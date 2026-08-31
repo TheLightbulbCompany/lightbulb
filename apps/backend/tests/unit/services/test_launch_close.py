@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from core.auth import AuthContext
+from core.repositories import launch_settings_repo
 from core.services import launch_close, launch_phase
 
 NOW = datetime.now(timezone.utc)
@@ -53,13 +54,11 @@ class _Harness:
     async def _update_fields(self, email, fields):
         self.rows[email].update(fields)
 
-    async def _record_close_state(self, fields, condition=None):
+    async def _record_close_state(self, fields, condition=None, condition_values=None):
         # Mirrors the repo's conditional semantics: the pot-freeze condition
-        # loses when final_pot_cents is already set — first values kept.
-        if (
-            condition == "attribute_not_exists(final_pot_cents)"
-            and self.settings_row.get("final_pot_cents") is not None
-        ):
+        # loses when final_pot_cents is already set — first values kept. A
+        # None (the legacy DynamoDB NULL) counts as unfrozen, per POT_UNFROZEN.
+        if condition == launch_settings_repo.POT_UNFROZEN and self.settings_row.get("final_pot_cents") is not None:
             self.close_state_writes.append({**fields, "__condition_lost__": True})
             return False
         self.settings_row.update(fields)
@@ -419,15 +418,16 @@ async def test_mark_winner_coupon_consumed_never_raises():
         await launch_close.mark_winner_coupon_consumed("user_a")
 
 
-async def test_pot_freeze_is_a_conditional_write_first_values_win():
-    """The (d) write carries attribute_not_exists(final_pot_cents) — a
-    concurrent recovery run losing the condition keeps the first run's
-    frozen values (DB-level write-once)."""
+async def test_pot_freeze_is_a_conditional_write_first_values_win(caplog):
+    """The (d) write carries POT_UNFROZEN — a concurrent recovery run losing
+    the condition keeps the first run's frozen values (DB-level write-once),
+    and says so at WARNING: a discarded freeze was silent once, and that is
+    how the pot stayed unset through every close."""
     rows = [_row("a@x.com", 1)]
     with _Harness(rows, {}) as h:
         await launch_close.close(ADMIN)
         pot_writes = [w for w in h.close_state_writes if "final_pot_cents" in w]
-        assert pot_writes[-1].get("__condition__") == "attribute_not_exists(final_pot_cents)"
+        assert pot_writes[-1].get("__condition__") == launch_settings_repo.POT_UNFROZEN
         first_pot = h.settings_row["final_pot_cents"]
 
         # Simulate the crash-recovery race: closed_at set but this run reads
@@ -436,13 +436,23 @@ async def test_pot_freeze_is_a_conditional_write_first_values_win():
         h.settings_row["final_pot_cents"] = None  # what the racing run believes
         h.settings_row["final_pot_cents"] = stale_row_pot  # row truth stays frozen
 
+        reads = {"n": 0}
+
         async def _stale_effective():
-            return dict(h.settings_row, final_pot_cents=None)
+            # ONLY the run's opening read is stale — that is what makes it
+            # re-enter (b)-(d). Every read after the lost freeze sees the row
+            # truth, exactly as a real DynamoDB read would.
+            reads["n"] += 1
+            return dict(h.settings_row, final_pot_cents=None) if reads["n"] == 1 else dict(h.settings_row)
 
         with patch("core.services.launch_close.launch_settings.effective", side_effect=_stale_effective):
-            await launch_close.close(ADMIN, force=True)
+            with caplog.at_level("WARNING", logger="core.services.launch_close"):
+                result = await launch_close.close(ADMIN, force=True)
         assert h.settings_row["final_pot_cents"] == first_pot  # condition lost -> untouched
         assert any(w.get("__condition_lost__") for w in h.close_state_writes)
+        assert any("pot freeze discarded" in r.getMessage() for r in caplog.records)
+        # …and the summary reports the row's frozen values, not this run's.
+        assert result["final_pot_cents"] == first_pot
 
 
 async def test_email_claim_lost_means_no_send():

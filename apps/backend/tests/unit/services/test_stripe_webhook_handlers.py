@@ -1923,3 +1923,38 @@ class TestSubscriptionActivationDelegatesToLaunchReferral:
         with patch("core.services.launch_close.mark_winner_coupon_consumed", new_callable=AsyncMock) as stamp:
             await handlers.handle_checkout_session(event, MagicMock())
         stamp.assert_not_awaited()
+
+    @staticmethod
+    async def _stamped_for(payment_status: str, event_type: str = "checkout.session.completed") -> bool:
+        event = {
+            "id": f"evt_cs_{payment_status}",
+            "type": event_type,
+            "data": {
+                "object": {
+                    "id": "cs_w",
+                    "payment_status": payment_status,
+                    "metadata": {"owner_id": "user_w", "launch_winner_coupon": "true"},
+                }
+            },
+        }
+        with patch("core.services.launch_close.mark_winner_coupon_consumed", new_callable=AsyncMock) as stamp:
+            await handlers.handle_checkout_session(event, MagicMock())
+        return stamp.await_count == 1
+
+    async def test_an_unpaid_delayed_session_does_not_stamp_the_coupon(self):
+        """A delayed method (ACH) fires checkout.session.completed while the
+        payment can still FAIL. Stamping there burns the winner's free month
+        without ever giving it to them — and a forced close rerun would then
+        skip attaching it."""
+        assert await self._stamped_for("unpaid") is False
+
+    async def test_the_free_month_zero_dollar_session_still_stamps(self):
+        """The winner's own session is the $0 shape: 100% off Starter means
+        `no_payment_required`, not `paid`. A `== "paid"` check would have
+        skipped the exact case this stamp exists for."""
+        assert await self._stamped_for("no_payment_required") is True
+
+    async def test_the_delayed_payment_stamps_when_it_finally_succeeds(self):
+        """async_payment_succeeded lands back on this same handler, with the
+        status flipped — that is when the coupon is genuinely consumed."""
+        assert await self._stamped_for("paid", "checkout.session.async_payment_succeeded") is True

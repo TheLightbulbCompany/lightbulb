@@ -26,7 +26,7 @@ import stripe
 from core.auth import AuthContext
 from core.config import settings
 from core.dynamodb import run_in_thread, utc_now_iso
-from core.repositories import billing_repo, launch_waitlist_repo, user_repo
+from core.repositories import billing_repo, launch_settings_repo, launch_waitlist_repo, user_repo
 from core.services import launch_phase, launch_service, launch_settings
 from core.services.launch_sheet_email import send_winner_paid_email, send_winner_unpaid_email
 from core.services.provision_gate import is_paid_subscription
@@ -255,14 +255,33 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
 
         # (d) Freeze the pot: front + per-entrant × final roster. Write-once
         # at the DB level — a concurrent recovery run losing the condition
-        # keeps the first run's frozen values.
+        # keeps the first run's frozen values. The condition also accepts a
+        # legacy NULL `final_pot_cents` (see POT_UNFROZEN), or a row saved by
+        # the admin settings form before that fix would never freeze at all.
         roster_count = sum(1 for r in sheet if r["email"] in winner_emails or r["email"] in paying)
         c = launch_phase.constants()
         final_pot = c["pot_front_cents"] + c["pot_per_entrant_cents"] * roster_count
-        await launch_settings.record_close_state(
+        froze = await launch_settings.record_close_state(
             {"final_roster_count": roster_count, "final_pot_cents": final_pot},
-            condition="attribute_not_exists(final_pot_cents)",
+            condition=launch_settings_repo.POT_UNFROZEN,
+            condition_values=launch_settings_repo.POT_UNFROZEN_VALUES,
         )
+        if not froze:
+            # The row was frozen by someone else between this run's read and
+            # this write. Legitimate under a concurrent recovery run — but it
+            # is also how the NULL-attribute defect hid, so it is never silent
+            # again, and the summary reports what is actually ON the row.
+            frozen = await launch_settings.effective()
+            logger.warning(
+                "launch_close: pot freeze discarded — the row already carries "
+                "final_pot_cents=%r final_roster_count=%r; this run computed %r/%r",
+                frozen.get("final_pot_cents"),
+                frozen.get("final_roster_count"),
+                final_pot,
+                roster_count,
+            )
+            roster_count = frozen.get("final_roster_count")
+            final_pot = frozen.get("final_pot_cents")
 
     # (e) The coupon: ensure a PRODUCT-RESTRICTED one exists (mint if
     # missing; force a re-mint over a stale coupon that predates the

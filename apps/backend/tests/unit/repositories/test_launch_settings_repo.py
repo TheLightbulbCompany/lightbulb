@@ -199,3 +199,55 @@ async def test_update_fields_condition_makes_the_pot_freeze_write_once(repo):
     assert second is False  # swallowed, not raised
     row = await repo.get()
     assert row["final_pot_cents"] == 103_000 and row["final_roster_count"] == 3  # first values kept
+
+
+async def _freeze(repo, pot: int, roster: int) -> bool:
+    """The close's (d) pot-freeze write, exactly as launch_close issues it."""
+    return await repo.update_fields(
+        {"final_pot_cents": pot, "final_roster_count": roster},
+        condition=repo.POT_UNFROZEN,
+        condition_values=repo.POT_UNFROZEN_VALUES,
+    )
+
+
+async def test_put_omits_none_valued_fields_instead_of_writing_dynamodb_nulls(repo):
+    """The bug, at its source: DEFAULTS carries `final_pot_cents: None`, and a
+    put that persisted it stored a NULL attribute — which EXISTS, so the pot
+    freeze's attribute_not_exists condition then rejected every close."""
+    await repo.put(dict(repo.DEFAULTS, enabled=True, updated_by="user_admin"))
+    item = repo._table().get_item(Key={"id": "settings"})["Item"]
+    for field in ("final_pot_cents", "final_roster_count", "closed_at", "close_started_at", "close_result"):
+        assert field not in item, f"{field} was persisted as a DynamoDB NULL"
+    # The caller's view is unchanged: every reader merges DEFAULTS, so an
+    # absent attribute still reads as None (launch_settings.effective,
+    # launch_phase._row).
+    stored = await repo.get()
+    assert "final_pot_cents" not in stored
+    assert {**repo.DEFAULTS, **stored}["final_pot_cents"] is None
+
+
+async def test_admin_settings_save_then_close_still_freezes_the_pot(repo):
+    """The regression: the owner MUST save settings (to set the dates) before
+    the close ever runs. That save must not disarm the freeze."""
+    await repo.put(dict(repo.DEFAULTS, enabled=True, updated_by="user_admin"))
+    assert await _freeze(repo, 103_000, 3) is True
+    row = await repo.get()
+    assert row["final_pot_cents"] == 103_000 and row["final_roster_count"] == 3
+
+
+async def test_freeze_condition_tolerates_a_legacy_null_attribute(repo):
+    """Rows saved before the put fix (dev's, and prod's if it was ever saved)
+    already carry the NULL — they must still freeze exactly once."""
+    repo._table().put_item(Item={"id": "settings", "enabled": True, "final_pot_cents": None})
+    assert await _freeze(repo, 103_000, 3) is True
+    assert (await repo.get())["final_pot_cents"] == 103_000
+    # …and only once: the write-once guarantee survives the NULL tolerance.
+    assert await _freeze(repo, 999_999, 99) is False
+    assert (await repo.get())["final_pot_cents"] == 103_000
+
+
+async def test_freeze_condition_never_overwrites_a_real_frozen_value(repo):
+    await repo.put(dict(repo.DEFAULTS, final_pot_cents=103_000, final_roster_count=3))
+    assert await _freeze(repo, 999_999, 99) is False
+    row = await repo.get()
+    assert row["final_pot_cents"] == 103_000 and row["final_roster_count"] == 3

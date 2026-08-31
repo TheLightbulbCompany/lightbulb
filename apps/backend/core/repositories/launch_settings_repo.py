@@ -59,6 +59,15 @@ DEFAULTS: dict = {
 }
 
 
+# The pot freeze is write-once at the DB level. It cannot be a bare
+# `attribute_not_exists`: rows saved before `put` learned to omit None-valued
+# fields carry `final_pot_cents` as a DynamoDB NULL, so the attribute EXISTS
+# and the freeze would be rejected — silently — on every close. A NULL means
+# "never frozen", exactly like an absent attribute.
+POT_UNFROZEN = "attribute_not_exists(final_pot_cents) OR attribute_type(final_pot_cents, :nulltype)"
+POT_UNFROZEN_VALUES = {":nulltype": "NULL"}
+
+
 def _table():
     return get_table("launch-settings")
 
@@ -119,15 +128,16 @@ def get_sync() -> dict | None:
     return _plain(resp.get("Item"))
 
 
-async def update_fields(fields: dict, *, condition: str | None = None) -> bool:
+async def update_fields(fields: dict, *, condition: str | None = None, condition_values: dict | None = None) -> bool:
     """SET only the supplied fields on the settings row — one atomic
     UpdateExpression, no read-modify-write, so a close-state write can never
     clobber a concurrent admin save (and vice versa). Upserts the row if no
     admin ever saved one (the DEFAULTS merge covers the rest).
 
-    ``condition`` is an optional ConditionExpression; a failed condition is
-    swallowed and returns False — DB-level enforcement of write-once fields
-    (the pot freeze) under genuine concurrency."""
+    ``condition`` is an optional ConditionExpression (``condition_values``
+    supplies any placeholders it names — see ``POT_UNFROZEN``); a failed
+    condition is swallowed and returns False — DB-level enforcement of
+    write-once fields (the pot freeze) under genuine concurrency."""
     names = {f"#f{i}": k for i, k in enumerate(fields)}
     values: dict = {f":v{i}": v for i, v in enumerate(fields.values())}
     values[":t"] = utc_now_iso()
@@ -139,6 +149,7 @@ async def update_fields(fields: dict, *, condition: str | None = None) -> bool:
     }
     if condition:
         kwargs["ConditionExpression"] = condition
+        values.update(condition_values or {})
     try:
         await run_in_thread(_table().update_item, **kwargs)
         return True
@@ -155,5 +166,16 @@ async def put(item: dict) -> dict:
     row = dict(item)
     row["id"] = _ID
     row["updated_at"] = utc_now_iso()
-    await run_in_thread(_table().put_item, Item=row)
-    return _plain(row)
+    # None-valued fields are OMITTED, never written. DynamoDB stores a None as
+    # a NULL attribute, which EXISTS — and the close's write-once pot freeze
+    # keys off the attribute NOT existing, so persisting the DEFAULTS
+    # `final_pot_cents: None` (which every admin save and coupon mint carries
+    # forward) silently rejected the freeze on every close afterwards. put_item
+    # replaces the whole item, so omitting is the same as clearing, and
+    # `effective()`'s DEFAULTS merge reads an absent attribute back as None.
+    stored = {k: v for k, v in row.items() if v is not None}
+    await run_in_thread(_table().put_item, Item=stored)
+    # The STORED row, not the submitted one — what `get()` will read back.
+    # Callers that need the full shape merge DEFAULTS, exactly as they do
+    # for a row nobody has ever saved (`launch_settings.effective`).
+    return _plain(stored)

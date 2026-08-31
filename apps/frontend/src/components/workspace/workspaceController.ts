@@ -187,6 +187,13 @@ function addOrFocus(descriptor: PanelDescriptor, extraParams?: Record<string, st
     if (Object.keys(nextParams).length > 0) {
       existing.api.updateParameters(nextParams);
     }
+    // A panel restored from a persisted layout keeps whatever title was
+    // serialized at save time — re-assert the registry title so a rename
+    // reaches long-lived layouts. Differs-only: ChatPanel self-titles to the
+    // agent name (and chat re-opens route through openChatPanel anyway).
+    if (existing.title !== descriptor.title) {
+      existing.api.setTitle(descriptor.title);
+    }
     existing.api.setActive();
     return;
   }

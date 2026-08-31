@@ -31,9 +31,13 @@ function makeFakeApi() {
   const removed: Handler<FakePanel>[] = [];
   let active: FakePanel | undefined;
   class FakePanel {
+    title: string | undefined;
     api = {
       setActive: vi.fn(() => {
         fire(this);
+      }),
+      setTitle: vi.fn((t: string) => {
+        this.title = t;
       }),
       updateParameters: vi.fn(),
       close: vi.fn(() => {
@@ -53,9 +57,10 @@ function makeFakeApi() {
   }
   const api = {
     getPanel: (id: string) => panels.get(id),
-    addPanel: vi.fn((opts: { id: string; params?: Record<string, string> }) => {
+    addPanel: vi.fn((opts: { id: string; params?: Record<string, string>; title?: string }) => {
       if (panels.has(opts.id)) throw new Error(`dockview: panel with id ${opts.id} already exists`);
       const p = new FakePanel(opts.id, opts.params ?? {});
+      p.title = opts.title;
       panels.set(opts.id, p);
       fire(p);
       return p;
@@ -144,6 +149,23 @@ describe("workspaceController", () => {
       teamsKey: "issues",
       agent: "B",
     });
+  });
+
+  it("focusing an existing panel heals a stale persisted tab title", () => {
+    const api = makeFakeApi();
+    attachDockviewApi(api, () => "friday-id");
+    openPanel("teams-artifacts");
+    const panel = api.getPanel("teams-artifacts") as unknown as {
+      title: string | undefined;
+      api: { setTitle: ReturnType<typeof vi.fn> };
+    };
+    // As restored by fromJSON from a blob saved before the rename.
+    panel.title = "Artifacts";
+    openPanel("teams-artifacts");
+    expect(panel.api.setTitle).toHaveBeenCalledWith("Library");
+    panel.api.setTitle.mockClear();
+    openPanel("teams-artifacts");
+    expect(panel.api.setTitle).not.toHaveBeenCalled(); // already canonical
   });
 
   it("openPanel with pushUrl writes the canonical URL once", () => {

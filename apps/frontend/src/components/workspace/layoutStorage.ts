@@ -9,6 +9,7 @@ import {
   ONE_SHOT_PARAMS,
   RETIRED_PANEL_ALIASES,
   DEFAULT_AGENT_SENTINEL,
+  describePanel,
 } from "./panelRegistry";
 
 // v2: Mission Control put Browser (not Dashboard) in the right-top slot. The
@@ -124,6 +125,47 @@ export function layoutStorageKey(scopeId: string): string {
   return `${KEY_PREFIX}:${scopeId}`;
 }
 
+// Persisted blobs carry the tab title dockview serialized at save time, and
+// fromJSON restores it verbatim — a registry rename would otherwise never
+// reach a pre-existing layout. Re-derive the title from panelRegistry via the
+// panel's params (post-migration, so a renamed panel resolves by its new
+// key); null = "can't resolve this shape", caller keeps the stored title.
+function canonicalPanelTitle(
+  component: string,
+  params: Record<string, unknown> | undefined,
+): string | null {
+  let key: string;
+  const p: Record<string, string> = {};
+  switch (component) {
+    case "chat": {
+      if (typeof params?.agentId !== "string") return null;
+      key = "chat";
+      p.agent = params.agentId;
+      break;
+    }
+    case "teams": {
+      if (typeof params?.teamsKey !== "string") return null;
+      key = `teams-${params.teamsKey}`;
+      if (typeof params.detailId === "string") p.detailId = params.detailId;
+      break;
+    }
+    case "control": {
+      // Covers both CONTROL_KEYS panels and the agent-inspector, whose
+      // controlKey doubles as its registry key.
+      if (typeof params?.controlKey !== "string") return null;
+      key = params.controlKey;
+      break;
+    }
+    case "file-viewer":
+    case "browser":
+      key = component;
+      break;
+    default:
+      return null;
+  }
+  return describePanel(key, p)?.title ?? null;
+}
+
 // fromJSON THROWS (after clearing the dock) on an unregistered
 // contentComponent — one stale key must not nuke the whole saved layout.
 // Component names live only in the flat panels map (the grid tree references
@@ -205,7 +247,17 @@ export function sanitizeLayout(
       }
     }
 
-    panels[finalId] = { ...state, id: finalId, contentComponent: component, params };
+    // Heal a stale serialized title (a rename shipped after this blob was
+    // saved); never invent one where none was stored.
+    const healedTitle =
+      typeof state.title === "string" ? (canonicalPanelTitle(component, params) ?? state.title) : null;
+    panels[finalId] = {
+      ...state,
+      id: finalId,
+      contentComponent: component,
+      params,
+      ...(healedTitle !== null ? { title: healedTitle } : {}),
+    };
   }
 
   let grid = raw.grid;

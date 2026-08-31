@@ -39,7 +39,7 @@ export const NON_COMMAND_PARAMS = ["checkout", "subscription", "credits", "provi
 const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
   dashboard: "Home",
   agents: "Agents",
-  "org-chart": "Org Chart",
+  "org-chart": "Org chart",
   inbox: "Inbox",
   issues: "Tasks",
   routines: "Automations",

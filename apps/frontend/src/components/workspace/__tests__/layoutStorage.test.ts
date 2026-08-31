@@ -81,6 +81,19 @@ describe("layoutStorage", () => {
     expect(clean.panels["teams-issues"].params).toEqual({ teamsKey: "issues", agent: "a-1" });
   });
 
+  it("sanitizer heals a stale serialized tab title from the registry", () => {
+    const dirty = minimalLayout({
+      "teams-artifacts": {
+        id: "teams-artifacts",
+        contentComponent: "teams",
+        title: "Artifacts", // saved before the Library rename
+        params: { teamsKey: "artifacts" },
+      },
+    });
+    const clean = sanitizeLayout(dirty);
+    expect(clean.panels["teams-artifacts"].title).toBe("Library");
+  });
+
   it("sanitizer strips persist-only params (initialTab) so a nav intent can't restore forever", () => {
     const dirty = minimalLayout({
       "agent-inspector": {

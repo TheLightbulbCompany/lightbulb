@@ -1772,3 +1772,19 @@ async def test_ask_is_still_a_no_op():
     with patch.object(mod, "shared_admin_client") as client:
         assert (await mod.advance(_row(state="ask")))["state"] == "ask"
     client.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_start_matches_mixed_case_wire_provider_names():
+    """The wire provider_name is mixed-case ("Sentry") while request bodies
+    carry lowercase slugs; the match must be case-insensitive or every
+    capitalized provider is unfilable (seen live on dev)."""
+    svc = {**SERVICE, "provider_name": "Sentry", "service_id": "developer"}
+    with (
+        patch.object(mod.api, "catalog_services", AsyncMock(return_value=[svc])) as cs,
+        patch.object(mod.api, "catalog_providers", AsyncMock(return_value=[PROVIDER])),
+    ):
+        service, provider = await mod._read_catalog("acct_1", "sentry", "developer")
+    assert service["service_id"] == "developer"
+    # unfiltered read — no provider_name kwarg reaches the client
+    assert cs.await_args.kwargs.get("provider_name") is None

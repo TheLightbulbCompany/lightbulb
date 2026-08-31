@@ -24,7 +24,7 @@ export function ReferralLink({ code, link }: { code: string; link?: string }) {
   };
   return (
     <div className="lc-field">
-      <span>Refer a friend who subscribes → you get a month free.</span>
+      <span>Share your link — every referral who subscribes moves you up.</span>
       <div className="lc-row">
         <input readOnly data-mono value={href} aria-label="Your referral link" onFocus={(e) => e.currentTarget.select()} />
         <button type="button" className="ld-btn ld-btn--ghost" onClick={copy}>{copied ? "Copied" : "Copy"}</button>

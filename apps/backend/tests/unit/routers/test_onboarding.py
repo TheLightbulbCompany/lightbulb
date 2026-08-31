@@ -189,14 +189,14 @@ def test_too_short_input_still_rejected(client):
     client.put.assert_not_awaited()
 
 
-# --- editing a stashed idea while held on the launch waitlist -----------------
+# --- editing a stashed idea before the container exists -----------------------
 
 
-def test_held_owner_resubmit_upserts_the_pending_brief(client):
-    """No container row yet (held) + a brief already pending == the landing
-    card's "edit your idea" flow re-POSTing this route. That must actually
-    replace the stored text, not bounce off as already_submitted."""
-    client.get_container.return_value = None  # no container -- held
+def test_pre_container_owner_resubmit_upserts_the_pending_brief(client):
+    """No container row yet + a brief already pending == the landing card's
+    "edit your idea" flow re-POSTing this route. That must actually replace
+    the stored text, not bounce off as already_submitted."""
+    client.get_container.return_value = None  # no container yet
     client.put.side_effect = [False, True]  # first put loses the guard, retry overwrites
 
     resp = client.post("/api/v1/onboarding/brief", json={"path": "new", "input": "A better idea"})
@@ -227,7 +227,7 @@ def test_owner_with_a_container_never_gets_the_upsert_retry(client):
 
 def test_container_read_failure_keeps_the_original_refusal(client):
     """An unreadable container row must not flip a real onboarding owner into
-    the held/overwrite branch -- degrade toward the existing refusal."""
+    the overwrite branch -- degrade toward the existing refusal."""
     client.get_container.side_effect = RuntimeError("boom")
     client.put.return_value = False
 

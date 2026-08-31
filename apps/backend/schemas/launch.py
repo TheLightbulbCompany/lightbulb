@@ -6,16 +6,15 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class LaunchInfo(BaseModel):
+    """The public /launch payload. NO pot fields, ever — the pot is
+    admin-only (it lives in the ops sheet payload)."""
+
     phase: str
-    drop_at: str
+    sheet_closes_at: str
     competition_start_at: str
     competition_end_at: str
     signups: int
-    competing: int
-    on_board: int
-    pot_cents: int
     comp_slots: int
-    pot_per_entrant_cents: int
     referral_jump: int
 
 
@@ -63,30 +62,38 @@ class LaunchSettingsUpdate(BaseModel):
     console. Every field is REQUIRED, with no default: the write is a full
     replace, so a partial body has to be a 422 rather than a silent reset of
     whatever it left out — a body with no dates would otherwise blank the
-    launch schedule. (``drop_at``/``competition_start_at`` are nullable, but
-    the client still has to say ``null``.)
+    launch schedule. (The three dates are nullable, but the client still has
+    to say ``null``.)
 
-    ``referral_jump`` is the queue-jump setting: how many waitlist spots each
-    referral moves the referrer up (``core.services.launch_service.
-    effective_position``).
+    ``referral_jump`` is the queue-jump setting: how many sheet spots each
+    counted referral (referee subscribed) moves the referrer up
+    (``core.services.launch_service.effective_position``).
 
-    The three ``stripe_*`` ids are deliberately NOT here: they are minted by
-    the coupon endpoint and carried forward by
-    ``core.services.launch_settings.update``, never client-supplied — which
-    also keeps them out of the admin-action audit body. Real validation
-    (ranges, date grammar, enabled-requires-both-dates) happens in
-    ``core.services.launch_settings.validate``; this model exists to give the
-    field list a shape, not to duplicate that logic."""
+    ``stripe_coupon_id`` and the close-state fields (``closed_at``,
+    ``final_pot_cents``, ``final_roster_count``) are deliberately NOT here:
+    they are written by the coupon mint / close action and carried forward
+    by ``core.services.launch_settings.update``, never client-supplied.
+    Real validation (ranges, date grammar, orderings, enabled-requires-dates)
+    happens in ``core.services.launch_settings.validate``; this model exists
+    to give the field list a shape, not to duplicate that logic."""
 
     enabled: bool
-    drop_at: str | None
+    sheet_closes_at: str | None
     competition_start_at: str | None
+    competition_end_at: str | None
     comp_slots: int
-    competition_days: int
     pot_front_cents: int
     pot_per_entrant_cents: int
     referral_jump: int
 
 
 class StripeCouponCreateRequest(BaseModel):
+    force: bool = False
+
+
+class LaunchCloseRequest(BaseModel):
+    """``force`` re-runs an already-stamped close so a partial failure
+    (Stripe blip mid coupon-attach, an email that never sent) can converge —
+    every step is idempotent and skips work already done."""
+
     force: bool = False

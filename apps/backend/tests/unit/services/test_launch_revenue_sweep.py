@@ -7,8 +7,10 @@ import pytest
 from core.services import launch_phase, launch_revenue as rev
 
 NOW = datetime(2026, 10, 1, 12, tzinfo=timezone.utc)
-DROP = datetime(2026, 9, 18, 16, tzinfo=timezone.utc)
-S = launch_phase.Schedule(DROP, DROP + timedelta(hours=72), DROP + timedelta(hours=72, days=30), 220, 72, 30)
+# Same instants the pre-pivot suite used (the proration math below depends on
+# NOW sitting 9d20h into a 30-day window) — only the field names moved.
+CLOSES = datetime(2026, 9, 18, 16, tzinfo=timezone.utc)
+S = launch_phase.Schedule(CLOSES, CLOSES + timedelta(hours=72), CLOSES + timedelta(hours=72, days=30), 200, None)
 
 
 def ENTRY(owner_id: str, baseline_cents: int, **over) -> dict:
@@ -130,7 +132,7 @@ async def test_refresh_all_noop_outside_window(repo):
         patch.object(rev, "refresh_entry", AsyncMock()) as one,
         patch.object(rev.launch_phase, "schedule", return_value=S),
     ):
-        assert await rev.refresh_all(now=DROP - timedelta(days=1)) == 0
+        assert await rev.refresh_all(now=CLOSES - timedelta(days=1)) == 0
         assert await rev.refresh_all(now=S.competition_end_at + timedelta(days=2)) == 0
         one.assert_not_awaited()
 
@@ -154,7 +156,7 @@ async def test_maybe_revalidate_noop_when_unconfigured_or_outside_window():
     with patch.object(rev.launch_phase, "schedule", return_value=None):
         assert rev.maybe_revalidate(now=NOW) is False
     with patch.object(rev.launch_phase, "schedule", return_value=S):
-        assert rev.maybe_revalidate(now=DROP - timedelta(days=1)) is False
+        assert rev.maybe_revalidate(now=CLOSES - timedelta(days=1)) is False
         assert rev.maybe_revalidate(now=S.competition_end_at + timedelta(days=2)) is False
     assert rev._inflight is None
 

@@ -3,15 +3,13 @@ through a 30-second in-process cache.
 
 The row (``core.repositories.launch_settings_repo``, edited via
 ``core.services.launch_settings`` from the admin console) is THE source of
-the dates and pot constants for every surface. This module sits on the
-container-status poll path (``core.services.launch_hold``), so it never lets
-that path fail: a DynamoDB read failure falls back to the cached/default row
-(``_row()``), and a row that fails to derive a schedule (bad types, bad
-dates) is treated as feature-off rather than raised (``schedule()``).
-``enabled=False`` or either date missing = feature off.
+the dates and pot constants for every surface. A DynamoDB read failure falls
+back to the cached/default row (``_row()``), and a row that fails to derive a
+schedule (bad types, bad dates) is treated as feature-off rather than raised
+(``schedule()``). ``enabled=False`` or any date missing = feature off.
 
-Phase ladder: waitlist (before the drop) → activation (drop .. competition
-start) → live → ended.
+Phase ladder: open (sheet accepting joins) → closed (the admin close action
+stamped ``closed_at``, or ``sheet_closes_at`` passed) → competition → ended.
 """
 
 from __future__ import annotations
@@ -19,27 +17,26 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Literal
 
 from core.repositories import launch_settings_repo
 
 logger = logging.getLogger(__name__)
 
-Phase = Literal["waitlist", "activation", "live", "ended"]
+Phase = Literal["open", "closed", "competition", "ended"]
 
 _CACHE_TTL_S = 30
-_CACHE: dict = {"row": None, "fetched_at": 0.0, "unavailable": False, "invalid": False}
+_CACHE: dict = {"row": None, "fetched_at": 0.0}
 
 
 @dataclass(frozen=True)
 class Schedule:
-    drop_at: datetime
+    sheet_closes_at: datetime
     competition_start_at: datetime
     competition_end_at: datetime
     comp_slots: int
-    activation_window_hours: int
-    competition_days: int
+    closed_at: datetime | None
 
 
 def parse_iso(value: str) -> datetime:
@@ -52,59 +49,34 @@ def parse_iso(value: str) -> datetime:
 def invalidate() -> None:
     _CACHE["row"] = None
     _CACHE["fetched_at"] = 0.0
-    _CACHE["unavailable"] = False
-    _CACHE["invalid"] = False
 
 
 def _row() -> dict:
     """The effective settings row (``DEFAULTS`` ⊕ the stored row), through
     the 30s cache. A DynamoDB read failure logs a warning and falls back to
-    whatever is cached (or DEFAULTS on a cold cache) instead of raising —
-    this is on the container-status poll path, and a DynamoDB hiccup must
-    never 500 the fleet.
-
-    A cold-cache failure is deliberately NOT cached: the next call retries
-    (rather than serving a guess for 30 seconds), and ``settings_unavailable``
-    reports that the DEFAULTS just served are a guess rather than the row."""
+    whatever is cached (or DEFAULTS on a cold cache) instead of raising — a
+    DynamoDB hiccup must never 500 a public surface. A cold-cache failure is
+    deliberately NOT cached: the next call retries."""
     now = time.monotonic()
     if _CACHE["row"] is not None and now - _CACHE["fetched_at"] < _CACHE_TTL_S:
         return _CACHE["row"]
     try:
         stored = launch_settings_repo.get_sync()
         row = {**launch_settings_repo.DEFAULTS, **(stored or {})}
-    except Exception:  # noqa: BLE001 — the poll path must never fail because DynamoDB hiccuped
+    except Exception:  # noqa: BLE001 — serving surfaces must never fail because DynamoDB hiccuped
         logger.warning("launch_phase: settings read failed; serving cached/default row", exc_info=True)
         if _CACHE["row"] is None:
-            _CACHE["unavailable"] = True
             return dict(launch_settings_repo.DEFAULTS)
         row = _CACHE["row"]
-    _CACHE["unavailable"] = False
     _CACHE["row"] = row
     _CACHE["fetched_at"] = now
     return row
-
-
-def settings_unavailable() -> bool:
-    """True iff the row currently backing every launch surface is not a
-    trustworthy read of the stored settings: either (a) the last read failed
-    with nothing cached to fall back to (DEFAULTS-as-a-guess), or (b) the
-    last read row failed to derive a ``Schedule`` (bad types, bad dates) —
-    ``schedule()`` treats that as feature-off too, but it is NOT the same as
-    an admin genuinely disabling the launch.
-
-    Only ``launch_hold`` acts on this: un-holding an owner is irreversible
-    (it stamps the 3-day trial clock), so a container-less owner is held
-    rather than released on a DynamoDB blip or a malformed row. Every other
-    reader stays fail-open — ``require_launch`` 404s, the webhook join is
-    skipped."""
-    return bool(_CACHE["unavailable"] or _CACHE["invalid"])
 
 
 def constants() -> dict:
     row = _row()
     return {
         "comp_slots": row["comp_slots"],
-        "competition_days": row["competition_days"],
         "pot_front_cents": row["pot_front_cents"],
         "pot_per_entrant_cents": row["pot_per_entrant_cents"],
         "referral_jump": row["referral_jump"],
@@ -117,47 +89,44 @@ def coupon_id() -> str:
 
 def schedule() -> Schedule | None:
     row = _row()
-    if not row["enabled"] or not row["drop_at"] or not row["competition_start_at"]:
-        # Genuinely off, not malformed — a prior malformed-row flag no
-        # longer describes the row we just read.
-        _CACHE["invalid"] = False
+    if (
+        not row["enabled"]
+        or not row["sheet_closes_at"]
+        or not row["competition_start_at"]
+        or not row["competition_end_at"]
+    ):
         return None
     try:
-        drop = parse_iso(row["drop_at"])
+        closes = parse_iso(row["sheet_closes_at"])
         start = parse_iso(row["competition_start_at"])
-        if start <= drop:
-            # launch_settings.validate() already refuses this order at write
-            # time, so this only fires against a row that bypassed validation
-            # (a hand-edited DynamoDB item) — treated the same as any other
-            # malformed row below: log and go feature-off, not a 500.
-            raise ValueError("competition_start_at must be after drop_at")
-        _CACHE["invalid"] = False
+        end = parse_iso(row["competition_end_at"])
+        if start <= closes or end <= start:
+            # launch_settings.validate() already refuses these orderings at
+            # write time, so this only fires against a row that bypassed
+            # validation (a hand-edited DynamoDB item) — log and go
+            # feature-off, not a 500.
+            raise ValueError("dates out of order")
+        closed_at = parse_iso(row["closed_at"]) if row.get("closed_at") else None
         return Schedule(
-            drop_at=drop,
+            sheet_closes_at=closes,
             competition_start_at=start,
-            competition_end_at=start + timedelta(days=row["competition_days"]),
+            competition_end_at=end,
             comp_slots=row["comp_slots"],
-            activation_window_hours=int((start - drop).total_seconds() // 3600),
-            competition_days=row["competition_days"],
+            closed_at=closed_at,
         )
-    except Exception:  # noqa: BLE001 — the poll path must never fail because a row is malformed
+    except Exception:  # noqa: BLE001 — a malformed row must not 500 any surface
         logger.warning("launch_phase: settings row failed to derive a schedule; treating as feature off", exc_info=True)
-        # Unlike "disabled" or "no dates set", this row was READ successfully
-        # but is garbage — un-holding a container-less owner on it would be
-        # wrong the same way a DynamoDB read failure would be. See
-        # settings_unavailable()'s docstring.
-        _CACHE["invalid"] = True
         return None
 
 
 def phase(s: Schedule, now: datetime | None = None) -> Phase:
     now = now or datetime.now(timezone.utc)
-    if now < s.drop_at:
-        return "waitlist"
+    if s.closed_at is None and now < s.sheet_closes_at:
+        return "open"
     if now < s.competition_start_at:
-        return "activation"
+        return "closed"
     if now < s.competition_end_at:
-        return "live"
+        return "competition"
     return "ended"
 
 

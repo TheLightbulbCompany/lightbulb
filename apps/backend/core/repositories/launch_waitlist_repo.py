@@ -1,9 +1,12 @@
-"""launch-waitlist table — one row per email, plus a counter row.
+"""launch-waitlist table — one row per email, plus a counter row. Post-pivot
+this table IS the competition sign-up sheet: a row is sheet membership once
+``joined_at`` is stamped (``mark_joined``, from the explicit POST
+/launch/join), and the close action writes ``winner`` / ``compete_eligible``
+onto the same rows.
 
-Keyed by lowercased email because the waitlist exists before any account
-does; the join to a Clerk user is ``users.email`` (written by the
-``user.created`` webhook) and is stamped onto the row as ``user_id`` on the
-first authed read (``claim_user``).
+Keyed by lowercased email (rows can predate sheet membership — referral
+attribution creates them); the join to a Clerk user is ``users.email`` and is
+stamped onto the row as ``user_id`` on the first authed read (``claim_user``).
 """
 
 from __future__ import annotations
@@ -21,7 +24,7 @@ REFERRAL_CODE_INDEX = "referral-code-index"
 _CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 _CODE_LEN = 8
 
-CounterField = Literal["referrals_signed_up", "referrals_paid", "free_months_banked"]
+CounterField = Literal["referrals_signed_up", "referrals_subscribed"]
 
 
 def _table():
@@ -44,7 +47,7 @@ def _plain(item: dict | None) -> dict | None:
     if not item:
         return None
     out = dict(item)
-    for k in ("position", "referrals_signed_up", "referrals_paid", "free_months_banked"):
+    for k in ("position", "referrals_signed_up", "referrals_subscribed"):
         if k in out:
             out[k] = int(out[k])
     return out
@@ -103,8 +106,7 @@ async def join(email: str, *, referred_by: str | None, source: str) -> dict:
         "source": source,
         "created_at": utc_now_iso(),
         "referrals_signed_up": 0,
-        "referrals_paid": 0,
-        "free_months_banked": 0,
+        "referrals_subscribed": 0,
     }
     if referrer:
         item["referred_by"] = referrer["referral_code"]
@@ -154,14 +156,14 @@ async def attribute(email: str, referral_code: str) -> bool:
     return True
 
 
-async def mark_rewarded(email: str) -> bool:
-    """CAS guard for the referral payout: True exactly once per referred row."""
+async def _stamp_once(email: str, field: str) -> bool:
+    """CAS: set ``field`` to now exactly once per row. True iff this call wrote it."""
     try:
         await run_in_thread(
             _table().update_item,
             Key={"email": email},
-            UpdateExpression="SET referral_rewarded_at = :t",
-            ConditionExpression="attribute_exists(email) AND attribute_not_exists(referral_rewarded_at)",
+            UpdateExpression=f"SET {field} = :t",
+            ConditionExpression=f"attribute_exists(email) AND attribute_not_exists({field})",
             ExpressionAttributeValues={":t": utc_now_iso()},
         )
         return True
@@ -171,26 +173,90 @@ async def mark_rewarded(email: str) -> bool:
         return False
 
 
-async def add_counter(email: str, field: CounterField, delta: int) -> int | None:
-    """Atomic ADD on an EXISTING row. Returns the new value, or ``None`` when the
-    write was refused — a negative delta that would go below zero, or no row.
-
-    ``None`` is load-bearing on the money path: a caller that decrements a banked
-    free month must be able to tell a refused decrement from a successful one, or
-    its compensating put-back mints a month that was never spent."""
-    kwargs: dict = {
-        "Key": {"email": email},
-        "UpdateExpression": "ADD #f :d",
-        "ConditionExpression": "attribute_exists(email)",
-        "ExpressionAttributeNames": {"#f": field},
-        "ExpressionAttributeValues": {":d": delta},
-        "ReturnValues": "UPDATED_NEW",
-    }
-    if delta < 0:
-        kwargs["ConditionExpression"] += " AND #f >= :need"
-        kwargs["ExpressionAttributeValues"][":need"] = -delta
+async def mark_joined(email: str, *, display_name: str, public: bool) -> bool:
+    """Sheet membership stamp + the join-time fields, ONE atomic write —
+    first join wins wholesale, so a retry after a partial failure can never
+    half-apply (e.g. re-default a private row's ``public`` back to true). A
+    row can exist WITHOUT this (referral attribution creates rows); only
+    stamped rows are on the sheet. True exactly once per row."""
     try:
-        resp = await run_in_thread(_table().update_item, **kwargs)
+        await run_in_thread(
+            _table().update_item,
+            Key={"email": email},
+            UpdateExpression="SET joined_at = :t, display_name = :d, #pub = :p",
+            ConditionExpression="attribute_exists(email) AND attribute_not_exists(joined_at)",
+            ExpressionAttributeNames={"#pub": "public"},
+            ExpressionAttributeValues={":t": utc_now_iso(), ":d": display_name, ":p": bool(public)},
+        )
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return False
+
+
+async def claim_winner_email(email: str) -> bool:
+    """At-most-once claim for the winner email: stamp winner_email_sent_at
+    BEFORE sending, so two concurrent close runs can never double-send. True
+    iff this run owns the send; a failed send releases the claim
+    (``release_winner_email``) so a force rerun retries."""
+    return await _stamp_once(email, "winner_email_sent_at")
+
+
+async def release_winner_email(email: str) -> None:
+    """Undo a winner-email claim whose send FAILED — the row goes back to
+    unsent so a force rerun retries it."""
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"email": email},
+            UpdateExpression="REMOVE winner_email_sent_at",
+            ConditionExpression="attribute_exists(email)",
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+
+async def mark_referral_counted(email: str) -> bool:
+    """Dedup for referral counting: True exactly once per referee row, the
+    first time their subscription goes live (launch_referral)."""
+    return await _stamp_once(email, "referral_counted_at")
+
+
+async def update_fields(email: str, fields: dict) -> None:
+    """SET the given fields on an EXISTING row (no-op if the row is gone).
+    Used by the sheet join (display_name/public) and the close action
+    (winner / compete_eligible / coupon + email stamps)."""
+    names = {f"#f{i}": k for i, k in enumerate(fields)}
+    values = {f":v{i}": v for i, v in enumerate(fields.values())}
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"email": email},
+            UpdateExpression="SET " + ", ".join(f"{n} = :v{i}" for i, n in enumerate(names)),
+            ConditionExpression="attribute_exists(email)",
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+
+async def add_counter(email: str, field: CounterField, delta: int) -> int | None:
+    """Atomic ADD on an EXISTING row. Returns the new value, or ``None`` when
+    there is no row to add to."""
+    try:
+        resp = await run_in_thread(
+            _table().update_item,
+            Key={"email": email},
+            UpdateExpression="ADD #f :d",
+            ConditionExpression="attribute_exists(email)",
+            ExpressionAttributeNames={"#f": field},
+            ExpressionAttributeValues={":d": delta},
+            ReturnValues="UPDATED_NEW",
+        )
         return int(resp["Attributes"][field])
     except ClientError as e:
         if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
@@ -198,9 +264,9 @@ async def add_counter(email: str, field: CounterField, delta: int) -> int | None
         return None
 
 
-async def list_all() -> list[dict]:
+async def list_all(*, consistent: bool = False) -> list[dict]:
     items: list[dict] = []
-    kwargs: dict = {}
+    kwargs: dict = {"ConsistentRead": True} if consistent else {}
     while True:
         page = await run_in_thread(_table().scan, **kwargs)
         items.extend(_plain(i) for i in page.get("Items", []) if i.get("email") != COUNTER_KEY)
@@ -213,32 +279,3 @@ async def list_all() -> list[dict]:
 async def count() -> int:
     row = await run_in_thread(_table().get_item, Key={"email": COUNTER_KEY})
     return int((row.get("Item") or {}).get("position", 0))
-
-
-async def mark_pot_counted(email: str) -> bool:
-    """CAS guard: True exactly once per row, the first time it's counted toward the pot."""
-    try:
-        await run_in_thread(
-            _table().update_item,
-            Key={"email": email},
-            UpdateExpression="SET pot_counted_at = :t",
-            ConditionExpression="attribute_exists(email) AND attribute_not_exists(pot_counted_at)",
-            ExpressionAttributeValues={":t": utc_now_iso()},
-        )
-        return True
-    except ClientError as e:
-        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
-        return False
-
-
-async def count_pot_counted() -> int:
-    total = 0
-    kwargs: dict = {"FilterExpression": "attribute_exists(pot_counted_at)", "Select": "COUNT"}
-    while True:
-        page = await run_in_thread(_table().scan, **kwargs)
-        total += int(page.get("Count", 0))
-        last = page.get("LastEvaluatedKey")
-        if not last:
-            return total
-        kwargs["ExclusiveStartKey"] = last

@@ -19,9 +19,17 @@ export async function saveLaunchSettings(body: LaunchSettingsInput): Promise<Act
   return adminPut("/ops/launch/settings", body);
 }
 
-/** One-click mint of the free-month Stripe coupon + promotion code. 409 when
- * one is already configured and `force` wasn't passed, 422 when the dates
- * aren't set yet, 502 on a Stripe-side failure. */
+/** One-click mint of the free-month Stripe coupon (100% once, no promo
+ * codes — it's attached server-side, never typed). 409 when one is already
+ * configured and `force` wasn't passed, 422/502 otherwise. */
 export async function createLaunchStripeCoupon(force: boolean): Promise<ActionResult> {
   return adminPost("/ops/launch/settings/stripe-coupon", { force });
+}
+
+/** Close the competition sign-up sheet: freeze joins/jumps, flag winners,
+ * freeze the pot, attach coupons, email winners. 409 "already_closed"
+ * without `force`; a forced rerun retries only the failed coupon/email
+ * steps (convergence, never a re-flag). */
+export async function closeLaunchSheet(force: boolean): Promise<ActionResult> {
+  return adminPost("/ops/launch/close", { force });
 }

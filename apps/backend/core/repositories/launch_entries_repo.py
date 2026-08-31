@@ -4,10 +4,10 @@ The entrant's Stripe restricted key is NOT here; it lives in Secrets Manager
 on the BYO-key rail (see core.services.launch_service). Revenue numbers are
 written by the hourly sweep (core.services.launch_revenue).
 
-Joining (``join``) and connecting Stripe (``set_key_connected``) are two
-separate writes: a row starts ``has_key=False`` at join time and flips True
-only once a validated key + baseline land — see launch_service.join vs
-launch_service.connect_stripe.
+Post-pivot this table is ONLY the revenue-board attachment: the competition
+entry itself is the sheet row (``launch_waitlist_repo``), and
+``launch_service.connect_stripe`` mints this row on demand from it. A row
+starts ``has_key=False`` and flips True once a validated key + baseline land.
 """
 
 from __future__ import annotations

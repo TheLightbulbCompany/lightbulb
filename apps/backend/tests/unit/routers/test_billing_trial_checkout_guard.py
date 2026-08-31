@@ -639,3 +639,37 @@ async def test_lost_checkout_slot_claim_maps_to_409(
 
     assert resp.status_code == 409
     assert resp.json()["detail"] == "checkout_in_progress"
+
+
+@pytest.mark.asyncio
+@patch("core.services.launch_close.winner_checkout_discount", new_callable=AsyncMock)
+@patch("core.services.billing_service.create_flat_fee_checkout")
+@patch("routers.billing.stripe.checkout.Session.expire")
+@patch("routers.billing.stripe.checkout.Session.retrieve")
+@patch("routers.billing.stripe.Subscription.list")
+@patch("routers.billing.clerk_admin")
+@patch("routers.billing.billing_repo")
+async def test_launch_winner_with_a_stale_undiscounted_session_gets_a_fresh_one(
+    mock_repo, mock_clerk, mock_sub_list, mock_retrieve, mock_expire, mock_create_checkout, mock_discount, async_client
+):
+    """The owner opened a session, THEN the close flagged them a winner: the
+    cached session carries no free-month discount (marker absent), so reusing
+    it would charge them full price. Expire it and mint fresh — the fresh
+    session gets the discount pre-applied by the builder."""
+    mock_discount.return_value = [{"coupon": "coup_1"}]
+    mock_repo.get_by_owner_id = AsyncMock(return_value=dict(_PENDING_ROW))
+    mock_repo.set_provider_choice = AsyncMock(return_value=None)
+    mock_repo.release_checkout_slot = AsyncMock(return_value=None)
+    mock_clerk.list_pending_invitations_for_user = AsyncMock(return_value=[])
+    mock_sub_list.return_value = _sub_list([])
+    mock_retrieve.return_value = _open_session()  # same provider, no marker
+    mock_create_checkout.return_value = type("Session", (), {"url": "https://checkout.stripe.com/fresh"})()
+
+    resp = await async_client.post(
+        "/api/v1/billing/trial-checkout",
+        json={"provider_choice": "bedrock_claude"},
+    )
+
+    assert resp.status_code == 200
+    mock_expire.assert_called_once()
+    assert resp.json()["checkout_url"] == "https://checkout.stripe.com/fresh"

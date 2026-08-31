@@ -4,9 +4,8 @@
    --cream, --cream-deeper, --edge) — not the landing-only ones (--ink,
    --mute, --gold, --danger, --forest live under .ld-page's scope) — because
    this stylesheet was built to
-   work outside .ld-page (the since-deleted in-chat held card loaded it
-   there), and global tokens keep it portable to any future non-landing
-   surface. Lives beside its components —
+   work outside .ld-page too, and global tokens keep it portable to any
+   future non-landing surface. Lives beside its components —
    landing.css is brand-owned and is never edited from here. */
 
 .lc-stats {
@@ -42,10 +41,6 @@
   background: var(--cream-deeper);
   color: var(--midnight);
 }
-.lc-card--lit { border-color: var(--brass); }
-/* The landing hero's spot card: the hero section centers text and spans
-   820px; the card reads left and stays letter-width. */
-.lc-card--spot { text-align: left; max-width: 560px; margin-inline: auto; }
 
 .lc-table { width: 100%; border-collapse: collapse; font-size: var(--text-ui); color: var(--midnight); }
 /* The product's small-caps column head (the `label-caps` utility, written out:
@@ -75,7 +70,6 @@
   font-size: var(--text-ui);
 }
 .lc-field textarea { resize: vertical; font-family: inherit; }
-.lc-idea { font-size: var(--text-ui); color: var(--midnight); margin: 0 0 8px; overflow-wrap: anywhere; }
 /* No `:focus` recipe here — the one focus ring is the global `:focus-visible`
    rule in globals.css. Brass on cream is 2.76:1 and fails the 3:1 bar anyway. */
 .lc-field input[data-mono] { font-family: var(--font-mono), ui-monospace, monospace; font-size: var(--text-ui); }

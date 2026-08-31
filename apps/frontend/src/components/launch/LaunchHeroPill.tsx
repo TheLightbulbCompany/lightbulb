@@ -2,30 +2,27 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { formatMoney } from "@/lib/launch";
 import { useLaunchInfo } from "./useLaunchInfo";
 
 /**
- * The landing hero's quiet pointer to the open launch competition — mounted
- * by `HeroFunnel.tsx` directly under the eyebrow. Reads the public `GET
- * /launch` via `useLaunchInfo`, which degrades any non-200 (feature off,
- * transient error) to `null`: render nothing, never a broken pill on the
- * hero.
+ * The landing hero's quiet pointer to the launch competition — mounted by
+ * `HeroFunnel.tsx` directly under the eyebrow. Reads the public `GET /launch`
+ * via `useLaunchInfo`, which degrades any non-200 (feature off, transient
+ * error) to `null`: render nothing, never a broken pill on the hero. The
+ * closed/ended phases render nothing too — a dead competition earns no hero
+ * real estate.
  */
 export function LaunchHeroPill() {
   const info = useLaunchInfo();
 
   if (!info) return null;
 
-  const pot = formatMoney(info.pot_cents, "USD");
   const copy =
-    info.phase === "waitlist"
-      ? `Launch competition · ${pot} pot · ${info.signups.toLocaleString("en-US")} on the list → see your spot`
-      : info.phase === "activation"
-        ? `Launch competition · ${pot} pot · doors are open → join`
-        : info.phase === "live"
-          ? `Launch competition is on · ${info.competing.toLocaleString("en-US")} competing → the board`
-          : null;
+    info.phase === "open"
+      ? `Launch competition · first ${info.comp_slots.toLocaleString("en-US")} get a month free → see the rules`
+      : info.phase === "competition"
+        ? "Launch competition · live now → leaderboard"
+        : null;
 
   if (!copy) return null;
 

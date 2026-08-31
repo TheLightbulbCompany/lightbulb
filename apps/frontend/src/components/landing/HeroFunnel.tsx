@@ -15,16 +15,12 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { useAuth } from "@clerk/nextjs";
 import type { Path } from "@/components/onboarding/FirstRunSteps";
 import { LaunchHeroPill } from "@/components/launch/LaunchHeroPill";
 import { useLaunchInfo } from "@/components/launch/useLaunchInfo";
 import { LANDING_BRIEF_STORAGE_KEY } from "@/hooks/useLandingBriefReplay";
-import { useApi } from "@/lib/api";
-import type { LaunchMe } from "@/lib/launch";
 import { clearSignupIntentCookie } from "@/lib/signupIntent";
 import { capture } from "@/lib/analytics";
-import { LaunchSpotCard } from "./LaunchSpotCard";
 import { HeroLamp } from "./HeroLamp";
 import { lightOn } from "./HeroLamp/lampStore";
 
@@ -52,40 +48,9 @@ function stash(path: Path, input: string) {
 
 export function HeroFunnel() {
   const router = useRouter();
-  const { isSignedIn } = useAuth();
-  const api = useApi();
   const launch = useLaunchInfo();
   const [path, setPath] = React.useState<Path>("new");
   const [input, setInput] = React.useState("");
-  // Resolves only for a signed-in owner the pre-drop hold applies to. The
-  // default render is ALWAYS the funnel (no layout shift for the 99% case);
-  // the spot card swaps in after /launch/me confirms held. Derived from
-  // /launch/me alone — no /container/status call from the landing page.
-  const [heldMe, setHeldMe] = React.useState<LaunchMe | null>(null);
-
-  const waitlistOpen = launch?.phase === "waitlist";
-  React.useEffect(() => {
-    if (!isSignedIn || !waitlistOpen) return;
-    let alive = true;
-    api
-      .get("/launch/me")
-      .then((raw) => {
-        const me = raw as LaunchMe;
-        // `held` is computed server-side (pre-drop waitlist phase + no
-        // container row -- the same predicate as the launch_pending gate),
-        // so existing owners keep today's landing page regardless of their
-        // onboarding bookkeeping. Competition entrants are never swapped.
-        if (alive && me.held === true && me.phase === "waitlist" && !me.joined) {
-          setHeldMe(me);
-        }
-      })
-      .catch(() => {
-        /* degrade to the ordinary funnel */
-      });
-    return () => {
-      alive = false;
-    };
-  }, [api, isSignedIn, waitlistOpen]);
 
   // 3..2000 mirrors the backend BriefBody rules — an oversized stash would be
   // rejected by the replay hook AFTER signup, silently losing the brief.
@@ -107,26 +72,10 @@ export function HeroFunnel() {
     router.push("/sign-up");
   };
 
-  // During the waitlist phase the landing page is the whole waitlist
-  // experience: a held owner's hero slot IS their spot card.
-  if (heldMe && launch) {
-    return (
-      <section className="ld-funnel" id="start">
-        <HeroLamp />
-        <div className="ld-funnel-in">
-          <p className="ld-mono ld-funnel-eyebrow">
-            The Integrated Management Environment
-          </p>
-          <LaunchHeroPill />
-          <LaunchSpotCard me={heldMe} info={launch} />
-        </div>
-      </section>
-    );
-  }
-
-  // Launch enabled and pre-/at-drop: the same funnel, framed as joining the
-  // launch. The stash → /sign-up flow is unchanged.
-  const launchFraming = launch?.phase === "waitlist" || launch?.phase === "activation";
+  // Launch sheet open: the same funnel, framed as joining the launch. The
+  // stash → /sign-up flow is unchanged — the sheet itself is joined
+  // in-product, after onboarding.
+  const launchFraming = launch?.phase === "open";
 
   return (
     <section className="ld-funnel" id="start">

@@ -1877,13 +1877,49 @@ async def test_failed_conversion_keeps_the_guard_markers(mock_repo, mock_contain
     assert "conversion_started_at" not in fields
 
 
-class TestInvoicePaidDelegatesToLaunchReferral:
-    async def test_invoice_paid_calls_launch_referral(self):
+class TestSubscriptionActivationDelegatesToLaunchReferral:
+    """The launch referral hook rides the entering-live transition of
+    handle_subscription_state (invoice.paid is no longer handled at all)."""
+
+    async def test_entering_live_calls_the_launch_hook(self, mock_repo):
+        with patch("core.services.launch_referral.on_subscription_activated", new_callable=AsyncMock) as hook:
+            await _run_state(mock_repo, "trial_local", "active")
+        hook.assert_awaited_once_with("org_x")
+
+    async def test_a_live_to_live_event_does_not_call_the_hook(self, mock_repo):
+        with patch("core.services.launch_referral.on_subscription_activated", new_callable=AsyncMock) as hook:
+            await _run_state(mock_repo, "active", "active")
+        hook.assert_not_awaited()
+
+    async def test_invoice_paid_is_not_a_handled_event(self):
+        assert "invoice.paid" not in handlers.STRIPE_WEBHOOK_HANDLERS
+
+    async def test_checkout_with_the_winner_marker_stamps_coupon_consumed(self):
+        """A completed session that carried the winner discount consumed the
+        coupon — the sheet row is stamped so a forced close rerun cannot
+        attach a second free month. Fires even for credit-less sessions
+        (the stamp sits before the credit-funding early return)."""
         event = {
-            "id": "evt_i",
-            "type": "invoice.paid",
-            "data": {"object": {"id": "in_1", "customer": "cus_1", "amount_paid": 5000}},
+            "id": "evt_cs_w",
+            "type": "checkout.session.completed",
+            "data": {
+                "object": {
+                    "id": "cs_w",
+                    "payment_status": "paid",
+                    "metadata": {"owner_id": "user_w", "launch_winner_coupon": "true"},
+                }
+            },
         }
-        with patch("core.services.launch_referral.on_invoice_paid", new_callable=AsyncMock) as hook:
-            await handlers.handle_invoice_paid(event, MagicMock())
-        hook.assert_awaited_once_with(event["data"]["object"])
+        with patch("core.services.launch_close.mark_winner_coupon_consumed", new_callable=AsyncMock) as stamp:
+            await handlers.handle_checkout_session(event, MagicMock())
+        stamp.assert_awaited_once_with("user_w")
+
+    async def test_checkout_without_the_marker_stamps_nothing(self):
+        event = {
+            "id": "evt_cs_n",
+            "type": "checkout.session.completed",
+            "data": {"object": {"id": "cs_n", "payment_status": "paid", "metadata": {"owner_id": "user_n"}}},
+        }
+        with patch("core.services.launch_close.mark_winner_coupon_consumed", new_callable=AsyncMock) as stamp:
+            await handlers.handle_checkout_session(event, MagicMock())
+        stamp.assert_not_awaited()

@@ -3,19 +3,31 @@
 import * as React from "react";
 import { LogoMark } from "@/components/Logo";
 import type { LaunchInfo } from "@/lib/launch";
-import { formatMoney } from "@/lib/launch";
 import { useCountdown } from "./useCountdown";
 
 const HEADLINE: Record<LaunchInfo["phase"], React.ReactNode> = {
-  waitlist: <>The Lightbulb<br />Launch Competition.</>,
-  activation: <>Lightbulb is live.<br />The competition starts soon.</>,
-  live: <>The competition<br />is on.</>,
+  open: <>The Lightbulb<br />Launch Competition.</>,
+  closed: <>The sheet is closed.<br />The competition starts soon.</>,
+  competition: <>The competition<br />is on.</>,
   ended: <>The competition<br />has ended.</>,
 };
 
+// NO pot anywhere on this page — the pot is admin-only.
 export function LaunchHero({ info, children }: { info: LaunchInfo; children?: React.ReactNode }) {
-  const target = info.phase === "waitlist" ? info.drop_at : info.phase === "activation" ? info.competition_start_at : info.competition_end_at;
-  const label = info.phase === "waitlist" ? "until the drop" : info.phase === "activation" ? "until the competition starts" : info.phase === "live" ? "left" : "";
+  const target =
+    info.phase === "open"
+      ? info.sheet_closes_at
+      : info.phase === "closed"
+        ? info.competition_start_at
+        : info.competition_end_at;
+  const label =
+    info.phase === "open"
+      ? "until the sheet closes"
+      : info.phase === "closed"
+        ? "until the competition starts"
+        : info.phase === "competition"
+          ? "left"
+          : "";
   const countdown = useCountdown(target) ?? "—";
   return (
     <section className="ld-funnel" id="start">
@@ -23,30 +35,17 @@ export function LaunchHero({ info, children }: { info: LaunchInfo; children?: Re
         <p className="ld-mono ld-funnel-eyebrow">Build a business with your own AI company</p>
         <LogoMark className="ld-funnel-mark" />
         <h1 className="ld-funnel-h1">{HEADLINE[info.phase]}</h1>
-        <p className="ld-funnel-fine">Biggest revenue lift over 30 days wins the pot. Every entrant adds {formatMoney(info.pot_per_entrant_cents, "USD")} to it.</p>
+        <p className="ld-funnel-fine">
+          The first {info.comp_slots.toLocaleString("en-US")} on the sheet get their first month free, and the biggest
+          revenue lift over the competition wins.
+        </p>
         {children}
         <div className="lc-stats">
           <div className="lc-stat">
-            <div className="lc-stat-value">{formatMoney(info.pot_cents, "USD")}</div>
-            <div className="ld-mono lc-stat-label">prize pot</div>
+            <div className="lc-stat-value">{info.signups.toLocaleString("en-US")}</div>
+            {/* "signups", never "on the sheet" — the counter includes attribution-only rows. */}
+            <div className="ld-mono lc-stat-label">signups</div>
           </div>
-          {info.phase === "waitlist" ? (
-            <div className="lc-stat">
-              <div className="lc-stat-value">{info.signups}</div>
-              <div className="ld-mono lc-stat-label">signed up</div>
-            </div>
-          ) : (
-            <>
-              <div className="lc-stat">
-                <div className="lc-stat-value">{info.competing}</div>
-                <div className="ld-mono lc-stat-label">competing</div>
-              </div>
-              <div className="lc-stat">
-                <div className="lc-stat-value">{info.on_board}</div>
-                <div className="ld-mono lc-stat-label">on the board</div>
-              </div>
-            </>
-          )}
           {info.phase !== "ended" ? (
             <div className="lc-stat">
               <div className="lc-stat-value">{countdown}</div>

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 
 const replaceMock = vi.fn();
 vi.mock("next/navigation", () => ({
@@ -115,6 +115,9 @@ vi.mock("@/components/chat/TrialBanner", () => ({
 vi.mock("@/components/chat/OutOfCreditsBanner", () => ({
   OutOfCreditsBanner: () => null,
 }));
+vi.mock("@/components/chat/LaunchJoinBanner", () => ({
+  LaunchJoinBanner: () => <div data-testid="launch-join-banner" />,
+}));
 vi.mock("@/components/control/ControlSidebar", () => ({
   ControlSidebar: () => null,
 }));
@@ -182,5 +185,8 @@ describe("ChatLayout — needsInvitationFlow", () => {
       </ChatLayout>,
     );
     expect(replaceMock).not.toHaveBeenCalledWith("/onboarding");
+    // Smoke: the launch join banner is mounted in the mobile shell's banner
+    // row (beside TrialBanner/OutOfCreditsBanner).
+    expect(screen.getByTestId("launch-join-banner")).toBeInTheDocument();
   });
 });

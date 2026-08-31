@@ -2189,7 +2189,7 @@ class PaperclipRepo:
 
         ``overwrite=True`` skips the put-if-absent guard entirely and
         replaces whatever is there, ``pending`` included -- for the landing
-        card's "edit your idea while held" flow (routers/onboarding.py),
+        card's pre-container "edit your idea" flow (routers/onboarding.py),
         which the caller only takes for an owner it has confirmed has no
         container row yet, so there is no in-flight fulfilment claim on this
         item to clobber. Never pass this for a container-having owner.

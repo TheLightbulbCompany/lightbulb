@@ -36,10 +36,12 @@ export function BrainPanel({ initialPath }: BrainPanelProps = {}) {
   // than remounting (workspaceController's addOrFocus/updateParameters), so
   // the seed-only useState above never sees the new value on its own. Re-apply
   // it here — same prev-prop-compare idiom as InboxPage.tsx's `?tab` handling.
+  // If the editor holds unsaved edits, the open page wins over the deep link —
+  // this runs during render, where a confirm() is not an option.
   const [prevInitialPath, setPrevInitialPath] = React.useState(initialPath);
   if (initialPath !== prevInitialPath) {
     setPrevInitialPath(initialPath);
-    if (initialPath) setSelectedPath(initialPath);
+    if (initialPath && !editorDirty) setSelectedPath(initialPath);
   }
 
   const { files, isLoading: treeLoading, error: treeError, refresh } = useBrainTree();

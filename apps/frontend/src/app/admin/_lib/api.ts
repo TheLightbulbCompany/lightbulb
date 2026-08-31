@@ -677,6 +677,8 @@ export async function getGrowth(token: string): Promise<OpsEnvelope<GrowthData> 
 
 export interface LaunchOpsEntry {
   owner_id: string;
+  /** A live Stripe subscription exists for this owner (billing row check). */
+  has_subscription: boolean;
   display_name: string | null;
   public: boolean;
   waitlist_position: number | null;
@@ -687,92 +689,103 @@ export interface LaunchOpsEntry {
   pct: number | null;
   refreshed_at: string | null;
   refresh_error: string | null;
-  /** position ≤ comp_slots AND activated by the deadline — eligibility, not observed redemption. */
-  comp_eligible: boolean;
 }
 
-export interface LaunchOpsWaitlistRow {
+/** A JOINED competition-sheet row (`ops/launch.py` filters on `joined_at`),
+ * sorted (effective_position, position). */
+export interface LaunchSheetRow {
   email: string;
   position: number;
-  /** `position` after queue-jumps from referrals (see `LaunchSettings.referral_jump`
-   * / `core.services.launch_service.effective_position`) — the CSV/sheet sort key. */
+  /** `position` after referral queue-jumps — the sheet/CSV sort key. */
   effective_position: number;
+  display_name: string | null;
+  public: boolean;
   referral_link: string;
   created_at: string | null;
+  joined_at: string | null;
   user_id: string | null;
-  /** null where activation was never resolved — the sheet only asks about the
-   *  comped top slots and actual entrants (see core/services/ops/launch.py). */
-  activated: boolean | null;
   referred_by: string | null;
   referrals_signed_up: number;
-  referrals_paid: number;
-  free_months_banked: number;
+  referrals_subscribed: number;
+  winner: boolean;
+  /** Pre-close always true (nobody ruled out yet); post-close the stored flag. */
+  compete_eligible: boolean;
+  coupon_attached_at: string | null;
+  winner_email_sent_at: string | null;
 }
 
-/** The launch-settings row's public projection (never `updated_by`/`mint_nonce` —
- * see `core.services.launch_settings.to_public`). `updated_at` is absent until
- * the row has been saved once (DEFAULTS carries no timestamp). */
+/** The launch-settings row's admin projection (`to_admin` — everything but
+ * `mint_nonce`). The pot fields are INTERNAL — they appear here and nowhere
+ * public. `closed_at`/`final_*` are stamped by the close action, never PUT. */
 export interface LaunchSettings {
   enabled: boolean;
-  drop_at: string | null;
+  sheet_closes_at: string | null;
   competition_start_at: string | null;
+  competition_end_at: string | null;
   comp_slots: number;
-  competition_days: number;
   pot_front_cents: number;
   pot_per_entrant_cents: number;
-  /** Queue-jump: how many waitlist spots each referral moves the referrer up
-   * (`core.services.launch_service.effective_position`). */
+  /** Queue-jump: sheet spots per counted (subscribed) referral. */
   referral_jump: number;
   stripe_coupon_id: string;
-  stripe_promotion_code_id: string;
-  stripe_promotion_code: string;
+  closed_at: string | null;
+  final_pot_cents: number | null;
+  final_roster_count: number | null;
   updated_at?: string;
+  updated_by?: string;
 }
 
-/** The eight admin-editable fields of `LaunchSettings` — the `PUT
- * /ops/launch/settings` body. The three `stripe_*` fields + `updated_at` are
- * server-managed (minted by the coupon endpoint / stamped on write). */
+/** The eight admin-editable fields — the exact `PUT /ops/launch/settings`
+ * body (full replace; every field required, dates nullable). */
 export type LaunchSettingsInput = Pick<
   LaunchSettings,
   | "enabled"
-  | "drop_at"
+  | "sheet_closes_at"
   | "competition_start_at"
+  | "competition_end_at"
   | "comp_slots"
-  | "competition_days"
   | "pot_front_cents"
   | "pot_per_entrant_cents"
   | "referral_jump"
 >;
 
-/** The full economics sheet — only present when the competition is enabled
- * and the sheet computed cleanly (`enabled: true`, `source_state: "ok"`). */
+/** POST /ops/launch/close result — the per-step counts of the close run. */
+export interface LaunchCloseResult {
+  closed_at: string | null;
+  sheet_count: number;
+  winners: number;
+  paying: number;
+  final_roster_count: number;
+  final_pot_cents: number;
+  coupons_attached: number;
+  coupon_failures: number;
+  emails_sent: number;
+  email_failures: number;
+}
+
+/** The full sheet payload — only when the competition is enabled and the
+ * read computed cleanly (`enabled: true`, `source_state: "ok"`). */
 export interface LaunchOpsSheet {
   generated_at: string;
-  phase: "waitlist" | "activation" | "live" | "ended";
-  schedule: { drop_at: string; competition_start_at: string; competition_end_at: string; comp_slots: number };
-  waitlist: { total: number; top_slots_activated: number; top_slots_claimed: number };
-  signups: number;
-  competing: number;
-  on_board: number;
-  competing_breakdown: { paid: number; comp_eligible: number; public: number };
-  public_pot_cents: number;
-  funded_pot_cents: number;
-  pot_counted: number;
-  pot_front_cents: number;
-  pot_per_entrant_cents: number;
-  referrals: { signed_up: number; paid: number; months_banked: number };
-  economics: {
-    paid_profit_cents: number;
-    comp_cost_cents: number;
-    referral_cost_cents: number;
-    pnl_cents: number;
-    aws_credits_cents: number;
-    net_cents: number;
-  };
-  entries: LaunchOpsEntry[];
-  waitlist_rows: LaunchOpsWaitlistRow[];
   settings: LaunchSettings;
   enabled: true;
+  phase: "open" | "closed" | "competition" | "ended";
+  schedule: { sheet_closes_at: string; competition_start_at: string; competition_end_at: string; comp_slots: number };
+  signups: number;
+  sheet: { total: number; joined: number; winners: number };
+  competing: number;
+  on_board: number;
+  // The pot — ADMIN-ONLY, never in any public payload.
+  pot_front_cents: number;
+  pot_per_entrant_cents: number;
+  projected_pot_cents: number;
+  closed: boolean;
+  closed_at: string | null;
+  final_pot_cents: number | null;
+  final_roster_count: number | null;
+  referrals: { signed_up: number; subscribed: number };
+  entries: LaunchOpsEntry[];
+  sheet_rows: LaunchSheetRow[];
 }
 
 /** The disabled/unset shape (`core.services.ops.launch.compute`'s early-return

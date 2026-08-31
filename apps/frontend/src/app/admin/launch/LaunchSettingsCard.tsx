@@ -41,11 +41,12 @@ export interface LaunchSettingsCardProps {
 }
 
 /**
- * The admin editor for the launch-settings DynamoDB row — dates, comp slots,
- * pot constants, and the one-click Stripe coupon mint. Always rendered
+ * The admin editor for the launch-settings DynamoDB row — the three schedule
+ * instants, comp slots, referral jump, the (internal-only) pot constants, and
+ * the one-click Stripe coupon mint. Always rendered
  * (`app/admin/launch/page.tsx` mounts it regardless of `enabled`, since an
  * admin has to be able to turn the feature ON from here); the rest of the
- * economics sheet only shows up once the row is enabled and computes clean.
+ * sheet only shows up once the row is enabled and computes clean.
  */
 export function LaunchSettingsCard({ settings }: LaunchSettingsCardProps) {
   const router = useRouter();
@@ -54,10 +55,10 @@ export function LaunchSettingsCard({ settings }: LaunchSettingsCardProps) {
   // whenever the row is on but the sheet failed to compute, and the checkbox
   // has to show what is stored.
   const [enabled, setEnabled] = React.useState(settings.enabled);
-  const [dropAtLocal, setDropAtLocal] = React.useState(() => toEasternLocal(settings.drop_at));
+  const [closesAtLocal, setClosesAtLocal] = React.useState(() => toEasternLocal(settings.sheet_closes_at));
   const [startAtLocal, setStartAtLocal] = React.useState(() => toEasternLocal(settings.competition_start_at));
+  const [endAtLocal, setEndAtLocal] = React.useState(() => toEasternLocal(settings.competition_end_at));
   const [compSlots, setCompSlots] = React.useState(String(settings.comp_slots));
-  const [competitionDays, setCompetitionDays] = React.useState(String(settings.competition_days));
   const [potFrontDollars, setPotFrontDollars] = React.useState(String(settings.pot_front_cents / 100));
   const [potPerEntrantDollars, setPotPerEntrantDollars] = React.useState(String(settings.pot_per_entrant_cents / 100));
   const [referralJump, setReferralJump] = React.useState(String(settings.referral_jump));
@@ -68,7 +69,6 @@ export function LaunchSettingsCard({ settings }: LaunchSettingsCardProps) {
 
   const [couponBusy, setCouponBusy] = React.useState(false);
   const [couponError, setCouponError] = React.useState<string | null>(null);
-  const [copied, setCopied] = React.useState(false);
 
   async function doSave() {
     setSaving(true);
@@ -76,12 +76,12 @@ export function LaunchSettingsCard({ settings }: LaunchSettingsCardProps) {
     setNotice(null);
     const payload: LaunchSettingsInput = {
       enabled,
-      drop_at: dropAtLocal ? fromEasternLocal(dropAtLocal) : null,
+      sheet_closes_at: closesAtLocal ? fromEasternLocal(closesAtLocal) : null,
       competition_start_at: startAtLocal ? fromEasternLocal(startAtLocal) : null,
+      competition_end_at: endAtLocal ? fromEasternLocal(endAtLocal) : null,
       // Every one of the four is a whole number server-side — round here so a
       // typed "1.5" is a 2, not a 422 (the pot fields already did).
       comp_slots: Math.round(Number(compSlots)),
-      competition_days: Math.round(Number(competitionDays)),
       pot_front_cents: Math.round(Number(potFrontDollars) * 100),
       pot_per_entrant_cents: Math.round(Number(potPerEntrantDollars) * 100),
       referral_jump: Math.round(Number(referralJump)),
@@ -96,17 +96,17 @@ export function LaunchSettingsCard({ settings }: LaunchSettingsCardProps) {
     router.refresh();
   }
 
-  // A save that flips `enabled` or moves `drop_at` to the other side of "now"
-  // changes what every signed-in user's next poll sees — gate those behind
-  // the typed-launch confirm, not the ones that just tweak pot math. Captured
-  // once (not read directly in render — Date.now() is impure), same pattern
-  // as settings/page.tsx / ChatLayout.tsx / WorkspaceSidebar.tsx.
+  // A save that flips `enabled` or moves `sheet_closes_at` to the other side
+  // of "now" changes what every signed-in user's next poll sees — gate those
+  // behind the typed-launch confirm, not the ones that just tweak pot math.
+  // Captured once (not read directly in render — Date.now() is impure), same
+  // pattern as settings/page.tsx / ChatLayout.tsx / WorkspaceSidebar.tsx.
   const [now] = React.useState(() => Date.now());
-  const oldDropMs = settings.drop_at ? Date.parse(settings.drop_at) : null;
-  const newDropIso = dropAtLocal ? fromEasternLocal(dropAtLocal) : null;
-  const newDropMs = newDropIso ? Date.parse(newDropIso) : null;
-  const dropCrossesNow = oldDropMs !== null && newDropMs !== null && oldDropMs > now !== newDropMs > now;
-  const needsConfirm = enabled !== settings.enabled || dropCrossesNow;
+  const oldCloseMs = settings.sheet_closes_at ? Date.parse(settings.sheet_closes_at) : null;
+  const newCloseIso = closesAtLocal ? fromEasternLocal(closesAtLocal) : null;
+  const newCloseMs = newCloseIso ? Date.parse(newCloseIso) : null;
+  const closeCrossesNow = oldCloseMs !== null && newCloseMs !== null && oldCloseMs > now !== newCloseMs > now;
+  const needsConfirm = enabled !== settings.enabled || closeCrossesNow;
 
   async function doMintCoupon(force: boolean) {
     setCouponBusy(true);
@@ -118,22 +118,10 @@ export function LaunchSettingsCard({ settings }: LaunchSettingsCardProps) {
       setCouponError(describeError(result));
       return;
     }
-    setNotice("Stripe coupon + promo code created.");
+    setNotice("Stripe coupon created.");
     router.refresh();
   }
 
-  async function copyPromoCode() {
-    if (!settings.stripe_promotion_code) return;
-    try {
-      await navigator.clipboard.writeText(settings.stripe_promotion_code);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      /* clipboard blocked — the code is still visible to select and copy by hand */
-    }
-  }
-
-  const datesSet = !!settings.drop_at && !!settings.competition_start_at;
   const couponExists = !!settings.stripe_coupon_id;
 
   return (
@@ -150,21 +138,21 @@ export function LaunchSettingsCard({ settings }: LaunchSettingsCardProps) {
           {errors.enabled ? <p className="text-2xs text-err">{errors.enabled}</p> : null}
         </div>
 
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <div className="space-y-1">
             <label
-              htmlFor="launch-drop-at"
+              htmlFor="launch-sheet-closes-at"
               className="text-xs font-medium uppercase tracking-caps text-muted-foreground"
             >
-              Drop (ET)
+              Sheet closes (ET)
             </label>
             <Input
-              id="launch-drop-at"
+              id="launch-sheet-closes-at"
               type="datetime-local"
-              value={dropAtLocal}
-              onChange={(e) => setDropAtLocal(e.target.value)}
+              value={closesAtLocal}
+              onChange={(e) => setClosesAtLocal(e.target.value)}
             />
-            {errors.drop_at ? <p className="text-2xs text-err">{errors.drop_at}</p> : null}
+            {errors.sheet_closes_at ? <p className="text-2xs text-err">{errors.sheet_closes_at}</p> : null}
           </div>
           <div className="space-y-1">
             <label
@@ -181,9 +169,24 @@ export function LaunchSettingsCard({ settings }: LaunchSettingsCardProps) {
             />
             {errors.competition_start_at ? <p className="text-2xs text-err">{errors.competition_start_at}</p> : null}
           </div>
+          <div className="space-y-1">
+            <label
+              htmlFor="launch-end-at"
+              className="text-xs font-medium uppercase tracking-caps text-muted-foreground"
+            >
+              Competition end (ET)
+            </label>
+            <Input
+              id="launch-end-at"
+              type="datetime-local"
+              value={endAtLocal}
+              onChange={(e) => setEndAtLocal(e.target.value)}
+            />
+            {errors.competition_end_at ? <p className="text-2xs text-err">{errors.competition_end_at}</p> : null}
+          </div>
         </div>
         <p className="text-2xs text-muted-foreground">
-          Doors open at drop; Join opens at competition start; the promo code expires at competition start.
+          Joins are open until the sheet closes; the board runs start → end.
         </p>
 
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -206,20 +209,20 @@ export function LaunchSettingsCard({ settings }: LaunchSettingsCardProps) {
           </div>
           <div className="space-y-1">
             <label
-              htmlFor="launch-competition-days"
+              htmlFor="launch-referral-jump"
               className="text-xs font-medium uppercase tracking-caps text-muted-foreground"
             >
-              Competition days
+              Spots per referral
             </label>
             <Input
-              id="launch-competition-days"
+              id="launch-referral-jump"
               type="number"
-              min={1}
+              min={0}
               step={1}
-              value={competitionDays}
-              onChange={(e) => setCompetitionDays(e.target.value)}
+              value={referralJump}
+              onChange={(e) => setReferralJump(e.target.value)}
             />
-            {errors.competition_days ? <p className="text-2xs text-err">{errors.competition_days}</p> : null}
+            {errors.referral_jump ? <p className="text-2xs text-err">{errors.referral_jump}</p> : null}
           </div>
           <div className="space-y-1">
             <label
@@ -255,24 +258,10 @@ export function LaunchSettingsCard({ settings }: LaunchSettingsCardProps) {
             />
             {errors.pot_per_entrant_cents ? <p className="text-2xs text-err">{errors.pot_per_entrant_cents}</p> : null}
           </div>
-          <div className="space-y-1">
-            <label
-              htmlFor="launch-referral-jump"
-              className="text-xs font-medium uppercase tracking-caps text-muted-foreground"
-            >
-              Spots per referral
-            </label>
-            <Input
-              id="launch-referral-jump"
-              type="number"
-              min={0}
-              step={1}
-              value={referralJump}
-              onChange={(e) => setReferralJump(e.target.value)}
-            />
-            {errors.referral_jump ? <p className="text-2xs text-err">{errors.referral_jump}</p> : null}
-          </div>
         </div>
+        <p className="text-2xs text-muted-foreground">
+          The pot fields are internal — never shown publicly.
+        </p>
 
         {needsConfirm ? (
           <ConfirmActionDialog
@@ -292,36 +281,19 @@ export function LaunchSettingsCard({ settings }: LaunchSettingsCardProps) {
 
         <div className="space-y-2 rounded-lg border border-border p-3">
           <h3 className="text-xs font-medium uppercase tracking-caps text-muted-foreground">Stripe coupon</h3>
+          <p className="text-2xs text-muted-foreground">
+            100% off once, no promo codes — it&apos;s attached server-side to winners, never typed at checkout.
+          </p>
           <DefRow label="Coupon id" value={settings.stripe_coupon_id || "—"} mono />
-          <DefRow label="Promo code id" value={settings.stripe_promotion_code_id || "—"} mono />
-          <DefRow
-            label="Promo code"
-            value={
-              settings.stripe_promotion_code ? (
-                <span className="inline-flex items-center gap-2">
-                  <span className="font-mono">{settings.stripe_promotion_code}</span>
-                  <button
-                    type="button"
-                    onClick={copyPromoCode}
-                    className="rounded-md border border-border px-2 py-0.5 text-2xs text-muted-foreground hover:bg-accent hover:text-foreground"
-                  >
-                    {copied ? "Copied" : "Copy"}
-                  </button>
-                </span>
-              ) : (
-                "—"
-              )
-            }
-          />
           {couponError ? <ErrorBanner error={couponError} /> : null}
           {couponExists ? (
             <ConfirmActionDialog
               confirmText="create"
-              actionLabel="Re-mint the Stripe coupon + promo code"
+              actionLabel="Re-mint the Stripe coupon"
               onConfirm={() => doMintCoupon(true)}
             >
-              <Button type="button" variant="outline" size="sm" disabled={!datesSet || couponBusy}>
-                {couponBusy ? "Working…" : "Create Stripe coupon + promo code"}
+              <Button type="button" variant="outline" size="sm" disabled={couponBusy}>
+                {couponBusy ? "Working…" : "Create Stripe coupon"}
               </Button>
             </ConfirmActionDialog>
           ) : (
@@ -329,10 +301,10 @@ export function LaunchSettingsCard({ settings }: LaunchSettingsCardProps) {
               type="button"
               variant="outline"
               size="sm"
-              disabled={!datesSet || couponBusy}
+              disabled={couponBusy}
               onClick={() => doMintCoupon(false)}
             >
-              {couponBusy ? "Working…" : "Create Stripe coupon + promo code"}
+              {couponBusy ? "Working…" : "Create Stripe coupon"}
             </Button>
           )}
         </div>

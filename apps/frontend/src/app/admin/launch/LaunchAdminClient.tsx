@@ -4,11 +4,14 @@ import * as React from "react";
 import { useRouter } from "next/navigation";
 
 import { Card } from "@/components/admin/Card";
+import { ConfirmActionDialog } from "@/components/admin/ConfirmActionDialog";
+import { ErrorBanner } from "@/components/admin/ErrorBanner";
 import { MetricStat } from "@/components/admin/MetricStat";
+import { Button } from "@/components/ui/button";
 import { formatMoney, formatPct } from "@/lib/launch";
 
-import { refreshLaunch, removeLaunchEntry } from "../_actions/launch";
-import type { LaunchOpsSheet } from "../_lib/api";
+import { closeLaunchSheet, refreshLaunch, removeLaunchEntry } from "../_actions/launch";
+import type { LaunchCloseResult, LaunchOpsSheet } from "../_lib/api";
 import { Table } from "../growth/sections";
 
 // Values starting with =, +, -, or @ are formula triggers in Excel/Sheets when
@@ -20,24 +23,69 @@ export function csvEscape(v: unknown): string {
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-// `activated` is null for rows the sheet never resolved onboarding for (see
-// core/services/ops/launch.py) — an em dash, never "null" or a fabricated no.
-export function waitlistCsv(rows: LaunchOpsSheet["waitlist_rows"]): string {
-  const head = ["email", "position", "effective_position", "referral_link", "created_at", "activated"];
+/** CSV over the JOINED sheet rows, in the payload's own (effective_position,
+ * position) order — built client-side off `sheet_rows`. */
+export function sheetCsv(rows: LaunchOpsSheet["sheet_rows"]): string {
+  const head = [
+    "email",
+    "position",
+    "effective_position",
+    "display_name",
+    "public",
+    "referral_link",
+    "created_at",
+    "joined_at",
+    "user_id",
+    "referred_by",
+    "referrals_signed_up",
+    "referrals_subscribed",
+    "winner",
+    "compete_eligible",
+    "coupon_attached_at",
+    "winner_email_sent_at",
+  ];
   return [
     head.join(","),
     ...rows.map((r) =>
-      [r.email, r.position, r.effective_position, r.referral_link, r.created_at, r.activated ?? "—"]
+      [
+        r.email,
+        r.position,
+        r.effective_position,
+        r.display_name,
+        r.public,
+        r.referral_link,
+        r.created_at,
+        r.joined_at,
+        r.user_id,
+        r.referred_by,
+        r.referrals_signed_up,
+        r.referrals_subscribed,
+        r.winner,
+        r.compete_eligible,
+        r.coupon_attached_at,
+        r.winner_email_sent_at,
+      ]
         .map(csvEscape)
         .join(","),
     ),
   ].join("\n");
 }
 
+function describeClose(r: LaunchCloseResult): string {
+  return (
+    `Closed ${r.closed_at ?? "—"}: ${r.winners} winners flagged of ${r.sheet_count} on the sheet ` +
+    `(${r.paying} paying) · roster ${r.final_roster_count} · pot ${formatMoney(r.final_pot_cents, "usd")} · ` +
+    `coupons ${r.coupons_attached} attached / ${r.coupon_failures} failed · ` +
+    `emails ${r.emails_sent} sent / ${r.email_failures} failed`
+  );
+}
+
 export function LaunchAdminClient({ data }: { data: LaunchOpsSheet }) {
   const router = useRouter();
   const [note, setNote] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
+  const [closeResult, setCloseResult] = React.useState<LaunchCloseResult | null>(null);
+  const [closeError, setCloseError] = React.useState<string | null>(null);
 
   const refresh = async () => {
     setBusy(true);
@@ -55,69 +103,138 @@ export function LaunchAdminClient({ data }: { data: LaunchOpsSheet }) {
     router.refresh();
   };
 
+  const close = async (force: boolean) => {
+    setBusy(true);
+    setCloseError(null);
+    const r = await closeLaunchSheet(force);
+    setBusy(false);
+    if (r.ok) {
+      setCloseResult(r.data as LaunchCloseResult);
+    } else {
+      setCloseError(`Close failed (${r.status}): ${r.error ?? JSON.stringify(r.data)}`);
+    }
+    router.refresh();
+  };
+
   const exportCsv = () => {
-    const blob = new Blob([waitlistCsv(data.waitlist_rows)], { type: "text/csv" });
+    const blob = new Blob([sheetCsv(data.sheet_rows)], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "launch-waitlist.csv";
+    a.download = "launch-sheet.csv";
     a.click();
     URL.revokeObjectURL(url);
   };
 
-  const e = data.economics;
-  const cb = data.competing_breakdown;
+  const closeFailures = closeResult !== null && (closeResult.coupon_failures > 0 || closeResult.email_failures > 0);
+
   return (
     <div className="space-y-6">
+      {data.closed ? (
+        <Card title="Sheet closed">
+          <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
+            <MetricStat label="closed at" value={data.closed_at ?? "—"} />
+            <MetricStat label="final roster" value={data.final_roster_count ?? "—"} hint="winners + paying subscribers" />
+            <MetricStat
+              label="final pot (internal)"
+              value={data.final_pot_cents !== null ? formatMoney(data.final_pot_cents, "usd") : "—"}
+              hint="frozen at close — never shown publicly"
+            />
+          </div>
+        </Card>
+      ) : null}
+
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-        <MetricStat label="public pot" value={formatMoney(data.public_pot_cents, "usd")} hint={`${data.signups} signed up × ${formatMoney(data.pot_per_entrant_cents, "usd")} + ${formatMoney(data.pot_front_cents, "usd")}`} />
-        <MetricStat label="funded pot" value={formatMoney(data.funded_pot_cents, "usd")} hint={`${data.pot_counted} first invoices landed`} />
-        <MetricStat label="signed up" value={data.signups} hint="sign-up counter — drives the public pot" />
-        <MetricStat label="competing" value={data.competing} hint={`${cb.paid} paid · ${cb.comp_eligible} eligible · ${cb.public} public`} />
+        <MetricStat label="signups" value={data.signups} hint="every row incl. attribution-only" />
+        <MetricStat label="on the sheet" value={data.sheet.joined} hint={`${data.sheet.total} rows total · joins are explicit`} />
+        <MetricStat label="winners" value={data.sheet.winners} hint={`top ${data.schedule.comp_slots} by effective position at close`} />
+        <MetricStat
+          label={data.closed ? "final pot (internal)" : "projected pot (internal)"}
+          value={formatMoney(data.closed ? (data.final_pot_cents ?? 0) : data.projected_pot_cents, "usd")}
+          hint={`${formatMoney(data.pot_front_cents, "usd")} + ${formatMoney(data.pot_per_entrant_cents, "usd")} × roster — never shown publicly`}
+        />
+        <MetricStat label="competing" value={data.competing} />
         <MetricStat label="on the board" value={data.on_board} />
-        <MetricStat label="waitlist rows" value={data.waitlist.total} hint={`rows on the sheet · ${data.waitlist.top_slots_claimed} of top ${data.schedule.comp_slots} claimed`} />
-        <MetricStat label="top slots activated" value={`${data.waitlist.top_slots_activated} / ${data.schedule.comp_slots}`} />
         <MetricStat label="referrals signed up" value={data.referrals.signed_up} />
-        <MetricStat label="referrals paid" value={data.referrals.paid} hint={`${data.referrals.months_banked} months banked`} />
-        <MetricStat label="P&L before credits" value={formatMoney(e.pnl_cents, "usd")} tone={e.pnl_cents < 0 ? "error" : "default"} />
-        <MetricStat label="net after AWS credits" value={formatMoney(e.net_cents, "usd")} hint={`credits ${formatMoney(e.aws_credits_cents, "usd")}`} />
+        <MetricStat label="referrals subscribed" value={data.referrals.subscribed} hint="the counted kind — drives jumps + credits" />
       </div>
 
       <Card
         title="Actions"
         action={
           <div className="flex gap-2">
-            <button type="button" onClick={exportCsv} className="rounded-md border border-border bg-card px-3 py-1.5 text-xs text-foreground hover:bg-accent">Export waitlist CSV</button>
-            <button type="button" onClick={refresh} disabled={busy} className="rounded-md border border-border bg-card px-3 py-1.5 text-xs text-foreground hover:bg-accent disabled:opacity-50">{busy ? "Refreshing…" : "Refresh all"}</button>
+            <button type="button" onClick={exportCsv} className="rounded-md border border-border bg-card px-3 py-1.5 text-xs text-foreground hover:bg-accent">Export sheet CSV</button>
+            <button type="button" onClick={refresh} disabled={busy} className="rounded-md border border-border bg-card px-3 py-1.5 text-xs text-foreground hover:bg-accent disabled:opacity-50">{busy ? "Working…" : "Refresh all"}</button>
+            {!data.closed ? (
+              <ConfirmActionDialog
+                confirmText="close"
+                actionLabel="Close the sign-up sheet — flag winners, freeze the pot, attach coupons, email winners"
+                destructive
+                onConfirm={() => close(false)}
+              >
+                <Button type="button" variant="destructive" size="sm" disabled={busy}>
+                  Close the sheet
+                </Button>
+              </ConfirmActionDialog>
+            ) : (
+              <ConfirmActionDialog
+                confirmText="close"
+                actionLabel="Re-run the close (force) — retries failed coupons/emails only; winners and the pot stay frozen"
+                onConfirm={() => close(true)}
+              >
+                <Button type="button" variant="outline" size="sm" disabled={busy}>
+                  Re-run close (force)
+                </Button>
+              </ConfirmActionDialog>
+            )}
           </div>
         }
       >
-        <p className="text-xs text-muted-foreground">{note ?? "Export the top rows for the launch email; refresh before judging."}</p>
+        <p className="text-xs text-muted-foreground">{note ?? "Export the sheet for the launch email; refresh before judging."}</p>
+        {closeError ? <ErrorBanner error={closeError} /> : null}
+        {closeResult ? (
+          <div className="mt-2 space-y-2">
+            <p className="text-xs text-foreground">{describeClose(closeResult)}</p>
+            {closeFailures ? (
+              <div className="flex items-center gap-2">
+                <ErrorBanner error="Some coupon attaches or winner emails failed — a forced rerun retries only the failed steps." />
+                <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => close(true)}>
+                  Retry (force)
+                </Button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </Card>
 
-      <Card title="Economics (sheet lines)">
+      <Card title={`Sheet (${data.sheet_rows.length} joined)`}>
         <Table
-          head={["line", "amount"]}
-          rows={[
-            ["paid entrants profit", formatMoney(e.paid_profit_cents, "usd")],
-            ["comped waitlist cost", formatMoney(-e.comp_cost_cents, "usd")],
-            ["referral free months cost", formatMoney(-e.referral_cost_cents, "usd")],
-            ["competition P&L", formatMoney(e.pnl_cents, "usd")],
-            ["AWS credits", formatMoney(e.aws_credits_cents, "usd")],
-            ["net", formatMoney(e.net_cents, "usd")],
-          ]}
+          head={["eff #", "#", "name", "email", "joined", "refs subbed", "refs signed", "winner", "eligible", "coupon", "emailed"]}
+          rows={data.sheet_rows.map((r) => [
+            r.effective_position,
+            r.position,
+            r.display_name ?? "—",
+            r.email,
+            r.joined_at ?? "—",
+            r.referrals_subscribed,
+            r.referrals_signed_up,
+            r.winner ? "yes" : "",
+            r.compete_eligible ? "yes" : "no",
+            r.coupon_attached_at ? "yes" : "",
+            r.winner_email_sent_at ? "yes" : "",
+          ])}
         />
       </Card>
 
-      <Card title={`Entries (${data.entries.length})`}>
+      <Card title={`Board entries (${data.entries.length})`}>
         <Table
-          head={["#", "entrant", "owner", "pos", "eligible", "public", "baseline", "window", "lift", "growth", "refreshed", "error", ""]}
+          head={["#", "entrant", "owner", "sheet pos", "paid", "public", "baseline", "window", "lift", "growth", "refreshed", "error", ""]}
           rows={data.entries.map((r, i) => [
             i + 1,
             r.display_name ?? "—",
             r.owner_id,
             r.waitlist_position ?? "—",
-            r.comp_eligible ? "yes" : "no",
+            r.has_subscription ? "yes" : "no",
             r.public ? "yes" : "no",
             formatMoney(r.baseline_cents, r.currency ?? "usd"),
             formatMoney(r.window_cents, r.currency ?? "usd"),

@@ -13,6 +13,13 @@ import {
 interface ConnectionsListProps {
   /** Org admins may connect/disconnect; non-admins see disabled actions. */
   canManage: boolean;
+  /**
+   * Providers rendered elsewhere on the same page (e.g. Stripe's consolidated
+   * section on /settings/connections) — dropped from this list so one brand
+   * never shows up twice. Omitted everywhere else (the Control dashboard's
+   * IntegrationsPanel keeps the full server-driven catalog).
+   */
+  exclude?: string[];
 }
 
 /**
@@ -39,7 +46,7 @@ const KIND_LABELS: Record<string, string> = {
  * /settings/connections page re-mutates this same SWR key after an OAuth
  * return so a freshly-connected provider flips to green without a reload.
  */
-export function ConnectionsList({ canManage }: ConnectionsListProps) {
+export function ConnectionsList({ canManage, exclude }: ConnectionsListProps) {
   const { connections, isLoading, error, mutate, connectPaste, startOAuth, disconnect } =
     useConnections();
   // The second facet. Its providers are NOT the OAuth registry's: this rail
@@ -60,7 +67,7 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
       } as Connection,
       railOnly: true,
     })),
-  ];
+  ].filter((r) => !exclude?.includes(r.connection.provider));
 
   if (error) {
     return (

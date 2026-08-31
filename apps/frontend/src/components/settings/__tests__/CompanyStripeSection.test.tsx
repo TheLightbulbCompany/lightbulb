@@ -133,11 +133,11 @@ describe("CompanyStripeSection", () => {
   it("hides actions for non-admins", async () => {
     get.mockResolvedValue(UNBOUND);
     renderSection(false);
-    // The card title "Stripe" is the unambiguous marker that loading has
-    // resolved — the desc paragraph and the non-admin message both also
-    // contain the substring "Stripe", so a plain findByText(/Stripe/) here
-    // throws on multiple matches.
-    await screen.findByRole("heading", { name: "Stripe" });
+    // The grant heading "Company account" is the unambiguous marker that
+    // loading has resolved — the desc paragraph and the non-admin message
+    // both contain the substring "Stripe", so a plain findByText(/Stripe/)
+    // here throws on multiple matches.
+    await screen.findByRole("heading", { name: "Company account" });
     expect(screen.queryByText("Set up Stripe")).toBeNull();
   });
 });

@@ -270,11 +270,34 @@ async def list_projects(account_id: str) -> list[dict]:
 # --- 4.2 Catalog (account context) -----------------------------------------
 
 
+async def _catalog_with_fallback(account_id: str, path: str, params: dict) -> list[dict]:
+    """Filter by the configured partition, but never let the filter blank the
+    catalog: the spec calls `catalog` "a Preview implementation field" and the
+    sandbox returns services with `catalog: null` (verified live 2026-08-31),
+    so a partition filter over unpopulated rows matches nothing. When the
+    filtered read is empty, re-read unfiltered — account context already
+    scopes what this owner may see; the partition is a selector, not a fence.
+    """
+    rows = await paginate(account_id, path, params=params)
+    if rows or not params.get("catalog"):
+        return rows
+    unfiltered = {k: v for k, v in params.items() if k != "catalog"}
+    rows = await paginate(account_id, path, params=unfiltered)
+    if rows:
+        logger.warning(
+            "provisioning: catalog filter %r matched nothing but the unfiltered "
+            "read has %d rows — Stripe left the partition field unpopulated",
+            params.get("catalog"),
+            len(rows),
+        )
+    return rows
+
+
 async def catalog_providers(account_id: str) -> list[dict]:
-    return await paginate(
+    return await _catalog_with_fallback(
         account_id,
         f"{BASE}/catalog/providers",
-        params={"catalog": settings.STRIPE_PROJECTS_CATALOG, "limit": 100},
+        {"catalog": settings.STRIPE_PROJECTS_CATALOG, "limit": 100},
     )
 
 
@@ -282,11 +305,12 @@ async def catalog_services(account_id: str, *, provider_name: str | None = None)
     """`catalog` selects the partition (`prod | dev | testing`). It is
     configuration, never a literal — dev runs `testing` and prod runs `prod`,
     and reading one partition while writing another is how you provision into a
-    catalog the owner never saw."""
-    return await paginate(
+    catalog the owner never saw. (When Stripe leaves the partition field
+    unpopulated the filter falls back to unfiltered — see _catalog_with_fallback.)"""
+    return await _catalog_with_fallback(
         account_id,
         f"{BASE}/catalog/services",
-        params={
+        {
             "provider_name": provider_name,
             "catalog": settings.STRIPE_PROJECTS_CATALOG,
             "limit": 100,

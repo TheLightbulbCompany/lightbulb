@@ -211,9 +211,14 @@ async def test_the_catalog_partition_is_configuration_on_every_catalog_read(monk
         await mod.create_resource(
             "acct_1", service_ref="s", provider="p", project="proj_1", name="n", configuration={}, catalog="testing"
         )
+    # Each catalog read filters by the configured partition first; because the
+    # fake returns no rows, the unfiltered fallback follows each filtered read
+    # (see _catalog_with_fallback), so the calls pair up.
     assert "catalog=testing" in raw.call_args_list[0].args[1]
-    assert "catalog=testing" in raw.call_args_list[1].args[1]
-    assert raw.call_args_list[2].args[3]["catalog"] == "testing"
+    assert "catalog=" not in raw.call_args_list[1].args[1]
+    assert "catalog=testing" in raw.call_args_list[2].args[1]
+    assert "catalog=" not in raw.call_args_list[3].args[1]
+    assert raw.call_args_list[4].args[3]["catalog"] == "testing"
 
 
 @pytest.mark.asyncio
@@ -402,3 +407,31 @@ async def test_request_unwraps_stripe_response_body():
     with patch.object(mod, "_raw", return_value=real):
         out = await mod.request("acct_x", "get", "/v2/provisioning/eligibility")
     assert out == {"is_eligible": True, "requirements": []}
+
+
+@pytest.mark.asyncio
+async def test_catalog_falls_back_when_partition_filter_matches_nothing():
+    """The sandbox returns services with catalog:null (spec: 'a Preview
+    implementation field'), so filtering by partition can blank the catalog.
+    Empty filtered read -> retry unfiltered."""
+    calls = []
+
+    async def fake_paginate(account_id, path, *, params=None, limit_pages=20):
+        calls.append(dict(params))
+        return [] if params.get("catalog") else [{"id": "prvsvc_1"}]
+
+    with patch.object(mod, "paginate", side_effect=fake_paginate):
+        rows = await mod.catalog_services("acct_x")
+    assert rows == [{"id": "prvsvc_1"}]
+    assert calls[0].get("catalog") and "catalog" not in calls[1]
+
+
+@pytest.mark.asyncio
+async def test_catalog_no_fallback_when_filtered_read_has_rows():
+    async def fake_paginate(account_id, path, *, params=None, limit_pages=20):
+        return [{"id": "prvsvc_filtered"}]
+
+    with patch.object(mod, "paginate", side_effect=fake_paginate) as pg:
+        rows = await mod.catalog_services("acct_x")
+    assert rows == [{"id": "prvsvc_filtered"}]
+    assert pg.call_count == 1

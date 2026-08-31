@@ -37,13 +37,13 @@ export async function generateMetadata({
       publishedTime: post.date,
       authors: [post.author],
       tags: post.tags,
-      images: [{ url: "/og-image.png", width: 1200, height: 630, alt: "Lightbulb" }],
+      images: [{ url: "/og-lightbulb.png", width: 1200, height: 630, alt: "Lightbulb" }],
     },
     twitter: {
       card: "summary_large_image",
       title: post.title,
       description: post.description,
-      images: ["/og-image.png"],
+      images: ["/og-lightbulb.png"],
     },
   };
 }
@@ -68,7 +68,7 @@ export default async function BlogPostPage({
     publisher: {
       "@type": "Organization",
       name: "Lightbulb",
-      logo: { "@type": "ImageObject", url: `${SITE_URL}/og-image.png` },
+      logo: { "@type": "ImageObject", url: `${SITE_URL}/og-lightbulb.png` },
     },
     mainEntityOfPage: { "@type": "WebPage", "@id": `${SITE_URL}/blog/${post.slug}` },
     keywords: post.tags.join(", "),

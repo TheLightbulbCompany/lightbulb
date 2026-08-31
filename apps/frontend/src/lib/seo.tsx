@@ -4,7 +4,7 @@ import { SITE_URL } from "./domain";
 
 export { SITE_URL };
 export const SITE_NAME = "Lightbulb";
-export const OG_IMAGE = "/og-image.png";
+export const OG_IMAGE = "/og-lightbulb.png";
 
 export function absoluteUrl(path = "/") {
   return new URL(path, SITE_URL).toString();

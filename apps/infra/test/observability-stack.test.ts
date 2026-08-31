@@ -170,6 +170,7 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "chat.error": [["reason", "reclassified"]],
   "chat.message.count": [[]],
   "chat.session_usage.fetch.error": [[]],
+  "company_stripe.account.created": [[]],
   "container.efs.access_point": [["op", "status"]],
   "container.error_state": [[]],
   "container.lifecycle.latency": [["op"]],
@@ -343,6 +344,20 @@ describe("ObservabilityStack", () => {
       Dimensions: Match.arrayWith([
         Match.objectLike({ Name: "status", Value: "inline_timeout" }),
       ]),
+    });
+  });
+
+  // The company Stripe create door is live in prod and owner-accepted, but
+  // was otherwise silent — this is how we learn when a real owner first
+  // mints a company Stripe account through it.
+  test("P16 pages when a company Stripe account is minted", () => {
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "lightbulb-dev-P16-company-stripe-account-created",
+      Namespace: "LightbulbAI",
+      MetricName: "company_stripe.account.created",
+      Threshold: 0,
+      ComparisonOperator: "GreaterThanThreshold",
+      TreatMissingData: "notBreaching",
     });
   });
 

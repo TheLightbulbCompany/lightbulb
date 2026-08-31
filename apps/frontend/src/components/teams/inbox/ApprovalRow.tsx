@@ -7,6 +7,7 @@ import { EditorialButton } from "@/components/teams/shell";
 import { notifyApiError, notifyError } from "@/lib/notify";
 import { useApi } from "@/lib/api";
 import { closePendingTab, navigatePendingTab, openPendingTab } from "@/components/settings/openInNewTab";
+import { isTauri, openExternalUrl } from "@/lib/externalAuth";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { useApprovalMutations } from "@/components/teams/inbox/hooks/useApprovalMutations";
 import {
@@ -77,6 +78,24 @@ export function ApprovalRow({ approval }: { approval: Approval }) {
     // one frame both get through it. Each one mints a checkout session or an
     // account request, so the guard is here too, on the value itself.
     if (busy) return;
+    // Desktop (Tauri): WKWebView blocks window.open, so the two-phase tab
+    // dance would always read as "popup blocked". The shell plugin has no
+    // user-activation constraint, so mint the URL first and open it in the
+    // SYSTEM browser — the webview must never navigate to a provider's
+    // authorize page (embedded-webview blocks + a callback the webview never
+    // sees).
+    if (isTauri()) {
+      void run(async () => {
+        const url = await fetchUrl();
+        if (!url) {
+          notifyError(NO_URL_MSG);
+          return;
+        }
+        openExternalUrl(url);
+        if (thenApprove) await approve(approval.id);
+      });
+      return;
+    }
     const w = openPendingTab();
     if (!w) {
       notifyError(POPUP_BLOCKED_MSG);

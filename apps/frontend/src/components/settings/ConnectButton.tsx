@@ -6,6 +6,7 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useApi, BACKEND_URL } from "@/lib/api";
+import { isTauri } from "@/lib/externalAuth";
 import { ApiError, type Connection } from "@/hooks/useConnections";
 import { AwsConnectCard } from "@/components/settings/AwsConnectCard";
 import { notifyApiError } from "@/lib/notify";
@@ -110,6 +111,12 @@ export function ConnectButton({
   //     app and re-auth against it WITHOUT first disconnecting, which would tear
   //     down their live Google connection.
   const needsByoSetup = connection.byo_required && !connection.byo_configured;
+
+  // Web: startOAuth navigates this page away, so the busy state is a moment of
+  // "Redirecting…". Desktop (Tauri): the consent screen opens in the system
+  // browser and startOAuth stays pending while it polls /connections for the
+  // grant — the row flips to Disconnect by itself once it lands.
+  const oauthBusyLabel = isTauri() ? "Finish in your browser…" : "Redirecting…";
 
   // Renders the "Use your own … app" button, or — once opened — the
   // client_id/secret form. Extracted so both the connected and not-connected
@@ -365,7 +372,7 @@ export function ConnectButton({
             onClick={() => run(() => startOAuth(provider))}
             aria-label={`Connect ${display_name}`}
           >
-            {busy ? "Redirecting…" : "Connect"}
+            {busy ? oauthBusyLabel : "Connect"}
           </Button>
         )}
         {renderByoSetup()}
@@ -400,7 +407,7 @@ export function ConnectButton({
           onClick={() => run(() => startOAuth(provider))}
           aria-label={`Connect ${display_name}`}
         >
-          {busy ? "Redirecting…" : "Connect"}
+          {busy ? oauthBusyLabel : "Connect"}
         </Button>
         {err && (
           <p className="text-xs text-[var(--err)]" role="alert">

@@ -2,6 +2,7 @@
 import { useState } from "react";
 import useSWR from "swr";
 import { useApi } from "@/lib/api";
+import { openAuthUrl } from "@/lib/externalAuth";
 import { useMarketplaceWriteGate } from "@/lib/marketplace/useMarketplaceWriteGate";
 import { MarketplaceRestrictedView } from "@/components/marketplace/RestrictedView";
 
@@ -31,7 +32,9 @@ export default function Dashboard() {
         onboarding_url?: string;
       };
       if (body.onboarding_url) {
-        window.location.href = body.onboarding_url;
+        // Web: navigates away. Desktop: opens the system browser (the webview
+        // must not navigate to Stripe onboarding); status refreshes on return.
+        openAuthUrl(body.onboarding_url);
       } else {
         setOnboardError("missing onboarding_url in response");
       }

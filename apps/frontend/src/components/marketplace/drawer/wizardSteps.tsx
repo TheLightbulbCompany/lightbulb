@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 
 import { useApi } from "@/lib/api";
+import { openAuthUrl } from "@/lib/externalAuth";
 import { useAgents, agentDisplayName, type Agent } from "@/hooks/useAgents";
 import {
   artifactPreview,
@@ -529,7 +530,9 @@ export function PricingStep({
       const r = (await api.post("/marketplace/payouts/onboard", {})) as {
         onboarding_url: string;
       };
-      window.location.href = r.onboarding_url;
+      // Web: navigates away. Desktop: opens the system browser (the webview
+      // must not navigate to Stripe onboarding); status refreshes on return.
+      openAuthUrl(r.onboarding_url);
     } finally {
       setPayoutBusy(false);
     }

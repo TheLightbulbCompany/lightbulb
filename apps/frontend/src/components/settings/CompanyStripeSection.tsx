@@ -5,6 +5,7 @@ import useSWR from "swr";
 import { useApi } from "@/lib/api";
 import { notifyApiError, notifyError } from "@/lib/notify";
 import { closePendingTab, navigatePendingTab, openPendingTab } from "@/components/settings/openInNewTab";
+import { isTauri, openExternalUrl, pollUntil } from "@/lib/externalAuth";
 
 const POPUP_BLOCKED_MSG =
   "Your browser blocked the Stripe window — allow popups for this site and try again.";
@@ -47,6 +48,21 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
    * first `await` is outside the user-activation window and Safari refuses.
    */
   function openWith(fetchUrl: () => Promise<string>) {
+    // Desktop (Tauri): WKWebView blocks window.open, so the two-phase tab
+    // dance would always read as "popup blocked". The shell plugin has no
+    // user-activation constraint, so fetch the URL first, open it in the
+    // SYSTEM browser, then poll our own status until Stripe's side lands
+    // (any field changing — account bound, details submitted, charges on).
+    if (isTauri()) {
+      void run(async () => {
+        openExternalUrl(await fetchUrl());
+        const before = JSON.stringify(data ?? null);
+        await pollUntil(
+          async () => JSON.stringify((await mutate()) ?? null) !== before,
+        );
+      });
+      return;
+    }
     const w = openPendingTab();
     if (!w) {
       notifyError(POPUP_BLOCKED_MSG);
@@ -162,6 +178,12 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
             )}
           </div>
         </div>
+      )}
+
+      {busy && isTauri() && (
+        <p className="text-sm text-[var(--midnight-muted)]" role="status">
+          Finish in your browser — this page updates automatically.
+        </p>
       )}
     </section>
   );

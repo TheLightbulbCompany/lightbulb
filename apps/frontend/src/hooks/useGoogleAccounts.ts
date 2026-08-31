@@ -4,6 +4,7 @@ import { useCallback } from "react";
 import useSWR from "swr";
 
 import { ApiError, useApi } from "@/lib/api";
+import { openAuthUrl, pollUntil } from "@/lib/externalAuth";
 
 /**
  * A single connected Google account. One owner can connect several Google
@@ -99,11 +100,19 @@ export function useGoogleAccounts() {
       "/connections/google/authorize",
     )) as AuthorizeResponse;
     // Hand the browser to Google's consent screen. Adding an account is
-    // additive on the backend — it never replaces an existing grant. The
-    // provider redirects back to /settings/connections, which the page
-    // handles on return; the full-page navigation discards this tree.
-    window.location.href = r.authorize_url;
-  }, [api]);
+    // additive on the backend — it never replaces an existing grant. On the
+    // web the provider redirects back to /settings/connections and the
+    // full-page navigation discards this tree. In the desktop app the consent
+    // screen opens in the SYSTEM browser (Google blocks embedded webviews),
+    // so this tree stays mounted: poll the accounts list until the new grant
+    // lands, then resolve so the caller's busy state clears.
+    const before = data?.accounts.length ?? 0;
+    if (openAuthUrl(r.authorize_url)) {
+      await pollUntil(
+        async () => ((await mutate())?.accounts.length ?? 0) > before,
+      );
+    }
+  }, [api, data, mutate]);
 
   return {
     accounts: data?.accounts ?? [],

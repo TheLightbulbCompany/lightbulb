@@ -1060,3 +1060,87 @@ def test_refund_window_parses_created_at_as_utc_not_local(mock_time, mock_get, m
         else:
             os.environ["TZ"] = old_tz
         _time.tzset()
+
+
+# --- Connect money-webhooks -> rollup refresh ------------------------------
+
+
+def _money_event(event_type: str, account: str | None = None) -> dict:
+    ev = {"id": f"evt_{event_type}", "type": event_type, "data": {"object": {"id": "obj_1"}}}
+    if account is not None:
+        ev["account"] = account
+    return ev
+
+
+@patch("routers.marketplace_purchases.rollup_service.refresh_owner_day", new_callable=AsyncMock)
+@patch(
+    "routers.marketplace_purchases.billing_repo.get_by_company_stripe_account_id",
+    new_callable=AsyncMock,
+    return_value={"owner_id": "own_1"},
+)
+@patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
+@patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
+def test_webhook_money_event_on_company_account_schedules_rollup_refresh(
+    mock_construct, mock_dedup, mock_lookup, mock_refresh, client
+):
+    from datetime import datetime, timezone
+
+    from core.services.webhook_dedup import WebhookDedupResult
+
+    mock_dedup.return_value = WebhookDedupResult.RECORDED
+    mock_construct.return_value = _money_event("payment_intent.succeeded", account="acct_company")
+
+    resp = client.post(
+        "/api/v1/marketplace/webhooks/stripe-marketplace",
+        headers={"stripe-signature": "test"},
+        content=b"{}",
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+    mock_lookup.assert_awaited_once_with("acct_company")
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    mock_refresh.assert_called_once_with("own_1", today)
+
+
+@patch("routers.marketplace_purchases.rollup_service.refresh_owner_day", new_callable=AsyncMock)
+@patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
+@patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
+def test_webhook_money_event_on_seller_account_acks_without_refresh(mock_construct, mock_dedup, mock_refresh, client):
+    """A seller's connected account is not a company row (autouse fixture
+    returns None) -> the event falls through to the ack, no rollup touch."""
+    from core.services.webhook_dedup import WebhookDedupResult
+
+    mock_dedup.return_value = WebhookDedupResult.RECORDED
+    mock_construct.return_value = _money_event("payout.paid", account="acct_seller")
+
+    resp = client.post(
+        "/api/v1/marketplace/webhooks/stripe-marketplace",
+        headers={"stripe-signature": "test"},
+        content=b"{}",
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+    mock_refresh.assert_not_called()
+
+
+@patch("routers.marketplace_purchases.rollup_service.refresh_owner_day", new_callable=AsyncMock)
+@patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
+@patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
+def test_webhook_money_event_without_account_acked(mock_construct, mock_dedup, mock_refresh, client):
+    """Platform-scoped delivery carries no `account` on the envelope -> ack."""
+    from core.services.webhook_dedup import WebhookDedupResult
+
+    mock_dedup.return_value = WebhookDedupResult.RECORDED
+    mock_construct.return_value = _money_event("customer.created")
+
+    resp = client.post(
+        "/api/v1/marketplace/webhooks/stripe-marketplace",
+        headers={"stripe-signature": "test"},
+        content=b"{}",
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+    mock_refresh.assert_not_called()

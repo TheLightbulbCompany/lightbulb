@@ -123,6 +123,7 @@ def no_network(monkeypatch):
     monkeypatch.setattr(mod.api, "payment_profile", AsyncMock(side_effect=ProvisioningError("not_found", "no profile")))
     monkeypatch.setattr(mod.api, "list_projects", AsyncMock(return_value=[]))
     monkeypatch.setattr(mod.api, "list_resources", AsyncMock(return_value=[]))
+    monkeypatch.setattr(mod.work_products, "register", AsyncMock(return_value="wp_1"))
 
 
 # --- start ------------------------------------------------------------------
@@ -762,6 +763,15 @@ async def test_complete_resource_binds_the_matching_resource_id_only():
     assert land.await_args.kwargs["resource"]["env_keys"] == ["NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN"]
     assert land.await_args.kwargs["resource"]["level"] == "company"
     mod.owner_facts.write_owner_facts.assert_awaited_once_with("org_a")
+    # The work-product receipt rides the bind, scoped to the originating issue.
+    receipt = mod.work_products.register.await_args
+    assert receipt.args == ("org_a",)
+    assert receipt.kwargs["type"] == "artifact"
+    assert receipt.kwargs["provider"] == "posthog"
+    assert receipt.kwargs["title"] == "Provisioned svc_analytics"
+    assert receipt.kwargs["issue_id"] == "iss_1"
+    assert receipt.kwargs["external_id"] == "res_1"
+    assert receipt.kwargs["metadata"] == {"workflow_id": "pwf_1", "level": "company"}
 
 
 @pytest.mark.asyncio
@@ -1772,3 +1782,32 @@ async def test_ask_is_still_a_no_op():
     with patch.object(mod, "shared_admin_client") as client:
         assert (await mod.advance(_row(state="ask")))["state"] == "ask"
     client.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_start_matches_mixed_case_wire_provider_names():
+    """The wire provider_name is mixed-case ("Sentry") while request bodies
+    carry lowercase slugs; the match must be case-insensitive or every
+    capitalized provider is unfilable (seen live on dev)."""
+    svc = {**SERVICE, "provider_name": "Sentry", "service_id": "developer"}
+    with (
+        patch.object(mod.api, "catalog_services", AsyncMock(return_value=[svc])) as cs,
+        patch.object(mod.api, "catalog_providers", AsyncMock(return_value=[PROVIDER])),
+    ):
+        service, provider = await mod._read_catalog("acct_1", "sentry", "developer")
+    assert service["service_id"] == "developer"
+    # unfiltered read — no provider_name kwarg reaches the client
+    assert cs.await_args.kwargs.get("provider_name") is None
+
+
+@pytest.mark.asyncio
+async def test_read_catalog_none_provider_refuses_cleanly():
+    """Schemathesis found a 500: a fuzzed/malformed workflow row can reach
+    _read_catalog with provider_name=None; .lower() on it crashed. Must be a
+    clean service_unavailable refusal."""
+    with (
+        patch.object(mod.api, "catalog_services", AsyncMock(return_value=[SERVICE])),
+        patch.object(mod.api, "catalog_providers", AsyncMock(return_value=[PROVIDER])),
+    ):
+        with pytest.raises(mod.WorkflowRefused):
+            await mod._read_catalog("acct_1", None, "analytics")

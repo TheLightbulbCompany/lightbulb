@@ -706,66 +706,21 @@ async def handle_clerk_webhook(request: Request):
                 # back to Clerk admin API. Logging is enough.
                 logger.exception("user_repo.put failed for user.created %s", user_id)
 
-            # Sign-up IS the waitlist now. Best-effort join, skipped when the
-            # feature is off (no launch settings drop configured for this
-            # env) or Clerk sent no email — never fails the webhook. The
-            # join result also decides which sign-up email goes out below:
-            # while the list is open (waitlist phase), it's the "You're #N"
-            # waitlist confirmation instead of the generic welcome.
-            schedule = None
-            waitlist_row: dict | None = None
+            # Best-effort welcome email — the sender already swallows its own
+            # errors; we also guard here so a blowup can never 500 the
+            # webhook (which would trigger a Clerk retry storm). Competition
+            # sign-up-sheet membership is explicit (POST /launch/join, inside
+            # the product) — signup joins nothing.
             if email:
                 try:
-                    from core.repositories import launch_waitlist_repo
-                    from core.services import launch_phase
+                    from core.services.welcome_email import send_welcome_email
 
-                    schedule = launch_phase.schedule()
-                    if schedule is not None:
-                        waitlist_row = await launch_waitlist_repo.join(email, referred_by=None, source="signup")
+                    await send_welcome_email(
+                        to_email=email,
+                        first_name=data.get("first_name"),
+                    )
                 except Exception:
-                    logger.exception("launch waitlist join failed for user.created %s", user_id)
-
-            # Best-effort sign-up email — exactly one of the two. Either
-            # sender already swallows its own errors; we also guard here so
-            # a blowup can never 500 the webhook (which would trigger a
-            # Clerk retry storm).
-            if email:
-                is_waitlist_phase = False
-                try:
-                    if schedule is not None and waitlist_row is not None:
-                        from core.services import launch_phase
-
-                        is_waitlist_phase = launch_phase.phase(schedule) == "waitlist"
-                except Exception:
-                    logger.exception("launch waitlist phase check failed for user.created %s", user_id)
-
-                if is_waitlist_phase:
-                    try:
-                        from core.services import launch_phase, launch_service
-                        from core.services.launch_waitlist_email import send_waitlist_email
-
-                        referral_jump = launch_phase.constants()["referral_jump"]
-                        await send_waitlist_email(
-                            to_email=email,
-                            first_name=data.get("first_name"),
-                            effective_position=launch_service.effective_position(waitlist_row, referral_jump),
-                            referral_link=launch_service.referral_link(waitlist_row["referral_code"]),
-                            drop_at=schedule.drop_at,
-                            referral_jump=referral_jump,
-                            comp_slots=schedule.comp_slots,
-                        )
-                    except Exception:
-                        logger.exception("launch waitlist email send raised for user.created %s", user_id)
-                else:
-                    try:
-                        from core.services.welcome_email import send_welcome_email
-
-                        await send_welcome_email(
-                            to_email=email,
-                            first_name=data.get("first_name"),
-                        )
-                    except Exception:
-                        logger.exception("welcome email send raised for user.created %s", user_id)
+                    logger.exception("welcome email send raised for user.created %s", user_id)
 
     elif event_type == "user.updated":
         user_id = data.get("id", "")

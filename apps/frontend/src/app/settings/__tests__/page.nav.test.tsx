@@ -30,9 +30,6 @@ vi.mock("@/components/control/panels/SkillsTab", () => ({
 vi.mock("@/components/control/panels/SkillProposalsPanel", () => ({
   SkillProposalsPanel: () => <div data-testid="skill-proposals-panel" />,
 }));
-vi.mock("@/components/control/panels/DreamsPanel", () => ({
-  DreamsPanel: () => <div data-testid="dreams-panel" />,
-}));
 vi.mock("@/components/control/panels/ChannelsStatusPanel", () => ({
   ChannelsStatusPanel: () => <div data-testid="channels-status-panel" />,
 }));
@@ -138,12 +135,17 @@ describe("Settings nav — 6 intent-ordered groups", () => {
     expect(within(navEl).getByText("MCP servers")).toBeInTheDocument();
   });
 
-  it("registers the ENGINE ROOM panels (Skills, Skill Proposals, Dreams)", () => {
+  it("registers the ENGINE ROOM panels (Skills, Skill Proposals)", () => {
     render(<SettingsPage />);
     const navEl = screen.getByRole("navigation", { name: /settings navigation/i });
     expect(within(navEl).getByText("Skills")).toBeInTheDocument();
     expect(within(navEl).getByText("Skill Proposals")).toBeInTheDocument();
-    expect(within(navEl).getByText("Dreams / Memory")).toBeInTheDocument();
+  });
+
+  it("no longer lists Dreams / Memory — it folded into the Brain panel as a tab", () => {
+    render(<SettingsPage />);
+    const navEl = screen.getByRole("navigation", { name: /settings navigation/i });
+    expect(within(navEl).queryByText("Dreams / Memory")).not.toBeInTheDocument();
   });
 
   // --- Channel Status (ENGINE ROOM) — DISTINCT key from WIRING Channels ---
@@ -166,5 +168,13 @@ describe("Settings nav — 6 intent-ordered groups", () => {
     render(<SettingsPage />);
     // The channel-status panel mounts (its stub marker is present).
     expect(screen.getByTestId("channels-status-panel")).toBeInTheDocument();
+  });
+
+  // --- Trust boundary: `in` walks the prototype chain, hasOwnProperty doesn't ---
+  it("falls back to Profile for a prototype-chain key like ?panel=constructor (review finding 8)", () => {
+    nav.panel = "constructor";
+    const { container } = render(<SettingsPage />);
+    expect(container.querySelector("#panel-profile")).toBeInTheDocument();
+    expect(screen.queryByTestId("channels-status-panel")).not.toBeInTheDocument();
   });
 });

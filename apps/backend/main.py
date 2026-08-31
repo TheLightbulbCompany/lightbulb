@@ -34,6 +34,7 @@ from routers import (
     apple_iap,
     automations,
     billing,
+    brain,
     browser_view,
     channels,
     config,
@@ -857,6 +858,9 @@ app.include_router(automations.router, prefix="/api/v1", tags=["automations"])
 # Workspace file browser (EFS agent workspace)
 app.include_router(workspace_files.router, prefix="/api/v1/container", tags=["container"])
 
+# Brain — owner surface over the memory-wiki vault (EFS wiki/)
+app.include_router(brain.router, prefix="/api/v1/container", tags=["container"])
+
 # Debug routes (dev-only container provisioning)
 app.include_router(debug.router, prefix="/api/v1/debug", tags=["debug"])
 
@@ -962,6 +966,12 @@ app.include_router(company_stripe.router, prefix="/api/v1/company/stripe", tags=
 from routers import company_provisioning  # noqa: E402
 
 app.include_router(company_provisioning.router, prefix="/api/v1/company/provisioning", tags=["company-provisioning"])
+
+# Capability policy + revoke-all (the P0d slice — row + surface only;
+# enforcement in the rails is P1).
+from routers import company_policy  # noqa: E402
+
+app.include_router(company_policy.router, prefix="/api/v1/company", tags=["company-policy"])
 
 # Marketplace admin (Plan 2) — moderation queue, approve/reject, takedown.
 from routers import marketplace_admin  # noqa: E402

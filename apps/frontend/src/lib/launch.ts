@@ -1,23 +1,18 @@
 import { BACKEND_URL } from "@/lib/api";
 
-export type LaunchPhase = "waitlist" | "activation" | "live" | "ended";
+export type LaunchPhase = "open" | "closed" | "competition" | "ended";
 
+/** Public `GET /launch`. NO pot fields — the pot is admin-only and never
+ * appears in any public payload. `signups` counts every sheet row including
+ * attribution-only ones, so copy must say "signups", never "on the sheet". */
 export interface LaunchInfo {
   phase: LaunchPhase;
-  drop_at: string;
+  sheet_closes_at: string;
   competition_start_at: string;
   competition_end_at: string;
   signups: number;
-  competing: number;
-  on_board: number;
-  pot_cents: number;
   comp_slots: number;
-  pot_per_entrant_cents: number;
-  /** Sent by `GET /launch`. Optional only for the merge→promote window
-   * (Vercel ships the frontend on merge; the backend is promoted on demand),
-   * during which an older backend omits it and the rules copy falls back to
-   * the generic sentence. */
-  referral_jump?: number;
+  referral_jump: number;
 }
 
 export interface LeaderboardRow {
@@ -28,6 +23,8 @@ export interface LeaderboardRow {
   currency: string;
 }
 
+/** The revenue-board entry dict returned by POST /launch/connect-stripe —
+ * the only read surface for the caller's own board attachment. */
 export interface LaunchEntry {
   display_name: string;
   public: boolean;
@@ -41,42 +38,38 @@ export interface LaunchEntry {
   refresh_error: string | null;
 }
 
-export interface LaunchWaitlist {
-  position: number;
-  /** `max(1, position - referral_jump * referrals_signed_up)` — the queue
-   * position after referral jumps; the number every UI surface shows. */
-  effective_position: number;
-  /** `position - effective_position` — how many spots referrals moved you up. */
-  moved_up: number;
-  /** Spots per referral, echoed for the "each referral moves you up N spots" copy. */
-  referral_jump: number;
-  referral_code: string;
-  in_comp_window: boolean;
-  referral_link: string;
-  referrals_signed_up: number;
-  referrals_paid: number;
-  free_months_banked: number;
+/** The board-attachment projection carried on /launch/me for JOINED rows —
+ * a subset of `LaunchEntry`, so a reload mid-competition shows the connected
+ * state instead of inviting a key re-paste. */
+export interface LaunchMeEntry {
+  has_key: boolean;
+  public: boolean;
+  entered_at: string | null;
+  delta_cents: number | null;
+  refreshed_at: string | null;
+  refresh_error: string | null;
+  currency: string | null;
 }
 
+/** `GET /launch/me` (auth) — the caller's sheet status. `position` and the
+ * referral fields are null until they explicitly joined; `compete_eligible`
+ * is false when not joined and true for joined rows pre-close. */
 export interface LaunchMe {
   phase: LaunchPhase;
-  waitlist: LaunchWaitlist | null;
-  activated: boolean;
-  activated_at: string | null;
-  entry: LaunchEntry | null;
   joined: boolean;
-  has_key: boolean;
-  /** Server-side pre-drop hold: waitlist phase + no container row (the same
-   * predicate the launch_pending gate uses). Optional for the merge->promote
-   * window, during which an older backend omits it. */
-  held?: boolean;
-  can_join: boolean;
-  reason: string | null;
-  idea: string | null;
-  /** Untruncated pending-brief text (the `idea` teaser is capped at 140
-   * chars) — feeds the landing spot card's edit form. Optional for the
-   * merge→promote window, during which an older backend omits it. */
-  idea_full?: string | null;
+  position: number | null;
+  /** `position` after referral queue-jumps — the number every surface shows. */
+  effective_position: number | null;
+  referrals_subscribed: number;
+  referral_code: string | null;
+  referral_link: string | null;
+  credits_milestone_reached: 0 | 5 | 20;
+  winner: boolean;
+  compete_eligible: boolean;
+  /** Friday's first run delivered — the join precondition. */
+  onboarded: boolean;
+  /** The board attachment; null until joined AND connected. */
+  entry: LaunchMeEntry | null;
 }
 
 export const LAUNCH_REF_KEY = "launch_ref";

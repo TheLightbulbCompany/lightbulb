@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 
-// Six Settings config panels are gateway-bound (Skills, Skill Proposals,
-// Dreams, Channel Status, MCP/IntegrationsPanel, the LLM health dot). They mount
+// Five Settings config panels are gateway-bound (Skills, Skill Proposals,
+// Channel Status, MCP/IntegrationsPanel, the LLM health dot). They mount
 // once /settings/* is wrapped in the same GatewayProvider the chat surface uses.
 // The server-component layout delegates that wrap to SettingsGatewayGate (a
 // client component). This test asserts the delegation.

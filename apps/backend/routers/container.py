@@ -273,16 +273,6 @@ async def container_status(
         # state.
         is_admin = auth.is_org_admin if auth.is_org_context else True
 
-        # Launch Competition pre-drop hold, BEFORE ensure_personal_trial_default
-        # — a held owner must not get the 3-day trial clock stamped before the
-        # drop. Lazy import for consistency with the other launch_hold call
-        # sites (it imports Gate from provision_gate).
-        from core.services import launch_hold
-
-        launch_gate = await launch_hold.pre_drop_gate(owner_id, owner_role="admin" if is_admin else "member")
-        if launch_gate is not None:
-            raise HTTPException(status_code=402, detail=launch_gate.to_payload())
-
         # Auto-default a brand-new PERSONAL owner into trial_local BEFORE the
         # gate. Otherwise the gate sees no billing row, returns signup_required,
         # and this endpoint 404s below — before ensure_user_ready (the

@@ -3,6 +3,7 @@
 import * as React from "react";
 import { ApiError, useApi } from "@/lib/api";
 import { capture } from "@/lib/analytics";
+import type { LaunchEntry } from "@/lib/launch";
 
 const KEY_RE = /^rk_(live|test)_[A-Za-z0-9]{16,}$/;
 
@@ -12,10 +13,11 @@ const REASON_COPY: Record<string, string> = {
   stripe_permission: "That key can't read your balance. Give it Balance: Read and Charges: Read, then paste it again.",
   stripe_error: "Stripe didn't answer. Try again in a minute.",
   mixed_currency: "Your account settles in more than one currency — we can't rank it. Email support.",
+  not_joined: "Join the competition first, then connect Stripe.",
   no_entry: "Join the competition first, then connect Stripe.",
 };
 
-export function ConnectStripeForm({ onConnected }: { onConnected: () => void }) {
+export function ConnectStripeForm({ onConnected }: { onConnected: (entry: LaunchEntry) => void }) {
   const api = useApi();
   const [key, setKey] = React.useState("");
   const [busy, setBusy] = React.useState(false);
@@ -31,9 +33,9 @@ export function ConnectStripeForm({ onConnected }: { onConnected: () => void }) 
     }
     setBusy(true);
     try {
-      await api.post("/launch/connect-stripe", { stripe_key: trimmed });
+      const entry = (await api.post("/launch/connect-stripe", { stripe_key: trimmed })) as LaunchEntry;
       capture("launch_stripe_connected", {});
-      onConnected();
+      onConnected(entry);
     } catch (err) {
       const reason = err instanceof ApiError && typeof err.body === "object" && err.body && "detail" in err.body ? String((err.body as { detail: unknown }).detail) : "stripe_error";
       setError(REASON_COPY[reason] ?? "Couldn't connect — try again.");

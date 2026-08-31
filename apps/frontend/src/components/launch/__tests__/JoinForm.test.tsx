@@ -31,12 +31,30 @@ describe("JoinForm", () => {
     await waitFor(() => expect(post).toHaveBeenCalledWith("/launch/join", { display_name: "Ada", public: false }));
   });
 
-  it("maps a backend refusal reason to copy", async () => {
+  it("maps a 409 {reason} refusal to copy", async () => {
     const { ApiError } = await import("@/lib/api");
-    post.mockRejectedValue(new ApiError(400, { detail: "not_activated" }, "not_activated"));
+    post.mockRejectedValue(new ApiError(409, { detail: { reason: "not_onboarded" } }, "API 409"));
     render(<JoinForm onJoined={vi.fn()} />);
     fireEvent.change(screen.getByLabelText(/display name/i), { target: { value: "Ada" } });
     fireEvent.click(screen.getByRole("button", { name: /join the competition/i }));
     expect(await screen.findByRole("alert")).toHaveTextContent(/Finish onboarding first/);
+  });
+
+  it("tells an org actor to switch to their personal workspace", async () => {
+    const { ApiError } = await import("@/lib/api");
+    post.mockRejectedValue(new ApiError(409, { detail: { reason: "org_not_supported" } }, "API 409"));
+    render(<JoinForm onJoined={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText(/display name/i), { target: { value: "Ada" } });
+    fireEvent.click(screen.getByRole("button", { name: /join the competition/i }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/Switch to your personal workspace/);
+  });
+
+  it("maps a plain-string 400 detail to copy", async () => {
+    const { ApiError } = await import("@/lib/api");
+    post.mockRejectedValue(new ApiError(400, { detail: "no_email" }, "API 400"));
+    render(<JoinForm onJoined={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText(/display name/i), { target: { value: "Ada" } });
+    fireEvent.click(screen.getByRole("button", { name: /join the competition/i }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/couldn't find an email/i);
   });
 });

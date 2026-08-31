@@ -5,21 +5,37 @@ import Link from "next/link";
 import { useAuth } from "@clerk/nextjs";
 import { Footer } from "@/components/landing/Footer";
 import { Navbar } from "@/components/landing/Navbar";
-import { fetchLaunchInfo, formatMoney, type LaunchInfo } from "@/lib/launch";
+import { fetchLaunchInfo, type LaunchInfo } from "@/lib/launch";
 import { LaunchHero } from "./LaunchHero";
 import { Leaderboard } from "./Leaderboard";
-import { MyLaunchCard } from "./MyLaunchCard";
+import { SheetCard } from "./SheetCard";
 import "./launch.css";
 
+const ET = "America/New_York";
+
+/** "September 30 at 12:00 PM ET" — the rule copy renders the payload's own
+ * instants, never hardcoded dates. */
+function etDateTime(iso: string): string {
+  const d = new Date(iso);
+  const day = new Intl.DateTimeFormat("en-US", { timeZone: ET, month: "long", day: "numeric" }).format(d);
+  const time = new Intl.DateTimeFormat("en-US", { timeZone: ET, hour: "numeric", minute: "2-digit", hour12: true })
+    .format(d)
+    .replace(/\u202f/g, " ");
+  return `${day} at ${time} ET`;
+}
+
+function etDay(iso: string): string {
+  return new Intl.DateTimeFormat("en-US", { timeZone: ET, month: "long", day: "numeric" }).format(new Date(iso));
+}
+
+// NO pot mention anywhere on this page — the pot is admin-only.
 const rules = (info: LaunchInfo): string[] => [
-  "Sign up and finish onboarding — Friday's first run has to complete.",
-  `Every entrant puts ${formatMoney(info.pot_per_entrant_cents, "USD")} into the pot; the first ${info.comp_slots} on the waitlist get their month free.`,
-  // `GET /launch` carries `referral_jump`; the generic sentence covers the
-  // merge→promote window where an older backend still omits it.
-  info.referral_jump !== undefined
-    ? `Each referral moves you up ${info.referral_jump} spots.`
-    : "Referrals move you up the list.",
-  "Connect a read-only Stripe key. The board ranks the dollar lift over your prior 30 days.",
+  "Onboard — Friday's first run has to complete — then hit Join.",
+  `The sheet closes ${etDateTime(info.sheet_closes_at)}.`,
+  `The first ${info.comp_slots.toLocaleString("en-US")} on the sheet get their first month free.`,
+  `Every referral who subscribes moves you up ${info.referral_jump} spots — the first 20 count.`,
+  "Referral credits: 5 subscribed referrals earn $50 in credits; 20 earn $250 total.",
+  `The competition runs ${etDay(info.competition_start_at)} – ${etDay(info.competition_end_at)}: connect a read-only Stripe key, and the board ranks the dollar lift over your prior 30 days.`,
   "Judges pick the winner from the board. Self-dealing gets you removed.",
 ];
 
@@ -48,21 +64,17 @@ export default function LaunchPage() {
       ) : (
         <>
           <LaunchHero info={info}>
-            {info.phase === "waitlist" || info.phase === "activation" ? (
+            {info.phase === "open" && !isSignedIn ? (
               <div className="lc-actions" style={{ justifyContent: "center" }}>
                 <Link href="/sign-up" className="ld-btn">Sign up <span className="ld-btn-arrow" aria-hidden="true">→</span></Link>
-                {info.phase === "waitlist" ? (
-                  <p className="lc-fine" style={{ flexBasis: "100%", textAlign: "center" }}>
-                    Already signed up? <Link href="/sign-in">Sign in</Link>
-                  </p>
-                ) : (
-                  <p className="lc-fine" style={{ flexBasis: "100%", textAlign: "center" }}>Got a code in your inbox? Finish onboarding first, then redeem it at checkout.</p>
-                )}
+                <p className="lc-fine" style={{ flexBasis: "100%", textAlign: "center" }}>
+                  Already signed up? <Link href="/sign-in">Sign in</Link>
+                </p>
               </div>
             ) : null}
           </LaunchHero>
 
-          {info.phase === "live" || info.phase === "ended" ? (
+          {info.phase === "competition" || info.phase === "ended" ? (
             <section className="ld-section" id="board">
               <p className="ld-kicker">The board</p>
               <h2 className="ld-h2">Revenue lift, <em>live</em>.</h2>
@@ -72,7 +84,7 @@ export default function LaunchPage() {
 
           {isSignedIn ? (
             <section className="ld-section" id="you">
-              <MyLaunchCard info={info} />
+              <SheetCard info={info} />
             </section>
           ) : null}
 

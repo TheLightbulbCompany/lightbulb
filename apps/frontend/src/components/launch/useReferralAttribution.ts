@@ -6,9 +6,7 @@ import { LAUNCH_REF_KEY, type LaunchMe } from "@/lib/launch";
 
 /**
  * Attributes a stored referral code once the caller's own `/launch/me` row is
- * known. Shared by `/launch`'s MyLaunchCard and the landing hero's
- * LaunchSpotCard, so a held user gets attributed without ever visiting
- * `/launch`.
+ * known (used by /launch's SheetCard and the in-chat join banner).
  *
  * The code is read from localStorage (written by `useLaunchRef`, mounted on
  * the landing root via LaunchRefCapture and on `/launch` itself) and removed
@@ -27,7 +25,7 @@ export function useReferralAttribution(api: ReturnType<typeof useApi>, me: Launc
       return; /* storage unavailable */
     }
     if (!ref) return;
-    if (me.waitlist?.referral_code === ref) return; // never self-attribute
+    if (me.referral_code === ref) return; // never self-attribute
     attributed.current = true;
     api
       .post("/launch/referral", { ref })

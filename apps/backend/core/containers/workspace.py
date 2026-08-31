@@ -314,9 +314,15 @@ class Workspace:
                 if name in _EXCLUDED_NAMES:
                     continue
 
-                stat = entry.stat()
-                is_dir = entry.is_dir()
-                rel_path = str(entry.resolve().relative_to(user_root))
+                try:
+                    stat = entry.stat()
+                    is_dir = entry.is_dir()
+                    rel_path = str(entry.resolve().relative_to(user_root))
+                except (OSError, ValueError):
+                    # A dangling symlink (stat raises) or a symlink resolving
+                    # outside the user root (relative_to raises) must skip
+                    # THAT entry, not kill or 500 the whole listing.
+                    continue
 
                 entries.append(
                     {

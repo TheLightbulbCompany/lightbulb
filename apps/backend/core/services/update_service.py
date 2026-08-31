@@ -13,15 +13,20 @@ The scheduled worker also runs two Paperclip-related passes (T13):
   applied; non-retryable failures get marked failed with the truncated
   reason; retryable failures stay pending and are picked up on the
   next iteration.
+
+Plus the P0c owner-day rollup pass (``_rollup_pass``) — once per hour,
+refresh today+yesterday rollup rows for every owner with a bound company
+Stripe account (``rollup_service.refresh_owner_day``).
 """
 
 import asyncio
 import logging
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from core.observability.metrics import put_metric
-from core.repositories import container_repo, update_repo
+from core.repositories import billing_repo, container_repo, update_repo
 from core.dynamodb import utc_now_iso
 from core.services.catalog_slice import REMOVED_AGENT_ENTRY_KEYS
 from core.services import config_schema
@@ -49,6 +54,9 @@ TASKDEF_ROLL_CHANGE_KEYS = ("new_image", "new_cpu", "new_memory", TASK_DEFINITIO
 
 # Daily purge pass cadence, in seconds.
 _PURGE_PASS_INTERVAL_SECONDS = 24 * 60 * 60
+
+# Hourly owner-day rollup pass cadence, in seconds (P0c).
+_ROLLUP_PASS_INTERVAL_SECONDS = 60 * 60
 
 # Inter-iteration wait for run_scheduled_worker, in seconds.
 _WORKER_INTERVAL_S = 60
@@ -942,17 +950,41 @@ async def _recover_stale_task_definition_refreshes() -> None:
         await _apply_claimed_update(claimed, claim_id)
 
 
+async def _rollup_pass() -> None:
+    """P0c: refresh today+yesterday owner-day rollup rows.
+
+    Iterates owners with a bound company Stripe account and recomputes
+    their rollup rows from provider truth. Per-owner try/except so one
+    owner's provider failure never starves the rest. Idempotent by
+    construction (whole-row recompute-and-replace), so the transient
+    ×2 worker during deploys is harmless.
+    """
+    from core.services import rollup_service  # local: keeps worker import light
+
+    owners = await billing_repo.list_company_stripe_owners()
+    today = datetime.now(timezone.utc).date()
+    days = (today.isoformat(), (today - timedelta(days=1)).isoformat())
+    for owner_id in owners:
+        try:
+            for day in days:
+                await rollup_service.refresh_owner_day(owner_id, day)
+        except Exception:
+            logger.exception("rollup refresh failed (owner=%s)", owner_id)
+
+
 async def run_scheduled_worker() -> None:
     """Background worker: poll for due scheduled updates and apply them.
 
     Runs every 60 seconds indefinitely. Each iteration also runs the
-    Paperclip retry pass (every loop) and the Paperclip purge pass
-    (once per ``_PURGE_PASS_INTERVAL_SECONDS`` -- 24h).
+    Paperclip retry pass (every loop), the Paperclip purge pass
+    (once per ``_PURGE_PASS_INTERVAL_SECONDS`` -- 24h), and the owner-day
+    rollup pass (once per ``_ROLLUP_PASS_INTERVAL_SECONDS`` -- 1h).
     """
     logger.info("Scheduled update worker started")
     global _worker_stop
     _worker_stop = asyncio.Event()  # bind to the loop running this worker
     last_purge_pass_at: float = 0.0  # epoch seconds; 0 forces a run on first iteration
+    last_rollup_pass_at: float = 0.0  # same sentinel idiom as the purge pass
     while not _worker_stop.is_set():
         try:
             put_metric("update.scheduled_worker.heartbeat")
@@ -993,6 +1025,15 @@ async def run_scheduled_worker() -> None:
                 except Exception:
                     logger.exception("paperclip_purge_pass crashed")
                 last_purge_pass_at = now
+
+            # P0c: owner-day rollup pass — runs once per hour, same
+            # monotonic-interval idiom as the purge pass above.
+            if last_rollup_pass_at == 0.0 or now - last_rollup_pass_at >= _ROLLUP_PASS_INTERVAL_SECONDS:
+                try:
+                    await _rollup_pass()
+                except Exception:
+                    logger.exception("rollup_pass crashed")
+                last_rollup_pass_at = now
         except Exception:
             put_metric("update.scheduled_worker.error")
             logger.exception("Error in scheduled update worker loop")

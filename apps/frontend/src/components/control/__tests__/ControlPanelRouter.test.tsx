@@ -15,7 +15,6 @@ vi.mock("../panels/AgentsPanel", () => ({ AgentsPanel: () => <div /> }));
 vi.mock("../panels/SkillsTab", () => ({ SkillsTab: () => <div data-testid="skills-store" /> }));
 vi.mock("../panels/IntegrationsPanel", () => ({ IntegrationsPanel: () => <div /> }));
 vi.mock("../panels/ChannelsStatusPanel", () => ({ ChannelsStatusPanel: () => <div /> }));
-vi.mock("../panels/DreamsPanel", () => ({ DreamsPanel: () => <div>DreamsPanel</div> }));
 vi.mock("../panels/SkillProposalsPanel", () => ({ SkillProposalsPanel: () => <div>SkillProposalsPanel</div> }));
 vi.mock("../panels/AgentInspectorPanel", () => ({
   AgentInspectorPanel: () => <div data-testid="agent-inspector-panel" />,
@@ -36,6 +35,11 @@ describe("ControlPanelRouter routing", () => {
 
   it("falls back to OverviewPanel for unknown panel keys", async () => {
     render(<ControlPanelRouter panel="does-not-exist" onPanelChange={vi.fn()} />);
+    expect(await screen.findByTestId("overview-panel")).toBeInTheDocument();
+  });
+
+  it("no longer routes 'dreams' — it retired by alias into the Brain panel, not this router", async () => {
+    render(<ControlPanelRouter panel="dreams" onPanelChange={vi.fn()} />);
     expect(await screen.findByTestId("overview-panel")).toBeInTheDocument();
   });
 

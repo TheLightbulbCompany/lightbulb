@@ -62,10 +62,7 @@ def _launch_settings_read_defaults():
     "nothing saved yet" (feature off).
 
     Unit tests have no DynamoDB, so the real ``get_sync`` would attempt a
-    network read and fail — and a FAILED read is not the same as an empty
-    one: ``launch_phase.settings_unavailable()`` goes True and
-    ``launch_hold.pre_drop_gate`` then holds every container-less owner
-    (fail-closed by design). Patching the read to "no row" keeps the launch
+    network read and fail. Patching the read to "no row" keeps the launch
     feature off for tests that aren't about it. Tests that want a live
     schedule use the ``launch_schedule`` fixture (it patches over this one);
     the repo's own moto tests override this fixture to exercise the real
@@ -275,8 +272,9 @@ def mock_settings():
 
 @pytest.fixture
 def launch_schedule():
-    """Patch the launch-settings row in memory. Call with (drop_at, start_at)
-    datetimes, or no args to turn the feature off."""
+    """Patch the launch-settings row in memory. Call with (closes_at[, start_at,
+    end_at]) datetimes, or no args to turn the feature off. ``closed_at``
+    simulates the admin close action's stamp."""
     from contextlib import contextmanager
     from datetime import timedelta
     from unittest.mock import patch
@@ -285,15 +283,17 @@ def launch_schedule():
     from core.services import launch_phase
 
     @contextmanager
-    def _set(drop_at=None, start_at=None, *, comp_slots=220, competition_days=30, enabled=None):
-        start = start_at or (drop_at + timedelta(hours=72) if drop_at else None)
+    def _set(closes_at=None, start_at=None, end_at=None, *, comp_slots=200, closed_at=None, enabled=None):
+        start = start_at or (closes_at + timedelta(hours=12) if closes_at else None)
+        end = end_at or (start + timedelta(days=61) if start else None)
         row = {
             **launch_settings_repo.DEFAULTS,
-            "enabled": (drop_at is not None) if enabled is None else enabled,
-            "drop_at": drop_at.isoformat() if drop_at else None,
+            "enabled": (closes_at is not None) if enabled is None else enabled,
+            "sheet_closes_at": closes_at.isoformat() if closes_at else None,
             "competition_start_at": start.isoformat() if start else None,
+            "competition_end_at": end.isoformat() if end else None,
+            "closed_at": closed_at.isoformat() if closed_at else None,
             "comp_slots": comp_slots,
-            "competition_days": competition_days,
         }
 
         async def _get():

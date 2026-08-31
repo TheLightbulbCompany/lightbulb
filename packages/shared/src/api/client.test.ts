@@ -202,6 +202,13 @@ describe("createApiClient", () => {
     expect(fetchMock.mock.calls[2][1].method).toBe("DELETE");
   });
 
+  it("resolves a 204 no-content response as null instead of failing JSON parse", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const client = createApiClient(CONFIG);
+
+    await expect(client.del("/container/brain/file?path=a.md")).resolves.toBeNull();
+  });
+
   it("downloadBlob returns bytes and throws ApiError on failure", async () => {
     fetchMock.mockResolvedValueOnce(new Response(new Blob(["abc"]), { status: 200 }));
     const client = createApiClient(CONFIG);

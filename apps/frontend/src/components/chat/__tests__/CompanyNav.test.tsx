@@ -15,6 +15,7 @@ const ALL_LABELS = [
   "Automations",
   "Goals",
   "Projects",
+  "Brain",
   "Library",
   "Org chart",
   "Activity",
@@ -33,9 +34,9 @@ describe("CompanyNav", () => {
   it('puts "Home" first', () => {
     expect(COMPANY_SECTIONS[0].items[0].label).toBe("Home");
   });
-  it('files "Library" under Knowledge and opens teams-artifacts on click', () => {
+  it('files "Brain" and "Library" under Knowledge and opens teams-artifacts on click', () => {
     const knowledge = COMPANY_SECTIONS.find((s) => s.label === "Knowledge");
-    expect(knowledge?.items.map((i) => i.label)).toEqual(["Library"]);
+    expect(knowledge?.items.map((i) => i.label)).toEqual(["Brain", "Library"]);
     const onPanelChange = vi.fn();
     render(<CompanyNav onPanelChange={onPanelChange} />);
     fireEvent.click(screen.getByText("Library"));
@@ -57,6 +58,8 @@ describe("CompanyNav", () => {
     // Label is "Tasks"; the panel key stayed `teams-issues`.
     fireEvent.click(screen.getByText("Tasks"));
     expect(onPanelChange).toHaveBeenCalledWith("teams-issues");
+    fireEvent.click(screen.getByText("Brain"));
+    expect(onPanelChange).toHaveBeenCalledWith("teams-brain");
   });
   it("marks the active item with the midnight accent", () => {
     render(<CompanyNav activePanel="teams-routines" />);

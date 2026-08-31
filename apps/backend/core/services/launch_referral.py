@@ -1,61 +1,43 @@
-"""Referral free months, paid out from Stripe ``invoice.paid``.
+"""Referral counting + credit milestones, driven from subscription activation.
 
-Rule (spec): the referrer earns a free month when the referred person's FIRST
-PAID invoice lands. The once-only guard is ``launch_waitlist_repo.mark_rewarded``
-on the referred row (a conditional write). The grant is a 100%-off-once coupon
-applied to the referrer's subscription; when it cannot be applied it is banked
-on the referrer's row and drained one per ``invoice.paid`` of their own.
+Rule (pivot spec): a referral COUNTS when the referred person's subscription
+goes live for the first time — ``handle_subscription_state``'s entering-live
+transition calls ``on_subscription_activated``. The once-only guard is
+``launch_waitlist_repo.mark_referral_counted`` on the referee's row (a CAS),
+so Stripe's unordered/duplicate deliveries and later re-subscribes are inert.
+Counting freezes once the sheet is no longer ``open`` (the close action
+stamps ``closed_at``); ``referred_by`` matters for nothing else.
+
+Milestones, stamped on the REFERRER's row (``milestone_5_credits`` /
+``milestone_20_credits``: "granted" | "pending_grant"): 5 counted referrals →
+$50 of Bedrock credits, 20 → $200 more ($250 total). A grant replicates the
+checkout webhook's two-ledger sequence — ``grant_prepaid_credits`` (Metronome,
+idempotent on a stable key) then the restore-only fast-gate refresh
+(``read_net_balance_microcents`` + ``apply_fresh_balance``). A referrer with
+no Metronome ledger yet (trial-only, or an unclaimed row) is stamped
+``pending_grant`` and re-attempted when THEY subscribe — and on every later
+counted referral, since ``check_milestones`` re-attempts any pending stamp.
 
 Personal owners only. Never raises — this runs inside the webhook handler.
 """
 
 from __future__ import annotations
 
-import hashlib
 import logging
 
-import stripe
-
-from core.dynamodb import run_in_thread
 from core.observability.product_analytics import capture_product_event
-from core.repositories import billing_repo, launch_waitlist_repo, user_repo
+from core.repositories import launch_waitlist_repo, user_repo
 from core.services import launch_phase
 
 logger = logging.getLogger(__name__)
 
+# (counted-referral threshold, credit grant in cents). The 20-milestone is a
+# TOP-UP: $50 at 5 plus $200 at 20 = $250 total.
+MILESTONES = ((5, 5_000), (20, 20_000))
 
-def subscription_has_discount(sub: dict) -> bool:
-    return bool(sub.get("discount")) or bool(sub.get("discounts"))
 
-
-async def grant_free_month(owner_id: str, *, idempotency_key: str) -> bool:
-    """Apply the free-month coupon to the owner's live subscription.
-    False ⇒ caller must bank it (no sub, already discounted, or no coupon)."""
-    coupon = launch_phase.coupon_id()
-    if not coupon:
-        return False
-    billing = await billing_repo.get_by_owner_id(owner_id)
-    sub_id = (billing or {}).get("stripe_subscription_id")
-    if not sub_id or (billing or {}).get("subscription_status") not in ("active", "trialing"):
-        return False
-    sub = await run_in_thread(stripe.Subscription.retrieve, sub_id)
-    if subscription_has_discount(sub):
-        return False
-    try:
-        await run_in_thread(
-            stripe.Subscription.modify, sub_id, discounts=[{"coupon": coupon}], idempotency_key=idempotency_key
-        )
-    except stripe.InvalidRequestError as e:
-        # Older API versions reject `discounts` on subscription update; `coupon` is the legacy spelling.
-        if "discounts" not in str(e):
-            raise
-        await run_in_thread(
-            stripe.Subscription.modify, sub_id, coupon=coupon, idempotency_key=f"{idempotency_key}:legacy"
-        )
-    capture_product_event(
-        distinct_id=owner_id, event="launch_free_month_applied", properties={"subscription_id": sub_id}
-    )
-    return True
+def _milestone_field(threshold: int) -> str:
+    return f"milestone_{threshold}_credits"
 
 
 async def _email_for_owner(owner_id: str) -> str | None:
@@ -64,133 +46,78 @@ async def _email_for_owner(owner_id: str) -> str | None:
     return email.strip().lower() if email else None
 
 
-async def _safe_counter(
-    email: str,
-    field: launch_waitlist_repo.CounterField,
-    delta: int,
-    *,
-    code: str | None = None,
-    owner_id: str | None = None,
-) -> None:
-    """A counter write that carries money. Retried once; a second failure is logged
-    at ERROR so it can be reconciled by hand — identified by referral code and
-    owner id, NEVER by the email."""
-    for attempt in (1, 2):
-        try:
-            await launch_waitlist_repo.add_counter(email, field, delta)
-            return
-        except Exception:  # noqa: BLE001 — losing a month is worse than a noisy log line
-            if attempt == 2:
-                logger.error(
-                    "launch_referral: counter write failed twice — reconcile by hand "
-                    "(field=%s delta=%s referral_code=%s owner_id=%s)",
-                    field,
-                    delta,
-                    code,
-                    owner_id,
-                    exc_info=True,
-                )
+async def _grant_credits(owner_id: str, amount_cents: int, idempotency_key: str) -> bool:
+    """The shared two-ledger grant sequence (see
+    ``metronome_funding.grant_prepaid_credits_and_refresh_gate``). False ⇒
+    the owner has no Metronome ledger yet (FundingError) — the caller stamps
+    ``pending_grant``. Any other failure propagates so nothing is stamped and
+    the next event retries."""
+    from core.billing.metronome_funding import FundingError, grant_prepaid_credits_and_refresh_gate
 
-
-async def _reward_referrer(payer_email: str, payer_row: dict, invoice_id: str) -> None:
-    code = payer_row.get("referred_by")
-    if not code:
-        return
-    if not await launch_waitlist_repo.mark_rewarded(payer_email):
-        return  # already paid out for this referred person
-    # Past this line the once-only credit is spent. NOTHING may raise before the
-    # bank decision below, or the referrer silently loses their free month.
-    referrer: dict | None = None
-    referrer_owner: str | None = None
-    applied = False
     try:
-        referrer = await launch_waitlist_repo.get_by_referral_code(code)
-        if referrer:
-            referrer_owner = referrer.get("user_id")
-            if referrer_owner:
-                billing = await billing_repo.get_by_owner_id(referrer_owner)
-                sub_id = (billing or {}).get("stripe_subscription_id")
-                applied = await grant_free_month(
-                    referrer_owner, idempotency_key=f"referral_reward:{sub_id}:{invoice_id}"
-                )
-    except Exception:  # noqa: BLE001 — any failure after the CAS banks the month instead
-        logger.warning("launch_referral: referral grant failed after the CAS", exc_info=True)
-        applied = False
-    if referrer is None:
-        # The referrer row could not be resolved, so there is no row to credit.
-        logger.error("launch_referral: no referrer row for referral_code=%s after the CAS", code)
-        return
-    if not applied:
-        await _safe_counter(referrer["email"], "free_months_banked", 1, code=code, owner_id=referrer_owner)
-    await _safe_counter(referrer["email"], "referrals_paid", 1, code=code, owner_id=referrer_owner)
-    capture_product_event(
-        distinct_id=referrer_owner or None,
-        event="launch_referral_rewarded",
-        properties={
-            "applied": applied,
-            "referred_owner_email_hash": hashlib.sha256(payer_email.encode()).hexdigest()[:16],
-        },
-    )
+        await grant_prepaid_credits_and_refresh_gate(owner_id, amount_cents, idempotency_key=idempotency_key)
+    except FundingError:
+        return False
+    return True
 
 
-async def _drain_banked(payer_owner: str, payer_email: str, payer_row: dict, invoice_id: str) -> None:
-    if int(payer_row.get("free_months_banked", 0)) <= 0:
-        return
-    remaining = await launch_waitlist_repo.add_counter(payer_email, "free_months_banked", -1)
-    if remaining is None:
-        return  # the decrement was refused — there is no month to spend, so nothing to put back
-    sub_id = ((await billing_repo.get_by_owner_id(payer_owner)) or {}).get("stripe_subscription_id")
+async def check_milestones(referrer_row: dict) -> None:
+    """Grant every milestone the referrer's counted total has reached and not
+    yet been granted. Idempotent: "granted" stamps are final, the Metronome
+    idempotency key is a pure function of (milestone, owner), and a
+    ``pending_grant`` stamp is re-attempted on every call."""
+    email = referrer_row["email"]
+    owner_id = referrer_row.get("user_id")
+    count = int(referrer_row.get("referrals_subscribed", 0))
+    for threshold, cents in MILESTONES:
+        if count < threshold:
+            continue
+        field = _milestone_field(threshold)
+        if referrer_row.get(field) == "granted":
+            continue
+        granted = False
+        if owner_id:
+            granted = await _grant_credits(owner_id, cents, f"launch-milestone-{threshold}:{owner_id}")
+        await launch_waitlist_repo.update_fields(email, {field: "granted" if granted else "pending_grant"})
+        capture_product_event(
+            distinct_id=owner_id or None,
+            event="launch_milestone_credits",
+            properties={"milestone": threshold, "amount_cents": cents, "granted": granted},
+        )
+        if granted:
+            logger.info("launch_referral: milestone %s granted to %s ($%s)", threshold, owner_id, cents / 100)
+
+
+async def on_subscription_activated(owner_id: str) -> None:
+    """The referee's subscription just went live for the first time
+    (``handle_subscription_state`` entering-live). Count them toward their
+    referrer (once, while the sheet is open) and re-attempt any of their OWN
+    pending milestone grants. Never raises."""
     try:
-        applied = await grant_free_month(payer_owner, idempotency_key=f"banked_month:{sub_id}:{invoice_id}")
-    except Exception:  # noqa: BLE001 — a Stripe failure after the decrement must still put the month back
-        logger.warning("launch_referral: grant_free_month failed while draining banked month", exc_info=True)
-        applied = False
-    if applied:
-        return
-    await _safe_counter(
-        payer_email, "free_months_banked", 1, code=payer_row.get("referral_code"), owner_id=payer_owner
-    )  # put it back
-    logger.info("launch: banked month not applicable yet for %s (remaining=%s)", payer_owner, remaining + 1)
-
-
-async def on_invoice_paid(invoice: dict) -> None:
-    try:
-        # Inside the try on purpose: schedule() raises on a malformed settings
-        # row (competition_start_at <= drop_at slipping past validate()), and
-        # this handler's contract is that a launch bug never fails the
-        # billing webhook. Fail-loud lives at the admin write
-        # (launch_settings.validate) and at the poll door
-        # (launch_hold.pre_drop_gate), not here.
-        if launch_phase.schedule() is None:
-            return  # the competition is not configured — the webhook does no launch reads at all
-        customer = invoice.get("customer")
-        if not customer:
-            return
-        rows = await billing_repo.list_by_stripe_customer_id(customer)
-        if not rows:
-            return
-        sub_id = invoice.get("subscription")
-        matches = [r for r in rows if r.get("stripe_subscription_id") == sub_id] if sub_id else rows
-        owner_id = (matches or rows)[0]["owner_id"]
+        s = launch_phase.schedule()
+        if s is None:
+            return  # the competition is not configured for this env
         if owner_id.startswith("org_"):
+            return  # personal owners only
+        email = await _email_for_owner(owner_id)
+        if not email:
             return
-        payer_email = await _email_for_owner(owner_id)
-        if not payer_email:
+        row = await launch_waitlist_repo.get(email)
+        if not row:
             return
-        # The funded pot counts the FIRST Stripe invoice of ANY amount (redemption
-        # counts, not just paid amounts) — CAS makes duplicate invoices inert. This
-        # must never abort the referral reward path below, so it gets its own try/except.
-        try:
-            await launch_waitlist_repo.mark_pot_counted(payer_email)
-        except Exception:  # noqa: BLE001
-            logger.warning("launch_referral: mark_pot_counted failed for owner=%s", owner_id, exc_info=True)
-        if int(invoice.get("amount_paid") or 0) <= 0:
-            return
-        payer_row = await launch_waitlist_repo.get(payer_email)
-        if not payer_row:
-            return
-        invoice_id = invoice.get("id") or "unknown"
-        await _reward_referrer(payer_email, payer_row, invoice_id)
-        await _drain_banked(owner_id, payer_email, payer_row, invoice_id)
+        # 1. Count this referee toward their referrer — jumps freeze the
+        #    moment the sheet is no longer open (close stamps closed_at).
+        if row.get("referred_by") and launch_phase.phase(s) == "open":
+            if await launch_waitlist_repo.mark_referral_counted(email):
+                referrer = await launch_waitlist_repo.get_by_referral_code(row["referred_by"])
+                if referrer:
+                    new_count = await launch_waitlist_repo.add_counter(referrer["email"], "referrals_subscribed", 1)
+                    if new_count is not None:
+                        await check_milestones({**referrer, "referrals_subscribed": new_count})
+        # 2. This owner may themselves be a referrer whose milestone grant was
+        #    pending on a missing Metronome ledger — their subscription is the
+        #    moment one gets provisioned, so re-attempt.
+        if any(row.get(_milestone_field(t)) == "pending_grant" for t, _ in MILESTONES):
+            await check_milestones(row)
     except Exception:  # noqa: BLE001 — a launch bug must never fail the billing webhook
-        logger.warning("launch_referral.on_invoice_paid failed", exc_info=True)
+        logger.warning("launch_referral.on_subscription_activated failed for %s", owner_id, exc_info=True)

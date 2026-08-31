@@ -1,5 +1,5 @@
-"""Phase math for the Launch Competition — launch_phase reads the
-launch-settings DynamoDB row through a 30s in-process cache."""
+"""Phase math for the Launch Competition sign-up sheet — launch_phase reads
+the launch-settings DynamoDB row through a 30s in-process cache."""
 
 import time
 from datetime import datetime, timedelta, timezone
@@ -10,8 +10,9 @@ import pytest
 from core.repositories import launch_settings_repo
 from core.services import launch_phase
 
-DROP = datetime(2026, 9, 18, 4, 0, tzinfo=timezone.utc)  # Thu Sep 17 midnight Eastern = Fri 00:00 -04:00
-START = datetime(2026, 9, 21, 4, 0, tzinfo=timezone.utc)  # Sun Sep 20 midnight Eastern = Mon 00:00 -04:00
+CLOSES = datetime(2026, 9, 30, 16, 0, tzinfo=timezone.utc)  # Sept 30 noon ET
+START = datetime(2026, 10, 1, 4, 0, tzinfo=timezone.utc)
+END = datetime(2026, 12, 1, 5, 0, tzinfo=timezone.utc)
 
 
 def _row(**over):
@@ -22,8 +23,9 @@ def _row(**over):
 
 CONFIGURED = _row(
     enabled=True,
-    drop_at="2026-09-18T00:00:00-04:00",
-    competition_start_at="2026-09-21T00:00:00-04:00",
+    sheet_closes_at="2026-09-30T12:00:00-04:00",
+    competition_start_at="2026-10-01T00:00:00-04:00",
+    competition_end_at="2026-12-01T00:00:00-05:00",
 )
 
 
@@ -46,73 +48,88 @@ def test_schedule_is_none_when_no_row_saved_yet():
 
 
 def test_schedule_is_none_when_disabled():
-    row = _row(enabled=False, drop_at="2026-09-18T00:00:00-04:00", competition_start_at="2026-09-21T00:00:00-04:00")
+    row = dict(CONFIGURED, enabled=False)
     with patch.object(launch_settings_repo, "get_sync", return_value=row):
         assert launch_phase.schedule() is None
 
 
-def test_schedule_is_none_when_a_date_is_null():
-    row = _row(enabled=True, drop_at="2026-09-18T00:00:00-04:00", competition_start_at=None)
+@pytest.mark.parametrize("missing", ["sheet_closes_at", "competition_start_at", "competition_end_at"])
+def test_schedule_is_none_when_any_date_is_null(missing):
+    row = dict(CONFIGURED)
+    row[missing] = None
     with patch.object(launch_settings_repo, "get_sync", return_value=row):
         assert launch_phase.schedule() is None
 
 
-def test_schedule_derives_end_and_window(configured):
+def test_schedule_reads_the_three_explicit_dates(configured):
     s = launch_phase.schedule()
-    assert s.drop_at == DROP and s.competition_start_at == START
-    assert s.competition_end_at == START + timedelta(days=30)
-    assert s.activation_window_hours == 72 and s.comp_slots == 220
+    assert s.sheet_closes_at == CLOSES
+    assert s.competition_start_at == START
+    assert s.competition_end_at == END
+    assert s.comp_slots == 200 and s.closed_at is None
 
 
-def test_schedule_treats_start_before_drop_as_feature_off_not_a_raise(caplog):
-    """launch_settings.validate() already refuses this order at write time —
-    this only exercises a hand-edited row. The poll path must never fail
-    because of it: log and go feature-off, not raise."""
-    bad = _row(enabled=True, drop_at="2026-09-21T00:00:00-04:00", competition_start_at="2026-09-18T00:00:00-04:00")
+def test_schedule_carries_closed_at():
+    row = dict(CONFIGURED, closed_at="2026-09-28T09:00:00-04:00")
+    with patch.object(launch_settings_repo, "get_sync", return_value=row):
+        s = launch_phase.schedule()
+    assert s.closed_at == datetime(2026, 9, 28, 13, 0, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize(
+    "over",
+    [
+        # start before closes
+        {"competition_start_at": "2026-09-29T00:00:00-04:00"},
+        # end before start
+        {"competition_end_at": "2026-09-30T13:00:00-04:00"},
+        # garbage date type
+        {"competition_end_at": 12345},
+    ],
+)
+def test_schedule_treats_a_malformed_row_as_feature_off_not_a_raise(caplog, over):
+    """launch_settings.validate() already refuses these at write time — this
+    only exercises a hand-edited row. Log and go feature-off, never a 500."""
+    bad = dict(CONFIGURED, **over)
     with patch.object(launch_settings_repo, "get_sync", return_value=bad):
         with caplog.at_level("WARNING", logger=launch_phase.logger.name):
             assert launch_phase.schedule() is None
     assert "failed to derive a schedule" in caplog.text
-    # A row that failed to derive a Schedule is a different failure mode than
-    # "off" — settings_unavailable() must reflect it (see launch_hold).
-    assert launch_phase.settings_unavailable() is True
-
-
-def test_schedule_never_raises_on_a_malformed_int_field(caplog):
-    """Belt-and-braces on top of _plain()'s int coercion: even if a bad type
-    slips through (e.g. a hand-edited row), schedule()'s own arithmetic must
-    not raise on the poll path — it logs and goes feature-off."""
-    bad = _row(enabled=True, drop_at=CONFIGURED["drop_at"], competition_start_at=CONFIGURED["competition_start_at"])
-    bad["competition_days"] = "x"
-    with patch.object(launch_settings_repo, "get_sync", return_value=bad):
-        with caplog.at_level("WARNING", logger=launch_phase.logger.name):
-            assert launch_phase.schedule() is None
-    assert "failed to derive a schedule" in caplog.text
-    assert launch_phase.settings_unavailable() is True
 
 
 @pytest.mark.parametrize(
     "now,expected",
     [
-        (DROP - timedelta(days=21), "waitlist"),
-        (DROP - timedelta(seconds=1), "waitlist"),
-        (DROP, "activation"),
-        (START - timedelta(seconds=1), "activation"),
-        (START, "live"),
-        (START + timedelta(days=29), "live"),
-        (START + timedelta(days=30), "ended"),
+        (CLOSES - timedelta(days=21), "open"),
+        (CLOSES - timedelta(seconds=1), "open"),
+        (CLOSES, "closed"),
+        (START - timedelta(seconds=1), "closed"),
+        (START, "competition"),
+        (END - timedelta(seconds=1), "competition"),
+        (END, "ended"),
     ],
 )
 def test_phase_boundaries(configured, now, expected):
     assert launch_phase.phase(launch_phase.schedule(), now) == expected
 
 
+def test_early_close_via_closed_at_leaves_open_before_sheet_closes_at():
+    """The admin close action stamps closed_at; the phase must leave "open"
+    immediately even though sheet_closes_at is still in the future."""
+    row = dict(CONFIGURED, closed_at="2026-09-20T09:00:00-04:00")
+    with patch.object(launch_settings_repo, "get_sync", return_value=row):
+        s = launch_phase.schedule()
+    assert launch_phase.phase(s, CLOSES - timedelta(days=5)) == "closed"
+    # ...and the later boundaries are untouched.
+    assert launch_phase.phase(s, START) == "competition"
+    assert launch_phase.phase(s, END) == "ended"
+
+
 def test_pot_and_constants_read_the_row(configured):
     assert launch_phase.pot_cents(0) == 100_000
     assert launch_phase.pot_cents(500) == 600_000
     assert launch_phase.constants() == {
-        "comp_slots": 220,
-        "competition_days": 30,
+        "comp_slots": 200,
         "pot_front_cents": 100_000,
         "pot_per_entrant_cents": 1_000,
         "referral_jump": 10,
@@ -120,8 +137,8 @@ def test_pot_and_constants_read_the_row(configured):
 
 
 def test_coupon_id_reads_the_row():
-    with patch.object(launch_settings_repo, "get_sync", return_value=_row(stripe_coupon_id="promo_123")):
-        assert launch_phase.coupon_id() == "promo_123"
+    with patch.object(launch_settings_repo, "get_sync", return_value=_row(stripe_coupon_id="coup_123")):
+        assert launch_phase.coupon_id() == "coup_123"
 
 
 def test_coupon_id_empty_when_unset():
@@ -133,18 +150,8 @@ _CACHE_TTL_S_PLUS = launch_phase._CACHE_TTL_S + 1
 
 
 def test_cache_honours_the_ttl_then_refetches():
-    """A second call inside the 30s window must not hit the repo again; once
-    the TTL has elapsed the next call refetches."""
     calls = {"n": 0}
-    rows = [
-        CONFIGURED,
-        _row(
-            comp_slots=999,
-            enabled=True,
-            drop_at=CONFIGURED["drop_at"],
-            competition_start_at=CONFIGURED["competition_start_at"],
-        ),
-    ]
+    rows = [CONFIGURED, dict(CONFIGURED, comp_slots=999)]
 
     def _get_sync():
         calls["n"] += 1
@@ -187,76 +194,22 @@ def test_ddb_read_failure_on_a_cold_cache_falls_back_to_defaults_feature_off(cap
         with caplog.at_level("WARNING", logger=launch_phase.logger.name):
             assert launch_phase.schedule() is None  # DEFAULTS: enabled=False
     assert "settings read failed" in caplog.text
+    # Nothing cached -> the very next call retries and picks the row up.
+    assert launch_phase._CACHE["row"] is None
+    with patch.object(launch_settings_repo, "get_sync", return_value=CONFIGURED) as ok:
+        assert launch_phase.schedule() is not None
+    assert ok.call_count == 1
 
 
 def test_ddb_read_failure_after_ttl_serves_the_last_known_row(caplog):
-    """The poll path must never fail because DynamoDB hiccuped — a refetch
-    failure after the TTL falls back to the previously cached row, not to
-    DEFAULTS, and does not raise."""
     t = {"now": time.monotonic()}
     with patch("core.services.launch_phase.time.monotonic", side_effect=lambda: t["now"]):
         with patch.object(launch_settings_repo, "get_sync", return_value=CONFIGURED):
-            first = launch_phase.schedule()
-        assert first is not None and first.comp_slots == 220
+            assert launch_phase.schedule() is not None
 
         t["now"] += _CACHE_TTL_S_PLUS
         with patch.object(launch_settings_repo, "get_sync", side_effect=RuntimeError("ddb down")):
             with caplog.at_level("WARNING", logger=launch_phase.logger.name):
                 s = launch_phase.schedule()
-    assert s is not None and s.comp_slots == 220
+    assert s is not None and s.comp_slots == 200
     assert "settings read failed" in caplog.text
-
-
-def test_cold_cache_read_failure_is_not_cached_and_reports_unavailable():
-    """A failed read with nothing cached must not become a 30s "feature off"
-    answer: the DEFAULTS served are flagged as a guess (settings_unavailable),
-    nothing is cached, and the very next call retries — and picks up the row
-    the moment DynamoDB comes back."""
-    with patch.object(launch_settings_repo, "get_sync", side_effect=RuntimeError("ddb down")):
-        assert launch_phase.schedule() is None
-        assert launch_phase.settings_unavailable() is True
-        assert launch_phase._CACHE["row"] is None  # nothing cached -> the next call retries
-
-    with patch.object(launch_settings_repo, "get_sync", return_value=CONFIGURED) as ok:
-        s = launch_phase.schedule()
-    assert s is not None and ok.call_count == 1
-    assert launch_phase.settings_unavailable() is False
-
-
-def test_read_failure_with_a_warm_cache_is_not_unavailable():
-    """A cached row is a real answer, stale or not — only a cold-cache failure
-    is 'unavailable'."""
-    t = {"now": time.monotonic()}
-    with patch("core.services.launch_phase.time.monotonic", side_effect=lambda: t["now"]):
-        with patch.object(launch_settings_repo, "get_sync", return_value=CONFIGURED):
-            assert launch_phase.schedule() is not None
-        t["now"] += _CACHE_TTL_S_PLUS
-        with patch.object(launch_settings_repo, "get_sync", side_effect=RuntimeError("ddb down")):
-            assert launch_phase.schedule() is not None
-    assert launch_phase.settings_unavailable() is False
-
-
-def test_invalidate_clears_the_unavailable_flag():
-    with patch.object(launch_settings_repo, "get_sync", side_effect=RuntimeError("ddb down")):
-        launch_phase.schedule()
-    assert launch_phase.settings_unavailable() is True
-    launch_phase.invalidate()
-    assert launch_phase.settings_unavailable() is False
-
-
-def test_a_subsequent_valid_row_clears_the_invalid_flag():
-    """The malformed-row flag describes the LAST read, not a sticky state —
-    once a valid row is derived, settings_unavailable() must go back to
-    False without needing an explicit invalidate() in between (the TTL
-    expiring is enough in production; here we invalidate to force a
-    refetch)."""
-    bad = _row(enabled=True, drop_at=CONFIGURED["drop_at"], competition_start_at=CONFIGURED["competition_start_at"])
-    bad["competition_days"] = "x"
-    with patch.object(launch_settings_repo, "get_sync", return_value=bad):
-        assert launch_phase.schedule() is None
-    assert launch_phase.settings_unavailable() is True
-
-    launch_phase.invalidate()
-    with patch.object(launch_settings_repo, "get_sync", return_value=CONFIGURED):
-        assert launch_phase.schedule() is not None
-    assert launch_phase.settings_unavailable() is False

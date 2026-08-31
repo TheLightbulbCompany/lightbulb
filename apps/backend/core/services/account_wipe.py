@@ -344,6 +344,28 @@ def _skip(steps: list[WipeStep], system: str, action: str, detail: str) -> None:
     steps.append(WipeStep(system=system, action=action, status="skipped", detail=detail))
 
 
+async def cancel_open_workflows(owner_id: str) -> tuple[int, int]:
+    """Cancel every non-terminal provisioning workflow — never deprovision.
+
+    The row is OUR durable memory of an ask, and closing it makes it terminal,
+    so no later read of it touches Stripe for this owner again. The provider
+    resources themselves are the owner's and are left standing (spec §3.6);
+    this is a pure DDB write and reaches no provider. Shared by the account
+    wipe and the owner's revoke-all. Returns (cancelled, open_count) — a
+    transition returning None means someone else moved the row first, which is
+    closed-or-moving either way and not an error here.
+    """
+    rows = await provisioning_workflow_repo.list_for_owner(owner_id)
+    open_rows = [r for r in rows if r.get("state") not in provisioning_workflow_repo.TERMINAL_STATES]
+    cancelled = 0
+    for row in open_rows:
+        if await provisioning_workflow_repo.transition(
+            row["workflow_id"], from_state=row["state"], to_state="cancelled"
+        ):
+            cancelled += 1
+    return cancelled, len(open_rows)
+
+
 async def _wipe_company_stripe(steps: list[WipeStep], *, owner_id: str) -> None:
     """Step 8b: revoke the platform's link to the company's Stripe account.
 
@@ -932,24 +954,12 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
     # each no-ops on an empty set.
 
     # Any provisioning workflow still in flight is CANCELLED — never
-    # deprovisioned (spec §3.6). The row is OUR durable memory of an ask, and
-    # closing it makes it terminal, so no later read of it touches Stripe for
-    # this owner again. The provider resources themselves are the owner's and
-    # are left standing; this is a pure DDB write and reaches no provider. It
+    # deprovisioned (see cancel_open_workflows' docstring). It
     # runs BEFORE the credential deletes below so a reader mid-step cannot land
     # a fresh secret after those have already run.
     async def _s9e2() -> str:
-        rows = await provisioning_workflow_repo.list_for_owner(owner_id)
-        open_rows = [r for r in rows if r.get("state") not in provisioning_workflow_repo.TERMINAL_STATES]
-        cancelled = 0
-        for row in open_rows:
-            # None means someone else moved it first (a reader mid-step) —
-            # it is closed or moving either way, so it is not an error here.
-            if await provisioning_workflow_repo.transition(
-                row["workflow_id"], from_state=row["state"], to_state="cancelled"
-            ):
-                cancelled += 1
-        return f"cancelled {cancelled} of {len(open_rows)} open provisioning workflow(s)"
+        cancelled, open_count = await cancel_open_workflows(owner_id)
+        return f"cancelled {cancelled} of {open_count} open provisioning workflow(s)"
 
     await _step(steps, system="provisioning", action="cancel_open_workflows", fn=_s9e2)
 

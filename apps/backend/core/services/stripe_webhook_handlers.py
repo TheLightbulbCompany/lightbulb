@@ -989,6 +989,16 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
         if resolved_provider not in ("chatgpt_oauth", "byo_key"):
             dispatch_metronome_provisioning(account["owner_id"])
 
+        # Launch Competition: this first-activation transition is what counts
+        # a referred owner toward their referrer (and retries the owner's own
+        # pending milestone credit grants). Best-effort — never raises; its
+        # own CAS dedup makes duplicate/unordered deliveries inert.
+        # NOTE: the Apple IAP activation path does NOT come through here — it
+        # must call on_subscription_activated too when the mobile app ships.
+        from core.services import launch_referral
+
+        await launch_referral.on_subscription_activated(account["owner_id"])
+
     # Teams per-seat subscriptions additionally record the subscription item
     # id + seat quantity so sync_team_seat_quantity has an item to modify.
     # Detect by explicit metadata purpose OR by the seat price id. Personal
@@ -1268,16 +1278,6 @@ async def handle_invoice_payment_failed(event: dict[str, Any], billing_service: 
     return None
 
 
-async def handle_invoice_paid(event: dict[str, Any], billing_service: BillingService) -> Response | None:
-    event_data = event["data"]["object"]
-    logger.info("Payment succeeded for customer %s", event_data.get("customer"))
-    # Launch Competition referral payout — best-effort, never raises.
-    from core.services import launch_referral
-
-    await launch_referral.on_invoice_paid(event_data)
-    return None
-
-
 async def handle_checkout_session(event: dict[str, Any], billing_service: BillingService) -> Response | None:
     """`checkout.session.completed` + `checkout.session.async_payment_succeeded`.
 
@@ -1302,6 +1302,16 @@ async def handle_checkout_session(event: dict[str, Any], billing_service: Billin
     """
     session = event["data"]["object"]
     session_metadata = session.get("metadata") or {}
+    # Launch competition: a completed session that carried the winner
+    # free-month discount just CONSUMED the coupon — stamp the sheet row so
+    # a forced close rerun cannot attach a second free month to the
+    # subscription this checkout minted. Before the credit-funding early
+    # return below, because most winner checkouts carry no credits at all.
+    # Best-effort — never raises.
+    if session_metadata.get("launch_winner_coupon") == "true" and session_metadata.get("owner_id"):
+        from core.services.launch_close import mark_winner_coupon_consumed
+
+        await mark_winner_coupon_consumed(session_metadata["owner_id"])
     # Two session shapes fund credits here:
     #   - purpose=credit_top_up      → the standalone top-up Checkout
     #                                  (mode=payment), amount in `amount_cents`
@@ -1388,14 +1398,17 @@ async def handle_checkout_session(event: dict[str, Any], billing_service: Billin
     # internal coupon charges nothing but still funds the full balance
     # (the coupon is us absorbing the cost). Bundled sessions disable
     # promotion codes outright, so this only applies to standalone top-ups.
-    from core.billing.metronome_funding import grant_prepaid_credits
+    from core.billing.metronome_funding import grant_prepaid_credits_and_refresh_gate
 
     # Session id as the Metronome Idempotency-Key: one completed Checkout
     # grants exactly once, however many times Stripe redelivers (or fires
-    # completed + async_payment_succeeded back-to-back). A failure here
+    # completed + async_payment_succeeded back-to-back). A grant failure
     # re-raises so the webhook 500s and Stripe redelivers — paid-for
-    # credits must never be silently dropped.
-    await grant_prepaid_credits(
+    # credits must never be silently dropped. The helper follows the grant
+    # with the restore-only fast-gate refresh (best-effort, positive-balance
+    # only, so a Metronome read lag can never re-revoke the owner who just
+    # paid).
+    await grant_prepaid_credits_and_refresh_gate(
         owner_id,
         int(amount_cents_str),
         idempotency_key=f"checkout-{session['id']}",
@@ -1410,18 +1423,6 @@ async def handle_checkout_session(event: dict[str, Any], billing_service: Billin
             # later checkout. Don't fail the webhook into redelivery (the
             # grant above would replay harmlessly, but the noise is real).
             logger.exception("Failed to persist auto-charge opt-in for owner %s", owner_id)
-
-    # Restore-only refresh (same contract as the one-click top-up path):
-    # act only on a confirmed-positive balance so a Metronome read lag can
-    # never re-revoke the owner who just paid.
-    try:
-        from core.services.metronome_gate import apply_fresh_balance, read_net_balance_microcents
-
-        balance_uc = await read_net_balance_microcents(owner_id)
-        if balance_uc is not None and balance_uc > 0:
-            await apply_fresh_balance(owner_id, balance_uc)
-    except Exception:
-        logger.warning("Post-checkout balance refresh failed for owner %s", owner_id, exc_info=True)
 
     put_metric("credit.top_up.granted", dimensions={"source": "checkout"})
     return Response(status_code=200)
@@ -1439,7 +1440,6 @@ STRIPE_WEBHOOK_HANDLERS: dict[str, HandlerFn] = {
     "customer.subscription.trial_will_end": handle_trial_will_end,
     "customer.subscription.deleted": handle_subscription_deleted,
     "invoice.payment_failed": handle_invoice_payment_failed,
-    "invoice.paid": handle_invoice_paid,
     "checkout.session.completed": handle_checkout_session,
     "checkout.session.async_payment_succeeded": handle_checkout_session,
 }

@@ -26,6 +26,12 @@ describe("parseCommand", () => {
   it("resolves retired aliases", () => {
     expect(parseCommand("?panel=teams-approvals")?.descriptor.panelId).toBe("teams-inbox");
     expect(parseCommand("?panel=credits")?.descriptor.panelId).toBe("control:llm");
+    // Dreams folded into Brain as a tab — an old ?panel=dreams deep link
+    // must open the Brain panel, not 404 into "missing", and land ON the
+    // Dreams tab rather than silently defaulting to Notes (review finding 3).
+    const dreamsCmd = parseCommand("?panel=dreams");
+    expect(dreamsCmd?.descriptor.panelId).toBe("teams-brain");
+    expect(dreamsCmd?.descriptor.params).toEqual({ teamsKey: "brain", tab: "dreams" });
   });
 
   it("defines /chat?agent= as open-or-focus that agent's chat (deploy-success link)", () => {

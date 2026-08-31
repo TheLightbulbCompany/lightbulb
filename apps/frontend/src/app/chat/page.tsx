@@ -125,7 +125,13 @@ function MobileChatShell() {
   // report one-shot consumption / durable clears back through the callbacks
   // below, which strip the matching URL param (replace-only).
   const agentParam = searchParams.get("agent");
-  const tabParam = searchParams.get("tab");
+  // A raw ?panel=dreams link never carries &tab=dreams — that's a synthesis
+  // describePanel does for the desktop URL channel (panelRegistry.ts:175),
+  // which this mobile channel doesn't run through. Mirror it here: since the
+  // alias always resolves to teams-brain, forcing tab here can never leak
+  // onto an unrelated panel.
+  const tabParam = searchParams.get("tab") ?? (panelParam === "dreams" ? "dreams" : null);
+  const pathParam = searchParams.get("path");
   const oneShots = {
     new: searchParams.get("new") ?? undefined,
     newIssue: searchParams.get("newIssue") ?? undefined,
@@ -331,6 +337,7 @@ function MobileChatShell() {
                 panelParams={{
                   ...(agentParam ? { agent: agentParam } : {}),
                   ...(tabParam ? { tab: tabParam } : {}),
+                  ...(pathParam ? { path: pathParam } : {}),
                   ...(oneShots.new ? { new: oneShots.new } : {}),
                   ...(oneShots.newIssue ? { newIssue: oneShots.newIssue } : {}),
                 }}

@@ -8,7 +8,7 @@ from core.auth import AuthContext, require_platform_admin
 from core.services.admin_audit import audit_admin_action
 from core.services.ops import alarms, deploys, ecs_ops
 from core.services.ops import envelope as env
-from schemas.launch import LaunchSettingsUpdate, StripeCouponCreateRequest
+from schemas.launch import LaunchCloseRequest, LaunchSettingsUpdate, StripeCouponCreateRequest
 
 router = APIRouter()
 
@@ -62,7 +62,7 @@ async def get_launch_settings(_auth: AuthContext = Depends(require_platform_admi
     Never audited — a read has nothing to log."""
     from core.services import launch_settings
 
-    return launch_settings.to_public(await launch_settings.effective())
+    return launch_settings.to_admin(await launch_settings.effective())
 
 
 @router.put("/launch/settings")
@@ -106,6 +106,36 @@ async def post_launch_stripe_coupon(
         raise HTTPException(status_code=422, detail={"errors": e.errors})
     except launch_settings.StripeMintError:
         raise HTTPException(status_code=502, detail="stripe_error")
+
+
+@router.post("/launch/close", status_code=202)
+@audit_admin_action("launch.close", target_user_id_override="__launch__", capture_params=["body"])
+async def post_launch_close(
+    body: LaunchCloseRequest,
+    request: Request,
+    auth: AuthContext = Depends(require_platform_admin),
+):
+    """START the close as a background task and 202 — with a full sheet the
+    sequence is hundreds of sequential Stripe calls plus the winner emails,
+    far past the API gateway timeout. Refusals are synchronous: 409
+    already_closed / close_running unless ``force`` (which is also how a
+    crashed task is recovered — every step is idempotent). The finished
+    summary lands on the settings row as ``close_result``, surfaced by
+    GET /ops/launch alongside ``close_running``."""
+    from core.services import launch_close
+    from core.services.ops import launch as launch_ops
+
+    try:
+        await launch_close.start_close(auth, force=body.force)
+    except launch_close.AlreadyClosed:
+        raise HTTPException(status_code=409, detail="already_closed")
+    except launch_close.CloseRunning:
+        raise HTTPException(status_code=409, detail="close_running")
+    except launch_close.CloseError as e:
+        raise HTTPException(status_code=409, detail=e.reason)
+    launch_ops.clear_cache()
+    _clear_public_launch_cache()
+    return {"status": "started"}
 
 
 def _clear_public_launch_cache() -> None:

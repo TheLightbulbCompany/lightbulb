@@ -1,8 +1,8 @@
 """launch-settings table — a single row (``id="settings"``) holding the Launch
-Competition's human inputs: the two dates, the pot constants, comp slots, and
-the Stripe free-month coupon/promo ids. Edited from the admin console
-(``core.services.launch_settings``); read by ``core.services.launch_phase``
-through a 30-second in-process cache.
+Competition's human inputs (the three dates, the pot constants, comp slots)
+plus the server-managed close state and the Stripe free-month coupon id.
+Edited from the admin console (``core.services.launch_settings``); read by
+``core.services.launch_phase`` through a 30-second in-process cache.
 
 ``DEFAULTS`` is the row's shape before any admin has ever saved it (feature
 off — see ``launch_phase.schedule()``'s None contract).
@@ -10,8 +10,11 @@ off — see ``launch_phase.schedule()``'s None contract).
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ClientError
 
 from core.config import settings
 from core.dynamodb import get_table, run_in_thread, table_name, utc_now_iso
@@ -19,32 +22,39 @@ from core.dynamodb import get_table, run_in_thread, table_name, utc_now_iso
 _ID = "settings"
 _INT_FIELDS = (
     "comp_slots",
-    "competition_days",
     "pot_front_cents",
     "pot_per_entrant_cents",
     "referral_jump",
     "mint_nonce",
+    "final_pot_cents",
+    "final_roster_count",
 )
 
 DEFAULTS: dict = {
     "enabled": False,
-    "drop_at": None,
+    "sheet_closes_at": None,
     "competition_start_at": None,
-    "comp_slots": 220,
-    "competition_days": 30,
+    "competition_end_at": None,
+    "comp_slots": 200,
     "pot_front_cents": 100_000,
     "pot_per_entrant_cents": 1_000,
-    # Waitlist queue-jump: each referral moves the referrer up this many
-    # spots (see launch_service.effective_position). Admin-editable, ≥ 0.
+    # Sheet queue-jump: each counted referral (referee subscribed) moves the
+    # referrer up this many spots (see launch_service.effective_position).
     "referral_jump": 10,
+    # Close state — written by core.services.launch_close, never by the admin
+    # settings PUT (carried forward server-side like the coupon fields).
+    "closed_at": None,
+    "final_pot_cents": None,
+    "final_roster_count": None,
+    # Async close bookkeeping (routers/ops.py POST /launch/close → 202):
+    # started-stamp + the finished run's summary counts.
+    "close_started_at": None,
+    "close_result": None,
     "stripe_coupon_id": "",
-    "stripe_promotion_code_id": "",
-    "stripe_promotion_code": "",
-    # Server-only — never exposed via `launch_settings.to_public` or the
-    # admin PUT schema. Bumped by `create_stripe_coupon` on every successful
-    # mint so coupon/promo idempotency keys (and the promo code itself) are a
-    # pure function of the row instead of a fresh random value per call —
-    # see the fix-round note in `core/services/launch_settings.py`.
+    # Server-only — never exposed via the admin PUT schema. Bumped by
+    # `create_stripe_coupon` on every forced re-mint so the coupon idempotency
+    # key is a pure function of the row instead of a fresh random value per
+    # call — see the note in `core/services/launch_settings.py`.
     "mint_nonce": 0,
 }
 
@@ -84,6 +94,9 @@ def _plain(item: dict | None) -> dict | None:
     for k in _INT_FIELDS:
         if out.get(k) is not None:
             out[k] = int(out[k])
+    if isinstance(out.get("close_result"), dict):
+        # The summary counts come back as Decimals like every DynamoDB number.
+        out["close_result"] = {k: int(v) if isinstance(v, Decimal) else v for k, v in out["close_result"].items()}
     if out.get("enabled") is not None:
         # Strict identity, not `bool(...)` — `bool("false")` is True in
         # Python, so a hand-edited string value must not enable the launch.
@@ -104,6 +117,35 @@ def get_sync() -> dict | None:
     client above, because this one blocks the event loop while it waits."""
     resp = _sync_table().get_item(Key={"id": _ID})
     return _plain(resp.get("Item"))
+
+
+async def update_fields(fields: dict, *, condition: str | None = None) -> bool:
+    """SET only the supplied fields on the settings row — one atomic
+    UpdateExpression, no read-modify-write, so a close-state write can never
+    clobber a concurrent admin save (and vice versa). Upserts the row if no
+    admin ever saved one (the DEFAULTS merge covers the rest).
+
+    ``condition`` is an optional ConditionExpression; a failed condition is
+    swallowed and returns False — DB-level enforcement of write-once fields
+    (the pot freeze) under genuine concurrency."""
+    names = {f"#f{i}": k for i, k in enumerate(fields)}
+    values: dict = {f":v{i}": v for i, v in enumerate(fields.values())}
+    values[":t"] = utc_now_iso()
+    kwargs: dict = {
+        "Key": {"id": _ID},
+        "UpdateExpression": "SET " + ", ".join(f"{n} = :v{i}" for i, n in enumerate(names)) + ", updated_at = :t",
+        "ExpressionAttributeNames": names,
+        "ExpressionAttributeValues": values,
+    }
+    if condition:
+        kwargs["ConditionExpression"] = condition
+    try:
+        await run_in_thread(_table().update_item, **kwargs)
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return False
 
 
 async def put(item: dict) -> dict:

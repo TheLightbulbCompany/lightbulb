@@ -1,4 +1,4 @@
-"""Lightbulb Launch Competition — waitlist, join/connect, leaderboard.
+"""Lightbulb Launch Competition — the sign-up sheet, referrals, and the board.
 
 Every route 404s until the launch-settings row is ``enabled`` with both dates
 set for this env (``require_launch``, backed by
@@ -16,7 +16,7 @@ from typing import Awaitable, Callable
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from core.auth import AuthContext, get_current_user
-from core.repositories import billing_repo, launch_entries_repo, launch_waitlist_repo
+from core.repositories import billing_repo, launch_waitlist_repo
 from core.services import launch_phase, launch_revenue, launch_service
 from core.services.launch_phase import Schedule
 from core.services.rate_bucket import RateBucket
@@ -74,21 +74,16 @@ def _rate_limit(request: Request, surface: str) -> None:
 
 @router.get("", response_model=LaunchInfo, operation_id="launch_info")
 async def launch_info(response: Response, s: Schedule = Depends(require_launch)) -> dict:
+    # NO pot fields here, or in any other public payload — the pot is
+    # admin-only (schemas.launch.LaunchInfo is the enforced shape).
     async def _build() -> dict:
-        signups = await launch_waitlist_repo.count()
-        competing = await launch_entries_repo.count()
-        on_board = await launch_entries_repo.count_with_key()
         return {
             "phase": launch_phase.phase(s),
-            "drop_at": s.drop_at.isoformat(),
+            "sheet_closes_at": s.sheet_closes_at.isoformat(),
             "competition_start_at": s.competition_start_at.isoformat(),
             "competition_end_at": s.competition_end_at.isoformat(),
-            "signups": signups,
-            "competing": competing,
-            "on_board": on_board,
-            "pot_cents": launch_phase.pot_cents(signups),
+            "signups": await launch_waitlist_repo.count(),
             "comp_slots": s.comp_slots,
-            "pot_per_entrant_cents": launch_phase.constants()["pot_per_entrant_cents"],
             "referral_jump": launch_phase.constants()["referral_jump"],
         }
 
@@ -136,14 +131,23 @@ async def join(
     auth: AuthContext = Depends(get_current_user),
     s: Schedule = Depends(require_launch),
 ) -> dict:
+    """Explicit competition-sheet join — the only door onto the sheet.
+    Refused with 409 {"reason": "not_onboarded"} until Friday's first run has
+    delivered, and 409 {"reason": "closed"} once the sheet is no longer open.
+    Idempotent: joining twice returns the existing membership."""
     _rate_limit(request, "join")
-    # One entry per owner: an org member joining would create the org's row
-    # under their own identity instead of the org's.
-    if auth.is_org_context and not auth.is_org_admin:
-        raise HTTPException(status_code=403, detail="org_admin_required")
+    # Org contexts can't join AT ALL: the sheet row keys to the personal
+    # email/user_id while org billing keys by org_id, so every money leg
+    # (the close's paying lookup, the coupon attach, milestone grants,
+    # referral counting) would silently miss an org actor. Personal
+    # competition only. Attribution and /launch/me stay readable for them.
+    if auth.is_org_context:
+        raise HTTPException(status_code=409, detail={"reason": "org_not_supported"})
     try:
-        return await launch_service.join(auth, s, display_name=body.display_name, public=body.public)
+        return await launch_service.join_sheet(auth, s, display_name=body.display_name, public=body.public)
     except launch_service.LaunchRefused as e:
+        if e.reason in ("not_onboarded", "closed"):
+            raise HTTPException(status_code=409, detail={"reason": e.reason})
         raise HTTPException(status_code=400, detail=e.reason)
 
 

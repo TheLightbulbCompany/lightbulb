@@ -17,6 +17,7 @@ import {
   History,
   Images,
   Search,
+  BookOpen,
 } from "lucide-react";
 import type { ComponentType, SVGProps } from "react";
 
@@ -56,6 +57,8 @@ export const COMPANY_SECTIONS: { label: string | null; items: CompanySectionItem
   {
     label: "Knowledge",
     items: [
+      // Brain first: what the company knows is read before what it produced.
+      { panel: "teams-brain", label: "Brain", Icon: BookOpen },
       // Library is the spec's noun for the work-products gallery; the panel
       // key stays `teams-artifacts` (mobile builds these URLs as strings).
       { panel: "teams-artifacts", label: "Library", Icon: Images },

@@ -54,8 +54,9 @@ MAX_STARTER_CREDITS_CENTS = 100_000  # $1,000 — matches _TOP_UP_MAX_CENTS
 
 # Bumped whenever the Checkout Session request body shape changes — see
 # _checkout_idempotency_key. v2 = top-level `metadata` + the optional credits
-# line item + conditional allow_promotion_codes.
-_CHECKOUT_BODY_VERSION = 2
+# line item + conditional allow_promotion_codes. v3 = the launch winner
+# `discounts` pre-apply (which also drops allow_promotion_codes when present).
+_CHECKOUT_BODY_VERSION = 3
 
 
 def normalize_starter_credits(credits_cents: int | None) -> int | None:
@@ -482,6 +483,25 @@ async def _build_subscription_checkout(
     if not account or not account.get("stripe_customer_id"):
         raise BillingServiceError(f"No Stripe customer for owner_id={owner_id}")
 
+    # Launch competition: an unpaid WINNER's checkout gets the free-month
+    # coupon pre-applied server-side (no code to type) — but ONLY on a
+    # session selling the flat (Starter) plan: the coupon is product-
+    # restricted to it (free month = Starter month), so an Ultra session
+    # gets no discount rather than a Stripe applicability error. Lazy
+    # import — the launch modules import nothing from here. Never raises
+    # (returns None on any failure).
+    discounts = None
+    if any(item.get("price") == settings.STRIPE_FLAT_PRICE_ID for item in line_items):
+        from core.services.launch_close import winner_checkout_discount
+
+        discounts = await winner_checkout_discount(owner_id)
+    if discounts:
+        # The marker rides BOTH metadata targets (session + subscription) so
+        # handle_checkout_session can stamp the sheet row the moment the
+        # coupon is consumed — without it a forced close rerun would attach
+        # a second free month to the subscription this checkout mints.
+        metadata = {**metadata, "launch_winner_coupon": "true"}
+
     subscription_data: dict = {"metadata": metadata}
 
     kwargs: dict = dict(
@@ -520,6 +540,12 @@ async def _build_subscription_checkout(
         # Omitted entirely for web callers so their session shape — and
         # therefore their idempotency body-compare — is untouched.
         kwargs["origin_context"] = origin_context
+    if discounts:
+        kwargs["discounts"] = discounts
+        # Stripe refuses a session that sets both `discounts` and
+        # `allow_promotion_codes` — and the coupon is 100% off, so there is
+        # nothing left for a promo code to do.
+        kwargs.pop("allow_promotion_codes", None)
     with timing("stripe.api.latency", {"op": "checkout.session.create"}):
         session = stripe.checkout.Session.create(**kwargs)
     return session
@@ -571,7 +597,18 @@ async def _open_pending_checkout(owner_id: str) -> stripe.checkout.Session | Non
     # of truth, no migration, and the same dict the grant webhook reads.
     purpose = (pending.get("metadata") or {}).get("purpose")
     if purpose == "mobile_web_checkout":
-        return pending
+        # Launch winner staleness: a session minted before the owner's row
+        # was flagged carries no discount (marker absent), and one minted
+        # WITH the discount goes stale once the coupon is consumed. Either
+        # mismatch means the cached session sells the wrong total — fall
+        # through to the expire-and-mint-fresh path below.
+        from core.services.launch_close import winner_checkout_discount
+
+        has_marker = (pending.get("metadata") or {}).get("launch_winner_coupon") == "true"
+        wants_discount = bool(await winner_checkout_discount(owner_id))
+        if has_marker == wants_discount:
+            return pending
+        logger.info("Pending checkout session %s has a stale winner-discount state — expiring it", pending_id)
 
     # Someone else's open session. Expire it before minting ours, or both stay
     # completable and the owner can be charged twice.

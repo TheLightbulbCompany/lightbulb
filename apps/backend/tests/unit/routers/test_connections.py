@@ -1262,6 +1262,26 @@ class TestOAuthCallbackContainerOrigin:
         mock_repo.put_status.assert_awaited_once()
 
 
+class TestRetainsSecret:
+    """``_retains_secret`` — backend custodianship of the exchanged credential.
+
+    Base rule: every provider except ``refresh_owner: actor`` retains. The
+    ``retain_secret: true`` yaml flag opts an actor-refresh provider back IN —
+    posthog carries it so the backend can run HogQL reads (P0c) while the
+    container's MCP copy stays untouched."""
+
+    def test_posthog_retains_despite_actor_refresh(self):
+        p = registry.get_provider("posthog")
+        assert p.refresh_owner == "actor"  # guard: the flag is doing the work
+        assert connections._retains_secret(p) is True
+
+    def test_actor_refresh_without_flag_stays_unretained(self):
+        p = registry.get_provider("google")
+        assert p.refresh_owner == "actor"
+        assert p.retain_secret is False
+        assert connections._retains_secret(p) is False
+
+
 class TestOAuthCallback:
     """GET /api/v1/oauth/{provider}/callback — PUBLIC; identity from state record."""
 

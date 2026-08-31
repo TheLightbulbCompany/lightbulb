@@ -1074,23 +1074,40 @@ async def ws_message(
 
             # Node connection: pure-relay flow.
             #
-            # The subprocess only ever sends ONE `connect` frame: the signed
+            # The only `connect` frame that means anything here is the signed
             # reply to the upstream container's `connect.challenge` (the
-            # OpenClaw v3 handshake is server-initiated, see
-            # upstream src/gateway/client.ts). The backend
-            # started the upstream handshake itself on `$connect` via
-            # `_kick_off_node_connect`, so by the time this signed-connect
-            # frame arrives there's an awaiting NodeUpstreamConnection
-            # ready to consume it. Route it through `submit_signed_connect`
-            # and ACK synchronously — `handle_node_connect` is what
-            # eventually forwards `hello-ok` DOWN to the client (with the
-            # subprocess's own request id, captured during the handshake).
-            #
-            # A "frame 1: wake-up" path that opened the upstream WS in
-            # response to a proxy-injected unsigned `connect` would collide
-            # with the subprocess's real signed connect and silently break
-            # JSON-RPC id correlation.
+            # OpenClaw v3 handshake is server-initiated, see upstream
+            # src/gateway/client.ts). The backend started the upstream
+            # handshake itself on `$connect` via `_kick_off_node_connect`, so
+            # by the time that frame arrives there's an awaiting
+            # NodeUpstreamConnection ready to consume it. Route it through
+            # `submit_signed_connect` and ACK synchronously —
+            # `handle_node_connect` is what eventually forwards `hello-ok`
+            # DOWN to the client (keyed to the client's own request id,
+            # captured during the handshake).
             if role == "node":
+                # Only a SIGNED connect may resolve the pending handshake.
+                #
+                # `submit_signed_connect` forwards whatever it is handed
+                # upstream VERBATIM as the signed reply. Desktop builds up to
+                # 0.4.86 open with a deviceless "wake-up" connect — a relic of
+                # the pre-`$connect` trigger — which races the real signed
+                # frame and usually wins, so the container answers
+                # NOT_PAIRED/DEVICE_IDENTITY_REQUIRED, the desktop tears the
+                # socket down, and local tools never connect. Measured on the
+                # owner's prod install 2026-08-31: 282 of 286 handshakes.
+                #
+                # The upstream handshake already started at `$connect`, so a
+                # deviceless frame has nothing left to do. Drop it and let the
+                # signed frame (which is still coming) do its job. This is the
+                # half of the fix that reaches installed DMGs.
+                device = connect_params.get("device")
+                if not (isinstance(device, dict) and device.get("id")):
+                    logger.info(
+                        "Dropping deviceless node connect on %s (legacy wake-up frame)",
+                        x_connection_id[:12] if x_connection_id else "?",
+                    )
+                    return Response(status_code=200)
                 if is_node_connection(x_connection_id):
                     submit_node_signed_connect(x_connection_id, body)
                     return Response(status_code=200)

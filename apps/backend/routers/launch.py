@@ -1,4 +1,4 @@
-"""Lightbulb Launch Competition — waitlist, join/connect, leaderboard.
+"""Lightbulb Launch Competition — the sign-up sheet, referrals, and the board.
 
 Every route 404s until the launch-settings row is ``enabled`` with both dates
 set for this env (``require_launch``, backed by
@@ -131,14 +131,20 @@ async def join(
     auth: AuthContext = Depends(get_current_user),
     s: Schedule = Depends(require_launch),
 ) -> dict:
+    """Explicit competition-sheet join — the only door onto the sheet.
+    Refused with 409 {"reason": "not_onboarded"} until Friday's first run has
+    delivered, and 409 {"reason": "closed"} once the sheet is no longer open.
+    Idempotent: joining twice returns the existing membership."""
     _rate_limit(request, "join")
-    # One entry per owner: an org member joining would create the org's row
-    # under their own identity instead of the org's.
+    # One sheet row per owner: an org member joining would create the org's
+    # row under their own identity instead of the org's.
     if auth.is_org_context and not auth.is_org_admin:
         raise HTTPException(status_code=403, detail="org_admin_required")
     try:
-        return await launch_service.join(auth, s, display_name=body.display_name, public=body.public)
+        return await launch_service.join_sheet(auth, s, display_name=body.display_name, public=body.public)
     except launch_service.LaunchRefused as e:
+        if e.reason in ("not_onboarded", "closed"):
+            raise HTTPException(status_code=409, detail={"reason": e.reason})
         raise HTTPException(status_code=400, detail=e.reason)
 
 

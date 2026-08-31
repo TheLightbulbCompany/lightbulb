@@ -1,32 +1,32 @@
-"""Launch Competition — per-user composition and the entry flow.
+"""Launch Competition — sheet membership and the revenue board.
 
-`me()` is the one place waitlist + billing + onboarding facts are combined
-for a caller. Entry is two explicit steps: `join()` creates the entry row
-once activation + a live subscription are in place, and `connect_stripe()`
-(optional) validates a pasted Stripe restricted key, computes the baseline,
-stores it on the BYO-key rail, and flips the entry onto the public board.
-`set_public()` is a third, independent step: flipping the board-visibility
-flag on an existing entry, retractable at any time.
+The sheet row (``launch_waitlist_repo``) IS the competition entry:
+``join_sheet`` stamps membership on it, referrals move it up
+(``effective_position``), and the close action flags ``winner`` /
+``compete_eligible`` on it. The separate launch-entries table survives ONLY
+as the revenue-board attachment (Stripe key + baseline + refresh machinery,
+``launch_revenue``): ``connect_stripe`` mints that row on demand from the
+sheet row, and the leaderboard reads it.
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 from botocore.exceptions import ClientError
 
 from core.auth import AuthContext, resolve_owner_id
 from core.config import settings
 from core.dynamodb import utc_now_iso
-from core.repositories import billing_repo, container_repo, launch_entries_repo, launch_waitlist_repo, user_repo
+from core.repositories import launch_entries_repo, launch_waitlist_repo, user_repo
 from core.services import launch_phase, launch_revenue, readiness_state
 from core.services.launch_phase import Schedule, phase
 
 logger = logging.getLogger(__name__)
 
-# trial_local can't join: the $10 buy-in rides a subscription (paid or comped
-# via the promo code), and a free-tier container has neither.
+# Referral ATTRIBUTION must precede the referee's first payment — used by
+# POST /launch/referral's refusal guard (routers/launch.py).
 LIVE_FOR_ENTRY = frozenset({"active", "trialing"})
 
 
@@ -38,28 +38,26 @@ MAX_REFERRALS_COUNTED = 20  # ponytail: a flat cap; make it a setting if the own
 
 
 def effective_position(row: dict, referral_jump: int) -> int:
-    """Queue-jump: each referral moves the referrer up ``referral_jump``
-    spots, floored at 1 (position never goes to zero or negative). This is
-    the ONE place that math happens — every surface that shows or gates on a
-    waitlist position (``me()``, ``join()``, the admin sheet's top-slot logic
-    and CSV) reads through this, not raw ``row["position"]``.
+    """Queue-jump: each COUNTED referral (referee subscribed —
+    ``referrals_subscribed``, written by launch_referral) moves the referrer
+    up ``referral_jump`` spots, floored at 1. This is the ONE place that math
+    happens — every surface that shows or ranks a sheet position (``me()``,
+    the close action's winner ordering, the admin sheet) reads through this,
+    not raw ``row["position"]``.
 
-    Only the first ``MAX_REFERRALS_COUNTED`` referrals count toward the jump:
-    sign-ups are cheap (a throwaway Clerk account each), so an uncapped jump
-    would let anyone buy their way into the comp-slot window for nothing."""
-    counted = min(int(row.get("referrals_signed_up", 0)), MAX_REFERRALS_COUNTED)
+    Only the first ``MAX_REFERRALS_COUNTED`` referrals count toward the jump,
+    so a jump farm cannot buy the whole top of the sheet."""
+    counted = min(int(row.get("referrals_subscribed", 0)), MAX_REFERRALS_COUNTED)
     return max(1, int(row["position"]) - referral_jump * counted)
 
 
 async def resolve_email(auth: AuthContext) -> str | None:
     """The users-table email FIRST, the live Clerk JWT claim only as fallback.
 
-    Order matters: the waitlist is keyed by email, and the pot/referral path
-    (``launch_referral._email_for_owner``) can only see the users-table value.
-    Preferring the JWT here would key a rename's waitlist row to an address
-    the webhook can never look up — one owner, two emails, a referral reward
-    that never lands.
-    """
+    Order matters: the sheet is keyed by email, and the referral-counting
+    path (``launch_referral._email_for_owner``) can only see the users-table
+    value. Preferring the JWT here would key a rename's sheet row to an
+    address the webhook path can never look up."""
     row = await user_repo.get(auth.user_id)
     email = (row or {}).get("email")
     if email:
@@ -67,19 +65,90 @@ async def resolve_email(auth: AuthContext) -> str | None:
     return auth.email.strip().lower() if auth.email else None
 
 
-def can_join(
-    *, s: Schedule, billing: dict | None, onboarding: dict, now: datetime | None = None
-) -> tuple[bool, str | None]:
-    p = phase(s, now or datetime.now(timezone.utc))
-    if p == "waitlist":
-        return False, "phase_waitlist"
-    if p == "ended":
-        return False, "phase_ended"
-    if (billing or {}).get("subscription_status") not in LIVE_FOR_ENTRY:
-        return False, "no_subscription"
+def credits_milestone_reached(row: dict | None) -> int:
+    subs = int((row or {}).get("referrals_subscribed", 0))
+    return 20 if subs >= 20 else 5 if subs >= 5 else 0
+
+
+async def me(auth: AuthContext, s: Schedule) -> dict:
+    """Read-only sheet status for the caller. Never joins — membership is
+    the explicit POST /launch/join only. The one write is ``claim_user``:
+    the stamp is the ONLY writer of ``user_id`` on the row (referral
+    counting and the close action read it), so it runs on the read path."""
+    owner_id = resolve_owner_id(auth)
+    email = await resolve_email(auth)
+    row = await launch_waitlist_repo.get(email) if email else None
+    if row is not None:
+        await launch_waitlist_repo.claim_user(email, auth.user_id)
+    onboarding = await readiness_state.resolve_onboarding_state(owner_id)
+    joined = bool(row and row.get("joined_at"))
+    referral_jump = launch_phase.constants()["referral_jump"]
+    return {
+        "phase": phase(s),
+        "joined": joined,
+        "position": int(row["position"]) if joined else None,
+        "effective_position": effective_position(row, referral_jump) if joined else None,
+        "referrals_subscribed": int(row.get("referrals_subscribed", 0)) if row else 0,
+        "referral_code": row["referral_code"] if joined else None,
+        "referral_link": referral_link(row["referral_code"]) if joined else None,
+        "credits_milestone_reached": credits_milestone_reached(row),
+        "winner": bool(row and row.get("winner")),
+        "compete_eligible": bool(row.get("compete_eligible", True)) if joined else False,
+        "onboarded": onboarding.get("bootstrap_state") == "delivered",
+    }
+
+
+class LaunchRefused(Exception):
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+async def join_sheet(auth: AuthContext, s: Schedule, *, display_name: str, public: bool) -> dict:
+    """Explicit sheet join — the only door onto the sheet. Requires an
+    ONBOARDED owner (Friday's first run delivered) and the ``open`` phase.
+    Idempotent: joining twice returns the existing membership untouched (no
+    second email, first display_name wins)."""
+    owner_id = resolve_owner_id(auth)
+    onboarding = await readiness_state.resolve_onboarding_state(owner_id)
     if onboarding.get("bootstrap_state") != "delivered":
-        return False, "not_activated"
-    return True, None
+        raise LaunchRefused("not_onboarded")
+    if phase(s) != "open":
+        raise LaunchRefused("closed")
+    email = await resolve_email(auth)
+    if not email:
+        raise LaunchRefused("no_email")
+
+    row = await launch_waitlist_repo.join(email, referred_by=None, source="sheet")
+    await launch_waitlist_repo.claim_user(email, auth.user_id)
+    first_join = await launch_waitlist_repo.mark_joined(email)
+    if first_join:
+        await launch_waitlist_repo.update_fields(email, {"display_name": display_name.strip(), "public": bool(public)})
+        referral_jump = launch_phase.constants()["referral_jump"]
+        try:
+            from core.services.launch_sheet_email import send_join_email
+
+            await send_join_email(
+                to_email=email,
+                first_name=None,
+                position=effective_position(row, referral_jump),
+                referral_link=referral_link(row["referral_code"]),
+                referral_jump=referral_jump,
+                comp_slots=s.comp_slots,
+                sheet_closes_at=s.sheet_closes_at,
+            )
+        except Exception:  # noqa: BLE001 — a failed email must never fail the join
+            logger.exception("launch: join email failed for %s", owner_id)
+        logger.info("launch: %s joined the sheet (position=%s)", owner_id, row["position"])
+    return await me(auth, s)
+
+
+async def _sheet_row_for(auth: AuthContext) -> dict:
+    email = await resolve_email(auth)
+    row = await launch_waitlist_repo.get(email) if email else None
+    if not row or not row.get("joined_at"):
+        raise LaunchRefused("not_joined")
+    return row
 
 
 def _public_entry(entry: dict | None) -> dict | None:
@@ -99,153 +168,24 @@ def _public_entry(entry: dict | None) -> dict | None:
     }
 
 
-def _paperclip_repo():
-    """Local import so ``patch("core.repositories.paperclip_repo.PaperclipRepo", ...)``
-    (the pattern every existing test double in this codebase already uses)
-    keeps working -- mirrors ``core.services.readiness_state._paperclip_repo``.
-    """
-    from core.repositories.paperclip_repo import PaperclipRepo
-
-    return PaperclipRepo(table_name="paperclip-companies")
-
-
-async def _pending_idea(owner_id: str) -> str | None:
-    """First 140 chars of a still-pending funnel answer, or None. A read
-    failure degrades to None -- /launch/me must not break because the idea
-    teaser couldn't be fetched (mirrors PaperclipRepo._has_pending_brief's
-    own degrade-to-default posture)."""
-    try:
-        item = await _paperclip_repo().get_pending_brief(owner_id)
-    except Exception:  # noqa: BLE001 — a degraded read must not break /launch/me
-        logger.info("launch_service: pending-brief read failed for owner %s", owner_id, exc_info=True)
-        return None
-    text = (item or {}).get("input")
-    return text[:140] if text else None
-
-
-async def _pending_idea_full(owner_id: str) -> str | None:
-    """Untruncated pending-brief text, or None -- same degrade-to-None
-    posture as ``_pending_idea``, and a separate read of the same tiny row
-    rather than sharing one: ``/launch/me`` is on-demand, not the 3s
-    container-status poll, so the extra GetItem isn't worth coupling the two
-    fields together for. This is what lets the landing card's held-owner
-    "edit your idea" view prefill the full text, not just the 140-char
-    teaser."""
-    try:
-        item = await _paperclip_repo().get_pending_brief(owner_id)
-    except Exception:  # noqa: BLE001 — a degraded read must not break /launch/me
-        logger.info("launch_service: pending-brief read failed for owner %s", owner_id, exc_info=True)
-        return None
-    return (item or {}).get("input") or None
-
-
-async def me(auth: AuthContext, s: Schedule) -> dict:
-    owner_id = resolve_owner_id(auth)
-    email = await resolve_email(auth)
-    # Held = pre-drop waitlist phase + no container row: the SAME predicate
-    # launch_hold.pre_drop_gate and the onboarding-brief upsert retry apply
-    # (three sites, one definition). A failed container read counts as "has a
-    # container" -- fail toward the ordinary funnel, never toward the card.
-    try:
-        has_container = await container_repo.get_by_owner_id(owner_id) is not None
-    except Exception:  # noqa: BLE001 -- a degraded read must not mis-hold an owner
-        logger.warning("launch_service: container read failed for %s; not held", owner_id, exc_info=True)
-        has_container = True
-    held = phase(s) == "waitlist" and not has_container
-    waitlist: dict | None = None
-    row: dict | None = None
-    if email:
-        # Join-on-read is for HELD owners only -- their /launch/me is what
-        # self-heals waitlist membership before the drop. Everyone else gets
-        # a plain read so an existing row still displays without minting a
-        # waitlist row for every signed-in caller.
-        if held:
-            row = await launch_waitlist_repo.join(email, referred_by=None, source="signup")
-        else:
-            row = await launch_waitlist_repo.get(email)
-        if row is not None:
-            # Claim is not join: the user.created webhook writes email-only
-            # rows and this stamp is the ONLY writer of user_id (the admin
-            # sheet's activated/top-slot columns read it), so it runs on the
-            # read path too. claim_user's conditional write (row must exist,
-            # user_id must not) never creates rows.
-            await launch_waitlist_repo.claim_user(email, auth.user_id)
-    if row is not None:
-        referral_jump = launch_phase.constants()["referral_jump"]
-        position = row["position"]
-        eff = effective_position(row, referral_jump)
-        waitlist = {
-            "position": position,
-            "effective_position": eff,
-            "moved_up": position - eff,
-            "referral_jump": referral_jump,
-            "referral_code": row["referral_code"],
-            "in_comp_window": eff <= s.comp_slots,
-            "referral_link": referral_link(row["referral_code"]),
-            "referrals_signed_up": int(row.get("referrals_signed_up", 0)),
-            "referrals_paid": int(row.get("referrals_paid", 0)),
-            "free_months_banked": int(row.get("free_months_banked", 0)),
-        }
-    billing = await billing_repo.get_by_owner_id(owner_id)
-    onboarding = await readiness_state.resolve_onboarding_state(owner_id)
-    entry = await launch_entries_repo.get(owner_id)
-    ok, reason = can_join(s=s, billing=billing, onboarding=onboarding)
-    return {
-        "phase": phase(s),
-        "held": held,
-        "waitlist": waitlist,
-        "activated": onboarding.get("bootstrap_state") == "delivered",
-        "activated_at": onboarding.get("bootstrap_delivered_at"),
-        "entry": _public_entry(entry),
-        "joined": entry is not None,
-        "has_key": bool(entry and entry.get("has_key")),
-        "can_join": ok,
-        "reason": reason,
-        "idea": await _pending_idea(owner_id),
-        "idea_full": await _pending_idea_full(owner_id),
-    }
-
-
-class LaunchRefused(Exception):
-    def __init__(self, reason: str):
-        super().__init__(reason)
-        self.reason = reason
-
-
-async def join(auth: AuthContext, s: Schedule, *, display_name: str, public: bool) -> dict:
-    """Step 1: create the entry row. Requires activation + a live
-    subscription; never touches Stripe. Idempotent — an owner who already has
-    an entry gets that row back untouched (see launch_entries_repo.join)."""
-    owner_id = resolve_owner_id(auth)
-    billing = await billing_repo.get_by_owner_id(owner_id)
-    onboarding = await readiness_state.resolve_onboarding_state(owner_id)
-    ok, reason = can_join(s=s, billing=billing, onboarding=onboarding)
-    if not ok:
-        raise LaunchRefused(reason or "refused")
-    position = None
-    email = await resolve_email(auth)
-    if email:
-        row = await launch_waitlist_repo.get(email)
-        if row:
-            referral_jump = launch_phase.constants()["referral_jump"]
-            position = effective_position(row, referral_jump)
-    entry = await launch_entries_repo.join(
-        owner_id, display_name=display_name.strip(), public=public, waitlist_position=position
-    )
-    logger.info("launch: %s joined (position=%s)", owner_id, position)
-    return _public_entry(entry)
-
-
 async def connect_stripe(auth: AuthContext, s: Schedule, *, stripe_key: str) -> dict:
-    """Step 2 (optional): validate the pasted restricted key, compute the
-    baseline over [start-30d, start) — refined by the refresh path once the
-    window has actually closed, see launch_revenue._baseline_is_provisional —
-    store the key, then flip the entry onto the board. Requires an existing
-    entry; replaces any previously-connected key."""
+    """Board opt-in: validate the pasted restricted key, compute the baseline
+    over [start-30d, start) — refined by the refresh path once the window has
+    actually closed, see launch_revenue._baseline_is_provisional — store the
+    key, then flip the board entry live. The board entry (launch-entries row)
+    is minted on demand from the sheet row; replaces any previously-connected
+    key."""
     owner_id = resolve_owner_id(auth)
+    sheet_row = await _sheet_row_for(auth)
     entry = await launch_entries_repo.get(owner_id)
     if not entry:
-        raise LaunchRefused("no_entry")
+        referral_jump = launch_phase.constants()["referral_jump"]
+        entry = await launch_entries_repo.join(
+            owner_id,
+            display_name=sheet_row.get("display_name") or sheet_row["email"].split("@")[0],
+            public=bool(sheet_row.get("public", True)),
+            waitlist_position=effective_position(sheet_row, referral_jump),
+        )
     try:
         await launch_revenue.validate_key(stripe_key)
     except launch_revenue.KeyRejected as e:
@@ -282,16 +222,15 @@ async def connect_stripe(auth: AuthContext, s: Schedule, *, stripe_key: str) -> 
 
 
 async def set_public(auth: AuthContext, s: Schedule, *, public: bool) -> dict:
-    """Flip the privacy flag on an existing entry. ``public`` is a control the
-    entrant must be able to retract at any time -- independent of join/
-    connect_stripe, which only ever set it at entry time."""
+    """Flip the board-visibility flag — on the sheet row always, and on the
+    board entry too once one exists. Retractable at any time."""
     owner_id = resolve_owner_id(auth)
+    sheet_row = await _sheet_row_for(auth)
+    await launch_waitlist_repo.update_fields(sheet_row["email"], {"public": bool(public)})
     entry = await launch_entries_repo.get(owner_id)
-    if not entry:
-        raise LaunchRefused("no_entry")
-    await launch_entries_repo.set_public(owner_id, public)
-    updated = await launch_entries_repo.get(owner_id)
-    return _public_entry(updated)
+    if entry:
+        await launch_entries_repo.set_public(owner_id, public)
+    return {"public": bool(public)}
 
 
 def rank(entries: list[dict]) -> list[dict]:

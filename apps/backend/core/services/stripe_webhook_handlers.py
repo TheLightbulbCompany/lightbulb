@@ -989,6 +989,14 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
         if resolved_provider not in ("chatgpt_oauth", "byo_key"):
             dispatch_metronome_provisioning(account["owner_id"])
 
+        # Launch Competition: this first-activation transition is what counts
+        # a referred owner toward their referrer (and retries the owner's own
+        # pending milestone credit grants). Best-effort — never raises; its
+        # own CAS dedup makes duplicate/unordered deliveries inert.
+        from core.services import launch_referral
+
+        await launch_referral.on_subscription_activated(account["owner_id"])
+
     # Teams per-seat subscriptions additionally record the subscription item
     # id + seat quantity so sync_team_seat_quantity has an item to modify.
     # Detect by explicit metadata purpose OR by the seat price id. Personal
@@ -1268,16 +1276,6 @@ async def handle_invoice_payment_failed(event: dict[str, Any], billing_service: 
     return None
 
 
-async def handle_invoice_paid(event: dict[str, Any], billing_service: BillingService) -> Response | None:
-    event_data = event["data"]["object"]
-    logger.info("Payment succeeded for customer %s", event_data.get("customer"))
-    # Launch Competition referral payout — best-effort, never raises.
-    from core.services import launch_referral
-
-    await launch_referral.on_invoice_paid(event_data)
-    return None
-
-
 async def handle_checkout_session(event: dict[str, Any], billing_service: BillingService) -> Response | None:
     """`checkout.session.completed` + `checkout.session.async_payment_succeeded`.
 
@@ -1439,7 +1437,6 @@ STRIPE_WEBHOOK_HANDLERS: dict[str, HandlerFn] = {
     "customer.subscription.trial_will_end": handle_trial_will_end,
     "customer.subscription.deleted": handle_subscription_deleted,
     "invoice.payment_failed": handle_invoice_payment_failed,
-    "invoice.paid": handle_invoice_paid,
     "checkout.session.completed": handle_checkout_session,
     "checkout.session.async_payment_succeeded": handle_checkout_session,
 }

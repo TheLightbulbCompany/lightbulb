@@ -115,9 +115,6 @@ vi.mock("@/components/chat/TrialBanner", () => ({
 vi.mock("@/components/chat/OutOfCreditsBanner", () => ({
   OutOfCreditsBanner: () => null,
 }));
-vi.mock("@/components/control/ControlSidebar", () => ({
-  ControlSidebar: () => null,
-}));
 vi.mock("@/components/chat/FileViewer", () => ({
   FileViewer: () => null,
 }));

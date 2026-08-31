@@ -90,7 +90,6 @@ vi.mock("@/components/chat/GallerySection", () => ({ GallerySection: () => null 
 vi.mock("@/components/chat/HealthIndicator", () => ({ HealthIndicator: () => null }));
 vi.mock("@/components/chat/TrialBanner", () => ({ TrialBanner: () => null }));
 vi.mock("@/components/chat/OutOfCreditsBanner", () => ({ OutOfCreditsBanner: () => null }));
-vi.mock("@/components/control/ControlSidebar", () => ({ ControlSidebar: () => null }));
 vi.mock("@/components/chat/FileViewer", () => ({ FileViewer: () => null }));
 vi.mock("@/components/chat/AgentDialogs", () => ({
   AgentCreateDialog: () => null,

@@ -390,13 +390,15 @@ async def test_deep_link_can_select_the_catalog_partition():
 
 @pytest.mark.asyncio
 async def test_request_unwraps_stripe_response_body():
-    """StripeClient.raw_request returns a StripeResponse, not a dict — its
-    `data` attribute is the raw JSON body. dict() on it raises TypeError,
-    which 500'd the first live catalog call on dev."""
+    """StripeClient.raw_request returns a StripeResponse, not a dict — `.data`
+    is the ALREADY-PARSED body (json.loads with OrderedDict pairs), `.body` the
+    raw text. Built on the real SDK class so the contract cannot drift: two
+    hand-modeled fakes in a row asserted the wrong shape and 500'd dev."""
 
-    class _StripeResponse:
-        data = '{"is_eligible": true, "requirements": []}'
+    from stripe import StripeResponse
 
-    with patch.object(mod, "_raw", return_value=_StripeResponse()):
+    real = StripeResponse('{"is_eligible": true, "requirements": []}', 200, {})
+
+    with patch.object(mod, "_raw", return_value=real):
         out = await mod.request("acct_x", "get", "/v2/provisioning/eligibility")
     assert out == {"is_eligible": True, "requirements": []}

@@ -32,7 +32,6 @@ import type { ProvisioningPhase } from "@/hooks/useProvisioningState";
 
 interface Props {
   gatePhase: ProvisioningPhase;
-  blockedCode?: string | null;
   awaitingBrief: boolean;
   isTerminalError: boolean;
 }
@@ -87,25 +86,13 @@ describe("useLandingBriefReplay", () => {
     expect(post).toHaveBeenCalledTimes(1);
   });
 
-  it("a pre-drop held user still stashes the idea; any other blocked code does not", async () => {
+  it("never fires while the gate is blocked, and leaves the stash in place", () => {
     post.mockResolvedValue({ status: "staged" });
     stash({ path: "new", input: "A bakery for dogs", detail: "" });
 
-    // Every other blocked code is a dead end for a brief.
-    const { unmount } = mount({ ...READY, gatePhase: "blocked", blockedCode: "trial_expired" });
+    mount({ ...READY, gatePhase: "blocked" });
     expect(post).not.toHaveBeenCalled();
     expect(window.sessionStorage.getItem(LANDING_BRIEF_STORAGE_KEY)).not.toBeNull();
-    unmount();
-
-    // launch_pending is the one blocked state that still takes the brief —
-    // POST /onboarding/brief is intake only and needs no container.
-    mount({ ...READY, gatePhase: "blocked", blockedCode: "launch_pending" });
-    await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
-    expect(post).toHaveBeenCalledWith("/onboarding/brief", {
-      path: "new",
-      input: "A bakery for dogs",
-      detail: undefined,
-    });
   });
 
   it("holds fire until every condition is true", async () => {

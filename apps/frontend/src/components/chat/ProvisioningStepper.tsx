@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSWRConfig } from "swr";
-import { useSearchParams, useRouter } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 
 import { capture } from "@/lib/analytics";
 import {
@@ -309,23 +309,6 @@ export function ProvisioningStepper({
     container,
     refresh,
   } = useProvisioningState();
-
-  // Held (pre-drop launch hold, core/services/launch_hold.py): a signed-up
-  // account with no container yet must never see the /chat shell — the
-  // landing root's spot card (LaunchSpotCard) is a complete, self-sufficient
-  // experience for held owners (position, countdown, idea capture, referral
-  // link all included), so bounce there instead of rendering an in-chat card.
-  // The redirect is unconditional: this component only ever mounts inside
-  // the /chat workspace shell, never on the landing root, so replace("/")
-  // cannot loop. (A usePathname guard here broke a dozen unrelated test
-  // mocks for a case that cannot occur.)
-  const router = useRouter();
-  const isHeld = gatePhase === "blocked" && blocked?.code === "launch_pending";
-  useEffect(() => {
-    if (isHeld) {
-      router.replace("/");
-    }
-  }, [isHeld, router]);
 
   // Instant-ready: the backend's connection pool pushes
   // status_change("HEALTHY") over the WebSocket at the exact moment the
@@ -795,7 +778,6 @@ export function ProvisioningStepper({
   // suppressed so the user isn't shown a form they already answered.
   const { replaying: briefReplaying, orgDraftVersion } = useLandingBriefReplay({
     gatePhase,
-    blockedCode: blocked?.code ?? null,
     awaitingBrief,
     isTerminalError,
   });
@@ -1140,16 +1122,6 @@ export function ProvisioningStepper({
         </div>
       </div>
     );
-  }
-
-  // Pre-drop hold: a signed-up account with no container yet (Launch
-  // Competition, see core/services/launch_hold.py). The redirect effect
-  // above sends held owners to "/" (the landing spot card); this only
-  // needs to hold the neutral loader for the frame or two before that
-  // navigation lands — never the generic blocked card, and never the
-  // in-chat shell.
-  if (isHeld) {
-    return <StepperHold />;
   }
 
   // Teams billing paywall: the gate returns team_billing_required for an org

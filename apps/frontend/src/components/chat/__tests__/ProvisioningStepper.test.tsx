@@ -76,17 +76,8 @@ vi.mock("posthog-js/react", () => ({
   PostHogProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
 
-// Stable spy so the held-redirect test can assert against it — a fresh
-// vi.fn() per useRouter() call (the previous shape) can't be asserted on
-// across renders.
-const { routerReplace, mockRouter } = vi.hoisted(() => {
-  const routerReplace = vi.fn();
-  // Stable identity, like the real next router — a fresh object per call
-  // would retrigger the redirect effect on every render.
-  return { routerReplace, mockRouter: { replace: routerReplace, push: vi.fn() } };
-});
 vi.mock("next/navigation", () => ({
-  useRouter: () => mockRouter,
+  useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
   useSearchParams: vi.fn(() => new URLSearchParams()),
 }));
 
@@ -194,7 +185,6 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     billingMockAccount = { provider_choice: "bedrock_claude" };
     billingMockRefresh = vi.fn();
     billingMockStartTeamCheckout.mockClear();
-    routerReplace.mockClear();
     clerkMockUser = null;
     clerkMockIsLoaded = true;
   });
@@ -467,50 +457,6 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     expect(card.className).toMatch(/bg-cream(?![-\w])/);
     // Same centerpiece footer the generic blocked card gets.
     expect(screen.getByRole("button", { name: /Check again/ })).toBeInTheDocument();
-  });
-
-  it("redirects to / for launch_pending instead of rendering the /chat shell", () => {
-    useProvMock.mockReturnValue({
-      phase: "blocked",
-      container: null,
-      blocked: {
-        code: "launch_pending",
-        title: "You're on the list",
-        message: "Doors open Friday, September 18 at 4:00 PM ET. Sign back in then and Friday runs your idea.",
-        action: {
-          kind: "link",
-          label: "See your spot",
-          href: "/launch",
-          admin_only: false,
-        },
-        owner_role: "admin",
-      },
-      refreshInterval: 5000,
-      refresh: vi.fn(),
-    });
-
-    const { rerender } = render(
-      <ProvisioningStepper>
-        <div>children</div>
-      </ProvisioningStepper>,
-    );
-
-    expect(routerReplace).toHaveBeenCalledWith("/");
-    expect(routerReplace).toHaveBeenCalledTimes(1);
-    // The neutral loader, not the shell content or a held-status card.
-    expect(screen.getByText(/Getting your workspace ready/)).toBeInTheDocument();
-    expect(screen.queryByText("children")).not.toBeInTheDocument();
-    expect(screen.queryByText(/Doors open Friday/)).not.toBeInTheDocument();
-
-    // Effect-dep stability: a re-render in the same held state must not
-    // fire router.replace again (the redirect is unconditional — the
-    // stepper only mounts inside /chat, never on the landing root).
-    rerender(
-      <ProvisioningStepper>
-        <div>children</div>
-      </ProvisioningStepper>,
-    );
-    expect(routerReplace).toHaveBeenCalledTimes(1);
   });
 
   it.each([["trial_daily_cap"], ["trial_expired"]])(

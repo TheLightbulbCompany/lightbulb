@@ -409,8 +409,9 @@ appear there.
 ### 4.7 Redaction and the two PostHogs
 
 ISOA-189: agent prose is not redacted today. Support transcripts carry
-customer PII and env carries provider keys — widen `agent_redaction`/`curator`
-to support threads and brain writes before P2. Our own PostHog
+customer PII and env carries provider keys — prose redaction is NET-NEW (no
+prose redactor exists in the codebase; `curator.py` is marketplace-curator
+resolution, unrelated): build it in P2 before Support ships. Our own PostHog
 (`posthog_admin.py`, project 380894, admin growth) is never read for owner
 pages; Numbers reads only the owner's.
 

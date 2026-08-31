@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 _QUERY_URL = "https://us.posthog.com/api/projects/@current/query"
 _TIMEOUT_S = 10.0
-_DAY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_DAY_RE = re.compile(r"\d{4}-\d{2}-\d{2}", re.ASCII)
 # day is interpolated only after _DAY_RE.fullmatch — the injection fence.
 _HOGQL = (
     "SELECT count(DISTINCT person_id) FROM events WHERE event = '$pageview' AND toDate(timestamp) = toDate('{day}')"
@@ -103,10 +103,21 @@ async def _post_query(client: httpx.AsyncClient, token: str, day: str) -> httpx.
 
 async def day_traffic(owner_id: str, day: str) -> dict | None:
     """``{"visitors": int}`` — distinct $pageview persons on ``day`` (UTC), or
-    ``None`` when no token is retained or the read fails."""
+    ``None`` when no token is retained or the read fails. Never raises except
+    the day-format ``ValueError`` fence."""
     if not _DAY_RE.fullmatch(day):
         raise ValueError(f"day must be YYYY-MM-DD, got {day!r}")
+    try:
+        return await _day_traffic(owner_id, day)
+    except Exception:
+        # One guard for every failure mode past the fence: httpx transport
+        # errors, atomic_write OSError on a degraded EFS mount, SM transport
+        # errors, a 200 non-JSON refresh body. Stale tile, never a 500.
+        logger.exception("posthog day_traffic failed owner=%s day=%s", owner_id, day)
+        return None
 
+
+async def _day_traffic(owner_id: str, day: str) -> dict | None:
     store = await asyncio.to_thread(_read_store, owner_id)
     token = ((store or {}).get("tokens") or {}).get("access_token")
     if not token:
@@ -117,17 +128,13 @@ async def day_traffic(owner_id: str, day: str) -> dict | None:
         logger.info("posthog day_traffic: no token owner=%s", owner_id)
         return None
 
-    try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
+    async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
+        resp = await _post_query(client, token, day)
+        if resp.status_code == 401 and store:
+            token = await _refresh(client, owner_id, store)
+            if not token:
+                return None
             resp = await _post_query(client, token, day)
-            if resp.status_code == 401 and store:
-                token = await _refresh(client, owner_id, store)
-                if not token:
-                    return None
-                resp = await _post_query(client, token, day)
-    except httpx.HTTPError as e:
-        logger.warning("posthog query failed owner=%s day=%s: %s", owner_id, day, e)
-        return None
 
     if resp.status_code != 200:
         logger.warning("posthog query non-200 owner=%s day=%s status=%s", owner_id, day, resp.status_code)

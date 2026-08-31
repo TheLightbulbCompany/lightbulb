@@ -173,3 +173,30 @@ async def test_malformed_results_returns_none(tmp_path):
         patch.object(owner_posthog.httpx, "AsyncClient", factory),
     ):
         assert await owner_posthog.day_traffic(OWNER, DAY) is None
+
+
+async def test_atomic_write_oserror_during_refresh_returns_none(tmp_path):
+    path = _write_store(tmp_path, {"access_token": "at_old", "refresh_token": "rt_old"})
+    factory, _ = _fake_async_client(
+        [
+            _response(401),
+            _response(200, {"access_token": "at_new", "refresh_token": "rt_new"}),
+        ]
+    )
+    with (
+        patch.object(owner_posthog, "_store_file", return_value=path),
+        patch.object(owner_posthog.httpx, "AsyncClient", factory),
+        patch.object(owner_posthog, "atomic_write", side_effect=OSError("EFS mount degraded")),
+    ):
+        assert await owner_posthog.day_traffic(OWNER, DAY) is None
+
+
+async def test_sm_client_error_returns_none(tmp_path):
+    from botocore.exceptions import ClientError
+
+    err = ClientError({"Error": {"Code": "ThrottlingException"}}, "GetSecretValue")
+    with (
+        patch.object(owner_posthog, "_store_file", return_value=tmp_path / "missing.json"),
+        patch.object(owner_posthog.integration_secret_store, "get", AsyncMock(side_effect=err)),
+    ):
+        assert await owner_posthog.day_traffic(OWNER, DAY) is None

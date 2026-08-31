@@ -14,6 +14,7 @@ from decimal import Decimal
 
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ClientError
 
 from core.config import settings
 from core.dynamodb import get_table, run_in_thread, table_name, utc_now_iso
@@ -118,21 +119,33 @@ def get_sync() -> dict | None:
     return _plain(resp.get("Item"))
 
 
-async def update_fields(fields: dict) -> None:
+async def update_fields(fields: dict, *, condition: str | None = None) -> bool:
     """SET only the supplied fields on the settings row — one atomic
     UpdateExpression, no read-modify-write, so a close-state write can never
     clobber a concurrent admin save (and vice versa). Upserts the row if no
-    admin ever saved one (the DEFAULTS merge covers the rest)."""
+    admin ever saved one (the DEFAULTS merge covers the rest).
+
+    ``condition`` is an optional ConditionExpression; a failed condition is
+    swallowed and returns False — DB-level enforcement of write-once fields
+    (the pot freeze) under genuine concurrency."""
     names = {f"#f{i}": k for i, k in enumerate(fields)}
     values: dict = {f":v{i}": v for i, v in enumerate(fields.values())}
     values[":t"] = utc_now_iso()
-    await run_in_thread(
-        _table().update_item,
-        Key={"id": _ID},
-        UpdateExpression="SET " + ", ".join(f"{n} = :v{i}" for i, n in enumerate(names)) + ", updated_at = :t",
-        ExpressionAttributeNames=names,
-        ExpressionAttributeValues=values,
-    )
+    kwargs: dict = {
+        "Key": {"id": _ID},
+        "UpdateExpression": "SET " + ", ".join(f"{n} = :v{i}" for i, n in enumerate(names)) + ", updated_at = :t",
+        "ExpressionAttributeNames": names,
+        "ExpressionAttributeValues": values,
+    }
+    if condition:
+        kwargs["ConditionExpression"] = condition
+    try:
+        await run_in_thread(_table().update_item, **kwargs)
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return False
 
 
 async def put(item: dict) -> dict:

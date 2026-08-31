@@ -236,7 +236,7 @@ async def test_record_close_state_is_an_atomic_partial_update():
         patch.object(ls, "_clear_caches") as clear,
     ):
         await ls.record_close_state({"closed_at": "2026-09-30T16:00:00+00:00"})
-    update_mock.assert_awaited_once_with({"closed_at": "2026-09-30T16:00:00+00:00"})
+    update_mock.assert_awaited_once_with({"closed_at": "2026-09-30T16:00:00+00:00"}, condition=None)
     put_mock.assert_not_awaited()
     get_mock.assert_not_awaited()
     clear.assert_called_once()

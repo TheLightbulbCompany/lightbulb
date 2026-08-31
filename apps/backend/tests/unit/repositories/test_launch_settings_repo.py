@@ -184,3 +184,18 @@ async def test_update_fields_upserts_when_no_row_saved_yet(repo):
     await repo.update_fields({"close_started_at": "2026-09-30T15:59:00+00:00"})
     row = await repo.get()
     assert row["close_started_at"] == "2026-09-30T15:59:00+00:00"
+
+
+async def test_update_fields_condition_makes_the_pot_freeze_write_once(repo):
+    first = await repo.update_fields(
+        {"final_pot_cents": 103_000, "final_roster_count": 3},
+        condition="attribute_not_exists(final_pot_cents)",
+    )
+    assert first is True
+    second = await repo.update_fields(
+        {"final_pot_cents": 999_999, "final_roster_count": 99},
+        condition="attribute_not_exists(final_pot_cents)",
+    )
+    assert second is False  # swallowed, not raised
+    row = await repo.get()
+    assert row["final_pot_cents"] == 103_000 and row["final_roster_count"] == 3  # first values kept

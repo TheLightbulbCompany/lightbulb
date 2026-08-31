@@ -253,12 +253,16 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
             eligible = r["email"] in winner_emails or r["email"] in paying
             await launch_waitlist_repo.update_fields(r["email"], {"compete_eligible": eligible})
 
-        # (d) Freeze the pot: front + per-entrant × final roster. First write
-        # only — these values are immutable once stamped.
+        # (d) Freeze the pot: front + per-entrant × final roster. Write-once
+        # at the DB level — a concurrent recovery run losing the condition
+        # keeps the first run's frozen values.
         roster_count = sum(1 for r in sheet if r["email"] in winner_emails or r["email"] in paying)
         c = launch_phase.constants()
         final_pot = c["pot_front_cents"] + c["pot_per_entrant_cents"] * roster_count
-        await launch_settings.record_close_state({"final_roster_count": roster_count, "final_pot_cents": final_pot})
+        await launch_settings.record_close_state(
+            {"final_roster_count": roster_count, "final_pot_cents": final_pot},
+            condition="attribute_not_exists(final_pot_cents)",
+        )
 
     # (e) The coupon: ensure a PRODUCT-RESTRICTED one exists (mint if
     # missing; force a re-mint over a stale coupon that predates the
@@ -324,6 +328,11 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
             # unstamped on both counts, so a force rerun after the attach
             # problem is fixed sends the right one.
             continue
+        # CLAIM-FIRST (at-most-once): stamp the row before sending, so a
+        # concurrent run can never double-send; a failed send releases the
+        # claim below and counts as a failure, so a force rerun retries.
+        if not await launch_waitlist_repo.claim_winner_email(r["email"]):
+            continue  # another run owns this row's email
         # Paid variant only when the coupon actually lands on their sub — a
         # nonflat paying winner gets the unpaid variant, whose copy ("first
         # month of Starter is free, applied automatically at checkout") is
@@ -332,10 +341,13 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
         send = send_winner_paid_email if is_paid_variant else send_winner_unpaid_email
         message_id = await send(to_email=r["email"], first_name=None)
         if message_id:
-            await launch_waitlist_repo.update_fields(r["email"], {"winner_email_sent_at": utc_now_iso()})
             emails_sent += 1
         else:
             email_failures += 1
+            try:
+                await launch_waitlist_repo.release_winner_email(r["email"])
+            except Exception:  # noqa: BLE001 — a stuck claim means this winner is never emailed; reconcile by hand
+                logger.exception("launch_close: failed to release winner-email claim for %s", r.get("user_id"))
 
     summary = {
         "closed_at": (await launch_settings.effective())["closed_at"],

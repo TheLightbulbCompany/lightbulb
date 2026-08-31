@@ -148,3 +148,15 @@ async def test_list_all_excludes_counter_row(table):
 def test_normalize_email_rejects_garbage(table):
     with pytest.raises(ValueError):
         table.normalize_email("not-an-email")
+
+
+async def test_winner_email_claim_is_cas_and_release_reopens_it(table):
+    await table.join("a@example.com", referred_by=None, source="sheet")
+    assert await table.claim_winner_email("a@example.com") is True
+    assert await table.claim_winner_email("a@example.com") is False  # other run owns it
+    await table.release_winner_email("a@example.com")  # failed send — reopen
+    assert "winner_email_sent_at" not in await table.get("a@example.com")
+    assert await table.claim_winner_email("a@example.com") is True
+    # Releasing a missing row is a silent no-op, never a mint.
+    await table.release_winner_email("nobody@example.com")
+    assert await table.get("nobody@example.com") is None

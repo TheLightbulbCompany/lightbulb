@@ -156,6 +156,16 @@ describe("LaunchAdminClient", () => {
     expect(screen.getAllByText(/Closing…/).length).toBeGreaterThan(0);
   });
 
+  it("no close button of ANY kind while a run is live — a disabled in-progress state instead", () => {
+    // Forcing a second concurrent close from the UI is never right: the
+    // top-level force door must vanish while close_running (and the first
+    // Close button with it).
+    render(<LaunchAdminClient data={{ ...data, closed: true, closed_at: "t", close_running: true }} />);
+    expect(screen.queryByRole("button", { name: /re-run close \(force\)/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /close the sheet/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /close in progress…/i })).toBeDisabled();
+  });
+
   it("a finished close renders the persisted summary counts", () => {
     render(<LaunchAdminClient data={{ ...data, closed: true, closed_at: closeResult.closed_at, close_result: closeResult }} />);
     expect(screen.getByText(/40 winners flagged of 40 on the sheet/)).toBeInTheDocument();

@@ -53,10 +53,27 @@ class _Harness:
     async def _update_fields(self, email, fields):
         self.rows[email].update(fields)
 
-    async def _record_close_state(self, fields):
+    async def _record_close_state(self, fields, condition=None):
+        # Mirrors the repo's conditional semantics: the pot-freeze condition
+        # loses when final_pot_cents is already set — first values kept.
+        if (
+            condition == "attribute_not_exists(final_pot_cents)"
+            and self.settings_row.get("final_pot_cents") is not None
+        ):
+            self.close_state_writes.append({**fields, "__condition_lost__": True})
+            return False
         self.settings_row.update(fields)
-        self.close_state_writes.append(dict(fields))
-        return dict(self.settings_row)
+        self.close_state_writes.append(dict(fields) | ({"__condition__": condition} if condition else {}))
+        return True
+
+    async def _claim_winner_email(self, email):
+        if self.rows[email].get("winner_email_sent_at"):
+            return False
+        self.rows[email]["winner_email_sent_at"] = "claimed"
+        return True
+
+    async def _release_winner_email(self, email):
+        self.rows[email].pop("winner_email_sent_at", None)
 
     async def _effective(self):
         return dict(self.settings_row)
@@ -93,6 +110,14 @@ class _Harness:
                 AsyncMock(side_effect=lambda **kw: [dict(r) for r in self.rows.values()]),
             ),
             patch("core.services.launch_close.launch_waitlist_repo.update_fields", side_effect=self._update_fields),
+            patch(
+                "core.services.launch_close.launch_waitlist_repo.claim_winner_email",
+                side_effect=self._claim_winner_email,
+            ),
+            patch(
+                "core.services.launch_close.launch_waitlist_repo.release_winner_email",
+                side_effect=self._release_winner_email,
+            ),
             patch(
                 "core.services.launch_close.billing_repo.get_by_owner_id",
                 AsyncMock(side_effect=lambda uid: self.billing.get(uid)),
@@ -392,6 +417,55 @@ async def test_mark_winner_coupon_consumed_stamps_the_sheet_row():
 async def test_mark_winner_coupon_consumed_never_raises():
     with patch("core.services.launch_close.user_repo.get", AsyncMock(side_effect=RuntimeError("ddb down"))):
         await launch_close.mark_winner_coupon_consumed("user_a")
+
+
+async def test_pot_freeze_is_a_conditional_write_first_values_win():
+    """The (d) write carries attribute_not_exists(final_pot_cents) — a
+    concurrent recovery run losing the condition keeps the first run's
+    frozen values (DB-level write-once)."""
+    rows = [_row("a@x.com", 1)]
+    with _Harness(rows, {}) as h:
+        await launch_close.close(ADMIN)
+        pot_writes = [w for w in h.close_state_writes if "final_pot_cents" in w]
+        assert pot_writes[-1].get("__condition__") == "attribute_not_exists(final_pot_cents)"
+        first_pot = h.settings_row["final_pot_cents"]
+
+        # Simulate the crash-recovery race: closed_at set but this run reads
+        # final_pot as unset -> re-runs (b)-(d); the conditional write LOSES.
+        stale_row_pot = h.settings_row["final_pot_cents"]
+        h.settings_row["final_pot_cents"] = None  # what the racing run believes
+        h.settings_row["final_pot_cents"] = stale_row_pot  # row truth stays frozen
+
+        async def _stale_effective():
+            return dict(h.settings_row, final_pot_cents=None)
+
+        with patch("core.services.launch_close.launch_settings.effective", side_effect=_stale_effective):
+            await launch_close.close(ADMIN, force=True)
+        assert h.settings_row["final_pot_cents"] == first_pot  # condition lost -> untouched
+        assert any(w.get("__condition_lost__") for w in h.close_state_writes)
+
+
+async def test_email_claim_lost_means_no_send():
+    """A concurrent run already claimed the row — this run sends nothing."""
+    rows = [_row("a@x.com", 1)]
+    with _Harness(rows, {}) as h:
+        with patch("core.services.launch_close.launch_waitlist_repo.claim_winner_email", AsyncMock(return_value=False)):
+            result = await launch_close.close(ADMIN)
+    assert h.sent == []
+    assert result["emails_sent"] == 0 and result["email_failures"] == 0
+
+
+async def test_a_failed_send_releases_the_claim_for_the_force_rerun():
+    rows = [_row("a@x.com", 1)]
+    with _Harness(rows, {}) as h:
+        with patch("core.services.launch_close.send_winner_unpaid_email", AsyncMock(return_value=None)):
+            result = await launch_close.close(ADMIN)
+        # Claim was taken, send failed, claim released — retryable.
+        assert result["email_failures"] == 1
+        assert "winner_email_sent_at" not in h.rows["a@x.com"]
+        await launch_close.close(ADMIN, force=True)
+    assert h.sent == [("unpaid", "a@x.com")]
+    assert h.rows["a@x.com"]["winner_email_sent_at"]
 
 
 async def test_close_ties_break_by_raw_position():

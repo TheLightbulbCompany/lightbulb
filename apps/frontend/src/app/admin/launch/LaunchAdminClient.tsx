@@ -185,7 +185,15 @@ export function LaunchAdminClient({ data }: { data: LaunchOpsSheet }) {
           <div className="flex gap-2">
             <button type="button" onClick={exportCsv} className="rounded-md border border-border bg-card px-3 py-1.5 text-xs text-foreground hover:bg-accent">Export sheet CSV</button>
             <button type="button" onClick={refresh} disabled={busy} className="rounded-md border border-border bg-card px-3 py-1.5 text-xs text-foreground hover:bg-accent disabled:opacity-50">{busy ? "Working…" : "Refresh all"}</button>
-            {!data.closed ? (
+            {closeRunning ? (
+              // A run is LIVE — neither a first close nor a force belongs in
+              // the UI. The disabled state doubles as the progress indicator;
+              // a crashed run surfaces its error result (or the admin
+              // refreshes into the failed state before forcing).
+              <Button type="button" variant="outline" size="sm" disabled>
+                Close in progress…
+              </Button>
+            ) : !data.closed ? (
               <ConfirmActionDialog
                 confirmText="close"
                 actionLabel="Close the sign-up sheet — flag winners, freeze the pot, attach coupons, email winners"

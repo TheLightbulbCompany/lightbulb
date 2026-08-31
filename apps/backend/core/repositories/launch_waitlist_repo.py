@@ -195,6 +195,29 @@ async def mark_joined(email: str, *, display_name: str, public: bool) -> bool:
         return False
 
 
+async def claim_winner_email(email: str) -> bool:
+    """At-most-once claim for the winner email: stamp winner_email_sent_at
+    BEFORE sending, so two concurrent close runs can never double-send. True
+    iff this run owns the send; a failed send releases the claim
+    (``release_winner_email``) so a force rerun retries."""
+    return await _stamp_once(email, "winner_email_sent_at")
+
+
+async def release_winner_email(email: str) -> None:
+    """Undo a winner-email claim whose send FAILED — the row goes back to
+    unsent so a force rerun retries it."""
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"email": email},
+            UpdateExpression="REMOVE winner_email_sent_at",
+            ConditionExpression="attribute_exists(email)",
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+
 async def mark_referral_counted(email: str) -> bool:
     """Dedup for referral counting: True exactly once per referee row, the
     first time their subscription goes live (launch_referral)."""

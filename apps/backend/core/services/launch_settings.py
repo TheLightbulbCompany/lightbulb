@@ -201,15 +201,17 @@ async def update(auth: AuthContext, payload: dict) -> dict:
     return to_admin(saved)
 
 
-async def record_close_state(fields: dict) -> None:
+async def record_close_state(fields: dict, *, condition: str | None = None) -> bool:
     """Atomic partial write of the server-managed close-state fields
     (``closed_at``, the pot freeze, the async-close bookkeeping) — a single
     UpdateExpression SET of ONLY the supplied fields (no read), used by
     ``core.services.launch_close`` only. The admin PUT carries these fields
     forward (``_SERVER_MANAGED_FIELDS``), so neither writer can clobber the
-    other."""
-    await launch_settings_repo.update_fields(fields)
+    other. ``condition`` makes the write conditional (write-once fields —
+    the pot freeze); a lost condition returns False and writes nothing."""
+    wrote = await launch_settings_repo.update_fields(fields, condition=condition)
     _clear_caches()
+    return wrote
 
 
 async def create_stripe_coupon(auth: AuthContext, *, force: bool = False) -> dict:

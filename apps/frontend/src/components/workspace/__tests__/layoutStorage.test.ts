@@ -156,7 +156,10 @@ describe("layoutStorage", () => {
     // control:dreams) — now retired by alias to teams-brain, a TEAMS panel.
     // The migration must flip contentComponent, not just the id/params, or
     // the restored panel mounts ControlDockPanel with a controlKey no router
-    // recognizes anymore.
+    // recognizes anymore. It must also carry tab: "dreams" (F5) so the
+    // restored panel reopens on the Dreams tab, not silently defaulting to
+    // Notes — mirroring describePanel's ?panel=dreams synthesis for the URL
+    // channel.
     const dirty = leafLayout(["control:dreams"], "control:dreams", {
       "control:dreams": {
         id: "control:dreams",
@@ -169,7 +172,7 @@ describe("layoutStorage", () => {
     expect(clean.panels["teams-brain"]).toEqual({
       id: "teams-brain",
       contentComponent: "teams",
-      params: { teamsKey: "brain" },
+      params: { teamsKey: "brain", tab: "dreams" },
     });
     const leafData = (clean.grid.root as unknown as { data: { views: string[]; activeView: string } }).data;
     expect(leafData.views).toEqual(["teams-brain"]);

@@ -51,7 +51,7 @@ function hasOwnKey(obj: object, key: string): boolean {
 // (controlKey vs teamsKey) — so `component` is signalled back to the caller.
 function migrateRetiredPanelId(
   id: string,
-): { id: string; teamsKey?: string; controlKey?: string; component?: "teams" } | null {
+): { id: string; teamsKey?: string; controlKey?: string; component?: "teams"; tab?: string } | null {
   if (hasOwnKey(RETIRED_PANEL_ALIASES, id)) {
     const target = RETIRED_PANEL_ALIASES[id];
     if (target.startsWith("teams-")) {
@@ -69,7 +69,17 @@ function migrateRetiredPanelId(
     if (hasOwnKey(RETIRED_PANEL_ALIASES, key)) {
       const target = RETIRED_PANEL_ALIASES[key];
       if (target.startsWith("teams-")) {
-        return { id: target, teamsKey: target.slice("teams-".length), component: "teams" };
+        // dreams -> teams-brain must reopen ON the Dreams tab, not silently
+        // default to Notes — mirror describePanel's synthesis for the URL
+        // channel (panelRegistry.ts:175), checked on the ORIGINAL retired
+        // key so a persisted teams-brain panel (never `control:dreams`) is
+        // untouched.
+        return {
+          id: target,
+          teamsKey: target.slice("teams-".length),
+          component: "teams",
+          ...(key === "dreams" ? { tab: "dreams" } : {}),
+        };
       }
       return { id: `control:${target}`, controlKey: target };
     }
@@ -217,6 +227,11 @@ export function sanitizeLayout(
       if (params) {
         if (migration.teamsKey !== undefined) params.teamsKey = migration.teamsKey;
         if (migration.controlKey !== undefined) params.controlKey = migration.controlKey;
+        // Applied AFTER the PERSIST_ONLY_STRIP pass above (which deletes any
+        // stored `tab`), so this is the one case a restored layout is
+        // allowed to carry a tab — it's a one-time migration synthesis, not
+        // persisted view state.
+        if (migration.tab !== undefined) params.tab = migration.tab;
         // Crossing control -> teams drops the stale controlKey — teams-brain
         // takes only teamsKey, and a leftover controlKey would just be dead
         // weight in the persisted params.

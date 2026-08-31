@@ -195,9 +195,20 @@ async def write_brain_file(
     full_path = _guard_brain_path(workspace, owner_id, body.path)
     try:
         result = await asyncio.to_thread(_locked_write, workspace, owner_id, full_path, body.content)
+    except FileExistsError as exc:
+        # F7: a parent-chain component is a regular file (e.g. PUT
+        # "main/index.md/child.md" when "main/index.md" already exists) —
+        # open_lock_fd's os.makedirs surfaces this as a raw OSError. A bad
+        # request, not a 500.
+        raise HTTPException(status_code=400, detail=f"Invalid path: {exc}")
     except WorkspaceError as exc:
         if "traversal" in str(exc).lower():
             raise HTTPException(status_code=403, detail="Access denied")
+        if isinstance(exc.__cause__, IsADirectoryError):
+            # F7: the write target names an existing directory — os.replace
+            # refuses (IsADirectoryError, wrapped by _write_bytes_atomic). A
+            # bad request, not a 500.
+            raise HTTPException(status_code=400, detail=f"Path is a directory: {body.path!r}")
         logger.exception("Failed to write brain file for owner %s", owner_id)
         raise HTTPException(status_code=500, detail="Failed to write brain file")
     logger.info("Wrote brain file %s for owner %s", full_path, owner_id)
@@ -250,6 +261,11 @@ def _validate_upload_filename(name: str) -> None:
             status_code=400,
             detail=f"Filename exceeds {MAX_UPLOAD_FILENAME_BYTES} bytes",
         )
+    if name.endswith(_LOCK_SUFFIX):
+        # F8: an upload named "*.lb-lock" would land in inbox/ and 200, but
+        # the tree filter (_strip_wiki_prefix) hides any `.{name}.lb-lock`
+        # file — the owner would never see it landed.
+        raise HTTPException(status_code=400, detail=f"Filename may not end with {_LOCK_SUFFIX!r}")
 
 
 def _locked_inbox_upload(workspace, owner_id: str, safe_name: str, data: bytes) -> dict:
@@ -268,6 +284,13 @@ def _locked_inbox_upload(workspace, owner_id: str, safe_name: str, data: bytes) 
     filenames also serialize. Uploads are rare — move to per-name locks if
     concurrent-upload throughput ever becomes a real bottleneck.
     """
+    # F3: pin the tenancy boundary BEFORE any filesystem mutation. A
+    # compromised container could plant `wiki` as a symlink escaping the user
+    # root — _ensure_within_subtree alone doesn't catch that (it resolves the
+    # subtree root through the same symlink), so without this the mkdir calls
+    # below would create a lock file / inbox dir inside another owner's tree
+    # before the eventual content-write's _resolve_user_file call refuses it.
+    workspace._resolve_user_file(owner_id, BRAIN_SUBTREE)
     wiki_dir = workspace.user_path(owner_id) / BRAIN_SUBTREE
     inbox_dir = wiki_dir / "inbox"
     lock_path = str(wiki_dir / _INBOX_LOCK_NAME)
@@ -339,12 +362,29 @@ async def upload_brain_files(
 
 
 def _locked_delete(workspace, owner_id: str, full_path: str) -> None:
-    """Locked unlink of a wiki page plus its own lock sidecar (never vault content)."""
+    """Locked unlink of a wiki page plus its own lock sidecar (never vault content).
+
+    Takes the same two-layer lock as ``_locked_write`` (F4): the in-process
+    lock alone only fences threads in this backend process, not the second
+    instance transiently running during a rolling deploy — the fcntl sidecar
+    is what the module docstring means by "serializes BACKEND writers", and a
+    delete that skips it can unlink a sidecar the other instance still holds.
+    """
     resolved = workspace._resolve_user_file(owner_id, full_path)
     sidecar = _lock_sidecar_path(resolved)
-    with get_file_lock(str(sidecar)):
-        workspace.delete_file(owner_id, full_path)
-        sidecar.unlink(missing_ok=True)
+    lock_path = str(sidecar)
+    with get_file_lock(lock_path):
+        # open_lock_fd creates the parent dirs alongside the sidecar — a
+        # no-op in practice here since a file's parent must already exist for
+        # the file itself to exist.
+        lock_fd = open_lock_fd(str(resolved.parent), lock_path)
+        try:
+            fcntl.lockf(lock_fd, fcntl.LOCK_EX)
+            workspace.delete_file(owner_id, full_path)
+            sidecar.unlink(missing_ok=True)
+        finally:
+            fcntl.lockf(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
 
 
 @router.delete("/brain/file", status_code=204)

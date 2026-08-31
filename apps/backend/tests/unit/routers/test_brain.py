@@ -252,6 +252,31 @@ class TestBrainFileRoundTrip:
         assert exc.value.status_code == 413
 
     @pytest.mark.asyncio
+    async def test_write_400_when_parent_component_is_a_file(self, workspace, wiki_root):
+        """F7: PUT "main/index.md/child.md" when "main/index.md" already
+        exists as a file — open_lock_fd's os.makedirs raises a raw
+        FileExistsError; must 400, not an unhandled 500."""
+        from routers.brain import BrainWriteRequest, write_brain_file
+
+        body = BrainWriteRequest(path="main/index.md/child.md", content="x")
+        with pytest.raises(HTTPException) as exc:
+            await write_brain_file(body=body, auth=_auth())
+        assert exc.value.status_code == 400
+        assert (wiki_root / "main" / "index.md").read_text() == "# Index\n"
+
+    @pytest.mark.asyncio
+    async def test_write_400_when_target_is_a_directory(self, workspace, wiki_root):
+        """F7: PUT whose path names an existing directory — os.replace raises
+        IsADirectoryError (wrapped as WorkspaceError); must 400, not 500."""
+        from routers.brain import BrainWriteRequest, write_brain_file
+
+        body = BrainWriteRequest(path="main", content="x")
+        with pytest.raises(HTTPException) as exc:
+            await write_brain_file(body=body, auth=_auth())
+        assert exc.value.status_code == 400
+        assert (wiki_root / "main").is_dir()
+
+    @pytest.mark.asyncio
     async def test_chown_called_after_write(self, workspace):
         """The container (uid 1000) must be able to read the owner's edit."""
         from routers.brain import BrainWriteRequest, write_brain_file
@@ -314,6 +339,29 @@ class TestBrainDelete:
         workspace.ensure_user_dir(USER_ID)
         res = await delete_brain_file(path="never-existed.md", auth=_auth())
         assert res.status_code == 204
+
+    @pytest.mark.asyncio
+    async def test_delete_takes_per_file_lock_sidecar(self, workspace, wiki_root, monkeypatch):
+        """F4: delete must take the same fcntl sidecar layer as write — the
+        module docstring's "serializes BACKEND writers" claim otherwise frays
+        on delete in the two-instance deploy window. Spied the same way as
+        test_write_takes_per_file_lock_sidecar."""
+        import routers.brain as brain_mod
+        from routers.brain import delete_brain_file
+
+        real_open_lock_fd = brain_mod.open_lock_fd
+        acquired: list[str] = []
+
+        def spy(lock_dir, lock_path):
+            acquired.append(lock_path)
+            return real_open_lock_fd(lock_dir, lock_path)
+
+        monkeypatch.setattr(brain_mod, "open_lock_fd", spy)
+        await delete_brain_file(path="main/index.md", auth=_auth())
+        assert len(acquired) == 1
+        assert acquired[0].endswith("/wiki/main/.index.md.lb-lock")
+        # The sidecar is reclaimed once the delete completes — no orphan left.
+        assert not (wiki_root / "main" / ".index.md.lb-lock").exists()
 
     @pytest.mark.asyncio
     async def test_delete_removes_only_its_own_lock_sidecar(self, workspace, wiki_root):
@@ -413,6 +461,32 @@ class TestBrainUpload:
         assert chown.called
 
     @pytest.mark.asyncio
+    async def test_upload_guard_runs_before_mutation_on_symlinked_wiki(self, workspace):
+        """F3: a compromised container could plant `wiki` as a symlink
+        escaping the user root. _ensure_within_subtree alone doesn't catch
+        this (it resolves the subtree root through the same symlink) — the
+        actual content write is still refused by _resolve_user_file's
+        user-root pin (500), but that guard must run BEFORE any mkdir/lock-
+        file mutation: no inbox dir or lock sidecar may land in the escaped
+        (other tenant's) directory."""
+        import os
+
+        from routers.brain import upload_brain_files
+
+        workspace.ensure_user_dir(USER_ID)
+        other_owner_dir = workspace._mount / "other_owner"
+        other_owner_dir.mkdir()
+        os.symlink(other_owner_dir, workspace._mount / USER_ID / "wiki")
+
+        with pytest.raises(HTTPException) as exc:
+            await upload_brain_files(files=[_upload("notes.md", b"hello")], auth=_auth())
+        assert exc.value.status_code == 500
+
+        # No mutation landed inside the escaped directory: no inbox/, no
+        # lock sidecar — the guard ran before either mkdir call.
+        assert list(other_owner_dir.iterdir()) == []
+
+    @pytest.mark.asyncio
     async def test_upload_sanitizes_traversal_in_filename(self, workspace):
         """A path-y filename is reduced to its basename — no escaping inbox/."""
         from routers.brain import upload_brain_files
@@ -495,6 +569,19 @@ class TestBrainUploadHardening:
             await upload_brain_files(files=[_upload("notes.md\n", b"x")], auth=_auth())
         assert exc.value.status_code == 400
         assert not (workspace._mount / USER_ID / "wiki" / "inbox" / "notes.md\n").exists()
+
+    @pytest.mark.asyncio
+    async def test_upload_rejects_lb_lock_suffix_filename(self, workspace):
+        """F8: a name ending `.lb-lock` would upload 200, but the tree filter
+        (_strip_wiki_prefix) hides any `.{name}.lb-lock` file — the owner
+        would never see it landed."""
+        from routers.brain import upload_brain_files
+
+        workspace.ensure_user_dir(USER_ID)
+        with pytest.raises(HTTPException) as exc:
+            await upload_brain_files(files=[_upload(".notes.md.lb-lock", b"x")], auth=_auth())
+        assert exc.value.status_code == 400
+        assert not (workspace._mount / USER_ID / "wiki" / "inbox" / ".notes.md.lb-lock").exists()
 
     @pytest.mark.asyncio
     async def test_concurrent_same_name_uploads_both_survive_with_distinct_names(self, workspace):

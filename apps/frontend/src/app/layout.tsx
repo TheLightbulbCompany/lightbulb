@@ -47,13 +47,13 @@ export const metadata: Metadata = {
     url: SITE_URL,
     siteName: "Lightbulb",
     type: "website",
-    images: [{ url: "/og-image.png", width: 1200, height: 630, alt: "Lightbulb" }],
+    images: [{ url: "/og-lightbulb.png", width: 1200, height: 630, alt: "Lightbulb" }],
   },
   twitter: {
     card: "summary_large_image",
     title: SITE_TITLE,
     description: SITE_DESCRIPTION,
-    images: ["/og-image.png"],
+    images: ["/og-lightbulb.png"],
   },
 };
 

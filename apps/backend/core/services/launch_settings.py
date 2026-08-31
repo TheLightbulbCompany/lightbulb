@@ -176,7 +176,15 @@ def _clear_caches() -> None:
 # stored row on every save rather than trusted from the payload. Without the
 # carry-forward a settings save after the close would silently blank the
 # frozen pot/roster (or reset the coupon idempotency nonce).
-_SERVER_MANAGED_FIELDS = ("mint_nonce", "stripe_coupon_id", "closed_at", "final_pot_cents", "final_roster_count")
+_SERVER_MANAGED_FIELDS = (
+    "mint_nonce",
+    "stripe_coupon_id",
+    "closed_at",
+    "final_pot_cents",
+    "final_roster_count",
+    "close_started_at",
+    "close_result",
+)
 
 
 async def update(auth: AuthContext, payload: dict) -> dict:
@@ -193,16 +201,15 @@ async def update(auth: AuthContext, payload: dict) -> dict:
     return to_admin(saved)
 
 
-async def record_close_state(fields: dict) -> dict:
-    """Partial server-side write of the close-state fields (``closed_at``,
-    ``final_pot_cents``, ``final_roster_count``) — used by
-    ``core.services.launch_close`` only. Full-replace over ``effective()`` is
-    safe against the admin PUT because ``update`` carries these fields
-    forward (see ``_SERVER_MANAGED_FIELDS``)."""
-    current = await effective()
-    saved = await launch_settings_repo.put({**current, **fields})
+async def record_close_state(fields: dict) -> None:
+    """Atomic partial write of the server-managed close-state fields
+    (``closed_at``, the pot freeze, the async-close bookkeeping) — a single
+    UpdateExpression SET of ONLY the supplied fields (no read), used by
+    ``core.services.launch_close`` only. The admin PUT carries these fields
+    forward (``_SERVER_MANAGED_FIELDS``), so neither writer can clobber the
+    other."""
+    await launch_settings_repo.update_fields(fields)
     _clear_caches()
-    return saved
 
 
 async def create_stripe_coupon(auth: AuthContext, *, force: bool = False) -> dict:

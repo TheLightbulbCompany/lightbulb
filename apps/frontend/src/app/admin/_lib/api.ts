@@ -750,17 +750,24 @@ export type LaunchSettingsInput = Pick<
 >;
 
 /** POST /ops/launch/close result — the per-step counts of the close run. */
+/** The finished close run's summary, persisted on the settings row by the
+ * background task (POST /ops/launch/close is a 202 starter). All fields are
+ * optional: a failed run writes only `error`. */
 export interface LaunchCloseResult {
-  closed_at: string | null;
-  sheet_count: number;
-  winners: number;
-  paying: number;
-  final_roster_count: number;
-  final_pot_cents: number;
-  coupons_attached: number;
-  coupon_failures: number;
-  emails_sent: number;
-  email_failures: number;
+  error?: string;
+  closed_at?: string | null;
+  sheet_count?: number;
+  winners?: number;
+  paying?: number;
+  final_roster_count?: number | null;
+  final_pot_cents?: number | null;
+  coupons_attached?: number;
+  coupon_failures?: number;
+  /** Paying winners NOT on the Starter plan — the product-restricted coupon
+   * would discount $0, so they were skipped and got the unpaid email. */
+  coupon_skipped_nonflat?: number;
+  emails_sent?: number;
+  email_failures?: number;
 }
 
 /** The full sheet payload — only when the competition is enabled and the
@@ -781,6 +788,9 @@ export interface LaunchOpsSheet {
   projected_pot_cents: number;
   closed: boolean;
   closed_at: string | null;
+  /** A close background task started and has not written its result yet. */
+  close_running: boolean;
+  close_result: LaunchCloseResult | null;
   final_pot_cents: number | null;
   final_roster_count: number | null;
   referrals: { signed_up: number; subscribed: number };

@@ -993,6 +993,8 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
         # a referred owner toward their referrer (and retries the owner's own
         # pending milestone credit grants). Best-effort — never raises; its
         # own CAS dedup makes duplicate/unordered deliveries inert.
+        # NOTE: the Apple IAP activation path does NOT come through here — it
+        # must call on_subscription_activated too when the mobile app ships.
         from core.services import launch_referral
 
         await launch_referral.on_subscription_activated(account["owner_id"])

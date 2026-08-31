@@ -565,9 +565,19 @@ async def create_trial_checkout(
             )
             pending_credits_raw = (pending.get("metadata") or {}).get("credits_cents")
             pending_credits = int(pending_credits_raw) if pending_credits_raw else None
+            # Launch winner staleness is a third body-varying input: a session
+            # minted before the owner's sheet row was flagged carries no
+            # free-month discount (marker absent), and one minted WITH it goes
+            # stale once the coupon is consumed. Reusing either mismatch hands
+            # the owner a session at the wrong total — expire and mint fresh.
+            from core.services.launch_close import winner_checkout_discount
+
+            has_winner_marker = (pending.get("metadata") or {}).get("launch_winner_coupon") == "true"
+            wants_winner_discount = bool(await winner_checkout_discount(owner_id))
             if (
                 account.get("pending_checkout_provider") == body.provider_choice
                 and pending_credits == requested_credits
+                and has_winner_marker == wants_winner_discount
             ):
                 # Same intent — send them back to the SAME hosted session.
                 return {"checkout_url": pending.url}

@@ -162,12 +162,12 @@ describe("SheetCard", () => {
   it("a reload mid-competition seeds board state from me.entry — lift + toggle, no connect invite", async () => {
     get.mockResolvedValue(joined({
       phase: "competition",
-      entry: { has_key: true, public: true, entered_at: "t", delta_cents: 5000, refreshed_at: "t", refresh_error: null },
+      entry: { has_key: true, public: true, entered_at: "t", currency: "eur", delta_cents: 5000, refreshed_at: "t", refresh_error: null },
     }));
     patch.mockResolvedValue({ public: false });
     mount(info({ phase: "competition" }));
     expect(await screen.findByText(/Lift so far/)).toBeInTheDocument();
-    expect(screen.getByText("$50")).toBeInTheDocument();
+    expect(screen.getByText("€50")).toBeInTheDocument();  // the entry's own currency, never a USD default
     expect(screen.queryByText(/Connect a read-only Stripe key/)).not.toBeInTheDocument();
     const checkbox = screen.getByLabelText(/show my name on the board/i);
     fireEvent.click(checkbox);
@@ -177,7 +177,7 @@ describe("SheetCard", () => {
   it("a refresh_error on me.entry re-offers the connect form", async () => {
     get.mockResolvedValue(joined({
       phase: "competition",
-      entry: { has_key: true, public: true, entered_at: "t", delta_cents: 0, refreshed_at: "t", refresh_error: "stripe_auth" },
+      entry: { has_key: true, public: true, entered_at: "t", currency: "usd", delta_cents: 0, refreshed_at: "t", refresh_error: "stripe_auth" },
     }));
     mount(info({ phase: "competition" }));
     expect(await screen.findByText(/stripe_auth/)).toBeInTheDocument();

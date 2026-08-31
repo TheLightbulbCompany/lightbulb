@@ -129,6 +129,7 @@ async def test_me_carries_the_board_entry_for_a_joined_owner():
         "has_key": True,
         "public": False,
         "entered_at": "2026-10-02T00:00:00+00:00",
+        "currency": "eur",
         "delta_cents": 5000,
         "refreshed_at": "2026-10-05T00:00:00+00:00",
         "refresh_error": None,
@@ -140,6 +141,7 @@ async def test_me_carries_the_board_entry_for_a_joined_owner():
         "has_key": True,
         "public": False,
         "entered_at": "2026-10-02T00:00:00+00:00",
+        "currency": "eur",  # the board's currency rides along — no USD default in the UI
         "delta_cents": 5000,
         "refreshed_at": "2026-10-05T00:00:00+00:00",
         "refresh_error": None,

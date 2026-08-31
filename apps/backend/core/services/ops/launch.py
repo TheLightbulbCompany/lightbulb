@@ -120,6 +120,10 @@ async def _compute(s: launch_phase.Schedule) -> dict:
         "projected_pot_cents": launch_phase.pot_cents(len(sheet_rows)),
         "closed": closed,
         "closed_at": settings_row.get("closed_at"),
+        # Async close bookkeeping: started-but-no-result = a background task
+        # is (or died) mid-run; the finished run's summary counts.
+        "close_running": bool(settings_row.get("close_started_at")) and settings_row.get("close_result") is None,
+        "close_result": settings_row.get("close_result"),
         "final_pot_cents": settings_row.get("final_pot_cents"),
         "final_roster_count": settings_row.get("final_roster_count"),
         "referrals": {

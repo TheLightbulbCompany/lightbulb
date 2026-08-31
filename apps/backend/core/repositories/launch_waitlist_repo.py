@@ -173,11 +173,26 @@ async def _stamp_once(email: str, field: str) -> bool:
         return False
 
 
-async def mark_joined(email: str) -> bool:
-    """Sheet membership stamp — the explicit POST /launch/join. A row can
-    exist WITHOUT this (referral attribution creates rows); only stamped rows
-    are on the sheet. True exactly once per row."""
-    return await _stamp_once(email, "joined_at")
+async def mark_joined(email: str, *, display_name: str, public: bool) -> bool:
+    """Sheet membership stamp + the join-time fields, ONE atomic write —
+    first join wins wholesale, so a retry after a partial failure can never
+    half-apply (e.g. re-default a private row's ``public`` back to true). A
+    row can exist WITHOUT this (referral attribution creates rows); only
+    stamped rows are on the sheet. True exactly once per row."""
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"email": email},
+            UpdateExpression="SET joined_at = :t, display_name = :d, #pub = :p",
+            ConditionExpression="attribute_exists(email) AND attribute_not_exists(joined_at)",
+            ExpressionAttributeNames={"#pub": "public"},
+            ExpressionAttributeValues={":t": utc_now_iso(), ":d": display_name, ":p": bool(public)},
+        )
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return False
 
 
 async def mark_referral_counted(email: str) -> bool:
@@ -226,9 +241,9 @@ async def add_counter(email: str, field: CounterField, delta: int) -> int | None
         return None
 
 
-async def list_all() -> list[dict]:
+async def list_all(*, consistent: bool = False) -> list[dict]:
     items: list[dict] = []
-    kwargs: dict = {}
+    kwargs: dict = {"ConsistentRead": True} if consistent else {}
     while True:
         page = await run_in_thread(_table().scan, **kwargs)
         items.extend(_plain(i) for i in page.get("Items", []) if i.get("email") != COUNTER_KEY)

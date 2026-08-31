@@ -10,6 +10,8 @@ off — see ``launch_phase.schedule()``'s None contract).
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import boto3
 from botocore.config import Config
 
@@ -43,6 +45,10 @@ DEFAULTS: dict = {
     "closed_at": None,
     "final_pot_cents": None,
     "final_roster_count": None,
+    # Async close bookkeeping (routers/ops.py POST /launch/close → 202):
+    # started-stamp + the finished run's summary counts.
+    "close_started_at": None,
+    "close_result": None,
     "stripe_coupon_id": "",
     # Server-only — never exposed via the admin PUT schema. Bumped by
     # `create_stripe_coupon` on every forced re-mint so the coupon idempotency
@@ -87,6 +93,9 @@ def _plain(item: dict | None) -> dict | None:
     for k in _INT_FIELDS:
         if out.get(k) is not None:
             out[k] = int(out[k])
+    if isinstance(out.get("close_result"), dict):
+        # The summary counts come back as Decimals like every DynamoDB number.
+        out["close_result"] = {k: int(v) if isinstance(v, Decimal) else v for k, v in out["close_result"].items()}
     if out.get("enabled") is not None:
         # Strict identity, not `bool(...)` — `bool("false")` is True in
         # Python, so a hand-edited string value must not enable the launch.
@@ -107,6 +116,23 @@ def get_sync() -> dict | None:
     client above, because this one blocks the event loop while it waits."""
     resp = _sync_table().get_item(Key={"id": _ID})
     return _plain(resp.get("Item"))
+
+
+async def update_fields(fields: dict) -> None:
+    """SET only the supplied fields on the settings row — one atomic
+    UpdateExpression, no read-modify-write, so a close-state write can never
+    clobber a concurrent admin save (and vice versa). Upserts the row if no
+    admin ever saved one (the DEFAULTS merge covers the rest)."""
+    names = {f"#f{i}": k for i, k in enumerate(fields)}
+    values: dict = {f":v{i}": v for i, v in enumerate(fields.values())}
+    values[":t"] = utc_now_iso()
+    await run_in_thread(
+        _table().update_item,
+        Key={"id": _ID},
+        UpdateExpression="SET " + ", ".join(f"{n} = :v{i}" for i, n in enumerate(names)) + ", updated_at = :t",
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues=values,
+    )
 
 
 async def put(item: dict) -> dict:

@@ -48,8 +48,7 @@ export interface LaunchMeEntry {
   delta_cents: number | null;
   refreshed_at: string | null;
   refresh_error: string | null;
-  /** Only on the fuller connect-stripe response (`LaunchEntry`). */
-  currency?: string | null;
+  currency: string | null;
 }
 
 /** `GET /launch/me` (auth) — the caller's sheet status. `position` and the

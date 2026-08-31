@@ -17,6 +17,7 @@ converges: done work is skipped, missed work is retried.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 
@@ -41,6 +42,12 @@ class CloseError(Exception):
 
 class AlreadyClosed(Exception):
     """``closed_at`` is already stamped and the caller didn't pass ``force``."""
+
+
+class CloseRunning(Exception):
+    """A close background task was started and has not written its result yet
+    (``close_started_at`` set, ``close_result`` unset) — refuse a second
+    start unless ``force`` (which is also how a crashed task is recovered)."""
 
 
 def _discount_coupon_id(d) -> str | None:
@@ -105,12 +112,18 @@ async def _ensure_restricted_coupon(auth: AuthContext) -> str:
     if coupon:
         try:
             stored = await run_in_thread(stripe.Coupon.retrieve, coupon, expand=["applies_to"])
+            price = await run_in_thread(stripe.Price.retrieve, settings.STRIPE_FLAT_PRICE_ID)
         except stripe.StripeError as e:
             logger.error("launch_close: coupon verification failed for %s: %s", coupon, e)
             raise launch_settings.StripeMintError() from None
-        if (stored.get("applies_to") or {}).get("products"):
+        # The restriction must name the CURRENT flat product — merely being
+        # restricted to something isn't enough (a rotated flat price, or a
+        # coupon minted against another env's product, discounts nothing).
+        if price["product"] in ((stored.get("applies_to") or {}).get("products") or []):
             return coupon
-        logger.warning("launch_close: stored coupon %s lacks applies_to — re-minting restricted", coupon)
+        logger.warning(
+            "launch_close: stored coupon %s does not apply to the flat product — re-minting restricted", coupon
+        )
     await launch_settings.create_stripe_coupon(auth, force=bool(coupon))
     return (await launch_settings.effective())["stripe_coupon_id"]
 
@@ -131,6 +144,51 @@ async def mark_winner_coupon_consumed(owner_id: str) -> None:
         logger.warning("launch_close: coupon-consumed stamp failed for %s", owner_id, exc_info=True)
 
 
+def _is_running(row: dict) -> bool:
+    return bool(row.get("close_started_at")) and row.get("close_result") is None
+
+
+async def start_close(auth: AuthContext, *, force: bool = False) -> None:
+    """Run the close as a background task — 200 winners means ~400 sequential
+    Stripe calls plus 200 SES sends, far past the API gateway's 30s timeout,
+    so the router returns 202 and the admin sheet polls ``close_result``.
+
+    Refusals happen HERE, synchronously (an exception inside the task would
+    vanish): already-closed and already-running both 409 unless ``force``.
+    ``close_started_at`` is stamped before the task starts; the finished
+    task's summary (or its error) lands on the settings row as
+    ``close_result``. A crash that writes neither is recovered by a force
+    rerun, exactly like any partial failure — the per-row stamps make the
+    sequence convergent."""
+    row = await launch_settings.effective()
+    if row.get("closed_at") and not force:
+        raise AlreadyClosed()
+    if _is_running(row) and not force:
+        raise CloseRunning()
+    if launch_phase.schedule() is None:
+        raise CloseError("launch_disabled")
+    await launch_settings.record_close_state({"close_started_at": utc_now_iso(), "close_result": None})
+    asyncio.create_task(_run_close(auth, force=force))
+
+
+async def _run_close(auth: AuthContext, *, force: bool) -> None:
+    try:
+        result = await close(auth, force=force)
+    except CloseError as e:
+        result = {"error": e.reason}
+    except launch_settings.StripeMintError:
+        result = {"error": "stripe_error"}
+    except launch_settings.SettingsInvalid:
+        result = {"error": "settings_invalid"}
+    except Exception:  # noqa: BLE001 — the summary write below is the only observer left
+        logger.exception("launch_close: background close failed")
+        result = {"error": "close_failed"}
+    try:
+        await launch_settings.record_close_state({"close_result": result})
+    except Exception:  # noqa: BLE001 — leaves close_running true; the admin recovers with force
+        logger.exception("launch_close: failed to record close_result")
+
+
 async def close(auth: AuthContext, *, force: bool = False) -> dict:
     row = await launch_settings.effective()
     already_closed = bool(row.get("closed_at"))
@@ -146,7 +204,11 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
     if not already_closed:
         await launch_settings.record_close_state({"closed_at": utc_now_iso()})
 
-    sheet = [r for r in await launch_waitlist_repo.list_all() if r.get("joined_at")]
+    # Consistent scan: the close must see every committed join — an
+    # eventually-consistent page dropping a row would deterministically
+    # exclude a legitimate winner. (The 30s settings-cache instance race
+    # stays accepted; this is about the roster itself.)
+    sheet = [r for r in await launch_waitlist_repo.list_all(consistent=True) if r.get("joined_at")]
     jump = launch_phase.constants()["referral_jump"]
 
     paying: dict[str, dict] = {}
@@ -209,6 +271,7 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
     coupon_failures = 0
     coupon_skipped_nonflat = 0
     nonflat_winners: set[str] = set()
+    attach_blocked: set[str] = set()
     for r in winners:
         billing = paying.get(r["email"])
         if not billing or r.get("coupon_attached_at"):
@@ -217,6 +280,7 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
             outcome = await _attach_coupon(billing, coupon)
         except Exception:  # noqa: BLE001 — one bad subscription must not abort the rest of the close
             coupon_failures += 1
+            attach_blocked.add(r["email"])
             logger.exception("launch_close: coupon attach failed for %s", r.get("user_id"))
             continue
         if outcome == "attached":
@@ -241,6 +305,7 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
             # so the admin SEES it; the row stays unstamped, so a forced
             # rerun retries once the sub id exists.
             coupon_failures += 1
+            attach_blocked.add(r["email"])
             logger.error(
                 "launch_close: paying winner %s has no stripe_subscription_id — coupon not attached",
                 r.get("user_id"),
@@ -252,6 +317,12 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
     email_failures = 0
     for r in winners:
         if r.get("winner_email_sent_at"):
+            continue
+        if r["email"] in attach_blocked:
+            # The attach FAILED (no sub id, or a Stripe error) — neither
+            # variant is true for them yet. No email this run; the row is
+            # unstamped on both counts, so a force rerun after the attach
+            # problem is fixed sends the right one.
             continue
         # Paid variant only when the coupon actually lands on their sub — a
         # nonflat paying winner gets the unpaid variant, whose copy ("first
@@ -303,7 +374,16 @@ async def winner_checkout_discount(owner_id: str) -> list[dict] | None:
         user = await user_repo.get(owner_id)
         email = ((user or {}).get("email") or "").strip().lower()
         if not email:
-            return None
+            # Legacy user rows can lack the email column — Clerk is the
+            # email truth (same order launch_service.resolve_email uses;
+            # there is no JWT claim on the checkout path, so the admin API
+            # is the fallback). Best-effort: any miss means no discount.
+            try:
+                from core.services import clerk_admin
+
+                email = (await clerk_admin.get_primary_email(owner_id)).strip().lower()
+            except Exception:  # noqa: BLE001 — no resolvable email, no discount
+                return None
         row = await launch_waitlist_repo.get(email)
         if row and row.get("winner") and not row.get("coupon_attached_at"):
             return [{"coupon": coupon}]

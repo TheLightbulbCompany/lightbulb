@@ -108,34 +108,34 @@ async def post_launch_stripe_coupon(
         raise HTTPException(status_code=502, detail="stripe_error")
 
 
-@router.post("/launch/close")
+@router.post("/launch/close", status_code=202)
 @audit_admin_action("launch.close", target_user_id_override="__launch__", capture_params=["body"])
 async def post_launch_close(
     body: LaunchCloseRequest,
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    """Close the competition sign-up sheet: freeze joins/jumps, flag the
-    top-comp_slots winners, freeze the pot, attach the free-month coupon to
-    paying winners, email every winner. 409 once already closed unless
-    ``force`` — every step is idempotent, so a forced rerun after a partial
-    failure converges. 502 if the coupon mint fails at Stripe."""
-    from core.services import launch_close, launch_settings
+    """START the close as a background task and 202 — with a full sheet the
+    sequence is hundreds of sequential Stripe calls plus the winner emails,
+    far past the API gateway timeout. Refusals are synchronous: 409
+    already_closed / close_running unless ``force`` (which is also how a
+    crashed task is recovered — every step is idempotent). The finished
+    summary lands on the settings row as ``close_result``, surfaced by
+    GET /ops/launch alongside ``close_running``."""
+    from core.services import launch_close
     from core.services.ops import launch as launch_ops
 
     try:
-        result = await launch_close.close(auth, force=body.force)
+        await launch_close.start_close(auth, force=body.force)
     except launch_close.AlreadyClosed:
         raise HTTPException(status_code=409, detail="already_closed")
+    except launch_close.CloseRunning:
+        raise HTTPException(status_code=409, detail="close_running")
     except launch_close.CloseError as e:
         raise HTTPException(status_code=409, detail=e.reason)
-    except launch_settings.SettingsInvalid as e:
-        raise HTTPException(status_code=422, detail={"errors": e.errors})
-    except launch_settings.StripeMintError:
-        raise HTTPException(status_code=502, detail="stripe_error")
     launch_ops.clear_cache()
     _clear_public_launch_cache()
-    return result
+    return {"status": "started"}
 
 
 def _clear_public_launch_cache() -> None:

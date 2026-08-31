@@ -94,15 +94,20 @@ async def test_claim_user_sets_once(table):
     assert (await table.get("a@example.com"))["user_id"] == "user_1"
 
 
-async def test_mark_joined_is_cas(table):
+async def test_mark_joined_is_cas_and_atomic_with_the_join_fields(table):
     await table.join("a@example.com", referred_by=None, source="sheet")
-    assert await table.mark_joined("a@example.com") is True
-    assert await table.mark_joined("a@example.com") is False
-    assert (await table.get("a@example.com"))["joined_at"]
+    assert await table.mark_joined("a@example.com", display_name="Acme", public=False) is True
+    row = await table.get("a@example.com")
+    assert row["joined_at"] and row["display_name"] == "Acme" and row["public"] is False
+    # Second join loses the CAS wholesale — no field half-applies (a retry
+    # must never re-default a private row's public back to true).
+    assert await table.mark_joined("a@example.com", display_name="Other", public=True) is False
+    row = await table.get("a@example.com")
+    assert row["display_name"] == "Acme" and row["public"] is False
 
 
 async def test_mark_joined_never_mints_a_row(table):
-    assert await table.mark_joined("nobody@example.com") is False
+    assert await table.mark_joined("nobody@example.com", display_name="X", public=True) is False
     assert await table.get("nobody@example.com") is None
 
 

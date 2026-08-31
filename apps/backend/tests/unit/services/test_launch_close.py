@@ -90,7 +90,7 @@ class _Harness:
             ),
             patch(
                 "core.services.launch_close.launch_waitlist_repo.list_all",
-                AsyncMock(side_effect=lambda: [dict(r) for r in self.rows.values()]),
+                AsyncMock(side_effect=lambda **kw: [dict(r) for r in self.rows.values()]),
             ),
             patch("core.services.launch_close.launch_waitlist_repo.update_fields", side_effect=self._update_fields),
             patch(
@@ -110,6 +110,7 @@ class _Harness:
         ]
         m = [p.__enter__() for p in self._patches]
         self.mint = m[2]
+        self.list_all_mock = m[6]
         self.stripe_calls: list[tuple] = []
         return self
 
@@ -121,6 +122,9 @@ class _Harness:
                 # Coupon.retrieve — restricted by default; the stale-coupon
                 # test overrides this.
                 return {"id": args[0], "applies_to": {"products": ["prod_flat"]}}
+            if str(args[0]).startswith("price"):
+                # Price.retrieve — the flat price's product.
+                return {"product": "prod_flat"}
             # Subscription.retrieve — on the flat plan by default; the
             # nonflat-winner test overrides this.
             return {
@@ -157,6 +161,8 @@ async def test_close_full_sequence():
     billing = {"user_b": PAYING, "user_c": dict(PAYING, stripe_subscription_id="sub_c"), "user_d": TRIAL}
     with _Harness(rows, billing) as h:
         result = await launch_close.close(ADMIN)
+        # The roster scan must see every committed join.
+        assert h.list_all_mock.await_args.kwargs == {"consistent": True}
 
     # closed_at stamped first.
     assert h.close_state_writes[0].keys() == {"closed_at"}
@@ -421,7 +427,96 @@ async def test_a_coupon_attach_failure_does_not_abort_the_close():
     assert result["coupon_failures"] == 1 and result["coupons_attached"] == 1
     assert "coupon_attached_at" not in h.rows["a@x.com"]  # not stamped -> a rerun retries
     assert h.rows["b@x.com"]["coupon_attached_at"]
-    assert len(h.sent) == 2  # emails still went out
+    # The failed-attach winner gets NO email this run (neither variant is true
+    # for them yet); the successful one is emailed normally. The failed row is
+    # unstamped on both counts, so a force rerun sends the right variant once
+    # the attach problem is fixed.
+    assert h.sent == [("paid", "b@x.com")]
+    assert "winner_email_sent_at" not in h.rows["a@x.com"]
+
+
+# ---------------------------------------------------------------------------
+# start_close / _run_close — the async close
+# ---------------------------------------------------------------------------
+
+
+def _start_patches(row):
+    from unittest.mock import MagicMock
+
+    tasks: list = []
+
+    def _capture(coro):
+        tasks.append(coro)
+        return MagicMock()
+
+    return (
+        patch("core.services.launch_close.launch_settings.effective", AsyncMock(return_value=row)),
+        patch("core.services.launch_close.launch_settings.record_close_state", AsyncMock()),
+        patch("core.services.launch_close.launch_phase.schedule", return_value=_sched()),
+        patch("core.services.launch_close.asyncio.create_task", side_effect=_capture),
+        tasks,
+    )
+
+
+async def test_start_close_stamps_and_backgrounds_the_run():
+    row = {"closed_at": None, "close_started_at": None, "close_result": None, "final_pot_cents": None}
+    p0, p1, p2, p3, tasks = _start_patches(row)
+    with p0, p1 as record, p2, p3:
+        await launch_close.start_close(ADMIN)
+    stamped = record.await_args.args[0]
+    assert stamped["close_started_at"] and stamped["close_result"] is None
+    assert len(tasks) == 1
+    tasks[0].close()  # never awaited in this test — just captured
+
+
+async def test_start_close_refuses_a_second_start_without_force():
+    # closed_at already stamped (the running task got that far) — the
+    # already-closed guard fires first; either way, no second task starts.
+    row = {"closed_at": "t", "close_started_at": "t", "close_result": None, "final_pot_cents": None}
+    p0, p1, p2, p3, tasks = _start_patches(row)
+    with p0, p1 as record, p2, p3:
+        with pytest.raises(launch_close.AlreadyClosed):
+            await launch_close.start_close(ADMIN)
+    assert tasks == []
+    record.assert_not_awaited()
+
+
+async def test_start_close_running_without_closed_at_is_close_running():
+    # started (stamp landed) but close() crashed before stamping closed_at.
+    row = {"closed_at": None, "close_started_at": "t", "close_result": None, "final_pot_cents": None}
+    p0, p1, p2, p3, tasks = _start_patches(row)
+    with p0, p1, p2, p3:
+        with pytest.raises(launch_close.CloseRunning):
+            await launch_close.start_close(ADMIN)
+    assert tasks == []
+
+
+async def test_start_close_force_gets_past_both_refusals():
+    row = {"closed_at": "t", "close_started_at": "t", "close_result": None, "final_pot_cents": 1}
+    p0, p1, p2, p3, tasks = _start_patches(row)
+    with p0, p1, p2, p3:
+        await launch_close.start_close(ADMIN, force=True)
+    assert len(tasks) == 1
+    tasks[0].close()
+
+
+async def test_run_close_records_the_summary_on_the_settings_row():
+    summary = {"winners": 2, "coupons_attached": 1}
+    with (
+        patch("core.services.launch_close.close", AsyncMock(return_value=summary)),
+        patch("core.services.launch_close.launch_settings.record_close_state", AsyncMock()) as record,
+    ):
+        await launch_close._run_close(ADMIN, force=False)
+    record.assert_awaited_once_with({"close_result": summary})
+
+
+async def test_run_close_records_an_error_result_instead_of_vanishing():
+    with (
+        patch("core.services.launch_close.close", AsyncMock(side_effect=RuntimeError("boom"))),
+        patch("core.services.launch_close.launch_settings.record_close_state", AsyncMock()) as record,
+    ):
+        await launch_close._run_close(ADMIN, force=False)
+    record.assert_awaited_once_with({"close_result": {"error": "close_failed"}})
 
 
 async def _attach(retrieved_sub):

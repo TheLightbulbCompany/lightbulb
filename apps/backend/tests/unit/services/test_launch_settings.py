@@ -41,6 +41,8 @@ def test_defaults_shape():
         "closed_at": None,
         "final_pot_cents": None,
         "final_roster_count": None,
+        "close_started_at": None,
+        "close_result": None,
         "stripe_coupon_id": "",
         "mint_nonce": 0,
     }
@@ -203,6 +205,8 @@ async def test_update_preserves_server_managed_fields_regardless_of_payload():
         "closed_at": "2026-09-30T16:00:00+00:00",
         "final_pot_cents": 250_000,
         "final_roster_count": 150,
+        "close_started_at": "2026-09-30T15:59:00+00:00",
+        "close_result": {"winners": 2},
     }
     put_mock = AsyncMock(side_effect=lambda item: item)
     with (
@@ -217,19 +221,24 @@ async def test_update_preserves_server_managed_fields_regardless_of_payload():
     assert written["closed_at"] == "2026-09-30T16:00:00+00:00"
     assert written["final_pot_cents"] == 250_000
     assert written["final_roster_count"] == 150
+    assert written["close_started_at"] == "2026-09-30T15:59:00+00:00"
+    assert written["close_result"] == {"winners": 2}
 
 
-async def test_record_close_state_merges_onto_effective_and_clears_caches():
-    stored = {**ls.DEFAULTS, "enabled": True, "stripe_coupon_id": "coupon_x"}
-    put_mock = AsyncMock(side_effect=lambda item: item)
+async def test_record_close_state_is_an_atomic_partial_update():
+    """A single UpdateExpression SET of ONLY the supplied fields — no read,
+    no full-row put, so it can never clobber a concurrent admin save."""
+    update_mock = AsyncMock()
     with (
-        patch.object(ls.launch_settings_repo, "get", AsyncMock(return_value=stored)),
-        patch.object(ls.launch_settings_repo, "put", put_mock),
+        patch.object(ls.launch_settings_repo, "update_fields", update_mock),
+        patch.object(ls.launch_settings_repo, "put", AsyncMock()) as put_mock,
+        patch.object(ls.launch_settings_repo, "get", AsyncMock()) as get_mock,
         patch.object(ls, "_clear_caches") as clear,
     ):
-        saved = await ls.record_close_state({"closed_at": "2026-09-30T16:00:00+00:00"})
-    assert saved["closed_at"] == "2026-09-30T16:00:00+00:00"
-    assert put_mock.call_args.args[0]["stripe_coupon_id"] == "coupon_x"  # rest of row intact
+        await ls.record_close_state({"closed_at": "2026-09-30T16:00:00+00:00"})
+    update_mock.assert_awaited_once_with({"closed_at": "2026-09-30T16:00:00+00:00"})
+    put_mock.assert_not_awaited()
+    get_mock.assert_not_awaited()
     clear.assert_called_once()
 
 

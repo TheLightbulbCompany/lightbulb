@@ -597,7 +597,18 @@ async def _open_pending_checkout(owner_id: str) -> stripe.checkout.Session | Non
     # of truth, no migration, and the same dict the grant webhook reads.
     purpose = (pending.get("metadata") or {}).get("purpose")
     if purpose == "mobile_web_checkout":
-        return pending
+        # Launch winner staleness: a session minted before the owner's row
+        # was flagged carries no discount (marker absent), and one minted
+        # WITH the discount goes stale once the coupon is consumed. Either
+        # mismatch means the cached session sells the wrong total — fall
+        # through to the expire-and-mint-fresh path below.
+        from core.services.launch_close import winner_checkout_discount
+
+        has_marker = (pending.get("metadata") or {}).get("launch_winner_coupon") == "true"
+        wants_discount = bool(await winner_checkout_discount(owner_id))
+        if has_marker == wants_discount:
+            return pending
+        logger.info("Pending checkout session %s has a stale winner-discount state — expiring it", pending_id)
 
     # Someone else's open session. Expire it before minting ours, or both stay
     # completable and the owner can be charged twice.

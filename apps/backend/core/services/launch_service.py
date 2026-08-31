@@ -103,6 +103,7 @@ async def me(auth: AuthContext, s: Schedule) -> dict:
             "has_key": bool(entry.get("has_key", False)),
             "public": bool(entry.get("public", True)),
             "entered_at": entry.get("entered_at"),
+            "currency": entry.get("currency"),
             "delta_cents": int(entry.get("delta_cents", 0)),
             "refreshed_at": entry.get("refreshed_at"),
             "refresh_error": entry.get("refresh_error"),
@@ -135,9 +136,11 @@ async def join_sheet(auth: AuthContext, s: Schedule, *, display_name: str, publi
 
     row = await launch_waitlist_repo.join(email, referred_by=None, source="sheet")
     await launch_waitlist_repo.claim_user(email, auth.user_id)
-    first_join = await launch_waitlist_repo.mark_joined(email)
+    # One atomic write: joined_at + display_name + public land together, so a
+    # retry after a partial failure can never re-default a private row's
+    # `public` back to true.
+    first_join = await launch_waitlist_repo.mark_joined(email, display_name=display_name.strip(), public=bool(public))
     if first_join:
-        await launch_waitlist_repo.update_fields(email, {"display_name": display_name.strip(), "public": bool(public)})
         referral_jump = launch_phase.constants()["referral_jump"]
         try:
             from core.services.launch_sheet_email import send_join_email
@@ -157,11 +160,19 @@ async def join_sheet(auth: AuthContext, s: Schedule, *, display_name: str, publi
     return await me(auth, s)
 
 
-async def _sheet_row_for(auth: AuthContext) -> dict:
+async def _sheet_row_for(auth: AuthContext, s: Schedule) -> dict:
+    """The caller's JOINED sheet row, gated for board actions
+    (connect_stripe / set_public): the competition must not be over, and a
+    row the close ruled out (``compete_eligible=False``) may not touch the
+    board. Pre-close joined rows carry no flag and are eligible."""
     email = await resolve_email(auth)
     row = await launch_waitlist_repo.get(email) if email else None
     if not row or not row.get("joined_at"):
         raise LaunchRefused("not_joined")
+    if phase(s) == "ended":
+        raise LaunchRefused("ended")
+    if row.get("compete_eligible") is False:
+        raise LaunchRefused("not_eligible")
     return row
 
 
@@ -190,7 +201,7 @@ async def connect_stripe(auth: AuthContext, s: Schedule, *, stripe_key: str) -> 
     is minted on demand from the sheet row; replaces any previously-connected
     key."""
     owner_id = resolve_owner_id(auth)
-    sheet_row = await _sheet_row_for(auth)
+    sheet_row = await _sheet_row_for(auth, s)
     entry = await launch_entries_repo.get(owner_id)
     if not entry:
         referral_jump = launch_phase.constants()["referral_jump"]
@@ -239,7 +250,7 @@ async def set_public(auth: AuthContext, s: Schedule, *, public: bool) -> dict:
     """Flip the board-visibility flag — on the sheet row always, and on the
     board entry too once one exists. Retractable at any time."""
     owner_id = resolve_owner_id(auth)
-    sheet_row = await _sheet_row_for(auth)
+    sheet_row = await _sheet_row_for(auth, s)
     await launch_waitlist_repo.update_fields(sheet_row["email"], {"public": bool(public)})
     entry = await launch_entries_repo.get(owner_id)
     if entry:
@@ -271,5 +282,15 @@ def rank(entries: list[dict]) -> list[dict]:
 
 async def leaderboard(limit: int = 50) -> dict:
     entries = await launch_entries_repo.list_all()
+    # The close rules unpaid non-winners out (compete_eligible=False on the
+    # sheet row) — their board entries must vanish server-side, not just
+    # lose their buttons. Rows without a matching sheet row (pre-pivot
+    # legacy) stay visible.
+    ineligible = {
+        w["user_id"]
+        for w in await launch_waitlist_repo.list_all()
+        if w.get("user_id") and w.get("compete_eligible") is False
+    }
+    entries = [e for e in entries if e["owner_id"] not in ineligible]
     on_board = sum(1 for e in entries if e.get("has_key"))
     return {"competing": len(entries), "on_board": on_board, "rows": rank(entries)[:limit]}

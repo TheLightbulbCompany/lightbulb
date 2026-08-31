@@ -247,18 +247,19 @@ async def test_ops_launch_stripe_coupon_requires_admin(async_client):
 # ---------------------------------------------------------------------------
 
 
-async def test_ops_launch_close_delegates_audits_and_clears_caches(admin_client, audited):
-    result = {"closed_at": "t", "winners": 2, "final_pot_cents": 103_000}
+async def test_ops_launch_close_starts_the_background_task_and_202s(admin_client, audited):
+    """The close is async — the endpoint only STARTS it (hundreds of Stripe
+    calls would blow the API-GW timeout) and 202s; the summary lands on the
+    settings row as close_result."""
     with (
-        patch("core.services.launch_close.close", AsyncMock(return_value=result)) as close,
+        patch("core.services.launch_close.start_close", AsyncMock()) as start,
         patch("core.services.ops.launch.clear_cache") as clear_ops,
         patch("routers.launch.clear_response_cache") as clear_public,
     ):
         r = await admin_client.post("/api/v1/ops/launch/close", json={})
-    assert r.status_code == 200
-    body = r.json()
-    assert body["winners"] == 2 and body["final_pot_cents"] == 103_000
-    assert close.call_args.kwargs["force"] is False
+    assert r.status_code == 202
+    assert r.json()["status"] == "started"
+    assert start.call_args.kwargs["force"] is False
     clear_ops.assert_called_once()
     clear_public.assert_called_once()
     audited.assert_awaited_once()
@@ -267,22 +268,24 @@ async def test_ops_launch_close_delegates_audits_and_clears_caches(admin_client,
 async def test_ops_launch_close_already_closed_409(admin_client, audited):
     from core.services import launch_close
 
-    with patch("core.services.launch_close.close", AsyncMock(side_effect=launch_close.AlreadyClosed())):
+    with patch("core.services.launch_close.start_close", AsyncMock(side_effect=launch_close.AlreadyClosed())):
         r = await admin_client.post("/api/v1/ops/launch/close", json={})
     assert r.status_code == 409 and r.json()["detail"] == "already_closed"
 
 
-async def test_ops_launch_close_force_reaches_the_service(admin_client, audited):
-    with patch("core.services.launch_close.close", AsyncMock(return_value={})) as close:
-        r = await admin_client.post("/api/v1/ops/launch/close", json={"force": True})
-    assert r.status_code == 200
-    assert close.call_args.kwargs["force"] is True
+async def test_ops_launch_close_refuses_while_a_close_is_running(admin_client, audited):
+    from core.services import launch_close
 
-
-async def test_ops_launch_close_stripe_mint_failure_502(admin_client, audited):
-    with patch("core.services.launch_close.close", AsyncMock(side_effect=launch_settings.StripeMintError())):
+    with patch("core.services.launch_close.start_close", AsyncMock(side_effect=launch_close.CloseRunning())):
         r = await admin_client.post("/api/v1/ops/launch/close", json={})
-    assert r.status_code == 502 and r.json()["detail"] == "stripe_error"
+    assert r.status_code == 409 and r.json()["detail"] == "close_running"
+
+
+async def test_ops_launch_close_force_reaches_the_service(admin_client, audited):
+    with patch("core.services.launch_close.start_close", AsyncMock()) as start:
+        r = await admin_client.post("/api/v1/ops/launch/close", json={"force": True})
+    assert r.status_code == 202
+    assert start.call_args.kwargs["force"] is True
 
 
 async def test_ops_launch_close_requires_admin(async_client):

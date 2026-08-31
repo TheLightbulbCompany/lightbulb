@@ -45,7 +45,7 @@ beforeEach(() => {
   removeLaunchEntry.mockReset();
   removeLaunchEntry.mockResolvedValue({ ok: true, status: 200, data: { deleted: "u1" } });
   closeLaunchSheet.mockReset();
-  closeLaunchSheet.mockResolvedValue({ ok: true, status: 200, data: closeResult });
+  closeLaunchSheet.mockResolvedValue({ ok: true, status: 202, data: { status: "started" } });
 });
 
 import type { LaunchOpsSheet, LaunchSheetRow } from "../../_lib/api";
@@ -100,6 +100,8 @@ const data: LaunchOpsSheet = {
   projected_pot_cents: 140000,
   closed: false,
   closed_at: null,
+  close_running: false,
+  close_result: null,
   final_pot_cents: null,
   final_roster_count: null,
   referrals: { signed_up: 50, subscribed: 12 },
@@ -132,7 +134,7 @@ describe("LaunchAdminClient", () => {
     expect(screen.getByRole("button", { name: /close the sheet/i })).toBeInTheDocument();
   });
 
-  it("Close the sheet requires typing 'close' before the POST fires, then surfaces the counts", async () => {
+  it("Close the sheet requires typing 'close' before the POST fires, then shows the 202 in-progress state", async () => {
     const user = userEvent.setup();
     render(<LaunchAdminClient data={data} />);
     await user.click(screen.getByRole("button", { name: /close the sheet/i }));
@@ -144,25 +146,50 @@ describe("LaunchAdminClient", () => {
     await user.click(within(dialog).getByRole("button", { name: /^confirm /i }));
 
     expect(closeLaunchSheet).toHaveBeenCalledWith(false);
-    expect(await screen.findByText(/40 winners flagged of 40 on the sheet/)).toBeInTheDocument();
-    expect(screen.getByText(/pot \$1,400/)).toBeInTheDocument();
-    // Clean close: no retry affordance.
+    // 202 — the close runs in the background; the card says so.
+    expect((await screen.findAllByText(/Closing…/)).length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: /retry \(force\)/i })).not.toBeInTheDocument();
   });
 
-  it("coupon/email failures surface a Retry (force) that re-POSTs with force:true", async () => {
-    const user = userEvent.setup();
-    closeLaunchSheet.mockResolvedValue({ ok: true, status: 200, data: { ...closeResult, coupon_failures: 2, email_failures: 1 } });
-    render(<LaunchAdminClient data={data} />);
-    await user.click(screen.getByRole("button", { name: /close the sheet/i }));
-    const dialog = await screen.findByRole("alertdialog");
-    await user.type(within(dialog).getByLabelText(/type close to confirm/i), "close");
-    await user.click(within(dialog).getByRole("button", { name: /^confirm /i }));
+  it("a running close (from the sheet payload) shows the in-progress line", () => {
+    render(<LaunchAdminClient data={{ ...data, close_running: true }} />);
+    expect(screen.getAllByText(/Closing…/).length).toBeGreaterThan(0);
+  });
 
+  it("a finished close renders the persisted summary counts", () => {
+    render(<LaunchAdminClient data={{ ...data, closed: true, closed_at: closeResult.closed_at, close_result: closeResult }} />);
+    expect(screen.getByText(/40 winners flagged of 40 on the sheet/)).toBeInTheDocument();
+    expect(screen.getByText(/pot \$1,400/)).toBeInTheDocument();
+    // Clean close: no retry affordance, no skipped warning.
+    expect(screen.queryByRole("button", { name: /retry \(force\)/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/not on the Starter plan/)).not.toBeInTheDocument();
+  });
+
+  it("coupon/email failures in the persisted result surface a Retry (force) that re-POSTs with force:true", async () => {
+    const user = userEvent.setup();
+    render(
+      <LaunchAdminClient
+        data={{ ...data, closed: true, close_result: { ...closeResult, coupon_failures: 2, email_failures: 1 } }}
+      />,
+    );
     const retry = await screen.findByRole("button", { name: /retry \(force\)/i });
-    closeLaunchSheet.mockResolvedValue({ ok: true, status: 200, data: closeResult });
     await user.click(retry);
     expect(closeLaunchSheet).toHaveBeenLastCalledWith(true);
+  });
+
+  it("skipped non-Starter paying winners get a visible warning", () => {
+    render(
+      <LaunchAdminClient
+        data={{ ...data, closed: true, close_result: { ...closeResult, coupon_skipped_nonflat: 3 } }}
+      />,
+    );
+    expect(screen.getByText(/3 paying winner\(s\) are not on the Starter plan/)).toBeInTheDocument();
+    expect(screen.getByText(/3 skipped \(non-Starter\)/)).toBeInTheDocument();
+  });
+
+  it("a failed background run surfaces its error", () => {
+    render(<LaunchAdminClient data={{ ...data, closed: true, close_result: { error: "stripe_error" } }} />);
+    expect(screen.getByText(/Close run failed \(stripe_error\)/)).toBeInTheDocument();
   });
 
   it("a 422 renders the field errors, never [object Object]", async () => {

@@ -72,11 +72,12 @@ export function sheetCsv(rows: LaunchOpsSheet["sheet_rows"]): string {
 }
 
 function describeClose(r: LaunchCloseResult): string {
+  const skipped = (r.coupon_skipped_nonflat ?? 0) > 0 ? ` / ${r.coupon_skipped_nonflat} skipped (non-Starter)` : "";
   return (
-    `Closed ${r.closed_at ?? "—"}: ${r.winners} winners flagged of ${r.sheet_count} on the sheet ` +
-    `(${r.paying} paying) · roster ${r.final_roster_count} · pot ${formatMoney(r.final_pot_cents, "usd")} · ` +
-    `coupons ${r.coupons_attached} attached / ${r.coupon_failures} failed · ` +
-    `emails ${r.emails_sent} sent / ${r.email_failures} failed`
+    `Closed ${r.closed_at ?? "—"}: ${r.winners ?? 0} winners flagged of ${r.sheet_count ?? 0} on the sheet ` +
+    `(${r.paying ?? 0} paying) · roster ${r.final_roster_count ?? 0} · pot ${formatMoney(r.final_pot_cents ?? 0, "usd")} · ` +
+    `coupons ${r.coupons_attached ?? 0} attached / ${r.coupon_failures ?? 0} failed${skipped} · ` +
+    `emails ${r.emails_sent ?? 0} sent / ${r.email_failures ?? 0} failed`
   );
 }
 
@@ -84,7 +85,7 @@ export function LaunchAdminClient({ data }: { data: LaunchOpsSheet }) {
   const router = useRouter();
   const [note, setNote] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
-  const [closeResult, setCloseResult] = React.useState<LaunchCloseResult | null>(null);
+  const [closeStarted, setCloseStarted] = React.useState(false);
   const [closeError, setCloseError] = React.useState<string | null>(null);
 
   const refresh = async () => {
@@ -109,7 +110,10 @@ export function LaunchAdminClient({ data }: { data: LaunchOpsSheet }) {
     const r = await closeLaunchSheet(force);
     setBusy(false);
     if (r.ok) {
-      setCloseResult(r.data as LaunchCloseResult);
+      // 202 — the close runs as a background task; the summary lands on the
+      // sheet payload as close_result.
+      setCloseStarted(true);
+      setNote("Closing… (refresh for progress — the summary appears below when it finishes)");
     } else {
       // A 422 rides {"detail": {"errors": {field: msg}}} (the settings card's
       // envelope); a 409/502 detail is a plain string surfaced via r.error.
@@ -138,7 +142,11 @@ export function LaunchAdminClient({ data }: { data: LaunchOpsSheet }) {
     URL.revokeObjectURL(url);
   };
 
-  const closeFailures = closeResult !== null && (closeResult.coupon_failures > 0 || closeResult.email_failures > 0);
+  const closeResult = data.close_result;
+  const closeRunning = data.close_running || (closeStarted && !closeResult);
+  const closeFailures =
+    closeResult != null && ((closeResult.coupon_failures ?? 0) > 0 || (closeResult.email_failures ?? 0) > 0);
+  const closeSkipped = (closeResult?.coupon_skipped_nonflat ?? 0) > 0;
 
   return (
     <div className="space-y-6">
@@ -204,9 +212,20 @@ export function LaunchAdminClient({ data }: { data: LaunchOpsSheet }) {
       >
         <p className="text-xs text-muted-foreground">{note ?? "Export the sheet for the launch email; refresh before judging."}</p>
         {closeError ? <ErrorBanner error={closeError} /> : null}
-        {closeResult ? (
+        {closeRunning ? (
+          <p className="text-xs text-foreground">Closing… (refresh for progress — the summary appears here when it finishes)</p>
+        ) : null}
+        {closeResult?.error ? (
+          <ErrorBanner error={`Close run failed (${closeResult.error}) — re-run with force to retry.`} />
+        ) : null}
+        {closeResult && !closeResult.error ? (
           <div className="mt-2 space-y-2">
             <p className="text-xs text-foreground">{describeClose(closeResult)}</p>
+            {closeSkipped ? (
+              <ErrorBanner
+                error={`${closeResult.coupon_skipped_nonflat} paying winner(s) are not on the Starter plan — no coupon attached; they got the "free Starter month at checkout" email instead.`}
+              />
+            ) : null}
             {closeFailures ? (
               <div className="flex items-center gap-2">
                 <ErrorBanner error="Some coupon attaches or winner emails failed — a forced rerun retries only the failed steps." />

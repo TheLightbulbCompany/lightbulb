@@ -118,8 +118,9 @@ async def test_first_join_writes_membership_and_sends_the_email():
         body = await launch_service.join_sheet(AUTH, _sched(), display_name="  Acme  ", public=False)
     h.join.assert_awaited_once_with("me@x.com", referred_by=None, source="sheet")
     h.claim.assert_awaited_once_with("me@x.com", "user_1")
-    h.mark_joined.assert_awaited_once_with("me@x.com")
-    h.update_fields.assert_awaited_once_with("me@x.com", {"display_name": "Acme", "public": False})
+    # ONE atomic write carries membership + the join-time fields.
+    h.mark_joined.assert_awaited_once_with("me@x.com", display_name="Acme", public=False)
+    h.update_fields.assert_not_awaited()
     kwargs = h.email.await_args.kwargs
     assert kwargs["to_email"] == "me@x.com" and kwargs["position"] == 42
     assert kwargs["referral_link"] == "https://dev.flickmeon.ai/?ref=ABCD2345"
@@ -131,7 +132,8 @@ async def test_second_join_is_idempotent_no_email_no_overwrite():
     with _Harness(first_join=False) as h:
         await launch_service.join_sheet(AUTH, _sched(), display_name="NewName", public=True)
     h.email.assert_not_awaited()
-    h.update_fields.assert_not_awaited()  # first display_name wins
+    # First join wins wholesale — the repo CAS refused, nothing else written.
+    h.update_fields.assert_not_awaited()
 
 
 async def test_join_email_uses_the_effective_position():
@@ -146,3 +148,78 @@ async def test_a_failed_email_never_fails_the_join():
         h.email.side_effect = RuntimeError("ses down")
         body = await launch_service.join_sheet(AUTH, _sched(), display_name="Acme", public=True)
     assert body == {"joined": True}
+
+
+# ---------------------------------------------------------------------------
+# Board gating — connect_stripe / set_public / leaderboard honor the close
+# ---------------------------------------------------------------------------
+
+
+def _board_patches(row):
+    return (
+        patch("core.services.launch_service.user_repo.get", AsyncMock(return_value={"email": "me@x.com"})),
+        patch("core.services.launch_service.launch_waitlist_repo.get", AsyncMock(return_value=row)),
+    )
+
+
+@pytest.mark.parametrize("action", ["connect_stripe", "set_public"])
+async def test_board_actions_refused_for_a_ruled_out_row(action):
+    row = dict(ROW, joined_at="t", compete_eligible=False)
+    p0, p1 = _board_patches(row)
+    with p0, p1:
+        with pytest.raises(launch_service.LaunchRefused) as exc:
+            if action == "connect_stripe":
+                await launch_service.connect_stripe(AUTH, _sched(-1), stripe_key="rk_test_x")
+            else:
+                await launch_service.set_public(AUTH, _sched(-1), public=True)
+    assert exc.value.reason == "not_eligible"
+
+
+@pytest.mark.parametrize("action", ["connect_stripe", "set_public"])
+async def test_board_actions_refused_once_the_competition_ended(action):
+    row = dict(ROW, joined_at="t", compete_eligible=True)
+    ended = _sched(-100)  # sheet closed and competition end long past
+    p0, p1 = _board_patches(row)
+    with p0, p1:
+        with pytest.raises(launch_service.LaunchRefused) as exc:
+            if action == "connect_stripe":
+                await launch_service.connect_stripe(AUTH, ended, stripe_key="rk_test_x")
+            else:
+                await launch_service.set_public(AUTH, ended, public=True)
+    assert exc.value.reason == "ended"
+
+
+async def test_pre_close_joined_rows_are_eligible_for_the_board():
+    """No compete_eligible flag yet (pre-close) — the gate must treat the
+    row as eligible, not refuse it."""
+    row = dict(ROW, joined_at="t")  # no compete_eligible key
+    p0, p1 = _board_patches(row)
+    with p0, p1:
+        with (
+            patch("core.services.launch_service.launch_waitlist_repo.update_fields", AsyncMock()) as update,
+            patch("core.services.launch_service.launch_entries_repo.get", AsyncMock(return_value=None)),
+        ):
+            result = await launch_service.set_public(AUTH, _sched(-1), public=False)
+    assert result == {"public": False}
+    update.assert_awaited_once_with("me@x.com", {"public": False})
+
+
+async def test_leaderboard_filters_ruled_out_rows():
+    entries = [
+        {"owner_id": "user_in", "display_name": "In", "has_key": True, "public": True, "delta_cents": 100},
+        {"owner_id": "user_out", "display_name": "Out", "has_key": True, "public": True, "delta_cents": 900},
+        {"owner_id": "user_legacy", "display_name": "Legacy", "has_key": True, "public": True, "delta_cents": 50},
+    ]
+    sheet = [
+        {"email": "in@x.com", "user_id": "user_in", "compete_eligible": True},
+        {"email": "out@x.com", "user_id": "user_out", "compete_eligible": False},
+        # user_legacy has no sheet row at all — stays visible.
+    ]
+    with (
+        patch("core.services.launch_service.launch_entries_repo.list_all", AsyncMock(return_value=entries)),
+        patch("core.services.launch_service.launch_waitlist_repo.list_all", AsyncMock(return_value=sheet)),
+    ):
+        board = await launch_service.leaderboard()
+    names = [r["display_name"] for r in board["rows"]]
+    assert names == ["In", "Legacy"]  # ruled-out row gone, ranked by delta
+    assert board["competing"] == 2 and board["on_board"] == 2

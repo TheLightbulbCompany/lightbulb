@@ -148,3 +148,15 @@ async def test_compute_caches_for_60s(deps):
     first, _, _ = await ops_launch.compute()
     second, _, _ = await ops_launch.compute()
     assert first is second  # same cached object
+
+
+async def test_async_close_bookkeeping_surfaces(deps):
+    deps.update(close_started_at="2026-09-30T15:59:00+00:00", close_result=None)
+    data, _, _ = await ops_launch.compute()
+    assert data["close_running"] is True and data["close_result"] is None
+
+    ops_launch.clear_cache()
+    deps.update(close_result={"winners": 2, "coupon_skipped_nonflat": 1})
+    data, _, _ = await ops_launch.compute()
+    assert data["close_running"] is False
+    assert data["close_result"] == {"winners": 2, "coupon_skipped_nonflat": 1}

@@ -168,3 +168,19 @@ def test_get_sync_reads_through_a_client_with_bounded_timeouts():
         cfg = boto3_mod.resource.call_args.kwargs["config"]
     assert cfg.connect_timeout == 2 and cfg.read_timeout == 2
     assert cfg.retries["max_attempts"] == 2
+
+
+async def test_update_fields_sets_only_the_supplied_fields(repo):
+    await repo.put(dict(repo.DEFAULTS, enabled=True, stripe_coupon_id="coup_1"))
+    await repo.update_fields({"closed_at": "2026-09-30T16:00:00+00:00", "close_result": {"winners": 2}})
+    row = await repo.get()
+    assert row["closed_at"] == "2026-09-30T16:00:00+00:00"
+    assert row["close_result"] == {"winners": 2}  # ints, not Decimals
+    assert type(row["close_result"]["winners"]) is int
+    assert row["enabled"] is True and row["stripe_coupon_id"] == "coup_1"  # untouched
+
+
+async def test_update_fields_upserts_when_no_row_saved_yet(repo):
+    await repo.update_fields({"close_started_at": "2026-09-30T15:59:00+00:00"})
+    row = await repo.get()
+    assert row["close_started_at"] == "2026-09-30T15:59:00+00:00"

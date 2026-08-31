@@ -40,10 +40,16 @@ def test_post_desktop_pair_returns_pair_result(desktop_client):
         commands_mac=("system.notify", "device.info"),
         commands_cli=("system.run", "browser.proxy"),
     )
-    with patch(
-        "routers.desktop_pair.pair_desktop_devices",
-        AsyncMock(return_value=fake_result),
-    ) as pair:
+    with (
+        patch(
+            "routers.desktop_pair.pair_desktop_devices",
+            AsyncMock(return_value=fake_result),
+        ) as pair,
+        patch(
+            "routers.desktop_pair.push_desktop_pairing_live",
+            AsyncMock(return_value=True),
+        ) as push,
+    ):
         response = desktop_client.post(
             "/api/v1/desktop/pair",
             headers={"Authorization": "Bearer test"},
@@ -75,6 +81,45 @@ def test_post_desktop_pair_returns_pair_result(desktop_client):
     assert permissions.shell is True
     assert permissions.browser is True
     assert permissions.files is False
+    # The live push into the running container's trust store fires after a
+    # successful pair, with both freshly derived device ids.
+    push.assert_awaited_once_with(
+        owner_id="user_alice",
+        device_ids={"dev_mac_hash", "dev_cli_hash"},
+    )
+
+
+def test_post_desktop_pair_succeeds_when_live_push_fails(desktop_client):
+    """The live RPC push is best-effort: a failure (even an unexpected raise)
+    must never fail the pair request — the boot import is the fallback."""
+    fake_result = MagicMock(
+        gateway_url="wss://ws-dev.flickmeon.ai",
+        gateway_token="tok_xyz",
+        device_id_mac="dev_mac_hash",
+        device_id_cli="dev_cli_hash",
+        commands_mac=(),
+        commands_cli=(),
+    )
+    with (
+        patch(
+            "routers.desktop_pair.pair_desktop_devices",
+            AsyncMock(return_value=fake_result),
+        ),
+        patch(
+            "routers.desktop_pair.push_desktop_pairing_live",
+            AsyncMock(side_effect=RuntimeError("gateway exploded")),
+        ),
+    ):
+        response = desktop_client.post(
+            "/api/v1/desktop/pair",
+            headers={"Authorization": "Bearer test"},
+            json={
+                "tauriMacPubKey": "-----BEGIN PUBLIC KEY-----\nABC\n-----END PUBLIC KEY-----\n",
+                "cliPubKey": "-----BEGIN PUBLIC KEY-----\nDEF\n-----END PUBLIC KEY-----\n",
+            },
+        )
+
+    assert response.status_code == 200, response.text
 
 
 def test_post_desktop_pair_rejects_missing_pubkey(desktop_client):
@@ -102,10 +147,16 @@ def test_post_desktop_pair_returns_400_on_value_error(desktop_client):
 
 
 def test_delete_device_204(desktop_client):
-    with patch(
-        "routers.desktop_pair.revoke_desktop_device",
-        AsyncMock(return_value=True),
-    ) as revoke:
+    with (
+        patch(
+            "routers.desktop_pair.revoke_desktop_device",
+            AsyncMock(return_value=True),
+        ) as revoke,
+        patch(
+            "routers.desktop_pair.push_desktop_revoke_live",
+            AsyncMock(return_value=True),
+        ) as evict,
+    ):
         response = desktop_client.delete(
             "/api/v1/desktop/devices/dev_abc",
             headers={"Authorization": "Bearer test"},
@@ -114,3 +165,24 @@ def test_delete_device_204(desktop_client):
     revoke.assert_awaited_once()
     kwargs = revoke.await_args.kwargs
     assert kwargs["device_id"] == "dev_abc"
+    # The live trust-store eviction fires too — the boot import is add-only,
+    # so the JSON removal alone never evicts the device from the gateway.
+    evict.assert_awaited_once_with(owner_id="user_alice", device_id="dev_abc")
+
+
+def test_delete_device_204_when_live_eviction_fails(desktop_client):
+    with (
+        patch(
+            "routers.desktop_pair.revoke_desktop_device",
+            AsyncMock(return_value=True),
+        ),
+        patch(
+            "routers.desktop_pair.push_desktop_revoke_live",
+            AsyncMock(side_effect=RuntimeError("gateway exploded")),
+        ),
+    ):
+        response = desktop_client.delete(
+            "/api/v1/desktop/devices/dev_abc",
+            headers={"Authorization": "Bearer test"},
+        )
+    assert response.status_code == 204

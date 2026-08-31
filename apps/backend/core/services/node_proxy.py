@@ -24,7 +24,12 @@ from uuid import uuid4
 
 from core.gateway.node_connection import NodeUpstreamConnection
 from core.containers import get_ecs_manager, get_gateway_pool
+from core.observability.metrics import put_metric
 from core.services.config_patcher import patch_openclaw_config
+from core.services.desktop_pair_live import (
+    approve_pending_node_surface,
+    heal_desktop_device_not_paired,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -207,10 +212,36 @@ async def handle_node_connect(
         # a stale upstream in the registry. Use pop with default to stay
         # idempotent with the disconnect cleanup path.
         _node_upstreams.pop(connection_id, None)
+        # Self-heal NOT_PAIRED (twin of operator_proxy's operator-device heal).
+        # Since the OpenClaw 8.x image the gateway's trust store is SQLite,
+        # seeded from the backend-written paired.json only at boot — so a
+        # device paired via /desktop/pair against a RUNNING container is
+        # rejected NOT_PAIRED forever. The rejection durably created a pending
+        # pairing request; approve it here (gated on the backend-written
+        # paired.json — see heal_desktop_device_not_paired) so the desktop's
+        # own retry loop lands paired next attempt. A CancelledError bypasses
+        # the heal's `except Exception` by design; the finally still closes
+        # the rejected socket.
         try:
-            await upstream.close()
-        except Exception:
-            pass
+            rejection = upstream.rejection_error
+            if isinstance(rejection, dict) and rejection.get("code") == "NOT_PAIRED":
+                details = rejection.get("details")
+                if not isinstance(details, dict):
+                    details = {}
+                request_id = details.get("requestId")
+                healed = await heal_desktop_device_not_paired(
+                    owner_id=owner_id,
+                    ip=ip,
+                    gateway_token=container["gateway_token"],
+                    device_id=upstream.device_id,
+                    request_id=request_id if isinstance(request_id, str) and request_id else None,
+                )
+                put_metric("node.connect.not_paired_selfheal" if healed else "node.connect.not_paired_selfheal_failed")
+        finally:
+            try:
+                await upstream.close()
+            except Exception:
+                pass
         raise
 
     # Push hello-ok DOWN to the client, keyed to the subprocess's OWN
@@ -283,6 +314,22 @@ async def handle_node_connect(
         connection_id,
         node_id,
     )
+
+    # Second live-pairing gate: the 8.x gateway parks the node's declared
+    # command surface as pendingNodeSurface during this very handshake and
+    # strips its live commands to [] until an operator approves it — the boot
+    # fold of nodes/paired.json only covers the next container restart.
+    # Approve it now (gated on the backend-written nodes/paired.json and the
+    # owner's granted command set; never raises). The gateway updates the
+    # connected session in place, no reconnect needed.
+    if upstream.device_id:
+        await approve_pending_node_surface(
+            owner_id=owner_id,
+            ip=ip,
+            gateway_token=container["gateway_token"],
+            device_id=upstream.device_id,
+        )
+
     return hello
 
 

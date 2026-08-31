@@ -41,6 +41,7 @@ describe("NAV_ACTIONS derives from the sidebar IA", () => {
     expect(filterNavActions("dashboard").map((a) => a.id)).toContain("go-dashboard");
     expect(filterNavActions("artifacts").map((a) => a.id)).toContain("go-artifacts");
     expect(filterNavActions("issues").map((a) => a.id)).toContain("go-issues");
+    expect(filterNavActions("approvals").map((a) => a.id)).toContain("go-inbox");
   });
 });
 

@@ -50,7 +50,7 @@ describe("DashboardPanel", () => {
     render(<DashboardPanel />);
     // Header — PanelMasthead overline + h1 (editorial atom layer, PR 8)
     expect(screen.getByText("Operations")).toBeInTheDocument();
-    expect(screen.getByText("Dashboard")).toBeInTheDocument();
+    expect(screen.getByText("Home")).toBeInTheDocument();
     // 4 tile labels — scoped to the metrics strip ("Agents" also names the
     // ActiveAgentsPanel section heading).
     const metrics = within(screen.getByLabelText("Key metrics"));

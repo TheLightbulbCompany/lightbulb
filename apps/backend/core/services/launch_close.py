@@ -358,6 +358,9 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
     # retries the misses.
     sends = {"winner": 0, "competing": 0, "not_selected": 0}
     email_failures = 0
+    # Admin copy overrides, read ONCE (cached on the settings row) rather
+    # than per send.
+    copy = launch_phase.email_copy()
     for r in sheet:
         if r.get("winner_email_sent_at"):
             continue
@@ -388,7 +391,7 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
             variant, send, extra = "competing", send_still_competing_email, {"comp_slots": s.comp_slots}
         else:
             variant, send, extra = "not_selected", send_not_selected_email, {"comp_slots": s.comp_slots}
-        message_id = await send(to_email=r["email"], first_name=None, **extra)
+        message_id = await send(to_email=r["email"], first_name=None, copy=copy, **extra)
         if message_id:
             sends[variant] += 1
         else:

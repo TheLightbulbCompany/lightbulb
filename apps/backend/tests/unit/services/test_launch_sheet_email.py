@@ -4,6 +4,8 @@ still-competing, not-selected). No pot numbers anywhere."""
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from core.services import launch_sheet_email as em
 
 CLOSES = datetime(2026, 9, 30, 16, 0, tzinfo=timezone.utc)  # noon ET
@@ -126,3 +128,98 @@ async def test_no_email_mentions_the_pot():
         # \bpot\b, not a substring check — "spots" is fine, the pot is not.
         assert not re.search(r"\bpot\b", kw["html"], re.I) and not re.search(r"\bpot\b", kw["text"], re.I)
         assert "$1,000" not in kw["text"] and "1000" not in kw["text"]
+
+
+# ---------------------------------------------------------------------------
+# Admin-editable copy — the row holds OVERRIDES, the module holds the defaults
+# ---------------------------------------------------------------------------
+
+
+async def test_an_override_replaces_the_default_copy():
+    copy = {"competing": {"subject": "Custom subject", "lead": "Custom lead.", "detail": "Custom detail."}}
+    with patch.object(em.email_service, "send_email", AsyncMock(return_value="m")) as send:
+        await em.send_still_competing_email(to_email="a@x.com", first_name=None, comp_slots=200, copy=copy)
+    kw = send.await_args.kwargs
+    assert kw["subject"] == "Custom subject"
+    assert "Custom lead." in kw["text"] and "Custom detail." in kw["html"]
+    assert "you're in the competition" not in kw["text"]
+
+
+async def test_a_blank_or_missing_override_field_falls_back_to_the_default():
+    # subject overridden, lead blank (whitespace only), detail absent.
+    copy = {"not_selected": {"subject": "Only the subject", "lead": "   "}}
+    with patch.object(em.email_service, "send_email", AsyncMock(return_value="m")) as send:
+        await em.send_not_selected_email(to_email="a@x.com", first_name=None, comp_slots=200, copy=copy)
+    kw = send.await_args.kwargs
+    assert kw["subject"] == "Only the subject"
+    assert "The sign-up sheet is closed, and the 200 free months are taken." in kw["text"]
+    assert "You're not in the competition this round" in kw["text"]
+
+
+async def test_no_override_at_all_is_the_shipped_default():
+    with patch.object(em.email_service, "send_email", AsyncMock(return_value="m")) as send:
+        await em.send_still_competing_email(to_email="a@x.com", first_name=None, comp_slots=200, copy={})
+    assert "and you're in the competition." in send.await_args.kwargs["text"]
+
+
+async def test_admin_copy_is_escaped_never_rendered_as_markup():
+    """Admin copy is PLAIN TEXT — a `<b>` in it must reach the inbox as
+    characters, exactly like a user-supplied first name does."""
+    copy = {"competing": {"lead": "<b>bold</b> & <script>alert(1)</script>"}}
+    with patch.object(em.email_service, "send_email", AsyncMock(return_value="m")) as send:
+        await em.send_still_competing_email(to_email="a@x.com", first_name=None, comp_slots=200, copy=copy)
+    kw = send.await_args.kwargs
+    assert "<b>" not in kw["html"] and "<script>" not in kw["html"]
+    assert "&lt;b&gt;bold&lt;/b&gt; &amp; &lt;script&gt;" in kw["html"]
+    # …and apostrophes/quotes stay readable (quote=False — these are text nodes).
+    assert "&#x27;" not in kw["html"]
+
+
+async def test_an_unknown_placeholder_renders_literally_and_never_raises():
+    """A typo in admin copy must not take the close down with a KeyError."""
+    copy = {"not_selected": {"detail": "Slots: {comp_slots}, typo: {compslots} {referral_link}"}}
+    with patch.object(em.email_service, "send_email", AsyncMock(return_value="m")) as send:
+        assert await em.send_not_selected_email(to_email="a@x.com", first_name=None, comp_slots=50, copy=copy)
+    body = send.await_args.kwargs["text"]
+    assert "Slots: 50, typo: {compslots} {referral_link}" in body
+
+
+async def test_unbalanced_braces_render_raw_instead_of_raising():
+    copy = {"competing": {"lead": "half open {comp_slots"}}
+    with patch.object(em.email_service, "send_email", AsyncMock(return_value="m")) as send:
+        assert await em.send_still_competing_email(to_email="a@x.com", first_name=None, comp_slots=9, copy=copy)
+    assert "half open {comp_slots" in send.await_args.kwargs["text"]
+
+
+async def test_join_email_copy_can_be_overridden_with_its_placeholders():
+    copy = {"join": {"lead": "Spot {position} of {comp_slots}.", "detail": "Closes {sheet_closes}."}}
+    result, send = await _send_join(copy=copy)
+    assert result == "msg_1"
+    kw = send.await_args.kwargs
+    for body in (kw["html"], kw["text"]):
+        assert "Spot 7 of 200." in body
+        assert "Closes Wednesday, September 30 at 12:00 PM ET." in body
+    # The referral CTA and the button are code, not copy — still there.
+    assert "https://dev.flickmeon.ai/?ref=ABCD2345" in kw["html"]
+
+
+def test_placeholders_in_finds_names_and_rejects_unbalanced():
+    assert em.placeholders_in("a {comp_slots} b {position}") == {"comp_slots", "position"}
+    assert em.placeholders_in("no placeholders") == set()
+    with pytest.raises(ValueError):
+        em.placeholders_in("{oops")
+
+
+async def test_send_test_uses_a_distinguishable_kind():
+    values = em.sample_values(comp_slots=200, referral_jump=10, sheet_closes_at=CLOSES)
+    with patch.object(em.email_service, "send_email", AsyncMock(return_value="m")) as send:
+        assert await em.send_test("competing", to_email="admin@x.com", copy=None, values=values) == "m"
+    kw = send.await_args.kwargs
+    assert kw["to"] == "admin@x.com" and kw["kind"] == "launch_competing_test"
+
+
+async def test_every_variant_renders_with_sample_values():
+    values = em.sample_values(comp_slots=200, referral_jump=10, sheet_closes_at=CLOSES)
+    for variant in em.VARIANTS:
+        body = em.render(variant, copy=None, values=values)
+        assert body["subject"] and body["html"].startswith("<div") and body["text"]

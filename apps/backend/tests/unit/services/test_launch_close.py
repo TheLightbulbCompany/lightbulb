@@ -51,6 +51,8 @@ class _Harness:
         self.close_state_writes: list[dict] = []
         self.sent: list[tuple[str, str]] = []
         self.sent_comp_slots: list[int | None] = []
+        self.sent_copy: list[dict | None] = []
+        self.email_copy: dict = {}
 
     async def _update_fields(self, email, fields):
         self.rows[email].update(fields)
@@ -78,12 +80,13 @@ class _Harness:
     async def _effective(self):
         return dict(self.settings_row)
 
-    def _send(self, kind, *, to_email, first_name, comp_slots=None):
+    def _send(self, kind, *, to_email, first_name, comp_slots=None, copy=None):
         # Synchronous side_effect for the AsyncMock: the return value is what
         # the await resolves to. comp_slots only rides the two non-winner
         # variants; it is recorded so a test can assert what the copy renders.
         self.sent.append((kind, to_email))
         self.sent_comp_slots.append(comp_slots)
+        self.sent_copy.append(copy)
         return f"msg_{to_email}"
 
     def __enter__(self):
@@ -142,6 +145,9 @@ class _Harness:
             ),
             patch("core.services.launch_close.run_in_thread", AsyncMock(side_effect=self._stripe)),
             patch("core.services.launch_close.settings.STRIPE_FLAT_PRICE_ID", "price_flat"),
+            # Appended LAST on purpose: `self.mint`/`self.list_all_mock`
+            # below index into this list positionally.
+            patch("core.services.launch_close.launch_phase.email_copy", side_effect=lambda: self.email_copy),
         ]
         m = [p.__enter__() for p in self._patches]
         self.mint = m[2]

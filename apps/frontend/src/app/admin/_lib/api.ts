@@ -817,3 +817,21 @@ export type LaunchOpsData = LaunchOpsSheet | LaunchOpsDisabled;
 export async function getLaunchOps(token: string): Promise<OpsEnvelope<LaunchOpsData> | null> {
   return adminFetch<OpsEnvelope<LaunchOpsData>>(token, "/ops/launch");
 }
+
+/** One launch email's editable copy. `defaults` is the copy shipped in the
+ * backend module (the source of truth); `override` holds only the fields an
+ * admin has actually replaced — a blank field falls back to the default, so
+ * clearing all three IS "reset to default". `preview_html` renders the
+ * EFFECTIVE body with sample values. */
+export interface LaunchEmailVariant {
+  variant: string;
+  placeholders: string[];
+  defaults: { subject: string; lead: string; detail: string };
+  override: { subject?: string; lead?: string; detail?: string };
+  preview_subject: string;
+  preview_html: string;
+}
+
+export async function getLaunchEmailCopy(token: string): Promise<{ variants: LaunchEmailVariant[] } | null> {
+  return adminFetch<{ variants: LaunchEmailVariant[] }>(token, "/ops/launch/email-copy");
+}

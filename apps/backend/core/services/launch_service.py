@@ -153,6 +153,7 @@ async def join_sheet(auth: AuthContext, s: Schedule, *, display_name: str, publi
                 referral_jump=referral_jump,
                 comp_slots=s.comp_slots,
                 sheet_closes_at=s.sheet_closes_at,
+                copy=launch_phase.email_copy(),
             )
         except Exception:  # noqa: BLE001 — a failed email must never fail the join
             logger.exception("launch: join email failed for %s", owner_id)

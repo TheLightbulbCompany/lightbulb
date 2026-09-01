@@ -87,6 +87,26 @@ class LaunchSettingsUpdate(BaseModel):
     referral_jump: int
 
 
+class LaunchEmailCopyUpdate(BaseModel):
+    """One variant's copy override. Every field optional and BLANK-MEANS-
+    DEFAULT: the shipped copy in ``core.services.launch_sheet_email`` is the
+    source of truth, the row only ever holds overrides, so clearing all three
+    is how "reset to default" is sent. Plain text — it is escaped into the
+    HTML shell, never rendered as markup."""
+
+    variant: str
+    subject: str | None = None
+    lead: str | None = None
+    detail: str | None = None
+
+
+class LaunchEmailTestRequest(BaseModel):
+    """Send one variant to the signed-in admin's own Clerk address, with
+    sample values. Touches no sheet row."""
+
+    variant: str
+
+
 class StripeCouponCreateRequest(BaseModel):
     force: bool = False
 

@@ -44,6 +44,7 @@ def test_defaults_shape():
         "close_started_at": None,
         "close_result": None,
         "stripe_coupon_id": "",
+        "email_copy": {},
         "mint_nonce": 0,
     }
 
@@ -333,3 +334,96 @@ async def test_create_stripe_coupon_stripe_error_raises_without_leaking_the_mess
     assert "super secret detail" not in str(exc.value)
     put_mock.assert_not_called()
     clear.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Admin-editable email copy
+# ---------------------------------------------------------------------------
+
+
+def test_email_copy_validate_accepts_supported_placeholders():
+    out = ls.validate_email_copy("competing", {"lead": "  {comp_slots} months  ", "detail": "plain"})
+    assert out == {"lead": "{comp_slots} months", "detail": "plain"}
+
+
+def test_email_copy_validate_drops_blank_fields_so_they_fall_back_to_the_default():
+    assert ls.validate_email_copy("not_selected", {"subject": "", "lead": "   ", "detail": None}) == {}
+
+
+def test_email_copy_validate_rejects_a_placeholder_the_variant_cannot_supply():
+    with pytest.raises(ls.SettingsInvalid) as e:
+        ls.validate_email_copy("winner_paid", {"detail": "hi {comp_slots}"})
+    assert "comp_slots" in e.value.errors["detail"]
+    assert "supports none" in e.value.errors["detail"]
+
+
+def test_email_copy_validate_rejects_a_typo_placeholder():
+    with pytest.raises(ls.SettingsInvalid) as e:
+        ls.validate_email_copy("competing", {"lead": "{compslots}"})
+    assert "{compslots}" in e.value.errors["lead"]
+
+
+def test_email_copy_validate_rejects_unbalanced_braces():
+    with pytest.raises(ls.SettingsInvalid) as e:
+        ls.validate_email_copy("competing", {"lead": "half {open"})
+    assert "unbalanced" in e.value.errors["lead"]
+
+
+def test_email_copy_validate_rejects_an_unknown_variant():
+    with pytest.raises(ls.SettingsInvalid) as e:
+        ls.validate_email_copy("nope", {"lead": "x"})
+    assert "variant" in e.value.errors
+
+
+def test_email_copy_validate_caps_length():
+    with pytest.raises(ls.SettingsInvalid) as e:
+        ls.validate_email_copy("competing", {"detail": "x" * (ls.MAX_COPY_LEN + 1)})
+    assert "at most" in e.value.errors["detail"]
+
+
+async def test_update_email_copy_writes_only_that_variant_and_clears_caches():
+    written: list[dict] = []
+
+    async def _update_fields(fields, **kw):
+        written.append(fields)
+        return True
+
+    with (
+        patch.object(ls, "effective", AsyncMock(return_value={"email_copy": {"join": {"lead": "keep me"}}})),
+        patch.object(ls.launch_settings_repo, "update_fields", AsyncMock(side_effect=_update_fields)),
+        patch.object(ls, "_clear_caches") as clear,
+    ):
+        copy = await ls.update_email_copy(ADMIN, "competing", {"lead": "new lead"})
+    assert copy == {"join": {"lead": "keep me"}, "competing": {"lead": "new lead"}}
+    assert written[0]["email_copy"] == copy and written[0]["updated_by"] == "user_admin"
+    clear.assert_called_once()
+
+
+async def test_update_email_copy_with_every_field_blank_resets_to_default():
+    with (
+        patch.object(ls, "effective", AsyncMock(return_value={"email_copy": {"competing": {"lead": "old"}}})),
+        patch.object(ls.launch_settings_repo, "update_fields", AsyncMock(return_value=True)),
+        patch.object(ls, "_clear_caches"),
+    ):
+        copy = await ls.update_email_copy(ADMIN, "competing", {"subject": "", "lead": "", "detail": ""})
+    assert copy == {}  # the row no longer overrides it — the module default is back
+
+
+async def test_a_settings_save_carries_the_email_copy_forward():
+    """The settings PUT is a full replace of eight fields; without the
+    carry-forward every schedule edit would silently wipe the admin's copy."""
+    stored: dict = {}
+
+    async def _put(item):
+        stored.update(item)
+        return dict(item)
+
+    current = {**ls.DEFAULTS, "email_copy": {"competing": {"lead": "hand-written"}}}
+    with (
+        patch.object(ls, "effective", AsyncMock(return_value=current)),
+        patch.object(ls.launch_settings_repo, "put", AsyncMock(side_effect=_put)),
+        patch.object(ls, "_clear_caches"),
+    ):
+        saved = await ls.update(ADMIN, _payload())
+    assert stored["email_copy"] == {"competing": {"lead": "hand-written"}}
+    assert saved["email_copy"] == {"competing": {"lead": "hand-written"}}

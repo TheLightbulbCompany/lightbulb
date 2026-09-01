@@ -15,11 +15,15 @@ vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 const launchInfo = vi.fn<() => unknown>();
 vi.mock("@/components/launch/useLaunchInfo", () => ({ useLaunchInfo: () => launchInfo() }));
 
+// A `vi.fn()` (not a fixed object) so individual tests can vary firstName —
+// used below to check the email-local-part fallback when it's absent. There
+// is deliberately no company-name field here: nothing this banner already
+// has mounted carries the owner's Paperclip company name (see the comment
+// on `prefill` in LaunchJoinBanner.tsx), so the prefill chain stops at
+// first name -> email local-part.
+const clerkUser = vi.fn<() => { id: string; firstName: string | null; primaryEmailAddress: { emailAddress: string } }>();
 vi.mock("@clerk/nextjs", () => ({
-  useUser: () => ({
-    user: { id: "user_1", firstName: "Ada", primaryEmailAddress: { emailAddress: "ada@lovelace.dev" } },
-    isLoaded: true,
-  }),
+  useUser: () => ({ user: clerkUser(), isLoaded: true }),
 }));
 
 import type { LaunchMe } from "@/lib/launch";
@@ -61,14 +65,23 @@ describe("LaunchJoinBanner", () => {
     get.mockReset();
     post.mockReset();
     launchInfo.mockReturnValue(info());
+    clerkUser.mockReturnValue({ id: "user_1", firstName: "Ada", primaryEmailAddress: { emailAddress: "ada@lovelace.dev" } });
     localStorage.clear();
   });
 
-  it("shows the open-sheet nudge with the display name prefilled from the profile", async () => {
+  it("shows the open-sheet nudge with the display name prefilled from the profile, labeled as public", async () => {
     get.mockResolvedValue(me());
     mount();
     expect(await screen.findByText(/launch competition is open — first 200 get a month free/)).toBeInTheDocument();
     expect(screen.getByLabelText(/display name/i)).toHaveValue("Ada");
+    expect(screen.getByText(/shown on the public board/i)).toBeInTheDocument();
+  });
+
+  it("falls back to the email local-part when the profile has no first name", async () => {
+    clerkUser.mockReturnValue({ id: "user_1", firstName: null, primaryEmailAddress: { emailAddress: "ada@lovelace.dev" } });
+    get.mockResolvedValue(me());
+    mount();
+    expect(await screen.findByLabelText(/display name/i)).toHaveValue("ada");
   });
 
   it("renders nothing when the launch is off (404), closed, or the owner isn't onboarded", async () => {

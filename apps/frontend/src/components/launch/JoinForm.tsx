@@ -59,6 +59,7 @@ export function JoinForm({ onJoined }: { onJoined: () => void }) {
         <span>Display name</span>
         <input id="launch-name" required minLength={2} maxLength={40} value={name} onChange={(e) => setName(e.target.value)} />
       </label>
+      <p className="lc-fine" style={{ marginTop: 6 }}>Shown on the public board</p>
       <label className="lc-check">
         <input type="checkbox" checked={isPublic} onChange={(e) => setIsPublic(e.target.checked)} />
         Show me on the public board

@@ -11,6 +11,11 @@ import { JoinForm } from "../JoinForm";
 describe("JoinForm", () => {
   beforeEach(() => { post.mockReset(); capture.mockReset(); });
 
+  it("labels the display name as shown on the public board", () => {
+    render(<JoinForm onJoined={vi.fn()} />);
+    expect(screen.getByText(/shown on the public board/i)).toBeInTheDocument();
+  });
+
   it("posts display_name and public, captures analytics, and calls onJoined", async () => {
     const onJoined = vi.fn();
     post.mockResolvedValue({ display_name: "Ada", public: true });

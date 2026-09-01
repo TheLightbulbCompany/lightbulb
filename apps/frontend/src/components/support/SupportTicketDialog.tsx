@@ -5,6 +5,7 @@ import { useState } from "react";
 
 import { capture } from "@/lib/analytics";
 import { useApi } from "@/lib/api";
+import { SUPPORT_EMAIL } from "@/lib/domain";
 import { getRecentRequestIds } from "@/lib/requestIdLog";
 
 export const SUPPORT_CATEGORIES = [
@@ -110,7 +111,7 @@ export function SupportTicketDialog({ open, onClose, presetCategory, presetMessa
                 // that doesn't depend on our mail working.
                 <>
                   Our email delivery is having trouble, so we can&rsquo;t promise this reached
-                  us. Please send it straight to support@isol8.co and we&rsquo;ll pick it up
+                  us. Please send it straight to {SUPPORT_EMAIL} and we&rsquo;ll pick it up
                   there.
                 </>
               )}
@@ -168,7 +169,7 @@ export function SupportTicketDialog({ open, onClose, presetCategory, presetMessa
 
             {state === "error" ? (
               <p className="mb-3 text-xs text-err">
-                Couldn&rsquo;t send — please try again, or email support@isol8.co directly.
+                Couldn&rsquo;t send — please try again, or email {SUPPORT_EMAIL} directly.
               </p>
             ) : null}
 

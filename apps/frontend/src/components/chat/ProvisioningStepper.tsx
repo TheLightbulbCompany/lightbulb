@@ -21,6 +21,7 @@ import { useGateway } from "@/hooks/useGateway";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { nextOnboardingCompletion } from "@/components/chat/onboardingAnalytics";
 import { replaceSearchParams } from "@/lib/shellNav";
+import { SUPPORT_MAILTO } from "@/lib/domain";
 import { ChatGPTOAuthStep } from "@/components/chat/ChatGPTOAuthStep";
 import { ByoKeyStep } from "@/components/chat/ByoKeyStep";
 import { CreditsStep } from "@/components/chat/CreditsStep";
@@ -41,6 +42,7 @@ import {
   PROVISION_IDEAS,
   PROVISION_IDEA_ROTATION_MS as IDEA_ROTATION_MS,
   PROVISION_TIMEOUT_MS as TIMEOUT_MS,
+  PROVISION_STUCK_MS as STUCK_MS,
   formatProvisionElapsed as formatElapsed,
   deriveUIPhase,
   type UIPhase,
@@ -993,7 +995,7 @@ export function ProvisioningStepper({
                 </Button>
                 <Button variant="ghost" size="sm" asChild>
                   <a
-                    href="mailto:support@isol8.co"
+                    href={SUPPORT_MAILTO}
                     onClick={() => capture("support_contact_clicked", { source: "onboarding_stepper", phase })}
                   >Contact support</a>
                 </Button>
@@ -1161,7 +1163,7 @@ export function ProvisioningStepper({
             </Button>
             <Button variant="ghost" size="sm" asChild>
               <a
-                href="mailto:support@isol8.co"
+                href={SUPPORT_MAILTO}
                 onClick={() => capture("support_contact_clicked", { source: "onboarding_stepper", phase })}
               >Contact support</a>
             </Button>
@@ -1359,7 +1361,7 @@ export function ProvisioningStepper({
                 </Button>
                 <Button variant="ghost" size="sm" asChild>
                   <a
-                    href="mailto:support@isol8.co"
+                    href={SUPPORT_MAILTO}
                     onClick={() => capture("support_contact_clicked", { source: "onboarding_stepper", phase })}
                   >Contact support</a>
                 </Button>
@@ -1445,7 +1447,7 @@ export function ProvisioningStepper({
             </Button>
             <Button variant="ghost" className="rounded-full" asChild>
               <a
-                href="mailto:support@isol8.co"
+                href={SUPPORT_MAILTO}
                 onClick={() => capture("support_contact_clicked", { source: "onboarding_stepper", phase })}
               >Contact Support</a>
             </Button>
@@ -1459,6 +1461,25 @@ export function ProvisioningStepper({
   const steps = STEPS_PAID;
   const currentIdx = steps.findIndex((s) => s.phase === phase);
   const currentStep = steps[currentIdx] || steps[0];
+
+  // The SAME `bootstrap.state === "failed"` fact the ready branch reads at the
+  // top of this component. It used to be read ONLY there, so a container that
+  // never reached ready — the exact case where the owner has no chat surface to
+  // fall back on — showed the cheerful cold-start card instead, with the reason
+  // sitting unread on every poll. A dev owner sat on it for 21 hours while
+  // `last_error` said "Gateway connect failed: gateway starting; retry shortly".
+  // Inline, NOT a second `fixed` corner stack: this branch has no `children`
+  // underneath to layer over, and the ready branch's stack owns the only one.
+  const firstRunFailed = derived?.bootstrap.state === "failed";
+  // Past the second tier we stop claiming progress. Derived, not state, so
+  // "Check again" cannot erase it — the old handler reset `timedOut` AND
+  // `elapsedMs` to zero, which is how 21 hours kept looking like 5 minutes.
+  const stuck = elapsedMs > STUCK_MS;
+  // While the failure is known, the pod animation would keep steaming as if
+  // work were still happening.
+  const podAnimating =
+    !firstRunFailed &&
+    (phase === "gateway" || phase === "channels-sidecars" || phase === "agent");
 
   return (
     <>
@@ -1687,7 +1708,11 @@ export function ProvisioningStepper({
           {/* Animation stage */}
           <div className="provision-stage" aria-hidden="true">
             {/* Step: payment/container — key spinner */}
-            <div className={`provision-anim ${phase === "payment" || phase === "container" ? "active" : ""}`}>
+            <div
+              className={`provision-anim ${
+                !firstRunFailed && (phase === "payment" || phase === "container") ? "active" : ""
+              }`}
+            >
               <div className="anim-key-circle" />
               <div className="anim-key-icon">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--midnight)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1701,24 +1726,8 @@ export function ProvisioningStepper({
                 see continuous motion as the stepper text advances through
                 "Booting gateway..." -> "Starting channels..." -> "Starting
                 agent...". One animation, three labels. */}
-            <div
-              className={`provision-anim ${
-                phase === "gateway" ||
-                phase === "channels-sidecars" ||
-                phase === "agent"
-                  ? "active"
-                  : ""
-              }`}
-            >
-              <div
-                className={`anim-pod ${
-                  phase === "gateway" ||
-                  phase === "channels-sidecars" ||
-                  phase === "agent"
-                    ? "pod-open"
-                    : ""
-                }`}
-              >
+            <div className={`provision-anim ${podAnimating ? "active" : ""}`}>
+              <div className={`anim-pod ${podAnimating ? "pod-open" : ""}`}>
                 <div className="pod-steam-line" /><div className="pod-steam-line" /><div className="pod-steam-line" />
                 <div className="pod-lid-l" /><div className="pod-lid-r" />
                 <div className="pod-body"><div className="pod-window" /></div>
@@ -1741,17 +1750,24 @@ export function ProvisioningStepper({
             aria-live="polite"
             aria-atomic="true"
           >
-            {currentStep?.activeLabel || "Setting up..."}
+            {firstRunFailed
+              ? "Setup didn't finish"
+              : currentStep?.activeLabel || "Setting up..."}
           </h2>
-          <div className="provision-desc provision-desc-ideas">
-            <RotatingIdeas
-              eyebrow={
-                isOrg
-                  ? `Preparing workspace for ${organization?.name} — try asking your agent to…`
-                  : "While you wait, try asking your agent to…"
-              }
-            />
-          </div>
+          {/* Rotating "while you wait, try asking your agent to…" prompts are
+              an invitation to keep waiting. Once the failure is known there is
+              nothing to wait for, so they go. */}
+          {!firstRunFailed && (
+            <div className="provision-desc provision-desc-ideas">
+              <RotatingIdeas
+                eyebrow={
+                  isOrg
+                    ? `Preparing workspace for ${organization?.name} — try asking your agent to…`
+                    : "While you wait, try asking your agent to…"
+                }
+              />
+            </div>
+          )}
 
           {/* Progress dots */}
           <div className="provision-dots">
@@ -1764,14 +1780,19 @@ export function ProvisioningStepper({
           </div>
 
           {/* Quiet elapsed counter — present from the start so the user can
-              see the clock advancing, not a wall of unchanging spinner. */}
-          {(phase === "container" ||
-            phase === "gateway" ||
-            phase === "channels-sidecars" ||
-            phase === "agent") &&
+              see the clock advancing, not a wall of unchanging spinner. The
+              "cold starts can take a few minutes" caption is a claim about the
+              future, so it only survives while that is still plausibly true:
+              not once the failure is known, and not past the stuck tier. */}
+          {!firstRunFailed &&
+            (phase === "container" ||
+              phase === "gateway" ||
+              phase === "channels-sidecars" ||
+              phase === "agent") &&
             elapsedMs > 0 && (
               <div className="provision-elapsed" aria-live="polite">
-                {formatElapsed(elapsedMs)} · cold starts can take a few minutes
+                {formatElapsed(elapsedMs)}
+                {!stuck && " · cold starts can take a few minutes"}
               </div>
             )}
 
@@ -1784,29 +1805,45 @@ export function ProvisioningStepper({
             </div>
           )}
 
-          {timedOut && (
+          {/* The known-failure card. Inline, in the flow of this card — the
+              ready branch's `fixed` corner stack is the only one, and there is
+              no app behind this screen to layer a toast over. */}
+          {firstRunFailed && (
+            <FirstRunFailedNotice
+              lastError={derived?.bootstrap.last_error ?? null}
+              inline
+            />
+          )}
+
+          {!firstRunFailed && timedOut && (
             <div className="provision-timeout">
+              {/* Two tiers. The first is honest for a slow-but-live cold start.
+                  The second stops claiming it is "still going" — past 15 min
+                  nothing here is normal, and saying so is the only useful
+                  thing this screen can do. */}
               <p className="provision-timeout-msg">
-                Still going. Re-check below — your progress is preserved.
+                {stuck
+                  ? "This is taking longer than it should — something is stuck on our side. Setup normally finishes in a few minutes. Your progress is saved; contact us and we'll get it moving."
+                  : "Still going. Re-check below — your progress is preserved."}
               </p>
               <div className="provision-timeout-actions">
                 <Button
                   variant="outline"
                   size="sm"
                   className="rounded-full border-[var(--edge)]"
-                  onClick={() => {
-                    refresh();
-                    setTimedOut(false);
-                    provisioningStartRef.current = Date.now();
-                    setElapsedMs(0);
-                  }}
+                  // Re-poll ONLY. This used to also clear `timedOut` and reset
+                  // the clock to 0:00, so the one button an escalated owner
+                  // presses erased their own escalation and started the 5-min
+                  // budget over — 21 hours of stall read as five minutes,
+                  // repeatedly.
+                  onClick={() => refresh()}
                 >
                   Check again
                 </Button>
                 <Button variant="ghost" size="sm" asChild>
                   <a
-                    href="mailto:support@isol8.co"
-                    onClick={() => capture("support_contact_clicked", { source: "onboarding_stepper", phase })}
+                    href={SUPPORT_MAILTO}
+                    onClick={() => capture("support_contact_clicked", { source: "onboarding_stepper", phase, stuck })}
                   >Contact support</a>
                 </Button>
               </div>
@@ -1848,7 +1885,7 @@ function TeamsDegradedNotice() {
             features may be unavailable. Chat works normally.
           </p>
           <a
-            href="mailto:support@isol8.co"
+            href={SUPPORT_MAILTO}
             onClick={() =>
               capture("support_contact_clicked", { source: "teams_degraded_notice" })
             }
@@ -1893,26 +1930,61 @@ function TeamsDegradedNotice() {
  * too much machinery with its own defects. The reason strings are written for
  * operators, so they stay collapsed under "Technical details" rather than
  * leading — but they are never swallowed, because support needs them.
+ *
+ * `inline` is the COLD-START rendering of the same fact, and it differs in
+ * every way the branch differs:
+ *   - no `fixed` corner placement (that stack belongs to the ready branch, and
+ *     a test pins it at exactly one) and no toast shadow — this is the card;
+ *   - no title of its own: the cold-start card's own <h2> already says "Setup
+ *     didn't finish", and repeating it reads as two separate failures;
+ *   - no dismiss ×. Dismissing on the ready branch leaves you in a working
+ *     app. Dismissing here would leave you staring at the cold-start screen
+ *     with the reason gone — i.e. straight back into the lie;
+ *   - different body copy. "Your workspace is ready" is FALSE here — the
+ *     container never reached ready, and there is no chat behind this screen
+ *     to send Friday a message in, so that recovery does not exist either.
  */
-function FirstRunFailedNotice({ lastError }: { lastError: string | null }) {
+function FirstRunFailedNotice({
+  lastError,
+  inline = false,
+}: {
+  lastError: string | null;
+  inline?: boolean;
+}) {
   const [dismissed, setDismissed] = useState(false);
   useEffect(() => {
-    capture("first_run_failed_notice_shown");
-  }, []);
+    capture("first_run_failed_notice_shown", { surface: inline ? "cold_start" : "ready" });
+  }, [inline]);
   if (dismissed) return null;
   return (
     <div
       role="status"
       aria-live="polite"
-      className="max-w-sm rounded-xl border border-err bg-cream px-4 py-3 shadow-lg"
+      className={
+        inline
+          ? "mx-auto mt-7 max-w-sm rounded-xl border border-err bg-cream px-4 py-3 text-left"
+          : "max-w-sm rounded-xl border border-err bg-cream px-4 py-3 shadow-lg"
+      }
     >
       <div className="flex items-start gap-3">
         <div className="flex-1">
-          <p className="text-sm font-medium text-err">Friday couldn&apos;t start</p>
-          <p className="mt-1 text-xs text-[var(--midnight-soft)]">
-            Your workspace is ready, but her first run didn&apos;t get going.
-            Send her a message here to kick things off — if that doesn&apos;t
-            work either, contact support and we&apos;ll get it sorted.
+          {!inline && (
+            <p className="text-sm font-medium text-err">Friday couldn&apos;t start</p>
+          )}
+          <p className={`text-xs text-[var(--midnight-soft)] ${inline ? "" : "mt-1"}`}>
+            {inline ? (
+              <>
+                Your container came up, but the first-run kickoff failed and
+                won&apos;t retry on its own. Contact support and we&apos;ll
+                re-arm it — your brief is saved.
+              </>
+            ) : (
+              <>
+                Your workspace is ready, but her first run didn&apos;t get going.
+                Send her a message here to kick things off — if that doesn&apos;t
+                work either, contact support and we&apos;ll get it sorted.
+              </>
+            )}
           </p>
           {lastError && (
             <details className="mt-2">
@@ -1925,9 +1997,12 @@ function FirstRunFailedNotice({ lastError }: { lastError: string | null }) {
             </details>
           )}
           <a
-            href="mailto:support@isol8.co"
+            href={SUPPORT_MAILTO}
             onClick={() =>
-              capture("support_contact_clicked", { source: "first_run_failed_notice" })
+              capture("support_contact_clicked", {
+                source: "first_run_failed_notice",
+                surface: inline ? "cold_start" : "ready",
+              })
             }
             className="mt-2 inline-block text-xs font-medium text-[var(--midnight)] underline"
           >

@@ -165,7 +165,7 @@ describe("ProfilePanel — delete account", () => {
   it("org context gets the support-only message, never a delete button", () => {
     clerk.organization = { id: "org_1" };
     render(<SettingsPage />);
-    expect(screen.getByText(/contact support@isol8\.co/)).toBeInTheDocument();
+    expect(screen.getByText(/contact support@thelightbulb\.company/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /delete account/i })).toBeNull();
   });
 
@@ -175,6 +175,6 @@ describe("ProfilePanel — delete account", () => {
     clerk.orgLoaded = false;
     render(<SettingsPage />);
     expect(screen.queryByRole("button", { name: /delete account/i })).toBeNull();
-    expect(screen.queryByText(/contact support@isol8\.co/)).toBeNull();
+    expect(screen.queryByText(/contact support@thelightbulb\.company/)).toBeNull();
   });
 });

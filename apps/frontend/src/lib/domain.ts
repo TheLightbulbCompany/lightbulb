@@ -38,6 +38,23 @@ export const ROOT_DOMAIN = SITE_URL.replace(/^https?:\/\//, "").replace(
  */
 export const DEEP_LINK_SCHEME = "flickmeon";
 
+/**
+ * Where "contact support" actually lands.
+ *
+ * The MAIL domain, deliberately NOT derived from {@link ROOT_DOMAIN}:
+ * `flickmeon.ai` is the product URL and carries no MX, no SES identity, no mail
+ * records of any kind — the two are separate parameters on the infra side too
+ * (`apps/infra/lib/domains.ts`: `ROOT_DOMAIN` vs `PLATFORM_MAIL_DOMAIN`).
+ *
+ * One constant because the previous address, `support@isol8.co`, outlived the
+ * brand in ten hand-typed places, including the only escape hatch on the
+ * onboarding screen. An address that appears once cannot rot in a corner.
+ */
+export const SUPPORT_EMAIL = "support@thelightbulb.company";
+
+/** `href` form of {@link SUPPORT_EMAIL}, for every "Contact support" link. */
+export const SUPPORT_MAILTO = `mailto:${SUPPORT_EMAIL}`;
+
 /** `admin.<root>` etc. — hosts allowed to serve the /admin route group. */
 /**
  * The product domains this build answers on.

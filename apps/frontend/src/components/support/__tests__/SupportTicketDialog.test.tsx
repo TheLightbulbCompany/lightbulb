@@ -52,7 +52,9 @@ describe("SupportTicketDialog", () => {
 
     // Must not promise a reply, and must not claim we hold the message — the
     // email IS the capture path, so the only honest fallback is a direct address.
-    await waitFor(() => expect(screen.getByText(/support@isol8\.co/i)).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText(/support@thelightbulb\.company/i)).toBeInTheDocument(),
+    );
     expect(screen.queryByText(/on its way to our team/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/we logged your message/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/thanks — we got it/i)).not.toBeInTheDocument();

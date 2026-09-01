@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, act } from "@testing-library/react";
+import { render, screen, act, fireEvent } from "@testing-library/react";
 import React from "react";
+import { PROVISION_STUCK_MS, PROVISION_TIMEOUT_MS } from "@lightbulb/shared";
 
 // Global-mutate spy for the ready re-kick (the stepper sweeps `rpc|*` SWR
 // keys via useSWRConfig().mutate on the not-ready→ready transition). Partial
@@ -1002,7 +1003,7 @@ describe("ProvisioningStepper blocked-state rendering", () => {
 
       expect(
         screen.getByRole("link", { name: /contact support/i }),
-      ).toHaveAttribute("href", "mailto:support@isol8.co");
+      ).toHaveAttribute("href", "mailto:support@thelightbulb.company");
       // A Retry button here could not re-dispatch anything
       // (`claim_bootstrap_dispatch` admits only `not_started`, and
       // `reset_bootstrap_for_retry` is behind require_platform_admin) — a dead
@@ -1067,6 +1068,92 @@ describe("ProvisioningStepper blocked-state rendering", () => {
       expect(document.querySelectorAll(".fixed")).toHaveLength(1);
     });
 
+    // THE COVERAGE HOLE. Every case above builds `runtime_phase: "ready"`,
+    // which is the ONLY branch that read `bootstrap` — so the one state where
+    // the owner has no chat surface to fall back on was untested and, in
+    // production, unrendered. Observed on dev: 21 hours on the cold-start card
+    // with `last_error` shipped on every poll and read by nothing.
+    describe("...on a container that never reached ready", () => {
+      // The exact observed shape: ECS RUNNING, gateway port answering, health
+      // RPC answered, pool handshake never completed -> stepper phase "agent".
+      const coldStartWithBootstrap = (bootstrap: Record<string, unknown> | undefined) => {
+        gatewayHealthData = { ok: true };
+        useProvMock.mockReturnValue({
+          phase: "normal",
+          container: {
+            container_status: "running",
+            runtime_phase: "starting",
+            container_substatus: "gateway_healthy",
+            onboarded: true,
+            funnel: { state: "submitted" },
+            ...(bootstrap ? { bootstrap } : {}),
+          },
+          blocked: null,
+          refreshInterval: 3000,
+          refresh: vi.fn(),
+        });
+        return render(
+          <ProvisioningStepper>
+            <div>children</div>
+          </ProvisioningStepper>,
+        );
+      };
+      afterEach(() => {
+        gatewayHealthData = null;
+      });
+
+      it("shows the failure inline and drops every claim that it is still working", () => {
+        coldStartWithBootstrap({
+          state: "failed",
+          last_error: "Gateway connect failed: gateway starting; retry shortly",
+        });
+
+        expect(screen.getByText(/Setup didn't finish/i)).toBeInTheDocument();
+        expect(
+          screen.getByText(/Gateway connect failed: gateway starting/i),
+        ).toBeInTheDocument();
+
+        // The three lies, gone: the step label, the caption, the idea prompts.
+        expect(
+          screen.queryByText("Putting the finishing touches on your agent..."),
+        ).not.toBeInTheDocument();
+        expect(screen.queryByText(/cold starts can take a few minutes/i)).not.toBeInTheDocument();
+        expect(screen.queryByText(/While you wait/i)).not.toBeInTheDocument();
+      });
+
+      it("renders INLINE, never a second fixed overlay", () => {
+        coldStartWithBootstrap({ state: "failed", last_error: "chat.error" });
+        // The ready branch's corner stack is the only `.fixed` in this
+        // component, and it is unreachable from here.
+        expect(document.querySelectorAll(".fixed")).toHaveLength(0);
+      });
+
+      it("points at the live support address, and still offers no dead Retry", () => {
+        coldStartWithBootstrap({ state: "failed", last_error: "chat.error" });
+        expect(
+          screen.getByRole("link", { name: /contact support/i }),
+        ).toHaveAttribute("href", "mailto:support@thelightbulb.company");
+        expect(screen.queryByRole("button", { name: /retry/i })).not.toBeInTheDocument();
+      });
+
+      // The non-lie rule has to hold on this branch too: `dispatched`/`sent`
+      // are recovered by the dispatcher on the next poll, so a slow cold start
+      // must keep looking like a slow cold start.
+      it.each([
+        ["not_started", { state: "not_started", last_error: null }],
+        ["dispatched", { state: "dispatched", last_error: "connection refused" }],
+        ["sent", { state: "sent", last_error: null }],
+        ["absent", undefined],
+      ])("keeps the ordinary cold-start card for bootstrap=%s", (_label, bootstrap) => {
+        coldStartWithBootstrap(bootstrap);
+
+        expect(
+          screen.getByText("Putting the finishing touches on your agent..."),
+        ).toBeInTheDocument();
+        expect(screen.queryByText(/Setup didn't finish/i)).not.toBeInTheDocument();
+      });
+    });
+
     it("stays silent when the backend sends no bootstrap block at all", () => {
       useProvMock.mockReturnValue({
         phase: "normal",
@@ -1083,6 +1170,80 @@ describe("ProvisioningStepper blocked-state rendering", () => {
 
       expect(screen.getByText("children")).toBeInTheDocument();
       expect(screen.queryByText(/Friday couldn't start/i)).not.toBeInTheDocument();
+    });
+  });
+
+  // The wait had exactly one bound — a 5-minute soft timeout whose own "Check
+  // again" button reset the clock to 0:00 and cleared the banner. A diligent
+  // owner therefore deleted their own escalation, and the copy at 5:01 was
+  // identical to the copy at hour twenty-one.
+  describe("bounding the wait honestly", () => {
+    const refreshSpy = vi.fn();
+    const renderColdStart = () => {
+      gatewayHealthData = { ok: true };
+      useProvMock.mockReturnValue({
+        phase: "normal",
+        container: {
+          container_status: "running",
+          runtime_phase: "starting",
+          container_substatus: "gateway_healthy",
+          onboarded: true,
+          funnel: { state: "submitted" },
+        },
+        blocked: null,
+        refreshInterval: 3000,
+        refresh: refreshSpy,
+      });
+      return render(
+        <ProvisioningStepper>
+          <div>children</div>
+        </ProvisioningStepper>,
+      );
+    };
+
+    beforeEach(() => {
+      refreshSpy.mockClear();
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+      gatewayHealthData = null;
+    });
+
+    it("escalates to a second tier at 15 minutes", () => {
+      renderColdStart();
+
+      act(() => void vi.advanceTimersByTime(PROVISION_TIMEOUT_MS + 1_000));
+      expect(screen.getByText(/Still going/i)).toBeInTheDocument();
+      expect(screen.queryByText(/taking longer than it should/i)).not.toBeInTheDocument();
+
+      act(() => void vi.advanceTimersByTime(PROVISION_STUCK_MS - PROVISION_TIMEOUT_MS));
+      expect(screen.getByText(/taking longer than it should/i)).toBeInTheDocument();
+      expect(screen.getByText(/something is stuck on our side/i)).toBeInTheDocument();
+      expect(screen.queryByText(/Still going/i)).not.toBeInTheDocument();
+      // Past the stuck tier the counter stops carrying a promise about how
+      // long this normally takes.
+      expect(screen.queryByText(/cold starts can take a few minutes/i)).not.toBeInTheDocument();
+    });
+
+    it('"Check again" re-polls without erasing the escalation or the clock', () => {
+      renderColdStart();
+      act(() => void vi.advanceTimersByTime(PROVISION_STUCK_MS + 1_000));
+      expect(screen.getByText(/taking longer than it should/i)).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: /Check again/ }));
+
+      expect(refreshSpy).toHaveBeenCalledTimes(1);
+      // It used to setTimedOut(false) + setElapsedMs(0) + restamp the start
+      // ref, which is how 21 hours kept reading as five minutes, over and over.
+      expect(screen.getByText(/taking longer than it should/i)).toBeInTheDocument();
+      expect(screen.queryByText("0:00")).not.toBeInTheDocument();
+    });
+
+    it("rolls the counter to h:mm:ss instead of rendering 1260:37", () => {
+      renderColdStart();
+      act(() => void vi.advanceTimersByTime(3_600_000 + 5_000));
+      expect(screen.getByText(/^1:00:0\d$/)).toBeInTheDocument();
     });
   });
 

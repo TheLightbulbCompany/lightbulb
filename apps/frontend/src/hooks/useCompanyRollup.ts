@@ -55,10 +55,24 @@ export interface CompanyRollup {
   direction?: Record<string, RollupDirection>;
 }
 
+/** Home's masthead says "Last 14 days". The route defaults to 30, so asking
+ *  for the default put a 30-day total under a 14-day heading — two different
+ *  periods stated on one screen, with the wider one silently winning. Ask for
+ *  the window the page advertises. */
+export const ROLLUP_SPAN_DAYS = 14;
+
+function rollupPath(): string {
+  const end = new Date();
+  const start = new Date(end);
+  start.setUTCDate(start.getUTCDate() - (ROLLUP_SPAN_DAYS - 1));
+  const day = (d: Date) => d.toISOString().slice(0, 10);
+  return `/company/rollup?start=${day(start)}&end=${day(end)}`;
+}
+
 export function useCompanyRollup() {
   const api = useApi();
   const { data, error, isLoading, mutate } = useSWR<CompanyRollup>(
-    "/company/rollup",
+    rollupPath(),
     (path: string) => api.get(path) as Promise<CompanyRollup>,
     {
       // The hourly writer is the only thing that moves these numbers, so a

@@ -2024,10 +2024,17 @@ function FirstRunFailedNotice({
               // (the container never reached ready), so "send her a message" is
               // a recovery that does not exist here — the exact false
               // instruction the inline/ready copy split was written to avoid.
+              // Deliberately does NOT promise that setup resumes by itself.
+              // `bootstrap_state: "failed"` is only reached once
+              // MAX_BOOTSTRAP_ATTEMPTS is spent (or the failure was
+              // deterministic), and a top-up changes the balance without
+              // re-arming the row — `reset_bootstrap_for_retry` is admin-only.
+              // So topping up is necessary and may not be sufficient, and
+              // support is named as the step that finishes it.
               <>
-                Your Claude credits are used up, which will stop Friday running.
-                Top up and setup will pick up from here — your brief is saved.
-                If it still doesn&apos;t, contact support.
+                Your Claude credits are used up, which would stop Friday
+                running. Top up first — then contact support to restart setup,
+                and we&apos;ll pick it up from your saved brief.
               </>
             ) : inline ? (
               <>

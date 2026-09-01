@@ -30,6 +30,9 @@ export type { PanelSectionProps } from "./PanelSection";
 export { PanelEmptyState } from "./PanelEmptyState";
 export type { PanelEmptyStateProps, PanelEmptyStateAction } from "./PanelEmptyState";
 
+export { PanelNotice } from "./PanelNotice";
+export type { PanelNoticeProps, PanelNoticeState } from "./PanelNotice";
+
 export { PanelDataTable } from "./PanelDataTable";
 export type {
   PanelDataColumn,

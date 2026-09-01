@@ -56,21 +56,21 @@ import { DEFAULT_AGENT_SENTINEL } from "@/components/workspace/panelRegistry";
 
 const FACTS: FileEntry = {
   name: "facts.md",
-  path: "main/facts.md",
+  path: "topics/facts.md",
   type: "file",
   size: 42,
   modified_at: 1_756_000_000,
 };
-const MAIN_DIR: FileEntry = {
-  name: "main",
-  path: "main",
+const TOPICS_DIR: FileEntry = {
+  name: "topics",
+  path: "topics",
   type: "dir",
   size: null,
   modified_at: 1_756_000_000,
 };
 const FACTS_INFO: FileInfo = {
   name: "facts.md",
-  path: "main/facts.md",
+  path: "topics/facts.md",
   size: 42,
   modified_at: 1_756_000_000,
   content: "The sky is green.",
@@ -99,22 +99,22 @@ afterEach(() => {
 
 describe("BrainPanel", () => {
   it("renders the Knowledge/Brain masthead and the vault tree", () => {
-    treeState.files = [MAIN_DIR, FACTS];
+    treeState.files = [TOPICS_DIR, FACTS];
     render(<BrainPanel />);
     expect(screen.getByRole("heading", { name: "Brain" })).toBeInTheDocument();
     expect(screen.getByText("Knowledge")).toBeInTheDocument();
-    expect(screen.getByText("main")).toBeInTheDocument();
+    expect(screen.getByText("topics")).toBeInTheDocument();
   });
 
   it("requests a page on tree selection and shows its size · modified time", () => {
-    treeState.files = [MAIN_DIR, FACTS];
+    treeState.files = [TOPICS_DIR, FACTS];
     fileState.file = FACTS_INFO;
     render(<BrainPanel />);
-    fireEvent.click(screen.getByText("main"));
+    fireEvent.click(screen.getByText("topics"));
     // The tree entry is a button; the (mocked-open) viewer header repeats the
     // name in a plain span — scope to the role to hit the tree.
     fireEvent.click(screen.getByRole("button", { name: "facts.md" }));
-    expect(useBrainFileSpy).toHaveBeenLastCalledWith("main/facts.md");
+    expect(useBrainFileSpy).toHaveBeenLastCalledWith("topics/facts.md");
     // The audit line: owners trust a brain they can see the freshness of.
     expect(screen.getByTestId("panel-masthead-meta").textContent).toMatch(/42 B · /);
   });
@@ -122,13 +122,13 @@ describe("BrainPanel", () => {
   it("saves edits through saveBrainFile with the selected path", async () => {
     treeState.files = [FACTS];
     fileState.file = FACTS_INFO;
-    fileState.key = "/container/brain/file?path=main%2Ffacts.md";
-    render(<BrainPanel initialPath="main/facts.md" />);
+    fileState.key = "/container/brain/file?path=topics%2Ffacts.md";
+    render(<BrainPanel initialPath="topics/facts.md" />);
     const textarea = screen.getByDisplayValue("The sky is green.");
     fireEvent.change(textarea, { target: { value: "The sky is blue." } });
     fireEvent.click(screen.getByRole("button", { name: /save/i }));
     await waitFor(() =>
-      expect(saveBrainFile).toHaveBeenCalledWith("main/facts.md", "The sky is blue."),
+      expect(saveBrainFile).toHaveBeenCalledWith("topics/facts.md", "The sky is blue."),
     );
     expect(treeState.refresh).toHaveBeenCalled();
     // The audit line goes stale right after the owner's own edit unless the
@@ -141,9 +141,9 @@ describe("BrainPanel", () => {
     treeState.files = [FACTS];
     fileState.file = FACTS_INFO;
     vi.spyOn(window, "confirm").mockReturnValue(true);
-    render(<BrainPanel initialPath="main/facts.md" />);
+    render(<BrainPanel initialPath="topics/facts.md" />);
     fireEvent.click(screen.getByRole("button", { name: /delete/i }));
-    await waitFor(() => expect(deleteBrainFile).toHaveBeenCalledWith("main/facts.md"));
+    await waitFor(() => expect(deleteBrainFile).toHaveBeenCalledWith("topics/facts.md"));
     expect(treeState.refresh).toHaveBeenCalled();
   });
 
@@ -269,37 +269,37 @@ describe("BrainPanel", () => {
   it("follows a second ?path deep link on an already-mounted panel (M2)", () => {
     treeState.files = [FACTS];
     fileState.file = FACTS_INFO;
-    const { rerender } = render(<BrainPanel initialPath="main/facts.md" />);
-    expect(useBrainFileSpy).toHaveBeenLastCalledWith("main/facts.md");
+    const { rerender } = render(<BrainPanel initialPath="topics/facts.md" />);
+    expect(useBrainFileSpy).toHaveBeenLastCalledWith("topics/facts.md");
     // openPanel on an already-open panel focuses + merges params rather than
     // remounting — simulate that by rerendering with a new initialPath prop.
-    rerender(<BrainPanel initialPath="main/icp.md" />);
-    expect(useBrainFileSpy).toHaveBeenLastCalledWith("main/icp.md");
+    rerender(<BrainPanel initialPath="topics/icp.md" />);
+    expect(useBrainFileSpy).toHaveBeenLastCalledWith("topics/icp.md");
   });
 
   describe("Notes | Dreams tabs", () => {
     it("renders a Notes | Dreams tab bar, defaulting to Notes (the vault tree shows)", () => {
-      treeState.files = [MAIN_DIR, FACTS];
+      treeState.files = [TOPICS_DIR, FACTS];
       render(<BrainPanel />);
       const notesTab = screen.getByRole("tab", { name: "Notes" });
       expect(notesTab).toHaveAttribute("aria-selected", "true");
       expect(screen.getByRole("tab", { name: "Dreams" })).toBeInTheDocument();
-      expect(screen.getByText("main")).toBeInTheDocument();
+      expect(screen.getByText("topics")).toBeInTheDocument();
     });
 
     it("mounts the DreamsPanel body on the Dreams tab and hides the Notes tree", () => {
-      treeState.files = [MAIN_DIR, FACTS];
+      treeState.files = [TOPICS_DIR, FACTS];
       render(<BrainPanel />);
       // Radix activates a tab on mousedown, not on the synthetic click event.
       fireEvent.mouseDown(screen.getByRole("tab", { name: "Dreams" }));
       expect(screen.getByTestId("dreams-panel-body")).toBeInTheDocument();
-      expect(screen.queryByText("main")).not.toBeInTheDocument();
+      expect(screen.queryByText("topics")).not.toBeInTheDocument();
     });
 
     it("hides the Notes-only masthead meta/actions (size · modified, Delete) on the Dreams tab", () => {
       treeState.files = [FACTS];
       fileState.file = FACTS_INFO;
-      render(<BrainPanel initialPath="main/facts.md" />);
+      render(<BrainPanel initialPath="topics/facts.md" />);
       expect(screen.getByTestId("panel-masthead-meta")).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /delete/i })).toBeInTheDocument();
 
@@ -311,28 +311,28 @@ describe("BrainPanel", () => {
     });
 
     it("switching back to Notes restores the vault tree", () => {
-      treeState.files = [MAIN_DIR, FACTS];
+      treeState.files = [TOPICS_DIR, FACTS];
       render(<BrainPanel />);
       fireEvent.mouseDown(screen.getByRole("tab", { name: "Dreams" }));
       expect(screen.getByTestId("dreams-panel-body")).toBeInTheDocument();
 
       fireEvent.mouseDown(screen.getByRole("tab", { name: "Notes" }));
-      expect(screen.getByText("main")).toBeInTheDocument();
+      expect(screen.getByText("topics")).toBeInTheDocument();
       expect(screen.queryByTestId("dreams-panel-body")).not.toBeInTheDocument();
     });
 
     it("initialTab='dreams' seeds the Dreams tab active on mount (old ?panel=dreams links)", () => {
-      treeState.files = [MAIN_DIR, FACTS];
+      treeState.files = [TOPICS_DIR, FACTS];
       render(<BrainPanel initialTab="dreams" />);
       expect(screen.getByRole("tab", { name: "Dreams" })).toHaveAttribute("aria-selected", "true");
       expect(screen.getByTestId("dreams-panel-body")).toBeInTheDocument();
-      expect(screen.queryByText("main")).not.toBeInTheDocument();
+      expect(screen.queryByText("topics")).not.toBeInTheDocument();
     });
 
     it("guards a dirty editor on tab switch — declining discard keeps Notes and the draft (review finding 1)", () => {
       treeState.files = [FACTS];
       fileState.file = FACTS_INFO;
-      render(<BrainPanel initialPath="main/facts.md" />);
+      render(<BrainPanel initialPath="topics/facts.md" />);
       const textarea = screen.getByDisplayValue("The sky is green.");
       fireEvent.change(textarea, { target: { value: "The sky is actually blue — DRAFT" } });
 
@@ -348,7 +348,7 @@ describe("BrainPanel", () => {
     it("guards a dirty editor on tab switch — accepting discard switches to Dreams (review finding 1)", () => {
       treeState.files = [FACTS];
       fileState.file = FACTS_INFO;
-      render(<BrainPanel initialPath="main/facts.md" />);
+      render(<BrainPanel initialPath="topics/facts.md" />);
       const textarea = screen.getByDisplayValue("The sky is green.");
       fireEvent.change(textarea, { target: { value: "The sky is actually blue — DRAFT" } });
 

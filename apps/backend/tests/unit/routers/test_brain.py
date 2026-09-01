@@ -41,11 +41,16 @@ def workspace(tmp_path: Path, monkeypatch) -> Workspace:
 
 @pytest.fixture()
 def wiki_root(workspace: Workspace) -> Path:
-    """A populated wiki vault: wiki/main/{index.md, topics/agents.md}."""
-    root = workspace._mount / USER_ID / "wiki"
-    (root / "main" / "topics").mkdir(parents=True)
-    (root / "main" / "index.md").write_text("# Index\n", encoding="utf-8")
-    (root / "main" / "topics" / "agents.md").write_text("# Agents\n", encoding="utf-8")
+    """The populated vault itself — wiki/main/{index.md, topics/agents.md}.
+
+    The routes are rooted HERE, not at its parent wiki/: `main` is the
+    memory-wiki plugin's own global-scope vault directory, not a path segment
+    the owner should ever see.
+    """
+    root = workspace._mount / USER_ID / "wiki" / "main"
+    (root / "topics").mkdir(parents=True)
+    (root / "index.md").write_text("# Index\n", encoding="utf-8")
+    (root / "topics" / "agents.md").write_text("# Agents\n", encoding="utf-8")
     return root
 
 
@@ -108,14 +113,14 @@ class TestBrainPathGuards:
 
     @pytest.mark.asyncio
     async def test_read_rejects_symlink_escape(self, workspace, wiki_root):
-        """A symlink inside wiki/ pointing outside is rejected even without '..'."""
+        """A symlink inside the vault pointing outside is rejected even without '..'."""
         import os
 
         from routers.brain import read_brain_file
 
         secret = workspace._mount / USER_ID / "openclaw.json"
         secret.write_text('{"secret": true}', encoding="utf-8")
-        os.symlink("../openclaw.json", wiki_root / "evil.json")
+        os.symlink("../../openclaw.json", wiki_root / "evil.json")
         with pytest.raises(HTTPException) as exc:
             await read_brain_file(path="evil.json", auth=_auth())
         assert exc.value.status_code == 403
@@ -129,7 +134,7 @@ class TestBrainPathGuards:
 class TestBrainTree:
     @pytest.mark.asyncio
     async def test_tree_empty_when_no_vault(self, workspace):
-        """Missing wiki/ dir (plugin never wrote) returns an empty tree, not 404/500."""
+        """Missing vault dir (plugin never wrote) returns an empty tree, not 404/500."""
         from routers.brain import list_brain_tree
 
         workspace.ensure_user_dir(USER_ID)
@@ -142,16 +147,42 @@ class TestBrainTree:
 
         tree = await list_brain_tree(auth=_auth())
         paths = {f["path"] for f in tree["files"]}
-        assert "main" in paths
-        assert "main/index.md" in paths
-        assert "main/topics" in paths
-        assert "main/topics/agents.md" in paths
-        # Paths are wiki-relative — never user-root-relative
-        assert not any(p.startswith("wiki") for p in paths)
-        entry = next(f for f in tree["files"] if f["path"] == "main/index.md")
+        assert "index.md" in paths
+        assert "topics" in paths
+        assert "topics/agents.md" in paths
+        # Paths are VAULT-relative: neither the user root nor the vault's own
+        # parent (wiki/) nor its directory name (main/) may appear.
+        assert not any(p.startswith(("wiki", "main")) for p in paths)
+        entry = next(f for f in tree["files"] if f["path"] == "index.md")
         assert entry["type"] == "file"
         assert isinstance(entry["size"], int)
         assert isinstance(entry["modified_at"], float)
+
+    @pytest.mark.asyncio
+    async def test_tree_is_rooted_at_the_vault_not_its_parent(self, workspace, wiki_root):
+        """The vault is wiki/main (memory-wiki's global-scope default); wiki/
+        is only its parent. Rooting one level up showed the owner a `main/`
+        wrapper folder plus anything else living beside the vault."""
+        from routers.brain import list_brain_tree
+
+        (wiki_root.parent / "stray.md").write_text("not vault content", encoding="utf-8")
+
+        tree = await list_brain_tree(auth=_auth())
+        paths = {f["path"] for f in tree["files"]}
+        assert "index.md" in paths
+        assert "main" not in paths
+        assert "main/index.md" not in paths
+        assert "stray.md" not in paths
+
+    @pytest.mark.asyncio
+    async def test_read_rejects_escape_to_the_vault_parent(self, workspace, wiki_root):
+        """`..` out of the vault lands in wiki/, which is NOT owner surface."""
+        from routers.brain import read_brain_file
+
+        (wiki_root.parent / "stray.md").write_text("not vault content", encoding="utf-8")
+        with pytest.raises(HTTPException) as exc:
+            await read_brain_file(path="../stray.md", auth=_auth())
+        assert exc.value.status_code == 400
 
     @pytest.mark.asyncio
     async def test_tree_hides_only_our_lock_sidecars(self, workspace, wiki_root):
@@ -159,19 +190,19 @@ class TestBrainTree:
         content and directories that happen to share the suffix stay visible."""
         from routers.brain import list_brain_tree
 
-        (wiki_root / "main" / ".index.md.lb-lock").write_text("", encoding="utf-8")
-        (wiki_root / "main" / "report.md.lock").write_text("agent data", encoding="utf-8")
-        weird_dir = wiki_root / "main" / "weird.lb-lock"
+        (wiki_root / ".index.md.lb-lock").write_text("", encoding="utf-8")
+        (wiki_root / "report.md.lock").write_text("agent data", encoding="utf-8")
+        weird_dir = wiki_root / "weird.lb-lock"
         weird_dir.mkdir()
         (weird_dir / "child.md").write_text("x", encoding="utf-8")
 
         tree = await list_brain_tree(auth=_auth())
         paths = {f["path"] for f in tree["files"]}
-        assert "main/index.md" in paths
-        assert "main/.index.md.lb-lock" not in paths
-        assert "main/report.md.lock" in paths  # real vault content
-        assert "main/weird.lb-lock" in paths  # a dir, never filtered
-        assert "main/weird.lb-lock/child.md" in paths  # no orphaned children
+        assert "index.md" in paths
+        assert ".index.md.lb-lock" not in paths
+        assert "report.md.lock" in paths  # real vault content
+        assert "weird.lb-lock" in paths  # a dir, never filtered
+        assert "weird.lb-lock/child.md" in paths  # no orphaned children
 
     @pytest.mark.asyncio
     async def test_tree_skips_symlink_escaping_user_root(self, workspace, wiki_root, tmp_path):
@@ -182,13 +213,13 @@ class TestBrainTree:
 
         outside = tmp_path / "outside-user-root.txt"
         outside.write_text("secret", encoding="utf-8")
-        os.symlink(outside, wiki_root / "main" / "escape.txt")
+        os.symlink(outside, wiki_root / "escape.txt")
 
         tree = await list_brain_tree(auth=_auth())
         paths = {f["path"] for f in tree["files"]}
-        assert "main/escape.txt" not in paths
-        assert "main/index.md" in paths
-        assert "main/topics/agents.md" in paths
+        assert "escape.txt" not in paths
+        assert "index.md" in paths
+        assert "topics/agents.md" in paths
 
     @pytest.mark.asyncio
     async def test_tree_skips_dangling_symlink(self, workspace, wiki_root):
@@ -197,13 +228,13 @@ class TestBrainTree:
 
         from routers.brain import list_brain_tree
 
-        os.symlink("never-existed.md", wiki_root / "main" / "dangling.md")
+        os.symlink("never-existed.md", wiki_root / "dangling.md")
 
         tree = await list_brain_tree(auth=_auth())
         paths = {f["path"] for f in tree["files"]}
-        assert "main/dangling.md" not in paths
-        assert "main/index.md" in paths
-        assert "main/topics/agents.md" in paths
+        assert "dangling.md" not in paths
+        assert "index.md" in paths
+        assert "topics/agents.md" in paths
 
 
 # ===========================================================================
@@ -218,25 +249,25 @@ class TestBrainFileRoundTrip:
         from routers.brain import BrainWriteRequest, read_brain_file, write_brain_file
 
         workspace.ensure_user_dir(USER_ID)
-        body = BrainWriteRequest(path="main/topics/new-note.md", content="# New\nfact")
+        body = BrainWriteRequest(path="topics/new-note.md", content="# New\nfact")
         result = await write_brain_file(body=body, auth=_auth())
-        assert result["path"] == "main/topics/new-note.md"
+        assert result["path"] == "topics/new-note.md"
         assert result["size"] == len(b"# New\nfact")
         assert isinstance(result["modified_at"], float)
         on_disk = workspace._mount / USER_ID / "wiki" / "main" / "topics" / "new-note.md"
         assert on_disk.read_text() == "# New\nfact"
 
-        info = await read_brain_file(path="main/topics/new-note.md", auth=_auth())
+        info = await read_brain_file(path="topics/new-note.md", auth=_auth())
         assert info["content"] == "# New\nfact"
         assert info["binary"] is False
-        assert info["path"] == "main/topics/new-note.md"
+        assert info["path"] == "topics/new-note.md"
 
     @pytest.mark.asyncio
     async def test_read_404_when_absent(self, workspace):
         from routers.brain import read_brain_file
 
         workspace.ensure_user_dir(USER_ID)
-        (workspace._mount / USER_ID / "wiki").mkdir()
+        (workspace._mount / USER_ID / "wiki" / "main").mkdir(parents=True)
         with pytest.raises(HTTPException) as exc:
             await read_brain_file(path="ghost.md", auth=_auth())
         assert exc.value.status_code == 404
@@ -253,16 +284,16 @@ class TestBrainFileRoundTrip:
 
     @pytest.mark.asyncio
     async def test_write_400_when_parent_component_is_a_file(self, workspace, wiki_root):
-        """F7: PUT "main/index.md/child.md" when "main/index.md" already
+        """F7: PUT "index.md/child.md" when "index.md" already
         exists as a file — open_lock_fd's os.makedirs raises a raw
         FileExistsError; must 400, not an unhandled 500."""
         from routers.brain import BrainWriteRequest, write_brain_file
 
-        body = BrainWriteRequest(path="main/index.md/child.md", content="x")
+        body = BrainWriteRequest(path="index.md/child.md", content="x")
         with pytest.raises(HTTPException) as exc:
             await write_brain_file(body=body, auth=_auth())
         assert exc.value.status_code == 400
-        assert (wiki_root / "main" / "index.md").read_text() == "# Index\n"
+        assert (wiki_root / "index.md").read_text() == "# Index\n"
 
     @pytest.mark.asyncio
     async def test_write_400_when_target_is_a_directory(self, workspace, wiki_root):
@@ -270,11 +301,11 @@ class TestBrainFileRoundTrip:
         IsADirectoryError (wrapped as WorkspaceError); must 400, not 500."""
         from routers.brain import BrainWriteRequest, write_brain_file
 
-        body = BrainWriteRequest(path="main", content="x")
+        body = BrainWriteRequest(path="topics", content="x")
         with pytest.raises(HTTPException) as exc:
             await write_brain_file(body=body, auth=_auth())
         assert exc.value.status_code == 400
-        assert (wiki_root / "main").is_dir()
+        assert (wiki_root / "topics").is_dir()
 
     @pytest.mark.asyncio
     async def test_chown_called_after_write(self, workspace):
@@ -283,7 +314,7 @@ class TestBrainFileRoundTrip:
 
         workspace.ensure_user_dir(USER_ID)
         with patch.object(Workspace, "_chown_for_access_point") as chown:
-            body = BrainWriteRequest(path="main/note.md", content="x")
+            body = BrainWriteRequest(path="note.md", content="x")
             await write_brain_file(body=body, auth=_auth())
         assert chown.called
 
@@ -302,7 +333,7 @@ class TestBrainFileRoundTrip:
 
         monkeypatch.setattr(brain_mod, "open_lock_fd", spy)
         workspace.ensure_user_dir(USER_ID)
-        body = BrainWriteRequest(path="main/note.md", content="x")
+        body = BrainWriteRequest(path="note.md", content="x")
         await write_brain_file(body=body, auth=_auth())
         assert len(acquired) == 1
         assert acquired[0].endswith("/wiki/main/.note.md.lb-lock")
@@ -319,18 +350,18 @@ class TestBrainDelete:
     async def test_delete_file_204(self, workspace, wiki_root):
         from routers.brain import delete_brain_file
 
-        res = await delete_brain_file(path="main/index.md", auth=_auth())
+        res = await delete_brain_file(path="index.md", auth=_auth())
         assert res.status_code == 204
-        assert not (wiki_root / "main" / "index.md").exists()
+        assert not (wiki_root / "index.md").exists()
 
     @pytest.mark.asyncio
     async def test_delete_refuses_directory(self, workspace, wiki_root):
         from routers.brain import delete_brain_file
 
         with pytest.raises(HTTPException) as exc:
-            await delete_brain_file(path="main/topics", auth=_auth())
+            await delete_brain_file(path="topics", auth=_auth())
         assert exc.value.status_code == 400
-        assert (wiki_root / "main" / "topics").is_dir()
+        assert (wiki_root / "topics").is_dir()
 
     @pytest.mark.asyncio
     async def test_delete_missing_is_idempotent_204(self, workspace):
@@ -357,11 +388,11 @@ class TestBrainDelete:
             return real_open_lock_fd(lock_dir, lock_path)
 
         monkeypatch.setattr(brain_mod, "open_lock_fd", spy)
-        await delete_brain_file(path="main/index.md", auth=_auth())
+        await delete_brain_file(path="index.md", auth=_auth())
         assert len(acquired) == 1
         assert acquired[0].endswith("/wiki/main/.index.md.lb-lock")
         # The sidecar is reclaimed once the delete completes — no orphan left.
-        assert not (wiki_root / "main" / ".index.md.lb-lock").exists()
+        assert not (wiki_root / ".index.md.lb-lock").exists()
 
     @pytest.mark.asyncio
     async def test_delete_removes_only_its_own_lock_sidecar(self, workspace, wiki_root):
@@ -369,12 +400,12 @@ class TestBrainDelete:
         `{name}.lock`, which is real vault content."""
         from routers.brain import delete_brain_file
 
-        sidecar = wiki_root / "main" / ".index.md.lb-lock"
+        sidecar = wiki_root / ".index.md.lb-lock"
         sidecar.write_text("", encoding="utf-8")
-        agent_lock = wiki_root / "main" / "index.md.lock"
+        agent_lock = wiki_root / "index.md.lock"
         agent_lock.write_text("agent data", encoding="utf-8")
 
-        await delete_brain_file(path="main/index.md", auth=_auth())
+        await delete_brain_file(path="index.md", auth=_auth())
         assert not sidecar.exists()
         assert agent_lock.read_text() == "agent data"
 
@@ -392,7 +423,7 @@ class TestBrainUpload:
         workspace.ensure_user_dir(USER_ID)
         result = await upload_brain_files(files=[_upload("notes.md", b"hello")], auth=_auth())
         assert result["uploaded"] == [{"filename": "notes.md", "path": "inbox/notes.md", "size": 5}]
-        on_disk = workspace._mount / USER_ID / "wiki" / "inbox" / "notes.md"
+        on_disk = workspace._mount / USER_ID / "wiki" / "main" / "inbox" / "notes.md"
         assert on_disk.read_bytes() == b"hello"
 
     @pytest.mark.asyncio
@@ -448,7 +479,7 @@ class TestBrainUpload:
         with pytest.raises(HTTPException) as exc:
             await upload_brain_files(files=[_upload("big.md", big)], auth=_auth())
         assert exc.value.status_code == 400
-        assert not (workspace._mount / USER_ID / "wiki" / "inbox" / "big.md").exists()
+        assert not (workspace._mount / USER_ID / "wiki" / "main" / "inbox" / "big.md").exists()
 
     @pytest.mark.asyncio
     async def test_upload_chown_called(self, workspace):
@@ -494,7 +525,7 @@ class TestBrainUpload:
         workspace.ensure_user_dir(USER_ID)
         result = await upload_brain_files(files=[_upload("../../evil.md", b"x")], auth=_auth())
         assert result["uploaded"][0]["path"] == "inbox/evil.md"
-        assert (workspace._mount / USER_ID / "wiki" / "inbox" / "evil.md").exists()
+        assert (workspace._mount / USER_ID / "wiki" / "main" / "inbox" / "evil.md").exists()
         assert not (workspace._mount / "evil.md").exists()
 
 
@@ -513,7 +544,7 @@ class TestBrainUploadHardening:
         with pytest.raises(HTTPException) as exc:
             await upload_brain_files(files=[_upload(".", b"x")], auth=_auth())
         assert exc.value.status_code == 400
-        inbox = workspace._mount / USER_ID / "wiki" / "inbox"
+        inbox = workspace._mount / USER_ID / "wiki" / "main" / "inbox"
         # The bug: os.replace(tmp, inbox) turned the directory into a file.
         # Rejected before any fs work runs, so inbox/ isn't even created yet.
         assert not inbox.exists()
@@ -555,7 +586,7 @@ class TestBrainUploadHardening:
         with pytest.raises(HTTPException) as exc:
             await upload_brain_files(files=[_upload(long_name, b"x")], auth=_auth())
         assert exc.value.status_code == 400
-        assert not (workspace._mount / USER_ID / "wiki" / "inbox" / long_name).exists()
+        assert not (workspace._mount / USER_ID / "wiki" / "main" / "inbox" / long_name).exists()
 
     @pytest.mark.asyncio
     async def test_upload_rejects_trailing_newline_filename(self, workspace):
@@ -568,7 +599,7 @@ class TestBrainUploadHardening:
         with pytest.raises(HTTPException) as exc:
             await upload_brain_files(files=[_upload("notes.md\n", b"x")], auth=_auth())
         assert exc.value.status_code == 400
-        assert not (workspace._mount / USER_ID / "wiki" / "inbox" / "notes.md\n").exists()
+        assert not (workspace._mount / USER_ID / "wiki" / "main" / "inbox" / "notes.md\n").exists()
 
     @pytest.mark.asyncio
     async def test_upload_rejects_lb_lock_suffix_filename(self, workspace):
@@ -581,7 +612,7 @@ class TestBrainUploadHardening:
         with pytest.raises(HTTPException) as exc:
             await upload_brain_files(files=[_upload(".notes.md.lb-lock", b"x")], auth=_auth())
         assert exc.value.status_code == 400
-        assert not (workspace._mount / USER_ID / "wiki" / "inbox" / ".notes.md.lb-lock").exists()
+        assert not (workspace._mount / USER_ID / "wiki" / "main" / "inbox" / ".notes.md.lb-lock").exists()
 
     @pytest.mark.asyncio
     async def test_concurrent_same_name_uploads_both_survive_with_distinct_names(self, workspace):
@@ -605,7 +636,7 @@ class TestBrainUploadHardening:
 
         paths = sorted(u["path"] for u in results)
         assert paths == ["inbox/notes-1.md", "inbox/notes.md"]
-        inbox = workspace._mount / USER_ID / "wiki" / "inbox"
+        inbox = workspace._mount / USER_ID / "wiki" / "main" / "inbox"
         contents = {(inbox / "notes.md").read_bytes(), (inbox / "notes-1.md").read_bytes()}
         assert contents == {b"AAA", b"BBB"}
 
@@ -640,5 +671,5 @@ class TestBrainUploadHttp:
         )
         assert response.status_code == 200
         assert response.json() == {"uploaded": [{"filename": "notes.md", "path": "inbox/notes.md", "size": 5}]}
-        on_disk = workspace._mount / USER_ID / "wiki" / "inbox" / "notes.md"
+        on_disk = workspace._mount / USER_ID / "wiki" / "main" / "inbox" / "notes.md"
         assert on_disk.read_bytes() == b"hello"

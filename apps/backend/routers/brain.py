@@ -1,9 +1,9 @@
-"""Owner routes over the memory-wiki vault at {user_root}/wiki/ on EFS.
+"""Owner routes over the memory-wiki vault at {user_root}/wiki/main/ on EFS.
 
-The vault is written by the container-side memory-wiki plugin (usually under
-wiki/main/). These routes give the owner a browse/edit/delete surface over it,
-pinned to the ``wiki`` subtree with the same guard machinery
-``routers/workspace_files.py`` uses for agent workspaces.
+The vault is written by the container-side memory-wiki plugin. These routes
+give the owner a browse/edit/delete surface over it, pinned to the vault
+subtree with the same guard machinery ``routers/workspace_files.py`` uses for
+agent workspaces.
 
 Lock-vs-plugin note: writes take the repo's two-layer lock (per-file
 in-process ``threading.Lock`` + ``fcntl.lockf`` on a dot-prefixed
@@ -44,7 +44,14 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-BRAIN_SUBTREE = "wiki"
+# The vault directory ITSELF, not its parent: with ``vault.scope: "global"``
+# and no ``vault.path`` — what ``config.memory_plugin_entries`` pins, guarded by
+# tests/unit/containers/test_config.py — memory-wiki resolves its vault to
+# ``~/.openclaw/wiki/main`` (a plugin constant, NOT an agent id: agent-scoped
+# vaults are the ones that nest per-agent under ``wiki/``). The user root
+# mounts at ``~/.openclaw``, so ``main`` is the owner's brain and ``wiki/`` is
+# plumbing they should never see.
+BRAIN_SUBTREE = "wiki/main"
 # Dot-prefixed + distinctive so it can never collide with agent-written vault
 # content (a plain `{file}.lock` did — an agent's report.md.lock is real data).
 _LOCK_SUFFIX = ".lb-lock"
@@ -56,9 +63,9 @@ def _lock_sidecar_path(resolved: Path) -> Path:
 
 
 def _guard_brain_path(workspace, owner_id: str, path: str) -> str:
-    """Validate a wiki-relative path and pin it to the ``wiki`` subtree.
+    """Validate a vault-relative path and pin it to the vault subtree.
 
-    Returns the user-root-relative path (``wiki/{path}``). 400 on malformed
+    Returns the user-root-relative path (``wiki/main/{path}``). 400 on malformed
     paths, 403 on anything that resolves outside the subtree (symlink escapes
     included).
     """
@@ -75,7 +82,7 @@ def _guard_brain_path(workspace, owner_id: str, path: str) -> str:
 
 
 def _strip_wiki_prefix(entries: list[dict]) -> list[dict]:
-    """Rewrite entry paths from user-root-relative to wiki-relative, dropping
+    """Rewrite entry paths from user-root-relative to vault-relative, dropping
     the per-file write-lock sidecars (plumbing, not owner content)."""
     prefix = f"{BRAIN_SUBTREE}/"
     out = []
@@ -91,7 +98,7 @@ def _strip_wiki_prefix(entries: list[dict]) -> list[dict]:
 
 @router.get("/brain/tree")
 async def list_brain_tree(auth: AuthContext = Depends(get_current_user)):
-    """Recursive listing of the owner's wiki vault, paths relative to wiki/.
+    """Recursive listing of the owner's wiki vault, paths relative to the vault.
 
     A missing vault (the plugin hasn't written yet) is an empty tree, never
     an error — _collect_recursive swallows the not-found.
@@ -197,7 +204,7 @@ async def write_brain_file(
         result = await asyncio.to_thread(_locked_write, workspace, owner_id, full_path, body.content)
     except FileExistsError as exc:
         # F7: a parent-chain component is a regular file (e.g. PUT
-        # "main/index.md/child.md" when "main/index.md" already exists) —
+        # "index.md/child.md" when "index.md" already exists) —
         # open_lock_fd's os.makedirs surfaces this as a raw OSError. A bad
         # request, not a 500.
         raise HTTPException(status_code=400, detail=f"Invalid path: {exc}")
@@ -231,8 +238,9 @@ def _dedupe_filename(dir_path: Path, name: str) -> str:
 
 MAX_UPLOAD_FILENAME_BYTES = 200
 _FILENAME_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
-# The inbox-wide upload lock sidecar — deliberately ONE lock for the whole
-# inbox, not per-filename (see _locked_inbox_upload).
+# The inbox-wide upload lock sidecar, kept in the vault root — deliberately ONE
+# lock for the whole inbox, not per-filename (see _locked_inbox_upload). Its
+# `.{...}.lb-lock` shape is what keeps _strip_wiki_prefix from listing it.
 _INBOX_LOCK_NAME = ".inbox-upload.lb-lock"
 
 
@@ -291,12 +299,12 @@ def _locked_inbox_upload(workspace, owner_id: str, safe_name: str, data: bytes) 
     # below would create a lock file / inbox dir inside another owner's tree
     # before the eventual content-write's _resolve_user_file call refuses it.
     workspace._resolve_user_file(owner_id, BRAIN_SUBTREE)
-    wiki_dir = workspace.user_path(owner_id) / BRAIN_SUBTREE
-    inbox_dir = wiki_dir / "inbox"
-    lock_path = str(wiki_dir / _INBOX_LOCK_NAME)
+    vault_dir = workspace.user_path(owner_id) / BRAIN_SUBTREE
+    inbox_dir = vault_dir / "inbox"
+    lock_path = str(vault_dir / _INBOX_LOCK_NAME)
     with get_file_lock(lock_path):
-        # open_lock_fd creates wiki_dir (holding the sidecar) if missing.
-        lock_fd = open_lock_fd(str(wiki_dir), lock_path)
+        # open_lock_fd creates vault_dir (holding the sidecar) if missing.
+        lock_fd = open_lock_fd(str(vault_dir), lock_path)
         try:
             fcntl.lockf(lock_fd, fcntl.LOCK_EX)
             inbox_dir.mkdir(parents=True, exist_ok=True)
@@ -321,7 +329,7 @@ async def upload_brain_files(
     files: List[UploadFile] = File(..., description="Files to drop into the vault inbox"),
     auth: AuthContext = Depends(get_current_user),
 ):
-    """Owner drop-zone: land files under wiki/inbox/ so agents notice new material.
+    """Owner drop-zone: land files under the vault's inbox/ so agents notice them.
 
     Same caps/shape as POST /container/files (routers/container_files.py):
     10 files per request, 10MB each. A same-named collision gets a `-1`

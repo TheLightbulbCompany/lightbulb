@@ -227,10 +227,26 @@ AGENT_RUN_RETRIES_MAX = 8
 # AGENT_RUN_TIMEOUT_SECONDS. A slow compaction that succeeds beats a dead run.
 COMPACTION_TIMEOUT_SECONDS = 600
 
+# agents.defaults.maxConcurrent — the global semaphore every run entrance passes.
+# We used to leave this at the upstream default, which through 7.2 was a fixed
+# DEFAULT_AGENT_MAX_CONCURRENT = 4. 2026.8.1 replaced the constant with
+# min(16, max(8, availableParallelism)) (agent-limits.ts) — and the max(8, ...)
+# is a FLOOR, so a 1 vCPU box cannot resolve below 8. Worse, os.availableParallelism()
+# is libuv's uv_available_parallelism: it honours cpuset but NOT the CFS cpu quota
+# Fargate limits us with, so a 1 vCPU / 4 GB task reads the HOST core count and
+# lands on the ceiling of 16. That is 2-4x what prod ran for months, on the box
+# that already crash-looped an 11-agent owner at boot (24 SQLite DBs restoring
+# concurrently starved the single vCPU; "database is locked" is what SQLite
+# reports when a starved process exhausts its busy timeout).
+#
+# So pin it. 4 is not a new number — it is the value 7.2 ran in prod. The value
+# is also memoized per process and materialized into the effective config by
+# applyAgentDefaults, so it cannot be corrected at runtime.
+AGENT_MAX_CONCURRENT = 4
+
 # agents.defaults.subagents.maxConcurrent — upstream default 8. The subagent lane
 # does NOT count against the main agents.defaults.maxConcurrent semaphore, so it
-# needs its own bound. (maxConcurrent itself is deliberately left at its upstream
-# default of 4 — it is already a real global semaphore every entrance passes.)
+# needs its own bound.
 #
 # TRIAL ONLY, unlike the other three bounds. Those (timeoutSeconds, runRetries,
 # loopDetection) are sane everywhere: no legitimate run wants 48 hours or 160
@@ -1745,6 +1761,11 @@ def build_openclaw_config_dict(
                 # fan-out loop can run 8 parallel agents — 8 parallel spends — by
                 # default. Two at a time still lets an agent delegate; it just
                 # can't multiply itself out of the cap.
+                # Global run semaphore — pinned, never inherited. See
+                # AGENT_MAX_CONCURRENT: 8.1 made the upstream default derive
+                # from the host's CPU count, which on quota-limited Fargate
+                # reads the HOST core count, not our 1 vCPU.
+                "maxConcurrent": AGENT_MAX_CONCURRENT,
                 "subagents": {
                     "allowAgents": ["*"],
                     # Children inherit the CALLER's model when unset — and the
@@ -1807,7 +1828,19 @@ def build_openclaw_config_dict(
             # 2026.8.1 retired the qmd backend and moved memorySearch here from
             # agents.defaults; 7.2 wants the mirror image of both.
             **(
-                {"search": memory_search_entry(provider_choice, byo_provider)}
+                {
+                    "search": {
+                        **memory_search_entry(provider_choice, byo_provider),
+                        # No literal default upstream: 8.1 derives this from
+                        # session.dmScope (resolveRememberAcrossConversations).
+                        # Ours is "per-account-channel-peer", so it resolves
+                        # false today — but that couples a recall decision to an
+                        # unrelated key, and when true it ALSO force-enables
+                        # session memory and appends "sessions" to the indexed
+                        # sources regardless of memory.search.sources. Say it.
+                        "rememberAcrossConversations": False,
+                    }
+                }
                 if _emit_81_shape
                 else {"backend": "builtin"}
             ),

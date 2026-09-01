@@ -25,7 +25,7 @@
     "openclaw": ">=2026.5.17"
   },
   "devDependencies": {
-    "openclaw": "2026.7.2-beta.3",
+    "openclaw": "2026.8.1",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"
   }

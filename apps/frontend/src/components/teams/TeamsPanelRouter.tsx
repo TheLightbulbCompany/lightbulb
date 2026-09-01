@@ -32,6 +32,7 @@ const PANEL_LOADERS: Record<string, () => Promise<React.ComponentType>> = {
   accounts: () => import("./panels/AccountsPanel").then((m) => m.AccountsPanel),
   search: () => import("./panels/SearchPanel").then((m) => m.SearchPanel),
   settings: () => import("./panels/SettingsPanel").then((m) => m.SettingsPanel),
+  spend: () => import("./panels/SpendPanel").then((m) => m.SpendPanel),
 };
 
 const PANELS: Record<string, React.ComponentType> = Object.fromEntries(

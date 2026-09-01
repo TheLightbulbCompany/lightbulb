@@ -28,6 +28,9 @@ const KEYWORDS: Record<string, string[]> = {
   artifacts: ["artifacts"],
   "org-chart": ["network", "hierarchy"],
   activity: ["events", "log"],
+  // "usage" is the label the same numbers carry under /settings (?panel=usage),
+  // so muscle memory finds Spend.
+  spend: ["usage", "cost", "costs", "billing", "credits"],
 };
 
 export const NAV_ACTIONS: CommandPaletteAction[] = [

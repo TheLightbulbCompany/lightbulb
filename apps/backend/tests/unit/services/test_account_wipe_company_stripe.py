@@ -42,7 +42,15 @@ async def test_wipe_skips_when_no_company_account():
 
 
 @pytest.mark.asyncio
-async def test_wipe_deauthorize_failure_leaves_the_binding_in_place():
+async def test_wipe_unbinds_even_when_the_deauthorize_fails():
+    """The unbind no longer sits on the FAR side of the Stripe call.
+
+    It used to: `_step` swallowed the raise so the wipe continued, but the
+    `clear_company_stripe_account` below it never ran — leaving the row bound
+    and the platform link unsevered on the one path whose whole job is to
+    sever it. The step is STILL reported `failed`, so the admin knows Stripe
+    never confirmed the revoke; the local state is clean either way.
+    """
     steps = []
     with (
         patch.object(
@@ -55,4 +63,4 @@ async def test_wipe_deauthorize_failure_leaves_the_binding_in_place():
     ):
         await mod._wipe_company_stripe(steps, owner_id="org_a")
     assert steps[-1].status == "failed"
-    clear.assert_not_awaited()
+    clear.assert_awaited_once_with("org_a", account_id="acct_fresh")

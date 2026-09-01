@@ -410,7 +410,13 @@ def test_create_maps_stripe_error_to_502_and_does_not_bind(client):
     bind.assert_not_awaited()
 
 
-def test_disconnect_maps_stripe_error_and_keeps_binding(client):
+def test_disconnect_unbinds_even_when_stripe_errors(client, facts):
+    """A Stripe error used to 502 with the row still bound — and this fixture
+    is the case that made it permanent: a `created` account was minted through
+    Accounts v2 and was never an OAuth grant, so Stripe can answer
+    `invalid_client` ("isn't connected to your application") every single
+    time, leaving the owner no way to unbind. The unbind is unconditional now;
+    the unconfirmed revoke is reported rather than swallowed."""
     import stripe as stripe_mod
 
     row = {"owner_id": "org_a", "company_stripe_account_id": "acct_x", "company_stripe_source": "created"}
@@ -422,8 +428,10 @@ def test_disconnect_maps_stripe_error_and_keeps_binding(client):
         patch.object(mod.billing_repo, "clear_company_stripe_account", AsyncMock()) as clear,
     ):
         resp = client.post("/api/v1/company/stripe/disconnect")
-    assert resp.status_code == 502
-    clear.assert_not_awaited()
+    assert resp.status_code == 200
+    assert resp.json() == {"disconnected": True, "stripe_released": False}
+    clear.assert_awaited_once_with("org_a", account_id="acct_x")
+    facts.assert_awaited_once_with("org_a")
 
 
 def test_disconnect_deauthorizes_and_clears(client, facts):
@@ -435,6 +443,7 @@ def test_disconnect_deauthorizes_and_clears(client, facts):
     ):
         resp = client.post("/api/v1/company/stripe/disconnect")
     assert resp.status_code == 200
+    assert resp.json() == {"disconnected": True, "stripe_released": True}
     deauth.assert_awaited_once_with(account_id="acct_x")
     clear.assert_awaited_once_with("org_a", account_id="acct_x")
     facts.assert_awaited_once_with("org_a")

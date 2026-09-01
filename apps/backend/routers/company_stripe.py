@@ -247,7 +247,15 @@ async def connect_callback(code: str = Query(default=""), state: str = Query(def
 
 @router.post("/disconnect")
 async def disconnect(auth: Annotated[AuthContext, Depends(get_current_user)]):
-    """Revoke the platform link and unbind. The owner's account is untouched."""
+    """Revoke the platform link and unbind. The owner's account is untouched.
+
+    The unbind is unconditional. A Stripe error used to 502 with the row left
+    bound, which is unrecoverable for a `created` account: it was minted
+    through Accounts v2 and was never an OAuth grant, so Stripe can answer
+    `invalid_client` ("isn't connected to your application") on every retry
+    and the owner could never let go. `stripe_released` reports whether the
+    revoke was confirmed instead of hiding it.
+    """
     _require_connect_configured()
     _gate_admin(auth)
     owner_id = resolve_owner_id(auth)
@@ -255,13 +263,9 @@ async def disconnect(auth: Annotated[AuthContext, Depends(get_current_user)]):
     account_id = row.get("company_stripe_account_id")
     if not account_id:
         raise HTTPException(status_code=409, detail="No Stripe account bound")
-    try:
-        await company_stripe.deauthorize(account_id=account_id)
-    except stripe.error.StripeError as e:
-        raise _stripe_failure(e) from e
-    await billing_repo.clear_company_stripe_account(owner_id, account_id=account_id)
+    released = await company_stripe.release_and_unbind(owner_id=owner_id, account_id=account_id)
     await write_owner_facts(owner_id)
-    return {"disconnected": True}
+    return {"disconnected": True, "stripe_released": released}
 
 
 class RequestStripeBody(BaseModel):

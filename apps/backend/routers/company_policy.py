@@ -90,14 +90,17 @@ async def revoke_all(body: RevokeAllBody, auth: Annotated[AuthContext, Depends(g
         await integration_secret_store.delete(owner_id, key)
         revoked.append(f"secret:{key}")
 
-    # 3. Stripe Connect: the disconnect route's service path — deauthorize the
-    # platform link, then unbind. The owner's account itself is untouched.
+    # 3. Stripe Connect: the disconnect route's service path — sever the
+    # platform link and unbind. The owner's account itself is untouched.
+    # `release_and_unbind` unbinds whatever Stripe answers: this is a kill
+    # switch, and one that 500s on a Stripe outage (or on a `created` account
+    # Stripe declines to deauthorize) is not a kill switch. An unconfirmed
+    # revoke is reported in the payload rather than raised.
     row = await billing_repo.get_by_owner_id(owner_id) or {}
     account_id = row.get("company_stripe_account_id")
     if account_id:
-        await company_stripe.deauthorize(account_id=account_id)
-        await billing_repo.clear_company_stripe_account(owner_id, account_id=account_id)
-        revoked.append(f"stripe_connect:{account_id}")
+        released = await company_stripe.release_and_unbind(owner_id=owner_id, account_id=account_id)
+        revoked.append(f"stripe_connect:{account_id}" + ("" if released else "(stripe_unconfirmed)"))
         await write_owner_facts(owner_id)
 
     logger.info("company_policy: revoke-all owner_id=%s revoked=%s", owner_id, revoked)

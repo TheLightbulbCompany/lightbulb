@@ -163,6 +163,30 @@ def test_revoke_all_composes_each_primitive_once_in_order(client, facts):
     ]
 
 
+def test_revoke_all_unbinds_and_still_succeeds_when_stripe_errors(client, facts):
+    """A kill switch that 500s is not a kill switch. The Stripe call was
+    unguarded and not inside a swallow, so a Stripe outage — or a `created`
+    account Stripe refuses to deauthorize at all — raised straight out of the
+    request, leaving the row bound and the owner with a dead button."""
+    _, cancel, sdelete, _ = _revoke_mocks()
+    billing_row = {"owner_id": "org_a", "company_stripe_account_id": "acct_1"}
+    clear = AsyncMock(return_value=billing_row)
+    with (
+        patch.object(mod.account_wipe, "cancel_open_workflows", cancel),
+        patch.object(mod.integrations_repo, "list_for_owner", AsyncMock(return_value=[])),
+        patch.object(mod.integration_secret_store, "delete", sdelete),
+        patch.object(billing_repo, "get_by_owner_id", AsyncMock(return_value=billing_row)),
+        patch.object(mod.company_stripe, "deauthorize", AsyncMock(side_effect=RuntimeError("stripe down"))),
+        patch.object(billing_repo, "clear_company_stripe_account", clear),
+    ):
+        resp = client.post("/api/v1/company/revoke-all", json={"confirm": "revoke"})
+    assert resp.status_code == 200
+    # The unbind happened, and the unconfirmed revoke is REPORTED, not hidden.
+    clear.assert_awaited_once_with("org_a", account_id="acct_1")
+    assert resp.json()["revoked"][-1] == "stripe_connect:acct_1(stripe_unconfirmed)"
+    facts.assert_awaited_once_with("org_a")
+
+
 def test_revoke_all_skips_stripe_when_unbound(client):
     _, cancel, sdelete, deauth = _revoke_mocks()
     with (

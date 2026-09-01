@@ -109,19 +109,47 @@ class _Safe(dict):
         return "{" + key + "}"
 
 
+def placeholders_in(text: str) -> set[str]:
+    """The placeholder names a copy string uses — bare names only. ``""``
+    comes back for a bare ``{}``, which no variant supplies.
+
+    Raises ``ValueError``, with a message fit to show an admin, on anything
+    ``str.format`` would accept but we will not:
+
+    - **unbalanced braces** — what ``str.format`` itself rejects;
+    - **attribute / index traversal** (``{comp_slots.__class__}``,
+      ``{x[0]}``) — ``format_map`` walks those at RENDER time, so a value's
+      internals would reach a customer's inbox;
+    - **format specs and conversions** (``{comp_slots:>999999999}``,
+      ``{x!r}``) — a width spec is a string-amplification bomb: it renders
+      before any guard can run, on the single non-autoscaled backend task.
+
+    ``_fill`` runs this on every render, so the fence lives here rather than
+    only in the admin write path — a future caller of ``render()`` that
+    bypasses validation is safe too."""
+    try:
+        parsed = list(Formatter().parse(text))
+    except ValueError:
+        raise ValueError("has an unbalanced { or } — use {{ or }} for a literal brace") from None
+    names = set()
+    for _, name, spec, conversion in parsed:
+        if name is None:
+            continue
+        if spec or conversion:
+            raise ValueError(f"format specs and conversions are not allowed: {{{name}}}")
+        if "." in name or "[" in name:
+            raise ValueError(f"attribute and index lookups are not allowed: {{{name}}}")
+        names.add(name)
+    return names
+
+
 def _fill(template: str, values: dict) -> str:
     try:
+        placeholders_in(template)  # the gate — traversal, specs, bad braces
         return template.format_map(_Safe(values))
-    except Exception:  # noqa: BLE001 — malformed braces in admin copy render raw, never explode
-        logger.warning("launch email copy has malformed placeholders; rendering it raw")
+    except Exception:  # noqa: BLE001 — bad admin copy renders raw, never explodes a close
+        logger.warning("launch email copy has unusable placeholders; rendering it raw")
         return template
-
-
-def placeholders_in(text: str) -> set[str]:
-    """The placeholder names a copy string uses. Raises ``ValueError`` on
-    unbalanced braces (what ``str.format`` itself would raise); ``""`` comes
-    back for a bare ``{}``, which no variant supplies."""
-    return {name for _, name, _, _ in Formatter().parse(text) if name is not None}
 
 
 def _closes_date(sheet_closes_at: datetime) -> str:

@@ -238,10 +238,16 @@ def validate_email_copy(variant: str, payload: dict) -> dict:
         if len(value) > MAX_COPY_LEN:
             errors[field] = f"must be at most {MAX_COPY_LEN} characters"
             continue
+        if field == "subject" and ("\r" in value or "\n" in value):
+            # EmailMessage refuses a header with a newline, so the send would
+            # RAISE — every row of that cohort released and dumped into
+            # email_failures with nothing saying why. Refuse it here instead.
+            errors[field] = "must be a single line — no line breaks"
+            continue
         try:
             used = launch_sheet_email.placeholders_in(value)
-        except ValueError:
-            errors[field] = "has an unbalanced { or } — use {{ or }} for a literal brace"
+        except ValueError as e:
+            errors[field] = str(e)
             continue
         unknown = sorted(n for n in used if n not in allowed)
         if unknown:

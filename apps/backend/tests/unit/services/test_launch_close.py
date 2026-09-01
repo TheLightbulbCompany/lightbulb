@@ -555,13 +555,18 @@ async def test_a_paying_non_winner_stays_in_and_is_told_so():
     rows = [_row("w@x.com", 1), _row("payer@x.com", 50)]
     billing = {"user_payer": dict(PAYING, stripe_subscription_id="sub_p")}
     with _Harness(rows, billing, comp_slots=1) as h:
+        h.email_copy = {"competing": {"lead": "hand-written"}}
         result = await launch_close.close(ADMIN)
     assert "winner" not in h.rows["payer@x.com"]
     assert h.rows["payer@x.com"]["compete_eligible"] is True
     assert ("competing", "payer@x.com") in h.sent
     assert result["emails_competing"] == 1 and result["emails_not_selected"] == 0
-    # The slot count in the copy is THIS close's, not a hard-coded 200.
+    # The slot count in the copy is the FROZEN winner count, not a hard-coded
+    # 200 and not the live comp_slots setting.
     assert h.sent_comp_slots == [None, 1]  # winner variant takes none; competing takes 1
+    # The admin's stored copy actually reaches the send — without this, dropping
+    # `copy=copy` at the call site would leave every other test still passing.
+    assert h.sent_copy == [{"competing": {"lead": "hand-written"}}] * 2
     # …and no coupon went anywhere near a non-winner.
     assert [c for c in h.stripe_calls if c[0] == "modify"] == []
 
@@ -598,6 +603,22 @@ async def test_a_failed_non_winner_send_releases_the_claim():
         await launch_close.close(ADMIN, force=True)
     assert ("not_selected", "d@x.com") in h.sent
     assert h.rows["d@x.com"]["winner_email_sent_at"]
+
+
+async def test_the_quoted_slot_count_is_the_frozen_winner_count():
+    """A comp_slots edit between the close and a convergence rerun must not
+    change the number a not-yet-emailed row is told — the free months that
+    were actually given is what the copy states."""
+    rows = [
+        _row("w@x.com", 1, winner=True, compete_eligible=True, winner_email_sent_at="sent"),
+        _row("d@x.com", 40, compete_eligible=False),
+    ]
+    settings_row = {"closed_at": "2026-09-30T16:00:00+00:00", "final_pot_cents": 1, "final_roster_count": 1}
+    with _Harness(rows, {}, settings_row=settings_row, comp_slots=1) as h:
+        h.comp_slots = 99  # the admin edits slots after the close
+        await launch_close.close(ADMIN, force=True)
+    assert h.sent == [("not_selected", "d@x.com")]
+    assert h.sent_comp_slots == [1]  # len(winners), not 99
 
 
 async def test_a_rerun_reads_eligibility_off_the_stamped_row():

@@ -223,3 +223,31 @@ async def test_every_variant_renders_with_sample_values():
     for variant in em.VARIANTS:
         body = em.render(variant, copy=None, values=values)
         assert body["subject"] and body["html"].startswith("<div") and body["text"]
+
+
+def test_placeholders_in_rejects_attribute_and_index_traversal():
+    """`format_map` walks attributes at RENDER time, so `{comp_slots.__class__}`
+    would put a value's internals in a customer's inbox. The gate is in the
+    renderer's own path, not only in the admin validator."""
+    for bad in ("{comp_slots.__class__}", "{comp_slots[0]}", "{x.y.z}"):
+        with pytest.raises(ValueError, match="attribute and index"):
+            em.placeholders_in(bad)
+
+
+def test_placeholders_in_rejects_format_specs_and_conversions():
+    """`{comp_slots:>999999999}` renders a ~1GB string before any guard can
+    run, on the single non-autoscaled backend task."""
+    with pytest.raises(ValueError, match="format specs"):
+        em.placeholders_in("{comp_slots:>999999999}")
+    with pytest.raises(ValueError, match="format specs"):
+        em.placeholders_in("{comp_slots!r}")
+
+
+async def test_a_traversing_or_amplifying_placeholder_renders_raw():
+    """Even reaching render() directly — no validator in the way — the copy
+    comes out as literal text, never expanded."""
+    for bad in ("{comp_slots.__class__}", "{comp_slots:>999999}"):
+        body = em.render("competing", copy={"competing": {"lead": bad}}, values={"comp_slots": 200})
+        assert bad in body["text"]  # literal, not expanded
+        assert "&lt;class" not in body["html"] and "<class" not in body["text"]
+        assert len(body["text"]) < 2000  # no width-spec amplification

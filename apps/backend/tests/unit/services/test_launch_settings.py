@@ -427,3 +427,28 @@ async def test_a_settings_save_carries_the_email_copy_forward():
         saved = await ls.update(ADMIN, _payload())
     assert stored["email_copy"] == {"competing": {"lead": "hand-written"}}
     assert saved["email_copy"] == {"competing": {"lead": "hand-written"}}
+
+
+def test_email_copy_validate_rejects_attribute_traversal():
+    with pytest.raises(ls.SettingsInvalid) as e:
+        ls.validate_email_copy("competing", {"lead": "{comp_slots.__class__}"})
+    assert "attribute and index" in e.value.errors["lead"]
+
+
+def test_email_copy_validate_rejects_a_format_spec():
+    """A width spec is a string-amplification bomb — it renders before
+    `_fill`'s except can help, on the one backend task."""
+    with pytest.raises(ls.SettingsInvalid) as e:
+        ls.validate_email_copy("competing", {"detail": "{comp_slots:>999999999}"})
+    assert "format specs" in e.value.errors["detail"]
+
+
+def test_email_copy_validate_rejects_a_multiline_subject():
+    """A newline in a subject makes EmailMessage RAISE at send: the whole
+    cohort would land in email_failures with nothing saying why."""
+    for bad in ("two\nlines", "carriage\rreturn"):
+        with pytest.raises(ls.SettingsInvalid) as e:
+            ls.validate_email_copy("competing", {"subject": bad})
+        assert "single line" in e.value.errors["subject"]
+    # …but a newline in the BODY fields is fine.
+    assert ls.validate_email_copy("competing", {"detail": "two\nlines"}) == {"detail": "two\nlines"}

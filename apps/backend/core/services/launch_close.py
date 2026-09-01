@@ -386,11 +386,14 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
             send = send_winner_paid_email if is_paid_variant else send_winner_unpaid_email
             variant, extra = "winner", {}
         elif r["email"] in eligible_emails:
-            # The slot count is passed down, never re-read inside the email
-            # module, so the number in the copy is the one this close ran on.
-            variant, send, extra = "competing", send_still_competing_email, {"comp_slots": s.comp_slots}
+            # len(winners), NOT s.comp_slots: the winner set is frozen at the
+            # first close, so a comp_slots edit before a convergence rerun
+            # would otherwise quote a not-yet-emailed row a number the data no
+            # longer supports. The count of free months actually given is
+            # exact and immune to later edits.
+            variant, send, extra = "competing", send_still_competing_email, {"comp_slots": len(winners)}
         else:
-            variant, send, extra = "not_selected", send_not_selected_email, {"comp_slots": s.comp_slots}
+            variant, send, extra = "not_selected", send_not_selected_email, {"comp_slots": len(winners)}
         message_id = await send(to_email=r["email"], first_name=None, copy=copy, **extra)
         if message_id:
             sends[variant] += 1

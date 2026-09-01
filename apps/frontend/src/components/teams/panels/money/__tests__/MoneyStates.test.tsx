@@ -4,6 +4,8 @@ import { render, screen } from "@testing-library/react";
 
 import { MoneyStates } from "../MoneyStates";
 import { moneyView, type MoneyEnvelope } from "@/hooks/useCompanyMoney";
+import { ApiError } from "@lightbulb/shared";
+import { formatStripeAmount } from "../money";
 
 const env = (over: Partial<MoneyEnvelope<unknown>> = {}): MoneyEnvelope<unknown> => ({
   stripe_bound: true,
@@ -54,7 +56,7 @@ describe("MoneyStates copy", () => {
     // "no payments yet" when the truth is a two-minute form away.
     render(<MoneyStates view={{ kind: "partial" }} noun="payments" />);
     expect(screen.getByText(/Stripe onboarding isn't finished/i)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /finish stripe setup/i })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /open accounts/i })).toBeInTheDocument();
     expect(screen.queryByText(/No payments yet/i)).not.toBeInTheDocument();
   });
 
@@ -75,5 +77,68 @@ describe("MoneyStates copy", () => {
       );
       unmount();
     }
+  });
+});
+
+
+describe("moneyView — states found in review", () => {
+  it("separates a 403 from a Stripe outage", () => {
+    // `company_money._owner()` calls require_org_admin, so EVERY non-admin org
+    // member 403s on all four routes. Collapsing that into "couldn't reach
+    // Stripe, check back shortly" tells them to wait for something permanent.
+    expect(moneyView(undefined, new ApiError(403, {}), false)).toEqual({ kind: "forbidden" });
+    expect(moneyView(undefined, new ApiError(502, {}), false)).toEqual({ kind: "unavailable" });
+  });
+
+  it("does not call a submitted-but-unreviewed account 'connected and ready'", () => {
+    // details_submitted true + charges_enabled false. Lists are legitimately
+    // empty, but no payment CAN land — and Accounts calls this "Under review",
+    // so `zero` here would make two tabs contradict each other.
+    expect(
+      moneyView(env({ details_submitted: true, charges_enabled: false }), undefined, false),
+    ).toEqual({ kind: "under_review" });
+  });
+
+  it("treats an ABSENT charges_enabled as enabled, not as under review", () => {
+    // Same deploy-skew rule as details_submitted: absent must not read as false.
+    const { charges_enabled: _omit, ...withoutField } = env();
+    expect(moneyView(withoutField as MoneyEnvelope<unknown>, undefined, false)).toEqual({
+      kind: "zero",
+    });
+  });
+});
+
+describe("MoneyStates copy — states found in review", () => {
+  it("tells a non-admin the truth, and offers no CTA they cannot act on", () => {
+    render(<MoneyStates view={{ kind: "forbidden" }} noun="payments" />);
+    expect(screen.getByText(/Only workspace admins can see payments/i)).toBeInTheDocument();
+    expect(screen.queryByText(/check back shortly/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+  });
+
+  it("never promises 'Finish Stripe setup', which does not exist for a connected account", () => {
+    // CompanyStripeSection gates its Finish onboarding button on
+    // source === "created", so that label would send a connect-existing owner
+    // to a page without the button it just named.
+    render(<MoneyStates view={{ kind: "partial" }} noun="payments" />);
+    expect(screen.getByRole("link", { name: /open accounts/i })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /finish stripe setup/i })).not.toBeInTheDocument();
+  });
+});
+
+describe("formatStripeAmount", () => {
+  it("is not 100x wrong on a zero-decimal currency", () => {
+    // JPY has no minor unit: amount 1000 IS 1000 yen. Dividing by 100 rendered
+    // "10.00 JPY" on the one surface whose value is reconciling against Stripe.
+    expect(formatStripeAmount(1000, "jpy")).toBe("¥1,000");
+    expect(formatStripeAmount(1000, "usd")).toBe("$10.00");
+  });
+
+  it("groups thousands, which the hand-rolled formatter did not", () => {
+    expect(formatStripeAmount(123450, "usd")).toBe("$1,234.50");
+  });
+
+  it("does not silently format an unknown currency as dollars", () => {
+    expect(formatStripeAmount(500, null)).toBe("500");
   });
 });

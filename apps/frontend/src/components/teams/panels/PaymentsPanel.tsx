@@ -20,23 +20,7 @@ import { PanelDataTable, PanelMasthead, type PanelDataColumn } from "@/component
 import { EditorialButton } from "@/components/teams/shell";
 import { MoneyStates } from "@/components/teams/panels/money/MoneyStates";
 import { useCompanyMoney, type PaymentRow } from "@/hooks/useCompanyMoney";
-import { formatUsdCents } from "@/lib/creditAmounts";
-
-function when(unix: number): string {
-  return new Date(unix * 1000).toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
-}
-
-/** Stripe amounts are minor units. USD minor units are cents, so
- *  `formatUsdCents` is correct; a zero-decimal currency (JPY) would not be,
- *  which is why the currency is shown next to a non-USD amount. */
-function money(amount: number, currency: string): string {
-  if (currency?.toLowerCase() === "usd") return formatUsdCents(amount);
-  return `${(amount / 100).toFixed(2)} ${currency?.toUpperCase() ?? ""}`.trim();
-}
+import { formatStripeAmount, formatUnixDay } from "@/components/teams/panels/money/money";
 
 /** Never colour alone (system.md) — the word carries the status, the colour
  *  only reinforces it, and an unknown status renders neutral rather than ok. */
@@ -50,7 +34,7 @@ function statusOf(row: PaymentRow): { label: string; tone: string } {
 }
 
 const COLUMNS: PanelDataColumn<PaymentRow>[] = [
-  { key: "created", header: "Date", cell: (r) => when(r.created), width: "8rem" },
+  { key: "created", header: "Date", cell: (r) => formatUnixDay(r.created), width: "8rem" },
   {
     key: "description",
     header: "Description",
@@ -71,10 +55,10 @@ const COLUMNS: PanelDataColumn<PaymentRow>[] = [
     align: "right",
     cell: (r) => (
       <span className="tabular-nums">
-        {money(r.amount, r.currency)}
+        {formatStripeAmount(r.amount, r.currency)}
         {r.amount_refunded > 0 && !r.refunded && (
           <span className="ml-1 text-[var(--midnight-muted)]">
-            (−{money(r.amount_refunded, r.currency)})
+            (−{formatStripeAmount(r.amount_refunded, r.currency)})
           </span>
         )}
       </span>
@@ -101,14 +85,13 @@ const COLUMNS: PanelDataColumn<PaymentRow>[] = [
 ];
 
 export function PaymentsPanel() {
-  const { rows, view, hasMore, next, paged } = useCompanyMoney<PaymentRow>("payments");
+  const { rows, view, hasMore, next } = useCompanyMoney<PaymentRow>("payments");
 
   return (
     <div className="editorial-page p-4 sm:p-5 lg:p-6 flex flex-col gap-4 max-w-5xl mx-auto w-full">
       <PanelMasthead
         overline="Money"
         title="Payments"
-        meta={paged ? "Later pages" : undefined}
       />
 
       {view.kind === "rows" ? (

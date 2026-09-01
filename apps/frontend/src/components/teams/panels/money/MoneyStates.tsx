@@ -35,6 +35,39 @@ export function MoneyStates({ view, noun }: { view: MoneyView; noun: string }) {
         />
       );
 
+    case "forbidden":
+      // `company_money._owner()` calls `require_org_admin`, so a non-admin org
+      // member 403s on every Money route, forever. Rendering that as a
+      // temporary Stripe problem told them to wait for something that never
+      // changes. It is permanent, it is ours, and there is no CTA because
+      // there is nothing this person can do about it themselves.
+      return (
+        <PanelNotice
+          state="unavailable"
+          icon={CreditCard}
+          headline={`Only workspace admins can see ${noun}.`}
+          supporting="Your workspace admin can share what you need, or change your role."
+        />
+      );
+
+    case "under_review":
+      // details_submitted true, charges_enabled false. The lists are
+      // legitimately empty, but "connected and ready" is false — no payment
+      // CAN land — and the Accounts panel calls this same state "Under review".
+      return (
+        <PanelNotice
+          state="partial"
+          icon={CreditCard}
+          headline="Stripe is still reviewing your account."
+          supporting={`Your details are submitted, but Stripe hasn't enabled charges yet, so no ${noun} can arrive. This usually clears on its own.`}
+          href={ACCOUNTS}
+          action={{
+            label: "Check status",
+            onClick: (e) => handleShellLinkClick(e, ACCOUNTS),
+          }}
+        />
+      );
+
     case "unbound":
       // Copied deliberately from result.dev, which words this better than we
       // did: it names the upstream dependency and promises the page fills
@@ -65,10 +98,16 @@ export function MoneyStates({ view, noun }: { view: MoneyView; noun: string }) {
           state="partial"
           icon={CreditCard}
           headline="Your Stripe onboarding isn't finished."
-          supporting={`Stripe is connected but not yet accepting charges, so there are no ${noun} to show. Finishing setup takes a couple of minutes.`}
+          supporting={`Stripe is connected but not yet accepting charges, so there are no ${noun} to show. Finish it from Accounts — either here or in the Stripe Dashboard.`}
           href={ACCOUNTS}
+          // "Open Accounts", not "Finish Stripe setup": CompanyStripeSection
+          // gates its "Finish onboarding" button on `source === "created"`, so
+          // an owner who CONNECTED an existing unfinished account would be sent
+          // to a page with no such button — a CTA promising an action that is
+          // not there. Accounts always offers "Open Stripe Dashboard", which
+          // works for both sources.
           action={{
-            label: "Finish Stripe setup",
+            label: "Open Accounts",
             onClick: (e) => handleShellLinkClick(e, ACCOUNTS),
           }}
         />

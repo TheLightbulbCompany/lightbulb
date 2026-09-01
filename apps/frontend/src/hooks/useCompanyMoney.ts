@@ -2,6 +2,7 @@
 
 import { useCallback, useState } from "react";
 import useSWR from "swr";
+import { ApiError } from "@lightbulb/shared";
 import { useApi } from "@/lib/api";
 
 /**
@@ -88,8 +89,10 @@ export type MoneyKind = "payments" | "customers" | "products";
 export type MoneyView =
   | { kind: "loading" }
   | { kind: "unavailable" }
+  | { kind: "forbidden" }
   | { kind: "unbound" }
   | { kind: "partial" }
+  | { kind: "under_review" }
   | { kind: "zero" }
   | { kind: "rows" };
 
@@ -98,18 +101,36 @@ export function moneyView<Row>(
   error: unknown,
   isLoading: boolean,
 ): MoneyView {
+  // A 403 is NOT a Stripe outage. `company_money._owner()` calls
+  // `require_org_admin`, so every non-admin org member gets 403 on all four
+  // routes — and collapsing that into "we couldn't reach Stripe, check back
+  // shortly" tells them to wait for something that will never change. It is
+  // permanent, it is ours, and it has a different sentence.
+  if (error instanceof ApiError && error.status === 403) return { kind: "forbidden" };
   if (error) return { kind: "unavailable" };
   if (isLoading || !data) return { kind: "loading" };
   if (!data.stripe_bound) return { kind: "unbound" };
   // `details_submitted` is absent on an older backend; absent must not read as
   // unonboarded, or every owner sees "finish setup" during a deploy skew.
   if (data.details_submitted === false) return { kind: "partial" };
+  // Submitted but not yet accepting charges: Stripe is reviewing the account.
+  // This returns legitimately empty lists too, but telling the owner they are
+  // "connected and ready" is false — no payment CAN land — and it contradicts
+  // the Accounts panel, which renders this same state as "Under review".
+  // `charges_enabled` is absent on an older backend, so only an explicit
+  // `false` counts.
+  if (data.charges_enabled === false) return { kind: "under_review" };
   return data.data.length ? { kind: "rows" } : { kind: "zero" };
 }
 
 export function useCompanyMoney<Row>(kind: MoneyKind) {
   const api = useApi();
   const [cursor, setCursor] = useState<string | null>(null);
+  // Pages already fetched, in order. "Load more" APPENDS — swapping the SWR key
+  // alone replaced the visible rows with the next page and left no way back to
+  // page 1, and an empty final page then rendered "No payments yet" to an owner
+  // who had just paged through dozens of them.
+  const [earlier, setEarlier] = useState<Row[]>([]);
 
   const key = cursor ? `/company/${kind}?starting_after=${cursor}` : `/company/${kind}`;
   const { data, error, isLoading } = useSWR<MoneyEnvelope<Row>>(
@@ -119,17 +140,21 @@ export function useCompanyMoney<Row>(kind: MoneyKind) {
   );
 
   const next = useCallback(() => {
-    if (data?.next_cursor) setCursor(data.next_cursor);
-  }, [data?.next_cursor]);
+    if (!data?.next_cursor) return;
+    setEarlier((prev) => [...prev, ...data.data]);
+    setCursor(data.next_cursor);
+  }, [data]);
+
+  const rows = [...earlier, ...(data?.data ?? [])];
+  const view = moneyView(data, error, isLoading);
 
   return {
-    envelope: data,
-    rows: data?.data ?? [],
-    view: moneyView(data, error, isLoading),
+    rows,
+    // Once a page has been accumulated the owner HAS rows, even if the newest
+    // page came back empty — deriving the view off the current page alone would
+    // flip a populated table to "no payments yet" on the last click.
+    view: earlier.length && view.kind === "zero" ? ({ kind: "rows" } as MoneyView) : view,
     hasMore: !!data?.has_more,
     next,
-    /** True once the owner has paged — the panel shows "showing later pages". */
-    paged: cursor !== null,
-    resetPaging: () => setCursor(null),
   };
 }

@@ -14,15 +14,7 @@ import { PanelDataTable, PanelMasthead, type PanelDataColumn } from "@/component
 import { EditorialButton } from "@/components/teams/shell";
 import { MoneyStates } from "@/components/teams/panels/money/MoneyStates";
 import { useCompanyMoney, type CustomerRow } from "@/hooks/useCompanyMoney";
-import { formatUsdCents } from "@/lib/creditAmounts";
-
-function when(unix: number): string {
-  return new Date(unix * 1000).toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
-}
+import { formatStripeAmount, formatUnixDay } from "@/components/teams/panels/money/money";
 
 const COLUMNS: PanelDataColumn<CustomerRow>[] = [
   {
@@ -37,7 +29,7 @@ const COLUMNS: PanelDataColumn<CustomerRow>[] = [
       </span>
     ),
   },
-  { key: "created", header: "Since", cell: (r) => when(r.created), width: "9rem" },
+  { key: "created", header: "Since", cell: (r) => formatUnixDay(r.created), width: "9rem" },
   {
     key: "standing",
     header: "Standing",
@@ -68,22 +60,21 @@ const COLUMNS: PanelDataColumn<CustomerRow>[] = [
       ) : (
         <span className="tabular-nums">
           {r.balance < 0
-            ? `${formatUsdCents(-r.balance)} credit`
-            : `${formatUsdCents(r.balance)} owed`}
+            ? `${formatStripeAmount(-r.balance, r.currency)} credit`
+            : `${formatStripeAmount(r.balance, r.currency)} owed`}
         </span>
       ),
   },
 ];
 
 export function CustomersPanel() {
-  const { rows, view, hasMore, next, paged } = useCompanyMoney<CustomerRow>("customers");
+  const { rows, view, hasMore, next } = useCompanyMoney<CustomerRow>("customers");
 
   return (
     <div className="editorial-page p-4 sm:p-5 lg:p-6 flex flex-col gap-4 max-w-5xl mx-auto w-full">
       <PanelMasthead
         overline="Money"
         title="Customers"
-        meta={paged ? "Later pages" : undefined}
       />
 
       {view.kind === "rows" ? (

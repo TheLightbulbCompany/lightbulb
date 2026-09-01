@@ -11,22 +11,24 @@
 // and Customers are three peer reads of one connected account, and a section
 // would have made one of the three a second-class citizen of another's tab.
 //
-// The `default_price` may arrive expanded or as a bare id depending on what
-// Stripe returns; both are handled rather than assuming the expand.
+// There is deliberately no Status column: `stripe_page` sets `active=True` for
+// the products kind, so every row IS live and the column could only ever print
+// one value — 8rem of a table spent on zero information.
 
 import { PanelDataTable, PanelMasthead, type PanelDataColumn } from "@/components/teams/shell";
 import { EditorialButton } from "@/components/teams/shell";
 import { MoneyStates } from "@/components/teams/panels/money/MoneyStates";
 import { useCompanyMoney, type ProductRow } from "@/hooks/useCompanyMoney";
-import { formatUsdCents } from "@/lib/creditAmounts";
+import { formatStripeAmount } from "@/components/teams/panels/money/money";
 
 function priceOf(p: ProductRow["default_price"]): string {
   if (!p) return "—";
+  // The backend always expands `default_price`, so the bare-id shape does not
+  // reach us — narrow it out rather than carrying a branch for a contract the
+  // server does not offer.
   if (typeof p === "string") return "Set in Stripe";
   if (p.unit_amount === null || p.unit_amount === undefined) return "Variable";
-  return p.currency?.toLowerCase() === "usd"
-    ? formatUsdCents(p.unit_amount)
-    : `${(p.unit_amount / 100).toFixed(2)} ${p.currency?.toUpperCase() ?? ""}`.trim();
+  return formatStripeAmount(p.unit_amount, p.currency);
 }
 
 const COLUMNS: PanelDataColumn<ProductRow>[] = [
@@ -43,17 +45,6 @@ const COLUMNS: PanelDataColumn<ProductRow>[] = [
     ),
   },
   {
-    key: "active",
-    header: "Status",
-    width: "8rem",
-    cell: (r) =>
-      r.active ? (
-        <span className="text-ok">Live</span>
-      ) : (
-        <span className="text-[var(--midnight-muted)]">Archived</span>
-      ),
-  },
-  {
     key: "price",
     header: "Price",
     align: "right",
@@ -63,14 +54,13 @@ const COLUMNS: PanelDataColumn<ProductRow>[] = [
 ];
 
 export function ProductsPanel() {
-  const { rows, view, hasMore, next, paged } = useCompanyMoney<ProductRow>("products");
+  const { rows, view, hasMore, next } = useCompanyMoney<ProductRow>("products");
 
   return (
     <div className="editorial-page p-4 sm:p-5 lg:p-6 flex flex-col gap-4 max-w-4xl mx-auto w-full">
       <PanelMasthead
         overline="Money"
         title="Products"
-        meta={paged ? "Later pages" : undefined}
       />
 
       {view.kind === "rows" ? (

@@ -62,6 +62,17 @@ const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
   payments: "Payments",
   products: "Products",
   customers: "Customers",
+  // Shells with named exits (owner ruling 2026-09-01): the map is complete
+  // before every rail is. Keys are permanent the moment they ship — mobile
+  // builds `?panel=teams-<key>` as a string.
+  publish: "Publish",
+  seo: "SEO & AEO",
+  ads: "Ads",
+  support: "Support",
+  identity: "Identity",
+  "domain-site": "Domain & Site",
+  compliance: "Compliance",
+  contracts: "Contracts",
 };
 
 const TEAMS_DETAIL_KEYS: Readonly<Record<string, string>> = {

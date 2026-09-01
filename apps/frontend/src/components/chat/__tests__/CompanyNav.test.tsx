@@ -19,10 +19,18 @@ const ALL_LABELS = [
   "Automations",
   "Goals",
   "Projects",
+  "Support",
+  "Publish",
+  "SEO & AEO",
+  "Ads",
   "Brain",
   "Library",
   "Org chart",
   "Accounts",
+  "Identity",
+  "Domain & Site",
+  "Compliance",
+  "Contracts",
   "Activity",
 ];
 
@@ -33,11 +41,12 @@ describe("CompanyNav", () => {
       expect(screen.getByText(label)).toBeInTheDocument();
     }
   });
-  it("declares the spec §5.1 section order: top block, Money, Work, Knowledge, Company", () => {
+  it("declares the spec §5.1 section order: top block, Money, Work, Growth, Knowledge, Company", () => {
     expect(COMPANY_SECTIONS.map((s) => s.label)).toEqual([
       null,
       "Money",
       "Work",
+      "Growth",
       "Knowledge",
       "Company",
     ]);

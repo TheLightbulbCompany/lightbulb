@@ -36,6 +36,14 @@ const PANEL_LOADERS: Record<string, () => Promise<React.ComponentType>> = {
   payments: () => import("./panels/PaymentsPanel").then((m) => m.PaymentsPanel),
   products: () => import("./panels/ProductsPanel").then((m) => m.ProductsPanel),
   customers: () => import("./panels/CustomersPanel").then((m) => m.CustomersPanel),
+  publish: () => import("./panels/PublishPanel").then((m) => m.PublishPanel),
+  seo: () => import("./panels/SeoPanel").then((m) => m.SeoPanel),
+  ads: () => import("./panels/AdsPanel").then((m) => m.AdsPanel),
+  support: () => import("./panels/SupportPanel").then((m) => m.SupportPanel),
+  identity: () => import("./panels/IdentityPanel").then((m) => m.IdentityPanel),
+  "domain-site": () => import("./panels/DomainSitePanel").then((m) => m.DomainSitePanel),
+  compliance: () => import("./panels/CompliancePanel").then((m) => m.CompliancePanel),
+  contracts: () => import("./panels/ContractsPanel").then((m) => m.ContractsPanel),
 };
 
 const PANELS: Record<string, React.ComponentType> = Object.fromEntries(

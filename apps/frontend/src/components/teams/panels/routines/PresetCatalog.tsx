@@ -20,7 +20,7 @@ import { useConnections } from "@/hooks/useConnections";
 import { notifyApiError, notifySuccess } from "@/lib/notify";
 import { handleShellLinkClick } from "@/lib/shellNav";
 import type { CompanyAgent } from "@/components/teams/shared/types";
-import { ROUTINE_PRESETS, presetIsOn, type RoutinePreset } from "./presets";
+import { ROUTINE_PRESETS, presetIsOn, presetMarker, type RoutinePreset } from "./presets";
 
 const INTEGRATIONS = "/chat?panel=integrations";
 
@@ -65,43 +65,60 @@ function PresetSwitch({
 
 export function PresetCatalog({
   agents,
-  routineTitles,
+  routineDescriptions,
   onCreated,
 }: {
   agents: CompanyAgent[];
-  /** Titles of every existing routine, to hide presets already switched on. */
-  routineTitles: Set<string>;
+  /** Instructions of every existing routine — presets are recognised by the
+   *  marker they stamp there, not by their editable title. */
+  routineDescriptions: string[];
   onCreated: () => void;
 }) {
-  const { post } = useTeamsApi();
+  const { post, patch, del } = useTeamsApi();
   const { connections } = useConnections();
   const [busy, setBusy] = useState<string | null>(null);
 
   const connected = new Set(connections.filter((c) => c.status === "connected").map((c) => c.provider));
-  const remaining = ROUTINE_PRESETS.filter((p) => !presetIsOn(p, routineTitles));
+  const remaining = ROUTINE_PRESETS.filter((p) => !presetIsOn(p, routineDescriptions));
   if (!remaining.length) return null;
 
   const assignee = defaultAssignee(agents);
 
   async function switchOn(preset: RoutinePreset) {
     setBusy(preset.key);
+    // The same two calls CreateRoutineDialog's schedule rung makes, with one
+    // difference that makes the pair atomic: the routine is created PAUSED,
+    // the trigger attached, THEN it is activated. If the trigger call fails,
+    // an active-but-triggerless routine would otherwise be left behind — and
+    // because its marker matches, the preset would vanish from this catalog
+    // as if it had been switched on. On failure the orphan is deleted.
+    let routineId: string | null = null;
     try {
-      // Identical to CreateRoutineDialog's schedule rung — two calls, the
-      // trigger attached after, timezone from the browser as upstream does.
       const routine = await post<{ id: string }>("/routines", {
         title: preset.title,
-        description: preset.description,
+        description: `${preset.description}\n\n${presetMarker(preset.key)}`,
         assignee_agent_id: assignee,
-        status: "active",
+        status: "paused",
       });
+      routineId = routine.id;
       await post(`/routines/${routine.id}/triggers`, {
         kind: "schedule",
         cron_expression: preset.cron,
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
       });
+      await patch(`/routines/${routine.id}`, { status: "active" });
       notifySuccess(`${preset.title} is on — ${preset.cadence.toLowerCase()}.`);
       onCreated();
     } catch (e) {
+      if (routineId) {
+        // Best-effort rollback; a failure here just leaves a PAUSED routine
+        // the owner can see and delete, which is honest rather than hidden.
+        try {
+          await del(`/routines/${routineId}`);
+        } catch {
+          /* leave the paused row visible */
+        }
+      }
       notifyApiError(e, "Couldn't switch that on");
     } finally {
       setBusy(null);

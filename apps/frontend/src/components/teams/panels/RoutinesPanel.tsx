@@ -557,10 +557,14 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
           owner with a full setup sees just their table. Suppressed while a
           search/agent filter is active — the catalog is not part of the
           filtered result and would read as if it were. */}
-      {!isLoading && !search && !agentPick && (
+      {/* Also hidden under the intrinsic `agentId` scope (the per-agent
+          inspector): a preset assigns itself to the CEO, so switching one on
+          from another agent's Schedule tab would create it for someone else
+          and the new row would vanish from the scoped list. */}
+      {!isLoading && !search && !agentPick && !agentId && (
         <PresetCatalog
           agents={agents}
-          routineTitles={new Set((routines ?? []).flatMap((r) => (r.title ? [r.title] : [])))}
+          routineDescriptions={(routines ?? []).map((r) => r.prompt ?? "")}
           onCreated={() => mutate()}
         />
       )}

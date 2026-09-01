@@ -104,8 +104,21 @@ export const ROUTINE_PRESETS: RoutinePreset[] = [
   },
 ];
 
-/** A preset is "on" when a routine carrying its exact title already exists —
- *  the cheapest recognition that survives the routine being edited later. */
-export function presetIsOn(preset: RoutinePreset, routineTitles: Set<string>): boolean {
-  return routineTitles.has(preset.title);
+/** Stamped into the routine's description on create, so the preset can be
+ *  recognised later by something the owner does not edit by accident.
+ *
+ *  NOT the title: titles are editable in RoutineDetailPanel, so a renamed
+ *  preset would be offered again (and switched on twice), while a hand-made
+ *  routine that happened to share a title would hide the preset. A routine
+ *  has no metadata/tags field to carry identity, so the description — which
+ *  the agent reads as its instructions — carries one trailing marker line. */
+export function presetMarker(key: string): string {
+  return `[lightbulb-preset:${key}]`;
+}
+
+/** A preset is "on" when any existing routine's instructions carry its marker. */
+export function presetIsOn(preset: RoutinePreset, routineDescriptions: Iterable<string>): boolean {
+  const marker = presetMarker(preset.key);
+  for (const d of routineDescriptions) if (d.includes(marker)) return true;
+  return false;
 }

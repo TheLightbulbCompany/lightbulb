@@ -261,10 +261,17 @@ path-filtered gates (`backend.yml`, `frontend-ci.yml`, `infra-ci.yml`,
 is safe — a *skipped job* reports success to branch protection.
 
 The same workflow posts a bare `@codex review` on open / ready-for-review /
-reopen (not on every push). Codex **no longer auto-reviews**; that comment is
-the trigger, and any trailing text after `@codex review` stops it being picked
-up. Codex then answers on one of four surfaces — check all four before
-concluding it was silent:
+reopen (not on every push). That comment is the trigger, and any trailing text
+after `@codex review` stops it being picked up.
+
+> **Installing the app is only half of it — it must be connected to a Codex
+> account.** If Codex answers `To use Codex here, create a Codex account and
+> connect to github`, nobody has linked it at
+> <https://chatgpt.com/codex/cloud/settings/connectors>. It will keep replying
+> with that one line and never review. That is a login problem, not a code one.
+
+Codex then answers on one of four surfaces — check all four before concluding
+it was silent:
 
 ```bash
 gh pr view <n> --repo TheLightbulbCompany/lightbulb --json reviews  # formal review

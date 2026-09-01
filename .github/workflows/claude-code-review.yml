@@ -44,9 +44,14 @@ jobs:
       github.event_name == 'pull_request'
       && github.event.action != 'synchronize'
       && !github.event.pull_request.draft
-    runs-on: ${{ vars.CI_RUNNER }}
-    # Posting one comment. If this is queued for five minutes something is
-    # wrong with the runner, not with the review.
+    # NOT ${{ vars.CI_RUNNER }}, deliberately. Measured on this PR: the job sat
+    # QUEUED for ~6 minutes behind a saturated self-hosted box (6 runs
+    # in-flight) to do ~2 seconds of work — and because the workflow-level
+    # concurrency group is `cancel-in-progress`, a push during that wait kills
+    # the ping before it ever posts. A hosted runner costs one billed minute
+    # per PR and makes the request prompt and reliable. It also keeps a slot
+    # free on the shared box for the gates that actually need it.
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       pull-requests: write

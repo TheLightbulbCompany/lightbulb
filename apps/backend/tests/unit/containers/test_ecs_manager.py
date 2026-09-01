@@ -2122,7 +2122,8 @@ class TestAwaitRunningTransition:
 
     @pytest.mark.asyncio
     async def test_spot_placement_timeout_flips_service_to_on_demand(self, manager, mock_ecs_client):
-        """Zero placed tasks past SPOT_PLACEMENT_FALLBACK_S is the Spot
+        """Zero placed tasks past SPOT_PLACEMENT_FALLBACK_S, while the
+        service actually wants a task (desiredCount>0), is the Spot
         capacity-unavailable signature (no tasks, no failures, no rollout
         change). The poller must flip the service to on-demand exactly once
         and keep polling; the flip passes no desiredCount so it can never
@@ -2141,7 +2142,7 @@ class TestAwaitRunningTransition:
             mock_repo.get_by_owner_id = AsyncMock(side_effect=rows)
             mock_repo.update_fields = AsyncMock()
             manager._get_primary_deployment = AsyncMock(
-                return_value={"id": "ecs-svc/primary", "rolloutState": "IN_PROGRESS"}
+                return_value={"id": "ecs-svc/primary", "rolloutState": "IN_PROGRESS", "desiredCount": 1}
             )
 
             await manager._await_running_transition("user_test_123", interval_s=0)
@@ -2153,11 +2154,45 @@ class TestAwaitRunningTransition:
         assert "desiredCount" not in kwargs
 
     @pytest.mark.asyncio
+    async def test_spot_fallback_skipped_when_desired_count_zero(self, manager, mock_ecs_client):
+        """A service sitting at desiredCount=0 (stopped, or racing a
+        wake/stop) trivially has zero placed tasks forever -- that is not a
+        Spot capacity drought. The fallback timer must never even start, and
+        the service must never be flipped to on-demand (permanently ~3x'ing
+        its compute cost, since the flip has no revert path) for a capacity
+        drought that never happened."""
+        mock_ecs_client.list_tasks.return_value = {"taskArns": []}
+        rows = [
+            _make_container_dict(status="provisioning"),
+            _make_container_dict(status="provisioning"),
+            _make_container_dict(status="stopped"),
+        ]
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+            patch(
+                "core.containers.ecs_manager.time.monotonic",
+                side_effect=AssertionError("fallback timer must not run for a service at desiredCount=0"),
+            ),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(side_effect=rows)
+            mock_repo.update_fields = AsyncMock()
+            manager._get_primary_deployment = AsyncMock(
+                return_value={"id": "ecs-svc/primary", "rolloutState": "IN_PROGRESS", "desiredCount": 0}
+            )
+
+            await manager._await_running_transition("user_test_123", interval_s=0)
+
+        mock_ecs_client.update_service.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_pending_task_pulling_image_never_triggers_spot_fallback(self, manager, mock_ecs_client):
         """A PENDING task (multi-GB image pull, minutes long) counts as
         placed — the fallback timer must never even start, no matter how
         long the pull takes. Only a service ECS has placed NOTHING into
-        may be flipped."""
+        may be flipped. desiredCount is deliberately 0 here too, to prove
+        the placed-task short-circuit runs BEFORE desiredCount is ever
+        consulted -- the happy path never depends on it."""
         mock_ecs_client.list_tasks.return_value = {"taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/abc"]}
         mock_ecs_client.describe_tasks.return_value = {
             "tasks": [{"lastStatus": "PENDING", "startedBy": "ecs-svc/primary", "attachments": []}]
@@ -2178,7 +2213,7 @@ class TestAwaitRunningTransition:
             mock_repo.get_by_owner_id = AsyncMock(side_effect=rows)
             mock_repo.update_fields = AsyncMock()
             manager._get_primary_deployment = AsyncMock(
-                return_value={"id": "ecs-svc/primary", "rolloutState": "IN_PROGRESS"}
+                return_value={"id": "ecs-svc/primary", "rolloutState": "IN_PROGRESS", "desiredCount": 0}
             )
 
             await manager._await_running_transition("user_test_123", interval_s=0)

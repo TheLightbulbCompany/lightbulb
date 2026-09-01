@@ -3545,9 +3545,15 @@ class EcsManager:
         available places no tasks, reports no failures, and never trips the
         circuit breaker — it would sit in provisioning forever. If ECS has
         placed zero tasks (any lifecycle state, so a PENDING task pulling the
-        multi-GB image does NOT trigger this) for SPOT_PLACEMENT_FALLBACK_S,
-        flip the service to on-demand once and keep polling. The flip only
-        runs when the service is empty, so it can never kill a live task.
+        multi-GB image does NOT trigger this) for SPOT_PLACEMENT_FALLBACK_S
+        **while desiredCount > 0**, flip the service to on-demand once and
+        keep polling. The desiredCount gate matters: a service sitting at
+        desiredCount=0 (stopped, or racing a wake/stop) trivially has zero
+        placed tasks forever, and that is not a capacity drought -- flipping
+        on that signature permanently triples the container's compute cost
+        for no reason (no revert path, see `_fallback_service_to_on_demand`).
+        The flip only runs when the service is empty, so it can never kill a
+        live task.
 
         ``claim_id`` / ``generation`` / ``attempt_token``: when ``claim_id``
         is given (the SFN runner's foreground call via ``wait_for_running``),
@@ -3631,12 +3637,31 @@ class EcsManager:
                 if placed_count > 0:
                     no_placement_since = None
                 elif not spot_fallback_done:
-                    now = time.monotonic()
-                    if no_placement_since is None:
-                        no_placement_since = now
-                    elif now - no_placement_since >= SPOT_PLACEMENT_FALLBACK_S:
-                        spot_fallback_done = True
-                        self._fallback_service_to_on_demand(service_name, user_id)
+                    # desiredCount rides along on the same describe_services
+                    # call `_get_primary_deployment` already made this tick --
+                    # no extra API round trip needed to gate on it.
+                    desired_count = primary.get("desiredCount", 0)
+                    if desired_count <= 0:
+                        # Service isn't asking ECS to place anything right
+                        # now (desiredCount=0 -- stopped, or racing a
+                        # wake/stop). Zero placed tasks here is the expected
+                        # steady state, not a Spot capacity drought, so don't
+                        # accrue time toward the flip.
+                        no_placement_since = None
+                    else:
+                        now = time.monotonic()
+                        if no_placement_since is None:
+                            no_placement_since = now
+                        elif now - no_placement_since >= SPOT_PLACEMENT_FALLBACK_S:
+                            elapsed_s = now - no_placement_since
+                            spot_fallback_done = True
+                            self._fallback_service_to_on_demand(
+                                service_name,
+                                user_id,
+                                elapsed_s=elapsed_s,
+                                desired_count=desired_count,
+                                placed_count=placed_count,
+                            )
                 # to_thread: the 5s TCP connect must not stall the backend
                 # event loop — this poller runs detached in-process for
                 # wake/resize transitions.
@@ -3769,20 +3794,49 @@ class EcsManager:
 
             await asyncio.sleep(interval_s)
 
-    def _fallback_service_to_on_demand(self, service_name: str, user_id: str) -> None:
-        """Flip a service that Spot cannot place onto on-demand FARGATE.
+    def _fallback_service_to_on_demand(
+        self,
+        service_name: str,
+        user_id: str,
+        *,
+        elapsed_s: float,
+        desired_count: int,
+        placed_count: int,
+    ) -> None:
+        """Flip a service that has placed nothing for SPOT_PLACEMENT_FALLBACK_S
+        onto on-demand FARGATE.
 
-        Only called by _await_running_transition after the service has had
-        zero placed tasks for SPOT_PLACEMENT_FALLBACK_S, so forceNewDeployment
-        cannot terminate a live task (there are none). The service stays
-        on-demand until its next full reprovision recreates it on Spot —
-        deliberately no revert path; capacity droughts are rare and a
-        container quietly paying on-demand beats machinery to migrate it back.
+        Only called by _await_running_transition once desiredCount > 0 (the
+        service actually wants a task running) AND zero tasks have been
+        placed for SPOT_PLACEMENT_FALLBACK_S, so forceNewDeployment cannot
+        terminate a live task (there are none). The service stays on-demand
+        until its next full reprovision recreates it on Spot — deliberately
+        no revert path; capacity droughts are rare and a container quietly
+        paying on-demand beats machinery to migrate it back.
+
+        This is a response to a PLACEMENT TIMEOUT, not a diagnosed root
+        cause. A Spot capacity drought is the common case, but the same
+        signature (desiredCount>0, zero placed, no rollout failure) can also
+        show up for a stuck image pull, an EFS mount failure, or subnet/ENI
+        exhaustion — we don't attempt to disambiguate those here, only to
+        stop asserting a cause we never actually observed. The log line
+        below best-effort includes ECS's own most recent service event as a
+        free diagnostic hint.
 
         Failure here is non-fatal: the poller keeps polling either way, and
         the container simply stays pending until capacity appears or an
         operator intervenes.
         """
+        latest_event = ""
+        try:
+            resp = self._ecs.describe_services(cluster=self._cluster, services=[service_name])
+            events = resp.get("services", [{}])[0].get("events", [])
+            if events:
+                latest_event = f" Latest ECS event: {events[0].get('message', '')!r}."
+        except Exception:
+            # Best-effort diagnostic only -- never let it block the flip.
+            pass
+
         try:
             self._ecs.update_service(
                 cluster=self._cluster,
@@ -3795,14 +3849,19 @@ class EcsManager:
                 dimensions={"trigger": "placement_timeout"},
             )
             logger.warning(
-                "No Spot capacity for %s after %.0fs with zero placed tasks; flipped service to on-demand (user=%s)",
+                "Flipped %s to on-demand after %.0fs with zero placed tasks "
+                "(desiredCount=%d, placed=%d, user=%s); this responds to a "
+                "placement timeout, not a diagnosed Spot capacity shortage.%s",
                 service_name,
-                SPOT_PLACEMENT_FALLBACK_S,
+                elapsed_s,
+                desired_count,
+                placed_count,
                 user_id,
+                latest_event,
             )
         except Exception:
             logger.exception(
-                "Failed to flip %s to on-demand after Spot placement timeout (user=%s)",
+                "Failed to flip %s to on-demand after a placement timeout (user=%s)",
                 service_name,
                 user_id,
             )

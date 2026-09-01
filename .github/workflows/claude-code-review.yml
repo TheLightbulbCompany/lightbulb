@@ -1,9 +1,20 @@
 name: Claude Code Review
 
 on:
-  # Auto-run-on-PR disabled for now — was: pull_request, types [opened,
-  # synchronize, ready_for_review, reopened]. Re-enable by restoring that
-  # trigger. workflow_dispatch keeps a manual run available in the meantime.
+  # Re-enabled (paused to workflow_dispatch in #1837, when CodeRabbit and
+  # Greptile were doing the reviewing). Both are gone, so this is the reviewer
+  # again — and the only PR workflow that runs on EVERY pull request, which is
+  # what makes it eligible as the required status check on `main`.
+  #
+  # Do NOT add a `paths:` / `paths-ignore:` filter here. A path-filtered
+  # workflow does not start at all on a non-matching PR, so no check is ever
+  # reported and a required check would block that PR forever. (A job-level
+  # `if:` is safe — a SKIPPED job reports success to branch protection; a
+  # workflow that never starts reports nothing.) That is precisely why the
+  # other PR gates — backend / frontend / infra / company / mobile CI, all
+  # path-filtered — cannot serve as the required check.
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
   workflow_dispatch:
 
 # Supersede in-flight reviews for the same PR — `synchronize` fires on every
@@ -15,6 +26,55 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Ask the installed `chatgpt-codex-connector` GitHub App for a review. It is
+  # billed to the owner's ChatGPT plan, not a per-repo SaaS seat, so it costs
+  # nothing extra now that CodeRabbit and Greptile are gone.
+  #
+  # It CANNOT be the gate: the connector answers with an issue comment or a 👍
+  # reaction and never publishes a status check, so branch protection has
+  # nothing to require. `claude-review` below is the gate; this is the second
+  # opinion. Codex also no longer auto-reviews on open — a comment is required.
+  request-codex-review:
+    # Skip on `synchronize`: re-posting on every push spams the thread, and the
+    # connector re-reviews the new head by itself. Skip drafts — `ready_for_review`
+    # is in the trigger list, so a draft gets its ping when it is marked ready.
+    # `github.event_name` guards the workflow_dispatch path, where there is no
+    # pull_request context at all.
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.action != 'synchronize'
+      && !github.event.pull_request.draft
+    # NOT ${{ vars.CI_RUNNER }}, deliberately. Measured on this PR: the job sat
+    # QUEUED for ~6 minutes behind a saturated self-hosted box (6 runs
+    # in-flight) to do ~2 seconds of work — and because the workflow-level
+    # concurrency group is `cancel-in-progress`, a push during that wait kills
+    # the ping before it ever posts. A hosted runner costs one billed minute
+    # per PR and makes the request prompt and reliable. It also keeps a slot
+    # free on the shared box for the gates that actually need it.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      # github-script, not the `gh` CLI: `gh` is only proven present on the
+      # self-hosted *macOS* runner (desktop-build.yml). Nothing on the Linux
+      # CI_RUNNER box uses it, so do not bet the review request on it being
+      # installed. This step runs on the runner's node, which is already
+      # required by every JS action the box runs (actions/checkout below).
+      - name: Ask Codex to review
+        uses: actions/github-script@v7
+        with:
+          # The body must be a BARE `@codex review`. Trailing text in the
+          # comment has been observed to stop the connector picking the
+          # request up — resist adding "please" or a checklist here.
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: '@codex review',
+            });
+
   claude-review:
     runs-on: ${{ vars.CI_RUNNER }}
     # An agent session has no natural upper bound, and on the shared box an

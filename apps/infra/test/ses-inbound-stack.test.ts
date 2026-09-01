@@ -181,9 +181,16 @@ describe("SesInboundStack", () => {
     expect(JSON.stringify(activation.Properties.Create)).toContain(
       "setActiveReceiptRuleSet",
     );
-    expect(JSON.stringify(activation.Properties.Delete)).toContain(
-      "setActiveReceiptRuleSet",
-    );
+    // REGRESSION, same class as the Bedrock logging incident (2026-08-30):
+    // there must be NO Delete. setActiveReceiptRuleSet with empty params does
+    // not deactivate "our" rule set — omitting RuleSetName deactivates WHATEVER
+    // is active, account-wide, stopping inbound agent mail for every tenant.
+    // Its Bedrock twin proved the mechanism live: a logical-id rename made the
+    // OLD id's Delete fire 9s after the new one's Create (CloudTrail); CFN
+    // deletes by LOGICAL id however stable the physical id is. Assert on the
+    // Delete PROPERTY — the template's own DeletionPolicy is the literal
+    // string "Delete" and would make a serialised check meaningless.
+    expect(activation.Properties.Delete).toBeUndefined();
     // DependsOn must include the catch-all rule's logical id so activation
     // never races ahead of the rule (and its S3/Lambda action permissions)
     // existing.
@@ -477,4 +484,6 @@ describe("SesInboundStack gating (LightbulbStage)", () => {
       }),
     ).toThrow(/devSesIngestSecretName is required/);
   });
+
+
 });

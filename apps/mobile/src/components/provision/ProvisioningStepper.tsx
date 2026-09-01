@@ -65,6 +65,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   PROVISION_IDEAS,
   PROVISION_IDEA_ROTATION_MS,
+  PROVISION_STUCK_MS,
   PROVISION_TIMEOUT_MS,
   formatProvisionElapsed,
 } from "@lightbulb/shared";
@@ -84,6 +85,14 @@ const PROMOTE_MS = 10_000;
 
 /** Crossfade half-duration for the rotating idea line (matches web's 180ms). */
 const IDEA_FADE_MS = 180;
+
+/** The one escape hatch this screen has. Also used by the failure notice. */
+const SUPPORT_MAILTO = "mailto:support@thelightbulb.company";
+
+/** Replaces the step label once the kickoff is known to have failed. The step
+ *  labels are all present-progressive ("Putting the finishing touches on your
+ *  agent…"), i.e. claims that work is under way. */
+const FAILED_TITLE = "Setup didn’t finish";
 
 /**
  * The three visible steps. Labels match web's STEPS_PAID rows for the same
@@ -146,13 +155,104 @@ function StartingBanner({ label }: { label: string }) {
 // Full-screen stepper pieces
 // ---------------------------------------------------------------------------
 
-/** Spinner inside a soft forest ring, the ring breathing via usePulse. */
-function ProvisionRing() {
-  const opacity = usePulse(true, 0.5);
+/**
+ * Spinner inside a soft forest ring, the ring breathing via usePulse.
+ *
+ * `animating={false}` stops both the spinner and the breath. A looping
+ * animation is a claim about the present tense — that work is happening right
+ * now — so once the first-run kickoff is known to have failed it is as much a
+ * lie as the copy is. The ring itself stays: the card still needs a mark, and
+ * a static one asserts nothing.
+ */
+function ProvisionRing({ animating = true }: { animating?: boolean }) {
+  const opacity = usePulse(animating, 0.5);
   return (
     <View style={styles.stage}>
       <Animated.View style={[styles.ring, { opacity }]} />
-      <ActivityIndicator size="large" color={colors.forest} />
+      {animating ? <ActivityIndicator size="large" color={colors.forest} /> : null}
+    </View>
+  );
+}
+
+/**
+ * Friday's server-dispatched first-run kickoff FAILED (`bootstrap.state ===
+ * "failed"`). ONE component, two renderings, because the two branches it
+ * serves differ in what the owner can actually do:
+ *
+ *   • banner (default) — the container reached `ready`, so chat behind this is
+ *     LIVE and messaging Friday directly is a real recovery. A thin
+ *     non-blocking bar over the app, never an interstitial.
+ *   • `inline` — the promoted cold-start stepper, which has REPLACED the tab
+ *     shell. A bar over nothing is the wrong idiom, and "message her here"
+ *     is advice the owner cannot take: there is no chat behind this screen.
+ *     So it sits in the card, under the card's own honest title, and carries
+ *     the support address, which is the only lever left.
+ *
+ * NO retry in either: the re-arm lever (`reset_bootstrap_for_retry`) is
+ * platform-admin only, so a Retry would be a dead button. `error` is the
+ * operator-written reason, expandable in place so support gets the WHOLE
+ * string — mirroring web's `<details>`. It starts clamped (the banner sits
+ * over live chat and the reasons run long), but a clamp with no way past it
+ * would swallow exactly the detail support needs, which is the failure this
+ * whole surface exists to stop.
+ */
+export function FirstRunFailedNotice({
+  error,
+  inline = false,
+}: {
+  error?: string | null;
+  inline?: boolean;
+}) {
+  const insets = useSafeAreaInsets();
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <View
+      style={
+        inline
+          ? styles.firstRunInline
+          : [styles.firstRunBanner, { paddingTop: insets.top }]
+      }
+      testID="first-run-failed"
+    >
+      <View style={styles.firstRunRow}>
+        <View style={styles.firstRunCopy}>
+          <Text style={styles.firstRunText}>
+            {inline
+              ? "Your container came up, but the first-run kickoff failed and won’t retry on its own. Contact support and we’ll re-arm it — your brief is saved."
+              : "Friday couldn’t start her first run. Message her here to kick things off, or contact support if she doesn’t answer."}
+          </Text>
+          {error ? (
+            <Pressable
+              onPress={() => setExpanded((v) => !v)}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityState={{ expanded }}
+              accessibilityLabel={
+                expanded ? "Hide technical details" : "Show technical details"
+              }
+              style={({ pressed }) => [pressed && styles.pressed]}
+            >
+              <Text style={styles.firstRunAction}>
+                {expanded ? "Hide technical details" : "Technical details"}
+              </Text>
+              {expanded ? (
+                <Text style={styles.firstRunDetail}>{error}</Text>
+              ) : null}
+            </Pressable>
+          ) : null}
+          {inline ? (
+            <Pressable
+              onPress={() => void Linking.openURL(SUPPORT_MAILTO)}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Contact support"
+              style={({ pressed }) => [pressed && styles.pressed]}
+            >
+              <Text style={styles.firstRunAction}>Contact support</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      </View>
     </View>
   );
 }
@@ -347,6 +447,18 @@ export function ProvisioningStepper({ status, onRetry, children }: Props) {
       ? activeStepIndex(status.phase, status.substatus)
       : 0;
 
+  // The kickoff is KNOWN to have failed. `bootstrap.state` used to be read on
+  // the `ready` variant alone — and a container whose gateway never registers
+  // composes to `starting`, never `ready`, so the notice was unreachable in
+  // precisely the case it was written for. A dev owner sat on this screen for
+  // 21 hours while every poll carried "Gateway connect failed: gateway
+  // starting; retry shortly".
+  //
+  // `starting` only: `ready` keeps the gate's banner-over-live-chat rendering,
+  // which is the right idiom while there IS chat behind it.
+  const firstRunFailed =
+    status.kind === "starting" && status.bootstrapState === "failed";
+
   // iOS has no live regions (`accessibilityLiveRegion` is documented
   // "@platform android" in ViewAccessibility.d.ts) and iOS is the only
   // platform this app ships on, so announce phase changes explicitly. Scoped
@@ -354,8 +466,10 @@ export function ProvisioningStepper({ status, onRetry, children }: Props) {
   // swipe to, not something worth interrupting them for.
   useEffect(() => {
     if (!promoted) return;
-    AccessibilityInfo.announceForAccessibility(STEPS[activeStep].active);
-  }, [promoted, activeStep]);
+    AccessibilityInfo.announceForAccessibility(
+      firstRunFailed ? FAILED_TITLE : STEPS[activeStep].active,
+    );
+  }, [promoted, activeStep, firstRunFailed]);
 
   // The promoted stepper replaces the whole tab shell, so the gate's rule for
   // the Interstitial applies verbatim here: it is the only exit a wrong-account
@@ -388,28 +502,49 @@ export function ProvisioningStepper({ status, onRetry, children }: Props) {
   }
 
   const timedOut = elapsedMs > PROVISION_TIMEOUT_MS;
+  // Second, harder tier. Derived from the clock rather than held as state, so
+  // nothing can erase it: web's equivalent button used to clear its own
+  // escalation flag AND zero the clock, which is how 21 hours kept reading as
+  // five minutes. Mobile's Retry only refetches — a poll that comes back
+  // `starting` again doesn't change `status.kind`, so it never restamps the
+  // clock either. Both halves of that rule now hold here by construction.
+  const stuck = elapsedMs > PROVISION_STUCK_MS;
 
   return (
     <View style={[styles.page, { paddingTop: insets.top + spacing.xl }]}>
       <Wordmark />
 
-      <ProvisionRing />
+      <ProvisionRing animating={!firstRunFailed} />
 
       <Text style={styles.title} accessibilityRole="text" testID="provision-title">
-        {STEPS[activeStep].active}
+        {firstRunFailed ? FAILED_TITLE : STEPS[activeStep].active}
       </Text>
 
-      <RotatingIdeas />
+      {/* "While you wait, try asking your agent to…" is an invitation to keep
+          waiting. Once the failure is known there is nothing to wait for. */}
+      {firstRunFailed ? null : <RotatingIdeas />}
 
+      {/* The rail STAYS on a failure: it reports how far setup actually got,
+          which is still true and is the one thing support will ask for. */}
       <DotRail active={activeStep} />
 
       <Text style={styles.elapsed} testID="provision-elapsed">
         {formatProvisionElapsed(elapsedMs)}
       </Text>
 
-      {timedOut ? (
+      {firstRunFailed ? <FirstRunFailedNotice error={status.bootstrapError} inline /> : null}
+
+      {/* Suppressed on a known failure: "taking longer than usual" is a claim
+          that it is still going, and the notice above already carries the one
+          action left. A Retry here would only re-poll a state the backend has
+          already settled. */}
+      {!firstRunFailed && timedOut ? (
         <View style={styles.timeout} testID="provision-timeout">
-          <Text style={styles.timeoutMsg}>This is taking longer than usual.</Text>
+          <Text style={styles.timeoutMsg}>
+            {stuck
+              ? "This is taking longer than it should — something is stuck on our side. Setup normally finishes in a few minutes. Your progress is saved; contact us and we’ll get it moving."
+              : "This is taking longer than usual."}
+          </Text>
           <View style={styles.timeoutActions}>
             <Pressable
               style={({ pressed }) => [styles.timeoutButton, pressed && styles.pressed]}
@@ -421,7 +556,7 @@ export function ProvisioningStepper({ status, onRetry, children }: Props) {
             </Pressable>
             <Pressable
               style={({ pressed }) => [styles.timeoutButton, pressed && styles.pressed]}
-              onPress={() => void Linking.openURL("mailto:support@thelightbulb.company")}
+              onPress={() => void Linking.openURL(SUPPORT_MAILTO)}
               accessibilityRole="button"
               accessibilityLabel="Contact support"
             >
@@ -471,6 +606,53 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18,
     color: colors.bannerText,
+  },
+
+  // First-run failure — a real failure, not a "needs attention" nudge, so it
+  // uses the error tokens rather than the amber ones. Two chromes, one fact:
+  // `firstRunBanner` is the thin bar over live children (the gate's `ready`
+  // rendering); `firstRunInline` is the bordered block inside the promoted
+  // stepper's card, where there is nothing behind it to bar.
+  firstRunBanner: {
+    backgroundColor: colors.errorBg,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.errorBorder,
+  },
+  firstRunInline: {
+    alignSelf: "stretch",
+    maxWidth: 400,
+    backgroundColor: colors.errorBg,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.errorBorder,
+    borderRadius: radii.md,
+  },
+  firstRunRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  firstRunCopy: { flex: 1, gap: spacing.xs },
+  firstRunText: {
+    fontFamily: fonts.sans,
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.errorText,
+  },
+  firstRunAction: {
+    fontFamily: fonts.sansMedium,
+    fontSize: 12,
+    lineHeight: 16,
+    color: colors.errorText,
+  },
+  firstRunDetail: {
+    marginTop: spacing.xs,
+    fontFamily: fonts.sans,
+    fontSize: 11,
+    lineHeight: 15,
+    color: colors.errorText,
+    opacity: 0.8,
   },
 
   // Full-screen stepper — cardless on cream, mirroring web's provision-card.

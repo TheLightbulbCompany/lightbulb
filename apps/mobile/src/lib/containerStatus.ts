@@ -94,9 +94,11 @@ export type ContainerStatus =
        * dispatched first-run kickoff. `"failed"` is the ONLY value acted on
        * (ProvisionGate's non-blocking first-run banner): `dispatched` (fresh
        * or stale-but-re-arming) and `sent` are recovered by the dispatcher
-       * itself on the next poll, so they are not failures. Surfaced on `ready`
-       * only, alongside `teamsStatus` — a kickoff can only have run against a
-       * container that came up.
+       * itself on the next poll, so they are not failures.
+       *
+       * Carried on `starting` too — see that variant. Surfacing it on `ready`
+       * ALONE is what let a dev owner sit on the cold-start screen for 21
+       * hours with the reason arriving on every poll and read by nothing.
        */
       bootstrapState?: string;
       /** `bootstrap.last_error`, verbatim — operator-written, shown as detail. */
@@ -115,6 +117,21 @@ export type ContainerStatus =
        * alarm).
        */
       teamsStatus?: string;
+      /**
+       * Same two `bootstrap` fields the `ready` variant carries, and they
+       * belong here for a structural reason rather than for completeness.
+       *
+       * `ready` means the container is up AND the backend holds a live gateway
+       * registration (readiness_state.py: running + gateway_connected). The
+       * kickoff only needs the first of those, so the failure whose whole
+       * cause is "the gateway never registered" — `last_error` literally reads
+       * "Gateway connect failed: gateway starting; retry shortly" — composes
+       * to `starting` and never to `ready`. Reading it on `ready` only meant
+       * the notice was unreachable in exactly the case it was written for.
+       */
+      bootstrapState?: string;
+      /** `bootstrap.last_error`, verbatim — operator-written, shown as detail. */
+      bootstrapError?: string | null;
     }
   | { kind: "parked" }
   /**
@@ -267,6 +284,8 @@ function fromClassified(
             substatus: info.container_substatus ?? undefined,
             onboarded: info.onboarded,
             teamsStatus,
+            bootstrapState: derived.bootstrap.state,
+            bootstrapError: derived.bootstrap.last_error,
           };
       }
     }

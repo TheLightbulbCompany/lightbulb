@@ -18,6 +18,7 @@ const ALL_LABELS = [
   "Brain",
   "Library",
   "Org chart",
+  "Accounts",
   "Activity",
 ];
 

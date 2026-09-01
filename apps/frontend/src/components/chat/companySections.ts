@@ -18,6 +18,7 @@ import {
   Images,
   Search,
   BookOpen,
+  Plug,
 } from "lucide-react";
 import type { ComponentType, SVGProps } from "react";
 
@@ -68,6 +69,10 @@ export const COMPANY_SECTIONS: { label: string | null; items: CompanySectionItem
     label: "Company",
     items: [
       { panel: "teams-org-chart", label: "Org chart", Icon: Network },
+      // What the company has accounts with, what agents set up on its behalf,
+      // and the kill switch. Sits in Company, not Settings, because it is the
+      // page an owner opens the first time an agent does something surprising.
+      { panel: "teams-accounts", label: "Accounts", Icon: Plug },
       { panel: "teams-activity", label: "Activity", Icon: History },
     ],
   },

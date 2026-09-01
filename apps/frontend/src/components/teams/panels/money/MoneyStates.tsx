@@ -98,7 +98,12 @@ export function MoneyStates({ view, noun }: { view: MoneyView; noun: string }) {
           state="partial"
           icon={CreditCard}
           headline="Your Stripe onboarding isn't finished."
-          supporting={`Stripe is connected but not yet accepting charges, so there are no ${noun} to show. Finish it from Accounts — either here or in the Stripe Dashboard.`}
+          // No "either here": for a CONNECTED source the only finish path is
+          // Stripe's own Dashboard, opened from Accounts — the in-app
+          // "Finish onboarding" button exists only for accounts we created.
+          // Verified on the dev fixture: "either here" was a promise the next
+          // page could not keep.
+          supporting={`Stripe is connected but not yet accepting charges, so there are no ${noun} to show. Finish onboarding in your Stripe Dashboard — you can open it from Accounts.`}
           href={ACCOUNTS}
           // "Open Accounts", not "Finish Stripe setup": CompanyStripeSection
           // gates its "Finish onboarding" button on `source === "created"`, so

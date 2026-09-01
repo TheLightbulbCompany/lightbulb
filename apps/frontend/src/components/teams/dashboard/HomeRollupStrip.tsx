@@ -245,7 +245,13 @@ export function HomeRollupStrip() {
         <p className="text-xs text-[var(--midnight-muted)]">{rangeLabel}</p>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+      {/* Container queries, not viewport breakpoints: this strip renders inside
+          a dock pane that is often half the viewport (a browser panel sits
+          beside it). With `lg:grid-cols-4`, a narrow pane still got four
+          columns and "Unavailable" truncated to "Unavailab". The container
+          is InlineTeamsPanel's wrapper, the same one DashboardPanel's own
+          `@md:`/`@4xl:` tiles resolve against. */}
+      <div className="grid grid-cols-2 gap-2 @3xl:grid-cols-4">
         <Tile
           icon={DollarSign}
           label="Revenue"

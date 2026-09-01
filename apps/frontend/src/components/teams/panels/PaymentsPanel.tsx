@@ -16,10 +16,9 @@
 // These are **charges**, not PaymentIntents: `receipt_url`, `refunded` and
 // `amount_refunded` live on the charge, and reconciliation needs all three.
 
-import { PanelDataTable, PanelMasthead, type PanelDataColumn } from "@/components/teams/shell";
-import { EditorialButton } from "@/components/teams/shell";
-import { MoneyStates } from "@/components/teams/panels/money/MoneyStates";
-import { useCompanyMoney, type PaymentRow } from "@/hooks/useCompanyMoney";
+import type { PanelDataColumn } from "@/components/teams/shell";
+import { MoneyPanel } from "@/components/teams/panels/money/MoneyPanel";
+import type { PaymentRow } from "@/hooks/useCompanyMoney";
 import { formatStripeAmount, formatUnixDay } from "@/components/teams/panels/money/money";
 
 /** Never colour alone (system.md) — the word carries the status, the colour
@@ -85,34 +84,5 @@ const COLUMNS: PanelDataColumn<PaymentRow>[] = [
 ];
 
 export function PaymentsPanel() {
-  const { rows, view, hasMore, next } = useCompanyMoney<PaymentRow>("payments");
-
-  return (
-    <div className="editorial-page p-4 sm:p-5 lg:p-6 flex flex-col gap-4 max-w-5xl mx-auto w-full">
-      <PanelMasthead
-        overline="Money"
-        title="Payments"
-      />
-
-      {view.kind === "rows" ? (
-        <>
-          <PanelDataTable rows={rows} columns={COLUMNS} rowKey={(r) => r.id} />
-          {/* Stripe's own cursor. There is deliberately no page count: getting
-              one means walking every page server-side, and a page is a view,
-              not a copy. */}
-          {hasMore && (
-            <div className="flex justify-center">
-              <EditorialButton size="sm" variant="secondary" onClick={next}>
-                Load more
-              </EditorialButton>
-            </div>
-          )}
-        </>
-      ) : view.kind === "loading" ? (
-        <PanelDataTable rows={[]} columns={COLUMNS} rowKey={(r) => r.id} loading />
-      ) : (
-        <MoneyStates view={view} noun="payments" />
-      )}
-    </div>
-  );
+  return <MoneyPanel<PaymentRow> kind="payments" title="Payments" noun="payments" columns={COLUMNS} maxWidth="max-w-5xl" />;
 }

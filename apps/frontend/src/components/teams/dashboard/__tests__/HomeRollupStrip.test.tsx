@@ -149,3 +149,42 @@ describe("HomeRollupStrip honesty — regressions found in review", () => {
     }
   });
 });
+
+describe("HomeRollupStrip — visitors, once the backend can tell the two apart", () => {
+  it("says Unavailable when the owner has no PostHog connection", () => {
+    // `visitors` is omitted from days[] AND named in `unavailable` for an
+    // owner with no PostHog. Printing `sum() ?? 0` here would be a number
+    // nobody measured.
+    mockRollup.mockReturnValue(
+      view({ rollup: { ...LIVE, unavailable: ["followers", "open_threads", "visitors"] } }),
+    );
+    render(<HomeRollupStrip />);
+    expect(screen.getByText("Unavailable")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Visitors over the period")).not.toBeInTheDocument();
+  });
+
+  it("renders a MEASURED zero as a real zero, and names its source", () => {
+    // The asymmetry that matters: suppressing a genuine zero-traffic day would
+    // be the opposite error. An owner WITH PostHog sends `visitors: 0` that is
+    // NOT in `unavailable`.
+    mockRollup.mockReturnValue(
+      view({
+        rollup: {
+          ...LIVE,
+          unavailable: ["followers", "open_threads"],
+          days: [
+            { day: "2026-08-30", revenue_microcents: 1_000_000, signups: 1, visitors: 0 },
+            { day: "2026-08-31", revenue_microcents: 2_000_000, signups: 2, visitors: 0 },
+          ],
+        },
+      }),
+    );
+    render(<HomeRollupStrip />);
+
+    expect(screen.getByText("Visitors")).toBeInTheDocument();
+    expect(screen.queryByText("Unavailable")).not.toBeInTheDocument();
+    // The signal is connection-level, not per-day: a lapsed PostHog token also
+    // reads as a measured 0. Naming the source is what makes that recoverable.
+    expect(screen.getByText("From your PostHog")).toBeInTheDocument();
+  });
+});

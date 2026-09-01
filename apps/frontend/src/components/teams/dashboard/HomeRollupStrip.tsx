@@ -236,14 +236,27 @@ export function HomeRollupStrip() {
           series={days.map((d) => d.signups)}
           unavailable={isUnavailable("signups")}
         />
-        {/* NO VISITORS TILE. `owner_posthog.day_traffic` returns None for any
-            owner without a PostHog connection — the common case — and
-            `rollup_service` then stores `visitors: 0`. The backend's
-            `UNAVAILABLE` is the module constant ["followers","open_threads"],
-            so `visitors` never joins it and the tile would print a confident
-            "0" for a number nobody measured. That is the exact lie this module
-            exists to prevent, so the tile waits until the backend can say
-            per-owner whether zero means zero or means unknown. */}
+        {/* The backend's `unavailable` is owner-derived: an owner
+            with no PostHog connection has `visitors` omitted from days[]
+            AND named in `unavailable`, while an owner WITH PostHog and a
+            genuine zero-traffic day still sends a real `visitors: 0` that is
+            not in the list. Suppressing that measured zero would be the
+            opposite error to the one this guard exists for.
+
+            KNOWN LIMIT, stated in the caption rather than left to be
+            discovered: the backend signal is connection-level, not per-day. An
+            owner who connected PostHog and whose refresh token has since
+            lapsed reads a measured-looking 0. Naming the source is what makes
+            that recoverable — an owner who doubts the number knows which
+            system to go and check. */}
+        <Tile
+          icon={Eye}
+          label="Visitors"
+          value={sum(days, "visitors").toLocaleString()}
+          caption={isUnavailable("visitors") ? readingsCaption : "From your PostHog"}
+          series={days.map((d) => d.visitors)}
+          unavailable={isUnavailable("visitors")}
+        />
         {/* Month-to-date, NOT a per-day series — see useCompanyRollup's note.
             There is deliberately no sparkline here: the underlying column is
             the running month total stamped on every row, so plotting it would

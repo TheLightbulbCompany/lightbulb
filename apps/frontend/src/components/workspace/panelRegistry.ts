@@ -59,6 +59,9 @@ const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
   // same component (SpendPanel wraps UsagePanel), and `?panel=usage` links are
   // already in the wild.
   spend: "Spend",
+  payments: "Payments",
+  products: "Products",
+  customers: "Customers",
 };
 
 const TEAMS_DETAIL_KEYS: Readonly<Record<string, string>> = {

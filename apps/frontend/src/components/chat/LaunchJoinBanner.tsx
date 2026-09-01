@@ -13,11 +13,16 @@ import type { LaunchMe } from "@/lib/launch";
  * The in-product competition-sheet join surface: a slim banner in the
  * workspace shell (next to TrialBanner/OutOfCreditsBanner), shown while the
  * sheet is open to an onboarded owner who hasn't joined. Join POSTs inline —
- * no navigation — with a display-name field prefilled from the Clerk profile
- * (POST /launch/join REQUIRES display_name). After joining it shows the
- * position + referral link, and only then becomes dismissible (per-user
- * localStorage key): the join nudge itself stays until they join, /launch
- * has the full rules.
+ * no navigation — with a display-name field prefilled from
+ * `me.suggested_display_name` (POST /launch/join REQUIRES display_name).
+ * Onboarding requires Friday's first run, and Friday renames the Paperclip
+ * company during that run — so by the time this banner can show at all, the
+ * suggestion is essentially always there; a null (a Paperclip hiccup on the
+ * backend) falls back to an empty field with a "Your company name"
+ * placeholder rather than the Clerk first name — the board ranks
+ * businesses, not people. After joining it shows the position + referral
+ * link, and only then becomes dismissible (per-user localStorage key): the
+ * join nudge itself stays until they join, /launch has the full rules.
  */
 
 function dismissKey(userId: string): string {
@@ -32,8 +37,13 @@ export function LaunchJoinBanner() {
   const { data: me, mutate } = useSWR<LaunchMe>(open ? "/launch/me" : null, (k: string) => api.get(k) as Promise<LaunchMe>);
   useReferralAttribution(api, open ? me : null);
 
-  const prefill = user?.firstName || user?.primaryEmailAddress?.emailAddress.split("@")[0] || "";
-  const [name, setName] = React.useState<string | null>(null); // null = untouched, use prefill
+  // `me.suggested_display_name` (the owner's live Paperclip company name —
+  // see schemas.launch.LaunchMe) is the prefill; null falls back to the
+  // empty-field placeholder. `null` here means "untouched, use prefill" so
+  // the derived value updates once `me` resolves (it starts undefined on
+  // first render) without an extra effect.
+  const prefill = me?.suggested_display_name ?? "";
+  const [name, setName] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [dismissed, setDismissed] = React.useState(false);
@@ -110,13 +120,17 @@ export function LaunchJoinBanner() {
   return (
     <div className="bg-cream border-b border-info px-4 py-2 text-ui text-info flex items-center gap-3 flex-wrap" data-testid="launch-join-banner">
       <span>The launch competition is open — first {info.comp_slots.toLocaleString("en-US")} get a month free.</span>
-      <input
-        aria-label="Display name"
-        value={name ?? prefill}
-        maxLength={40}
-        onChange={(e) => setName(e.target.value)}
-        className="border border-edge rounded px-2 py-0.5 bg-transparent text-foreground w-40"
-      />
+      <div className="flex flex-col gap-0.5">
+        <input
+          aria-label="Display name"
+          value={name ?? prefill}
+          maxLength={40}
+          placeholder="Your company name"
+          onChange={(e) => setName(e.target.value)}
+          className="border border-edge rounded px-2 py-0.5 bg-transparent text-foreground w-40"
+        />
+        <span className="text-2xs text-[var(--midnight-muted)]">Shown on the public board</span>
+      </div>
       <button type="button" onClick={join} disabled={busy || displayName.length < 2} className="underline disabled:opacity-50">
         {busy ? "Joining…" : "Join"}
       </button>

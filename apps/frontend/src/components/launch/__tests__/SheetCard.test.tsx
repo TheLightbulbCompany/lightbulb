@@ -51,6 +51,7 @@ const me = (over: Partial<LaunchMe> = {}): LaunchMe => ({
   winner: false,
   compete_eligible: false,
   onboarded: true,
+  suggested_display_name: null,
   entry: null,
   ...over,
 });

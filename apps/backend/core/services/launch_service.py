@@ -20,8 +20,10 @@ from core.auth import AuthContext, resolve_owner_id
 from core.config import settings
 from core.dynamodb import utc_now_iso
 from core.repositories import launch_entries_repo, launch_teams_repo, launch_waitlist_repo, user_repo
-from core.services import launch_phase, launch_revenue, readiness_state
+from core.repositories.paperclip_repo import PaperclipRepo
+from core.services import agent_email, launch_phase, launch_revenue, readiness_state
 from core.services.launch_phase import Schedule, phase
+from core.services.paperclip_openclaw_pairing import resolve_company_id_for_owner
 from schemas.launch import TEAM_SEATS_MAX
 
 logger = logging.getLogger(__name__)
@@ -71,6 +73,27 @@ def credits_milestone_reached(row: dict | None) -> int:
     return 20 if subs >= 20 else 5 if subs >= 5 else 0
 
 
+async def _suggested_display_name(owner_id: str) -> str | None:
+    """Friday renames the Paperclip company during onboarding's first run —
+    the agent picks the name from the owner's idea (see
+    ``agent_email.resolve_company_name``'s docstring) — so by the time an
+    owner can see this field their company already has a real name.
+    Composed from the same id + name resolvers ``company_stripe`` and
+    ``agent_email`` already use, rather than a third lookup. Degrades to
+    None on ANY failure (missing company, Paperclip hiccup, ...); callers
+    MUST gate this on onboarded + not-yet-joined so the hot /launch/me read
+    never pays for an unused cross-service round trip."""
+    try:
+        repo = PaperclipRepo(table_name="paperclip-companies")
+        company_id = await resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
+        if not company_id:
+            return None
+        return await agent_email.resolve_company_name(company_id)
+    except Exception as e:  # noqa: BLE001 — a Paperclip hiccup must never fail /launch/me
+        logger.warning("launch_service: suggested_display_name lookup failed for %s: %s", owner_id, e)
+        return None
+
+
 async def me(auth: AuthContext, s: Schedule) -> dict:
     """Read-only sheet status for the caller. Never joins — membership is
     the explicit POST /launch/join only. The one write is ``claim_user``:
@@ -83,11 +106,26 @@ async def me(auth: AuthContext, s: Schedule) -> dict:
         await launch_waitlist_repo.claim_user(email, auth.user_id)
     onboarding = await readiness_state.resolve_onboarding_state(owner_id)
     joined = bool(row and row.get("joined_at"))
+    onboarded = onboarding.get("bootstrap_state") == "delivered"
     referral_jump = launch_phase.constants()["referral_jump"]
     # The board attachment, so a reload during the competition shows the
     # connected state instead of inviting a key re-paste. Read for joined
     # rows only — the entry can't exist otherwise.
     entry = await launch_entries_repo.get(owner_id) if joined else None
+    # Only worth the cross-service Paperclip call when the suggestion would
+    # actually be used: an onboarded caller who hasn't joined yet. A joined
+    # row's display_name is already locked in; an unonboarded caller is
+    # refused at /join anyway (`not_onboarded`) so there's nothing to prefill.
+    # Org callers are ALSO excluded: POST /launch/join permanently refuses
+    # `org_not_supported` for any is_org_context caller (see the `join`
+    # route), so an org owner can never reach joined=True — without this,
+    # every /launch/me read from an onboarded org owner (LaunchJoinBanner
+    # mounts unconditionally in the workspace shell, revalidating on
+    # focus/mount) would pay a Paperclip round trip for a suggestion that
+    # can never be used.
+    suggested_display_name = (
+        await _suggested_display_name(owner_id) if onboarded and not joined and not auth.is_org_context else None
+    )
     return {
         "phase": phase(s),
         "joined": joined,
@@ -99,7 +137,8 @@ async def me(auth: AuthContext, s: Schedule) -> dict:
         "credits_milestone_reached": credits_milestone_reached(row),
         "winner": bool(row and row.get("winner")),
         "compete_eligible": bool(row.get("compete_eligible", True)) if joined else False,
-        "onboarded": onboarding.get("bootstrap_state") == "delivered",
+        "onboarded": onboarded,
+        "suggested_display_name": suggested_display_name,
         "entry": {
             "has_key": bool(entry.get("has_key", False)),
             "public": bool(entry.get("public", True)),

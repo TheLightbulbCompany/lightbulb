@@ -188,6 +188,32 @@ export function HomeRollupStrip() {
     );
   }
 
+  // `days.length > 0` is NOT the same as "there is activity to show". The
+  // live dev payload was three rows present, every value a real 0, visitors
+  // omitted (unavailable) — and the tiles rendered "$0 / 0 / Unavailable ·
+  // 3 days with readings", which reads as "we have three days of data" when
+  // the truth is "three days, nothing happened". Same trap Spend fell into at
+  // the month boundary. So: if every SERVED metric is zero (unavailable ones
+  // do not count either way), say that in a sentence instead of a tile row.
+  //
+  // The asymmetry matters: an owner who earned $0 today but had 40 visitors
+  // must still see the tiles — real zero revenue beside a real visitor count.
+  // Only all-zero-or-unavailable collapses.
+  const served = (["revenue_microcents", "signups", "visitors"] as const).filter(
+    (k) => !isUnavailable(k),
+  );
+  const nothingHappened = served.every((k) => sum(days, k) === 0);
+  if (nothingHappened) {
+    return (
+      <PanelNotice
+        state="zero"
+        icon={DollarSign}
+        headline={`Nothing to report yet across ${days.length} ${days.length === 1 ? "day" : "days"} of readings.`}
+        supporting="Stripe is connected and reporting; there just hasn't been a sale or a signup in the window. The strip fills in from the first one."
+      />
+    );
+  }
+
   // `days[]` is SPARSE — the writer returns None and stores nothing when every
   // source was empty, so absent days are omitted rather than zero-filled. The
   // sparkline plots ordinally, which means a gap of weeks looks identical to

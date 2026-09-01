@@ -80,14 +80,13 @@ def test_hooks_session_key_safety_settings():
     assert cfg["hooks"]["allowRequestSessionKey"] is True
     prefixes = cfg["hooks"]["allowedSessionKeyPrefixes"]
     assert "lightbulb-" in prefixes
-    # TRANSITIONAL, and the ordering is the whole point: this allowlist is
-    # container-side and only refreshes when openclaw.json is rewritten at
-    # provision/reprovision, while the minting side is backend-side and flips
-    # the moment the backend deploys. Keeping "isol8-" means a container that
-    # has NOT been reprovisioned still accepts the keys the backend mints today.
-    # DELETE only once every live container has been reprovisioned AND nothing
-    # mints an "isol8-" key.
-    assert "isol8-" in prefixes
+    # CLEAN CUT: the transitional "isol8-" entry is gone in the same release
+    # that starts minting "lightbulb-email:". Safe because the fleet reroll
+    # ships with it (no container keeps a stale allowlist) and because there
+    # was nothing to preserve — a live prod audit found ZERO isol8-email
+    # session keys in any agent state. Re-adding it would be brand residue,
+    # not compatibility.
+    assert "isol8-" not in prefixes
     # OpenClaw v2026.5.7 (gateway/hooks.ts) crashes at boot when
     # defaultSessionKey is unset and "hook:" is not in the allowed list.
     # Without this prefix every newly-provisioned container refuses to start.

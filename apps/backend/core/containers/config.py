@@ -2007,22 +2007,24 @@ def build_openclaw_config_dict(
             # "hook:" in this list when ``defaultSessionKey`` is unset
             # (we don't set it above). Omitting "hook:" makes the gateway
             # throw at boot — every newly-provisioned container would
-            # refuse to start. DO NOT REMOVE. "lightbulb-"/"isol8-" are for our
-            # own session-key conventions used by internal callers.
+            # refuse to start. DO NOT REMOVE. "lightbulb-" is for our own
+            # session-key conventions used by internal callers.
             #
-            # BOTH BRAND PREFIXES, deliberately, and the ORDER of the two moves
-            # matters. This allowlist is CONTAINER-SIDE: it only changes when a
-            # container's openclaw.json is rewritten, which happens at provision
-            # / reprovision (never for a container just sitting there). The
-            # minting side is BACKEND-side and changes the instant the backend
-            # deploys. So the allowlist must learn "lightbulb-" BEFORE anything
-            # mints one — otherwise every container not yet reprovisioned would
-            # reject the key with a 400 (gateway/server/hooks-request-handler.ts)
-            # and inbound agent mail would lose thread continuity fleet-wide.
-            # This release is that first half; nothing mints "lightbulb-" yet.
-            # FOLLOW-UP, only once every live container has been reprovisioned:
-            # drop "isol8-".
-            "allowedSessionKeyPrefixes": ["lightbulb-", "isol8-", "hook:"],
+            # CLEAN CUT — the transitional "isol8-" entry is gone, in the same
+            # release that starts minting "lightbulb-email:". Normally the
+            # ordering would matter: this allowlist is CONTAINER-SIDE (it only
+            # changes when a container's openclaw.json is rewritten, at
+            # provision / reprovision) while the minting side is BACKEND-side
+            # and flips the instant the backend deploys, so a container not yet
+            # reprovisioned would reject the key with a 400
+            # (gateway/server/hooks-request-handler.ts). Two things make the
+            # single step safe here: the FLEET REROLL ships with this change,
+            # so no container keeps a stale allowlist; and there was nothing to
+            # preserve — an audit of the live prod founder container found ZERO
+            # `isol8-email` session keys anywhere in its agent state, the prefix
+            # being minted only for inbound agent mail it had never received.
+            # Keep "hook:" — that one is functional, not brand residue.
+            "allowedSessionKeyPrefixes": ["lightbulb-", "hook:"],
             # Inbound agent email needs a STABLE per-thread session key so a
             # reply continues the same conversation instead of cold-starting a
             # throwaway `hook:<uuid>` every time (see agent_mail_thread). Both
@@ -2033,13 +2035,10 @@ def build_openclaw_config_dict(
             # What still bounds a leaked/replayed hook token, now that it can
             # name a session rather than only create one:
             #   * allowedSessionKeyPrefixes above — it can only reach
-            #     `lightbulb-*` / `isol8-*` / `hook:*` keys, and
-            #     `lightbulb-email:<sha256>` (agent_mail_thread._PREFIX) is the
-            #     ONLY one of those we mint. This release is the minting half
-            #     the allowlist entry above was added ahead of; the `isol8-`
-            #     entry now covers nothing we mint and goes with the
-            #     reprovision follow-up noted there. (The `lightbulb-` in
-            #     routers/connections.py is an STS RoleSessionName, not this.)
+            #     `lightbulb-*` / `hook:*` keys, and `lightbulb-email:<sha256>`
+            #     (agent_mail_thread._PREFIX) is the ONLY one we mint. (The
+            #     `lightbulb-` in routers/connections.py is an STS
+            #     RoleSessionName, not this.)
             #   * allowedAgentIds below — it cannot aim at an arbitrary agent.
             # The delta accepted deliberately: previously such a token could
             # only start fresh sessions; it can now target an existing one and

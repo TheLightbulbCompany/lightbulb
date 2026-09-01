@@ -728,6 +728,9 @@ export interface LaunchTeamEntry {
   submitter_org_slug: string;
   counted: boolean;
   submitted_at: string | null;
+  /** Last write of any kind. `submitted_at` survives a resubmission, so this
+   * is the only thing that moves when a submitter edits after review. */
+  updated_at: string | null;
   /** What this entry adds to the pot once counted — per-entrant + per-seat × seats. */
   contribution_cents: number;
 }

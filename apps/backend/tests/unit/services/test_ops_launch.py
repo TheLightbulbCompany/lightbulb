@@ -93,6 +93,7 @@ def deps():
             "submitter_org_slug": "tuple",
             "counted": True,
             "submitted_at": "t",
+            "updated_at": "t9",
         },
         {
             "owner_id": "org_u",
@@ -144,6 +145,9 @@ async def test_sheet_payload_shape(deps):
     t_counted, t_pending = data["team_entries"]
     assert t_counted["team_name"] == "Tuple" and t_counted["counted"] is True
     assert t_counted["contribution_cents"] == 1_000 + 4 * 500
+    # An edit after review keeps submitted_at, so updated_at is the only
+    # column that can show it happened.
+    assert t_counted["submitted_at"] == "t" and t_counted["updated_at"] == "t9"
     assert t_pending["counted"] is False and t_pending["contribution_cents"] == 1_000 + 9 * 500
 
     # Board section still rides along, keyed by entries.

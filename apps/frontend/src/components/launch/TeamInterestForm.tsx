@@ -54,7 +54,7 @@ export function TeamInterestForm({ signedIn }: { signedIn: boolean }) {
       {sent ? (
         <p className="lc-fine" role="status">
           Got it — {sent.team_name}, {sent.seats} seat{sent.seats === 1 ? "" : "s"}. A founder will email you to sort
-          out the entry. Nothing is entered yet, and you can send this again to correct the details.
+          out the entry. Nothing is entered yet — they will confirm the details with you.
         </p>
       ) : !signedIn ? (
         <p className="lc-fine">

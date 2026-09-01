@@ -79,6 +79,15 @@ async def test_an_org_context_may_submit_even_though_it_may_not_join(configured,
 
 
 @patch("routers.launch.launch_service.submit_team_interest", AsyncMock(return_value={}))
+async def test_an_org_member_is_refused_like_every_other_one_row_per_owner_write(configured, async_client_org_member):
+    """The row keys to resolve_owner_id (the ORG id), so a member submitting
+    would overwrite the org's row — the same reason /connect-stripe and
+    PATCH /entry gate on org admin."""
+    r = await async_client_org_member.post("/api/v1/launch/team-interest", json=BODY)
+    assert r.status_code == 403 and r.json()["detail"] == "org_admin_required"
+
+
+@patch("routers.launch.launch_service.submit_team_interest", AsyncMock(return_value={}))
 async def test_team_interest_is_rate_limited_per_ip(configured, async_client):
     for _ in range(10):
         assert (await async_client.post("/api/v1/launch/team-interest", json=BODY)).status_code == 200
@@ -101,6 +110,10 @@ class _Store:
 
     async def put_interest(self, owner_id, **fields):
         row = self.rows.setdefault(owner_id, {"submitted_at": "first", "counted": False})
+        if row.get("counted"):
+            # Mirrors the repo's conditional retry: a counted row keeps the
+            # founders' seat count, everything else still lands.
+            fields = {k: v for k, v in fields.items() if k != "seats"}
         row.update(fields, owner_id=owner_id)
         return dict(row)
 
@@ -145,6 +158,17 @@ async def test_submission_stores_the_row_and_emails_the_founders(store):
     for body in (kwargs["html"], kwargs["text"]):
         assert "$30.00" in body  # $10 per entrant + 4 × $5 per seat
         assert "container only" in body
+
+
+@patch("core.services.launch_sheet_email.email_service.send_email", AsyncMock(return_value="msg_1"))
+async def test_a_counted_team_cannot_raise_its_own_pot_contribution(store):
+    """A submitter must not be able to move the number the founders approved."""
+    await launch_service.submit_team_interest(AUTH, team_name="Tuple", seats=5, note="")
+    await launch_service.set_team_entry("user_t", seats=None, counted=True)
+    assert await launch_service.counted_team_seats() == [5]
+
+    await launch_service.submit_team_interest(AUTH, team_name="Tuple", seats=500, note="")
+    assert await launch_service.counted_team_seats() == [5]
 
 
 @patch("core.services.launch_sheet_email.email_service.send_email", AsyncMock(return_value="msg_1"))

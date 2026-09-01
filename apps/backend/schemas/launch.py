@@ -88,7 +88,7 @@ class LeaderboardResponse(BaseModel):
 
 
 class LaunchSettingsUpdate(BaseModel):
-    """The eight admin-editable launch-settings fields, as PUT by the admin
+    """The nine admin-editable launch-settings fields, as PUT by the admin
     console. Every field is REQUIRED, with no default: the write is a full
     replace, so a partial body has to be a 422 rather than a silent reset of
     whatever it left out — a body with no dates would otherwise blank the
@@ -114,6 +114,13 @@ class LaunchSettingsUpdate(BaseModel):
     comp_slots: int
     pot_front_cents: int
     pot_per_entrant_cents: int
+    # Per SEAT of a counted team entry, on top of pot_per_entrant_cents. It
+    # MUST be listed here: the router does `body.model_dump()`, so a field the
+    # model does not declare is dropped by pydantic before validate() ever
+    # sees it, `validate` falls back to DEFAULTS, and `put` — a FULL replace —
+    # rewrites the stored value on every save. A field missing from this model
+    # is a field the admin form cannot change.
+    pot_per_seat_cents: int
     referral_jump: int
 
 

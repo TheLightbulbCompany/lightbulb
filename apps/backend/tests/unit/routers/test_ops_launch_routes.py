@@ -112,6 +112,7 @@ _FULL_PUT_BODY = {
     "comp_slots": 200,
     "pot_front_cents": 100_000,
     "pot_per_entrant_cents": 1_000,
+    "pot_per_seat_cents": 500,
     "referral_jump": 10,
 }
 
@@ -136,6 +137,7 @@ async def test_ops_launch_settings_put_success_writes_row_audits_and_clears_cach
         "comp_slots": 200,
         "pot_front_cents": 100_000,
         "pot_per_entrant_cents": 1_000,
+        "pot_per_seat_cents": 500,
         "stripe_coupon_id": "",
         "updated_at": "2026-08-29T00:00:00+00:00",
         "updated_by": "user_admin",
@@ -433,3 +435,42 @@ async def test_ops_team_entry_bad_seats_is_the_422_field_envelope(admin_client):
 async def test_ops_team_entry_requires_admin(async_client):
     r = await async_client.post("/api/v1/ops/launch/team-entries/org_1", json={"counted": True})
     assert r.status_code in (401, 403)
+
+
+async def test_settings_put_round_trips_a_non_default_pot_per_seat(admin_client):
+    """Every admin-editable field must survive the ROUTE, not just the form.
+
+    `put_launch_settings` does `body.model_dump()`, so a field missing from
+    `LaunchSettingsUpdate` is dropped by pydantic before `validate` sees it —
+    `validate` then falls back to DEFAULTS and `put` (a full replace) rewrites
+    the stored value on every save. That failure is invisible from the client
+    side: the form renders the field and posts it, and the console still shows
+    the default. Assert on what is STORED."""
+    stored: dict = {}
+
+    async def _put(item):
+        stored.update(item)
+        return dict(item)
+
+    with (
+        patch.object(launch_settings.launch_settings_repo, "get", AsyncMock(return_value=None)),
+        patch.object(launch_settings.launch_settings_repo, "put", AsyncMock(side_effect=_put)),
+        patch.object(launch_settings, "_clear_caches"),
+    ):
+        r = await admin_client.put(
+            "/api/v1/ops/launch/settings",
+            json={
+                "enabled": False,
+                "sheet_closes_at": None,
+                "competition_start_at": None,
+                "competition_end_at": None,
+                "comp_slots": 200,
+                "pot_front_cents": 100_000,
+                "pot_per_entrant_cents": 1_000,
+                "pot_per_seat_cents": 1_000,  # NOT the 500 default
+                "referral_jump": 10,
+            },
+        )
+    assert r.status_code == 200
+    assert stored["pot_per_seat_cents"] == 1_000
+    assert r.json()["pot_per_seat_cents"] == 1_000

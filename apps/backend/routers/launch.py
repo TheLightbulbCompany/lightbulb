@@ -166,6 +166,11 @@ async def team_interest(
     and it is what identifies the submitter. Idempotent per owner — a second
     submission edits the same row."""
     _rate_limit(request, "team_interest")
+    # Same one-row-per-owner rule as /connect-stripe and PATCH /entry: the row
+    # keys to resolve_owner_id (the ORG id in an org context), so a member
+    # submitting would overwrite the org's row under their own identity.
+    if auth.is_org_context and not auth.is_org_admin:
+        raise HTTPException(status_code=403, detail="org_admin_required")
     return await launch_service.submit_team_interest(auth, team_name=body.team_name, seats=body.seats, note=body.note)
 
 

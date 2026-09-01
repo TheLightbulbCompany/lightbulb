@@ -352,11 +352,13 @@ export function TeamEntriesCard({
       </p>
       {error ? <ErrorBanner error={error} /> : null}
       <Table
-        head={["team", "seats", "counts", "contribution", "submitter", "submitted", "note"]}
+        head={["team", "seats", "counts", "contribution", "submitter", "submitted", "edited", "note"]}
         rows={data.team_entries.map((t) => [
           t.team_name,
           <input
-            key="seats"
+            // Keyed on the SERVER's seat count: a failed save must not leave
+            // the admin looking at a number the server never took.
+            key={`${t.owner_id}:${t.seats}`}
             type="number"
             min={1}
             max={500}
@@ -383,6 +385,9 @@ export function TeamEntriesCard({
           formatMoney(t.contribution_cents, "usd"),
           t.submitter_email || t.submitter_user_id,
           t.submitted_at ?? "—",
+          // A resubmission keeps submitted_at, so without this column a
+          // post-review edit moves nothing on screen.
+          t.updated_at ?? "—",
           t.note || "—",
         ])}
       />

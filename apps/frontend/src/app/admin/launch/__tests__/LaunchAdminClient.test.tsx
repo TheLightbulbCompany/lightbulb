@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -17,10 +17,12 @@ vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
 const refreshLaunch = vi.fn();
 const removeLaunchEntry = vi.fn();
 const closeLaunchSheet = vi.fn();
+const setLaunchTeamEntry = vi.fn();
 vi.mock("../../_actions/launch", () => ({
   refreshLaunch: () => refreshLaunch(),
   removeLaunchEntry: (ownerId: string) => removeLaunchEntry(ownerId),
   closeLaunchSheet: (force: boolean) => closeLaunchSheet(force),
+  setLaunchTeamEntry: (ownerId: string, body: object) => setLaunchTeamEntry(ownerId, body),
 }));
 
 const closeResult = {
@@ -49,6 +51,8 @@ beforeEach(() => {
   removeLaunchEntry.mockResolvedValue({ ok: true, status: 200, data: { deleted: "u1" } });
   closeLaunchSheet.mockReset();
   closeLaunchSheet.mockResolvedValue({ ok: true, status: 202, data: { status: "started" } });
+  setLaunchTeamEntry.mockReset();
+  setLaunchTeamEntry.mockResolvedValue({ ok: true, status: 200, data: {} });
 });
 
 import type { LaunchOpsSheet, LaunchSheetRow } from "../../_lib/api";
@@ -308,5 +312,68 @@ describe("csvEscape", () => {
   it("leaves an ordinary value untouched", () => {
     expect(csvEscape("Ada")).toBe("Ada");
     expect(csvEscape(null)).toBe("");
+  });
+});
+
+describe("TeamEntriesCard", () => {
+  const withTeam = (): LaunchOpsSheet => ({
+    ...data,
+    teams: { total: 1, counted: 0, contribution_cents: 0 },
+    team_entries: [
+      {
+        owner_id: "org_1",
+        team_name: "Tuple",
+        seats: 4,
+        note: "six of us",
+        submitter_email: "founder@tuple.com",
+        submitter_user_id: "u_t",
+        submitter_org_slug: "tuple",
+        counted: false,
+        submitted_at: "2026-09-01T00:00:00Z",
+        updated_at: "2026-09-02T00:00:00Z",
+        contribution_cents: 1_000 + 4 * 500,
+      },
+    ],
+  });
+
+  it("shows what a submission would add to the pot before it is counted", () => {
+    render(<LaunchAdminClient data={withTeam()} />);
+    expect(screen.getByText("Team entries (0 of 1 counted)")).toBeInTheDocument();
+    // Scoped to the team's own row, so it can never pass off another table.
+    const row = within(screen.getByText("Tuple").closest("tr")!);
+    expect(row.getByText("$30")).toBeInTheDocument(); // $10 + 4 × $5
+    // submitted_at survives a resubmission, so the edited column is the only
+    // thing that moves when someone changes their details after review.
+    expect(row.getByText("2026-09-02T00:00:00Z")).toBeInTheDocument();
+  });
+
+  it("the counts-toward-the-pot toggle posts for that owner", async () => {
+    render(<LaunchAdminClient data={withTeam()} />);
+    fireEvent.click(screen.getByLabelText("Count Tuple toward the pot"));
+    await waitFor(() => expect(setLaunchTeamEntry).toHaveBeenCalledWith("org_1", { counted: true }));
+  });
+
+  it("a corrected seat count posts on blur, and only when it changed", async () => {
+    render(<LaunchAdminClient data={withTeam()} />);
+    const seats = screen.getByLabelText("Seats for Tuple");
+    fireEvent.blur(seats);
+    expect(setLaunchTeamEntry).not.toHaveBeenCalled();
+
+    fireEvent.change(seats, { target: { value: "6" } });
+    fireEvent.blur(seats);
+    await waitFor(() => expect(setLaunchTeamEntry).toHaveBeenCalledWith("org_1", { seats: 6 }));
+  });
+
+  it("surfaces a 422 field error instead of silently keeping the typed number", async () => {
+    setLaunchTeamEntry.mockResolvedValue({
+      ok: false,
+      status: 422,
+      data: { detail: { errors: { seats: "must be between 1 and 500" } } },
+    });
+    render(<LaunchAdminClient data={withTeam()} />);
+    const seats = screen.getByLabelText("Seats for Tuple");
+    fireEvent.change(seats, { target: { value: "900" } });
+    fireEvent.blur(seats);
+    expect(await screen.findByText(/seats: must be between 1 and 500/)).toBeInTheDocument();
   });
 });

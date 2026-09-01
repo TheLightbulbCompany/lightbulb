@@ -61,10 +61,20 @@ async def put_interest(
     submitter_email: str,
     submitter_org_slug: str | None,
 ) -> dict:
-    """Upsert the submitter's interest row — idempotent per owner. A second
-    submission REPLACES the details; ``submitted_at`` and the founders'
-    ``counted`` verdict survive it (``if_not_exists``), so re-submitting can
-    neither reset the queue position nor silently un-review a counted team."""
+    """Upsert the submitter's interest row — idempotent per owner.
+
+    A resubmission replaces the details, but ``submitted_at`` and the
+    founders' ``counted`` verdict survive it (``if_not_exists``).
+
+    **The seat count is pinned once a founder has counted the row.** The
+    verdict is *about a number*: if a resubmission could still move ``seats``,
+    a team counted at 5 (+$35) could resubmit at 500 and silently freeze the
+    pot with $2,510 nobody approved. So the write is conditional on the row
+    being uncounted; when that condition loses, it is retried WITHOUT
+    ``seats`` so a name or note correction still lands while the reviewed
+    number stays put. Changing a counted team's seats is an admin action
+    (``update_fields``), which is the whole point of the toggle.
+    """
     fields = {
         "owner_id": owner_id,
         "team_name": team_name,
@@ -73,25 +83,43 @@ async def put_interest(
         "submitter_user_id": submitter_user_id,
         "submitter_email": submitter_email,
         "submitter_org_slug": submitter_org_slug or "",
-        "updated_at": utc_now_iso(),
     }
+    try:
+        return await _upsert(owner_id, fields, guard_uncounted=True)
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        # Already reviewed and counted — keep the founders' number.
+        return await _upsert(owner_id, {k: v for k, v in fields.items() if k != "seats"}, guard_uncounted=False)
+
+
+# Only an UNCOUNTED row may have its seat count rewritten by its own submitter.
+# A missing attribute is an unreviewed row (put_interest defaults it to False,
+# but the very first write has no row at all).
+UNCOUNTED = "attribute_not_exists(#counted) OR #counted = :false"
+
+
+async def _upsert(owner_id: str, fields: dict, *, guard_uncounted: bool) -> dict:
     names = {f"#f{i}": k for i, k in enumerate(fields)}
     values: dict = {f":v{i}": v for i, v in enumerate(fields.values())}
     values[":t"] = utc_now_iso()
     values[":false"] = False
-    resp = await run_in_thread(
-        _table().update_item,
-        Key={"id": _key(owner_id)},
-        UpdateExpression=(
+    kwargs: dict = {
+        "Key": {"id": _key(owner_id)},
+        "UpdateExpression": (
             "SET "
             + ", ".join(f"{n} = :v{i}" for i, n in enumerate(names))
+            + ", updated_at = :t"
             + ", submitted_at = if_not_exists(submitted_at, :t)"
             + ", #counted = if_not_exists(#counted, :false)"
         ),
-        ExpressionAttributeNames={**names, "#counted": "counted"},
-        ExpressionAttributeValues=values,
-        ReturnValues="ALL_NEW",
-    )
+        "ExpressionAttributeNames": {**names, "#counted": "counted"},
+        "ExpressionAttributeValues": values,
+        "ReturnValues": "ALL_NEW",
+    }
+    if guard_uncounted:
+        kwargs["ConditionExpression"] = UNCOUNTED
+    resp = await run_in_thread(_table().update_item, **kwargs)
     return _plain(resp["Attributes"])
 
 

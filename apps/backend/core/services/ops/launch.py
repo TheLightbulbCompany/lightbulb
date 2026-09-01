@@ -107,6 +107,9 @@ async def _compute(s: launch_phase.Schedule) -> dict:
             "submitter_org_slug": t.get("submitter_org_slug") or "",
             "counted": bool(t.get("counted")),
             "submitted_at": t.get("submitted_at"),
+            # submitted_at survives a resubmission, so this is the only field
+            # that moves when a submitter edits after the founders reviewed.
+            "updated_at": t.get("updated_at"),
             # What this entry adds to the pot once counted — shown for every
             # row so an admin sees the cost of flipping the toggle.
             "contribution_cents": launch_service.team_contribution_cents(int(t.get("seats", 0))),

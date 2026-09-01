@@ -59,16 +59,54 @@ async def test_put_then_get_round_trips(repos):
     assert await teams.get("org_1") == saved
 
 
-async def test_resubmitting_updates_the_same_row_and_keeps_the_verdict(repos):
+async def test_resubmitting_an_unreviewed_row_updates_it_in_place(repos):
     teams, _ = repos
     first = await _submit(teams)
-    await teams.update_fields("org_1", {"counted": True})
     second = await _submit(teams, team_name="Tuple Inc", seats=9)
 
     assert len(await teams.list_all()) == 1
     assert second["team_name"] == "Tuple Inc" and second["seats"] == 9
     assert second["submitted_at"] == first["submitted_at"]  # the original stamp survives
-    assert second["counted"] is True  # a resubmission cannot un-review itself
+
+
+async def test_a_counted_rows_seat_count_is_pinned_against_its_own_submitter(repos):
+    """The founders' verdict is ABOUT a number. If a resubmission could still
+    move `seats`, a team counted at 5 could resubmit at 500 and the close
+    would freeze the pot with $2,510 nobody approved."""
+    teams, _ = repos
+    await _submit(teams, seats=5)
+    await teams.update_fields("org_1", {"counted": True})
+
+    after = await _submit(teams, team_name="Tuple Inc", seats=500, note="grew a lot")
+
+    assert after["seats"] == 5  # pinned
+    assert after["counted"] is True  # and still counted
+    # The edit is not thrown away — everything BUT the number lands.
+    assert after["team_name"] == "Tuple Inc" and after["note"] == "grew a lot"
+    # …which is what the pot actually reads.
+    counted = [r["seats"] for r in await teams.list_all() if r["counted"]]
+    assert counted == [5]
+
+
+async def test_an_admin_can_still_change_a_counted_rows_seats(repos):
+    """The pin is on the SUBMITTER's path only — correcting a reviewed team is
+    exactly what the admin edit is for."""
+    teams, _ = repos
+    await _submit(teams, seats=5)
+    await teams.update_fields("org_1", {"counted": True})
+    row = await teams.update_fields("org_1", {"seats": 8})
+    assert row["seats"] == 8 and row["counted"] is True
+
+
+async def test_a_resubmission_moves_updated_at_so_a_post_review_edit_is_visible(repos):
+    teams, _ = repos
+    first = await _submit(teams, seats=5)
+    await teams.update_fields("org_1", {"counted": True})
+    after = await _submit(teams, team_name="Tuple Inc", seats=500)
+    # submitted_at is frozen by design, so updated_at is the only signal the
+    # admin card can show that someone edited after review.
+    assert after["submitted_at"] == first["submitted_at"]
+    assert after["updated_at"] >= first["updated_at"]
 
 
 async def test_update_fields_on_a_missing_row_returns_none(repos):

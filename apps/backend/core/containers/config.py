@@ -1966,17 +1966,29 @@ def build_openclaw_config_dict(
             # Autonomous Skill Workshop capture: the agent turns durable
             # corrections ("from now on...") and proven multi-step workflows
             # into pending skill proposals, reviewed in the Skill Proposals
-            # panel. Never self-applies from the autonomous path; the
-            # in-chat path may apply under the upstream-default
-            # approvalPolicy "auto". Paid providers only — each capture is
-            # an extra model review over the turn, which a $3-cap trial
-            # budget must not fund. Schema-verified key on the pinned 7.1
-            # fork: skills.workshop.autonomous.enabled (zod-schema.ts).
-            **(
-                {}
-                if is_bedrock_trial
-                else {"workshop": {"autonomous": ({"mode": "propose"} if _emit_81_shape else {"enabled": True})}}
-            ),
+            # panel. Paid providers only — each capture is an extra model
+            # review over the turn, plus scheduled `skill-collection-review`
+            # runs with nobody watching, which a $3-cap trial budget must not
+            # fund.
+            #
+            # ALWAYS EMIT THE BLOCK — never rely on the upstream default to
+            # mean "off". 7.x defaulted `autonomous.enabled` to false, so
+            # omitting it was equivalent; 2026.8.1 renamed the key to
+            # `autonomous.mode` and defaults it to "auto" — the MOST
+            # aggressive setting (review after every run AND self-apply).
+            # Omitting the block on 8.1 therefore gave trial owners more
+            # autonomy than paid owners and burned the whole $3/day cap in
+            # minutes of first-run onboarding (prod, 2026-09-01: capped 8
+            # minutes in, bootstrap kickoff throttled out on all 5 attempts).
+            # Only `mode: "off"` disables it (workshop/config.ts,
+            # experience-review.ts, collection-review.ts).
+            "workshop": {
+                "autonomous": (
+                    {"mode": "off" if is_bedrock_trial else "propose"}
+                    if _emit_81_shape
+                    else {"enabled": not is_bedrock_trial}
+                )
+            },
         },
         "hooks": {
             "internal": {

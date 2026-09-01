@@ -22,6 +22,7 @@
 // say it with.
 
 import { DollarSign, UserPlus, Eye, Wallet } from "lucide-react";
+import { ApiError } from "@lightbulb/shared";
 import { PanelNotice } from "@/components/teams/shell";
 import { useCompanyRollup, type RollupDay } from "@/hooks/useCompanyRollup";
 import { formatUsdCents } from "@/lib/creditAmounts";
@@ -41,7 +42,11 @@ function sum(days: RollupDay[], key: "revenue_microcents" | "signups" | "visitor
  * axes, no tooltip and no legend, and pulling in a charting dependency to draw
  * one line would be the kind of thing nobody removes later.
  */
-function Sparkline({ values, label }: { values: number[]; label: string }) {
+function Sparkline({ values: raw, label }: { values: number[]; label: string }) {
+  // `sum()` guards with `?? 0`; without the same coercion here one missing key
+  // makes min/max NaN and every coordinate serialises as "NaN,NaN" — the SVG
+  // then renders nothing and the tile silently shows a total with no trend.
+  const values = raw.map((v) => (Number.isFinite(v) ? v : 0));
   if (values.length < 2) return null;
   // Revenue CAN be negative: `_read_day` sums balance-transaction `net` over
   // all transaction types, so a day whose refunds and disputes exceed its
@@ -72,26 +77,6 @@ function Sparkline({ values, label }: { values: number[]; label: string }) {
       />
     </svg>
   );
-}
-
-// The backend names unavailable columns by their raw key. A hand-written
-// sentence for today's exact pair ("followers" + "open_threads") is right until
-// the day the list changes, and then it silently drops the new entry or prints
-// `open_threads` at the owner. A label map plus Intl.ListFormat handles every
-// arity and never leaks a snake_case key.
-const UNAVAILABLE_LABELS: Record<string, string> = {
-  followers: "followers",
-  open_threads: "open threads",
-  revenue_microcents: "revenue",
-  signups: "signups",
-  visitors: "visitors",
-};
-
-function formatUnavailable(keys: string[]): string {
-  const names = keys.map((k) => UNAVAILABLE_LABELS[k] ?? k.replace(/_/g, " "));
-  const list = new Intl.ListFormat("en", { style: "long", type: "conjunction" }).format(names);
-  const verb = names.length === 1 ? "isn't" : "aren't";
-  return `${list.charAt(0).toUpperCase()}${list.slice(1)} ${verb} wired up yet.`;
 }
 
 function Tile({
@@ -139,10 +124,19 @@ function Tile({
 export function HomeRollupStrip() {
   const { rollup, isLoading, error, isUnavailable } = useCompanyRollup();
 
-  if (isLoading) return null;
+  // `/company/rollup` calls require_org_admin, so an ordinary org member 403s
+  // forever. Telling them it is temporary and to check back sends them to wait
+  // for something that can never resolve — and SWR keeps retrying a request
+  // that cannot succeed.
+  if (error instanceof ApiError && error.status === 403) return null;
 
-  // A failed read is NOT zero revenue. Say we could not look.
-  if (error || !rollup) {
+  if (isLoading && !rollup) return <div className="h-[132px]" aria-hidden="true" />;
+
+  // `error && !rollup`, NOT `error || !rollup`: SWR keeps `data` and sets
+  // `error` when a REVALIDATION fails, so the wider guard threw away numbers
+  // still sitting in the cache and replaced a populated strip with a failure
+  // notice on one transient 500.
+  if (error && !rollup) {
     return (
       <PanelNotice
         state="unavailable"
@@ -152,6 +146,7 @@ export function HomeRollupStrip() {
       />
     );
   }
+  if (!rollup) return null;
 
   // No Connect binding ⇒ no rollup rows exist at all, including the columns
   // that have nothing to do with Stripe. A silent set of zeros here would be a
@@ -177,6 +172,21 @@ export function HomeRollupStrip() {
 
   const days = rollup.days ?? [];
   const spendCents = microcentsToCents(rollup.agent_spend_month_to_date_microcents ?? 0);
+
+  // Bound minutes ago: `stripe_bound: true` with no rows, because the hourly
+  // writer has not run and there is no backfill. Rendering the tiles here put
+  // "$0" beside a range label reading "No readings yet" — two contradictory
+  // statements on one strip, and three numbers we had not earned.
+  if (!days.length) {
+    return (
+      <PanelNotice
+        state="zero"
+        icon={DollarSign}
+        headline="No readings yet."
+        supporting="Your Stripe account is connected. The first daily reading lands within the hour."
+      />
+    );
+  }
 
   // `days[]` is SPARSE — the writer returns None and stores nothing when every
   // source was empty, so absent days are omitted rather than zero-filled. The
@@ -226,14 +236,14 @@ export function HomeRollupStrip() {
           series={days.map((d) => d.signups)}
           unavailable={isUnavailable("signups")}
         />
-        <Tile
-          icon={Eye}
-          label="Visitors"
-          value={sum(days, "visitors").toLocaleString()}
-          caption={readingsCaption}
-          series={days.map((d) => d.visitors)}
-          unavailable={isUnavailable("visitors")}
-        />
+        {/* NO VISITORS TILE. `owner_posthog.day_traffic` returns None for any
+            owner without a PostHog connection — the common case — and
+            `rollup_service` then stores `visitors: 0`. The backend's
+            `UNAVAILABLE` is the module constant ["followers","open_threads"],
+            so `visitors` never joins it and the tile would print a confident
+            "0" for a number nobody measured. That is the exact lie this module
+            exists to prevent, so the tile waits until the backend can say
+            per-owner whether zero means zero or means unknown. */}
         {/* Month-to-date, NOT a per-day series — see useCompanyRollup's note.
             There is deliberately no sparkline here: the underlying column is
             the running month total stamped on every row, so plotting it would
@@ -246,13 +256,11 @@ export function HomeRollupStrip() {
         />
       </div>
 
-      {/* Columns the backend told us it cannot serve. Named, not hidden — an
-          owner who sees five tiles and expects seven should be told why. */}
-      {rollup.unavailable?.length > 0 && (
-        <p className="text-xs text-[var(--midnight-muted)]">
-          {formatUnavailable(rollup.unavailable)}
-        </p>
-      )}
+      {/* Deliberately NOT listing rollup.unavailable here. It is the fixed
+          constant ["followers","open_threads"], so the line rendered for every
+          owner forever — explaining the absence of two things this strip never
+          offered a tile for. `isUnavailable` still guards each tile it does
+          render, which is where the contract actually bites. */}
     </section>
   );
 }

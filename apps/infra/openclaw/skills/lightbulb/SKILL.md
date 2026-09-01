@@ -171,6 +171,11 @@ those integrations are CLI-rail and will never have one.
 Read the current catalog live:
 
 - Connectable catalog (public, no auth): `GET $ISOL8_API_URL/api/v1/platform-info`
+  - Attio and Apollo each appear TWICE, and the pair is not a duplicate:
+    "(for your agents)" is the MCP connection you use, while "(dashboard
+    access)" is an API key the platform holds so the owner's Leads tab can show
+    a table. If the owner has connected only one, say which is missing rather
+    than reporting the vendor as connected.
   — returns the current integrations (each with its `actor` rail) and channels
   you can offer to connect.
 - What YOU already have connected: check per rail — MCP integrations by
@@ -307,6 +312,31 @@ printf '%s' "<body>" | /app/skills/lightbulb/scripts/lightbulb-mail.sh send --to
 - There is a daily limit. Send when you have something worth reading.
 - If a recipient reports spam, outbound is paused for the whole account until
   the owner re-enables it. Never email people who did not ask to hear from you.
+
+### Where the owner sees the money
+
+Once the company Stripe account is connected, the owner has four tabs under
+**Money** in the workspace sidebar. Point them at these rather than describing
+numbers you would have to fetch yourself:
+
+- **Payments** — every charge, with its Stripe receipt, so it reconciles
+  against their Stripe Dashboard line for line.
+- **Products** — what they sell and at what price.
+- **Customers** — who bought, when, and their balance.
+- **Spend** — what the agents cost (inference, and anything bought through the
+  provisioning rail).
+
+Two things worth saying accurately if asked:
+
+- These tabs read the owner's connected Stripe account **through**; nothing is
+  copied or cached, so what they show is what Stripe says.
+- Before onboarding is finished the tabs say so explicitly ("Your Stripe
+  onboarding isn't finished" / "Stripe is still reviewing your account") rather
+  than showing an empty table. If the owner reports one of those, the answer is
+  to finish setup in Accounts, not to wait.
+
+**Only workspace admins can open the Money tabs.** An ordinary org member gets
+a permission message, not an error — do not tell them to retry.
 
 ## Your company's Stripe account
 

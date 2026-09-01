@@ -110,6 +110,13 @@ export function moneyView<Row>(
   if (error) return { kind: "unavailable" };
   if (isLoading || !data) return { kind: "loading" };
   if (!data.stripe_bound) return { kind: "unbound" };
+  // ROWS WIN. The onboarding booleans are only advanced by a best-effort
+  // `_sync_status` at bind (which returns early on any StripeError) and by the
+  // `account.updated` webhook, so they can be stale-false on an account that
+  // has real charges — and an account Stripe later restricts keeps months of
+  // history with `charges_enabled: false`. Checking them first hid the owner's
+  // actual money behind "your onboarding isn't finished".
+  if (data.data.length) return { kind: "rows" };
   // `details_submitted` is absent on an older backend; absent must not read as
   // unonboarded, or every owner sees "finish setup" during a deploy skew.
   if (data.details_submitted === false) return { kind: "partial" };
@@ -136,7 +143,10 @@ export function useCompanyMoney<Row>(kind: MoneyKind) {
   const { data, error, isLoading } = useSWR<MoneyEnvelope<Row>>(
     key,
     (path: string) => api.get(path) as Promise<MoneyEnvelope<Row>>,
-    { dedupingInterval: 30_000 },
+    // keepPreviousData: without it, changing the cursor on "Load more" blanks
+    // `data`, so the view flips to `loading` and every accumulated row is
+    // replaced by a skeleton until the next page lands.
+    { dedupingInterval: 30_000, keepPreviousData: true },
   );
 
   const next = useCallback(() => {
@@ -150,10 +160,11 @@ export function useCompanyMoney<Row>(kind: MoneyKind) {
 
   return {
     rows,
-    // Once a page has been accumulated the owner HAS rows, even if the newest
-    // page came back empty — deriving the view off the current page alone would
-    // flip a populated table to "no payments yet" on the last click.
-    view: earlier.length && view.kind === "zero" ? ({ kind: "rows" } as MoneyView) : view,
+    // Once pages have accumulated the owner HAS rows, so no later page can take
+    // them away — not an empty last page (`zero`), not a mid-flight fetch
+    // (`loading`), and not a 502 on page 3 (`unavailable`), which would
+    // otherwise strand them with no way back to page 1.
+    view: rows.length && view.kind !== "forbidden" ? ({ kind: "rows" } as MoneyView) : view,
     hasMore: !!data?.has_more,
     next,
   };

@@ -1961,8 +1961,8 @@ function FirstRunFailedNotice({
   // would queue a self-serviceable failure behind a human. Both SWR keys are
   // already mounted by the banner on this screen, so this costs no request.
   const stepperApi = useApi();
-  const { balance: creditsBalance } = useCredits();
-  const { data: creditsMe } = useSWR<{ provider_choice: string | null }>(
+  const { balance: creditsBalance, error: creditsError } = useCredits();
+  const { data: creditsMe, error: creditsMeError } = useSWR<{ provider_choice: string | null }>(
     "/users/me",
     () => stepperApi.get("/users/me") as Promise<{ provider_choice: string | null }>,
   );
@@ -1972,7 +1972,12 @@ function FirstRunFailedNotice({
   // moment later — double-counting the failure and under-reporting the
   // credits share, which is the exact metric this dimension was added to
   // measure. Wait until both have resolved, then fire once.
-  const creditsResolved = creditsBalance !== undefined && creditsMe !== undefined;
+  // Resolved OR errored. SWR leaves `data` undefined on error, not only while
+  // loading, so a "both defined" gate silently dropped the impression whenever
+  // a credits read failed — i.e. for exactly the owners whose first run failed
+  // hardest, during the very incidents this metric is meant to size.
+  const creditsResolved =
+    (creditsBalance !== undefined || creditsError) && (creditsMe !== undefined || creditsMeError);
   const creditsBlocked = isCreditsBlocked(creditsBalance, creditsMe?.provider_choice);
   const captured = useRef(false);
   useEffect(() => {
@@ -2000,7 +2005,7 @@ function FirstRunFailedNotice({
             <p className="text-sm font-medium text-err">Friday couldn&apos;t start</p>
           )}
           <p className={`text-xs text-[var(--midnight-soft)] ${inline ? "" : "mt-1"}`}>
-            {creditsBlocked ? (
+            {creditsBlocked && !inline ? (
               // NOT "she failed BECAUSE you're out of credits". `creditsBlocked`
               // is read off the balance alone and never looks at `lastError`,
               // so it is a correlate, not a cause: an owner whose container
@@ -2013,6 +2018,16 @@ function FirstRunFailedNotice({
                 Your Claude credits are used up, which will stop Friday running.
                 Top up and send her a message — your brief is saved. If she
                 still doesn&apos;t start, contact support.
+              </>
+            ) : creditsBlocked && inline ? (
+              // Same blocker, but there is NO CHAT behind the cold-start card
+              // (the container never reached ready), so "send her a message" is
+              // a recovery that does not exist here — the exact false
+              // instruction the inline/ready copy split was written to avoid.
+              <>
+                Your Claude credits are used up, which will stop Friday running.
+                Top up and setup will pick up from here — your brief is saved.
+                If it still doesn&apos;t, contact support.
               </>
             ) : inline ? (
               <>

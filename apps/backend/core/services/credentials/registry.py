@@ -117,11 +117,28 @@ class Wiring(BaseModel):
     openclaw_paths: list[OpenclawPath] | None = None
     materializer: str | None = None
     mcp_server: McpServer | None = None
+    # A credential the BACKEND reads and the container never receives. Explicit
+    # rather than "no target set", so it can never happen by a typo.
+    #
+    # This exists because openclaw.json is NOT durable for arbitrary keys: a
+    # reprovision rebuilds it wholesale and re-injects only the
+    # `integration_mcp_servers` merge and `provisioning_landing.build_provisioned_env`,
+    # which selects Projects rows by key prefix AND actor stamp. Anything else
+    # written into the config is silently dropped on the next image roll while
+    # the integration row still reads "connected" — a credential that vanishes
+    # without telling anyone. So a backend-read key does not go there at all;
+    # Secrets Manager (via `_retains_secret`) is its only custodian.
+    backend_only: bool = False
 
     @model_validator(mode="after")
     def _exactly_one(self) -> "Wiring":
         # Truthiness check: an empty `openclaw_paths: []` is intentionally treated as "not set".
-        if sum(bool(x) for x in (self.openclaw_paths, self.materializer, self.mcp_server)) != 1:
+        targets = sum(bool(x) for x in (self.openclaw_paths, self.materializer, self.mcp_server))
+        if self.backend_only:
+            if targets:
+                raise ValueError("backend_only wiring must not set a delivery target")
+            return self
+        if targets != 1:
             raise ValueError("wiring must set exactly one of openclaw_paths | materializer | mcp_server")
         return self
 

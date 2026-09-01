@@ -847,19 +847,7 @@ async def _disconnect_teardown(owner_id: str, provider: str, p: registry.Provide
             await _seed_identity_best_effort(owner_id, agent_id)
     if p.wiring.openclaw_paths:
         for op in p.wiring.openclaw_paths:
-            parts = op.path.split(".")
-            # An env var must be DELETED, not blanked. OpenClaw exports
-            # `env.vars` into the agent's process environment, so a blanked leaf
-            # leaves `ATTIO_API_KEY=""` present forever after a disconnect — and
-            # any tool or skill that branches on presence (`"X" in os.environ`)
-            # rather than truthiness then takes the authenticated path with an
-            # empty credential. For a config leaf like
-            # `tools.web.search.parallel.apiKey`, blanking is the established
-            # behaviour and stays.
-            if parts[:2] == ["env", "vars"]:
-                await config_patcher.delete_openclaw_config_path(owner_id, parts)
-            else:
-                await config_patcher.set_openclaw_config_path(owner_id, parts, "")
+            await config_patcher.set_openclaw_config_path(owner_id, op.path.split("."), "")
     if p.wiring.mcp_server:
         # The integration owns mcp.servers.<key> as a whole block, so remove the
         # entire server entry — leaving only the env leaf would strand a

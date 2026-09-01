@@ -238,6 +238,84 @@ class TestPerformSignedConnect:
         with pytest.raises(RuntimeError, match="Gateway connect failed: unsupported") as ei:
             await operator_rpc.perform_signed_connect(ws, owner_id="test-user", token="t")
         assert not isinstance(ei.value, operator_rpc.GatewayConnectAuthError)
+        # A rejection with no retry signal is genuinely deterministic — it must
+        # NOT pick up the transient type, or the bootstrap dispatcher would
+        # retry a protocol mismatch on a ladder that cannot fix it.
+        assert not isinstance(ei.value, operator_rpc.GatewayConnectUnavailableError)
+
+    @pytest.mark.asyncio
+    async def test_startup_window_rejection_raises_the_transient_type(self, mock_device_auth_deps):
+        """THE PROD DEFECT. OpenClaw answers the handshake during its own boot
+        window with UNAVAILABLE / retryable / "gateway starting; retry
+        shortly". That arrived here as a BARE RuntimeError, so the bootstrap
+        dispatcher (which matches transients by TYPE) skipped its ~3-minute
+        connect ladder entirely and wrote bootstrap_state="failed" on the first
+        hit — permanently dead-ending three prod owners' onboarding."""
+        ws = AsyncMock()
+        ws.recv = AsyncMock(
+            side_effect=[
+                json.dumps({"event": "connect.challenge", "payload": {"nonce": "n"}}),
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": {
+                            "message": "gateway starting; retry shortly",
+                            "code": "UNAVAILABLE",
+                            "retryable": True,
+                            "retryAfterMs": 2000,
+                        },
+                    }
+                ),
+            ]
+        )
+        with pytest.raises(operator_rpc.GatewayConnectUnavailableError, match="gateway starting") as ei:
+            await operator_rpc.perform_signed_connect(ws, owner_id="test-user", token="t")
+        assert ei.value.code == "UNAVAILABLE"
+        assert ei.value.retry_after_ms == 2000
+        # Still a RuntimeError so pre-existing broad handlers keep catching it.
+        assert isinstance(ei.value, RuntimeError)
+
+    @pytest.mark.asyncio
+    async def test_retryable_flag_alone_is_enough(self, mock_device_auth_deps):
+        """The classification is keyed on the gateway's STRUCTURED signal, not
+        on message text (which is free-form and differs per call site — at
+        least two distinct texts produced the prod dead-end). Either half of
+        that signal is sufficient, so a gateway version that sends one without
+        the other is still classified correctly."""
+        for error in (
+            {"message": "session store is busy", "code": "SOMETHING_ELSE", "retryable": True},
+            {"message": "gateway starting", "code": "UNAVAILABLE"},
+        ):
+            ws = AsyncMock()
+            ws.recv = AsyncMock(
+                side_effect=[
+                    json.dumps({"event": "connect.challenge", "payload": {"nonce": "n"}}),
+                    json.dumps({"ok": False, "error": error}),
+                ]
+            )
+            with pytest.raises(operator_rpc.GatewayConnectUnavailableError):
+                await operator_rpc.perform_signed_connect(ws, owner_id="test-user", token="t")
+
+    @pytest.mark.asyncio
+    async def test_auth_rejection_wins_over_a_retryable_flag(self, mock_device_auth_deps):
+        """An auth rate-limit may well set `retryable`, but each retry still
+        counts toward the gateway's 10-in-60s lockout, so it must stay an auth
+        error rather than become something callers ride a ladder against."""
+        ws = AsyncMock()
+        ws.recv = AsyncMock(
+            side_effect=[
+                json.dumps({"event": "connect.challenge", "payload": {"nonce": "n"}}),
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": {"message": "rate limited", "code": "AUTH_RATE_LIMITED", "retryable": True},
+                    }
+                ),
+            ]
+        )
+        with pytest.raises(operator_rpc.GatewayConnectAuthError) as ei:
+            await operator_rpc.perform_signed_connect(ws, owner_id="test-user", token="t")
+        assert not isinstance(ei.value, operator_rpc.GatewayConnectUnavailableError)
 
     @pytest.mark.asyncio
     async def test_raises_when_no_operator_seed(self):

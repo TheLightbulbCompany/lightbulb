@@ -35,6 +35,13 @@ GATEWAY_PORT = 18789  # OpenClaw gateway port (avoid circular import with contai
 # Default per-recv timeout (seconds) for the short handshake/RPC exchanges.
 _DEFAULT_TIMEOUT = 10
 
+# OpenClaw's canonical "service or required backend is temporarily
+# unavailable" code (``ErrorCodes.UNAVAILABLE`` in its gateway-protocol
+# package). Checked ALONGSIDE the error's own ``retryable`` flag rather than
+# instead of it: the flag is the semantic signal, this code is the belt for a
+# gateway version that sends the code without the flag.
+_UNAVAILABLE_CODE = "UNAVAILABLE"
+
 
 class GatewayConnectAuthError(RuntimeError):
     """Connect rejected with an auth-shaped error code (AUTH_FAILED,
@@ -52,6 +59,49 @@ class GatewayConnectAuthError(RuntimeError):
         super().__init__(message)
         self.code = code
         self.retry_after_ms = retry_after_ms
+
+
+class GatewayConnectUnavailableError(RuntimeError):
+    """Connect rejected as TEMPORARILY unavailable — the gateway process is up
+    enough to answer the handshake but not ready to admit a session.
+
+    The canonical case is OpenClaw's own startup window: ``connect-admission``
+    answers ``errorShape(ErrorCodes.UNAVAILABLE, "gateway starting; retry
+    shortly", {retryable: true, retryAfterMs})`` while the container boots.
+    Nothing about that rejection is permanent — the very next connect succeeds.
+
+    It used to arrive as a BARE ``RuntimeError`` (the catch-all below), which
+    put it in the same bucket as an auth rejection: not in
+    ``bootstrap_dispatcher._TRANSIENT_DISPATCH_ERRORS``, so the bootstrap
+    dispatcher skipped its ~3-minute connect-retry ladder entirely and wrote
+    ``bootstrap_state="failed"`` on the FIRST hit — permanently dead-ending
+    that owner's onboarding. Three prod owners were wedged on exactly this
+    rejection.
+
+    Discriminated on the STRUCTURED signal the gateway sends (``retryable`` /
+    the ``UNAVAILABLE`` code), never on the message text, which is free-form
+    and varies per call site. Subclasses RuntimeError so pre-existing broad
+    handlers keep working; callers that care match it by TYPE.
+    """
+
+    def __init__(self, message: str, *, code: str | None = None, retry_after_ms: int | None = None):
+        super().__init__(message)
+        self.code = code
+        self.retry_after_ms = retry_after_ms
+
+
+def _retry_after_ms(error: dict) -> int | None:
+    """The gateway's own back-off hint, if it sent one.
+
+    ``retryAfterMs`` sits directly on the error object or nested under
+    ``error.data``, depending on the gateway version.
+    """
+    retry_after = error.get("retryAfterMs")
+    if retry_after is None:
+        data = error.get("data")
+        if isinstance(data, dict):
+            retry_after = data.get("retryAfterMs")
+    return int(retry_after) if isinstance(retry_after, (int, float)) else None
 
 
 class GatewayConnectNotPairedError(RuntimeError):
@@ -188,17 +238,20 @@ async def perform_signed_connect(
                 details=error.get("details"),
             )
         if isinstance(code, str) and "AUTH" in code.upper():
-            # retryAfterMs sits directly on the error object or nested under
-            # error.data, depending on the gateway version.
-            retry_after = error.get("retryAfterMs")
-            if retry_after is None:
-                data = error.get("data")
-                if isinstance(data, dict):
-                    retry_after = data.get("retryAfterMs")
+            # Checked BEFORE the retryable branch below on purpose: an
+            # AUTH_RATE_LIMITED rejection may well set ``retryable``, but it
+            # still counts toward the gateway's 10-in-60s lockout, so it must
+            # stay an auth error rather than become something a caller retries.
             raise GatewayConnectAuthError(
                 f"Gateway connect failed: {message}",
                 code=code,
-                retry_after_ms=int(retry_after) if isinstance(retry_after, (int, float)) else None,
+                retry_after_ms=_retry_after_ms(error),
+            )
+        if error.get("retryable") is True or code == _UNAVAILABLE_CODE:
+            raise GatewayConnectUnavailableError(
+                f"Gateway connect failed: {message}",
+                code=code,
+                retry_after_ms=_retry_after_ms(error),
             )
         raise RuntimeError(f"Gateway connect failed: {message}")
     return resp

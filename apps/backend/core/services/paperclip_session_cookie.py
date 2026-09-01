@@ -2,12 +2,21 @@
 
 Replaces the per-request Paperclip sign-in ("the storm") with a single
 browser-held ``.isol8.co`` Better Auth session cookie. **The browser is the
-cache:** the BFF reads the cookie off the request and forwards it upstream;
-it only signs in (mints a fresh cookie + sets it on the response) on a cold
-start, on expiry, or on a downstream 401. No per-user server-side store, no
-new infra — the cookie lives in the user's own browser, where session
-cookies belong (the system-owned admin credential stays in Secrets Manager;
-that ownership split is deliberate).
+primary cache:** the BFF reads the cookie off the request and forwards it
+upstream; it only signs in (mints a fresh cookie + sets it on the response)
+on a cold start, on expiry, or on a downstream 401. The cookie lives in the
+user's own browser, where session cookies belong (the system-owned admin
+credential stays in Secrets Manager; that ownership split is deliberate).
+
+Behind that sits a small per-user in-process backstop (``_ColdMint``) for the
+callers the browser cache cannot serve: the cold start before any Set-Cookie
+has landed, and every forced re-mint. It holds a minted session for its real
+lifetime (``_SESSION_REUSE_SECONDS``, well inside Better Auth's 7-day TTL) and
+parks an owner whose sign-in draws a 429. Both matter because Better Auth's
+sign-in rate limiter keys on IP and the entire backend is one ECS task = one
+IP: without reuse the fleet burns a 3-per-10s budget on credentials it already
+held, and without the park one looping owner spends everybody else's share of
+it. See the constants for the numbers and the reasoning behind them.
 
 Two surfaces share this module:
   - the native Teams BFF (``routers/teams/*``), which proves the caller's
@@ -63,16 +72,53 @@ _SESSION_MAX_AGE_SECONDS = 7 * 24 * 3600
 _BIND_COOKIE = "isol8_pc_bind"
 _BIND_KIND = "paperclip_bind"
 
-# Cold-start singleflight: when the Teams page first loads it fires ~6-8 panel
-# requests in parallel before any Set-Cookie has landed. Without coalescing
-# they would each sign in. A per-user lock + a few-seconds result buffer makes
-# the burst share ONE sign-in. This is a coalescer for the cold mint, NOT a
-# persistent cache (the browser is the cache); it self-evicts fast.
-_COLD_MINT_BUFFER_SECONDS = 10.0
+# How long a minted session is reused server-side before we sign in again.
+#
+# Better Auth issues 7-day sessions (its default; the Paperclip fork overrides
+# nothing — ``server/src/auth/better-auth.ts`` passes only ``rateLimit.enabled``
+# and no ``session.expiresIn``). The 10s this used to hold threw away a
+# week-long credential after ten seconds and re-signed-in constantly for
+# nothing. 23h is the margin ``paperclip_admin_session`` already uses for the
+# bootstrap admin: comfortably inside the 7-day ceiling even with clock skew, at
+# most one re-mint per owner per day, and a backend redeploy starts fresh anyway.
+#
+# A session revoked upstream before this elapses does NOT have to wait out the
+# TTL: the downstream 401 self-heal (``main.py``) calls back with ``force=True``
+# and re-mints within the same request.
+_SESSION_REUSE_SECONDS = 23 * 3600
+
+# Better Auth rate-limits ``POST /api/auth/sign-in/email`` to 3 requests per 10s
+# keyed by IP. The whole backend is one ECS task = one IP, so that budget is
+# shared by the entire fleet, and one owner looping (401 -> forced re-mint ->
+# 429 -> no cookie -> 401) can starve every other owner's first sign-in.
+# Parking the owner who drew the 429 is the bulkhead: the park is per-user, so
+# they degrade only themselves instead of re-entering the shared bucket on the
+# very next request.
+_RATE_LIMIT_PARK_SECONDS = 10.0
+
+# Ceiling on a server-supplied ``Retry-After`` so a bad header cannot park an
+# owner for hours.
+_MAX_PARK_SECONDS = 300.0
 
 
 class SessionCookieError(Exception):
     """Raised when a fresh session cookie cannot be obtained."""
+
+
+class SessionRateLimited(SessionCookieError):
+    """The owner is parked because their last sign-in drew a 429.
+
+    Carries ``retry_after`` (seconds) so a caller can report it. Distinct from
+    the base error so a caller that wants to treat "come back shortly" as
+    transient can, without string-matching.
+    """
+
+    def __init__(self, message: str, retry_after: float):
+        super().__init__(message)
+        self.retry_after = retry_after
+        # Mirrors PaperclipApiError's contract so the drain's transient check
+        # (``getattr(e, "retryable", False)``) classifies this correctly too.
+        self.retryable = True
 
 
 # A bare ``name=value`` session-cookie line wrapped with the bookkeeping the
@@ -216,13 +262,41 @@ def set_session_on_response(response, session_cookie_line: str, user_id: str) ->
 # ---------------------------------------------------------------------------
 
 
+def _park_seconds(exc: BaseException) -> float | None:
+    """Seconds to park this owner for, or ``None`` if ``exc`` is not a 429.
+
+    Duck-typed on ``status_code``/``retry_after`` rather than importing
+    ``PaperclipApiError`` — this module deliberately depends on nothing but
+    config + pyjwt, and the admin client imports a great deal more.
+    """
+    if getattr(exc, "status_code", None) != 429:
+        return None
+    try:
+        hinted = float(getattr(exc, "retry_after", None))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return _RATE_LIMIT_PARK_SECONDS
+    return min(max(hinted, 1.0), _MAX_PARK_SECONDS)
+
+
 class _ColdMint:
-    """Per-user lock + short-lived result buffer that collapses a cold-start
-    burst into a single sign-in."""
+    """Per-user lock, session buffer, and rate-limit park.
+
+    One lock per user collapses a burst into a single sign-in; the buffer then
+    reuses that session for its real lifetime; the park keeps an owner whose
+    sign-in was rate-limited out of the shared IP budget until it recovers.
+    Everything is keyed by user id, which is what makes a bad owner's blast
+    radius exactly one owner.
+
+    ponytail: the three dicts grow one entry per owner seen and are only
+    pruned lazily on access. At fleet size (tens to thousands) that is a few
+    hundred KB; if it ever matters, an LRU or a periodic sweep of entries whose
+    buffer has expired is the upgrade.
+    """
 
     def __init__(self) -> None:
         self._locks: dict[str, asyncio.Lock] = {}
         self._buf: dict[str, tuple[str, float]] = {}
+        self._parked_until: dict[str, float] = {}
 
     def _lock(self, user_id: str) -> asyncio.Lock:
         lock = self._locks.get(user_id)
@@ -231,32 +305,85 @@ class _ColdMint:
             self._locks[user_id] = lock
         return lock
 
-    def _fresh(self, user_id: str) -> str | None:
+    def _fresh(self, user_id: str, stale_before: float | None) -> str | None:
         entry = self._buf.get(user_id)
         if entry is None:
             return None
         cookie, at = entry
-        # monotonic: buffer age is an in-process elapsed check (stamped in
-        # mint(), compared here) that coalesces a cold-start burst; a wall-clock
-        # step must not extend or collapse the dedupe window.
-        if (time.monotonic() - at) >= _COLD_MINT_BUFFER_SECONDS:
+        # monotonic everywhere: these are in-process elapsed checks (stamped in
+        # mint(), compared here), so a wall-clock step must not extend or
+        # collapse the reuse window.
+        if (time.monotonic() - at) >= _SESSION_REUSE_SECONDS:
             self._buf.pop(user_id, None)
+            return None
+        if stale_before is not None and at <= stale_before:
+            # A forced caller decided its cookie was bad at ``stale_before``;
+            # anything minted at or before that moment is the same bad cookie.
+            # Deliberately NOT popped: if the replacement mint then fails (a
+            # 429), a later unforced caller can still try what we have rather
+            # than being left with nothing.
             return None
         return cookie
 
-    async def mint(self, user_id: str, mint: MintFn) -> str:
+    def _parked_for(self, user_id: str) -> float | None:
+        until = self._parked_until.get(user_id)
+        if until is None:
+            return None
+        remaining = until - time.monotonic()
+        if remaining <= 0:
+            self._parked_until.pop(user_id, None)
+            return None
+        return remaining
+
+    async def mint(self, user_id: str, mint: MintFn, *, stale_before: float | None = None) -> str:
         async with self._lock(user_id):
-            cached = self._fresh(user_id)
+            # Re-checked under the lock, so a burst that queued behind one
+            # sign-in picks up its result instead of each doing their own.
+            cached = self._fresh(user_id, stale_before)
             if cached is not None:
                 return cached
-            cookie = await mint()
+
+            remaining = self._parked_for(user_id)
+            if remaining is not None:
+                raise SessionRateLimited(
+                    f"paperclip sign-in for {user_id} is rate-limited; retry in {remaining:.0f}s",
+                    retry_after=remaining,
+                )
+
+            try:
+                cookie = await mint()
+            except BaseException as exc:
+                park = _park_seconds(exc)
+                if park is not None:
+                    self._parked_until[user_id] = time.monotonic() + park
+                    logger.warning(
+                        "paperclip sign-in rate-limited for %s; parking that owner for %.0fs",
+                        user_id,
+                        park,
+                    )
+                # The buffer is untouched on ANY failure — a mint that could not
+                # replace the session must not also destroy it.
+                raise
+
             if not cookie:
                 raise SessionCookieError("sign-in returned no session cookie")
             self._buf[user_id] = (cookie, time.monotonic())
+            self._parked_until.pop(user_id, None)
             return cookie
 
     def evict(self, user_id: str) -> None:
+        """Forget everything about ``user_id``.
+
+        Production no longer calls this — a forced re-mint marks the old
+        session stale rather than deleting it (see ``resolve_session_cookie``),
+        precisely so a failed replacement cannot leave an owner with nothing.
+        It survives as the reset primitive for tests, which is also why it
+        drops the LOCK: the lock is bound to the event loop that created it,
+        and each test gets a new one.
+        """
         self._buf.pop(user_id, None)
+        self._parked_until.pop(user_id, None)
+        self._locks.pop(user_id, None)
 
 
 _cold = _ColdMint()
@@ -279,19 +406,31 @@ async def resolve_session_cookie(
 
     - Reuses the browser-presented cookie when it is bound to ``user_id``.
     - Otherwise (or when ``force`` after a downstream 401) signs in once
-      (coalesced across a cold-start burst), seeds the browser via
-      ``response``, and returns the fresh line.
+      (coalesced across a burst), seeds the browser via ``response``, and
+      returns the fresh line.
+
+    Raises ``SessionRateLimited`` (a ``SessionCookieError``) when this owner is
+    parked after a rate-limited sign-in.
 
     The caller is responsible for stamping ``Origin: PAPERCLIP_PUBLIC_URL`` on
     the upstream request (Better Auth resolves the ``__Secure-`` cookie name
     off the request URL/Origin).
     """
+    stale_before: float | None = None
     if not force:
         trusted = is_trusted(cookies, user_id)
         if trusted is not None:
             return trusted
     else:
-        _cold.evict(user_id)
-    fresh = await _cold.mint(user_id, mint)
+        # Mark, don't evict. Evicting here dropped the buffered session BEFORE
+        # its replacement existed, so (a) a re-mint that then failed left the
+        # owner with nothing, and (b) concurrent 401s each evicted the cookie
+        # the other had just minted and signed in again — the exact loop that
+        # spent the fleet's rate-limit budget. Recording the instant we decided
+        # ours was stale keeps both properties: a session minted AFTER this
+        # moment is a genuine replacement and gets reused, one from before does
+        # not, and a failed mint destroys nothing.
+        stale_before = time.monotonic()
+    fresh = await _cold.mint(user_id, mint, stale_before=stale_before)
     set_session_on_response(response, fresh, user_id)
     return fresh

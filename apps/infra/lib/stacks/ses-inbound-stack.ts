@@ -559,14 +559,17 @@ export class SesInboundStack extends cdk.Stack {
     // -------------------------------------------------------------------------
     // Activate the rule set. No CDK L1/L2 for SetActiveReceiptRuleSet — same
     // AwsCustomResource pattern as bedrock-meter-stack.ts's
-    // PutModelInvocationLoggingConfiguration custom resource. onDelete clears
-    // the active rule set entirely (empty params — SES semantics: omitting
-    // RuleSetName deactivates whatever is currently active).
+    // PutModelInvocationLoggingConfiguration custom resource. It has NO
+    // onDelete — see below.
     // -------------------------------------------------------------------------
     // "V2" for the same ServiceToken-replacement reason as BedrockLoggingConfigV2
-    // (bedrock-meter-stack.ts): the named provider changed the service token, and
-    // the stable physical id means the old resource's Delete (which would
-    // DEACTIVATE the inbound rule set) is skipped on replacement.
+    // (bedrock-meter-stack.ts). NOTE the original note here claimed the stable
+    // physical id means the old resource's Delete is skipped on replacement.
+    // That is FALSE across a logical-id rename, and it was proven in production
+    // by the Bedrock twin of this resource: on 2026-08-30 the renamed resource's
+    // Create wrote the config at 22:13:14Z and the OLD logical id's Delete wiped
+    // it at 22:13:23Z (CloudTrail). CFN deletes by LOGICAL id; a stable physical
+    // id changes nothing.
     const activateRuleSet = new cr.AwsCustomResource(this, "ActivateAgentMailRuleSetV2", {
       // Explicit name + role so the helper Lambda carries the lightbulb
       // prefix instead of the auto-name derived from the old stack name.
@@ -590,11 +593,13 @@ export class SesInboundStack extends cdk.Stack {
         parameters: { RuleSetName: this.ruleSet.receiptRuleSetName },
         physicalResourceId: cr.PhysicalResourceId.of(`ses-active-rule-set-${this.region}`),
       },
-      onDelete: {
-        service: "SES",
-        action: "setActiveReceiptRuleSet",
-        parameters: {},
-      },
+      // NO onDelete. setActiveReceiptRuleSet with empty params does not
+      // deactivate "our" rule set — omitting RuleSetName deactivates WHATEVER
+      // is currently active, account-wide, which stops inbound agent mail for
+      // every tenant. Renaming this logical id again would fire that Delete
+      // seconds after the replacement's Create, exactly as the Bedrock twin
+      // did. Teardown now leaves the active rule set in place: a stale active
+      // rule set is strictly safer than silently losing inbound mail.
       policy: cr.AwsCustomResourcePolicy.fromStatements([
         new iam.PolicyStatement({
           effect: iam.Effect.ALLOW,

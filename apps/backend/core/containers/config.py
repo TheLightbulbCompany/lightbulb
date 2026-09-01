@@ -2007,9 +2007,22 @@ def build_openclaw_config_dict(
             # "hook:" in this list when ``defaultSessionKey`` is unset
             # (we don't set it above). Omitting "hook:" makes the gateway
             # throw at boot — every newly-provisioned container would
-            # refuse to start. DO NOT REMOVE. "isol8-" is for our own
-            # session-key conventions used by internal callers.
-            "allowedSessionKeyPrefixes": ["isol8-", "hook:"],
+            # refuse to start. DO NOT REMOVE. "lightbulb-"/"isol8-" are for our
+            # own session-key conventions used by internal callers.
+            #
+            # BOTH BRAND PREFIXES, deliberately, and the ORDER of the two moves
+            # matters. This allowlist is CONTAINER-SIDE: it only changes when a
+            # container's openclaw.json is rewritten, which happens at provision
+            # / reprovision (never for a container just sitting there). The
+            # minting side is BACKEND-side and changes the instant the backend
+            # deploys. So the allowlist must learn "lightbulb-" BEFORE anything
+            # mints one — otherwise every container not yet reprovisioned would
+            # reject the key with a 400 (gateway/server/hooks-request-handler.ts)
+            # and inbound agent mail would lose thread continuity fleet-wide.
+            # This release is that first half; nothing mints "lightbulb-" yet.
+            # FOLLOW-UP, only once every live container has been reprovisioned:
+            # drop "isol8-".
+            "allowedSessionKeyPrefixes": ["lightbulb-", "isol8-", "hook:"],
             # Inbound agent email needs a STABLE per-thread session key so a
             # reply continues the same conversation instead of cold-starting a
             # throwaway `hook:<uuid>` every time (see agent_mail_thread). Both
@@ -2020,15 +2033,16 @@ def build_openclaw_config_dict(
             # What still bounds a leaked/replayed hook token, now that it can
             # name a session rather than only create one:
             #   * allowedSessionKeyPrefixes below — it can only reach
-            #     `isol8-*` / `hook:*` keys, and `isol8-email:<sha256>` is the
-            #     only isol8- OpenClaw session key we mint (the `isol8-` in
-            #     routers/connections.py is an STS RoleSessionName, not this).
+            #     `lightbulb-*` / `isol8-*` / `hook:*` keys, and the mail thread
+            #     key (agent_mail_thread) is the ONLY one of those we mint (the
+            #     `isol8-` in routers/connections.py is an STS RoleSessionName,
+            #     not this).
             #   * allowedAgentIds below — it cannot aim at an arbitrary agent.
             # The delta accepted deliberately: previously such a token could
             # only start fresh sessions; it can now target an existing one and
-            # read its prior context. Tightening the prefix to
-            # `isol8-email:` would shrink that further and is the obvious next
-            # step if anything else ever mints an isol8- session key.
+            # read its prior context. Tightening the prefix to the mail-thread
+            # one alone would shrink that further and is the obvious next step
+            # if anything else ever mints a brand-prefixed session key.
             "allowRequestSessionKey": True,
             # Bound which agents a hook call may target: the seeded roster at
             # write time ("main" for the legacy fallback shape). Nothing in

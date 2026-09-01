@@ -79,12 +79,38 @@ def test_hooks_session_key_safety_settings():
     # CREATE sessions; it can now target an existing one and read its context.
     assert cfg["hooks"]["allowRequestSessionKey"] is True
     prefixes = cfg["hooks"]["allowedSessionKeyPrefixes"]
+    assert "lightbulb-" in prefixes
+    # TRANSITIONAL, and the ordering is the whole point: this allowlist is
+    # container-side and only refreshes when openclaw.json is rewritten at
+    # provision/reprovision, while the minting side is backend-side and flips
+    # the moment the backend deploys. Keeping "isol8-" means a container that
+    # has NOT been reprovisioned still accepts the keys the backend mints today.
+    # DELETE only once every live container has been reprovisioned AND nothing
+    # mints an "isol8-" key.
     assert "isol8-" in prefixes
     # OpenClaw v2026.5.7 (gateway/hooks.ts) crashes at boot when
     # defaultSessionKey is unset and "hook:" is not in the allowed list.
     # Without this prefix every newly-provisioned container refuses to start.
     # DO NOT WEAKEN OR REMOVE THIS ASSERTION.
     assert "hook:" in prefixes
+
+
+def test_minted_mail_session_key_is_inside_the_allowlist():
+    """The invariant that actually matters, stated once instead of implied.
+
+    Two sides have to agree: agent_mail_thread MINTS the session key, this
+    config is the container-side ALLOWLIST that admits it. They live in
+    different modules and rename on different schedules, and when they disagree
+    the container rejects the key with a 400 and inbound mail silently loses
+    thread continuity. Assert the coupling directly so a one-sided rename fails
+    here rather than in production.
+    """
+    from core.services.agent_mail_thread import thread_session_key
+
+    key = thread_session_key({"Message-ID": "<root-1@example.com>"})
+    assert key is not None
+    prefixes = _cfg()["hooks"]["allowedSessionKeyPrefixes"]
+    assert any(key.startswith(p) for p in prefixes), f"{key!r} matches none of {prefixes}"
 
 
 def test_hooks_internal_block_preserved():

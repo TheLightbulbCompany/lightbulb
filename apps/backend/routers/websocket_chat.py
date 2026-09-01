@@ -359,6 +359,7 @@ def _fit_rpc_result_for_frame(method: str, result, budget: int = _WS_FRAME_BUDGE
 
 
 def require_ws_internal_caller(
+    x_lightbulb_ws_internal: Optional[str] = Header(None, alias="x-lightbulb-ws-internal"),
     x_isol8_ws_internal: Optional[str] = Header(None, alias="x-isol8-ws-internal"),
 ) -> None:
     """Authenticate the CALLER of the /ws/* endpoints — the trusted WebSocket
@@ -377,6 +378,16 @@ def require_ws_internal_caller(
     the switch is flipped (zero-downtime rollout). When enforcement is on but no
     secret is configured we fail closed (503) rather than silently allow forged
     callers.
+
+    TRANSITIONAL — accepts the retired `x-isol8-ws-internal` spelling as well as
+    the current `x-lightbulb-ws-internal`. The Lambdas (ApiStack) and the backend
+    (ServiceStack) are separate CloudFormation stacks in one pipeline run, and
+    the backend rolls at maxHealthyPercent 200, so during a deploy one side is on
+    the new name while the other is still on the old one for minutes. A hard swap
+    would 403 every WS connect/message in that window. Both names carry the SAME
+    secret, so accepting either widens no trust boundary — only the spelling.
+    FOLLOW-UP: once this release is deployed to dev AND promoted to prod, delete
+    the `x_isol8_ws_internal` parameter and this paragraph. No sender emits it.
     """
     if not settings.WS_ENFORCE_INTERNAL_SECRET:
         return
@@ -387,8 +398,9 @@ def require_ws_internal_caller(
             "rejecting /ws/* calls until the secret is configured"
         )
         raise HTTPException(status_code=503, detail="WebSocket gateway not configured")
+    presented = x_lightbulb_ws_internal or x_isol8_ws_internal
     # Compare bytes, not str: compare_digest raises TypeError on non-ASCII str.
-    if not x_isol8_ws_internal or not hmac.compare_digest(x_isol8_ws_internal.encode("utf-8"), secret.encode("utf-8")):
+    if not presented or not hmac.compare_digest(presented.encode("utf-8"), secret.encode("utf-8")):
         raise HTTPException(status_code=403, detail="Forbidden")
 
 

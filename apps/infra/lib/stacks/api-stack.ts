@@ -68,7 +68,7 @@ export interface ApiStackProps extends cdk.StackProps {
   /**
    * Secrets Manager name (NOT ISecret) of the WS internal shared secret. The
    * three WebSocket Lambdas fetch it at cold-start and attach it as the
-   * `x-isol8-ws-internal` header so the backend `/ws/*` endpoints can tell them
+   * `x-lightbulb-ws-internal` header so the backend `/ws/*` endpoints can tell them
    * apart from forged callers arriving via the public HTTP API Gateway. Passed
    * as a plain string for the same cross-stack reason as the service-token key;
    * encrypted under the same CMK (`paperclipKmsKeyArn`).
@@ -547,7 +547,7 @@ export class ApiStack extends cdk.Stack {
     // and are reachable both via these trusted Lambdas AND via the public HTTP
     // API Gateway $default route (which has no authorizer). Each Lambda fetches
     // this secret at cold-start (via boto3, mirroring the authorizer's
-    // service-token handling) and attaches it as the `x-isol8-ws-internal`
+    // service-token handling) and attaches it as the `x-lightbulb-ws-internal`
     // header that the public route cannot supply; the backend's
     // require_ws_internal_caller dependency rejects callers that lack it. ARN
     // (not value) goes in the env so the secret never lands in CFN/deploy logs.

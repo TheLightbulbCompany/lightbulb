@@ -26,8 +26,9 @@
 //!
 //! `getRuntimeConfig()` loads once per process and there is no watcher on
 //! the node-host path, so every write here must be followed by a sidecar
-//! restart (see `lib.rs::restart_node_host_subprocess`) or it takes effect
-//! only on the next launch.
+//! restart (see `lib.rs::restart_node_host_subprocess_locked`) or it takes
+//! effect only on the next launch. The callers hold
+//! `AuthState::node_host_mutation` across both the write and that restart.
 
 use std::path::{Path, PathBuf};
 

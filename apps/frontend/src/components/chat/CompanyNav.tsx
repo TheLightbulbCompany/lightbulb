@@ -10,9 +10,24 @@ export { COMPANY_SECTIONS };
 export function CompanyNav({
   activePanel,
   onPanelChange,
+  disabled = false,
+  disabledTitle,
 }: {
   activePanel?: string;
   onPanelChange?: (panel: string) => void;
+  /**
+   * Render the items as unavailable rather than enabled-and-inert.
+   *
+   * The desktop shell keeps this nav painted while the provisioning stepper
+   * has swapped the dockview host out, and `openPanel` early-returns when the
+   * dock's api is null — so every click was a silent no-op with no error, no
+   * toast, nothing. The create-agent / new-task pills beside this nav already
+   * disable themselves off the same `chatReady` signal; these items just never
+   * got the same treatment. Opt-in, because ChatLayout (mobile) routes
+   * `onPanelChange` somewhere that genuinely works.
+   */
+  disabled?: boolean;
+  disabledTitle?: string;
 }): React.ReactElement {
   return (
     // No own scroll region: this nav lives inside the shared `.sidebar-scroll`
@@ -37,10 +52,12 @@ export function CompanyNav({
                 key={panel}
                 type="button"
                 onClick={() => onPanelChange?.(panel)}
-                className={`flex w-full items-center gap-2.5 rounded-full px-3 py-2 text-sm transition-colors ${
+                disabled={disabled}
+                title={disabled ? disabledTitle : undefined}
+                className={`flex w-full items-center gap-2.5 rounded-full px-3 py-2 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                   active
                     ? "bg-[var(--cream)] text-[var(--midnight)]"
-                    : "text-[var(--midnight-soft)] hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)]"
+                    : "text-[var(--midnight-soft)] enabled:hover:bg-[var(--cream-deep)] enabled:hover:text-[var(--midnight)]"
                 }`}
               >
                 <Icon size={16} />

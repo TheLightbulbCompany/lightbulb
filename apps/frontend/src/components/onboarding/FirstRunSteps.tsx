@@ -9,6 +9,8 @@
  */
 import * as React from "react";
 
+import { SUPPORT_MAILTO } from "@/lib/domain";
+
 export type Path = "new" | "grow";
 /** "noIdea" = they clicked "I don't know yet — you pick": submit with no input. */
 export type Mode = "idea" | "noIdea";
@@ -178,7 +180,7 @@ export function FirstRunSteps({
             <p className="break-words text-xs text-[var(--midnight-muted)]">{error.detail}</p>
             <p>
               Please{" "}
-              <a className="underline" href="mailto:support@isol8.co">
+              <a className="underline" href={SUPPORT_MAILTO}>
                 contact support
               </a>{" "}
               and we&apos;ll get it sorted.

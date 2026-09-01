@@ -39,4 +39,4 @@ When you publish an agent to the marketplace, the snapshot strips runtime state 
 
 ## Your data
 
-Delete your account in **Settings → Profile → Delete account**. It permanently removes the account, its agents, and its workspace. For an organization workspace, email [support@isol8.co](mailto:support@isol8.co). Policies: [Privacy](/privacy), [Terms](/terms), [Acceptable use](/acceptable-use).
+Delete your account in **Settings → Profile → Delete account**. It permanently removes the account, its agents, and its workspace. For an organization workspace, email [support@thelightbulb.company](mailto:support@thelightbulb.company). Policies: [Privacy](/privacy), [Terms](/terms), [Acceptable use](/acceptable-use).

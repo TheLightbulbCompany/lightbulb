@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 
 import { capture } from "@/lib/analytics";
+import { SUPPORT_EMAIL } from "@/lib/domain";
 import { planLabel } from "@/lib/planLabel";
 import { useAuth, useUser, UserButton, useOrganization, useClerk } from "@clerk/nextjs";
 import { useApi, ApiError } from "@/lib/api";
@@ -104,8 +105,8 @@ function DeleteAccountCard() {
         detail === "email_mismatch"
           ? "That email didn't match this account."
           : detail === "deletion_incomplete"
-            ? "Deletion didn't finish — try again in a moment, or contact support@isol8.co."
-            : (detail ?? "Something went wrong — try again or contact support@isol8.co."),
+            ? `Deletion didn't finish — try again in a moment, or contact ${SUPPORT_EMAIL}.`
+            : (detail ?? `Something went wrong — try again or contact ${SUPPORT_EMAIL}.`),
       );
       setBusy(false);
     }
@@ -118,7 +119,7 @@ function DeleteAccountCard() {
       <div className="settings-card-title" style={{ color: DANGER }}>Delete account</div>
       {organization ? (
         <div className="settings-card-desc">
-          Workspace accounts can&apos;t be deleted in-app — contact support@isol8.co.
+          Workspace accounts can&apos;t be deleted in-app — contact {SUPPORT_EMAIL}.
         </div>
       ) : !open ? (
         <>

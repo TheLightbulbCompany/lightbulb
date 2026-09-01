@@ -215,9 +215,15 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
         />
         {/* CompanyNav (Home / Inbox / Work / Knowledge / Company) plus the marketplace
             block (GallerySection). */}
+        {/* Same `chatReady` gate as the create pill above. While the stepper
+            owns the screen the dock is unmounted, so `openPanel` hits its
+            `if (!_api) return` and these clicks did nothing at all — silently.
+            Half this sidebar told the truth about that; now all of it does. */}
         <CompanyNav
           activePanel={companyActivePanel}
           onPanelChange={(key) => openPanel(key, {}, { pushUrl: true })}
+          disabled={!chatReady}
+          disabledTitle="Available once your workspace is ready"
         />
         <GallerySection />
       </div>

@@ -66,6 +66,36 @@ describe("CompanyNav", () => {
     const btn = screen.getByText("Automations").closest("button");
     expect(btn?.className).toMatch(/--midnight/);
   });
+  // The desktop shell paints this nav while the provisioning stepper has the
+  // dockview host unmounted, and `openPanel` early-returns when the dock api is
+  // null — so every one of these clicks was a silent no-op with the button
+  // rendered fully enabled. An inert-but-enabled control is the same class of
+  // defect as a false progress bar: the UI asserting a capability it lacks.
+  it("renders items as unavailable, with a reason, when disabled", () => {
+    const onPanelChange = vi.fn();
+    render(
+      <CompanyNav
+        disabled
+        disabledTitle="Available once your workspace is ready"
+        onPanelChange={onPanelChange}
+      />,
+    );
+    for (const label of ALL_LABELS) {
+      const btn = screen.getByText(label).closest("button");
+      expect(btn, `"${label}" should be disabled`).toBeDisabled();
+      expect(btn).toHaveAttribute("title", "Available once your workspace is ready");
+    }
+    fireEvent.click(screen.getByText("Tasks"));
+    expect(onPanelChange).not.toHaveBeenCalled();
+  });
+
+  it("is enabled and untitled by default (mobile's ChatLayout routes it somewhere live)", () => {
+    render(<CompanyNav onPanelChange={vi.fn()} />);
+    const btn = screen.getByText("Tasks").closest("button");
+    expect(btn).toBeEnabled();
+    expect(btn).not.toHaveAttribute("title");
+  });
+
   it("owns no scroll region — the shared .sidebar-scroll wrapper owns the single scroll", () => {
     // Inverted deliberately in #1002: the nav used to carry its own
     // `min-h-0 overflow-y-auto`, which nested a second scroll inside

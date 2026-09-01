@@ -249,7 +249,7 @@ describe("FirstRunFunnel", () => {
     expect(screen.getByText("paperclip exploded")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
     const support = screen.getByRole("link", { name: /contact support/i });
-    expect(support.getAttribute("href")).toBe("mailto:support@isol8.co");
+    expect(support.getAttribute("href")).toBe("mailto:support@thelightbulb.company");
   });
 
   it("a different upstream error resets the failure streak", async () => {

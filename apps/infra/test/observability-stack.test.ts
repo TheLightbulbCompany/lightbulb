@@ -164,6 +164,10 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "auth.jwt.fail": [["reason"]],
   "auth.org_admin.denied": [[]],
   "billing.pricing.missing_model": [[]],
+  // core/repositories/paperclip_repo.py — mark_bootstrap_delivered /
+  // mark_bootstrap_failed, on the conditional write that lands the terminal
+  // transition. W66 binds the "failed" status rollup.
+  "bootstrap.state": [["status"]],
   "channel.configure": [["provider", "status"]],
   "channel.rpc": [["provider", "status"]],
   "chat.e2e.latency": [[]],

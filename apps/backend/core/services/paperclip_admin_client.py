@@ -145,6 +145,26 @@ def _extract_session_cookie(resp: httpx.Response) -> Optional[str]:
     return None
 
 
+def _retry_after_seconds(resp: httpx.Response) -> float | None:
+    """Paperclip's ``Retry-After`` hint, in seconds, or None.
+
+    NOTE the header is the standard ``Retry-After``, NOT ``X-Retry-After``:
+    Paperclip sets it via ``res.setHeader("Retry-After", ...)`` on its
+    rate-limited routes (fork ``server/src/routes/{access,issues}.ts``), always
+    as an integer count of seconds — the HTTP-date form is never emitted, so
+    parsing one is not worth the code. A malformed or negative value is
+    treated as absent rather than trusted.
+    """
+    raw = resp.headers.get("retry-after")
+    if not raw:
+        return None
+    try:
+        seconds = float(raw)
+    except ValueError:
+        return None
+    return seconds if seconds > 0 else None
+
+
 def _paperclip_error_code(body: Any) -> str | None:
     """Return a structured Paperclip error code without text matching."""
 
@@ -187,7 +207,7 @@ class PaperclipApiError(Exception):
     #: flooding a log record.
     BODY_LOG_CHARS = 800
 
-    def __init__(self, message: str, status_code: int, body: Any):
+    def __init__(self, message: str, status_code: int, body: Any, retry_after: float | None = None):
         super().__init__(message)
         self.message = message
         self.status_code = status_code
@@ -195,6 +215,13 @@ class PaperclipApiError(Exception):
         # Auto-classify retryability: 5xx + 429 are retryable, everything
         # else (4xx state errors) is not.
         self.retryable: bool = status_code >= 500 or status_code == 429
+        #: Seconds from Paperclip's ``Retry-After`` header, when it sent one.
+        #: Only the rate-limited routes set it, so this is None on almost every
+        #: error. Populated by the verb helpers below; the handful of call
+        #: sites that build their own request (Better Auth sign-in/sign-up,
+        #: attachments) leave it None, which is correct — those routes are not
+        #: rate limited, and None just means "no hint, use your own backoff".
+        self.retry_after: float | None = retry_after
 
     def __str__(self) -> str:
         if not self.body:
@@ -316,6 +343,7 @@ class PaperclipAdminClient:
                 f"POST {path} -> {resp.status_code}",
                 status_code=resp.status_code,
                 body=resp.text,
+                retry_after=_retry_after_seconds(resp),
             )
         return resp.json() if resp.content else {}
 
@@ -338,6 +366,7 @@ class PaperclipAdminClient:
                 f"DELETE {path} -> {resp.status_code}",
                 status_code=resp.status_code,
                 body=resp.text,
+                retry_after=_retry_after_seconds(resp),
             )
         if resp.status_code == 404 or not resp.content:
             return {}
@@ -366,6 +395,7 @@ class PaperclipAdminClient:
                 f"GET {path} -> {resp.status_code}",
                 status_code=resp.status_code,
                 body=resp.text,
+                retry_after=_retry_after_seconds(resp),
             )
         return resp.json() if resp.content else {}
 
@@ -390,6 +420,7 @@ class PaperclipAdminClient:
                 f"PATCH {path} -> {resp.status_code}",
                 status_code=resp.status_code,
                 body=resp.text,
+                retry_after=_retry_after_seconds(resp),
             )
         return resp.json() if resp.content else {}
 
@@ -421,6 +452,7 @@ class PaperclipAdminClient:
                 f"PUT {path} -> {resp.status_code}",
                 status_code=resp.status_code,
                 body=resp.text,
+                retry_after=_retry_after_seconds(resp),
             )
         return resp.status_code, (resp.json() if resp.content else {})
 

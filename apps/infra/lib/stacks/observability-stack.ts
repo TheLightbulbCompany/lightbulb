@@ -2033,6 +2033,42 @@ def handler(event, _ctx):
       treatMissingData: cloudwatch.TreatMissingData.BREACHING,
       severity: "warn",
     });
+
+    // W66: onboarding-bootstrap-failed
+    //
+    // The activation funnel had NO alarm at all until this one. Four prod
+    // owners signed up, submitted a goal, and never got an agent response;
+    // nothing anywhere emitted a metric for it, so the only detection was an
+    // owner complaining. `bootstrap.state{status:"failed"}` is written by
+    // PaperclipRepo.mark_bootstrap_failed on the conditional write that lands
+    // the terminal transition — one datapoint per owner permanently stuck.
+    //
+    // Uses the status rollup (see statusSum) rather than a literal dimension
+    // map so the alarm binds the [env, service, status] set the emitter
+    // actually publishes.
+    //
+    // Threshold 0 / GREATER_THAN over 15 min: ONE wedged owner is worth
+    // looking at — this is not a rate to be tuned, it is a state nobody
+    // should be in. Warn, not page: the owner is already stuck by the time it
+    // fires, so it wants a human within the hour, not out of bed. The bounded
+    // in-dispatch retries and the /readyz gate mean a routine boot race no
+    // longer reaches `failed`, so this should be quiet in steady state.
+    this.createAlarm({
+      id: "W66",
+      name: "onboarding-bootstrap-failed",
+      description:
+        "Friday's first-run kickoff hit a terminal failure for at least one owner in 15 min - they submitted a goal and will never get an agent response without a bootstrap reset. Check bootstrap_last_error on the paperclip-companies row.",
+      metric: this.statusSum({
+        metricName: "bootstrap.state",
+        status: "failed",
+        periodMinutes: 15,
+        label: "Wedged onboarding kickoffs",
+      }),
+      threshold: 0,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      severity: "warn",
+    });
   }
 
   // =========================================================================

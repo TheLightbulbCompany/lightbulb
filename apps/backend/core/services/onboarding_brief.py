@@ -436,6 +436,11 @@ MAX_DRAIN_FAILURES = 5
 # lifetime's worth of background work.
 _RETRY_BACKOFF_S = (2, 5, 10, 20, 30, 60, 60)
 
+# Ceiling on an honoured ``Retry-After``. Paperclip sends 60 on its rate-limited
+# routes, so this never bites in practice -- it is here so a wrong or hostile
+# header value cannot park a background task for hours.
+_MAX_RATE_LIMIT_WAIT_S = max(_RETRY_BACKOFF_S)
+
 # A funnel claim held this long with nothing seeded behind it is not a peer
 # mid-flight (a real drain takes seconds) -- it is a claim whose owner died
 # between the CAS and the seed, e.g. a task killed by a rolling deploy. The
@@ -521,18 +526,41 @@ async def _drain_until_settled(owner_id: str) -> None:
     NOT_READY costs nothing but a wait -- provisioning taking its time is the
     expected path, not a failure. Only a real FAILED attempt is counted, and
     only against the persisted budget, so attempts survive the process that
-    made them.
+    made them. A Paperclip 429 is in the first category, not the second: it
+    waits (honouring ``Retry-After``) and spends a pass of the ladder, but
+    never a slot of the budget.
     """
     from core.repositories.paperclip_repo import PaperclipRepo
 
     repo = PaperclipRepo(table_name="paperclip-companies")
+
+    from core.services.paperclip_admin_client import PaperclipApiError
 
     for delay in _RETRY_BACKOFF_S:
         reason = ""
         try:
             outcome = await _fulfil_pending_brief(owner_id)
         except Exception as e:  # noqa: BLE001 — a raise IS a failed attempt
-            # Deliberately broad. Some of what lands here is transient
+            # ...with ONE exception: a 429 is not an attempt that failed, it is
+            # Paperclip asking us to come back later, and it always clears. It
+            # used to cost a budget slot like any other raise, so five
+            # rate-limit hits -- entirely possible when several brand-new
+            # owners seed goals and projects at once -- permanently failed a
+            # perfectly good brief. Deliberately NARROWER than
+            # ``PaperclipApiError.retryable``, which also covers 5xx: a 5xx may
+            # be an upstream that never recovers, and the budget is exactly
+            # what stops that looping forever (see below). The pass is still
+            # spent, so the ladder stays bounded either way.
+            if isinstance(e, PaperclipApiError) and e.status_code == 429:
+                wait = min(e.retry_after or delay, _MAX_RATE_LIMIT_WAIT_S)
+                logger.info(
+                    "reconcile_brief: rate limited for %s, retrying in %ss (not counted as a failure)",
+                    owner_id,
+                    wait,
+                )
+                await asyncio.sleep(wait)
+                continue
+            # Otherwise deliberately broad. Some of what lands here is transient
             # (Paperclip warming, a 5xx) and some never resolves (Clerk has no
             # email for a deleted submitter; a TypeError from a real bug). The
             # budget below is what tells them apart in the end -- classifying

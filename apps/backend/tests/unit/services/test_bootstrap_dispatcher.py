@@ -102,7 +102,16 @@ def _fake_pool(*, register_returns=True):
 _OPENCLAW_CONFIG = {"agents": {"list": [{"id": "friday-uuid", "default": True}, {"id": "atlas-uuid"}]}}
 
 
-async def _run(onboarding=None, *, repo=None, ecs=None, pool=None, config=_OPENCLAW_CONFIG, pass_onboarding=True):
+async def _run(
+    onboarding=None,
+    *,
+    repo=None,
+    ecs=None,
+    pool=None,
+    config=_OPENCLAW_CONFIG,
+    pass_onboarding=True,
+    gateway_ready=True,
+):
     """Drive maybe_dispatch_bootstrap("user_owner", ...).
 
     ``pass_onboarding=True`` (the default, and the shape both real callers
@@ -111,6 +120,11 @@ async def _run(onboarding=None, *, repo=None, ecs=None, pool=None, config=_OPENC
     False to exercise the fallback-fetch path instead. Either way, the
     ``resolve_onboarding_state`` mock is returned so callers can assert on
     whether it was actually invoked.
+
+    ``gateway_ready`` stubs the pre-claim ``/readyz`` probe. It defaults True
+    because every test here that is not ABOUT readiness assumes a container
+    that will accept a connect; leaving the real probe in place would send an
+    actual HTTP request to the fake task IP.
     """
     onboarding = onboarding if onboarding is not None else _onboarding()
     repo = repo or _fake_repo(onboarding=onboarding)
@@ -124,6 +138,7 @@ async def _run(onboarding=None, *, repo=None, ecs=None, pool=None, config=_OPENC
         patch("core.containers.get_gateway_pool", return_value=pool),
         patch("core.containers.config.read_openclaw_config_from_efs", new=AsyncMock(return_value=config)),
         patch("routers.websocket_chat.build_chat_session_key", return_value="agent:friday-uuid:member_1"),
+        patch.object(bootstrap_dispatcher, "_gateway_is_ready", new=AsyncMock(return_value=gateway_ready)),
     ):
         if pass_onboarding:
             await bootstrap_dispatcher.maybe_dispatch_bootstrap("user_owner", onboarding=onboarding)
@@ -323,6 +338,58 @@ async def test_reattach_that_did_not_register_backs_off_before_retrying():
     ecs3.resolve_running_container.assert_awaited_once()
     pool3.register_run_completion_callback.assert_called_once()
     assert "user_owner" not in bootstrap_dispatcher._reattach_not_before
+
+
+@pytest.mark.asyncio
+async def test_gateway_not_ready_defers_without_claiming():
+    """A RUNNING, ECS-HEALTHY container whose gateway will not admit a connect
+    yet must be WAITED for, not dispatched to.
+
+    This is the wedge three of the four owners hit on 2026-08-30: /healthz
+    (liveness) passes while OpenClaw's startup sidecars are still coming up,
+    so connect-admission rejects with "gateway starting; retry shortly" -- a
+    bare RuntimeError the classifier types DETERMINISTIC, which lands the row
+    in `failed`. Refusing BEFORE the claim is what makes that impossible: no
+    claim means no dispatch_id, no attempt increment, and no row write at all,
+    so the next /container/status poll re-evaluates from a clean slate."""
+    repo, ecs, pool, _ = await _run(gateway_ready=False)
+    ecs.resolve_running_container.assert_awaited_once()
+    repo.claim_bootstrap_dispatch.assert_not_awaited()
+    repo.mark_bootstrap_failed.assert_not_awaited()
+    repo.rearm_bootstrap_dispatch.assert_not_awaited()
+    pool.send_rpc.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_readyz_503_is_not_ready_but_404_is_treated_as_ready():
+    """The probe's fail-open rule. A 503 is OpenClaw's definitive "startup
+    pending"; a connection error is the boot window before it listens. Anything
+    else -- notably a 404 from a container whose image predates /readyz -- is an
+    answer the probe cannot interpret, and must NOT block: that would strand
+    those owners in `not_started` forever behind no alarm at all."""
+
+    class _Resp:
+        def __init__(self, status_code):
+            self.status_code = status_code
+
+    def _client_returning(resp_or_exc):
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        if isinstance(resp_or_exc, Exception):
+            client.get = AsyncMock(side_effect=resp_or_exc)
+        else:
+            client.get = AsyncMock(return_value=resp_or_exc)
+        return client
+
+    for outcome, expected in (
+        (_Resp(200), True),
+        (_Resp(503), False),
+        (OSError("connection refused"), False),
+        (_Resp(404), True),
+    ):
+        with patch.object(bootstrap_dispatcher.httpx, "AsyncClient", return_value=_client_returning(outcome)):
+            assert await bootstrap_dispatcher._gateway_is_ready("10.0.0.5") is expected, outcome
 
 
 @pytest.mark.asyncio
@@ -911,6 +978,7 @@ async def test_session_key_built_with_submitting_member_not_row_pk():
             patch("core.containers.get_ecs_manager", return_value=ecs),
             patch("core.containers.get_gateway_pool", return_value=pool),
             patch("core.containers.config.read_openclaw_config_from_efs", new=AsyncMock(return_value=_OPENCLAW_CONFIG)),
+            patch.object(bootstrap_dispatcher, "_gateway_is_ready", new=AsyncMock(return_value=True)),
         ):
             await bootstrap_dispatcher.maybe_dispatch_bootstrap("user_owner", onboarding=onboarding)
     build_key.assert_called_once_with("friday-uuid", "member_not_creator", None)

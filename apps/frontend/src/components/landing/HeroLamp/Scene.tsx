@@ -8,6 +8,7 @@ import { Bloom, EffectComposer } from "@react-three/postprocessing";
 import { useLampTheme } from "./lampStore";
 import { SCROLL_IMPULSE, createPendulum } from "./pendulum";
 import { cssColor } from "./lampGeometry";
+import { makeWordTexture } from "./wordTexture";
 import { GLASS_CENTER_Y, LAMP_ANCHOR_Y, Lamp, easeStrike, type LampColors } from "./Lamp";
 
 // The strike's one clock. Same 700ms as `--dur-strike` in globals.css, which
@@ -81,6 +82,29 @@ const SWING_INVISIBLE = 0.002;
 // Don't rewrite the switch's transform for sub-pixel jitter.
 const SWITCH_EPSILON = 0.5;
 
+// ── The neon wordmark on the back wall ─────────────────────────────────────
+// Just in front of the wall (-1.6), so the sign sits IN the room rather than
+// over it — the lamp, the copy and the pool all pass in front of it.
+const WORD_Z = -1.4;
+// Low in the room, the way the footer's wordmark sits at the bottom of the
+// page. The canvas masks its own last 140px into the page (world y -1.35 at
+// 1200x700, floor -2.51), so the letters start at full strength and dissolve
+// downward — and the ones that run past the floor are cropped, not clipped.
+const WORD_Y = -2.05;
+// How tall the LETTERS may be, in world units — the glow's own padding is not
+// counted. Height-first, so the width follows and the sign cannot grow into
+// the copy above it on a wide monitor.
+const WORD_INK_HEIGHT = 1.9;
+// ...unless that would run it off the sides, which a tall narrow phone would.
+const WORD_MAX_WIDTH = 0.9;
+// Perspective: the plane is further from the camera than z = 0, where
+// `viewport.width` is measured.
+const WORD_Z_SCALE = (CAMERA_Z - WORD_Z) / CAMERA_Z;
+// A neon sign is for a dark room. Lit, the room's own light all but erases it
+// — which is the point: the strike has to be worth something here too.
+const NEON_DARK = 0.6;
+const NEON_LIT = 0.1;
+
 const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);
 
 type Quality = 2 | 1 | 0; // 2 = full, 1 = no bloom, 0 = no bloom + no shadows
@@ -139,6 +163,57 @@ function Wall({ litRef, colors }: { litRef: React.MutableRefObject<number>; colo
         // the exact page colour — the lighter rectangle in the lit room. Only
         // honoured because useFrame gives the material its own envMap; see there.
         envMapIntensity={0}
+        toneMapped={false}
+      />
+    </mesh>
+  );
+}
+
+/** "Lightbulb" in neon on the back wall: the footer's cursive wordmark drawn
+ *  to a canvas in the page's own Lora italic, added over the wall rather than
+ *  lit by the lamp — it is a light source, not a surface. */
+function Wordmark({ litRef, color }: { litRef: React.MutableRefObject<number>; color: string }) {
+  const [word, setWord] = React.useState<ReturnType<typeof makeWordTexture> | null>(null);
+  const mat = React.useRef<THREE.MeshBasicMaterial>(null);
+  const invalidate = useThree((s) => s.invalidate);
+  const viewport = useThree((s) => s.viewport);
+
+  React.useEffect(() => {
+    let live = true;
+    let made: THREE.CanvasTexture | null = null;
+    // Only once the face has loaded: measured against the fallback serif, the
+    // word would be the wrong width for the rest of the session.
+    document.fonts.ready
+      .then(() => {
+        if (!live) return;
+        const w = makeWordTexture("Lightbulb", color);
+        made = w.texture;
+        setWord(w);
+        invalidate();
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+      made?.dispose();
+    };
+  }, [color, invalidate]);
+
+  useFrame(() => {
+    if (mat.current) mat.current.opacity = NEON_DARK + (NEON_LIT - NEON_DARK) * easeStrike(litRef.current);
+  });
+
+  if (!word) return null;
+  const width = Math.min(WORD_INK_HEIGHT / word.inkAspect, viewport.width * WORD_Z_SCALE * WORD_MAX_WIDTH);
+  return (
+    <mesh position={[0, WORD_Y, WORD_Z]}>
+      <planeGeometry args={[width, width * word.aspect]} />
+      <meshBasicMaterial
+        ref={mat}
+        map={word.texture}
+        transparent
+        opacity={NEON_DARK}
+        depthWrite={false}
+        blending={THREE.AdditiveBlending}
         toneMapped={false}
       />
     </mesh>
@@ -533,6 +608,7 @@ export default function Scene({ switchRef }: { switchRef?: React.RefObject<HTMLB
         </Environment>
 
         <Wall litRef={litRef} colors={colors} />
+        <Wordmark litRef={litRef} color={colors.bulb} />
         <Lamp
           litRef={litRef}
           anchorRef={anchorRef}

@@ -311,6 +311,57 @@ def dispatch_metronome_provisioning(owner_id: str) -> None:
     task.add_done_callback(_BACKGROUND_TASKS.discard)
 
 
+async def _request_company_stripe(owner_id: str) -> None:
+    """Best-effort "connect the company's Stripe account" card. Never raises."""
+    from core.services import company_stripe_approval
+
+    try:
+        await company_stripe_approval.request_company_stripe(
+            owner_id=owner_id,
+            issue_id=None,
+            reason=(
+                "Your subscription is live. Connecting the company's Stripe account "
+                "turns on payments, customers and revenue reporting."
+            ),
+        )
+    except Exception:
+        put_metric("company_stripe.request.error")
+        logger.exception(
+            "Could not file the company Stripe request for owner %s on entering_live — "
+            "the owner can still connect from Settings, and Friday can re-file",
+            owner_id,
+        )
+
+
+def dispatch_company_stripe_request(owner_id: str) -> None:
+    """Ask the owner to set up (or connect) the company's Stripe account.
+
+    Nothing platform-side asked before this: ``request_company_stripe`` had a
+    single caller, the container hook route, so the card appeared only when
+    Friday spontaneously filed it — and the resulting
+    ``company_stripe_account_id`` is what the whole Money data plane
+    (Payments / Customers / Products / Home rollups) reads through.
+
+    We ASK, never auto-create. Creating the account for the owner would
+    foreclose "connect my existing Stripe" (``connect/start`` 409s once bound),
+    permanently stamp a raw owner_id as the Stripe display name, and flip owner
+    facts to ``pending`` — which the fleet skill reads as "already requested,
+    do not ask again".
+
+    Idempotent twice over, so firing it here is safe: the call short-circuits
+    when an account is already bound, and ``file_board_card`` dedupes on the
+    pending ``company_stripe`` marker, so at most one card exists at a time.
+
+    Fire-and-forget for the same reason as ``dispatch_metronome_provisioning``
+    — three Paperclip round trips are too many to await inside a Stripe
+    webhook, and the strong reference below is what stops asyncio garbage-
+    collecting the task mid-await.
+    """
+    task = asyncio.create_task(_request_company_stripe(owner_id))
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+
 async def start_trial_conversion(owner_id: str, flight_key: str) -> bool:
     """Begin the trial→paid conversion for one owner, at most once.
 
@@ -1011,6 +1062,12 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
         from core.services import launch_referral
 
         await launch_referral.on_subscription_activated(account["owner_id"])
+
+        # Ask the owner to connect the company's Stripe account. Unconditional
+        # on the LLM provider above: this is the owner's own revenue rail, not
+        # ours, and every paid shape needs it for the Money surfaces to hold
+        # anything at all.
+        dispatch_company_stripe_request(account["owner_id"])
 
     # Teams per-seat subscriptions additionally record the subscription item
     # id + seat quantity so sync_team_seat_quantity has an item to modify.

@@ -20,13 +20,24 @@ import { resourcePrefix, tableName } from "./table-names";
 // account's Standard-OAuth "connect an existing account" flow. Public, not a
 // secret — safe as a plain constant (contrast the STRIPE_*_PRICE_ID_{DEV,PROD}
 // values in app.ts, which are actual account identifiers read from GitHub
-// secrets at synth time). OWNER TODO: fill these in from the Stripe dashboard
-// (Connect → Settings) once the platform's Connect integration is registered;
-// empty means STRIPE_CONNECT_CLIENT_ID ships as "" and that OAuth flow can't
-// start yet.
+// secrets at synth time). Read from the live dashboard 2026-09-01 (platform
+// acct_1TBLi5I54BysGS3r); empty would mean STRIPE_CONNECT_CLIENT_ID ships as
+// "" and that OAuth flow can't start.
+//
+// ⚠️ The client id ALONE does not make live OAuth work. Two dashboard settings
+// on Connect → Onboarding options → OAuth are still required, and both were
+// unset when this value was read:
+//   1. "Enable OAuth" (OAuth for Stripe Dashboard accounts) — toggle is OFF.
+//   2. At least one redirect URI. The dashboard refuses the flow outright:
+//      "You must define a redirect URI to onboard users via OAuth." Ours is
+//      STRIPE_COMPANY_OAUTH_REDIRECT_URL below —
+//      https://api.flickmeon.ai/api/v1/company/stripe/connect/callback (prod).
+// Docs: "You must specify all redirect URLs in your platform settings"
+// (docs.stripe.com/connect/oauth-standard-accounts). Until both are set, the
+// authorize URL this id builds will be rejected by Stripe.
 const STRIPE_CONNECT_CLIENT_ID_BY_ENV: Record<string, string> = {
   dev: "ca_VAYlHjvDMa4nm0M4C3uEen6Hk7cfpBBO",
-  prod: "",
+  prod: "ca_USVqSxboff54k8ETEYsNtlJK62FiFI7S",
 };
 
 export interface LightbulbStageProps extends cdk.StageProps {

@@ -118,6 +118,114 @@ def test_revoke_is_org_admin_only(member_client):
     assert resp.status_code == 403
 
 
+# --- GET /charges — Spend's second source ---------------------------------
+# Near-universally empty today (it needs a bound company Stripe account AND
+# provisioned providers), so every test here is about empty not looking broken.
+
+CHARGES = "/api/v1/company/provisioning/charges"
+
+
+def _charges(client, *, resources=(RES,), account="acct_1", usage=([], False), **params):
+    account_mock = (
+        AsyncMock(return_value=account)
+        if account
+        else AsyncMock(side_effect=mod.WorkflowRefused("no_company_stripe_account", "connect Stripe"))
+    )
+    walker = AsyncMock(return_value=usage) if not isinstance(usage, Exception) else AsyncMock(side_effect=usage)
+    with (
+        patch.object(mod.provisioning_workflow, "account_id_for", account_mock),
+        patch.object(mod.provisioning_landing, "provisioning_summary", AsyncMock(return_value=list(resources))),
+        patch.object(mod.api, "charges_usage", walker),
+    ):
+        resp = client.get(CHARGES, params=params)
+    return resp, walker
+
+
+def test_charges_says_unavailable_with_a_reason_when_stripe_is_unbound(client):
+    resp, walker = _charges(client, account=None)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["provisioning_available"] is False
+    assert body["reason"] == "no_company_stripe_account"
+    assert body["charges"] == []
+    walker.assert_not_awaited()
+
+
+def test_charges_says_unavailable_when_nothing_is_provisioned(client):
+    resp, walker = _charges(client, resources=[])
+    assert resp.json()["reason"] == "no_provisioned_resources"
+    assert resp.json()["provisioning_available"] is False
+    walker.assert_not_awaited()
+
+
+def test_charges_available_and_empty_is_distinguishable_from_unavailable(client):
+    resp, _ = _charges(client, usage=([], False))
+    body = resp.json()
+    assert body["provisioning_available"] is True and body["reason"] is None
+    assert body["charges"] == []
+
+
+def test_charges_sends_the_three_required_fields_and_an_exclusive_end(client):
+    resp, walker = _charges(
+        client,
+        usage=([{"id": "u1", "amount": 120}], False),
+        start="2026-08-01",
+        end="2026-08-30",
+    )
+    assert resp.status_code == 200
+    kwargs = walker.await_args.kwargs
+    assert kwargs["start_time"] == "2026-08-01T00:00:00Z"
+    assert kwargs["end_time"] == "2026-08-31T00:00:00Z"  # end is inclusive, the bound is not
+    assert isinstance(kwargs["livemode"], bool)
+    assert resp.json()["charges"] == [{"id": "u1", "amount": 120}]
+
+
+def test_charges_are_money_out_and_say_so(client):
+    resp, _ = _charges(client)
+    assert resp.json()["direction"] == "out"
+
+
+def test_charges_redacts_the_secret_shaped_keys(client):
+    resp, _ = _charges(client, usage=([{"id": "u1", "url": "https://preauthed"}], False))
+    assert resp.json()["charges"][0]["url"] == "[redacted]"
+
+
+def test_charges_reports_a_truncated_walk(client):
+    resp, _ = _charges(client, usage=([{"id": "u1"}], True))
+    assert resp.json()["truncated"] is True
+
+
+def test_charges_surfaces_a_stripe_refusal_not_an_empty_list(client):
+    resp, _ = _charges(client, usage=mod.ProvisioningError("provider_failure", "nope"))
+    assert resp.status_code == 502
+    assert resp.json()["detail"]["code"] == "stripe_error"
+
+
+def test_charges_rejects_a_bad_window(client):
+    resp, walker = _charges(client, start="not-a-date")
+    assert resp.status_code == 422
+    walker.assert_not_awaited()
+
+
+def test_charges_rejects_an_unbounded_span(client):
+    resp, walker = _charges(client, start="2020-01-01", end="2026-08-30")
+    assert resp.status_code == 422
+    walker.assert_not_awaited()
+
+
+def test_charges_is_org_admin_only(member_client):
+    assert member_client.get(CHARGES).status_code == 403
+
+
+def test_charges_is_paid_only_unlike_the_company_money_reads(client, monkeypatch):
+    """The asymmetry is deliberate: this route sits on the rail whose other
+    routes mutate. /company/rollup and friends stay unpaid-gated."""
+    entitlement = AsyncMock()
+    monkeypatch.setattr(mod, "require_always_on_entitlement", entitlement)
+    _charges(client)
+    entitlement.assert_awaited_once_with("org_a", message=mod.PAID_MESSAGE)
+
+
 def test_revoke_is_blocked_on_the_trial_plan(client, monkeypatch):
     from fastapi import HTTPException
 

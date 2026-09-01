@@ -34,6 +34,7 @@ from core.services.provisioning_workflow import WorkflowRefused, is_offerable, i
 from core.services.stripe_provisioning import ProvisioningError
 from routers.agent_builder import _require_hook_token
 from routers.company_board import file_card
+from routers.company_money import day_after, day_range
 from routers.teams._guards import require_always_on_entitlement
 
 logger = logging.getLogger(__name__)
@@ -138,6 +139,66 @@ async def resources(auth: Annotated[AuthContext, Depends(get_current_user)]):
     owner_id = resolve_owner_id(auth)
     rows = await provisioning_landing.provisioning_summary(owner_id)
     return {"resources": [_safe_resource(r) for r in rows]}
+
+
+@router.get("/charges")
+async def charges(owner_id: Owner, start: str | None = None, end: str | None = None):
+    """What agents bought on the owner's behalf — Spend's second source.
+
+    Spend now adds three sources up: agent inference (``/billing/spend``),
+    these provider charges, and the company's own Stripe money
+    (``/company/rollup``'s revenue column, which moves the other way — hence
+    the explicit ``direction``). Every amount here is money OUT.
+
+    This is near-universally EMPTY today: it needs both a bound company Stripe
+    account and provisioned providers, which almost no owner has. So empty and
+    broken must not look alike — ``provisioning_available`` is false with a
+    ``reason`` when a precondition is missing (and Stripe is never called),
+    true with an empty ``charges`` list when the owner really has no spend, and
+    a Stripe refusal is a 502/503, never an empty list.
+    """
+    start_day, end_day = day_range(start, end)
+    unavailable = {
+        "start": start_day,
+        "end": end_day,
+        "provisioning_available": False,
+        "charges": [],
+        "truncated": False,
+        "direction": "out",
+    }
+    try:
+        account_id = await provisioning_workflow.account_id_for(owner_id)
+    except WorkflowRefused as e:
+        return {**unavailable, "reason": e.code}
+    # An owner with no provisioned resources has nothing to be charged for, so
+    # the preview API is not worth asking. (provisioning_summary swallows a DDB
+    # read failure to [] — same honest-empty contract GET /resources runs on.)
+    if not await provisioning_landing.provisioning_summary(owner_id):
+        return {**unavailable, "reason": "no_provisioned_resources"}
+
+    try:
+        rows, truncated = await api.charges_usage(
+            account_id,
+            # start_time/end_time/livemode are non-optional on this endpoint,
+            # and the window is exclusive at the end like every other range we
+            # send Stripe.
+            start_time=f"{start_day}T00:00:00Z",
+            end_time=f"{day_after(end_day)}T00:00:00Z",
+            livemode=api.is_livemode(),
+        )
+    except ProvisioningError as e:
+        raise _stripe_failure(e) from e
+    return {
+        **unavailable,
+        "provisioning_available": True,
+        "reason": None,
+        # Rows pass through: their shape is a preview contract that can change
+        # under us, and an allowlist guessed against it would blank real spend
+        # into a convincing zero. `redact` drops the secret-shaped keys §6
+        # names, which is the only filter that can be written honestly here.
+        "charges": [api.redact(row) for row in rows],
+        "truncated": truncated,
+    }
 
 
 @router.post("/resources/{provider}/{resource_id}/revoke")

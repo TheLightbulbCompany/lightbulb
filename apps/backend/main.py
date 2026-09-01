@@ -973,6 +973,11 @@ from routers import company_policy  # noqa: E402
 
 app.include_router(company_policy.router, prefix="/api/v1/company", tags=["company-policy"])
 
+# Money reads — the stored day rollup plus live Stripe payments/customers/products.
+from routers import company_money  # noqa: E402
+
+app.include_router(company_money.router, prefix="/api/v1/company", tags=["company-money"])
+
 # Marketplace admin (Plan 2) — moderation queue, approve/reject, takedown.
 from routers import marketplace_admin  # noqa: E402
 

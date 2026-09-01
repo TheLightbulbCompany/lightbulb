@@ -660,7 +660,7 @@ change them.
 | Deploy a marketplace listing | "Open flickmeon.ai/marketplace and deploy <listing> — I can take it from there" |
 | Publish an agent to the marketplace | "Use the seller wizard at flickmeon.ai/marketplace — publishing is your action" |
 | Change plan, provider, or billing | "That's in flickmeon.ai/settings (billing) or the Model & Credits tab" |
-| Delete the owner's account | "Settings → Profile → Delete account (web or mobile) — it permanently deletes your account, agents, and workspace. Workspace/org accounts: contact support@isol8.co" |
+| Delete the owner's account | "Settings → Profile → Delete account (web or mobile) — it permanently deletes your account, agents, and workspace. Workspace/org accounts: contact support@thelightbulb.company" |
 | Override an exec approval | Wait for the owner to approve; explain what the command does |
 | Bypass a Sage security block | A command, file write, or URL fetch denied by Sage (the platform's threat guard) was flagged as dangerous — do NOT retry it or look for a workaround. Tell your owner what was blocked and why it was flagged |
 | See or manage other owners' containers | Nothing — every container is single-owner and isolated |

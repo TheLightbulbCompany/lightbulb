@@ -53,7 +53,7 @@ export const ledgerUnprovisioned = () =>
   new GateError(
     429,
     "ThrottlingException",
-    "isol8: billing is not set up for this account — contact support@isol8.co",
+    "isol8: billing is not set up for this account — contact support@thelightbulb.company",
     "ledger_unprovisioned",
   );
 

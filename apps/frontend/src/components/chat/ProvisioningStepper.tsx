@@ -1,10 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSWRConfig } from "swr";
+import useSWR, { useSWRConfig } from "swr";
 import { useSearchParams } from "next/navigation";
+import Link from "next/link";
 
 import { capture } from "@/lib/analytics";
+import { useApi } from "@/lib/api";
 import {
   Loader2,
   XCircle,
@@ -16,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { FirstRunFunnel } from "@/components/onboarding/FirstRunFunnel";
 import { useLandingBriefReplay } from "@/hooks/useLandingBriefReplay";
 import { useBilling } from "@/hooks/useBilling";
+import { useCredits, isCreditsBlocked } from "@/hooks/useCredits";
 import { useProvisioningState, type BlockedPayload } from "@/hooks/useProvisioningState";
 import { useGateway } from "@/hooks/useGateway";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
@@ -1952,9 +1955,24 @@ function FirstRunFailedNotice({
   inline?: boolean;
 }) {
   const [dismissed, setDismissed] = useState(false);
+  // Same predicate the credits banner uses, so the two can never explain the
+  // same screen differently. When the gate is what stopped Friday, this is a
+  // billing problem the owner resolves themselves — routing them to support
+  // would queue a self-serviceable failure behind a human. Both SWR keys are
+  // already mounted by the banner on this screen, so this costs no request.
+  const stepperApi = useApi();
+  const { balance: creditsBalance } = useCredits();
+  const { data: creditsMe } = useSWR<{ provider_choice: string | null }>(
+    "/users/me",
+    () => stepperApi.get("/users/me") as Promise<{ provider_choice: string | null }>,
+  );
+  const creditsBlocked = isCreditsBlocked(creditsBalance, creditsMe?.provider_choice);
   useEffect(() => {
-    capture("first_run_failed_notice_shown", { surface: inline ? "cold_start" : "ready" });
-  }, [inline]);
+    capture("first_run_failed_notice_shown", {
+      surface: inline ? "cold_start" : "ready",
+      cause: creditsBlocked ? "credits" : "unknown",
+    });
+  }, [inline, creditsBlocked]);
   if (dismissed) return null;
   return (
     <div
@@ -1972,7 +1990,13 @@ function FirstRunFailedNotice({
             <p className="text-sm font-medium text-err">Friday couldn&apos;t start</p>
           )}
           <p className={`text-xs text-[var(--midnight-soft)] ${inline ? "" : "mt-1"}`}>
-            {inline ? (
+            {creditsBlocked ? (
+              <>
+                Friday couldn&apos;t start because you&apos;re out of Claude
+                credits. Top up and she&apos;ll pick this up — your brief is
+                saved.
+              </>
+            ) : inline ? (
               <>
                 Your container came up, but the first-run kickoff failed and
                 won&apos;t retry on its own. Contact support and we&apos;ll
@@ -1996,18 +2020,27 @@ function FirstRunFailedNotice({
               </p>
             </details>
           )}
-          <a
-            href={SUPPORT_MAILTO}
-            onClick={() =>
-              capture("support_contact_clicked", {
-                source: "first_run_failed_notice",
-                surface: inline ? "cold_start" : "ready",
-              })
-            }
-            className="mt-2 inline-block text-xs font-medium text-[var(--midnight)] underline"
-          >
-            Contact support
-          </a>
+          {creditsBlocked ? (
+            <Link
+              href="/chat?provider=bedrock_claude"
+              className="mt-2 inline-block text-xs font-medium text-[var(--midnight)] underline"
+            >
+              Top up now
+            </Link>
+          ) : (
+            <a
+              href={SUPPORT_MAILTO}
+              onClick={() =>
+                capture("support_contact_clicked", {
+                  source: "first_run_failed_notice",
+                  surface: inline ? "cold_start" : "ready",
+                })
+              }
+              className="mt-2 inline-block text-xs font-medium text-[var(--midnight)] underline"
+            >
+              Contact support
+            </a>
+          )}
         </div>
         <button
           type="button"

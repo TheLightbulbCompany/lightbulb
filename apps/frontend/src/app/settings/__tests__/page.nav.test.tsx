@@ -7,9 +7,10 @@ import React from "react";
 // relocated config panels are deep-linkable.
 
 // Mutable ?panel= param so deep-link-guard tests can drive the initial panel.
-const nav = vi.hoisted(() => ({ panel: null as string | null }));
+const nav = vi.hoisted(() => ({ panel: null as string | null, replace: vi.fn() }));
 vi.mock("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(nav.panel ? { panel: nav.panel } : {}),
+  useRouter: () => ({ replace: nav.replace }),
 }));
 
 // The Settings page composes several gateway-bound Control panels. Stub them all
@@ -72,6 +73,7 @@ describe("Settings nav — 6 intent-ordered groups", () => {
   beforeEach(() => {
     clerk.membership = null; // default: personal owner = admin
     nav.panel = null;
+    nav.replace.mockClear();
   });
 
   it("renders the six group headers in order", () => {
@@ -168,6 +170,24 @@ describe("Settings nav — 6 intent-ordered groups", () => {
     render(<SettingsPage />);
     // The channel-status panel mounts (its stub marker is present).
     expect(screen.getByTestId("channels-status-panel")).toBeInTheDocument();
+  });
+
+  // --- Deep link to a nav row that is a ROUTE, not a tab ---
+  it("forwards ?panel=connections to /settings/connections instead of falling back to Profile", () => {
+    // Connections can't be a ?panel= tab (OAuth consent redirects the browser
+    // back to its own route), so the key isn't in PANELS — the deep link used
+    // to land silently on Profile.
+    nav.panel = "connections";
+    const { container } = render(<SettingsPage />);
+    expect(nav.replace).toHaveBeenCalledWith("/settings/connections");
+    // …and nothing is painted on the way out — no Profile flash.
+    expect(container.querySelector("#panel-profile")).not.toBeInTheDocument();
+  });
+
+  it("leaves a real tab key alone — only href rows redirect", () => {
+    nav.panel = "channel-status";
+    render(<SettingsPage />);
+    expect(nav.replace).not.toHaveBeenCalled();
   });
 
   // --- Trust boundary: `in` walks the prototype chain, hasOwnProperty doesn't ---

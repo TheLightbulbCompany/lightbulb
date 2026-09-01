@@ -20,6 +20,9 @@ import React from "react";
 const nav = vi.hoisted(() => ({ panel: "billing" as string | null }));
 vi.mock("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(nav.panel ? { panel: nav.panel } : {}),
+  // The page forwards a ?panel= naming an href-only nav row (Connections) to
+  // that route; no test here uses one, so a no-op replace suffices.
+  useRouter: () => ({ replace: vi.fn() }),
 }));
 
 const clerk = vi.hoisted(() => ({

@@ -7,6 +7,7 @@
 //   4. INVARIANT: the panel open/focus path performs ZERO history writes —
 //      only pushUrl:true calls may write (spec §6: focus never touches the URL)
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import type React from "react";
 import type { DockviewApi } from "dockview-react";
 
 vi.mock("@/lib/shellNav", () => ({
@@ -22,6 +23,8 @@ import {
   openPanel,
   _resetControllerForTests,
 } from "../workspaceController";
+import { RETIRED_PANEL_ALIASES, describePanel } from "../panelRegistry";
+import { TeamsPanelRouter } from "@/components/teams/TeamsPanelRouter";
 
 // Minimal fake DockviewApi (trimmed copy of workspaceController.test.ts's) —
 // just enough for openPanel's add-or-focus path.
@@ -97,9 +100,11 @@ describe("deriveReconcilerAction — lastApplied latch", () => {
     expect(deriveReconcilerAction("?utm_source=x", d!.nextSignature)).toBeNull();
   });
 
-  it("resolves retired aliases into the panelKey handed to openPanel", () => {
-    const d = deriveReconcilerAction("?panel=credits", null);
-    expect(d!.panelKey).toBe("llm");
+  it("hands openPanel the RAW ?panel value — describePanel owns alias resolution", () => {
+    // Pre-resolving here would hide the pre-alias key from describePanel, which
+    // branches on it to carry a retired panel's meaning onto its successor.
+    expect(deriveReconcilerAction("?panel=credits", null)!.panelKey).toBe("credits");
+    expect(deriveReconcilerAction("?panel=dreams", null)!.panelKey).toBe("dreams");
   });
 
   it("separates raw durable params (URL grammar) from one-shots", () => {
@@ -211,6 +216,45 @@ describe("isCommandTargetOpen (analytics newness check)", () => {
     expect(isCommandTargetOpen(cmd, ["chat:__default__"], () => "friday-id")).toBe(true);
     expect(isCommandTargetOpen(cmd, ["chat:__default__"], () => "other-id")).toBe(false);
     expect(isCommandTargetOpen(cmd, ["chat:friday-id"], () => undefined)).toBe(true);
+  });
+});
+
+// The regression this exists for: every test above (and panelRegistry's,
+// urlChannel's) checked ONE LINK of the deep-link chain, and the chain was
+// broken at a seam none of them crossed — the reconciler pre-resolved the
+// alias, so describePanel never saw "dreams" and Brain opened on Notes. These
+// walk the WHOLE chain the shell actually executes.
+describe("retired-alias deep links keep their meaning end to end", () => {
+  it("?panel=dreams opens Brain with the Dreams tab selected", () => {
+    const api = makeFakeApi();
+    attachDockviewApi(api, () => undefined);
+
+    // 1. reconciler → 2. openPanel → 3. the params dockview mounts the panel with
+    const d = deriveReconcilerAction("?panel=dreams", null)!;
+    openPanel(d.panelKey!, d.durableParams, { oneShots: d.command!.oneShots });
+    const mounted = api.getPanel("teams-brain")!.params as Record<string, string>;
+    expect(mounted).toEqual({ teamsKey: "brain", tab: "dreams" });
+
+    // 4. the router turns those params into BrainPanel's seed tab. Invoked
+    // directly (this branch is hookless) so the assertion is on the real
+    // router, not a re-statement of its contract.
+    const element = TeamsPanelRouter({
+      panel: mounted.teamsKey,
+      panelParams: mounted,
+    }) as React.ReactElement<{ initialTab: string | null }>;
+    expect(element.props.initialTab).toBe("dreams");
+  });
+
+  it("every retired alias still lands on its successor's panel id", () => {
+    const api = makeFakeApi();
+    attachDockviewApi(api, () => undefined);
+    for (const [alias, target] of Object.entries(RETIRED_PANEL_ALIASES)) {
+      const d = deriveReconcilerAction(`?panel=${alias}`, null)!;
+      expect(d.panelKey).toBe(alias);
+      openPanel(d.panelKey!, d.durableParams);
+      const expectedId = describePanel(target, {})!.panelId;
+      expect(api.getPanel(expectedId), `${alias} → ${expectedId}`).toBeDefined();
+    }
   });
 });
 

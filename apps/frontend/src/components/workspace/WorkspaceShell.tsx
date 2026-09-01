@@ -41,6 +41,7 @@ import { buildMissionControlLayout } from "./buildDefaultLayout";
 import { readLayout, writeLayout, clearLayout } from "./layoutStorage";
 import { useBrowserToolAutoOpen } from "./useBrowserToolAutoOpen";
 import { clearClosedPanelFromUrl } from "./urlChannel";
+import { resolvePanelAlias } from "./panelRegistry";
 import { requestFocusComposer } from "@/lib/focusComposerRequest";
 import { deriveReconcilerAction, isCommandTargetOpen } from "./workspaceShellReconciler";
 import {
@@ -178,7 +179,14 @@ export function WorkspaceShell(): React.ReactElement {
       // NO pushUrl: the URL already carries this command.
       openPanel(decision.panelKey, decision.durableParams, { oneShots: command.oneShots });
     }
-    if (!wasOpen) capture("workspace_panel_opened", { panel: decision.panelKey ?? "chat" });
+    // Analytics reports the panel that actually opened, so a retired alias is
+    // resolved HERE — decision.panelKey stays raw because describePanel needs
+    // the pre-alias key to pick the right tab (see the reconciler's doc).
+    if (!wasOpen) {
+      capture("workspace_panel_opened", {
+        panel: decision.panelKey ? resolvePanelAlias(decision.panelKey) : "chat",
+      });
+    }
     if (decision.strippedSearch !== null) {
       replaceSearchParams(new URLSearchParams(decision.strippedSearch));
     }

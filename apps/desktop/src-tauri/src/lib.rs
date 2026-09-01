@@ -62,13 +62,19 @@ pub struct AuthState {
     pub proxy_handle: Mutex<Option<crate::proxy::ProxyHandle>>,
     /// Bundled `openclaw node run` subprocess. Same lifetime as `proxy_handle`.
     pub subprocess_handle: Mutex<Option<crate::subprocess::SubprocessHandle>>,
-    /// Serializes `restart_node_host_subprocess`. The restart is
-    /// take-handle -> await shutdown -> await spawn, so two concurrent
-    /// callers (a settings pane saving twice in quick succession) would
-    /// both see `None` in `subprocess_handle` and leave a second, orphaned
-    /// child attached to the proxy. Async because the critical section
-    /// spans awaits.
-    pub node_host_restart: tokio::sync::Mutex<()>,
+    /// Serializes local-MCP mutation end to end: the `openclaw.json`
+    /// read-modify-write AND the sidecar restart that follows it.
+    ///
+    /// Two reasons it covers both halves, not just the restart:
+    /// - The restart is take-handle -> await shutdown -> await spawn, so two
+    ///   concurrent callers would both see `None` in `subprocess_handle` and
+    ///   leave a second, orphaned child attached to the proxy.
+    /// - The config write is a read-modify-write, so two concurrent saves
+    ///   would interleave and silently drop one update (last writer wins on a
+    ///   value it read before the other's write).
+    ///
+    /// Async because the critical section spans awaits.
+    pub node_host_mutation: tokio::sync::Mutex<()>,
     /// `/desktop/pair` response — retained so we can later call
     /// `/desktop/devices/{device_id}` (revoke) on logout.
     pub pair_response: Mutex<Option<crate::pair_client::PairResponse>>,
@@ -424,11 +430,12 @@ fn openclaw_state_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, Stri
 ///
 /// A missing proxy means the node host was never started this session, so
 /// there is nothing to bounce and the next launch picks the config up.
-async fn restart_node_host_subprocess(app: &tauri::AppHandle) -> Result<(), String> {
+/// Caller MUST already hold `AuthState::node_host_mutation`. The lock covers the
+/// config read-modify-write as well as the restart — see `local_mcp_set`.
+async fn restart_node_host_subprocess_locked(app: &tauri::AppHandle) -> Result<(), String> {
     let state = app
         .try_state::<AuthState>()
         .ok_or_else(|| "AuthState not managed".to_string())?;
-    let _serialized = state.node_host_restart.lock().await;
 
     let proxy_port = state
         .proxy_handle
@@ -460,7 +467,16 @@ async fn restart_node_host_subprocess(app: &tauri::AppHandle) -> Result<(), Stri
     }
 
     let cli_id = keychain::load_or_generate(keychain::KeychainSlot::Cli, KEYCHAIN_SERVICE)?;
-    let handle = subprocess::spawn(
+    // The previous child is already gone by this point, so a spawn failure
+    // leaves the node host DOWN — not just local MCP, but chat and the whole
+    // gateway surface for this session, until the app is relaunched. Say that,
+    // rather than returning a bare spawn error the settings pane would render
+    // as a generic "save failed" next to a config that did in fact save.
+    //
+    // Deliberately no retry: the realistic failures here are deterministic
+    // (missing/unresolvable sidecar binary, bad state dir), so a retry would
+    // just double the wait before the same message.
+    let handle = match subprocess::spawn(
         resolve_node_host_binary()?,
         proxy_port,
         openclaw_state_dir(app)?,
@@ -468,7 +484,20 @@ async fn restart_node_host_subprocess(app: &tauri::AppHandle) -> Result<(), Stri
         &cli_id.public_key_pem,
         &gateway_token,
     )
-    .await?;
+    .await
+    {
+        Ok(handle) => handle,
+        Err(e) => {
+            log(&format!(
+                "[local-mcp] sidecar respawn FAILED after teardown; node host is down: {e}"
+            ));
+            return Err(format!(
+                "Your MCP settings were saved, but the local agent host could not be \
+                 restarted and is now stopped. Quit and reopen Lightbulb to bring it \
+                 back. ({e})"
+            ));
+        }
+    };
     *state
         .subprocess_handle
         .lock()
@@ -487,19 +516,32 @@ async fn local_mcp_list(app: tauri::AppHandle) -> Result<serde_json::Value, Stri
 }
 
 /// Replace the whole servers map, then bounce the sidecar so it takes effect.
+///
+/// The lock spans the read-modify-write AND the restart. Guarding only the
+/// restart would let two concurrent calls interleave their RMW of
+/// `openclaw.json` and silently drop one update — last writer wins on a value
+/// it read before the other's write.
 #[tauri::command]
 async fn local_mcp_set(app: tauri::AppHandle, servers: serde_json::Value) -> Result<(), String> {
+    let state = app
+        .try_state::<AuthState>()
+        .ok_or_else(|| "AuthState not managed".to_string())?;
+    let _serialized = state.node_host_mutation.lock().await;
     local_mcp::set_servers(&openclaw_state_dir(&app)?, servers)?;
-    restart_node_host_subprocess(&app).await
+    restart_node_host_subprocess_locked(&app).await
 }
 
 /// Remove one server. `false` (and no restart) if it wasn't there.
 #[tauri::command]
 async fn local_mcp_remove(app: tauri::AppHandle, name: String) -> Result<bool, String> {
+    let state = app
+        .try_state::<AuthState>()
+        .ok_or_else(|| "AuthState not managed".to_string())?;
+    let _serialized = state.node_host_mutation.lock().await;
     if !local_mcp::remove_server(&openclaw_state_dir(&app)?, &name)? {
         return Ok(false);
     }
-    restart_node_host_subprocess(&app).await?;
+    restart_node_host_subprocess_locked(&app).await?;
     Ok(true)
 }
 
@@ -1416,7 +1458,7 @@ end tell"#,
             bootstrap_in_flight: Mutex::new(false),
             proxy_handle: Mutex::new(None),
             subprocess_handle: Mutex::new(None),
-            node_host_restart: tokio::sync::Mutex::new(()),
+            node_host_mutation: tokio::sync::Mutex::new(()),
             pair_response: Mutex::new(None),
             gateway_token: Arc::new(RwLock::new(None)),
         })

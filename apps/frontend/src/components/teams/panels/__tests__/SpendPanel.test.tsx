@@ -185,7 +185,12 @@ describe("SpendPanel headline — partial / unverifiable figures", () => {
 
 describe("SpendPanel empty state", () => {
   it("an owner who has never run an agent gets a true statement, not an error", () => {
-    setup({ usage: { ...usageFixture, request_count: 0 }, spend: { mode: "tokens_only" } });
+    // lifetime_spend 0 as well as request_count 0 — the genuine first-run
+    // owner, not a company sitting on a freshly rolled-over calendar month.
+    setup({
+      usage: { ...usageFixture, request_count: 0, lifetime_spend: 0 },
+      spend: { mode: "tokens_only" },
+    });
     expect(screen.getByText("No agent runs this period.")).toBeInTheDocument();
     expect(screen.getByText(/nothing has run yet/i)).toBeInTheDocument();
     // The all-zero token grid would be noise, so the body stands down too.
@@ -209,5 +214,69 @@ describe("SpendPanel empty state", () => {
   it("does not flash the empty state while usage is still loading", () => {
     setup({ usage: null, usageLoading: true });
     expect(screen.queryByText("No agent runs this period.")).toBeNull();
+  });
+});
+
+// A calendar-month period resets to zero at 00:00 UTC on the 1st, so for the
+// first days of every month an active company's Money tab read "No agent runs
+// this period. Nothing has been billed because nothing has run yet." — word for
+// word the copy a genuinely idle fleet gets. Seen live on 2026-09-01 by an owner
+// who had spent ~$1.40 across 50+ agent runs the day before.
+describe("SpendPanel empty state — month boundary vs a genuinely idle fleet", () => {
+  const boundary = {
+    usage: { ...usageFixture, period: "2026-09", request_count: 0, lifetime_spend: 1.4 },
+  };
+  const zeroBedrock = {
+    mode: "bedrock",
+    billed_month_to_date_cents: 0,
+    by_model: [],
+    period_start: null,
+  };
+
+  it("names the period reset instead of claiming nothing has ever run", () => {
+    setup({ ...boundary, spend: zeroBedrock });
+    expect(screen.getByText("No agent runs yet in September.")).toBeInTheDocument();
+    expect(screen.queryByText("No agent runs this period.")).toBeNull();
+    expect(screen.queryByText(/nothing has run yet/i)).toBeNull();
+    expect(screen.getByText(/ran in an earlier period/i)).toBeInTheDocument();
+  });
+
+  it("prints no dollar figure — there is no prior-period amount to source", () => {
+    setup({ ...boundary, spend: zeroBedrock });
+    // lifetime_spend is read as a boolean and nothing else. #1236 pulled the
+    // DDB analytics counters out of this tab; naming the boundary must not
+    // smuggle one back in as "last month you spent…".
+    expect(screen.queryByText(/\$/)).toBeNull();
+    expect(screen.queryByText(/1\.4/)).toBeNull();
+  });
+
+  it("oauth/quota owners get the same boundary copy and still no dollars", () => {
+    // An owner who moved from Bedrock to ChatGPT OAuth carries a non-zero
+    // lifetime counter. They pay OpenAI directly and we cannot see that
+    // invoice, so the copy names the reset without implying any figure.
+    setup({
+      ...boundary,
+      account: { subscription_status: "active", provider_choice: "chatgpt_oauth" },
+      spend: { mode: "oauth_quota", plan: "Pro", windows: [] },
+    });
+    expect(screen.getByText("No agent runs yet in September.")).toBeInTheDocument();
+    expect(screen.queryByText(/\$/)).toBeNull();
+  });
+
+  it("a company that has never run anything keeps the first-run copy", () => {
+    setup({
+      usage: { ...usageFixture, period: "2026-09", request_count: 0, lifetime_spend: 0 },
+      spend: { mode: "tokens_only" },
+    });
+    expect(screen.getByText("No agent runs this period.")).toBeInTheDocument();
+    expect(screen.queryByText(/ran in an earlier period/i)).toBeNull();
+  });
+
+  it("falls back to the first-run copy when the period label is unreadable", () => {
+    setup({
+      usage: { ...usageFixture, period: "", request_count: 0, lifetime_spend: 1.4 },
+      spend: { mode: "tokens_only" },
+    });
+    expect(screen.getByText("No agent runs this period.")).toBeInTheDocument();
   });
 });

@@ -22,11 +22,14 @@
 //            the ledger that actually bills — so it is the figure charged.
 //  LIVE      request count + period label from GET /billing/usage, and the
 //            per-member split (org admins only; personal owners get []).
-//  NEVER     /billing/usage's `total_spend` and `lifetime_spend`. Those are
-//            the DynamoDB usage counters, which are analytics-only (CLAUDE.md
-//            "Usage Flow"), and #1236 deliberately pulled them out of the UI.
-//            UsagePanel.spend.test.tsx pins their absence; do not reintroduce
-//            them here just because this tab is named after money.
+//  NEVER     /billing/usage's `total_spend` and `lifetime_spend` AS FIGURES.
+//            Those are the DynamoDB usage counters, which are analytics-only
+//            (CLAUDE.md "Usage Flow"), and #1236 deliberately pulled them out
+//            of the UI. UsagePanel.spend.test.tsx pins their absence; do not
+//            reintroduce them here just because this tab is named after money.
+//            `lifetime_spend` is read in ONE place below — as a boolean, to
+//            tell a month rollover apart from a company that has never run
+//            anything. No number derived from it is ever printed.
 //  PARTIAL   `tokens_only` is ambiguous by construction:
 //            spend_service.get_spend_summary returns it BOTH for owners with
 //            no platform-billed inference (BYOK, free tier) AND as the
@@ -130,6 +133,24 @@ export function spendHeadline(
   };
 }
 
+/** "2026-09" -> "September". null for anything that isn't a period label.
+ *
+ *  The label comes from /billing/usage, i.e. the server's UTC month. The
+ *  browser clock is a second and sometimes disagreeing source of truth for the
+ *  same thing (a viewer in UTC-7 is still on August 31 when the period rolls),
+ *  so it gets no vote here — which is also why the copy below names the month
+ *  rather than how many days into it we are. */
+function periodMonthName(period: string | undefined): string | null {
+  const match = /^(\d{4})-(\d{2})$/.exec(period ?? "");
+  if (!match) return null;
+  const month = Number(match[2]);
+  if (month < 1 || month > 12) return null;
+  return new Date(Date.UTC(Number(match[1]), month - 1, 1)).toLocaleString("en-US", {
+    month: "long",
+    timeZone: "UTC",
+  });
+}
+
 export function SpendPanel() {
   const { account, fetchUsage } = useBilling();
   const { spend } = useSpend();
@@ -148,6 +169,26 @@ export function SpendPanel() {
   // with a lagging counter must never render as "no agent runs".
   const nothingThisPeriod = !isLoading && (!usage || usage.request_count === 0) && billedCents === 0;
 
+  // "Period" is the calendar month, so on the 1st every active company's
+  // counters read zero and the first-run copy — "nothing has run yet" — becomes
+  // the most misleading sentence on the page: literally true, practically a
+  // report that the fleet is dead. Name the rollover instead.
+  //
+  // There is no prior-period figure to quote. /billing/spend reads Metronome's
+  // DRAFT invoice (current period only) and /billing/usage carries one period
+  // and a lifetime total; nothing exposes "last month" without a new backend
+  // route, so this says the boundary happened and quotes no amount.
+  //
+  // ponytail: `lifetime_spend > 0` is the only cross-period signal the frontend
+  // has, and record_usage stores spend 0 for non-Bedrock models — so a
+  // ChatGPT-OAuth or BYOK owner with a year of history still lands on the
+  // first-run copy. One-way and never false-positive: a non-zero lifetime
+  // counter with a zero current period PROVES an earlier period ran. If that
+  // ceiling starts to bite, the fix is a lifetime request_count on
+  // /billing/usage (backend change), not a guess here.
+  const ranInAnEarlierPeriod = (usage?.lifetime_spend ?? 0) > 0;
+  const monthName = periodMonthName(usage?.period);
+
   return (
     <div className="editorial-page p-4 sm:p-5 lg:p-6 flex flex-col gap-5 max-w-4xl mx-auto w-full">
       <PanelMasthead
@@ -157,11 +198,19 @@ export function SpendPanel() {
       />
 
       {nothingThisPeriod ? (
-        <PanelEmptyState
-          icon={Wallet}
-          headline="No agent runs this period."
-          supporting="Nothing has been billed because nothing has run yet. The moment an agent does, what it cost shows up here."
-        />
+        ranInAnEarlierPeriod && monthName ? (
+          <PanelEmptyState
+            icon={Wallet}
+            headline={`No agent runs yet in ${monthName}.`}
+            supporting={`Your agents ran in an earlier period; ${monthName} counts from zero. What they do this month shows up here.`}
+          />
+        ) : (
+          <PanelEmptyState
+            icon={Wallet}
+            headline="No agent runs this period."
+            supporting="Nothing has been billed because nothing has run yet. The moment an agent does, what it cost shows up here."
+          />
+        )
       ) : (
         <>
           {headline && (

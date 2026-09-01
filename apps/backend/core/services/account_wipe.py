@@ -386,8 +386,14 @@ async def _wipe_company_stripe(steps: list[WipeStep], *, owner_id: str) -> None:
         return
 
     async def _s8b(account_id: str = account_id) -> str:
-        await company_stripe.deauthorize(account_id=account_id)
-        await billing_repo.clear_company_stripe_account(owner_id, account_id=account_id)
+        # `release_and_unbind` clears the binding whatever Stripe answers —
+        # the unbind used to sit on the far side of the deauthorize, so a
+        # raise left the row bound and the platform attached, which is the
+        # single failure this step exists to prevent. Raising AFTER that
+        # unbind is how the report records "Stripe never confirmed": _step
+        # marks the step failed and the wipe carries on.
+        if not await company_stripe.release_and_unbind(owner_id=owner_id, account_id=account_id):
+            raise RuntimeError(f"unbound {account_id} locally, but Stripe did not confirm the revoke")
         return f"company_stripe_account_id={account_id} deauthorized (account retained by owner)"
 
     await _step(steps, system="stripe", action="deauthorize_company_account", fn=_s8b)

@@ -1,6 +1,6 @@
 import os
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -184,3 +184,79 @@ async def test_accounts_v2_version_is_pinned_only_when_configured(monkeypatch):
         await mod.create_company_account(owner_id="org_a", email="f@example.com", company_name="N")
         options = client.v2.core.accounts.create.call_args.kwargs["options"]
         assert options["stripe_version"] == "2026-08-26.dahlia"
+
+
+# --- the exit: deauthorize + release_and_unbind ----------------------------
+#
+# `release_and_unbind` exists because three call sites (the account wipe, the
+# owner's revoke-all, and the disconnect route) each open-coded "deauthorize,
+# THEN clear the binding" — an ordering that lost the unbind whenever Stripe
+# raised.
+
+
+@pytest.mark.asyncio
+async def test_deauthorize_skips_stripe_when_the_client_id_is_unset(monkeypatch):
+    """`STRIPE_CONNECT_CLIENT_ID` was `""` in prod until the Connect app was
+    configured. Sending `client_id=""` buys an `invalid_client` error, not a
+    revoke — so there is nothing to gain by making the call."""
+    monkeypatch.setattr(settings, "STRIPE_CONNECT_CLIENT_ID", "")
+    with patch("core.services.company_stripe.stripe.OAuth.deauthorize") as deauth:
+        assert await company_stripe.deauthorize(account_id="acct_existing") is False
+    deauth.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_release_and_unbind_reports_the_revoke_and_clears():
+    with (
+        patch("core.services.company_stripe.stripe.OAuth.deauthorize"),
+        patch.object(company_stripe.billing_repo, "clear_company_stripe_account", AsyncMock()) as clear,
+    ):
+        assert await company_stripe.release_and_unbind(owner_id="org_a", account_id="acct_x") is True
+    clear.assert_awaited_once_with("org_a", account_id="acct_x")
+
+
+@pytest.mark.asyncio
+async def test_release_and_unbind_clears_the_binding_even_when_stripe_raises():
+    """The load-bearing property. A raise used to skip the unbind entirely,
+    leaving the row bound to an account we claim to have let go of."""
+    with (
+        patch("core.services.company_stripe.stripe.OAuth.deauthorize", side_effect=RuntimeError("stripe down")),
+        patch.object(company_stripe.billing_repo, "clear_company_stripe_account", AsyncMock()) as clear,
+    ):
+        assert await company_stripe.release_and_unbind(owner_id="org_a", account_id="acct_x") is False
+    clear.assert_awaited_once_with("org_a", account_id="acct_x")
+
+
+@pytest.mark.asyncio
+async def test_release_and_unbind_clears_without_calling_stripe_when_unconfigured(monkeypatch):
+    """An empty client id must never again strand a bound row."""
+    monkeypatch.setattr(settings, "STRIPE_CONNECT_CLIENT_ID", "")
+    with (
+        patch("core.services.company_stripe.stripe.OAuth.deauthorize") as deauth,
+        patch.object(company_stripe.billing_repo, "clear_company_stripe_account", AsyncMock()) as clear,
+    ):
+        assert await company_stripe.release_and_unbind(owner_id="org_a", account_id="acct_x") is False
+    deauth.assert_not_called()
+    clear.assert_awaited_once_with("org_a", account_id="acct_x")
+
+
+@pytest.mark.asyncio
+async def test_release_and_unbind_never_closes_or_deletes_a_created_account():
+    """A `source="created"` account takes the SAME exit as a connected one.
+
+    Stripe offers no third option: v2 `close` "removes access to the Account
+    and its associated resources" (a delete, banned by spec §3.6 — and
+    refused anyway for our `losses_collector=stripe` + `dashboard=full`
+    shape: `stripe_loss_liable_cannot_be_deleted`), and v1 DELETE excludes
+    accounts "that have access to the standard dashboard". `OAuth.deauthorize`
+    is the only documented primitive that leaves the owner's account working,
+    so it is attempted for both doors — and its outcome never decides the
+    unbind. This asserts EXACT calls, so a future `close`/`delete` fails it.
+    """
+    with (
+        patch("core.services.company_stripe.stripe") as stripe_spy,
+        patch.object(company_stripe.billing_repo, "clear_company_stripe_account", AsyncMock()) as clear,
+    ):
+        await company_stripe.release_and_unbind(owner_id="org_a", account_id="acct_created")
+    assert [c[0] for c in stripe_spy.mock_calls] == ["OAuth.deauthorize"]
+    clear.assert_awaited_once_with("org_a", account_id="acct_created")

@@ -148,6 +148,10 @@ async def test_wipe_deletes_our_copies_but_never_reaches_the_provider(wipe_mocks
     wipe_mocks.company_stripe_deauthorize.side_effect = real_company_stripe_deauthorize
 
     with (
+        # A configured client id, so the deauthorize is actually attempted and
+        # the exact-calls assertion below keeps its teeth. Unset (the Settings
+        # default) it is skipped by design — see `company_stripe.deauthorize`.
+        patch.object(settings, "STRIPE_CONNECT_CLIENT_ID", "ca_test"),
         patch("core.services.stripe_provisioning.request", new_callable=AsyncMock) as provisioning_request_spy,
         patch("core.services.stripe_provisioning.remove_resource", new_callable=AsyncMock) as remove_spy,
         patch("core.services.stripe_provisioning.unlink_resource", new_callable=AsyncMock) as unlink_spy,
@@ -190,10 +194,8 @@ async def test_wipe_deletes_our_copies_but_never_reaches_the_provider(wipe_mocks
     assert len(stripe_spy.mock_calls) == 1
     [deauth_call] = stripe_spy.mock_calls
     assert deauth_call[0] == "OAuth.deauthorize"
-    assert deauth_call.kwargs == {
-        "client_id": settings.STRIPE_CONNECT_CLIENT_ID,
-        "stripe_user_id": "acct_xyz789",
-    }
+    # The literal, not `settings.…`: the patch above is out of scope by now.
+    assert deauth_call.kwargs == {"client_id": "ca_test", "stripe_user_id": "acct_xyz789"}
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,7 @@ pub mod claude_export;
 pub mod device_token;
 pub mod file_access;
 pub mod keychain;
+pub mod local_mcp;
 mod node_client;
 mod node_invoke;
 pub mod pair_client;
@@ -61,6 +62,13 @@ pub struct AuthState {
     pub proxy_handle: Mutex<Option<crate::proxy::ProxyHandle>>,
     /// Bundled `openclaw node run` subprocess. Same lifetime as `proxy_handle`.
     pub subprocess_handle: Mutex<Option<crate::subprocess::SubprocessHandle>>,
+    /// Serializes `restart_node_host_subprocess`. The restart is
+    /// take-handle -> await shutdown -> await spawn, so two concurrent
+    /// callers (a settings pane saving twice in quick succession) would
+    /// both see `None` in `subprocess_handle` and leave a second, orphaned
+    /// child attached to the proxy. Async because the critical section
+    /// spans awaits.
+    pub node_host_restart: tokio::sync::Mutex<()>,
     /// `/desktop/pair` response — retained so we can later call
     /// `/desktop/devices/{device_id}` (revoke) on logout.
     pub pair_response: Mutex<Option<crate::pair_client::PairResponse>>,
@@ -337,7 +345,7 @@ async fn run_bootstrap(
         .path()
         .app_data_dir()
         .map_err(|e| format!("app_data_dir: {e}"))?;
-    let state_dir = app_data.join("openclaw-state");
+    let state_dir = state_dir_in(&app_data);
 
     let binary = resolve_node_host_binary()?;
 
@@ -380,6 +388,119 @@ async fn run_bootstrap(
     stash_handles(app, handles);
 
     Ok(())
+}
+
+/// `OPENCLAW_STATE_DIR` for the sidecar: `<app_data_dir>/openclaw-state`.
+/// Single definition so the config file `local_mcp` writes and the state
+/// dir `subprocess::spawn` exports can never drift apart.
+fn state_dir_in(app_data: &std::path::Path) -> std::path::PathBuf {
+    app_data.join("openclaw-state")
+}
+
+/// Same, resolved from an AppHandle.
+fn openclaw_state_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|d| state_dir_in(&d))
+        .map_err(|e| format!("app_data_dir: {e}"))
+}
+
+/// Stop the openclaw sidecar and respawn it against the EXISTING proxy.
+///
+/// The node host reads `nodeHost.mcp.servers` once, at startup
+/// (`getRuntimeConfig()`), and nothing watches the file on that path — so a
+/// config write is inert until the process is bounced.
+///
+/// Deliberately NOT a replay of `bootstrap::start_from_pair`: that function
+/// also calls `start_proxy`, so re-entering it would bind a second loopback
+/// listener and leak the first (its `ProxyHandle` — the only thing holding
+/// the shutdown channel — would be dropped when we overwrote the slot, but
+/// the accept loop and any in-flight upstream connections belong to a task
+/// we no longer signal). The proxy is also the wrong thing to restart: it
+/// holds the device-token minter and re-mints on every upstream open, so it
+/// survives a child bounce untouched and the child reconnects through it on
+/// the same port. Everything else `spawn` needs — identity file, retired
+/// `node.json` sweep — is idempotent by construction.
+///
+/// A missing proxy means the node host was never started this session, so
+/// there is nothing to bounce and the next launch picks the config up.
+async fn restart_node_host_subprocess(app: &tauri::AppHandle) -> Result<(), String> {
+    let state = app
+        .try_state::<AuthState>()
+        .ok_or_else(|| "AuthState not managed".to_string())?;
+    let _serialized = state.node_host_restart.lock().await;
+
+    let proxy_port = state
+        .proxy_handle
+        .lock()
+        .map_err(|e| format!("proxy_handle lock: {e}"))?
+        .as_ref()
+        .map(|p| p.local_port());
+    let Some(proxy_port) = proxy_port else {
+        log("[local-mcp] node host not running; config takes effect on next launch");
+        return Ok(());
+    };
+
+    let gateway_token = state
+        .gateway_token
+        .read()
+        .map_err(|e| format!("gateway_token lock: {e}"))?
+        .clone()
+        .ok_or_else(|| "no gateway token yet; pair the device first".to_string())?;
+
+    // Take the handle BEFORE awaiting so a caller that races past the lock
+    // (impossible today, but cheap) can't shut the same child down twice.
+    let previous = state
+        .subprocess_handle
+        .lock()
+        .map_err(|e| format!("subprocess_handle lock: {e}"))?
+        .take();
+    if let Some(previous) = previous {
+        previous.shutdown().await;
+    }
+
+    let cli_id = keychain::load_or_generate(keychain::KeychainSlot::Cli, KEYCHAIN_SERVICE)?;
+    let handle = subprocess::spawn(
+        resolve_node_host_binary()?,
+        proxy_port,
+        openclaw_state_dir(app)?,
+        &cli_id.private_key_pem,
+        &cli_id.public_key_pem,
+        &gateway_token,
+    )
+    .await?;
+    *state
+        .subprocess_handle
+        .lock()
+        .map_err(|e| format!("subprocess_handle lock: {e}"))? = Some(handle);
+    log(&format!(
+        "[local-mcp] node host sidecar restarted on proxy port {proxy_port}"
+    ));
+    Ok(())
+}
+
+/// The `nodeHost.mcp.servers` object from the Mac-side openclaw config.
+/// `{}` when nothing is configured yet.
+#[tauri::command]
+async fn local_mcp_list(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    local_mcp::list_servers(&openclaw_state_dir(&app)?)
+}
+
+/// Replace the whole servers map, then bounce the sidecar so it takes effect.
+#[tauri::command]
+async fn local_mcp_set(app: tauri::AppHandle, servers: serde_json::Value) -> Result<(), String> {
+    local_mcp::set_servers(&openclaw_state_dir(&app)?, servers)?;
+    restart_node_host_subprocess(&app).await
+}
+
+/// Remove one server. `false` (and no restart) if it wasn't there.
+#[tauri::command]
+async fn local_mcp_remove(app: tauri::AppHandle, name: String) -> Result<bool, String> {
+    if !local_mcp::remove_server(&openclaw_state_dir(&app)?, &name)? {
+        return Ok(false);
+    }
+    restart_node_host_subprocess(&app).await?;
+    Ok(true)
 }
 
 /// Resolve the launcher shim registered as `bin/lightbulb-browser-service` in
@@ -506,7 +627,7 @@ async fn start_from_persisted_state(
     cli_id: keychain::DeviceIdentity,
     app_data: std::path::PathBuf,
 ) -> Result<(), String> {
-    let state_dir = app_data.join("openclaw-state");
+    let state_dir = state_dir_in(&app_data);
     let binary = resolve_node_host_binary()?;
     let display_name = persisted.display_name.clone();
 
@@ -1295,6 +1416,7 @@ end tell"#,
             bootstrap_in_flight: Mutex::new(false),
             proxy_handle: Mutex::new(None),
             subprocess_handle: Mutex::new(None),
+            node_host_restart: tokio::sync::Mutex::new(()),
             pair_response: Mutex::new(None),
             gateway_token: Arc::new(RwLock::new(None)),
         })
@@ -1311,6 +1433,9 @@ end tell"#,
             file_access_add_path,
             file_access_remove_path,
             file_access_default_path,
+            local_mcp_list,
+            local_mcp_set,
+            local_mcp_remove,
             claude_export::export_claude_context,
         ])
         .setup(|app| {

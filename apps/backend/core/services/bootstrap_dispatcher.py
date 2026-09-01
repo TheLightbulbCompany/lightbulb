@@ -199,20 +199,31 @@ Failure handling is TWO-TIERED (both bounded by ``bootstrap_attempts``):
   race killed the onboarding forever; scoping re-arm to the provably-pre-send
   connect phase recovers the boot-window blip without reintroducing that risk.
 
-* **Bounded retry OF a ``failed`` row** (``_retry_failed_bootstrap``). The two
-  tiers above only catch a failure they can classify DURING the dispatch,
-  which left a real hole: a transient the classifier types deterministic (a
-  connect rejection carrying OpenClaw's own "gateway starting; retry shortly"
-  arrives as a bare ``RuntimeError``) or one that only surfaces as the run's
-  terminal (a rate-limited first run) lands in ``failed``, and ``failed`` was
-  reachable ONLY by the admin lever. Both were observed on one dev account on
-  2026-08-30, each behind a RUNNING, HEALTHY container, leaving the owner on
-  the funnel spinner for 21 hours. A ``failed`` row is therefore re-armed
-  automatically now -- under the SAME ``bootstrap_attempts`` budget, no sooner
-  than ``FAILED_RETRY_BACKOFF_S`` after the failed attempt started, and NEVER
-  for the ambiguous send-attempted-never-acked row. Past those bounds nothing
-  changes: the row stays ``failed``, and ``reset_bootstrap_for_retry`` (which
-  zeroes the counter) is still the operator's way out.
+* **Bounded retry OF a ``failed`` row** (``_retry_failed_bootstrap``) -- the
+  BACKSTOP under the two tiers above, and the second half of a deliberately
+  two-layer defence.
+
+  The first layer is CLASSIFICATION: a transient must be typed as one, or the
+  ladder above never runs. OpenClaw's startup-window rejection was not
+  (``GatewayConnectUnavailableError`` exists now precisely to fix that), and
+  fixing it there is the better repair for that specific error.
+
+  But classification can only ever cover errors somebody anticipated, and this
+  failure mode is not hypothetical: FOUR prod owners were found permanently
+  wedged at ``funnel_state=submitted`` on 2026-08-30, on at least TWO distinct
+  causes -- three on the startup-window rejection above, and one (since
+  2026-08-21) on "Gateway connection closed", a reader-loop drop that resolves
+  the run observer as failed AFTER the send and so could never have been
+  classified into the connect ladder at all. Reprovisioning fixed none of them:
+  ``provision_org`` short-circuits on an already-active company and never
+  touches bootstrap state. So the structural rule is what has to change --
+  a ``failed`` row is re-armed automatically now, under the SAME
+  ``bootstrap_attempts`` budget, no sooner than ``FAILED_RETRY_BACKOFF_S``
+  after the failed attempt started, and NEVER for the ambiguous
+  send-attempted-never-acked row. Past those bounds nothing changes: the row
+  stays ``failed``, and ``reset_bootstrap_for_retry`` (which zeroes the
+  counter) is still the operator's way out. The point is that NO unclassified
+  transient can produce a permanent dead end again, whatever its type or text.
 
 If the runtime is not up yet (no running container / no task IP), this
 function does NOTHING -- no dispatch, no partial write, no stale handoff
@@ -231,6 +242,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from core.gateway.connection_pool import GatewayReconnectThrottled
+from core.gateway.operator_rpc import GatewayConnectUnavailableError
 from core.services.agent_roster import roster_entries
 from core.observability.metrics import put_metric
 from core.repositories.paperclip_repo import BootstrapClaimResult
@@ -313,12 +325,23 @@ _STALE_UNSENT_CAPPED_ERROR = (
 # Failure classes the dispatcher treats as TRANSIENT: connection-level
 # failures (``OSError`` covers ConnectionRefusedError/ConnectionResetError/
 # the raw [Errno 111] connect refusal), timeouts (``asyncio.TimeoutError``
-# IS ``TimeoutError`` on >=3.11), and ``GatewayReconnectThrottled`` -- the
+# IS ``TimeoutError`` on >=3.11), ``GatewayReconnectThrottled`` -- the
 # pool's own 5s reconnect floor, which clears on its own with no other
-# change. Everything else -- including ``GatewayConnectAuthError`` and
-# ``GatewayAuthBackoff`` (same credentials cannot succeed on retry, and each
-# attempt counts toward the gateway's 10-in-60s lockout) and chat-level
-# errors -- is DETERMINISTIC and marks the bootstrap failed for real.
+# change -- and ``GatewayConnectUnavailableError``, the gateway's OWN
+# "retryable" rejection. Everything else -- including
+# ``GatewayConnectAuthError`` and ``GatewayAuthBackoff`` (same credentials
+# cannot succeed on retry, and each attempt counts toward the gateway's
+# 10-in-60s lockout) and chat-level errors -- is DETERMINISTIC and marks the
+# bootstrap failed for real.
+#
+# ``GatewayConnectUnavailableError`` is the newest entry and cost three prod
+# owners their onboarding. OpenClaw answers the handshake during its own
+# startup window with ``UNAVAILABLE`` / ``retryable: true`` / "gateway
+# starting; retry shortly" -- a rejection that says in as many words that it
+# clears by itself -- and that arrived here as a bare ``RuntimeError``, so the
+# ladder below was SKIPPED ENTIRELY and the row was written ``failed`` on the
+# first hit. ``operator_rpc`` now raises it as its own type, discriminated on
+# the gateway's STRUCTURED flag rather than the free-form message text.
 #
 # The throttle MUST be matched by its own type, never by ``RuntimeError``:
 # the auth-backoff guard is also a RuntimeError and is the semantic
@@ -340,6 +363,7 @@ _TRANSIENT_DISPATCH_ERRORS: tuple[type[BaseException], ...] = (
     OSError,
     TimeoutError,
     GatewayReconnectThrottled,
+    GatewayConnectUnavailableError,
 )
 
 
@@ -509,11 +533,13 @@ async def _retry_failed_bootstrap(repo, onboarding: dict, *, owner_id: str) -> b
     row -- there is still no sweeper).
 
     ``failed`` was terminal-until-an-operator-noticed, and that is a live
-    product defect: a transient the classifier happens to type non-transient
-    dead-ends the owner permanently. Observed on dev 2026-08-30, twice on one
-    account, each behind a RUNNING, HEALTHY container -- a connect rejection
-    carrying OpenClaw's own "gateway starting; retry shortly", then a
-    rate-limited first run -- with the funnel spinner up for 21 hours.
+    product defect with named victims: FOUR prod owners were found stuck at
+    ``funnel_state=submitted`` on 2026-08-30 (the oldest since 2026-08-21),
+    each behind a RUNNING, HEALTHY container, staring at a funnel spinner that
+    would never advance -- on at least TWO distinct error texts, which is why
+    classifying the known one is necessary but not sufficient. A dev account
+    reproduced it twice in a night: the startup-window connect rejection, then
+    a rate-limited first run, wedged 21 hours.
 
     But ``failed`` was not excluded by accident, and this does not simply
     admit it. Three bounds, all of which must hold:

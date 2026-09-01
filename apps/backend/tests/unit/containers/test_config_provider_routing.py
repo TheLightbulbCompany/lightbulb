@@ -850,11 +850,16 @@ def test_paid_bedrock_keeps_cron_heartbeat_channels_and_acp():
     assert cfg["acp"]["allowedAgents"] == ["claude"]
 
 
-def test_bedrock_trial_omits_skill_workshop_autocapture():
+def test_bedrock_trial_disables_skill_workshop_autocapture_explicitly():
     """Autonomous skill capture runs an extra model review over qualifying
     turns — the $3 trial budget must fund the user's own messages, not
-    background self-improvement."""
-    assert "workshop" not in _trial_cfg()["skills"]
+    background self-improvement.
+
+    Must be an explicit "off", never an omitted block: 2026.8.1 defaults
+    ``autonomous.mode`` to "auto" (review every run AND self-apply), so
+    omitting it handed trial owners MORE autonomy than paid owners.
+    """
+    assert _trial_cfg()["skills"]["workshop"] == {"autonomous": {"mode": "off"}}
 
 
 @pytest.mark.parametrize(

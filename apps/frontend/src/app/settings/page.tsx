@@ -15,6 +15,7 @@ import { ProviderPicker } from "@/components/chat/ProvisioningStepper";
 import { MyChannelsSection } from "@/components/settings/MyChannelsSection";
 import { WebhooksPanel } from "@/components/settings/WebhooksPanel";
 import { DesktopFileAccess } from "@/components/desktop/DesktopFileAccess";
+import { LocalMcpServers } from "@/components/desktop/LocalMcpServers";
 import { HandlePicker } from "@/components/marketplace/HandlePicker";
 import { getMySellerProfile, type SellerProfile } from "@/lib/marketplace/api";
 import { Logo } from "@/components/Logo";
@@ -52,6 +53,7 @@ type Panel =
   | "mcp"
   | "webhooks"
   | "desktop"
+  | "local-mcp"
   | "skills"
   | "skill-proposals"
   | "channel-status"
@@ -661,6 +663,9 @@ const PANELS: Record<Panel, () => React.ReactElement> = {
   mcp: () => <IntegrationsPanel variant="settings" />,
   webhooks: WebhooksPanel,
   desktop: DesktopFileAccess,
+  // Desktop-app-only: MCP servers running on the user's own Mac, driven by the
+  // Tauri local_mcp_* commands. Renders a download prompt in a browser.
+  "local-mcp": LocalMcpServers,
   // SkillsTab takes an optional `agentId`; mounting it prop-less yields the
   // owner-level (global) skills surface — the engine-room home.
   skills: () => <SkillsTab />,

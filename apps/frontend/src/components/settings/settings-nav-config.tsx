@@ -66,6 +66,9 @@ export const SETTINGS_NAV_SECTIONS: NavSection[] = [
       { id: "mcp", name: "MCP servers", icon: "mcp", panel: "mcp" },
       { id: "webhooks", name: "Webhooks", icon: "webhooks", panel: "webhooks" },
       { id: "desktop", name: "Desktop", icon: "desktop", panel: "desktop" },
+      // MCP servers on the user's own Mac — desktop-app-only, so it sits with
+      // the other Desktop row rather than with the container-side `mcp` tab.
+      { id: "local-mcp", name: "Local MCP servers", icon: "mcp", panel: "local-mcp" },
     ],
   },
   {

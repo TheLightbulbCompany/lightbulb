@@ -101,6 +101,9 @@ export type AnalyticsEvent =
   | "desktop_file_access_added"
   | "desktop_file_access_removed"
   | "desktop_permissions_saved"
+  // MCP servers running on the user's own Mac (Tauri local_mcp_* commands)
+  | "local_mcp_server_removed"
+  | "local_mcp_servers_saved"
   // Cron
   | "cron_job_created"
   | "cron_job_deleted"

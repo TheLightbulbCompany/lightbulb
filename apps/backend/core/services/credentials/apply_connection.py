@@ -34,6 +34,10 @@ async def apply_connection(owner_id: str, provider_key: str, credential: dict[st
     return None, which a generic caller can ignore."""
     p = registry.get_provider(provider_key)
     w = p.wiring
+    if w.backend_only:
+        # Nothing reaches the container. The credential's only custodian is
+        # Secrets Manager, written by the caller via `_retains_secret`.
+        return None
     if w.openclaw_paths:
         for op in w.openclaw_paths:
             value = _resolve_source(op.source, credential, credential)

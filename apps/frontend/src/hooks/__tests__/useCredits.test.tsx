@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook } from "@testing-library/react";
 import { SWRConfig } from "swr";
-import { useCredits } from "../useCredits";
+import { useCredits, isCreditsBlocked } from "../useCredits";
 
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({
@@ -191,5 +191,48 @@ describe("useCredits", () => {
 
     const { result } = renderHook(() => useCredits(), { wrapper });
     expect(result.current.autoChargeEnabled).toBe(false);
+  });
+});
+
+// isCreditsBlocked is the single answer two surfaces that can render on the
+// SAME screen both depend on — the credits banner and the first-run failure
+// notice. Before it existed, the notice sent an out-of-credits owner to
+// support while the banner above it correctly said "top up", so one screen
+// gave two explanations and the prominent one queued a self-serviceable
+// billing problem behind a human.
+describe("isCreditsBlocked", () => {
+  it("is false off the prepaid path, however empty the balance looks", () => {
+    // chatgpt_oauth and byo_key owners never spend our credits, so a zero
+    // balance says nothing about whether they can run.
+    const empty = { balance_microcents: 0, balance_dollars: "0", is_exhausted: true };
+    expect(isCreditsBlocked(empty, "chatgpt_oauth")).toBe(false);
+    expect(isCreditsBlocked(empty, "byo_key")).toBe(false);
+    expect(isCreditsBlocked(empty, null)).toBe(false);
+  });
+
+  it("is true on bedrock_claude when the gate would refuse the balance", () => {
+    // Gate admission, not `> 0`: a small positive balance still buys nothing.
+    expect(
+      isCreditsBlocked(
+        { balance_microcents: 200_000, balance_dollars: "0.20", is_exhausted: true },
+        "bedrock_claude",
+      ),
+    ).toBe(true);
+  });
+
+  it("is false on a spendable balance, and on an indeterminate one", () => {
+    expect(
+      isCreditsBlocked(
+        { balance_microcents: 5_000_000, balance_dollars: "5", is_exhausted: false },
+        "bedrock_claude",
+      ),
+    ).toBe(false);
+    // Metronome unavailable — never scare an owner with a false blocker.
+    expect(
+      isCreditsBlocked(
+        { balance_microcents: null, balance_dollars: null },
+        "bedrock_claude",
+      ),
+    ).toBe(false);
   });
 });

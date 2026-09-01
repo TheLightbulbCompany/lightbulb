@@ -20,6 +20,9 @@ import {
   BookOpen,
   Plug,
   Wallet,
+  CreditCard,
+  Package,
+  Users,
 } from "lucide-react";
 import type { ComponentType, SVGProps } from "react";
 
@@ -50,8 +53,17 @@ export const COMPANY_SECTIONS: { label: string | null; items: CompanySectionItem
     ],
   },
   {
+    // Spec §5.1 order: the three Stripe reads, then what the agents cost.
+    // Products is its own tab, not a section of Payments — they are three peer
+    // reads of one connected account, and a section would have made one a
+    // second-class citizen of another's tab.
     label: "Money",
-    items: [{ panel: "teams-spend", label: "Spend", Icon: Wallet }],
+    items: [
+      { panel: "teams-payments", label: "Payments", Icon: CreditCard },
+      { panel: "teams-products", label: "Products", Icon: Package },
+      { panel: "teams-customers", label: "Customers", Icon: Users },
+      { panel: "teams-spend", label: "Spend", Icon: Wallet },
+    ],
   },
   {
     label: "Work",

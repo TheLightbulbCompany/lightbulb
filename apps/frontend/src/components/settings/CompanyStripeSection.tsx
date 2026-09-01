@@ -6,6 +6,14 @@ import { useApi } from "@/lib/api";
 import { notifyApiError, notifyError } from "@/lib/notify";
 import { closePendingTab, navigatePendingTab, openPendingTab } from "@/components/settings/openInNewTab";
 import { isTauri, openExternalUrl, pollUntil } from "@/lib/externalAuth";
+// NOT `settings-btn-save` / `settings-btn-outline`: those live in the
+// route-scoped `app/settings/settings.css`, which never loads in the workspace
+// shell. This component renders in BOTH places — /settings and the Accounts
+// panel on /chat — so on /chat every control here painted as unstyled text
+// (#2268). `TeamBillingCard.tsx` documents the identical trap from an earlier
+// incident. EditorialButton is token-based and route-independent, so it is
+// correct on both surfaces.
+import { EditorialButton } from "@/components/teams/shell";
 
 const POPUP_BLOCKED_MSG =
   "Your browser blocked the Stripe window — allow popups for this site and try again.";
@@ -157,23 +165,24 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
           <div className="flex flex-wrap gap-2">
             {canManage ? (
               <>
-                <button
+                <EditorialButton
                   type="button"
-                  className="settings-btn-save"
+                  size="sm"
                   disabled={busy}
                   onClick={() => openWith(async () => (await createLink()).onboarding_url)}
                 >
                   Set up Stripe
-                </button>
+                </EditorialButton>
                 {connectConfigured && (
-                  <button
+                  <EditorialButton
                     type="button"
-                    className="settings-btn-outline"
+                    size="sm"
+                    variant="secondary"
                     disabled={busy}
                     onClick={() => openWith(async () => (await connectStart()).authorize_url)}
                   >
                     Connect existing Stripe
-                  </button>
+                  </EditorialButton>
                 )}
               </>
             ) : (
@@ -195,31 +204,40 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
               </div>
             </dl>
             <div className="flex flex-wrap gap-2">
+              {/* EditorialButton is button-only, so this anchor carries the same
+                  global `editorial-btn` classes directly rather than a
+                  route-scoped one. */}
               {data.dashboard_url && (
-                <a className="settings-btn-outline" href={data.dashboard_url} target="_blank" rel="noopener noreferrer">
+                <a
+                  className="editorial-btn editorial-btn--secondary editorial-btn--sm"
+                  href={data.dashboard_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
                   Open Stripe Dashboard
                 </a>
               )}
               {canManage && data.source === "created" && !data.charges_enabled && (
-                <button
+                <EditorialButton
                   type="button"
-                  className="settings-btn-save"
+                  size="sm"
                   disabled={busy}
                   onClick={() => openWith(async () => (await onboardingLink()).onboarding_url)}
                 >
                   Finish onboarding
-                </button>
+                </EditorialButton>
               )}
               {canManage && (
-                <button
+                <EditorialButton
                   type="button"
-                  className="settings-btn-outline"
+                  size="sm"
+                  variant="secondary"
                   disabled={busy || !connectConfigured}
                   title={connectConfigured ? undefined : "Not available until Stripe Connect is configured"}
                   onClick={() => run(async () => { await api.post("/company/stripe/disconnect", {}); })}
                 >
                   Disconnect
-                </button>
+                </EditorialButton>
               )}
             </div>
           </div>

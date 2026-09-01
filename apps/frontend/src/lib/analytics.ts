@@ -70,6 +70,11 @@ export type AnalyticsEvent =
   // Billing
   | "billing_portal_opened"
   | "billing_ultra_upgrade_clicked"
+  // Paired with `first_run_failed_notice_shown` {cause: "credits"}: without a
+  // click event, the question the credits branch was built to answer — do
+  // out-of-credits owners self-serve instead of emailing us — cannot be
+  // answered from the data at all.
+  | "credits_topup_clicked"
   | "subscription_checkout_canceled"
   | "subscription_checkout_failed"
   | "subscription_checkout_returned_success"

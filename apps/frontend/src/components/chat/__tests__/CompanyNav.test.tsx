@@ -11,6 +11,9 @@ const ALL_LABELS = [
   "Home",
   "Search",
   "Inbox",
+  "Payments",
+  "Products",
+  "Customers",
   "Spend",
   "Tasks",
   "Automations",
@@ -39,9 +42,17 @@ describe("CompanyNav", () => {
       "Company",
     ]);
   });
-  it('files "Spend" alone under Money and opens teams-spend on click', () => {
+  it("files the four Money tabs in spec order and opens teams-spend on click", () => {
+    // The three Stripe reads first, then what the agents cost. Products is a
+    // peer tab, not a section of Payments — all three read one connected
+    // account and none is subordinate to another.
     const money = COMPANY_SECTIONS.find((s) => s.label === "Money");
-    expect(money?.items.map((i) => i.label)).toEqual(["Spend"]);
+    expect(money?.items.map((i) => i.label)).toEqual([
+      "Payments",
+      "Products",
+      "Customers",
+      "Spend",
+    ]);
     const onPanelChange = vi.fn();
     render(<CompanyNav onPanelChange={onPanelChange} />);
     fireEvent.click(screen.getByText("Spend"));

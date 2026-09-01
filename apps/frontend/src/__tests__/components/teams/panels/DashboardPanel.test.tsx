@@ -5,6 +5,21 @@
 import { describe, test, expect, vi, beforeEach } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 
+// HomeRollupStrip mounts `useCompanyRollup`, a real SWR hook. Left unmocked it
+// keeps a revalidation promise alive past this file's teardown and throws
+// `document is not defined` from swr's isVisible() — which surfaces as an
+// unhandled error and a non-zero exit even with every test passing. These
+// files assert the agent-metrics dashboard, not the business strip; that has
+// its own test file.
+vi.mock("@/hooks/useCompanyRollup", () => ({
+  useCompanyRollup: () => ({
+    rollup: undefined,
+    error: undefined,
+    isLoading: true,
+    refresh: vi.fn(),
+    isUnavailable: () => false,
+  }),
+}));
 vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: vi.fn() }));
 vi.mock("@/components/teams/dashboard/hooks/useActivityFeed", () => ({
   useActivityFeed: vi.fn(),

@@ -48,6 +48,30 @@ export function isCreditsExhausted(balance: CreditsBalance | null | undefined): 
   );
 }
 
+/**
+ * Is this owner BLOCKED on credits right now? The two-part question every
+ * credit-aware surface actually asks: is the owner on the prepaid path at all
+ * (`bedrock_claude` — chatgpt_oauth / byo_key never spend our credits), and is
+ * the balance unspendable at the gate.
+ *
+ * A pure function rather than a hook, deliberately. Two consumers now need this
+ * answer — OutOfCreditsBanner and FirstRunFailedNotice — and they can render on
+ * the SAME screen, so a drift between them shows the owner two contradictory
+ * explanations at once. That was the bug. But wrapping it in a hook that calls
+ * `useCredits` internally would make the module-internal call invisible to
+ * `vi.mock("@/hooks/useCredits")`, silently defeating the existing tests that
+ * deliberately exercise the REAL predicate. Callers own their data fetching
+ * (both SWR keys are shared, so the second consumer costs no request) and pass
+ * the two inputs in.
+ */
+export function isCreditsBlocked(
+  balance: CreditsBalance | null | undefined,
+  providerChoice: string | null | undefined,
+): boolean {
+  if (providerChoice !== "bedrock_claude") return false;
+  return isCreditsExhausted(balance);
+}
+
 export type TopUpResult = {
   /** "requested" — Metronome charges the saved card and releases the
    *  credits asynchronously; there is no checkout redirect. */

@@ -26,6 +26,7 @@ import { ActiveAgentsPanel } from "@/components/teams/dashboard/ActiveAgentsPane
 import { useActivityFeed } from "@/components/teams/dashboard/hooks/useActivityFeed";
 import { useLiveRuns } from "@/components/teams/dashboard/hooks/useLiveRuns";
 import { PanelMasthead } from "@/components/teams/shell";
+import { HomeRollupStrip } from "@/components/teams/dashboard/HomeRollupStrip";
 import { StatusIcon } from "@/components/teams/shared/components/StatusIcon";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
@@ -250,6 +251,14 @@ export function DashboardPanel() {
         title="Home"
         meta="Last 14 days"
       />
+
+      {/* The business strip: what the company earned and attracted. Rendered
+          ABOVE the agent metrics because "is my business working" is the
+          question an owner opens Home with — the agent telemetry below answers
+          "are my agents busy", which is a different and less urgent question.
+          Additive: an owner with no Stripe binding sees one honest notice here
+          and the rest of Home exactly as it was. */}
+      <HomeRollupStrip />
 
       {/* Live agent runs — sits prominently below the masthead so active
           work is the first thing the dashboard surfaces. */}

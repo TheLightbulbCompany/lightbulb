@@ -1995,6 +1995,18 @@ class TestCompanyStripeRequestOnEnteringLive:
 
         company_stripe_request.assert_called_once_with("org_x")
 
+    @pytest.mark.parametrize("provider", ["chatgpt_oauth", "byo_key"])
+    async def test_a_non_bedrock_owner_is_asked_too(self, mock_repo, company_stripe_request, provider):
+        """The ask is UNCONDITIONAL on the LLM provider — it is the owner's own
+        revenue rail, not ours. It sits directly beside the Metronome dispatch,
+        which IS provider-gated, so this pins the two apart before an edit
+        couples them."""
+        await _run_state(
+            mock_repo, "trial_local", "active", metadata={"owner_id": "org_x", "provider_choice": provider}
+        )
+
+        company_stripe_request.assert_called_once_with("org_x")
+
     async def test_a_renewal_does_not_ask(self, mock_repo, company_stripe_request):
         """An ordinary renewal is not an entry into paid. The card dedupes on a
         pending marker so a repeat would be inert, but each attempt is three

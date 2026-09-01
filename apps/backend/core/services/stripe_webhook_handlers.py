@@ -353,9 +353,17 @@ def dispatch_company_stripe_request(owner_id: str) -> None:
     pending ``company_stripe`` marker, so at most one card exists at a time.
 
     Fire-and-forget for the same reason as ``dispatch_metronome_provisioning``
-    — three Paperclip round trips are too many to await inside a Stripe
+    — filing a card is several Paperclip round trips (company lookup, admin
+    cookie, pending list, then the create), too many to await inside a Stripe
     webhook, and the strong reference below is what stops asyncio garbage-
     collecting the task mid-await.
+
+    An owner whose Paperclip company does not exist yet gets NO card and no
+    error: ``file_board_card`` returns None on the company gate. Reachable only
+    on the rare direct-to-paid entry (no prior ``trial_local`` row, so no
+    provisioned container yet), and ``entering_live`` is a one-shot edge that
+    never re-fires — the owner's Settings page and Friday remain the fallbacks,
+    exactly as they were before this dispatch existed.
     """
     task = asyncio.create_task(_request_company_stripe(owner_id))
     _BACKGROUND_TASKS.add(task)

@@ -242,6 +242,51 @@ the sanctioned path. NOTE the `+clerk_test` bootstrap-admin collision bug
 after the mail move — as an owner can never seed Paperclip; issue #2003); pick
 a different test account for import/Teams flows.
 
+### Code Review
+
+**CodeRabbit and Greptile are GONE** (subscriptions cancelled 2026-08-30). Do
+not wait on them, and do not treat a stale `CodeRabbit` required check as
+something to bypass — the fix is to drop the check, not to unprotect `main`.
+
+| | who | surface | gates the merge? |
+|---|---|---|---|
+| **Gate** | `claude-code-review.yml` → `anthropics/claude-code-action` | sticky PR comment | **yes** — the job `claude-review` is the required status check on `main` |
+| **Second opinion** | the `chatgpt-codex-connector` GitHub App | issue comment or 👍 reaction | no — it publishes no status check at all |
+
+`claude-code-review.yml` runs on every `pull_request` and is deliberately **not**
+path-filtered: a workflow that never starts reports no check, and a required
+check that never reports blocks that PR forever. That is also why none of the
+path-filtered gates (`backend.yml`, `frontend-ci.yml`, `infra-ci.yml`,
+`company-ci.yml`, `mobile-ci.yml`) can be the required check. A job-level `if:`
+is safe — a *skipped job* reports success to branch protection.
+
+The same workflow posts a bare `@codex review` on open / ready-for-review /
+reopen (not on every push). Codex **no longer auto-reviews**; that comment is
+the trigger, and any trailing text after `@codex review` stops it being picked
+up. Codex then answers on one of four surfaces — check all four before
+concluding it was silent:
+
+```bash
+gh pr view <n> --repo TheLightbulbCompany/lightbulb --json reviews  # formal review
+gh api repos/TheLightbulbCompany/lightbulb/pulls/<n>/comments       # inline findings
+gh api repos/TheLightbulbCompany/lightbulb/issues/<n>/comments      # "Review Result" / "Didn't find any major issues."
+gh api repos/TheLightbulbCompany/lightbulb/issues/<n>/reactions     # a bare 👍 IS a complete approval
+```
+
+A clean pass is usually the issue **comment** or the 👍 alone, so a poll that
+watches only the reviews endpoint hangs forever on a clean PR.
+
+**Local `codex` CLI is the fallback** when the connector does not pick a PR up:
+run it against the diff and paste the result into the PR thread. It cannot run
+in Actions — it authenticates with a rotating ChatGPT OAuth token in
+`~/.codex/auth.json` (there is no `OPENAI_API_KEY`), which is not a CI-safe
+secret. That is why the GitHub App, not the CLI, does the automated pass.
+
+**Admin bypass is not the normal path.** `main` runs with `enforce_admins: true`.
+Merging past a missing or red required check means switching that off, and it
+must go back on in the same sitting. If the reviewer itself is broken, fix it or
+drop it from the required contexts — never leave the branch unprotected.
+
 ### CI/CD Monitoring
 
 ```bash

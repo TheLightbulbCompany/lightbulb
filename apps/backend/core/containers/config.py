@@ -1332,6 +1332,10 @@ _NODE_ALLOW_COMMANDS = [
     "system.execApprovals.get",
     "system.execApprovals.set",
     "browser.proxy",
+    # Node-hosted local MCP servers (desktop sidecar). Approved pairing
+    # commands already enter the runtime allowlist on their own; this is the
+    # same second door every other desktop-host command here rides.
+    "mcp.tools.call.v1",
     "device.info",
     "device.status",
     "device.health",

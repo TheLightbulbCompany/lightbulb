@@ -185,7 +185,12 @@ export function AccountsPanel() {
           not the other. Same vocabulary as StripeSection on
           /settings/connections — that component can't be reused here, its
           `.settings-card` classes live in the route-scoped settings.css and
-          are never loaded on /chat (see TeamBillingCard's styling note). */}
+          are never loaded on /chat (see TeamBillingCard's styling note).
+
+          THE RULE TO KEEP: while these two share a page they must not share a
+          vocabulary. The bare word "Stripe" may never be the label a
+          connection status hangs off, or "Not connected" reads as a verdict on
+          the owner's money — see the ConnectionsList `labels` call below. */}
       <PanelSection
         label="Where money lands"
         open={open.account}

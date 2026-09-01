@@ -15845,7 +15845,7 @@ function resolveRawHomeDir(env, homedir) {
   }
   if (explicitHome === "~" || explicitHome.startsWith("~/") || explicitHome.startsWith("~\\")) {
     const fallbackHome = resolveRawOsHomeDir(env, homedir);
-    return fallbackHome ? explicitHome.replace(/^~(?=$|[\\/])/, fallbackHome) : void 0;
+    return fallbackHome ? explicitHome.replace(/^~(?=$|[\\/])/, () => fallbackHome) : void 0;
   }
   return explicitHome;
 }
@@ -15870,7 +15870,7 @@ function expandHomePrefix(input, opts) {
   if (!home) {
     return input;
   }
-  return input.replace(/^~(?=$|[\\/])/, home);
+  return input.replace(/^~(?=$|[\\/])/, () => home);
 }
 function resolveHomeRelativePath(input, opts) {
   const trimmed = input.trim();
@@ -16109,6 +16109,23 @@ function resolveConfigDir(env = process.env, homedir = os2.homedir) {
 }
 var CONFIG_DIR = resolveConfigDir();
 
+// packages/model-catalog-core/src/provider-id.ts
+function normalizeProviderId(provider) {
+  return normalizeLowercaseStringOrEmpty(provider);
+}
+
+// packages/model-catalog-core/src/model-catalog-refs.ts
+function parseProviderModelRef(value) {
+  const trimmed = value.trim();
+  const slashIndex = trimmed.indexOf("/");
+  if (slashIndex <= 0 || slashIndex >= trimmed.length - 1) {
+    return null;
+  }
+  const provider = trimmed.slice(0, slashIndex).trim();
+  const model = trimmed.slice(slashIndex + 1).trim();
+  return provider && model ? { provider, model } : null;
+}
+
 // src/config/paths.ts
 import fs2 from "node:fs";
 import os3 from "node:os";
@@ -16247,6 +16264,10 @@ function normalizeAgentIdStrict(value) {
   }
   const agentId = normalized.replace(INVALID_CHARS_RE, "-").replace(LEADING_DASH_RE, "").replace(TRAILING_DASH_RE, "").slice(0, 64);
   return agentId ? ok(agentId) : err("unrepresentable");
+}
+function isValidAgentId(value) {
+  const trimmed = (value ?? "").trim();
+  return Boolean(trimmed) && VALID_ID_RE.test(trimmed);
 }
 
 // src/infra/prototype-keys.ts
@@ -16560,11 +16581,6 @@ var AgentToolModelSchema = external_exports.union([
 // src/config/zod-schema.core.ts
 import path6 from "node:path";
 
-// packages/model-catalog-core/src/provider-id.ts
-function normalizeProviderId(provider) {
-  return normalizeLowercaseStringOrEmpty(provider);
-}
-
 // src/infra/exec-safety.ts
 var SHELL_METACHARS = /[;&|`$<>]/;
 var CONTROL_CHARS = /[\r\n]/;
@@ -16606,6 +16622,32 @@ function isSafeExecutableValue(value) {
     return false;
   }
   return BARE_NAME_PATTERN.test(trimmed);
+}
+
+// src/secrets/exact-hostname.ts
+import net from "node:net";
+import { domainToASCII } from "node:url";
+function normalizeExactAllowedHost(raw) {
+  const trimmed = raw.trim().toLowerCase().replace(/\.+$/u, "");
+  if (trimmed.includes("*")) {
+    throw new Error(`Allowed host "${raw}" cannot contain a wildcard; use one exact hostname.`);
+  }
+  const unbracketed = trimmed.startsWith("[") && trimmed.endsWith("]") ? trimmed.slice(1, -1) : trimmed;
+  if (net.isIP(unbracketed)) {
+    return unbracketed;
+  }
+  if (!unbracketed || unbracketed.includes(":") || /[\s/?#@]/u.test(unbracketed)) {
+    throw new Error(
+      `Allowed host "${raw}" must be a hostname without a scheme, path, wildcard, or port.`
+    );
+  }
+  const ascii = domainToASCII(unbracketed);
+  if (!ascii || ascii.length > 253 || ascii.split(".").some(
+    (label) => !label || label.length > 63 || label.startsWith("-") || label.endsWith("-") || !/^[a-z0-9-]+$/u.test(label)
+  )) {
+    throw new Error(`Allowed host "${raw}" is not a valid hostname.`);
+  }
+  return ascii;
 }
 
 // src/config/types.secrets.ts
@@ -16678,6 +16720,92 @@ function formatExecSecretRefIdValidationMessage() {
     'and must not include "." or ".." path segments',
     '(example: "vault/openai/api-key" or "aws/secret#json_key").'
   ].join(" ");
+}
+
+// src/config/model-provider-config.ts
+var BUILT_IN_MODEL_PROVIDER_OVERLAY_IDS = /* @__PURE__ */ new Set([
+  "amazon-bedrock",
+  "amazon-bedrock-mantle",
+  "anthropic",
+  "anthropic-vertex",
+  "arcee",
+  "azure-openai-responses",
+  "byteplus",
+  "byteplus-plan",
+  "cerebras",
+  "chutes",
+  "claude-cli",
+  "clawrouter",
+  "cloudflare-ai-gateway",
+  "codex",
+  "comfy",
+  "copilot-proxy",
+  "dashscope",
+  "deepinfra",
+  "deepseek",
+  "fal",
+  "fireworks",
+  "github-copilot",
+  "gmi",
+  "gmi-cloud",
+  "gmicloud",
+  "google",
+  "google-antigravity",
+  "google-gemini-cli",
+  "google-vertex",
+  "groq",
+  "huggingface",
+  "kilocode",
+  "kimi",
+  "kimi-coding",
+  "litellm",
+  "lmstudio",
+  "meta",
+  "microsoft-foundry",
+  "minimax",
+  "minimax-portal",
+  "mistral",
+  "modelstudio",
+  "moonshot",
+  "moonshot-ai",
+  "moonshotai",
+  "nvidia",
+  "novita",
+  "novita-ai",
+  "novitaai",
+  "ollama",
+  "ollama-cloud",
+  "openai",
+  "opencode",
+  "opencode-go",
+  "openrouter",
+  "qianfan",
+  "qwen",
+  "qwen-token-plan",
+  "qwencloud",
+  "sglang",
+  "stepfun",
+  "stepfun-plan",
+  "synthetic",
+  "tencent-tokenhub",
+  "tencent-tokenplan",
+  "together",
+  "venice",
+  "vercel-ai-gateway",
+  "vllm",
+  "volcengine",
+  "volcengine-plan",
+  "vydra",
+  "x-ai",
+  "xai",
+  "xiaomi",
+  "xiaomi-token-plan",
+  "z.ai",
+  "z-ai",
+  "zai"
+]);
+function isBuiltInModelProviderOverlayId(providerId) {
+  return BUILT_IN_MODEL_PROVIDER_OVERLAY_IDS.has(normalizeProviderId(providerId));
 }
 
 // src/config/types.models.ts
@@ -16827,6 +16955,16 @@ var SecretsExecProviderSchema = external_exports.union([
   SecretsPluginIntegrationExecProviderSchema
 ]);
 var SecretsStoreProviderSchema = external_exports.object({ source: external_exports.literal("store") }).strict();
+var EgressProxyExactHostSchema = external_exports.string().trim().min(1).superRefine((host, ctx) => {
+  try {
+    normalizeExactAllowedHost(host);
+  } catch (error51) {
+    ctx.addIssue({
+      code: "custom",
+      message: error51 instanceof Error ? error51.message : "Invalid allowed host"
+    });
+  }
+});
 var SecretProviderSchema = external_exports.union([
   SecretsEnvProviderSchema,
   SecretsFileProviderSchema,
@@ -16836,7 +16974,8 @@ var SecretProviderSchema = external_exports.union([
 var SecretsConfigSchema = external_exports.object({
   egressProxy: external_exports.object({
     enabled: external_exports.boolean().optional(),
-    bypassHosts: external_exports.array(external_exports.string().trim().min(1)).max(256).optional()
+    allowedHosts: external_exports.array(EgressProxyExactHostSchema).max(256).optional(),
+    bypassHosts: external_exports.array(EgressProxyExactHostSchema).max(256).optional()
   }).strict().optional(),
   providers: external_exports.object({
     // Keep this as a record so users can define multiple named providers per source.
@@ -16853,12 +16992,50 @@ var OPENAI_CHATGPT_RESPONSES_API = "openai-chatgpt-responses";
 var ModelApiSchema = external_exports.enum(MODEL_APIS, {
   error: (issue2) => issue2.input === LEGACY_OPENAI_CODEX_RESPONSES_API ? `"${LEGACY_OPENAI_CODEX_RESPONSES_API}" is a removed api id; use "${OPENAI_CHATGPT_RESPONSES_API}"` : void 0
 });
+var RoutingPercentileCutoffsSchema = external_exports.object({
+  p50: external_exports.number().optional(),
+  p75: external_exports.number().optional(),
+  p90: external_exports.number().optional(),
+  p99: external_exports.number().optional()
+}).strict();
+var OpenRouterRoutingSchema = external_exports.object({
+  allow_fallbacks: external_exports.boolean().optional(),
+  require_parameters: external_exports.boolean().optional(),
+  data_collection: external_exports.enum(["deny", "allow"]).optional(),
+  zdr: external_exports.boolean().optional(),
+  enforce_distillable_text: external_exports.boolean().optional(),
+  order: external_exports.array(external_exports.string()).optional(),
+  only: external_exports.array(external_exports.string()).optional(),
+  ignore: external_exports.array(external_exports.string()).optional(),
+  quantizations: external_exports.array(external_exports.string()).optional(),
+  sort: external_exports.union([
+    external_exports.string(),
+    external_exports.object({
+      by: external_exports.string().optional(),
+      partition: external_exports.string().nullable().optional()
+    }).strict()
+  ]).optional(),
+  max_price: external_exports.object({
+    prompt: external_exports.union([external_exports.number(), external_exports.string()]).optional(),
+    completion: external_exports.union([external_exports.number(), external_exports.string()]).optional(),
+    image: external_exports.union([external_exports.number(), external_exports.string()]).optional(),
+    audio: external_exports.union([external_exports.number(), external_exports.string()]).optional(),
+    request: external_exports.union([external_exports.number(), external_exports.string()]).optional()
+  }).strict().optional(),
+  preferred_min_throughput: external_exports.union([external_exports.number(), RoutingPercentileCutoffsSchema]).optional(),
+  preferred_max_latency: external_exports.union([external_exports.number(), RoutingPercentileCutoffsSchema]).optional()
+}).strict();
+var VercelGatewayRoutingSchema = external_exports.object({
+  only: external_exports.array(external_exports.string()).optional(),
+  order: external_exports.array(external_exports.string()).optional()
+}).strict();
 var ModelCompatSchema = external_exports.object({
   supportsStore: external_exports.boolean().optional(),
   supportsPromptCacheKey: external_exports.boolean().optional(),
   supportsDeveloperRole: external_exports.boolean().optional(),
   supportsReasoningEffort: external_exports.boolean().optional(),
   supportsTemperature: external_exports.boolean().optional(),
+  supportsInstructions: external_exports.boolean().optional(),
   supportsUsageInStreaming: external_exports.boolean().optional(),
   supportsTools: external_exports.boolean().optional(),
   codeMode: external_exports.enum(["preferred", "capable"]).optional(),
@@ -16878,7 +17055,15 @@ var ModelCompatSchema = external_exports.object({
   toolSchemaProfile: external_exports.string().optional(),
   unsupportedToolSchemaKeywords: external_exports.array(external_exports.string().min(1)).optional(),
   toolCallArgumentsEncoding: external_exports.string().optional(),
-  requiresOpenAiAnthropicToolPayload: external_exports.boolean().optional()
+  requiresOpenAiAnthropicToolPayload: external_exports.boolean().optional(),
+  openRouterRouting: OpenRouterRoutingSchema.optional(),
+  vercelGatewayRouting: VercelGatewayRoutingSchema.optional(),
+  zaiToolStream: external_exports.boolean().optional(),
+  cacheControlFormat: external_exports.literal("anthropic").optional(),
+  sendSessionAffinityHeaders: external_exports.boolean().optional(),
+  sendSessionIdHeader: external_exports.boolean().optional(),
+  supportsEagerToolInputStreaming: external_exports.boolean().optional(),
+  supportsLongCacheRetention: external_exports.boolean().optional()
 }).strict().optional();
 var ConfiguredProviderRequestTlsSchema = external_exports.object({
   ca: SecretInputSchema.optional().register(sensitive),
@@ -16992,90 +17177,6 @@ var ModelProviderLocalServiceSchema = external_exports.object({
   readyTimeoutMs: external_exports.number().int().positive().optional(),
   idleStopMs: external_exports.number().int().nonnegative().optional()
 }).strict().optional();
-var BUILT_IN_MODEL_PROVIDER_OVERLAY_IDS = /* @__PURE__ */ new Set([
-  "amazon-bedrock",
-  "amazon-bedrock-mantle",
-  "anthropic",
-  "anthropic-vertex",
-  "arcee",
-  "azure-openai-responses",
-  "byteplus",
-  "byteplus-plan",
-  "cerebras",
-  "chutes",
-  "claude-cli",
-  "clawrouter",
-  "cloudflare-ai-gateway",
-  "codex",
-  "comfy",
-  "copilot-proxy",
-  "dashscope",
-  "deepinfra",
-  "deepseek",
-  "fal",
-  "fireworks",
-  "github-copilot",
-  "gmi",
-  "gmi-cloud",
-  "gmicloud",
-  "google",
-  "google-antigravity",
-  "google-gemini-cli",
-  "google-vertex",
-  "groq",
-  "huggingface",
-  "kilocode",
-  "kimi",
-  "kimi-coding",
-  "litellm",
-  "lmstudio",
-  "meta",
-  "microsoft-foundry",
-  "minimax",
-  "minimax-portal",
-  "mistral",
-  "modelstudio",
-  "moonshot",
-  "moonshot-ai",
-  "moonshotai",
-  "nvidia",
-  "novita",
-  "novita-ai",
-  "novitaai",
-  "ollama",
-  "ollama-cloud",
-  "openai",
-  "opencode",
-  "opencode-go",
-  "openrouter",
-  "qianfan",
-  "qwen",
-  "qwen-token-plan",
-  "qwencloud",
-  "sglang",
-  "stepfun",
-  "stepfun-plan",
-  "synthetic",
-  "tencent-tokenhub",
-  "tencent-tokenplan",
-  "together",
-  "venice",
-  "vercel-ai-gateway",
-  "vllm",
-  "volcengine",
-  "volcengine-plan",
-  "vydra",
-  "x-ai",
-  "xai",
-  "xiaomi",
-  "xiaomi-token-plan",
-  "z.ai",
-  "z-ai",
-  "zai"
-]);
-function isBuiltInModelProviderOverlayId(providerId) {
-  return BUILT_IN_MODEL_PROVIDER_OVERLAY_IDS.has(normalizeProviderId(providerId));
-}
 var ModelProviderSchema = external_exports.object({
   // Bundled provider overlays are materialized with an empty-string sentinel.
   // ModelProvidersSchema below still rejects empty baseUrl values for custom providers.
@@ -17738,6 +17839,7 @@ var ToolExecBaseShape = {
   safeBins: external_exports.array(external_exports.string()).optional(),
   strictInlineEval: external_exports.boolean().optional(),
   commandHighlighting: external_exports.boolean().optional(),
+  grantExpiryDays: external_exports.number().int().min(1).max(3650).optional(),
   safeBinTrustedDirs: external_exports.array(external_exports.string()).optional(),
   safeBinProfiles: external_exports.record(external_exports.string(), ToolExecSafeBinProfileSchema).optional(),
   reviewer: external_exports.object({
@@ -17975,8 +18077,20 @@ var AgentModelRuntimeEntrySchema = external_exports.object({
   alias: external_exports.string().optional(),
   params: external_exports.record(external_exports.string(), external_exports.unknown()).optional(),
   agentRuntime: AgentRuntimePolicySchema,
+  codeMode: external_exports.boolean().optional(),
   streaming: external_exports.boolean().optional()
 }).strict();
+var AgentModelMapSchema = external_exports.record(external_exports.string(), AgentModelRuntimeEntrySchema).superRefine((models, ctx) => {
+  for (const [ref, entry] of Object.entries(models)) {
+    if (entry.codeMode !== void 0 && (ref.includes("*") || !parseProviderModelRef(ref))) {
+      ctx.addIssue({
+        code: external_exports.ZodIssueCode.custom,
+        path: [ref, "codeMode"],
+        message: "Code Mode requires an exact provider/model entry; wildcard and bare model keys are not supported."
+      });
+    }
+  }
+});
 var AgentModelPolicySchema = external_exports.object({
   allow: external_exports.array(external_exports.string()).optional()
 }).strict();
@@ -17988,7 +18102,7 @@ var AgentEntrySchema = external_exports.object({
   agentDir: external_exports.string().optional(),
   model: AgentModelSchema.optional(),
   utilityModel: external_exports.string().optional(),
-  models: external_exports.record(external_exports.string(), AgentModelRuntimeEntrySchema).optional(),
+  models: AgentModelMapSchema.optional(),
   modelPolicy: AgentModelPolicySchema.optional(),
   thinkingDefault: external_exports.enum(["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max", "ultra"]).optional(),
   verboseDefault: external_exports.enum(["off", "on", "full"]).optional(),
@@ -18109,6 +18223,7 @@ var AgentDefaultsSchema = external_exports.object({
   /** Global default provider params applied to all models before per-model and per-agent overrides. */
   params: external_exports.record(external_exports.string(), external_exports.unknown()).optional(),
   model: AgentModelSchema.optional(),
+  modelSelectionScope: external_exports.enum(["session", "agent", "global"]).optional(),
   utilityModel: external_exports.string().optional(),
   imageModel: AgentToolModelSchema.optional(),
   mediaModels: external_exports.object({
@@ -18120,7 +18235,7 @@ var AgentDefaultsSchema = external_exports.object({
   pdfModel: AgentToolModelSchema.optional(),
   pdfMaxMb: external_exports.number().positive().optional(),
   pdfMaxPages: external_exports.number().int().positive().optional(),
-  models: external_exports.record(external_exports.string(), AgentModelRuntimeEntrySchema).optional(),
+  models: AgentModelMapSchema.optional(),
   modelPolicy: AgentModelPolicySchema.optional(),
   workspace: external_exports.string().optional(),
   skills: external_exports.array(external_exports.string()).optional(),
@@ -18268,6 +18383,20 @@ var AgentsSchema = external_exports.object({
       code: external_exports.ZodIssueCode.custom,
       path: ["entries"],
       message: "agents.entries must contain at least one configured agent"
+    });
+  }
+  const firstKeyByAgentId = /* @__PURE__ */ new Map();
+  for (const [key] of entries) {
+    const agentId = normalizeAgentId(key);
+    const firstKey = firstKeyByAgentId.get(agentId);
+    if (!firstKey) {
+      firstKeyByAgentId.set(agentId, key);
+      continue;
+    }
+    ctx.addIssue({
+      code: external_exports.ZodIssueCode.custom,
+      path: ["entries", key],
+      message: `agents.entries keys "${firstKey}" and "${key}" resolve to the same agent id "${agentId}"; rename one key so each agent has a unique id`
     });
   }
   const marked = entries.filter(([, entry]) => entry.default === true);
@@ -18693,6 +18822,16 @@ var CloudWorkerProfileShape = {
     label: "Cloud Worker Install Method",
     help: `Worker installation method: "bundle" (default) transfers the gateway's content-hashed installed build and supports released, development, and unreleased versions; "npm" installs the exact gateway version and is available only when that version is released.`
   }),
+  suspendAfter: external_exports.string().refine((value) => {
+    try {
+      return /(?:ms|s|m|h|d)$/i.test(value) && parseDurationMs(value) >= 6e4;
+    } catch {
+      return false;
+    }
+  }, "Worker profile suspendAfter must be a duration of at least 1m").optional().register(configUiMetadata, {
+    label: "Cloud Worker Idle Suspend Duration",
+    help: "Automatically reclaims an idle cloud worker after this duration, such as 45m or 2h; the next message provisions a replacement. Minimum: 1m. Leave unset to keep workers running."
+  }),
   settings: CloudWorkerSettingsSchema.optional().register(configUiMetadata, {
     label: "Cloud Worker Provider Settings",
     help: "Provider-owned settings validated by the selected plugin. Use SecretRef objects for secret-bearing values; opaque settings do not gain automatic secret resolution."
@@ -18737,6 +18876,7 @@ var CLOUD_WORKER_FIELD_SCHEMAS = {
   "cloudWorkers.profiles.*": CloudWorkerProfileSchema,
   "cloudWorkers.profiles.*.provider": CloudWorkerProfileShape.provider,
   "cloudWorkers.profiles.*.install": CloudWorkerProfileShape.install,
+  "cloudWorkers.profiles.*.suspendAfter": CloudWorkerProfileShape.suspendAfter,
   "cloudWorkers.profiles.*.settings": CloudWorkerProfileShape.settings
 };
 function projectCloudWorkerFieldMetadata(field) {
@@ -18896,6 +19036,9 @@ function findEdgeAuthIssue(headers) {
   return null;
 }
 
+// src/infra/node-runner-inventory.ts
+var NODE_WORKER_CAPACITY_MAX = 1024;
+
 // src/config/zod-schema.node-host.ts
 var BrowserSnapshotDefaultsSchema = external_exports.object({
   mode: external_exports.literal("efficient").optional()
@@ -18906,7 +19049,10 @@ var NodeHostAgentRunsSchema = external_exports.object({
   }).strict().optional()
 }).strict().optional();
 var NodeHostWorkerRunsSchema = external_exports.object({
-  enabled: external_exports.boolean().optional()
+  enabled: external_exports.boolean().optional(),
+  capacity: external_exports.number().int().min(1).max(NODE_WORKER_CAPACITY_MAX).optional(),
+  isolation: external_exports.enum(["none", "container"]).optional(),
+  containerImage: external_exports.string().trim().min(1).optional()
 }).strict().optional();
 
 // src/config/zod-schema.root-support.ts
@@ -19276,6 +19422,16 @@ var OperatorScopeSchema = external_exports.enum([
   TALK_SCOPE,
   TALK_SECRETS_SCOPE
 ]);
+var GatewayOperatorRoleDefinitionSchema = external_exports.strictObject({
+  sessions: external_exports.strictObject({ others: external_exports.enum(["none", "view", "suggest", "write"]) }),
+  sandbox: external_exports.enum(["inherit", "required"]).optional(),
+  agents: external_exports.union([
+    external_exports.literal("*"),
+    external_exports.array(external_exports.string().trim().min(1).refine(isValidAgentId, "Invalid agent id")).transform((agents) => uniqueValues(agents.map(normalizeAgentId)))
+  ]),
+  scopes: external_exports.array(OperatorScopeSchema).transform((scopes) => uniqueValues(scopes))
+});
+var GatewayOperatorRoleNameSchema = external_exports.string().trim().min(1).max(128);
 var GATEWAY_HTTP_LOOPBACK_HOSTS = /* @__PURE__ */ new Set(["localhost", "127.0.0.1", "[::1]"]);
 function validateGatewayPublicOrigin(value) {
   if (!validateHttpOrigin(value)) {
@@ -19353,6 +19509,21 @@ var GatewayConfigSchema = external_exports.strictObject({
         scopes: external_exports.array(external_exports.string().min(1)).optional()
       }).optional()
     }).optional()
+  }).optional(),
+  roles: external_exports.strictObject({
+    default: GatewayOperatorRoleNameSchema,
+    definitions: external_exports.record(GatewayOperatorRoleNameSchema, GatewayOperatorRoleDefinitionSchema).refine(
+      (definitions) => Object.keys(definitions).length > 0,
+      "gateway.roles.definitions must contain at least one role definition"
+    )
+  }).superRefine((roles, ctx) => {
+    if (!Object.hasOwn(roles.definitions, roles.default)) {
+      ctx.addIssue({
+        code: "custom",
+        message: "gateway.roles.default must name a configured role definition",
+        path: ["default"]
+      });
+    }
   }).optional(),
   trustedProxies: external_exports.array(external_exports.string()).optional(),
   allowRealIpFallback: external_exports.boolean().optional(),
@@ -19482,6 +19653,7 @@ var HookMappingSchema = external_exports.object({
   sessionMode: external_exports.union([external_exports.literal("isolated"), external_exports.literal("persistent")]).optional(),
   messageTemplate: external_exports.string().optional(),
   textTemplate: external_exports.string().optional(),
+  forEach: external_exports.string().regex(/^[^.[\]]+$/, "forEach must be a top-level payload key").optional(),
   deliver: external_exports.boolean().optional(),
   allowUnsafeExternalContent: external_exports.boolean().optional(),
   // Keep this open-ended so runtime channel plugins (for example feishu) can be
@@ -19681,6 +19853,23 @@ var CommandsSchema = external_exports.object({
   })
 );
 
+// src/config/zod-schema.telemetry.ts
+var TelemetryConfigShape = {
+  enabled: external_exports.boolean().optional().register(configUiMetadata, {
+    label: "Anonymous Feature Statistics",
+    help: "Shares enabled channel and provider names, plugin count, and recent session count with the daily update check. Disabled by default and always disabled when DO_NOT_TRACK=1."
+  }),
+  consentedAt: external_exports.string().datetime().optional().register(configUiMetadata, {
+    label: "Feature Statistics Consent Timestamp",
+    help: "ISO timestamp recording when the operator accepted or declined anonymous feature statistics. Prevents the setup wizard from asking again."
+  })
+};
+var TelemetryConfigSchema = external_exports.object(TelemetryConfigShape).strict().optional();
+var TELEMETRY_FIELD_SCHEMAS = {
+  "telemetry.enabled": TelemetryConfigShape.enabled,
+  "telemetry.consentedAt": TelemetryConfigShape.consentedAt
+};
+
 // src/config/zod-schema.root-shape.ts
 var MetricNamePrefixSchema = external_exports.string().max(128).regex(/^(?:[A-Za-z][A-Za-z0-9_./-]*)?$/);
 var OpenClawSchemaShape = {
@@ -19757,6 +19946,7 @@ var OpenClawSchemaShape = {
       enabled: external_exports.boolean().optional()
     }).optional()
   }).optional(),
+  telemetry: TelemetryConfigSchema,
   browser: external_exports.strictObject({
     enabled: external_exports.boolean().optional(),
     allowSystemProfileImport: external_exports.boolean().optional(),
@@ -19812,16 +20002,22 @@ var OpenClawSchemaShape = {
   }).optional(),
   ui: external_exports.strictObject({
     seamColor: HexColorSchema.optional(),
-    assistant: external_exports.strictObject({
-      name: external_exports.string().max(50).optional(),
-      avatar: external_exports.string().max(2e6).optional()
-    }).optional(),
     // Operator display prefs. Canonical here (agent-writable via approval,
     // synced across devices); the Control UI mirrors them into local
     // storage for instant boot and offline fallback.
     prefs: external_exports.strictObject({
-      theme: external_exports.union([external_exports.literal("claw"), external_exports.literal("knot"), external_exports.literal("dash"), external_exports.literal("custom")]).optional(),
+      theme: external_exports.union([
+        external_exports.literal("claw"),
+        external_exports.literal("knot"),
+        external_exports.literal("dash"),
+        external_exports.literal("absolutely"),
+        external_exports.literal("tide"),
+        external_exports.literal("beacon"),
+        external_exports.literal("phosphor"),
+        external_exports.literal("custom")
+      ]).optional(),
       themeMode: external_exports.union([external_exports.literal("light"), external_exports.literal("dark"), external_exports.literal("system")]).optional(),
+      accent: HexColorSchema.startsWith("#").optional(),
       locale: external_exports.string().max(20).optional(),
       chatShowThinking: external_exports.boolean().optional(),
       chatShowToolCalls: external_exports.boolean().optional(),

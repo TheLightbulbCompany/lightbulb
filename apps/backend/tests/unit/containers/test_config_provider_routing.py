@@ -7,6 +7,7 @@ import pytest
 from core.billing.bedrock_pricing import get_rate
 from core.services.agent_roster import roster_entries
 from core.containers.config import (
+    AGENT_MAX_CONCURRENT,
     build_openclaw_config_dict,
     build_provider_block,
     cheap_model_ref,
@@ -850,6 +851,35 @@ def test_paid_bedrock_keeps_cron_heartbeat_channels_and_acp():
     assert cfg["acp"]["allowedAgents"] == ["claude"]
 
 
+def test_agent_max_concurrent_is_pinned_not_cpu_derived():
+    """2026.8.1 replaced the fixed ``DEFAULT_AGENT_MAX_CONCURRENT = 4`` with
+    ``min(16, max(8, availableParallelism))`` (agent-limits.ts). The ``max(8, ...)``
+    is a FLOOR, so a 1 vCPU box can never resolve below 8 — and Fargate limits by
+    CFS quota rather than cpuset, which ``os.availableParallelism()`` does not
+    honour, so our 1 vCPU / 4 GB tasks report the HOST core count and land on the
+    ceiling of 16. That is 2-4x the concurrency 7.2 ran in prod for months, on the
+    same box that already crash-looped an 11-agent owner at boot.
+
+    Pin it, in BOTH shapes: the value must not depend on the host's core count.
+    """
+    for cfg in (_trial_cfg(), _paid_cfg()):
+        assert cfg["agents"]["defaults"]["maxConcurrent"] == AGENT_MAX_CONCURRENT
+    assert AGENT_MAX_CONCURRENT == 4, "7.2 ran a fixed 4; do not raise without a load test"
+
+
+def test_memory_recall_across_conversations_is_pinned_off():
+    """``memory.search.rememberAcrossConversations`` has no literal default: 8.1
+    derives it from ``session.dmScope`` (config-utils.ts resolveRememberAcross-
+    Conversations). We emit ``dmScope: "per-account-channel-peer"``, so it happens
+    to resolve false today — but changing dmScope for an unrelated reason would
+    silently turn cross-conversation recall on fleet-wide, and when on it also
+    force-enables session memory and appends "sessions" to the indexed sources
+    regardless of ``memory.search.sources``. State it explicitly.
+    """
+    for cfg in (_trial_cfg(), _paid_cfg()):
+        assert cfg["memory"]["search"]["rememberAcrossConversations"] is False
+
+
 def test_bedrock_trial_disables_skill_workshop_autocapture_explicitly():
     """Autonomous skill capture runs an extra model review over qualifying
     turns — the $3 trial budget must fund the user's own messages, not
@@ -996,13 +1026,20 @@ def test_tool_loop_detection_enabled(provider_choice, kwargs):
 
 @pytest.mark.parametrize("provider_choice,kwargs", _BOUNDED_CONFIGS)
 def test_global_agent_semaphore_and_cache_retention_untouched(provider_choice, kwargs):
-    """agents.defaults.maxConcurrent stays at its upstream default of 4, and
-    cacheRetention stays "long" — "none" would kill cache READS too and make a
-    long loop dramatically MORE expensive."""
+    """The effective global agent semaphore stays 4, and cacheRetention stays
+    "long" — "none" would kill cache READS too and make a long loop dramatically
+    MORE expensive.
+
+    The INTENT here is unchanged; only the mechanism moved. Through 7.2 an
+    omitted key yielded the fixed upstream DEFAULT_AGENT_MAX_CONCURRENT = 4, so
+    asserting absence asserted the value. 2026.8.1 made the default
+    min(16, max(8, availableParallelism)), so omission now yields 8 at best and
+    16 on quota-limited Fargate. Assert the value, not the absence.
+    """
     cfg = build_openclaw_config_dict(
         user_id="u_1", gateway_token="test-token", provider_choice=provider_choice, **kwargs
     )
-    assert "maxConcurrent" not in cfg["agents"]["defaults"]
+    assert cfg["agents"]["defaults"]["maxConcurrent"] == 4
     assert cfg["agents"]["defaults"]["params"]["cacheRetention"] == "long"
 
 

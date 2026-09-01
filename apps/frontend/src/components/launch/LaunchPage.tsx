@@ -9,6 +9,7 @@ import { fetchLaunchInfo, type LaunchInfo } from "@/lib/launch";
 import { LaunchHero } from "./LaunchHero";
 import { Leaderboard } from "./Leaderboard";
 import { SheetCard } from "./SheetCard";
+import { TeamInterestForm } from "./TeamInterestForm";
 import "./launch.css";
 
 const ET = "America/New_York";
@@ -85,6 +86,15 @@ export default function LaunchPage() {
           {isSignedIn ? (
             <section className="ld-section" id="you">
               <SheetCard info={info} />
+            </section>
+          ) : null}
+
+          {/* Teams do not self-serve — this raises a hand, the founders do the
+              entry. Deliberately subordinate to the individual path above, and
+              only while the sheet is open (there is nothing to enter after). */}
+          {info.phase === "open" ? (
+            <section className="ld-section" id="teams">
+              <TeamInterestForm signedIn={!!isSignedIn} />
             </section>
           ) : null}
 

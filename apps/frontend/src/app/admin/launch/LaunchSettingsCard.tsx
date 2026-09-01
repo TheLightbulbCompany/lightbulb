@@ -61,6 +61,7 @@ export function LaunchSettingsCard({ settings }: LaunchSettingsCardProps) {
   const [compSlots, setCompSlots] = React.useState(String(settings.comp_slots));
   const [potFrontDollars, setPotFrontDollars] = React.useState(String(settings.pot_front_cents / 100));
   const [potPerEntrantDollars, setPotPerEntrantDollars] = React.useState(String(settings.pot_per_entrant_cents / 100));
+  const [potPerSeatDollars, setPotPerSeatDollars] = React.useState(String(settings.pot_per_seat_cents / 100));
   const [referralJump, setReferralJump] = React.useState(String(settings.referral_jump));
 
   const [saving, setSaving] = React.useState(false);
@@ -84,6 +85,7 @@ export function LaunchSettingsCard({ settings }: LaunchSettingsCardProps) {
       comp_slots: Math.round(Number(compSlots)),
       pot_front_cents: Math.round(Number(potFrontDollars) * 100),
       pot_per_entrant_cents: Math.round(Number(potPerEntrantDollars) * 100),
+      pot_per_seat_cents: Math.round(Number(potPerSeatDollars) * 100),
       referral_jump: Math.round(Number(referralJump)),
     };
     const result = await saveLaunchSettings(payload);
@@ -189,7 +191,7 @@ export function LaunchSettingsCard({ settings }: LaunchSettingsCardProps) {
           Joins are open until the sheet closes; the board runs start → end.
         </p>
 
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
           <div className="space-y-1">
             <label
               htmlFor="launch-comp-slots"
@@ -258,9 +260,27 @@ export function LaunchSettingsCard({ settings }: LaunchSettingsCardProps) {
             />
             {errors.pot_per_entrant_cents ? <p className="text-2xs text-err">{errors.pot_per_entrant_cents}</p> : null}
           </div>
+          <div className="space-y-1">
+            <label
+              htmlFor="launch-pot-per-seat"
+              className="text-xs font-medium uppercase tracking-caps text-muted-foreground"
+            >
+              Pot per team seat ($)
+            </label>
+            <Input
+              id="launch-pot-per-seat"
+              type="number"
+              min={0}
+              step={1}
+              value={potPerSeatDollars}
+              onChange={(e) => setPotPerSeatDollars(e.target.value)}
+            />
+            {errors.pot_per_seat_cents ? <p className="text-2xs text-err">{errors.pot_per_seat_cents}</p> : null}
+          </div>
         </div>
         <p className="text-2xs text-muted-foreground">
-          The pot fields are internal — never shown publicly.
+          The pot fields are internal — never shown publicly. An individual entrant contributes the per-entrant
+          amount; a counted team contributes the per-entrant amount plus the per-seat amount for every seat.
         </p>
 
         {needsConfirm ? (

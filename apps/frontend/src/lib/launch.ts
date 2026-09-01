@@ -72,6 +72,18 @@ export interface LaunchMe {
   entry: LaunchMeEntry | null;
 }
 
+/** `POST /launch/team-interest` (auth) — the caller's own team submission.
+ * NOT an entry: teams are entered by hand by the founders, and `counted` is
+ * their verdict on whether it contributes to the pot. No pot numbers here —
+ * the pot is admin-only on every surface. */
+export interface LaunchTeamInterest {
+  team_name: string;
+  seats: number;
+  note: string;
+  submitted_at: string | null;
+  counted: boolean;
+}
+
 export const LAUNCH_REF_KEY = "launch_ref";
 
 // Public reads use plain fetch: the shared client refuses to send without a

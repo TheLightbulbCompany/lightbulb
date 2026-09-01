@@ -399,3 +399,37 @@ async def test_ops_launch_email_test_502s_when_the_send_fails(admin_client):
     ):
         r = await admin_client.post("/api/v1/ops/launch/email-test", json={"variant": "competing"})
     assert r.status_code == 502
+
+
+# --- team entries: the founders' manual lane --------------------------------
+
+
+async def test_ops_team_entry_toggle_round_trips(admin_client):
+    row = {"owner_id": "org_1", "team_name": "Tuple", "seats": 6, "counted": True}
+    with (
+        patch("core.services.launch_service.set_team_entry", AsyncMock(return_value=row)) as set_entry,
+        patch("core.services.ops.launch.clear_cache") as clear,
+    ):
+        r = await admin_client.post("/api/v1/ops/launch/team-entries/org_1", json={"seats": 6, "counted": True})
+    # The audit decorator merges its own `audit_status` into a dict response.
+    assert r.status_code == 200 and r.json() | row == r.json()
+    assert set_entry.await_args.kwargs == {"seats": 6, "counted": True}
+    assert set_entry.await_args.args == ("org_1",)
+    # The pot preview reads through the 60s ops cache — a flipped toggle has to
+    # land on the next page load, not a minute later.
+    clear.assert_called_once()
+
+
+async def test_ops_team_entry_bad_seats_is_the_422_field_envelope(admin_client):
+    with patch(
+        "core.services.launch_service.set_team_entry",
+        AsyncMock(side_effect=launch_settings.SettingsInvalid({"seats": "must be between 1 and 500"})),
+    ):
+        r = await admin_client.post("/api/v1/ops/launch/team-entries/org_1", json={"seats": 0})
+    assert r.status_code == 422
+    assert r.json()["detail"] == {"errors": {"seats": "must be between 1 and 500"}}
+
+
+async def test_ops_team_entry_requires_admin(async_client):
+    r = await async_client.post("/api/v1/ops/launch/team-entries/org_1", json={"counted": True})
+    assert r.status_code in (401, 403)

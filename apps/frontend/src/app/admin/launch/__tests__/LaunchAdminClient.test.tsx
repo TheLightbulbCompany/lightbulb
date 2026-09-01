@@ -85,6 +85,7 @@ const data: LaunchOpsSheet = {
     comp_slots: 200,
     pot_front_cents: 100000,
     pot_per_entrant_cents: 1000,
+    pot_per_seat_cents: 500,
     referral_jump: 10,
     stripe_coupon_id: "co_1",
     closed_at: null,
@@ -100,6 +101,7 @@ const data: LaunchOpsSheet = {
   on_board: 8,
   pot_front_cents: 100000,
   pot_per_entrant_cents: 1000,
+  pot_per_seat_cents: 500,
   projected_pot_cents: 140000,
   closed: false,
   closed_at: null,
@@ -108,6 +110,8 @@ const data: LaunchOpsSheet = {
   final_pot_cents: null,
   final_roster_count: null,
   referrals: { signed_up: 50, subscribed: 12 },
+  teams: { total: 0, counted: 0, contribution_cents: 0 },
+  team_entries: [],
   entries: [{ owner_id: "u1", has_subscription: true, display_name: "Ada", public: true, waitlist_position: 3, currency: "usd", baseline_cents: 1000, window_cents: 3000, delta_cents: 2000, pct: 2, refreshed_at: "t", refresh_error: null }],
   sheet_rows: [sheetRow(), sheetRow({ email: "b@x.com", position: 2, effective_position: 2, display_name: "Bob", user_id: "u2", winner: false, compete_eligible: false, coupon_attached_at: null, winner_email_sent_at: null, referrals_subscribed: 0, referrals_signed_up: 0 })],
 };
@@ -120,7 +124,9 @@ describe("LaunchAdminClient", () => {
     // The projected pot is labelled internal and hints its own arithmetic.
     expect(screen.getByText("projected pot (internal)")).toBeInTheDocument();
     expect(screen.getByText("$1,400")).toBeInTheDocument();
-    expect(screen.getByText(/\$1,000 \+ \$10 × roster — never shown publicly/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/\$1,000 \+ \$10 × roster \+ counted teams \(\$10 \+ \$5 × seats\) — never shown publicly/),
+    ).toBeInTheDocument();
     // Sheet table: effective position first, winner/eligible flags per row.
     // ("Ada" is in the sheet table AND the board entries table.)
     expect(screen.getAllByText("Ada").length).toBeGreaterThanOrEqual(2);

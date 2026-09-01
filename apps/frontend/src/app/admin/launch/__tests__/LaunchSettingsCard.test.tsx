@@ -28,6 +28,7 @@ const baseSettings: LaunchSettings = {
   competition_end_at: "2026-12-01T00:00:00-05:00",
   comp_slots: 200,
   pot_front_cents: 100000,
+  pot_per_seat_cents: 500,
   pot_per_entrant_cents: 1000,
   referral_jump: 10,
   stripe_coupon_id: "",
@@ -73,7 +74,8 @@ describe("LaunchSettingsCard", () => {
       competition_end_at: "2026-12-01T00:00:00-05:00",
       comp_slots: 200,
       pot_front_cents: 120000,
-      pot_per_entrant_cents: 1000,
+      pot_per_seat_cents: 500,
+  pot_per_entrant_cents: 1000,
       referral_jump: 10,
     });
     expect(mockRefresh).toHaveBeenCalled();

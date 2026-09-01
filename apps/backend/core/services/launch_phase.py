@@ -18,7 +18,7 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Iterable, Literal
 
 from core.repositories import launch_settings_repo
 
@@ -79,6 +79,7 @@ def constants() -> dict:
         "comp_slots": row["comp_slots"],
         "pot_front_cents": row["pot_front_cents"],
         "pot_per_entrant_cents": row["pot_per_entrant_cents"],
+        "pot_per_seat_cents": row["pot_per_seat_cents"],
         "referral_jump": row["referral_jump"],
     }
 
@@ -137,6 +138,17 @@ def phase(s: Schedule, now: datetime | None = None) -> Phase:
     return "ended"
 
 
-def pot_cents(entrants: int) -> int:
+def pot_cents(entrants: int, team_seats: Iterable[int] = ()) -> int:
+    """front + per-entrant × individual roster + one (per-entrant + per-seat ×
+    seats) block per COUNTED team entry.
+
+    ``team_seats`` is the seat count of each team the founders have marked
+    counted (``launch_teams_repo``) — an unreviewed submission passes nothing
+    here, so it can never inflate the pot. A team is one entrant with a size:
+    it contributes the same per-entrant amount an individual does, plus the
+    per-seat amount for each seat."""
     c = constants()
-    return c["pot_front_cents"] + c["pot_per_entrant_cents"] * max(entrants, 0)
+    total = c["pot_front_cents"] + c["pot_per_entrant_cents"] * max(entrants, 0)
+    for seats in team_seats:
+        total += c["pot_per_entrant_cents"] + c["pot_per_seat_cents"] * max(int(seats), 0)
+    return total

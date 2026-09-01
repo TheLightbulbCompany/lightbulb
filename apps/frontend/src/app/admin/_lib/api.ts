@@ -714,6 +714,24 @@ export interface LaunchSheetRow {
   winner_email_sent_at: string | null;
 }
 
+/** One team submission (`POST /launch/team-interest`) — the founders' manual
+ * lane. Teams never join the sheet, so a team entry has no position and no
+ * coupon; `counted` is the founders' verdict, and ONLY a counted entry
+ * contributes `contribution_cents` to the pot. */
+export interface LaunchTeamEntry {
+  owner_id: string;
+  team_name: string;
+  seats: number;
+  note: string;
+  submitter_email: string;
+  submitter_user_id: string;
+  submitter_org_slug: string;
+  counted: boolean;
+  submitted_at: string | null;
+  /** What this entry adds to the pot once counted — per-entrant + per-seat × seats. */
+  contribution_cents: number;
+}
+
 /** The launch-settings row's admin projection (`to_admin` — everything but
  * `mint_nonce`). The pot fields are INTERNAL — they appear here and nowhere
  * public. `closed_at`/`final_*` are stamped by the close action, never PUT. */
@@ -725,6 +743,8 @@ export interface LaunchSettings {
   comp_slots: number;
   pot_front_cents: number;
   pot_per_entrant_cents: number;
+  /** Per SEAT of a counted team entry, on top of the per-entrant amount. */
+  pot_per_seat_cents: number;
   /** Queue-jump: sheet spots per counted (subscribed) referral. */
   referral_jump: number;
   stripe_coupon_id: string;
@@ -735,7 +755,7 @@ export interface LaunchSettings {
   updated_by?: string;
 }
 
-/** The eight admin-editable fields — the exact `PUT /ops/launch/settings`
+/** The nine admin-editable fields — the exact `PUT /ops/launch/settings`
  * body (full replace; every field required, dates nullable). */
 export type LaunchSettingsInput = Pick<
   LaunchSettings,
@@ -746,6 +766,7 @@ export type LaunchSettingsInput = Pick<
   | "comp_slots"
   | "pot_front_cents"
   | "pot_per_entrant_cents"
+  | "pot_per_seat_cents"
   | "referral_jump"
 >;
 
@@ -791,6 +812,7 @@ export interface LaunchOpsSheet {
   // The pot — ADMIN-ONLY, never in any public payload.
   pot_front_cents: number;
   pot_per_entrant_cents: number;
+  pot_per_seat_cents: number;
   projected_pot_cents: number;
   closed: boolean;
   closed_at: string | null;
@@ -800,6 +822,10 @@ export interface LaunchOpsSheet {
   final_pot_cents: number | null;
   final_roster_count: number | null;
   referrals: { signed_up: number; subscribed: number };
+  /** Team submissions: how many, how many the founders marked counted, and
+   * what those counted ones add to the pot. */
+  teams: { total: number; counted: number; contribution_cents: number };
+  team_entries: LaunchTeamEntry[];
   entries: LaunchOpsEntry[];
   sheet_rows: LaunchSheetRow[];
 }

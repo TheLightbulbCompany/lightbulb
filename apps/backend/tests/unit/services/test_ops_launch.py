@@ -82,6 +82,26 @@ def deps():
             "refresh_error": "stripe_auth",
         },
     ]
+    teams = [
+        {
+            "owner_id": "org_t",
+            "team_name": "Tuple",
+            "seats": 4,
+            "note": "six people, four seats",
+            "submitter_email": "founder@tuple.com",
+            "submitter_user_id": "u_t",
+            "submitter_org_slug": "tuple",
+            "counted": True,
+            "submitted_at": "t",
+        },
+        {
+            "owner_id": "org_u",
+            "team_name": "Unreviewed",
+            "seats": 9,
+            "counted": False,
+            "submitted_at": "t2",
+        },
+    ]
     billing = {"u_a": {"stripe_subscription_id": "sub_a"}}
     settings_row = _settings_row()
     with (
@@ -89,6 +109,7 @@ def deps():
         patch.object(ops_launch.launch_waitlist_repo, "list_all", AsyncMock(return_value=waitlist)),
         patch.object(ops_launch.launch_waitlist_repo, "count", AsyncMock(return_value=3)),
         patch.object(ops_launch.launch_entries_repo, "list_all", AsyncMock(return_value=entries)),
+        patch.object(ops_launch.launch_teams_repo, "list_all", AsyncMock(return_value=teams)),
         patch.object(ops_launch.billing_repo, "get_by_owner_id", AsyncMock(side_effect=lambda o: billing.get(o))),
         patch.object(ops_launch.launch_settings, "effective", AsyncMock(return_value=settings_row)),
     ):
@@ -117,6 +138,14 @@ async def test_sheet_payload_shape(deps):
     assert c["winner"] is False and c["compete_eligible"] is True  # pre-close default
     assert c["referred_by"] == "AAAA2345"
 
+    # Team entries ride along too — both of them, counted or not, so an
+    # admin can review what is waiting.
+    assert data["teams"] == {"total": 2, "counted": 1, "contribution_cents": 1_000 + 4 * 500}
+    t_counted, t_pending = data["team_entries"]
+    assert t_counted["team_name"] == "Tuple" and t_counted["counted"] is True
+    assert t_counted["contribution_cents"] == 1_000 + 4 * 500
+    assert t_pending["counted"] is False and t_pending["contribution_cents"] == 1_000 + 9 * 500
+
     # Board section still rides along, keyed by entries.
     assert data["entries"][0]["owner_id"] == "u_a" and data["entries"][0]["has_subscription"] is True
 
@@ -124,7 +153,10 @@ async def test_sheet_payload_shape(deps):
 async def test_pot_is_admin_only_and_projected_pre_close(deps):
     data, _, _ = await ops_launch.compute()
     assert data["pot_front_cents"] == 100_000 and data["pot_per_entrant_cents"] == 1_000
-    assert data["projected_pot_cents"] == 100_000 + 2 * 1_000  # 2 joined rows
+    assert data["pot_per_seat_cents"] == 500
+    # 2 joined individuals + ONE counted team (4 seats): the uncounted 9-seat
+    # submission contributes nothing.
+    assert data["projected_pot_cents"] == 100_000 + 2 * 1_000 + (1_000 + 4 * 500)
     assert data["closed"] is False and data["closed_at"] is None
     assert data["final_pot_cents"] is None and data["final_roster_count"] is None
 

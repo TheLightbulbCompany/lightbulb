@@ -8,7 +8,7 @@ import asyncio
 import time
 
 from core.dynamodb import utc_now_iso
-from core.repositories import billing_repo, launch_entries_repo, launch_waitlist_repo
+from core.repositories import billing_repo, launch_entries_repo, launch_teams_repo, launch_waitlist_repo
 from core.services import launch_phase, launch_service, launch_settings
 from core.services.ops import envelope as env
 
@@ -17,9 +17,12 @@ _cache: dict[str, tuple[float, tuple]] = {}
 
 
 async def _compute(s: launch_phase.Schedule) -> dict:
-    waitlist, entries, signups, settings_row = await asyncio.gather(
+    waitlist, entries, teams, signups, settings_row = await asyncio.gather(
         launch_waitlist_repo.list_all(),
         launch_entries_repo.list_all(),
+        # Team entries — the founders' manual lane. Only the counted ones
+        # reach the pot; the rest are here so an admin can review them.
+        launch_teams_repo.list_all(),
         # Same source as GET /launch's `signups` — the atomic position counter,
         # not len(list_all()), which drifts if a row is ever hard-deleted.
         launch_waitlist_repo.count(),
@@ -93,6 +96,25 @@ async def _compute(s: launch_phase.Schedule) -> dict:
         key=lambda r: (r["effective_position"], r["position"]),
     )
 
+    team_rows = [
+        {
+            "owner_id": t.get("owner_id"),
+            "team_name": t.get("team_name"),
+            "seats": int(t.get("seats", 0)),
+            "note": t.get("note") or "",
+            "submitter_email": t.get("submitter_email") or "",
+            "submitter_user_id": t.get("submitter_user_id") or "",
+            "submitter_org_slug": t.get("submitter_org_slug") or "",
+            "counted": bool(t.get("counted")),
+            "submitted_at": t.get("submitted_at"),
+            # What this entry adds to the pot once counted — shown for every
+            # row so an admin sees the cost of flipping the toggle.
+            "contribution_cents": launch_service.team_contribution_cents(int(t.get("seats", 0))),
+        }
+        for t in teams
+    ]
+    counted_seats = [r["seats"] for r in team_rows if r["counted"]]
+
     return {
         "generated_at": utc_now_iso(),
         "settings": launch_settings.to_admin(settings_row),
@@ -117,7 +139,8 @@ async def _compute(s: launch_phase.Schedule) -> dict:
         # the settings row at close and are surfaced verbatim here.
         "pot_front_cents": constants["pot_front_cents"],
         "pot_per_entrant_cents": constants["pot_per_entrant_cents"],
-        "projected_pot_cents": launch_phase.pot_cents(len(sheet_rows)),
+        "pot_per_seat_cents": constants["pot_per_seat_cents"],
+        "projected_pot_cents": launch_phase.pot_cents(len(sheet_rows), counted_seats),
         "closed": closed,
         "closed_at": settings_row.get("closed_at"),
         # Async close bookkeeping: started-but-no-result = a background task
@@ -130,6 +153,12 @@ async def _compute(s: launch_phase.Schedule) -> dict:
             "signed_up": sum(int(w.get("referrals_signed_up", 0)) for w in waitlist),
             "subscribed": sum(int(w.get("referrals_subscribed", 0)) for w in waitlist),
         },
+        "teams": {
+            "total": len(team_rows),
+            "counted": len(counted_seats),
+            "contribution_cents": sum(r["contribution_cents"] for r in team_rows if r["counted"]),
+        },
+        "team_entries": team_rows,
         "entries": entry_rows,
         "sheet_rows": sheet_rows,
     }

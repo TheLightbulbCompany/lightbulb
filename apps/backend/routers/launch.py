@@ -28,6 +28,7 @@ from schemas.launch import (
     LaunchInfo,
     LeaderboardResponse,
     ReferralAttributeRequest,
+    TeamInterestRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -149,6 +150,23 @@ async def join(
         if e.reason in ("not_onboarded", "closed"):
             raise HTTPException(status_code=409, detail={"reason": e.reason})
         raise HTTPException(status_code=400, detail=e.reason)
+
+
+@router.post("/team-interest", operation_id="launch_team_interest")
+async def team_interest(
+    body: TeamInterestRequest,
+    request: Request,
+    auth: AuthContext = Depends(get_current_user),
+    s: Schedule = Depends(require_launch),
+) -> dict:
+    """A team raises its hand — the founders enter it BY HAND. This is not a
+    join: it stores an interest row and emails the founders, and the org
+    refusal on /join above stays exactly as it is. Auth is required (any
+    signed-in caller, personal or org): it keeps the form off the spam list
+    and it is what identifies the submitter. Idempotent per owner — a second
+    submission edits the same row."""
+    _rate_limit(request, "team_interest")
+    return await launch_service.submit_team_interest(auth, team_name=body.team_name, seats=body.seats, note=body.note)
 
 
 @router.post("/connect-stripe", operation_id="launch_connect_stripe")

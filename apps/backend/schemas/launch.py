@@ -35,6 +35,36 @@ class JoinRequest(BaseModel):
         return v.strip() if isinstance(v, str) else v
 
 
+# The one seat ceiling — the admin edit path validates against it too
+# (``core.services.launch_service.set_team_entry``), so it lives here rather
+# than as a literal in each.
+TEAM_SEATS_MAX = 500
+
+
+class TeamInterestRequest(BaseModel):
+    """A team raising its hand — NOT an entry. The founders enter teams by
+    hand, so this body is only what they need to have that conversation."""
+
+    team_name: str = Field(min_length=2, max_length=80)
+    seats: int = Field(ge=1, le=TEAM_SEATS_MAX)
+    note: str = Field(default="", max_length=1000)
+
+    @field_validator("team_name", "note", mode="before")
+    @classmethod
+    def _strip_text(cls, v):
+        # Before, not after: a whitespace-only team name has to FAIL
+        # min_length rather than pass it and land as "".
+        return v.strip() if isinstance(v, str) else v
+
+
+class TeamEntryPatchRequest(BaseModel):
+    """The admin's edit of one team entry: correct the seat count, and decide
+    whether it counts toward the pot. Both optional — send what changed."""
+
+    seats: int | None = None
+    counted: bool | None = None
+
+
 class ConnectStripeRequest(BaseModel):
     stripe_key: str = Field(min_length=20, max_length=200)
 

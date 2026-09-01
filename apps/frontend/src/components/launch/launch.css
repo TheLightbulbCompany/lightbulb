@@ -82,3 +82,18 @@
 .lc-row { display: flex; gap: 8px; margin-top: 8px; }
 .lc-row input { flex: 1; min-width: 0; }
 .lc-actions { margin-top: 18px; display: flex; gap: 10px; flex-wrap: wrap; }
+
+/* "Entering as a team?" — the subordinate path under the individual join.
+   A native <details>, so the closed state is one quiet line. */
+.lc-disclosure { margin-top: 20px; max-width: 520px; }
+.lc-disclosure > summary {
+  cursor: pointer;
+  font-size: var(--text-ui);
+  color: var(--midnight-muted);
+  list-style: none;
+}
+.lc-disclosure > summary::-webkit-details-marker { display: none; }
+.lc-disclosure > summary::before { content: "+ "; color: var(--brass); }
+.lc-disclosure[open] > summary::before { content: "− "; }
+.lc-disclosure > summary:hover { color: var(--midnight); }
+.lc-disclosure[open] > summary { margin-bottom: 12px; color: var(--midnight); }

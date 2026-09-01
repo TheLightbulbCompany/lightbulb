@@ -37,6 +37,7 @@ def test_defaults_shape():
         "comp_slots": 200,
         "pot_front_cents": 100_000,
         "pot_per_entrant_cents": 1_000,
+        "pot_per_seat_cents": 500,
         "referral_jump": 10,
         "closed_at": None,
         "final_pot_cents": None,

@@ -343,3 +343,83 @@ async def send_test(variant: str, *, to_email: str, copy: dict | None, values: d
     signed-in admin's own address. Touches no sheet row and stamps no claim —
     it is only ``_send`` with a distinguishable ``kind``."""
     return await _send(variant, to_email=to_email, first_name=None, values=values, copy=copy, kind_suffix="_test")
+
+
+# --- team interest: the founders' own notification ---------------------------
+#
+# Deliberately NOT one of the VARIANTS above. Those are CUSTOMER copy: they are
+# admin-editable, carry validated placeholders, and appear in the console's
+# email editor and test-send. This one is internal ops mail — it goes to the
+# founders' own inbox, has nothing an admin would want to reword, and putting
+# it in VARIANTS would put an internal notice in the customer-copy editor.
+# Shape follows the module anyway: HTML + text, _STYLE, its own `kind`,
+# best-effort, never raises.
+
+# The standing rule the founders would otherwise have to rederive at close:
+# a winning TEAM's free month covers the container line only.
+TEAM_FREE_MONTH_NOTE = (
+    "If this team wins, their free month covers the container only "
+    "($50 Teams base) — per-seat charges still bill normally, so a "
+    "five-seat winner costs us the same $50 an individual winner does."
+)
+
+
+async def send_team_interest_email(
+    *,
+    team_name: str,
+    seats: int,
+    note: str,
+    submitter_email: str,
+    submitter_user_id: str,
+    submitter_org_slug: str | None,
+    contribution_cents: int,
+) -> str | None:
+    """Tell the founders a team raised its hand. Best-effort: returns the SES
+    MessageId or None, and NEVER raises — the submission is stored either way.
+    Reply-To is the submitter, so a reply reaches them directly."""
+    pot = f"${contribution_cents / 100:,.2f}"
+    rows = [
+        ("Team", team_name),
+        ("Seats", str(seats)),
+        ("Submitted by", submitter_email or submitter_user_id),
+        ("Owner", submitter_org_slug or submitter_user_id),
+        ("Pot contribution if counted", pot),
+    ]
+    row_html = "".join(f"<p><strong>{html.escape(k)}:</strong> {html.escape(v, quote=False)}</p>" for k, v in rows if v)
+    note_html = (
+        f'<p><strong>Note:</strong></p><blockquote style="border-left:3px solid #ddd;padding-left:12px;'
+        f'white-space:pre-wrap">{html.escape(note, quote=False)}</blockquote>'
+        if note
+        else ""
+    )
+    body_html = f"""\
+<div style="{_STYLE}">
+  <p><strong>A team wants in on the launch competition.</strong></p>
+  {row_html}{note_html}
+  <p style="color:#666;font-size:14px">{html.escape(TEAM_FREE_MONTH_NOTE, quote=False)}</p>
+  <p style="color:#666;font-size:14px">
+    Team entry is manual — nothing has been entered. Mark it counted in
+    /admin/launch for it to contribute to the pot.
+  </p>
+</div>"""
+    body_text = (
+        "A team wants in on the launch competition.\n\n"
+        + "".join(f"{k}: {v}\n" for k, v in rows if v)
+        + (f"\nNote:\n{note}\n" if note else "")
+        + f"\n{TEAM_FREE_MONTH_NOTE}\n"
+        + "\nTeam entry is manual — nothing has been entered. Mark it counted in "
+        "/admin/launch for it to contribute to the pot.\n"
+    )
+    try:
+        return await email_service.send_email(
+            to=settings.EMAIL_SUPPORT_ADDRESS,
+            subject=f"[Launch] Team entry: {team_name} ({seats} seats)",
+            html=body_html,
+            text=body_text,
+            from_addr=settings.EMAIL_FROM_TICKETS,
+            reply_to=submitter_email or settings.EMAIL_SUPPORT_ADDRESS,
+            kind="launch_team_interest",
+        )
+    except Exception:  # noqa: BLE001 — a failed email must never fail the submission
+        logger.exception("launch team-interest email send raised for %s", submitter_user_id)
+        return None

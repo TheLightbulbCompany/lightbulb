@@ -24,6 +24,7 @@ _INT_FIELDS = (
     "comp_slots",
     "pot_front_cents",
     "pot_per_entrant_cents",
+    "pot_per_seat_cents",
     "referral_jump",
     "mint_nonce",
     "final_pot_cents",
@@ -38,6 +39,10 @@ DEFAULTS: dict = {
     "comp_slots": 200,
     "pot_front_cents": 100_000,
     "pot_per_entrant_cents": 1_000,
+    # Team entries (core.repositories.launch_teams_repo) contribute the
+    # per-entrant amount PLUS this much per seat — a team is one entrant with
+    # a size. Counted teams only; see launch_phase.pot_cents.
+    "pot_per_seat_cents": 500,
     # Sheet queue-jump: each counted referral (referee subscribed) moves the
     # referrer up this many spots (see launch_service.effective_position).
     "referral_jump": 10,

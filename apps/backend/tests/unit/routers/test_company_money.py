@@ -282,10 +282,17 @@ def test_payments_day_range_filters_on_created(client):
     assert created["lt"] == company_stripe_reads._day_bounds("2026-08-30")["lt"]
 
 
-def test_payments_rejects_a_bad_date(client):
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"start": "yesterday"},
+        {"start": "2026-08-30", "end": "2026-08-01"},  # reversed, same rule as /rollup
+    ],
+)
+def test_payments_rejects_a_bad_range(client, params):
     factory = MagicMock()
     with patch.object(company_stripe_reads, "_client", factory):
-        resp = client.get("/api/v1/company/payments", params={"start": "yesterday"})
+        resp = client.get("/api/v1/company/payments", params=params)
     assert resp.status_code == 422
     factory.assert_not_called()
 

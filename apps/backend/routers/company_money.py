@@ -122,9 +122,12 @@ async def rollup(
 
 async def _page(auth: AuthContext, kind: str, **kwargs) -> dict:
     owner_id = _owner(auth)
-    for field in ("start", "end"):
-        if kwargs.get(field):
-            parse_day(kwargs[field], field)
+    days = [parse_day(kwargs[field], field) for field in ("start", "end") if kwargs.get(field)]
+    # No span cap here — Stripe's own cursor bounds the read, and an open range
+    # means "the latest N". The ordering rule is still day_range's: a reversed
+    # range is a caller mistake, and answering it with an empty page hides that.
+    if len(days) == 2 and days[0] > days[1]:
+        raise HTTPException(status_code=422, detail="range must be ascending")
     try:
         return await company_stripe_reads.stripe_page(owner_id, kind, **kwargs)
     except stripe.error.StripeError as e:

@@ -21,6 +21,10 @@ fn build_tray_menu(app: &AppHandle, status_label: &str) -> tauri::Result<()> {
     let status = MenuItemBuilder::with_id("status", status_label)
         .enabled(false)
         .build(app)?;
+    // The only way back to the window that isn't a terminal. The window can
+    // be hidden (close button) or, after a crash, gone entirely — this item
+    // covers both via focus_or_recreate_main_window.
+    let open = MenuItemBuilder::with_id("open", "Open Lightbulb").build(app)?;
     let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
 
     let menu = MenuBuilder::new(app)
@@ -28,6 +32,7 @@ fn build_tray_menu(app: &AppHandle, status_label: &str) -> tauri::Result<()> {
         .separator()
         .item(&status)
         .separator()
+        .item(&open)
         .item(&quit)
         .build()?;
 
@@ -38,10 +43,12 @@ fn build_tray_menu(app: &AppHandle, status_label: &str) -> tauri::Result<()> {
         TrayIconBuilder::with_id("main")
             .tooltip("Lightbulb")
             .menu(&menu)
-            .on_menu_event(|app, event| {
-                if event.id().as_ref() == "quit" {
-                    app.exit(0);
-                }
+            // Registered once, on the TrayIcon itself — it survives the
+            // set_menu() rebuilds that update_tray_status does.
+            .on_menu_event(|app, event| match event.id().as_ref() {
+                "open" => crate::focus_or_recreate_main_window(app),
+                "quit" => app.exit(0),
+                _ => {}
             })
             .build(app)?;
     }

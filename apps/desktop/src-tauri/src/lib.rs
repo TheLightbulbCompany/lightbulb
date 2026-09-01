@@ -1013,8 +1013,87 @@ fn redact_url(url_str: &str) -> String {
     }
 }
 
+/// Pick the deep-link URL out of a second-instance argv.
+///
+/// A plain relaunch (Dock, Finder, Spotlight, `open -a`) forwards only the
+/// executable path — and LaunchServices can append `-psn_0_1234` — so *most*
+/// second launches carry no URL at all. This deliberately returns an `Option`
+/// rather than a parse that can fail: nothing about argv may stop the caller
+/// from restoring the window. See `focus_or_recreate_main_window`.
+fn deep_link_from_argv(argv: &[String]) -> Option<&str> {
+    argv.iter()
+        .find(|a| a.starts_with("flickmeon://"))
+        .map(|s| s.as_str())
+}
+
+/// The two states the main window can be in when we need it back.
+#[derive(Debug, PartialEq, Eq)]
+pub enum WindowRecovery {
+    /// The window object is still alive (hidden, minimized, or just behind
+    /// another app): show + unminimize + focus it.
+    ShowExisting,
+    /// The window was destroyed and the process is running headless: rebuild
+    /// it from the bundled config.
+    Recreate,
+}
+
+pub fn decide_window_recovery(main_window_exists: bool) -> WindowRecovery {
+    if main_window_exists {
+        WindowRecovery::ShowExisting
+    } else {
+        WindowRecovery::Recreate
+    }
+}
+
+/// Bring the main window back, whatever state it is in. Safe to call from any
+/// wake-up path (second launch, deep link, tray menu, macOS Dock reopen) and
+/// idempotent when the window is already visible and focused.
+pub fn focus_or_recreate_main_window(app: &tauri::AppHandle) {
+    // Undo an app-level hide (Cmd+H, or Hide from the Dock menu); a hidden
+    // NSApplication ignores per-window `show()`.
+    #[cfg(target_os = "macos")]
+    let _ = app.show();
+
+    let existing = app.get_webview_window("main");
+    if decide_window_recovery(existing.is_some()) == WindowRecovery::ShowExisting {
+        if let Some(window) = existing {
+            let _ = window.unminimize();
+            let _ = window.show();
+            let _ = window.set_focus();
+            log("[window] restored existing main window");
+            return;
+        }
+    }
+
+    // No window object left. Rebuild from the bundled window config so the
+    // URL, size and title stay defined once in tauri.conf.json — the prod
+    // build patches `.app.windows[0].url` there, so this picks up the right
+    // origin in both flavors.
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|w| w.label == "main")
+        .cloned();
+    let Some(config) = config else {
+        log("[window] no `main` window config to recreate from");
+        return;
+    };
+    match tauri::WebviewWindowBuilder::from_config(app, &config).and_then(|b| b.build()) {
+        Ok(window) => {
+            let _ = window.set_focus();
+            log("[window] recreated main window from config");
+        }
+        Err(e) => log(&format!("[window] recreate failed: {e}")),
+    }
+}
+
 fn handle_deep_link_url(app: &tauri::AppHandle, url_str: &str) {
     log(&format!("[deep-link] received: {}", redact_url(url_str)));
+    // Restore the window BEFORE emitting: the ticket event needs a live
+    // webview to land in, and a windowless process would drop it silently.
+    focus_or_recreate_main_window(app);
     if url_str.starts_with("flickmeon://auth") {
         if let Ok(parsed) = url::Url::parse(url_str) {
             if let Some(ticket) = parsed
@@ -1029,9 +1108,54 @@ fn handle_deep_link_url(app: &tauri::AppHandle, url_str: &str) {
             }
         }
     }
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.unminimize();
-        let _ = window.set_focus();
+}
+
+#[cfg(test)]
+mod window_recovery_tests {
+    use super::*;
+
+    #[test]
+    fn plain_relaunch_argv_carries_no_deep_link() {
+        // The bug: the owner's relaunch forwarded only the executable path,
+        // the callback found no flickmeon:// entry, and did nothing at all.
+        // `None` here MUST NOT be treated as "nothing to do".
+        let argv = vec![
+            "/Applications/Lightbulb.app/Contents/MacOS/lightbulb-desktop".to_string(),
+            "-psn_0_886372".to_string(),
+        ];
+        assert_eq!(deep_link_from_argv(&argv), None);
+    }
+
+    #[test]
+    fn unparseable_argv_does_not_panic_or_match() {
+        let argv = vec!["<unparseable>".to_string(), String::new(), "?!".to_string()];
+        assert_eq!(deep_link_from_argv(&argv), None);
+        // And the log redaction that produced `<unparseable>` in the report
+        // is just a logging concern — it never gates control flow.
+        assert_eq!(redact_url("not a url"), "<unparseable>");
+    }
+
+    #[test]
+    fn deep_link_is_found_among_other_args() {
+        let argv = vec![
+            "/Applications/Lightbulb.app/Contents/MacOS/lightbulb-desktop".to_string(),
+            "flickmeon://auth?ticket=abc".to_string(),
+        ];
+        assert_eq!(deep_link_from_argv(&argv), Some("flickmeon://auth?ticket=abc"));
+    }
+
+    #[test]
+    fn redact_url_drops_the_ticket_query() {
+        // /tmp/lightbulb-desktop.log is world-readable; the Clerk one-time
+        // sign-in ticket must never reach it.
+        let redacted = redact_url("flickmeon://auth?ticket=super-secret#frag");
+        assert!(!redacted.contains("super-secret"), "leaked: {redacted}");
+    }
+
+    #[test]
+    fn missing_window_recreates_rather_than_giving_up() {
+        assert_eq!(decide_window_recovery(false), WindowRecovery::Recreate);
+        assert_eq!(decide_window_recovery(true), WindowRecovery::ShowExisting);
     }
 }
 
@@ -1069,6 +1193,23 @@ fn window_open_override_script() -> String {
 
 pub fn run() {
     tauri::Builder::default()
+        // Hide-on-close, not quit-on-close. This process is a background
+        // service host — it owns the node host, the gateway WebSocket and the
+        // loopback browser proxy the container drives — so tearing it down
+        // when the user closes the window would break flows that are supposed
+        // to keep running. Preventing the close also means the window object
+        // is never destroyed, which is what makes recovery deterministic:
+        // there is always something for `focus_or_recreate_main_window` to
+        // show. Quit stays one click away in the tray.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                    log("[window] main close requested; hiding to tray");
+                }
+            }
+        })
         .on_page_load(|webview, payload| {
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
                 log("[page-load] injecting window.open override");
@@ -1091,11 +1232,14 @@ pub fn run() {
                 "[single-instance] second launch argv={:?}",
                 redacted
             ));
-            // The deep-link URL appears as one of the argv entries.
-            for arg in argv {
-                if arg.starts_with("flickmeon://") {
-                    handle_deep_link_url(app, &arg);
-                }
+            // Restore the window FIRST and unconditionally. A plain relaunch
+            // (clicking the app icon) forwards no flickmeon:// URL, so the
+            // old `for arg in argv { if starts_with(...) }` loop matched
+            // nothing and the callback returned having done nothing — every
+            // relaunch of a windowless process was silently swallowed.
+            focus_or_recreate_main_window(app);
+            if let Some(url) = deep_link_from_argv(&argv) {
+                handle_deep_link_url(app, url);
             }
         }))
         .plugin(tauri_plugin_deep_link::init())
@@ -1229,6 +1373,16 @@ end tell"#,
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|_app, _event| {
+            // Dock-icon click on an already-running app: macOS delivers
+            // applicationShouldHandleReopen instead of spawning a second
+            // process, so single_instance never fires for this path.
+            #[cfg(target_os = "macos")]
+            if matches!(_event, tauri::RunEvent::Reopen { .. }) {
+                log("[reopen] dock reopen; restoring main window");
+                focus_or_recreate_main_window(_app);
+            }
+        });
 }

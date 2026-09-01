@@ -110,11 +110,16 @@ describe("AccountsPanel — the company account and the agent grants are differe
   it("labels each rail by what it does rather than leaving the brand to do it", async () => {
     renderPanel();
     await screen.findByText("Ask me first: Moving money");
-    expect(screen.getByText("Where money lands")).toBeInTheDocument();
-    expect(screen.getByText("What your agents can use")).toBeInTheDocument();
-    // The bare status word is no longer a section heading. It was the half of
+    // Queried as the section triggers themselves, which also proves the query
+    // below would have found the old "Connected" section had it survived.
+    expect(screen.getByRole("button", { name: /^Where money lands/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^What your agents can use/ })).toBeInTheDocument();
+    // The bare status word is no longer a section heading — it was the half of
     // the contradiction that made a not-connected row look authoritative.
-    expect(screen.queryByText("Connected")).not.toBeInTheDocument();
+    // Scoped to the PanelSection triggers rather than the whole page: the real
+    // ConnectionsList legitimately renders "Connected" on a connected row, and
+    // it is only stubbed here.
+    expect(screen.queryByRole("button", { name: /^Connected/ })).not.toBeInTheDocument();
   });
 
   it("says on the page that neither rail is the other", async () => {

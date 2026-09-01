@@ -20,6 +20,16 @@ interface ConnectionsListProps {
    * IntegrationsPanel keeps the full server-driven catalog).
    */
   exclude?: string[];
+  /**
+   * Display-name overrides, keyed by provider. For pages that render this list
+   * beside something else wearing the same brand: on the Accounts panel a bare
+   * "Stripe" row sits under the company's own Stripe account, so its "Not
+   * connected" reads as a verdict on where the owner's money lands. Relabelling
+   * the row keeps a connection status attached to the agent grant and only the
+   * agent grant. Sibling of `exclude` — same idea, one step short of hiding the
+   * row. Omitted everywhere else, so the server's `display_name` stands.
+   */
+  labels?: Record<string, string>;
 }
 
 /**
@@ -46,7 +56,7 @@ const KIND_LABELS: Record<string, string> = {
  * /settings/connections page re-mutates this same SWR key after an OAuth
  * return so a freshly-connected provider flips to green without a reload.
  */
-export function ConnectionsList({ canManage, exclude }: ConnectionsListProps) {
+export function ConnectionsList({ canManage, exclude, labels }: ConnectionsListProps) {
   const { connections, isLoading, error, mutate, connectPaste, startOAuth, disconnect } =
     useConnections();
   // The second facet. Its providers are NOT the OAuth registry's: this rail
@@ -125,7 +135,9 @@ export function ConnectionsList({ canManage, exclude }: ConnectionsListProps) {
             />
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2">
-                <p className="text-sm font-medium text-midnight">{connection.display_name}</p>
+                <p className="text-sm font-medium text-midnight">
+                  {labels?.[connection.provider] ?? connection.display_name}
+                </p>
                 {connection.actor && KIND_LABELS[connection.actor] && (
                   <span className="shrink-0 rounded-sm border border-[var(--edge)] px-1.5 py-0.5 text-2xs font-medium text-[var(--midnight-muted)]">
                     {KIND_LABELS[connection.actor]}

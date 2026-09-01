@@ -29,8 +29,13 @@ vi.mock("@/components/settings/CompanyStripeSection", () => ({
   ),
 }));
 vi.mock("@/components/settings/ConnectionsList", () => ({
-  ConnectionsList: ({ canManage }: { canManage: boolean }) => (
-    <div data-testid="connections-list">{String(canManage)}</div>
+  // Records `labels` so the panel's relabelling contract is assertable here;
+  // that the override actually changes the rendered row is ConnectionsList's
+  // own suite ("display-name overrides").
+  ConnectionsList: ({ canManage, labels }: { canManage: boolean; labels?: Record<string, string> }) => (
+    <div data-testid="connections-list" data-labels={JSON.stringify(labels ?? {})}>
+      {String(canManage)}
+    </div>
   ),
 }));
 
@@ -120,6 +125,24 @@ describe("AccountsPanel — the company account and the agent grants are differe
     // ConnectionsList legitimately renders "Connected" on a connected row, and
     // it is only stubbed here.
     expect(screen.queryByRole("button", { name: /^Connected/ })).not.toBeInTheDocument();
+  });
+
+  // The load-bearing one. Section framing alone still left the provider row
+  // labelled with the bare word "Stripe" while carrying "Not connected" — and
+  // an owner arriving from the auto-filed Stripe setup card reads that as "the
+  // upgrade I just did failed", then clicks Connect on the MCP grant, which is
+  // the wrong recovery: they end up OAuth-connected with still no company
+  // account. The brand name alone must never be the label a connection status
+  // hangs off, so the status can never be read as being about the money.
+  it("never lets the bare brand name carry the provider row's status", async () => {
+    renderPanel();
+    await screen.findByText("Ask me first: Moving money");
+    const labels = JSON.parse(
+      screen.getByTestId("connections-list").getAttribute("data-labels") ?? "{}",
+    );
+    expect(labels.stripe).toBeTruthy();
+    expect(labels.stripe).not.toBe("Stripe");
+    expect(labels.stripe).toMatch(/agent/i);
   });
 
   it("says on the page that neither rail is the other", async () => {

@@ -226,7 +226,14 @@ export function AccountsPanel() {
               className="py-8"
             />
           )}
-          <ConnectionsList canManage={canManage} />
+          {/* The row must survive being read on its own, because the status
+              sits right next to it: "Stripe · Not connected" one section under
+              a company Stripe account is how an owner concludes the upgrade
+              they just paid for failed, and then "fixes" it by connecting the
+              MCP grant — which leaves them OAuth-connected with still no
+              company account. The brand name alone never carries a status
+              here. */}
+          <ConnectionsList canManage={canManage} labels={{ stripe: "Stripe for your agents" }} />
         </div>
       </PanelSection>
 

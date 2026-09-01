@@ -17,7 +17,6 @@ import {
   type WorkspaceCommand,
 } from "./urlChannel";
 import {
-  resolvePanelAlias,
   chatPanelId,
   DEFAULT_AGENT_SENTINEL,
   ONE_SHOT_PARAMS,
@@ -30,8 +29,13 @@ export interface ReconcilerDecision {
   nextSignature: string;
   // null = the URL carries no command (still latch nextSignature).
   command: WorkspaceCommand | null;
-  // Alias-resolved raw ?panel value for openPanel; null for chat commands
-  // (chat is opened via openChatPanel with the descriptor's agentId).
+  // The RAW ?panel value for openPanel; null for chat commands (chat is opened
+  // via openChatPanel with the descriptor's agentId). Deliberately NOT
+  // alias-resolved: describePanel resolves the alias itself AND branches on the
+  // pre-alias key to carry a retired panel's meaning onto its successor
+  // (?panel=dreams must land on Brain's DREAMS tab, panelRegistry.ts). Handing
+  // it a pre-resolved key silently drops that — the whole reason a deep link to
+  // a retired panel used to open its successor's default tab.
   panelKey: string | null;
   // Raw URL-grammar durable params (e.g. { agent, inspectorTab }) — openPanel
   // re-derives the descriptor from these; one-shots and billing params removed.
@@ -74,13 +78,7 @@ export function deriveReconcilerAction(
   for (const k of ONE_SHOT_PARAMS) delete durableParams[k];
   for (const k of NON_COMMAND_PARAMS) delete durableParams[k];
 
-  const rawPanelKey = params.get("panel");
-  const panelKey =
-    command.descriptor.component === "chat"
-      ? null
-      : rawPanelKey
-        ? resolvePanelAlias(rawPanelKey)
-        : null;
+  const panelKey = command.descriptor.component === "chat" ? null : params.get("panel");
 
   return { nextSignature, command, panelKey, durableParams, strippedSearch };
 }

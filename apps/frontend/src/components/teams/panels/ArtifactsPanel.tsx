@@ -66,7 +66,7 @@ function SortControl({
       className="flex items-center gap-1 rounded-md border p-0.5 text-xs"
       style={{ borderColor: "var(--edge)" }}
       role="group"
-      aria-label="Sort artifacts"
+      aria-label="Sort deliverables"
     >
       {opts.map((o) => {
         const active = sort === o.value;
@@ -165,7 +165,7 @@ export function ArtifactsPanel() {
       // The destructive op failed (offline / 403 / 5xx). Keep the dialog open
       // with its retry context and surface the failure, rather than silently
       // closing as if the delete had succeeded.
-      setDeleteError("Couldn’t delete this artifact. Please try again.");
+      setDeleteError("Couldn’t delete this deliverable. Please try again.");
       setDeleting(false);
       return;
     }
@@ -202,7 +202,7 @@ export function ArtifactsPanel() {
             style={{ color: "var(--midnight-muted)" }}
           >
             <ArrowLeft size={16} aria-hidden="true" />
-            All artifacts
+            All deliverables
           </button>
           {selectedGroup ? (
             <span className="truncate" style={{ color: "var(--midnight-muted)" }}>
@@ -215,10 +215,10 @@ export function ArtifactsPanel() {
         </div>
       ) : null}
 
-      <section aria-label="Artifacts gallery" className="min-w-0">
+      <section aria-label="Library" className="min-w-0">
         {activeLoading && !hasItems ? (
           <p className="font-editorial-serif text-base italic" style={{ color: "var(--midnight-muted)" }}>
-            Loading artifacts…
+            Loading the Library…
           </p>
         ) : activeError && !hasItems ? (
           <p
@@ -226,13 +226,13 @@ export function ArtifactsPanel() {
             className="font-editorial-serif text-base italic"
             style={{ color: "var(--err)" }}
           >
-            Failed to load artifacts.
+            Failed to load the Library.
           </p>
         ) : !hasItems ? (
           <div className="flex flex-col items-center gap-2 py-12 text-center">
             <Images size={20} style={{ color: "var(--midnight-muted)" }} />
             <p className="font-editorial-serif text-base italic" style={{ color: "var(--midnight-muted)" }}>
-              {isExpanded ? "No artifacts in this task." : "No artifacts yet."}
+              {isExpanded ? "No deliverables in this task." : "Nothing in the Library yet."}
             </p>
             {!isExpanded ? (
               <p className="text-xs" style={{ color: "var(--midnight-muted)" }}>
@@ -281,7 +281,7 @@ export function ArtifactsPanel() {
             setDeleteError(null);
           }
         }}
-        title="Delete this artifact?"
+        title="Delete this deliverable?"
         description="This can’t be undone."
         footer={
           <>

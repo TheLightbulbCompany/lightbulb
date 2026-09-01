@@ -171,7 +171,9 @@ export function describePanel(
       // The retired `dreams` control panel aliases here (RETIRED_PANEL_ALIASES) —
       // an old ?panel=dreams link should land ON the Dreams tab, not silently
       // default to Notes. Checked on the ORIGINAL panelKey (pre-alias), so a
-      // fresh ?panel=teams-brain link is untouched.
+      // fresh ?panel=teams-brain link is untouched — which means every caller
+      // must hand describePanel the RAW ?panel value and let it resolve —
+      // a caller that pre-resolves makes this branch permanently dead.
       if (teamsKey === "brain" && panelKey === "dreams") p.tab = "dreams";
       return { panelId: key, component: "teams", title: TEAMS_LIST_KEYS[teamsKey], params: p };
     }

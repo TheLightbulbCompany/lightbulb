@@ -2,7 +2,7 @@
 
 import "./settings.css";
 import React, { Suspense, useEffect, useState, useCallback } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 
 import { capture } from "@/lib/analytics";
@@ -713,6 +713,19 @@ function SettingsPageInner() {
   const [activePanel, setActivePanel] = useState<Panel>(initialPanel);
   const ActivePanelComponent = PANELS[activePanel];
 
+  // …but some nav rows are sibling ROUTES, not tabs — Connections lives at
+  // /settings/connections because OAuth consent redirects the browser back to
+  // it. `?panel=connections` therefore names nothing in PANELS and used to
+  // fall back to Profile, silently, with no way to tell a typo from a real
+  // destination. Forward it to the route the nav row points at instead.
+  const router = useRouter();
+  const outboundHref = SETTINGS_NAV_SECTIONS.flatMap((s) => s.items).find(
+    (n) => n.href !== undefined && n.id === initialPanelParam,
+  )?.href;
+  useEffect(() => {
+    if (outboundHref) router.replace(outboundHref);
+  }, [outboundHref, router]);
+
   // Arrow-key roving focus operates only over the in-page tabs. Outbound
   // links (e.g. Connections) are excluded so they don't try to set a panel
   // that doesn't exist, and admin-only tabs hidden from non-admins are excluded
@@ -747,6 +760,10 @@ function SettingsPageInner() {
       document.getElementById(`settings-nav-${prev.id}`)?.focus();
     }
   }
+
+  // Redirecting (see outboundHref above) — render nothing rather than flashing
+  // the Profile pane on the way out. No hooks run below this line.
+  if (outboundHref) return null;
 
   return (
     <>

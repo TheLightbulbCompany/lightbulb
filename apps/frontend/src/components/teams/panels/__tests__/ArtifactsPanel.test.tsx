@@ -325,7 +325,7 @@ describe("ArtifactsPanel — secondary icons stop propagation (do not open the v
       }),
     );
 
-    expect(screen.getByText("Delete this artifact?")).toBeInTheDocument();
+    expect(screen.getByText("Delete this deliverable?")).toBeInTheDocument();
     // The confirm dialog is a dialog, but the VIEWER (which would show the
     // markdown body) must not have opened.
     expect(screen.queryByTestId("md")).not.toBeInTheDocument();
@@ -341,7 +341,7 @@ describe("ArtifactsPanel — delete", () => {
     expandStack();
 
     fireEvent.click(screen.getByRole("button", { name: "Delete Implementation plan" }));
-    expect(screen.getByText("Delete this artifact?")).toBeInTheDocument();
+    expect(screen.getByText("Delete this deliverable?")).toBeInTheDocument();
     expect(del).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
@@ -393,10 +393,10 @@ describe("ArtifactsPanel — delete", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
 
     expect(
-      await screen.findByText("Couldn’t delete this artifact. Please try again."),
+      await screen.findByText("Couldn’t delete this deliverable. Please try again."),
     ).toBeInTheDocument();
     // Dialog stays open (still asking to confirm), gallery not revalidated.
-    expect(screen.getByText("Delete this artifact?")).toBeInTheDocument();
+    expect(screen.getByText("Delete this deliverable?")).toBeInTheDocument();
     expect(globalMutate).not.toHaveBeenCalled();
   });
 
@@ -443,6 +443,10 @@ describe("ArtifactsPanel — empty", () => {
   it("shows the empty state when there are no stacks", () => {
     stubStackList([]);
     render(<ArtifactsPanel />);
-    expect(screen.getByText("No artifacts yet.")).toBeInTheDocument();
+    expect(screen.getByText("Nothing in the Library yet.")).toBeInTheDocument();
+    // The panel is "Library" everywhere else (masthead, sidebar, tab title);
+    // the IA rename left "artifacts" behind in the body copy. Nothing the
+    // reader sees may say it.
+    expect(screen.queryByText(/artifacts?/i)).not.toBeInTheDocument();
   });
 });

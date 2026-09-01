@@ -32,7 +32,7 @@ from core.config import settings
 from core.dynamodb import run_in_thread
 from core.repositories import launch_settings_repo
 from core.repositories.launch_settings_repo import DEFAULTS
-from core.services import launch_phase
+from core.services import launch_phase, launch_sheet_email
 from core.services.launch_phase import parse_iso
 
 logger = logging.getLogger(__name__)
@@ -182,6 +182,10 @@ def _clear_caches() -> None:
 # condition.
 _SERVER_MANAGED_FIELDS = (
     "mint_nonce",
+    # Not server-managed so much as edited through its OWN endpoint — the
+    # settings PUT's eight-field contract does not carry it, so without the
+    # carry-forward every schedule save would wipe the admin's email copy.
+    "email_copy",
     "stripe_coupon_id",
     "closed_at",
     "final_pot_cents",
@@ -206,6 +210,104 @@ async def update(auth: AuthContext, payload: dict) -> dict:
     # close-state fields rather than storing NULLs, and the admin form expects
     # the whole shape back.
     return to_admin({**DEFAULTS, **saved})
+
+
+MAX_COPY_LEN = 2000
+
+
+def validate_email_copy(variant: str, payload: dict) -> dict:
+    """Normalize + validate one variant's copy override. A blank (or absent)
+    field is DROPPED, which is how "reset to default" is expressed — the
+    shipped copy in ``launch_sheet_email`` is always the fallback. Raises
+    ``SettingsInvalid`` (router -> 422 ``{"detail": {"errors": ...}}``)."""
+    if variant not in launch_sheet_email.VARIANTS:
+        raise SettingsInvalid({"variant": f"must be one of {', '.join(launch_sheet_email.VARIANTS)}"})
+    allowed = set(launch_sheet_email.PLACEHOLDERS[variant])
+    errors: dict[str, str] = {}
+    out: dict[str, str] = {}
+    for field in launch_sheet_email.FIELDS:
+        value = payload.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            errors[field] = "must be text"
+            continue
+        value = value.strip()
+        if not value:
+            continue  # blank -> fall back to the shipped default
+        if len(value) > MAX_COPY_LEN:
+            errors[field] = f"must be at most {MAX_COPY_LEN} characters"
+            continue
+        if field == "subject" and ("\r" in value or "\n" in value):
+            # EmailMessage refuses a header with a newline, so the send would
+            # RAISE — every row of that cohort released and dumped into
+            # email_failures with nothing saying why. Refuse it here instead.
+            errors[field] = "must be a single line — no line breaks"
+            continue
+        try:
+            used = launch_sheet_email.placeholders_in(value)
+        except ValueError as e:
+            errors[field] = str(e)
+            continue
+        unknown = sorted(n for n in used if n not in allowed)
+        if unknown:
+            supported = ", ".join(f"{{{p}}}" for p in sorted(allowed)) or "none"
+            errors[field] = (
+                f"unsupported placeholder(s): {', '.join('{' + (n or '') + '}' for n in unknown)}; "
+                f"this email supports {supported}"
+            )
+            continue
+        out[field] = value
+    if errors:
+        raise SettingsInvalid(errors)
+    return out
+
+
+async def update_email_copy(auth: AuthContext, variant: str, payload: dict) -> dict:
+    """Persist one variant's copy override (all-blank = reset to default) and
+    drop the caches, so the next email uses it. Partial write of the single
+    ``email_copy`` map, so a schedule save in flight can't clobber it.
+
+    ponytail: read-modify-write of the map, so two admins editing DIFFERENT
+    variants in the same instant can lose one edit. One console, one admin at
+    a time — make it a per-variant attribute if that ever stops being true."""
+    fields = validate_email_copy(variant, payload)
+    current = await effective()
+    copy = dict(current.get("email_copy") or {})
+    if fields:
+        copy[variant] = fields
+    else:
+        copy.pop(variant, None)
+    await launch_settings_repo.update_fields({"email_copy": copy, "updated_by": auth.user_id})
+    _clear_caches()
+    return copy
+
+
+def email_copy_admin(row: dict) -> list[dict]:
+    """Every variant's default, override, effective copy, supported
+    placeholders and a rendered preview — everything the console's email
+    editor needs, in one read."""
+    s = launch_phase.schedule()
+    values = launch_sheet_email.sample_values(
+        comp_slots=row["comp_slots"],
+        referral_jump=row["referral_jump"],
+        sheet_closes_at=s.sheet_closes_at if s else None,
+    )
+    overrides = row.get("email_copy") or {}
+    out = []
+    for variant in launch_sheet_email.VARIANTS:
+        body = launch_sheet_email.render(variant, copy=overrides, values=values)
+        out.append(
+            {
+                "variant": variant,
+                "placeholders": list(launch_sheet_email.PLACEHOLDERS[variant]),
+                "defaults": dict(launch_sheet_email.DEFAULT_COPY[variant]),
+                "override": dict(overrides.get(variant) or {}),
+                "preview_subject": body["subject"],
+                "preview_html": launch_sheet_email.preview_document(body["html"]),
+            }
+        )
+    return out
 
 
 async def record_close_state(

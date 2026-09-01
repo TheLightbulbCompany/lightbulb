@@ -33,3 +33,22 @@ export async function createLaunchStripeCoupon(force: boolean): Promise<ActionRe
 export async function closeLaunchSheet(force: boolean): Promise<ActionResult> {
   return adminPost("/ops/launch/close", { force });
 }
+
+/** Save one launch email's copy. Blank fields are dropped server-side and
+ * fall back to the shipped default, so sending all three blank is the reset.
+ * 422 returns `data: {detail: {errors: {field: message}}}` — same envelope as
+ * the settings PUT — for an unsupported placeholder. */
+export async function saveLaunchEmailCopy(body: {
+  variant: string;
+  subject: string;
+  lead: string;
+  detail: string;
+}): Promise<ActionResult> {
+  return adminPut("/ops/launch/email-copy", body);
+}
+
+/** Send one variant, with sample values, to the signed-in admin's own Clerk
+ * address. Touches no sheet row and stamps no email claim. */
+export async function sendLaunchTestEmail(variant: string): Promise<ActionResult> {
+  return adminPost("/ops/launch/email-test", { variant });
+}

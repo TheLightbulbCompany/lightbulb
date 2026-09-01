@@ -196,15 +196,18 @@ async def mark_joined(email: str, *, display_name: str, public: bool) -> bool:
 
 
 async def claim_winner_email(email: str) -> bool:
-    """At-most-once claim for the winner email: stamp winner_email_sent_at
-    BEFORE sending, so two concurrent close runs can never double-send. True
-    iff this run owns the send; a failed send releases the claim
-    (``release_winner_email``) so a force rerun retries."""
+    """At-most-once claim for the close email — ANY variant (winner, still
+    competing, not selected): stamp winner_email_sent_at BEFORE sending, so
+    two concurrent close runs can never double-send. The field keeps its
+    winner-era name deliberately: renaming it would orphan every row already
+    stamped by a partial close. True iff this run owns the send; a failed
+    send releases the claim (``release_winner_email``) so a force rerun
+    retries."""
     return await _stamp_once(email, "winner_email_sent_at")
 
 
 async def release_winner_email(email: str) -> None:
-    """Undo a winner-email claim whose send FAILED — the row goes back to
+    """Undo a close-email claim whose send FAILED — the row goes back to
     unsent so a force rerun retries it."""
     try:
         await run_in_thread(

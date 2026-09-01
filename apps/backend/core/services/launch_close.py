@@ -7,7 +7,10 @@ joins and referral jumps — the phase leaves ``open``), flag the top
 ``compete_eligible`` (winners ∪ paying subscribers; unpaid non-winners are
 out), freeze the pot (``pot_front + per_entrant × roster``) onto the settings
 row, ensure the ONE Stripe free-month coupon exists and attach it to every
-PAYING winner's subscription, and email every winner (paid/unpaid variants).
+PAYING winner's subscription, and email EVERYONE on the sheet — in their own
+words: winners (paid/unpaid coupon variants), paying non-winners (still in
+the competition, just without the free month), and everyone else (out of the
+competition, keeps the product).
 
 Every step is idempotent and stamps per-row flags (``winner``,
 ``compete_eligible``, ``coupon_attached_at``, ``winner_email_sent_at``), so a
@@ -28,7 +31,12 @@ from core.config import settings
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.repositories import billing_repo, launch_settings_repo, launch_waitlist_repo, user_repo
 from core.services import launch_phase, launch_service, launch_settings
-from core.services.launch_sheet_email import send_winner_paid_email, send_winner_unpaid_email
+from core.services.launch_sheet_email import (
+    send_not_selected_email,
+    send_still_competing_email,
+    send_winner_paid_email,
+    send_winner_unpaid_email,
+)
 from core.services.provision_gate import is_paid_subscription
 
 logger = logging.getLogger(__name__)
@@ -231,6 +239,11 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
             billing = (await billing_repo.get_by_owner_id(uid)) if uid else None
             if is_paid_subscription(billing):
                 paying[r["email"]] = billing or {}
+        # Eligibility is NOT recomputed on a rerun either — the stamp the
+        # first close wrote is the truth, so a subscription started after the
+        # close can't flip a "not this round" row into a "you're competing"
+        # email that contradicts its own compete_eligible flag.
+        eligible_emails = {r["email"] for r in sheet if r.get("compete_eligible")}
         roster_count = row.get("final_roster_count")
         final_pot = row.get("final_pot_cents")
     else:
@@ -258,7 +271,8 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
         # keeps the first run's frozen values. The condition also accepts a
         # legacy NULL `final_pot_cents` (see POT_UNFROZEN), or a row saved by
         # the admin settings form before that fix would never freeze at all.
-        roster_count = sum(1 for r in sheet if r["email"] in winner_emails or r["email"] in paying)
+        eligible_emails = {r["email"] for r in sheet if r["email"] in winner_emails or r["email"] in paying}
+        roster_count = len(eligible_emails)
         c = launch_phase.constants()
         final_pot = c["pot_front_cents"] + c["pot_per_entrant_cents"] * roster_count
         froze = await launch_settings.record_close_state(
@@ -282,6 +296,8 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
             )
             roster_count = frozen.get("final_roster_count")
             final_pot = frozen.get("final_pot_cents")
+
+    winner_emails = {r["email"] for r in winners}
 
     # (e) The coupon: ensure a PRODUCT-RESTRICTED one exists (mint if
     # missing; force a re-mint over a stale coupon that predates the
@@ -334,39 +350,59 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
                 r.get("user_id"),
             )
 
-    # (f) Winner emails — paid vs unpaid variant, stamped per row only on a
-    # confirmed send so a rerun retries the misses.
-    emails_sent = 0
+    # (f) Everyone on the sheet hears, in the words their outcome earns:
+    # winners get the coupon copy (paid vs unpaid), paying non-winners are
+    # told they are still competing (they are — compete_eligible stayed
+    # true, they just pay their own way), and the rest are told the round
+    # passed them by. Stamped per row only on a confirmed send so a rerun
+    # retries the misses.
+    sends = {"winner": 0, "competing": 0, "not_selected": 0}
     email_failures = 0
-    for r in winners:
+    # Admin copy overrides, read ONCE (cached on the settings row) rather
+    # than per send.
+    copy = launch_phase.email_copy()
+    for r in sheet:
         if r.get("winner_email_sent_at"):
             continue
         if r["email"] in attach_blocked:
-            # The attach FAILED (no sub id, or a Stripe error) — neither
-            # variant is true for them yet. No email this run; the row is
-            # unstamped on both counts, so a force rerun after the attach
-            # problem is fixed sends the right one.
+            # A winner whose attach FAILED (no sub id, or a Stripe error) —
+            # neither winner variant is true for them yet. No email this run;
+            # the row is unstamped on both counts, so a force rerun after the
+            # attach problem is fixed sends the right one.
             continue
         # CLAIM-FIRST (at-most-once): stamp the row before sending, so a
         # concurrent run can never double-send; a failed send releases the
-        # claim below and counts as a failure, so a force rerun retries.
+        # claim below and counts as a failure, so a force rerun retries. ONE
+        # stamp for every variant (the winner-named field predates them), so
+        # a row emailed once is never emailed again as something else.
         if not await launch_waitlist_repo.claim_winner_email(r["email"]):
             continue  # another run owns this row's email
-        # Paid variant only when the coupon actually lands on their sub — a
-        # nonflat paying winner gets the unpaid variant, whose copy ("first
-        # month of Starter is free, applied automatically at checkout") is
-        # literally accurate for them.
-        is_paid_variant = r["email"] in paying and r["email"] not in nonflat_winners
-        send = send_winner_paid_email if is_paid_variant else send_winner_unpaid_email
-        message_id = await send(to_email=r["email"], first_name=None)
+        if r["email"] in winner_emails:
+            # Paid variant only when the coupon actually lands on their sub —
+            # a nonflat paying winner gets the unpaid variant, whose copy
+            # ("first month of Starter is free, applied automatically at
+            # checkout") is literally accurate for them.
+            is_paid_variant = r["email"] in paying and r["email"] not in nonflat_winners
+            send = send_winner_paid_email if is_paid_variant else send_winner_unpaid_email
+            variant, extra = "winner", {}
+        elif r["email"] in eligible_emails:
+            # len(winners), NOT s.comp_slots: the winner set is frozen at the
+            # first close, so a comp_slots edit before a convergence rerun
+            # would otherwise quote a not-yet-emailed row a number the data no
+            # longer supports. The count of free months actually given is
+            # exact and immune to later edits.
+            variant, send, extra = "competing", send_still_competing_email, {"comp_slots": len(winners)}
+        else:
+            variant, send, extra = "not_selected", send_not_selected_email, {"comp_slots": len(winners)}
+        message_id = await send(to_email=r["email"], first_name=None, copy=copy, **extra)
         if message_id:
-            emails_sent += 1
+            sends[variant] += 1
         else:
             email_failures += 1
             try:
                 await launch_waitlist_repo.release_winner_email(r["email"])
-            except Exception:  # noqa: BLE001 — a stuck claim means this winner is never emailed; reconcile by hand
-                logger.exception("launch_close: failed to release winner-email claim for %s", r.get("user_id"))
+            except Exception:  # noqa: BLE001 — a stuck claim means this row is never emailed; reconcile by hand
+                logger.exception("launch_close: failed to release close-email claim for %s", r.get("user_id"))
 
     summary = {
         "closed_at": (await launch_settings.effective())["closed_at"],
@@ -378,7 +414,10 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
         "coupons_attached": coupons_attached,
         "coupon_failures": coupon_failures,
         "coupon_skipped_nonflat": coupon_skipped_nonflat,
-        "emails_sent": emails_sent,
+        "emails_sent": sum(sends.values()),
+        "emails_winner": sends["winner"],
+        "emails_competing": sends["competing"],
+        "emails_not_selected": sends["not_selected"],
         "email_failures": email_failures,
     }
     logger.info("launch_close: %s", summary)

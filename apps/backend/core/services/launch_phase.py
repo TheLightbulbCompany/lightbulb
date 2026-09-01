@@ -87,6 +87,13 @@ def coupon_id() -> str:
     return _row()["stripe_coupon_id"]
 
 
+def email_copy() -> dict:
+    """The admin's per-variant email copy OVERRIDES (see
+    ``core.services.launch_sheet_email``). Rides the same 30s row cache, so
+    neither the join path nor a 200-send close pays a read per email."""
+    return _row().get("email_copy") or {}
+
+
 def schedule() -> Schedule | None:
     row = _row()
     if (

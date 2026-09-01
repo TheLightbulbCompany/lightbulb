@@ -8,7 +8,13 @@ from core.auth import AuthContext, require_platform_admin
 from core.services.admin_audit import audit_admin_action
 from core.services.ops import alarms, deploys, ecs_ops
 from core.services.ops import envelope as env
-from schemas.launch import LaunchCloseRequest, LaunchSettingsUpdate, StripeCouponCreateRequest
+from schemas.launch import (
+    LaunchCloseRequest,
+    LaunchEmailCopyUpdate,
+    LaunchEmailTestRequest,
+    LaunchSettingsUpdate,
+    StripeCouponCreateRequest,
+)
 
 router = APIRouter()
 
@@ -82,6 +88,69 @@ async def put_launch_settings(
         return await launch_settings.update(auth, body.model_dump())
     except launch_settings.SettingsInvalid as e:
         raise HTTPException(status_code=422, detail={"errors": e.errors})
+
+
+@router.get("/launch/email-copy")
+async def get_launch_email_copy(_auth: AuthContext = Depends(require_platform_admin)):
+    """Per-variant launch email copy for the admin editor: the shipped
+    defaults, the stored override, the supported placeholders, and a rendered
+    preview of the effective body."""
+    from core.services import launch_settings
+
+    return {"variants": launch_settings.email_copy_admin(await launch_settings.effective())}
+
+
+@router.put("/launch/email-copy")
+@audit_admin_action("launch.email_copy.update", target_user_id_override="__launch__", capture_params=["body"])
+async def put_launch_email_copy(
+    request: Request,
+    body: LaunchEmailCopyUpdate,
+    auth: AuthContext = Depends(require_platform_admin),
+):
+    """Save (or, with every field blank, reset) one variant's copy. 422 with
+    the usual ``{"detail": {"errors": ...}}`` on an unsupported placeholder."""
+    from core.services import launch_settings
+
+    try:
+        copy = await launch_settings.update_email_copy(auth, body.variant, body.model_dump(exclude={"variant"}))
+    except launch_settings.SettingsInvalid as e:
+        raise HTTPException(status_code=422, detail={"errors": e.errors}) from None
+    return {"variant": body.variant, "override": copy.get(body.variant, {})}
+
+
+@router.post("/launch/email-test")
+@audit_admin_action("launch.email_test", target_user_id_override="__launch__", capture_params=["body"])
+async def post_launch_email_test(
+    request: Request,
+    body: LaunchEmailTestRequest,
+    auth: AuthContext = Depends(require_platform_admin),
+):
+    """Send ONE variant, with sample values, to the signed-in admin's own
+    Clerk address. Never touches a sheet row and never stamps an email claim —
+    it cannot double-send or suppress a real close email."""
+    from core.services import clerk_admin, launch_settings, launch_sheet_email
+
+    if body.variant not in launch_sheet_email.VARIANTS:
+        raise HTTPException(status_code=422, detail={"errors": {"variant": "unknown email variant"}})
+    row = await launch_settings.effective()
+    try:
+        to_email = (await clerk_admin.get_primary_email(auth.user_id)).strip()
+    except Exception:  # noqa: BLE001 — no address, no send; say so instead of 500ing
+        raise HTTPException(status_code=422, detail={"errors": {"variant": "no email on your admin account"}}) from None
+    from core.services import launch_phase
+
+    s = launch_phase.schedule()
+    values = launch_sheet_email.sample_values(
+        comp_slots=row["comp_slots"],
+        referral_jump=row["referral_jump"],
+        sheet_closes_at=s.sheet_closes_at if s else None,
+    )
+    message_id = await launch_sheet_email.send_test(
+        body.variant, to_email=to_email, copy=row.get("email_copy"), values=values
+    )
+    if not message_id:
+        raise HTTPException(status_code=502, detail="send_failed")
+    return {"sent_to": to_email, "variant": body.variant}
 
 
 @router.post("/launch/settings/stripe-coupon")

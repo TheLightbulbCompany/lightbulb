@@ -50,6 +50,9 @@ class _Harness:
         self.comp_slots = comp_slots
         self.close_state_writes: list[dict] = []
         self.sent: list[tuple[str, str]] = []
+        self.sent_comp_slots: list[int | None] = []
+        self.sent_copy: list[dict | None] = []
+        self.email_copy: dict = {}
 
     async def _update_fields(self, email, fields):
         self.rows[email].update(fields)
@@ -77,10 +80,13 @@ class _Harness:
     async def _effective(self):
         return dict(self.settings_row)
 
-    def _send(self, kind, *, to_email, first_name):
+    def _send(self, kind, *, to_email, first_name, comp_slots=None, copy=None):
         # Synchronous side_effect for the AsyncMock: the return value is what
-        # the await resolves to.
+        # the await resolves to. comp_slots only rides the two non-winner
+        # variants; it is recorded so a test can assert what the copy renders.
         self.sent.append((kind, to_email))
+        self.sent_comp_slots.append(comp_slots)
+        self.sent_copy.append(copy)
         return f"msg_{to_email}"
 
     def __enter__(self):
@@ -129,8 +135,19 @@ class _Harness:
                 "core.services.launch_close.send_winner_unpaid_email",
                 side_effect=lambda **kw: self._send("unpaid", **kw),
             ),
+            patch(
+                "core.services.launch_close.send_still_competing_email",
+                side_effect=lambda **kw: self._send("competing", **kw),
+            ),
+            patch(
+                "core.services.launch_close.send_not_selected_email",
+                side_effect=lambda **kw: self._send("not_selected", **kw),
+            ),
             patch("core.services.launch_close.run_in_thread", AsyncMock(side_effect=self._stripe)),
             patch("core.services.launch_close.settings.STRIPE_FLAT_PRICE_ID", "price_flat"),
+            # Appended LAST on purpose: `self.mint`/`self.list_all_mock`
+            # below index into this list positionally.
+            patch("core.services.launch_close.launch_phase.email_copy", side_effect=lambda: self.email_copy),
         ]
         m = [p.__enter__() for p in self._patches]
         self.mint = m[2]
@@ -209,9 +226,22 @@ async def test_close_full_sequence():
     assert modifies[0][2]["idempotency_key"] == "launch-close-coupon:sub_1"
     assert h.rows["b@x.com"]["coupon_attached_at"]
     assert "coupon_attached_at" not in h.rows["a@x.com"]
-    # emails: both winners, right variants; non-winners get nothing.
-    assert sorted(h.sent) == [("paid", "b@x.com"), ("unpaid", "a@x.com")]
-    assert h.rows["a@x.com"]["winner_email_sent_at"] and h.rows["b@x.com"]["winner_email_sent_at"]
+    # emails: EVERY sheet row hears, in the words its outcome earns — the two
+    # winners get the coupon variants, the paying non-winner (c) is told they
+    # are still competing, the ruled-out one (d) is not. The never-joined row
+    # (e) is invisible to the close and gets nothing.
+    assert sorted(h.sent) == [
+        ("competing", "c@x.com"),
+        ("not_selected", "d@x.com"),
+        ("paid", "b@x.com"),
+        ("unpaid", "a@x.com"),
+    ]
+    assert all(h.rows[e]["winner_email_sent_at"] for e in ("a@x.com", "b@x.com", "c@x.com", "d@x.com"))
+    assert "winner_email_sent_at" not in h.rows["e@x.com"]
+    assert result["emails_sent"] == 4
+    assert result["emails_winner"] == 2
+    assert result["emails_competing"] == 1 and result["emails_not_selected"] == 1
+    assert result["email_failures"] == 0
     h.mint.assert_not_awaited()  # coupon already existed
     assert result["winners"] == 2 and result["final_pot_cents"] == 103_000
 
@@ -517,6 +547,99 @@ async def test_a_coupon_attach_failure_does_not_abort_the_close():
     # the attach problem is fixed.
     assert h.sent == [("paid", "b@x.com")]
     assert "winner_email_sent_at" not in h.rows["a@x.com"]
+
+
+async def test_a_paying_non_winner_stays_in_and_is_told_so():
+    """The three-way split's whole point: a paying non-winner keeps
+    compete_eligible, so telling them "you're out" would be false."""
+    rows = [_row("w@x.com", 1), _row("payer@x.com", 50)]
+    billing = {"user_payer": dict(PAYING, stripe_subscription_id="sub_p")}
+    with _Harness(rows, billing, comp_slots=1) as h:
+        h.email_copy = {"competing": {"lead": "hand-written"}}
+        result = await launch_close.close(ADMIN)
+    assert "winner" not in h.rows["payer@x.com"]
+    assert h.rows["payer@x.com"]["compete_eligible"] is True
+    assert ("competing", "payer@x.com") in h.sent
+    assert result["emails_competing"] == 1 and result["emails_not_selected"] == 0
+    # The slot count in the copy is the FROZEN winner count, not a hard-coded
+    # 200 and not the live comp_slots setting.
+    assert h.sent_comp_slots == [None, 1]  # winner variant takes none; competing takes 1
+    # The admin's stored copy actually reaches the send — without this, dropping
+    # `copy=copy` at the call site would leave every other test still passing.
+    assert h.sent_copy == [{"competing": {"lead": "hand-written"}}] * 2
+    # …and no coupon went anywhere near a non-winner.
+    assert [c for c in h.stripe_calls if c[0] == "modify"] == []
+
+
+async def test_a_non_paying_non_winner_is_ruled_out_and_told_so():
+    rows = [_row("w@x.com", 1), _row("out@x.com", 50)]
+    with _Harness(rows, {"user_out": TRIAL}, comp_slots=1) as h:
+        result = await launch_close.close(ADMIN)
+    assert h.rows["out@x.com"]["compete_eligible"] is False
+    assert ("not_selected", "out@x.com") in h.sent
+    assert h.sent_comp_slots[h.sent.index(("not_selected", "out@x.com"))] == 1
+    assert result["emails_not_selected"] == 1 and result["emails_competing"] == 0
+
+
+async def test_force_rerun_re_sends_nothing_to_any_cohort():
+    rows = [_row("a@x.com", 1), _row("c@x.com", 20), _row("d@x.com", 40)]
+    billing = {"user_c": dict(PAYING, stripe_subscription_id="sub_c")}
+    with _Harness(rows, billing, comp_slots=1) as h:
+        await launch_close.close(ADMIN)
+        first = sorted(h.sent)
+        assert len(first) == 3
+        result = await launch_close.close(ADMIN, force=True)
+    assert sorted(h.sent) == first  # every row already claimed
+    assert result["emails_sent"] == 0 and result["email_failures"] == 0
+
+
+async def test_a_failed_non_winner_send_releases_the_claim():
+    rows = [_row("a@x.com", 1), _row("d@x.com", 40)]
+    with _Harness(rows, {}, comp_slots=1) as h:
+        with patch("core.services.launch_close.send_not_selected_email", AsyncMock(return_value=None)):
+            result = await launch_close.close(ADMIN)
+        assert result["email_failures"] == 1 and result["emails_not_selected"] == 0
+        assert "winner_email_sent_at" not in h.rows["d@x.com"]  # released -> retryable
+        await launch_close.close(ADMIN, force=True)
+    assert ("not_selected", "d@x.com") in h.sent
+    assert h.rows["d@x.com"]["winner_email_sent_at"]
+
+
+async def test_the_quoted_slot_count_is_the_frozen_winner_count():
+    """A comp_slots edit between the close and a convergence rerun must not
+    change the number a not-yet-emailed row is told — the free months that
+    were actually given is what the copy states."""
+    rows = [
+        _row("w@x.com", 1, winner=True, compete_eligible=True, winner_email_sent_at="sent"),
+        _row("d@x.com", 40, compete_eligible=False),
+    ]
+    settings_row = {"closed_at": "2026-09-30T16:00:00+00:00", "final_pot_cents": 1, "final_roster_count": 1}
+    with _Harness(rows, {}, settings_row=settings_row, comp_slots=1) as h:
+        h.comp_slots = 99  # the admin edits slots after the close
+        await launch_close.close(ADMIN, force=True)
+    assert h.sent == [("not_selected", "d@x.com")]
+    assert h.sent_comp_slots == [1]  # len(winners), not 99
+
+
+async def test_a_rerun_reads_eligibility_off_the_stamped_row():
+    """Convergence rerun: (c) never runs again, so the variant must come off
+    the compete_eligible stamp — a row stamped False can't be told it is
+    competing just because billing changed after the close."""
+    rows = [
+        _row("w@x.com", 1, winner=True, compete_eligible=True),
+        _row("c@x.com", 20, compete_eligible=True),
+        _row("d@x.com", 40, compete_eligible=False),
+    ]
+    settings_row = {
+        "closed_at": "2026-09-30T16:00:00+00:00",
+        "final_pot_cents": 103_000,
+        "final_roster_count": 2,
+    }
+    # d now pays — the stamp still says they are out, and the stamp wins.
+    with _Harness(rows, {"user_d": PAYING}, settings_row=settings_row, comp_slots=1) as h:
+        await launch_close.close(ADMIN, force=True)
+    assert ("competing", "c@x.com") in h.sent
+    assert ("not_selected", "d@x.com") in h.sent
 
 
 # ---------------------------------------------------------------------------

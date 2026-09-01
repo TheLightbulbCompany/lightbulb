@@ -51,6 +51,11 @@ DEFAULTS: dict = {
     "close_started_at": None,
     "close_result": None,
     "stripe_coupon_id": "",
+    # Per-variant email copy OVERRIDES ({variant: {subject/lead/detail}}) —
+    # empty means every email uses the shipped default in
+    # `core.services.launch_sheet_email`. Written by the admin console's
+    # email-copy endpoint, carried forward by the settings PUT.
+    "email_copy": {},
     # Server-only — never exposed via the admin PUT schema. Bumped by
     # `create_stripe_coupon` on every forced re-mint so the coupon idempotency
     # key is a pure function of the row instead of a fresh random value per

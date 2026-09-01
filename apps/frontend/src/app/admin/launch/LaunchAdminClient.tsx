@@ -77,7 +77,8 @@ function describeClose(r: LaunchCloseResult): string {
     `Closed ${r.closed_at ?? "—"}: ${r.winners ?? 0} winners flagged of ${r.sheet_count ?? 0} on the sheet ` +
     `(${r.paying ?? 0} paying) · roster ${r.final_roster_count ?? 0} · pot ${formatMoney(r.final_pot_cents ?? 0, "usd")} · ` +
     `coupons ${r.coupons_attached ?? 0} attached / ${r.coupon_failures ?? 0} failed${skipped} · ` +
-    `emails ${r.emails_sent ?? 0} sent / ${r.email_failures ?? 0} failed`
+    `emails ${r.emails_sent ?? 0} sent (${r.emails_winner ?? 0} winner / ${r.emails_competing ?? 0} competing / ` +
+    `${r.emails_not_selected ?? 0} not selected) / ${r.email_failures ?? 0} failed`
   );
 }
 

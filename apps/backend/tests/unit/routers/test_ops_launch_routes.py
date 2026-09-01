@@ -291,3 +291,111 @@ async def test_ops_launch_close_force_reaches_the_service(admin_client, audited)
 async def test_ops_launch_close_requires_admin(async_client):
     r = await async_client.post("/api/v1/ops/launch/close", json={})
     assert r.status_code in (401, 403)
+
+
+# ---------------------------------------------------------------------------
+# Admin-editable email copy: GET / PUT / test send
+# ---------------------------------------------------------------------------
+
+_ROW = {
+    **launch_settings.DEFAULTS,
+    "enabled": True,
+    "comp_slots": 200,
+    "referral_jump": 10,
+    "email_copy": {"competing": {"lead": "hand-written lead"}},
+}
+
+
+async def test_ops_launch_email_copy_returns_every_variant_with_a_preview(admin_client):
+    with patch("core.services.launch_settings.effective", AsyncMock(return_value=_ROW)):
+        r = await admin_client.get("/api/v1/ops/launch/email-copy")
+    assert r.status_code == 200
+    variants = r.json()["variants"]
+    assert [v["variant"] for v in variants] == [
+        "join",
+        "winner_paid",
+        "winner_unpaid",
+        "competing",
+        "not_selected",
+    ]
+    competing = next(v for v in variants if v["variant"] == "competing")
+    assert competing["override"] == {"lead": "hand-written lead"}
+    assert competing["defaults"]["lead"].startswith("The sign-up sheet is closed")
+    assert competing["placeholders"] == ["comp_slots"]
+    # The preview renders the EFFECTIVE copy (override applied), as HTML.
+    assert "hand-written lead" in competing["preview_html"]
+    # A standalone document carrying its OWN light ground — the body fragment
+    # hardcodes a dark text colour, so the preview must not inherit the admin
+    # console's (possibly dark) theme.
+    assert competing["preview_html"].startswith("<!doctype html>")
+    assert "background:#ffffff" in competing["preview_html"]
+
+
+async def test_ops_launch_email_copy_put_saves_one_variant(admin_client):
+    with patch(
+        "core.services.launch_settings.update_email_copy",
+        AsyncMock(return_value={"competing": {"lead": "new"}}),
+    ) as upd:
+        r = await admin_client.put("/api/v1/ops/launch/email-copy", json={"variant": "competing", "lead": "new"})
+    # `audit_status` rides along from @audit_admin_action's panic path (no
+    # audit table in unit tests) — assert the payload, not the envelope.
+    assert r.status_code == 200
+    body = r.json()
+    assert body["variant"] == "competing" and body["override"] == {"lead": "new"}
+    assert upd.await_args.args[1] == "competing"
+    assert "variant" not in upd.await_args.args[2]
+
+
+async def test_ops_launch_email_copy_put_422s_on_an_unsupported_placeholder(admin_client):
+    r = await admin_client.put(
+        "/api/v1/ops/launch/email-copy",
+        json={"variant": "winner_paid", "detail": "hello {referral_link}"},
+    )
+    assert r.status_code == 422
+    errors = r.json()["detail"]["errors"]
+    assert "referral_link" in errors["detail"]
+
+
+async def test_ops_launch_email_copy_requires_admin(async_client):
+    r = await async_client.get("/api/v1/ops/launch/email-copy")
+    assert r.status_code in (401, 403)
+    r = await async_client.put("/api/v1/ops/launch/email-copy", json={"variant": "competing", "lead": "x"})
+    assert r.status_code in (401, 403)
+    r = await async_client.post("/api/v1/ops/launch/email-test", json={"variant": "competing"})
+    assert r.status_code in (401, 403)
+
+
+async def test_ops_launch_email_test_sends_only_to_the_signed_in_admin(admin_client):
+    with (
+        patch("core.services.launch_settings.effective", AsyncMock(return_value=_ROW)),
+        patch("core.services.clerk_admin.get_primary_email", AsyncMock(return_value="admin@x.com ")),
+        patch("core.services.launch_sheet_email.send_test", AsyncMock(return_value="msg_1")) as send,
+        patch("core.repositories.launch_waitlist_repo.claim_winner_email", AsyncMock()) as claim,
+        patch("core.repositories.launch_waitlist_repo.update_fields", AsyncMock()) as update,
+    ):
+        r = await admin_client.post("/api/v1/ops/launch/email-test", json={"variant": "competing"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["sent_to"] == "admin@x.com" and body["variant"] == "competing"
+    assert send.await_args.args[0] == "competing"
+    assert send.await_args.kwargs["to_email"] == "admin@x.com"
+    # A test send touches NO sheet state — no claim stamped, no row written.
+    claim.assert_not_awaited()
+    update.assert_not_awaited()
+
+
+async def test_ops_launch_email_test_rejects_an_unknown_variant(admin_client):
+    with patch("core.services.launch_sheet_email.send_test", AsyncMock()) as send:
+        r = await admin_client.post("/api/v1/ops/launch/email-test", json={"variant": "nope"})
+    assert r.status_code == 422
+    send.assert_not_awaited()
+
+
+async def test_ops_launch_email_test_502s_when_the_send_fails(admin_client):
+    with (
+        patch("core.services.launch_settings.effective", AsyncMock(return_value=_ROW)),
+        patch("core.services.clerk_admin.get_primary_email", AsyncMock(return_value="admin@x.com")),
+        patch("core.services.launch_sheet_email.send_test", AsyncMock(return_value=None)),
+    ):
+        r = await admin_client.post("/api/v1/ops/launch/email-test", json={"variant": "competing"})
+    assert r.status_code == 502

@@ -202,7 +202,14 @@ export function HomeRollupStrip() {
   const served = (["revenue_microcents", "signups", "visitors"] as const).filter(
     (k) => !isUnavailable(k),
   );
-  const nothingHappened = served.every((k) => sum(days, k) === 0);
+  // ANY non-zero day, not a zero SUM: revenue supports negative days, so a
+  // sale and a refund that net to exactly zero across the window are two
+  // real transactions, not "nothing happened".
+  const anyReading = served.some((k) => days.some((d) => (d[k] ?? 0) !== 0));
+  // Agent spend is part of "did anything happen". A pre-revenue company has
+  // zero sales and real costs — collapsing to "nothing to report" would hide
+  // the one number that owner most needs to see.
+  const nothingHappened = !anyReading && spendCents === 0;
   if (nothingHappened) {
     return (
       <PanelNotice

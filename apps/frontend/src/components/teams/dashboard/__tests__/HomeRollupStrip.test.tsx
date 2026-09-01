@@ -192,6 +192,9 @@ describe("HomeRollupStrip — visitors, once the backend can tell the two apart"
 describe("HomeRollupStrip — days present but nothing happened", () => {
   const ALL_ZERO = {
     ...LIVE,
+    // "Nothing happened" means no spend either — a pre-revenue company with
+    // costs is NOT this case, and the tiles must stay (tested below).
+    agent_spend_month_to_date_microcents: 0,
     unavailable: ["followers", "open_threads", "visitors"],
     days: [
       { day: "2026-08-30", revenue_microcents: 0, signups: 0 },
@@ -239,6 +242,43 @@ describe("HomeRollupStrip — days present but nothing happened", () => {
         rollup: {
           ...ALL_ZERO,
           days: [{ day: "2026-08-30", revenue_microcents: 5_000_000, signups: 0 }],
+        },
+      }),
+    );
+    render(<HomeRollupStrip />);
+    expect(screen.getByText("Revenue")).toBeInTheDocument();
+    expect(screen.queryByText(/Nothing to report yet/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("HomeRollupStrip — the two collapse cases review caught", () => {
+  it("keeps the tiles when only agent spend is non-zero — pre-revenue is not 'nothing'", () => {
+    mockRollup.mockReturnValue(
+      view({
+        rollup: {
+          ...LIVE,
+          unavailable: ["followers", "open_threads", "visitors"],
+          agent_spend_month_to_date_microcents: 1_400_000,
+          days: [{ day: "2026-08-30", revenue_microcents: 0, signups: 0 }],
+        },
+      }),
+    );
+    render(<HomeRollupStrip />);
+    expect(screen.getByText("Agent spend")).toBeInTheDocument();
+    expect(screen.queryByText(/Nothing to report yet/i)).not.toBeInTheDocument();
+  });
+
+  it("treats a sale and a refund that net to zero as activity, not silence", () => {
+    mockRollup.mockReturnValue(
+      view({
+        rollup: {
+          ...LIVE,
+          unavailable: ["followers", "open_threads", "visitors"],
+          agent_spend_month_to_date_microcents: 0,
+          days: [
+            { day: "2026-08-30", revenue_microcents: 5_000_000, signups: 0 },
+            { day: "2026-08-31", revenue_microcents: -5_000_000, signups: 0 },
+          ],
         },
       }),
     );

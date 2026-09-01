@@ -858,7 +858,7 @@ app.include_router(automations.router, prefix="/api/v1", tags=["automations"])
 # Workspace file browser (EFS agent workspace)
 app.include_router(workspace_files.router, prefix="/api/v1/container", tags=["container"])
 
-# Brain — owner surface over the memory-wiki vault (EFS wiki/)
+# Brain — owner surface over the memory-wiki vault (EFS wiki/main/)
 app.include_router(brain.router, prefix="/api/v1/container", tags=["container"])
 
 # Debug routes (dev-only container provisioning)

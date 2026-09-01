@@ -1,7 +1,7 @@
 "use client";
 
 // The company Brain — a browser + editor over the memory-wiki vault the
-// agents read and write on EFS (wiki/, served by routers/brain.py). Owners
+// agents read and write on EFS (wiki/main/, served by routers/brain.py). Owners
 // trust a brain they can audit: every page shows its size and modified time,
 // and a wrong fact is fixed by editing it in place. Reuses FileTree +
 // FileContentViewer (editor, dirty tracking, scoped Cmd+S come free).
@@ -73,7 +73,7 @@ export function BrainPanel({ initialPath, initialTab }: BrainPanelProps = {}) {
   const [dragOver, setDragOver] = React.useState(false);
   const [uploading, setUploading] = React.useState(false);
 
-  // Owner drop-zone: dropped/picked files land in wiki/inbox/ so the agents
+  // Owner drop-zone: dropped/picked files land in the vault's inbox/ so the agents
   // notice new material next time they check. Best-effort per drop — a
   // partial failure (e.g. one oversized file) still refreshes the tree so
   // whatever DID land shows up immediately. Guarded against re-entry so a

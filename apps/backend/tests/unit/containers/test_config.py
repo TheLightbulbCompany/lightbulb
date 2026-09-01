@@ -230,7 +230,13 @@ class TestOpenclawConfigShape:
         defeats the feature; renderMode "obsidian" writes [[wikilink]]
         markdown. Only schema-legal keys may appear (the upstream configSchema
         is additionalProperties:false at every level; vault accepts only
-        scope/path/renderMode) — a stray key bricks the container at boot."""
+        scope/path/renderMode) — a stray key bricks the container at boot.
+
+        Leaving `vault.path` unset is also load-bearing OUTSIDE the container:
+        the plugin then resolves the vault to its `~/.openclaw/wiki/main`
+        default, which is what routers/brain.py's BRAIN_SUBTREE roots the
+        owner's Brain panel at. Setting a path here without moving that
+        constant points the panel at an empty directory."""
         config = _cfg()
         entry = config["plugins"]["entries"]["memory-wiki"]
         assert entry["enabled"] is True

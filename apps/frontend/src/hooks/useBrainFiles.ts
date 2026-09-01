@@ -66,7 +66,7 @@ export function useBrainMutations() {
         }>,
       deleteBrainFile: (path: string) =>
         api.del(`/container/brain/file?path=${encodeURIComponent(path)}`),
-      // Owner drop-zone: lands files under wiki/inbox/ (routers/brain.py).
+      // Owner drop-zone: lands files under the vault's inbox/ (routers/brain.py).
       uploadBrainFiles: (files: File[]) => {
         const formData = new FormData();
         for (const file of files) formData.append("files", file);

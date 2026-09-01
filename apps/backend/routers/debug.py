@@ -6,7 +6,6 @@ dev/local/test or unset (see ``assert_debug_enabled``), refused everywhere else.
 """
 
 import logging
-import secrets
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -27,6 +26,7 @@ from core.repositories import (
 )
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import connection_service
+from core.services.container_provision import resolve_provider_choice
 from core.services.credentials import integration_secret_store
 
 logger = logging.getLogger(__name__)
@@ -93,39 +93,43 @@ async def provision_container(
         }
 
     try:
-        gateway_token = secrets.token_urlsafe(32)
-        ecs_manager = get_ecs_manager()
-
-        # Step 1: Create ECS service (desiredCount=0) — creates access
-        # point and EFS dir, but does NOT start the container yet.
-        service_name = await ecs_manager.create_user_service(owner_id, gateway_token)
-
-        # Step 2: Write all configs to EFS before the container boots. This
-        # is the single source of truth for per-container files — it writes
-        # openclaw.json, the node device PEM, and the combined
-        # devices/paired.json (with BOTH the node and the operator device
-        # entries, KMS-encrypted operator seed persisted to the DynamoDB
-        # containers row).
-        # provider_choice defaults to bedrock_claude for dev provisioning.
-        # bedrock_claude fails closed without the owner's per-owner AIP ARNs, so
-        # thread the ones already on the row. Read them rather than calling
-        # ensure_owner_aips: ensuring re-stamps the reverse-index plan to "paid",
-        # which would disarm a trial owner's daily-cap kill switch. A brand-new
-        # owner with no prior row has no AIPs to reuse — real provisioning mints
-        # them; this dev shortcut does not.
-        await ecs_manager.write_user_configs(
+        # Provision through the SAME entry point production uses, rather than
+        # hand-rolling create_user_service -> write_user_configs ->
+        # start_user_service. The hand-rolled sequence skipped the Bedrock mint
+        # block entirely and instead reused ``bedrock_aip_arns`` off whatever
+        # row happened to still be there, which breaks the DELETE-then-POST
+        # reprovision CLAUDE.md documents:
+        #
+        # DELETE goes through delete_user_service, whose teardown seam
+        # (reap_owner_bedrock_resources) DESTROYS the owner's AIPs, gate-token
+        # rows and per-owner IAM role along with the containers row that was the
+        # only handle naming them. So on the POST there was no row and no ARNs,
+        # and build_provider_block fail-closed with "bedrock_claude requires
+        # aip_arns with at least a 'sonnet' key" — leaving the owner with no
+        # container and no documented way back.
+        #
+        # Preserving the ARNs across the DELETE would NOT have been the fix: they
+        # name profiles the reap deleted, so a config written from them boots a
+        # container that AccessDenies on every turn. The row is a cache, the
+        # Bedrock/IAM resources are the truth, and after a teardown the truth is
+        # "gone" — re-minting is the only honest recovery, and it lives in
+        # provision_user_container (ensure_owner_aips + ensure_owner_bedrock_role
+        # + mint_gate_token, then configs, then start).
+        #
+        # provider_choice is RESOLVED from billing, never hardcoded — that is
+        # what keeps the re-mint away from the trial-stamping trap. Hardcoding
+        # "bedrock_claude" would make ensure_owner_aips mint all three tiers and
+        # stamp plan="paid" on the reverse-index rows the meter Lambda reads to
+        # arm the $3/day cap kill. A trial_local owner resolves to
+        # ``bedrock_trial``, whose sonnet-only mint stamps plan="trial" — byte
+        # for byte the call the real provisioner makes for that owner.
+        provider_choice, byo_provider = await resolve_provider_choice(owner_id)
+        service_name = await get_ecs_manager().provision_user_container(
             owner_id,
-            gateway_token,
-            provider_choice="bedrock_claude",
+            provider_choice=provider_choice,
+            byo_provider=byo_provider,
             owner_type=owner_type,
-            aip_arns=existing.get("bedrock_aip_arns") if existing else None,
         )
-
-        # Step 3: Now start the container — configs are on EFS.
-        # force: this route IS a provision (it just created the service and
-        # wrote the configs), and it is a developer tool — 403 in production, so
-        # it is not a door a customer can use to wake a capped container.
-        await ecs_manager.start_user_service(owner_id, force=True)
 
         return {
             "status": "provisioned",
@@ -173,15 +177,22 @@ async def redeploy_container(
         # up with the env-var T2 injects on the per-user task def. Render
         # is the same either way (literal placeholder), but threading
         # keeps the rotate-flow plumbing uniform across provision paths.
-        # bedrock_claude needs the owner's AIP ARNs (see build_provider_block,
-        # which fails closed without them). Read them off the container row, the
-        # same way update_service.reapply_owner_config does — do NOT
-        # ensure_owner_aips here (see the POST route for why: it would re-stamp
-        # a trial owner's plan to "paid").
+        # provider_choice is RESOLVED, not hardcoded. Hardcoding "bedrock_claude"
+        # rewrote a chatgpt_oauth/byo_key owner's config onto a Bedrock block
+        # they hold no AIPs for (build_provider_block then raises, same 500 as
+        # the POST route used to), and flattened a trial owner's one-model
+        # free-tier lockdown into the paid catalog shape.
+        #
+        # Unlike the POST route this stays a CONFIG rewrite, so the ARNs still
+        # come off the live container row (the way update_service.reapply_owner_config
+        # reads them) — the row exists here by definition, its AIPs are live, and
+        # ensure_owner_aips has no business running on a redeploy.
+        provider_choice, byo_provider = await resolve_provider_choice(owner_id)
         await ecs_manager.write_user_configs(
             owner_id,
             container["gateway_token"],
-            provider_choice="bedrock_claude",
+            provider_choice=provider_choice,
+            byo_provider=byo_provider,
             hook_token=container.get("hook_token"),
             owner_type=owner_type,
             aip_arns=container.get("bedrock_aip_arns"),

@@ -1316,6 +1316,13 @@
    unlit bulb is the one state that makes the toggle look broken. */
 [data-lb-theme="dark"] .ld-lamp-glow { opacity: 0.08; }
 [data-lb-theme="dark"] .ld-funnel-eyebrow { color: var(--brass); }
+/* The closing copy sits over the neon wordmark, and brass letters on an amber
+   glow is the same yellow twice. Cream here ONLY — --midnight-muted stays
+   brass for every other label on the dark ground (§06). The hover needs its
+   own line: same specificity as the rule above it, so it would otherwise lose
+   on source order. */
+[data-lb-theme="dark"] :is(.ld-funnel-fine, .ld-funnel-swap) { color: var(--midnight-soft); }
+[data-lb-theme="dark"] .ld-funnel-swap:hover { color: var(--midnight); }
 
 .ld-page {
   transition: background-color var(--dur-strike) var(--ease-out),

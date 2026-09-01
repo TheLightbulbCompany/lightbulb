@@ -23,6 +23,13 @@ const mockRead = vi.fn((path: string) => {
   return { data, isLoading: false, error: null, mutate: mockMutate };
 });
 
+// The preset catalog renders above the table and carries its own switches
+// and agent names, which would collide with this file's single-element
+// queries against the table. It has its own test file
+// (panels/routines/__tests__/PresetCatalog.test.tsx); here it is inert.
+vi.mock("@/components/teams/panels/routines/PresetCatalog", () => ({
+  PresetCatalog: () => null,
+}));
 vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: () => ({
     read: mockRead,

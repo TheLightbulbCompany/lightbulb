@@ -32,6 +32,7 @@ import {
   type StartRung,
 } from "@/components/teams/shared/components/ConnectedAppTrigger";
 import { withRoutineReviewer } from "@/components/teams/panels/routineExecutionPolicy";
+import { PresetCatalog } from "@/components/teams/panels/routines/PresetCatalog";
 import {
   SIGNING_MODE_OPTIONS,
   REPLAY_WINDOW_SIGNING_MODES,
@@ -550,6 +551,19 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
         already covers the "what ran, when, did it fail" need, so we defer the
         cross-routine view rather than invent backend surface for it.
       */}
+      {/* The preset catalog sits above the table and creates ordinary routines
+          through the builder's own two calls. It hides presets that already
+          exist (matched by title) and renders nothing once all are on, so an
+          owner with a full setup sees just their table. Suppressed while a
+          search/agent filter is active — the catalog is not part of the
+          filtered result and would read as if it were. */}
+      {!isLoading && !search && !agentPick && (
+        <PresetCatalog
+          agents={agents}
+          routineTitles={new Set((routines ?? []).flatMap((r) => (r.title ? [r.title] : [])))}
+          onCreated={() => mutate()}
+        />
+      )}
       {isLoading ? (
         <div className="font-editorial-serif text-xl italic text-[var(--midnight-muted)]">
           Loading…
@@ -561,7 +575,7 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
           supporting={
             search || agentPick
               ? "No automations match your filters."
-              : "Create an automation to define a recurring workflow that fires on a schedule or trigger."
+              : "Switch one on above, or create your own — anything on a schedule, a webhook, or a connected app."
           }
         />
       ) : (

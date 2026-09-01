@@ -15,15 +15,11 @@ vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 const launchInfo = vi.fn<() => unknown>();
 vi.mock("@/components/launch/useLaunchInfo", () => ({ useLaunchInfo: () => launchInfo() }));
 
-// A `vi.fn()` (not a fixed object) so individual tests can vary firstName —
-// used below to check the email-local-part fallback when it's absent. There
-// is deliberately no company-name field here: nothing this banner already
-// has mounted carries the owner's Paperclip company name (see the comment
-// on `prefill` in LaunchJoinBanner.tsx), so the prefill chain stops at
-// first name -> email local-part.
-const clerkUser = vi.fn<() => { id: string; firstName: string | null; primaryEmailAddress: { emailAddress: string } }>();
 vi.mock("@clerk/nextjs", () => ({
-  useUser: () => ({ user: clerkUser(), isLoaded: true }),
+  useUser: () => ({
+    user: { id: "user_1", firstName: "Ada", primaryEmailAddress: { emailAddress: "ada@lovelace.dev" } },
+    isLoaded: true,
+  }),
 }));
 
 import type { LaunchMe } from "@/lib/launch";
@@ -65,23 +61,29 @@ describe("LaunchJoinBanner", () => {
     get.mockReset();
     post.mockReset();
     launchInfo.mockReturnValue(info());
-    clerkUser.mockReturnValue({ id: "user_1", firstName: "Ada", primaryEmailAddress: { emailAddress: "ada@lovelace.dev" } });
     localStorage.clear();
   });
 
-  it("shows the open-sheet nudge with the display name prefilled from the profile, labeled as public", async () => {
+  it("shows the open-sheet nudge with an empty, placeholder-labeled display name field", async () => {
     get.mockResolvedValue(me());
     mount();
     expect(await screen.findByText(/launch competition is open — first 200 get a month free/)).toBeInTheDocument();
-    expect(screen.getByLabelText(/display name/i)).toHaveValue("Ada");
+    const input = screen.getByLabelText(/display name/i);
+    expect(input).toHaveValue("");
+    expect(input).toHaveAttribute("placeholder", "Your company name");
     expect(screen.getByText(/shown on the public board/i)).toBeInTheDocument();
   });
 
-  it("falls back to the email local-part when the profile has no first name", async () => {
-    clerkUser.mockReturnValue({ id: "user_1", firstName: null, primaryEmailAddress: { emailAddress: "ada@lovelace.dev" } });
+  it("keeps Join disabled until a valid (2+ char) name is typed", async () => {
     get.mockResolvedValue(me());
     mount();
-    expect(await screen.findByLabelText(/display name/i)).toHaveValue("ada");
+    const input = await screen.findByLabelText(/display name/i);
+    const joinBtn = screen.getByRole("button", { name: /^join$/i });
+    expect(joinBtn).toBeDisabled();
+    fireEvent.change(input, { target: { value: "N" } });
+    expect(joinBtn).toBeDisabled();
+    fireEvent.change(input, { target: { value: "Northwind Ceramics" } });
+    expect(joinBtn).toBeEnabled();
   });
 
   it("renders nothing when the launch is off (404), closed, or the owner isn't onboarded", async () => {
@@ -128,7 +130,8 @@ describe("LaunchJoinBanner", () => {
     get.mockResolvedValue(me());
     post.mockRejectedValue(new ApiError(409, { detail: { reason: "org_not_supported" } }, "API 409"));
     mount();
-    fireEvent.click(await screen.findByRole("button", { name: /^join$/i }));
+    fireEvent.change(await screen.findByLabelText(/display name/i), { target: { value: "Northwind Ceramics" } });
+    fireEvent.click(screen.getByRole("button", { name: /^join$/i }));
     expect(await screen.findByRole("alert")).toHaveTextContent(/Switch to your personal workspace/);
   });
 

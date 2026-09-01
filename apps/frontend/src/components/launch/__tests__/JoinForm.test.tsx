@@ -11,9 +11,12 @@ import { JoinForm } from "../JoinForm";
 describe("JoinForm", () => {
   beforeEach(() => { post.mockReset(); capture.mockReset(); });
 
-  it("labels the display name as shown on the public board", () => {
+  it("labels the display name as shown on the public board, and starts empty with a placeholder", () => {
     render(<JoinForm onJoined={vi.fn()} />);
     expect(screen.getByText(/shown on the public board/i)).toBeInTheDocument();
+    const input = screen.getByLabelText(/display name/i);
+    expect(input).toHaveValue("");
+    expect(input).toHaveAttribute("placeholder", "Your company name");
   });
 
   it("posts display_name and public, captures analytics, and calls onJoined", async () => {

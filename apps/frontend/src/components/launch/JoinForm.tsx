@@ -57,7 +57,7 @@ export function JoinForm({ onJoined }: { onJoined: () => void }) {
     <form onSubmit={submit} aria-label="Join the competition">
       <label className="lc-field" htmlFor="launch-name">
         <span>Display name</span>
-        <input id="launch-name" required minLength={2} maxLength={40} value={name} onChange={(e) => setName(e.target.value)} />
+        <input id="launch-name" required minLength={2} maxLength={40} placeholder="Your company name" value={name} onChange={(e) => setName(e.target.value)} />
       </label>
       <p className="lc-fine" style={{ marginTop: 6 }}>Shown on the public board</p>
       <label className="lc-check">

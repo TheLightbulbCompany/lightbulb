@@ -13,11 +13,15 @@ import type { LaunchMe } from "@/lib/launch";
  * The in-product competition-sheet join surface: a slim banner in the
  * workspace shell (next to TrialBanner/OutOfCreditsBanner), shown while the
  * sheet is open to an onboarded owner who hasn't joined. Join POSTs inline —
- * no navigation — with a display-name field prefilled from the Clerk profile
- * (POST /launch/join REQUIRES display_name). After joining it shows the
- * position + referral link, and only then becomes dismissible (per-user
- * localStorage key): the join nudge itself stays until they join, /launch
- * has the full rules.
+ * no navigation — with an EMPTY display-name field (POST /launch/join
+ * REQUIRES display_name). Deliberately no prefill: the board ranks
+ * businesses, not people, and the owner's Paperclip company name isn't
+ * reachable here without a brand-new cross-service request (see the
+ * `name` state below), so a wrong default (the Clerk first name) would be
+ * worse than none — the placeholder asks the right question instead. After
+ * joining it shows the position + referral link, and only then becomes
+ * dismissible (per-user localStorage key): the join nudge itself stays
+ * until they join, /launch has the full rules.
  */
 
 function dismissKey(userId: string): string {
@@ -32,15 +36,15 @@ export function LaunchJoinBanner() {
   const { data: me, mutate } = useSWR<LaunchMe>(open ? "/launch/me" : null, (k: string) => api.get(k) as Promise<LaunchMe>);
   useReferralAttribution(api, open ? me : null);
 
-  // The board ranks businesses, not people, so the ideal prefill is the
-  // owner's Paperclip company name — but nothing already mounted here
-  // carries it: it's only exposed via the Teams BFF's authenticated
-  // `/settings` fetch (Company Settings panel), which this banner isn't
-  // wrapped in. Wiring it in would mean a brand-new request off a compact
-  // in-product nudge, so this stays first name -> email local-part until
-  // the company name is reachable without one.
-  const prefill = user?.firstName || user?.primaryEmailAddress?.emailAddress.split("@")[0] || "";
-  const [name, setName] = React.useState<string | null>(null); // null = untouched, use prefill
+  // No prefill. The board ranks businesses, not people — the owner's
+  // Paperclip company name would be the right default, but nothing already
+  // mounted here carries it (it's only exposed via the Teams BFF's
+  // authenticated `/settings` fetch, which this banner isn't wrapped in),
+  // and wiring in a brand-new request off a compact in-product nudge isn't
+  // worth it. A wrong default (the Clerk first name) is worse than none —
+  // an empty box with a clear placeholder asks the right question instead
+  // of something people accept by inertia.
+  const [name, setName] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [dismissed, setDismissed] = React.useState(false);
@@ -57,7 +61,7 @@ export function LaunchJoinBanner() {
 
   if (!open || !me || !me.onboarded || dismissed || !user) return null;
 
-  const displayName = (name ?? prefill).trim();
+  const displayName = name.trim();
 
   const join = async () => {
     if (displayName.length < 2 || busy) return;
@@ -120,8 +124,9 @@ export function LaunchJoinBanner() {
       <div className="flex flex-col gap-0.5">
         <input
           aria-label="Display name"
-          value={name ?? prefill}
+          value={name}
           maxLength={40}
+          placeholder="Your company name"
           onChange={(e) => setName(e.target.value)}
           className="border border-edge rounded px-2 py-0.5 bg-transparent text-foreground w-40"
         />

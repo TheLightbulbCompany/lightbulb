@@ -44,6 +44,7 @@ const PANEL_LOADERS: Record<string, () => Promise<React.ComponentType>> = {
   "domain-site": () => import("./panels/DomainSitePanel").then((m) => m.DomainSitePanel),
   compliance: () => import("./panels/CompliancePanel").then((m) => m.CompliancePanel),
   contracts: () => import("./panels/ContractsPanel").then((m) => m.ContractsPanel),
+  leads: () => import("./panels/LeadsPanel").then((m) => m.LeadsPanel),
 };
 
 const PANELS: Record<string, React.ComponentType> = Object.fromEntries(

@@ -23,6 +23,7 @@ const ALL_LABELS = [
   "Publish",
   "SEO & AEO",
   "Ads",
+  "Leads",
   "Brain",
   "Library",
   "Org chart",

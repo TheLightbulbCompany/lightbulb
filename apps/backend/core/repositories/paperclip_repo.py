@@ -1845,6 +1845,61 @@ class PaperclipRepo:
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             pass
 
+    async def rearm_failed_bootstrap(self, user_id: str, *, onboarding_generation: str, dispatch_id: str) -> bool:
+        """Conditional ``bootstrap_state: failed -> not_started`` for the
+        dispatcher's BOUNDED automatic retry
+        (``bootstrap_dispatcher._retry_failed_bootstrap``).
+
+        ``failed`` used to be reachable only by the admin lever below, which
+        made every transient that happened to be typed non-transient — a
+        connect rejection carrying OpenClaw's own "gateway starting; retry
+        shortly", a rate-limited first run — a PERMANENT dead end for that
+        owner, behind a healthy container, with the funnel spinner up forever.
+        This is the automatic counterpart, fenced so the reasons ``failed``
+        exists still hold:
+
+        * ``bootstrap_attempts`` is KEPT (never zeroed like the lever below),
+          so ``MAX_BOOTSTRAP_ATTEMPTS`` bounds retries and the row settles back
+          into ``failed`` for the operator once the budget is spent.
+        * The AMBIGUOUS row is excluded IN THE WRITE, not just in the caller's
+          read: a send that was attempted and never acked may already have been
+          taken by OpenClaw, and re-dispatching mints a new
+          ``bootstrap_dispatch_id`` / ``idempotencyKey`` it cannot dedup, so
+          Friday could run twice. ``attribute_exists(bootstrap_sent_at)`` is
+          what admits the other post-send case — an ACKED kickoff whose run was
+          OBSERVED to terminate in a chat error. That run is definitively over,
+          so a fresh one cannot overlap it.
+        * ``funnel_state`` is untouched (still ``submitted``): the owner-visible
+          contract is unchanged while the retry runs, and the standing
+          ``submitted`` funnel is what makes the row claimable at all.
+
+        Guard-fail is swallowed into False the same way as the marks above — a
+        caller working from a superseded generation/dispatch has nothing to do.
+        """
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"user_id": user_id},
+                UpdateExpression="SET bootstrap_state = :ns, updated_at = :u",
+                ConditionExpression=(
+                    "onboarding_generation = :gen AND bootstrap_dispatch_id = :did AND "
+                    "funnel_state = :submitted AND bootstrap_state = :failed AND "
+                    "(attribute_not_exists(bootstrap_send_attempted_at) OR attribute_exists(bootstrap_sent_at))"
+                ),
+                ExpressionAttributeValues={
+                    ":ns": "not_started",
+                    ":u": utc_now_iso(),
+                    ":gen": onboarding_generation,
+                    ":did": dispatch_id,
+                    ":submitted": "submitted",
+                    ":failed": "failed",
+                },
+            )
+            return True
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            return False
+
     async def reset_bootstrap_for_retry(
         self, user_id: str, *, onboarding_generation: str, expected_dispatch_id: Optional[str] = None
     ) -> bool:
@@ -1856,11 +1911,16 @@ class PaperclipRepo:
         manual stand-in: fenced on the SAME onboarding_generation the operator
         read, and only from a genuinely failed bootstrap on a still-submitted
         funnel -- a superseded or already-recovered row is a no-op (False).
-        Distinct from ``rearm_bootstrap_dispatch``, the automatic transient
-        re-arm for a still-``dispatched`` row: this lever recovers a row the
-        pipeline has already declared terminally ``failed``.
+        Distinct from the two AUTOMATIC re-arms —
+        ``rearm_bootstrap_dispatch`` (a still-``dispatched`` claim) and
+        ``rearm_failed_bootstrap`` (a ``failed`` row still inside the attempt
+        budget, whose send is provably unsent or provably over). This lever is
+        what takes the rows those two deliberately refuse: a spent attempt
+        budget, and the AMBIGUOUS send-attempted-never-acked row an operator
+        may knowingly retry at the risk of a double delivery.
         ``bootstrap_last_error`` is kept as history; ``bootstrap_attempts``
-        resets so MAX_BOOTSTRAP_ATTEMPTS re-arms. The next owner
+        resets so MAX_BOOTSTRAP_ATTEMPTS re-arms — which is the other half of
+        why the automatic path never zeroes it. The next owner
         ``/container/status`` poll re-dispatches.
 
         *expected_dispatch_id* switches the fence from ``failed`` to a

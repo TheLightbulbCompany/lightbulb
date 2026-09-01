@@ -14,7 +14,7 @@ _ws_internal_secret = ""
 def _get_ws_internal_secret():
     """Fetch (and cache) the shared secret the backend /ws/* endpoints expect.
 
-    Attached as the ``x-isol8-ws-internal`` header so the backend can tell this
+    Attached as the ``x-lightbulb-ws-internal`` header so the backend can tell this
     trusted Lambda apart from a forged caller arriving via the public HTTP API
     Gateway. Cached on first success; on failure returns "" WITHOUT caching so a
     transient error doesn't permanently strip the header from a warm container.
@@ -46,7 +46,7 @@ def handler(event, context):
     }
     ws_secret = _get_ws_internal_secret()
     if ws_secret:
-        headers["x-isol8-ws-internal"] = ws_secret
+        headers["x-lightbulb-ws-internal"] = ws_secret
 
     try:
         req = urllib.request.Request(

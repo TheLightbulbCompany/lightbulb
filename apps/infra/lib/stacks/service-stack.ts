@@ -1365,7 +1365,7 @@ export class ServiceStack extends cdk.Stack {
       WS_GATEWAY_URL: props.webSocketUrl,
       WS_CONNECTIONS_TABLE: props.connectionsTableName,
       // WS caller-attestation gate, enforced in every env. The
-      // x-isol8-ws-internal header is verified flowing from the WS Lambdas on
+      // x-lightbulb-ws-internal header is verified flowing from the WS Lambdas on
       // both dev and prod (zero secret-fetch failures across real connects),
       // so the backend rejects /ws/* callers that lack it — closing the
       // unauthenticated WebSocket-impersonation hole on the public HTTP
@@ -1781,7 +1781,7 @@ export class ServiceStack extends cdk.Stack {
           props.secretNames.metronomeWebhookSecret,
         ),
       ),
-      // Shared secret the WS Lambdas attach as x-isol8-ws-internal. The
+      // Shared secret the WS Lambdas attach as x-lightbulb-ws-internal. The
       // backend compares it (require_ws_internal_caller) only when
       // WS_ENFORCE_INTERNAL_SECRET is "true". Same CMK as the other auth
       // secrets, so KmsDecryptForSecrets below already covers decrypt.

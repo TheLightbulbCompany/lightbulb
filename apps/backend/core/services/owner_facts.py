@@ -28,7 +28,9 @@ from core.dynamodb import utc_now_iso
 logger = logging.getLogger(__name__)
 
 FACTS_FILENAME = "lightbulb-facts.json"
-# Pre-rename name, deleted on every write so no agent can read stale facts.
+# Pre-rename name. Deleted on every write so nothing can read frozen facts; the
+# fleet reroll that ships this change puts every container on an image that only
+# ever looks for FACTS_FILENAME.
 _LEGACY_FACTS_FILENAME = "isol8-facts.json"
 
 
@@ -227,11 +229,11 @@ async def write_owner_facts(owner_id: str, *, account_overrides: dict | None = N
             provisioning=await _lookup_provisioning(owner_id),
         )
         get_workspace().write_file(owner_id, FACTS_FILENAME, json.dumps(facts, indent=2) + "\n")
-        # The file was renamed from isol8-facts.json. Leaving the old inode
-        # behind would be worse than orphaning it: agents on an image whose
-        # bundled skill still names the old path would read FROZEN plan /
-        # provider / email state and act on it. A missing file is a safe
-        # failure; a stale one is not.
+        # Delete the pre-rename file rather than leaving it behind. A stale
+        # facts file is worse than a missing one: an agent that found it would
+        # act on frozen plan/provider/email state. Safe to delete outright
+        # because this change ships with a fleet reroll — no container is left
+        # running an image that reads the old name.
         get_workspace().delete_file(owner_id, _LEGACY_FACTS_FILENAME)
     except Exception as e:  # noqa: BLE001 — facts must never block callers
         logger.warning("write_owner_facts: skipped for %s: %s", owner_id, e)

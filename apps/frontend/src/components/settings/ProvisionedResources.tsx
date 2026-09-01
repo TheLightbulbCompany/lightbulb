@@ -145,6 +145,10 @@ export function useProvisioningRail() {
     // A failed read leaves both maps empty, which is indistinguishable from
     // "this owner has provisioned nothing" — so the caller says which.
     error: resources.error ?? workflows.error ?? null,
+    // Same ambiguity the comment above names, for the in-flight case: on a
+    // cold cache both maps are empty with no error, so a consumer would
+    // assert "nothing provisioned" before a byte has arrived.
+    isLoading: resources.isLoading || workflows.isLoading,
     /** Every provider this rail knows about — the superset the card list needs. */
     providers,
     refresh: () => {

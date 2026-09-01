@@ -22,20 +22,31 @@
 import { Send } from "lucide-react";
 import { PanelMasthead, PanelNotice } from "@/components/teams/shell";
 import { handleShellLinkClick } from "@/lib/shellNav";
+import { useConnections } from "@/hooks/useConnections";
+
+// The social providers this tab can post through. Only the ones the
+// /connections endpoint actually lists for this owner are ever named:
+// `instagram` is gated to `environments: [local, dev]` plus named dogfood
+// owners, so in prod most owners cannot see it, and telling them to connect
+// it would be an exit that does not exist for them.
+const SOCIAL = { instagram: "Instagram", x: "X" } as const;
 
 const INTEGRATIONS = "/chat?panel=integrations";
 
+// LOCAL time, not UTC: this is a calendar the owner reads, not a billing
+// period. At 00:30Z on the 1st, an owner in California is still on the 31st
+// and would otherwise see next month with day 1 highlighted.
 function monthGrid(now: Date): { label: string; cells: (number | null)[] } {
-  const y = now.getUTCFullYear();
-  const m = now.getUTCMonth();
-  const first = new Date(Date.UTC(y, m, 1));
-  const daysInMonth = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+  const y = now.getFullYear();
+  const m = now.getMonth();
+  const first = new Date(y, m, 1);
+  const daysInMonth = new Date(y, m + 1, 0).getDate();
   // Monday-first, matching result.dev and most business calendars.
-  const lead = (first.getUTCDay() + 6) % 7;
+  const lead = (first.getDay() + 6) % 7;
   const cells: (number | null)[] = Array(lead).fill(null);
   for (let d = 1; d <= daysInMonth; d++) cells.push(d);
   while (cells.length % 7) cells.push(null);
-  const label = first.toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
+  const label = first.toLocaleDateString("en-US", { month: "long", year: "numeric" });
   return { label, cells };
 }
 
@@ -44,7 +55,16 @@ const DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 export function PublishPanel() {
   const now = new Date();
   const { label, cells } = monthGrid(now);
-  const today = now.getUTCDate();
+  const today = now.getDate();
+  const { connections } = useConnections();
+
+  // What this owner can actually see and has actually connected. The
+  // endpoint already hides env-gated providers, so "available" here means
+  // "listed for you", and the copy names exactly those.
+  const social = connections.filter((c) => c.provider in SOCIAL);
+  const connected = social.filter((c) => c.status === "connected").map((c) => SOCIAL[c.provider as keyof typeof SOCIAL]);
+  const available = social.map((c) => SOCIAL[c.provider as keyof typeof SOCIAL]);
+  const list = (xs: string[]) => new Intl.ListFormat("en", { type: "disjunction" }).format(xs);
 
   return (
     <div className="editorial-page p-4 sm:p-5 lg:p-6 flex flex-col gap-4 max-w-5xl mx-auto w-full">
@@ -54,18 +74,39 @@ export function PublishPanel() {
         meta="Everything you've shipped and everything that's coming, on one calendar."
       />
 
-      <PanelNotice
-        state="unbound"
-        icon={Send}
-        headline="No social accounts connected yet."
-        supporting="Connect Instagram or X in Integrations and this calendar starts filling in as your agents post."
-        prompt="Connect my Instagram so you can post for me."
-        href={INTEGRATIONS}
-        action={{
-          label: "Connect accounts",
-          onClick: (e) => handleShellLinkClick(e, INTEGRATIONS),
-        }}
-      />
+      {connected.length ? (
+        // Connected, but there is no post store yet, so the calendar has
+        // nothing to render. Say that — not "nothing connected".
+        <PanelNotice
+          state="zero"
+          icon={Send}
+          headline={`${new Intl.ListFormat("en").format(connected)} connected.`}
+          supporting="Posts your agents publish will appear on this calendar. Nothing has been scheduled or posted yet."
+          prompt="Draft one post about what we shipped this week and post it."
+        />
+      ) : available.length ? (
+        <PanelNotice
+          state="unbound"
+          icon={Send}
+          headline="No social accounts connected yet."
+          supporting={`Connect ${list(available)} in Integrations and this calendar starts filling in as your agents post.`}
+          prompt={`Connect my ${available[0]} so you can post for me.`}
+          href={INTEGRATIONS}
+          action={{
+            label: "Connect accounts",
+            onClick: (e) => handleShellLinkClick(e, INTEGRATIONS),
+          }}
+        />
+      ) : (
+        // No social provider is listed for this owner at all — an honest
+        // "not yet" rather than a connect button to a row that is not there.
+        <PanelNotice
+          state="soon"
+          icon={Send}
+          headline="Social publishing isn't available on your workspace yet."
+          supporting="When it is, connected networks show up in Integrations and this calendar fills in as your agents post."
+        />
+      )}
 
       <section aria-label={`${label} calendar`} className="flex flex-col gap-2">
         <p className="font-editorial-serif text-lg text-[var(--midnight)]">{label}</p>

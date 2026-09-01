@@ -66,7 +66,7 @@ const COLUMNS: PanelDataColumn<ProvisionedResource>[] = [
 ];
 
 export function DomainSitePanel() {
-  const { byProvider, error } = useProvisioningRail();
+  const { byProvider, error, isLoading } = useProvisioningRail();
 
   const rows: ProvisionedResource[] = [];
   for (const [provider, list] of byProvider) {
@@ -84,6 +84,11 @@ export function DomainSitePanel() {
           headline="We couldn't read your provisioned resources just now."
           supporting="This is a temporary read failure. Check back shortly."
         />
+      ) : isLoading && !rows.length ? (
+        // Cold cache: both maps empty, no error, nothing arrived yet. Saying
+        // "No domain yet" here was a materially false claim on a slow
+        // connection for an owner who has one.
+        <PanelDataTable rows={[]} columns={COLUMNS} rowKey={(r) => r.resource_id} loading />
       ) : rows.length ? (
         <PanelDataTable rows={rows} columns={COLUMNS} rowKey={(r) => r.resource_id} />
       ) : (

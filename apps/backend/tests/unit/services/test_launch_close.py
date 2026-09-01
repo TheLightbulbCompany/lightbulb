@@ -43,11 +43,14 @@ class _Harness:
     update_fields mutates the in-memory rows so idempotency reruns see the
     stamps a prior run wrote."""
 
-    def __init__(self, rows, billing, *, settings_row=None, comp_slots=2):
+    def __init__(self, rows, billing, *, settings_row=None, comp_slots=2, team_seats=()):
         self.rows = {r["email"]: r for r in rows}
         self.billing = billing
         self.settings_row = {"closed_at": None, "stripe_coupon_id": "coup_1", **(settings_row or {})}
         self.comp_slots = comp_slots
+        # Seat counts of the team entries the founders marked COUNTED — the
+        # only ones the close folds into the pot.
+        self.team_seats = list(team_seats)
         self.close_state_writes: list[dict] = []
         self.sent: list[tuple[str, str]] = []
         self.sent_comp_slots: list[int | None] = []
@@ -103,6 +106,7 @@ class _Harness:
                     "comp_slots": self.comp_slots,
                     "pot_front_cents": 100_000,
                     "pot_per_entrant_cents": 1_000,
+                    "pot_per_seat_cents": 500,
                     "referral_jump": 10,
                 },
             ),
@@ -113,6 +117,10 @@ class _Harness:
             patch(
                 "core.services.launch_close.launch_waitlist_repo.list_all",
                 AsyncMock(side_effect=lambda **kw: [dict(r) for r in self.rows.values()]),
+            ),
+            patch(
+                "core.services.launch_close.launch_service.counted_team_seats",
+                AsyncMock(side_effect=lambda: list(self.team_seats)),
             ),
             patch("core.services.launch_close.launch_waitlist_repo.update_fields", side_effect=self._update_fields),
             patch(
@@ -915,3 +923,25 @@ async def test_ultra_checkout_gets_no_discount_even_for_a_winner():
     assert "discounts" not in captured
     assert captured["allow_promotion_codes"] is True
     lookup.assert_not_awaited()
+
+
+async def test_the_pot_freeze_folds_in_counted_teams_only():
+    """Teams never reach the sheet, so they are not in `final_roster_count` —
+    they are folded into the pot separately, at $10 + $5/seat, and ONLY the
+    ones the founders marked counted (an unreviewed submission passes nothing
+    to `counted_team_seats`, so it cannot inflate the pot)."""
+    rows = [_row("a@x.com", 1), _row("b@x.com", 2)]
+    billing = {}
+    with _Harness(rows, billing, team_seats=[4, 1]) as h:
+        await launch_close.close(ADMIN)
+    # roster is the two individuals; the pot adds one (per-entrant + per-seat ×
+    # seats) block per counted team.
+    assert h.settings_row["final_roster_count"] == 2
+    assert h.settings_row["final_pot_cents"] == 100_000 + 2 * 1_000 + (1_000 + 4 * 500) + (1_000 + 1 * 500)
+
+
+async def test_uncounted_teams_contribute_nothing_to_the_pot():
+    rows = [_row("a@x.com", 1), _row("b@x.com", 2)]
+    with _Harness(rows, {}, team_seats=[]) as h:
+        await launch_close.close(ADMIN)
+    assert h.settings_row["final_pot_cents"] == 100_000 + 2 * 1_000

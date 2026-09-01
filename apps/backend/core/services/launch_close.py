@@ -266,15 +266,19 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
             eligible = r["email"] in winner_emails or r["email"] in paying
             await launch_waitlist_repo.update_fields(r["email"], {"compete_eligible": eligible})
 
-        # (d) Freeze the pot: front + per-entrant × final roster. Write-once
+        # (d) Freeze the pot: front + per-entrant × final roster + one
+        # (per-entrant + per-seat × seats) block per counted TEAM entry. Write-once
         # at the DB level — a concurrent recovery run losing the condition
         # keeps the first run's frozen values. The condition also accepts a
         # legacy NULL `final_pot_cents` (see POT_UNFROZEN), or a row saved by
         # the admin settings form before that fix would never freeze at all.
         eligible_emails = {r["email"] for r in sheet if r["email"] in winner_emails or r["email"] in paying}
         roster_count = len(eligible_emails)
-        c = launch_phase.constants()
-        final_pot = c["pot_front_cents"] + c["pot_per_entrant_cents"] * roster_count
+        # Teams never reach the sheet (POST /launch/join refuses an org
+        # context), so they are not in `roster_count` — they are folded into
+        # the pot separately, and ONLY the ones the founders marked counted.
+        team_seats = await launch_service.counted_team_seats()
+        final_pot = launch_phase.pot_cents(roster_count, team_seats)
         froze = await launch_settings.record_close_state(
             {"final_roster_count": roster_count, "final_pot_cents": final_pot},
             condition=launch_settings_repo.POT_UNFROZEN,

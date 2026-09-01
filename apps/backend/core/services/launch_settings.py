@@ -43,7 +43,7 @@ _ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{
 
 _DATE_FIELDS = ("sheet_closes_at", "competition_start_at", "competition_end_at")
 _POSITIVE_INT_FIELDS = ("comp_slots",)
-_NONNEG_INT_FIELDS = ("pot_front_cents", "pot_per_entrant_cents", "referral_jump")
+_NONNEG_INT_FIELDS = ("pot_front_cents", "pot_per_entrant_cents", "pot_per_seat_cents", "referral_jump")
 
 # The one launch free-month coupon: 100% off, once, redeemable through the end
 # of October ET (spec: winners have the whole first competition month to

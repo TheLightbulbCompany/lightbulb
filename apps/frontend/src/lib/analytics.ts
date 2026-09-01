@@ -156,7 +156,8 @@ export type AnalyticsEvent =
   // Launch competition
   | "launch_joined"
   | "launch_stripe_connected"
-  | "launch_referral_copied";
+  | "launch_referral_copied"
+  | "launch_team_interest";
 
 /**
  * Type exposing the ``__loaded`` flag PostHog sets after ``init()``

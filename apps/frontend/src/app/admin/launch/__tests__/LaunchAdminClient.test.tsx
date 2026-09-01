@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -17,10 +17,12 @@ vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
 const refreshLaunch = vi.fn();
 const removeLaunchEntry = vi.fn();
 const closeLaunchSheet = vi.fn();
+const setLaunchTeamEntry = vi.fn();
 vi.mock("../../_actions/launch", () => ({
   refreshLaunch: () => refreshLaunch(),
   removeLaunchEntry: (ownerId: string) => removeLaunchEntry(ownerId),
   closeLaunchSheet: (force: boolean) => closeLaunchSheet(force),
+  setLaunchTeamEntry: (ownerId: string, body: object) => setLaunchTeamEntry(ownerId, body),
 }));
 
 const closeResult = {
@@ -49,6 +51,8 @@ beforeEach(() => {
   removeLaunchEntry.mockResolvedValue({ ok: true, status: 200, data: { deleted: "u1" } });
   closeLaunchSheet.mockReset();
   closeLaunchSheet.mockResolvedValue({ ok: true, status: 202, data: { status: "started" } });
+  setLaunchTeamEntry.mockReset();
+  setLaunchTeamEntry.mockResolvedValue({ ok: true, status: 200, data: {} });
 });
 
 import type { LaunchOpsSheet, LaunchSheetRow } from "../../_lib/api";
@@ -85,6 +89,7 @@ const data: LaunchOpsSheet = {
     comp_slots: 200,
     pot_front_cents: 100000,
     pot_per_entrant_cents: 1000,
+    pot_per_seat_cents: 500,
     referral_jump: 10,
     stripe_coupon_id: "co_1",
     closed_at: null,
@@ -100,6 +105,7 @@ const data: LaunchOpsSheet = {
   on_board: 8,
   pot_front_cents: 100000,
   pot_per_entrant_cents: 1000,
+  pot_per_seat_cents: 500,
   projected_pot_cents: 140000,
   closed: false,
   closed_at: null,
@@ -108,6 +114,8 @@ const data: LaunchOpsSheet = {
   final_pot_cents: null,
   final_roster_count: null,
   referrals: { signed_up: 50, subscribed: 12 },
+  teams: { total: 0, counted: 0, contribution_cents: 0 },
+  team_entries: [],
   entries: [{ owner_id: "u1", has_subscription: true, display_name: "Ada", public: true, waitlist_position: 3, currency: "usd", baseline_cents: 1000, window_cents: 3000, delta_cents: 2000, pct: 2, refreshed_at: "t", refresh_error: null }],
   sheet_rows: [sheetRow(), sheetRow({ email: "b@x.com", position: 2, effective_position: 2, display_name: "Bob", user_id: "u2", winner: false, compete_eligible: false, coupon_attached_at: null, winner_email_sent_at: null, referrals_subscribed: 0, referrals_signed_up: 0 })],
 };
@@ -120,7 +128,9 @@ describe("LaunchAdminClient", () => {
     // The projected pot is labelled internal and hints its own arithmetic.
     expect(screen.getByText("projected pot (internal)")).toBeInTheDocument();
     expect(screen.getByText("$1,400")).toBeInTheDocument();
-    expect(screen.getByText(/\$1,000 \+ \$10 × roster — never shown publicly/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/\$1,000 \+ \$10 × roster \+ counted teams \(\$10 \+ \$5 × seats\) — never shown publicly/),
+    ).toBeInTheDocument();
     // Sheet table: effective position first, winner/eligible flags per row.
     // ("Ada" is in the sheet table AND the board entries table.)
     expect(screen.getAllByText("Ada").length).toBeGreaterThanOrEqual(2);
@@ -302,5 +312,68 @@ describe("csvEscape", () => {
   it("leaves an ordinary value untouched", () => {
     expect(csvEscape("Ada")).toBe("Ada");
     expect(csvEscape(null)).toBe("");
+  });
+});
+
+describe("TeamEntriesCard", () => {
+  const withTeam = (): LaunchOpsSheet => ({
+    ...data,
+    teams: { total: 1, counted: 0, contribution_cents: 0 },
+    team_entries: [
+      {
+        owner_id: "org_1",
+        team_name: "Tuple",
+        seats: 4,
+        note: "six of us",
+        submitter_email: "founder@tuple.com",
+        submitter_user_id: "u_t",
+        submitter_org_slug: "tuple",
+        counted: false,
+        submitted_at: "2026-09-01T00:00:00Z",
+        updated_at: "2026-09-02T00:00:00Z",
+        contribution_cents: 1_000 + 4 * 500,
+      },
+    ],
+  });
+
+  it("shows what a submission would add to the pot before it is counted", () => {
+    render(<LaunchAdminClient data={withTeam()} />);
+    expect(screen.getByText("Team entries (0 of 1 counted)")).toBeInTheDocument();
+    // Scoped to the team's own row, so it can never pass off another table.
+    const row = within(screen.getByText("Tuple").closest("tr")!);
+    expect(row.getByText("$30")).toBeInTheDocument(); // $10 + 4 × $5
+    // submitted_at survives a resubmission, so the edited column is the only
+    // thing that moves when someone changes their details after review.
+    expect(row.getByText("2026-09-02T00:00:00Z")).toBeInTheDocument();
+  });
+
+  it("the counts-toward-the-pot toggle posts for that owner", async () => {
+    render(<LaunchAdminClient data={withTeam()} />);
+    fireEvent.click(screen.getByLabelText("Count Tuple toward the pot"));
+    await waitFor(() => expect(setLaunchTeamEntry).toHaveBeenCalledWith("org_1", { counted: true }));
+  });
+
+  it("a corrected seat count posts on blur, and only when it changed", async () => {
+    render(<LaunchAdminClient data={withTeam()} />);
+    const seats = screen.getByLabelText("Seats for Tuple");
+    fireEvent.blur(seats);
+    expect(setLaunchTeamEntry).not.toHaveBeenCalled();
+
+    fireEvent.change(seats, { target: { value: "6" } });
+    fireEvent.blur(seats);
+    await waitFor(() => expect(setLaunchTeamEntry).toHaveBeenCalledWith("org_1", { seats: 6 }));
+  });
+
+  it("surfaces a 422 field error instead of silently keeping the typed number", async () => {
+    setLaunchTeamEntry.mockResolvedValue({
+      ok: false,
+      status: 422,
+      data: { detail: { errors: { seats: "must be between 1 and 500" } } },
+    });
+    render(<LaunchAdminClient data={withTeam()} />);
+    const seats = screen.getByLabelText("Seats for Tuple");
+    fireEvent.change(seats, { target: { value: "900" } });
+    fireEvent.blur(seats);
+    expect(await screen.findByText(/seats: must be between 1 and 500/)).toBeInTheDocument();
   });
 });

@@ -112,6 +112,7 @@ _FULL_PUT_BODY = {
     "comp_slots": 200,
     "pot_front_cents": 100_000,
     "pot_per_entrant_cents": 1_000,
+    "pot_per_seat_cents": 500,
     "referral_jump": 10,
 }
 
@@ -136,6 +137,7 @@ async def test_ops_launch_settings_put_success_writes_row_audits_and_clears_cach
         "comp_slots": 200,
         "pot_front_cents": 100_000,
         "pot_per_entrant_cents": 1_000,
+        "pot_per_seat_cents": 500,
         "stripe_coupon_id": "",
         "updated_at": "2026-08-29T00:00:00+00:00",
         "updated_by": "user_admin",
@@ -399,3 +401,76 @@ async def test_ops_launch_email_test_502s_when_the_send_fails(admin_client):
     ):
         r = await admin_client.post("/api/v1/ops/launch/email-test", json={"variant": "competing"})
     assert r.status_code == 502
+
+
+# --- team entries: the founders' manual lane --------------------------------
+
+
+async def test_ops_team_entry_toggle_round_trips(admin_client):
+    row = {"owner_id": "org_1", "team_name": "Tuple", "seats": 6, "counted": True}
+    with (
+        patch("core.services.launch_service.set_team_entry", AsyncMock(return_value=row)) as set_entry,
+        patch("core.services.ops.launch.clear_cache") as clear,
+    ):
+        r = await admin_client.post("/api/v1/ops/launch/team-entries/org_1", json={"seats": 6, "counted": True})
+    # The audit decorator merges its own `audit_status` into a dict response.
+    assert r.status_code == 200 and r.json() | row == r.json()
+    assert set_entry.await_args.kwargs == {"seats": 6, "counted": True}
+    assert set_entry.await_args.args == ("org_1",)
+    # The pot preview reads through the 60s ops cache — a flipped toggle has to
+    # land on the next page load, not a minute later.
+    clear.assert_called_once()
+
+
+async def test_ops_team_entry_bad_seats_is_the_422_field_envelope(admin_client):
+    with patch(
+        "core.services.launch_service.set_team_entry",
+        AsyncMock(side_effect=launch_settings.SettingsInvalid({"seats": "must be between 1 and 500"})),
+    ):
+        r = await admin_client.post("/api/v1/ops/launch/team-entries/org_1", json={"seats": 0})
+    assert r.status_code == 422
+    assert r.json()["detail"] == {"errors": {"seats": "must be between 1 and 500"}}
+
+
+async def test_ops_team_entry_requires_admin(async_client):
+    r = await async_client.post("/api/v1/ops/launch/team-entries/org_1", json={"counted": True})
+    assert r.status_code in (401, 403)
+
+
+async def test_settings_put_round_trips_a_non_default_pot_per_seat(admin_client):
+    """Every admin-editable field must survive the ROUTE, not just the form.
+
+    `put_launch_settings` does `body.model_dump()`, so a field missing from
+    `LaunchSettingsUpdate` is dropped by pydantic before `validate` sees it —
+    `validate` then falls back to DEFAULTS and `put` (a full replace) rewrites
+    the stored value on every save. That failure is invisible from the client
+    side: the form renders the field and posts it, and the console still shows
+    the default. Assert on what is STORED."""
+    stored: dict = {}
+
+    async def _put(item):
+        stored.update(item)
+        return dict(item)
+
+    with (
+        patch.object(launch_settings.launch_settings_repo, "get", AsyncMock(return_value=None)),
+        patch.object(launch_settings.launch_settings_repo, "put", AsyncMock(side_effect=_put)),
+        patch.object(launch_settings, "_clear_caches"),
+    ):
+        r = await admin_client.put(
+            "/api/v1/ops/launch/settings",
+            json={
+                "enabled": False,
+                "sheet_closes_at": None,
+                "competition_start_at": None,
+                "competition_end_at": None,
+                "comp_slots": 200,
+                "pot_front_cents": 100_000,
+                "pot_per_entrant_cents": 1_000,
+                "pot_per_seat_cents": 1_000,  # NOT the 500 default
+                "referral_jump": 10,
+            },
+        )
+    assert r.status_code == 200
+    assert stored["pot_per_seat_cents"] == 1_000
+    assert r.json()["pot_per_seat_cents"] == 1_000

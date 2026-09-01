@@ -19,9 +19,10 @@ from botocore.exceptions import ClientError
 from core.auth import AuthContext, resolve_owner_id
 from core.config import settings
 from core.dynamodb import utc_now_iso
-from core.repositories import launch_entries_repo, launch_waitlist_repo, user_repo
+from core.repositories import launch_entries_repo, launch_teams_repo, launch_waitlist_repo, user_repo
 from core.services import launch_phase, launch_revenue, readiness_state
 from core.services.launch_phase import Schedule, phase
+from schemas.launch import TEAM_SEATS_MAX
 
 logger = logging.getLogger(__name__)
 
@@ -295,3 +296,91 @@ async def leaderboard(limit: int = 50) -> dict:
     entries = [e for e in entries if e["owner_id"] not in ineligible]
     on_board = sum(1 for e in entries if e.get("has_key"))
     return {"competing": len(entries), "on_board": on_board, "rows": rank(entries)[:limit]}
+
+
+# --- team entries: raise a hand, the founders do the rest --------------------
+#
+# Teams do NOT self-serve. POST /launch/join still refuses an org context (409
+# org_not_supported) and nothing here changes that: a submission stores a row
+# and emails the founders, who enter the team by hand. No sheet row, no
+# position, no coupon, no org onboarding.
+
+
+def team_contribution_cents(seats: int) -> int:
+    """What ONE counted team adds to the pot: the per-entrant amount every
+    entrant contributes, plus the per-seat amount for each seat. Same
+    arithmetic ``launch_phase.pot_cents`` applies at close — expressed once
+    here so the founder email and the admin card quote the real number."""
+    c = launch_phase.constants()
+    return c["pot_per_entrant_cents"] + c["pot_per_seat_cents"] * max(int(seats), 0)
+
+
+def _public_team(row: dict) -> dict:
+    """What the submitter gets back — their own submission, plus the founders'
+    verdict. No pot arithmetic: the pot is admin-only, on every surface."""
+    return {
+        "team_name": row["team_name"],
+        "seats": int(row["seats"]),
+        "note": row.get("note") or "",
+        "submitted_at": row.get("submitted_at"),
+        "counted": bool(row.get("counted")),
+    }
+
+
+async def submit_team_interest(auth: AuthContext, *, team_name: str, seats: int, note: str) -> dict:
+    """Store (or update) the caller's team-interest row and tell the founders.
+    Idempotent per OWNER — a resubmission edits the same row rather than
+    filing a second one. The email is best-effort and never fails the write:
+    the row is the record, the email is the nudge."""
+    owner_id = resolve_owner_id(auth)
+    email = await resolve_email(auth) or ""
+    row = await launch_teams_repo.put_interest(
+        owner_id,
+        team_name=team_name,
+        seats=seats,
+        note=note,
+        submitter_user_id=auth.user_id,
+        submitter_email=email,
+        submitter_org_slug=auth.org_slug,
+    )
+    from core.services.launch_sheet_email import send_team_interest_email
+
+    await send_team_interest_email(
+        team_name=team_name,
+        seats=seats,
+        note=note,
+        submitter_email=email,
+        submitter_user_id=auth.user_id,
+        submitter_org_slug=auth.org_slug,
+        contribution_cents=team_contribution_cents(seats),
+    )
+    logger.info("launch: %s submitted team interest (%s seats)", owner_id, seats)
+    return _public_team(row)
+
+
+async def set_team_entry(owner_id: str, *, seats: int | None, counted: bool | None) -> dict:
+    """Admin edit of one team entry — the seat correction and the "counts
+    toward the pot" verdict. Raises ``SettingsInvalid`` (router -> 422, the
+    console's usual ``{"detail": {"errors": …}}`` envelope) on a bad seat
+    count or an owner with no submission."""
+    from core.services.launch_settings import SettingsInvalid
+
+    fields: dict = {}
+    if seats is not None:
+        if not 1 <= int(seats) <= TEAM_SEATS_MAX:
+            raise SettingsInvalid({"seats": f"must be between 1 and {TEAM_SEATS_MAX}"})
+        fields["seats"] = int(seats)
+    if counted is not None:
+        fields["counted"] = bool(counted)
+    if not fields:
+        raise SettingsInvalid({"seats": "nothing to change"})
+    row = await launch_teams_repo.update_fields(owner_id, fields)
+    if row is None:
+        raise SettingsInvalid({"owner_id": "no team entry for that owner"})
+    return row
+
+
+async def counted_team_seats() -> list[int]:
+    """Seat counts of the team entries the founders marked counted — the only
+    ones that reach the pot (``launch_phase.pot_cents``)."""
+    return [int(t["seats"]) for t in await launch_teams_repo.list_all() if t.get("counted")]

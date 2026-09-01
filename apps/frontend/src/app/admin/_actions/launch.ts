@@ -52,3 +52,14 @@ export async function saveLaunchEmailCopy(body: {
 export async function sendLaunchTestEmail(variant: string): Promise<ActionResult> {
   return adminPost("/ops/launch/email-test", { variant });
 }
+
+/** Correct a team submission's seat count, and decide whether it counts
+ * toward the pot. Only a COUNTED entry contributes — an unreviewed submission
+ * never inflates the pot. 422 returns `data: {detail: {errors: {field: msg}}}`,
+ * the same envelope as the settings PUT. */
+export async function setLaunchTeamEntry(
+  ownerId: string,
+  body: { seats?: number; counted?: boolean },
+): Promise<ActionResult> {
+  return adminPost(`/ops/launch/team-entries/${encodeURIComponent(ownerId)}`, body);
+}

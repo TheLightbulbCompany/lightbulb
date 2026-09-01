@@ -14,6 +14,7 @@ from schemas.launch import (
     LaunchEmailTestRequest,
     LaunchSettingsUpdate,
     StripeCouponCreateRequest,
+    TeamEntryPatchRequest,
 )
 
 router = APIRouter()
@@ -175,6 +176,29 @@ async def post_launch_stripe_coupon(
         raise HTTPException(status_code=422, detail={"errors": e.errors})
     except launch_settings.StripeMintError:
         raise HTTPException(status_code=502, detail="stripe_error")
+
+
+@router.post("/launch/team-entries/{owner_id}")
+@audit_admin_action("launch.team_entry.update", target_param="owner_id", capture_params=["owner_id", "body"])
+async def post_launch_team_entry(
+    owner_id: str,
+    body: TeamEntryPatchRequest,
+    request: Request,
+    auth: AuthContext = Depends(require_platform_admin),
+):
+    """Correct a team's seat count, or decide whether it counts toward the
+    pot. Only a COUNTED entry contributes — an unreviewed submission never
+    inflates the pot. 422 with the usual ``{"detail": {"errors": ...}}`` on a
+    bad seat count or an unknown owner."""
+    from core.services import launch_service, launch_settings
+    from core.services.ops import launch as launch_ops
+
+    try:
+        row = await launch_service.set_team_entry(owner_id, seats=body.seats, counted=body.counted)
+    except launch_settings.SettingsInvalid as e:
+        raise HTTPException(status_code=422, detail={"errors": e.errors}) from None
+    launch_ops.clear_cache()
+    return row
 
 
 @router.post("/launch/close", status_code=202)

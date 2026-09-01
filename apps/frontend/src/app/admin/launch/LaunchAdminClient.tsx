@@ -10,7 +10,7 @@ import { MetricStat } from "@/components/admin/MetricStat";
 import { Button } from "@/components/ui/button";
 import { formatMoney, formatPct } from "@/lib/launch";
 
-import { closeLaunchSheet, refreshLaunch, removeLaunchEntry } from "../_actions/launch";
+import { closeLaunchSheet, refreshLaunch, removeLaunchEntry, setLaunchTeamEntry } from "../_actions/launch";
 import type { LaunchCloseResult, LaunchOpsSheet } from "../_lib/api";
 import { Table } from "../growth/sections";
 
@@ -172,7 +172,7 @@ export function LaunchAdminClient({ data }: { data: LaunchOpsSheet }) {
         <MetricStat
           label={data.closed ? "final pot (internal)" : "projected pot (internal)"}
           value={formatMoney(data.closed ? (data.final_pot_cents ?? 0) : data.projected_pot_cents, "usd")}
-          hint={`${formatMoney(data.pot_front_cents, "usd")} + ${formatMoney(data.pot_per_entrant_cents, "usd")} × roster — never shown publicly`}
+          hint={`${formatMoney(data.pot_front_cents, "usd")} + ${formatMoney(data.pot_per_entrant_cents, "usd")} × roster + counted teams (${formatMoney(data.pot_per_entrant_cents, "usd")} + ${formatMoney(data.pot_per_seat_cents, "usd")} × seats) — never shown publicly`}
         />
         <MetricStat label="competing" value={data.competing} />
         <MetricStat label="on the board" value={data.on_board} />
@@ -266,6 +266,8 @@ export function LaunchAdminClient({ data }: { data: LaunchOpsSheet }) {
         />
       </Card>
 
+      <TeamEntriesCard data={data} busy={busy} onChanged={() => router.refresh()} />
+
       <Card title={`Board entries (${data.entries.length})`}>
         <Table
           head={["#", "entrant", "owner", "sheet pos", "paid", "public", "baseline", "window", "lift", "growth", "refreshed", "error", ""]}
@@ -295,5 +297,100 @@ export function LaunchAdminClient({ data }: { data: LaunchOpsSheet }) {
         />
       </Card>
     </div>
+  );
+}
+
+/**
+ * Team entries — the founders' manual lane. Teams never join the sheet (POST
+ * /launch/join refuses an org context), so a submission sits here until a
+ * founder marks it counted; only then does it reach the pot. The seat count
+ * is editable because the submitter's number is a claim, not a fact.
+ */
+export function TeamEntriesCard({
+  data,
+  busy,
+  onChanged,
+}: {
+  data: LaunchOpsSheet;
+  busy: boolean;
+  onChanged: () => void;
+}) {
+  const [saving, setSaving] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
+
+  const save = async (ownerId: string, body: { seats?: number; counted?: boolean }) => {
+    setSaving(ownerId);
+    setError(null);
+    const r = await setLaunchTeamEntry(ownerId, body);
+    setSaving(null);
+    if (!r.ok) {
+      // Same 422 envelope as the settings PUT: {detail: {errors: {field: msg}}}.
+      const detail = (r.data as { detail?: unknown } | undefined)?.detail;
+      const errors =
+        detail && typeof detail === "object" && "errors" in detail
+          ? (detail as { errors?: Record<string, string> }).errors
+          : null;
+      setError(
+        errors
+          ? Object.entries(errors)
+              .map(([f, m]) => `${f}: ${m}`)
+              .join("; ")
+          : `Team entry update failed (${r.status}): ${r.error ?? ""}`,
+      );
+    }
+    onChanged();
+  };
+
+  return (
+    <Card title={`Team entries (${data.teams.counted} of ${data.teams.total} counted)`}>
+      <p className="text-xs text-muted-foreground">
+        Teams raise their hand here and the founders enter them by hand — nothing is automatic. Only a counted entry
+        contributes to the pot: {formatMoney(data.pot_per_entrant_cents, "usd")} +{" "}
+        {formatMoney(data.pot_per_seat_cents, "usd")} per seat, {formatMoney(data.teams.contribution_cents, "usd")}{" "}
+        counted so far. If a team wins, their free month covers the container only ($50 Teams base) — per-seat charges
+        still bill.
+      </p>
+      {error ? <ErrorBanner error={error} /> : null}
+      <Table
+        head={["team", "seats", "counts", "contribution", "submitter", "submitted", "edited", "note"]}
+        rows={data.team_entries.map((t) => [
+          t.team_name,
+          <input
+            // Keyed on the SERVER's seat count: a failed save must not leave
+            // the admin looking at a number the server never took.
+            key={`${t.owner_id}:${t.seats}`}
+            type="number"
+            min={1}
+            max={500}
+            step={1}
+            defaultValue={t.seats}
+            disabled={busy || saving === t.owner_id}
+            aria-label={`Seats for ${t.team_name}`}
+            onBlur={(e) => {
+              const next = Number(e.target.value);
+              if (next !== t.seats) void save(t.owner_id, { seats: next });
+            }}
+            className="w-20 rounded-md border border-border bg-card px-2 py-0.5 text-xs text-foreground"
+          />,
+          <label key="counted" className="flex items-center gap-2 text-xs text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={t.counted}
+              disabled={busy || saving === t.owner_id}
+              aria-label={`Count ${t.team_name} toward the pot`}
+              onChange={(e) => void save(t.owner_id, { counted: e.target.checked })}
+            />
+            {t.counted ? "yes" : "no"}
+          </label>,
+          formatMoney(t.contribution_cents, "usd"),
+          t.submitter_email || t.submitter_user_id,
+          t.submitted_at ?? "—",
+          // A resubmission keeps submitted_at, so without this column a
+          // post-review edit moves nothing on screen.
+          t.updated_at ?? "—",
+          t.note || "—",
+        ])}
+      />
+    </Card>
   );
 }

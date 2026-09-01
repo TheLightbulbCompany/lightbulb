@@ -522,4 +522,43 @@ describe("BedrockMeterStack", () => {
     // drops, a failed kill went silent again.
     expect(paged).toBe(6);
   });
+
+  /** REGRESSION (2026-08-30 incident): the logging custom resource must carry
+   *  NO Delete. deleteModelInvocationLoggingConfiguration is an account+region
+   *  singleton that takes no arguments, so it cannot be scoped to our own
+   *  config. When the resource's LOGICAL ID was renamed, the new resource's
+   *  Create wrote the config at 22:13:14Z and the old logical id's Delete
+   *  wiped it 9s later (CloudTrail), leaving Bedrock invocation logging off
+   *  for ~31h and blinding the meter — the free-tier cap's auditor and
+   *  backstop. Neither the Delete call nor the IAM permission for it may
+   *  come back. */
+  test("the logging custom resource has no Delete — it would wipe an account singleton", () => {
+    const crs = template.findResources("Custom::AWS");
+    const logging = Object.values(crs).filter((cr: any) =>
+      JSON.stringify(cr.Properties?.Create ?? "").includes(
+        "putModelInvocationLoggingConfiguration",
+      ),
+    );
+    expect(logging.length).toBe(1);
+    // The custom resource's onDelete surfaces as a `Delete` PROPERTY. It must
+    // be absent. (Do not assert on the serialised resource — CloudFormation's
+    // own DeletionPolicy/UpdateReplacePolicy are the string "Delete" and have
+    // nothing to do with this.)
+    expect((logging[0] as any).Properties.Delete).toBeUndefined();
+    expect(JSON.stringify(logging[0])).not.toContain(
+      "deleteModelInvocationLoggingConfiguration",
+    );
+
+    const policies = JSON.stringify(
+      template.findResources("AWS::IAM::Policy"),
+    );
+    expect(policies).not.toContain(
+      "bedrock:DeleteModelInvocationLoggingConfiguration",
+    );
+    // …while the Put it exists to perform is still granted.
+    expect(policies).toContain(
+      "bedrock:PutModelInvocationLoggingConfiguration",
+    );
+  });
+
 });

@@ -152,16 +152,23 @@ export class BedrockMeterStack extends cdk.Stack {
           `bedrock-logging-${this.region}`,
         ),
       },
-      onDelete: {
-        service: "Bedrock",
-        action: "deleteModelInvocationLoggingConfiguration",
-      },
+      // NO onDelete. This is an ACCOUNT+REGION SINGLETON and
+      // deleteModelInvocationLoggingConfiguration takes no arguments, so it
+      // cannot be scoped to "our" config — it wipes logging for the account.
+      // The old comment claimed CFN skips the Delete because the physical id
+      // is stable. That is true for an in-place replace and FALSE across a
+      // LOGICAL ID rename: on 2026-08-30 the renamed resource's Create wrote
+      // the config at 22:13:14Z and the OLD logical id's Delete wiped it at
+      // 22:13:23Z — nine seconds later (CloudTrail). Logging stayed off for
+      // ~31h until it was restored by hand, blinding the meter Lambda that is
+      // the free-tier cap's auditor and backstop kill. Tearing this stack down
+      // now leaves the logging config in place; that is deliberate and is the
+      // strictly safer failure direction.
       policy: cr.AwsCustomResourcePolicy.fromStatements([
         new iam.PolicyStatement({
           effect: iam.Effect.ALLOW,
           actions: [
             "bedrock:PutModelInvocationLoggingConfiguration",
-            "bedrock:DeleteModelInvocationLoggingConfiguration",
             "bedrock:GetModelInvocationLoggingConfiguration",
           ],
           resources: ["*"], // account-level config — no resource ARN exists

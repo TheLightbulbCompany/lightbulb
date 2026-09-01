@@ -103,22 +103,16 @@ function MobileChatShell() {
   const detailId = searchParams.get("detailId");
   const activeView: "chat" | "control" = panelParam ? "control" : "chat";
   // Resolve retired panel keys (credits→llm, teams-approvals→teams-inbox, …)
-  // through the shared registry so the panel renders under its live key
-  // immediately. The URL is canonicalized in the effect below.
+  // through the shared registry so the panel renders under its live key.
+  // Resolution happens at READ time only — the address bar is left exactly as
+  // the sender wrote it. This shell must NOT canonicalize ?panel in place: on
+  // a desktop viewport it is the branch that mounts during hydration
+  // (useIsDesktop's server snapshot is false), so a rewrite here lands before
+  // the dynamically-imported WorkspaceShell ever reads window.location.search
+  // — and the dock's reconciler deliberately needs the RAW key to carry a
+  // retired panel's meaning onto its successor (?panel=dreams → Brain's
+  // Dreams tab; see workspaceShellReconciler.ts and panelRegistry.ts).
   const activePanel: string = panelParam ? resolvePanelAlias(panelParam) : "overview";
-
-  // Canonicalize a retired panel key in the address bar. Replace-only (no
-  // history entry) — this is what fixes the old credits→llm push-trap, where
-  // ControlPanelRouter's remap pushed and trapped Back on ?panel=credits.
-  useEffect(() => {
-    if (!panelParam) return;
-    const resolved = resolvePanelAlias(panelParam);
-    if (resolved === panelParam) return;
-    const params = new URLSearchParams(searchParams.toString());
-    params.set("panel", resolved);
-    params.delete("detailId");
-    replaceSearchParams(params);
-  }, [panelParam, searchParams]);
 
   // Per-panel params derived once from the URL (mobile's channel) and threaded
   // down. Panels no longer read the URL themselves; they consume these props and

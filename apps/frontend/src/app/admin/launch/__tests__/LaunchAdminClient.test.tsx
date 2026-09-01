@@ -33,6 +33,9 @@ const closeResult = {
   coupons_attached: 12,
   coupon_failures: 0,
   emails_sent: 40,
+  emails_winner: 30,
+  emails_competing: 6,
+  emails_not_selected: 4,
   email_failures: 0,
 };
 
@@ -170,6 +173,8 @@ describe("LaunchAdminClient", () => {
     render(<LaunchAdminClient data={{ ...data, closed: true, closed_at: closeResult.closed_at, close_result: closeResult }} />);
     expect(screen.getByText(/40 winners flagged of 40 on the sheet/)).toBeInTheDocument();
     expect(screen.getByText(/pot \$1,400/)).toBeInTheDocument();
+    // Every cohort's send count is visible — a total alone hides who heard what.
+    expect(screen.getByText(/emails 40 sent \(30 winner \/ 6 competing \/ 4 not selected\)/)).toBeInTheDocument();
     // Clean close: no retry affordance, no skipped warning.
     expect(screen.queryByRole("button", { name: /retry \(force\)/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/not on the Starter plan/)).not.toBeInTheDocument();

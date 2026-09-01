@@ -1,5 +1,5 @@
-"""Sheet emails — join confirmation + the two winner variants. No pot
-numbers anywhere."""
+"""Sheet emails — join confirmation + the four close variants (two winner,
+still-competing, not-selected). No pot numbers anywhere."""
 
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
@@ -76,15 +76,47 @@ async def test_winner_unpaid_email_copy():
     assert "Your first month of Starter is free — applied automatically at checkout." in kw["text"]
 
 
+async def test_still_competing_email_copy():
+    with patch.object(em.email_service, "send_email", AsyncMock(return_value="msg_4")) as send:
+        assert await em.send_still_competing_email(to_email="a@x.com", first_name=None) == "msg_4"
+    kw = send.await_args.kwargs
+    assert kw["subject"] == "You're in the launch competition"
+    assert kw["kind"] == "launch_competing"
+    for body in (kw["html"], kw["text"]):
+        assert "The sign-up sheet is closed, and you're in the competition." in body
+        assert "competing on equal footing from October 1" in body
+
+
+async def test_not_selected_email_copy():
+    with patch.object(em.email_service, "send_email", AsyncMock(return_value="msg_5")) as send:
+        assert await em.send_not_selected_email(to_email="a@x.com", first_name=None) == "msg_5"
+    kw = send.await_args.kwargs
+    assert kw["subject"] == "The launch competition starts October 1"
+    assert kw["kind"] == "launch_not_selected"
+    for body in (kw["html"], kw["text"]):
+        assert "The sign-up sheet is closed, and the 200 free months are taken." in body
+        assert "You're not in the competition this round" in body
+
+
+async def test_close_emails_never_raise():
+    with patch.object(em.email_service, "send_email", AsyncMock(side_effect=RuntimeError("ses down"))):
+        assert await em.send_still_competing_email(to_email="a@x.com", first_name=None) is None
+        assert await em.send_not_selected_email(to_email="a@x.com", first_name=None) is None
+
+
 async def test_no_email_mentions_the_pot():
     _, join_send = await _send_join()
     with patch.object(em.email_service, "send_email", AsyncMock(return_value="m")) as paid_send:
         await em.send_winner_paid_email(to_email="a@x.com", first_name=None)
     with patch.object(em.email_service, "send_email", AsyncMock(return_value="m")) as unpaid_send:
         await em.send_winner_unpaid_email(to_email="a@x.com", first_name=None)
+    with patch.object(em.email_service, "send_email", AsyncMock(return_value="m")) as competing_send:
+        await em.send_still_competing_email(to_email="a@x.com", first_name=None)
+    with patch.object(em.email_service, "send_email", AsyncMock(return_value="m")) as not_selected_send:
+        await em.send_not_selected_email(to_email="a@x.com", first_name=None)
     import re
 
-    for send in (join_send, paid_send, unpaid_send):
+    for send in (join_send, paid_send, unpaid_send, competing_send, not_selected_send):
         kw = send.await_args.kwargs
         # \bpot\b, not a substring check — "spots" is fine, the pot is not.
         assert not re.search(r"\bpot\b", kw["html"], re.I) and not re.search(r"\bpot\b", kw["text"], re.I)

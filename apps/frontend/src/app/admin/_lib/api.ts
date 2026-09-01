@@ -766,7 +766,13 @@ export interface LaunchCloseResult {
   /** Paying winners NOT on the Starter plan — the product-restricted coupon
    * would discount $0, so they were skipped and got the unpaid email. */
   coupon_skipped_nonflat?: number;
+  /** Total close emails sent across all three cohorts. */
   emails_sent?: number;
+  emails_winner?: number;
+  /** Paying non-winners — still competing, told so. */
+  emails_competing?: number;
+  /** Non-winners who don't pay — out of the competition, told so. */
+  emails_not_selected?: number;
   email_failures?: number;
 }
 

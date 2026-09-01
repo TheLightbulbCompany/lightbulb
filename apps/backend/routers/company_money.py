@@ -9,18 +9,25 @@ Gating copies routers/company_policy.py: org context requires org:admin, and
 the owner is the ORG, never the member who clicked. Deliberately NOT
 paid-gated — reading your own numbers must survive a lapsed subscription.
 
-Three things the rollup row says that a naive passthrough would say wrongly:
+Four things the rollup row says that a naive passthrough would say wrongly:
 
 1. ``followers`` and ``open_threads`` are hardcoded zeros in the writer
    (bundle.social is P3; no owner-scoped thread store exists). They are named
    in ``unavailable`` and omitted from ``days[]`` — a 0 would render a tile
    that lies, a null would make a client's sum NaN. The WRITER contract is
    unchanged: rollup_repo.put_day still requires every key.
-2. ``agent_spend_microcents`` on a row is MONTH-TO-DATE, not that day's spend
+2. ``visitors`` is rule 1 again, but conditionally. owner_posthog.day_traffic
+   returns None on every miss and rollup_service stores 0 for it, so an owner
+   who never connected PostHog gets a confident 0 for a quantity nobody
+   measured. ``unavailable`` is therefore computed, not constant: no PostHog
+   connection ⇒ visitors joins the omitted set. An owner WHO HAS connected
+   keeps a genuine 0 — suppressing a real zero-traffic day is the opposite
+   error.
+3. ``agent_spend_microcents`` on a row is MONTH-TO-DATE, not that day's spend
    (rollup_service stamps the running month total onto each current-month
    row), so summing the column double-counts. It never appears in ``days[]``;
    one top-level scalar is served live from the usage row instead.
-3. Rollup rows exist only for Stripe-bound owners (the hourly pass iterates
+4. Rollup rows exist only for Stripe-bound owners (the hourly pass iterates
    connected accounts), so an unbound owner's empty ``days`` means "no
    source", not "no revenue" — ``stripe_bound`` lets the UI say which, and
    ``first_day`` lets it label a range the writers never backfilled.
@@ -36,7 +43,7 @@ import stripe
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
-from core.repositories import billing_repo, rollup_repo, usage_repo
+from core.repositories import billing_repo, integrations_repo, rollup_repo, usage_repo
 from core.services import company_stripe_reads
 from routers.company_stripe import _stripe_failure
 
@@ -49,9 +56,32 @@ MAX_SPAN_DAYS = 366
 DEFAULT_SPAN_DAYS = 30
 DAY_KEYS = ("day", "revenue_microcents", "signups", "visitors")
 UNAVAILABLE = ["followers", "open_threads"]
+# ``visitors`` joins them for an owner with no PostHog: see _measures_visitors.
+VISITORS = "visitors"
 # Money moves in two directions and the Spend tab now adds three sources up.
 # Stated per field so no client has to read a name and guess the sign.
 DIRECTION = {"revenue_microcents": "in", "agent_spend_month_to_date_microcents": "out"}
+
+
+async def _measures_visitors(owner_id: str) -> bool:
+    """Whether this owner has a PostHog connection at all — i.e. whether the
+    stored ``visitors`` number is a measurement or a placeholder.
+
+    owner_posthog.day_traffic returns None on every miss and rollup_service
+    stores 0 for it (put_day requires every key, deliberately), so the row
+    itself cannot tell the two apart. One GetItem on the owner's posthog
+    integrations row can: it is written only after a successful OAuth apply and
+    deleted on disconnect/wipe, and "connected" is the same predicate
+    catalog_service already gates deploys on. It must stay a DDB read — asking
+    PostHog itself would put a vendor round-trip on every rollup request.
+
+    ponytail: connection-level, not per-day. A connected owner whose refresh
+    token has since lapsed still reads 0 (or, more often, rollup_service's
+    carried-forward prior). Distinguishing THAT needs the writer to record
+    whether the day was measured, which is a writer-contract change.
+    """
+    row = await integrations_repo.get(owner_id, "posthog")
+    return bool(row) and row.get("status", "connected") == "connected"
 
 
 def _owner(auth: AuthContext) -> str:
@@ -102,6 +132,8 @@ async def rollup(
     # total_spend_microdollars but holds microCENTS (misnomer, no conversion).
     usage = await usage_repo.get_period_usage(owner_id, end_day[:7])
     billing = await billing_repo.get_by_owner_id(owner_id) or {}
+    measured = await _measures_visitors(owner_id)
+    day_keys = DAY_KEYS if measured else tuple(k for k in DAY_KEYS if k != VISITORS)
 
     return {
         "start": start_day,
@@ -110,9 +142,9 @@ async def rollup(
         # Sparse: absent days are omitted, and this is the first one that
         # exists — the writers do today+yesterday only, never a backfill.
         "first_day": rows[0]["day"] if rows else None,
-        "days": [{k: row[k] for k in DAY_KEYS} for row in rows],
+        "days": [{k: row[k] for k in day_keys} for row in rows],
         "agent_spend_month_to_date_microcents": (usage or {}).get("total_spend_microdollars", 0),
-        "unavailable": UNAVAILABLE,
+        "unavailable": UNAVAILABLE if measured else [*UNAVAILABLE, VISITORS],
         # Spend sums three sources (agent inference, provider charges, company
         # Stripe), so direction is stated rather than inferred from a name: a
         # client that nets money IN against money OUT is the failure mode.

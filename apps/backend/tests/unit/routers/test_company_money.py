@@ -3,11 +3,13 @@
 Four read-only routes. The rollup serves the stored day rows; the other three
 read the owner's connected Stripe account THROUGH, storing nothing.
 
-The three honesty rules each get a test: followers/open_threads are hardcoded
-zeros in the writer (so they are named `unavailable`, never emitted as 0),
-agent spend is month-to-date (so it is one top-level scalar, never a per-day
-column that would double-count when summed), and an owner with no connected
-account gets an empty 200 rather than an error.
+The honesty rules each get a test: followers/open_threads are hardcoded zeros
+in the writer (so they are named `unavailable`, never emitted as 0), visitors
+is a stored 0 for an owner with no PostHog connection (so it is unavailable
+too — but a real 0 for one who HAS it), agent spend is month-to-date (so it is
+one top-level scalar, never a per-day column that would double-count when
+summed), and an owner with no connected account gets an empty 200 rather than
+an error.
 """
 
 import os
@@ -67,11 +69,17 @@ def _rows(*days):
     ]
 
 
-def _rollup(client, rows=(), usage=None, billing=None, **params):
+# The default owner HAS PostHog connected — the _rows fixture's visitors: 30 is
+# only a coherent number for one who does.
+CONNECTED_POSTHOG = {"owner_id": "org_a", "provider": "posthog", "status": "connected"}
+
+
+def _rollup(client, rows=(), usage=None, billing=None, posthog=CONNECTED_POSTHOG, **params):
     with (
         patch.object(mod.rollup_repo, "get_days", AsyncMock(return_value=list(rows))),
         patch.object(mod.usage_repo, "get_period_usage", AsyncMock(return_value=usage)) as usage_mock,
         patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value=billing)),
+        patch.object(mod.integrations_repo, "get", AsyncMock(return_value=posthog)),
     ):
         resp = client.get("/api/v1/company/rollup", params=params)
     return resp, usage_mock
@@ -87,6 +95,51 @@ def test_rollup_omits_the_hardcoded_zeros_and_names_them_unavailable(client):
     assert body["days"] == [{"day": "2026-08-30", "revenue_microcents": 1_000_000, "signups": 2, "visitors": 30}]
     assert "followers" not in body["days"][0] and "open_threads" not in body["days"][0]
     assert body["unavailable"] == ["followers", "open_threads"]
+
+
+def test_rollup_omits_visitors_when_the_owner_never_connected_posthog(client):
+    """No PostHog connection means we have never measured visitors. The stored
+    0 (rollup_service's, forced by put_day's every-key contract) must not reach
+    a client as a number: omitted from days[], named in unavailable."""
+    resp, _ = _rollup(client, rows=_rows("2026-08-30"), posthog=None)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["days"] == [{"day": "2026-08-30", "revenue_microcents": 1_000_000, "signups": 2}]
+    assert "visitors" in body["unavailable"]
+
+
+def test_rollup_keeps_a_genuine_zero_for_a_connected_owner_with_no_traffic(client):
+    """The asymmetry: an owner WITH PostHog who truly had nobody visit still
+    sees a real 0. Suppressing that would be the opposite lie."""
+    rows = _rows("2026-08-30")
+    rows[0]["visitors"] = 0
+    resp, _ = _rollup(client, rows=rows)
+    body = resp.json()
+    assert body["days"][0]["visitors"] == 0
+    assert "visitors" not in body["unavailable"]
+
+
+def test_rollup_treats_a_non_connected_posthog_row_as_unmeasured(client):
+    """A row exists but its status is not ``connected`` — same verdict as no row."""
+    resp, _ = _rollup(client, rows=_rows("2026-08-30"), posthog={**CONNECTED_POSTHOG, "status": "revoked"})
+    body = resp.json()
+    assert "visitors" not in body["days"][0]
+    assert "visitors" in body["unavailable"]
+
+
+def test_rollup_decides_visitors_from_one_ddb_row_never_from_posthog(client):
+    """Cost fence: one GetItem on this owner's posthog status row. A vendor
+    round-trip per rollup request is what this must never become."""
+    get = AsyncMock(return_value=None)
+    with (
+        patch.object(mod.rollup_repo, "get_days", AsyncMock(return_value=[])),
+        patch.object(mod.usage_repo, "get_period_usage", AsyncMock(return_value=None)),
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value=None)),
+        patch.object(mod.integrations_repo, "get", get),
+    ):
+        assert client.get("/api/v1/company/rollup").status_code == 200
+    assert get.await_count == 1
+    assert get.await_args.args == ("org_a", "posthog")
 
 
 def test_rollup_agent_spend_is_one_mtd_scalar_from_usage_not_a_per_day_column(client):

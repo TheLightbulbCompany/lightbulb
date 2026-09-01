@@ -3,9 +3,13 @@ import { describe, expect, it } from "vitest";
 import { parseLocalMcpConfig } from "../localMcp";
 
 /**
- * The three traps in lib/localMcp.ts fail SILENTLY at runtime — a wrong
- * config produces a server that never yields tools and never errors anywhere
- * the user can see. This suite is what keeps them caught at paste time.
+ * The traps in lib/localMcp.ts fail SILENTLY at runtime — a wrong config
+ * produces a server that never yields tools and never errors anywhere the user
+ * can see. This suite is what keeps them handled at paste time.
+ *
+ * `localhost` is deliberately NOT rejected: the SSRF blocklist never runs for a
+ * configured MCP server URL (see the module header), the Rust side doesn't
+ * reject it either, and it is the most common local-MCP case.
  */
 describe("parseLocalMcpConfig", () => {
   const err = (raw: string) => {
@@ -14,11 +18,26 @@ describe("parseLocalMcpConfig", () => {
     return r.error;
   };
 
-  describe("trap 1 — a url without a transport silently gets an SSE client", () => {
-    it("rejects a url entry with no transport, naming streamable-http", () => {
-      const message = err('{"remote":{"url":"https://mcp.example.com/mcp"}}');
-      expect(message).toContain('no "transport"');
-      expect(message).toContain("streamable-http");
+  describe("a url without a transport silently gets an SSE client", () => {
+    it("fills in streamable-http rather than rejecting — the Rust side defaults it too", () => {
+      expect(parseLocalMcpConfig('{"remote":{"url":"https://mcp.example.com/mcp"}}')).toEqual({
+        ok: true,
+        servers: { remote: { url: "https://mcp.example.com/mcp", transport: "streamable-http" } },
+      });
+    });
+
+    it("leaves an explicit sse alone — the default only fills a gap", () => {
+      expect(parseLocalMcpConfig('{"remote":{"url":"https://mcp.example.com/mcp","transport":"sse"}}')).toEqual({
+        ok: true,
+        servers: { remote: { url: "https://mcp.example.com/mcp", transport: "sse" } },
+      });
+    });
+
+    it("does not add a transport to a command entry", () => {
+      expect(parseLocalMcpConfig('{"fs":{"command":"npx"}}')).toEqual({
+        ok: true,
+        servers: { fs: { command: "npx" } },
+      });
     });
 
     it("accepts the same entry once transport is explicit", () => {
@@ -47,33 +66,29 @@ describe("parseLocalMcpConfig", () => {
     });
   });
 
-  describe("trap 2 — localhost is SSRF-blocked, 127.0.0.1 is auto-trusted", () => {
-    it("rejects localhost and names the replacement", () => {
-      const message = err('{"local":{"url":"http://localhost:8080/mcp","transport":"streamable-http"}}');
-      expect(message).toContain("localhost");
-      expect(message).toContain("127.0.0.1");
-    });
-
-    it("catches localhost regardless of case or path", () => {
-      expect(err('{"local":{"url":"HTTP://LocalHost:3000/sse","transport":"sse"}}')).toContain("127.0.0.1");
-    });
-
-    it("accepts the loopback IP", () => {
-      expect(parseLocalMcpConfig('{"local":{"url":"http://127.0.0.1:8080/mcp","transport":"streamable-http"}}').ok).toBe(
-        true,
+  describe("localhost is NOT rejected — the SSRF blocklist never runs for a configured MCP url", () => {
+    it("passes a localhost url through untouched", () => {
+      expect(parseLocalMcpConfig('{"local":{"url":"http://localhost:3000/mcp","transport":"streamable-http"}}')).toEqual(
+        {
+          ok: true,
+          servers: { local: { url: "http://localhost:3000/mcp", transport: "streamable-http" } },
+        },
       );
     });
 
-    it("does not flag a hostname that merely contains 'localhost'", () => {
-      expect(parseLocalMcpConfig('{"x":{"url":"https://localhost.example.com/mcp","transport":"sse"}}').ok).toBe(true);
+    it("defaults a transport-less localhost url like any other", () => {
+      expect(parseLocalMcpConfig('{"local":{"url":"http://localhost:3000/mcp"}}')).toEqual({
+        ok: true,
+        servers: { local: { url: "http://localhost:3000/mcp", transport: "streamable-http" } },
+      });
     });
 
-    it("rejects a url that is not a url at all", () => {
-      expect(err('{"x":{"url":"not a url","transport":"sse"}}')).toContain("isn't a valid URL");
+    it("accepts the loopback IP too — neither host is special", () => {
+      expect(parseLocalMcpConfig('{"local":{"url":"http://127.0.0.1:8080/mcp","transport":"sse"}}').ok).toBe(true);
     });
   });
 
-  describe("trap 3 — `disabled` is rejected by the strict schema; `enabled` is the flag", () => {
+  describe("`disabled` is rejected by the strict schema; `enabled` is the flag", () => {
     it("rejects `disabled` and points at `enabled`", () => {
       const message = err('{"fs":{"command":"npx","disabled":true}}');
       expect(message).toContain('"disabled"');
@@ -110,6 +125,10 @@ describe("parseLocalMcpConfig", () => {
 
     it("rejects an empty map", () => {
       expect(err("{}")).toContain("No servers");
+    });
+
+    it("rejects a url that is not a url at all", () => {
+      expect(err('{"x":{"url":"not a url","transport":"sse"}}')).toContain("isn't a valid URL");
     });
 
     it("rejects an entry with neither command nor url", () => {

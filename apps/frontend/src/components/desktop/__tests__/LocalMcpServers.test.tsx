@@ -86,11 +86,11 @@ describe("LocalMcpServers", () => {
     await waitFor(() => expect(screen.getByText(/No local MCP servers yet/i)).toBeTruthy());
 
     await userEvent.click(screen.getByLabelText(/Local MCP server configuration/i));
-    await userEvent.paste('{"remote":{"url":"http://localhost:8080/mcp","transport":"sse"}}');
+    await userEvent.paste('{"remote":{"command":"npx","disabled":true}}');
     await userEvent.click(screen.getByRole("button", { name: /save & restart/i }));
 
     expect(await screen.findByRole("alert")).toBeTruthy();
-    expect(screen.getByRole("alert").textContent).toContain("127.0.0.1");
+    expect(screen.getByRole("alert").textContent).toContain('"enabled": false');
     expect(invoke).not.toHaveBeenCalledWith("local_mcp_set", expect.anything());
   });
 

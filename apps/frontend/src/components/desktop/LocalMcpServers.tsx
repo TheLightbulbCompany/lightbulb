@@ -44,7 +44,7 @@ const PLACEHOLDER_CONFIG = `{
     "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/me/Documents"]
   },
   "local-http": {
-    "url": "http://127.0.0.1:8080/mcp",
+    "url": "http://localhost:3000/mcp",
     "transport": "streamable-http"
   }
 }`;
@@ -217,9 +217,8 @@ export function LocalMcpServers() {
       {/* Paste config */}
       <div className="space-y-2">
         <p className="text-xs text-muted-foreground">
-          Paste a server config. Remote servers need an explicit{" "}
-          <code>transport</code>, and <code>127.0.0.1</code> rather than{" "}
-          <code>localhost</code>.
+          Paste a server config. A <code>url</code> with no <code>transport</code>{" "}
+          is saved as <code>streamable-http</code>.
         </p>
         <textarea
           className="w-full h-44 rounded-lg border border-border bg-background p-3 text-xs font-mono resize-y"

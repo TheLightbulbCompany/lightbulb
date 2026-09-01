@@ -1,7 +1,11 @@
 import { act, fireEvent, render, screen } from "@testing-library/react-native";
 import { useEffect } from "react";
 import { AccessibilityInfo, Alert, Text } from "react-native";
-import { PROVISION_IDEAS, PROVISION_TIMEOUT_MS } from "@lightbulb/shared";
+import {
+  PROVISION_IDEAS,
+  PROVISION_STUCK_MS,
+  PROVISION_TIMEOUT_MS,
+} from "@lightbulb/shared";
 
 jest.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
@@ -457,5 +461,199 @@ describe("ProvisioningStepper blocking-state exits", () => {
     const buttons = alertSpy.mock.calls[0]?.[2] ?? [];
     buttons.find((button) => button.text === "Sign out")?.onPress?.();
     expect(mockSignOut).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * THE COVERAGE HOLE this PR fills.
+ *
+ * `bootstrap.state` was surfaced on the `ready` variant alone, and a container
+ * whose gateway never registers composes to `starting` — so the failure notice
+ * was unreachable in exactly the case it was written for. A dev owner sat on
+ * this screen for 21 hours with the reason arriving on every poll and read by
+ * nothing; four prod owners are wedged the same way.
+ */
+describe("ProvisioningStepper stops claiming progress once bootstrap has failed", () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    holdAnimationsStatic();
+    mockSignOut.mockReset();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+
+  // The observed shape: ECS RUNNING, gateway port answering, no live gateway
+  // registration -> runtime_phase "starting" -> the promoted stepper.
+  const renderFailed = async (
+    bootstrap: { bootstrapState?: string; bootstrapError?: string | null } = {
+      bootstrapState: "failed",
+      bootstrapError: "Gateway connect failed: gateway starting; retry shortly",
+    },
+    onRetry: () => void = jest.fn(),
+  ) => {
+    const result = await render(
+      <ProvisioningStepper
+        status={{ kind: "starting", phase: "starting", ...bootstrap }}
+        onRetry={onRetry}
+      >
+        <Text>APP</Text>
+      </ProvisioningStepper>,
+    );
+    await act(async () => {
+      jest.advanceTimersByTime(11_000);
+    });
+    return result;
+  };
+
+  it("names the failure and drops every claim that work is under way", async () => {
+    await renderFailed();
+
+    expect(screen.getByTestId("provision-title")).toHaveTextContent(
+      /Setup didn.t finish/,
+    );
+    expect(screen.getByTestId("first-run-failed")).toBeTruthy();
+
+    // The step label was the lie: all three are present-progressive.
+    expect(
+      screen.queryByText("Putting the finishing touches on your agent…"),
+    ).toBeNull();
+    // "While you wait…" is an invitation to keep waiting.
+    expect(screen.queryByText("WHILE YOU WAIT")).toBeNull();
+    for (const idea of PROVISION_IDEAS) {
+      expect(screen.queryByText(idea)).toBeNull();
+    }
+  });
+
+  it("keeps the rail and the clock — how far setup got is still true", async () => {
+    await renderFailed();
+
+    expect(screen.getByTestId("provision-dot-rail")).toBeTruthy();
+    expect(screen.getByTestId("provision-elapsed")).toBeTruthy();
+  });
+
+  it("hands over the reason verbatim, and never a dead Retry", async () => {
+    const reason = [
+      "Gateway connect failed: gateway starting; retry shortly",
+      "dispatch_id=6f1c2b84-1f2a-4a9d-9f0e-0b2c9d1e77aa",
+      "attempts=5",
+    ].join("\n");
+    await renderFailed({ bootstrapState: "failed", bootstrapError: reason });
+
+    await fireEvent.press(screen.getByLabelText("Show technical details"));
+    expect(screen.getByText(reason)).toBeTruthy();
+
+    // The re-arm lever is platform-admin only, so a Retry would be dead — and
+    // the soft-timeout block that carries one must not appear either.
+    expect(screen.getByLabelText("Contact support")).toBeTruthy();
+    expect(screen.queryByText("Retry")).toBeNull();
+  });
+
+  it("keeps the soft-timeout block suppressed even past the stuck tier", async () => {
+    await renderFailed();
+    await act(async () => {
+      jest.advanceTimersByTime(PROVISION_STUCK_MS);
+    });
+
+    // "still going" / "taking longer" are claims about a run that has ended.
+    expect(screen.queryByTestId("provision-timeout")).toBeNull();
+    expect(screen.getByTestId("provision-title")).toHaveTextContent(
+      /Setup didn.t finish/,
+    );
+  });
+
+  // The non-lie rule from the ready branch has to hold here too: these rungs
+  // are re-armed or completed by the dispatcher on the next poll, so a slow
+  // cold start must keep looking like a slow cold start.
+  it.each([
+    ["not_started", { bootstrapState: "not_started", bootstrapError: null }],
+    ["dispatched", { bootstrapState: "dispatched", bootstrapError: "connection refused" }],
+    ["sent", { bootstrapState: "sent", bootstrapError: null }],
+    ["delivered", { bootstrapState: "delivered", bootstrapError: null }],
+    ["absent", {}],
+  ])("keeps the ordinary cold-start card for bootstrapState=%s", async (_label, bootstrap) => {
+    await renderFailed(bootstrap);
+
+    expect(
+      screen.getByText("Putting the finishing touches on your agent…"),
+    ).toBeTruthy();
+    expect(screen.queryByTestId("first-run-failed")).toBeNull();
+  });
+});
+
+/**
+ * The wait had exactly one bound — a 5-minute soft timeout whose copy was
+ * identical at 5:01 and at hour twenty-one.
+ */
+describe("ProvisioningStepper bounds the wait honestly", () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    holdAnimationsStatic();
+    mockSignOut.mockReset();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+
+  const renderColdStart = async (onRetry: () => void = jest.fn()) =>
+    await render(
+      <ProvisioningStepper
+        status={{ kind: "starting", phase: "starting" }}
+        onRetry={onRetry}
+      >
+        <Text>APP</Text>
+      </ProvisioningStepper>,
+    );
+
+  it("escalates to a second tier at 15 minutes", async () => {
+    await renderColdStart();
+
+    await act(async () => {
+      jest.advanceTimersByTime(PROVISION_TIMEOUT_MS + 1_000);
+    });
+    expect(screen.getByText("This is taking longer than usual.")).toBeTruthy();
+
+    await act(async () => {
+      jest.advanceTimersByTime(PROVISION_STUCK_MS - PROVISION_TIMEOUT_MS);
+    });
+    expect(screen.queryByText("This is taking longer than usual.")).toBeNull();
+    expect(
+      screen.getByText(/something is stuck on our side/),
+    ).toBeTruthy();
+  });
+
+  // Web's equivalent button cleared its own escalation flag AND zeroed the
+  // clock, so a diligent owner deleted their own escalation and 21 hours kept
+  // reading as five minutes. Mobile's Retry only refetches — pin that.
+  it("Retry re-polls without erasing the escalation or the clock", async () => {
+    const onRetry = jest.fn();
+    await renderColdStart(onRetry);
+
+    await act(async () => {
+      jest.advanceTimersByTime(PROVISION_STUCK_MS + 1_000);
+    });
+    expect(screen.getByText(/something is stuck on our side/)).toBeTruthy();
+
+    await fireEvent.press(screen.getByLabelText("Retry"));
+
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(/something is stuck on our side/)).toBeTruthy();
+    expect(screen.queryByText("0:00")).toBeNull();
+  });
+
+  // Inherited from the shared formatter (web's PR), pinned here because this
+  // is the screen that rendered "1260:37 · cold starts can take a few minutes".
+  it("rolls the counter to h:mm:ss instead of a four-digit minute count", async () => {
+    await renderColdStart();
+
+    await act(async () => {
+      jest.advanceTimersByTime(3_600_000 + 5_000);
+    });
+
+    expect(screen.getByTestId("provision-elapsed")).toHaveTextContent(/^1:00:0\d$/);
   });
 });

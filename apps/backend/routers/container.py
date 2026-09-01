@@ -558,10 +558,22 @@ async def container_status(
     # taken with it (rolling deploy, grace close). The dispatcher re-attaches
     # one here if this process lacks it; when it already holds it (the common
     # case) that is one dict lookup, no reads.
+    #
+    # "failed" is admitted because it was NOT actually terminal in the way the
+    # owner experiences it: a transient the dispatcher's classifier types
+    # deterministic (a connect rejection that literally says "retry shortly")
+    # or one that only shows up as the run's terminal (a rate limit) dead-ended
+    # the owner on the funnel spinner FOREVER behind a healthy container, until
+    # an operator noticed. The dispatcher's own retry is bounded — the same
+    # attempts budget, a backoff, and never the ambiguous send-attempted row
+    # (bootstrap_dispatcher._retry_failed_bootstrap) — so a genuinely broken
+    # bootstrap is NOT re-dispatched on every ~3s poll: past the bounds the
+    # dispatcher returns on the attempts comparison, off this same dict, with
+    # no reads at all.
     if (
         contract["runtime_phase"] in ("starting", "ready")
         and onboarding.get("funnel_state") == "submitted"
-        and (onboarding.get("bootstrap_state") or "not_started") in ("not_started", "dispatched", "sent")
+        and (onboarding.get("bootstrap_state") or "not_started") in ("not_started", "dispatched", "sent", "failed")
     ):
         asyncio.create_task(maybe_dispatch_bootstrap(owner_id, onboarding=onboarding))
 

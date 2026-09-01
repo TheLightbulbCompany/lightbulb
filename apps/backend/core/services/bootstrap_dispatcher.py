@@ -144,7 +144,8 @@ mechanism to keep alive. A ``dispatched`` row older than
 
 ``routers/container.py``'s pre-gate therefore admits ``dispatched`` rows
 too (a stuck claim can only be found by a poll that actually calls in);
-the dispatcher returns immediately for a fresh one.
+the dispatcher returns immediately for a fresh one. It admits ``failed``
+for the same reason -- see the bounded-retry tier below.
 
 CRITICAL UX invariant this dispatcher must never break: dispatching
 chat.send from the BACKEND instead of a browser tab does NOT change where
@@ -198,6 +199,21 @@ Failure handling is TWO-TIERED (both bounded by ``bootstrap_attempts``):
   race killed the onboarding forever; scoping re-arm to the provably-pre-send
   connect phase recovers the boot-window blip without reintroducing that risk.
 
+* **Bounded retry OF a ``failed`` row** (``_retry_failed_bootstrap``). The two
+  tiers above only catch a failure they can classify DURING the dispatch,
+  which left a real hole: a transient the classifier types deterministic (a
+  connect rejection carrying OpenClaw's own "gateway starting; retry shortly"
+  arrives as a bare ``RuntimeError``) or one that only surfaces as the run's
+  terminal (a rate-limited first run) lands in ``failed``, and ``failed`` was
+  reachable ONLY by the admin lever. Both were observed on one dev account on
+  2026-08-30, each behind a RUNNING, HEALTHY container, leaving the owner on
+  the funnel spinner for 21 hours. A ``failed`` row is therefore re-armed
+  automatically now -- under the SAME ``bootstrap_attempts`` budget, no sooner
+  than ``FAILED_RETRY_BACKOFF_S`` after the failed attempt started, and NEVER
+  for the ambiguous send-attempted-never-acked row. Past those bounds nothing
+  changes: the row stays ``failed``, and ``reset_bootstrap_for_retry`` (which
+  zeroes the counter) is still the operator's way out.
+
 If the runtime is not up yet (no running container / no task IP), this
 function does NOTHING -- no dispatch, no partial write, no stale handoff
 token. Per the spec: "If the runtime isn't up at brief-submit, WAIT for the
@@ -249,6 +265,19 @@ _CONNECT_RETRY_DELAYS_S: tuple[float, ...] = (5, 10, 20, 30, 30, 30, 30, 30)
 # Shared with the admin lever (``routers/admin.py``'s reset-bootstrap), which
 # must refuse a claim this rule would still consider live.
 STALE_DISPATCH_AFTER_S = 600
+
+# How long a ``failed`` row must sit before the BOUNDED automatic retry may
+# re-arm it (see ``_retry_failed_bootstrap``). Measured from
+# ``bootstrap_dispatched_at``, i.e. from when the failed attempt STARTED, which
+# is what actually needs bounding: /container/status is polled every ~3s by
+# every loading client, so without a floor a failed row would re-dispatch on
+# every poll and hammer the gateway and the model. Two minutes, not the ten of
+# STALE_DISPATCH_AFTER_S: that constant answers a different question (is a
+# claimant's process dead) and is sized off the in-dispatch connect ladder,
+# while this one is paid by an owner watching a spinner. Combined with
+# MAX_BOOTSTRAP_ATTEMPTS the whole automatic recovery window is a handful of
+# minutes, after which the row is ``failed`` for the operator lever.
+FAILED_RETRY_BACKOFF_S = 120
 
 # Retry ladder for the ``sent`` stamp (~7.5s total). Short and bounded: it runs
 # inline in the dispatch task, after delivery, so it must not hold the task open
@@ -355,29 +384,40 @@ async def _ensure_connection_with_retry(pool, owner_id: str, ip: str, token: str
     await pool.ensure_connection(owner_id, ip, token)
 
 
-def is_dispatch_stale(dispatched_at) -> bool:
-    """Is a ``dispatched`` claim older than ``STALE_DISPATCH_AFTER_S``?
+def _age_exceeds(stamp, seconds: float) -> bool:
+    """Is *stamp* more than *seconds* in the past?
 
     Takes whatever the caller already holds -- an ISO string (the
     ``get_onboarding_state`` bridge dict) or a ``datetime`` (the
-    ``PaperclipCompany`` dataclass the admin lever reads) -- so both sides of
-    the "is this claim dead" question answer it with the SAME threshold and
-    the same parsing.
+    ``PaperclipCompany`` dataclass the admin lever reads) -- so every "has
+    enough time passed" question on this row is answered with the same
+    parsing.
 
-    An absent or unparseable stamp is NOT stale: a claim we cannot date is one
-    we must leave alone rather than guess at (fail closed -- the cost of a
-    wrong "stale" is a double-dispatched kickoff).
+    An absent or unparseable stamp is NEVER old enough (fail closed): a row we
+    cannot date is one we must leave alone rather than guess at, and both
+    callers pay for a wrong "yes" in the same currency -- a double-dispatched
+    kickoff.
     """
-    if isinstance(dispatched_at, str):
+    if isinstance(stamp, str):
         try:
-            dispatched_at = datetime.fromisoformat(dispatched_at)
+            stamp = datetime.fromisoformat(stamp)
         except ValueError:
             return False
-    if not isinstance(dispatched_at, datetime):
+    if not isinstance(stamp, datetime):
         return False
-    if dispatched_at.tzinfo is None:
-        dispatched_at = dispatched_at.replace(tzinfo=timezone.utc)
-    return datetime.now(timezone.utc) - dispatched_at > timedelta(seconds=STALE_DISPATCH_AFTER_S)
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - stamp > timedelta(seconds=seconds)
+
+
+def is_dispatch_stale(dispatched_at) -> bool:
+    """Is a ``dispatched`` claim older than ``STALE_DISPATCH_AFTER_S``?
+
+    Both sides of the "is this claim dead" question -- this module's lazy
+    expiry and the admin lever (``routers/admin.py``'s reset-bootstrap) --
+    answer it through here, with the SAME threshold.
+    """
+    return _age_exceeds(dispatched_at, STALE_DISPATCH_AFTER_S)
 
 
 async def _recover_stale_dispatch(repo, onboarding: dict, *, owner_id: str) -> bool:
@@ -460,6 +500,80 @@ async def _recover_stale_dispatch(repo, onboarding: dict, *, owner_id: str) -> b
         only_if_unacked=True,
     )
     return False
+
+
+async def _retry_failed_bootstrap(repo, onboarding: dict, *, owner_id: str) -> bool:
+    """BOUNDED automatic retry of a ``failed`` row. True == re-armed, and this
+    caller should go on to re-claim it (same shape as
+    ``_recover_stale_dispatch``, evaluated on the poll that already read the
+    row -- there is still no sweeper).
+
+    ``failed`` was terminal-until-an-operator-noticed, and that is a live
+    product defect: a transient the classifier happens to type non-transient
+    dead-ends the owner permanently. Observed on dev 2026-08-30, twice on one
+    account, each behind a RUNNING, HEALTHY container -- a connect rejection
+    carrying OpenClaw's own "gateway starting; retry shortly", then a
+    rate-limited first run -- with the funnel spinner up for 21 hours.
+
+    But ``failed`` was not excluded by accident, and this does not simply
+    admit it. Three bounds, all of which must hold:
+
+    * **Attempt budget.** ``MAX_BOOTSTRAP_ATTEMPTS``, the SAME counter every
+      other dispatch path spends (the re-arm keeps it, each claim increments
+      it), so this is one budget for all recovery, not a second one stacked on
+      top. At the cap the row stays ``failed`` for the operator lever --
+      unchanged from today, and the reason a per-poll admission would have
+      hammered the gateway/model forever.
+    * **Backoff.** ``FAILED_RETRY_BACKOFF_S`` since the failed attempt
+      STARTED. /container/status is polled every ~3s by every loading client;
+      this is what keeps a retry from riding that cadence.
+    * **Never the AMBIGUOUS row.** A send attempted but never acked may
+      already have been taken by OpenClaw, and every claim mints a fresh
+      ``bootstrap_dispatch_id`` (== the kickoff's ``idempotencyKey``) it cannot
+      dedup -- so re-dispatching could run Friday twice. The other post-send
+      shape IS retried: an ACKED kickoff whose run was OBSERVED to terminate in
+      a chat error is definitively over, so a fresh run cannot overlap it. The
+      checks here are a cheap pre-filter; ``rearm_failed_bootstrap``'s
+      condition expression is the actual fence, so two backend instances (a
+      rolling deploy runs 2) cannot both re-arm.
+
+    Ceiling, accepted: ``_record_late_ack`` can stamp ``bootstrap_sent_at`` on
+    a row the staleness rule just settled ``failed``, so a claimant slow by
+    >10 minutes whose send then lands reads here as "acked, run over" while its
+    run may still be live. That needs a >10-minute-slow claimant AND a run
+    still going ``FAILED_RETRY_BACKOFF_S`` after its ack; the cost is one
+    duplicate kickoff, against a defect that today costs the owner everything.
+    """
+    attempts = onboarding.get("bootstrap_attempts") or 0
+    if attempts >= MAX_BOOTSTRAP_ATTEMPTS:
+        # Terminal for real. The operator lever (which zeroes the counter) is
+        # the only way out, exactly as before this function existed.
+        return False
+    if not _age_exceeds(onboarding.get("bootstrap_dispatched_at"), FAILED_RETRY_BACKOFF_S):
+        return False
+    if onboarding.get("bootstrap_send_attempted_at") and not onboarding.get("bootstrap_sent_at"):
+        return False
+
+    row_user_id = onboarding.get("user_id")
+    generation = onboarding.get("onboarding_generation")
+    dispatch_id = onboarding.get("bootstrap_dispatch_id")
+    if not (row_user_id and generation and dispatch_id):
+        # No fencing token (a legacy/degraded row) -- leave it for the admin
+        # lever rather than write unfenced, same as the staleness rule.
+        return False
+
+    if not await repo.rearm_failed_bootstrap(row_user_id, onboarding_generation=generation, dispatch_id=dispatch_id):
+        return False
+    put_metric("bootstrap.failed_retry_rearmed")
+    logger.warning(
+        "bootstrap_dispatcher: retrying failed bootstrap for %s (dispatch_id=%s, attempt %d/%d, last error: %s)",
+        owner_id,
+        dispatch_id,
+        attempts + 1,
+        MAX_BOOTSTRAP_ATTEMPTS,
+        onboarding.get("bootstrap_last_error"),
+    )
+    return True
 
 
 async def _stamp_sent_with_retry(repo, row_user_id: str, *, owner_id: str, generation: str, dispatch_id: str) -> bool:
@@ -926,15 +1040,19 @@ async def maybe_dispatch_bootstrap(owner_id: str, *, onboarding: dict | None = N
         # settled ``failed`` (ambiguous) and stood down from.
         if not await _recover_stale_dispatch(repo, onboarding, owner_id=owner_id):
             return
+    elif bootstrap_state == "failed":
+        # A DETERMINISTIC connect failure, an AMBIGUOUS post-connect failure,
+        # an expired ambiguous claim, a run that terminated in a chat error, or
+        # the attempts cap. It used to be terminal without exception, which
+        # made every transient the classifier happens to type non-transient a
+        # PERMANENT dead end for the owner. Now it is retried -- bounded by the
+        # attempt budget and a backoff, and never for the ambiguous row (see
+        # _retry_failed_bootstrap). Past those bounds this returns False and
+        # the row stays failed for the admin lever, exactly as before.
+        if not await _retry_failed_bootstrap(repo, onboarding, owner_id=owner_id):
+            return
     elif bootstrap_state != "not_started":
-        # delivered: done. failed: terminal -- a
-        # DETERMINISTIC connect failure, the attempts cap, an AMBIGUOUS
-        # post-connect failure (chat.send may already have been accepted; see
-        # the failure classifier below), or an expired ambiguous claim. Only
-        # TRANSIENT connect-phase failures and provably-unsent expired claims
-        # go back to not_started, so "failed" means a re-dispatch is unsafe or
-        # pointless and it needs the admin lever / the next
-        # onboarding_generation, not another poll.
+        # delivered: done.
         return
     if (onboarding.get("bootstrap_attempts") or 0) >= MAX_BOOTSTRAP_ATTEMPTS:
         logger.warning(

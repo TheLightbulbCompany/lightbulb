@@ -2171,6 +2171,18 @@ class TestContainerStatusTeamsStatus:
         sent.assert_awaited_once()
         assert sent.call_args.kwargs["onboarding"]["bootstrap_state"] == "sent"
 
+        # `failed` must reach the dispatcher too. It was excluded here, which
+        # made a transient that named itself retryable ("gateway starting;
+        # retry shortly") a PERMANENT dead end: the owner sat on the funnel
+        # spinner behind a running, healthy container until an operator ran the
+        # admin reset. The bounds that keep this poll cadence from hammering a
+        # genuinely broken bootstrap (attempt cap + backoff, never the
+        # ambiguous send-attempted row) live in the dispatcher, and it is the
+        # only place they can be evaluated — so the poll has to call in.
+        failed = await _poll("failed")
+        failed.assert_awaited_once()
+        assert failed.call_args.kwargs["onboarding"]["bootstrap_state"] == "failed"
+
         delivered = await _poll("delivered")
         delivered.assert_not_awaited()
 

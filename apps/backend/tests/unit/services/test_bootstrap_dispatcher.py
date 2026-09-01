@@ -68,6 +68,9 @@ def _fake_repo(*, claim_result=BootstrapClaimResult.WON, dispatch_id="dispatch-1
     repo.mark_bootstrap_delivered = AsyncMock(return_value=True)
     repo.mark_bootstrap_failed = AsyncMock()
     repo.rearm_bootstrap_dispatch = AsyncMock()
+    # Reports whether its conditional write LANDED — the fence two backend
+    # instances race through, so the dispatcher acts on the difference.
+    repo.rearm_failed_bootstrap = AsyncMock(return_value=True)
     repo.delete_pending_brief = AsyncMock(return_value=True)
     return repo
 
@@ -498,6 +501,165 @@ def test_is_dispatch_stale_accepts_both_shapes_and_fails_closed():
     assert bootstrap_dispatcher.is_dispatch_stale(None) is False
     assert bootstrap_dispatcher.is_dispatch_stale("") is False
     assert bootstrap_dispatcher.is_dispatch_stale("not-a-timestamp") is False
+
+
+# ---------------------------------------------------------------------------
+# Bounded automatic retry of a `failed` row.
+#
+# `failed` used to be terminal until an operator noticed, which turned every
+# transient the in-dispatch classifier types DETERMINISTIC (a connect rejection
+# carrying OpenClaw's own "gateway starting; retry shortly" arrives as a bare
+# RuntimeError) or that only surfaces as the RUN's terminal (a rate-limited
+# first run) into a permanent dead end — observed twice on one dev account on
+# 2026-08-30, each behind a running, HEALTHY container, the owner left on the
+# funnel spinner for 21 hours.
+#
+# It is admitted now, but only under three bounds, because /container/status is
+# polled every ~3s by every loading client and an unconditional admission would
+# re-dispatch a genuinely broken bootstrap on every one of those polls.
+# ---------------------------------------------------------------------------
+
+
+_PAST_BACKOFF = bootstrap_dispatcher.FAILED_RETRY_BACKOFF_S + 60
+
+
+def _failed_row(**overrides) -> dict:
+    """A `failed` row shaped like the FIRST dev failure: the dispatch died at
+    connect, so neither send stamp is set (provably unsent)."""
+    base = dict(
+        bootstrap_state="failed",
+        bootstrap_dispatch_id="dead-dispatch-1",
+        bootstrap_dispatched_at=_ago(_PAST_BACKOFF),
+        bootstrap_attempts=1,
+        bootstrap_last_error="Gateway connect failed: gateway starting; retry shortly",
+    )
+    base.update(overrides)
+    return _onboarding(**base)
+
+
+@pytest.mark.asyncio
+async def test_failed_row_under_the_cap_and_past_the_backoff_redispatches_now():
+    """THE DEFECT. A transient that names itself retryable landed in `failed`
+    and stayed there through 21 hours of ~3s polls against a healthy
+    container. The same call that re-arms it re-claims it — recovery is not
+    deferred to a later poll."""
+    repo, ecs, pool, _ = await _run(_failed_row())
+
+    repo.rearm_failed_bootstrap.assert_awaited_once()
+    rearm = repo.rearm_failed_bootstrap.call_args
+    assert rearm.args[0] == "creator_1"  # the ROW's PK, like every DDB write here
+    # Fenced on the FAILED attempt's own dispatch_id + generation, so two
+    # backend instances (a rolling deploy runs 2) cannot both re-arm.
+    assert rearm.kwargs["dispatch_id"] == "dead-dispatch-1"
+    assert rearm.kwargs["onboarding_generation"] == "01G"
+
+    repo.claim_bootstrap_dispatch.assert_awaited_once_with("creator_1", onboarding_generation="01G")
+    pool.send_rpc.assert_awaited_once()
+    # The retry never zeroes the counter — that is the admin lever's job, and
+    # is what keeps MAX_BOOTSTRAP_ATTEMPTS a real bound here.
+    assert "bootstrap_attempts" not in rearm.kwargs
+
+
+@pytest.mark.asyncio
+async def test_failed_row_inside_the_backoff_window_does_not_dispatch():
+    """The hazard `failed` was excluded for: without a floor, a broken
+    bootstrap re-dispatches on every ~3s poll and hammers the gateway and the
+    model forever."""
+    repo, ecs, pool, _ = await _run(_failed_row(bootstrap_dispatched_at=_ago(30)))
+
+    repo.rearm_failed_bootstrap.assert_not_awaited()
+    repo.claim_bootstrap_dispatch.assert_not_awaited()
+    pool.send_rpc.assert_not_awaited()
+    # And the throttled poll is free: no container resolve, no EFS read.
+    ecs.resolve_running_container.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_failed_row_at_the_attempt_cap_stays_failed_for_the_operator():
+    """Past the budget the behaviour is exactly what it is today: the row
+    stays `failed`, and only reset_bootstrap_for_retry (which zeroes the
+    counter) takes it. One budget for every recovery path, not a second one
+    stacked on top."""
+    repo, ecs, pool, _ = await _run(_failed_row(bootstrap_attempts=bootstrap_dispatcher.MAX_BOOTSTRAP_ATTEMPTS))
+
+    repo.rearm_failed_bootstrap.assert_not_awaited()
+    repo.claim_bootstrap_dispatch.assert_not_awaited()
+    repo.mark_bootstrap_failed.assert_not_awaited()  # already failed; nothing to write
+    pool.send_rpc.assert_not_awaited()
+    ecs.resolve_running_container.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_failed_row_with_an_unacked_send_is_never_retried_automatically():
+    """AMBIGUOUS: the write-ahead stamp is set and the ack never was, so
+    OpenClaw may already have taken the run. Every claim mints a new
+    dispatch_id (== the kickoff's idempotencyKey), so a retry could run Friday
+    twice — the same rule the post-connect classifier and the staleness
+    recovery already follow. Only the operator, knowingly, takes this one."""
+    repo, ecs, pool, _ = await _run(_failed_row(bootstrap_send_attempted_at=_ago(_PAST_BACKOFF)))
+
+    repo.rearm_failed_bootstrap.assert_not_awaited()
+    repo.claim_bootstrap_dispatch.assert_not_awaited()
+    pool.send_rpc.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_failed_row_whose_acked_run_terminated_in_an_error_is_retried():
+    """The SECOND dev failure: "⚠️ API rate limit reached." The kickoff was
+    acked and the run was OBSERVED to terminate, so the run is definitively
+    over and a fresh one cannot overlap it — bootstrap_sent_at is what
+    separates this from the ambiguous row above."""
+    onboarding = _failed_row(
+        bootstrap_send_attempted_at=_ago(_PAST_BACKOFF),
+        bootstrap_sent_at=_ago(_PAST_BACKOFF),
+        bootstrap_last_error="⚠️ API rate limit reached. Please try again later.",
+    )
+    repo, ecs, pool, _ = await _run(onboarding)
+
+    repo.rearm_failed_bootstrap.assert_awaited_once()
+    repo.claim_bootstrap_dispatch.assert_awaited_once()
+    pool.send_rpc.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_failed_retry_that_loses_the_conditional_write_dispatches_nothing():
+    """The fence doing its job: a superseded generation, an admin reset, or the
+    peer instance winning first. A re-arm that did not land is not this
+    caller's row to claim."""
+    onboarding = _failed_row()
+    repo = _fake_repo(onboarding=onboarding)
+    repo.rearm_failed_bootstrap = AsyncMock(return_value=False)
+    repo, ecs, pool, _ = await _run(onboarding, repo=repo)
+
+    repo.rearm_failed_bootstrap.assert_awaited_once()
+    repo.claim_bootstrap_dispatch.assert_not_awaited()
+    pool.send_rpc.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_failed_row_with_no_dispatch_id_is_left_alone():
+    """No fencing token (a legacy/degraded row) — leave it for the admin lever
+    rather than write unfenced, same as the staleness rule."""
+    repo, ecs, pool, _ = await _run(_failed_row(bootstrap_dispatch_id=None))
+
+    repo.rearm_failed_bootstrap.assert_not_awaited()
+    repo.claim_bootstrap_dispatch.assert_not_awaited()
+    pool.send_rpc.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_failed_retry_never_fires_for_the_other_bootstrap_states():
+    """Regression guard: admitting `failed` must not leak the failed-retry
+    write onto the paths that already had their own recovery (or deliberately
+    have none)."""
+    for onboarding in (
+        _onboarding(),  # not_started — the ordinary first dispatch
+        _stale_dispatched(),  # dispatched — the staleness rule's re-arm
+        _sent_onboarding(),  # sent — observer re-attach only, NEVER a re-send
+        _onboarding(bootstrap_state="delivered"),  # done
+    ):
+        repo, _, _, _ = await _run(onboarding)
+        repo.rearm_failed_bootstrap.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

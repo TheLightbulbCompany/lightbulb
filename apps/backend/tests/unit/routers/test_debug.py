@@ -759,79 +759,170 @@ class TestDdbRows:
         assert res.status_code == 403
 
 
-class TestReprovisionThreadsBedrockAips:
-    """POST/PATCH /debug/provision must thread the owner's existing Bedrock AIP
-    ARNs into write_user_configs. build_provider_block fails closed for
-    bedrock_claude without them, so before the fix these routes 500'd for every
-    Bedrock/trial owner (#2028), breaking the documented dev re-provision lever.
+class TestDeleteThenPostReprovision:
+    """The DELETE-then-POST reprovision CLAUDE.md documents, tested as the state
+    transition it actually is.
 
-    They must READ the ARNs off the row, never call ensure_owner_aips — ensuring
-    re-stamps a trial owner's reverse-index plan to "paid", which disarms the
-    meter Lambda's daily-cap kill switch.
+    DELETE does not merely drop the containers row: delete_user_service's
+    teardown seam (reap_owner_bedrock_resources) destroys the owner's AIPs,
+    gate-token rows and per-owner IAM role, because that row was the only handle
+    naming them. The POST used to hand-roll create_user_service ->
+    write_user_configs -> start_user_service and thread ``bedrock_aip_arns`` off
+    the row, so after a DELETE it had none and build_provider_block fail-closed
+    ("bedrock_claude requires aip_arns with at least a 'sonnet' key") — a 500
+    that left the owner with no container and no documented way back.
+
+    Carrying the ARNs across the DELETE is not the fix either: they name deleted
+    profiles. The POST has to RE-MINT, which is why it goes through
+    provision_user_container.
+
+    THE TRAP that re-mint has to dodge: ensure_owner_aips stamps a ``plan`` onto
+    the reverse-index rows the meter Lambda reads to arm the $3/day trial cap —
+    "paid" for the default three-tier mint, "trial" for the sonnet-only one. The
+    tier set follows provider_choice, so RESOLVING provider_choice from billing
+    instead of hardcoding "bedrock_claude" is what leaves a trial owner's plan
+    exactly where it was.
     """
 
-    @pytest.mark.asyncio
-    @patch("routers.debug.get_ecs_manager")
-    @patch("routers.debug.container_repo")
-    async def test_patch_reprovision_passes_container_aip_arns(self, mock_container_repo, mock_ecs_mgr, async_client):
-        aips = {"sonnet": "arn:aws:bedrock:us-east-1:1:application-inference-profile/x"}
-        mock_container_repo.get_by_owner_id = AsyncMock(
-            return_value={
+    @pytest.fixture
+    def container_rows(self):
+        """One containers row, in a box the DELETE can actually empty — the whole
+        defect lives in what the POST sees afterwards."""
+        return {
+            "row": {
                 "owner_id": "user_test_123",
+                "status": "running",
                 "service_name": "openclaw-user_test_123-abc",
                 "gateway_token": "gw-tok",
-                "hook_token": "hook-tok",
-                "bedrock_aip_arns": aips,
+                "bedrock_aip_arns": {"sonnet": "arn:aws:bedrock:us-east-1:1:application-inference-profile/x"},
             }
-        )
-        ecs_mgr = MagicMock()
-        ecs_mgr.write_user_configs = AsyncMock()
-        ecs_mgr.start_user_service = AsyncMock()
-        mock_ecs_mgr.return_value = ecs_mgr
+        }
 
-        res = await async_client.patch("/api/v1/debug/provision")
+    @pytest.fixture
+    def fake_container_repo(self, container_rows):
+        repo = MagicMock()
+        repo.get_by_owner_id = AsyncMock(side_effect=lambda *_a, **_k: container_rows["row"])
+        return repo
 
-        assert res.status_code == 200
-        ecs_mgr.write_user_configs.assert_awaited_once()
-        assert ecs_mgr.write_user_configs.await_args.kwargs["aip_arns"] == aips
+    @pytest.fixture
+    def fake_ecs(self, container_rows):
+        mgr = MagicMock()
 
-    @pytest.mark.asyncio
-    @patch("routers.debug.get_ecs_manager")
-    @patch("routers.debug.container_repo")
-    async def test_post_provision_reuses_existing_row_aip_arns(self, mock_container_repo, mock_ecs_mgr, async_client):
-        aips = {"sonnet": "arn:aws:bedrock:us-east-1:1:application-inference-profile/y"}
-        # A prior (stopped) row still carries the owner's minted AIPs; status is
-        # not running/provisioning, so provisioning proceeds and reuses them.
-        mock_container_repo.get_by_owner_id = AsyncMock(
-            return_value={"owner_id": "user_test_123", "status": "stopped", "bedrock_aip_arns": aips}
-        )
-        ecs_mgr = MagicMock()
-        ecs_mgr.create_user_service = AsyncMock(return_value="openclaw-user_test_123-abc")
-        ecs_mgr.write_user_configs = AsyncMock()
-        ecs_mgr.start_user_service = AsyncMock()
-        mock_ecs_mgr.return_value = ecs_mgr
+        async def _delete(owner_id):
+            # Stands in for the real teardown: the row goes, and with it the
+            # AIPs / gate-token rows / IAM role the reap destroys.
+            container_rows["row"] = None
 
-        res = await async_client.post("/api/v1/debug/provision")
-
-        assert res.status_code == 200
-        ecs_mgr.write_user_configs.assert_awaited_once()
-        assert ecs_mgr.write_user_configs.await_args.kwargs["aip_arns"] == aips
+        mgr.delete_user_service = AsyncMock(side_effect=_delete)
+        mgr.provision_user_container = AsyncMock(return_value="openclaw-user_test_123-new")
+        # Stubbed so a regression back to the hand-rolled provision is caught by
+        # the assertions below rather than by an AttributeError.
+        mgr.create_user_service = AsyncMock(return_value="openclaw-user_test_123-new")
+        mgr.write_user_configs = AsyncMock()
+        mgr.start_user_service = AsyncMock()
+        return mgr
 
     @pytest.mark.asyncio
-    @patch("routers.debug.get_ecs_manager")
-    @patch("routers.debug.container_repo")
-    async def test_post_provision_no_prior_row_passes_none(self, mock_container_repo, mock_ecs_mgr, async_client):
-        # Brand-new owner: no prior row, so no AIPs to reuse. The dev shortcut
-        # passes None (real provisioning mints them); this documents that we do
-        # NOT silently ensure_owner_aips here and re-stamp a plan.
-        mock_container_repo.get_by_owner_id = AsyncMock(return_value=None)
-        ecs_mgr = MagicMock()
-        ecs_mgr.create_user_service = AsyncMock(return_value="openclaw-user_test_123-abc")
-        ecs_mgr.write_user_configs = AsyncMock()
-        ecs_mgr.start_user_service = AsyncMock()
-        mock_ecs_mgr.return_value = ecs_mgr
+    async def test_delete_then_post_reprovisions_a_bedrock_owner(
+        self, container_rows, fake_container_repo, fake_ecs, async_client
+    ):
+        billing_row = {
+            "owner_id": "user_test_123",
+            "subscription_status": "active",
+            "provider_choice": "bedrock_claude",
+        }
+        before = dict(billing_row)
 
-        res = await async_client.post("/api/v1/debug/provision")
+        with (
+            patch("routers.debug.container_repo", fake_container_repo),
+            patch("routers.debug.get_ecs_manager", return_value=fake_ecs),
+            patch("core.services.container_provision.billing_repo") as mock_billing,
+        ):
+            mock_billing.get_by_owner_id = AsyncMock(return_value=billing_row)
 
-        assert res.status_code == 200
-        assert ecs_mgr.write_user_configs.await_args.kwargs["aip_arns"] is None
+            deleted = await async_client.delete("/api/v1/debug/provision")
+            assert deleted.status_code == 200
+            assert container_rows["row"] is None, "DELETE must leave no row for the POST to read"
+
+            provisioned = await async_client.post("/api/v1/debug/provision")
+
+        # The cycle ends with a container, not the 500.
+        assert provisioned.status_code == 200, provisioned.text
+        assert provisioned.json()["status"] == "provisioned"
+        assert provisioned.json()["service_name"] == "openclaw-user_test_123-new"
+
+        # And with a VALID provider block, because provisioning ran the path that
+        # mints the AIPs BEFORE writing the config — not the router writing a
+        # config with aip_arns=None.
+        fake_ecs.provision_user_container.assert_awaited_once()
+        kwargs = fake_ecs.provision_user_container.await_args.kwargs
+        assert kwargs["provider_choice"] == "bedrock_claude"
+        assert kwargs["byo_provider"] is None
+        fake_ecs.write_user_configs.assert_not_awaited()
+        fake_ecs.create_user_service.assert_not_awaited()
+
+        # Plan/trial state is untouched across the cycle.
+        assert billing_row == before
+
+    @pytest.mark.asyncio
+    async def test_delete_then_post_keeps_a_trial_owner_on_the_trial_mint(
+        self, container_rows, fake_container_repo, fake_ecs, async_client
+    ):
+        """The guard on the trap.
+
+        provider_choice picks ensure_owner_aips' tier set, and the tier set picks
+        the reverse-index ``plan`` stamp. A trial_local owner must reach the
+        sonnet-only ``bedrock_trial`` mint (plan="trial"); the old hardcoded
+        "bedrock_claude" would have minted all three tiers, stamped plan="paid",
+        disarmed the meter Lambda's $3/day cap kill and handed a card-less owner
+        Opus.
+        """
+        from core.containers.config import BEDROCK_TRIAL_CHOICE
+
+        billing_row = {"owner_id": "user_test_123", "subscription_status": "trial_local"}
+        before = dict(billing_row)
+
+        with (
+            patch("routers.debug.container_repo", fake_container_repo),
+            patch("routers.debug.get_ecs_manager", return_value=fake_ecs),
+            patch("core.services.container_provision.billing_repo") as mock_billing,
+        ):
+            mock_billing.get_by_owner_id = AsyncMock(return_value=billing_row)
+            await async_client.delete("/api/v1/debug/provision")
+            provisioned = await async_client.post("/api/v1/debug/provision")
+
+        assert provisioned.status_code == 200, provisioned.text
+        choice = fake_ecs.provision_user_container.await_args.kwargs["provider_choice"]
+        assert choice == BEDROCK_TRIAL_CHOICE
+        assert choice != "bedrock_claude"
+        assert billing_row == before
+
+    @pytest.mark.asyncio
+    async def test_patch_redeploy_resolves_the_provider_and_reuses_row_aips(
+        self, fake_container_repo, fake_ecs, async_client
+    ):
+        """PATCH stays a config rewrite — the row and its live AIPs both exist —
+        but its provider_choice was hardcoded to bedrock_claude too, which
+        rewrote a chatgpt_oauth/byo_key owner's config onto a Bedrock block they
+        hold no AIPs for (the same fail-closed raise) and flattened a trial
+        owner's one-model lockdown into the paid catalog shape."""
+        billing_row = {
+            "owner_id": "user_test_123",
+            "subscription_status": "active",
+            "provider_choice": "byo_key",
+            "byo_provider": "anthropic",
+        }
+
+        with (
+            patch("routers.debug.container_repo", fake_container_repo),
+            patch("routers.debug.get_ecs_manager", return_value=fake_ecs),
+            patch("core.services.container_provision.billing_repo") as mock_billing,
+        ):
+            mock_billing.get_by_owner_id = AsyncMock(return_value=billing_row)
+            res = await async_client.patch("/api/v1/debug/provision")
+
+        assert res.status_code == 200, res.text
+        kwargs = fake_ecs.write_user_configs.await_args.kwargs
+        assert kwargs["provider_choice"] == "byo_key"
+        assert kwargs["byo_provider"] == "anthropic"
+        assert kwargs["aip_arns"] == {"sonnet": "arn:aws:bedrock:us-east-1:1:application-inference-profile/x"}

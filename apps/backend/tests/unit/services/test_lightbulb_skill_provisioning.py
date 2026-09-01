@@ -30,7 +30,10 @@ def _flat() -> str:
 
 def test_the_three_container_routes_are_documented():
     flat = _flat()
-    base = "$ISOL8_API_URL/api/v1/company/provisioning/u/$ISOL8_OWNER_ID"
+    # Path only: the skill now routes these through scripts/lightbulb-api.sh,
+    # which prepends $ISOL8_API_URL itself — an inline `$ISOL8_API_URL/...`
+    # curl is exactly the transcript-redaction trap the scripts exist to avoid.
+    base = "/api/v1/company/provisioning/u/$ISOL8_OWNER_ID"
     assert f"{base}/catalog?q=" in flat
     assert f'{base}/requests"' in flat
     assert f'{base}/requests/<workflow_id>"' in flat

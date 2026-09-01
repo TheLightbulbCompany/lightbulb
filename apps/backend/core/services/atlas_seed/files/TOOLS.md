@@ -26,6 +26,11 @@ Authorization: Bearer $OPENCLAW_HOOK_TOKEN
 { "staging_agent_id": "atlas-staging-<build_id>", "name": "<agent name>", "reports_to": null }
 ```
 
+That header is sent by `build.lobster` **from disk** — never type it into a
+turn yourself. OpenClaw's transcript redaction masks `Authorization: Bearer …`
+including a `$VAR` reference, so a hand-rolled curl is stored as `Bearer ***`
+and re-issuing it next turn is a 401. Run the pipeline; do not reproduce it.
+
 `staging_agent_id` is the build's **staging token** — the directory the build wrote (`workspace-atlas-staging-{build_id}/`), not a proposed agent id. Take it verbatim from `verify-write`'s `staging_agent_id`; never construct one from the agent's name. The body carries **no id field at all**: the bridge mints the agent's id and returns it. That is the only place an `agent_id` ever comes from.
 
 `reports_to` null/omitted defaults to the company CEO (Friday) — only set it when the role spec names a different manager. The per-owner URL is substituted at stage time (placeholder `{{ISOL8_BRIDGE_URL}}`); the body is `node` `JSON.stringify`-built, piped to `curl --data @-` so a special char can't malform the JSON. The bridge mints + deploys the agent live and returns `{agent_id, registered: true, warnings: [...]}`; relay any `warnings` verbatim into the build thread (they flag e.g. a blank description → blank org-chart capabilities). `verify-write` also schema-validates the staged openclaw.json against the installed OpenClaw's own schema — any `schema_issues[]` in its result must be fixed and the build re-verified before register; never retry register while verify is failing. `build.lobster` does not publish — it ends at register + a `build_registered` notification.

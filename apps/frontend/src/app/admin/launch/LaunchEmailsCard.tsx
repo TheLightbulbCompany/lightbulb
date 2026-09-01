@@ -135,12 +135,16 @@ function VariantBlock({ v }: { v: LaunchEmailVariant }) {
           </p>
           {/* An iframe, not dangerouslySetInnerHTML: the email body is rendered
               in its own sandboxed document, so it can neither inherit the
-              console's CSS nor run anything in it. */}
+              console's CSS nor run anything in it. The white ground lives
+              INSIDE that document (the backend's `preview_document`), like a
+              real mail client's — the email body hardcodes a dark text
+              colour, so a theme token here would make the preview unreadable
+              in dark mode. */}
           <iframe
             title={`${v.variant} preview`}
             sandbox=""
             srcDoc={v.preview_html}
-            className="h-56 w-full rounded border border-border bg-white"
+            className="h-56 w-full rounded border border-border"
           />
         </div>
       </div>

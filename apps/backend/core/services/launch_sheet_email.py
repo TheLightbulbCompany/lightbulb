@@ -324,6 +324,20 @@ def sample_values(*, comp_slots: int, referral_jump: int, sheet_closes_at: datet
     )
 
 
+def preview_document(body_html: str) -> str:
+    """The admin preview's body wrapped in a minimal standalone document with
+    a WHITE ground — what a real mail client provides, and what the body
+    fragment already assumes (its text colour is a fixed dark hex, so on a
+    dark ground it would be unreadable). This is email HTML rendered in an
+    isolated sandboxed iframe, not app chrome: a literal hex belongs here,
+    and putting it here rather than on the iframe element keeps the console's
+    own styling on brand tokens."""
+    return (
+        '<!doctype html><html><head><meta charset="utf-8"></head>'
+        f'<body style="margin:0;padding:16px;background:#ffffff">{body_html}</body></html>'
+    )
+
+
 async def send_test(variant: str, *, to_email: str, copy: dict | None, values: dict) -> str | None:
     """Admin "send test to me": the real body with sample values, to the
     signed-in admin's own address. Touches no sheet row and stamps no claim —

@@ -251,3 +251,20 @@ async def test_a_traversing_or_amplifying_placeholder_renders_raw():
         assert bad in body["text"]  # literal, not expanded
         assert "&lt;class" not in body["html"] and "<class" not in body["text"]
         assert len(body["text"]) < 2000  # no width-spec amplification
+
+
+def test_preview_document_carries_its_own_light_ground():
+    """The body fragment hardcodes a dark text colour, so the preview must
+    bring its own white ground rather than inheriting the admin console's
+    theme — and it must live in the DOCUMENT, not on the iframe element, so
+    the console itself stays on brand tokens."""
+    doc = em.preview_document("<div><p>body</p></div>")
+    assert doc.startswith("<!doctype html>")
+    assert "background:#ffffff" in doc
+    assert "<div><p>body</p></div>" in doc
+
+
+async def test_a_real_send_is_the_bare_fragment_not_the_preview_document():
+    with patch.object(em.email_service, "send_email", AsyncMock(return_value="m")) as send:
+        await em.send_still_competing_email(to_email="a@x.com", first_name=None, comp_slots=200)
+    assert send.await_args.kwargs["html"].startswith("<div")

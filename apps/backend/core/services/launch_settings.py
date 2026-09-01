@@ -304,7 +304,7 @@ def email_copy_admin(row: dict) -> list[dict]:
                 "defaults": dict(launch_sheet_email.DEFAULT_COPY[variant]),
                 "override": dict(overrides.get(variant) or {}),
                 "preview_subject": body["subject"],
-                "preview_html": body["html"],
+                "preview_html": launch_sheet_email.preview_document(body["html"]),
             }
         )
     return out

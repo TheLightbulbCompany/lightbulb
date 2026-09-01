@@ -23,7 +23,9 @@ const variant = (over: Partial<LaunchEmailVariant> = {}): LaunchEmailVariant => 
   },
   override: {},
   preview_subject: "You're in the launch competition",
-  preview_html: "<div><p>preview body</p></div>",
+  preview_html:
+    '<!doctype html><html><head><meta charset="utf-8"></head>' +
+    '<body style="margin:0;padding:16px;background:#ffffff"><div><p>preview body</p></div></body></html>',
   ...over,
 });
 
@@ -96,7 +98,11 @@ describe("LaunchEmailsCard", () => {
     const frame = container.querySelector("iframe");
     expect(frame).not.toBeNull();
     expect(frame).toHaveAttribute("sandbox", "");
-    expect(frame).toHaveAttribute("srcdoc", "<div><p>preview body</p></div>");
+    // The light ground rides INSIDE the document the backend built, not on the
+    // iframe element — a Tailwind palette literal here is banned, and a theme
+    // token would put the email's hardcoded dark text on a dark ground.
+    expect(frame!.getAttribute("srcdoc")).toContain("background:#ffffff");
+    expect(frame!.className).not.toMatch(/\bbg-/);
     expect(screen.queryByText("preview body")).not.toBeInTheDocument();
   });
 

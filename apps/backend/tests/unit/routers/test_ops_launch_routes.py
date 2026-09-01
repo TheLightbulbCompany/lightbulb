@@ -324,7 +324,11 @@ async def test_ops_launch_email_copy_returns_every_variant_with_a_preview(admin_
     assert competing["placeholders"] == ["comp_slots"]
     # The preview renders the EFFECTIVE copy (override applied), as HTML.
     assert "hand-written lead" in competing["preview_html"]
-    assert competing["preview_html"].startswith("<div")
+    # A standalone document carrying its OWN light ground — the body fragment
+    # hardcodes a dark text colour, so the preview must not inherit the admin
+    # console's (possibly dark) theme.
+    assert competing["preview_html"].startswith("<!doctype html>")
+    assert "background:#ffffff" in competing["preview_html"]
 
 
 async def test_ops_launch_email_copy_put_saves_one_variant(admin_client):

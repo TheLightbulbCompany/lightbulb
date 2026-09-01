@@ -206,6 +206,21 @@ async def test_me_suggested_display_name_is_null_and_uncalled_once_joined():
     suggested.assert_not_awaited()
 
 
+async def test_me_suggested_display_name_is_null_and_uncalled_for_an_org_caller():
+    """POST /launch/join permanently refuses org_not_supported, so an org
+    owner can never reach joined=True — an onboarded-but-unjoined org caller
+    must still skip the Paperclip call (LaunchJoinBanner mounts
+    unconditionally in the workspace shell, so this is every org owner's
+    /launch/me read). Same proof shape as the joined-caller test above: the
+    stubbed resolver has a name ready, so a non-null result would mean the
+    gate is missing, not just that the mock defaulted to None."""
+    org_auth = AuthContext(user_id="user_1", org_id="org_1", email="me@x.com")
+    body, _, _, suggested = await _me(None, auth=org_auth, suggested_name="Northwind Ceramics")
+    assert body["joined"] is False
+    assert body["suggested_display_name"] is None
+    suggested.assert_not_awaited()
+
+
 async def test_me_post_close_winner_flags():
     row = _row(winner=True, compete_eligible=True)
     body, _, _, _ = await _me(row, sched=_sched(+5, closed_at=NOW - timedelta(hours=1)))

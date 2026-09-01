@@ -116,7 +116,16 @@ async def me(auth: AuthContext, s: Schedule) -> dict:
     # actually be used: an onboarded caller who hasn't joined yet. A joined
     # row's display_name is already locked in; an unonboarded caller is
     # refused at /join anyway (`not_onboarded`) so there's nothing to prefill.
-    suggested_display_name = await _suggested_display_name(owner_id) if onboarded and not joined else None
+    # Org callers are ALSO excluded: POST /launch/join permanently refuses
+    # `org_not_supported` for any is_org_context caller (see the `join`
+    # route), so an org owner can never reach joined=True — without this,
+    # every /launch/me read from an onboarded org owner (LaunchJoinBanner
+    # mounts unconditionally in the workspace shell, revalidating on
+    # focus/mount) would pay a Paperclip round trip for a suggestion that
+    # can never be used.
+    suggested_display_name = (
+        await _suggested_display_name(owner_id) if onboarded and not joined and not auth.is_org_context else None
+    )
     return {
         "phase": phase(s),
         "joined": joined,

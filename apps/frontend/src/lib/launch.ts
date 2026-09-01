@@ -68,6 +68,13 @@ export interface LaunchMe {
   compete_eligible: boolean;
   /** Friday's first run delivered — the join precondition. */
   onboarded: boolean;
+  /** The owner's current Paperclip company name (Friday renames it during
+   * onboarding), offered as the join field's prefill so the public board
+   * shows the business, not the person. Only ever non-null when onboarded
+   * and not yet joined — a joined row's name is already locked in, and an
+   * unonboarded caller can't join yet, so the backend skips the Paperclip
+   * lookup and this is null in every other case. */
+  suggested_display_name: string | null;
   /** The board attachment; null until joined AND connected. */
   entry: LaunchMeEntry | null;
 }

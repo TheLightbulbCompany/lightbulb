@@ -13,15 +13,16 @@ import type { LaunchMe } from "@/lib/launch";
  * The in-product competition-sheet join surface: a slim banner in the
  * workspace shell (next to TrialBanner/OutOfCreditsBanner), shown while the
  * sheet is open to an onboarded owner who hasn't joined. Join POSTs inline —
- * no navigation — with an EMPTY display-name field (POST /launch/join
- * REQUIRES display_name). Deliberately no prefill: the board ranks
- * businesses, not people, and the owner's Paperclip company name isn't
- * reachable here without a brand-new cross-service request (see the
- * `name` state below), so a wrong default (the Clerk first name) would be
- * worse than none — the placeholder asks the right question instead. After
- * joining it shows the position + referral link, and only then becomes
- * dismissible (per-user localStorage key): the join nudge itself stays
- * until they join, /launch has the full rules.
+ * no navigation — with a display-name field prefilled from
+ * `me.suggested_display_name` (POST /launch/join REQUIRES display_name).
+ * Onboarding requires Friday's first run, and Friday renames the Paperclip
+ * company during that run — so by the time this banner can show at all, the
+ * suggestion is essentially always there; a null (a Paperclip hiccup on the
+ * backend) falls back to an empty field with a "Your company name"
+ * placeholder rather than the Clerk first name — the board ranks
+ * businesses, not people. After joining it shows the position + referral
+ * link, and only then becomes dismissible (per-user localStorage key): the
+ * join nudge itself stays until they join, /launch has the full rules.
  */
 
 function dismissKey(userId: string): string {
@@ -36,15 +37,13 @@ export function LaunchJoinBanner() {
   const { data: me, mutate } = useSWR<LaunchMe>(open ? "/launch/me" : null, (k: string) => api.get(k) as Promise<LaunchMe>);
   useReferralAttribution(api, open ? me : null);
 
-  // No prefill. The board ranks businesses, not people — the owner's
-  // Paperclip company name would be the right default, but nothing already
-  // mounted here carries it (it's only exposed via the Teams BFF's
-  // authenticated `/settings` fetch, which this banner isn't wrapped in),
-  // and wiring in a brand-new request off a compact in-product nudge isn't
-  // worth it. A wrong default (the Clerk first name) is worse than none —
-  // an empty box with a clear placeholder asks the right question instead
-  // of something people accept by inertia.
-  const [name, setName] = React.useState("");
+  // `me.suggested_display_name` (the owner's live Paperclip company name —
+  // see schemas.launch.LaunchMe) is the prefill; null falls back to the
+  // empty-field placeholder. `null` here means "untouched, use prefill" so
+  // the derived value updates once `me` resolves (it starts undefined on
+  // first render) without an extra effect.
+  const prefill = me?.suggested_display_name ?? "";
+  const [name, setName] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [dismissed, setDismissed] = React.useState(false);
@@ -61,7 +60,7 @@ export function LaunchJoinBanner() {
 
   if (!open || !me || !me.onboarded || dismissed || !user) return null;
 
-  const displayName = name.trim();
+  const displayName = (name ?? prefill).trim();
 
   const join = async () => {
     if (displayName.length < 2 || busy) return;
@@ -124,7 +123,7 @@ export function LaunchJoinBanner() {
       <div className="flex flex-col gap-0.5">
         <input
           aria-label="Display name"
-          value={name}
+          value={name ?? prefill}
           maxLength={40}
           placeholder="Your company name"
           onChange={(e) => setName(e.target.value)}

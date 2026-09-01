@@ -62,7 +62,7 @@ export function SheetCard({ info }: { info: LaunchInfo }) {
             </div>
           </div>
         ) : open ? (
-          <JoinForm onJoined={() => mutate()} />
+          <JoinForm onJoined={() => mutate()} suggestedName={me.suggested_display_name} />
         ) : (
           <p className="lc-fine">The sheet has closed — you can&apos;t join the competition anymore, and nothing else changes.</p>
         )}

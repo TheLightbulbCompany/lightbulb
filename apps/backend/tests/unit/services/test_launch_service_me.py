@@ -37,7 +37,7 @@ def _row(**over):
     return row
 
 
-def _patches(row, onboarding=ONBOARDED, entry=None):
+def _patches(row, onboarding=ONBOARDED, entry=None, suggested_name=None):
     return (
         patch("core.services.launch_service.launch_waitlist_repo.get", AsyncMock(return_value=row)),
         patch("core.services.launch_service.launch_waitlist_repo.claim_user", AsyncMock()),
@@ -47,15 +47,20 @@ def _patches(row, onboarding=ONBOARDED, entry=None):
         ),
         patch("core.services.launch_service.settings.FRONTEND_URL", "https://dev.flickmeon.ai"),
         patch("core.services.launch_service.launch_entries_repo.get", AsyncMock(return_value=entry)),
+        # Stubbed at the `me()` call boundary for every test in this file —
+        # `_suggested_display_name`'s own resolve/degrade logic gets its own
+        # tests below. Default None matches the common (joined or
+        # not-onboarded) fixtures here.
+        patch("core.services.launch_service._suggested_display_name", AsyncMock(return_value=suggested_name)),
     )
 
 
-async def _me(row, *, sched=None, onboarding=ONBOARDED, auth=None, entry=None):
+async def _me(row, *, sched=None, onboarding=ONBOARDED, auth=None, entry=None, suggested_name=None):
     auth = auth or AuthContext(user_id="user_1", email="me@x.com")
-    p = _patches(row, onboarding, entry)
-    with p[0], p[1] as claim, p[2], p[3], p[4], p[5] as entries_get:
+    p = _patches(row, onboarding, entry, suggested_name)
+    with p[0], p[1] as claim, p[2], p[3], p[4], p[5] as entries_get, p[6] as suggested:
         body = await launch_service.me(auth, sched or _sched(+5))
-    return body, claim, entries_get
+    return body, claim, entries_get, suggested
 
 
 def test_effective_position_uses_subscribed_referrals_with_the_20_cap():
@@ -102,7 +107,7 @@ async def test_me_is_read_only_and_claims_the_row():
 
 
 async def test_me_shape_for_a_joined_owner():
-    body, _, _ = await _me(_row(referrals_subscribed=2))
+    body, _, _, suggested = await _me(_row(referrals_subscribed=2))
     assert body == {
         "phase": "open",
         "joined": True,
@@ -115,8 +120,10 @@ async def test_me_shape_for_a_joined_owner():
         "winner": False,
         "compete_eligible": True,
         "onboarded": True,
+        "suggested_display_name": None,
         "entry": None,
     }
+    suggested.assert_not_awaited()  # joined already has a locked-in display_name — no Paperclip call
 
 
 async def test_me_carries_the_board_entry_for_a_joined_owner():
@@ -135,7 +142,7 @@ async def test_me_carries_the_board_entry_for_a_joined_owner():
         "refresh_error": None,
         "stripe_key_secret_arn": "arn:aws:secretsmanager:not-for-clients",
     }
-    body, _, _ = await _me(_row(), entry=entry_row)
+    body, _, _, _ = await _me(_row(), entry=entry_row)
     # Exact projection — no key material, no owner_id, no baseline internals.
     assert body["entry"] == {
         "has_key": True,
@@ -149,47 +156,103 @@ async def test_me_carries_the_board_entry_for_a_joined_owner():
 
 
 async def test_me_never_reads_the_entry_for_an_unjoined_row():
-    body, _, entries_get = await _me(_row(joined_at=None))
+    body, _, entries_get, _ = await _me(_row(joined_at=None))
     entries_get.assert_not_awaited()
     assert body["entry"] is None
 
 
 async def test_me_has_no_pot_keys():
-    body, _, _ = await _me(_row())
+    body, _, _, _ = await _me(_row())
     assert not any("pot" in k for k in body), body
 
 
 @pytest.mark.parametrize("subs,milestone", [(0, 0), (4, 0), (5, 5), (19, 5), (20, 20), (50, 20)])
 async def test_me_credits_milestone_ladder(subs, milestone):
-    body, _, _ = await _me(_row(referrals_subscribed=subs))
+    body, _, _, _ = await _me(_row(referrals_subscribed=subs))
     assert body["credits_milestone_reached"] == milestone
 
 
 async def test_me_no_row_at_all():
-    body, claim, _ = await _me(None, onboarding=NOT_ONBOARDED)
+    body, claim, _, suggested = await _me(None, onboarding=NOT_ONBOARDED)
     claim.assert_not_awaited()
     assert body["joined"] is False and body["position"] is None
     assert body["referral_code"] is None and body["referral_link"] is None
     assert body["winner"] is False and body["compete_eligible"] is False
     assert body["onboarded"] is False
+    # Not onboarded -> nothing to prefill (join is refused anyway) -> no
+    # Paperclip round trip.
+    assert body["suggested_display_name"] is None
+    suggested.assert_not_awaited()
 
 
 async def test_me_row_without_joined_at_is_not_joined():
     """A row minted by referral attribution is NOT sheet membership — only
     the explicit join stamps joined_at."""
-    body, claim, _ = await _me(_row(joined_at=None))
+    body, claim, _, suggested = await _me(_row(joined_at=None), suggested_name="Northwind Ceramics")
     claim.assert_awaited_once()  # the claim still runs on any existing row
     assert body["joined"] is False and body["position"] is None
+    # Onboarded + not yet joined -> exactly the case the field exists for.
+    assert body["suggested_display_name"] == "Northwind Ceramics"
+    suggested.assert_awaited_once_with("user_1")
+
+
+async def test_me_suggested_display_name_is_null_and_uncalled_once_joined():
+    """The gate is on `joined`, not just on the mock's default return —
+    prove Paperclip is skipped even when the (stubbed) resolver has a name
+    ready to give."""
+    body, _, _, suggested = await _me(_row(referrals_subscribed=2), suggested_name="Northwind Ceramics")
+    assert body["joined"] is True
+    assert body["suggested_display_name"] is None
+    suggested.assert_not_awaited()
 
 
 async def test_me_post_close_winner_flags():
     row = _row(winner=True, compete_eligible=True)
-    body, _, _ = await _me(row, sched=_sched(+5, closed_at=NOW - timedelta(hours=1)))
+    body, _, _, _ = await _me(row, sched=_sched(+5, closed_at=NOW - timedelta(hours=1)))
     assert body["phase"] == "closed"
     assert body["winner"] is True and body["compete_eligible"] is True
 
 
 async def test_me_post_close_ruled_out_row():
     row = _row(winner=False, compete_eligible=False)
-    body, _, _ = await _me(row, sched=_sched(-1))
+    body, _, _, _ = await _me(row, sched=_sched(-1))
     assert body["winner"] is False and body["compete_eligible"] is False
+
+
+async def test_suggested_display_name_resolves_the_live_paperclip_company_name():
+    """Friday renames the company during onboarding, so once the id
+    resolves the name comes straight from `agent_email.resolve_company_name`
+    — composed from the two resolvers, not a third lookup."""
+    with (
+        patch(
+            "core.services.launch_service.resolve_company_id_for_owner",
+            AsyncMock(return_value="company_1"),
+        ) as resolve_id,
+        patch(
+            "core.services.launch_service.agent_email.resolve_company_name",
+            AsyncMock(return_value="Northwind Ceramics"),
+        ) as resolve_name,
+    ):
+        name = await launch_service._suggested_display_name("user_1")
+    assert name == "Northwind Ceramics"
+    resolve_id.assert_awaited_once()
+    resolve_name.assert_awaited_once_with("company_1")
+
+
+async def test_suggested_display_name_is_none_when_no_company_id_yet():
+    with (
+        patch("core.services.launch_service.resolve_company_id_for_owner", AsyncMock(return_value=None)),
+        patch("core.services.launch_service.agent_email.resolve_company_name", AsyncMock()) as resolve_name,
+    ):
+        assert await launch_service._suggested_display_name("user_1") is None
+    resolve_name.assert_not_awaited()  # no id -> never even asks Paperclip for a name
+
+
+async def test_suggested_display_name_degrades_to_none_on_a_paperclip_failure():
+    """A Paperclip hiccup must never fail /launch/me — mirrors the
+    `# noqa: BLE001` degrade-to-None pattern the existing resolvers use."""
+    with patch(
+        "core.services.launch_service.resolve_company_id_for_owner",
+        AsyncMock(side_effect=RuntimeError("paperclip is down")),
+    ):
+        assert await launch_service._suggested_display_name("user_1") is None

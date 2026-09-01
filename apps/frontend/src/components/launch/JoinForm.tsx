@@ -31,9 +31,13 @@ export function joinErrorCopy(err: unknown): string {
   return "Couldn't join — try again.";
 }
 
-export function JoinForm({ onJoined }: { onJoined: () => void }) {
+export function JoinForm({ onJoined, suggestedName }: { onJoined: () => void; suggestedName?: string | null }) {
   const api = useApi();
-  const [name, setName] = React.useState("");
+  // `suggestedName` (SheetCard's `me.suggested_display_name`, the owner's
+  // live Paperclip company name) is only ever passed once `me` has already
+  // loaded — SheetCard doesn't render this form until then — so a plain
+  // initializer is enough; it never needs to react to a later prop change.
+  const [name, setName] = React.useState(suggestedName ?? "");
   const [isPublic, setIsPublic] = React.useState(true);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);

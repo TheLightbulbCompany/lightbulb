@@ -48,6 +48,7 @@ const me = (over: Partial<LaunchMe> = {}): LaunchMe => ({
   winner: false,
   compete_eligible: false,
   onboarded: true,
+  suggested_display_name: null,
   entry: null,
   ...over,
 });
@@ -64,14 +65,20 @@ describe("LaunchJoinBanner", () => {
     localStorage.clear();
   });
 
-  it("shows the open-sheet nudge with an empty, placeholder-labeled display name field", async () => {
-    get.mockResolvedValue(me());
+  it("shows the open-sheet nudge with an empty, placeholder-labeled field when there's no suggested name", async () => {
+    get.mockResolvedValue(me({ suggested_display_name: null }));
     mount();
     expect(await screen.findByText(/launch competition is open — first 200 get a month free/)).toBeInTheDocument();
     const input = screen.getByLabelText(/display name/i);
     expect(input).toHaveValue("");
     expect(input).toHaveAttribute("placeholder", "Your company name");
     expect(screen.getByText(/shown on the public board/i)).toBeInTheDocument();
+  });
+
+  it("prefills the display name from the owner's suggested (Paperclip) company name", async () => {
+    get.mockResolvedValue(me({ suggested_display_name: "Northwind Ceramics" }));
+    mount();
+    expect(await screen.findByLabelText(/display name/i)).toHaveValue("Northwind Ceramics");
   });
 
   it("keeps Join disabled until a valid (2+ char) name is typed", async () => {
@@ -105,8 +112,11 @@ describe("LaunchJoinBanner", () => {
     expect(notOnboarded.container).toBeEmptyDOMElement();
   });
 
-  it("joins inline with the (editable) display name and flips to the position + referral link", async () => {
-    get.mockResolvedValue(me());
+  it("joins inline with an edit that overrides the suggested name, and flips to the position + referral link", async () => {
+    // Starts from a suggested name (proving it's editable, not a locked
+    // default) and types over it — the POST must carry what the user
+    // actually typed, not the suggestion.
+    get.mockResolvedValue(me({ suggested_display_name: "Northwind Ceramics" }));
     post.mockResolvedValue(me({
       joined: true,
       position: 41,
@@ -117,6 +127,7 @@ describe("LaunchJoinBanner", () => {
     }));
     mount();
     const input = await screen.findByLabelText(/display name/i);
+    expect(input).toHaveValue("Northwind Ceramics");
     fireEvent.change(input, { target: { value: "Ada L" } });
     fireEvent.click(screen.getByRole("button", { name: /^join$/i }));
     await waitFor(() => expect(post).toHaveBeenCalledWith("/launch/join", { display_name: "Ada L", public: true }));

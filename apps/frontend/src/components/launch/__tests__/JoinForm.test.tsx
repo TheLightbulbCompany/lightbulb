@@ -11,12 +11,22 @@ import { JoinForm } from "../JoinForm";
 describe("JoinForm", () => {
   beforeEach(() => { post.mockReset(); capture.mockReset(); });
 
-  it("labels the display name as shown on the public board, and starts empty with a placeholder", () => {
+  it("labels the display name as shown on the public board, and starts empty with a placeholder when there's no suggested name", () => {
     render(<JoinForm onJoined={vi.fn()} />);
     expect(screen.getByText(/shown on the public board/i)).toBeInTheDocument();
     const input = screen.getByLabelText(/display name/i);
     expect(input).toHaveValue("");
     expect(input).toHaveAttribute("placeholder", "Your company name");
+  });
+
+  it("prefills from suggestedName, and an edit still submits what the user typed", async () => {
+    post.mockResolvedValue({ display_name: "Ada L", public: true });
+    render(<JoinForm onJoined={vi.fn()} suggestedName="Northwind Ceramics" />);
+    const input = screen.getByLabelText(/display name/i);
+    expect(input).toHaveValue("Northwind Ceramics");
+    fireEvent.change(input, { target: { value: "Ada L" } });
+    fireEvent.click(screen.getByRole("button", { name: /join the competition/i }));
+    await waitFor(() => expect(post).toHaveBeenCalledWith("/launch/join", { display_name: "Ada L", public: true }));
   });
 
   it("posts display_name and public, captures analytics, and calls onJoined", async () => {

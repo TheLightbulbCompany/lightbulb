@@ -261,6 +261,23 @@ def build_onboarding_brief_text(*, path: str, user_input: str | None, detail: st
 # connections she can now START herself (routers/connections.py
 # authorize_from_container — hook-token sibling of the tab's Connect); that
 # curl rides along for the same reason the catalog one does.
+# The mint step calls a SCRIPT, never an inline curl. An Authorization header
+# written into a turn is redacted on the session-append path
+# (AUTHORIZATION_BEARER_REDACT_PATTERN), and that pattern is NOT in OpenClaw's
+# SHELL_REFERENCE_PRESERVING_PATTERN_SOURCES — the opaque-credential class
+# `[^\s\\"\',;&#?<>)}\]]+` does not exclude `$`, so even the SHELL REFERENCE
+# `$OPENCLAW_HOOK_TOKEN` is stored as `***`. The turn that emits it executes
+# fine; the NEXT turn reads its own history, copies `Bearer ***`, and gets a
+# 401 "invalid hook token". Prod 2026-08-30 cost an owner ~15 minutes of first
+# run to that loop. Keep the credential out of the agent's typed text.
+#
+# The "if that script is not on this machine" clause is the backend/image
+# seam: the script ships in the extended IMAGE, this text ships in the
+# BACKEND, and a prod.tag flip does not move running containers until they
+# are rerolled. If a backend promotion ever gets ahead of the reroll, first
+# run degrades to "use the Integrations tab" instead of Friday hunting for a
+# missing file — and the clause forbids the hand-rolled curl that would put
+# us straight back in the redaction loop.
 _INTEGRATIONS_STEP = (
     "\n\nAlong with those moves, tell me which integrations to connect. Read the "
     "live catalog first — `curl -s $ISOL8_API_URL/api/v1/platform-info` — then "
@@ -268,11 +285,11 @@ _INTEGRATIONS_STEP = (
     "unlocks, and say what it costs me to set up (each entry's `requestable` and "
     "`byo_required` flags tell you that — don't promise me one click without "
     "checking them). For the one-click ones (both flags false) don't wait on me: "
-    'mint the sign-in link yourself — `curl -s -H "Authorization: Bearer '
-    '$OPENCLAW_HOOK_TOKEN" "$ISOL8_API_URL/api/v1/connections/u/$ISOL8_OWNER_ID/'
-    '<provider>/authorize"` returns `authorize_url` — open it in your browser, and '
-    "tell me to sign in in the Browser panel. Anything else, just tell me which "
-    "are worth my time."
+    "mint the sign-in link yourself — `/app/skills/lightbulb/scripts/"
+    "lightbulb-connect.sh link <provider>` prints it — open it in your browser, "
+    "and tell me to sign in in the Browser panel. If that script is not on this "
+    "machine, don't improvise the call — just tell me to connect it from the "
+    "Integrations tab. Anything else, just tell me which are worth my time."
 )
 
 

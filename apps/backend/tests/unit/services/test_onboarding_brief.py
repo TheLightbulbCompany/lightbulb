@@ -293,8 +293,11 @@ def test_first_run_message_asks_for_integration_recommendations(brief):
     # Both kickoff paths: the "you pick" fallback is the same product moment.
     assert CATALOG in msg
     assert "integrations to connect" in msg
-    # The one-click mint path is handed over too (the agent may never open the skill).
-    assert "connections/u/$ISOL8_OWNER_ID/<provider>/authorize" in msg
+    # The one-click mint path is handed over too (the agent may never open the
+    # skill) — as the SCRIPT, never an inline Authorization header, which the
+    # transcript redaction would store as `Bearer ***` and poison the next turn.
+    # See test_kickoff_never_inlines_an_authorization_header.
+    assert "lightbulb-connect.sh link <provider>" in msg
 
 
 def test_kickoff_names_the_flags_that_gate_a_one_click_promise():
@@ -360,3 +363,28 @@ def test_kickoff_names_the_company_before_the_board():
     for brief in ("a coffee subscription business", None):
         msg = build_first_run_message(brief)
         assert msg.index("company's name") < msg.index("three best next moves")
+
+
+def test_kickoff_never_inlines_an_authorization_header():
+    """The kickoff must not hand the agent a curl carrying the hook token.
+
+    OpenClaw redacts `Authorization: Bearer <x>` on the session-append path,
+    and that pattern is NOT shell-reference-preserving — the opaque-credential
+    class does not exclude `$`, so `$OPENCLAW_HOOK_TOKEN` is stored as `***`
+    and `${OPENCLAW_HOOK_TOKEN:-}` as `***}`. The turn that emits it runs; the
+    NEXT turn copies the masked form and gets 401 "invalid hook token".
+    Prod 2026-08-30 lost an owner ~15 minutes of first run to that loop.
+    Mint links through scripts/lightbulb-connect.sh instead — a file on disk
+    never round-trips through the transcript.
+    """
+    for brief in (None, "an online store that sells handmade candles"):
+        msg = build_first_run_message(brief)
+        assert "Authorization" not in msg, "kickoff inlines an Authorization header"
+        assert "OPENCLAW_HOOK_TOKEN" not in msg, "kickoff exposes the hook token"
+        assert "bearer" not in msg.lower(), "kickoff inlines a bearer header (any case)"
+        assert "lightbulb-connect.sh" in msg
+        # The backend/image seam depends on this sentence: the script ships in
+        # the image, this text in the backend, and containers only get the
+        # script after a reroll. Without the fallback a stale container's
+        # Friday hunts for a missing file.
+        assert "Integrations tab" in msg, "the fallback clause is load-bearing"

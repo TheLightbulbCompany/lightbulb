@@ -146,23 +146,32 @@ def _extract_session_cookie(resp: httpx.Response) -> Optional[str]:
 
 
 def _retry_after_seconds(resp: httpx.Response) -> float | None:
-    """Paperclip's ``Retry-After`` hint, in seconds, or None.
+    """The upstream's back-off hint, in seconds, or None.
 
-    NOTE the header is the standard ``Retry-After``, NOT ``X-Retry-After``:
-    Paperclip sets it via ``res.setHeader("Retry-After", ...)`` on its
-    rate-limited routes (fork ``server/src/routes/{access,issues}.ts``), always
-    as an integer count of seconds — the HTTP-date form is never emitted, so
-    parsing one is not worth the code. A malformed or negative value is
+    BOTH spellings are real, from two different emitters, so read both — a
+    caller that checked only one would silently ignore the other's hint:
+
+    - ``Retry-After`` (the standard) — Paperclip's own routes, set via
+      ``res.setHeader("Retry-After", ...)`` (fork
+      ``server/src/routes/{access,issues}.ts``).
+    - ``X-Retry-After`` — Better Auth's rate limiter, which guards
+      ``/api/auth/sign-in/email`` (``better-auth/dist/api/rate-limiter/index.mjs``).
+
+    Both emit an integer count of seconds; neither emits the HTTP-date form, so
+    parsing one is not worth the code. A malformed or non-positive value is
     treated as absent rather than trusted.
     """
-    raw = resp.headers.get("retry-after")
-    if not raw:
-        return None
-    try:
-        seconds = float(raw)
-    except ValueError:
-        return None
-    return seconds if seconds > 0 else None
+    for name in ("retry-after", "x-retry-after"):
+        raw = resp.headers.get(name)
+        if not raw:
+            continue
+        try:
+            seconds = float(raw)
+        except ValueError:
+            continue
+        if seconds > 0:
+            return seconds
+    return None
 
 
 def _paperclip_error_code(body: Any) -> str | None:
@@ -215,12 +224,15 @@ class PaperclipApiError(Exception):
         # Auto-classify retryability: 5xx + 429 are retryable, everything
         # else (4xx state errors) is not.
         self.retryable: bool = status_code >= 500 or status_code == 429
-        #: Seconds from Paperclip's ``Retry-After`` header, when it sent one.
-        #: Only the rate-limited routes set it, so this is None on almost every
-        #: error. Populated by the verb helpers below; the handful of call
-        #: sites that build their own request (Better Auth sign-in/sign-up,
-        #: attachments) leave it None, which is correct — those routes are not
-        #: rate limited, and None just means "no hint, use your own backoff".
+        #: Seconds the server asked us to wait, when it sent a hint. Only the
+        #: rate-limited routes send one, so this is None on almost every error,
+        #: and None just means "no hint, use your own backoff".
+        #:
+        #: TWO independent rate limiters feed this, which is why
+        #: ``_retry_after_seconds`` reads two header spellings: Paperclip's own
+        #: routes (via the verb helpers below) and Better Auth's sign-in
+        #: limiter (via ``sign_in_user``). ``sign_up_user`` and the attachment
+        #: helpers still build their own request and leave this None.
         self.retry_after: float | None = retry_after
 
     def __str__(self) -> str:
@@ -527,6 +539,7 @@ class PaperclipAdminClient:
                 f"POST /api/auth/sign-in/email -> {resp.status_code}",
                 status_code=resp.status_code,
                 body=resp.text,
+                retry_after=_retry_after_seconds(resp),
             )
         data = resp.json() if resp.content else {}
         cookie = _extract_session_cookie(resp)

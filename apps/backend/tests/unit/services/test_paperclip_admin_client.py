@@ -779,3 +779,52 @@ async def test_restore_routine_revision_posts_to_restore_endpoint(client_factory
     assert captured["method"] == "POST"
     assert "/api/routines/r1/revisions/rev_1/restore" in captured["url"]
     assert out["revision"]["id"] == "rev_1"
+
+
+# ---------------------------------------------------------------------------
+# Retry-After: two emitters, two spellings
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("header", ["Retry-After", "X-Retry-After"])
+async def test_sign_in_429_carries_the_backoff_hint_in_either_spelling(client_factory, header):
+    """Better Auth's sign-in limiter emits ``X-Retry-After`` while Paperclip's
+    own routes emit the standard ``Retry-After``. Both are real, so reading
+    only one silently ignores the other's hint — which is how a caller ends up
+    inventing a backoff the server already told it."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, text="Too many requests", headers={header: "42"})
+
+    client = client_factory(handler)
+    with pytest.raises(PaperclipApiError) as err:
+        await client.sign_in_user(email="a@b.test", password="pw")
+
+    assert err.value.status_code == 429
+    assert err.value.retryable is True
+    assert err.value.retry_after == 42
+
+
+async def test_a_429_with_no_hint_leaves_retry_after_unset(client_factory):
+    """None means "no hint" — the caller uses its own backoff rather than
+    treating a missing header as zero seconds."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, text="Too many requests")
+
+    client = client_factory(handler)
+    with pytest.raises(PaperclipApiError) as err:
+        await client.sign_in_user(email="a@b.test", password="pw")
+
+    assert err.value.retry_after is None
+
+
+async def test_a_malformed_or_non_positive_hint_is_treated_as_absent(client_factory):
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, text="nope", headers={"Retry-After": "not-a-number"})
+
+    client = client_factory(handler)
+    with pytest.raises(PaperclipApiError) as err:
+        await client.sign_in_user(email="a@b.test", password="pw")
+
+    assert err.value.retry_after is None

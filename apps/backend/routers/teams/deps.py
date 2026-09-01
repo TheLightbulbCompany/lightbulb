@@ -14,7 +14,7 @@ from fastapi import HTTPException
 
 from core.auth import AuthContext, resolve_owner_id
 from core.repositories.paperclip_repo import PaperclipCompany
-from core.services.paperclip_session_cookie import resolve_session_cookie
+from core.services.paperclip_session_cookie import SessionRateLimited, resolve_session_cookie
 
 
 def envelope_list(upstream: Any, key: str) -> dict[str, list[dict]]:
@@ -130,12 +130,24 @@ async def resolve_teams_context(
     if company.status != "active":
         raise TeamsContextError(status_code=503, detail=f"team workspace status={company.status}")
 
-    cookie = await resolve_session_cookie(
-        cookies=cookies,
-        response=response,
-        user_id=auth.user_id,
-        mint=lambda: session_factory(auth.user_id),
-    )
+    try:
+        cookie = await resolve_session_cookie(
+            cookies=cookies,
+            response=response,
+            user_id=auth.user_id,
+            mint=lambda: session_factory(auth.user_id),
+        )
+    except SessionRateLimited as e:
+        # This owner is parked because their own sign-in drew Better Auth's 429
+        # (see ``paperclip_session_cookie``: the limiter keys on IP and the
+        # whole backend is one). That is "come back shortly", the same verdict
+        # as the provisioning waits above — so answer 503 + Retry-After instead
+        # of letting the error escape as a 500.
+        raise TeamsContextError(
+            status_code=503,
+            detail="team workspace session temporarily unavailable",
+            headers={"Retry-After": str(max(1, int(e.retry_after)))},
+        ) from e
 
     return TeamsContext(
         user_id=auth.user_id,

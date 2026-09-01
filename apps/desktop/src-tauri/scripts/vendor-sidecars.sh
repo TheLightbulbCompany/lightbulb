@@ -15,17 +15,36 @@
 # clipboard, sharp, canvas, koffi, sqlite-vec). Sharing one
 # node_modules across architectures misresolves these.
 #
-# Mirrors OpenClaw's own macOS Swift integration: a native host
-# spawns the CLI (`openclaw node run`) and hits it over loopback.
+# NOTE: this does NOT mirror OpenClaw's own macOS Swift app, despite what
+# this comment used to claim. That app IS the node -- it speaks the gateway
+# protocol natively and spawns `openclaw node worker`, a hidden private JSONL
+# worker over stdio, only to execute Node-side commands. We instead run the
+# full headless `openclaw node run` and let it be the node. Ours is the
+# supported public shape; theirs is an internal contract. The consequence is
+# that we own a persistent node-host state dir (identity, node config, SQLite)
+# that their app never materializes -- so upstream's answer to a state
+# migration ("tell the user to run openclaw doctor --fix") is not available
+# to us. We have no CLI on the user's PATH. See subprocess.rs.
 set -euo pipefail
 
-# Pin matches the dev container's openclaw image upstream tag
-# (openclaw-version.json). Keeping desktop ↔ container in sync avoids
-# the protocol-version (PR #660/#662) and dist-chunk drift bugs.
-# openclaw@2026.5.28 requires Node >=22.19.0 per its package.json
-# engines field; Node 22 is the current LTS line.
-NODE_VERSION="22.19.0"
-OPENCLAW_VERSION="2026.5.28"
+# Pin tracks the deployed container image's upstream line -- that is
+# openclaw-version.json's `dev.tag`/`prod.tag` (both 2026.8.1-isol8.1-*),
+# NOT its `tag` field, which is only the legacy public bootstrap fallback.
+# Keeping desktop <-> container in sync avoids the protocol-version
+# (PR #660/#662) and dist-chunk drift bugs.
+#
+# We vendor from PUBLIC npm, so this is vanilla openclaw -- none of the
+# fork's carried patches. That is fine for a node host (the patches are
+# gateway/agent-side) but it is a real divergence: desktop and container
+# run the same VERSION, not the same BUILD.
+#
+# NODE_VERSION is bound by the vendored openclaw's package.json engines
+# field, which is NOT advisory -- assertSupportedRuntime() errors and
+# exits at startup. 2026.5.28 wanted >=22.19.0; 2026.8.1 wants
+# >=22.22.3 <23. npm install does not enforce it (no engine-strict), so
+# a mismatch fails at runtime inside the packaged app, not at build.
+NODE_VERSION="22.23.2"
+OPENCLAW_VERSION="2026.8.1"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TAURI_DIR="$(dirname "$SCRIPT_DIR")"

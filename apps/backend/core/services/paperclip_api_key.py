@@ -202,7 +202,7 @@ async def _mint_and_store(
         result = await admin_client.create_agent_api_key(
             session_cookie=cookie,
             agent_id=paperclip_agent_id,
-            name="isol8-mcp-server",
+            name="lightbulb-mcp-server",
             idempotency_key=f"{owner_id}:mcp-key:{paperclip_agent_id}",
         )
     except (PaperclipApiError, httpx.HTTPError) as exc:

@@ -52,11 +52,19 @@ for _bin in sqlite3 jq aws litestream; do
 done
 
 # --- 0. Owner id: per-user task env, else the facts file on the EFS spine.
+# ISOL8_OWNER_ID is the real source: ecs_manager.provision_user_container sets
+# it on every task definition it registers, and refresh_task_definition clones
+# the live env verbatim, so it survives every later revision. The facts-file
+# read below is the backstop for a task definition registered before that env
+# var existed. This change ships with a FLEET REROLL — every container gets the
+# new image and a freshly-registered task definition together — so there is no
+# window where an old image looks for a new-name file or vice versa, and no
+# transitional second name to remember to delete.
 OWNER_ID="${ISOL8_OWNER_ID:-}"
-if [ -z "$OWNER_ID" ] && [ -f "$STATE_ROOT/isol8-facts.json" ]; then
-  OWNER_ID=$(jq -r '.owner_id // empty' "$STATE_ROOT/isol8-facts.json" 2>/dev/null || true)
+if [ -z "$OWNER_ID" ] && [ -f "$STATE_ROOT/lightbulb-facts.json" ]; then
+  OWNER_ID=$(jq -r '.owner_id // empty' "$STATE_ROOT/lightbulb-facts.json" 2>/dev/null || true)
 fi
-[ -n "$OWNER_ID" ] || { log "FATAL: owner id unresolved (no ISOL8_OWNER_ID env, no isol8-facts.json)"; exit 1; }
+[ -n "$OWNER_ID" ] || { log "FATAL: owner id unresolved (no ISOL8_OWNER_ID env, no lightbulb-facts.json)"; exit 1; }
 export OWNER_ID
 # The baked litestream config references $ISOL8_STATE_ROOT so it always replicates
 # the SAME databases this script restored into.

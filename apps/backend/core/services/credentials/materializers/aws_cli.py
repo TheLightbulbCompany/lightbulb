@@ -6,13 +6,13 @@ Three files under ``{EFS_MOUNT_PATH}/{owner}/.aws/`` (in-container:
 ``/users/{owner}`` at ``/home/node/.openclaw``, and the task env
 ``AWS_CONFIG_FILE`` already points at ``config`` there):
 
-* ``config`` — ``[profile isol8-connector]`` whose ``credential_process`` runs
+* ``config`` — ``[profile lightbulb-connector]`` whose ``credential_process`` runs
   the helper below. The profile is **named**, never ``[default]``: a default
   profile would be picked up by the in-process Bedrock SDK's default chain.
   It carries NO ``role_arn``/``credential_source``/``external_id`` — a profile
   mixing ``role_arn`` with other credential sources flips botocore into
   assume-role mode, and the ExternalId must never touch EFS.
-* ``isol8-creds.mjs`` — zero-dependency node ESM helper the CLI executes once
+* ``lightbulb-creds.mjs`` — zero-dependency node ESM helper the CLI executes once
   per invocation: serves the cached credential while >10 min validity remains,
   else fetches from the backend credentials endpoint with the bearer token and
   rewrites the cache. ``/usr/bin/env node`` keeps the command PATH-robust.
@@ -32,14 +32,11 @@ import json
 from core.config import settings
 from core.services.credentials.materializers.base import atomic_write, owner_efs_root
 
+# Must match the baked aws-exec-profile plugin's AWS_CONNECTOR_PROFILE
+# (apps/infra/openclaw/plugins/aws-exec-profile/dist/resolve.js): the plugin
+# injects AWS_PROFILE by name only when it finds this exact section header.
 AWS_CONNECTOR_PROFILE = "lightbulb-connector"
-# The baked aws-exec-profile plugin injects AWS_PROFILE by name, and it ships in
-# the container IMAGE -- so a container running the pre-rename image still asks
-# for the old profile. Both sections are written, pointing at the same
-# credential_process, so either name resolves. Drop the legacy section once
-# every container runs an image built after the rename.
-LEGACY_AWS_CONNECTOR_PROFILES = ("isol8-connector",)
-HELPER_FILENAME = "isol8-creds.mjs"
+HELPER_FILENAME = "lightbulb-creds.mjs"
 TOKEN_FILENAME = "token"
 CACHE_FILENAME = "cache.json"
 
@@ -47,7 +44,7 @@ CACHE_FILENAME = "cache.json"
 _CONTAINER_AWS_DIR = "/home/node/.openclaw/.aws"
 
 _HELPER_TEMPLATE = r"""#!/usr/bin/env node
-// Isol8 AWS credential_process helper — materialized by the Isol8 backend.
+// Lightbulb AWS credential_process helper — materialized by the Lightbulb backend.
 // Prints credential_process JSON: cache while fresh, else fetch from the
 // backend with the sibling bearer token. The token is the security boundary.
 import { readFileSync, writeFileSync } from "node:fs";
@@ -81,7 +78,7 @@ if (msLeft(cached) > REFRESH_MARGIN_MS) {
 
 const tok = readJson(join(DIR, "token"));
 if (!tok || !tok.token) {
-  console.error("isol8: AWS connection token missing — reconnect AWS in Lightbulb settings");
+  console.error("lightbulb: AWS connection token missing — reconnect AWS in Lightbulb settings");
   process.exit(1);
 }
 
@@ -101,13 +98,13 @@ try {
     if (parsed && parsed.Version === 1 && parsed.AccessKeyId) {
       creds = parsed;
     } else {
-      console.error("isol8: credential service returned a malformed credential payload");
+      console.error("lightbulb: credential service returned a malformed credential payload");
     }
   } else {
-    console.error(`isol8: credential service returned ${resp.status}`);
+    console.error(`lightbulb: credential service returned ${resp.status}`);
   }
 } catch (err) {
-  console.error(`isol8: credential service unreachable (${(err && err.name) || err})`);
+  console.error(`lightbulb: credential service unreachable (${(err && err.name) || err})`);
 }
 
 if (!creds) {
@@ -115,7 +112,7 @@ if (!creds) {
     emit(cached); // stale-but-valid cache beats failing the CLI call
     process.exit(0);
   }
-  console.error("isol8: no valid AWS credentials — Lightbulb credential service unavailable");
+  console.error("lightbulb: no valid AWS credentials — Lightbulb credential service unavailable");
   process.exit(1);
 }
 
@@ -130,18 +127,11 @@ emit(creds);
 
 def write(owner_id: str, provider_key: str, credential: dict) -> None:
     aws_dir = owner_efs_root(owner_id) / ".aws"
-    # One section per accepted profile name, all pointing at the same
-    # credential_process. An agent whose image predates the rename injects
-    # AWS_PROFILE=isol8-connector and must still resolve; a fresh image asks for
-    # the new name. Writing both is what makes the rename a no-op for a running
-    # container instead of an AccessDenied at the next exec.
-    body = "".join(
-        f"[profile {name}]\n"
+    config = (
+        f"[profile {AWS_CONNECTOR_PROFILE}]\n"
         f"region = {credential['region']}\n"
         f"credential_process = /usr/bin/env node {_CONTAINER_AWS_DIR}/{HELPER_FILENAME}\n"
-        for name in (AWS_CONNECTOR_PROFILE, *LEGACY_AWS_CONNECTOR_PROFILES)
     )
-    config = body
     helper = _HELPER_TEMPLATE.replace("__API_BASE__", settings.PUBLIC_API_BASE)
     token = json.dumps({"owner_id": owner_id, "token": credential["cli_token"]})
     atomic_write(aws_dir / "config", config.encode())

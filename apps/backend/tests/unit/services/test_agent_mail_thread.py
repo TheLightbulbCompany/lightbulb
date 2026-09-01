@@ -66,10 +66,16 @@ def test_different_threads_get_different_keys():
 
 def test_key_carries_the_allowlisted_prefix():
     """`hooks.allowedSessionKeyPrefixes` is what bounds a leaked hook token to
-    email threads. A key outside it is rejected by the container outright."""
+    email threads. A key outside it is rejected by the container outright.
+
+    ⚠️ COUPLED: this prefix must stay covered by
+    ``core/containers/config.py``'s ``hooks.allowedSessionKeyPrefixes`` AND by
+    the copy of that list already baked into each container's openclaw.json.
+    Renaming one side alone silently stops inbound agent mail from reaching
+    any session."""
     key = thread_session_key({"Message-ID": SELF})
     assert key is not None
-    assert key.startswith("isol8-email:")
+    assert key.startswith("lightbulb-email:")
 
 
 def test_key_is_hashed_not_the_raw_message_id():

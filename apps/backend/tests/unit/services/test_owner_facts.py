@@ -69,6 +69,9 @@ async def test_write_owner_facts_writes_json(monkeypatch):
             written["path"] = path
             written["content"] = content
 
+        def delete_file(self, user_id, path):
+            written["deleted"] = path
+
     async def fake_get(owner_id, *, consistent_read=False):
         return {"subscription_status": "active", "provider_choice": "bedrock_claude"}
 
@@ -78,10 +81,16 @@ async def test_write_owner_facts_writes_json(monkeypatch):
     await owner_facts.write_owner_facts("user_abc")
 
     assert written["user_id"] == "user_abc"
-    assert written["path"] == "isol8-facts.json"
+    assert written["path"] == "lightbulb-facts.json"
     facts = json.loads(written["content"])
     assert facts["provider_choice"] == "bedrock_claude"
     assert facts["plan"] == "Starter ($50/mo flat fee)"
+    # The pre-rename file is removed, not left behind: a stale facts file would
+    # hand an agent frozen plan/provider state. The write is wrapped in a
+    # best-effort try/except, so without a delete_file on this stub the call
+    # would be swallowed as an AttributeError and the assertion below is what
+    # proves the delete actually ran.
+    assert written["deleted"] == "isol8-facts.json"
 
 
 @pytest.mark.asyncio

@@ -27,7 +27,7 @@ export default definePluginEntry({
   id: "aws-exec-profile",
   name: "AWS exec profile",
   description:
-    "Injects AWS_PROFILE=isol8-connector into the agent's exec environment only.",
+    "Injects AWS_PROFILE=lightbulb-connector into the agent's exec environment only.",
   register(api) {
     api.on("resolve_exec_env", resolveExecEnv, { priority: 50 });
   },

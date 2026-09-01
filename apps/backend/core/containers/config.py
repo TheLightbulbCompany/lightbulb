@@ -1025,7 +1025,7 @@ def workflow_plugin_entries(llm_task_model: str | None = None) -> dict:
       strict (``additionalProperties: false``); only schema-listed keys may
       ever be added here or the container crash-loops at boot.
     - ``aws-exec-profile`` — baked in-repo plugin whose ``resolve_exec_env``
-      hook injects ``AWS_PROFILE=isol8-connector`` into the agent's exec'd
+      hook injects ``AWS_PROFILE=lightbulb-connector`` into the agent's exec'd
       commands only when the owner's connector AWS profile is materialized.
       Inert (returns ``{}``) until that profile exists, so it is safe to enable
       fleet-wide regardless of provider.
@@ -2056,22 +2056,24 @@ def build_openclaw_config_dict(
             # "hook:" in this list when ``defaultSessionKey`` is unset
             # (we don't set it above). Omitting "hook:" makes the gateway
             # throw at boot — every newly-provisioned container would
-            # refuse to start. DO NOT REMOVE. "lightbulb-"/"isol8-" are for our
-            # own session-key conventions used by internal callers.
+            # refuse to start. DO NOT REMOVE. "lightbulb-" is for our own
+            # session-key conventions used by internal callers.
             #
-            # BOTH BRAND PREFIXES, deliberately, and the ORDER of the two moves
-            # matters. This allowlist is CONTAINER-SIDE: it only changes when a
-            # container's openclaw.json is rewritten, which happens at provision
-            # / reprovision (never for a container just sitting there). The
-            # minting side is BACKEND-side and changes the instant the backend
-            # deploys. So the allowlist must learn "lightbulb-" BEFORE anything
-            # mints one — otherwise every container not yet reprovisioned would
-            # reject the key with a 400 (gateway/server/hooks-request-handler.ts)
-            # and inbound agent mail would lose thread continuity fleet-wide.
-            # This release is that first half; nothing mints "lightbulb-" yet.
-            # FOLLOW-UP, only once every live container has been reprovisioned:
-            # drop "isol8-".
-            "allowedSessionKeyPrefixes": ["lightbulb-", "isol8-", "hook:"],
+            # CLEAN CUT — the transitional "isol8-" entry is gone, in the same
+            # release that starts minting "lightbulb-email:". Normally the
+            # ordering would matter: this allowlist is CONTAINER-SIDE (it only
+            # changes when a container's openclaw.json is rewritten, at
+            # provision / reprovision) while the minting side is BACKEND-side
+            # and flips the instant the backend deploys, so a container not yet
+            # reprovisioned would reject the key with a 400
+            # (gateway/server/hooks-request-handler.ts). Two things make the
+            # single step safe here: the FLEET REROLL ships with this change,
+            # so no container keeps a stale allowlist; and there was nothing to
+            # preserve — an audit of the live prod founder container found ZERO
+            # `isol8-email` session keys anywhere in its agent state, the prefix
+            # being minted only for inbound agent mail it had never received.
+            # Keep "hook:" — that one is functional, not brand residue.
+            "allowedSessionKeyPrefixes": ["lightbulb-", "hook:"],
             # Inbound agent email needs a STABLE per-thread session key so a
             # reply continues the same conversation instead of cold-starting a
             # throwaway `hook:<uuid>` every time (see agent_mail_thread). Both
@@ -2081,17 +2083,17 @@ def build_openclaw_config_dict(
             #
             # What still bounds a leaked/replayed hook token, now that it can
             # name a session rather than only create one:
-            #   * allowedSessionKeyPrefixes below — it can only reach
-            #     `lightbulb-*` / `isol8-*` / `hook:*` keys, and the mail thread
-            #     key (agent_mail_thread) is the ONLY one of those we mint (the
-            #     `isol8-` in routers/connections.py is an STS RoleSessionName,
-            #     not this).
+            #   * allowedSessionKeyPrefixes above — it can only reach
+            #     `lightbulb-*` / `hook:*` keys, and `lightbulb-email:<sha256>`
+            #     (agent_mail_thread._PREFIX) is the ONLY one we mint. (The
+            #     `lightbulb-` in routers/connections.py is an STS
+            #     RoleSessionName, not this.)
             #   * allowedAgentIds below — it cannot aim at an arbitrary agent.
             # The delta accepted deliberately: previously such a token could
             # only start fresh sessions; it can now target an existing one and
-            # read its prior context. Tightening the prefix to the mail-thread
-            # one alone would shrink that further and is the obvious next step
-            # if anything else ever mints a brand-prefixed session key.
+            # read its prior context. Tightening the prefix to
+            # `lightbulb-email:` would shrink that further and is the obvious
+            # next step if anything else ever mints a session key.
             "allowRequestSessionKey": True,
             # Bound which agents a hook call may target: the seeded roster at
             # write time ("main" for the legacy fallback shape). Nothing in

@@ -434,10 +434,7 @@ export class ServiceStack extends cdk.Stack {
         // match the CFN template RoleName and the backend constant; renaming
         // any one silently breaks the self-account trust-pin check (GetRole
         // scoped to the old name → AccessDenied → fail-closed 400).
-        resources: [
-          `arn:aws:iam::${this.account}:role/lightbulb-connector`,
-          `arn:aws:iam::${this.account}:role/isol8-connector`,
-        ],
+        resources: [`arn:aws:iam::${this.account}:role/lightbulb-connector`],
       }),
     );
 
@@ -1071,15 +1068,12 @@ export class ServiceStack extends cdk.Stack {
         new iam.PolicyStatement({
           sid: "StsAssumeConnectorRole",
           actions: ["sts:AssumeRole"],
-          // BOTH names while the rename migrates. The role lives in the
-          // OWNER'S account, so we cannot rename theirs -- anyone who
-          // launched the quick-create stack before the rename still has
-          // the legacy role. Dropping the legacy ARN here AccessDenies
-          // them at vend time. Remove it once every stack is relaunched.
-          resources: [
-            "arn:aws:iam::*:role/lightbulb-connector",
-            "arn:aws:iam::*:role/isol8-connector",
-          ],
+          // The single canonical name. The role lives in the OWNER'S account
+          // and the quick-create template pins RoleName, so an account that
+          // still holds a pre-rename role must relaunch the stack before it
+          // can vend -- routers/connections.py rejects any other name at
+          // connect time with a 400 rather than an AccessDenied here.
+          resources: ["arn:aws:iam::*:role/lightbulb-connector"],
         }),
       ],
       roles: [this.taskRole],

@@ -21,7 +21,7 @@ assume on their behalf.
   assume and vends the short-lived credentials to the owner's container via
   its `credential_process` endpoint; the container itself holds no AWS
   identity.
-- Because the role uses a fixed name (`isol8-connector`), launching the stack
+- Because the role uses a fixed name (`lightbulb-connector`), launching the stack
   requires acknowledging **CAPABILITY_NAMED_IAM**.
 
 After the stack is created, the owner copies the `RoleArn` stack output back

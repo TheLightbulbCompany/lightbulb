@@ -40,18 +40,16 @@ logger = logging.getLogger(__name__)
 # elsewhere in the module use _caller_account_id() instead.
 OUR_ACCOUNT_ID: str = "877352799272"
 
-# The IAM role name of the read-only connector Isol8 stands up in its OWN account
-# for the AWS scope-tiers rail. Lives here (the base module both aws_cfn and
-# connections import) so the literal has a single home — aws_cfn already imports
-# bedrock_aip, so the constant can't live there without a cycle.
-# The role an owner creates in THEIR OWN account. Renaming it is a two-sided
-# migration: the name is pinned by the quick-create CloudFormation template, so
-# a role that already exists in someone's account keeps the legacy name until
-# they relaunch the stack. New stacks mint the new name; both are accepted until
-# every existing role is relaunched, then LEGACY_CONNECTOR_ROLE_NAMES goes away.
+# The IAM role name of the read-only connector Lightbulb stands up in its OWN
+# account for the AWS scope-tiers rail. Lives here (the base module both aws_cfn
+# and connections import) so the literal has a single home — aws_cfn already
+# imports bedrock_aip, so the constant can't live there without a cycle.
+# Also the role an owner creates in THEIR OWN account: the name is pinned by the
+# quick-create CloudFormation template (apps/infra/aws/aws-connector.yaml
+# RoleName), the service-stack iam:GetRole / sts:AssumeRole resource ARNs, and
+# the baked aws-exec-profile plugin's AWS_CONNECTOR_PROFILE. Renaming it means
+# renaming all four in lockstep and relaunching every quick-create stack.
 CONNECTOR_ROLE_NAME = "lightbulb-connector"
-LEGACY_CONNECTOR_ROLE_NAMES = ("isol8-connector",)
-ACCEPTED_CONNECTOR_ROLE_NAMES = (CONNECTOR_ROLE_NAME, *LEGACY_CONNECTOR_ROLE_NAMES)
 
 # The three AIP tiers. Order matters only for deterministic iteration.
 TIERS: tuple[str, str, str] = ("opus", "sonnet", "haiku")

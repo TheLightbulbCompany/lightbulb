@@ -876,7 +876,7 @@ def test_migrate_legacy_user_md_swaps_lines_and_preserves_content():
     assert friday_identity._migrate_legacy_user_md(ws, "user_abc", "uuid-f") is True
     path, content = ws.written
     assert path == "workspace-uuid-f/USER.md"
-    assert "isol8-facts.json" in content
+    assert "lightbulb-facts.json" in content
     assert "Isol8 plan" not in content
     assert "- **Provider:**" not in content
     # Friday's evolved content survives untouched.
@@ -885,7 +885,7 @@ def test_migrate_legacy_user_md_swaps_lines_and_preserves_content():
 
 
 def test_migrate_legacy_user_md_noop_on_new_template():
-    ws = _MigrationWs("# USER.md\n- **Plan & provider:** read `~/.openclaw/isol8-facts.json`\n")
+    ws = _MigrationWs("# USER.md\n- **Plan & provider:** read `~/.openclaw/lightbulb-facts.json`\n")
     assert friday_identity._migrate_legacy_user_md(ws, "user_abc", "uuid-f") is False
     assert ws.written is None
 
@@ -905,7 +905,7 @@ def test_migrate_legacy_user_md_preserves_owner_edited_provider_line():
     _, content = ws.written
     # The plan line migrated, but the owner-edited provider line stays.
     assert "my own custom note about providers" in content
-    assert "isol8-facts.json" in content
+    assert "lightbulb-facts.json" in content
 
 
 def test_migrate_legacy_user_md_noop_when_plan_line_is_substring_only():
@@ -941,7 +941,7 @@ def test_migrate_legacy_user_md_only_drops_the_adjacent_provider_line():
     assert friday_identity._migrate_legacy_user_md(ws, "user_abc", "uuid-f") is True
     _, migrated = ws.written
     # The adjacent seed pair migrated...
-    assert "isol8-facts.json" in migrated
+    assert "lightbulb-facts.json" in migrated
     assert "Isol8 plan" not in migrated
     # ...but the lookalike in the Notes section survives.
     assert migrated.count("- **Provider:** Bedrock (Claude, Isol8-managed credits)") == 1
@@ -1515,6 +1515,22 @@ def test_stale_brand_fragments_repoint_the_isol8_generation_too():
     )
     assert friday_identity._migrate_stale_brand_fragments(ws, "owner_1", _UUID) is True
     assert friday_identity._FACTS_POINTER_LINE_1 in ws.files[rel]
+
+
+def test_stale_brand_fragments_repoint_the_pre_rename_facts_path():
+    """Current brand wording, old facts path.
+
+    The facts file moved isol8-facts.json -> lightbulb-facts.json AFTER the
+    brand rename, so a USER.md seeded in between names Lightbulb but points at
+    a path the backend now deletes. Without this fragment that file would tell
+    Friday to read a file that no longer exists."""
+    rel = f"workspace-{_UUID}/USER.md"
+    ws = _DictWorkspace(
+        {rel: "- **Plan & provider:** read `~/.openclaw/isol8-facts.json` — Lightbulb keeps it\n  current;\n"}
+    )
+    assert friday_identity._migrate_stale_brand_fragments(ws, "owner_1", _UUID) is True
+    assert friday_identity._FACTS_POINTER_LINE_1 in ws.files[rel]
+    assert "isol8-facts.json" not in ws.files[rel]
 
 
 def test_heal_migrations_leave_a_lightbulb_ai_friday_fully_current():

@@ -26,7 +26,7 @@ test("returns AWS_PROFILE when the config file declares the connector profile", 
       cfg,
       `${AWS_CONNECTOR_PROFILE_HEADER}\nregion = us-east-1\nrole_arn = arn:aws:iam::123:role/x\n`,
     );
-    assert.deepEqual(resolve(cfg), { AWS_PROFILE: "isol8-connector" });
+    assert.deepEqual(resolve(cfg), { AWS_PROFILE: "lightbulb-connector" });
   });
 });
 

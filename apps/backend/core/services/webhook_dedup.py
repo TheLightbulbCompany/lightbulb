@@ -1,6 +1,6 @@
 """Idempotency helper for inbound webhooks (Stripe primarily, Clerk also).
 
-Reuses the existing `isol8-{env}-webhook-event-dedup` DynamoDB table provisioned
+Reuses the existing `lightbulb-{env}-webhook-event-dedup` DynamoDB table provisioned
 by the database stack. Items have a 30-day TTL so the table never grows
 unboundedly.
 

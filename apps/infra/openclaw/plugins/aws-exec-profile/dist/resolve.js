@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 
 // Must match the materializer's AWS_CONNECTOR_PROFILE constant — the Plan-2/3
 // credential rail writes the owner's role under this exact profile name.
-export const AWS_CONNECTOR_PROFILE = "isol8-connector";
+export const AWS_CONNECTOR_PROFILE = "lightbulb-connector";
 
 // The materializer writes the profile to the file at AWS_CONFIG_FILE; this is
 // the baked container default (same value the task env sets).
@@ -19,9 +19,9 @@ export const AWS_CONNECTOR_PROFILE_HEADER = `[profile ${AWS_CONNECTOR_PROFILE}]`
 
 // Line-anchored matcher for a REAL INI section header. A plain substring scan
 // would false-positive on a commented-out header (e.g. `# [profile
-// isol8-connector]`) and inject AWS_PROFILE for a profile the awscli can't find
+// lightbulb-connector]`) and inject AWS_PROFILE for a profile the awscli can't find
 // ("profile not found"). Derived from AWS_CONNECTOR_PROFILE (regex-escaped) so
-// it stays consistent with the constant — matches `[profile isol8-connector]`
+// it stays consistent with the constant — matches `[profile lightbulb-connector]`
 // only when it starts a line.
 const HEADER_RE = new RegExp(
   `(?:^|\\n)\\[profile ${AWS_CONNECTOR_PROFILE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\](?:\\n|$)`,
@@ -31,9 +31,9 @@ const HEADER_RE = new RegExp(
  * Decide whether the agent's exec'd commands should run as the owner's
  * connector AWS identity.
  *
- * Returns `{ AWS_PROFILE: "isol8-connector" }` only when the config file at
+ * Returns `{ AWS_PROFILE: "lightbulb-connector" }` only when the config file at
  * `configPathEnv` (falling back to the baked default) exists AND declares the
- * `[profile isol8-connector]` section. Otherwise returns `{}`. Never throws —
+ * `[profile lightbulb-connector]` section. Otherwise returns `{}`. Never throws —
  * any fs error (missing file, permission, etc.) degrades to `{}` so a failed
  * read can never break the exec tool.
  *

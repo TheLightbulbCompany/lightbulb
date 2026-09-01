@@ -1,4 +1,4 @@
-"""The `provisioning` list in `isol8-facts.json`.
+"""The `provisioning` list in `lightbulb-facts.json`.
 
 Friday reads this so she never asks twice. Two properties are load-bearing:
 NAMES only (never a credential value), and a lookup failure that leaves the

@@ -30,22 +30,17 @@ def _write(tmp_path, monkeypatch, owner="o") -> Path:
 def test_config_uses_credential_process_and_no_secrets(tmp_path, monkeypatch):
     aws_dir = _write(tmp_path, monkeypatch)
     body = (aws_dir / "config").read_text()
-    # One section per accepted profile name. The legacy section is what keeps a
-    # container running a pre-rename image (which injects AWS_PROFILE by the old
-    # name) resolving instead of AccessDenying at its next exec.
-    from core.services.credentials.materializers.aws_cli import (
-        AWS_CONNECTOR_PROFILE,
-        LEGACY_AWS_CONNECTOR_PROFILES,
-    )
+    # Exactly ONE section, named for the profile the baked aws-exec-profile
+    # plugin injects. A second (legacy) section would be a silently-accepted
+    # second name the plugin's HEADER_RE no longer looks for.
+    from core.services.credentials.materializers.aws_cli import AWS_CONNECTOR_PROFILE
 
-    expected = "".join(
-        f"[profile {name}]\n"
+    assert body == (
+        f"[profile {AWS_CONNECTOR_PROFILE}]\n"
         "region = us-east-1\n"
-        "credential_process = /usr/bin/env node /home/node/.openclaw/.aws/isol8-creds.mjs\n"
-        for name in (AWS_CONNECTOR_PROFILE, *LEGACY_AWS_CONNECTOR_PROFILES)
+        "credential_process = /usr/bin/env node /home/node/.openclaw/.aws/lightbulb-creds.mjs\n"
     )
-    assert body == expected
-    assert "[profile isol8-connector]" in body, "legacy profile must survive the rename"
+    assert "isol8" not in body
     # The config must carry no assume-role or secret material: a profile mixing
     # role_arn with credential_process would flip botocore into assume-role mode,
     # and external_id must never touch EFS again.
@@ -147,7 +142,7 @@ def test_helper_end_to_end_fetch_then_cache(tmp_path, monkeypatch):
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not on PATH")
 def test_helper_rejects_malformed_200_body(tmp_path, monkeypatch):
     """A 200 with a truthy-but-malformed body ({}) must not be emitted or
-    cached as credentials — with no cache the helper exits 1 with an isol8:
+    cached as credentials — with no cache the helper exits 1 with a lightbulb:
     error instead of handing the CLI an empty credential object."""
     _StubHandler.calls = []
     orig_creds = _StubHandler.creds
@@ -162,7 +157,7 @@ def test_helper_rejects_malformed_200_body(tmp_path, monkeypatch):
         r = subprocess.run(["node", str(aws_dir / aws_cli.HELPER_FILENAME)], capture_output=True, text=True, timeout=30)
         assert r.returncode == 1
         assert r.stdout == ""  # nothing emitted — the CLI must not see {} as creds
-        assert "isol8" in r.stderr
+        assert "lightbulb" in r.stderr
         # And the malformed payload must not poison the cache.
         assert not (aws_dir / aws_cli.CACHE_FILENAME).exists()
     finally:
@@ -179,4 +174,4 @@ def test_helper_clear_error_when_backend_unreachable_and_no_cache(tmp_path, monk
     helper = Path(tmp_path) / "org_x" / ".aws" / aws_cli.HELPER_FILENAME
     r = subprocess.run(["node", str(helper)], capture_output=True, text=True, timeout=30)
     assert r.returncode == 1
-    assert "isol8" in r.stderr  # names us, not a bare stack trace
+    assert "lightbulb" in r.stderr  # names us, not a bare stack trace

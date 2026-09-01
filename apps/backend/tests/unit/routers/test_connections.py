@@ -1790,12 +1790,9 @@ class TestAwsComplete:
     owner-supplied role ARN is the confused-deputy surface, so it is validated
     BEFORE the credential is ever stored or assumed."""
 
-    # Deliberately the LEGACY role name: every happy-path case below therefore
-    # proves an owner who launched the quick-create stack BEFORE the rename can
-    # still connect. That is the whole point of the migration window -- the role
-    # lives in their account and we cannot rename it for them.
-    _GOOD_ARN = "arn:aws:iam::123456789012:role/isol8-connector"
-    _NEW_ARN = "arn:aws:iam::123456789012:role/lightbulb-connector"
+    # The single canonical role name the quick-create template pins.
+    _GOOD_ARN = "arn:aws:iam::123456789012:role/lightbulb-connector"
+    _LEGACY_ARN = "arn:aws:iam::123456789012:role/isol8-connector"
 
     @pytest.mark.asyncio
     @patch("routers.connections.bedrock_aip")
@@ -1879,7 +1876,7 @@ class TestAwsComplete:
         self, mock_repo, mock_store, mock_apply, mock_aip, async_client
     ):
         # SECURITY: the backend's sts:AssumeRole IAM grant is scoped to
-        # role/isol8-connector, so a hand-rolled role with any other name is
+        # role/lightbulb-connector, so a hand-rolled role with any other name is
         # rejected with a clear 400 at connect time — never stored, never
         # left to fail as a vend-time AccessDenied.
         mock_aip.OUR_ACCOUNT_ID = "877352799272"
@@ -1900,20 +1897,41 @@ class TestAwsComplete:
         mock_apply.apply_connection.assert_not_called()
         mock_repo.put_status.assert_not_called()
 
-    def test_both_connector_role_names_are_accepted(self):
-        """The rename cannot be one-sided: the role is in the OWNER'S account.
+    @pytest.mark.asyncio
+    @patch("routers.connections.bedrock_aip")
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    async def test_aws_complete_rejects_the_retired_connector_role_name(
+        self, mock_repo, mock_store, mock_apply, mock_aip, async_client
+    ):
+        """The pre-rename role name is no longer accepted anywhere.
 
-        Dropping the legacy name from the accepted set AccessDenies every owner
-        who has not relaunched the quick-create stack. This asserts the set, not
-        the current value, so narrowing it later is a deliberate edit here."""
-        from core.billing.bedrock_aip import (
-            ACCEPTED_CONNECTOR_ROLE_NAMES,
-            CONNECTOR_ROLE_NAME,
+        The backend's sts:AssumeRole grant (service-stack StsAssumeConnectorRole)
+        names only `lightbulb-connector`, so accepting the old name here would
+        store a credential that AccessDenies at vend time instead of failing
+        loudly at connect time. An owner still holding the retired role must
+        relaunch the quick-create stack."""
+        mock_aip.OUR_ACCOUNT_ID = "877352799272"
+        mock_store.get = AsyncMock(return_value={"external_id": "ext_abc"})
+        mock_store.put = AsyncMock()
+        mock_apply.apply_connection = AsyncMock()
+        mock_repo.put_status = AsyncMock()
+
+        resp = await async_client.post(
+            "/api/v1/connections/aws/aws-complete",
+            json={"role_arn": self._LEGACY_ARN},
         )
+        assert resp.status_code == 400
+        mock_store.put.assert_not_called()
 
-        assert CONNECTOR_ROLE_NAME == "lightbulb-connector"
-        assert "isol8-connector" in ACCEPTED_CONNECTOR_ROLE_NAMES
-        assert CONNECTOR_ROLE_NAME in ACCEPTED_CONNECTOR_ROLE_NAMES
+    def test_connector_role_name_is_the_only_accepted_name(self):
+        """One name, no transitional alias — the shim it replaced is gone."""
+        from core.billing import bedrock_aip
+
+        assert bedrock_aip.CONNECTOR_ROLE_NAME == "lightbulb-connector"
+        assert not hasattr(bedrock_aip, "ACCEPTED_CONNECTOR_ROLE_NAMES")
+        assert not hasattr(bedrock_aip, "LEGACY_CONNECTOR_ROLE_NAMES")
 
     @pytest.mark.asyncio
     @patch("routers.connections.bedrock_aip")
@@ -2139,9 +2157,9 @@ class TestAwsComplete:
     # --- Trust-pin gate: a role IN OUR account is allowed ONLY if its trust
     # policy pins the platform trust principal (our account root) + THIS
     # owner's ExternalId, verified via iam:GetRole. This is the guarantee that
-    # no tenant can ever connect one of Isol8's own AWS roles.
+    # no tenant can ever connect one of Lightbulb's own AWS roles.
     _PLATFORM_PRINCIPAL = "arn:aws:iam::877352799272:root"
-    _OUR_ACCOUNT_ARN = "arn:aws:iam::877352799272:role/isol8-connector"
+    _OUR_ACCOUNT_ARN = "arn:aws:iam::877352799272:role/lightbulb-connector"
 
     @staticmethod
     def _set_trust(mock_aip, statements):
@@ -2486,7 +2504,7 @@ class TestAwsComplete:
         }
         resp = await async_client.post(
             "/api/v1/connections/aws/aws-complete",
-            json={"role_arn": "arn:aws:iam::877352799272:role/isol8-connector"},
+            json={"role_arn": "arn:aws:iam::877352799272:role/lightbulb-connector"},
         )
         assert resp.status_code == 400
 
@@ -2581,7 +2599,7 @@ class TestAwsCredentialsEndpoint:
         assert kwargs["RoleArn"] == "arn:aws:iam::123456789012:role/IsolReadOnly"
         assert kwargs["ExternalId"] == "ext_abc"
         assert kwargs["DurationSeconds"] == 3600
-        assert kwargs["RoleSessionName"].startswith("isol8-")
+        assert kwargs["RoleSessionName"].startswith("lightbulb-")
 
     @pytest.mark.asyncio
     async def test_missing_bearer_is_401(self, async_client):

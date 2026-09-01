@@ -385,7 +385,7 @@ _USER_TEMPLATE_PERSONAL = """\
 - **Name:** {full_name}
 - **What to call them:** {first_name_or_fallback}
 - **Email:** {email}
-- **Plan & provider:** read `~/.openclaw/isol8-facts.json` — Lightbulb keeps it
+- **Plan & provider:** read `~/.openclaw/lightbulb-facts.json` — Lightbulb keeps it
   current; trust it over anything remembered.
 
 ## Context
@@ -410,7 +410,7 @@ you. Each member can chat with you, and Paperclip issues route per-member.
 
 - **Org:** {org_name}
 - **Owner email:** {owner_email}
-- **Plan & provider:** read `~/.openclaw/isol8-facts.json` — Lightbulb keeps it
+- **Plan & provider:** read `~/.openclaw/lightbulb-facts.json` — Lightbulb keeps it
   current; trust it over anything remembered.
 
 ## Members You've Met
@@ -873,7 +873,7 @@ _LEGACY_PROVIDER_LABELS = (
     "BYO OpenAI key",
     "BYO API key (provider unspecified)",
 )
-_FACTS_POINTER_LINE_1 = "- **Plan & provider:** read `~/.openclaw/isol8-facts.json` — Lightbulb keeps it"
+_FACTS_POINTER_LINE_1 = "- **Plan & provider:** read `~/.openclaw/lightbulb-facts.json` — Lightbulb keeps it"
 _FACTS_POINTER_LINE_2 = "  current; trust it over anything remembered."
 
 # Platform-owned instruction fragments the seed templates wrote verbatim,
@@ -884,6 +884,12 @@ _FACTS_POINTER_LINE_2 = "  current; trust it over anything remembered."
 # already on EFS.
 _STALE_BRAND_FRAGMENTS: tuple[tuple[str, str], ...] = (
     # USER.md facts pointer — the personal and org templates share the wording.
+    # Three retired generations: two pre-rebrand vendor names, plus the
+    # current wording written before the facts file moved off `isol8-facts.json`.
+    (
+        "- **Plan & provider:** read `~/.openclaw/isol8-facts.json` — Lightbulb keeps it",
+        _FACTS_POINTER_LINE_1,
+    ),
     (
         "- **Plan & provider:** read `~/.openclaw/isol8-facts.json` — Lightbulb AI keeps it",
         _FACTS_POINTER_LINE_1,
@@ -926,7 +932,7 @@ def _migrate_legacy_user_md(workspace: Workspace, owner_id: str, agent_uuid: str
 
     Seeds are write-if-missing, so already-provisioned owners would otherwise
     keep the stale hardcoded plan/provider in Friday's boot context forever —
-    directly contradicting the facts file the isol8 skill points at. This
+    directly contradicting the facts file the lightbulb skill points at. This
     runs on every (re)provision/config-rewrite, so the fleet heals during the
     same image-promotion apply that ships the skill.
 

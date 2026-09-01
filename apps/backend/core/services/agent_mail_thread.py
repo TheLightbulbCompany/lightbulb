@@ -25,8 +25,10 @@ from it would have split one conversation into several.
 
 The key is hashed rather than embedding the Message-ID: session keys are
 lowercased upstream, and a raw Message-ID carries ``<>``, ``@`` and arbitrary
-punctuation. The ``isol8-`` prefix satisfies the container's
-``hooks.allowedSessionKeyPrefixes`` without widening it.
+punctuation. The prefix below must remain covered by the container's
+``hooks.allowedSessionKeyPrefixes`` (``core/containers/config.py``) — a key
+outside that allowlist is rejected by the gateway, so inbound mail would stop
+reaching a session at all.
 """
 
 import hashlib
@@ -34,7 +36,7 @@ import hashlib
 # Prefix must stay inside `hooks.allowedSessionKeyPrefixes` (see
 # core/containers/config.py) — that allowlist is what bounds a leaked hook
 # token to email threads instead of arbitrary session ownership.
-_PREFIX = "isol8-email:"
+_PREFIX = "lightbulb-email:"
 
 # 16 hex chars of SHA-256. Collisions would merge two unrelated threads into
 # one session; 64 bits is far past what a single owner's mail volume can reach.

@@ -435,12 +435,11 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
           Match.objectLike({
             Sid: "StsAssumeConnectorRole",
             Action: "sts:AssumeRole",
-            // Both names: the role is in the OWNER'S account, so dropping
-            // the legacy ARN AccessDenies anyone who has not relaunched.
-            Resource: [
-              "arn:aws:iam::*:role/lightbulb-connector",
-              "arn:aws:iam::*:role/isol8-connector",
-            ],
+            // Exactly one name. The transitional legacy ARN is gone: an
+            // account still holding the retired role must relaunch the
+            // quick-create stack, and routers/connections.py rejects the old
+            // name at connect time rather than letting it AccessDeny here.
+            Resource: "arn:aws:iam::*:role/lightbulb-connector",
           }),
         ]),
       }),

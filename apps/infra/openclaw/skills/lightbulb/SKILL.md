@@ -278,7 +278,7 @@ the company first (see the Paperclip section), then:
 ```
 
 (absolute path — the skill lives at /app/skills/lightbulb; your cwd is your workspace.)
-If `isol8-facts.json` says `email_enabled: false`, email is off here — do not
+If `lightbulb-facts.json` says `email_enabled: false`, email is off here — do not
 offer it.
 
 **Inbox.** Mail to your address is stored for 30 days. Some of it also wakes
@@ -347,7 +347,7 @@ a permission message, not an error — do not tell them to retry.
 ## Your company's Stripe account
 
 Money for the business (selling a product, taking payments, paying for a
-provider) needs the company's own Stripe account. Check `~/.openclaw/isol8-facts.json`
+provider) needs the company's own Stripe account. Check `~/.openclaw/lightbulb-facts.json`
 for `company_stripe: "connected"`; if it is absent or `"none"`, do not
 improvise a Stripe signup — ask the owner through the platform. `"pending"`
 means the account exists but onboarding is not finished: do not file the
@@ -393,7 +393,7 @@ to their X, read their Linear). This rail *creates a new account or resource on
 the company's Stripe identity* and hands you its credentials. Needing to read
 from a service the owner already uses is the OAuth rail, not this one.
 
-**Read `~/.openclaw/isol8-facts.json` first — never ask twice.** Its
+**Read `~/.openclaw/lightbulb-facts.json` first — never ask twice.** Its
 `provisioning` list holds one entry per provider+service:
 `{workflow_id, provider, service, state}`, plus `resource_name` and `env_keys`
 once it is done.
@@ -673,7 +673,7 @@ own inference — on a Plus plan a long coding session can exhaust the 5-hour
 window for both, so warn the owner before kicking off multi-hour work.
 
 **Never state the owner's plan or provider from memory.** Read
-`~/.openclaw/isol8-facts.json` — Lightbulb keeps it current:
+`~/.openclaw/lightbulb-facts.json` — Lightbulb keeps it current:
 
 ```json
 {
@@ -741,6 +741,6 @@ change them.
   skills copy in (an existing skill is never overwritten). Credentials, transcripts,
   settings, and commands are never imported.
 - **"What plan am I on?" / "Which model are you?"** → Read
-  `~/.openclaw/isol8-facts.json`, answer from it.
+  `~/.openclaw/lightbulb-facts.json`, answer from it.
 - **"Why can't you do X?"** → Check the boundaries table above before
   improvising an explanation.

@@ -1,7 +1,7 @@
 """Owner-facts file: per-owner dynamic platform state on EFS.
 
-``isol8-facts.json`` sits at the EFS user root (in-container:
-``~/.openclaw/isol8-facts.json`` — the access point chroots
+``lightbulb-facts.json`` sits at the EFS user root (in-container:
+``~/.openclaw/lightbulb-facts.json`` — the access point chroots
 ``/users/{user_id}`` to ``/home/node/.openclaw``) so every agent — Friday,
 Atlas, scaffolded specialists, marketplace hires — can read the owner's
 CURRENT plan/provider state instead of trusting seed files rendered once at
@@ -11,7 +11,7 @@ provision time. The backend is the sole writer; writes happen at provision
 (``stripe_webhook_handlers.handle_subscription_state``). Best-effort by
 design: a facts write must never block any of those callers.
 
-The bundled ``isol8`` platform skill tells agents to read this file for
+The bundled ``lightbulb`` platform skill tells agents to read this file for
 plan/provider questions.
 """
 
@@ -27,7 +27,9 @@ from core.dynamodb import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
-FACTS_FILENAME = "isol8-facts.json"
+FACTS_FILENAME = "lightbulb-facts.json"
+# Pre-rename name, deleted on every write so no agent can read stale facts.
+_LEGACY_FACTS_FILENAME = "isol8-facts.json"
 
 
 def format_provider_label(provider_choice: str | None, byo_provider: str | None) -> str:
@@ -225,5 +227,11 @@ async def write_owner_facts(owner_id: str, *, account_overrides: dict | None = N
             provisioning=await _lookup_provisioning(owner_id),
         )
         get_workspace().write_file(owner_id, FACTS_FILENAME, json.dumps(facts, indent=2) + "\n")
+        # The file was renamed from isol8-facts.json. Leaving the old inode
+        # behind would be worse than orphaning it: agents on an image whose
+        # bundled skill still names the old path would read FROZEN plan /
+        # provider / email state and act on it. A missing file is a safe
+        # failure; a stale one is not.
+        get_workspace().delete_file(owner_id, _LEGACY_FACTS_FILENAME)
     except Exception as e:  # noqa: BLE001 — facts must never block callers
         logger.warning("write_owner_facts: skipped for %s: %s", owner_id, e)

@@ -1009,7 +1009,7 @@ def workflow_plugin_entries(llm_task_model: str | None = None) -> dict:
       strict (``additionalProperties: false``); only schema-listed keys may
       ever be added here or the container crash-loops at boot.
     - ``aws-exec-profile`` — baked in-repo plugin whose ``resolve_exec_env``
-      hook injects ``AWS_PROFILE=isol8-connector`` into the agent's exec'd
+      hook injects ``AWS_PROFILE=lightbulb-connector`` into the agent's exec'd
       commands only when the owner's connector AWS profile is materialized.
       Inert (returns ``{}``) until that profile exists, so it is safe to enable
       fleet-wide regardless of provider.
@@ -2032,17 +2032,20 @@ def build_openclaw_config_dict(
             #
             # What still bounds a leaked/replayed hook token, now that it can
             # name a session rather than only create one:
-            #   * allowedSessionKeyPrefixes below — it can only reach
-            #     `lightbulb-*` / `isol8-*` / `hook:*` keys, and the mail thread
-            #     key (agent_mail_thread) is the ONLY one of those we mint (the
-            #     `isol8-` in routers/connections.py is an STS RoleSessionName,
-            #     not this).
+            #   * allowedSessionKeyPrefixes above — it can only reach
+            #     `lightbulb-*` / `isol8-*` / `hook:*` keys, and
+            #     `lightbulb-email:<sha256>` (agent_mail_thread._PREFIX) is the
+            #     ONLY one of those we mint. This release is the minting half
+            #     the allowlist entry above was added ahead of; the `isol8-`
+            #     entry now covers nothing we mint and goes with the
+            #     reprovision follow-up noted there. (The `lightbulb-` in
+            #     routers/connections.py is an STS RoleSessionName, not this.)
             #   * allowedAgentIds below — it cannot aim at an arbitrary agent.
             # The delta accepted deliberately: previously such a token could
             # only start fresh sessions; it can now target an existing one and
-            # read its prior context. Tightening the prefix to the mail-thread
-            # one alone would shrink that further and is the obvious next step
-            # if anything else ever mints a brand-prefixed session key.
+            # read its prior context. Tightening the prefix to
+            # `lightbulb-email:` would shrink that further and is the obvious
+            # next step if anything else ever mints a session key.
             "allowRequestSessionKey": True,
             # Bound which agents a hook call may target: the seeded roster at
             # write time ("main" for the legacy fallback shape). Nothing in

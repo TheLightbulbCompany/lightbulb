@@ -36,7 +36,7 @@ def test_key_is_canonical_and_credential_free():
     )
 
     assert first == second
-    assert first.startswith("isol8-agent-create:v1:marketplace-deploy:")
+    assert first.startswith("lightbulb-agent-create:v1:marketplace-deploy:")
     assert "Forge" not in first
     assert len(first) < 160
 

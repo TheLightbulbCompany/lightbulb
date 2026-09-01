@@ -681,7 +681,7 @@ RUN chown -R 1000:1000 /home/node/.sage
 # ---- Layer 14: baked aws-exec-profile plugin ----
 # Hand-written, dependency-free OpenClaw plugin (lives in-repo, NOT an npm
 # package). Registers a `resolve_exec_env` hook that injects
-# AWS_PROFILE=isol8-connector into the agent's exec'd commands ONLY when the
+# AWS_PROFILE=lightbulb-connector into the agent's exec'd commands ONLY when the
 # owner's connector AWS profile has been materialized at AWS_CONFIG_FILE — the
 # node/harness process (and Bedrock's in-process AWS SDK) keeps the host ECS
 # task-role identity. COPY lands it root-owned in the stock plugin root (the
@@ -743,7 +743,7 @@ COPY skills/paperclip /app/skills/paperclip
 # specialists, marketplace hires — gets identical, current platform
 # knowledge on every image promotion, with no per-agent seeding and no
 # reprovision. Dynamic per-owner state deliberately lives OUTSIDE the image
-# in ~/.openclaw/isol8-facts.json (written by the backend — see
+# in ~/.openclaw/lightbulb-facts.json (written by the backend — see
 # core/services/owner_facts.py); the skill points agents at it.
 # Authored in-repo (not vendored). Keep in lockstep with the anchors listed
 # in the SKILL.md maintenance header.

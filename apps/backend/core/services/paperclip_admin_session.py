@@ -17,7 +17,7 @@ remain non-admin (Paperclip's authz still filters their requests by
 company memberships), and only the backend has elevated privileges.
 
 **Credential lifecycle:**
-- Read once per process from Secrets Manager (``isol8/{env}/paperclip_admin_credentials``)
+- Read once per process from Secrets Manager (``lightbulb/{env}/paperclip_admin_credentials``)
 - Cached for the process lifetime
 - Better Auth session re-acquired on first call after process start, on
   401 from any downstream admin call (call ``invalidate_admin_session()``),

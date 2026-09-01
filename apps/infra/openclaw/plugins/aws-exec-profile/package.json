@@ -2,7 +2,7 @@
   "name": "aws-exec-profile",
   "version": "0.0.1",
   "private": true,
-  "description": "Injects AWS_PROFILE=isol8-connector into the agent's exec environment only.",
+  "description": "Injects AWS_PROFILE=lightbulb-connector into the agent's exec environment only.",
   "type": "module",
   "openclaw": {
     "extensions": ["./index.ts"],

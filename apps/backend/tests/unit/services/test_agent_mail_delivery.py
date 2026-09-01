@@ -191,14 +191,14 @@ async def test_session_key_is_forwarded_when_given(monkeypatch):
         agent_id="agent_friday",
         message="hi",
         idempotency_key="eml_1",
-        session_key="isol8-email:deadbeefdeadbeef",
+        session_key="lightbulb-email:deadbeefdeadbeef",
     )
 
     assert result == "delivered"
     import json as _j
 
     body = _j.loads(captured["json"])
-    assert body["sessionKey"] == "isol8-email:deadbeefdeadbeef"
+    assert body["sessionKey"] == "lightbulb-email:deadbeefdeadbeef"
 
 
 @pytest.mark.asyncio
@@ -233,7 +233,7 @@ async def test_pre_flag_container_rejecting_session_key_retries_unthreaded(monke
         agent_id="agent_friday",
         message="hi",
         idempotency_key="eml_1",
-        session_key="isol8-email:deadbeefdeadbeef",
+        session_key="lightbulb-email:deadbeefdeadbeef",
     )
 
     assert result == "delivered", "must not fail just because the container is older than the flag"

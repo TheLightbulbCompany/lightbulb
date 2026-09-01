@@ -110,7 +110,7 @@ def test_register_happy_path(
     assert "Summarizes contracts" in (minted_meta.capabilities or "")
     # No reports_to in the body → defaulted to the apex CEO (Friday).
     assert mock_create_pc.await_args.kwargs["reports_to"] == "friday-uuid"
-    assert mock_create_pc.await_args.kwargs["idempotency_key"].startswith("isol8-agent-create:v1:agent-builder:")
+    assert mock_create_pc.await_args.kwargs["idempotency_key"].startswith("lightbulb-agent-create:v1:agent-builder:")
 
 
 @patch("routers.agent_builder.emit_agent_deployed")
@@ -258,7 +258,7 @@ def test_exact_cap_builder_retry_is_replay_only_and_cannot_create(
     assert response.status_code == 409
     assert response.json()["detail"] == AGENT_BUDGET_EXCEEDED_DETAIL
     assert mock_create_pc.await_args.kwargs["idempotency_replay_only"] is True
-    assert mock_create_pc.await_args.kwargs["idempotency_key"].startswith("isol8-agent-create:v1:agent-builder:")
+    assert mock_create_pc.await_args.kwargs["idempotency_key"].startswith("lightbulb-agent-create:v1:agent-builder:")
     release.assert_awaited_once()
 
 

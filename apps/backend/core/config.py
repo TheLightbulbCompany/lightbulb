@@ -138,7 +138,7 @@ class Settings(BaseSettings):
     EFS_FILE_SYSTEM_ID: str = ""
 
     # Public S3 URL of the hosted AWS read-only connector CloudFormation
-    # template (the public-read isol8-{env}-cfn-templates bucket, wired by CDK
+    # template (the public-read lightbulb-{env}-cfn-templates bucket, wired by CDK
     # service-stack). The connections aws-setup endpoint feeds this as the
     # quick-create TemplateURL so the "Create role in AWS" button works.
     # CloudFormation requires an S3 URL it can fetch anonymously. Empty default
@@ -456,12 +456,13 @@ class Settings(BaseSettings):
     # materializer runs gog with GOG_KEYRING_BACKEND=file and this password to
     # encrypt the owner's Google OAuth keyring on EFS; the identical value is
     # injected into every per-user OpenClaw container so it can read the keyring
-    # at runtime. Provisioned by CDK from the `isol8/{env}/gog-keyring-password`
+    # at runtime. Provisioned by CDK from the `lightbulb/{env}/gog-keyring-password`
     # secret — must stay stable forever or existing keyrings become unreadable.
     GOG_KEYRING_PASSWORD: str = ""
 
     # KMS CMK ARN/alias for per-container secrets (operator device private keys,
-    # gateway tokens). Provisioned by CDK as `alias/isol8-{env}-container-secrets`.
+    # gateway tokens). Provisioned by CDK as the auth-stack KMS CMK (its ARN is
+    # threaded through as `CONTAINER_SECRETS_KMS_KEY_ID`).
     # Backend calls kms:Encrypt at provision time and kms:Decrypt at handshake
     # time — both operations are audited via CloudTrail so we have a per-call
     # record of which backend instance touched which container's secrets.

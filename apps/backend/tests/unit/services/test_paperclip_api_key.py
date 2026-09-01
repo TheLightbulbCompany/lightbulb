@@ -116,7 +116,7 @@ def admin_client(monkeypatch):
     client = MagicMock()
     client._http = MagicMock()
     client.create_agent_api_key = AsyncMock(
-        return_value={"id": "key-1", "name": "isol8-mcp-server", "token": "pcli_live_abc"}
+        return_value={"id": "key-1", "name": "lightbulb-mcp-server", "token": "pcli_live_abc"}
     )
 
     async def fake_cookie(_http):
@@ -286,7 +286,7 @@ async def test_returns_none_when_transport_fails(admin_client, fake_sm):
 @pytest.mark.asyncio
 async def test_returns_none_when_paperclip_response_missing_token(admin_client, fake_sm):
     admin_client.create_agent_api_key = AsyncMock(
-        return_value={"id": "key-1", "name": "isol8-mcp-server"},
+        return_value={"id": "key-1", "name": "lightbulb-mcp-server"},
     )  # no "token" field
 
     result = await paperclip_api_key.ensure_paperclip_api_key(

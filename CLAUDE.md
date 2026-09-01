@@ -13,7 +13,7 @@ The OpenClaw container image we run is an **extended image** built from our **Op
 - `image`/`tag`/`full` — the **legacy public** upstream image (`ghcr.io/openclaw/openclaw`), kept only as the bootstrap/unknown-env fallback in `container-stack.ts` (pulled by per-user ECS tasks with **no** registry credentials, so it must stay anonymously pullable). `tag` also feeds the `OPENCLAW_UPSTREAM_VERSION` env fallback.
 - `extendedImage` + per-env `dev.tag`/`prod.tag` — the ECR extended image actually deployed; `dev.tag`/`prod.tag` are the per-environment promotion gate (flip dev, validate, then prod). They drive `meta.lastTouchedVersion` via `deployed_upstream_version()`.
 
-Bundled agent-facing skills live at `apps/infra/openclaw/skills/` (`paperclip`, `lightbulb`). The `lightbulb` skill is the fleet's knowledge of the platform itself — when user-facing surfaces, marketplace/billing flows, or Paperclip seeding change, update its SKILL.md (anchors listed in its maintenance header). Per-owner dynamic state (plan/provider) is NOT in the skill; it lives in `~/.openclaw/isol8-facts.json`, written by `core/services/owner_facts.py`.
+Bundled agent-facing skills live at `apps/infra/openclaw/skills/` (`paperclip`, `lightbulb`). The `lightbulb` skill is the fleet's knowledge of the platform itself — when user-facing surfaces, marketplace/billing flows, or Paperclip seeding change, update its SKILL.md (anchors listed in its maintenance header). Per-owner dynamic state (plan/provider) is NOT in the skill; it lives in `~/.openclaw/lightbulb-facts.json`, written by `core/services/owner_facts.py`.
 
 This repo does not vendor OpenClaw source. The base image is built from the **Isol8 fork `TheLightbulbCompany/agent`** (a GitHub fork of [github.com/openclaw/openclaw](https://github.com/openclaw/openclaw)). The fork's `main` tracks upstream — it was realigned to `openclaw/openclaw:main`, so `git pull upstream main` merges cleanly. Our patches do **not** live on `main`; they sit on `isol8/*` branches plus `v<version>-isol8.<n>` tags, which the fork's `docker-release.yml` builds and publishes to GHCR `ghcr.io/thelightbulbcompany/agent` (the carried patch set is enumerated in `openclaw-version.json`'s `notes`). The writable fork workspace is checked out at **`~/dev/agent-fork`** (origin = `TheLightbulbCompany/agent`, upstream = `openclaw/openclaw`). A stale second clone at `~/Desktop/agent` is pending delete — it sits on iCloud-synced Desktop and git operations hang there; do not use it. Treat fork checkouts as outside this repo — do not commit them into it.
 
@@ -72,9 +72,6 @@ every one of these:**
 - **The Expo project slug `isol8-mobile`** — Expo slugs cannot be renamed
   (dashboard and eas-cli have no rename; only display name changes).
   `apps/mobile/app.json` must keep `slug: "isol8-mobile"` to match the server.
-- **`isol8-connector`** — the IAM role *and* the CloudFormation stack name live in
-  customers' own AWS accounts, and the name is baked immutably into published
-  marketplace artifacts.
 - **`-isol8.N` image tags** and the `isol8/*` fork branches in
   `openclaw-version.json` / `paperclip-version.json` — they are rollback refs.
 - **Historical issue/PR references** (`Isol8AI/isol8#2053`, `isol8 #2016`) — quote
@@ -87,6 +84,30 @@ every one of these:**
 - **The EFS lock sidecars `.isol8-guard` / `.isol8-protocol`** — renaming them is a
   once-only migration across every EFS volume with a fatal failure mode and zero
   benefit (see "Config Patching Notes").
+
+**RUNTIME IDENTIFIERS — RETIRED 2026-08-31; do not reintroduce.** These used to
+sit in the residue list above as "leave them, existing users/data would break".
+The premise is gone (no external users; the one account holding a connector
+stack is ours), so they were renamed outright, along with the transitional
+accept-both shims that existed only to bridge them:
+
+| was | now | lives in |
+|---|---|---|
+| `isol8-connector` | `lightbulb-connector` | `bedrock_aip.CONNECTOR_ROLE_NAME`, `aws-connector.yaml` `RoleName`, `service-stack.ts` iam:GetRole + sts:AssumeRole resources, the baked `aws-exec-profile` plugin |
+| `isol8-creds.mjs` | `lightbulb-creds.mjs` | `aws_cli.HELPER_FILENAME` (on EFS at `.aws/`) |
+| `isol8-facts.json` | `lightbulb-facts.json` | `owner_facts.FACTS_FILENAME`; read by the bundled `lightbulb` skill and the local-sqlite boot script |
+| `isol8-email:` | `lightbulb-email:` | `agent_mail_thread._PREFIX` — **must stay covered by `hooks.allowedSessionKeyPrefixes`** |
+| `isol8-agent-create:v1` | `lightbulb-agent-create:v1` | `paperclip_agent_idempotency._KEY_PREFIX` |
+| `isol8-x` | `lightbulb-x` | `xurl_cli._XURL_APP_NAME` (app key inside the owner's `~/.xurl`) |
+| `isol8-mcp-server` | `lightbulb-mcp-server` | the Paperclip agent API-key display name |
+| `isol8-backend` (operator device) | `lightbulb-backend` | `operator_device.build_paired_operator_entry` `displayName` |
+| `isol8-<owner>` STS session name | `lightbulb-<owner>` | `routers/connections.py` `RoleSessionName` |
+
+Three of these have a state-on-EFS or state-in-someone-else's-account tail:
+`lightbulb-connector` needs the quick-create stack relaunched **and** a rebuilt
+extended image (the baked plugin injects the profile by name); the facts file's
+old inode is deleted on every write so nothing can read frozen facts; the mail
+prefix is inert until the container's `openclaw.json` allowlist is rewritten.
 
 **CloudWatch metric namespaces** were renamed (owner decision 2026-08-27):
 `Isol8*` → `LightbulbAI*`, and the metric `service` dimension `isol8-backend` →

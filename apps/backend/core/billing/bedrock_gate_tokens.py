@@ -22,7 +22,7 @@ Table naming: the gate-tokens table is GATE-PRIVATE state, defined in the
 bedrock-gate CDK stack (NOT database-stack), so — unlike ``bedrock-aip-owners``
 / ``metronome-fast-gate``, whose full names arrive as CDK-injected env vars —
 the backend constructs it by convention from the env name, matching the gateway
-Lambda's own ``TOKENS_TABLE`` and ``bedrock_aip._aip_name``'s ``isol8-{env}-``
+Lambda's own ``TOKENS_TABLE`` and ``bedrock_aip._aip_name``'s ``lightbulb-{env}-``
 scheme. An explicit ``BEDROCK_GATE_TOKENS_TABLE`` override wins (tests / manual
 wiring).
 

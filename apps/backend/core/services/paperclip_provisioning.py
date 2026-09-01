@@ -192,7 +192,7 @@ async def build_paperclip_provisioning() -> "PaperclipProvisioning":
     )
     admin = PaperclipAdminClient(http_client=http)
     # Short name only — ``core.dynamodb.get_table`` prepends the env
-    # prefix once (``isol8-{env}-``). Passing the fully-qualified name
+    # prefix once (``lightbulb-{env}-``). Passing the fully-qualified name
     # would double-prefix at production deploy time and 404 on every lookup.
     repo = PaperclipRepo(table_name="paperclip-companies")
     provisioning = PaperclipProvisioning(admin, repo, env_name=settings.ENVIRONMENT)

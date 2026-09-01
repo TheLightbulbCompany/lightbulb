@@ -53,10 +53,10 @@ done
 
 # --- 0. Owner id: per-user task env, else the facts file on the EFS spine.
 OWNER_ID="${ISOL8_OWNER_ID:-}"
-if [ -z "$OWNER_ID" ] && [ -f "$STATE_ROOT/isol8-facts.json" ]; then
-  OWNER_ID=$(jq -r '.owner_id // empty' "$STATE_ROOT/isol8-facts.json" 2>/dev/null || true)
+if [ -z "$OWNER_ID" ] && [ -f "$STATE_ROOT/lightbulb-facts.json" ]; then
+  OWNER_ID=$(jq -r '.owner_id // empty' "$STATE_ROOT/lightbulb-facts.json" 2>/dev/null || true)
 fi
-[ -n "$OWNER_ID" ] || { log "FATAL: owner id unresolved (no ISOL8_OWNER_ID env, no isol8-facts.json)"; exit 1; }
+[ -n "$OWNER_ID" ] || { log "FATAL: owner id unresolved (no ISOL8_OWNER_ID env, no lightbulb-facts.json)"; exit 1; }
 export OWNER_ID
 # The baked litestream config references $ISOL8_STATE_ROOT so it always replicates
 # the SAME databases this script restored into.

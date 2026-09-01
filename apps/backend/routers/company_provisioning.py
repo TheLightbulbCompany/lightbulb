@@ -160,7 +160,7 @@ async def revoke(provider: str, resource_id: str, auth: Annotated[AuthContext, D
 
 # ---------------------------------------------------------------------------
 # Container-authed (hook token). Spec §3.2: Friday reaches the rail through
-# `catalog`, `requests`, `requests/{id}` and `isol8-facts.json`. She never sees
+# `catalog`, `requests`, `requests/{id}` and `lightbulb-facts.json`. She never sees
 # a credential value, a checkout URL, a redirect URL, a deep link or a Stripe
 # account id — `_safe_service` and `_safe_workflow` are the two serializers
 # that guarantee it.

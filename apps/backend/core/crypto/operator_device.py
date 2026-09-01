@@ -269,7 +269,7 @@ def build_paired_operator_entry(
     *,
     gateway_token: str,
     scopes: Iterable[str] = BACKEND_OPERATOR_SCOPES,
-    display_name: str = "isol8-backend",
+    display_name: str = "lightbulb-backend",
     client_id: str = BACKEND_CLIENT_ID,
     client_mode: str = BACKEND_CLIENT_MODE,
 ) -> dict:

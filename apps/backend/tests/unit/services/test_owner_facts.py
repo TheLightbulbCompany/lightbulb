@@ -78,7 +78,7 @@ async def test_write_owner_facts_writes_json(monkeypatch):
     await owner_facts.write_owner_facts("user_abc")
 
     assert written["user_id"] == "user_abc"
-    assert written["path"] == "isol8-facts.json"
+    assert written["path"] == "lightbulb-facts.json"
     facts = json.loads(written["content"])
     assert facts["provider_choice"] == "bedrock_claude"
     assert facts["plan"] == "Starter ($50/mo flat fee)"

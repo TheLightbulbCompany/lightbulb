@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 # a read whose failure mode is "delete the bootstrap admin". Not worth it for
 # a two-element allowlist.
 # DO NOT RENAME / REWRITE these addresses: they are live Better Auth rows in
-# Aurora and values inside Secrets Manager isol8/{env}/paperclip_admin_credentials —
+# Aurora and values inside Secrets Manager lightbulb/{env}/paperclip_admin_credentials —
 # no repo edit changes either. Editing them here silently disarms the guard and
 # the next admin wipe deletes the bootstrap admin, breaking provisioning fleet-wide.
 # Every address the Paperclip bootstrap admin has ever been minted under.

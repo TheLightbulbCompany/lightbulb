@@ -42,6 +42,20 @@ describe("LocalMcpServers", () => {
     expect(screen.queryByLabelText(/Local MCP server configuration/i)).toBeNull();
   });
 
+  // This pane deploys with the web app; `local_mcp_*` ships with the desktop
+  // DMG. Because the app loads the remote URL, every already-installed build
+  // renders this pane before it has the commands — for however long it takes
+  // that user to relaunch. Without this branch they'd see Tauri's raw
+  // "not found" string and have no idea it means "update the app".
+  it("asks an out-of-date desktop app to update rather than showing the raw IPC error", async () => {
+    installTauriBridge(() => Promise.reject("Command local_mcp_list not found"));
+    render(<LocalMcpServers />);
+    await waitFor(() => {
+      expect(screen.getByText(/newer version of the Lightbulb desktop app/i)).toBeTruthy();
+    });
+    expect(screen.queryByText(/local_mcp_list/)).toBeNull();
+  });
+
   it("lists what local_mcp_list returns", async () => {
     installTauriBridge(
       vi.fn(async () => ({

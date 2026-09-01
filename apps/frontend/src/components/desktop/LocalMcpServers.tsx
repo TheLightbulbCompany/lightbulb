@@ -58,7 +58,18 @@ const RESTART_NOTICE =
 
 function errText(e: unknown): string {
   // Tauri invoke rejects with a plain string, not an Error.
-  return e instanceof Error ? e.message : String(e);
+  const raw = e instanceof Error ? e.message : String(e);
+  // This pane ships with the WEB deploy; the commands it calls ship with the
+  // DESKTOP build. The app loads the remote URL, so the pane appears inside
+  // already-installed builds the moment the frontend deploys — and every
+  // invoke then rejects with Tauri's "not found" until the user picks up a DMG
+  // carrying `local_mcp_*`. They pick that up whenever they next relaunch, so
+  // the window is days, not minutes. Say what to do instead of surfacing the
+  // raw string.
+  if (/not found|unknown command|missing .*command/i.test(raw)) {
+    return "This needs a newer version of the Lightbulb desktop app. Check for updates, then reopen Settings.";
+  }
+  return raw;
 }
 
 export function LocalMcpServers() {

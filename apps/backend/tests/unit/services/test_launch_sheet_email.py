@@ -77,31 +77,36 @@ async def test_winner_unpaid_email_copy():
 
 
 async def test_still_competing_email_copy():
+    # A NON-default slot count: the number is threaded in from the close, so
+    # a hard-coded 200 in the copy would fail here.
     with patch.object(em.email_service, "send_email", AsyncMock(return_value="msg_4")) as send:
-        assert await em.send_still_competing_email(to_email="a@x.com", first_name=None) == "msg_4"
+        assert await em.send_still_competing_email(to_email="a@x.com", first_name=None, comp_slots=50) == "msg_4"
     kw = send.await_args.kwargs
     assert kw["subject"] == "You're in the launch competition"
     assert kw["kind"] == "launch_competing"
     for body in (kw["html"], kw["text"]):
         assert "The sign-up sheet is closed, and you're in the competition." in body
+        assert "The 50 free months went to the earliest spots on the sheet" in body
+        assert "200" not in body
         assert "competing on equal footing from October 1" in body
 
 
 async def test_not_selected_email_copy():
     with patch.object(em.email_service, "send_email", AsyncMock(return_value="msg_5")) as send:
-        assert await em.send_not_selected_email(to_email="a@x.com", first_name=None) == "msg_5"
+        assert await em.send_not_selected_email(to_email="a@x.com", first_name=None, comp_slots=50) == "msg_5"
     kw = send.await_args.kwargs
     assert kw["subject"] == "The launch competition starts October 1"
     assert kw["kind"] == "launch_not_selected"
     for body in (kw["html"], kw["text"]):
-        assert "The sign-up sheet is closed, and the 200 free months are taken." in body
+        assert "The sign-up sheet is closed, and the 50 free months are taken." in body
+        assert "200" not in body
         assert "You're not in the competition this round" in body
 
 
 async def test_close_emails_never_raise():
     with patch.object(em.email_service, "send_email", AsyncMock(side_effect=RuntimeError("ses down"))):
-        assert await em.send_still_competing_email(to_email="a@x.com", first_name=None) is None
-        assert await em.send_not_selected_email(to_email="a@x.com", first_name=None) is None
+        assert await em.send_still_competing_email(to_email="a@x.com", first_name=None, comp_slots=200) is None
+        assert await em.send_not_selected_email(to_email="a@x.com", first_name=None, comp_slots=200) is None
 
 
 async def test_no_email_mentions_the_pot():
@@ -111,9 +116,9 @@ async def test_no_email_mentions_the_pot():
     with patch.object(em.email_service, "send_email", AsyncMock(return_value="m")) as unpaid_send:
         await em.send_winner_unpaid_email(to_email="a@x.com", first_name=None)
     with patch.object(em.email_service, "send_email", AsyncMock(return_value="m")) as competing_send:
-        await em.send_still_competing_email(to_email="a@x.com", first_name=None)
+        await em.send_still_competing_email(to_email="a@x.com", first_name=None, comp_slots=200)
     with patch.object(em.email_service, "send_email", AsyncMock(return_value="m")) as not_selected_send:
-        await em.send_not_selected_email(to_email="a@x.com", first_name=None)
+        await em.send_not_selected_email(to_email="a@x.com", first_name=None, comp_slots=200)
     import re
 
     for send in (join_send, paid_send, unpaid_send, competing_send, not_selected_send):

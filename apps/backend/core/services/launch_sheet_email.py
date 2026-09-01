@@ -162,29 +162,31 @@ async def send_winner_unpaid_email(*, to_email: str, first_name: str | None) -> 
     )
 
 
-async def send_still_competing_email(*, to_email: str, first_name: str | None) -> str | None:
+async def send_still_competing_email(*, to_email: str, first_name: str | None, comp_slots: int) -> str | None:
     """Not a winner, but paying — they stay in the competition, just without
-    the free month."""
+    the free month. ``comp_slots`` is passed in (like the join email's) so the
+    number always matches the close that produced this send."""
     return await _send_close(
         to_email,
         first_name,
         _COMPETING_SUBJECT,
         "The sign-up sheet is closed, and you're in the competition.",
-        "The 200 free months went to the earliest spots on the sheet, so this one's on your own subscription "
-        "— but you're competing on equal footing from October 1. The board ranks the dollar lift over your "
-        "prior 30 days, so what matters now is what your company actually does between now and December 1.",
+        f"The {comp_slots} free months went to the earliest spots on the sheet, so this one's on your own "
+        "subscription — but you're competing on equal footing from October 1. The board ranks the dollar lift "
+        "over your prior 30 days, so what matters now is what your company actually does between now and "
+        "December 1.",
         "launch_competing",
     )
 
 
-async def send_not_selected_email(*, to_email: str, first_name: str | None) -> str | None:
+async def send_not_selected_email(*, to_email: str, first_name: str | None, comp_slots: int) -> str | None:
     """Neither a winner nor paying — out of the competition, keeps the
     product."""
     return await _send_close(
         to_email,
         first_name,
         _NOT_SELECTED_SUBJECT,
-        "The sign-up sheet is closed, and the 200 free months are taken.",
+        f"The sign-up sheet is closed, and the {comp_slots} free months are taken.",
         "You're not in the competition this round — those spots went to the earliest sign-ups and the people "
         "who brought others along. Nothing changes about your company: Friday and your agents keep working, "
         "and everything you've built stays yours. Subscribe any time and keep going; we'll be building in "

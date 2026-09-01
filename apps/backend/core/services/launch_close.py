@@ -380,12 +380,15 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
             # ("first month of Starter is free, applied automatically at
             # checkout") is literally accurate for them.
             is_paid_variant = r["email"] in paying and r["email"] not in nonflat_winners
-            variant, send = "winner", (send_winner_paid_email if is_paid_variant else send_winner_unpaid_email)
+            send = send_winner_paid_email if is_paid_variant else send_winner_unpaid_email
+            variant, extra = "winner", {}
         elif r["email"] in eligible_emails:
-            variant, send = "competing", send_still_competing_email
+            # The slot count is passed down, never re-read inside the email
+            # module, so the number in the copy is the one this close ran on.
+            variant, send, extra = "competing", send_still_competing_email, {"comp_slots": s.comp_slots}
         else:
-            variant, send = "not_selected", send_not_selected_email
-        message_id = await send(to_email=r["email"], first_name=None)
+            variant, send, extra = "not_selected", send_not_selected_email, {"comp_slots": s.comp_slots}
+        message_id = await send(to_email=r["email"], first_name=None, **extra)
         if message_id:
             sends[variant] += 1
         else:

@@ -50,6 +50,7 @@ class _Harness:
         self.comp_slots = comp_slots
         self.close_state_writes: list[dict] = []
         self.sent: list[tuple[str, str]] = []
+        self.sent_comp_slots: list[int | None] = []
 
     async def _update_fields(self, email, fields):
         self.rows[email].update(fields)
@@ -77,10 +78,12 @@ class _Harness:
     async def _effective(self):
         return dict(self.settings_row)
 
-    def _send(self, kind, *, to_email, first_name):
+    def _send(self, kind, *, to_email, first_name, comp_slots=None):
         # Synchronous side_effect for the AsyncMock: the return value is what
-        # the await resolves to.
+        # the await resolves to. comp_slots only rides the two non-winner
+        # variants; it is recorded so a test can assert what the copy renders.
         self.sent.append((kind, to_email))
+        self.sent_comp_slots.append(comp_slots)
         return f"msg_{to_email}"
 
     def __enter__(self):
@@ -551,6 +554,8 @@ async def test_a_paying_non_winner_stays_in_and_is_told_so():
     assert h.rows["payer@x.com"]["compete_eligible"] is True
     assert ("competing", "payer@x.com") in h.sent
     assert result["emails_competing"] == 1 and result["emails_not_selected"] == 0
+    # The slot count in the copy is THIS close's, not a hard-coded 200.
+    assert h.sent_comp_slots == [None, 1]  # winner variant takes none; competing takes 1
     # …and no coupon went anywhere near a non-winner.
     assert [c for c in h.stripe_calls if c[0] == "modify"] == []
 
@@ -561,6 +566,7 @@ async def test_a_non_paying_non_winner_is_ruled_out_and_told_so():
         result = await launch_close.close(ADMIN)
     assert h.rows["out@x.com"]["compete_eligible"] is False
     assert ("not_selected", "out@x.com") in h.sent
+    assert h.sent_comp_slots[h.sent.index(("not_selected", "out@x.com"))] == 1
     assert result["emails_not_selected"] == 1 and result["emails_competing"] == 0
 
 

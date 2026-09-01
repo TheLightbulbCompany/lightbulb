@@ -104,6 +104,16 @@ def test_rollup_agent_spend_is_one_mtd_scalar_from_usage_not_a_per_day_column(cl
     assert len(period) == 7 and period[4] == "-"
 
 
+def test_rollup_states_the_direction_of_every_money_field(client):
+    """Spend sums three sources now — a client that nets money IN against
+    money OUT is the failure mode, so the sign is stated, not inferred."""
+    resp, _ = _rollup(client, rows=_rows("2026-08-30"))
+    assert resp.json()["direction"] == {
+        "revenue_microcents": "in",
+        "agent_spend_month_to_date_microcents": "out",
+    }
+
+
 def test_rollup_agent_spend_is_zero_when_no_usage_row(client):
     resp, _ = _rollup(client, rows=_rows("2026-08-30"), usage=None)
     assert resp.json()["agent_spend_month_to_date_microcents"] == 0

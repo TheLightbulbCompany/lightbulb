@@ -49,6 +49,9 @@ MAX_SPAN_DAYS = 366
 DEFAULT_SPAN_DAYS = 30
 DAY_KEYS = ("day", "revenue_microcents", "signups", "visitors")
 UNAVAILABLE = ["followers", "open_threads"]
+# Money moves in two directions and the Spend tab now adds three sources up.
+# Stated per field so no client has to read a name and guess the sign.
+DIRECTION = {"revenue_microcents": "in", "agent_spend_month_to_date_microcents": "out"}
 
 
 def _owner(auth: AuthContext) -> str:
@@ -57,11 +60,31 @@ def _owner(auth: AuthContext) -> str:
     return resolve_owner_id(auth)
 
 
-def _day(value: str, field: str) -> datetime:
+def parse_day(value: str, field: str) -> datetime:
+    """Public: the provisioning-charges route parses its window the same way."""
     try:
         return datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     except ValueError:
         raise HTTPException(status_code=422, detail=f"{field} must be YYYY-MM-DD") from None
+
+
+def day_range(start: str | None, end: str | None) -> tuple[str, str]:
+    """The window contract every Money read shares: ``YYYY-MM-DD`` UTC, ending
+    today, 30 days by default, ascending, and capped — an uncapped span walks
+    an unbounded number of DynamoDB pages (and, on the charges route, of Stripe
+    pages)."""
+    end_at = parse_day(end, "end") if end else datetime.now(timezone.utc)
+    start_at = parse_day(start, "start") if start else end_at - timedelta(days=DEFAULT_SPAN_DAYS - 1)
+    span = (end_at - start_at).days + 1
+    if not 1 <= span <= MAX_SPAN_DAYS:
+        raise HTTPException(status_code=422, detail=f"range must be 1-{MAX_SPAN_DAYS} days, ascending")
+    return start_at.strftime("%Y-%m-%d"), end_at.strftime("%Y-%m-%d")
+
+
+def day_after(day: str) -> str:
+    """The exclusive end of an inclusive day range — the same shape Stripe's
+    own ``{gte, lt}`` created filter uses."""
+    return (parse_day(day, "end") + timedelta(days=1)).strftime("%Y-%m-%d")
 
 
 @router.get("/rollup")
@@ -70,20 +93,14 @@ async def rollup(
     start: str | None = None,
     end: str | None = None,
 ):
-    """Stored day rows for the range, plus the two honesty markers."""
+    """Stored day rows for the range, plus the honesty markers."""
     owner_id = _owner(auth)
-    end_at = _day(end, "end") if end else datetime.now(timezone.utc)
-    start_at = _day(start, "start") if start else end_at - timedelta(days=DEFAULT_SPAN_DAYS - 1)
-    span = (end_at - start_at).days + 1
-    if not 1 <= span <= MAX_SPAN_DAYS:
-        raise HTTPException(status_code=422, detail=f"range must be 1-{MAX_SPAN_DAYS} days, ascending")
-
-    start_day, end_day = start_at.strftime("%Y-%m-%d"), end_at.strftime("%Y-%m-%d")
+    start_day, end_day = day_range(start, end)
     rows = await rollup_repo.get_days(owner_id, start_day, end_day)
     # One GetItem on the same row rollup_service reads, so it is always at
     # least as fresh as the stamp on a day row. The stored attribute is named
     # total_spend_microdollars but holds microCENTS (misnomer, no conversion).
-    usage = await usage_repo.get_period_usage(owner_id, end_at.strftime("%Y-%m"))
+    usage = await usage_repo.get_period_usage(owner_id, end_day[:7])
     billing = await billing_repo.get_by_owner_id(owner_id) or {}
 
     return {
@@ -96,6 +113,10 @@ async def rollup(
         "days": [{k: row[k] for k in DAY_KEYS} for row in rows],
         "agent_spend_month_to_date_microcents": (usage or {}).get("total_spend_microdollars", 0),
         "unavailable": UNAVAILABLE,
+        # Spend sums three sources (agent inference, provider charges, company
+        # Stripe), so direction is stated rather than inferred from a name: a
+        # client that nets money IN against money OUT is the failure mode.
+        "direction": DIRECTION,
     }
 
 
@@ -103,7 +124,7 @@ async def _page(auth: AuthContext, kind: str, **kwargs) -> dict:
     owner_id = _owner(auth)
     for field in ("start", "end"):
         if kwargs.get(field):
-            _day(kwargs[field], field)
+            parse_day(kwargs[field], field)
     try:
         return await company_stripe_reads.stripe_page(owner_id, kind, **kwargs)
     except stripe.error.StripeError as e:

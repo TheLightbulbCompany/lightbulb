@@ -386,6 +386,47 @@ async def test_charges_passes_limit_and_page_and_is_not_a_v2_list():
 
 
 @pytest.mark.asyncio
+async def test_charges_usage_walks_usage_rows_that_paginate_would_miss():
+    pages = [
+        {"usage": [{"id": "u1"}], "next_page_url": "https://api.stripe.com/v2/provisioning/charges?page=OPAQUE"},
+        {"usage": [{"id": "u2"}]},
+    ]
+    raw = MagicMock(side_effect=pages)
+    with patch.object(mod, "_raw", raw):
+        rows, truncated = await mod.charges_usage("acct_1", start_time="t0", end_time="t1", livemode=True)
+    assert [r["id"] for r in rows] == ["u1", "u2"]
+    assert truncated is False
+    # The RETURNED url verbatim (path + query), never a page value we built.
+    assert raw.call_args_list[1].args[1].endswith("/v2/provisioning/charges?page=OPAQUE")
+
+
+@pytest.mark.asyncio
+async def test_paginate_collects_nothing_from_a_usage_response():
+    """Why charges_usage exists: paginate reads `data`, /charges answers `usage`."""
+    with patch.object(mod, "_raw", MagicMock(return_value={"usage": [{"id": "u1"}]})):
+        assert await mod.paginate("acct_1", "/v2/provisioning/charges") == []
+
+
+@pytest.mark.asyncio
+async def test_charges_usage_reports_a_walk_it_had_to_cut_short():
+    endless = {"usage": [{"id": "u"}], "next_page_url": "https://api.stripe.com/v2/provisioning/charges?page=P"}
+    with patch.object(mod, "_raw", MagicMock(return_value=endless)):
+        rows, truncated = await mod.charges_usage(
+            "acct_1", start_time="t0", end_time="t1", livemode=True, limit_pages=3
+        )
+    assert len(rows) == 3
+    assert truncated is True
+
+
+def test_livemode_follows_the_platform_key_not_the_catalog(monkeypatch):
+    monkeypatch.setattr(mod.settings, "STRIPE_PROJECTS_CATALOG", "prod")
+    monkeypatch.setattr(mod.settings, "STRIPE_SECRET_KEY", "sk_test_sandbox")
+    assert mod.is_livemode() is False
+    monkeypatch.setattr(mod.settings, "STRIPE_SECRET_KEY", "sk_live_platform")
+    assert mod.is_livemode() is True
+
+
+@pytest.mark.asyncio
 async def test_deep_link_can_select_the_catalog_partition():
     raw = MagicMock(return_value={"purpose": "dashboard", "url": "https://p", "expires_time": "t"})
     with patch.object(mod, "_raw", raw):

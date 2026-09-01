@@ -527,3 +527,40 @@ async def charges(
             "page": page,
         },
     )
+
+
+def is_livemode() -> bool:
+    """Which mode's charges exist to be asked for.
+
+    The platform key decides: a live key's ``Stripe-Context`` sees only
+    live-mode objects, a Sandbox key's only test ones. Deliberately NOT derived
+    from ``STRIPE_PROJECTS_CATALOG`` — that is a catalog selector, and the
+    guide is explicit that a TESTING catalog can still make real charges.
+    """
+    return settings.STRIPE_SECRET_KEY.startswith(("sk_live_", "rk_live_"))
+
+
+async def charges_usage(
+    account_id: str,
+    *,
+    start_time: str,
+    end_time: str,
+    livemode: bool,
+    project: str | None = None,
+    limit_pages: int = 5,
+) -> tuple[list[dict], bool]:
+    """Every ``usage`` row in the window, and whether the walk stopped early.
+
+    The usage-shaped walker ``charges`` promises: ``paginate`` collects nothing
+    here because this endpoint answers ``usage[]`` rather than ``data[]``.
+    Pages are followed by ``next_page_url`` verbatim, never constructed.
+    """
+    page = await charges(account_id, start_time=start_time, end_time=end_time, livemode=livemode, project=project)
+    rows: list[dict] = list(page.get("usage") or [])
+    for _ in range(limit_pages - 1):
+        nxt = page.get("next_page_url")
+        if not nxt:
+            return rows, False
+        page = await request(account_id, "get", _relative(nxt))
+        rows.extend(page.get("usage") or [])
+    return rows, bool(page.get("next_page_url"))

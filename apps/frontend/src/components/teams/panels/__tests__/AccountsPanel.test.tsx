@@ -94,6 +94,37 @@ describe("AccountsPanel — masthead + composition", () => {
   });
 });
 
+describe("AccountsPanel — the company account and the agent grants are different rails", () => {
+  // Regression, seen live on dev: this panel rendered a section literally
+  // labelled "Connected" — holding a Stripe row reading "Not connected ·
+  // OAuth" — directly under a company-account card reading "Connected as
+  // acct_1UAL…". Two things called Stripe, opposite states, one screen. An
+  // owner read the page as proof their Stripe integration was connected and
+  // could not square it with a `no_company_stripe_account` failure.
+  //
+  // They ARE different rails: the company account is the owner's own Stripe
+  // Connect merchant account (backend-only credential, revenue lands there),
+  // the row is a direct_oauth MCP grant whose token lives in the container.
+  // Each has to be labelled by what it does, and each has to disclaim being
+  // the other.
+  it("labels each rail by what it does rather than leaving the brand to do it", async () => {
+    renderPanel();
+    await screen.findByText("Ask me first: Moving money");
+    expect(screen.getByText("Where money lands")).toBeInTheDocument();
+    expect(screen.getByText("What your agents can use")).toBeInTheDocument();
+    // The bare status word is no longer a section heading. It was the half of
+    // the contradiction that made a not-connected row look authoritative.
+    expect(screen.queryByText("Connected")).not.toBeInTheDocument();
+  });
+
+  it("says on the page that neither rail is the other", async () => {
+    renderPanel();
+    await screen.findByText("Ask me first: Moving money");
+    expect(screen.getByText(/this is not an integration/i)).toBeInTheDocument();
+    expect(screen.getByText(/none of them is your company account/i)).toBeInTheDocument();
+  });
+});
+
 describe("AccountsPanel — provisioned empty state", () => {
   it("says nothing is provisioned yet when the rail is empty", async () => {
     renderPanel();

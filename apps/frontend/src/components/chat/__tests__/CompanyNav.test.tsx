@@ -11,6 +11,7 @@ const ALL_LABELS = [
   "Home",
   "Search",
   "Inbox",
+  "Spend",
   "Tasks",
   "Automations",
   "Goals",
@@ -29,8 +30,22 @@ describe("CompanyNav", () => {
       expect(screen.getByText(label)).toBeInTheDocument();
     }
   });
-  it("declares the spec §5.1 section order: top block, Work, Knowledge, Company", () => {
-    expect(COMPANY_SECTIONS.map((s) => s.label)).toEqual([null, "Work", "Knowledge", "Company"]);
+  it("declares the spec §5.1 section order: top block, Money, Work, Knowledge, Company", () => {
+    expect(COMPANY_SECTIONS.map((s) => s.label)).toEqual([
+      null,
+      "Money",
+      "Work",
+      "Knowledge",
+      "Company",
+    ]);
+  });
+  it('files "Spend" alone under Money and opens teams-spend on click', () => {
+    const money = COMPANY_SECTIONS.find((s) => s.label === "Money");
+    expect(money?.items.map((i) => i.label)).toEqual(["Spend"]);
+    const onPanelChange = vi.fn();
+    render(<CompanyNav onPanelChange={onPanelChange} />);
+    fireEvent.click(screen.getByText("Spend"));
+    expect(onPanelChange).toHaveBeenCalledWith("teams-spend");
   });
   it('puts "Home" first', () => {
     expect(COMPANY_SECTIONS[0].items[0].label).toBe("Home");

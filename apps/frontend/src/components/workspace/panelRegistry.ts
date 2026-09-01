@@ -55,6 +55,10 @@ const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
   accounts: "Accounts",
   search: "Search",
   settings: "Team Settings",
+  // Money → Spend. CONTROL_KEYS.usage stays exactly as it is: the two open the
+  // same component (SpendPanel wraps UsagePanel), and `?panel=usage` links are
+  // already in the wild.
+  spend: "Spend",
 };
 
 const TEAMS_DETAIL_KEYS: Readonly<Record<string, string>> = {

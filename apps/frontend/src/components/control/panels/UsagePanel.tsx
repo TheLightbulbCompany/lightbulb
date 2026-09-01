@@ -29,7 +29,16 @@ function formatCents(cents: number): string {
 // Component
 // =============================================================================
 
-export function UsagePanel() {
+export interface UsagePanelProps {
+  /** Rendered inside another panel's page (Money → Spend, `SpendPanel.tsx`),
+   *  which already supplies the page padding and a `PanelMasthead`. Drops this
+   *  component's own page padding and its "Usage" heading so the two don't
+   *  stack — everything below the heading is identical in both hosts. Two
+   *  registrations (`?panel=usage` and `?panel=teams-spend`), one component. */
+  embedded?: boolean;
+}
+
+export function UsagePanel({ embedded = false }: UsagePanelProps = {}) {
   const { account, isLoading: accountLoading, fetchUsage, refresh } = useBilling();
   const isOrgAdmin = useIsWorkspaceAdmin();
   const { spend } = useSpend();
@@ -73,10 +82,10 @@ export function UsagePanel() {
   }
 
   return (
-    <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="font-editorial-serif text-title">Usage</h2>
-        <Button variant="ghost" size="sm" onClick={handleRefresh}>
+    <div className={embedded ? "space-y-6" : "p-6 space-y-6"}>
+      <div className={embedded ? "flex justify-end" : "flex items-center justify-between"}>
+        {!embedded && <h2 className="font-editorial-serif text-title">Usage</h2>}
+        <Button variant="ghost" size="sm" onClick={handleRefresh} aria-label="Refresh usage">
           <RefreshCw size={16} />
         </Button>
       </div>

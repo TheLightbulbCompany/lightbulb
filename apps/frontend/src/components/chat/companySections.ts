@@ -19,6 +19,7 @@ import {
   Search,
   BookOpen,
   Plug,
+  Wallet,
 } from "lucide-react";
 import type { ComponentType, SVGProps } from "react";
 
@@ -33,7 +34,9 @@ export type CompanySectionItem = {
 };
 
 // Spec §5.1 IA. An item appears here ONLY when its tab is live;
-// Money/Growth/Operations groups arrive with their tabs (P1+).
+// the Growth/Operations groups arrive with their tabs (P1+), and Money holds
+// only Spend until Payments/Products/Customers have a Connect binding and a
+// list route to read.
 // Every panel renders inline via InlineTeamsPanel (TeamsPanelRouter maps each
 // key). `agents` and `settings` are intentionally excluded — agents are the
 // roster, settings is the Settings home.
@@ -45,6 +48,10 @@ export const COMPANY_SECTIONS: { label: string | null; items: CompanySectionItem
       { panel: "teams-search", label: "Search", Icon: Search },
       { panel: "teams-inbox", label: "Inbox", Icon: Inbox },
     ],
+  },
+  {
+    label: "Money",
+    items: [{ panel: "teams-spend", label: "Spend", Icon: Wallet }],
   },
   {
     label: "Work",

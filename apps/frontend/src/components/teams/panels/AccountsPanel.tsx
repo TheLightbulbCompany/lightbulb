@@ -174,23 +174,52 @@ export function AccountsPanel() {
         meta={`${wired.size} connected`}
       />
 
+      {/* Two rails, one brand. The company account below is the owner's own
+          Stripe Connect merchant account — backend-only credential, revenue
+          lands there. The "Stripe" row in the next section is a direct_oauth
+          MCP grant whose token lives in the container. Framed as "Company
+          account" over "Connected" they read as one thing in two states, and
+          an owner duly concluded their Stripe integration was connected
+          because this page said so. Both sections are therefore labelled by
+          what they DO, and each says in the owner's own language that it is
+          not the other. Same vocabulary as StripeSection on
+          /settings/connections — that component can't be reused here, its
+          `.settings-card` classes live in the route-scoped settings.css and
+          are never loaded on /chat (see TeamBillingCard's styling note).
+
+          THE RULE TO KEEP: while these two share a page they must not share a
+          vocabulary. The bare word "Stripe" may never be the label a
+          connection status hangs off, or "Not connected" reads as a verdict on
+          the owner's money — see the ConnectionsList `labels` call below. */}
       <PanelSection
-        label="Company account"
+        label="Where money lands"
         open={open.account}
         onOpenChange={(v) => setOpen((s) => ({ ...s, account: v }))}
       >
-        <div className="py-3">
+        <div className="flex flex-col gap-3 py-3">
+          <p className="text-caption" style={{ color: "var(--midnight-muted)" }}>
+            Your own Stripe account. Revenue lands here, and anything we set up for you is billed
+            to it. This is not an integration — your agents never hold its credentials.
+          </p>
           <CompanyStripeSection canManage={canManage} />
         </div>
       </PanelSection>
 
+      {/* No `count` here on purpose. Under "Connected" the bare number read as
+          "N connected"; under a what-it-does label it would be a number
+          against no denominator, next to a list where most rows are not
+          connected. The masthead already carries "N connected". */}
       <PanelSection
-        label="Connected"
-        count={wired.size}
+        label="What your agents can use"
         open={open.connected}
         onOpenChange={(v) => setOpen((s) => ({ ...s, connected: v }))}
       >
         <div className="flex flex-col gap-3 py-3">
+          <p className="text-caption" style={{ color: "var(--midnight-muted)" }}>
+            Separate sign-ins your agents use to do work. Each is its own connection — none of
+            them is your company account above, and connecting one never changes where your
+            revenue lands.
+          </p>
           {/* The one thing this page says with no data: your agents have not
               set anything up on your behalf. Reassurance, not an error — so it
               sits above the catalog rather than replacing it. */}
@@ -202,7 +231,14 @@ export function AccountsPanel() {
               className="py-8"
             />
           )}
-          <ConnectionsList canManage={canManage} />
+          {/* The row must survive being read on its own, because the status
+              sits right next to it: "Stripe · Not connected" one section under
+              a company Stripe account is how an owner concludes the upgrade
+              they just paid for failed, and then "fixes" it by connecting the
+              MCP grant — which leaves them OAuth-connected with still no
+              company account. The brand name alone never carries a status
+              here. */}
+          <ConnectionsList canManage={canManage} labels={{ stripe: "Stripe for your agents" }} />
         </div>
       </PanelSection>
 

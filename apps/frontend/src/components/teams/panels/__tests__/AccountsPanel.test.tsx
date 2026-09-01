@@ -29,8 +29,13 @@ vi.mock("@/components/settings/CompanyStripeSection", () => ({
   ),
 }));
 vi.mock("@/components/settings/ConnectionsList", () => ({
-  ConnectionsList: ({ canManage }: { canManage: boolean }) => (
-    <div data-testid="connections-list">{String(canManage)}</div>
+  // Records `labels` so the panel's relabelling contract is assertable here;
+  // that the override actually changes the rendered row is ConnectionsList's
+  // own suite ("display-name overrides").
+  ConnectionsList: ({ canManage, labels }: { canManage: boolean; labels?: Record<string, string> }) => (
+    <div data-testid="connections-list" data-labels={JSON.stringify(labels ?? {})}>
+      {String(canManage)}
+    </div>
   ),
 }));
 
@@ -91,6 +96,60 @@ describe("AccountsPanel — masthead + composition", () => {
     renderPanel();
     await screen.findByText("Ask me first: Moving money");
     expect(screen.getByTestId("panel-masthead-meta")).toHaveTextContent("2 connected");
+  });
+});
+
+describe("AccountsPanel — the company account and the agent grants are different rails", () => {
+  // Regression, seen live on dev: this panel rendered a section literally
+  // labelled "Connected" — holding a Stripe row reading "Not connected ·
+  // OAuth" — directly under a company-account card reading "Connected as
+  // acct_1UAL…". Two things called Stripe, opposite states, one screen. An
+  // owner read the page as proof their Stripe integration was connected and
+  // could not square it with a `no_company_stripe_account` failure.
+  //
+  // They ARE different rails: the company account is the owner's own Stripe
+  // Connect merchant account (backend-only credential, revenue lands there),
+  // the row is a direct_oauth MCP grant whose token lives in the container.
+  // Each has to be labelled by what it does, and each has to disclaim being
+  // the other.
+  it("labels each rail by what it does rather than leaving the brand to do it", async () => {
+    renderPanel();
+    await screen.findByText("Ask me first: Moving money");
+    // Queried as the section triggers themselves, which also proves the query
+    // below would have found the old "Connected" section had it survived.
+    expect(screen.getByRole("button", { name: /^Where money lands/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^What your agents can use/ })).toBeInTheDocument();
+    // The bare status word is no longer a section heading — it was the half of
+    // the contradiction that made a not-connected row look authoritative.
+    // Scoped to the PanelSection triggers rather than the whole page: the real
+    // ConnectionsList legitimately renders "Connected" on a connected row, and
+    // it is only stubbed here.
+    expect(screen.queryByRole("button", { name: /^Connected/ })).not.toBeInTheDocument();
+  });
+
+  // The load-bearing one. Section framing alone still left the provider row
+  // labelled with the bare word "Stripe" while carrying "Not connected" — and
+  // an owner arriving from the auto-filed Stripe setup card reads that as "the
+  // upgrade I just did failed", then clicks Connect on the MCP grant, which is
+  // the wrong recovery: they end up OAuth-connected with still no company
+  // account. The brand name alone must never be the label a connection status
+  // hangs off, so the status can never be read as being about the money.
+  it("never lets the bare brand name carry the provider row's status", async () => {
+    renderPanel();
+    await screen.findByText("Ask me first: Moving money");
+    const labels = JSON.parse(
+      screen.getByTestId("connections-list").getAttribute("data-labels") ?? "{}",
+    );
+    expect(labels.stripe).toBeTruthy();
+    expect(labels.stripe).not.toBe("Stripe");
+    expect(labels.stripe).toMatch(/agent/i);
+  });
+
+  it("says on the page that neither rail is the other", async () => {
+    renderPanel();
+    await screen.findByText("Ask me first: Moving money");
+    expect(screen.getByText(/this is not an integration/i)).toBeInTheDocument();
+    expect(screen.getByText(/none of them is your company account/i)).toBeInTheDocument();
   });
 });
 

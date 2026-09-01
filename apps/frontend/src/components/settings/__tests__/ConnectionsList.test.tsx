@@ -268,3 +268,42 @@ describe("ConnectionsList — the Projects resources facet", () => {
     expect(screen.getByText(/Set up by your agents/)).toBeInTheDocument();
   });
 });
+
+describe("ConnectionsList — display-name overrides", () => {
+  beforeEach(resetRail);
+
+  // Some pages put this list next to something that shares a provider's brand
+  // name. On the Accounts panel a bare "Stripe" row sits below the company's
+  // own Stripe account, so its "Not connected" reads as a verdict on the
+  // money. The caller relabels the row so a connection status can only ever be
+  // read as being about the agent grant.
+  it("renders the caller's label instead of the server's display name", () => {
+    h.connections = [
+      { provider: "stripe", display_name: "Stripe", acquisition: "direct_oauth", status: "disconnected" },
+    ];
+    render(<ConnectionsList canManage labels={{ stripe: "Stripe for your agents" }} />);
+
+    expect(screen.getByText("Stripe for your agents")).toBeInTheDocument();
+    // The bare brand name must not survive anywhere as a row label.
+    expect(screen.queryByText("Stripe")).toBeNull();
+  });
+
+  it("leaves providers the caller did not name alone", () => {
+    h.connections = [
+      { provider: "stripe", display_name: "Stripe", acquisition: "direct_oauth", status: "disconnected" },
+      { provider: "github", display_name: "GitHub", acquisition: "paste_token", status: "connected" },
+    ];
+    render(<ConnectionsList canManage labels={{ stripe: "Stripe for your agents" }} />);
+
+    expect(screen.getByText("GitHub")).toBeInTheDocument();
+  });
+
+  it("is optional — with no overrides the server's names are used verbatim", () => {
+    h.connections = [
+      { provider: "stripe", display_name: "Stripe", acquisition: "direct_oauth", status: "disconnected" },
+    ];
+    render(<ConnectionsList canManage />);
+
+    expect(screen.getByText("Stripe")).toBeInTheDocument();
+  });
+});

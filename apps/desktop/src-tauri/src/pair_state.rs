@@ -32,7 +32,25 @@ use crate::pair_client::PairResponse;
 /// Current on-disk schema version. Bump when the JSON shape changes; `load`
 /// treats any other version as absent so an old binary never misreads a
 /// newer shape (and vice versa) — the webview pair path just re-pairs.
-const STORE_VERSION: u32 = 1;
+///
+/// 1 -> 2: the shape is UNCHANGED. This bump exists to force exactly that
+/// re-pair, because the SERVER-side command surface changed and there is no
+/// other way to reach an already-paired Mac.
+///
+/// `nodes/paired.json` — the gateway's approval surface — is written only by
+/// `POST /desktop/pair`, and that endpoint is called only from
+/// `bootstrap::run_bootstrap`. Every relaunch after the first replays this
+/// persisted state instead (`lib.rs::start_from_persisted_state`), so an
+/// existing install would never re-pair on its own. It would therefore never
+/// be granted `mcp.tools.call.v1` (local MCP tools would silently not appear —
+/// the gateway filters the node's MCP descriptors out before the agent sees
+/// them, with no error) and would keep filing a capability-upgrade pairing
+/// request on every single reconnect, because the 8.1 node host declares
+/// `caps: ["system","mcp"]` unconditionally.
+///
+/// Discarding this file costs one re-pair round trip on next launch and
+/// nothing else: device identity lives in the Keychain, not here.
+const STORE_VERSION: u32 = 2;
 
 const FILE_NAME: &str = "pair_state.json";
 
@@ -173,6 +191,25 @@ mod tests {
         state.version = STORE_VERSION + 1;
         save(dir.path(), &state).unwrap();
         assert_eq!(load(dir.path()), None);
+    }
+
+    /// The v1 -> v2 bump is the ONLY mechanism that re-pairs an already-paired
+    /// Mac, which is how an existing install is granted `mcp.tools.call.v1`.
+    /// Deliberately a literal `1`, not `STORE_VERSION - 1`: this pins the real
+    /// upgrade path and must keep meaning that even after the next bump.
+    /// The sibling test above only covers a NEWER file (forward-incompat).
+    #[test]
+    fn load_discards_a_v1_file_so_the_mac_re_pairs() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = sample();
+        state.version = 1;
+        save(dir.path(), &state).unwrap();
+        assert_eq!(
+            load(dir.path()),
+            None,
+            "a v1 pair_state must be discarded, or the Mac replays persisted \
+             state forever and never re-pairs"
+        );
     }
 
     #[test]

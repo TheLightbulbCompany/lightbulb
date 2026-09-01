@@ -28,21 +28,21 @@ export class GateError extends Error {
 
 // Auth / authorization
 export const unauthorized = () =>
-  new GateError(401, "UnrecognizedClientException", "isol8: missing or invalid gateway token", "auth_failed");
+  new GateError(401, "UnrecognizedClientException", "Lightbulb: missing or invalid gateway token", "auth_failed");
 export const denied = () =>
-  new GateError(403, "AccessDeniedException", "isol8: access disabled for this account", "denied");
+  new GateError(403, "AccessDeniedException", "Lightbulb: access disabled for this account", "denied");
 export const forbiddenAip = () =>
-  new GateError(403, "AccessDeniedException", "isol8: model not authorized for this account", "aip_forbidden");
+  new GateError(403, "AccessDeniedException", "Lightbulb: model not authorized for this account", "aip_forbidden");
 export const forbiddenOp = () =>
-  new GateError(403, "AccessDeniedException", "isol8: operation not permitted", "op_forbidden");
+  new GateError(403, "AccessDeniedException", "Lightbulb: operation not permitted", "op_forbidden");
 
 // Budget
 export const trialCap = () =>
-  new GateError(429, "ThrottlingException", "isol8: daily free limit reached — resets at midnight UTC", "trial_daily_cap");
+  new GateError(429, "ThrottlingException", "Lightbulb: daily free limit reached — resets at midnight UTC", "trial_daily_cap");
 export const trialExpired = () =>
-  new GateError(429, "ThrottlingException", "isol8: free trial ended — upgrade to keep going", "trial_expired");
+  new GateError(429, "ThrottlingException", "Lightbulb: free trial ended — upgrade to keep going", "trial_expired");
 export const creditExhausted = () =>
-  new GateError(429, "ThrottlingException", "isol8: credit balance exhausted", "credit_exhausted");
+  new GateError(429, "ThrottlingException", "Lightbulb: credit balance exhausted", "credit_exhausted");
 // DISTINCT from creditExhausted on purpose. "Drained their balance" is normal
 // business; "has no ledger at all" is a provisioning failure on our side. They
 // emit different metrics (`gate.credit_exhausted` vs
@@ -53,12 +53,12 @@ export const ledgerUnprovisioned = () =>
   new GateError(
     429,
     "ThrottlingException",
-    "isol8: billing is not set up for this account — contact support@thelightbulb.company",
+    "Lightbulb: billing is not set up for this account — contact support@thelightbulb.company",
     "ledger_unprovisioned",
   );
 
 // Routing / internal
 export const notFound = () =>
-  new GateError(404, "ResourceNotFoundException", "isol8: unknown route", "not_found");
+  new GateError(404, "ResourceNotFoundException", "Lightbulb: unknown route", "not_found");
 export const internal = () =>
-  new GateError(502, "InternalServerException", "isol8: gate error", "gate_error");
+  new GateError(502, "InternalServerException", "Lightbulb: gate error", "gate_error");

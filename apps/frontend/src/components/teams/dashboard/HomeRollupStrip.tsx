@@ -43,10 +43,17 @@ function sum(days: RollupDay[], key: "revenue_microcents" | "signups" | "visitor
  */
 function Sparkline({ values, label }: { values: number[]; label: string }) {
   if (values.length < 2) return null;
-  const max = Math.max(...values, 1);
+  // Revenue CAN be negative: `_read_day` sums balance-transaction `net` over
+  // all transaction types, so a day whose refunds and disputes exceed its
+  // charges is below zero. A `max`-only scale put those points outside the
+  // viewBox, where the SVG clipped them silently — a refund day rendered as a
+  // flat line instead of a drop, which is worse than not drawing it at all.
+  const lo = Math.min(...values, 0);
+  const hi = Math.max(...values, 0);
+  const span = hi - lo || 1;
   const step = 100 / (values.length - 1);
   const points = values
-    .map((v, i) => `${(i * step).toFixed(2)},${(20 - (v / max) * 18).toFixed(2)}`)
+    .map((v, i) => `${(i * step).toFixed(2)},${(19 - ((v - lo) / span) * 18).toFixed(2)}`)
     .join(" ");
   return (
     <svg
@@ -65,6 +72,26 @@ function Sparkline({ values, label }: { values: number[]; label: string }) {
       />
     </svg>
   );
+}
+
+// The backend names unavailable columns by their raw key. A hand-written
+// sentence for today's exact pair ("followers" + "open_threads") is right until
+// the day the list changes, and then it silently drops the new entry or prints
+// `open_threads` at the owner. A label map plus Intl.ListFormat handles every
+// arity and never leaks a snake_case key.
+const UNAVAILABLE_LABELS: Record<string, string> = {
+  followers: "followers",
+  open_threads: "open threads",
+  revenue_microcents: "revenue",
+  signups: "signups",
+  visitors: "visitors",
+};
+
+function formatUnavailable(keys: string[]): string {
+  const names = keys.map((k) => UNAVAILABLE_LABELS[k] ?? k.replace(/_/g, " "));
+  const list = new Intl.ListFormat("en", { style: "long", type: "conjunction" }).format(names);
+  const verb = names.length === 1 ? "isn't" : "aren't";
+  return `${list.charAt(0).toUpperCase()}${list.slice(1)} ${verb} wired up yet.`;
 }
 
 function Tile({
@@ -88,6 +115,10 @@ function Tile({
         <p className="label-caps text-[var(--midnight-muted)]">{label}</p>
         <Icon size={14} strokeWidth={1.75} className="mt-0.5 shrink-0 text-[var(--midnight-muted)]" />
       </div>
+      {/* An unavailable column must not print the computed value. The backend
+          omits the key from days[], so `sum()` coerces it to 0 — and a 0 here
+          is a claim we have not earned, which is the whole point of the
+          `unavailable` list. Say we cannot see it. */}
       <p
         className={
           unavailable
@@ -95,16 +126,18 @@ function Tile({
             : "font-editorial-serif text-2xl tabular-nums leading-none text-[var(--midnight)]"
         }
       >
-        {value}
+        {unavailable ? "Unavailable" : value}
       </p>
-      <p className="mt-1.5 text-xs text-[var(--midnight-muted)]">{caption}</p>
+      <p className="mt-1.5 text-xs text-[var(--midnight-muted)]">
+        {unavailable ? "Not wired up yet" : caption}
+      </p>
       {series && !unavailable && <Sparkline values={series} label={`${label} over the period`} />}
     </div>
   );
 }
 
 export function HomeRollupStrip() {
-  const { rollup, isLoading, error } = useCompanyRollup();
+  const { rollup, isLoading, error, isUnavailable } = useCompanyRollup();
 
   if (isLoading) return null;
 
@@ -145,10 +178,24 @@ export function HomeRollupStrip() {
   const days = rollup.days ?? [];
   const spendCents = microcentsToCents(rollup.agent_spend_month_to_date_microcents ?? 0);
 
+  // `days[]` is SPARSE — the writer returns None and stores nothing when every
+  // source was empty, so absent days are omitted rather than zero-filled. The
+  // sparkline plots ordinally, which means a gap of weeks looks identical to
+  // consecutive days. Rather than pretend otherwise, the caption says how many
+  // days actually carry a reading; plotting against the date is the real fix
+  // and is deferred until the strip is worth a charting dependency.
+  const readingsCaption = days.length
+    ? `${days.length} ${days.length === 1 ? "day" : "days"} with readings`
+    : "No readings yet";
+
   // Label the range from first_day, never from the window we asked for —
   // there is no backfill, so rollups start at the Stripe binding.
   const rangeLabel = rollup.first_day
-    ? `Since ${new Date(rollup.first_day + "T00:00:00Z").toLocaleDateString(undefined, {
+    // Locale pinned: `undefined` resolves the HOST default, so the same date
+    // renders "Aug 30" on one machine and "30 Aug" on another — and a test
+    // asserting either fails on the other runner with a failure that reads as
+    // a date-logic bug.
+    ? `Since ${new Date(rollup.first_day + "T00:00:00Z").toLocaleDateString("en-US", {
         month: "short",
         day: "numeric",
         timeZone: "UTC",
@@ -167,22 +214,25 @@ export function HomeRollupStrip() {
           icon={DollarSign}
           label="Revenue"
           value={formatUsdCents(microcentsToCents(sum(days, "revenue_microcents")))}
-          caption={days.length ? `Across ${days.length} days` : "No readings yet"}
+          caption={readingsCaption}
           series={days.map((d) => d.revenue_microcents)}
+          unavailable={isUnavailable("revenue_microcents")}
         />
         <Tile
           icon={UserPlus}
           label="Signups"
           value={sum(days, "signups").toLocaleString()}
-          caption={days.length ? `Across ${days.length} days` : "No readings yet"}
+          caption={readingsCaption}
           series={days.map((d) => d.signups)}
+          unavailable={isUnavailable("signups")}
         />
         <Tile
           icon={Eye}
           label="Visitors"
           value={sum(days, "visitors").toLocaleString()}
-          caption={days.length ? `Across ${days.length} days` : "No readings yet"}
+          caption={readingsCaption}
           series={days.map((d) => d.visitors)}
+          unavailable={isUnavailable("visitors")}
         />
         {/* Month-to-date, NOT a per-day series — see useCompanyRollup's note.
             There is deliberately no sparkline here: the underlying column is
@@ -200,9 +250,7 @@ export function HomeRollupStrip() {
           owner who sees five tiles and expects seven should be told why. */}
       {rollup.unavailable?.length > 0 && (
         <p className="text-xs text-[var(--midnight-muted)]">
-          {rollup.unavailable.includes("followers") && rollup.unavailable.includes("open_threads")
-            ? "Followers and open threads aren't wired up yet."
-            : `${rollup.unavailable.join(" and ")} aren't wired up yet.`}
+          {formatUnavailable(rollup.unavailable)}
         </p>
       )}
     </section>

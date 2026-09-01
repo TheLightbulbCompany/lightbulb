@@ -22,6 +22,19 @@ const LIVE = {
   unavailable: ["followers", "open_threads"],
 };
 
+/** The hook's full return shape. `isUnavailable` is consulted per tile so a
+ *  column the backend names in `unavailable[]` renders as unavailable rather
+ *  than as a confident 0 — a partial mock silently throws instead. */
+const view = (over: Record<string, unknown>) => ({
+  rollup: undefined,
+  error: undefined,
+  isLoading: false,
+  refresh: vi.fn(),
+  isUnavailable: (key: string) =>
+    ((over.rollup as { unavailable?: string[] } | undefined)?.unavailable ?? []).includes(key),
+  ...over,
+});
+
 beforeEach(() => {
   mockRollup.mockReset();
 });
@@ -30,7 +43,7 @@ describe("HomeRollupStrip honesty", () => {
   it("says we cannot see, rather than showing zeros, when the read fails", () => {
     // A failed read is not zero revenue. Showing $0 here would be a number we
     // have not earned — the exact failure the whole state system exists for.
-    mockRollup.mockReturnValue({ rollup: undefined, error: new Error("boom"), isLoading: false });
+    mockRollup.mockReturnValue(view({ rollup: undefined, error: new Error("boom") }));
     render(<HomeRollupStrip />);
 
     expect(screen.getByText(/couldn't read your business numbers/i)).toBeInTheDocument();
@@ -41,11 +54,9 @@ describe("HomeRollupStrip honesty", () => {
     // Both rollup writers iterate owners with a bound company Stripe account,
     // so an unbound owner has no rows AT ALL — including the columns that have
     // nothing to do with Stripe. Zeros here would claim knowledge we lack.
-    mockRollup.mockReturnValue({
-      rollup: { ...LIVE, stripe_bound: false, days: [], first_day: null },
-      error: undefined,
-      isLoading: false,
-    });
+    mockRollup.mockReturnValue(
+      view({ rollup: { ...LIVE, stripe_bound: false, days: [], first_day: null } }),
+    );
     render(<HomeRollupStrip />);
 
     expect(screen.getByText(/Connect Stripe to see revenue here/i)).toBeInTheDocument();
@@ -55,11 +66,9 @@ describe("HomeRollupStrip honesty", () => {
   it("stays calm when unbound — an unconnected account is healthy, not an incident", () => {
     // system.md: "calm when healthy, loud only on incidents". Every new owner
     // starts here; painting it red would make a working product look broken.
-    mockRollup.mockReturnValue({
-      rollup: { ...LIVE, stripe_bound: false, days: [], first_day: null },
-      error: undefined,
-      isLoading: false,
-    });
+    mockRollup.mockReturnValue(
+      view({ rollup: { ...LIVE, stripe_bound: false, days: [], first_day: null } }),
+    );
     const { container } = render(<HomeRollupStrip />);
     const notice = container.querySelector("[data-panel-notice]")!;
     expect(notice.getAttribute("data-panel-notice")).toBe("unbound");
@@ -69,13 +78,13 @@ describe("HomeRollupStrip honesty", () => {
   it("labels the range from first_day, not from the window requested", () => {
     // There is no backfill: rollups begin at the Stripe binding. Saying
     // "last 30 days" over 2 days of data under-reports without admitting it.
-    mockRollup.mockReturnValue({ rollup: LIVE, error: undefined, isLoading: false });
+    mockRollup.mockReturnValue(view({ rollup: LIVE }));
     render(<HomeRollupStrip />);
     expect(screen.getByText(/Since Aug 30/)).toBeInTheDocument();
   });
 
   it("names the columns it cannot serve instead of showing them as zero", () => {
-    mockRollup.mockReturnValue({ rollup: LIVE, error: undefined, isLoading: false });
+    mockRollup.mockReturnValue(view({ rollup: LIVE }));
     render(<HomeRollupStrip />);
     expect(screen.getByText(/Followers and open threads aren't wired up yet/i)).toBeInTheDocument();
   });
@@ -84,12 +93,83 @@ describe("HomeRollupStrip honesty", () => {
     // The writer stamps the running month total onto each current-month row,
     // so a sparkline would draw a staircase that reads as growth, and a sum
     // would double-count by roughly the number of days elapsed.
-    mockRollup.mockReturnValue({ rollup: LIVE, error: undefined, isLoading: false });
+    mockRollup.mockReturnValue(view({ rollup: LIVE }));
     render(<HomeRollupStrip />);
 
     expect(screen.getByLabelText("Revenue over the period")).toBeInTheDocument();
     expect(screen.queryByLabelText("Agent spend over the period")).not.toBeInTheDocument();
     // ...and it is shown as the scalar it is.
     expect(screen.getByText("Month to date")).toBeInTheDocument();
+  });
+});
+
+describe("HomeRollupStrip honesty — regressions found in review", () => {
+  it("renders an unavailable column as unavailable, never as a confident 0", () => {
+    // `visitors` joins `unavailable[]` for any owner without a PostHog token
+    // (owner_posthog.day_traffic returns None per-owner). The backend then omits
+    // the key from days[], `sum()` coerces it to 0, and the tile would print a
+    // confident zero for a number we cannot see — the exact lie this module
+    // exists to prevent.
+    mockRollup.mockReturnValue(
+      view({
+        rollup: {
+          ...LIVE,
+          unavailable: ["followers", "open_threads", "visitors"],
+          days: [
+            { day: "2026-08-30", revenue_microcents: 1_000_000, signups: 1, visitors: 0 },
+            { day: "2026-08-31", revenue_microcents: 2_000_000, signups: 2, visitors: 0 },
+          ],
+        },
+      }),
+    );
+    render(<HomeRollupStrip />);
+
+    expect(screen.getByText("Unavailable")).toBeInTheDocument();
+    // ...and it must not be plotted as a flat line at zero either.
+    expect(screen.queryByLabelText("Visitors over the period")).not.toBeInTheDocument();
+  });
+
+  it("names every unavailable column, at any arity, without leaking raw keys", () => {
+    mockRollup.mockReturnValue(
+      view({ rollup: { ...LIVE, unavailable: ["followers", "open_threads", "visitors"] } }),
+    );
+    render(<HomeRollupStrip />);
+    // The old hand-written sentence special-cased exactly two entries and
+    // silently dropped any third.
+    expect(
+      screen.getByText(/Followers, open threads, and visitors aren't wired up yet/i),
+    ).toBeInTheDocument();
+  });
+
+  it("says 'isn't' for a single unavailable column, and never prints snake_case", () => {
+    mockRollup.mockReturnValue(view({ rollup: { ...LIVE, unavailable: ["open_threads"] } }));
+    render(<HomeRollupStrip />);
+    expect(screen.getByText(/Open threads isn't wired up yet/i)).toBeInTheDocument();
+    expect(screen.queryByText(/open_threads/)).not.toBeInTheDocument();
+  });
+
+  it("keeps a negative revenue day inside the sparkline's viewBox", () => {
+    // `_read_day` sums balance-transaction `net` over all types, so refunds and
+    // disputes can push a day below zero. A max-only scale mapped those points
+    // outside viewBox="0 0 100 20", where the SVG clipped them silently and a
+    // refund day rendered as a flat line rather than a drop.
+    mockRollup.mockReturnValue(
+      view({
+        rollup: {
+          ...LIVE,
+          days: [
+            { day: "2026-08-30", revenue_microcents: -5_000_000, signups: 0, visitors: 1 },
+            { day: "2026-08-31", revenue_microcents: 1_000_000, signups: 1, visitors: 2 },
+          ],
+        },
+      }),
+    );
+    const { container } = render(<HomeRollupStrip />);
+    const points = container.querySelector("polyline")!.getAttribute("points")!;
+    for (const pair of points.split(" ")) {
+      const y = Number(pair.split(",")[1]);
+      expect(y).toBeGreaterThanOrEqual(0);
+      expect(y).toBeLessThanOrEqual(20);
+    }
   });
 });

@@ -1966,13 +1966,23 @@ function FirstRunFailedNotice({
     "/users/me",
     () => stepperApi.get("/users/me") as Promise<{ provider_choice: string | null }>,
   );
+  // Both reads are async, so on the first render `creditsBlocked` is false
+  // simply because nothing has loaded. Firing the impression then would emit
+  // `cause: "unknown"` for every owner and a second `cause: "credits"` a
+  // moment later — double-counting the failure and under-reporting the
+  // credits share, which is the exact metric this dimension was added to
+  // measure. Wait until both have resolved, then fire once.
+  const creditsResolved = creditsBalance !== undefined && creditsMe !== undefined;
   const creditsBlocked = isCreditsBlocked(creditsBalance, creditsMe?.provider_choice);
+  const captured = useRef(false);
   useEffect(() => {
+    if (!creditsResolved || captured.current) return;
+    captured.current = true;
     capture("first_run_failed_notice_shown", {
       surface: inline ? "cold_start" : "ready",
       cause: creditsBlocked ? "credits" : "unknown",
     });
-  }, [inline, creditsBlocked]);
+  }, [inline, creditsBlocked, creditsResolved]);
   if (dismissed) return null;
   return (
     <div
@@ -1991,10 +2001,18 @@ function FirstRunFailedNotice({
           )}
           <p className={`text-xs text-[var(--midnight-soft)] ${inline ? "" : "mt-1"}`}>
             {creditsBlocked ? (
+              // NOT "she failed BECAUSE you're out of credits". `creditsBlocked`
+              // is read off the balance alone and never looks at `lastError`,
+              // so it is a correlate, not a cause: an owner whose container
+              // genuinely broke (EFS mount, ECS placement, gateway timeout —
+              // all of which reach `bootstrap_state: "failed"`) AND whose
+              // balance is low would be told a falsehood, top up, and see
+              // nothing change. Name the blocker, claim nothing about the
+              // cause, and keep the support exit below for both branches.
               <>
-                Friday couldn&apos;t start because you&apos;re out of Claude
-                credits. Top up and she&apos;ll pick this up — your brief is
-                saved.
+                Your Claude credits are used up, which will stop Friday running.
+                Top up and send her a message — your brief is saved. If she
+                still doesn&apos;t start, contact support.
               </>
             ) : inline ? (
               <>
@@ -2020,27 +2038,39 @@ function FirstRunFailedNotice({
               </p>
             </details>
           )}
-          {creditsBlocked ? (
-            <Link
-              href="/chat?provider=bedrock_claude"
-              className="mt-2 inline-block text-xs font-medium text-[var(--midnight)] underline"
-            >
-              Top up now
-            </Link>
-          ) : (
+          {/* Top up leads when credits are the likely blocker, but support is
+              ALWAYS present: the owner this branch can be wrong about is
+              precisely the one with a genuinely broken container, and they
+              must never be left without a path to a human. */}
+          <div className="mt-2 flex flex-wrap items-center gap-3">
+            {creditsBlocked && (
+              <Link
+                href="/chat?provider=bedrock_claude"
+                onClick={() =>
+                  capture("credits_topup_clicked", {
+                    source: "first_run_failed_notice",
+                    surface: inline ? "cold_start" : "ready",
+                  })
+                }
+                className="text-xs font-medium text-[var(--midnight)] underline"
+              >
+                Top up now
+              </Link>
+            )}
             <a
               href={SUPPORT_MAILTO}
               onClick={() =>
                 capture("support_contact_clicked", {
                   source: "first_run_failed_notice",
                   surface: inline ? "cold_start" : "ready",
+                  cause: creditsBlocked ? "credits" : "unknown",
                 })
               }
-              className="mt-2 inline-block text-xs font-medium text-[var(--midnight)] underline"
+              className="text-xs font-medium text-[var(--midnight)] underline"
             >
               Contact support
             </a>
-          )}
+          </div>
         </div>
         <button
           type="button"

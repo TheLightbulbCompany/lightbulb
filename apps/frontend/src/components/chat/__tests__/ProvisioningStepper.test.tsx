@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { SWRConfig } from "swr";
 import { render, screen, act, fireEvent } from "@testing-library/react";
 import React from "react";
 import { PROVISION_STUCK_MS, PROVISION_TIMEOUT_MS } from "@lightbulb/shared";
@@ -960,6 +961,41 @@ describe("ProvisioningStepper blocked-state rendering", () => {
   // no explanation — the reason was computed, shipped on the contract, and
   // rendered ONLY on the admin page. These pin the owner-facing surface.
   describe("first-run (bootstrap) failure notice", () => {
+    /** A failed first run with a controlled credit balance.
+     *
+     * Renders under its own SWR cache. The file resets `apiGet` between tests
+     * but SWR's cache is global and `useCredits` dedupes for 30s, so an earlier
+     * test's `/users/me` -> {} is served from cache and the mock below is never
+     * consulted — the assertions then fail for a reason that has nothing to do
+     * with the behaviour under test. */
+    const renderFailedNoticeWithCredits = (balance: Record<string, unknown>) => {
+      apiGet.mockImplementation((path: string) => {
+        if (path === "/users/me") return Promise.resolve({ provider_choice: "bedrock_claude" });
+        if (path === "/billing/credits/balance") return Promise.resolve(balance);
+        return Promise.resolve({});
+      });
+      useProvMock.mockReturnValue({
+        phase: "normal",
+        container: {
+          container_status: "running",
+          runtime_phase: "ready",
+          onboarded: true,
+          funnel: { state: "submitted" },
+          bootstrap: { state: "failed", last_error: "chat.error" },
+        },
+        blocked: null,
+        refreshInterval: 3000,
+        refresh: vi.fn(),
+      });
+      return render(
+        <SWRConfig value={{ provider: () => new Map() }}>
+          <ProvisioningStepper>
+            <div>children</div>
+          </ProvisioningStepper>
+        </SWRConfig>,
+      );
+    };
+
     const readyWithBootstrap = (bootstrap: Record<string, unknown>) => {
       useProvMock.mockReturnValue({
         phase: "normal",
@@ -1009,6 +1045,37 @@ describe("ProvisioningStepper blocked-state rendering", () => {
       // `reset_bootstrap_for_retry` is behind require_platform_admin) — a dead
       // button is the same bug in a new costume.
       expect(screen.queryByRole("button", { name: /retry/i })).not.toBeInTheDocument();
+    });
+
+    it("names credits as the blocker but NEVER removes the support exit", async () => {
+      // `creditsBlocked` is read off the balance alone and never looks at
+      // `lastError`, so it is a correlate and not a cause. An owner whose
+      // container genuinely broke AND whose balance is low would be told a
+      // falsehood — so the copy must not claim causation, and the one path to
+      // a human must survive in both branches. Shipping the credits branch
+      // without the support link is the bug this pins.
+      renderFailedNoticeWithCredits({ balance_microcents: 0, balance_dollars: "0", is_exhausted: true });
+
+      expect(await screen.findByText(/Your Claude credits are used up/i)).toBeInTheDocument();
+      // Never asserts WHY the run died.
+      expect(screen.queryByText(/couldn't start because/i)).not.toBeInTheDocument();
+      expect(screen.getByRole("link", { name: /top up now/i })).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: /contact support/i })).toHaveAttribute(
+        "href",
+        "mailto:support@thelightbulb.company",
+      );
+    });
+
+    it("keeps the support-only copy when credits are not the blocker", async () => {
+      renderFailedNoticeWithCredits({
+        balance_microcents: 5_000_000,
+        balance_dollars: "5",
+        is_exhausted: false,
+      });
+
+      expect(await screen.findByText(/her first run didn't get going/i)).toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: /top up now/i })).not.toBeInTheDocument();
+      expect(screen.getByRole("link", { name: /contact support/i })).toBeInTheDocument();
     });
 
     it("still renders when the reason is missing (older row / degraded write)", () => {

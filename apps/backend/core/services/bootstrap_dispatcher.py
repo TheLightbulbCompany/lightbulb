@@ -225,12 +225,28 @@ Failure handling is TWO-TIERED (both bounded by ``bootstrap_attempts``):
   counter) is still the operator's way out. The point is that NO unclassified
   transient can produce a permanent dead end again, whatever its type or text.
 
-If the runtime is not up yet (no running container / no task IP), this
-function does NOTHING -- no dispatch, no partial write, no stale handoff
-token. Per the spec: "If the runtime isn't up at brief-submit, WAIT for the
-next lifecycle transition -- do NOT store a stale handoff token." The next
-caller (a later ``/container/status`` poll observing the runtime come up)
-re-evaluates the same guards from scratch and dispatches then.
+If the runtime is not up yet, this function does NOTHING -- no dispatch, no
+partial write, no stale handoff token. Per the spec: "If the runtime isn't up
+at brief-submit, WAIT for the next lifecycle transition -- do NOT store a
+stale handoff token." The next caller (a later ``/container/status`` poll
+observing the runtime come up) re-evaluates the same guards from scratch and
+dispatches then.
+
+"Up" is TWO conditions, not one. A running container with a task IP is the
+first; the second is that OpenClaw's gateway will actually ADMIT a connect
+(``_gateway_is_ready`` -> ``/readyz``). They are not the same thing, and the
+gap between them is where three of the four owners wedged on 2026-08-30 died:
+ECS-healthy on ``/healthz``, but rejected by connect-admission with "gateway
+starting; retry shortly".
+
+This sits UPSTREAM of both layers above rather than duplicating either. They
+answer "what do we do once the gateway has already turned us away" --
+classification types the rejection transient, and the ``failed``-row backstop
+catches whatever classification missed. This one declines to provoke the
+rejection in the first place: a dispatch is not claimed at all until the
+gateway says it would accept one. The cheapest of the three, because the work
+it avoids is a claim, an attempt increment, and a multi-minute retry ladder
+spent waiting for a boot window we could simply have asked about.
 """
 
 from __future__ import annotations
@@ -241,8 +257,10 @@ import time
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
+import httpx
+
 from core.gateway.connection_pool import GatewayReconnectThrottled
-from core.gateway.operator_rpc import GatewayConnectUnavailableError
+from core.gateway.operator_rpc import GATEWAY_PORT, GatewayConnectUnavailableError
 from core.services.agent_roster import roster_entries
 from core.observability.metrics import put_metric
 from core.repositories.paperclip_repo import BootstrapClaimResult
@@ -267,6 +285,12 @@ MAX_BOOTSTRAP_ATTEMPTS = 5
 # ladder (~3 min of waiting across 9 connect attempts) is sized to outlast
 # that boot window so a normal cold boot never burns a bootstrap attempt.
 _CONNECT_RETRY_DELAYS_S: tuple[float, ...] = (5, 10, 20, 30, 30, 30, 30, 30)
+
+# Timeout for the pre-claim /readyz probe. Short on purpose: this runs inline
+# on a /container/status poll, and a gateway too busy to answer a trivial probe
+# in this budget is not a gateway that should be handed a kickoff either.
+_READYZ_TIMEOUT_S = 3.0
+
 
 # How long a ``dispatched`` claim may sit before a later poll may treat its
 # claimant as DEAD (see the module docstring's staleness rule). Derived from
@@ -375,6 +399,43 @@ def _paperclip_repo():
     from core.repositories.paperclip_repo import PaperclipRepo
 
     return PaperclipRepo(table_name="paperclip-companies")
+
+
+async def _gateway_is_ready(ip: str) -> bool:
+    """Whether OpenClaw's gateway will ADMIT a connect right now.
+
+    ``/readyz`` is driven by ``getStartupPending: isGatewayStartupPending``
+    (fork ``src/gateway/server.impl.ts``), the IDENTICAL predicate
+    ``connect-admission.ts`` rejects on with "gateway starting; retry shortly".
+    So a 200 here is the gateway's own promise that the connect below will not
+    be turned away for that reason -- which is the whole point: three of the
+    four owners wedged on 2026-08-30 died on exactly that rejection, behind a
+    RUNNING, ECS-HEALTHY task. ECS health is a LIVENESS probe against
+    ``/healthz`` (container-stack.ts) and deliberately stays one: ``/readyz``
+    also goes false while the gateway is DRAINING or a channel is unhealthy,
+    so wiring it into the ECS health check would kill healthy containers on a
+    Slack outage. The readiness question belongs to the caller that needs a
+    connect, not to the task's life support.
+
+    Unauthenticated is fine and deliberate: the probe stage runs ahead of
+    gateway auth and answers ``{"ready": bool}`` to anyone, withholding only
+    the subsystem names (``canRevealReadinessDetails``). The status code is
+    all we need.
+
+    FAIL-OPEN on an answer we cannot interpret. 503 and a connection error are
+    the two definitive "no" answers (startup pending, and nothing listening
+    yet -- the boot window). Anything else -- notably a 404 from a container
+    whose image predates the endpoint -- means the probe cannot tell, and
+    blocking on that would strand those owners in ``not_started`` forever with
+    no alarm behind it (W66 only fires on ``failed``). Unknown therefore falls
+    through to the connect-retry ladder, exactly as before this gate existed.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=_READYZ_TIMEOUT_S) as client:
+            status = (await client.get(f"http://{ip}:{GATEWAY_PORT}/readyz")).status_code
+    except Exception:  # noqa: BLE001 — nothing listening yet IS the boot window
+        return False
+    return status != 503
 
 
 async def _ensure_connection_with_retry(pool, owner_id: str, ip: str, token: str) -> None:
@@ -1116,6 +1177,21 @@ async def maybe_dispatch_bootstrap(owner_id: str, *, onboarding: dict | None = N
         # Runtime isn't up yet. Per the spec: wait for the next lifecycle
         # transition (the next caller that observes the runtime is up
         # re-evaluates from scratch) -- do NOT claim/write anything here.
+        return
+
+    # A RUNNING container is NOT a connectable one. The row goes running when
+    # the ECS task starts and the ECS health check passes on /healthz, but
+    # OpenClaw refuses connects until its startup sidecars are up -- so a
+    # dispatch fired in that window is turned away with "gateway starting;
+    # retry shortly". That rejection is now typed transient
+    # (GatewayConnectUnavailableError) and rides the connect-retry ladder, so
+    # it is survivable; asking first makes it unnecessary. Same early return
+    # as "runtime isn't up yet" -- no claim, no attempt burnt, no row write --
+    # so the boot window costs a poll instead of a claimed dispatch spent
+    # sleeping through the ladder, and the next /container/status poll
+    # re-evaluates from scratch.
+    if not await _gateway_is_ready(ip):
+        logger.info("bootstrap_dispatcher: gateway not ready yet for %s -- deferring dispatch", owner_id)
         return
 
     friday_agent_id = await _resolve_default_agent_id(owner_id)

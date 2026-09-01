@@ -49,6 +49,7 @@ from boto3.dynamodb.conditions import Key
 
 from core.auth import is_org_owner_id
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
+from core.observability.metrics import put_metric
 from core.services.status_events import publish_status_changed
 
 logger = logging.getLogger(__name__)
@@ -1716,6 +1717,11 @@ class PaperclipRepo:
             )
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             return False
+        # Emitted HERE, not at the caller, for the same reason the bool is
+        # returned here: this conditional write is the only thing that knows
+        # the transition actually LANDED. A guard-fail above returns before
+        # this line, so a superseded/duplicate observer never double-counts.
+        put_metric("bootstrap.state", dimensions={"status": "delivered"})
         return True
 
     async def mark_bootstrap_failed(
@@ -1775,7 +1781,13 @@ class PaperclipRepo:
                 },
             )
         except table.meta.client.exceptions.ConditionalCheckFailedException:
-            pass
+            return
+        # Same placement rule as mark_bootstrap_delivered: only a landed
+        # transition counts. This is the ONE fleet-wide signal that an owner
+        # submitted a goal and never got an agent response -- W66 alarms on it.
+        # No owner dimension: owner_id is on the metrics denylist by design,
+        # and a fleet count is what an operator acts on.
+        put_metric("bootstrap.state", dimensions={"status": "failed"})
 
     async def rearm_bootstrap_dispatch(
         self, user_id: str, *, onboarding_generation: str, dispatch_id: str, reason: str

@@ -409,6 +409,43 @@ async def test_a_deterministic_failure_gives_up_and_hands_the_funnel_back(env):
     assert env.admin.create_goal.await_count == brief_mod.MAX_DRAIN_FAILURES
 
 
+async def test_rate_limiting_never_burns_a_failure_attempt(env, monkeypatch):
+    """Paperclip 429s are it asking us to come back, not an attempt that
+    failed. They used to cost a budget slot like any other raise, so five of
+    them -- entirely reachable when several new owners seed goals at once --
+    permanently failed a perfectly good brief. The brief must still land."""
+    # The wait is capped, so a hostile header cannot park the task; zero it so
+    # the test does not actually sleep through the honoured hint.
+    monkeypatch.setattr(brief_mod, "_MAX_RATE_LIMIT_WAIT_S", 0)
+    limited = admin_mod.PaperclipApiError(
+        "GET /api/companies/c1/agents -> 429", status_code=429, body="rate limited", retry_after=60
+    )
+    env.admin.list_agents.side_effect = [limited] * (brief_mod.MAX_DRAIN_FAILURES + 1) + [[FRIDAY, ATLAS]]
+
+    await reconcile_pending_brief("user_abc")
+
+    env.repo.record_pending_brief_failure.assert_not_awaited()
+    env.repo.fail_pending_brief.assert_not_awaited()
+    # ...and the brief was fulfilled once the limit cleared.
+    env.admin.create_goal.assert_awaited_once()
+    env.repo.record_onboarding_ids.assert_awaited_once()
+
+
+async def test_a_5xx_still_burns_the_budget(env):
+    """Deliberately NARROWER than ``PaperclipApiError.retryable``, which also
+    covers 5xx. A 429 always clears; a 5xx may be an upstream that never
+    recovers, and the budget is the only thing that ends that -- exempting it
+    would rebuild the silent forever-loop the budget was added to kill."""
+    env.admin.list_agents.side_effect = admin_mod.PaperclipApiError(
+        "GET /api/companies/c1/agents -> 503", status_code=503, body="down"
+    )
+    env.repo.record_pending_brief_failure.side_effect = list(range(1, brief_mod.MAX_DRAIN_FAILURES + 1))
+
+    await reconcile_pending_brief("user_abc")
+
+    env.repo.fail_pending_brief.assert_awaited_once()
+
+
 async def test_not_ready_never_burns_a_failure_attempt(env):
     """Provisioning taking its time is the expected path, not a failure. If
     waiting counted against the budget, a slow provision would exhaust it

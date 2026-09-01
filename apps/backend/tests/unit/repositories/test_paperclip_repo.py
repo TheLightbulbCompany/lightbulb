@@ -1047,6 +1047,45 @@ async def test_mark_bootstrap_failed_fenced_on_dispatch_id(repo):
     assert fetched.bootstrap_last_error is None
 
 
+async def test_terminal_bootstrap_transitions_emit_the_activation_metric(repo):
+    """``bootstrap.state`` is the ONLY fleet-wide signal that an owner
+    submitted a goal and never got an agent response -- the W66 alarm reads
+    the ``failed`` rollup. It is emitted here rather than at the callers
+    because only this conditional write knows the transition LANDED: a
+    guard-fail (a superseded observer, a duplicate terminal) must not be
+    counted, or the alarm reports failures that never happened."""
+    await repo.put(
+        _make_company(
+            user_id="u1", onboarding_generation="01G", funnel_state="submitted", bootstrap_state="not_started"
+        )
+    )
+    _, dispatch_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01G")
+
+    with patch("core.repositories.paperclip_repo.put_metric") as metric:
+        await repo.mark_bootstrap_failed(
+            "u1", onboarding_generation="01G", dispatch_id=dispatch_id, reason="gateway starting; retry shortly"
+        )
+    metric.assert_called_once_with("bootstrap.state", dimensions={"status": "failed"})
+
+    # A guard-fail writes nothing, so it must count nothing.
+    with patch("core.repositories.paperclip_repo.put_metric") as metric:
+        await repo.mark_bootstrap_failed(
+            "u1", onboarding_generation="01G", dispatch_id="stale-dispatch-id", reason="boom"
+        )
+    metric.assert_not_called()
+
+    # The delivered leg, on a fresh generation so the CAS can land.
+    await repo.put(
+        _make_company(
+            user_id="u2", onboarding_generation="01H", funnel_state="submitted", bootstrap_state="not_started"
+        )
+    )
+    _, dispatch_id2 = await repo.claim_bootstrap_dispatch("u2", onboarding_generation="01H")
+    with patch("core.repositories.paperclip_repo.put_metric") as metric:
+        assert await repo.mark_bootstrap_delivered("u2", onboarding_generation="01H", dispatch_id=dispatch_id2) is True
+    metric.assert_called_once_with("bootstrap.state", dimensions={"status": "delivered"})
+
+
 # ---------------------------------------------------------------------------
 # rearm_bootstrap_dispatch (transient-failure retry path)
 # ---------------------------------------------------------------------------

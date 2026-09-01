@@ -9,7 +9,10 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from core.containers.workspace import Workspace
 from core.services.desktop_pair import (
+    DESKTOP_CLI_BROWSER_COMMANDS,
     DESKTOP_CLI_COMMANDS,
+    DESKTOP_CLI_FILE_COMMANDS,
+    DESKTOP_CLI_SHELL_COMMANDS,
     DESKTOP_MAC_COMMANDS,
     DesktopPermissionGrant,
     EfsWorkspaceAdapter,
@@ -40,7 +43,13 @@ def test_cli_commands_include_cross_platform_only():
     assert "system.run" in DESKTOP_CLI_COMMANDS
     assert "browser.proxy" in DESKTOP_CLI_COMMANDS
     assert "file.fetch" in DESKTOP_CLI_COMMANDS
+    assert "mcp.tools.call.v1" in DESKTOP_CLI_COMMANDS
     assert "system.notify" not in DESKTOP_CLI_COMMANDS
+    # A full grant is the three segments in order; anything else silently
+    # reorders what the pairing files hand the gateway.
+    assert DESKTOP_CLI_COMMANDS == (
+        DESKTOP_CLI_SHELL_COMMANDS + DESKTOP_CLI_BROWSER_COMMANDS + DESKTOP_CLI_FILE_COMMANDS
+    )
 
 
 def test_assert_disjoint_raises_on_overlap():
@@ -339,7 +348,7 @@ async def test_pair_desktop_devices_writes_two_paired_entries_flat():
     assert node_paired[result.device_id_mac]["commands"] == list(DESKTOP_MAC_COMMANDS)
     assert node_paired[result.device_id_mac]["caps"] == ["system", "screen"]
     assert node_paired[result.device_id_cli]["commands"] == list(DESKTOP_CLI_COMMANDS)
-    assert node_paired[result.device_id_cli]["caps"] == ["system", "browser", "file"]
+    assert node_paired[result.device_id_cli]["caps"] == ["system", "mcp", "browser", "file"]
     assert node_paired[result.device_id_cli]["platform"] == "macos"
 
 
@@ -388,8 +397,72 @@ async def test_pair_desktop_devices_honors_explicit_permission_groups():
 
     node_paired = workspace.node_paired_state
     assert node_paired[result.device_id_mac]["caps"] == ["system"]
-    assert node_paired[result.device_id_cli]["caps"] == ["browser"]
+    # "system"/"mcp" are unconditional: the node host declares them on every
+    # connect, and an approved set missing a declared cap makes the gateway
+    # file a pending pairing request on every reconnect.
+    assert node_paired[result.device_id_cli]["caps"] == ["system", "mcp", "browser"]
     assert node_paired[result.device_id_cli]["commands"] == ["browser.proxy"]
+
+
+async def test_node_paired_entry_carries_both_local_mcp_gates():
+    """Local MCP on the user's Mac has TWO independent gates in nodes/paired.json
+    that fail in different ways.
+
+    * ``commands`` must carry ``mcp.tools.call.v1``. Without it the gateway
+      drops every node MCP tool descriptor before the agent sees it
+      (gateway/node-plugin-tool-snapshot.ts filters on the node's effective
+      command list) — SILENT: no error, no tool.
+    * ``caps`` must carry ``"mcp"``. The 2026.8.1 node host declares it on
+      every connect, and a declared-but-unapproved cap is a capability upgrade
+      (gateway/node-connect-reconcile.ts ``hasCapabilityUpgrade``), which files
+      a fresh pending pairing request on EVERY reconnect.
+
+    Both live on the node-host entry (clientId ``node-host``) — the Tauri Rust
+    app has no MCP handler.
+    """
+    workspace = _FakeWorkspace(initial={})
+    cli_priv = Ed25519PrivateKey.from_private_bytes(b"\x07" * 32)
+    cli_pubkey = (
+        cli_priv.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+
+    result = await pair_desktop_devices(
+        user_id="user_alice",
+        owner_id="user_alice",
+        display_name_base="Alice Smith",
+        tauri_mac_pubkey=_FIXTURE_PEM,
+        cli_pubkey=cli_pubkey,
+        permissions=DesktopPermissionGrant.full(),
+        workspace=workspace,
+    )
+
+    cli_node = workspace.node_paired_state[result.device_id_cli]
+    assert cli_node["clientId"] == "node-host"
+    assert "mcp.tools.call.v1" in cli_node["commands"]
+    assert "mcp" in cli_node["caps"]
+    # The device-pairing file gates the same command surface; both must agree.
+    assert "mcp.tools.call.v1" in workspace.state[result.device_id_cli]["commands"]
+
+    # The Rust Mac node serves neither, so it must claim neither.
+    mac_node = workspace.node_paired_state[result.device_id_mac]
+    assert mac_node["clientId"] == "openclaw-macos"
+    assert "mcp.tools.call.v1" not in mac_node["commands"]
+    assert "mcp" not in mac_node["caps"]
+
+
+async def test_cli_caps_declare_unconditional_node_host_caps():
+    """Both are approved regardless of grant — see cli_caps()."""
+    assert DesktopPermissionGrant().cli_caps() == ["system", "mcp"]
+    assert DesktopPermissionGrant.full().cli_caps() == ["system", "mcp", "browser", "file"]
+    # A grant that withholds shell still approves them: withholding is what
+    # puts the node in a reconnect pairing-request loop.
+    assert DesktopPermissionGrant(files=True).cli_caps() == ["system", "mcp", "file"]
+    assert DesktopPermissionGrant(files=True).cli_commands() == DESKTOP_CLI_FILE_COMMANDS
 
 
 async def test_pair_desktop_devices_basic_permission_grants_no_remote_commands():
@@ -416,7 +489,7 @@ async def test_pair_desktop_devices_basic_permission_grants_no_remote_commands()
 
     assert result.commands_cli == ()
     assert "screen.snapshot" not in result.commands_mac
-    assert workspace.node_paired_state[result.device_id_cli]["caps"] == []
+    assert workspace.node_paired_state[result.device_id_cli]["caps"] == ["system", "mcp"]
     assert workspace.node_paired_state[result.device_id_cli]["commands"] == []
 
 

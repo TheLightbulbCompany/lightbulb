@@ -83,17 +83,6 @@ DESKTOP_MAC_COMMANDS: tuple[str, ...] = (
     "device.permissions",
 )
 
-DESKTOP_CLI_COMMANDS: tuple[str, ...] = (
-    "system.run",
-    "system.run.prepare",
-    "system.which",
-    "browser.proxy",
-    "file.fetch",
-    "file.write",
-    "dir.list",
-    "dir.fetch",
-)
-
 DESKTOP_MAC_BASE_COMMANDS: tuple[str, ...] = (
     "system.notify",
     "device.info",
@@ -106,6 +95,17 @@ DESKTOP_CLI_SHELL_COMMANDS: tuple[str, ...] = (
     "system.run",
     "system.run.prepare",
     "system.which",
+    # Local MCP servers hosted by the node host on the user's own Mac. Rides
+    # the shell group: upstream puts it in the same DESKTOP_HOST_COMMANDS
+    # bucket as system.run (gateway/node-command-policy.ts), it is served by
+    # the same process, and an MCP server is arbitrary local code by proxy —
+    # the same trust decision the user already made for system.run.
+    #
+    # Omitting it fails SILENTLY: the gateway drops every node MCP tool
+    # descriptor whose command is not in the node's effective command list
+    # (gateway/node-plugin-tool-snapshot.ts `allowedCommands.has(command)`),
+    # so the agent simply never sees the tools. No error anywhere.
+    "mcp.tools.call.v1",
 )
 
 DESKTOP_CLI_BROWSER_COMMANDS: tuple[str, ...] = ("browser.proxy",)
@@ -116,6 +116,29 @@ DESKTOP_CLI_FILE_COMMANDS: tuple[str, ...] = (
     "dir.list",
     "dir.fetch",
 )
+
+# Derived, not hand-copied: a full grant is exactly SHELL + BROWSER + FILE in
+# that order, and cli_commands() below emits the segments in the same order.
+DESKTOP_CLI_COMMANDS: tuple[str, ...] = (
+    DESKTOP_CLI_SHELL_COMMANDS + DESKTOP_CLI_BROWSER_COMMANDS + DESKTOP_CLI_FILE_COMMANDS
+)
+
+# Capabilities the 2026.8.1 node host declares UNCONDITIONALLY in its connect
+# manifest (node-host/runtime.ts `buildManifest`: caps ["system", "mcp", …]).
+#
+# They must be approved unconditionally too. The gateway treats any declared
+# cap missing from the approved set as a capability upgrade and files a fresh
+# pending pairing request on EVERY reconnect
+# (gateway/node-connect-reconcile.ts `hasCapabilityUpgrade`). Withholding the
+# command does not help: `retainFulfilledNodeCapabilities` only drops caps in
+# its CAPABILITY_COMMAND_FAMILIES map (camera/computer/location/screen), and
+# neither "system" nor "mcp" is in it.
+#
+# Approving them costs nothing. Caps are advertisement — used for node
+# discovery/filtering only. Execution is gated separately by
+# `isNodeCommandAllowed` against the node's EFFECTIVE command list
+# (approved ∩ declared), so a cap without its command grants no authority.
+NODE_HOST_DECLARED_CAPS: tuple[str, ...] = ("system", "mcp")
 
 ALLOWED_CLIENT_IDS = {"openclaw-macos", "node-host"}
 
@@ -173,9 +196,10 @@ class DesktopPermissionGrant:
         return caps
 
     def cli_caps(self) -> list[str]:
-        caps: list[str] = []
-        if self.shell:
-            caps.append("system")
+        # NODE_HOST_DECLARED_CAPS is unconditional — see its comment. The
+        # grant-gated caps below come from the node host's PLUGIN manifest, so
+        # they are only ever declared when that plugin is present.
+        caps: list[str] = list(NODE_HOST_DECLARED_CAPS)
         if self.browser:
             caps.append("browser")
         if self.files:

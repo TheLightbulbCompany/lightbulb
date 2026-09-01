@@ -140,7 +140,8 @@ def test_node_command_allowlist_is_identical_across_shapes(monkeypatch, emit_81)
     allow = nodes["commands"]["allow"] if emit_81 else nodes["allowCommands"]
     assert "screen.snapshot" in allow
     assert "system.run" in allow
-    assert len(allow) == 16
+    assert "mcp.tools.call.v1" in allow
+    assert len(allow) == 17
 
 
 # --- target-image derivation ------------------------------------------------

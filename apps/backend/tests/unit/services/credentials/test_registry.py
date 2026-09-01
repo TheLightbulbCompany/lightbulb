@@ -237,3 +237,56 @@ def test_gmail_events_carry_per_event_registration():
     for event_id in ("gmail.poll", "gmail.message"):
         rendered = events[event_id].starter_prompt.format(event_label="L", account="ada@example.com")
         assert "ada@example.com" in rendered
+
+
+# ── Tier 2: the backend-readable REST keys ────────────────────────────────
+#
+# `attio`/`apollo` are MCP OAuth connections the AGENT reaches from inside the
+# container; a backend route cannot. `retain_secret` would not fix that, because
+# the grants are MCP-SCOPED — Attio's is `openid offline_access mcp` while a
+# record read needs `record` + `object configuration` — so retaining that token
+# would retain something that 403s. The REST key is a separate credential.
+#
+# These tests pin the property the whole design exists for. If it regresses,
+# nothing throws: Leads just silently falls back to having no backend data,
+# which reads as "no leads" rather than as a broken credential path.
+
+
+def test_tier2_rest_keys_are_retained_backend_side():
+    from core.services.credentials.registry import all_providers
+    from routers.connections import _retains_secret
+
+    providers = all_providers()
+    for key in ("attio_api", "apollo_api"):
+        p = providers[key]
+        assert p.acquisition == "paste_token", key
+        # `refresh_owner: none` is what makes _retains_secret true. An actor
+        # refresh_owner would hand custody to the container keyring and the
+        # backend would store nothing durable.
+        assert p.refresh_owner == "none", key
+        assert _retains_secret(p) is True, f"{key} must be readable by a backend route"
+
+
+def test_mcp_rows_stay_container_only():
+    """The agent-facing rows must NOT start retaining as a side effect."""
+    from core.services.credentials.registry import all_providers
+    from routers.connections import _retains_secret
+
+    providers = all_providers()
+    for key in ("attio", "apollo"):
+        assert _retains_secret(providers[key]) is False, key
+
+
+def test_paired_providers_never_share_a_bare_name():
+    """Two rows for one vendor with the same label let a status on one read as
+    a status on the other — the confusion #2262 fixes for Stripe. Each pair
+    must say who the credential is for."""
+    from core.services.credentials.registry import all_providers
+
+    providers = all_providers()
+    for agent_key, api_key in (("attio", "attio_api"), ("apollo", "apollo_api")):
+        agent_name = providers[agent_key].display_name
+        api_name = providers[api_key].display_name
+        assert agent_name != api_name
+        assert "agents" in agent_name.lower(), agent_name
+        assert "dashboard" in api_name.lower(), api_name

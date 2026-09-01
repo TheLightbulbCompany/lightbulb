@@ -6,7 +6,7 @@
   "full": "ghcr.io/openclaw/openclaw:2026.5.28",
   "extendedImage": "877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/openclaw-extended",
   "dev": {
-    "tag": "2026.8.1-isol8.2-d60978a"
+    "tag": "2026.8.1-isol8.2-035a60f"
   },
   "prod": {
     "tag": "2026.8.1-isol8.2-d60978a"

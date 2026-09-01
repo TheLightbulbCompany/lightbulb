@@ -18,7 +18,7 @@ the trial cap. There is NO metadata-only mode.
 
 Consequence: every record carries the full request/response bodies, and live
 records were observed containing a tenant's Paperclip API key and gateway JWT
-in plaintext. Treat `/isol8/bedrock-invocation` as a credential-bearing
+in plaintext. Treat `/lightbulb/bedrock-invocation` as a credential-bearing
 surface. Mitigation is the log group's SHORT retention (3 days,
 `bedrock-meter-stack.ts`) — the meter consumes records within seconds and DLQ
 messages embed their own copy of the log event, so nothing re-reads the group

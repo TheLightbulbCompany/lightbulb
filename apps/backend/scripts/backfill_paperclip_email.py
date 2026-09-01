@@ -43,8 +43,8 @@ backfilling without re-running this script.
 Usage::
 
     cd apps/backend
-    DYNAMODB_TABLE_PREFIX=isol8-prod- uv run python -m scripts.backfill_paperclip_email --env prod --dry-run
-    DYNAMODB_TABLE_PREFIX=isol8-prod- uv run python -m scripts.backfill_paperclip_email --env prod
+    DYNAMODB_TABLE_PREFIX=lightbulb-prod- uv run python -m scripts.backfill_paperclip_email --env prod --dry-run
+    DYNAMODB_TABLE_PREFIX=lightbulb-prod- uv run python -m scripts.backfill_paperclip_email --env prod
 
 (``--env`` sets the prefix itself; the explicit env var above is belt-and-braces
 and is overwritten, not merged.) Requires AWS SSO
@@ -287,7 +287,7 @@ def main() -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
-    # Table naming reads DYNAMODB_TABLE_PREFIX, which DEFAULTS TO "isol8-dev-"
+    # Table naming reads DYNAMODB_TABLE_PREFIX, which DEFAULTS TO "lightbulb-dev-"
     # — ENVIRONMENT does not affect it. Set the prefix explicitly, and
     # OVERWRITE rather than setdefault so an inherited dev value in the
     # operator's shell cannot silently point a `--env prod` run at the dev
@@ -298,12 +298,12 @@ def main() -> int:
     # import in this module is function-local for exactly that reason — do not
     # hoist them to the top.
     os.environ["ENVIRONMENT"] = args.env
-    os.environ["DYNAMODB_TABLE_PREFIX"] = f"isol8-{args.env}-"
+    os.environ["DYNAMODB_TABLE_PREFIX"] = f"lightbulb-{args.env}-"
 
     from core.dynamodb import table_name
 
     resolved = table_name("paperclip-companies")
-    expected = f"isol8-{args.env}-paperclip-companies"
+    expected = f"lightbulb-{args.env}-paperclip-companies"
     if resolved != expected:
         logger.error("Table resolution mismatch: got %s, expected %s — refusing to run", resolved, expected)
         return 2

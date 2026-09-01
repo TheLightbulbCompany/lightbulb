@@ -4,25 +4,25 @@ After every `cdk deploy` of the Paperclip stack, run the database
 migrations one-shot ECS task. This task:
 
 1. Connects to the Paperclip Aurora cluster using the CDK-generated
-   master credentials (`isol8-{env}-paperclip-db-credentials`,
+   master credentials (`lightbulb-{env}-paperclip-db-credentials`,
    auto-injected into the container as `PGPASSWORD`).
 2. Creates the `vector` extension if not already present (idempotent —
    safe to re-run).
 3. Runs `pnpm --filter @paperclipai/db migrate` from `/app`, which
    applies any new Drizzle migrations.
 
-The task definition is `isol8-{env}-paperclip-migrate` (CFN output
+The task definition is `lightbulb-{env}-paperclip-migrate` (CFN output
 `PaperclipMigrateTaskDefArn`). It is a **one-shot task** — there is no
 ECS service backing it. Operators must invoke it manually.
 
 ## Prerequisites
 
 - AWS SSO logged in: `aws sso login --profile isol8-admin`
-- The Paperclip stack has been deployed (`isol8-{env}-paperclip`)
+- The Paperclip stack has been deployed (`lightbulb-{env}-paperclip`)
 - Have these values from CFN outputs (or the AWS console):
-  - Cluster ARN — from `isol8-{env}-container` outputs
-  - Two private-subnet IDs — from `isol8-{env}-network` outputs
-  - Paperclip task SG ID — `isol8-{env}-paperclip` output
+  - Cluster ARN — from `lightbulb-{env}-container` outputs
+  - Two private-subnet IDs — from `lightbulb-{env}-network` outputs
+  - Paperclip task SG ID — `lightbulb-{env}-paperclip` output
     `PaperclipTaskSecurityGroupId`
 
 ## Run Command
@@ -34,7 +34,7 @@ just the family — ECS resolves to the latest revision automatically.
 aws ecs run-task \
   --cluster <cluster-arn> \
   --launch-type FARGATE \
-  --task-definition isol8-<env>-paperclip-migrate \
+  --task-definition lightbulb-<env>-paperclip-migrate \
   --network-configuration "awsvpcConfiguration={subnets=[<priv-subnet-1>,<priv-subnet-2>],securityGroups=[<paperclip-task-sg>],assignPublicIp=DISABLED}" \
   --profile isol8-admin --region us-east-1
 ```
@@ -63,7 +63,7 @@ means the run failed — see "Failure Recovery" below.
 While the task is running, or after it stops, stream CloudWatch logs:
 
 ```bash
-aws logs tail /isol8/<env>/paperclip-migrate --follow \
+aws logs tail /lightbulb/<env>/paperclip-migrate --follow \
   --profile isol8-admin --region us-east-1
 ```
 
@@ -76,7 +76,7 @@ runner.
 - **Once on first deploy**, before treating the Paperclip service as
   healthy. The main service starts up immediately on `cdk deploy`, but
   it will hit empty/missing tables until migrations have run.
-- **After every `cdk deploy`** of `isol8-{env}-paperclip` that bumps the
+- **After every `cdk deploy`** of `lightbulb-{env}-paperclip` that bumps the
   Paperclip image tag — a new release may include schema changes.
 
 ## Safety net (when migrate is forgotten)
@@ -94,7 +94,7 @@ serving traffic.
 ```bash
 aws ecs describe-services \
   --cluster <cluster-arn> \
-  --services isol8-<env>-paperclip-server \
+  --services lightbulb-<env>-paperclip-server \
   --query 'services[0].deployments[*].{status:status,rollout:rolloutState,running:runningCount,failed:failureReason}' \
   --profile isol8-admin --region us-east-1
 ```
@@ -108,7 +108,7 @@ force a new deployment so ECS re-applies the latest task definition:
 ```bash
 aws ecs update-service \
   --cluster <cluster-arn> \
-  --service isol8-<env>-paperclip-server \
+  --service lightbulb-<env>-paperclip-server \
   --force-new-deployment \
   --profile isol8-admin --region us-east-1
 ```
@@ -168,7 +168,7 @@ tasks via `--family`:
 ```bash
 aws ecs list-tasks \
   --cluster <cluster-arn> \
-  --family isol8-<env>-paperclip-migrate \
+  --family lightbulb-<env>-paperclip-migrate \
   --desired-status RUNNING \
   --profile isol8-admin --region us-east-1
 ```
@@ -182,7 +182,7 @@ returned ARN to see how far along it is.
    `containers[0].exitCode == 0`.
 2. If `exitCode != 0` or `stoppedReason` is anything other than
    `Essential container in task exited`, pull the CloudWatch logs
-   (`aws logs tail /isol8/<env>/paperclip-migrate`) and read the last
+   (`aws logs tail /lightbulb/<env>/paperclip-migrate`) and read the last
    ~50 lines.
 3. Common log patterns:
    - `connection terminated` / `password authentication failed` — secret

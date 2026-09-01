@@ -380,7 +380,7 @@ def main() -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
-    # Table naming reads DYNAMODB_TABLE_PREFIX, which DEFAULTS to "isol8-dev-"
+    # Table naming reads DYNAMODB_TABLE_PREFIX, which DEFAULTS to "lightbulb-dev-"
     # — ENVIRONMENT does not affect it. An `--env prod` run that scanned dev
     # would report a clean verify for a fleet it never touched, and here the
     # clean verify is the green light to point SES at the new domain. Set the
@@ -391,12 +391,12 @@ def main() -> int:
     # time and core.dynamodb snapshots the prefix at ITS import). Every core.*
     # import in this module is function-local for that reason — do not hoist.
     os.environ["ENVIRONMENT"] = args.env
-    os.environ["DYNAMODB_TABLE_PREFIX"] = f"isol8-{args.env}-"
+    os.environ["DYNAMODB_TABLE_PREFIX"] = f"lightbulb-{args.env}-"
 
     from core.dynamodb import table_name
 
     resolved = table_name("agent-email-addresses")
-    expected = f"isol8-{args.env}-agent-email-addresses"
+    expected = f"lightbulb-{args.env}-agent-email-addresses"
     if resolved != expected:
         logger.error("Table resolution mismatch: got %s, expected %s — refusing to run", resolved, expected)
         return 2

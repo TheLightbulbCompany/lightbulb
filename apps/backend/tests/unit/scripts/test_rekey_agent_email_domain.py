@@ -277,23 +277,23 @@ class TestDryRunAndExitCodes:
 
 class TestTableResolution:
     """The script must touch the table it was ASKED for. DYNAMODB_TABLE_PREFIX
-    defaults to "isol8-dev-" and ENVIRONMENT does not affect it, so an
+    defaults to "lightbulb-dev-" and ENVIRONMENT does not affect it, so an
     `--env prod` run on the dev table would report a clean verify for a fleet
     it never read — and that clean verify is the green light to repoint SES."""
 
     def test_inherited_dev_prefix_cannot_win(self, monkeypatch):
         import os
 
-        monkeypatch.setenv("DYNAMODB_TABLE_PREFIX", "isol8-dev-")
+        monkeypatch.setenv("DYNAMODB_TABLE_PREFIX", "lightbulb-dev-")
         monkeypatch.setattr("sys.argv", ["rekey", "--env", "prod", "--dry-run"])
         with patch("scripts.rekey_agent_email_domain.asyncio.run", return_value=0):
             main()
-        assert os.environ["DYNAMODB_TABLE_PREFIX"] == "isol8-prod-"
+        assert os.environ["DYNAMODB_TABLE_PREFIX"] == "lightbulb-prod-"
 
     def test_refuses_to_run_on_a_table_mismatch(self, monkeypatch):
         monkeypatch.setattr("sys.argv", ["rekey", "--env", "prod", "--dry-run"])
         with (
-            patch("core.dynamodb.table_name", return_value="isol8-dev-agent-email-addresses"),
+            patch("core.dynamodb.table_name", return_value="lightbulb-dev-agent-email-addresses"),
             patch("scripts.rekey_agent_email_domain.asyncio.run") as run_mock,
         ):
             rc = main()
@@ -303,7 +303,7 @@ class TestTableResolution:
     def test_proceeds_when_the_table_resolves_correctly(self, monkeypatch):
         monkeypatch.setattr("sys.argv", ["rekey", "--env", "prod", "--dry-run"])
         with (
-            patch("core.dynamodb.table_name", return_value="isol8-prod-agent-email-addresses"),
+            patch("core.dynamodb.table_name", return_value="lightbulb-prod-agent-email-addresses"),
             patch("scripts.rekey_agent_email_domain.asyncio.run", return_value=0) as run_mock,
         ):
             rc = main()

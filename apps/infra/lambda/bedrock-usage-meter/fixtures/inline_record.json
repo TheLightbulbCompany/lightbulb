@@ -4,7 +4,7 @@
   "timestamp": "2026-06-07T12:00:00Z",
   "accountId": "877352799272",
   "identity": {
-    "arn": "arn:aws:sts::877352799272:assumed-role/isol8-dev-owner-bedrock-org_abc/ecs-task-session"
+    "arn": "arn:aws:sts::877352799272:assumed-role/lightbulb-dev-owner-bedrock-org_abc/ecs-task-session"
   },
   "region": "us-east-1",
   "requestId": "11111111-2222-3333-4444-555555555555",

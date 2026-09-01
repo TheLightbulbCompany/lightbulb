@@ -2,7 +2,7 @@
 
 Custom Docker image extending `ghcr.io/openclaw/openclaw:<UPSTREAM>` with Linux binaries for the bundled skills that need them.
 
-Built and pushed to ECR `isol8/openclaw-extended` by `.github/workflows/build-openclaw-image.yml` on every push to `main` that touches `Dockerfile` or `openclaw-version.json`.
+Built and pushed to ECR `lightbulb/openclaw-extended` by `.github/workflows/build-openclaw-image.yml` on every push to `main` that touches `Dockerfile` or `openclaw-version.json`.
 
 Source registry is **ghcr.io/openclaw/openclaw** (upstream's primary; anonymous pulls work without registry auth). Use the fat (non-slim) variant — it bundles plugin runtime deps so first-use of browser/codex/channels skips a ~6min lazy npm-install on cold start.
 

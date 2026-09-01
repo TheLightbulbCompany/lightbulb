@@ -86,7 +86,7 @@ async def _scan_billing_accounts() -> list[dict]:
 
     resolved = table_name("billing-accounts")
     # Log the table we ACTUALLY read. Table naming comes from
-    # DYNAMODB_TABLE_PREFIX (default "isol8-dev-"), NOT from ENVIRONMENT, so an
+    # DYNAMODB_TABLE_PREFIX (default "lightbulb-dev-"), NOT from ENVIRONMENT, so an
     # --env prod run that failed to set the prefix would quietly scan dev and
     # report "0 need a ledger" — which reads as "prod is clean, safe to deploy
     # the fences" and would lock out every real paid owner on the flip. main()
@@ -197,7 +197,7 @@ def main() -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
-    # Table naming reads DYNAMODB_TABLE_PREFIX, which DEFAULTS TO "isol8-dev-"
+    # Table naming reads DYNAMODB_TABLE_PREFIX, which DEFAULTS TO "lightbulb-dev-"
     # — ENVIRONMENT does not affect it. Setting only ENVIRONMENT made an
     # `--env prod` run scan the DEV table and report "0 need a ledger", i.e. a
     # clean bill of health for a prod fleet it never looked at. Set the prefix
@@ -209,12 +209,12 @@ def main() -> int:
     # import in this module is function-local for exactly that reason — do not
     # hoist them to the top.
     os.environ["ENVIRONMENT"] = args.env
-    os.environ["DYNAMODB_TABLE_PREFIX"] = f"isol8-{args.env}-"
+    os.environ["DYNAMODB_TABLE_PREFIX"] = f"lightbulb-{args.env}-"
 
     from core.dynamodb import table_name
 
     resolved = table_name("billing-accounts")
-    expected = f"isol8-{args.env}-billing-accounts"
+    expected = f"lightbulb-{args.env}-billing-accounts"
     if resolved != expected:
         # Belt and braces: if the prefix did not take (a stale import order, a
         # future refactor), refuse rather than report a confident zero about

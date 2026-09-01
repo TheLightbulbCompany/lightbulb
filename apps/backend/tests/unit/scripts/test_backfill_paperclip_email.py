@@ -63,7 +63,7 @@ class TestPlan:
 class TestTableResolution:
     """The script must scan the table for the env it was ASKED for.
 
-    Table naming reads DYNAMODB_TABLE_PREFIX, which defaults to "isol8-dev-";
+    Table naming reads DYNAMODB_TABLE_PREFIX, which defaults to "lightbulb-dev-";
     ENVIRONMENT does not affect it. An `--env prod` run that scanned the DEV
     table would report a confident all-clear for a fleet it never read — and
     here that all-clear is the green light to move a mailbox, which is a
@@ -79,16 +79,16 @@ class TestTableResolution:
         operator's shell must not silently redirect a prod run."""
         import os
 
-        monkeypatch.setenv("DYNAMODB_TABLE_PREFIX", "isol8-dev-")
+        monkeypatch.setenv("DYNAMODB_TABLE_PREFIX", "lightbulb-dev-")
         monkeypatch.setattr("sys.argv", ["backfill", "--env", "prod", "--dry-run"])
         with patch("scripts.backfill_paperclip_email.asyncio.run", return_value=0):
             main()
-        assert os.environ["DYNAMODB_TABLE_PREFIX"] == "isol8-prod-"
+        assert os.environ["DYNAMODB_TABLE_PREFIX"] == "lightbulb-prod-"
 
     def test_refuses_to_run_on_a_table_mismatch(self, monkeypatch):
         monkeypatch.setattr("sys.argv", ["backfill", "--env", "prod", "--dry-run"])
         with (
-            patch("core.dynamodb.table_name", return_value="isol8-dev-paperclip-companies"),
+            patch("core.dynamodb.table_name", return_value="lightbulb-dev-paperclip-companies"),
             patch("scripts.backfill_paperclip_email.asyncio.run") as run_mock,
         ):
             rc = main()
@@ -98,7 +98,7 @@ class TestTableResolution:
     def test_proceeds_when_the_table_resolves_correctly(self, monkeypatch):
         monkeypatch.setattr("sys.argv", ["backfill", "--env", "prod", "--dry-run"])
         with (
-            patch("core.dynamodb.table_name", return_value="isol8-prod-paperclip-companies"),
+            patch("core.dynamodb.table_name", return_value="lightbulb-prod-paperclip-companies"),
             patch("scripts.backfill_paperclip_email.asyncio.run", return_value=0) as run_mock,
         ):
             rc = main()

@@ -254,7 +254,7 @@ def _emit_metric(name, **properties):
     """Emit a CloudWatch metric via EMF (one JSON log line).
 
     Mirrors the backend's core/observability/metrics.put_metric EMF shape so the
-    meter Lambda's failure metrics land in the same Isol8 namespace. The
+    meter Lambda's failure metrics land in the same LightbulbAI namespace. The
     dimension set is always exactly {service, env}: both function instances
     share the namespace + service name, so the env dimension is what keeps dev
     noise from tripping the prod alarms (each alarm scopes to its env). Extra
@@ -265,7 +265,7 @@ def _emit_metric(name, **properties):
     """
     try:
         dims = {
-            "service": "isol8-bedrock-meter",
+            "service": "lightbulb-bedrock-meter",
             "env": os.environ.get("METER_ENV", "unknown"),
         }
         line = {
@@ -646,9 +646,9 @@ def _add_daily_spend(owner_id, date_key, delta_microcents):
 
 def _owner_role_name(owner_id):
     """The per-owner ECS task role. Mirrors bedrock_aip._owner_role_name — the
-    CDK scopes iam:DeleteRolePolicy to exactly this 'isol8-{env}-owner-bedrock-*'
+    CDK scopes iam:DeleteRolePolicy to exactly this 'lightbulb-{env}-owner-bedrock-*'
     prefix."""
-    return f"isol8-{os.environ['METER_ENV']}-owner-bedrock-{owner_id}"
+    return f"lightbulb-{os.environ['METER_ENV']}-owner-bedrock-{owner_id}"
 
 
 def _service_name(owner_id):
@@ -862,14 +862,14 @@ def _is_foreign_env_gateway(identity_arn):
 
     Both meters see both envs' gateway traffic, because the subscription
     filter cannot actually split them. The filter matches on the role name
-    (``isol8-{env}-bedrock-gate``), but the DEV gate Lambda is defined inside
+    (``lightbulb-{env}-bedrock-gate``), but the DEV gate Lambda is defined inside
     the PROD-named stack, so CDK auto-generated its role as
-    ``isol8-prod-bedrock-gate-GateFnDevServiceRole...``. That name contains
-    the literal ``isol8-prod-bedrock-gate``, so the PROD filter matches DEV
+    ``lightbulb-prod-bedrock-gate-GateFnDevServiceRole...``. That name contains
+    the literal ``lightbulb-prod-bedrock-gate``, so the PROD filter matches DEV
     records.
 
     The session name is the reliable discriminator. For a Lambda, the STS
-    session name is the function name — exactly ``isol8-{env}-bedrock-gate`` —
+    session name is the function name — exactly ``lightbulb-{env}-bedrock-gate`` —
     so the trailing ARN segment carries the true env no matter how the role
     itself was auto-named.
 
@@ -885,15 +885,15 @@ def _is_foreign_env_gateway(identity_arn):
     session = identity_arn.rsplit("/", 1)[-1]
     if not session.endswith("-bedrock-gate"):
         return False
-    return session != f"isol8-{os.environ['METER_ENV']}-bedrock-gate"
+    return session != f"lightbulb-{os.environ['METER_ENV']}-bedrock-gate"
 
 
 def _is_gateway_identity(identity_arn):
     """True iff this record was signed by the per-env GATEWAY role.
 
     Records reach this meter with identity.arn = one of two roles: the per-owner
-    role (``isol8-{env}-owner-bedrock-{owner}``, a direct-invoke owner) or the
-    gateway role (``isol8-{env}-bedrock-gate``, an owner cut over to the
+    role (``lightbulb-{env}-owner-bedrock-{owner}``, a direct-invoke owner) or the
+    gateway role (``lightbulb-{env}-bedrock-gate``, an owner cut over to the
     bedrock-gate). The two markers are distinct substrings, so a direct-owner
     record can never trip the gateway check.
 
@@ -904,7 +904,7 @@ def _is_gateway_identity(identity_arn):
     direct-owner-role record is a non-gatewayed owner the meter legitimately
     counts every time and must NEVER emit the reconcile metric.
     """
-    marker = f"isol8-{os.environ['METER_ENV']}-bedrock-gate"
+    marker = f"lightbulb-{os.environ['METER_ENV']}-bedrock-gate"
     return bool(identity_arn) and marker in identity_arn
 
 

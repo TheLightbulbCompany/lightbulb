@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.config import settings
+from core.observability.metrics import put_metric
 from core.repositories import billing_repo, oauth_state_repo
 from core.services import company_stripe, company_stripe_approval, provision_gate
 from core.services.owner_facts import write_owner_facts
@@ -136,6 +137,14 @@ async def create(auth: Annotated[AuthContext, Depends(get_current_user)]):
                     },
                 )
             account_id = winner
+        else:
+            # A brand-new Stripe Express account was actually minted and bound
+            # here — not the idempotent reuse above (account_id already set,
+            # this whole block skipped), and not an account adopted after
+            # losing a concurrent create race (the `bound is None` branch
+            # above). This is the one signal that a real owner just touched
+            # the live create door for the first time.
+            put_metric("company_stripe.account.created")
         await _sync_status(owner_id, account_id)
         await write_owner_facts(owner_id)
     try:

@@ -1,5 +1,5 @@
 import os
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -62,6 +62,15 @@ def facts(monkeypatch):
     return writer
 
 
+@pytest.fixture(autouse=True)
+def metric(monkeypatch):
+    """put_metric is sync (EMF print, not a network call) — stub it and let
+    each test assert on when the create door actually mints a new account."""
+    emitted = MagicMock()
+    monkeypatch.setattr(mod, "put_metric", emitted)
+    return emitted
+
+
 def test_status_unbound(client):
     with patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})):
         resp = client.get("/api/v1/company/stripe/status")
@@ -111,7 +120,7 @@ def test_disconnect_409_when_unconfigured(client, monkeypatch):
     clear.assert_not_awaited()
 
 
-def test_create_binds_and_returns_link(client, facts):
+def test_create_binds_and_returns_link(client, facts, metric):
     with (
         patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})),
         patch.object(mod.company_stripe, "resolve_company_name", AsyncMock(return_value="Northwind Ceramics")),
@@ -139,9 +148,11 @@ def test_create_binds_and_returns_link(client, facts):
     facts.assert_awaited_once_with("org_a")
     create.assert_awaited_once_with(owner_id="org_a", email="founder@example.com", company_name="Northwind Ceramics")
     bind.assert_awaited_once_with("org_a", account_id="acct_new", source="created")
+    metric.assert_called_once_with("company_stripe.account.created")
 
 
-def test_create_reuses_existing_created_account(client):
+def test_create_reuses_existing_created_account(client, metric):
+    """Idempotent path: no account is minted, so no metric either."""
     row = {"owner_id": "org_a", "company_stripe_account_id": "acct_old", "company_stripe_source": "created"}
     with (
         patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value=row)),
@@ -152,11 +163,13 @@ def test_create_reuses_existing_created_account(client):
     assert resp.status_code == 200
     assert resp.json()["account_id"] == "acct_old"
     create.assert_not_awaited()
+    metric.assert_not_called()
 
 
-def test_create_lost_bind_race_adopts_the_winner(client):
+def test_create_lost_bind_race_adopts_the_winner(client, metric):
     """set_company_stripe_account -> None with a bound row means a concurrent
-    create won; onboard the winner, not our orphan shell."""
+    create won; onboard the winner, not our orphan shell. We didn't mint
+    anything here, so no metric either — the winner's own request emitted it."""
     with (
         patch.object(
             mod.billing_repo,
@@ -183,6 +196,7 @@ def test_create_lost_bind_race_adopts_the_winner(client):
     assert resp.status_code == 200
     assert resp.json()["account_id"] == "acct_winner"
     link.assert_awaited_once_with(account_id="acct_winner")
+    metric.assert_not_called()
 
 
 def test_create_409s_when_there_is_no_billing_row(client):

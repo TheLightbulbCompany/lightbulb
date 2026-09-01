@@ -9,6 +9,20 @@
 //! file is rewritten on every spawn from the in-memory keypair passed in,
 //! and chmod'd to 0o600 so other users on the host can't read the private
 //! key.
+//!
+//! On openclaw 8.1+ that rewrite is a one-time import, not the ongoing
+//! source of truth: the node host migrates this file into its SQLite
+//! `device_identities` row at startup, and thereafter the row wins. If the
+//! rewritten file ever carried DIFFERENT key material than that row, the
+//! migrator throws, `reportMigration` downgrades it to a stderr warning,
+//! and the node silently connects under the OLD identity.
+//!
+//! ponytail: not reachable today — `keychain::load_or_generate` only mints
+//! a key when none exists and `keychain::delete` has no callers, so the
+//! keypair is stable for the life of the install. If key rotation or an
+//! unpair-that-clears-the-Keychain is ever added, this becomes a real
+//! silent-failure path and the fix is to stop writing this file once a
+//! canonical SQLite identity row exists.
 
 use ed25519_dalek::pkcs8::DecodePublicKey;
 use ed25519_dalek::VerifyingKey;
@@ -27,6 +41,48 @@ use crate::log;
 /// orderly stop where possible.
 pub struct SubprocessHandle {
     child: Arc<Mutex<Option<Child>>>,
+}
+
+/// Remove the retired `node.json` node-host config so an 8.1+ sidecar can start.
+///
+/// openclaw 2026.5.28 persisted node-host config to `<state_dir>/node.json`.
+/// 8.1 moved it into SQLite and now HARD-FAILS at startup while that file --
+/// or an interrupted `.doctor-importing` claim -- is still present:
+///
+/// > retired node-host state remains at ...; run `openclaw doctor --fix`
+///
+/// Unlike the device identity, node-host config is NOT in the startup
+/// migration set (`runStartupMigrations` covers device auth, device identity
+/// and exec approvals only), so nothing self-heals it. The node host simply
+/// exits on every launch until the file is gone.
+///
+/// We DELETE rather than migrate, because everything `node.json` carried is
+/// either regenerated or re-supplied by us on the next spawn:
+/// - `nodeId` is a random instance id, NOT the pairing key. The gateway keys
+///   pairing on the device identity (`connectParams.device?.id`), which lives
+///   in the Keychain and is written to `identity/device.json` below.
+/// - `gateway` host/port/tls arrive as `--host`/`--port` from the launcher
+///   shim on every launch.
+/// - `displayName` is re-supplied by the runner's configure call.
+///
+/// Running `openclaw doctor --fix` instead would work, but it also drags in
+/// the agent-DB migration ladder and its 300s budget for no benefit here --
+/// and upstream's macOS app cannot be copied on this point, because it never
+/// materializes a node-host state dir at all (it IS the node, and only spawns
+/// the hidden `openclaw node worker`). We also have no CLI on the user's PATH
+/// to tell them to run.
+///
+/// Unconditional and idempotent: 8.1+ never writes `node.json` back, so this
+/// is a no-op on every launch after the first one following the version bump.
+fn retire_legacy_node_host_config(state_dir: &std::path::Path) -> Result<(), String> {
+    for stale in ["node.json", "node.json.doctor-importing"] {
+        match std::fs::remove_file(state_dir.join(stale)) {
+            Ok(()) => log(&format!("[subprocess] removed retired node-host state: {stale}")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("remove retired {stale}: {e}")),
+        }
+    }
+    Ok(())
 }
 
 /// Write the identity file and spawn the openclaw subprocess.
@@ -53,6 +109,9 @@ pub async fn spawn(
     public_key_pem: &str,
     gateway_token: &str,
 ) -> Result<SubprocessHandle, String> {
+    // 0. Retire the pre-8.1 node-host config file.
+    retire_legacy_node_host_config(&state_dir)?;
+
     // 1. Write OPENCLAW_STATE_DIR/identity/device.json
     let identity_dir = state_dir.join("identity");
     std::fs::create_dir_all(&identity_dir)
@@ -158,5 +217,30 @@ impl SubprocessHandle {
         if let Some(mut child) = guard.take() {
             let _ = child.kill().await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::retire_legacy_node_host_config;
+
+    /// The 8.1 sidecar refuses to start while either legacy file is present,
+    /// and nothing self-heals it — so both must go, and re-running must be safe.
+    #[test]
+    fn removes_legacy_node_host_state_and_is_idempotent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = dir.path();
+        std::fs::write(state.join("node.json"), r#"{"version":1}"#).unwrap();
+        std::fs::write(state.join("node.json.doctor-importing"), "").unwrap();
+        // A file we must not touch.
+        std::fs::write(state.join("openclaw.json"), "{}").unwrap();
+
+        retire_legacy_node_host_config(state).expect("first pass");
+        assert!(!state.join("node.json").exists());
+        assert!(!state.join("node.json.doctor-importing").exists());
+        assert!(state.join("openclaw.json").exists(), "unrelated config must survive");
+
+        // Idempotent: a clean state dir is not an error.
+        retire_legacy_node_host_config(state).expect("second pass");
     }
 }

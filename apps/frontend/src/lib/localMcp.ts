@@ -111,6 +111,15 @@ function validateEntry(name: string, entry: unknown): string | null {
   if (/\s/.test(name)) {
     return `Server name "${name}" can't contain spaces — try "${name.trim().replace(/\s+/g, "-")}".`;
   }
+  // Must be rejected explicitly, not just because the desktop host also
+  // reserves it. `parseLocalMcpConfig` accumulates into a plain `{}`, so
+  // `servers["__proto__"] = entry` sets the object's PROTOTYPE rather than
+  // creating an own property: the server would vanish from the saved config
+  // with no error shown and no entry written. Catch it here so the user gets
+  // a message instead of a silent drop.
+  if (name === "__proto__") {
+    return `Server name "__proto__" is reserved — pick another name.`;
+  }
   if (!isPlainObject(entry)) {
     return `Server "${name}" must be an object.`;
   }

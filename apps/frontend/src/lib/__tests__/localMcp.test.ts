@@ -112,6 +112,23 @@ describe("parseLocalMcpConfig", () => {
     it("rejects an empty key", () => {
       expect(err('{"":{"command":"npx"}}')).toContain("can't be empty");
     });
+
+    // Without an explicit check this is a SILENT DROP, not a visible error:
+    // JSON.parse gives `__proto__` as an own property (no setter invoked), so
+    // it survives Object.entries — but the accumulator is a plain `{}`, so
+    // `servers["__proto__"] = entry` writes the PROTOTYPE and no own property
+    // appears. The user would save a config missing that server, with nothing
+    // shown. Assert the error, and assert the entry never materializes.
+    it("rejects a __proto__ key instead of silently dropping the server", () => {
+      expect(err('{"__proto__":{"command":"npx"}}')).toContain("reserved");
+    });
+
+    it("does not let a __proto__ key reach the saved map", () => {
+      const parsed = parseLocalMcpConfig('{"__proto__":{"command":"npx"},"ok":{"command":"npx"}}');
+      expect(parsed.ok).toBe(false);
+      // Belt and braces: the prototype of a fresh object is untouched.
+      expect(Object.prototype.hasOwnProperty.call({}, "command")).toBe(false);
+    });
   });
 
   describe("shape", () => {

@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from core.gateway.connection_pool import GatewayAuthBackoff, GatewayReconnectThrottled
+from core.gateway.operator_rpc import GatewayConnectUnavailableError
 from core.repositories.paperclip_repo import BootstrapClaimResult
 from core.services import bootstrap_dispatcher
 from core.services.onboarding_brief import FIRST_RUN_NO_BRIEF_MESSAGE, build_first_run_message
@@ -1119,6 +1120,51 @@ async def test_transient_failure_at_attempts_cap_marks_failed_for_real(monkeypat
 
     repo.mark_bootstrap_failed.assert_awaited_once()
     repo.rearm_bootstrap_dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_gateway_startup_window_rides_the_ladder_instead_of_failing(monkeypatch):
+    """The prod defect this fix's first half closes (3 wedged prod owners).
+
+    OpenClaw answers the handshake during its own boot window with UNAVAILABLE
+    / retryable / "gateway starting; retry shortly". That used to arrive as a
+    bare RuntimeError — indistinguishable here from an auth rejection — so the
+    connect ladder was SKIPPED and the row was written `failed` on the FIRST
+    hit, ending that owner's onboarding permanently. It is now its own type, so
+    the ladder (which exists for exactly this boot window) rides it out."""
+    monkeypatch.setattr(bootstrap_dispatcher, "_CONNECT_RETRY_DELAYS_S", (0, 0))
+    onboarding = _onboarding()
+    repo = _fake_repo(onboarding=onboarding)
+    pool = _fake_pool()
+    pool.ensure_connection = AsyncMock(
+        side_effect=[
+            GatewayConnectUnavailableError("Gateway connect failed: gateway starting; retry shortly"),
+            None,
+        ]
+    )
+    _, _, pool, _ = await _run(onboarding, repo=repo, pool=pool)
+
+    assert pool.ensure_connection.await_count == 2
+    pool.send_rpc.assert_awaited_once()
+    repo.mark_bootstrap_failed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_gateway_startup_window_rearms_when_the_ladder_is_spent(monkeypatch):
+    """And when the boot window outlasts the ladder it is a connect-phase
+    TRANSIENT: re-armed for the next poll, not the terminal failed."""
+    monkeypatch.setattr(bootstrap_dispatcher, "_CONNECT_RETRY_DELAYS_S", (0,))
+    onboarding = _onboarding()
+    repo = _fake_repo(onboarding=onboarding)
+    pool = _fake_pool()
+    pool.ensure_connection = AsyncMock(
+        side_effect=GatewayConnectUnavailableError("Gateway connect failed: gateway starting; retry shortly")
+    )
+    _, _, pool, _ = await _run(onboarding, repo=repo, pool=pool)
+
+    repo.rearm_bootstrap_dispatch.assert_awaited_once()
+    repo.mark_bootstrap_failed.assert_not_awaited()
+    pool.send_rpc.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -396,7 +396,7 @@ export function ContainerActionsPanel({
           {(usingCustom || !hasImages) && (
             <Input
               type="text"
-              placeholder={`877352799272.dkr.ecr.${AWS_REGION}.amazonaws.com/isol8/openclaw-extended:<tag>`}
+              placeholder={`877352799272.dkr.ecr.${AWS_REGION}.amazonaws.com/lightbulb/openclaw-extended:<tag>`}
               value={customImageUrl}
               onChange={(e) => setCustomImageUrl(e.target.value)}
               disabled={queueing}

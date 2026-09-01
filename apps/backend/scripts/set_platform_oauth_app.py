@@ -1,6 +1,6 @@
 """Seed (or rotate) a platform OAuth app client in Secrets Manager.
 
-Writes ``isol8/<env>/integrations/platform-oauth/<name>`` — the Isol8-owned
+Writes ``lightbulb/<env>/integrations/platform-oauth/<name>`` — the platform-owned
 OAuth client that platform-app providers (see ``OAuthSpec.platform_app``) use
 for every owner's connect. Reusable ops tool, not a one-shot backfill: run it
 again to rotate the secret after a Meta app-secret reset.
@@ -46,7 +46,7 @@ def main() -> int:
         print("empty client secret — aborting", file=sys.stderr)
         return 1
 
-    secret_name = f"isol8/{args.env}/integrations/platform-oauth/{args.name}"
+    secret_name = f"lightbulb/{args.env}/integrations/platform-oauth/{args.name}"
     payload = json.dumps({"client_id": args.client_id, "client_secret": client_secret})
 
     session = boto3.Session(profile_name=args.profile or None, region_name=args.region)

@@ -199,7 +199,7 @@ def main() -> None:
     ddb = boto3.client("dynamodb", region_name=REGION)
     for uid in plan.ddb_user_ids:
         ddb.delete_item(
-            TableName=f"isol8-{args.env}-paperclip-companies",
+            TableName=f"lightbulb-{args.env}-paperclip-companies",
             Key={"user_id": {"S": uid}},
         )
         print(f"Deleted DDB row {uid}")

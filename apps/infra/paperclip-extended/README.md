@@ -41,7 +41,7 @@ adapter.
 - **Pin:** `paperclip-version.json` at the repo root — `upstream` (the official
   image, by digest), `extendedImage` (our ECR repo), and per-env `dev.tag`/`prod.tag`.
 - **Build:** `.github/workflows/build-paperclip-image.yml` builds this Dockerfile
-  and pushes to ECR `isol8/paperclip-extended` on changes to the Dockerfile or the
+  and pushes to ECR `lightbulb/paperclip-extended` on changes to the Dockerfile or the
   version file. Tag = `<upstream-commit-short>-<repo-commit-short>`. The workflow
   reads `upstream` from the version file and passes it to the Dockerfile as the
   `UPSTREAM_IMAGE` build-arg, so the base `FROM` is sourced from the same single
@@ -53,17 +53,17 @@ adapter.
   broken as before).
 
 ### One-time prerequisite (out-of-band, like `openclaw-extended`)
-The ECR repo `isol8/paperclip-extended` is account-scoped and imported by name (not
+The ECR repo `lightbulb/paperclip-extended` is account-scoped and imported by name (not
 created by CDK). Create it once before the first build/deploy:
 
 ```
-aws ecr create-repository --repository-name isol8/paperclip-extended \
+aws ecr create-repository --repository-name lightbulb/paperclip-extended \
   --image-tag-mutability IMMUTABLE --image-scanning-configuration scanOnPush=true \
   --profile isol8-admin --region us-east-1
 ```
 
 **Pre-grant the builder role's push at the same time.** The build workflow
-pushes as the `isol8-openclaw-image-builder` OIDC role. That role's push grant on
+pushes as the `lightbulb-openclaw-image-builder` OIDC role. That role's push grant on
 this repo is added by `container-stack.ts` (`grantPullPush`) and only lands via the
 `deploy.yml` CDK pipeline. On the introducing merge, `build-paperclip-image`
 (triggered by the Dockerfile / version-file change) races that CDK deploy and the
@@ -73,11 +73,11 @@ push regardless of CDK timing (the CDK identity grant then layers on as the dura
 source of truth):
 
 ```
-aws ecr set-repository-policy --repository-name isol8/paperclip-extended \
+aws ecr set-repository-policy --repository-name lightbulb/paperclip-extended \
   --profile isol8-admin --region us-east-1 \
   --policy-text '{"Version":"2012-10-17","Statement":[{"Sid":"BuilderPush",
     "Effect":"Allow",
-    "Principal":{"AWS":"arn:aws:iam::877352799272:role/isol8-openclaw-image-builder"},
+    "Principal":{"AWS":"arn:aws:iam::877352799272:role/lightbulb-openclaw-image-builder"},
     "Action":["ecr:BatchCheckLayerAvailability","ecr:InitiateLayerUpload",
       "ecr:UploadLayerPart","ecr:CompleteLayerUpload","ecr:PutImage"]}]}'
 ```

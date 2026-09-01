@@ -65,7 +65,7 @@ class TestNeedsBackfill:
 class TestTableResolution:
     """The script must scan the table for the env it was ASKED for.
 
-    Table naming reads DYNAMODB_TABLE_PREFIX, which defaults to "isol8-dev-";
+    Table naming reads DYNAMODB_TABLE_PREFIX, which defaults to "lightbulb-dev-";
     ENVIRONMENT does not affect it. Setting only ENVIRONMENT made an
     `--env prod` run scan the DEV table and report "0 need a ledger" — a clean
     bill of health for a fleet it never looked at, which is precisely the
@@ -85,18 +85,18 @@ class TestTableResolution:
         monkeypatch.setattr("sys.argv", ["backfill", "--env", "prod", "--dry-run"])
         with patch("scripts.backfill_metronome_ledgers.asyncio.run", return_value=0):
             main()
-        assert os.environ["DYNAMODB_TABLE_PREFIX"] == "isol8-prod-"
+        assert os.environ["DYNAMODB_TABLE_PREFIX"] == "lightbulb-prod-"
 
     def test_inherited_dev_prefix_cannot_win(self, monkeypatch):
         """OVERWRITE, not setdefault — a dev prefix already exported in the
         operator's shell must not silently redirect a prod run."""
         import os
 
-        monkeypatch.setenv("DYNAMODB_TABLE_PREFIX", "isol8-dev-")
+        monkeypatch.setenv("DYNAMODB_TABLE_PREFIX", "lightbulb-dev-")
         monkeypatch.setattr("sys.argv", ["backfill", "--env", "prod", "--dry-run"])
         with patch("scripts.backfill_metronome_ledgers.asyncio.run", return_value=0):
             main()
-        assert os.environ["DYNAMODB_TABLE_PREFIX"] == "isol8-prod-"
+        assert os.environ["DYNAMODB_TABLE_PREFIX"] == "lightbulb-prod-"
 
     def test_refuses_to_run_on_a_table_mismatch(self, monkeypatch):
         """If the prefix did not take, REFUSE rather than report a confident
@@ -104,7 +104,7 @@ class TestTableResolution:
         deploy."""
         monkeypatch.setattr("sys.argv", ["backfill", "--env", "prod", "--dry-run"])
         with (
-            patch("core.dynamodb.table_name", return_value="isol8-dev-billing-accounts"),
+            patch("core.dynamodb.table_name", return_value="lightbulb-dev-billing-accounts"),
             patch("scripts.backfill_metronome_ledgers.asyncio.run") as run_mock,
         ):
             rc = main()
@@ -114,7 +114,7 @@ class TestTableResolution:
     def test_proceeds_when_the_table_resolves_correctly(self, monkeypatch):
         monkeypatch.setattr("sys.argv", ["backfill", "--env", "prod", "--dry-run"])
         with (
-            patch("core.dynamodb.table_name", return_value="isol8-prod-billing-accounts"),
+            patch("core.dynamodb.table_name", return_value="lightbulb-prod-billing-accounts"),
             patch("scripts.backfill_metronome_ledgers.asyncio.run", return_value=0) as run_mock,
         ):
             rc = main()

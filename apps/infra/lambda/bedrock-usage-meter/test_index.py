@@ -60,9 +60,9 @@ DEDUP_TABLE = "isol8-dev-bedrock-invocation-dedup"
 GATE_TOKENS_TABLE = "isol8-dev-bedrock-gate-tokens"
 CLUSTER_ARN = "arn:aws:ecs:us-east-1:877352799272:cluster/isol8-dev-container-ClusterEB0386A7-L9MzqPCGDupk"
 
-# A record signed by the per-env GATEWAY role (isol8-dev-bedrock-gate) rather
+# A record signed by the per-env GATEWAY role (lightbulb-dev-bedrock-gate) rather
 # than the per-owner role — the marker _is_gateway_identity keys on.
-GATEWAY_IDENTITY_ARN = "arn:aws:sts::877352799272:assumed-role/isol8-dev-bedrock-gate/gate-session"
+GATEWAY_IDENTITY_ARN = "arn:aws:sts::877352799272:assumed-role/lightbulb-dev-bedrock-gate/gate-session"
 
 OWNER_ITEM = {
     "Item": {
@@ -333,7 +333,7 @@ def test_handler_drops_foreign_env_gateway_without_dlq():
 
     The subscription filter cannot split the two envs: the dev gate Lambda
     lives in the prod-named stack, so its generated role name contains the
-    literal `isol8-prod-bedrock-gate` and the PROD filter matches DEV records.
+    literal `lightbulb-prod-bedrock-gate` and the PROD filter matches DEV records.
     Such a record can never resolve against this env's reverse table, so
     without the guard it DLQs as `unattributed` and looks like a revenue
     miss. METER_ENV is "dev" here, so a prod-gate session is the foreign one.
@@ -343,8 +343,8 @@ def test_handler_drops_foreign_env_gateway_without_dlq():
     record = _load("inline_record.json")
     record["identity"]["arn"] = (
         "arn:aws:sts::877352799272:assumed-role/"
-        "isol8-prod-bedrock-gate-GateFnDevServiceRoleE10163F-t7q3kmHZY2Pl/"
-        "isol8-prod-bedrock-gate"
+        "lightbulb-prod-bedrock-gate-GateFnDevServiceRoleE10163F-t7q3kmHZY2Pl/"
+        "lightbulb-prod-bedrock-gate"
     )
     ingested, dlqd, metrics = [], [], []
 
@@ -374,8 +374,8 @@ def test_handler_own_env_gateway_still_dlqs_when_unattributed():
     record = _load("inline_record.json")
     record["identity"]["arn"] = (
         "arn:aws:sts::877352799272:assumed-role/"
-        "isol8-prod-bedrock-gate-GateFnDevServiceRoleE10163F-t7q3kmHZY2Pl/"
-        "isol8-dev-bedrock-gate"
+        "lightbulb-prod-bedrock-gate-GateFnDevServiceRoleE10163F-t7q3kmHZY2Pl/"
+        "lightbulb-dev-bedrock-gate"
     )
     dlqd, metrics = [], []
 
@@ -1111,7 +1111,7 @@ def test_crossing_the_cap_revokes_iam_and_stops_ecs_exactly_once():
     assert spend == {_utc_today(): under + SONNET_PRICE_MICROCENTS}
 
     iam.delete_role_policy.assert_called_once_with(
-        RoleName="isol8-dev-owner-bedrock-org_abc",
+        RoleName="lightbulb-dev-owner-bedrock-org_abc",
         PolicyName="owner-bedrock",
     )
     ecs.update_service.assert_called_once_with(
@@ -1449,15 +1449,15 @@ def test_gateway_signed_record_already_claimed_by_gateway_skips_without_reconcil
 
 
 def test_owner_role_trial_record_counts_without_reconcile_metric():
-    """The default fixture identity is the per-owner role (isol8-dev-owner-bedrock-*)
+    """The default fixture identity is the per-owner role (lightbulb-dev-owner-bedrock-*)
     — a non-gatewayed owner the meter legitimately counts. It counts, and it
     must NOT emit the reconcile metric (reserved for gateway misses)."""
     import index
 
     record = _load("inline_record.json")
     # Guard: the fixture is genuinely an owner-role identity, not the gateway.
-    assert "isol8-dev-owner-bedrock" in record["identity"]["arn"]
-    assert "isol8-dev-bedrock-gate" not in record["identity"]["arn"]
+    assert "lightbulb-dev-owner-bedrock" in record["identity"]["arn"]
+    assert "lightbulb-dev-bedrock-gate" not in record["identity"]["arn"]
     metrics = []
 
     with (

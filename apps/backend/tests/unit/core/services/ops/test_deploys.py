@@ -10,8 +10,8 @@ async def test_list_stacks_classifies_and_finds_root_cause():
     fake = MagicMock()
     fake.describe_stacks.return_value = {
         "Stacks": [
-            {"StackName": "isol8-dev-service", "StackStatus": "UPDATE_ROLLBACK_COMPLETE", "LastUpdatedTime": None},
-            {"StackName": "isol8-dev-api", "StackStatus": "UPDATE_COMPLETE", "LastUpdatedTime": None},
+            {"StackName": "lightbulb-dev-service", "StackStatus": "UPDATE_ROLLBACK_COMPLETE", "LastUpdatedTime": None},
+            {"StackName": "lightbulb-dev-api", "StackStatus": "UPDATE_COMPLETE", "LastUpdatedTime": None},
             {"StackName": "other-stack", "StackStatus": "CREATE_COMPLETE", "LastUpdatedTime": None},
         ]
     }
@@ -39,10 +39,10 @@ async def test_list_stacks_classifies_and_finds_root_cause():
         rows = await deploys.list_stacks()
 
     by_name = {r["stack_name"]: r for r in rows}
-    # non-isol8 stack filtered out
+    # non-lightbulb stack filtered out
     assert "other-stack" not in by_name
-    assert by_name["isol8-dev-api"]["root_cause"] is None
-    failed = by_name["isol8-dev-service"]
+    assert by_name["lightbulb-dev-api"]["root_cause"] is None
+    failed = by_name["lightbulb-dev-service"]
     assert failed["status"] == "UPDATE_ROLLBACK_COMPLETE"
     # root cause is the failure WITHIN the current operation window, not the old one
     assert failed["root_cause"] == "task failed to start"
@@ -58,7 +58,7 @@ async def test_root_cause_walks_past_rollback_to_real_failure():
     fake = MagicMock()
     fake.describe_stacks.return_value = {
         "Stacks": [
-            {"StackName": "isol8-dev-service", "StackStatus": "UPDATE_ROLLBACK_COMPLETE", "LastUpdatedTime": None},
+            {"StackName": "lightbulb-dev-service", "StackStatus": "UPDATE_ROLLBACK_COMPLETE", "LastUpdatedTime": None},
         ]
     }
     fake.describe_stack_events.return_value = {
@@ -84,7 +84,7 @@ async def test_root_cause_walks_past_rollback_to_real_failure():
 
 
 @pytest.mark.asyncio
-async def test_list_stacks_empty_when_no_isol8_stacks():
+async def test_list_stacks_empty_when_no_lightbulb_stacks():
     fake = MagicMock()
     fake.describe_stacks.return_value = {"Stacks": [{"StackName": "unrelated", "StackStatus": "CREATE_COMPLETE"}]}
     with patch.object(deploys, "_cfn", return_value=fake), patch.object(deploys.settings, "ENVIRONMENT", "dev"):

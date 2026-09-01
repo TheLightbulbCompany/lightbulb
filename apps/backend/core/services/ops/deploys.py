@@ -59,7 +59,7 @@ async def _root_cause(stack_name: str) -> str | None:
 
 
 async def list_stacks() -> list[dict]:
-    prefix = f"isol8-{settings.ENVIRONMENT or 'dev'}-"
+    prefix = f"lightbulb-{settings.ENVIRONMENT or 'dev'}-"
     # describe_stacks() with no StackName enumerates ALL stacks; CloudFormation
     # authorizes that form against the cloudformation:ListStacks IAM action
     # (NOT DescribeStacks). Both grants live on the backend task role.

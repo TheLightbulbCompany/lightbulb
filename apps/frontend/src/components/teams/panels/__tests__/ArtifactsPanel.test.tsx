@@ -33,7 +33,14 @@ vi.mock("@/hooks/useTeamsApi", () => ({
       readPaths.push(path);
       const stub = reads[path];
       if (stub) {
-        if (opts?.keepPreviousData) keptData = stub.data;
+        if (opts?.keepPreviousData) {
+          if (stub.data !== undefined) keptData = stub.data;
+          // SWR keeps serving the PREVIOUS key's data when the new key errors —
+          // the case the Recent view must refuse to render as results.
+          else if (stub.error !== undefined) {
+            return { isLoading: false, mutate, ...stub, data: keptData };
+          }
+        }
         return { data: undefined, isLoading: false, error: undefined, mutate, ...stub };
       }
       if (opts?.keepPreviousData && keptData !== undefined) {
@@ -124,6 +131,7 @@ function group(over: Record<string, unknown> = {}) {
 
 // Flat newest-first read (the default Recent view).
 const RECENT_PATH = "/artifacts?groupBy=none&limit=100";
+const STACK_PATH = "/artifacts?groupBy=task";
 function stubRecent(artifacts: unknown[], nextCursor: string | null = null) {
   reads[RECENT_PATH] = { data: { artifacts, nextCursor }, isLoading: false, error: undefined };
 }
@@ -163,6 +171,16 @@ function expandStack() {
   fireEvent.click(screen.getByTestId("artifact-stack-card"));
 }
 
+// Deleting revalidates the gallery with ONE key filter over every
+// `/teams/artifacts?…` key (see `confirmDelete`) rather than the exact keys the
+// panel happens to be subscribed to. Pull the predicate off the spy so tests
+// assert on what it MATCHES, not on its identity.
+function galleryKeyFilter(): (key?: unknown) => boolean {
+  const call = globalMutate.mock.calls.find(([k]) => typeof k === "function");
+  if (!call) throw new Error("no key-filter mutate call");
+  return call[0] as (key?: unknown) => boolean;
+}
+
 function cardFor(title: string): HTMLElement {
   const card = screen
     .getAllByTestId("artifact-card")
@@ -200,7 +218,7 @@ describe("ArtifactsPanel — Recent view (default)", () => {
     render(<ArtifactsPanel />);
     expect(readPaths).toContain(RECENT_PATH);
     expect(readPaths).not.toContain("/artifacts?groupBy=task");
-    expect(screen.getByRole("heading", { name: "This week" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Past 7 days" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Older" })).toBeInTheDocument();
     expect(screen.getAllByTestId("artifact-card")).toHaveLength(2);
     expect(screen.queryByTestId("artifact-stack-card")).not.toBeInTheDocument();
@@ -587,7 +605,7 @@ describe("ArtifactsPanel — delete", () => {
     // …and the OTHER view's key, which is null-keyed right now: its bound mutate
     // is dead, so the refresh has to go through the global cache or the deleted
     // deliverable is still listed when the owner flips to Recent.
-    expect(globalMutate).toHaveBeenCalledWith(`/teams${RECENT_PATH}`);
+    expect(galleryKeyFilter()(`/teams${RECENT_PATH}`)).toBe(true);
     expect(nullMutate).not.toHaveBeenCalled();
   });
 
@@ -599,9 +617,8 @@ describe("ArtifactsPanel — delete", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
 
     await waitFor(() => expect(del).toHaveBeenCalledWith("/issues/iss_1/documents/plan"));
-    await waitFor(() =>
-      expect(globalMutate).toHaveBeenCalledWith("/teams/artifacts?groupBy=task"),
-    );
+    await waitFor(() => expect(globalMutate).toHaveBeenCalledWith(expect.any(Function)));
+    expect(galleryKeyFilter()(`/teams${STACK_PATH}`)).toBe(true);
     expect(nullMutate).not.toHaveBeenCalled();
   });
 
@@ -783,6 +800,44 @@ describe("ArtifactsPanel \u2014 search", () => {
     vi.useRealTimers();
   });
 
+  it("shows unavailable — not the previous query's cards — when a search fails", () => {
+    vi.useFakeTimers();
+    stubRecent([DOC]);
+    reads[`${RECENT_PATH}&q=plan`] = {
+      data: { artifacts: [DOC], nextCursor: null },
+      isLoading: false,
+      error: undefined,
+    };
+    reads[`${RECENT_PATH}&q=planning`] = {
+      data: undefined,
+      isLoading: false,
+      error: new Error("boom"),
+    };
+    render(<ArtifactsPanel />);
+    const box = screen.getByRole("searchbox", { name: "Search the Library" });
+
+    fireEvent.change(box, { target: { value: "plan" } });
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    expect(screen.getByTestId("artifact-card")).toBeInTheDocument();
+
+    fireEvent.change(box, { target: { value: "planning" } });
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    vi.useRealTimers();
+
+    // `keepPreviousData` still holds the "plan" results. Rendering them here
+    // would claim they matched "planning" — a read failure is never results.
+    expect(screen.queryByTestId("artifact-card")).not.toBeInTheDocument();
+    const notice = screen.getByRole("status");
+    expect(notice).toHaveAttribute("data-panel-notice", "unavailable");
+    expect(
+      within(notice).getByText("We couldn't load the Library right now."),
+    ).toBeInTheDocument();
+  });
+
   it("revalidates the q-suffixed gallery key when a delete happens under a search", async () => {
     vi.useFakeTimers();
     stubRecent([DOC]);
@@ -804,12 +859,17 @@ describe("ArtifactsPanel \u2014 search", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
 
     await waitFor(() => expect(del).toHaveBeenCalledWith("/issues/iss_1/documents/plan"));
-    // The hook is subscribed to the SUFFIXED key; revalidating the bare one
-    // would leave the deleted deliverable on screen until the search changed.
-    await waitFor(() =>
-      expect(globalMutate).toHaveBeenCalledWith(`/teams${RECENT_PATH}&q=pricing`),
-    );
-    expect(globalMutate).toHaveBeenCalledWith("/teams/artifacts?groupBy=task&q=pricing");
+    // Every `q` is its own key. Revalidating only the pair the panel is
+    // subscribed to leaves the deleted deliverable listed under the bare feed
+    // the owner sees the moment they clear the box — so one key filter covers
+    // the whole gallery, and nothing else.
+    await waitFor(() => expect(globalMutate).toHaveBeenCalledWith(expect.any(Function)));
+    const matches = galleryKeyFilter();
+    expect(matches(`/teams${RECENT_PATH}`)).toBe(true);
+    expect(matches(`/teams${RECENT_PATH}&q=pricing`)).toBe(true);
+    expect(matches(`/teams${RECENT_PATH}&q=foo`)).toBe(true);
+    expect(matches(`/teams${STACK_PATH}`)).toBe(true);
+    expect(matches("/teams/issues")).toBe(false);
   });
 });
 

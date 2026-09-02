@@ -24,10 +24,10 @@
 //     prefix; see artifactRouting.ts).
 //   - DELETE — an artifact card's trash icon (and the viewer's Delete button)
 //     runs a confirm-then-delete flow against the correct BFF DELETE endpoint,
-//     then revalidates BOTH gallery keys (through the global SWR cache, so the
-//     view the owner is NOT on refreshes too) and the issue-scoped SWR cache. A
-//     failed delete keeps the confirm dialog open with an error rather than
-//     closing.
+//     then revalidates EVERY gallery key (one key filter over the global SWR
+//     cache, so the view the owner is NOT on — and any other search — refreshes
+//     too) and the issue-scoped SWR cache. A failed delete keeps the confirm
+//     dialog open with an error rather than closing.
 //   - SORT   — a Newest/Oldest control sorts the current view client-side.
 //   - SEARCH — one debounced box, suffixed as `&q=` onto whichever read is
 //     active. It is SERVER-side on purpose: upstream matches a document's BODY,
@@ -166,7 +166,11 @@ export function ArtifactsPanel() {
       : null,
   );
 
-  const recentArtifacts = recent.data?.artifacts ?? [];
+  // A read failure is never rendered as results, retained or otherwise: with
+  // `keepPreviousData` the PREVIOUS query's data survives an error on the new
+  // key, which would list unrelated cards as though they matched the new search.
+  // The By-task reads don't opt into keepPreviousData, so they keep their posture.
+  const recentArtifacts = recent.error ? [] : (recent.data?.artifacts ?? []);
 
   const groups = stackList.data?.groups ?? [];
   const sortedGroups = sortGroupsByUpdated(groups, sort);
@@ -234,20 +238,20 @@ export function ArtifactsPanel() {
     // it. A revalidation hiccup must not reopen the dialog — the delete
     // succeeded.
     //
-    // The two gallery keys go through the GLOBAL cache mutate, not each read's
-    // bound one: only the active view is keyed (the other is null-keyed), and a
-    // bound mutate on a null-keyed hook is a no-op — so the inactive view would
-    // keep serving the deleted deliverable for the read layer's 15s dedupe
-    // window. `expanded` is bound because it is only ever keyed when open.
-    // They carry `qParam` because that is the key the hooks are subscribed to:
-    // revalidating the bare path under an active search refreshes nothing.
+    // The gallery goes through the GLOBAL cache mutate, not each read's bound
+    // one: only the active view is keyed (the other is null-keyed), and a bound
+    // mutate on a null-keyed hook is a no-op — so the inactive view would keep
+    // serving the deleted deliverable for the read layer's 15s dedupe window.
+    // It is SWR's key-filter form rather than the two exact keys, because every
+    // `q` is its own key: deleting under a search and then clearing the box
+    // would otherwise still list the deleted deliverable. The issue-scoped list
+    // is a different resource and stays an exact key.
     setViewing((cur) => (cur && cur.id === artifact.id ? null : cur));
     setPendingDelete(null);
     setDeleting(false);
     const issueListPath = issueListPathForArtifact(artifact);
     void Promise.all([
-      mutateCache(`/teams${RECENT_PATH}${qParam}`),
-      mutateCache(`/teams${STACK_PATH}${qParam}`),
+      mutateCache((key) => typeof key === "string" && key.startsWith("/teams/artifacts?")),
       expandedIssueId ? expanded.mutate() : Promise.resolve(undefined),
       issueListPath ? mutateCache(`/teams${issueListPath}`) : Promise.resolve(undefined),
     ]).catch(() => {});

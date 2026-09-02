@@ -151,7 +151,7 @@ describe("artifactRouting", () => {
     expect(groups.map((x) => x.id)).toEqual(["a", "b"]);
   });
 
-  it("buckets artifacts into This week / Earlier this month / Older by updatedAt", () => {
+  it("buckets artifacts into Past 7 days / Past 30 days / Older by updatedAt", () => {
     const now = Date.parse("2026-09-01T12:00:00Z");
     const mk = (id: string, updatedAt: string) => artifact({ id, updatedAt });
     const out = bucketByRecency(
@@ -164,8 +164,8 @@ describe("artifactRouting", () => {
       now,
     );
     expect(out.map((b) => [b.label, b.artifacts.map((a) => a.id)])).toEqual([
-      ["This week", ["wk"]],
-      ["Earlier this month", ["mo"]],
+      ["Past 7 days", ["wk"]],
+      ["Past 30 days", ["mo"]],
       ["Older", ["old", "bad"]],
     ]);
   });

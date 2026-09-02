@@ -334,8 +334,11 @@ _NAMING_STEP_SENTENCE = (
 # opens with "read BRIEF.md and pick…" and must not repeat it.
 _RESEARCH_BOUND = "Use at most two web searches, then give me the market in five bullets — no report. "
 
-# "three best next moves" is pinned by tests and by the naming-order rule:
-# the company is named BEFORE anything reaches the board.
+# "three best next moves" is pinned by tests and by the naming-order rule.
+# Nothing reaches the board on THIS run — the moves are proposed, not filed —
+# but the name still freezes: the email subdomain is minted by the first send
+# below, and the board's task-key prefix by the first task filed on a later
+# run. So the rename has to land ahead of both.
 _MOVES_STEP = (
     "Then propose my three best next moves, one line each. Do not create any "
     "issues yet — I'll tell you which to start. "

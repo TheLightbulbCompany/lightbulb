@@ -158,6 +158,9 @@ def test_first_run_message_with_brief_leads_with_the_users_ask():
     msg = build_first_run_message("a coffee subscription business")
     assert msg.startswith("I'm starting a coffee subscription business.")
     assert "Read BRIEF.md first" in msg
+    # Order is load-bearing: read the brief, THEN name the company from it —
+    # naming first means naming from nothing.
+    assert msg.index("Read BRIEF.md first") < msg.index("company's name")
     assert "at most two web searches" in msg
     assert "five bullets" in msg
     assert "three best next moves" in msg
@@ -176,6 +179,10 @@ def test_first_run_message_no_brief_falls_back_to_the_you_pick_default():
     assert "pick something promising" in FIRST_RUN_NO_BRIEF_MESSAGE
     assert "three best next moves" in FIRST_RUN_NO_BRIEF_MESSAGE
     assert "I'm watching" in FIRST_RUN_NO_BRIEF_MESSAGE
+    # This path opens with its own "read BRIEF.md and pick…", so the with-brief
+    # path's "Read BRIEF.md first." must not ride along in the shared bounds.
+    assert msg.lower().count("read brief.md") == 1
+    assert build_first_run_message("") == build_first_run_message(None)
     assert build_first_run_message("   ") == build_first_run_message(None)
 
 
@@ -297,7 +304,7 @@ def test_first_run_message_points_at_the_staged_integrations_list(brief):
     # The plumbing is gone: no catalog fetch, no link minting, no browser.
     assert "platform-info" not in msg
     assert "lightbulb-connect.sh" not in msg
-    assert "authorize" not in msg
+    assert "authorize" not in msg.lower()
     assert "Browser panel" not in msg
     # Stripe is stated by BRIEF.md, never requested by Friday on a first run.
     assert "nothing more about Stripe" in msg
@@ -350,7 +357,7 @@ def test_kickoff_ends_by_asking_which_move_to_start():
 
 
 def test_kickoff_never_inlines_an_authorization_header():
-    """Unchanged rationale: OpenClaw redacts `Authorization: Bearer <x>` on the
+    """OpenClaw redacts `Authorization: Bearer <x>` on the
     session-append path including a `$VAR` reference; an agent-typed curl works
     once and poisons the next turn (prod 2026-08-30)."""
     for brief in (None, "an online store that sells handmade candles"):

@@ -23,8 +23,10 @@
 
 import { DollarSign, UserPlus, Eye, Wallet } from "lucide-react";
 import { ApiError } from "@lightbulb/shared";
-import { PanelNotice } from "@/components/teams/shell";
-import { useCompanyRollup, type RollupDay } from "@/hooks/useCompanyRollup";
+import { useState, type ReactNode } from "react";
+import { PanelNotice, PanelTabs } from "@/components/teams/shell";
+import { useCompanyStripeStatus } from "@/components/settings/CompanyStripeSection";
+import { useCompanyRollup, type RollupDay, type RollupSpan } from "@/hooks/useCompanyRollup";
 import { formatUsdCents } from "@/lib/creditAmounts";
 import { handleShellLinkClick, teamsPanelUrl } from "@/lib/shellNav";
 
@@ -37,12 +39,45 @@ function sum(days: RollupDay[], key: "revenue_microcents" | "signups" | "visitor
   return days.reduce((acc, d) => acc + (d[key] ?? 0), 0);
 }
 
+/** `formatUsdCents(-500)` renders "$-5". Revenue is net and can go negative
+ *  (refund days), so the sign goes in front of the currency, typographic minus.
+ *  Escaped, not literal: U+2212 is indistinguishable from a hyphen in source. */
+function formatSignedUsdCents(cents: number): string {
+  return cents < 0 ? `\u2212${formatUsdCents(-cents)}` : formatUsdCents(cents);
+}
+
+/** Locale AND timezone pinned: `undefined` resolves the HOST default, so the
+ *  same date renders "Aug 30" on one machine and "30 Aug" on another — and a
+ *  test asserting either fails on the other runner with a failure that reads
+ *  as a date-logic bug. */
+function formatDay(day: string): string {
+  return new Date(day + "T00:00:00Z").toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+/** Locale pinned — `toLocaleString()` alone renders 1,234 or 1.234 by host. */
+function formatCount(n: number): string {
+  return n.toLocaleString("en-US");
+}
+
 /**
  * A bare polyline. No chart library: this is five to thirty points with no
  * axes, no tooltip and no legend, and pulling in a charting dependency to draw
  * one line would be the kind of thing nobody removes later.
  */
-function Sparkline({ values: raw, label }: { values: number[]; label: string }) {
+function Sparkline({
+  values: raw,
+  label,
+  tall,
+}: {
+  values: number[];
+  label: string;
+  /** The hero's line gets more room; every other tile keeps the hairline. */
+  tall?: boolean;
+}) {
   // `sum()` guards with `?? 0`; without the same coercion here one missing key
   // makes min/max NaN and every coordinate serialises as "NaN,NaN" — the SVG
   // then renders nothing and the tile silently shows a total with no trend.
@@ -66,7 +101,7 @@ function Sparkline({ values: raw, label }: { values: number[]; label: string }) 
       preserveAspectRatio="none"
       role="img"
       aria-label={label}
-      className="mt-2 h-5 w-full"
+      className={tall ? "mt-3 h-8 w-full" : "mt-2 h-5 w-full"}
     >
       <polyline
         points={points}
@@ -86,16 +121,32 @@ function Tile({
   caption,
   series,
   unavailable,
+  hero,
+  href,
+  linkLabel,
 }: {
   icon: typeof DollarSign;
   label: string;
   value: string;
-  caption: string;
+  caption: ReactNode;
   series?: number[];
   unavailable?: boolean;
+  /** Full-width, larger figure, taller sparkline. Revenue only. */
+  hero?: boolean;
+  /** In-shell destination; href stays real for new-tab / middle-click. */
+  href?: string;
+  linkLabel?: string;
 }) {
   return (
-    <div className="rounded-md border border-[var(--edge)] bg-card px-4 py-3">
+    <div
+      aria-label={label}
+      data-hero={hero ? "true" : undefined}
+      className={
+        hero
+          ? "rounded-md border border-[var(--edge)] bg-card px-5 py-4 @3xl:col-span-3"
+          : "rounded-md border border-[var(--edge)] bg-card px-4 py-3"
+      }
+    >
       <div className="mb-1.5 flex items-start justify-between gap-2">
         <p className="label-caps text-[var(--midnight-muted)]">{label}</p>
         <Icon size={14} strokeWidth={1.75} className="mt-0.5 shrink-0 text-[var(--midnight-muted)]" />
@@ -108,7 +159,9 @@ function Tile({
         className={
           unavailable
             ? "font-editorial-serif text-lg italic leading-none text-[var(--midnight-muted)]"
-            : "font-editorial-serif text-2xl tabular-nums leading-none text-[var(--midnight)]"
+            : hero
+              ? "font-editorial-serif text-4xl @md:text-5xl tabular-nums leading-none text-[var(--midnight)]"
+              : "font-editorial-serif text-2xl tabular-nums leading-none text-[var(--midnight)]"
         }
       >
         {unavailable ? "Unavailable" : value}
@@ -116,13 +169,49 @@ function Tile({
       <p className="mt-1.5 text-xs text-[var(--midnight-muted)]">
         {unavailable ? "Not wired up yet" : caption}
       </p>
-      {series && !unavailable && <Sparkline values={series} label={`${label} over the period`} />}
+      {series && !unavailable && (
+        <Sparkline values={series} label={`${label} over the period`} tall={hero} />
+      )}
+      {href && linkLabel && (
+        <a
+          href={href}
+          // Keeps the jump in-shell (preventDefault + pushState) while the
+          // href stays a real URL for new-tab / middle-click.
+          onClick={(e) => handleShellLinkClick(e, href)}
+          className="mt-2.5 inline-block label-caps text-[var(--midnight)] underline-offset-4 hover:underline"
+        >
+          {linkLabel} →
+        </a>
+      )}
     </div>
   );
 }
 
-export function HomeRollupStrip() {
-  const { rollup, isLoading, error, isUnavailable } = useCompanyRollup();
+const SPANS: { value: string; label: string }[] = [
+  { value: "7", label: "7d" },
+  { value: "30", label: "30d" },
+  { value: "90", label: "90d" },
+];
+
+/** "$40 in the previous 30 days" when the previous period is fully inside the
+ *  readings; otherwise say when readings began — never a zero for days that
+ *  were never measured (there is no backfill). */
+function comparison(
+  prevSum: number | null,
+  span: number,
+  firstDay: string | null,
+  fmt: (n: number) => string,
+): string {
+  if (prevSum !== null) return `${fmt(prevSum)} in the previous ${span} days`;
+  return firstDay ? `Readings began ${formatDay(firstDay)}` : `No reading for the previous ${span} days`;
+}
+
+export function HomeRollupStrip({ spendCents }: { spendCents: number | null }) {
+  const [span, setSpan] = useState<RollupSpan>(30);
+  const { rollup, windowStart, isLoading, error, isUnavailable } = useCompanyRollup(span);
+  // Deduped with Accounts' read of the same key. Only `details_submitted` is
+  // consulted, and only when there are no rows — rows win (moneyView's rule).
+  const { data: stripeStatus } = useCompanyStripeStatus();
 
   // `/company/rollup` calls require_org_admin, so an ordinary org member 403s
   // forever. Telling them it is temporary and to check back sends them to wait
@@ -130,7 +219,7 @@ export function HomeRollupStrip() {
   // that cannot succeed.
   if (error instanceof ApiError && error.status === 403) return null;
 
-  if (isLoading && !rollup) return <div className="h-[132px]" aria-hidden="true" />;
+  if (isLoading && !rollup) return <div className="h-[220px]" aria-hidden="true" />;
 
   // `error && !rollup`, NOT `error || !rollup`: SWR keeps `data` and sets
   // `error` when a REVALIDATION fails, so the wider guard threw away numbers
@@ -170,23 +259,17 @@ export function HomeRollupStrip() {
     );
   }
 
-  const days = rollup.days ?? [];
-  const spendCents = microcentsToCents(rollup.agent_spend_month_to_date_microcents ?? 0);
-
-  // Bound minutes ago: `stripe_bound: true` with no rows, because the hourly
-  // writer has not run and there is no backfill. Rendering the tiles here put
-  // "$0" beside a range label reading "No readings yet" — two contradictory
-  // statements on one strip, and three numbers we had not earned.
-  if (!days.length) {
-    return (
-      <PanelNotice
-        state="zero"
-        icon={DollarSign}
-        headline="No readings yet."
-        supporting="Your Stripe account is connected. The first daily reading lands within the hour."
-      />
-    );
-  }
+  // The hook asks for 2 × span so the tail of the range IS the previous
+  // period. Summing everything it returns under a "last 30 days" heading
+  // would report sixty days as thirty, so the split is not optional.
+  const all = rollup.days ?? [];
+  const days = all.filter((d) => d.day >= windowStart);
+  const previous = all.filter((d) => d.day < windowStart);
+  // A previous-period figure is only honest when readings cover that whole
+  // period: first_day at or before the 2×-window start.
+  const previousCovered = !!rollup.first_day && rollup.first_day <= rollup.start;
+  const prev = (k: "revenue_microcents" | "signups" | "visitors") =>
+    previousCovered ? sum(previous, k) : null;
 
   // `days.length > 0` is NOT the same as "there is activity to show". The
   // live dev payload was three rows present, every value a real 0, visitors
@@ -208,72 +291,101 @@ export function HomeRollupStrip() {
   const anyReading = served.some((k) => days.some((d) => (d[k] ?? 0) !== 0));
   // Agent spend is part of "did anything happen". A pre-revenue company has
   // zero sales and real costs — collapsing to "nothing to report" would hide
-  // the one number that owner most needs to see.
-  const nothingHappened = !anyReading && spendCents === 0;
-  if (nothingHappened) {
-    return (
-      <PanelNotice
-        state="zero"
-        icon={DollarSign}
-        headline={`Nothing to report yet across ${days.length} ${days.length === 1 ? "day" : "days"} of readings.`}
-        supporting="Stripe is connected and reporting; there just hasn't been a sale or a signup in the window. The strip fills in from the first one."
-      />
-    );
-  }
+  // the one number that owner most needs to see. `null` is "we cannot see it",
+  // which is not the same as zero and must not keep the tiles alive.
+  const spendKnown = spendCents !== null && spendCents !== 0;
 
+  // Label the range from first_day, never from the window we asked for —
+  // there is no backfill, so rollups start at the Stripe binding.
+  const rangeLabel =
+    rollup.first_day && rollup.first_day > windowStart
+      ? `Since ${formatDay(rollup.first_day)}`
+      : `Last ${span} days`;
   // `days[]` is SPARSE — the writer returns None and stores nothing when every
   // source was empty, so absent days are omitted rather than zero-filled. The
   // sparkline plots ordinally, which means a gap of weeks looks identical to
   // consecutive days. Rather than pretend otherwise, the caption says how many
   // days actually carry a reading; plotting against the date is the real fix
   // and is deferred until the strip is worth a charting dependency.
-  const readingsCaption = days.length
-    ? `${days.length} ${days.length === 1 ? "day" : "days"} with readings`
-    : "No readings yet";
+  const readings = `${days.length} ${days.length === 1 ? "day" : "days"} with readings`;
 
-  // Label the range from first_day, never from the window we asked for —
-  // there is no backfill, so rollups start at the Stripe binding.
-  const rangeLabel = rollup.first_day
-    // Locale pinned: `undefined` resolves the HOST default, so the same date
-    // renders "Aug 30" on one machine and "30 Aug" on another — and a test
-    // asserting either fails on the other runner with a failure that reads as
-    // a date-logic bug.
-    ? `Since ${new Date(rollup.first_day + "T00:00:00Z").toLocaleDateString("en-US", {
-        month: "short",
-        day: "numeric",
-        timeZone: "UTC",
-      })}`
-    : "No readings yet";
-
-  return (
-    <section aria-label="Business summary" className="flex flex-col gap-2">
-      <div className="flex items-baseline justify-between gap-3">
-        <p className="label-caps text-[var(--midnight-muted)]">Business</p>
-        <p className="text-xs text-[var(--midnight-muted)]">{rangeLabel}</p>
-      </div>
-
-      {/* Container queries, not viewport breakpoints: this strip renders inside
-          a dock pane that is often half the viewport (a browser panel sits
-          beside it). With `lg:grid-cols-4`, a narrow pane still got four
-          columns and "Unavailable" truncated to "Unavailab". The container
-          is InlineTeamsPanel's wrapper, the same one DashboardPanel's own
-          `@md:`/`@4xl:` tiles resolve against. */}
-      <div className="grid grid-cols-2 gap-2 @3xl:grid-cols-4">
+  let body: ReactNode;
+  // Bound but unonboarded: Stripe returns legitimately empty for an account
+  // with `details_submitted: false`, so "nothing happened yet" would send the
+  // owner to wait for money that cannot arrive. Only consulted with no rows —
+  // a reading beats a status flag.
+  if (!all.length && stripeStatus?.details_submitted === false) {
+    body = (
+      <PanelNotice
+        state="partial"
+        icon={DollarSign}
+        headline="Finish your Stripe setup to start receiving payments."
+        supporting="Your account is connected but Stripe hasn't finished onboarding it, so nothing can land here yet."
+        href={teamsPanelUrl("accounts")}
+        action={{
+          label: "Finish setup",
+          onClick: (e) => handleShellLinkClick(e, teamsPanelUrl("accounts")),
+        }}
+      />
+    );
+  } else if (!all.length) {
+    // Bound minutes ago: `stripe_bound: true` with no rows, because the hourly
+    // writer has not run and there is no backfill. Rendering the tiles here put
+    // "$0" beside a range label reading "No readings yet" — two contradictory
+    // statements on one strip, and three numbers we had not earned.
+    body = (
+      <PanelNotice
+        state="zero"
+        icon={DollarSign}
+        headline="No readings yet."
+        supporting="Your Stripe account is connected. The first daily reading lands within the hour."
+      />
+    );
+  } else if (!anyReading && !spendKnown) {
+    body = (
+      <PanelNotice
+        state="zero"
+        icon={DollarSign}
+        headline={`Nothing to report in the last ${span} days.`}
+        supporting="Stripe is connected and reporting; there just hasn't been a sale or a signup in the window. The tiles fill in from the first one."
+      />
+    );
+  } else {
+    body = (
+      // Container queries, not viewport breakpoints: this strip renders inside
+      // a dock pane that is often half the viewport (a browser panel sits
+      // beside it). With `lg:grid-cols-4`, a narrow pane still got four
+      // columns and "Unavailable" truncated to "Unavailab". The container
+      // is InlineTeamsPanel's wrapper, the same one DashboardPanel's own
+      // `@md:`/`@4xl:` tiles resolve against.
+      <div className="grid grid-cols-1 gap-2 @3xl:grid-cols-3">
         <Tile
+          hero
           icon={DollarSign}
           label="Revenue"
-          value={formatUsdCents(microcentsToCents(sum(days, "revenue_microcents")))}
-          caption={readingsCaption}
+          value={formatSignedUsdCents(microcentsToCents(sum(days, "revenue_microcents")))}
+          caption={comparison(
+            prev("revenue_microcents") === null
+              ? null
+              : microcentsToCents(prev("revenue_microcents")!),
+            span,
+            rollup.first_day,
+            formatSignedUsdCents,
+          )}
           series={days.map((d) => d.revenue_microcents)}
           unavailable={isUnavailable("revenue_microcents")}
+          href={teamsPanelUrl("payments")}
+          linkLabel="Open Payments"
         />
         <Tile
           icon={UserPlus}
           label="Signups"
-          value={sum(days, "signups").toLocaleString()}
-          caption={readingsCaption}
+          value={formatCount(sum(days, "signups"))}
+          caption={comparison(prev("signups"), span, rollup.first_day, formatCount)}
           series={days.map((d) => d.signups)}
           unavailable={isUnavailable("signups")}
+          href={teamsPanelUrl("customers")}
+          linkLabel="Open Customers"
         />
         {/* The backend's `unavailable` is owner-derived: an owner
             with no PostHog connection has `visitors` omitted from days[]
@@ -291,22 +403,52 @@ export function HomeRollupStrip() {
         <Tile
           icon={Eye}
           label="Visitors"
-          value={sum(days, "visitors").toLocaleString()}
-          caption={isUnavailable("visitors") ? readingsCaption : "From your PostHog"}
+          value={formatCount(sum(days, "visitors"))}
+          caption={`From your PostHog · ${comparison(prev("visitors"), span, rollup.first_day, formatCount)}`}
           series={days.map((d) => d.visitors)}
           unavailable={isUnavailable("visitors")}
+          href={isUnavailable("visitors") ? teamsPanelUrl("accounts") : undefined}
+          linkLabel={isUnavailable("visitors") ? "Connect PostHog" : undefined}
         />
-        {/* Month-to-date, NOT a per-day series — see useCompanyRollup's note.
-            There is deliberately no sparkline here: the underlying column is
-            the running month total stamped on every row, so plotting it would
-            draw a staircase that looks like growth. */}
+        {/* Billed spend from Metronome via /teams/dashboard.costs — the figure
+            Spend prints. `null` = the backend omitted the block (OAuth, BYOK,
+            trial, non-admin member, or a resolver failure); "Not shown" is the
+            honest word, never $0. No sparkline: it is a month scalar. */}
         <Tile
           icon={Wallet}
           label="Agent spend"
-          value={formatUsdCents(spendCents)}
-          caption="Month to date"
+          value={spendCents === null ? "Not shown" : formatUsdCents(spendCents)}
+          caption={spendCents === null ? "Open Spend for what your plan meters" : "Billed this month"}
+          href={teamsPanelUrl("spend")}
+          linkLabel="Open Spend"
         />
       </div>
+    );
+  }
+
+  return (
+    <section aria-label="Business summary" className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="label-caps text-[var(--midnight-muted)]">Business</p>
+        <div className="flex items-center gap-3">
+          {/* Two spans, not one interpolated string: the range and the
+              reading count are separate facts, and a reader (or a test)
+              looking for the range should not have to parse a separator
+              out of the middle of a sentence. */}
+          <p className="text-xs text-[var(--midnight-muted)]">
+            <span>{rangeLabel}</span>
+            {!!all.length && <> · {readings}</>}
+          </p>
+          <PanelTabs
+            variant="pill"
+            ariaLabel="Period"
+            tabs={SPANS}
+            value={String(span)}
+            onValueChange={(v) => setSpan(Number(v) as RollupSpan)}
+          />
+        </div>
+      </div>
+      {body}
 
       {/* Deliberately NOT listing rollup.unavailable here. It is the fixed
           constant ["followers","open_threads"], so the line rendered for every

@@ -24,8 +24,10 @@
 //     prefix; see artifactRouting.ts).
 //   - DELETE — an artifact card's trash icon (and the viewer's Delete button)
 //     runs a confirm-then-delete flow against the correct BFF DELETE endpoint,
-//     then revalidates BOTH the gallery and the issue-scoped SWR cache. A failed
-//     delete keeps the confirm dialog open with an error rather than closing.
+//     then revalidates BOTH gallery keys (through the global SWR cache, so the
+//     view the owner is NOT on refreshes too) and the issue-scoped SWR cache. A
+//     failed delete keeps the confirm dialog open with an error rather than
+//     closing.
 //   - SORT   — a Newest/Oldest control sorts the current view client-side.
 //
 // Deferred (follow-up): kind facets, cursor pagination, and lazy image-thumbnail
@@ -58,6 +60,7 @@ import type {
 export type LibraryView = "recent" | "by-task";
 
 const RECENT_PATH = "/artifacts?groupBy=none&limit=100";
+const STACK_PATH = "/artifacts?groupBy=task";
 
 function SortControl({
   sort,
@@ -124,7 +127,7 @@ export function ArtifactsPanel() {
   // Stack list — groupBy=task clusters deliverables under the issue that produced
   // them (the ported grouped shape, not a flat firehose).
   const stackList = read<CompanyArtifactsResponse>(
-    view === "by-task" ? "/artifacts?groupBy=task" : null,
+    view === "by-task" ? STACK_PATH : null,
   );
   // Expanded stack — a conditional (null-keyed) read until a stack is opened.
   const expanded = read<CompanyArtifactsResponse>(
@@ -200,13 +203,19 @@ export function ArtifactsPanel() {
     // that also holds it (separate SWR caches) so the task detail stops showing
     // it. A revalidation hiccup must not reopen the dialog — the delete
     // succeeded.
+    //
+    // The two gallery keys go through the GLOBAL cache mutate, not each read's
+    // bound one: only the active view is keyed (the other is null-keyed), and a
+    // bound mutate on a null-keyed hook is a no-op — so the inactive view would
+    // keep serving the deleted deliverable for the read layer's 15s dedupe
+    // window. `expanded` is bound because it is only ever keyed when open.
     setViewing((cur) => (cur && cur.id === artifact.id ? null : cur));
     setPendingDelete(null);
     setDeleting(false);
     const issueListPath = issueListPathForArtifact(artifact);
     void Promise.all([
-      recent.mutate(),
-      stackList.mutate(),
+      mutateCache(`/teams${RECENT_PATH}`),
+      mutateCache(`/teams${STACK_PATH}`),
       expandedIssueId ? expanded.mutate() : Promise.resolve(undefined),
       issueListPath ? mutateCache(`/teams${issueListPath}`) : Promise.resolve(undefined),
     ]).catch(() => {});

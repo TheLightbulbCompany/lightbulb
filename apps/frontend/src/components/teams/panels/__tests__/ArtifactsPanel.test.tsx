@@ -14,14 +14,20 @@ import {
 let reads: Record<string, Partial<SWRResponse<unknown, Error>>> = {};
 const readPaths: string[] = [];
 const mutate = vi.fn().mockResolvedValue(undefined);
+// A null-keyed read is SWR's "don't fetch" signal; its bound mutate is a no-op.
+// Distinct spy so a test can prove the panel never leans on one to revalidate.
+const nullMutate = vi.fn().mockResolvedValue(undefined);
 const del = vi.fn().mockResolvedValue({});
 const download = vi.fn();
 
 vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: () => ({
     read: (path: string | null) => {
-      if (path !== null) readPaths.push(path);
-      return path !== null && reads[path]
+      if (path === null) {
+        return { data: undefined, isLoading: false, error: undefined, mutate: nullMutate };
+      }
+      readPaths.push(path);
+      return reads[path]
         ? { data: undefined, isLoading: false, error: undefined, mutate, ...reads[path] }
         : { data: undefined, isLoading: false, error: undefined, mutate };
     },
@@ -127,6 +133,9 @@ function stubExpanded(
 function switchToByTask() {
   fireEvent.mouseDown(screen.getByRole("tab", { name: "By task" }));
 }
+function switchToRecent() {
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "Recent" }));
+}
 
 // The By task tab renders stack cards; click the (single) stack to expand it.
 function expandStack() {
@@ -145,6 +154,7 @@ beforeEach(() => {
   reads = {};
   readPaths.length = 0;
   mutate.mockClear();
+  nullMutate.mockClear();
   globalMutate.mockClear();
   del.mockClear();
   del.mockResolvedValue({});
@@ -164,6 +174,7 @@ describe("ArtifactsPanel — Recent view (default)", () => {
     ]);
     render(<ArtifactsPanel />);
     expect(readPaths).toContain(RECENT_PATH);
+    expect(readPaths).not.toContain("/artifacts?groupBy=task");
     expect(screen.getByRole("heading", { name: "This week" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Older" })).toBeInTheDocument();
     expect(screen.getAllByTestId("artifact-card")).toHaveLength(2);
@@ -186,8 +197,26 @@ describe("ArtifactsPanel — Recent view (default)", () => {
     render(<ArtifactsPanel />);
     switchToByTask();
     expect(screen.getByTestId("artifact-stack-card")).toBeInTheDocument();
-    fireEvent.mouseDown(screen.getByRole("tab", { name: "Recent" }));
+    switchToRecent();
     expect(screen.getByTestId("artifact-card")).toBeInTheDocument();
+  });
+});
+
+describe("ArtifactsPanel — expanded stack survives a tab round trip", () => {
+  it("comes back to the stack LIST, not the stack it had open", () => {
+    stubRecent([DOC]);
+    stubStackList([group()]);
+    stubExpanded("iss_1", [WORK_PRODUCT]);
+    render(<ArtifactsPanel />);
+    switchToByTask();
+    expandStack();
+    expect(screen.getByTestId("artifact-card")).toBeInTheDocument();
+
+    switchToRecent();
+    switchToByTask();
+
+    expect(screen.getByTestId("artifact-stack-card")).toBeInTheDocument();
+    expect(screen.queryByTestId("artifact-card")).not.toBeInTheDocument();
   });
 });
 
@@ -403,12 +432,31 @@ describe("ArtifactsPanel — delete", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     await waitFor(() => expect(del).toHaveBeenCalledWith("/issues/iss_1/documents/plan"));
-    // Invalidates BOTH a gallery key (bound mutate) and the issue-scoped
-    // documents list so the task detail drops the deleted artifact too.
+    // Invalidates the open stack (bound mutate) and the issue-scoped documents
+    // list so the task detail drops the deleted artifact too.
     expect(mutate).toHaveBeenCalled();
     await waitFor(() =>
       expect(globalMutate).toHaveBeenCalledWith("/teams/issues/iss_1/documents"),
     );
+    // …and the OTHER view's key, which is null-keyed right now: its bound mutate
+    // is dead, so the refresh has to go through the global cache or the deleted
+    // deliverable is still listed when the owner flips to Recent.
+    expect(globalMutate).toHaveBeenCalledWith(`/teams${RECENT_PATH}`);
+    expect(nullMutate).not.toHaveBeenCalled();
+  });
+
+  it("revalidates the By task list when the delete happens in Recent", async () => {
+    stubRecent([DOC]);
+    render(<ArtifactsPanel />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete Implementation plan" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(del).toHaveBeenCalledWith("/issues/iss_1/documents/plan"));
+    await waitFor(() =>
+      expect(globalMutate).toHaveBeenCalledWith("/teams/artifacts?groupBy=task"),
+    );
+    expect(nullMutate).not.toHaveBeenCalled();
   });
 
   it("routes a work-product delete to the work-products DELETE endpoint", async () => {

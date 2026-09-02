@@ -184,7 +184,7 @@ async def test_bedrock_claude_branch(tmp_path):
     [
         # Anthropic-DIRECT id — no Bedrock "-v1" suffix.
         ("byo_key", "anthropic", "anthropic/claude-opus-4-6"),
-        ("byo_key", "openai", "openai/gpt-5.5"),
+        ("byo_key", "openai", "openai/gpt-5.6-sol"),
         # chatgpt_oauth is a flat-rate plan — no premium tier to reserve, so
         # the CEO inherits the default (no per-agent model override).
         ("chatgpt_oauth", None, None),
@@ -206,7 +206,7 @@ def test_premium_model_ref_matrix(provider_choice, byo_provider, expected):
     [
         ("bedrock_claude", None, f"amazon-bedrock/{_AIPS['opus']}"),
         ("byo_key", "anthropic", "anthropic/claude-opus-4-6"),
-        ("byo_key", "openai", "openai/gpt-5.5"),
+        ("byo_key", "openai", "openai/gpt-5.6-sol"),
     ],
 )
 async def test_ceo_agent_gets_premium_model(tmp_path, provider_choice, byo_provider, expected_ceo_model):

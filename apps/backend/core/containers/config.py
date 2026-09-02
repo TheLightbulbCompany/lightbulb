@@ -599,7 +599,10 @@ def build_provider_block(
         # gpt-5.6-sol, not gpt-5.5: at 2026.8.1 the openai manifest marks
         # gpt-5.5 `status: deprecated` (replacedBy gpt-5.6-sol -- identical
         # cost, context window and reasoning class), and upstream's own
-        # fresh-setup default moved to gpt-5.6-sol (#122178). Deprecated refs
+        # fresh-setup default moved to gpt-5.6-sol (#122178). Deliberately NOT
+        # gated on _emit_81_shape like modelPolicy below: gpt-5.6-sol is
+        # already in the 7.2 manifest (verified at fork tag v2026.7.2-isol8.8),
+        # so a 7.2 rollback resolves it fine. Deprecated refs
         # still RESOLVE (only picker visibility changes, and a configured
         # ref stays visible), so this was latent rather than live -- but the
         # account-scoped discovery enabled by model_policy_block() drops
@@ -879,7 +882,11 @@ def premium_model_ref(
             # Anthropic-DIRECT id — no Bedrock "-v1" suffix / date-stamp.
             return "anthropic/claude-opus-4-6"
         if byo_provider == "openai":
-            return "openai/gpt-5.5"
+            # Same swap as the OAuth primary: gpt-5.5 is deprecated at 8.1 and
+            # the BYO path now runs key-scoped discovery too (model_policy_block),
+            # so a CEO pinned to a ref the key's live list omits would fail
+            # every Friday run. gpt-5.6-sol is the drop-in replacement.
+            return "openai/gpt-5.6-sol"
     return None
 
 
@@ -901,7 +908,7 @@ def cheap_model_ref(
     ignored or rejected by the Codex backend, so the aux call fails, compaction
     never runs, context grows unbounded, and the turn dies with "Context overflow:
     prompt too large". Returning ``None`` lets compaction / memory-flush /
-    heartbeat inherit the primary (gpt-5.5), which the OAuth token can actually
+    heartbeat inherit the primary (gpt-5.6-sol), which the OAuth token can actually
     invoke — so compaction runs. The general rule: only return a model the
     selected provider/auth path can actually invoke as a summarizer.
 

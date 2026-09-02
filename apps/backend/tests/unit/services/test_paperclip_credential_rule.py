@@ -31,9 +31,12 @@ def _personal_profile():
 
 def test_the_rule_itself_names_the_vars_but_forbids_printing_the_key():
     assert PAPERCLIP_CREDENTIAL_PROHIBITION in PAPERCLIP_CREDENTIAL_RULE
-    # The agent still has to be able to USE the credentials.
-    assert "$PAPERCLIP_API_KEY" in PAPERCLIP_CREDENTIAL_RULE
+    # The agent still has to know the credentials exist — but never write the
+    # header itself, so the var name is named without a leading `$` now that
+    # the fence routes through paperclip-api.sh instead of a raw curl.
+    assert "PAPERCLIP_API_KEY" in PAPERCLIP_CREDENTIAL_RULE
     assert "$PAPERCLIP_API_URL" in PAPERCLIP_CREDENTIAL_RULE
+    assert "Authorization: Bearer $" not in PAPERCLIP_CREDENTIAL_RULE
     # And must be told to ignore the stale fork-side wake instruction.
     assert "ignore" in PAPERCLIP_CREDENTIAL_RULE
     # It must never itself demonstrate reading the file.
@@ -90,3 +93,22 @@ async def test_company_agent_body_gets_the_prohibition_appended():
     body = written["workspace-agent_x/AGENTS.md"]
     assert "Model-authored body" in body  # the planner's content survives
     assert PAPERCLIP_CREDENTIAL_PROHIBITION in body
+
+
+def test_no_seeded_playbook_hand_types_the_auth_header():
+    """A written-out `Authorization: Bearer $...` is the exact substring that
+    triggers OpenClaw's transcript redaction (masked to `Bearer ***`, with the
+    var name itself truncated), which the next turn copies verbatim and 401s
+    forever. Every seeded playbook must route through `paperclip-api.sh`
+    instead of ever spelling the header out."""
+    from pathlib import Path
+
+    import core.services.atlas_seed as atlas_seed
+
+    agents_md = friday_identity._render_templates(_personal_profile())["AGENTS.md"]
+    vendored = (Path(atlas_seed.__file__).parent / "files" / "AGENTS.md").read_text(encoding="utf-8")
+    atlas_seeded = vendored + atlas_seed._ACP_DELEGATION_SECTION + PAPERCLIP_CREDENTIAL_RULE
+
+    for playbook in (agents_md, atlas_seeded, PAPERCLIP_CREDENTIAL_RULE):
+        assert "Authorization: Bearer $" not in playbook
+        assert "paperclip-api.sh" in playbook

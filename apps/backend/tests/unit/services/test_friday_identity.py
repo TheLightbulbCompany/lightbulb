@@ -1398,6 +1398,73 @@ def test_retired_skill_id_repairs_agents_md_too():
     assert "skill lightbulb" in ws.files[f"workspace-{_UUID}/AGENTS.md"]
 
 
+def test_paperclip_curl_migrated_to_script():
+    """An already-provisioned Friday whose AGENTS.md predates the script keeps
+    the hand-typed curl forever (write-if-missing). The migration repoints
+    both the fenced example and the sentence describing it, byte-exact."""
+    body = (
+        "intro prose before it.\n\n"
+        + friday_identity._LEGACY_PAPERCLIP_CURL_FENCE
+        + "\nmore prose. "
+        + friday_identity._LEGACY_PAPERCLIP_AUTH_SENTENCE
+        + " tail prose.\n"
+    )
+    ws = _DictWorkspace({f"workspace-{_UUID}/AGENTS.md": body})
+
+    assert friday_identity._migrate_paperclip_curl_to_script(ws, "owner_1", _UUID) is True
+    healed = ws.files[f"workspace-{_UUID}/AGENTS.md"]
+    assert "Authorization: Bearer $PAPERCLIP_API_KEY" not in healed
+    assert "paperclip-api.sh" in healed
+    assert friday_identity._PAPERCLIP_AUTH_SENTENCE in healed
+    # surrounding prose survives untouched
+    assert healed.startswith("intro prose before it.")
+    assert healed.endswith(" tail prose.\n")
+
+
+def test_paperclip_curl_migration_reproduces_the_new_template_byte_exact():
+    """The real regression this migration must never introduce: healing an
+    old, fully-rendered AGENTS.md must land EXACTLY on what a fresh seed
+    produces today, not some approximation of it. Build the pre-fix body by
+    reversing the two substitutions on the current template, then assert the
+    migration's output is byte-identical to the current rendered template."""
+    rendered = friday_identity._AGENTS_TEMPLATE.format(owner_display="Sam")
+    legacy_body = rendered.replace(
+        friday_identity._PAPERCLIP_SCRIPT_FENCE, friday_identity._LEGACY_PAPERCLIP_CURL_FENCE
+    ).replace(friday_identity._PAPERCLIP_AUTH_SENTENCE, friday_identity._LEGACY_PAPERCLIP_AUTH_SENTENCE)
+    assert legacy_body != rendered, "fixture must actually differ from the current template"
+
+    ws = _DictWorkspace({f"workspace-{_UUID}/AGENTS.md": legacy_body})
+    assert friday_identity._migrate_paperclip_curl_to_script(ws, "owner_1", _UUID) is True
+    assert ws.files[f"workspace-{_UUID}/AGENTS.md"] == rendered
+
+
+def test_paperclip_curl_migration_is_idempotent():
+    """A second run over an already-migrated body is a no-op."""
+    body = (
+        "intro prose before it.\n\n"
+        + friday_identity._LEGACY_PAPERCLIP_CURL_FENCE
+        + "\nmore prose. "
+        + friday_identity._LEGACY_PAPERCLIP_AUTH_SENTENCE
+        + " tail prose.\n"
+    )
+    ws = _DictWorkspace({f"workspace-{_UUID}/AGENTS.md": body})
+
+    assert friday_identity._migrate_paperclip_curl_to_script(ws, "owner_1", _UUID) is True
+    once_healed = ws.files[f"workspace-{_UUID}/AGENTS.md"]
+    assert friday_identity._migrate_paperclip_curl_to_script(ws, "owner_1", _UUID) is False
+    assert ws.files[f"workspace-{_UUID}/AGENTS.md"] == once_healed
+
+
+def test_paperclip_curl_migration_is_a_noop_without_the_legacy_anchor():
+    """A Friday seeded with the current template (no legacy curl fence) is
+    left untouched — this must never fire on already-current playbooks."""
+    body = friday_identity._AGENTS_TEMPLATE.format(owner_display="Sam")
+    ws = _DictWorkspace({f"workspace-{_UUID}/AGENTS.md": body})
+
+    assert friday_identity._migrate_paperclip_curl_to_script(ws, "owner_1", _UUID) is False
+    assert ws.files[f"workspace-{_UUID}/AGENTS.md"] == body
+
+
 def test_legacy_grounding_section_swaps_once_and_ends_on_the_new_skill_id():
     """Ordering guard. The legacy section is matched BYTE-EXACTLY and contains the
     retired id, so the id repair must run after it. If it ran first the match would

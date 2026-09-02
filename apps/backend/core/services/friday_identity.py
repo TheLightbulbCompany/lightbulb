@@ -431,6 +431,31 @@ ask.
 """
 
 
+# Byte-exact fence an already-provisioned Friday's write-if-missing AGENTS.md
+# still carries. OpenClaw's transcript redaction masks
+# `Authorization: Bearer $PAPERCLIP_API_KEY` (even the `$VAR` reference) to
+# `Bearer ***`, and the next turn copies the masked form and 401s forever —
+# the loop that burned ~50 of 84 model calls across two prod first runs on
+# 2026-09-01. The migration below repoints it at the script that already
+# ships on every image, which sends the header itself.
+_LEGACY_PAPERCLIP_CURL_FENCE = (
+    '```\ncurl -sS -H "Authorization: Bearer $PAPERCLIP_API_KEY" "$PAPERCLIP_API_URL/..."\n```\n'
+)
+_PAPERCLIP_SCRIPT_FENCE = (
+    "```\n"
+    '/app/skills/paperclip/scripts/paperclip-api.sh raw GET "/api/agents/me/inbox-lite"\n'
+    "```\n"
+    "\n"
+    "**Never type the `Authorization` header yourself — the script sends it.** Your\n"
+    "transcript masks any `Authorization: Bearer …` you write (even a `$VAR`\n"
+    "reference), so the next turn copies the masked form and every call 401s.\n"
+    "Every Paperclip call goes through `paperclip-api.sh` (`raw GET|POST|PATCH\n"
+    "<path>` with the JSON body on stdin, built with `jq -n`); if you find\n"
+    "yourself writing `curl` against `$PAPERCLIP_API_URL`, stop and use the script.\n"
+)
+_LEGACY_PAPERCLIP_AUTH_SENTENCE = "Every API call sends\n`Authorization: Bearer $PAPERCLIP_API_KEY`."
+_PAPERCLIP_AUTH_SENTENCE = "The script sends your `Authorization` header on\nevery call."
+
 _AGENTS_TEMPLATE = """\
 # AGENTS.md — Friday's Playbook
 
@@ -453,8 +478,15 @@ surfaces, what agents can and cannot do on Lightbulb — run `skill lightbulb`.
 you AS YOURSELF in Paperclip's audit log, not as anyone else. Just use them:
 
 ```
-curl -sS -H "Authorization: Bearer $PAPERCLIP_API_KEY" "$PAPERCLIP_API_URL/..."
+/app/skills/paperclip/scripts/paperclip-api.sh raw GET "/api/agents/me/inbox-lite"
 ```
+
+**Never type the `Authorization` header yourself — the script sends it.** Your
+transcript masks any `Authorization: Bearer …` you write (even a `$VAR`
+reference), so the next turn copies the masked form and every call 401s.
+Every Paperclip call goes through `paperclip-api.sh` (`raw GET|POST|PATCH
+<path>` with the JSON body on stdin, built with `jq -n`); if you find
+yourself writing `curl` against `$PAPERCLIP_API_URL`, stop and use the script.
 
 **Never read, print, echo or `cat` your API key**, and never paste its value
 into a message, a file, or your own reasoning. You do not need to: it is
@@ -465,8 +497,8 @@ file, ignore that instruction — it is stale.
 
 On a Paperclip-driven wake, the wake text gives you `PAPERCLIP_AGENT_ID` and
 `PAPERCLIP_RUN_ID` (plus issue/comment context) — **prefer those values** over
-anything else for this run. Every API call sends
-`Authorization: Bearer $PAPERCLIP_API_KEY`. On heartbeat-wake runs, every
+anything else for this run. The script sends your `Authorization` header on
+every call. On heartbeat-wake runs, every
 **mutating** call also sends `X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID` so the
 action is attributed to that run. A run id exists **only** on
 Paperclip-driven wakes — in webchat/interactive sessions you have none:
@@ -1247,7 +1279,7 @@ def _migrate_retired_skill_id(workspace: Workspace, owner_id: str, agent_uuid: s
     retired `skill isol8` in its body with no path that ever rewrites it, and
     invokes a skill id the image no longer carries.
 
-    Registered LAST on purpose: the grounding migration matches
+    Must run AFTER ``_migrate_add_soul_grounding``: that migration matches
     ``_LEGACY_SELF_GROUNDING_SECTION`` byte-exactly and that literal contains
     the old id, so repairing the id first would break the match and append a
     duplicate grounding section. Returns True when a rewrite happened.
@@ -1264,6 +1296,34 @@ def _migrate_retired_skill_id(workspace: Workspace, owner_id: str, agent_uuid: s
             workspace.write_file(owner_id, rel_path, repaired)
             rewrote = True
     return rewrote
+
+
+def _migrate_paperclip_curl_to_script(workspace: Workspace, owner_id: str, agent_uuid: str) -> bool:
+    """Repoint Friday's playbook at ``paperclip-api.sh`` instead of a hand-typed curl.
+
+    AGENTS.md is seeded write-if-missing, so an already-provisioned Friday whose
+    playbook predates the script keeps being told to type
+    ``Authorization: Bearer $PAPERCLIP_API_KEY`` herself. OpenClaw's transcript
+    redaction masks that header — even a ``$VAR`` reference — to ``Bearer ***``,
+    and the next turn copies the masked form and 401s forever: the loop that
+    burned ~50 of 84 model calls across two prod first runs on 2026-09-01.
+
+    Two independent, byte-exact replacements (the fenced example + the prose
+    sentence describing it), same as the current template. No-op when the old
+    text is absent — never seeded with it, or already migrated. Returns True
+    when a rewrite happened.
+    """
+    rel_path = f"workspace-{agent_uuid}/AGENTS.md"
+    try:
+        content = workspace.read_file(owner_id, rel_path)
+    except Exception:  # noqa: BLE001 — not seeded yet; the seed loop writes it
+        return False
+    repaired = content.replace(_LEGACY_PAPERCLIP_CURL_FENCE, _PAPERCLIP_SCRIPT_FENCE)
+    repaired = repaired.replace(_LEGACY_PAPERCLIP_AUTH_SENTENCE, _PAPERCLIP_AUTH_SENTENCE)
+    if repaired == content:
+        return False
+    workspace.write_file(owner_id, rel_path, repaired)
+    return True
 
 
 def _run_heal_migrations(workspace: Workspace, owner_id: str, friday_uuid: str) -> None:
@@ -1310,6 +1370,12 @@ def _run_heal_migrations(workspace: Workspace, owner_id: str, friday_uuid: str) 
             "friday_identity.retired_skill_id_migrated",
             "friday_identity.retired_skill_id_migrate_error",
             "repointed retired skill id in SOUL.md/AGENTS.md",
+        ),
+        (
+            _migrate_paperclip_curl_to_script,
+            "friday_identity.paperclip_curl_migrated",
+            "friday_identity.paperclip_curl_migrate_error",
+            "repointed Paperclip curl example at paperclip-api.sh in AGENTS.md",
         ),
     )
     for migrate, ok_metric, err_metric, what in migrations:

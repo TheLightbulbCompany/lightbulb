@@ -24,8 +24,15 @@ PAPERCLIP_CREDENTIAL_RULE = """
 directly:
 
 ```
-curl -sS -H "Authorization: Bearer $PAPERCLIP_API_KEY" "$PAPERCLIP_API_URL/..."
+/app/skills/paperclip/scripts/paperclip-api.sh raw GET "/api/agents/me/inbox-lite"
 ```
+
+**Never type the `Authorization` header yourself — the script sends it.** Your
+transcript masks any `Authorization: Bearer …` you write (even a `$VAR`
+reference), so the next turn copies the masked form and every call 401s.
+Every Paperclip call goes through `paperclip-api.sh` (`raw GET|POST|PATCH
+<path>` with the JSON body on stdin, built with `jq -n`); if you find
+yourself writing `curl` against `$PAPERCLIP_API_URL`, stop and use the script.
 
 **Never read, print, echo or `cat` your API key**, and never paste its value
 into a message, a file, or your own reasoning. You do not need to — it is

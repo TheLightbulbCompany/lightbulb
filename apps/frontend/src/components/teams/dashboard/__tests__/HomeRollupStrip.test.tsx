@@ -390,6 +390,22 @@ describe("HomeRollupStrip — business-first hero", () => {
     expect(screen.queryByText(/No readings yet/)).not.toBeInTheDocument();
   });
 
+  it("keeps the period toggle mounted while the new span loads", () => {
+    // Changing span re-keys SWR, so `rollup` goes undefined and `isLoading`
+    // true. Hoisting the placeholder above the section replaced the tab strip
+    // the owner had just clicked with an aria-hidden box — focus dropped to
+    // <body> and on a slow link there was no way to change their mind.
+    mockRollup.mockReturnValue(view({ rollup: undefined, isLoading: true }));
+    render(<HomeRollupStrip spendCents={1400} />);
+    const section = screen.getByLabelText("Business summary");
+    expect(within(section).getByRole("tablist", { name: "Period" })).toBeInTheDocument();
+    // The range label falls back to the span that was asked for.
+    expect(within(section).getByText("Last 30 days")).toBeInTheDocument();
+    const placeholder = section.querySelector('div[aria-hidden="true"]');
+    expect(placeholder).not.toBeNull();
+    expect(placeholder!.className).toContain("h-[220px]");
+  });
+
   it("exposes the period toggle beside the range label and re-requests on change", () => {
     mockRollup.mockReturnValue(view({ rollup: LIVE }));
     render(<HomeRollupStrip spendCents={1400} />);

@@ -20,6 +20,9 @@ vi.mock("@/hooks/useCompanyRollup", () => ({
     isUnavailable: () => false,
   }),
 }));
+vi.mock("@/components/settings/CompanyStripeSection", () => ({
+  useCompanyStripeStatus: () => ({ data: undefined }),
+}));
 vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: vi.fn() }));
 vi.mock("@/components/teams/dashboard/hooks/useActivityFeed", () => ({
   useActivityFeed: vi.fn(),

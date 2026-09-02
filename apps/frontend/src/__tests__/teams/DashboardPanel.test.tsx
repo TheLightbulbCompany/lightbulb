@@ -60,6 +60,9 @@ vi.mock("@/hooks/useCompanyRollup", () => ({
     isUnavailable: () => false,
   }),
 }));
+vi.mock("@/components/settings/CompanyStripeSection", () => ({
+  useCompanyStripeStatus: () => ({ data: undefined }),
+}));
 
 
 describe("DashboardPanel", () => {

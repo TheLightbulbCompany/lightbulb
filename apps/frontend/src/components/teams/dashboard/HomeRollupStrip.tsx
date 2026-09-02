@@ -219,8 +219,6 @@ export function HomeRollupStrip({ spendCents }: { spendCents: number | null }) {
   // that cannot succeed.
   if (error instanceof ApiError && error.status === 403) return null;
 
-  if (isLoading && !rollup) return <div className="h-[220px]" aria-hidden="true" />;
-
   // `error && !rollup`, NOT `error || !rollup`: SWR keeps `data` and sets
   // `error` when a REVALIDATION fails, so the wider guard threw away numbers
   // still sitting in the cache and replaced a populated strip with a failure
@@ -235,12 +233,12 @@ export function HomeRollupStrip({ spendCents }: { spendCents: number | null }) {
       />
     );
   }
-  if (!rollup) return null;
+  if (!rollup && !isLoading) return null;
 
   // No Connect binding ⇒ no rollup rows exist at all, including the columns
   // that have nothing to do with Stripe. A silent set of zeros here would be a
   // lie: we do not know it is zero, we know we cannot see.
-  if (!rollup.stripe_bound) {
+  if (rollup && !rollup.stripe_bound) {
     return (
       <PanelNotice
         state="unbound"
@@ -262,12 +260,12 @@ export function HomeRollupStrip({ spendCents }: { spendCents: number | null }) {
   // The hook asks for 2 × span so the tail of the range IS the previous
   // period. Summing everything it returns under a "last 30 days" heading
   // would report sixty days as thirty, so the split is not optional.
-  const all = rollup.days ?? [];
+  const all = rollup?.days ?? [];
   const days = all.filter((d) => d.day >= windowStart);
   const previous = all.filter((d) => d.day < windowStart);
   // A previous-period figure is only honest when readings cover that whole
   // period: first_day at or before the 2×-window start.
-  const previousCovered = !!rollup.first_day && rollup.first_day <= rollup.start;
+  const previousCovered = !!rollup?.first_day && rollup.first_day <= rollup.start;
   const prev = (k: "revenue_microcents" | "signups" | "visitors") =>
     previousCovered ? sum(previous, k) : null;
 
@@ -298,7 +296,7 @@ export function HomeRollupStrip({ spendCents }: { spendCents: number | null }) {
   // Label the range from first_day, never from the window we asked for —
   // there is no backfill, so rollups start at the Stripe binding.
   const rangeLabel =
-    rollup.first_day && rollup.first_day > windowStart
+    rollup?.first_day && rollup.first_day > windowStart
       ? `Since ${formatDay(rollup.first_day)}`
       : `Last ${span} days`;
   // `days[]` is SPARSE — the writer returns None and stores nothing when every
@@ -310,11 +308,20 @@ export function HomeRollupStrip({ spendCents }: { spendCents: number | null }) {
   const readings = `${days.length} ${days.length === 1 ? "day" : "days"} with readings`;
 
   let body: ReactNode;
+  // A span change re-keys SWR, so `rollup` goes undefined mid-toggle. The
+  // placeholder belongs INSIDE the section: hoisting it above cost the owner
+  // the very tab strip they had just clicked, dropped focus to <body>, and on
+  // a slow link left no way to change their mind. `keepPreviousData` is the
+  // wrong fix — it would render the old span's rows under the new span's
+  // windowStart, which is the bug this task exists to remove.
+  if (!rollup) {
+    body = <div className="h-[220px]" aria-hidden="true" />;
+  }
   // Bound but unonboarded: Stripe returns legitimately empty for an account
   // with `details_submitted: false`, so "nothing happened yet" would send the
   // owner to wait for money that cannot arrive. Only consulted with no rows —
   // a reading beats a status flag.
-  if (!all.length && stripeStatus?.details_submitted === false) {
+  else if (!all.length && stripeStatus?.details_submitted === false) {
     body = (
       <PanelNotice
         state="partial"

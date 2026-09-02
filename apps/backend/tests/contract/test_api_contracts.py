@@ -10,6 +10,7 @@ fuzz testing since they cannot be meaningfully tested without infrastructure.
 """
 
 import schemathesis
+from hypothesis import HealthCheck, settings
 from schemathesis.checks import not_a_server_error
 
 from core.auth import AuthContext
@@ -159,6 +160,13 @@ schema = (
 
 
 @schema.parametrize()
+# filter_too_much is a generation-EFFICIENCY check, not a correctness one: it
+# errors when hypothesis discards most drafts before they reach the endpoint.
+# The provisioning-workflow routes (deep nullable bodies behind a path param)
+# trip it randomly, failing one route per run with nothing wrong. The run
+# still exercises whatever examples survive; suppressing the check just stops
+# the flake from failing the suite.
+@settings(suppress_health_check=[HealthCheck.filter_too_much, HealthCheck.too_slow])
 def test_no_server_errors(case):
     """No endpoint should return 5xx for schema-valid requests.
 

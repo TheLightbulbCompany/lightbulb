@@ -85,7 +85,7 @@ const COLUMNS: PanelDataColumn<LeadRow>[] = [
 ];
 
 export function LeadsPanel() {
-  const { query, search, rows, total, view, hasMore, next } = useCompanyLeads();
+  const { query, search, rows, total, view, hasMore, moreFailed, next } = useCompanyLeads();
   const [draft, setDraft] = useState(CHIPS[0]);
 
   function submit(e: FormEvent) {
@@ -196,10 +196,15 @@ export function LeadsPanel() {
           </p>
           <PanelDataTable rows={rows} columns={COLUMNS} rowKey={(r) => r.id ?? `${r.first_name}-${r.organization}`} />
           {hasMore && (
-            <div className="flex justify-center">
+            <div className="flex flex-col items-center gap-1">
               <EditorialButton size="sm" variant="secondary" onClick={next}>
                 Load more
               </EditorialButton>
+              {moreFailed && (
+                <p className="text-xs text-[var(--midnight-muted)]">
+                  Couldn’t load the next page just now — the rows above are still yours.
+                </p>
+              )}
             </div>
           )}
         </>

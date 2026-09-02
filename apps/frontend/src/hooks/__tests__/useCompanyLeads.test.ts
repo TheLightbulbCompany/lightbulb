@@ -41,5 +41,13 @@ describe("leadsView", () => {
     // fetch, an empty last page, and a 502 on page 3.
     expect(leadsView("growth", undefined, undefined, true, 25)).toEqual({ kind: "rows" });
     expect(leadsView("growth", env(), undefined, false, 25)).toEqual({ kind: "rows" });
+    const outage = new ApiError(502, { detail: { code: "apollo_unavailable" } });
+    expect(leadsView("growth", undefined, outage, false, 25)).toEqual({ kind: "rows" });
+    const rejected = new ApiError(502, { detail: { code: "apollo_key_rejected" } });
+    expect(leadsView("growth", undefined, rejected, false, 25)).toEqual({ kind: "rows" });
+    // The one exception: a 403 is permanent, and page 1 would have refused.
+    expect(leadsView("growth", undefined, new ApiError(403, {}), false, 25)).toEqual({
+      kind: "forbidden",
+    });
   });
 });

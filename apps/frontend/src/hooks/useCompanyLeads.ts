@@ -60,13 +60,16 @@ export function leadsView(
   accumulated: number,
 ): LeadsView {
   if (!query) return { kind: "idle" };
+  // A 403 is permanent and cannot co-occur with rows (page 1 would have
+  // refused). Everything else — a 502 on page 3, a key revoked mid-session —
+  // must not take away a table the owner is already reading.
+  if (error instanceof ApiError && error.status === 403) return { kind: "forbidden" };
+  if (accumulated) return { kind: "rows" };
   if (error instanceof ApiError) {
-    if (error.status === 403) return { kind: "forbidden" };
     const code = (error.body as { detail?: { code?: string } } | null)?.detail?.code;
     if (code === "apollo_key_rejected") return { kind: "key_rejected" };
   }
   if (error) return { kind: "unavailable" };
-  if (accumulated) return { kind: "rows" };
   if (isLoading || !data) return { kind: "loading" };
   if (!data.connected) return { kind: "unbound" };
   return data.data.length ? { kind: "rows" } : { kind: "zero" };
@@ -105,6 +108,8 @@ export function useCompanyLeads() {
     total: data?.total ?? 0,
     view: leadsView(query, data, error, isLoading, earlier.length),
     hasMore: !!data?.has_more,
+    // A later page failed while a table is on screen: keep the rows, say so.
+    moreFailed: !!error && earlier.length > 0,
     next,
   };
 }

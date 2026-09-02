@@ -375,12 +375,17 @@ export function BrainPanel({ initialPath, initialTab, onPathUnavailable }: Brain
                 searchValue={query}
                 // Searching short-circuits the pane, so it unmounts BrainPage
                 // (and with it FileContentViewer's draft) exactly like a tab
-                // switch does — it takes the same guard. FileContentViewer
-                // never reports dirty=false on unmount, so an unguarded search
-                // would also leave `editorDirty` stuck true and fire a phantom
-                // prompt on the next navigation.
+                // switch does — it takes the same guard, unconditionally, like
+                // every sibling handler: `editing` is NOT the same question as
+                // "is an editor mounted". BrainPage routes any non-markdown
+                // text file (.txt/.csv/.json — the backend serves those
+                // binary:false) straight into the editable viewer with the
+                // Edit toggle hidden, so a draft can be dirty while
+                // `editing` is false. FileContentViewer also never reports
+                // dirty=false on unmount, so an unguarded search would leave
+                // `editorDirty` stuck true and fire a phantom prompt later.
                 onSearchChange={(v) => {
-                  if (editing && !confirmDiscardIfDirty()) return;
+                  if (!confirmDiscardIfDirty()) return;
                   setEditorDirty(false);
                   setEditing(false);
                   setQuery(v);

@@ -83,7 +83,7 @@ const md = (path: string, content: string): FileInfo => ({
   modified_at: 1_756_000_000,
   content,
   binary: false,
-  mime_type: "text/markdown",
+  mime_type: path.endsWith(".md") ? "text/markdown" : "text/plain",
 });
 
 beforeEach(() => {
@@ -262,6 +262,32 @@ describe("BrainPanel", () => {
     fireEvent.mouseDown(screen.getByRole("tab", { name: "Dreams" }));
     expect(confirmSpy).toHaveBeenCalledTimes(2);
     expect(screen.getByTestId("dreams-panel-body")).toBeInTheDocument();
+  });
+
+  it("searching guards a dirty NON-markdown file, which has no Edit toggle to be `editing` behind", () => {
+    // .txt/.csv/.json come back binary:false, so BrainPage hands them straight
+    // to the editable viewer and the Edit/View toggle never renders — a draft
+    // is dirty while `editing` is false. The guard cannot key on `editing`.
+    treeState.files = [...POPULATED, f("sources/raw.txt")];
+    fileState.file = md("sources/raw.txt", "hello");
+    render(<BrainPanel initialPath="sources/raw.txt" />);
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "hello there" } });
+    const box = screen.getByRole("searchbox", { name: /find a page by name/i });
+
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    fireEvent.change(box, { target: { value: "raw" } });
+    expect((box as HTMLInputElement).value).toBe("");
+    expect(screen.getByDisplayValue("hello there")).toBeInTheDocument();
+
+    confirmSpy.mockReturnValue(true);
+    fireEvent.change(box, { target: { value: "raw" } });
+    expect((box as HTMLInputElement).value).toBe("raw");
+    expect(screen.queryByDisplayValue("hello there")).toBeNull();
+
+    expect(confirmSpy).toHaveBeenCalledTimes(2);
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Dreams" }));
+    expect(confirmSpy).toHaveBeenCalledTimes(2);
   });
 
   it("the toolbar ASK button drafts the open-ended prompt", () => {

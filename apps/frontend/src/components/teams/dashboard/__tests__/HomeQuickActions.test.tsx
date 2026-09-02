@@ -44,10 +44,11 @@ describe("HomeQuickActions — every verb resolves to something real", () => {
 
   it("Ask Friday swaps to the chat view on mobile, where the dock is not mounted", () => {
     desktop = false;
-    const order: Array<{ type: string; agentId: string }> = [];
-    const onSelectAgent = (e: Event) =>
+    const order: Array<{ type: string; agentId: string; source?: string }> = [];
+    const onSelectAgent = (e: Event) => {
       const d = (e as CustomEvent).detail;
       order.push({ type: "selectAgent", agentId: d.agentId, source: d.source });
+    };
     const onFocusComposer = (e: Event) =>
       order.push({ type: "getstarted:focus-composer", agentId: (e as CustomEvent).detail.agentId });
     window.addEventListener("selectAgent", onSelectAgent);

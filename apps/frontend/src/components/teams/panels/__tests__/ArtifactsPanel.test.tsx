@@ -71,6 +71,17 @@ const WORK_PRODUCT = {
   updatedAt: "2026-01-01T00:00:00Z",
   href: "/ACME/issues/ISO-1#work-product-wp1",
 };
+// The agent skill's DEFAULT upload: a work product whose bytes sit behind an
+// attachment, reachable only through `downloadPath`.
+const WORK_PRODUCT_FILE = {
+  ...WORK_PRODUCT,
+  id: "work_product:wp9",
+  title: "Pricing proposal",
+  mediaKind: "text",
+  contentType: "text/markdown",
+  downloadPath: "/api/attachments/att9/content?download=1",
+  href: "/ACME/issues/ISO-1#work-product-wp9",
+};
 const ATTACHMENT = {
   id: "attachment:att1",
   source: "attachment",
@@ -349,6 +360,47 @@ describe("ArtifactsPanel — view on click", () => {
     // authenticated content route was hit for it.
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
     expect(download).toHaveBeenCalledWith("/attachments/att1/content");
+  });
+
+  it("renders a file-backed work product's markdown bytes inline, below its summary", async () => {
+    stubRecent([WORK_PRODUCT_FILE]);
+    reads["/issues/iss_1/work-products"] = {
+      data: {
+        workProducts: [
+          { id: "wp9", title: "Pricing proposal", summary: "Three tiers", url: null },
+        ],
+      },
+    };
+    download.mockResolvedValueOnce({
+      size: 7,
+      type: "text/markdown",
+      text: async () => "# Tiers",
+    } as unknown as Blob);
+    render(<ArtifactsPanel />);
+
+    fireEvent.click(cardFor("Pricing proposal"));
+
+    expect(await screen.findByText("Three tiers")).toBeInTheDocument();
+    expect(download).toHaveBeenCalledWith("/attachments/att9/content");
+    const md = await screen.findAllByTestId("md");
+    expect(md.map((m) => m.textContent)).toContain("# Tiers");
+  });
+
+  it("renders a plain-text attachment inline in a <pre>", async () => {
+    stubRecent([
+      { ...ATTACHMENT, id: "attachment:att2", title: "notes.txt", contentType: "text/plain", mediaKind: "text" },
+    ]);
+    download.mockResolvedValueOnce({
+      size: 5,
+      type: "text/plain",
+      text: async () => "hello",
+    } as unknown as Blob);
+    render(<ArtifactsPanel />);
+
+    fireEvent.click(cardFor("notes.txt"));
+
+    expect(await screen.findByText("hello")).toBeInTheDocument();
+    expect(download).toHaveBeenCalledWith("/attachments/att2/content");
   });
 });
 

@@ -230,6 +230,33 @@ describe("HomeRollupStrip — days present but nothing happened", () => {
     expect(screen.queryByText("$0")).not.toBeInTheDocument();
   });
 
+  it("keeps the tiles when the CURRENT window is empty but a covered previous period was not", () => {
+    // Revenue that stopped is the most important thing this strip can say.
+    // Collapsing here threw away "$400 in the previous 30 days" and handed an
+    // owner whose sales dried up the same sentence as one who never sold.
+    mockRollup.mockReturnValue(
+      view({
+        rollup: {
+          ...ALL_ZERO,
+          start: "2026-07-04",
+          first_day: "2026-07-04",
+          days: [
+            { day: "2026-07-10", revenue_microcents: 400_000_000, signups: 3 },
+            { day: "2026-08-30", revenue_microcents: 0, signups: 0 },
+          ],
+        },
+      }),
+    );
+    render(<HomeRollupStrip spendCents={0} />);
+
+    expect(screen.queryByText(/Nothing to report/i)).not.toBeInTheDocument();
+    // The honest picture: a real $0 for the window, beside what came before.
+    // Scoped to the hero — the Agent spend tile prints "$0" here too.
+    expect(within(screen.getByLabelText("Revenue")).getByText("$0")).toBeInTheDocument();
+    expect(screen.getByText("$400 in the previous 30 days")).toBeInTheDocument();
+    expect(screen.getByText("3 in the previous 30 days")).toBeInTheDocument();
+  });
+
   it("still renders the tiles when ANY served metric is non-zero", () => {
     // The asymmetry: $0 revenue beside 40 real visitors is real information,
     // and collapsing it would hide a measured number.

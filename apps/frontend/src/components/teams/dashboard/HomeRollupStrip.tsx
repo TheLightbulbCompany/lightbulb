@@ -301,6 +301,12 @@ export function HomeRollupStrip({
   // The asymmetry matters: an owner who earned $0 today but had 40 visitors
   // must still see the tiles — real zero revenue beside a real visitor count.
   // Only all-zero-or-unavailable collapses.
+  //
+  // A COVERED previous period that had activity counts as something to report,
+  // even when the current window is all zeros. $400 last month and $0 this one
+  // is the single most important thing this strip can say, and collapsing threw
+  // away the comparison caption that says it — leaving an owner whose revenue
+  // stopped with the same sentence as an owner who never sold anything.
   const served = (["revenue_microcents", "signups", "visitors"] as const).filter(
     (k) => !isUnavailable(k),
   );
@@ -308,6 +314,10 @@ export function HomeRollupStrip({
   // sale and a refund that net to exactly zero across the window are two
   // real transactions, not "nothing happened".
   const anyReading = served.some((k) => days.some((d) => (d[k] ?? 0) !== 0));
+  // Same test over the previous period, and only when it is covered — an
+  // uncovered previous period has no comparison caption to preserve.
+  const anyPreviousReading =
+    previousCovered && served.some((k) => previous.some((d) => (d[k] ?? 0) !== 0));
   // Agent spend is part of "did anything happen". A pre-revenue company has
   // zero sales and real costs — collapsing to "nothing to report" would hide
   // the one number that owner most needs to see. `null` is "we cannot see it",
@@ -377,7 +387,7 @@ export function HomeRollupStrip({
         supporting="Your Stripe account is connected. The first daily reading lands within the hour."
       />
     );
-  } else if (!anyReading && !spendKnown && !spendPending) {
+  } else if (!anyReading && !anyPreviousReading && !spendKnown && !spendPending) {
     body = (
       <PanelNotice
         state="zero"

@@ -56,9 +56,13 @@ async def get_platform_info() -> dict:
         # into being requested. Without that filter, adding a half-wired provider
         # gated `environments: [local, dev]` would publish it on this
         # unauthenticated route and have agents pitch it, with no config knob left
-        # to suppress it. Shared with the first-run BRIEF.md catalog
+        # to suppress it. Same gate the owner's Integrations tab uses, evaluated
+        # ownerless — `is_listable(p, None)` collapses to `visible_in_env(p) or
+        # p.offer_request_access`, which is exactly what this route published
+        # before. Shared with the first-run BRIEF.md catalog
         # (onboarding_brief.integration_rows_from_registry) so the two agree.
-        for provider in registry.connectable_providers()
+        for provider in registry.all_providers().values()
+        if registry.is_listable(provider, None)
     ]
     channels = [{"key": key, "display_name": key.replace("_", " ").title()} for key in CHANNEL_PROVIDER_IDS]
     return {"integrations": integrations, "channels": channels}

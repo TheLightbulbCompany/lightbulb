@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 
+from core.containers.config import CHANNEL_PROVIDER_IDS
 from core.containers.workspace import Workspace
 from core.observability.product_analytics import capture_product_event
 
@@ -62,7 +63,8 @@ _SCOPE_LINE_WITH_IDEA = (
     "Keep the research to the business and its market; the Integrations section below is already researched."
 )
 _SCOPE_LINE_NO_IDEA = (
-    "Once you have chosen, keep the research to that business and its market; "
+    "Once you have chosen, keep the research to that business and its market — "
+    "two web searches at most for the market, on top of what choosing took; "
     "the Integrations section below is already researched."
 )
 
@@ -120,11 +122,13 @@ def render_brief_md(
 # browser (useConnections.ts -> /connections/{provider}/authorize). Later turns
 # still read the live catalog per the skill; this covers the first run.
 #
-# Stripe is handled separately because it is move-independent: the company's own
-# Stripe account is the eligibility gate for the whole Projects rail. The line is
-# rendered from the billing row and Friday NEVER files the Stripe request on a
-# first run — #2254 files it when a subscription goes live, and a trial owner
-# cannot act on the card anyway.
+# The company's own Stripe account gets its own line because it is
+# move-independent: it is the eligibility gate for the whole Projects rail, not
+# something the plan does or does not need. The line is rendered from the
+# billing row and Friday NEVER files that request on a first run — the owner
+# does it from Settings, and a trial owner cannot act on it at all. It is a
+# different credential from the `stripe` integration ROW, which is the agent's
+# Stripe MCP tools; both appear, and they are not interchangeable.
 
 
 @dataclass(frozen=True)
@@ -133,18 +137,22 @@ class IntegrationRow:
     display_name: str
     byo_required: bool
     requestable: bool
+    # The registry's ``Acquisition`` literal — how the owner actually hands the
+    # credential over. Without it every non-BYO row read "one-click", which is
+    # false for the five paste-a-token providers and for AWS's role launcher.
+    acquisition: str
 
 
-def integration_rows_from_registry() -> list[IntegrationRow]:
-    """Every connectable provider, with the same two flags /platform-info exposes.
+def integration_rows_from_registry(owner_id: str | None = None) -> list[IntegrationRow]:
+    """Every provider this owner can see, with the flags that decide the label.
 
-    ``requestable`` mirrors routers/platform_info.py: ``not visible_in_env`` —
-    the owner cannot START that connection themselves in this environment.
-
-    The visibility filter is shared with that route outright
-    (``registry.connectable_providers``), so the two cannot drift: a provider
-    gated out of this environment that does not opt into
-    ``offer_request_access`` is HIDDEN, not "by request".
+    The gates are the same two the owner's own Integrations tab uses
+    (``registry.is_listable`` / ``registry.available_for``, see
+    routers/connections.py), so the menu Friday reads and the tab the owner
+    opens cannot disagree: a provider gated out of this environment that does
+    not opt into ``offer_request_access`` is HIDDEN, not "by request", and an
+    allowlisted prod owner sees their dogfood providers as connectable rather
+    than as "by request".
     """
     from core.services.credentials import registry
 
@@ -153,37 +161,48 @@ def integration_rows_from_registry() -> list[IntegrationRow]:
             key=p.key,
             display_name=p.display_name,
             byo_required=bool(p.byo_required),
-            requestable=not registry.visible_in_env(p),
+            requestable=not registry.available_for(p, owner_id),
+            acquisition=str(p.acquisition),
         )
-        for p in registry.connectable_providers()
+        for p in registry.all_providers().values()
+        if registry.is_listable(p, owner_id)
     ]
     return sorted(rows, key=lambda r: r.display_name.lower())
 
 
-# Statuses under which #2254 has ALREADY RUN the company-Stripe setup request
-# (it fires on the trial_local -> active transition and on direct-to-paid entry;
-# renewals and past-due keep whatever it left). It files no card when the
-# Paperclip company does not exist yet, so the line below says the platform
-# filed the request — never that a card is sitting in the Inbox.
-_PAID_SUBSCRIPTION_STATUSES = frozenset({"active", "trialing", "past_due"})
-
-
 def _stripe_line(billing_row: Mapping[str, object]) -> str:
+    """One line on the company's OWN Stripe account (the Connect account behind
+    routers/company_stripe.py) — a different credential from the `stripe`
+    integration row below, which grants the agent Stripe tools. States follow
+    owner_facts.build_owner_facts (connected / pending / none) so BRIEF.md and
+    lightbulb-facts.json never disagree on the same container.
+    """
+    from core.services.provision_gate import is_paid_subscription
+
     if billing_row.get("company_stripe_account_id"):
+        if billing_row.get("company_stripe_charges_enabled"):
+            return (
+                "- **Stripe (the company's own account): connected.** Payments and "
+                "provisioning are unlocked; nothing to ask for."
+            )
         return (
-            "- **Stripe (the company's own account): connected.** Payments and "
-            "provisioning are unlocked; nothing to ask for."
+            "- **Stripe (the company's own account): still being set up** — the owner "
+            "started it but Stripe has not enabled charges yet. Say it is pending; do "
+            "not treat it as connected and do not request it."
         )
-    if str(billing_row.get("subscription_status") or "") in _PAID_SUBSCRIPTION_STATUSES:
+    # `past_due` is paid for THIS purpose (the setup card was already filed on
+    # the way in) but not for is_paid_subscription, which fails it closed.
+    paid = is_paid_subscription(billing_row) or str(billing_row.get("subscription_status") or "") == "past_due"
+    if paid:
         return (
-            "- **Stripe (the company's own account): required — the platform files the "
-            "setup request itself when a subscription goes live.** Do not file another "
-            "request; tell the owner to check their Inbox for the setup card."
+            "- **Stripe (the company's own account): required** for payments and for "
+            "provisioning hosting and analytics. The owner sets it up from Settings; a "
+            "setup card may be waiting in their Inbox. Do not file a request yourself."
         )
     return (
         "- **Stripe (the company's own account): required** for payments and for "
-        "provisioning hosting and analytics. It is set up when the owner subscribes "
-        "— say so; do not request it."
+        "provisioning hosting and analytics. Once the owner subscribes the platform "
+        "asks them to set it up from their Inbox — say so; do not request it now."
     )
 
 
@@ -203,18 +222,30 @@ def render_integrations_md(rows: Sequence[IntegrationRow], billing_row: Mapping[
         "",
     ]
     for r in rows:
-        # The dedicated line above owns Stripe on a first run: connected-vs-required
-        # is what matters on day one, and a second "one-click" row here reads as
-        # permission to do what that line just forbade.
-        if r.key == "stripe":
-            continue
+        # The `stripe` row is NOT the line above: this one is the agent's Stripe
+        # MCP tools, that one is the company's own Connect account. Two
+        # credentials, two planes — dropping the row hid a connectable
+        # integration from the only menu the first run gets.
         if r.byo_required:
             how = "needs you (bring your own app)"
         elif r.requestable:
             how = "by request"
+        elif r.acquisition == "paste_token":
+            how = "API key (paste it in the Integrations tab)"
+        elif r.acquisition == "aws_sts":
+            how = "AWS role (a launcher in the Integrations tab)"
         else:
             how = "one-click"
         lines.append(f"- {r.display_name} (`{r.key}`): {how}")
+    # Channels are a separate tab and a separate list, and the section above
+    # forbids fetching a catalog — so the ones that exist have to be named here
+    # or Friday cannot mention them at all.
+    lines.append("")
+    lines.append(
+        "Channels — where the owner can talk to you, connected from the Channels tab: "
+        + ", ".join(c.replace("_", " ").title() for c in CHANNEL_PROVIDER_IDS)
+        + "."
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -355,11 +386,17 @@ _MOVES_STEP = (
     "issues yet — I'll tell you which to start. "
 )
 
-FIRST_RUN_NO_BRIEF_MESSAGE = (
+# One body, two openers — the bounds, the naming ask and the moves ask are the
+# same product moment on both paths, and two copies of them drifted apart once
+# already.
+_KICKOFF_BODY = f"{_NAMING_STEP_SENTENCE} {_RESEARCH_BOUND}{_MOVES_STEP}I'm watching."
+
+_NO_BRIEF_OPENER = (
     "I'm not sure what to build yet — read BRIEF.md and pick something promising "
-    f"for me, then tell me what you chose and why. {_NAMING_STEP_SENTENCE} "
-    f"{_RESEARCH_BOUND}{_MOVES_STEP}I'm watching."
+    "for me, then tell me what you chose and why. "
 )
+
+FIRST_RUN_NO_BRIEF_MESSAGE = _NO_BRIEF_OPENER + _KICKOFF_BODY
 
 
 def build_onboarding_brief_text(*, path: str, user_input: str | None, detail: str | None) -> str | None:
@@ -398,10 +435,12 @@ def build_onboarding_brief_text(*, path: str, user_input: str | None, detail: st
 # (render_integrations_md); Friday's only job here is the judgment call.
 _INTEGRATIONS_STEP = (
     "\n\nFrom the Integrations list in BRIEF.md, name the two or three that serve "
-    "those moves, one line each on what they unlock — I'll connect them from the "
-    "Integrations tab. Don't fetch the catalog and don't open sign-in pages; the "
-    "list is already there. Whatever BRIEF.md says about Stripe, repeat it and "
-    "say nothing more about Stripe."
+    "those moves, one line each on what they unlock and how they connect (the label "
+    "in the list) — I'll connect them from the Integrations tab. Don't fetch the "
+    "catalog and don't open sign-in pages; the list is already there. Whatever "
+    "BRIEF.md says about the company's own Stripe account, repeat it as written and "
+    "don't ask for that account. If BRIEF.md has no Integrations section, skip this "
+    "and just tell me to use the Integrations tab."
 )
 
 
@@ -439,12 +478,8 @@ def build_first_run_message(brief_text: str | None) -> str:
     email (first contact), and end with the same question.
     """
     brief = (brief_text or "").strip()
-    if not brief:
-        return FIRST_RUN_NO_BRIEF_MESSAGE + _INTEGRATIONS_STEP + _CLOSING_STEPS
-    return (
-        f"I'm starting {brief}. Read BRIEF.md first. "
-        f"{_NAMING_STEP_SENTENCE} {_RESEARCH_BOUND}{_MOVES_STEP}I'm watching." + _INTEGRATIONS_STEP + _CLOSING_STEPS
-    )
+    opener = FIRST_RUN_NO_BRIEF_MESSAGE if not brief else f"I'm starting {brief}. Read BRIEF.md first. {_KICKOFF_BODY}"
+    return opener + _INTEGRATIONS_STEP + _CLOSING_STEPS
 
 
 async def seed_goal_and_project(
@@ -768,12 +803,12 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
         agents = await admin.list_agents(session_cookie=session_cookie, company_id=owner_row.company_id)
         # Deterministic menu + Stripe status for the first run (see the
         # render_integrations_md header). A missing billing row renders the
-        # trial wording, which is the safe default: "It is set up when the
+        # not-yet-subscribed wording, which is the safe default: "Once the
         # owner subscribes". Read HERE, not next to the staging call: below
         # the claim a DynamoDB blip would unwind the goal, the project and
         # the claim itself, where up here it costs one retried attempt.
         billing_row = await billing_repo.get_by_owner_id(owner_id) or {}
-        integrations_md = render_integrations_md(integration_rows_from_registry(), billing_row)
+        integrations_md = render_integrations_md(integration_rows_from_registry(owner_id), billing_row)
     except Exception as e:  # noqa: BLE001 — classified by the caller's budget
         # Counted as a FAILURE, not as "not ready". Most of what lands here IS
         # transient (Paperclip warming, a 5xx), but some of it never resolves:

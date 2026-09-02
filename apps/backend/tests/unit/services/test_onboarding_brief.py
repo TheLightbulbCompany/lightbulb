@@ -88,6 +88,9 @@ def test_brief_md_you_pick_path_still_researches_the_person():
     # lines above it: on this path the business is not chosen yet.
     assert "Keep the research to the business" not in md
     assert "Once you have chosen" in md
+    # …and the market research is bounded ON TOP of what choosing cost, not
+    # instead of it — the you-pick path spends searches before it even starts.
+    assert "on top of what choosing took" in md
 
 
 def test_goal_title_new_path_uses_their_words():
@@ -311,8 +314,15 @@ def test_first_run_message_points_at_the_staged_integrations_list(brief):
     assert "lightbulb-connect.sh" not in msg
     assert "authorize" not in msg.lower()
     assert "Browser panel" not in msg
-    # Stripe is stated by BRIEF.md, never requested by Friday on a first run.
-    assert "nothing more about Stripe" in msg
+    # The COMPANY'S OWN Stripe account is stated by BRIEF.md and never requested
+    # by Friday on a first run — the `stripe` integration row is a separate
+    # credential and is not silenced with it.
+    assert "company's own Stripe account" in msg
+    # B: the label says HOW each one connects, not just what it unlocks.
+    assert "how they connect" in msg
+    # F: BRIEF.md is written by whatever backend provisioned the container; a
+    # skewed one has no Integrations section and the run must not stall on it.
+    assert "no Integrations section" in msg
 
 
 # --- First-run kickoff: name the company, then email the owner -------------
@@ -377,10 +387,34 @@ def test_kickoff_never_inlines_an_authorization_header():
 
 def _rows():
     return [
-        IntegrationRow(key="stripe", display_name="Stripe", byo_required=False, requestable=False),
-        IntegrationRow(key="instagram", display_name="Instagram", byo_required=False, requestable=False),
-        IntegrationRow(key="google", display_name="Google Workspace", byo_required=True, requestable=False),
-        IntegrationRow(key="meta_ads", display_name="Meta Ads", byo_required=False, requestable=True),
+        IntegrationRow(
+            key="stripe", display_name="Stripe", byo_required=False, requestable=False, acquisition="direct_oauth"
+        ),
+        IntegrationRow(
+            key="instagram",
+            display_name="Instagram",
+            byo_required=False,
+            requestable=False,
+            acquisition="direct_oauth",
+        ),
+        IntegrationRow(
+            key="google",
+            display_name="Google Workspace",
+            byo_required=True,
+            requestable=False,
+            acquisition="direct_oauth",
+        ),
+        IntegrationRow(
+            key="meta_ads",
+            display_name="Meta Ads",
+            byo_required=False,
+            requestable=True,
+            acquisition="direct_oauth",
+        ),
+        IntegrationRow(
+            key="shopify", display_name="Shopify", byo_required=False, requestable=False, acquisition="paste_token"
+        ),
+        IntegrationRow(key="aws", display_name="AWS", byo_required=False, requestable=False, acquisition="aws_sts"),
     ]
 
 
@@ -390,33 +424,73 @@ def test_integrations_md_labels_each_provider_from_the_two_flags():
     assert "- Instagram (`instagram`): one-click" in md
     assert "- Google Workspace (`google`): needs you (bring your own app)" in md
     assert "- Meta Ads (`meta_ads`): by request" in md
-    # Stripe is owned by the dedicated line, never repeated as a generic row.
-    assert "- Stripe (`stripe`)" not in md
+    # "one-click" is a claim about the acquisition rail, not a default: five
+    # providers want a pasted API key and AWS wants a role launcher.
+    assert "- Shopify (`shopify`): API key (paste it in the Integrations tab)" in md
+    assert "- AWS (`aws`): AWS role (a launcher in the Integrations tab)" in md
+    # The `stripe` ROW is the agent's Stripe tools — a different credential from
+    # the company's own Connect account on the dedicated line. Both appear.
+    assert "- Stripe (`stripe`): one-click" in md
     assert "Stripe (the company's own account)" in md
     # The section tells Friday NOT to re-fetch or open sign-in pages on a first run.
     assert "never fetch this catalog" in md
     assert "Integrations tab" in md
 
 
+def test_integrations_md_names_the_channels():
+    """The section forbids fetching a catalog, so channels the owner can reach
+    Friday on have to be named here or they are invisible to the first run."""
+    md = render_integrations_md(_rows(), {})
+    assert "Channels tab" in md
+    assert "Telegram, Discord, Slack" in md
+
+
 def test_integrations_md_stripe_line_trial_says_it_comes_with_subscribing():
     md = render_integrations_md(_rows(), {"subscription_status": "trial_local"})
-    assert "set up when the owner subscribes" in md
-    assert "do not request it" in md
+    assert "Once the owner subscribes" in md
+    assert "do not request it now" in md
 
 
-def test_integrations_md_stripe_line_paid_says_the_card_is_already_filed():
-    for status in ("active", "trialing", "past_due"):
-        md = render_integrations_md(_rows(), {"subscription_status": status})
-        assert "check their Inbox" in md, status
-        assert "Do not file another request" in md, status
+def test_integrations_md_stripe_line_paid_points_at_settings_never_files():
+    """Subscribing does not create the account — the owner does, from Settings.
+    The old line promised the platform had already filed the request, which sent
+    Friday to an Inbox card that may not exist."""
+    rows = [
+        {"subscription_status": "active"},
+        {"subscription_status": "trialing"},
+        {"subscription_status": "past_due"},
+        # Legacy row: status never backfilled, subscription id is the proof.
+        {"subscription_status": None, "stripe_subscription_id": "sub_1"},
+    ]
+    for row in rows:
+        md = render_integrations_md(_rows(), row)
+        assert "sets it up from Settings" in md, row
+        assert "Do not file a request yourself" in md, row
 
 
 def test_integrations_md_stripe_line_connected_wins_over_status():
     md = render_integrations_md(
-        _rows(), {"subscription_status": "trial_local", "company_stripe_account_id": "acct_123"}
+        _rows(),
+        {
+            "subscription_status": "trial_local",
+            "company_stripe_account_id": "acct_123",
+            "company_stripe_charges_enabled": True,
+        },
     )
     assert "account): connected." in md
     assert "do not request it" not in md
+
+
+def test_integrations_md_stripe_line_pending_when_charges_not_enabled():
+    """An account id alone is onboarding STARTED, not finished — the same
+    connected/pending/none split owner_facts writes into lightbulb-facts.json."""
+    for row in (
+        {"company_stripe_account_id": "acct_123", "company_stripe_charges_enabled": False},
+        {"company_stripe_account_id": "acct_123"},
+    ):
+        md = render_integrations_md(_rows(), row)
+        assert "still being set up" in md, row
+        assert "account): connected." not in md, row
 
 
 def test_integration_rows_come_from_the_live_registry_sorted():
@@ -427,6 +501,7 @@ def test_integration_rows_come_from_the_live_registry_sorted():
     keys = {r.key for r in rows}
     assert "stripe" in keys  # the one every company needs
     assert all(isinstance(r.byo_required, bool) and isinstance(r.requestable, bool) for r in rows)
+    assert all(isinstance(r.acquisition, str) and r.acquisition for r in rows)
 
 
 def test_integration_rows_drop_providers_gated_out_of_this_env(monkeypatch):
@@ -439,12 +514,14 @@ def test_integration_rows_drop_providers_gated_out_of_this_env(monkeypatch):
 
     from core.services.credentials import registry
 
-    def _p(key, *, visible, offer_request_access=False):
+    def _p(key, *, visible, offer_request_access=False, owner_allowlist=None):
         return SimpleNamespace(
             key=key,
             display_name=key.title(),
             byo_required=False,
+            acquisition="direct_oauth",
             offer_request_access=offer_request_access,
+            owner_allowlist=owner_allowlist,
             visible=visible,
         )
 
@@ -460,6 +537,35 @@ def test_integration_rows_drop_providers_gated_out_of_this_env(monkeypatch):
     assert "gated" not in rows
     assert rows["here"].requestable is False
     assert rows["askable"].requestable is True
+
+
+def test_integration_rows_honour_the_owner_allowlist(monkeypatch):
+    """The prod-dogfood escape hatch: a provider gated out of this environment
+    but allowlisted to one owner is connectable FOR THAT OWNER, and invisible to
+    everyone else. The menu has to agree with the tab that owner actually opens
+    (registry.available_for), or Friday pitches "by request" for a button that
+    says Connect."""
+    from types import SimpleNamespace
+
+    from core.services.credentials import registry
+
+    providers = {
+        "dogfood": SimpleNamespace(
+            key="dogfood",
+            display_name="Dogfood",
+            byo_required=False,
+            acquisition="direct_oauth",
+            offer_request_access=False,
+            owner_allowlist=["user_founder"],
+        )
+    }
+    monkeypatch.setattr(registry, "all_providers", lambda: providers)
+    monkeypatch.setattr(registry, "visible_in_env", lambda p: False)
+
+    mine = {r.key: r for r in integration_rows_from_registry("user_founder")}
+    assert mine["dogfood"].requestable is False
+    assert "dogfood" not in {r.key for r in integration_rows_from_registry("user_someone_else")}
+    assert "dogfood" not in {r.key for r in integration_rows_from_registry()}
 
 
 class _CapturingWorkspace:

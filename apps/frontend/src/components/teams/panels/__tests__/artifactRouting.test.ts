@@ -8,6 +8,7 @@ import {
   artifactContentPath,
   sortGroupsByUpdated,
   sortArtifactsByUpdated,
+  bucketByRecency,
 } from "../artifactRouting";
 import type {
   CompanyArtifact,
@@ -148,5 +149,24 @@ describe("artifactRouting", () => {
     expect(sortGroupsByUpdated(groups, "oldest").map((x) => x.id)).toEqual(["a", "b"]);
     // input untouched
     expect(groups.map((x) => x.id)).toEqual(["a", "b"]);
+  });
+
+  it("buckets artifacts into This week / Earlier this month / Older by updatedAt", () => {
+    const now = Date.parse("2026-09-01T12:00:00Z");
+    const mk = (id: string, updatedAt: string) => artifact({ id, updatedAt });
+    const out = bucketByRecency(
+      [
+        mk("old", "2026-06-01T00:00:00Z"),
+        mk("wk", "2026-08-30T00:00:00Z"),
+        mk("mo", "2026-08-10T00:00:00Z"),
+        mk("bad", "not-a-date"),
+      ],
+      now,
+    );
+    expect(out.map((b) => [b.label, b.artifacts.map((a) => a.id)])).toEqual([
+      ["This week", ["wk"]],
+      ["Earlier this month", ["mo"]],
+      ["Older", ["old", "bad"]],
+    ]);
   });
 });

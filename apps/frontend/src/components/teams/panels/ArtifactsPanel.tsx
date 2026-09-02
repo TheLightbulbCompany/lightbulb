@@ -8,12 +8,15 @@
 // (c) 2025 Paperclip AI), adapted to our editorial styling and our in-app
 // viewer.
 //
-// Two views, held in component state (upstream drives them via URL params):
-//   1. STACK LIST (default) — `GET /artifacts?groupBy=task` → a grid of
-//      ArtifactStackCards, one per task. Clicking a stack EXPANDS it inline.
-//   2. EXPANDED STACK — `GET /artifacts?groupBy=task&groupIssueId={id}` → that
-//      task's artifacts as ArtifactGalleryCards, with a "← All artifacts" back
-//      control. Clicking a card opens the in-app ArtifactViewerDialog.
+// Three views, held in component state (upstream drives them via URL params):
+//   1. RECENT (default) — `GET /artifacts?groupBy=none&limit=100` → the flat
+//      newest-first feed, bucketed by date. It answers the owner's actual
+//      question ("what did my agents make this week?") in one glance.
+//   2. BY TASK — `GET /artifacts?groupBy=task` → a grid of ArtifactStackCards,
+//      one per task. Clicking a stack EXPANDS it inline.
+//   3. EXPANDED STACK — `GET /artifacts?groupBy=task&groupIssueId={id}` → that
+//      task's artifacts as ArtifactGalleryCards, with a back control. Clicking
+//      a card opens the in-app ArtifactViewerDialog.
 //
 // Capabilities preserved from the previous list impl (do not regress):
 //   - VIEW   — clicking an artifact card opens ArtifactViewerDialog, which
@@ -25,20 +28,20 @@
 //     delete keeps the confirm dialog open with an error rather than closing.
 //   - SORT   — a Newest/Oldest control sorts the current view client-side.
 //
-// Deferred (follow-up): the flat/ungrouped view (`groupBy=none`), kind facets,
-// cursor pagination, and lazy image-thumbnail loading — the BFF route already
-// forwards those params.
+// Deferred (follow-up): kind facets, cursor pagination, and lazy image-thumbnail
+// loading — the BFF route already forwards those params.
 
 import { useState } from "react";
 import { useSWRConfig } from "swr";
 import { ArrowLeft, Images } from "lucide-react";
-import { PanelMasthead, PanelNotice } from "@/components/teams/shell";
+import { PanelMasthead, PanelNotice, PanelTabs } from "@/components/teams/shell";
 import { EditorialDialog } from "@/components/teams/shell/EditorialDialog";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { ArtifactViewerDialog } from "./ArtifactViewerDialog";
 import { ArtifactGalleryCard, ArtifactStackCard } from "./ArtifactCards";
 import {
   artifactContentPath,
+  bucketByRecency,
   deletePathForArtifact,
   issueListPathForArtifact,
   sortArtifactsByUpdated,
@@ -49,6 +52,12 @@ import type {
   CompanyArtifact,
   CompanyArtifactsResponse,
 } from "@/components/teams/shared/types";
+
+/** Which list the panel is showing. `recent` is the default — a flat,
+ * date-bucketed feed; `by-task` is the ported stack view. */
+export type LibraryView = "recent" | "by-task";
+
+const RECENT_PATH = "/artifacts?groupBy=none&limit=100";
 
 function SortControl({
   sort,
@@ -102,21 +111,29 @@ export function ArtifactsPanel() {
   // View state: null = the stack list; an issue id = that expanded stack. Upstream
   // holds this in a URL param (`groupIssueId`); we keep it in component state.
   const [expandedIssueId, setExpandedIssueId] = useState<string | null>(null);
+  const [view, setView] = useState<LibraryView>("recent");
   const [sort, setSort] = useState<ArtifactSort>("newest");
   const [viewing, setViewing] = useState<CompanyArtifact | null>(null);
   const [pendingDelete, setPendingDelete] = useState<CompanyArtifact | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
+  // Recent — the flat newest-first feed, bucketed by date. Only the active view
+  // is read; the other key stays null so switching tabs costs one fetch, not two.
+  const recent = read<CompanyArtifactsResponse>(view === "recent" ? RECENT_PATH : null);
   // Stack list — groupBy=task clusters deliverables under the issue that produced
   // them (the ported grouped shape, not a flat firehose).
-  const stackList = read<CompanyArtifactsResponse>("/artifacts?groupBy=task");
+  const stackList = read<CompanyArtifactsResponse>(
+    view === "by-task" ? "/artifacts?groupBy=task" : null,
+  );
   // Expanded stack — a conditional (null-keyed) read until a stack is opened.
   const expanded = read<CompanyArtifactsResponse>(
     expandedIssueId
       ? `/artifacts?groupBy=task&groupIssueId=${encodeURIComponent(expandedIssueId)}`
       : null,
   );
+
+  const recentArtifacts = recent.data?.artifacts ?? [];
 
   const groups = stackList.data?.groups ?? [];
   const sortedGroups = sortGroupsByUpdated(groups, sort);
@@ -126,10 +143,19 @@ export function ArtifactsPanel() {
   const selectedGroup =
     expanded.data?.selectedGroup ?? groups.find((g) => g.issue?.id === expandedIssueId) ?? null;
 
+  const isRecent = view === "recent";
   const isExpanded = expandedIssueId !== null;
-  const activeLoading = isExpanded ? expanded.isLoading : stackList.isLoading;
-  const activeError = isExpanded ? expanded.error : stackList.error;
-  const hasItems = isExpanded ? expandedArtifacts.length > 0 : groups.length > 0;
+  const activeLoading = isRecent
+    ? recent.isLoading
+    : isExpanded
+      ? expanded.isLoading
+      : stackList.isLoading;
+  const activeError = isRecent ? recent.error : isExpanded ? expanded.error : stackList.error;
+  const hasItems = isRecent
+    ? recentArtifacts.length > 0
+    : isExpanded
+      ? expandedArtifacts.length > 0
+      : groups.length > 0;
 
   async function handleDownload(artifact: CompanyArtifact) {
     const path = artifactContentPath(artifact);
@@ -179,6 +205,7 @@ export function ArtifactsPanel() {
     setDeleting(false);
     const issueListPath = issueListPathForArtifact(artifact);
     void Promise.all([
+      recent.mutate(),
       stackList.mutate(),
       expandedIssueId ? expanded.mutate() : Promise.resolve(undefined),
       issueListPath ? mutateCache(`/teams${issueListPath}`) : Promise.resolve(undefined),
@@ -187,12 +214,28 @@ export function ArtifactsPanel() {
 
   return (
     <div className="editorial-page p-4 sm:p-5 lg:p-6 flex flex-col gap-4 max-w-4xl mx-auto w-full">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <PanelMasthead overline="Knowledge" title="Library" />
-        {hasItems ? <SortControl sort={sort} onChange={setSort} /> : null}
+        <div className="flex items-center gap-2">
+          <PanelTabs
+            variant="pill"
+            ariaLabel="Library view"
+            value={view}
+            onValueChange={(v) => {
+              setView(v as LibraryView);
+              setExpandedIssueId(null);
+            }}
+            tabs={[
+              { value: "recent", label: "Recent" },
+              { value: "by-task", label: "By task" },
+            ]}
+          />
+          {/* Recent is date-ordered by definition; sort belongs to the stacks. */}
+          {!isRecent && hasItems ? <SortControl sort={sort} onChange={setSort} /> : null}
+        </div>
       </div>
 
-      {isExpanded ? (
+      {!isRecent && isExpanded ? (
         <div className="flex flex-wrap items-center gap-2 text-sm">
           <button
             type="button"
@@ -241,6 +284,31 @@ export function ArtifactsPanel() {
               supporting="The first deliverable your agents finish lands here — plans they write, files they upload, pages they publish."
             />
           )
+        ) : isRecent ? (
+          <div className="flex flex-col gap-5">
+            {bucketByRecency(recentArtifacts).map(({ label, artifacts }) => (
+              <section key={label} aria-label={label} className="flex flex-col gap-2">
+                <h2 className="label-caps">{label}</h2>
+                <div className="grid grid-cols-1 gap-3 @xl:grid-cols-2 @4xl:grid-cols-3">
+                  {artifacts.map((artifact) => (
+                    <ArtifactGalleryCard
+                      key={artifact.id}
+                      artifact={artifact}
+                      onOpen={setViewing}
+                      onDownload={handleDownload}
+                      onRequestDelete={setPendingDelete}
+                    />
+                  ))}
+                </div>
+              </section>
+            ))}
+            {recent.data?.nextCursor ? (
+              // ponytail: limit=100 + this line instead of cursor paging; add useSWRInfinite over nextCursor when a Library passes 100 and search is not enough.
+              <p className="text-caption" style={{ color: "var(--midnight-muted)" }}>
+                Showing the latest 100. Search to find older deliverables.
+              </p>
+            ) : null}
+          </div>
         ) : isExpanded ? (
           <div className="grid grid-cols-1 gap-3 @xl:grid-cols-2 @4xl:grid-cols-3">
             {sortedArtifacts.map((artifact) => (

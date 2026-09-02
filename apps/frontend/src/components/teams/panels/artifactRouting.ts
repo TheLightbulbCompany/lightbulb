@@ -149,3 +149,30 @@ export function sortArtifactsByUpdated(
 ): CompanyArtifact[] {
   return sortByUpdated(artifacts, dir);
 }
+
+export type RecencyBucket = "This week" | "Earlier this month" | "Older";
+const BUCKET_ORDER: RecencyBucket[] = ["This week", "Earlier this month", "Older"];
+
+/** Split a newest-first artifact list into date buckets for the Recent view.
+ * Unparseable dates fall to "Older" rather than "This week" (a claim we can't
+ * make). Order inside a bucket is the input order (server is newest-first). */
+export function bucketByRecency(
+  artifacts: CompanyArtifact[],
+  now: number = Date.now(),
+): { label: RecencyBucket; artifacts: CompanyArtifact[] }[] {
+  const DAY = 86_400_000;
+  const by: Record<RecencyBucket, CompanyArtifact[]> = {
+    "This week": [],
+    "Earlier this month": [],
+    Older: [],
+  };
+  for (const a of artifacts) {
+    const age = now - Date.parse(a.updatedAt);
+    const label: RecencyBucket =
+      age < 7 * DAY ? "This week" : age < 30 * DAY ? "Earlier this month" : "Older";
+    by[label].push(a);
+  }
+  return BUCKET_ORDER.map((label) => ({ label, artifacts: by[label] })).filter(
+    (b) => b.artifacts.length > 0,
+  );
+}

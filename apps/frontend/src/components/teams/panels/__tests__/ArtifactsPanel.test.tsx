@@ -95,7 +95,13 @@ function group(over: Record<string, unknown> = {}) {
   };
 }
 
-// Stack-list read (default view).
+// Flat newest-first read (the default Recent view).
+const RECENT_PATH = "/artifacts?groupBy=none&limit=100";
+function stubRecent(artifacts: unknown[], nextCursor: string | null = null) {
+  reads[RECENT_PATH] = { data: { artifacts, nextCursor }, isLoading: false, error: undefined };
+}
+
+// Stack-list read (the By task tab).
 function stubStackList(groups: unknown[]) {
   reads["/artifacts?groupBy=task"] = {
     data: { artifacts: [], groups, nextCursor: null },
@@ -117,7 +123,12 @@ function stubExpanded(
   };
 }
 
-// Default view renders stack cards; click the (single) stack to expand it.
+// Radix tabs activate on mousedown, not click (see InboxToolbar.test.tsx).
+function switchToByTask() {
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "By task" }));
+}
+
+// The By task tab renders stack cards; click the (single) stack to expand it.
 function expandStack() {
   fireEvent.click(screen.getByTestId("artifact-stack-card"));
 }
@@ -145,11 +156,47 @@ beforeEach(() => {
   (globalThis.URL.revokeObjectURL as unknown) = vi.fn();
 });
 
+describe("ArtifactsPanel — Recent view (default)", () => {
+  it("opens on a flat newest-first feed bucketed by date, without a task stack", async () => {
+    stubRecent([
+      { ...DOC, updatedAt: new Date().toISOString() },
+      { ...ATTACHMENT, updatedAt: "2020-01-01T00:00:00Z" },
+    ]);
+    render(<ArtifactsPanel />);
+    expect(readPaths).toContain(RECENT_PATH);
+    expect(screen.getByRole("heading", { name: "This week" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Older" })).toBeInTheDocument();
+    expect(screen.getAllByTestId("artifact-card")).toHaveLength(2);
+    expect(screen.queryByTestId("artifact-stack-card")).not.toBeInTheDocument();
+    // The image card's thumbnail resolves off-render; flush it inside the test.
+    await waitFor(() => expect(download).toHaveBeenCalledWith("/attachments/att1/content"));
+  });
+
+  it("says when the feed is capped so an owner never mistakes 100 for everything", () => {
+    stubRecent([DOC], "cursor-1");
+    render(<ArtifactsPanel />);
+    expect(
+      screen.getByText("Showing the latest 100. Search to find older deliverables."),
+    ).toBeInTheDocument();
+  });
+
+  it("switches to the By task stacks and back", () => {
+    stubRecent([DOC]);
+    stubStackList([group()]);
+    render(<ArtifactsPanel />);
+    switchToByTask();
+    expect(screen.getByTestId("artifact-stack-card")).toBeInTheDocument();
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Recent" }));
+    expect(screen.getByTestId("artifact-card")).toBeInTheDocument();
+  });
+});
+
 describe("ArtifactsPanel — stack list + expand", () => {
   it("shows a stack card by default and expands it into artifact cards, fetching by groupIssueId", () => {
     stubStackList([group()]);
     stubExpanded("iss_1", [DOC, WORK_PRODUCT]);
     render(<ArtifactsPanel />);
+    switchToByTask();
 
     // Default view: the stack card, no per-artifact cards yet.
     expect(screen.getByTestId("artifact-stack-card")).toBeInTheDocument();
@@ -167,6 +214,7 @@ describe("ArtifactsPanel — stack list + expand", () => {
     stubStackList([group()]);
     stubExpanded("iss_1", [DOC]);
     render(<ArtifactsPanel />);
+    switchToByTask();
 
     expandStack();
     expect(screen.getByTestId("artifact-card")).toBeInTheDocument();
@@ -182,6 +230,7 @@ describe("ArtifactsPanel — artifact card previews", () => {
     stubStackList([group()]);
     stubExpanded("iss_1", [DOC, WORK_PRODUCT]);
     render(<ArtifactsPanel />);
+    switchToByTask();
     expandStack();
 
     const docCard = cardFor("Implementation plan");
@@ -206,6 +255,7 @@ describe("ArtifactsPanel — view on click", () => {
       data: { id: "doc1", key: "plan", body: "Implementation details here" },
     };
     render(<ArtifactsPanel />);
+    switchToByTask();
     expandStack();
 
     fireEvent.click(cardFor("Implementation plan"));
@@ -224,6 +274,7 @@ describe("ArtifactsPanel — view on click", () => {
       },
     };
     render(<ArtifactsPanel />);
+    switchToByTask();
     expandStack();
 
     fireEvent.click(cardFor("Deploy preview"));
@@ -241,6 +292,7 @@ describe("ArtifactsPanel — view on click", () => {
       isValidating: true,
     };
     render(<ArtifactsPanel />);
+    switchToByTask();
     expandStack();
 
     fireEvent.click(cardFor("Deploy preview"));
@@ -256,6 +308,7 @@ describe("ArtifactsPanel — view on click", () => {
     stubStackList([group()]);
     stubExpanded("iss_1", [ATTACHMENT]);
     render(<ArtifactsPanel />);
+    switchToByTask();
     expandStack();
 
     fireEvent.click(cardFor("Screenshot.png"));
@@ -278,6 +331,7 @@ describe("ArtifactsPanel — secondary icons stop propagation (do not open the v
         <ArtifactsPanel />
       </InlineTeamsNavProvider>,
     );
+    switchToByTask();
     expandStack();
 
     const link = within(cardFor("Implementation plan")).getByRole("link", {
@@ -301,6 +355,7 @@ describe("ArtifactsPanel — secondary icons stop propagation (do not open the v
       .spyOn(HTMLAnchorElement.prototype, "click")
       .mockImplementation(() => {});
     render(<ArtifactsPanel />);
+    switchToByTask();
     expandStack();
 
     fireEvent.click(
@@ -317,6 +372,7 @@ describe("ArtifactsPanel — secondary icons stop propagation (do not open the v
     stubStackList([group()]);
     stubExpanded("iss_1", [DOC]);
     render(<ArtifactsPanel />);
+    switchToByTask();
     expandStack();
 
     fireEvent.click(
@@ -338,6 +394,7 @@ describe("ArtifactsPanel — delete", () => {
     stubStackList([group()]);
     stubExpanded("iss_1", [DOC]);
     render(<ArtifactsPanel />);
+    switchToByTask();
     expandStack();
 
     fireEvent.click(screen.getByRole("button", { name: "Delete Implementation plan" }));
@@ -358,6 +415,7 @@ describe("ArtifactsPanel — delete", () => {
     stubStackList([group()]);
     stubExpanded("iss_1", [WORK_PRODUCT]);
     render(<ArtifactsPanel />);
+    switchToByTask();
     expandStack();
 
     fireEvent.click(screen.getByRole("button", { name: "Delete Deploy preview" }));
@@ -372,6 +430,7 @@ describe("ArtifactsPanel — delete", () => {
     stubStackList([group()]);
     stubExpanded("iss_1", [ATTACHMENT]);
     render(<ArtifactsPanel />);
+    switchToByTask();
     expandStack();
 
     fireEvent.click(screen.getByRole("button", { name: "Delete Screenshot.png" }));
@@ -387,6 +446,7 @@ describe("ArtifactsPanel — delete", () => {
     stubExpanded("iss_1", [DOC]);
     del.mockRejectedValueOnce(new Error("boom"));
     render(<ArtifactsPanel />);
+    switchToByTask();
     expandStack();
 
     fireEvent.click(screen.getByRole("button", { name: "Delete Implementation plan" }));
@@ -404,6 +464,7 @@ describe("ArtifactsPanel — delete", () => {
     stubStackList([group()]);
     stubExpanded("iss_1", [DOC]);
     render(<ArtifactsPanel />);
+    switchToByTask();
     expandStack();
 
     fireEvent.click(screen.getByRole("button", { name: "Delete Implementation plan" }));
@@ -429,6 +490,7 @@ describe("ArtifactsPanel — sort", () => {
       }),
     ]);
     render(<ArtifactsPanel />);
+    switchToByTask();
 
     const identifiersNewest = screen.getAllByText(/^ISO-\d$/).map((el) => el.textContent);
     expect(identifiersNewest).toEqual(["ISO-2", "ISO-1"]);
@@ -441,7 +503,7 @@ describe("ArtifactsPanel — sort", () => {
 
 describe("ArtifactsPanel — honest states", () => {
   it("renders the zero notice when there is genuinely nothing", () => {
-    stubStackList([]);
+    stubRecent([]);
     render(<ArtifactsPanel />);
     const notice = screen.getByRole("status");
     expect(notice).toHaveAttribute("data-panel-notice", "zero");
@@ -453,7 +515,7 @@ describe("ArtifactsPanel — honest states", () => {
   });
 
   it("renders unavailable — never zero — when the read fails", () => {
-    reads["/artifacts?groupBy=task"] = {
+    reads[RECENT_PATH] = {
       data: undefined,
       isLoading: false,
       error: new Error("boom"),

@@ -28,6 +28,9 @@ description: >
                               routers/ses_inbound.py (email wake — allowlisted senders only); container cron via backend RPC;
                               extended-image gog binary (gmail settings watch = Pub/Sub)
   - Control Panel tabs ...... apps/frontend/src/components/control/ControlSidebar.tsx (NAV_ITEMS)
+  - Questions / secrets ..... apps/frontend/src/hooks/useQuestions.tsx + components/chat/QuestionCards.tsx (question.requested/resolved,
+                              question.resolve incl. secretStoreAllowedHosts); AgentProgressCard.tsx (progressCard.get/changed);
+                              ChatInput.tsx editable queue; core/containers/config.py TOOL_DENY_BASE (ask_user + secrets are NOT denied)
   - Integrations wiring ..... apps/backend/routers/integrations.py; core/containers/config.py (integration_mcp_servers merge)
   - Marketplace flows ....... apps/backend/routers/{marketplace_listings,marketplace_import}.py; core/services/{marketplace_service,agent_export,catalog_service,claude_code_import}.py
   - Seed team + roster ...... apps/backend/core/services/paperclip_provisioning.py (provision_org); friday_identity.py; atlas_seed/
@@ -115,6 +118,23 @@ exists.
 
 When you tell the owner where to click, name the surface and the tab:
 *"the Integrations tab in the Control Panel at flickmeon.ai/chat"*.
+
+**Asking the owner something, and asking for a credential.** Your `ask_user`
+tool renders in the owner's chat as a card — header, the options as buttons,
+an "Other" field, Skip, and a countdown — and their answer comes back to you
+as the tool result. Use it when a choice is genuinely theirs (which cloud,
+which of two approaches, a yes/no that changes what you do next) instead of
+asking in prose and stalling the run. For a credential, use the `secrets`
+tool: the owner gets a masked field and a consent block naming what is being
+stored and which hosts it may be sent to, the value is written to the secret
+store, and it never enters the transcript — so never ask for an API key,
+token or password in a chat message, and never echo one back. Both cards
+expire on their own; an unanswered question is a normal `no_answer` result,
+so carry on with your best judgment rather than re-asking. Your durable
+`progressCard` renders above the transcript as a collapsible card the owner
+can read between turns; keep it current on long runs. Prompts the owner
+queues while you are working can be edited or reordered before they reach
+you, so treat a queued message as final only once it arrives.
 
 **The Launch Competition.** Lightbulb runs a time-boxed competition ranked on
 the entrant's own Stripe account's revenue lift, never platform revenue. **It

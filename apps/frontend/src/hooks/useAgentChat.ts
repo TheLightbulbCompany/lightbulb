@@ -1345,6 +1345,34 @@ export function useAgentChat(
     [sendReq, invalidateHistoryAndRefetch, sessionKeyNow],
   );
 
+  // ---- Soft history revalidation on a run's terminal ----
+  //
+  // The optimistic user bubble sendMessage appends has no `__openclaw.id`, and
+  // nothing refetched history when the run ended — so MessageList's "Rewind to
+  // here" (gated on persistedEntryId) never appeared on anything typed in the
+  // current session until a full reload (prod 8.1 walk: 0/7 bubbles live, 7/7
+  // after F5). Re-read on the terminal so the server's entryIds land on the
+  // bubbles already on screen.
+  //
+  // SOFT, unlike invalidateHistoryAndRefetch: `_messageCache` and
+  // `chatMessages` are left untouched, so the fetch effect takes its cached-
+  // mount path — no skeleton, no blanked transcript, the composer never
+  // disables. `transcriptMutationSeqRef` still arbitrates: a send racing this
+  // refetch discards the snapshot, and that send's own terminal re-issues it.
+  //
+  // It also bumps `branchRefreshToken`: a new turn changes the active branch's
+  // message count and SessionBranchBar re-lists on that token alone, so the
+  // pill read "· 4 messages" for a 6-message branch.
+  const softRevalidateHistory = useCallback(() => {
+    const key = agentIdRef.current
+      ? `${agentIdRef.current}:${sessionName}:${activeSessionIdRef.current ?? ""}`
+      : null;
+    if (!key) return;
+    historyLoadedRef.current.delete(key);
+    setHistoryRefetchNonce((n) => n + 1);
+    setBranchRefreshToken((n) => n + 1);
+  }, [sessionName]);
+
   // ---- Load older history (paging backward) ----
   //
   // Walks the module-level `_historyPaging` cursor backward one page at a
@@ -1914,6 +1942,9 @@ export function useAgentChat(
           clientRunIdRef.current = null;
           resumeExpectedRef.current = false;
         }
+        // Runs at most once per runId (the addCappedRunId dedupe above), so a
+        // `done` that already revalidated is not repeated here.
+        softRevalidateHistory();
         drainQueueRef.current();
         return;
       }
@@ -2023,6 +2054,9 @@ export function useAgentChat(
         // run-ended signal, so the drain must happen here too.
         if (endedActiveRun && !drainedRunIdsRef.current.has(runId)) {
           addCappedRunId(drainedRunIdsRef.current, runId);
+          // Same runId dedupe as the drain: whichever terminal gets here first
+          // (this `done`, or the trailing `run_ended`) revalidates, never both.
+          softRevalidateHistory();
           drainQueueRef.current();
         }
         return;

@@ -258,7 +258,11 @@ export function ChatInput({
       if (detail?.agentId && detail.agentId !== agentIdRef.current) return;
       // Consume any pending module-store request for this agent so the
       // mount-path effect below can't re-fire the same handoff.
-      if (detail?.agentId) consumeFocusComposerRequest(detail.agentId);
+      const req = detail?.agentId ? consumeFocusComposerRequest(detail.agentId) : null;
+      // Seed only an empty composer — a handoff must never clobber a
+      // half-typed message; it still focuses so the owner sees where to type.
+      const draft = req?.draft;
+      if (draft) setInput((cur) => cur || draft);
       runFocusRoutine();
     };
     window.addEventListener("getstarted:focus-composer", onFocusRequest);
@@ -274,7 +278,11 @@ export function ChatInput({
   // plain mount and a sentinel panel whose agentId resolves late.
   React.useEffect(() => {
     if (!agentId) return;
-    if (consumeFocusComposerRequest(agentId)) runFocusRoutine();
+    const req = consumeFocusComposerRequest(agentId);
+    if (!req) return;
+    const draft = req.draft;
+    if (draft) setInput((cur) => cur || draft);
+    runFocusRoutine();
   }, [agentId, runFocusRoutine]);
 
   const showSizeError = React.useCallback((message: string) => {

@@ -11,6 +11,7 @@ import { useSyncExternalStore } from "react";
 // — there is no plain `IDisposable` export, unlike the brief's import list.
 import type { DockviewApi, IDockviewPanel, DockviewIDisposable as IDisposable } from "dockview-react";
 import { pushSearchParams, replaceSearchParams } from "@/lib/shellNav";
+import { requestFocusComposer } from "@/lib/focusComposerRequest";
 import {
   describePanel,
   chatPanelId,
@@ -253,6 +254,23 @@ export function openChatPanel(agentId: string): void {
   }
   const descriptor = describePanel("chat", { agent: agentId });
   if (descriptor) addOrFocus(descriptor);
+}
+
+// Hand the default agent a drafted message: open (or focus) its chat and seed
+// the composer. Same record-then-open-then-event sequence as the Get Started
+// chat action in WorkspaceShell — the slot covers a freshly ADDED panel whose
+// ChatInput hasn't mounted, the event covers an already-mounted one; ChatInput
+// consumes the slot on both paths so nothing double-fires. False when no
+// default agent resolves (pre-provision) so callers can stay silent.
+export function openChatPanelWithDraft(draft: string): boolean {
+  const target = _resolveDefaultAgentId();
+  if (!target) return false;
+  requestFocusComposer(target, draft);
+  openChatPanel(target);
+  window.dispatchEvent(
+    new CustomEvent("getstarted:focus-composer", { detail: { agentId: target } }),
+  );
+  return true;
 }
 
 // Sanctioned exception to "close never touches the URL" (spec §6 rule 8):

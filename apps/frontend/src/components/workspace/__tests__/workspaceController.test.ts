@@ -4,6 +4,7 @@ import {
   attachDockviewApi,
   openPanel,
   openChatPanel,
+  openChatPanelWithDraft,
   closeSubjectDeleted,
   closeChatPanelIfOpen,
   isShellOperationInProgress,
@@ -17,6 +18,10 @@ vi.mock("@/lib/shellNav", () => ({
   replaceSearchParams: vi.fn(),
 }));
 import { pushSearchParams, replaceSearchParams } from "@/lib/shellNav";
+import {
+  consumeFocusComposerRequest,
+  _resetFocusComposerRequestForTests,
+} from "@/lib/focusComposerRequest";
 
 type Handler<T> = (e: T) => void;
 
@@ -88,6 +93,7 @@ function makeFakeApi() {
 
 beforeEach(() => {
   _resetControllerForTests();
+  _resetFocusComposerRequestForTests();
   vi.clearAllMocks();
 });
 
@@ -195,6 +201,21 @@ describe("workspaceController", () => {
     attachDockviewApi(api, () => undefined);
     openChatPanel("a-1");
     expect(api.addPanel).toHaveBeenCalledWith(expect.objectContaining({ renderer: "always" }));
+  });
+
+  it("openChatPanelWithDraft opens the default agent's chat and parks the draft", () => {
+    const api = makeFakeApi();
+    attachDockviewApi(api, () => "a-1");
+    expect(openChatPanelWithDraft("file the inbox")).toBe(true);
+    expect(api.addPanel).toHaveBeenCalledWith(expect.objectContaining({ id: "chat:a-1" }));
+    expect(consumeFocusComposerRequest("a-1")).toEqual({ draft: "file the inbox" });
+  });
+
+  it("openChatPanelWithDraft is a silent no-op with no default agent", () => {
+    const api = makeFakeApi();
+    attachDockviewApi(api, () => undefined);
+    expect(openChatPanelWithDraft("x")).toBe(false);
+    expect(api.addPanel).not.toHaveBeenCalled();
   });
 
   it("closeSubjectDeleted replaces URL, closes self with suppression up, opens the list", () => {

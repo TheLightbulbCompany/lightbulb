@@ -19,17 +19,27 @@ const mutate = vi.fn().mockResolvedValue(undefined);
 const nullMutate = vi.fn().mockResolvedValue(undefined);
 const del = vi.fn().mockResolvedValue({});
 const download = vi.fn();
+// SWR's `keepPreviousData`: while a NEW key is in flight the hook keeps serving
+// the previous key's data (with isLoading still true). Modelled here for the
+// reads that opt in, so an unstubbed path reads as "in flight", not as "empty".
+let keptData: unknown;
 
 vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: () => ({
-    read: (path: string | null) => {
+    read: (path: string | null, opts?: { keepPreviousData?: boolean }) => {
       if (path === null) {
         return { data: undefined, isLoading: false, error: undefined, mutate: nullMutate };
       }
       readPaths.push(path);
-      return reads[path]
-        ? { data: undefined, isLoading: false, error: undefined, mutate, ...reads[path] }
-        : { data: undefined, isLoading: false, error: undefined, mutate };
+      const stub = reads[path];
+      if (stub) {
+        if (opts?.keepPreviousData) keptData = stub.data;
+        return { data: undefined, isLoading: false, error: undefined, mutate, ...stub };
+      }
+      if (opts?.keepPreviousData && keptData !== undefined) {
+        return { data: keptData, isLoading: true, error: undefined, mutate };
+      }
+      return { data: undefined, isLoading: false, error: undefined, mutate };
     },
     del,
     download,
@@ -166,6 +176,7 @@ beforeEach(() => {
   // fake timers installed for every test after it.
   vi.useRealTimers();
   reads = {};
+  keptData = undefined;
   readPaths.length = 0;
   mutate.mockClear();
   nullMutate.mockClear();
@@ -203,6 +214,32 @@ describe("ArtifactsPanel — Recent view (default)", () => {
     expect(
       screen.getByText("Showing the latest 100. Search to find older deliverables."),
     ).toBeInTheDocument();
+  });
+
+  it("tells an owner who is already searching to narrow, not to search", () => {
+    vi.useFakeTimers();
+    stubRecent([DOC], "cursor-1");
+    reads[`${RECENT_PATH}&q=plan`] = {
+      data: { artifacts: [DOC], nextCursor: "cursor-2" },
+      isLoading: false,
+      error: undefined,
+    };
+    render(<ArtifactsPanel />);
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search the Library" }), {
+      target: { value: "plan" },
+    });
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+
+    expect(
+      screen.getByText("Showing the latest 100. Narrow your search to find older deliverables."),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Showing the latest 100. Search to find older deliverables."),
+    ).not.toBeInTheDocument();
+    vi.useRealTimers();
   });
 
   it("switches to the By task stacks and back", () => {
@@ -384,6 +421,60 @@ describe("ArtifactsPanel — view on click", () => {
     expect(download).toHaveBeenCalledWith("/attachments/att9/content");
     const md = await screen.findAllByTestId("md");
     expect(md.map((m) => m.textContent)).toContain("# Tiers");
+  });
+
+  it("does not claim a missing summary above the deliverable it is missing from", async () => {
+    stubRecent([WORK_PRODUCT_FILE]);
+    // The agent upload helper's default: no summary, bytes behind an attachment.
+    reads["/issues/iss_1/work-products"] = {
+      data: { workProducts: [{ id: "wp9", title: "Pricing proposal", summary: "", url: null }] },
+    };
+    download.mockResolvedValueOnce({
+      size: 7,
+      type: "text/markdown",
+      text: async () => "# Tiers",
+    } as unknown as Blob);
+    render(<ArtifactsPanel />);
+
+    fireEvent.click(cardFor("Pricing proposal"));
+
+    const md = await screen.findAllByTestId("md");
+    expect(md.map((m) => m.textContent)).toContain("# Tiers");
+    expect(screen.queryByText("No summary provided.")).not.toBeInTheDocument();
+  });
+
+  it("still renders the readable bytes when the work-products list read fails", async () => {
+    stubRecent([WORK_PRODUCT_FILE]);
+    // The list read carries the SUMMARY only. Losing it must not hide the file.
+    reads["/issues/iss_1/work-products"] = {
+      data: undefined,
+      isLoading: false,
+      error: new Error("boom"),
+    };
+    download.mockResolvedValueOnce({
+      size: 7,
+      type: "text/markdown",
+      text: async () => "# Tiers",
+    } as unknown as Blob);
+    render(<ArtifactsPanel />);
+
+    fireEvent.click(cardFor("Pricing proposal"));
+
+    expect(await screen.findByText("Could not load this output.")).toBeInTheDocument();
+    expect(download).toHaveBeenCalledWith("/attachments/att9/content");
+    const md = await screen.findAllByTestId("md");
+    expect(md.map((m) => m.textContent)).toContain("# Tiers");
+  });
+
+  it("says a row it cannot route is unopenable, in the reader's words", async () => {
+    stubRecent([{ ...DOC, id: "mystery:x1", title: "Mystery" }]);
+    render(<ArtifactsPanel />);
+
+    fireEvent.click(cardFor("Mystery"));
+
+    expect(await screen.findByText("This can’t be opened here.")).toBeInTheDocument();
+    // Same rule as the zero notice: the reader never sees the internal word.
+    expect(screen.queryByText(/artifacts?/i)).not.toBeInTheDocument();
   });
 
   it("renders a plain-text attachment inline in a <pre>", async () => {
@@ -631,6 +722,14 @@ describe("ArtifactsPanel \u2014 search", () => {
   it("shows a no-match notice with a Clear exit instead of the zero copy", () => {
     vi.useFakeTimers();
     stubRecent([DOC]);
+    // The q read RESOLVES empty. An unstubbed path now reads as "still in
+    // flight" (the feed keeps previous data), and a miss is only a miss once
+    // the search has actually come back.
+    reads[`${RECENT_PATH}&q=zzz`] = {
+      data: { artifacts: [], nextCursor: null },
+      isLoading: false,
+      error: undefined,
+    };
     render(<ArtifactsPanel />);
 
     fireEvent.change(screen.getByRole("searchbox", { name: "Search the Library" }), {
@@ -640,7 +739,7 @@ describe("ArtifactsPanel \u2014 search", () => {
       vi.advanceTimersByTime(300);
     });
 
-    // No stub for the q path \u2192 empty. That is a search miss, not an empty Library.
+    // A search miss, not an empty Library.
     expect(screen.getByText("Nothing in the Library matches \u201Czzz\u201D.")).toBeInTheDocument();
     expect(screen.queryByText("Nothing made yet.")).not.toBeInTheDocument();
 
@@ -649,6 +748,38 @@ describe("ArtifactsPanel \u2014 search", () => {
       vi.advanceTimersByTime(300);
     });
     expect(screen.getByTestId("artifact-card")).toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it("keeps the loaded cards on screen while the settled search is still in flight", () => {
+    vi.useFakeTimers();
+    stubRecent([DOC]);
+    const { rerender } = render(<ArtifactsPanel />);
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search the Library" }), {
+      target: { value: "pricing" },
+    });
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+
+    // The new key is in flight: the feed the owner was reading stays put — no
+    // blank "Loading the Library…", and no premature no-match claim.
+    expect(readPaths).toContain(`${RECENT_PATH}&q=pricing`);
+    expect(screen.getByTestId("artifact-card")).toBeInTheDocument();
+    expect(screen.queryByText("Loading the Library…")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Nothing in the Library matches “pricing”."),
+    ).not.toBeInTheDocument();
+
+    // …and the notice lands once that read actually comes back empty.
+    reads[`${RECENT_PATH}&q=pricing`] = {
+      data: { artifacts: [], nextCursor: null },
+      isLoading: false,
+      error: undefined,
+    };
+    rerender(<ArtifactsPanel />);
+    expect(screen.getByText("Nothing in the Library matches “pricing”.")).toBeInTheDocument();
     vi.useRealTimers();
   });
 

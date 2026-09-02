@@ -145,8 +145,14 @@ export function ArtifactsPanel() {
 
   // Recent — the flat newest-first feed, bucketed by date. Only the active view
   // is read; the other key stays null so switching tabs costs one fetch, not two.
+  // `keepPreviousData` holds the loaded feed on screen while the next
+  // (q-suffixed) key is in flight, so every debounce settle does not blank the
+  // grid to "Loading the Library…". Deliberately NOT on the two stack reads:
+  // their keys go null on tab/back, and lagging data there would show one
+  // task's deliverables under another's heading.
   const recent = read<CompanyArtifactsResponse>(
     view === "recent" ? `${RECENT_PATH}${qParam}` : null,
+    { keepPreviousData: true },
   );
   // Stack list — groupBy=task clusters deliverables under the issue that produced
   // them (the ported grouped shape, not a flat firehose).
@@ -355,7 +361,10 @@ export function ArtifactsPanel() {
             {recent.data?.nextCursor ? (
               // ponytail: limit=100 + this line instead of cursor paging; add useSWRInfinite over nextCursor when a Library passes 100 and search is not enough.
               <p className="text-caption" style={{ color: "var(--midnight-muted)" }}>
-                Showing the latest 100. Search to find older deliverables.
+                Showing the latest 100.{" "}
+                {debouncedQuery
+                  ? "Narrow your search to find older deliverables."
+                  : "Search to find older deliverables."}
               </p>
             ) : null}
           </div>

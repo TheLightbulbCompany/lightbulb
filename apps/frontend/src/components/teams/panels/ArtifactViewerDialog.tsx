@@ -239,19 +239,34 @@ function WorkProductBody({
       </p>
     );
   }
-  if ((error && !data) || (data && !wp)) {
+  // The list read supplies the SUMMARY only; the deliverable's bytes hang off
+  // the artifact row and are readable whether or not that read landed. So the
+  // content renders in every branch below, including the failure ones — an
+  // owner whose list read 500s can still read the file they clicked.
+  const content = contentPath ? (
+    <ContentBody key={artifact.id} artifact={artifact} path={contentPath} />
+  ) : null;
+
+  if (!wp) {
     return (
-      <p role="alert" className="text-sm italic" style={{ color: "var(--err)" }}>
-        Could not load this output.
-      </p>
+      <div className="flex flex-col gap-2">
+        {error || data ? (
+          <p role="alert" className="text-sm italic" style={{ color: "var(--err)" }}>
+            Could not load this output.
+          </p>
+        ) : null}
+        {content}
+      </div>
     );
   }
-  if (!wp) return null;
   return (
     <div className="flex flex-col gap-2">
+      {/* The agent upload helper defaults the summary to "", so a file-backed
+          deliverable usually has none. Saying "no summary" directly above the
+          thing itself is noise — only claim it when there is nothing else. */}
       {wp.summary?.trim() ? (
         <MarkdownView>{wp.summary}</MarkdownView>
-      ) : (
+      ) : contentPath ? null : (
         <p className="text-sm italic" style={{ color: "var(--midnight-muted)" }}>
           No summary provided.
         </p>
@@ -268,9 +283,7 @@ function WorkProductBody({
           {wp.url}
         </a>
       ) : null}
-      {contentPath ? (
-        <ContentBody key={artifact.id} artifact={artifact} path={contentPath} />
-      ) : null}
+      {content}
     </div>
   );
 }
@@ -351,7 +364,7 @@ export function ArtifactViewerDialog({
           />
         ) : (
           <p role="alert" className="text-sm italic" style={{ color: "var(--err)" }}>
-            Unsupported artifact type.
+            This can’t be opened here.
           </p>
         )}
       </div>

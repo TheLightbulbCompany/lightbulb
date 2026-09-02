@@ -31,6 +31,10 @@ const TREE = [
 ];
 
 describe("toReadableMarkdown", () => {
+  it("an Obsidian image embed becomes a link that opens in-panel, never a broken relative <img>", () => {
+    expect(toReadableMarkdown("see ![[inbox/chart.png]] here")).toBe("see [inbox/chart.png](<inbox/chart.png>) here");
+  });
+
   it("turns obsidian wikilinks into relative markdown links, alias first", () => {
     expect(toReadableMarkdown("see [[entities/ada-lovelace|Ada Lovelace]] and [[ada-lovelace]]"))
       .toBe("see [Ada Lovelace](<entities/ada-lovelace>) and [ada-lovelace](<ada-lovelace>)");
@@ -158,6 +162,15 @@ describe("splitRelated", () => {
     expect(related).toEqual([{ target: "sources/deck", alias: "Deck" }]);
     expect(body).toContain("### Related\n\n- [[entities/acme|Acme]]");
     expect(body).not.toContain("openclaw:wiki:related");
+  });
+
+  it("binds to the heading above compile's marker, not to an owner's Related typed after the block", () => {
+    const page =
+      "# Ada\n\n## Related\n<!-- openclaw:wiki:related:start -->\n### Sources\n- [[sources/deck|Deck]]\n<!-- openclaw:wiki:related:end -->\n\n## Related\n\nMy own notes on why.\n";
+    const { body, related } = splitRelated(page);
+    expect(related).toEqual([{ target: "sources/deck", alias: "Deck" }]);
+    expect(body).not.toContain("openclaw:wiki:related");
+    expect(body).toContain("## Related\n\nMy own notes on why.");
   });
 
   it("keeps a Related section the owner structured with their own sub-headings", () => {

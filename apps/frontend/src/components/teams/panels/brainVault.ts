@@ -23,9 +23,20 @@ export function toReadableMarkdown(raw: string): string {
   // ponytail: a plain regex also rewrites a [[link]] inside a code span;
   // move to a remark text-node plugin (see remark-soft-breaks.ts) if a page
   // ever needs to DEMO wikilink syntax in code.
-  return raw.replace(
-    WIKILINK,
-    (_m, target: string, alias?: string) => `[${(alias ?? target).trim()}](<${target.trim()}>)`,
+  return (
+    raw
+      // `![[inbox/chart.png]]` is an Obsidian EMBED. Left as an image it
+      // becomes a relative `src` the browser fetches unauthenticated from
+      // the frontend origin and breaks. As a link it opens in-panel, where
+      // the viewer already renders the image. Inline embeds can come later.
+      // ponytail: link-not-embed; an `img` override that reads the file
+      // through the Brain API is the upgrade.
+      .replace(/!(?=\[\[)/g, "")
+      .replace(
+        WIKILINK,
+        (_m, target: string, alias?: string) =>
+          `[${(alias ?? target).trim()}](<${target.trim()}>)`,
+      )
   );
 }
 
@@ -256,6 +267,9 @@ function wikilinksIn(text: string): VaultLinkRef[] {
 // first nested `###`: no chips, and the `## Related` label lifted off the
 // sub-headings it belonged to.
 const RELATED_HEADING = /^(#{1,6})[ \t]+Related[ \t]*$/gim;
+// compile wraps its block in these; the heading sits on the line before the
+// start marker (plugin-sdk memory-host-markdown replaceManagedMarkdownBlock).
+const RELATED_START = "<!-- openclaw:wiki:related:start -->";
 // compile's body when every section is empty. Not ours to render.
 const NO_RELATED_SENTINEL = /^no related pages yet\.?$/i;
 // The three sub-headings compile writes inside the block (compile.ts
@@ -291,12 +305,20 @@ function hasOwnerProse(section: string): boolean {
  *  left exactly where it is: it is the owner's writing, and this function
  *  never deletes text it cannot re-render. */
 export function splitRelated(body: string): { body: string; related: VaultLinkRef[] } {
-  // The LAST Related heading: compile appends its managed block at the end
-  // of the page, so an owner's own earlier `### Related` subsection is never
-  // the one lifted here. (Fresh regex per call — RELATED_HEADING is /g.)
-  const all = Array.from(body.matchAll(new RegExp(RELATED_HEADING.source, "gim")));
-  const m = all[all.length - 1];
-  if (!m || m.index === undefined) return { body, related: [] };
+  // Which Related heading: the one compile wrote its managed block under —
+  // the nearest heading BEFORE `related:start` — when the markers exist, so
+  // neither an owner's earlier `### Related` subsection nor prose typed
+  // after the block is the one lifted. With no markers (a hand-written
+  // page), the last heading. (Fresh regex per call — RELATED_HEADING is /g.)
+  const all = Array.from(body.matchAll(new RegExp(RELATED_HEADING.source, "gim"))).filter(
+    (x): x is RegExpMatchArray & { index: number } => x.index !== undefined,
+  );
+  const start = body.indexOf(RELATED_START);
+  const m =
+    start === -1
+      ? all[all.length - 1]
+      : [...all].reverse().find((x) => x.index < start);
+  if (!m) return { body, related: [] };
   const after = body.slice(m.index + m[0].length);
   const next = new RegExp(`^#{1,${m[1].length}}[ \\t]+\\S`, "m").exec(after);
   const section = next ? after.slice(0, next.index) : after;

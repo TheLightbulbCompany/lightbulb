@@ -121,6 +121,14 @@ vi.mock("@/components/Logo", () => ({ Logo: () => <div data-testid="logo" /> }))
 vi.mock("@/components/chat/SessionList", () => ({
   SessionList: () => <div data-testid="session-list" />,
 }));
+// Reduced to a probe exposing the onSelect prop it received — lets us assert
+// a search-result click routes through the same `selectSession` store call as
+// SessionList's own row click, without pulling in the real search UI/RPC.
+vi.mock("@/components/chat/SessionSearch", () => ({
+  SessionSearch: ({ onSelect }: { onSelect: (sid: string | null) => void }) => (
+    <button data-testid="session-search-hit" onClick={() => onSelect("hit-session-id")} />
+  ),
+}));
 vi.mock("@/components/chat/AgentDialogs", () => ({
   AgentCreateDialog: ({ open }: { open: boolean }) =>
     open ? <div data-testid="create-dialog" /> : null,
@@ -187,6 +195,16 @@ describe("WorkspaceSidebar", () => {
 
     expect(screen.getByText("Two").closest(".agent-item")?.className).toContain("active");
     expect(screen.getByText("One").closest(".agent-item")?.className).not.toContain("active");
+  });
+
+  it("a session-search hit selects that session through the same store as SessionList", () => {
+    agents = [{ id: "a1", name: "One" }];
+    snapshot = { activePanelId: "chat:a1", focusedChatAgentId: "a1" };
+    render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
+
+    fireEvent.click(screen.getByTestId("session-search-hit"));
+
+    expect(selectSession).toHaveBeenCalledWith("hit-session-id");
   });
 
   it("CompanyNav change routes through openPanel with pushUrl", () => {

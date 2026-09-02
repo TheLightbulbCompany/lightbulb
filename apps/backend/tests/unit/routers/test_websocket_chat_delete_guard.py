@@ -245,3 +245,64 @@ async def test_rewind_and_branch_methods_allowed_on_own_key(method):
     )
     assert consumed is False
     assert payload is None
+
+
+# --- OpenClaw 8.1 sessions.search / chat.message.get -----------------------
+
+
+@pytest.mark.asyncio
+async def test_search_rejected_when_any_listed_key_is_foreign():
+    # One foreign key in the list is enough: the container would index that
+    # member's transcript for the caller.
+    consumed, payload = await _run_key_guard(
+        user_id="user_A",
+        method="sessions.search",
+        params={
+            "agentId": "agentX",
+            "query": "salary",
+            "sessionKeys": [f"agent:agentX:user_A:{_UUID}", f"agent:agentX:user_B:{_UUID}"],
+        },
+    )
+    assert consumed is True
+    assert payload["ok"] is False
+    assert "access" in payload["error"]["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_search_allowed_for_own_keys_and_forwarded_keyless():
+    consumed, _ = await _run_key_guard(
+        user_id="user_A",
+        method="sessions.search",
+        params={"agentId": "agentX", "query": "q", "sessionKeys": [f"agent:agentX:user_A:{_UUID}"]},
+    )
+    assert consumed is False
+    # Key-less search is scoped by the response post-filter, not refused.
+    consumed, _ = await _run_key_guard(
+        user_id="user_A",
+        method="sessions.search",
+        params={"agentId": "agentX", "query": "q"},
+    )
+    assert consumed is False
+
+
+@pytest.mark.asyncio
+async def test_chat_message_get_rejected_for_another_users_key():
+    consumed, payload = await _run_key_guard(
+        user_id="user_A",
+        method="chat.message.get",
+        params={"sessionKey": f"agent:agentX:user_B:{_UUID}", "messageId": "m1"},
+    )
+    assert consumed is True
+    assert payload["ok"] is False
+
+
+def test_search_hits_are_scoped_to_the_caller():
+    # A key-less search returns hits from every session on the shared
+    # container; only the caller's own survive.
+    mine = {"sessionKey": f"agent:agentX:user_a:{_UUID}", "snippet": "mine"}
+    theirs = {"sessionKey": f"agent:agentX:user_b:{_UUID}", "snippet": "theirs"}
+    cron = {"sessionKey": f"agent:agentX:cron:{_UUID}", "snippet": "cron"}
+    out = wc._filter_search_hits_for_user({"results": [mine, theirs, cron], "truncated": True}, "user_A")
+    assert out == {"results": [mine], "truncated": True}
+    # Non-dict / shapeless results pass through untouched.
+    assert wc._filter_search_hits_for_user({"indexing": True}, "user_A") == {"indexing": True}

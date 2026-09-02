@@ -1119,13 +1119,16 @@ def memory_plugin_entries() -> dict:
     which defaults OFF upstream). The plugin's default ``isolated`` vault only
     ever gains pages an agent files by hand, which is why the brain reads empty
     on a real org: memory-core writes to its own store and nothing crosses over.
-    In bridge mode the plugin's own service imports memory-core's public
-    artifacts — daily notes, dream reports, ``MEMORY.md``, event logs — into
-    ``sources/`` pages on a timer, deterministically and with no inference
-    (in-process, from our fork's memory-wiki patch; no cron and no routine
-    schedules it). ``wiki_apply`` stays the way agents file syntheses on top of
-    those sources. The remaining ``bridge.*`` flags default true, so enabling
-    is the whole configuration.
+    In bridge mode every ``wiki_*`` tool call first imports memory-core's
+    public artifacts — daily notes, dream reports, ``MEMORY.md``, event logs —
+    into ``sources/`` pages and recompiles the index (sync-on-read, upstream's
+    own design: ``extensions/memory-wiki/src/tool.ts`` calls
+    ``syncMemoryWikiImportedSources`` before each tool body; deterministic, no
+    inference, no cron and no routine). The skill tells agents to consult the
+    wiki before answering, so the first consult is what fills it.
+    ``wiki_apply`` stays the way agents file syntheses on top of those
+    sources. The remaining ``bridge.*`` flags default true, so enabling is the
+    whole configuration.
 
     Keys are restricted to the upstream configSchemas, which are strict
     (``additionalProperties:false``) at every level — the only key under

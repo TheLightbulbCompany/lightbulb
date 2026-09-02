@@ -993,8 +993,11 @@ async def ensure_plugin_config_keys(owner_id: str, plugin: str, keys: dict) -> N
     NESTED-ADDITIVE — deep-fills any key path that is ABSENT and never
     overwrites one that is present. Dict values recurse, so a half-configured
     subtree gains only its missing leaves; scalars and lists are written only
-    when the key is missing outright. An owner who explicitly set a key keeps
-    their value.
+    when the key is missing outright. A present value is left alone so this
+    can never clobber a key some other writer owns; it is NOT an opt-out
+    mechanism — the roll's regen path (``reapply_owner_config``) rewrites
+    ``plugins`` wholesale from the generator first, and this runs after it
+    (a no-op there) and on the legacy fallback path that regen cannot reach.
 
     Does nothing when the plugin entry itself is absent — that is
     ``ensure_plugin_entries``' job, which runs first on the same path.

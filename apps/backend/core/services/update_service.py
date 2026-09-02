@@ -612,12 +612,17 @@ async def _apply_claimed_update(update: dict, claim_id: str) -> bool:
 
                     # The bridge keys are what FILL the brain — memory-core's
                     # artifacts only cross into the wiki when vaultMode/bridge
-                    # are set. ensure_plugin_entries above is additive at the
-                    # entry level, so it skips every owner who already has a
-                    # memory-wiki entry: exactly the cohort provisioned before
-                    # those keys existed. This reaches inside the entry and
-                    # deep-fills only what is missing, so an owner who
-                    # explicitly chose an isolated vault keeps it.
+                    # are set. On the regen path above, reapply_owner_config
+                    # already wrote them: `plugins` is generator-owned wholesale
+                    # (_runtime_only_delta), so this is a no-op there. It exists
+                    # for the fallback path — legacy rows regen cannot reach —
+                    # where ensure_plugin_entries is additive at the ENTRY level
+                    # and skips every owner who already has a memory-wiki entry:
+                    # exactly the cohort provisioned before those keys existed.
+                    # No product surface lets an owner opt OUT of bridge mode,
+                    # so "preserve an explicit isolated choice" is not a contract
+                    # either path makes; the deep-fill's never-overwrite rule is
+                    # about not clobbering unrelated keys, not about opt-outs.
                     try:
                         await ensure_plugin_config_keys(
                             owner_id,

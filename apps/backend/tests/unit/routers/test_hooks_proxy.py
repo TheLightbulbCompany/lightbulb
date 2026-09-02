@@ -180,6 +180,7 @@ def test_successful_forward_passes_body_and_writes_audit(client, fake_container)
                 "User-Agent": "Stripe/1.0",
                 # Spoofed XFF — the proxy must overwrite, not append.
                 "X-Forwarded-For": "1.2.3.4",
+                "X-Real-IP": "1.2.3.4",
             },
             json={"text": "new email"},
         )
@@ -189,16 +190,20 @@ def test_successful_forward_passes_body_and_writes_audit(client, fake_container)
     assert forwarded_kwargs["url"] == "http://10.0.42.17:18789/hooks/wake"
     # Headers we control:
     assert forwarded_kwargs["headers"]["authorization"] == "Bearer " + fake_container["hook_token"]
-    assert forwarded_kwargs["headers"]["x-forwarded-for"] != "1.2.3.4"  # rewritten, not passed
-    assert forwarded_kwargs["headers"]["x-forwarded-proto"] == "https"
-    # Derived from PUBLIC_API_BASE — TestClient runs against the localhost
-    # default; in deployed envs this would be api-dev.isol8.co etc.
-    from urllib.parse import urlparse
-
-    from core.config import settings as _settings
-
-    expected_host = urlparse(_settings.PUBLIC_API_BASE).netloc
-    assert forwarded_kwargs["headers"]["x-forwarded-host"] == expected_host
+    # NO X-Forwarded-* may reach the container. 2026.8.1 ingress attribution
+    # (gateway/ingress-attribution.ts) fails CLOSED -- 403 proxy_attribution_required,
+    # before the hooks handler runs -- for any request carrying forwarded headers
+    # from an address outside gateway.trustedProxies, and our container config
+    # deliberately trusts only 127.0.0.1/::1 (the backend's 10.x subnet is NOT
+    # trusted, by design, after the WS-path 403 incident). Verified live on a
+    # rolled dev container 2026-09-02: same request, same token -- 400
+    # "message required" without the headers, 403 with them. Every external
+    # webhook through this proxy was dead on every 8.1 container until this.
+    # The caller's spoofed value must still not pass through either.
+    for h in forwarded_kwargs["headers"]:
+        assert not h.lower().startswith("x-forwarded-"), h
+    assert "forwarded" not in {h.lower() for h in forwarded_kwargs["headers"]}
+    assert "x-real-ip" not in {h.lower() for h in forwarded_kwargs["headers"]}
 
 
 def test_query_string_is_forwarded_verbatim(client, fake_container):

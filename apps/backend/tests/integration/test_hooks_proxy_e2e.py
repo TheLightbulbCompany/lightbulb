@@ -3,7 +3,9 @@
 Boots a stub HTTP server posing as the user's OpenClaw container,
 and POSTs a real request through the FastAPI app's TestClient.
 Verifies the body is forwarded, the audit row lands, and
-X-Forwarded-* are rewritten with the controlled values.
+NO X-Forwarded-* / Forwarded / X-Real-IP reaches the container -- OpenClaw
+8.1 answers 403 proxy_attribution_required to forwarded headers from an
+address outside gateway.trustedProxies, so the proxy asserts none.
 
 This test is "integration" in the lightweight sense: no emulated AWS,
 no real DDB, no real ECS — but it exercises the full request path
@@ -96,7 +98,14 @@ async def test_hooks_proxy_end_to_end(stub_container, monkeypatch):
     payload = {"text": "new email", "metadata": {"source": "stripe"}}
     r = client.post(
         "/api/v1/hooks/u/u_e2e/wake",
-        headers={"Authorization": f"Bearer {token}", "User-Agent": "Stripe/1.0"},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "User-Agent": "Stripe/1.0",
+            # Spoofed attribution from the caller: must be stripped, not relayed.
+            "X-Forwarded-For": "1.2.3.4",
+            "X-Forwarded-Proto": "https",
+            "X-Real-IP": "1.2.3.4",
+        },
         json=payload,
     )
 
@@ -104,13 +113,8 @@ async def test_hooks_proxy_end_to_end(stub_container, monkeypatch):
     assert r.json() == {"queued": True}
     assert json.loads(stub_container["received"]["body"]) == payload
     forwarded = stub_container["received"]["headers"]
-    assert forwarded.get("X-Forwarded-Proto") == "https"
-    # Derived from PUBLIC_API_BASE — TestClient runs against the localhost
-    # default; in deployed envs this would be api-dev.isol8.co etc.
-    from urllib.parse import urlparse
-
-    from core.config import settings as _settings
-
-    expected_host = urlparse(_settings.PUBLIC_API_BASE).netloc
-    assert forwarded.get("X-Forwarded-Host") == expected_host
+    lowered = {h.lower() for h in forwarded}
+    assert not any(h.startswith("x-forwarded-") for h in lowered), lowered
+    assert "forwarded" not in lowered
+    assert "x-real-ip" not in lowered
     assert forwarded.get("Authorization") == f"Bearer {token}"

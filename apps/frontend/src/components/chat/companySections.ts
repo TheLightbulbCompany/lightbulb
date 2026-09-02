@@ -23,6 +23,14 @@ import {
   CreditCard,
   Package,
   Users,
+  Send,
+  SearchCheck,
+  Megaphone,
+  LifeBuoy,
+  Landmark,
+  Globe,
+  ShieldCheck,
+  FileSignature,
 } from "lucide-react";
 import type { ComponentType, SVGProps } from "react";
 
@@ -72,6 +80,21 @@ export const COMPANY_SECTIONS: { label: string | null; items: CompanySectionItem
       { panel: "teams-routines", label: "Automations", Icon: Repeat },
       { panel: "teams-goals", label: "Goals", Icon: Target },
       { panel: "teams-projects", label: "Projects", Icon: FolderKanban },
+      // Support sits with Work (spec's "Operations"), not Company: it is a
+      // thing the company DOES, not a thing the company IS.
+      { panel: "teams-support", label: "Support", Icon: LifeBuoy },
+    ],
+  },
+  {
+    // Spec §5.1 Growth. All shells today — each states its exit (connect
+    // accounts, or a prompt Friday can act on). Content, Leads and Blog wait
+    // for their rails and are deliberately absent rather than shown as cards
+    // with no exit.
+    label: "Growth",
+    items: [
+      { panel: "teams-publish", label: "Publish", Icon: Send },
+      { panel: "teams-seo", label: "SEO & AEO", Icon: SearchCheck },
+      { panel: "teams-ads", label: "Ads", Icon: Megaphone },
     ],
   },
   {
@@ -92,6 +115,10 @@ export const COMPANY_SECTIONS: { label: string | null; items: CompanySectionItem
       // and the kill switch. Sits in Company, not Settings, because it is the
       // page an owner opens the first time an agent does something surprising.
       { panel: "teams-accounts", label: "Accounts", Icon: Plug },
+      { panel: "teams-identity", label: "Identity", Icon: Landmark },
+      { panel: "teams-domain-site", label: "Domain & Site", Icon: Globe },
+      { panel: "teams-compliance", label: "Compliance", Icon: ShieldCheck },
+      { panel: "teams-contracts", label: "Contracts", Icon: FileSignature },
       { panel: "teams-activity", label: "Activity", Icon: History },
     ],
   },

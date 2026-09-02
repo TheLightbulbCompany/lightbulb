@@ -210,3 +210,38 @@ def test_user_owns_session_key_predicate():
     assert wc._user_owns_session_key(f"paperclip:x:{_UUID}", "user_A") is False
     assert wc._user_owns_session_key("", "user_A") is False
     assert wc._user_owns_session_key(None, "user_A") is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "method,params",
+    [
+        ("sessions.rewind", {"sessionKey": f"agent:agentX:user_B:{_UUID}", "entryId": "e1"}),
+        ("sessions.branches.list", {"sessionKey": f"agent:agentX:user_B:{_UUID}"}),
+        (
+            "sessions.branches.switch",
+            {"sessionKey": f"agent:agentX:user_B:{_UUID}", "leafEntryId": "l1"},
+        ),
+    ],
+)
+async def test_rewind_and_branch_methods_rejected_for_another_users_key(method, params):
+    # OpenClaw 8.1's transcript-DAG RPCs take a client-supplied `sessionKey`.
+    # sessions.rewind and sessions.branches.switch DESTRUCTIVELY repoint the
+    # transcript, and sessions.branches.list leaks another member's branch
+    # headlines — the same cross-tenant IDOR class as chat.history on the
+    # shared per-owner container.
+    consumed, payload = await _run_key_guard(user_id="user_A", method=method, params=params)
+    assert consumed is True
+    assert payload["ok"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["sessions.rewind", "sessions.branches.list", "sessions.branches.switch"])
+async def test_rewind_and_branch_methods_allowed_on_own_key(method):
+    consumed, payload = await _run_key_guard(
+        user_id="user_A",
+        method=method,
+        params={"sessionKey": f"agent:agentX:user_A:{_UUID}"},
+    )
+    assert consumed is False
+    assert payload is None

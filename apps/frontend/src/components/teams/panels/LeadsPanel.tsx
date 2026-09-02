@@ -107,6 +107,8 @@ export function LeadsPanel() {
             aria-label="Who do you want to reach?"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
+            // The route's max_length; a longer sentence would 422 and read as an outage.
+            maxLength={200}
             className="min-w-0 flex-1 rounded-md border border-[var(--edge)] bg-card px-3 py-2 text-ui text-[var(--midnight)] placeholder:text-[var(--midnight-muted)]"
             placeholder="heads of growth at seed-stage devtools startups"
           />

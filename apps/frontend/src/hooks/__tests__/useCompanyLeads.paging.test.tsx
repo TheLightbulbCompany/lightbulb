@@ -13,8 +13,16 @@ const wrapper = ({ children }: { children: React.ReactNode }) => (
   <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>{children}</SWRConfig>
 );
 
-const person = (id: string): LeadRow =>
-  ({ id, first_name: id, last_name: "L.", title: "", organization: "", has_email: false, location: "" }) as LeadRow;
+const person = (id: string): LeadRow => ({
+  id,
+  first_name: id,
+  last_name: "L.",
+  title: null,
+  organization: null,
+  has_email: false,
+  city: null,
+  country: null,
+});
 const page = (n: number, hasMore = true) => ({
   connected: true,
   data: [person(`p${n}a`), person(`p${n}b`)],

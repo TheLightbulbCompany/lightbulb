@@ -70,9 +70,10 @@ def _check_rate_limit(owner_id: str) -> bool:
 
 
 def _extract_caller_ip(request: Request) -> str:
-    # Kept for routers/paperclip_trigger_proxy, which forwards to the Paperclip
-    # BFF (no ingress-attribution gate there). NOT used on the container hop.
     """Get the immediate TCP-peer IP, ignoring inbound X-Forwarded-* (untrusted).
+
+    Kept for routers/paperclip_trigger_proxy, which forwards to the Paperclip
+    BFF (no ingress-attribution gate there). NOT used on the container hop.
 
     In production this is the ALB's private IP. When uvicorn is configured
     with ``forwarded_allow_ips`` covering the ALB's subnet, starlette will

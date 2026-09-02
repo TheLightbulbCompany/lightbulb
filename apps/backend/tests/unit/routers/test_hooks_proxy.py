@@ -180,6 +180,7 @@ def test_successful_forward_passes_body_and_writes_audit(client, fake_container)
                 "User-Agent": "Stripe/1.0",
                 # Spoofed XFF — the proxy must overwrite, not append.
                 "X-Forwarded-For": "1.2.3.4",
+                "X-Real-IP": "1.2.3.4",
             },
             json={"text": "new email"},
         )
@@ -202,6 +203,7 @@ def test_successful_forward_passes_body_and_writes_audit(client, fake_container)
     for h in forwarded_kwargs["headers"]:
         assert not h.lower().startswith("x-forwarded-"), h
     assert "forwarded" not in {h.lower() for h in forwarded_kwargs["headers"]}
+    assert "x-real-ip" not in {h.lower() for h in forwarded_kwargs["headers"]}
 
 
 def test_query_string_is_forwarded_verbatim(client, fake_container):

@@ -203,6 +203,16 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
                 </dd>
               </div>
             </dl>
+            {data.source === "connected" && !data.details_submitted && (
+              // "Onboarding incomplete" names the problem; this names the fix.
+              // A connected account is finished in Stripe's own Dashboard —
+              // there is no in-app button for it, unlike accounts we created —
+              // and the Money tabs send owners here with exactly that promise.
+              <p className="text-sm text-[var(--midnight-soft)]">
+                Finish onboarding in your Stripe Dashboard — open it below. Payments unlock once
+                Stripe enables charges.
+              </p>
+            )}
             <div className="flex flex-wrap gap-2">
               {/* EditorialButton is button-only, so this anchor carries the same
                   global `editorial-btn` classes directly rather than a

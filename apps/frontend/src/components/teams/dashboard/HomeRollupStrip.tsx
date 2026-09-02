@@ -188,6 +188,39 @@ export function HomeRollupStrip() {
     );
   }
 
+  // `days.length > 0` is NOT the same as "there is activity to show". The
+  // live dev payload was three rows present, every value a real 0, visitors
+  // omitted (unavailable) — and the tiles rendered "$0 / 0 / Unavailable ·
+  // 3 days with readings", which reads as "we have three days of data" when
+  // the truth is "three days, nothing happened". Same trap Spend fell into at
+  // the month boundary. So: if every SERVED metric is zero (unavailable ones
+  // do not count either way), say that in a sentence instead of a tile row.
+  //
+  // The asymmetry matters: an owner who earned $0 today but had 40 visitors
+  // must still see the tiles — real zero revenue beside a real visitor count.
+  // Only all-zero-or-unavailable collapses.
+  const served = (["revenue_microcents", "signups", "visitors"] as const).filter(
+    (k) => !isUnavailable(k),
+  );
+  // ANY non-zero day, not a zero SUM: revenue supports negative days, so a
+  // sale and a refund that net to exactly zero across the window are two
+  // real transactions, not "nothing happened".
+  const anyReading = served.some((k) => days.some((d) => (d[k] ?? 0) !== 0));
+  // Agent spend is part of "did anything happen". A pre-revenue company has
+  // zero sales and real costs — collapsing to "nothing to report" would hide
+  // the one number that owner most needs to see.
+  const nothingHappened = !anyReading && spendCents === 0;
+  if (nothingHappened) {
+    return (
+      <PanelNotice
+        state="zero"
+        icon={DollarSign}
+        headline={`Nothing to report yet across ${days.length} ${days.length === 1 ? "day" : "days"} of readings.`}
+        supporting="Stripe is connected and reporting; there just hasn't been a sale or a signup in the window. The strip fills in from the first one."
+      />
+    );
+  }
+
   // `days[]` is SPARSE — the writer returns None and stores nothing when every
   // source was empty, so absent days are omitted rather than zero-filled. The
   // sparkline plots ordinally, which means a gap of weeks looks identical to
@@ -219,7 +252,13 @@ export function HomeRollupStrip() {
         <p className="text-xs text-[var(--midnight-muted)]">{rangeLabel}</p>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+      {/* Container queries, not viewport breakpoints: this strip renders inside
+          a dock pane that is often half the viewport (a browser panel sits
+          beside it). With `lg:grid-cols-4`, a narrow pane still got four
+          columns and "Unavailable" truncated to "Unavailab". The container
+          is InlineTeamsPanel's wrapper, the same one DashboardPanel's own
+          `@md:`/`@4xl:` tiles resolve against. */}
+      <div className="grid grid-cols-2 gap-2 @3xl:grid-cols-4">
         <Tile
           icon={DollarSign}
           label="Revenue"

@@ -255,7 +255,7 @@ function wikilinksIn(text: string): VaultLinkRef[] {
 // of the SAME OR SHALLOWER level. Stopping at any heading would end it at the
 // first nested `###`: no chips, and the `## Related` label lifted off the
 // sub-headings it belonged to.
-const RELATED_HEADING = /^(#{1,6})[ \t]+Related[ \t]*$/im;
+const RELATED_HEADING = /^(#{1,6})[ \t]+Related[ \t]*$/gim;
 // compile's body when every section is empty. Not ours to render.
 const NO_RELATED_SENTINEL = /^no related pages yet\.?$/i;
 // The three sub-headings compile writes inside the block (compile.ts
@@ -291,8 +291,12 @@ function hasOwnerProse(section: string): boolean {
  *  left exactly where it is: it is the owner's writing, and this function
  *  never deletes text it cannot re-render. */
 export function splitRelated(body: string): { body: string; related: VaultLinkRef[] } {
-  const m = RELATED_HEADING.exec(body);
-  if (!m) return { body, related: [] };
+  // The LAST Related heading: compile appends its managed block at the end
+  // of the page, so an owner's own earlier `### Related` subsection is never
+  // the one lifted here. (Fresh regex per call — RELATED_HEADING is /g.)
+  const all = Array.from(body.matchAll(new RegExp(RELATED_HEADING.source, "gim")));
+  const m = all[all.length - 1];
+  if (!m || m.index === undefined) return { body, related: [] };
   const after = body.slice(m.index + m[0].length);
   const next = new RegExp(`^#{1,${m[1].length}}[ \\t]+\\S`, "m").exec(after);
   const section = next ? after.slice(0, next.index) : after;

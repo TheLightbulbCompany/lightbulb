@@ -301,6 +301,15 @@ describe("BrainPanel", () => {
     expect(onPathUnavailable).toHaveBeenCalledWith("main/index.md");
   });
 
+  it("a rejected ?path (403 from the traversal guard) clears the durable param too", () => {
+    // Otherwise a persisted layout reopens the dead link on every restore.
+    treeState.files = POPULATED;
+    fileState.error = Object.assign(new Error("API 403"), { status: 403 });
+    const onPathUnavailable = vi.fn();
+    render(<BrainPanel initialPath="../secrets.md" onPathUnavailable={onPathUnavailable} />);
+    expect(onPathUnavailable).toHaveBeenCalledWith("../secrets.md");
+  });
+
   it("name search filters the tree and says it cannot see contents; no match hands off to ASK with the query", () => {
     treeState.files = POPULATED;
     render(<BrainPanel />);

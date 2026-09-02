@@ -111,9 +111,13 @@ export function BrainPanel({ initialPath, initialTab, onPathUnavailable }: Brain
   const { mutate: mutateCache } = useSWRConfig();
 
   // Stale deep link (the vault root moved from wiki/ to wiki/main/, so a
-  // persisted `?path=main/…` 404s on every load): clear the durable param
-  // once. The missing-page notice stays until the owner navigates.
-  const missing = (fileError as { status?: number } | null)?.status === 404;
+  // persisted `?path=main/…` 404s on every load) — or a rejected one
+  // (_guard_brain_path answers 400/403 to a traversal-shaped path): clear
+  // the durable param once, or a persisted layout reopens it on every
+  // restore. Same three statuses BrainPage renders as a stale link. The
+  // notice stays until the owner navigates.
+  const fileStatus = (fileError as { status?: number } | null)?.status;
+  const missing = fileStatus === 400 || fileStatus === 403 || fileStatus === 404;
   const clearedRef = React.useRef<string | null>(null);
   React.useEffect(() => {
     if (!missing || !pagePath || pagePath !== initialPath) return;

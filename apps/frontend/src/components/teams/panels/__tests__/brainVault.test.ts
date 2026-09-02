@@ -149,6 +149,16 @@ describe("splitRelated", () => {
     expect(splitRelated(page)).toEqual({ body: page, related: [] });
   });
 
+  it("lifts the compiler's trailing block, not an owner's earlier Related subsection", () => {
+    const page =
+      "# Ada\n\n## Notes\n\n### Related\n\n- [[entities/acme|Acme]]\n\n## Related\n" +
+      "<!-- openclaw:wiki:related:start -->\n### Sources\n- [[sources/deck|Deck]]\n<!-- openclaw:wiki:related:end -->\n";
+    const { body, related } = splitRelated(page);
+    expect(related).toEqual([{ target: "sources/deck", alias: "Deck" }]);
+    expect(body).toContain("### Related\n\n- [[entities/acme|Acme]]");
+    expect(body).not.toContain("openclaw:wiki:related");
+  });
+
   it("keeps a Related section the owner structured with their own sub-headings", () => {
     const page =
       "# Ada\n\n## Related\n\n### Customers\n- [[entities/acme|Acme]]\n### Competitors\n- [[entities/globex|Globex]]\n";

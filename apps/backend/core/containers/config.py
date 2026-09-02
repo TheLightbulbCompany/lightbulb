@@ -961,6 +961,19 @@ def heartbeat_model_ref(
     return cheap_model_ref(provider_choice, byo_provider, aip_arns=aip_arns)
 
 
+def _default_agent_id(paperclip_agents: list[dict]) -> str:
+    """The agent that owns ambient work: the CEO, else the first Paperclip
+    agent, else the legacy ``main`` entry an unprovisioned container gets.
+
+    One answer for both places that need it — the legacy ``default: true``
+    marker on the roster entry and ``agents.defaults.systemAgent.agentId``
+    — so they can never name different agents.
+    """
+    if not paperclip_agents:
+        return "main"
+    return next((a["id"] for a in paperclip_agents if a.get("role") == "ceo"), paperclip_agents[0]["id"])
+
+
 def _build_agents_list(paperclip_agents: list[dict], ceo_model: str | None = None) -> list[dict]:
     """Build the openclaw.json agents.list entries from Paperclip agents.
 
@@ -990,13 +1003,10 @@ def _build_agents_list(paperclip_agents: list[dict], ceo_model: str | None = Non
             },
         ]
 
-    default_index = next(
-        (i for i, a in enumerate(paperclip_agents) if a.get("role") == "ceo"),
-        0,
-    )
+    default_id = _default_agent_id(paperclip_agents)
 
     entries: list[dict] = []
-    for i, agent in enumerate(paperclip_agents):
+    for agent in paperclip_agents:
         agent_id = agent["id"]
         entry: dict = {
             "id": agent_id,
@@ -1029,7 +1039,7 @@ def _build_agents_list(paperclip_agents: list[dict], ceo_model: str | None = Non
             icon=agent.get("icon"),
         )
         write_to_agent_entry(entry, meta)
-        if i == default_index:
+        if agent_id == default_id:
             entry["default"] = True
             # The CEO (Friday) runs on the premium tier; everyone else
             # inherits the cheaper agents.defaults.model. ``ceo_model`` is
@@ -1665,6 +1675,19 @@ def build_openclaw_config_dict(
                 # container still honours them and loses real bounds without.
                 **({} if _emit_81_shape else {"runRetries": {"max": AGENT_RUN_RETRIES_MAX}}),
                 **({} if _emit_81_shape else {"memorySearch": memory_search_entry(provider_choice, byo_provider)}),
+                # 2026.8.1 resolves the owner of ambient work — the gateway's own
+                # health RPC, the system agent, the shared session store — from
+                # this key. Boot doctor materializes it from the legacy
+                # ``default: true`` marker and writes it back to disk, but ONLY
+                # at boot: a config regenerate on a RUNNING multi-agent container
+                # rewrote the file without it, the hot reload does not
+                # re-materialize, and every ambient resolver fell through to
+                # AgentSelectionRequiredError — the health RPC failed against a
+                # healthy process and the owner sat on the provisioning stepper
+                # until a task roll. Emit the explicit owner so a regenerate
+                # alone is never owner-less. 7.2's strict agents.defaults schema
+                # refuses the key.
+                **({"systemAgent": {"agentId": _default_agent_id(paperclip_agents or [])}} if _emit_81_shape else {}),
                 **(
                     {}
                     if _emit_81_shape or provider_choice not in BEDROCK_PROVIDER_CHOICES

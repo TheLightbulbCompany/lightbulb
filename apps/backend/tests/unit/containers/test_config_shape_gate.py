@@ -307,6 +307,33 @@ def test_81_shape_keys_the_unprovisioned_fallback_agent_too():
     assert config_schema.schema_errors(cfg) == []
 
 
+def test_81_shape_names_the_system_agent_owner_explicitly():
+    """The marker alone is not enough on a RUNNING 8.1 container: boot doctor
+    turns it into agents.defaults.systemAgent.agentId, but a config regenerate
+    without a restart does not, and a multi-agent roster with no explicit owner
+    fails the gateway's own health RPC (AgentSelectionRequiredError). The
+    generator names the owner itself, and it is the same agent the marker is on."""
+    cfg = build_openclaw_config_dict(**_COMMON, deployed_tag="2026.8.1-isol8.1-1c67107", paperclip_agents=_ROSTER)
+    assert cfg["agents"]["defaults"]["systemAgent"] == {"agentId": _FRIDAY}
+    assert config_schema.schema_errors(cfg) == []
+
+    # No CEO -> the first agent owns ambient work, marker and owner agree.
+    no_ceo = [{"id": _ATLAS, "name": "Atlas", "role": "general"}, {"id": _FRIDAY, "name": "Friday", "role": "general"}]
+    cfg = build_openclaw_config_dict(**_COMMON, deployed_tag="2026.8.1-isol8.1-1c67107", paperclip_agents=no_ceo)
+    assert cfg["agents"]["defaults"]["systemAgent"] == {"agentId": _ATLAS}
+    assert cfg["agents"]["entries"][_ATLAS]["default"] is True
+
+    # Unprovisioned fallback: the legacy single entry owns itself.
+    cfg = build_openclaw_config_dict(**_COMMON, deployed_tag="2026.8.1-isol8.1-1c67107")
+    assert cfg["agents"]["defaults"]["systemAgent"] == {"agentId": "main"}
+
+
+def test_72_shape_has_no_system_agent_key():
+    """7.2's agents.defaults is .strict(); the key would fail the whole file."""
+    cfg = build_openclaw_config_dict(**_COMMON, deployed_tag="2026.7.2-isol8.8-8f700f0", paperclip_agents=_ROSTER)
+    assert "systemAgent" not in cfg["agents"]["defaults"]
+
+
 def test_72_shape_still_emits_the_agents_list_array():
     """Mirror: on 7.2 ``entries`` does not exist and ``list`` is the roster."""
     cfg = build_openclaw_config_dict(**_COMMON, deployed_tag="2026.7.2-isol8.8-8f700f0", paperclip_agents=_ROSTER)

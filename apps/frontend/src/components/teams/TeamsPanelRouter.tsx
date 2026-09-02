@@ -114,7 +114,7 @@ export interface TeamsPanelRouterProps {
   // reaching here — this router no longer rewrites the URL for aliases.
   panelParams?: Record<string, string>;
   onConsumeOneShot?: (key: "new" | "newIssue") => void;
-  onUpdateDurableParam?: (key: "agent", value: string | null) => void;
+  onUpdateDurableParam?: (key: "agent" | "path", value: string | null) => void;
 }
 
 export function TeamsPanelRouter({
@@ -166,6 +166,7 @@ export function TeamsPanelRouter({
       <BrainPanel
         initialPath={panelParams?.path ?? null}
         initialTab={panelParams?.tab === "dreams" ? "dreams" : null}
+        onPathUnavailable={() => onUpdateDurableParam?.("path", null)}
       />
     );
   }

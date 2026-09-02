@@ -3,7 +3,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import type { FileEntry, FileInfo } from "@/hooks/useWorkspaceFiles";
 
 // Hook state the tests mutate per-case. useBrainFile is a spy so tests can
-// assert which path the panel actually requested after a tree click.
+// assert which page the panel actually requested after a navigation.
 let treeState: {
   files: FileEntry[];
   error: Error | undefined;
@@ -25,9 +25,13 @@ vi.mock("@/hooks/useBrainFiles", () => ({
   useBrainMutations: () => ({ saveBrainFile, deleteBrainFile, uploadBrainFiles }),
 }));
 
-const openChatPanel = vi.fn();
+// Every ASK exit is a draft handed to the default agent's composer (T1).
+const openChatPanelWithDraft = vi.fn((draft: string) => {
+  void draft; // recorded by the spy; tests assert on the call args
+  return true;
+});
 vi.mock("@/components/workspace/workspaceController", () => ({
-  openChatPanel: (agentId: string) => openChatPanel(agentId),
+  openChatPanelWithDraft: (d: string) => openChatPanelWithDraft(d),
 }));
 
 // The panel merges the PUT's fresh stat into the file's own SWR cache entry
@@ -52,31 +56,32 @@ vi.mock("@/components/control/panels/DreamsPanel", () => ({
 }));
 
 import { BrainPanel } from "../BrainPanel";
-import { DEFAULT_AGENT_SENTINEL } from "@/components/workspace/panelRegistry";
 
-const FACTS: FileEntry = {
-  name: "facts.md",
-  path: "topics/facts.md",
-  type: "file",
-  size: 42,
+const f = (path: string, type: "file" | "dir" = "file", size = 42): FileEntry => ({
+  name: path.slice(path.lastIndexOf("/") + 1),
+  path,
+  type,
+  size: type === "file" ? size : null,
   modified_at: 1_756_000_000,
-};
-const TOPICS_DIR: FileEntry = {
-  name: "topics",
-  path: "topics",
-  type: "dir",
-  size: null,
+});
+const INDEX = f("index.md");
+const ENTITIES = f("entities", "dir");
+const ENTITIES_INDEX = f("entities/index.md");
+const ADA = f("entities/ada-lovelace.md");
+const INBOX_DIR_ENTRY = f("inbox", "dir");
+const DECK = f("inbox/deck.pdf");
+const SCAFFOLD = [INDEX, ENTITIES, ENTITIES_INDEX];
+const POPULATED = [INDEX, ENTITIES, ENTITIES_INDEX, ADA, INBOX_DIR_ENTRY, DECK];
+
+const md = (path: string, content: string): FileInfo => ({
+  name: path.slice(path.lastIndexOf("/") + 1),
+  path,
+  size: content.length,
   modified_at: 1_756_000_000,
-};
-const FACTS_INFO: FileInfo = {
-  name: "facts.md",
-  path: "topics/facts.md",
-  size: 42,
-  modified_at: 1_756_000_000,
-  content: "The sky is green.",
+  content,
   binary: false,
   mime_type: "text/markdown",
-};
+});
 
 beforeEach(() => {
   treeState = { files: [], error: undefined, isLoading: false, refresh: vi.fn() };
@@ -86,7 +91,7 @@ beforeEach(() => {
   deleteBrainFile.mockClear();
   uploadBrainFiles.mockClear();
   uploadBrainFiles.mockResolvedValue({ uploaded: [] });
-  openChatPanel.mockClear();
+  openChatPanelWithDraft.mockClear();
   globalMutate.mockClear();
 });
 
@@ -98,52 +103,138 @@ afterEach(() => {
 });
 
 describe("BrainPanel", () => {
-  it("renders the Knowledge/Brain masthead and the vault tree", () => {
-    treeState.files = [TOPICS_DIR, FACTS];
+  it("lands on the vault's index.md rendered, with the split count in the masthead", () => {
+    treeState.files = POPULATED;
+    fileState.file = md("index.md", "# Wiki Index\n\n[[entities/ada-lovelace|Ada Lovelace]]");
     render(<BrainPanel />);
-    expect(screen.getByRole("heading", { name: "Brain" })).toBeInTheDocument();
-    expect(screen.getByText("Knowledge")).toBeInTheDocument();
-    expect(screen.getByText("topics")).toBeInTheDocument();
+    expect(useBrainFileSpy).toHaveBeenLastCalledWith("index.md");
+    expect(screen.getByRole("heading", { name: "Wiki Index" })).toBeInTheDocument();
+    expect(screen.getByTestId("panel-masthead-meta").textContent).toMatch(/1 filed · 1 in inbox/);
+    expect(screen.queryByRole("searchbox", { name: /find a page/i })).not.toBeNull();
   });
 
-  it("requests a page on tree selection and shows its size · modified time", () => {
-    treeState.files = [TOPICS_DIR, FACTS];
-    fileState.file = FACTS_INFO;
+  it("scaffold vault: zero notice, no fake page count, still lands on index.md", () => {
+    treeState.files = SCAFFOLD;
+    fileState.file = md("index.md", "# Wiki Index\n\n- No compiled pages yet.");
     render(<BrainPanel />);
-    fireEvent.click(screen.getByText("topics"));
-    // The tree entry is a button; the (mocked-open) viewer header repeats the
-    // name in a plain span — scope to the role to hit the tree.
-    fireEvent.click(screen.getByRole("button", { name: "facts.md" }));
-    expect(useBrainFileSpy).toHaveBeenLastCalledWith("topics/facts.md");
-    // The audit line: owners trust a brain they can see the freshness of.
-    expect(screen.getByTestId("panel-masthead-meta").textContent).toMatch(/42 B · /);
+    expect(useBrainFileSpy).toHaveBeenLastCalledWith("index.md");
+    expect(screen.getByText("Nothing filed yet.")).toBeInTheDocument();
+    expect(screen.getByTestId("panel-masthead-meta").textContent).toMatch(/0 filed · 0 in inbox/);
   });
 
-  it("saves edits through saveBrainFile with the selected path", async () => {
-    treeState.files = [FACTS];
-    fileState.file = FACTS_INFO;
-    fileState.key = "/container/brain/file?path=topics%2Ffacts.md";
-    render(<BrainPanel initialPath="topics/facts.md" />);
-    const textarea = screen.getByDisplayValue("The sky is green.");
-    fireEvent.change(textarea, { target: { value: "The sky is blue." } });
+  it("inbox files get the partial notice whose exit drafts the filing prompt", () => {
+    treeState.files = POPULATED;
+    render(<BrainPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Ask Friday to file it" }));
+    expect(openChatPanelWithDraft).toHaveBeenCalledWith(
+      expect.stringMatching(/1 file in the brain inbox/),
+    );
+  });
+
+  it("clicking the inbox count lists inbox files; picking one opens it", () => {
+    treeState.files = POPULATED;
+    render(<BrainPanel />);
+    fireEvent.click(screen.getByRole("button", { name: /1 in inbox/ }));
+    fireEvent.click(screen.getByRole("button", { name: /inbox\/deck\.pdf/ }));
+    expect(useBrainFileSpy).toHaveBeenLastCalledWith("inbox/deck.pdf");
+  });
+
+  it("a wikilink click navigates in-panel", () => {
+    treeState.files = POPULATED;
+    fileState.file = md("index.md", "[[entities/ada-lovelace|Ada Lovelace]]");
+    render(<BrainPanel />);
+    fireEvent.click(screen.getByRole("link", { name: "Ada Lovelace" }));
+    expect(useBrainFileSpy).toHaveBeenLastCalledWith("entities/ada-lovelace.md");
+  });
+
+  it("breadcrumb: Index and the section index are reachable from a deep page", () => {
+    treeState.files = POPULATED;
+    fileState.file = md("entities/ada-lovelace.md", "# Ada");
+    render(<BrainPanel initialPath="entities/ada-lovelace.md" />);
+    fireEvent.click(screen.getByRole("button", { name: "entities" }));
+    expect(useBrainFileSpy).toHaveBeenLastCalledWith("entities/index.md");
+    fireEvent.click(screen.getByRole("button", { name: "Index" }));
+    expect(useBrainFileSpy).toHaveBeenLastCalledWith("index.md");
+  });
+
+  it("Edit opens the raw editor; Save writes through saveBrainFile and returns to reading", async () => {
+    treeState.files = POPULATED;
+    fileState.file = md("entities/ada-lovelace.md", "---\ntitle: Ada\n---\n# Ada");
+    fileState.key = "/container/brain/file?path=entities%2Fada-lovelace.md";
+    render(<BrainPanel initialPath="entities/ada-lovelace.md" />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    // The editor is the raw file INCLUDING frontmatter — the audit view.
+    // (getByDisplayValue normalizes whitespace, so a multi-line value is
+    // matched off the element, not through a TextMatch.)
+    const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+    expect(ta.value).toBe("---\ntitle: Ada\n---\n# Ada");
+    fireEvent.change(ta, { target: { value: "---\ntitle: Ada\n---\n# Ada Lovelace" } });
     fireEvent.click(screen.getByRole("button", { name: /save/i }));
     await waitFor(() =>
-      expect(saveBrainFile).toHaveBeenCalledWith("topics/facts.md", "The sky is blue."),
+      expect(saveBrainFile).toHaveBeenCalledWith(
+        "entities/ada-lovelace.md",
+        "---\ntitle: Ada\n---\n# Ada Lovelace",
+      ),
     );
-    expect(treeState.refresh).toHaveBeenCalled();
-    // The audit line goes stale right after the owner's own edit unless the
-    // file's own SWR cache entry is also mutated (finding 6/M-fix): the panel
-    // must merge the PUT's fresh stat into the file key, not just the tree key.
     expect(globalMutate).toHaveBeenCalledWith(fileState.key, expect.any(Function), false);
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Edit" })).not.toBeNull());
   });
 
-  it("deletes the selected page after confirmation", async () => {
-    treeState.files = [FACTS];
-    fileState.file = FACTS_INFO;
+  it("leaving Edit with unsaved changes asks first; declining keeps the editor", () => {
+    treeState.files = POPULATED;
+    fileState.file = md("entities/ada-lovelace.md", "# Ada");
+    render(<BrainPanel initialPath="entities/ada-lovelace.md" />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByDisplayValue("# Ada"), { target: { value: "# Ada!" } });
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+    fireEvent.click(screen.getByRole("button", { name: "View" }));
+    expect(screen.getByDisplayValue("# Ada!")).toBeInTheDocument();
+  });
+
+  it("a stale ?path that 404s shows the missing-page notice and clears the durable param once", () => {
+    treeState.files = POPULATED;
+    fileState.error = Object.assign(new Error("API 404"), { status: 404 });
+    const onPathUnavailable = vi.fn();
+    const { rerender } = render(
+      <BrainPanel initialPath="main/index.md" onPathUnavailable={onPathUnavailable} />,
+    );
+    expect(screen.getByText(/No page at main\/index\.md/)).toBeInTheDocument();
+    // Once per stale path, not once per render — the shell hands a fresh
+    // inline callback down on every render of its own.
+    rerender(<BrainPanel initialPath="main/index.md" onPathUnavailable={onPathUnavailable} />);
+    expect(onPathUnavailable).toHaveBeenCalledTimes(1);
+    expect(onPathUnavailable).toHaveBeenCalledWith("main/index.md");
+  });
+
+  it("name search filters the tree and says it cannot see contents; no match hands off to ASK with the query", () => {
+    treeState.files = POPULATED;
+    render(<BrainPanel />);
+    const box = screen.getByRole("searchbox", { name: /find a page by name/i });
+    fireEvent.change(box, { target: { value: "ada" } });
+    expect(screen.getByRole("button", { name: /entities\/ada-lovelace\.md/ })).toBeInTheDocument();
+    expect(screen.getByText(/names only/i)).toBeInTheDocument();
+    fireEvent.change(box, { target: { value: "pricing" } });
+    expect(screen.getByText("No page named that.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /ask friday to search/i }));
+    expect(openChatPanelWithDraft).toHaveBeenCalledWith(expect.stringContaining('"pricing"'));
+  });
+
+  it("the toolbar ASK button drafts the open-ended prompt", () => {
+    treeState.files = POPULATED;
+    render(<BrainPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Ask Friday" }));
+    expect(openChatPanelWithDraft).toHaveBeenCalledWith(
+      "Look in our brain and tell me what we know about: ",
+    );
+  });
+
+  it("Delete removes the open page after confirmation", async () => {
+    treeState.files = POPULATED;
+    fileState.file = md("entities/ada-lovelace.md", "# Ada");
     vi.spyOn(window, "confirm").mockReturnValue(true);
-    render(<BrainPanel initialPath="topics/facts.md" />);
+    render(<BrainPanel initialPath="entities/ada-lovelace.md" />);
     fireEvent.click(screen.getByRole("button", { name: /delete/i }));
-    await waitFor(() => expect(deleteBrainFile).toHaveBeenCalledWith("topics/facts.md"));
+    await waitFor(() => expect(deleteBrainFile).toHaveBeenCalledWith("entities/ada-lovelace.md"));
     expect(treeState.refresh).toHaveBeenCalled();
   });
 
@@ -153,7 +244,9 @@ describe("BrainPanel", () => {
       screen.getByText("Your company's brain fills as your agents learn."),
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /ask friday/i }));
-    expect(openChatPanel).toHaveBeenCalledWith(DEFAULT_AGENT_SENTINEL);
+    expect(openChatPanelWithDraft).toHaveBeenCalledWith(
+      "Look in our brain and tell me what we know about: ",
+    );
   });
 
   it("does not show the empty state while the tree is still loading", () => {
@@ -176,18 +269,18 @@ describe("BrainPanel", () => {
     expect(treeState.refresh).toHaveBeenCalled();
   });
 
-  it("uploads dropped files onto the tree pane and refreshes the tree", async () => {
-    treeState.files = [FACTS];
+  it("uploads dropped files onto the notes pane and refreshes the tree", async () => {
+    treeState.files = POPULATED;
     render(<BrainPanel />);
-    const pane = screen.getByTestId("brain-tree-pane");
+    const pane = screen.getByTestId("brain-notes-pane");
     const file = new File(["hello"], "notes.md", { type: "text/markdown" });
     fireEvent.drop(pane, { dataTransfer: { files: [file] } });
     await waitFor(() => expect(uploadBrainFiles).toHaveBeenCalledWith([file]));
     await waitFor(() => expect(treeState.refresh).toHaveBeenCalled());
   });
 
-  it("uploads files picked via the file input on the tree pane", async () => {
-    treeState.files = [FACTS];
+  it("uploads files picked via the file input", async () => {
+    treeState.files = POPULATED;
     render(<BrainPanel />);
     const input = screen.getByLabelText(/upload files/i) as HTMLInputElement;
     const file = new File(["hello"], "notes.md", { type: "text/markdown" });
@@ -197,7 +290,7 @@ describe("BrainPanel", () => {
   });
 
   it("shows an error toast and still refreshes when an upload fails", async () => {
-    treeState.files = [FACTS];
+    treeState.files = POPULATED;
     uploadBrainFiles.mockRejectedValueOnce(new Error("too big"));
     render(<BrainPanel />);
     const input = screen.getByLabelText(/upload files/i) as HTMLInputElement;
@@ -208,13 +301,13 @@ describe("BrainPanel", () => {
   });
 
   it("ignores a second drop while an upload is already in flight (T3 review F7)", async () => {
-    treeState.files = [FACTS];
+    treeState.files = POPULATED;
     let resolveUpload: (v: { uploaded: never[] }) => void = () => {};
     uploadBrainFiles.mockImplementation(
       () => new Promise((resolve) => { resolveUpload = resolve; }),
     );
     render(<BrainPanel />);
-    const pane = screen.getByTestId("brain-tree-pane");
+    const pane = screen.getByTestId("brain-notes-pane");
     const file1 = new File(["a"], "a.md");
     const file2 = new File(["b"], "b.md");
 
@@ -232,7 +325,7 @@ describe("BrainPanel", () => {
   });
 
   it("disables the upload input while an upload is in flight (T3 review item 6)", async () => {
-    treeState.files = [FACTS];
+    treeState.files = POPULATED;
     let resolveUpload: (v: { uploaded: never[] }) => void = () => {};
     uploadBrainFiles.mockImplementation(
       () => new Promise((resolve) => { resolveUpload = resolve; }),
@@ -267,39 +360,39 @@ describe("BrainPanel", () => {
   });
 
   it("follows a second ?path deep link on an already-mounted panel (M2)", () => {
-    treeState.files = [FACTS];
-    fileState.file = FACTS_INFO;
-    const { rerender } = render(<BrainPanel initialPath="topics/facts.md" />);
-    expect(useBrainFileSpy).toHaveBeenLastCalledWith("topics/facts.md");
+    treeState.files = POPULATED;
+    fileState.file = md("entities/ada-lovelace.md", "# Ada");
+    const { rerender } = render(<BrainPanel initialPath="entities/ada-lovelace.md" />);
+    expect(useBrainFileSpy).toHaveBeenLastCalledWith("entities/ada-lovelace.md");
     // openPanel on an already-open panel focuses + merges params rather than
     // remounting — simulate that by rerendering with a new initialPath prop.
-    rerender(<BrainPanel initialPath="topics/icp.md" />);
-    expect(useBrainFileSpy).toHaveBeenLastCalledWith("topics/icp.md");
+    rerender(<BrainPanel initialPath="concepts/icp.md" />);
+    expect(useBrainFileSpy).toHaveBeenLastCalledWith("concepts/icp.md");
   });
 
   describe("Notes | Dreams tabs", () => {
-    it("renders a Notes | Dreams tab bar, defaulting to Notes (the vault tree shows)", () => {
-      treeState.files = [TOPICS_DIR, FACTS];
+    it("renders a Notes | Dreams tab bar, defaulting to Notes (the vault pane shows)", () => {
+      treeState.files = POPULATED;
       render(<BrainPanel />);
       const notesTab = screen.getByRole("tab", { name: "Notes" });
       expect(notesTab).toHaveAttribute("aria-selected", "true");
       expect(screen.getByRole("tab", { name: "Dreams" })).toBeInTheDocument();
-      expect(screen.getByText("topics")).toBeInTheDocument();
+      expect(screen.getByTestId("brain-notes-pane")).toBeInTheDocument();
     });
 
-    it("mounts the DreamsPanel body on the Dreams tab and hides the Notes tree", () => {
-      treeState.files = [TOPICS_DIR, FACTS];
+    it("mounts the DreamsPanel body on the Dreams tab and hides the Notes pane", () => {
+      treeState.files = POPULATED;
       render(<BrainPanel />);
       // Radix activates a tab on mousedown, not on the synthetic click event.
       fireEvent.mouseDown(screen.getByRole("tab", { name: "Dreams" }));
       expect(screen.getByTestId("dreams-panel-body")).toBeInTheDocument();
-      expect(screen.queryByText("topics")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("brain-notes-pane")).not.toBeInTheDocument();
     });
 
-    it("hides the Notes-only masthead meta/actions (size · modified, Delete) on the Dreams tab", () => {
-      treeState.files = [FACTS];
-      fileState.file = FACTS_INFO;
-      render(<BrainPanel initialPath="topics/facts.md" />);
+    it("hides the Notes-only masthead meta/actions (counts, size · modified, Delete) on the Dreams tab", () => {
+      treeState.files = POPULATED;
+      fileState.file = md("entities/ada-lovelace.md", "# Ada");
+      render(<BrainPanel initialPath="entities/ada-lovelace.md" />);
       expect(screen.getByTestId("panel-masthead-meta")).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /delete/i })).toBeInTheDocument();
 
@@ -310,31 +403,33 @@ describe("BrainPanel", () => {
       expect(screen.queryByRole("button", { name: /delete/i })).not.toBeInTheDocument();
     });
 
-    it("switching back to Notes restores the vault tree", () => {
-      treeState.files = [TOPICS_DIR, FACTS];
+    it("switching back to Notes restores the vault pane", () => {
+      treeState.files = POPULATED;
       render(<BrainPanel />);
       fireEvent.mouseDown(screen.getByRole("tab", { name: "Dreams" }));
       expect(screen.getByTestId("dreams-panel-body")).toBeInTheDocument();
 
       fireEvent.mouseDown(screen.getByRole("tab", { name: "Notes" }));
-      expect(screen.getByText("topics")).toBeInTheDocument();
+      expect(screen.getByTestId("brain-notes-pane")).toBeInTheDocument();
       expect(screen.queryByTestId("dreams-panel-body")).not.toBeInTheDocument();
     });
 
     it("initialTab='dreams' seeds the Dreams tab active on mount (old ?panel=dreams links)", () => {
-      treeState.files = [TOPICS_DIR, FACTS];
+      treeState.files = POPULATED;
       render(<BrainPanel initialTab="dreams" />);
       expect(screen.getByRole("tab", { name: "Dreams" })).toHaveAttribute("aria-selected", "true");
       expect(screen.getByTestId("dreams-panel-body")).toBeInTheDocument();
-      expect(screen.queryByText("topics")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("brain-notes-pane")).not.toBeInTheDocument();
     });
 
     it("guards a dirty editor on tab switch — declining discard keeps Notes and the draft (review finding 1)", () => {
-      treeState.files = [FACTS];
-      fileState.file = FACTS_INFO;
-      render(<BrainPanel initialPath="topics/facts.md" />);
-      const textarea = screen.getByDisplayValue("The sky is green.");
-      fireEvent.change(textarea, { target: { value: "The sky is actually blue — DRAFT" } });
+      treeState.files = POPULATED;
+      fileState.file = md("entities/ada-lovelace.md", "# Ada");
+      render(<BrainPanel initialPath="entities/ada-lovelace.md" />);
+      fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+      fireEvent.change(screen.getByDisplayValue("# Ada"), {
+        target: { value: "# Ada — DRAFT" },
+      });
 
       const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
       fireEvent.mouseDown(screen.getByRole("tab", { name: "Dreams" }));
@@ -342,15 +437,17 @@ describe("BrainPanel", () => {
       expect(confirmSpy).toHaveBeenCalled();
       expect(screen.queryByTestId("dreams-panel-body")).not.toBeInTheDocument();
       // Notes stayed mounted throughout — the draft was never unmounted/reset.
-      expect(screen.getByDisplayValue("The sky is actually blue — DRAFT")).toBeInTheDocument();
+      expect(screen.getByDisplayValue("# Ada — DRAFT")).toBeInTheDocument();
     });
 
     it("guards a dirty editor on tab switch — accepting discard switches to Dreams (review finding 1)", () => {
-      treeState.files = [FACTS];
-      fileState.file = FACTS_INFO;
-      render(<BrainPanel initialPath="topics/facts.md" />);
-      const textarea = screen.getByDisplayValue("The sky is green.");
-      fireEvent.change(textarea, { target: { value: "The sky is actually blue — DRAFT" } });
+      treeState.files = POPULATED;
+      fileState.file = md("entities/ada-lovelace.md", "# Ada");
+      render(<BrainPanel initialPath="entities/ada-lovelace.md" />);
+      fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+      fireEvent.change(screen.getByDisplayValue("# Ada"), {
+        target: { value: "# Ada — DRAFT" },
+      });
 
       vi.spyOn(window, "confirm").mockReturnValue(true);
       fireEvent.mouseDown(screen.getByRole("tab", { name: "Dreams" }));

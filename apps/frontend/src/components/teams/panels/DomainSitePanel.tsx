@@ -52,13 +52,12 @@ const COLUMNS: PanelDataColumn<ProvisionedResource>[] = [
     key: "status",
     header: "Status",
     width: "8rem",
-    // Never colour alone (system.md): the word carries it. Unknown renders
-    // neutral, never ok.
+    // The pointer is only ever written `active` (provisioning_workflow._bind);
+    // failures live on the workflow row, not here. Never colour alone
+    // (system.md): the word carries it. Unknown renders neutral, never ok.
     cell: (r) =>
-      r.status === "complete" ? (
+      r.status === "active" ? (
         <span className="text-ok">Live</span>
-      ) : r.status === "errored" ? (
-        <span className="text-err">Failed</span>
       ) : (
         <span className="text-[var(--midnight-muted)]">{r.status}</span>
       ),

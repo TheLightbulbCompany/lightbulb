@@ -11,7 +11,7 @@
 // for masthead H1 + section H2s; class-only swap, hooks/data preserved.
 
 import Link from "next/link";
-import { Bot, CircleDot, DollarSign, ShieldCheck } from "lucide-react";
+import { Bot, CircleDot, ShieldCheck } from "lucide-react";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { MetricCard } from "@/components/teams/dashboard/MetricCard";
 import {
@@ -44,13 +44,6 @@ import type {
 } from "@/components/teams/shared/types";
 
 /* ---------- helpers ---------- */
-
-function formatCents(cents: number): string {
-  return `$${(cents / 100).toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
-}
 
 const EMPTY_DASHBOARD: DashboardSummary = {
   agents: {},
@@ -246,11 +239,7 @@ export function DashboardPanel() {
 
   return (
     <div className="editorial-page p-4 sm:p-5 lg:p-6 flex flex-col gap-4 max-w-[1600px] mx-auto w-full">
-      <PanelMasthead
-        overline="Operations"
-        title="Home"
-        meta="Last 14 days"
-      />
+      <PanelMasthead overline="Operations" title="Home" />
 
       {/* The business strip: what the company earned and attracted. Rendered
           ABOVE the agent metrics because "is my business working" is the
@@ -258,7 +247,7 @@ export function DashboardPanel() {
           "are my agents busy", which is a different and less urgent question.
           Additive: an owner with no Stripe binding sees one honest notice here
           and the rest of Home exactly as it was. */}
-      <HomeRollupStrip />
+      <HomeRollupStrip spendCents={dashboard.costs?.monthSpendCents ?? null} />
 
       {/* Live agent runs — sits prominently below the masthead so active
           work is the first thing the dashboard surfaces. */}
@@ -267,7 +256,7 @@ export function DashboardPanel() {
       {/* Metric tiles — single continuous strip with internal hairlines */}
       <section
         aria-label="Key metrics"
-        className="editorial-card grid grid-cols-1 @md:grid-cols-2 @4xl:grid-cols-4 overflow-hidden"
+        className="editorial-card grid grid-cols-1 @md:grid-cols-2 @4xl:grid-cols-3 overflow-hidden"
       >
         <MetricCard
           icon={Bot}
@@ -294,16 +283,6 @@ export function DashboardPanel() {
             </span>
           }
         />
-        {dashboard.costs != null && (
-          <MetricCard
-            icon={DollarSign}
-            value={formatCents(dashboard.costs.monthSpendCents)}
-            label="Month Spend"
-            to="/chat?panel=usage"
-            onClick={(e) => handleShellLinkClick(e, "/chat?panel=usage")}
-            description={<span>Billed credits this month</span>}
-          />
-        )}
         <MetricCard
           icon={ShieldCheck}
           value={totalApprovals}

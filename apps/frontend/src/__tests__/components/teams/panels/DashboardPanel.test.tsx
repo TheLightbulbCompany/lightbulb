@@ -78,7 +78,7 @@ describe("DashboardPanel", () => {
     expect(screen.getByRole("alert")).toBeInTheDocument();
   });
 
-  test("renders 4 metric tiles when dashboard loaded", () => {
+  test("renders the three agent metric tiles when dashboard loaded", () => {
     mockApi(
       makeRead({
         "/dashboard": {
@@ -102,7 +102,6 @@ describe("DashboardPanel", () => {
     const metrics = within(screen.getByLabelText("Key metrics"));
     expect(metrics.getByText("Agents")).toBeInTheDocument();
     expect(metrics.getByText("Open Tasks")).toBeInTheDocument();
-    expect(metrics.getByText("Month Spend")).toBeInTheDocument();
     expect(metrics.getByText("Pending Approvals")).toBeInTheDocument();
   });
 
@@ -184,29 +183,6 @@ describe("DashboardPanel", () => {
     });
     render(<DashboardPanel />);
     expect(screen.queryByText(/no recent activity/i)).not.toBeInTheDocument();
-  });
-
-  test("formats month spend as currency", () => {
-    mockApi(
-      makeRead({
-        "/dashboard": {
-          data: {
-            dashboard: {
-              agents: {},
-              tasks: {},
-              runActivity: [],
-              costs: { monthSpendCents: 12345 },
-              pendingApprovals: 0,
-              budgets: { pendingApprovals: 0 },
-            },
-          },
-        },
-        "/issues": { data: [] },
-      }),
-    );
-    render(<DashboardPanel />);
-    expect(screen.getByText("$123.45")).toBeInTheDocument();
-    expect(screen.getByText(/Billed credits this month/i)).toBeInTheDocument();
   });
 
   test("renders Recent Tasks sorted by updatedAt desc, newest first", () => {

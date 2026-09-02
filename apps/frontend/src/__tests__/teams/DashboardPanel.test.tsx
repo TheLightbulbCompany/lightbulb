@@ -68,14 +68,13 @@ describe("DashboardPanel", () => {
     // Header — PanelMasthead overline + h1 (editorial atom layer, PR 8)
     expect(screen.getByText("Operations")).toBeInTheDocument();
     expect(screen.getByText("Home")).toBeInTheDocument();
-    // 4 tile labels — scoped to the metrics strip ("Agents" also names the
-    // ActiveAgentsPanel section heading).
+    // 3 tile labels — scoped to the metrics strip ("Agents" also names the
+    // ActiveAgentsPanel section heading). Spend is no longer one of them: it
+    // moved to the Business section, which is mocked as loading here and
+    // asserted in HomeRollupStrip.test.tsx.
     const metrics = within(screen.getByLabelText("Key metrics"));
     expect(metrics.getByText("Agents")).toBeInTheDocument();
     expect(metrics.getByText("Open Tasks")).toBeInTheDocument();
-    expect(metrics.getByText("Month Spend")).toBeInTheDocument();
     expect(metrics.getByText("Pending Approvals")).toBeInTheDocument();
-    // 4250 cents → $42.50 (unique enough to avoid description-text collisions)
-    expect(screen.getByText("$42.50")).toBeInTheDocument();
   });
 });

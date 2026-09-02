@@ -74,6 +74,18 @@ def test_render_brief_md_no_idea_tells_friday_to_pick_one():
     assert "None" not in md
 
 
+def test_brief_md_with_an_idea_does_not_ask_for_person_research():
+    md = render_brief_md(path="new", user_input="handmade candles", detail=None, display_name="Leo", email="l@x.com")
+    assert "Research the person" not in md
+    assert "handmade candles" in md
+
+
+def test_brief_md_you_pick_path_still_researches_the_person():
+    md = render_brief_md(path="new", user_input=None, detail=None, display_name="Leo", email="l@x.com")
+    assert "choosing the business is job zero" in md
+    assert "public footprint" in md
+
+
 def test_goal_title_new_path_uses_their_words():
     assert (
         derive_goal_title(path="new", user_input="A social media agency for restaurants")

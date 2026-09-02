@@ -50,8 +50,8 @@ The human just signed up and told us about the company they want run.
 - **Email:** {email}
 
 Treat their words as the seed, not the ceiling — on the `grow` path the
-input is usually their website; fetch it first. Research the person as
-well as the business (their public presence tells you who you work for).
+input is usually their website; fetch it first. Keep the research to the
+business and its market; the Integrations section below is already researched.
 """
 
 _IDEA_LINE = "- **Their words, verbatim:** {user_input}\n"
@@ -790,7 +790,7 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
         # Counted as a FAILURE, not as "not ready". Most of what lands here IS
         # transient (Paperclip warming, a 5xx), but some of it never resolves:
         # Clerk raising for a submitter whose account was deleted, or an
-        # AttributeError from a genuine bug in these three calls. Treating the
+        # AttributeError from a genuine bug in these calls. Treating the
         # whole class as "retry next poll" is what turned a permanent error
         # into a silent forever-loop the user could never escape -- the budget
         # in _drain_until_settled is what ends it now, and exc_info is what

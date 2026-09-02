@@ -100,7 +100,7 @@ const ABORTED_PATTERN = /Agent run was cancelled/i;
 // it: 4-part `agent:{agentId}:{userId}:{sessionId}` for a real session, or the
 // legacy 3-part `agent:{agentId}:{userId}` "General" session when sessionId is
 // null so no history is orphaned.
-function buildChatSessionKey(
+export function buildChatSessionKey(
   agentId: string,
   sessionName: string,
   sessionId: string | null,

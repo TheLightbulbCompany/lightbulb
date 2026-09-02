@@ -198,7 +198,7 @@ export function CodeBlock({ className, children, ...props }: React.HTMLAttribute
   );
 }
 
-const MarkdownContent = React.memo(function MarkdownContent({
+export const MarkdownContent = React.memo(function MarkdownContent({
   content,
   onOpenFile,
 }: {

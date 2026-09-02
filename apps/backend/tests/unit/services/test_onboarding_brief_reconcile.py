@@ -27,6 +27,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import core.containers as containers_mod
+import core.repositories.billing_repo as billing_mod
 import core.repositories.paperclip_repo as repo_mod
 import core.services.onboarding_brief as brief_mod
 import core.services.bootstrap_dispatcher as dispatcher_mod
@@ -90,6 +91,10 @@ def env(monkeypatch):
 
     monkeypatch.setattr(session_mod, "get_user_session_cookie", AsyncMock(return_value="cookie"))
     monkeypatch.setattr(clerk_mod, "get_primary_email", AsyncMock(return_value="max@acme.com"))
+    # No billing row: the read phase renders the integrations section with the
+    # trial Stripe wording. Unstubbed this is a live GetItem against a table
+    # that does not exist in unit tests.
+    monkeypatch.setattr(billing_mod, "get_by_owner_id", AsyncMock(return_value=None))
 
     ws = MagicMock()
     ws.write_file = MagicMock()
@@ -192,6 +197,8 @@ async def test_drain_claims_seeds_stages_then_retires_the_pending_item(env):
     assert brief_call.args[0] == "user_abc"  # owner id -- the workspace path
     assert brief_call.args[1] == "workspace-friday-uuid/BRIEF.md"
     assert "acme.com" in brief_call.args[2]
+    # The integrations menu is staged with the brief, in one write.
+    assert "## Integrations" in brief_call.args[2]
     # The item is deliberately NOT retired here: dismissal would then rest on
     # the row's funnel_state alone, which for an org is read through the
     # eventually-consistent by-org-id GSI -- and a poll inside that window

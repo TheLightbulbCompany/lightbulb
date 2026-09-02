@@ -732,6 +732,7 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
     """One fulfilment pass. May raise; ``_drain_until_settled`` counts that as
     a FAILED attempt exactly like a returned FAILED."""
     from core.containers import get_workspace
+    from core.repositories import billing_repo
     from core.repositories.paperclip_repo import FunnelClaimResult, PaperclipRepo
     from core.services.clerk_admin import get_primary_email
     from core.services.paperclip_admin_client import shared_admin_client
@@ -777,6 +778,14 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
         )
         admin = shared_admin_client()
         agents = await admin.list_agents(session_cookie=session_cookie, company_id=owner_row.company_id)
+        # Deterministic menu + Stripe status for the first run (see the
+        # render_integrations_md header). A missing billing row renders the
+        # trial wording, which is the safe default: "It is set up when the
+        # owner subscribes". Read HERE, not next to the staging call: below
+        # the claim a DynamoDB blip would unwind the goal, the project and
+        # the claim itself, where up here it costs one retried attempt.
+        billing_row = await billing_repo.get_by_owner_id(owner_id) or {}
+        integrations_md = render_integrations_md(integration_rows_from_registry(), billing_row)
     except Exception as e:  # noqa: BLE001 — classified by the caller's budget
         # Counted as a FAILURE, not as "not ready". Most of what lands here IS
         # transient (Paperclip warming, a 5xx), but some of it never resolves:
@@ -834,13 +843,6 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
             project_id=project_id,
             owner_id=owner_id,
         )
-        from core.repositories import billing_repo
-
-        # Deterministic menu + Stripe status for the first run (see the
-        # render_integrations_md header). A missing billing row renders the
-        # trial wording, which is the safe default: "set up when you subscribe".
-        billing_row = await billing_repo.get_by_owner_id(owner_id) or {}
-        integrations_md = render_integrations_md(integration_rows_from_registry(), billing_row)
         stage_first_run_files(
             workspace=get_workspace(),
             owner_id=owner_id,

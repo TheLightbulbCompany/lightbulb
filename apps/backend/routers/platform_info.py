@@ -52,12 +52,13 @@ async def get_platform_info() -> dict:
             # this skew changes the wording, never the destination.
             "requestable": not registry.visible_in_env(provider),
         }
-        for provider in registry.all_providers().values()
-        # A gate still means HIDDEN unless the provider opts into being requested.
-        # Without this, adding a half-wired provider gated `environments:
-        # [local, dev]` would publish it on this unauthenticated route and have
-        # agents pitch it, with no config knob left to suppress it.
-        if registry.visible_in_env(provider) or provider.offer_request_access
+        # Not every provider: a gate still means HIDDEN unless the provider opts
+        # into being requested. Without that filter, adding a half-wired provider
+        # gated `environments: [local, dev]` would publish it on this
+        # unauthenticated route and have agents pitch it, with no config knob left
+        # to suppress it. Shared with the first-run BRIEF.md catalog
+        # (onboarding_brief.integration_rows_from_registry) so the two agree.
+        for provider in registry.connectable_providers()
     ]
     channels = [{"key": key, "display_name": key.replace("_", " ").title()} for key in CHANNEL_PROVIDER_IDS]
     return {"integrations": integrations, "channels": channels}

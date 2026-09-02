@@ -50,11 +50,21 @@ The human just signed up and told us about the company they want run.
 - **Email:** {email}
 
 Treat their words as the seed, not the ceiling — on the `grow` path the
-input is usually their website; fetch it first. Keep the research to the
-business and its market; the Integrations section below is already researched.
+input is usually their website; fetch it first. {scope_line}
 """
 
 _IDEA_LINE = "- **Their words, verbatim:** {user_input}\n"
+
+# The scope line is per-path: the you-pick block below explicitly sends her to
+# research the PERSON, so a shared "keep the research to the business" would
+# contradict it three lines later. With an idea, the business is already given.
+_SCOPE_LINE_WITH_IDEA = (
+    "Keep the research to the business and its market; the Integrations section below is already researched."
+)
+_SCOPE_LINE_NO_IDEA = (
+    "Once you have chosen, keep the research to that business and its market; "
+    "the Integrations section below is already researched."
+)
 
 # No idea given: they clicked "I don't know yet — you pick". The absence is
 # the instruction. Their email is the only lead we have, so say so plainly
@@ -84,10 +94,12 @@ def render_brief_md(
 ) -> str:
     """Render BRIEF.md. ``user_input`` is None on the "you pick" button."""
     idea_block = _IDEA_LINE.format(user_input=user_input) if user_input else _NO_IDEA_BLOCK
+    scope_line = _SCOPE_LINE_WITH_IDEA if user_input else _SCOPE_LINE_NO_IDEA
     detail_line = f"- **Extra detail:** {detail}\n" if detail else ""
     return _BRIEF_TEMPLATE.format(
         path=path,
         idea_block=idea_block,
+        scope_line=scope_line,
         detail_line=detail_line,
         display_name=display_name,
         email=email,
@@ -129,12 +141,10 @@ def integration_rows_from_registry() -> list[IntegrationRow]:
     ``requestable`` mirrors routers/platform_info.py: ``not visible_in_env`` —
     the owner cannot START that connection themselves in this environment.
 
-    The visibility filter mirrors that route too, and for the same reason: a
-    provider gated out of this environment that does not opt into
-    ``offer_request_access`` is HIDDEN, not "by request". Without the filter a
-    half-wired provider pinned to ``environments: [local, dev]`` would be
-    pitched to owners in prod, where neither this catalog nor their own
-    Integrations tab (``registry.is_listable``) offers any way to get it.
+    The visibility filter is shared with that route outright
+    (``registry.connectable_providers``), so the two cannot drift: a provider
+    gated out of this environment that does not opt into
+    ``offer_request_access`` is HIDDEN, not "by request".
     """
     from core.services.credentials import registry
 
@@ -145,15 +155,16 @@ def integration_rows_from_registry() -> list[IntegrationRow]:
             byo_required=bool(p.byo_required),
             requestable=not registry.visible_in_env(p),
         )
-        for p in registry.all_providers().values()
-        if registry.visible_in_env(p) or p.offer_request_access
+        for p in registry.connectable_providers()
     ]
     return sorted(rows, key=lambda r: r.display_name.lower())
 
 
-# Statuses under which #2254 has already filed the company-Stripe setup card
+# Statuses under which #2254 has ALREADY RUN the company-Stripe setup request
 # (it fires on the trial_local -> active transition and on direct-to-paid entry;
-# renewals and past-due keep the existing card).
+# renewals and past-due keep whatever it left). It files no card when the
+# Paperclip company does not exist yet, so the line below says the platform
+# filed the request — never that a card is sitting in the Inbox.
 _PAID_SUBSCRIPTION_STATUSES = frozenset({"active", "trialing", "past_due"})
 
 
@@ -165,9 +176,9 @@ def _stripe_line(billing_row: Mapping[str, object]) -> str:
         )
     if str(billing_row.get("subscription_status") or "") in _PAID_SUBSCRIPTION_STATUSES:
         return (
-            "- **Stripe (the company's own account): required — a setup card is "
-            "already in the owner's Inbox.** Do not file another request; say the "
-            "card is waiting for them."
+            "- **Stripe (the company's own account): required — the platform files the "
+            "setup request itself when a subscription goes live.** Do not file another "
+            "request; tell the owner to check their Inbox for the setup card."
         )
     return (
         "- **Stripe (the company's own account): required** for payments and for "
@@ -302,7 +313,7 @@ def project_name_for(first_name: str) -> str:
 # Paperclip image pin that adds rename re-derivation, and must stay true on
 # both sides of that flip.
 _NAMING_STEP_SENTENCE = (
-    "Before you put anything on the board, check the company's name — if it is "
+    "Before you email me or put anything on the board, check the company's name — if it is "
     "still a placeholder rather than a real business name, rename it now: the "
     "name feeds identifiers that are minted early and can never be changed — "
     "the board's task-key prefix and the subdomain of my email address — so "
@@ -989,9 +1000,9 @@ def stage_first_run_files(
     owner_id: str,
     friday_agent_id: str,
     brief_md: str,
-    integrations_md: str = "",
+    integrations_md: str,
 ) -> None:
-    """Write BRIEF.md (brief + the staged integrations section), unconditionally.
+    """Write BRIEF.md — brief plus the staged integrations section — unconditionally.
 
     Used to be write-if-missing because its existence WAS the one-shot
     marker for the flow. The generation-fenced ``funnel_state`` claim on the

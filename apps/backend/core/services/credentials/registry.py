@@ -503,6 +503,20 @@ def visible_in_env(p: Provider) -> bool:
     return p.environments is None or current_env() in p.environments
 
 
+def connectable_providers() -> list[Provider]:
+    """Providers /platform-info exposes in this environment: visible here, or
+    askable (``offer_request_access``) so the owner can request them.
+
+    A gate still means HIDDEN unless the provider opts into being requested.
+    Without that, a half-wired provider pinned to ``environments: [local, dev]``
+    would be published to prod owners — pitched by the first-run BRIEF.md
+    catalog and by agents reading the public route — with no config knob left
+    to suppress it, and no way for the owner to get it from their own
+    Integrations tab (``is_listable``) either.
+    """
+    return [p for p in all_providers().values() if visible_in_env(p) or p.offer_request_access]
+
+
 def is_listable(p: Provider, owner_id: str | None) -> bool:
     """Whether this provider appears in the owner's connections list at all.
 

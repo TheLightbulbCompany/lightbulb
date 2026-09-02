@@ -84,6 +84,10 @@ def test_brief_md_you_pick_path_still_researches_the_person():
     md = render_brief_md(path="new", user_input=None, detail=None, display_name="Leo", email="l@x.com")
     assert "choosing the business is job zero" in md
     assert "public footprint" in md
+    # The shared scope line must not contradict the person-research block three
+    # lines above it: on this path the business is not chosen yet.
+    assert "Keep the research to the business" not in md
+    assert "Once you have chosen" in md
 
 
 def test_goal_title_new_path_uses_their_words():
@@ -282,6 +286,7 @@ def test_staging_overwrites_a_partial_prior_attempt():
         owner_id="user_abc",
         friday_agent_id="friday-uuid",
         brief_md="brief",
+        integrations_md="",
     )
 
     assert ws.write_file.call_count == 1
@@ -344,10 +349,12 @@ def test_kickoff_names_the_company_before_the_board():
     only re-derives it on rename while the board is still empty — so the
     naming ask must come BEFORE the moves ask on both kickoff paths, or
     every board keys its tasks off the signup placeholder (PRA-1 instead of
-    GOO-1)."""
+    GOO-1). Nothing reaches the board on THIS run, but the email subdomain is
+    minted by this run's send, so the rename must precede that too."""
     for brief in ("a coffee subscription business", None):
         msg = build_first_run_message(brief)
         assert msg.index("company's name") < msg.index("three best next moves")
+        assert msg.index("company's name") < msg.index("lightbulb-mail.sh")
 
 
 def test_kickoff_ends_by_asking_which_move_to_start():
@@ -400,7 +407,7 @@ def test_integrations_md_stripe_line_trial_says_it_comes_with_subscribing():
 def test_integrations_md_stripe_line_paid_says_the_card_is_already_filed():
     for status in ("active", "trialing", "past_due"):
         md = render_integrations_md(_rows(), {"subscription_status": status})
-        assert "already in the owner's Inbox" in md, status
+        assert "check their Inbox" in md, status
         assert "Do not file another request" in md, status
 
 
@@ -479,9 +486,3 @@ def test_stage_first_run_files_appends_the_integrations_section_to_brief_md():
             "# BRIEF.md — Onboarding brief\n\n## Integrations\n\n- Stripe (`stripe`): one-click\n",
         )
     ]
-
-
-def test_stage_first_run_files_without_a_section_is_unchanged():
-    ws = _CapturingWorkspace()
-    stage_first_run_files(workspace=ws, owner_id="u", friday_agent_id="f", brief_md="brief\n")
-    assert ws.writes == [("u", "workspace-f/BRIEF.md", "brief\n")]

@@ -22,6 +22,10 @@ const patch = vi.fn();
 const del = vi.fn();
 const mutate = vi.fn();
 
+vi.mock("@/components/marketplace/drawer/MarketplaceDrawerProvider", () => ({
+  useMarketplaceDrawer: () => ({ open: vi.fn() }),
+}));
+
 vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: () => ({
     read: (path: string) =>

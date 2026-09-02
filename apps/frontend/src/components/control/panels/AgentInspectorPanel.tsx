@@ -185,9 +185,11 @@ export function AgentInspectorPanel({
           <AgentChannelsSection agentId={agentId} />
         ) : null}
         {activeTab === "schedule" ? (
-          // RoutinesPanel uses only useTeamsApi (Clerk-backed, provider-free)
-          // and useInlineTeamsNav (null-safe without a provider), so it mounts
-          // bare here — no TeamsEventsProvider/CommandPaletteProvider needed.
+          // RoutinesPanel needs no TeamsEventsProvider/CommandPaletteProvider:
+          // useTeamsApi is Clerk-backed and useInlineTeamsNav is null-safe. It
+          // DOES need MarketplaceDrawerProvider (its empty state's "Hire an
+          // agent" exit), which app/chat/page.tsx mounts above every route
+          // that reaches this inspector.
           // The agentId prop scopes the list to this agent's routines (no chip);
           // the panel's own error/empty states cover an unavailable Teams side.
           <RoutinesPanel agentId={agentId} />

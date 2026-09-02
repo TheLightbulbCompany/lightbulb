@@ -23,6 +23,11 @@ const mockRead = vi.fn((path: string) => {
   return { data, isLoading: false, error: null, mutate: mockMutate };
 });
 
+const mockOpenMarketplace = vi.fn();
+vi.mock("@/components/marketplace/drawer/MarketplaceDrawerProvider", () => ({
+  useMarketplaceDrawer: () => ({ open: mockOpenMarketplace }),
+}));
+
 vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: () => ({
     read: mockRead,
@@ -105,6 +110,19 @@ describe("RoutinesPanel", () => {
     connectionsData = [];
     routinesData = { routines: [routine()] };
     agentsData = { agents: AGENTS };
+  });
+
+  it("with nothing built, offers both exits: build one here, or hire an agent from the marketplace", () => {
+    // Canned automation is the marketplace's job (published agents carry their
+    // routines). The empty state names both doors rather than growing a
+    // preset catalog of its own.
+    routinesData = { routines: [] };
+    render(<RoutinesPanel />);
+    expect(screen.getByText("No automations yet.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Hire an agent" }));
+    expect(mockOpenMarketplace).toHaveBeenCalledWith({ view: "browse" });
+    fireEvent.click(screen.getByRole("button", { name: "Build one" }));
+    expect(screen.getByRole("dialog", { name: /new automation/i })).toBeInTheDocument();
   });
 
   it("renders the routine title and a plain-English trigger sentence from the upstream shape", () => {

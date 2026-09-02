@@ -16,6 +16,7 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { AssigneePicker } from "@/components/teams/issues/pickers/AssigneePicker";
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
+import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { cn } from "@/lib/utils";
 import { handleShellLinkClick, teamsDetailUrl } from "@/lib/shellNav";
@@ -256,6 +257,7 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
   // In-shell (provider present) → open the detail view inline; standalone
   // under /teams (no provider) → fall back to <a>.
   const nav = useInlineTeamsNav();
+  const { open: openMarketplace } = useMarketplaceDrawer();
   const { data, isLoading, error, mutate } = read<{ routines: Routine[] }>(
     "/routines",
   );
@@ -561,7 +563,13 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
           supporting={
             search || agentPick
               ? "No automations match your filters."
-              : "Create an automation to define a recurring workflow that fires on a schedule or trigger."
+              : "Build one here, or hire an agent from the marketplace — any automations it was published with arrive paused, ready for you to switch on."
+          }
+          // Canned automation lives in the marketplace (published agents carry
+          // their routines, with provenance), not in a second catalog here.
+          action={search || agentPick ? undefined : { label: "Build one", onClick: () => setCreating(true) }}
+          secondaryAction={
+            search || agentPick ? undefined : { label: "Hire an agent", onClick: () => openMarketplace({ view: "browse" }) }
           }
         />
       ) : (

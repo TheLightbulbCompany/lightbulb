@@ -143,3 +143,24 @@ describe("MarkdownView attachment links", () => {
     expect(anchor).toHaveAttribute("href", "https://example.com/docs");
   });
 });
+
+describe("MarkdownView extension points", () => {
+  it("renders raw HTML comments as text by default (react-markdown 10 behaviour)", () => {
+    render(<MarkdownView>{"a\n\n<!-- openclaw:wiki:index:start -->\n\nb"}</MarkdownView>);
+    expect(screen.getByText(/openclaw:wiki:index:start/)).toBeInTheDocument();
+  });
+
+  it("skipHtml drops raw HTML entirely", () => {
+    render(<MarkdownView skipHtml>{"a\n\n<!-- openclaw:wiki:index:start -->\n\nb"}</MarkdownView>);
+    expect(screen.queryByText(/openclaw:wiki/)).toBeNull();
+  });
+
+  it("components override replaces a shared component", () => {
+    render(
+      <MarkdownView components={{ a: ({ children }) => <span data-testid="custom-a">{children}</span> }}>
+        {"[x](entities/x.md)"}
+      </MarkdownView>,
+    );
+    expect(screen.getByTestId("custom-a")).toHaveTextContent("x");
+  });
+});

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
@@ -98,7 +98,7 @@ function AttachmentLink({ path, name, children }: {
 
 // react-markdown does NOT render raw HTML (no rehype-raw), so the body is
 // inert apart from link hrefs, which we guard. Themed with the teams CSS vars.
-const markdownComponents: Components = {
+export const markdownComponents: Components = {
   a: ({ href, children, ...props }) => {
     const attachmentPath = attachmentPathFromHref(href);
     if (attachmentPath) {
@@ -164,10 +164,25 @@ const markdownComponents: Components = {
  * overflows its column — in the Teams task view it bled off the right edge into the
  * metadata panel. `min-w-0` lets this shrink below its content's intrinsic width inside
  * a flex/grid parent; `overflow-wrap:anywhere` forces a break inside the long token. */
-export function MarkdownView({ children }: { children: string }) {
+export interface MarkdownViewProps {
+  children: string;
+  /** Per-surface overrides merged over the shared set — the Brain swaps `a`
+   *  for in-vault wikilink navigation and enlarges headings for a reading pane. */
+  components?: Partial<Components>;
+  /** Drop raw HTML. react-markdown 10 turns an html node into a TEXT node
+   *  unless told to skip (lib/index.js:360-366), so memory-wiki's managed-block
+   *  markers (`<!-- openclaw:wiki:index:start -->`) would print verbatim. */
+  skipHtml?: boolean;
+}
+
+export function MarkdownView({ children, components, skipHtml }: MarkdownViewProps) {
+  const merged = useMemo(
+    () => (components ? { ...markdownComponents, ...components } : markdownComponents),
+    [components],
+  );
   return (
     <div className="min-w-0 [overflow-wrap:anywhere]">
-      <ReactMarkdown remarkPlugins={[remarkGfm, remarkSoftBreaks]} components={markdownComponents}>
+      <ReactMarkdown remarkPlugins={[remarkGfm, remarkSoftBreaks]} components={merged} skipHtml={skipHtml}>
         {children}
       </ReactMarkdown>
     </div>

@@ -2,31 +2,35 @@
 
 // apps/frontend/src/components/teams/panels/DashboardPanel.tsx
 //
-// Ported from upstream Paperclip's Dashboard
+// The agent telemetry below is ported from upstream Paperclip's Dashboard
 // (paperclip/ui/src/pages/Dashboard.tsx) (MIT, (c) 2025 Paperclip AI).
-// 4 metric tiles + 4 charts + recent activity feed. Drops upstream's
-// ActiveAgentsPanel, plugin slots, onboarding empty-state (handled
-// elsewhere in our TeamsLayout), and configurable date ranges (14d hardcoded).
-// Editorial reskin: tokens (cream/ink/mute/forest/edge) + Lora display
-// for masthead H1 + section H2s; class-only swap, hooks/data preserved.
+// Drops upstream's plugin slots, onboarding empty-state (handled elsewhere in
+// our TeamsLayout), and configurable date ranges (14d hardcoded).
+//
+// Composition: the company's own name is the H1, the business strip and the
+// quick actions come first, and the ported agent telemetry sits second inside
+// a collapsible "Your team". The /dashboard loading + error gate lives INSIDE
+// that section on purpose — it does an ECS probe, and a slow or provisioning
+// agent runtime must never hold up the revenue hero.
 
 import Link from "next/link";
+import { useState } from "react";
 import { Bot, CircleDot, ShieldCheck } from "lucide-react";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { MetricCard } from "@/components/teams/dashboard/MetricCard";
 import {
   ChartCard,
   RunActivityChart,
-  PriorityChart,
-  IssueStatusChart,
   SuccessRateChart,
 } from "@/components/teams/dashboard/ActivityCharts";
 import { ActivityRow } from "@/components/teams/dashboard/ActivityRow";
 import { ActiveAgentsPanel } from "@/components/teams/dashboard/ActiveAgentsPanel";
 import { useActivityFeed } from "@/components/teams/dashboard/hooks/useActivityFeed";
 import { useLiveRuns } from "@/components/teams/dashboard/hooks/useLiveRuns";
-import { PanelMasthead } from "@/components/teams/shell";
+import { PanelMasthead, PanelSection } from "@/components/teams/shell";
 import { HomeRollupStrip } from "@/components/teams/dashboard/HomeRollupStrip";
+import { HomeQuickActions } from "@/components/teams/dashboard/HomeQuickActions";
+import { useCompanyRollup } from "@/hooks/useCompanyRollup";
 import { StatusIcon } from "@/components/teams/shared/components/StatusIcon";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
@@ -62,32 +66,6 @@ function normalizeIssues(data: unknown): Issue[] {
     if (Array.isArray(obj.issues)) return obj.issues as Issue[];
   }
   return [];
-}
-
-/**
- * Charts ported from upstream consume the lighter `{priority, createdAt: Date}`
- * / `{status, createdAt: Date}` shape. Map our richer Issue rows down to that
- * minimal projection, dropping rows without a priority/status or createdAt
- * since they cannot be plotted on the date axis anyway.
- */
-function toPriorityRows(
-  issues: Issue[],
-): { priority: string; createdAt: Date }[] {
-  const out: { priority: string; createdAt: Date }[] = [];
-  for (const i of issues) {
-    if (!i.priority || !i.createdAt) continue;
-    out.push({ priority: i.priority, createdAt: new Date(i.createdAt) });
-  }
-  return out;
-}
-
-function toStatusRows(issues: Issue[]): { status: string; createdAt: Date }[] {
-  const out: { status: string; createdAt: Date }[] = [];
-  for (const i of issues) {
-    if (!i.status || !i.createdAt) continue;
-    out.push({ status: i.status, createdAt: new Date(i.createdAt) });
-  }
-  return out;
 }
 
 /** Most-recently-touched timestamp for ordering (updatedAt, falling back to
@@ -177,40 +155,30 @@ export function DashboardPanel() {
   const issuesQuery = read<unknown>("/issues");
   // Company roster so the activity feed can resolve agent actors + agent
   // entity references to names (same /agents read InboxPanel/IssuesPanel use).
-  // Called unconditionally (rules of hooks) above the loading/error returns.
   const agentsQuery = read<{ agents: CompanyAgent[] }>("/agents");
+  // Paperclip company record; `name` is the user-visible, editable company
+  // name (routers/teams/settings.py). Falls back to "Home" while it loads —
+  // PanelMasthead hides the overline when it equals the title, so the fallback
+  // reads as a plain "Home" masthead rather than "Home Home".
+  const settingsQuery = read<{ name?: string }>("/settings");
+  const companyName = settingsQuery.data?.name?.trim() || "Home";
   const { events, isLoading: activityLoading } = useActivityFeed(10);
-  // Live-agent-runs feed for the "Agents" panel. Hook is called
-  // unconditionally (rules of hooks) — the panel renders below, after the
-  // loading/error early-returns. SWR self-refreshes the feed on an interval.
+  // Live-agent-runs feed for the "Agents" panel. SWR self-refreshes it on an
+  // interval.
   const { runs: liveRuns } = useLiveRuns();
+  // Same SWR key the strip reads at its default span, so this is one request
+  // and not two. Only the binding flag is consulted here — it gates the
+  // Add-a-product chip.
+  const { rollup } = useCompanyRollup();
+  const [teamOpen, setTeamOpen] = useState(true);
 
-  if (dashboardQuery.isLoading && !dashboardQuery.data) {
-    return (
-      <div
-        className="editorial-page p-6 sm:p-8 font-editorial-serif text-xl italic"
-        style={{ color: "var(--midnight-muted)" }}
-      >
-        Loading…
-      </div>
-    );
-  }
-  if (dashboardQuery.error && !dashboardQuery.data) {
-    return (
-      <div
-        role="alert"
-        className="editorial-page p-6 sm:p-8 font-editorial-serif text-xl italic"
-        style={{ color: "var(--warn)" }}
-      >
-        Failed to load dashboard.
-      </div>
-    );
-  }
+  // Not early returns: /dashboard does an ECS probe, so this gate belongs
+  // inside "Your team" where it costs the owner nothing above it.
+  const dashboardLoading = dashboardQuery.isLoading && !dashboardQuery.data;
+  const dashboardFailed = !!dashboardQuery.error && !dashboardQuery.data;
 
   const dashboard = dashboardQuery.data?.dashboard ?? EMPTY_DASHBOARD;
   const issues = normalizeIssues(issuesQuery.data);
-  const priorityRows = toPriorityRows(issues);
-  const statusRows = toStatusRows(issues);
   // Issue lookup for the Agents panel's linked-task chips. Reuses the
   // dashboard's existing `/issues` read so the run cards resolve task
   // titles without fanning out a per-issue fetch (missing entries degrade
@@ -239,192 +207,234 @@ export function DashboardPanel() {
 
   return (
     <div className="editorial-page p-4 sm:p-5 lg:p-6 flex flex-col gap-4 max-w-[1600px] mx-auto w-full">
-      <PanelMasthead overline="Operations" title="Home" />
+      <PanelMasthead overline="Home" title={companyName} />
+      <p className="-mt-2 text-sm text-[var(--midnight-muted)]">
+        How the business is doing. Open any tile for the full picture.
+      </p>
 
-      {/* The business strip: what the company earned and attracted. Rendered
-          ABOVE the agent metrics because "is my business working" is the
-          question an owner opens Home with — the agent telemetry below answers
-          "are my agents busy", which is a different and less urgent question.
-          Additive: an owner with no Stripe binding sees one honest notice here
-          and the rest of Home exactly as it was. */}
+      {/* Business first: "is my business working" is the question an owner
+          opens Home with — the agent telemetry below answers "are my agents
+          busy", a different and less urgent one. Rendered independently of
+          Paperclip's /dashboard (which does an ECS probe), so a slow or
+          provisioning agent runtime never holds the revenue hero. */}
       <HomeRollupStrip spendCents={dashboard.costs?.monthSpendCents ?? null} />
+      <HomeQuickActions stripeBound={!!rollup?.stripe_bound} />
 
-      {/* Live agent runs — sits prominently below the masthead so active
-          work is the first thing the dashboard surfaces. */}
-      <ActiveAgentsPanel runs={liveRuns} issuesById={issuesById} />
-
-      {/* Metric tiles — single continuous strip with internal hairlines */}
-      <section
-        aria-label="Key metrics"
-        className="editorial-card grid grid-cols-1 @md:grid-cols-2 @4xl:grid-cols-3 overflow-hidden"
+      {/* "Are my agents busy" — real, and second. */}
+      <PanelSection
+        label="Your team"
+        count={agentsCount || undefined}
+        open={teamOpen}
+        onOpenChange={setTeamOpen}
       >
-        <MetricCard
-          icon={Bot}
-          value={agentsCount}
-          label="Agents"
-          to={teamsPanelUrl("agents")}
-          onClick={(e) => handleShellLinkClick(e, teamsPanelUrl("agents"))}
-          description={
-            <span>
-              {dashboard.agents.running ?? 0} running,{" "}
-              {dashboard.agents.paused ?? 0} paused
-            </span>
-          }
-        />
-        <MetricCard
-          icon={CircleDot}
-          value={openTasks}
-          label="Open Tasks"
-          to={teamsPanelUrl("issues")}
-          onClick={(e) => handleShellLinkClick(e, teamsPanelUrl("issues"))}
-          description={
-            <span>
-              {openTasks} open, {blockedTasks} blocked
-            </span>
-          }
-        />
-        <MetricCard
-          icon={ShieldCheck}
-          value={totalApprovals}
-          label="Pending Approvals"
-          to={teamsPanelUrl("inbox")}
-          onClick={(e) => handleShellLinkClick(e, teamsPanelUrl("inbox"))}
-          description={
-            dashboard.budgets.pendingApprovals > 0 ? (
-              <span>
-                {dashboard.budgets.pendingApprovals} budget overrides awaiting
-                board review
-              </span>
-            ) : (
-              <span>Awaiting board review</span>
-            )
-          }
-        />
-      </section>
-
-      {/* Charts grid */}
-      <section
-        aria-label="Activity charts"
-        className="grid gap-3 @md:gap-4 @xl:grid-cols-2 @5xl:grid-cols-4"
-      >
-        <ChartCard title="Run Activity" subtitle="Last 14 days">
-          <RunActivityChart activity={dashboard.runActivity} />
-        </ChartCard>
-        <ChartCard title="Issues by Priority" subtitle="Last 14 days">
-          <PriorityChart issues={priorityRows} />
-        </ChartCard>
-        <ChartCard title="Issues by Status" subtitle="Last 14 days">
-          <IssueStatusChart issues={statusRows} />
-        </ChartCard>
-        <ChartCard title="Success Rate" subtitle="Last 14 days">
-          <SuccessRateChart activity={dashboard.runActivity} />
-        </ChartCard>
-      </section>
-
-      {/* Recent tasks — the most-recently-updated issues, a quick way back
-          into in-flight work. */}
-      <section aria-label="Recent tasks" className="min-w-0">
-        <div className="flex items-baseline justify-between mb-3">
-          <h2
-            className="font-editorial-serif text-2xl"
-            style={{ color: "var(--midnight)" }}
-          >
-            Recent Tasks
-          </h2>
-          {recentTasks.length > 0 && (
-            <Link
-              href={teamsPanelUrl("issues")}
-              prefetch={false}
-              onClick={(e) => handleShellLinkClick(e, teamsPanelUrl("issues"))}
-              className="text-caption transition-colors hover:underline"
-              style={{ color: "var(--midnight)" }}
-            >
-              View all →
-            </Link>
-          )}
-        </div>
-        <div
-          className="editorial-card overflow-hidden"
-          style={{ borderColor: "var(--edge)" }}
-        >
-          {recentTasks.length === 0 ? (
+        <div className="flex flex-col gap-4 pt-4">
+          {dashboardLoading ? (
             <div
-              className="px-4 py-3 font-editorial-serif text-base italic"
+              className="font-editorial-serif text-xl italic"
               style={{ color: "var(--midnight-muted)" }}
             >
-              No recent tasks.
+              Loading…
+            </div>
+          ) : dashboardFailed ? (
+            <div
+              role="alert"
+              className="font-editorial-serif text-xl italic"
+              style={{ color: "var(--warn)" }}
+            >
+              Failed to load dashboard.
             </div>
           ) : (
-            <div>
-              {recentTasks.map((issue) => (
-                <RecentTaskRow
-                  key={issue.id}
-                  issue={issue}
-                  assigneeName={
-                    issue.assigneeAgentId
-                      ? agentNames.get(issue.assigneeAgentId) ?? null
-                      : null
+            <>
+              {/* Live agent runs — the first thing this section surfaces. */}
+              <ActiveAgentsPanel runs={liveRuns} issuesById={issuesById} />
+
+              {/* Metric tiles — single continuous strip with internal hairlines */}
+              <section
+                aria-label="Key metrics"
+                className="editorial-card grid grid-cols-1 @md:grid-cols-3 overflow-hidden"
+              >
+                <MetricCard
+                  icon={Bot}
+                  value={agentsCount}
+                  label="Agents"
+                  to={teamsPanelUrl("agents")}
+                  onClick={(e) =>
+                    handleShellLinkClick(e, teamsPanelUrl("agents"))
+                  }
+                  description={
+                    <span>
+                      {dashboard.agents.running ?? 0} running,{" "}
+                      {dashboard.agents.paused ?? 0} paused
+                    </span>
                   }
                 />
-              ))}
-            </div>
-          )}
-        </div>
-      </section>
+                <MetricCard
+                  icon={CircleDot}
+                  value={openTasks}
+                  label="Open Tasks"
+                  to={teamsPanelUrl("issues")}
+                  onClick={(e) =>
+                    handleShellLinkClick(e, teamsPanelUrl("issues"))
+                  }
+                  description={
+                    <span>
+                      {openTasks} open, {blockedTasks} blocked
+                    </span>
+                  }
+                />
+                <MetricCard
+                  icon={ShieldCheck}
+                  value={totalApprovals}
+                  label="Pending Approvals"
+                  to={teamsPanelUrl("inbox")}
+                  onClick={(e) =>
+                    handleShellLinkClick(e, teamsPanelUrl("inbox"))
+                  }
+                  description={
+                    dashboard.budgets.pendingApprovals > 0 ? (
+                      <span>
+                        {dashboard.budgets.pendingApprovals} budget overrides
+                        awaiting board review
+                      </span>
+                    ) : (
+                      <span>Awaiting board review</span>
+                    )
+                  }
+                />
+              </section>
 
-      {/* Recent activity */}
-      <section aria-label="Recent activity" className="min-w-0">
-        <div className="flex items-baseline justify-between mb-3">
-          <h2
-            className="font-editorial-serif text-2xl"
-            style={{ color: "var(--midnight)" }}
-          >
-            Recent activity
-          </h2>
-          {events.length > 0 && (
-            <Link
-              href={teamsPanelUrl("activity")}
-              prefetch={false}
-              onClick={(e) => handleShellLinkClick(e, teamsPanelUrl("activity"))}
-              className="text-caption transition-colors hover:underline"
-              style={{ color: "var(--midnight)" }}
-            >
-              View all →
-            </Link>
+              {/* Charts grid */}
+              <section
+                aria-label="Activity charts"
+                className="grid gap-3 @md:gap-4 @xl:grid-cols-2"
+              >
+                <ChartCard title="Run Activity" subtitle="Last 14 days">
+                  <RunActivityChart activity={dashboard.runActivity} />
+                </ChartCard>
+                <ChartCard title="Success Rate" subtitle="Last 14 days">
+                  <SuccessRateChart activity={dashboard.runActivity} />
+                </ChartCard>
+              </section>
+            </>
           )}
-        </div>
-        <div
-          className="editorial-card overflow-hidden"
-          style={{ borderColor: "var(--edge)" }}
-        >
-          {activityLoading && events.length === 0 ? (
-            <div
-              className="px-4 py-3 font-editorial-serif text-base italic"
-              style={{ color: "var(--midnight-muted)" }}
-            >
-              Loading activity…
-            </div>
-          ) : events.length === 0 ? (
-            <div
-              className="px-4 py-3 font-editorial-serif text-base italic"
-              style={{ color: "var(--midnight-muted)" }}
-            >
-              No recent activity.
-            </div>
-          ) : (
-            <div>
-              {events.map((evt, i) => (
-                <div
-                  key={evt.id}
-                  style={i === 0 ? undefined : { borderTop: "1px solid var(--edge)" }}
+
+          {/* Outside the gate above: these two read /issues and /activity, so
+              a /dashboard failure is no reason to withhold them. */}
+
+          {/* Recent tasks — the most-recently-updated issues, a quick way back
+              into in-flight work. */}
+          <section aria-label="Recent tasks" className="min-w-0">
+            <div className="flex items-baseline justify-between mb-3">
+              <h2
+                className="font-editorial-serif text-2xl"
+                style={{ color: "var(--midnight)" }}
+              >
+                Recent Tasks
+              </h2>
+              {recentTasks.length > 0 && (
+                <Link
+                  href={teamsPanelUrl("issues")}
+                  prefetch={false}
+                  onClick={(e) =>
+                    handleShellLinkClick(e, teamsPanelUrl("issues"))
+                  }
+                  className="text-caption transition-colors hover:underline"
+                  style={{ color: "var(--midnight)" }}
                 >
-                  <ActivityRow event={evt} agentNames={agentNames} />
-                </div>
-              ))}
+                  View all →
+                </Link>
+              )}
             </div>
-          )}
+            <div
+              className="editorial-card overflow-hidden"
+              style={{ borderColor: "var(--edge)" }}
+            >
+              {recentTasks.length === 0 ? (
+                <div
+                  className="px-4 py-3 font-editorial-serif text-base italic"
+                  style={{ color: "var(--midnight-muted)" }}
+                >
+                  No recent tasks.
+                </div>
+              ) : (
+                <div>
+                  {recentTasks.map((issue) => (
+                    <RecentTaskRow
+                      key={issue.id}
+                      issue={issue}
+                      assigneeName={
+                        issue.assigneeAgentId
+                          ? (agentNames.get(issue.assigneeAgentId) ?? null)
+                          : null
+                      }
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
+
+          {/* Recent activity */}
+          <section aria-label="Recent activity" className="min-w-0">
+            <div className="flex items-baseline justify-between mb-3">
+              <h2
+                className="font-editorial-serif text-2xl"
+                style={{ color: "var(--midnight)" }}
+              >
+                Recent activity
+              </h2>
+              {events.length > 0 && (
+                <Link
+                  href={teamsPanelUrl("activity")}
+                  prefetch={false}
+                  onClick={(e) =>
+                    handleShellLinkClick(e, teamsPanelUrl("activity"))
+                  }
+                  className="text-caption transition-colors hover:underline"
+                  style={{ color: "var(--midnight)" }}
+                >
+                  View all →
+                </Link>
+              )}
+            </div>
+            <div
+              className="editorial-card overflow-hidden"
+              style={{ borderColor: "var(--edge)" }}
+            >
+              {activityLoading && events.length === 0 ? (
+                <div
+                  className="px-4 py-3 font-editorial-serif text-base italic"
+                  style={{ color: "var(--midnight-muted)" }}
+                >
+                  Loading activity…
+                </div>
+              ) : events.length === 0 ? (
+                <div
+                  className="px-4 py-3 font-editorial-serif text-base italic"
+                  style={{ color: "var(--midnight-muted)" }}
+                >
+                  No recent activity.
+                </div>
+              ) : (
+                <div>
+                  {events.map((evt, i) => (
+                    <div
+                      key={evt.id}
+                      style={
+                        i === 0
+                          ? undefined
+                          : { borderTop: "1px solid var(--edge)" }
+                      }
+                    >
+                      <ActivityRow event={evt} agentNames={agentNames} />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
         </div>
-      </section>
+      </PanelSection>
     </div>
   );
 }

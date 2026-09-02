@@ -23,6 +23,11 @@ vi.mock("@/hooks/useCompanyRollup", () => ({
 vi.mock("@/components/settings/CompanyStripeSection", () => ({
   useCompanyStripeStatus: () => ({ data: undefined }),
 }));
+// Quick actions pull the marketplace drawer context + agent roster; this file
+// asserts Home's composition, not the chips (HomeQuickActions.test.tsx does).
+vi.mock("@/components/teams/dashboard/HomeQuickActions", () => ({
+  HomeQuickActions: () => <section aria-label="Quick actions" />,
+}));
 vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: vi.fn() }));
 vi.mock("@/components/teams/dashboard/hooks/useActivityFeed", () => ({
   useActivityFeed: vi.fn(),
@@ -108,7 +113,7 @@ describe("DashboardPanel", () => {
     expect(metrics.getByText("Pending Approvals")).toBeInTheDocument();
   });
 
-  test("renders 4 chart cards when dashboard loaded", () => {
+  test("renders the two run charts inside Your team", () => {
     mockApi(
       makeRead({
         "/dashboard": {
@@ -128,9 +133,10 @@ describe("DashboardPanel", () => {
     );
     render(<DashboardPanel />);
     expect(screen.getByText("Run Activity")).toBeInTheDocument();
-    expect(screen.getByText("Issues by Priority")).toBeInTheDocument();
-    expect(screen.getByText("Issues by Status")).toBeInTheDocument();
     expect(screen.getByText("Success Rate")).toBeInTheDocument();
+    // The Issues charts are Tasks analytics; Home no longer carries them.
+    expect(screen.queryByText("Issues by Priority")).not.toBeInTheDocument();
+    expect(screen.queryByText("Issues by Status")).not.toBeInTheDocument();
   });
 
   test("renders empty activity message when no events", () => {
@@ -309,6 +315,42 @@ describe("DashboardPanel", () => {
     // No throw + chart cards still present is sufficient signal that the
     // envelope-normalization branch is exercised.
     render(<DashboardPanel />);
-    expect(screen.getByText("Issues by Priority")).toBeInTheDocument();
+    expect(screen.getByText("Run Activity")).toBeInTheDocument();
+  });
+
+  test("falls back to Home as the H1 while the company name has not loaded", () => {
+    mockApi(
+      makeRead({
+        "/dashboard": {
+          data: {
+            dashboard: {
+              agents: {},
+              tasks: {},
+              runActivity: [],
+              costs: { monthSpendCents: 0 },
+              pendingApprovals: 0,
+              budgets: { pendingApprovals: 0 },
+            },
+          },
+        },
+        "/issues": { data: [] },
+      }),
+    );
+    render(<DashboardPanel />);
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Home" }),
+    ).toBeInTheDocument();
+  });
+
+  test("renders the Business section before the team section", () => {
+    // /dashboard still loading: the business strip and quick actions must
+    // render anyway, above "Your team" and its loading state.
+    mockApi(makeRead({ "/dashboard": { isLoading: true } }));
+    render(<DashboardPanel />);
+    const quickActions = screen.getByLabelText("Quick actions");
+    expect(
+      quickActions.compareDocumentPosition(screen.getByText("Your team")) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 });

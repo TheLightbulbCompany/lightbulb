@@ -42,6 +42,11 @@ vi.mock("@/hooks/useCompanyRollup", () => ({
 vi.mock("@/components/settings/CompanyStripeSection", () => ({
   useCompanyStripeStatus: () => ({ data: undefined }),
 }));
+// Quick actions pull the marketplace drawer context + agent roster; this file
+// asserts the spend tile, not the chips (HomeQuickActions.test.tsx does).
+vi.mock("@/components/teams/dashboard/HomeQuickActions", () => ({
+  HomeQuickActions: () => <section aria-label="Quick actions" />,
+}));
 
 import { DashboardPanel } from "../DashboardPanel";
 import { useTeamsApi } from "@/hooks/useTeamsApi";

@@ -563,7 +563,7 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
           supporting={
             search || agentPick
               ? "No automations match your filters."
-              : "Build one here, or hire an agent from the marketplace that already runs on a schedule — its automations arrive with it."
+              : "Build one here, or hire an agent from the marketplace — any automations it was published with arrive paused, ready for you to switch on."
           }
           // Canned automation lives in the marketplace (published agents carry
           // their routines, with provenance), not in a second catalog here.

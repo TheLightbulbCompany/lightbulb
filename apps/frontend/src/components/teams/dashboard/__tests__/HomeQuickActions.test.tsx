@@ -46,7 +46,8 @@ describe("HomeQuickActions — every verb resolves to something real", () => {
     desktop = false;
     const order: Array<{ type: string; agentId: string }> = [];
     const onSelectAgent = (e: Event) =>
-      order.push({ type: "selectAgent", agentId: (e as CustomEvent).detail.agentId });
+      const d = (e as CustomEvent).detail;
+      order.push({ type: "selectAgent", agentId: d.agentId, source: d.source });
     const onFocusComposer = (e: Event) =>
       order.push({ type: "getstarted:focus-composer", agentId: (e as CustomEvent).detail.agentId });
     window.addEventListener("selectAgent", onSelectAgent);
@@ -59,7 +60,9 @@ describe("HomeQuickActions — every verb resolves to something real", () => {
     // outrank defaultId and strand the focus event on the wrong agent — so
     // selectAgent must fire, and fire before the focus event.
     expect(order).toEqual([
-      { type: "selectAgent", agentId: "agent_1" },
+      // `source: "notification"` is the contract ChatLayout's own listener
+      // requires; without it the header's agent actions stay on the old agent.
+      { type: "selectAgent", agentId: "agent_1", source: "notification" },
       { type: "getstarted:focus-composer", agentId: "agent_1" },
     ]);
     window.removeEventListener("selectAgent", onSelectAgent);

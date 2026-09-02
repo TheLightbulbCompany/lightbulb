@@ -64,7 +64,7 @@ export function HomeQuickActions({ stripeBound }: { stripeBound: boolean }) {
       // which outranks `defaultId` once the owner has tapped any other agent —
       // without this, the URL swap can land back on a stale agent's composer,
       // which then ignores a focus event addressed to Friday.
-      window.dispatchEvent(new CustomEvent("selectAgent", { detail: { agentId: defaultId } }));
+      window.dispatchEvent(new CustomEvent("selectAgent", { detail: { agentId: defaultId, source: "notification" } }));
       handleShellLinkClick(e, "/chat");
     }
     window.dispatchEvent(

@@ -142,6 +142,23 @@ def _filter_sessions_for_user(result, user_id: str):
     return {**result, "sessions": kept}
 
 
+def _filter_search_hits_for_user(result, user_id: str):
+    """Drop sessions.search hits from sessions the caller doesn't own.
+
+    A key-less ``sessions.search`` indexes EVERY session of the agent on the
+    shared per-owner container, so its snippets would surface other org
+    members' (and paperclip:/cron:) transcripts. Same ownership guard as
+    ``_filter_sessions_for_user``.
+    """
+    if not isinstance(result, dict):
+        return result
+    hits = result.get("results")
+    if not isinstance(hits, list):
+        return result
+    kept = [h for h in hits if isinstance(h, dict) and _user_owns_session_key(h.get("sessionKey", ""), user_id)]
+    return {**result, "results": kept}
+
+
 # API Gateway's Management API rejects PostToConnection payloads over 128KiB
 # (413), and the whole res frame counts. Budget the chat.history payload well
 # below that so the envelope ({"type":"res","id":...}) always fits.
@@ -1409,6 +1426,14 @@ _SESSION_KEY_PARAM_BY_METHOD = {
     "sessions.rewind": "sessionKey",
     "sessions.branches.list": "sessionKey",
     "sessions.branches.switch": "sessionKey",
+    "chat.message.get": "sessionKey",
+}
+
+# Methods whose client-supplied session keys arrive as a LIST. Every key
+# must be owned or the call is refused; a key-less call is scoped by the
+# response post-filter instead (``_filter_search_hits_for_user``).
+_SESSION_KEYS_LIST_PARAM_BY_METHOD = {
+    "sessions.search": "sessionKeys",
 }
 
 
@@ -1438,14 +1463,26 @@ async def _guard_session_key_ownership(
       forge; leave it to the container / the sessions.list post-filter).
     """
     param_name = _SESSION_KEY_PARAM_BY_METHOD.get(method)
-    if param_name is None:
+    list_param_name = _SESSION_KEYS_LIST_PARAM_BY_METHOD.get(method)
+    if param_name is None and list_param_name is None:
         return False
-    key = (params or {}).get(param_name)
-    if not isinstance(key, str) or not key:
-        # No client-supplied key — nothing to validate. Forward as-is.
-        return False
-    if _user_owns_session_key(key, user_id):
-        return False
+    if param_name is not None:
+        key = (params or {}).get(param_name)
+        if not isinstance(key, str) or not key:
+            # No client-supplied key — nothing to validate. Forward as-is.
+            return False
+        if _user_owns_session_key(key, user_id):
+            return False
+    else:
+        keys = (params or {}).get(list_param_name)
+        if not isinstance(keys, list) or not keys:
+            # Key-less search: the container scans the whole agent; the
+            # response post-filter scopes the hits to the caller.
+            return False
+        foreign = [k for k in keys if not _user_owns_session_key(k, user_id)]
+        if not foreign:
+            return False
+        key = foreign[0]
     logger.warning(
         "[%s] rejected %s targeting non-owned session key=%s",
         user_id,
@@ -2042,6 +2079,8 @@ async def _process_rpc_background(
         # session on the shared per-owner box (paperclip/cron/other members).
         if method == "sessions.list":
             result = _filter_sessions_for_user(result, user_id)
+        elif method == "sessions.search":
+            result = _filter_search_hits_for_user(result, user_id)
         # Keep every res frame deliverable — see _fit_rpc_result_for_frame.
         result = _fit_rpc_result_for_frame(method, result)
         await management_api.send_message_async(

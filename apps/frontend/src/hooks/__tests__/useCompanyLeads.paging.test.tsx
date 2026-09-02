@@ -48,8 +48,10 @@ describe("useCompanyLeads paging", () => {
     await waitFor(() => expect(result.current.rows).toHaveLength(2));
 
     act(() => result.current.next());
-    // Page 1 moved into `earlier`; nothing for page 2 yet — two rows, not four.
+    // Page 1 moved into `earlier`; nothing for page 2 yet — two rows, not four,
+    // and the total the owner was reading stays put.
     expect(result.current.rows.map((r) => r.id)).toEqual(["p1a", "p1b"]);
+    expect(result.current.total).toBe(6);
 
     await act(async () => releasePage2(page(2, false)));
     await waitFor(() => expect(result.current.rows).toHaveLength(4));
@@ -73,6 +75,7 @@ describe("useCompanyLeads paging", () => {
     expect(result.current.rows.map((r) => r.id)).toEqual(["p1a", "p1b"]);
     expect(result.current.view).toEqual({ kind: "rows" });
     expect(result.current.hasMore).toBe(true);
+    expect(result.current.total).toBe(6);
 
     act(() => result.current.next());
     await waitFor(() => expect(result.current.rows).toHaveLength(4));

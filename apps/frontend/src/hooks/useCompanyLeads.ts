@@ -80,6 +80,9 @@ export function useCompanyLeads() {
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
   const [earlier, setEarlier] = useState<LeadRow[]>([]);
+  // The last successful total: while page N loads (or after it fails) there
+  // is no envelope, and "0 people" over 25 visible rows is a contradiction.
+  const [keptTotal, setKeptTotal] = useState(0);
 
   const key = query ? `/company/leads?q=${encodeURIComponent(query)}&page=${page}` : null;
   // No keepPreviousData: `earlier` is what keeps the table on screen between
@@ -93,6 +96,7 @@ export function useCompanyLeads() {
 
   const search = useCallback((q: string) => {
     setEarlier([]);
+    setKeptTotal(0);
     setPage(1);
     setQuery(q.trim());
   }, []);
@@ -106,6 +110,7 @@ export function useCompanyLeads() {
     }
     if (!data.has_more) return;
     setEarlier((prev) => [...prev, ...data.data]);
+    setKeptTotal(data.total);
     setPage((p) => p + 1);
   }, [data, mutate]);
 
@@ -116,7 +121,7 @@ export function useCompanyLeads() {
     query,
     search,
     rows,
-    total: data?.total ?? 0,
+    total: data?.total ?? keptTotal,
     view: leadsView(query, data, error, isLoading, earlier.length),
     // Mid-pagination with nothing back yet, the button stays so it can retry.
     hasMore: data ? data.has_more : earlier.length > 0,

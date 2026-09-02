@@ -15,6 +15,8 @@ The gate flips per environment as each tag is promoted, so during the rollout
 one environment is on each side of it. These tests pin both.
 """
 
+import json
+
 import pytest
 
 from core.containers.config import build_openclaw_config_dict
@@ -326,6 +328,25 @@ def test_81_shape_names_the_system_agent_owner_explicitly():
     # Unprovisioned fallback: the legacy single entry owns itself.
     cfg = build_openclaw_config_dict(**_COMMON, deployed_tag="2026.8.1-isol8.1-1c67107")
     assert cfg["agents"]["defaults"]["systemAgent"] == {"agentId": "main"}
+
+
+def test_81_roster_lists_the_ceo_first():
+    """After the loader strips the marker, agents.list reports the FIRST entry
+    as defaultId (the explicit-ownership fallback). The founder's roster listed
+    Tally before Friday, and every "Ask Friday" exit opened Tally. Order is the
+    only signal that resolver reads, so the CEO goes first; the rest keep
+    Paperclip's order."""
+    tally = "11111111-1111-1111-1111-111111111111"
+    pulse = "22222222-2222-2222-2222-222222222222"
+    roster = [
+        {"id": tally, "name": "Tally", "role": "general"},
+        {"id": pulse, "name": "Pulse", "role": "general"},
+        {"id": _FRIDAY, "name": "Friday", "role": "ceo"},
+    ]
+    cfg = build_openclaw_config_dict(**_COMMON, deployed_tag="2026.8.1-isol8.1-1c67107", paperclip_agents=roster)
+    assert list(cfg["agents"]["entries"]) == [_FRIDAY, tally, pulse]
+    # json.dumps preserves dict order, so the file the gateway reads does too.
+    assert list(json.loads(json.dumps(cfg))["agents"]["entries"]) == [_FRIDAY, tally, pulse]
 
 
 def test_72_shape_has_no_system_agent_key():

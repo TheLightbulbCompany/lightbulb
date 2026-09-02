@@ -988,6 +988,13 @@ def _build_agents_list(paperclip_agents: list[dict], ceo_model: str | None = Non
     Paperclip UUID so OpenClaw's session-key routing
     (agent:<uuid>:<rest>) lands in the right directory on EFS.
 
+    The default agent is emitted FIRST. On 2026.8.1 the loader strips the
+    legacy marker at load and ``agents.list`` then reports the first roster
+    entry as ``defaultId`` (src/gateway/agent-list.ts — the explicit-ownership
+    fallback). Every "Ask Friday" exit in the product resolves through that
+    id, so a roster that happened to list Tally first sent the owner's CEO
+    prompts to Tally. Order is the only durable signal that resolver reads.
+
     ``ceo_model`` (when provided) pins the CEO agent to the premium model
     via a per-agent ``model`` override; every other agent omits ``model``
     and inherits the cheaper ``agents.defaults.model``. ``None`` leaves the
@@ -1006,7 +1013,8 @@ def _build_agents_list(paperclip_agents: list[dict], ceo_model: str | None = Non
     default_id = _default_agent_id(paperclip_agents)
 
     entries: list[dict] = []
-    for agent in paperclip_agents:
+    # Stable sort: the default first, everyone else in Paperclip order.
+    for agent in sorted(paperclip_agents, key=lambda a: a["id"] != default_id):
         agent_id = agent["id"]
         entry: dict = {
             "id": agent_id,

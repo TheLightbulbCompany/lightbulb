@@ -31,6 +31,7 @@ import * as React from "react";
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { useGateway } from "@/hooks/useGateway";
+import { isSessionKeyForUser } from "@/lib/sessionKey";
 
 export type ExecApprovalDecision = "allow-once" | "allow-always" | "deny";
 
@@ -371,35 +372,17 @@ function parsePluginRequest(payload: unknown): ExecApprovalRequest | null {
  * member's browser receives every member's approval. Without this
  * filter, member B could see and resolve member A's pending exec.
  *
- * sessionKey format from OpenClaw: `agent:<agentId>:<memberId>` where
- * `<memberId>` is the Clerk user.id lowercased. We isolate the trailing
- * member-id segment and compare it case-insensitively for an exact
- * match. A naive `includes` would incorrectly accept a longer member
- * id whose suffix matches the current user's (e.g. user `user_abc` would
- * match `agent:.../user_abcd`).
- *
- * If the request has no sessionKey (defensive: malformed event, or
- * legacy emitter), we still accept — the alternative is dropping
- * legitimate events on personal accounts that may not always populate
- * sessionKey. The broadcast leak this guards against only manifests in
- * org contexts, where sessionKey is always present.
+ * Delegates to the shared session-key parser so this and the structured-
+ * question queue read the wire format the same way. That parser takes the
+ * member id from the THIRD segment; the previous trailing-segment reading
+ * here silently dropped every approval raised inside a NAMED webchat
+ * session (`agent:<id>:<user>:<uuid>`), whose last segment is a uuid.
  */
 function isApprovalForCurrentUser(
   req: ExecApprovalRequest,
   userId: string | null | undefined,
 ): boolean {
-  if (!userId) return false; // not signed in — drop everything
-  if (!req.sessionKey) return true; // no scoping signal; accept (legacy emitters)
-  const segments = req.sessionKey.split(":");
-  const memberId = segments[segments.length - 1];
-  // Personal-account sessions are keyed `agent:<agentId>:main` (see the backend
-  // connection_pool.py _parse_session_key "Personal webchat" shape) — the
-  // trailing segment is the literal "main", not a Clerk user id. Accept it as
-  // an unscoped personal session so personal exec/plugin approvals surface a
-  // card. This does NOT weaken the org guard: org member segments are Clerk
-  // user ids, which are never literally "main".
-  if (memberId.toLowerCase() === "main") return true;
-  return memberId.toLowerCase() === userId.toLowerCase();
+  return isSessionKeyForUser(req.sessionKey, userId);
 }
 
 export function useExecApprovals(): UseExecApprovalsReturn {

@@ -89,6 +89,13 @@ export type {
 export type {
   ChatIncomingMessage,
   GatewayEvent,
+  Question,
+  QuestionAnswers,
+  QuestionOption,
+  QuestionRecord,
+  QuestionResolvedEvent,
+  QuestionSecretStoreBinding,
+  QuestionStatus,
   ToolResultBlock,
 } from "./gateway/types";
 

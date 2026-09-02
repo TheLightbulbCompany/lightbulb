@@ -115,3 +115,78 @@ export interface GatewayEvent {
   event: string;
   payload: unknown;
 }
+
+// =============================================================================
+// Structured questions (OpenClaw 2026.8 `ask_user` / `secrets` tools)
+// =============================================================================
+//
+// The container's `ask_user` tool BLOCKS the run in-tool (default 900s) until
+// an operator answers, so these records are the only thing that unblocks it.
+// The gateway broadcasts `question.requested` / `question.resolved`, which the
+// backend forwards verbatim as `{type:"event", event, payload}` — see
+// connection_pool.py's generic event branch. Mirrors upstream
+// packages/gateway-protocol/src/schema/questions.ts; keep them in step.
+
+/** One selectable choice. `options` is either empty (free text) or 2–4 long. */
+export interface QuestionOption {
+  label: string;
+  description?: string;
+}
+
+/** Where a secret answer is stored, and the consent policy shown for it. */
+export interface QuestionSecretStoreBinding {
+  /** Store entry name, `^[A-Z][A-Z0-9_]{0,127}$` (e.g. STRIPE_API_KEY). */
+  name: string;
+  /** Only "secret" is accepted for masked prompts; "env" is Settings/CLI-only. */
+  kind: "secret" | "env";
+  /** Hostnames the stored value may be sent to. Server-normalized. */
+  allowedHosts?: string[];
+  reason?: string;
+}
+
+export interface Question {
+  /** `^[a-z][a-z0-9_]*$`; the key answers are posted under. */
+  questionId: string;
+  /** Short chip label, ≤12 chars. */
+  header: string;
+  question: string;
+  options: QuestionOption[];
+  multiSelect?: boolean;
+  /** Allow a free-text answer alongside the options. */
+  isOther?: boolean;
+  /** Render masked. Always paired with `secretStore` — the gateway rejects a
+   *  secret question without a binding. */
+  isSecret?: boolean;
+  secretStore?: QuestionSecretStoreBinding;
+  /** Present when the store already holds an entry this answer would overwrite. */
+  secretStoreExisting?: { updatedAtMs: number; updatedBy?: string };
+}
+
+/** Note the double nesting — `question.resolve` takes `{answers: {answers}}`. */
+export interface QuestionAnswers {
+  answers: Record<string, string[]>;
+}
+
+export type QuestionStatus = "pending" | "answered" | "cancelled" | "expired";
+
+/** One pending or recently resolved question request. Payload of the
+ *  `question.requested` event and of each `question.list` entry. */
+export interface QuestionRecord {
+  id: string;
+  /** 1–3 questions, answered together in one resolve. */
+  questions: Question[];
+  agentId?: string;
+  sessionKey?: string;
+  runId?: string;
+  createdAtMs: number;
+  expiresAtMs: number;
+  status: QuestionStatus;
+  answers?: QuestionAnswers;
+  resolvedBy?: string;
+}
+
+/** Payload of the `question.resolved` event. */
+export type QuestionResolvedEvent =
+  | { id: string; status: "answered"; answers: QuestionAnswers }
+  | { id: string; status: "cancelled" }
+  | { id: string; status: "expired" };

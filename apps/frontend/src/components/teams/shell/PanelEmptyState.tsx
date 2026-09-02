@@ -13,6 +13,8 @@ export interface PanelEmptyStateProps {
   headline: ReactNode;
   supporting: ReactNode;
   action?: PanelEmptyStateAction;
+  /** A second, quieter exit beside the primary one. */
+  secondaryAction?: PanelEmptyStateAction;
   className?: string;
 }
 
@@ -21,6 +23,7 @@ export function PanelEmptyState({
   headline,
   supporting,
   action,
+  secondaryAction,
   className,
 }: PanelEmptyStateProps) {
   return (
@@ -39,10 +42,19 @@ export function PanelEmptyState({
       <p className="max-w-[360px] text-ui text-[var(--midnight-muted)]">
         {supporting}
       </p>
-      {action && (
-        <EditorialButton variant="primary" onClick={action.onClick} className="mt-2">
-          {action.label}
-        </EditorialButton>
+      {(action || secondaryAction) && (
+        <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
+          {action && (
+            <EditorialButton variant="primary" onClick={action.onClick}>
+              {action.label}
+            </EditorialButton>
+          )}
+          {secondaryAction && (
+            <EditorialButton variant="secondary" onClick={secondaryAction.onClick}>
+              {secondaryAction.label}
+            </EditorialButton>
+          )}
+        </div>
       )}
     </div>
   );

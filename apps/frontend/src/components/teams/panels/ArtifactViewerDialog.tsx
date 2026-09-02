@@ -320,7 +320,7 @@ export function ArtifactViewerDialog({
         if (!next) onClose();
       }}
       className="sm:max-w-[720px]"
-      title={artifact.title || "Artifact"}
+      title={artifact.title || "Untitled"}
       description={
         artifact.issue?.identifier
           ? `${artifact.issue.identifier} · ${artifact.issue.title}`

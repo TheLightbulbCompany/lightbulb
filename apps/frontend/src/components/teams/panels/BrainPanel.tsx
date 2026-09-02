@@ -88,12 +88,19 @@ export function BrainPanel({ initialPath, initialTab, onPathUnavailable }: Brain
   // unsaved edits, the open page wins — this runs during render, where a
   // confirm() is not an option.
   const [prevInitialPath, setPrevInitialPath] = React.useState(initialPath);
+  // The once-per-bad-path guard for the stale-link clear below. Reset whenever
+  // the deep-link param changes (including to null after a clear), so the same
+  // dead path opened again into this panel is cleared again.
+  const clearedRef = React.useRef<string | null>(null);
   if (initialPath !== prevInitialPath) {
     setPrevInitialPath(initialPath);
+    clearedRef.current = null;
     if (initialPath && !editorDirty) {
       setSelectedPath(initialPath);
       setView("page");
       setEditing(false);
+      // An active search would keep showing its results over the page asked for.
+      setQuery("");
     }
   }
 
@@ -119,7 +126,6 @@ export function BrainPanel({ initialPath, initialTab, onPathUnavailable }: Brain
   // notice stays until the owner navigates.
   const fileStatus = (fileError as { status?: number } | null)?.status;
   const missing = fileStatus === 400 || fileStatus === 403 || fileStatus === 404;
-  const clearedRef = React.useRef<string | null>(null);
   React.useEffect(() => {
     if (!missing || !pagePath || pagePath !== initialPath) return;
     if (clearedRef.current === pagePath) return;

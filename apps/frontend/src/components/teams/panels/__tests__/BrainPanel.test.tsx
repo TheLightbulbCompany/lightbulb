@@ -333,6 +333,28 @@ describe("BrainPanel", () => {
     confirmSpy.mockRestore();
   });
 
+  it("a second deep link clears an active search so the requested page shows", () => {
+    treeState.files = POPULATED;
+    fileState.file = md("entities/ada-lovelace.md", "# Ada\n");
+    const { rerender } = render(<BrainPanel initialPath="index.md" />);
+    fireEvent.change(screen.getByRole("searchbox", { name: /find a page by name/i }), { target: { value: "ada" } });
+    expect(screen.getByText(/names only/i)).toBeInTheDocument();
+    rerender(<BrainPanel initialPath="entities/ada-lovelace.md" />);
+    expect(screen.queryByText(/names only/i)).toBeNull();
+    expect(useBrainFileSpy).toHaveBeenLastCalledWith("entities/ada-lovelace.md");
+  });
+
+  it("the same dead deep link opened again after a clear is cleared again", () => {
+    treeState.files = POPULATED;
+    fileState.error = Object.assign(new Error("API 404"), { status: 404 });
+    const onPathUnavailable = vi.fn();
+    const { rerender } = render(<BrainPanel initialPath="main/index.md" onPathUnavailable={onPathUnavailable} />);
+    expect(onPathUnavailable).toHaveBeenCalledTimes(1);
+    rerender(<BrainPanel initialPath={null} onPathUnavailable={onPathUnavailable} />);
+    rerender(<BrainPanel initialPath="main/index.md" onPathUnavailable={onPathUnavailable} />);
+    expect(onPathUnavailable).toHaveBeenCalledTimes(2);
+  });
+
   it("name search filters the tree and says it cannot see contents; no match hands off to ASK with the query", () => {
     treeState.files = POPULATED;
     render(<BrainPanel />);

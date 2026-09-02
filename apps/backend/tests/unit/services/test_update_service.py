@@ -346,6 +346,50 @@ async def test_apply_update_regenerates_config_before_image_roll():
     assert order == ["regen", "heal", "resize"]
 
 
+@pytest.mark.asyncio
+async def test_apply_update_carries_memory_wiki_bridge_keys_onto_existing_owners():
+    """The roll must deep-fill memory-wiki's config keys, not just the entry.
+
+    ``ensure_plugin_entries`` is additive at the ENTRY level, so it skips every
+    owner who already has a memory-wiki entry — precisely the cohort that
+    predates the bridge keys, which are what import memory-core's artifacts
+    into the brain. A failure here is a safety-net miss, never a reason to
+    strand an owner on an old image, so the roll still completes.
+    """
+    from core.containers.config import memory_plugin_entries
+
+    owner_id, update_id = "owner_wiki", "upd_wiki"
+    update_item = {
+        "owner_id": owner_id,
+        "update_id": update_id,
+        "update_type": "image_update",
+        "changes": {"new_image": "ecr/openclaw-extended:2026.5.28-abc"},
+    }
+
+    ecs = MagicMock()
+    ecs._size_for_owner = AsyncMock(return_value=("512", "2048"))
+    ecs.resize_user_container = AsyncMock()
+    # Raises: the same call proves both the wiring and that the roll survives it.
+    fill = AsyncMock(side_effect=RuntimeError("EFS unavailable"))
+
+    with (
+        patch.object(update_service, "update_repo", _claimed_repo(update_item)),
+        patch.object(update_service, "reapply_owner_config", AsyncMock()),
+        patch.object(update_service, "migrate_removed_config_keys", AsyncMock()),
+        patch.object(update_service, "heal_seeded_files", AsyncMock()),
+        patch("core.services.config_patcher.ensure_plugin_config_keys", fill),
+        patch("core.containers.get_ecs_manager", return_value=ecs),
+        patch("core.containers.get_workspace", return_value=MagicMock()),
+    ):
+        result = await update_service.apply_update(owner_id, update_id)
+
+    # VALUE-checked: the bridge keys are the whole point, and a call that
+    # passed the wrong subtree would still satisfy an await-only assertion.
+    fill.assert_awaited_once_with(owner_id, "memory-wiki", memory_plugin_entries()["memory-wiki"]["config"])
+    assert result is True
+    ecs.resize_user_container.assert_awaited_once()
+
+
 async def test_apply_update_falls_back_to_strip_for_legacy_rows():
     """A legacy row with no gateway_token cannot be regenerated —
     reapply_owner_config is the same code the admin Regenerate button 409s

@@ -987,6 +987,54 @@ async def ensure_plugin_entries(owner_id: str, entries: dict) -> None:
     await _locked_rmw(owner_id, _mutate, f"ensure plugin entries={sorted(wanted)}")
 
 
+async def ensure_plugin_config_keys(owner_id: str, plugin: str, keys: dict) -> None:
+    """Ensure ``plugins.entries.<plugin>.config`` contains each of ``keys``.
+
+    NESTED-ADDITIVE — deep-fills any key path that is ABSENT and never
+    overwrites one that is present. Dict values recurse, so a half-configured
+    subtree gains only its missing leaves; scalars and lists are written only
+    when the key is missing outright. An owner who explicitly set a key keeps
+    their value.
+
+    Does nothing when the plugin entry itself is absent — that is
+    ``ensure_plugin_entries``' job, which runs first on the same path.
+
+    Exists because ``ensure_plugin_entries`` is additive at the ENTRY level: it
+    skips any plugin key already present, so it cannot reach INSIDE an entry
+    the owner already has. An image roll bakes new plugin behaviour but reuses
+    the on-disk config, so a config key we start emitting at provision time
+    would otherwise reach only owners provisioned after it shipped — every
+    existing owner would carry the enabled plugin without the keys that make it
+    do the new thing. Idempotent, so it is safe on every roll.
+    """
+    wanted = copy.deepcopy(keys)
+
+    def _fill(target: dict, patch: dict) -> bool:
+        changed = False
+        for key, value in patch.items():
+            if key not in target:
+                target[key] = copy.deepcopy(value)
+                changed = True
+            elif isinstance(value, dict) and isinstance(target[key], dict):
+                changed = _fill(target[key], value) or changed
+        return changed
+
+    def _mutate(current: dict) -> bool:
+        if not wanted:
+            return False
+        plugins = current.get("plugins")
+        entries = plugins.get("entries") if isinstance(plugins, dict) else None
+        entry = entries.get(plugin) if isinstance(entries, dict) else None
+        if not isinstance(entry, dict):
+            return False
+        config = entry.setdefault("config", {})
+        if not isinstance(config, dict):
+            return False
+        return _fill(config, wanted)
+
+    await _locked_rmw(owner_id, _mutate, f"ensure plugin config plugin={plugin} keys={sorted(wanted)}")
+
+
 async def ensure_redact_patterns(owner_id: str, patterns: Iterable[str]) -> None:
     """Ensure ``logging.redactPatterns`` contains each of ``patterns``.
 

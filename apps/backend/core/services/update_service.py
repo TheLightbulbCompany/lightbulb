@@ -575,6 +575,7 @@ async def _apply_claimed_update(update: dict, claim_id: str) -> bool:
                     # Additive and behaviour-free, so it is safe on every owner.
                     from core.containers.config import REDACT_PATTERNS, memory_plugin_entries
                     from core.services.config_patcher import (
+                        ensure_plugin_config_keys,
                         ensure_plugin_entries,
                         ensure_redact_patterns,
                     )
@@ -608,6 +609,23 @@ async def _apply_claimed_update(update: dict, claim_id: str) -> bool:
                         )
                     except Exception:  # noqa: BLE001 — never block a roll on a safety-net patch
                         logger.exception("update_service: plugin-enable patch failed for owner=%s", owner_id)
+
+                    # The bridge keys are what FILL the brain — memory-core's
+                    # artifacts only cross into the wiki when vaultMode/bridge
+                    # are set. ensure_plugin_entries above is additive at the
+                    # entry level, so it skips every owner who already has a
+                    # memory-wiki entry: exactly the cohort provisioned before
+                    # those keys existed. This reaches inside the entry and
+                    # deep-fills only what is missing, so an owner who
+                    # explicitly chose an isolated vault keeps it.
+                    try:
+                        await ensure_plugin_config_keys(
+                            owner_id,
+                            "memory-wiki",
+                            memory_plugin_entries()["memory-wiki"]["config"],
+                        )
+                    except Exception:  # noqa: BLE001 — never block a roll on a safety-net patch
+                        logger.exception("update_service: memory-wiki config patch failed for owner=%s", owner_id)
 
                     # Image rolls are the fleet's routine touch-point, but they
                     # never rewrite configs — so the seeded-file heal pass that

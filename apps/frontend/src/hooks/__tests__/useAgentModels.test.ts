@@ -37,6 +37,20 @@ const CONFIG = {
 beforeEach(() => mockRpc.mockReset());
 
 describe("useAgentModels", () => {
+  it("requests the configured view for the agent, matching upstream's picker", () => {
+    // The gateway resolves `default` against the static plugin manifest and
+    // races full discovery at 750ms, serving the stale static list on timeout
+    // (models-list-result.ts). `configured` waits for account-scoped
+    // discovery and keeps the agent's pinned model visible even when the
+    // account's live list omits it -- the request shape the upstream Control
+    // UI sends (ui/src/lib/model-catalog-store.ts).
+    mockRpc.mockImplementation((method: string) =>
+      method === "models.list" ? rpc({ data: { models: [] } }) : rpc({ data: CONFIG }),
+    );
+    renderHook(() => useAgentModels("agent_a"));
+    expect(mockRpc).toHaveBeenCalledWith("models.list", { view: "configured", agentId: "agent_a" });
+  });
+
   it("returns models.list entries when the catalog resolves", () => {
     const models: ModelEntry[] = [
       { id: "gpt-5", provider: "openai", name: "GPT-5", available: true },
@@ -48,7 +62,7 @@ describe("useAgentModels", () => {
     expect(result.current.usingFallback).toBe(false);
     expect(result.current.models).toHaveLength(1);
     expect(result.current.models[0].id).toBe("gpt-5");
-    expect(mockRpc).toHaveBeenCalledWith("models.list", undefined);
+    expect(mockRpc).toHaveBeenCalledWith("models.list", { view: "configured", agentId: "agent_a" });
     expect(mockRpc).toHaveBeenCalledWith("config.get", undefined);
   });
 

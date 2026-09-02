@@ -230,6 +230,7 @@ async def replace_provider_block(
     tool_search_mode: str | None = None,
     acp_block: dict | None = None,
     acpx_entry: dict | None = None,
+    model_policy: dict | None = None,
 ) -> None:
     """Atomically swap the three openclaw.json subtrees that define the LLM
     provider: ``models.providers``, ``agents.defaults.model``, and
@@ -338,6 +339,15 @@ async def replace_provider_block(
             defaults = {}
             agents["defaults"] = defaults
         defaults["model"] = copy.deepcopy(default_model)
+        # modelPolicy.allow is a RESTRICTIVE allowlist, so it must track the
+        # provider exactly: set it on switch TO a discoverable provider, and
+        # DELETE it on switch away -- a stale ["openai/*"] after a ChatGPT ->
+        # Bedrock switch rejects every amazon-bedrock model at selection time
+        # and the configured default throws. See config.model_policy_block.
+        if model_policy is not None:
+            defaults["modelPolicy"] = copy.deepcopy(model_policy)
+        else:
+            defaults.pop("modelPolicy", None)
 
         # Keep the compaction aux-model overrides in sync with the new
         # provider — same hazard as the CEO override below, just for the

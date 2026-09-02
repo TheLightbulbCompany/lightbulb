@@ -49,7 +49,13 @@ async def test_chatgpt_oauth_branch(tmp_path):
     )
     cfg = json.loads(out.read_text())
     primary = cfg["agents"]["defaults"]["model"]["primary"]
-    assert primary == "openai/gpt-5.5"
+    # gpt-5.5 is `status: deprecated` in the 8.1 openai manifest (replacedBy
+    # gpt-5.6-sol -- same cost, context and reasoning class); upstream's own
+    # fresh-setup default is now gpt-5.6-sol. Deprecated refs still resolve,
+    # so this is a latent break, not a live one -- but once account-scoped
+    # discovery runs (modelPolicy below), a primary the account no longer
+    # lists fails every run the same way gpt-5.5-pro did.
+    assert primary == "openai/gpt-5.6-sol"
     # OpenClaw's openai provider has no JSON config knob for the
     # auth dir — it reads the CODEX_HOME env var (set on the per-user ECS
     # task in ecs_manager). The provider block is omitted entirely so the
@@ -878,6 +884,41 @@ def test_memory_recall_across_conversations_is_pinned_off():
     """
     for cfg in (_trial_cfg(), _paid_cfg()):
         assert cfg["memory"]["search"]["rememberAcrossConversations"] is False
+
+
+@pytest.mark.parametrize(
+    "provider_choice,byo_provider,expected",
+    [
+        ("chatgpt_oauth", None, ["openai/*"]),
+        ("byo_key", "openai", ["openai/*"]),
+        ("byo_key", "anthropic", ["anthropic/*"]),
+    ],
+)
+def test_discoverable_providers_emit_model_policy_wildcard(provider_choice, byo_provider, expected):
+    """The picker must resolve against the ACCOUNT-scoped catalog, not the
+    static plugin manifest -- the manifest is why a ChatGPT-OAuth owner was
+    offered a model their account cannot serve (bodyless 400 on select).
+
+    Upstream #115953/#116857 widens full-discovery escalation only when
+    ``agents.defaults.modelPolicy.allow`` carries a provider wildcard
+    (modelCatalogBrowseRequiresFullDiscovery, model-catalog-browse.ts). It
+    must be THIS path: the legacy ``agents.defaults.models`` map escalates
+    only the ``configured`` view, never the ``default`` view the picker sends.
+    """
+    cfg = _paid_cfg(provider_choice=provider_choice, byo_provider=byo_provider, aip_arns=None)
+    assert cfg["agents"]["defaults"]["modelPolicy"] == {"allow": expected}
+
+
+@pytest.mark.parametrize("provider_choice", ["bedrock_trial", "bedrock_claude"])
+def test_bedrock_paths_emit_no_model_policy(provider_choice):
+    """Bedrock ships an explicit static, pricing-matched catalog with plugin
+    discovery DISABLED, so there is nothing to discover and the picker already
+    equals the servable set. ``modelPolicy.allow`` is a RESTRICTIVE allowlist
+    (allowAny flips false the moment it has an entry) -- emitting one here
+    buys nothing and adds a way to lock an owner out of their own catalog.
+    """
+    cfg = _trial_cfg() if provider_choice == "bedrock_trial" else _paid_cfg()
+    assert "modelPolicy" not in cfg["agents"]["defaults"]
 
 
 def test_bedrock_trial_disables_skill_workshop_autocapture_explicitly():

@@ -1904,6 +1904,7 @@ async def _hot_swap_provider(
         derive_enabled_harnesses,
         heartbeat_model_ref,
         premium_model_ref,
+        model_policy_block,
     )
     from core.services.config_patcher import ConfigPatchError, replace_provider_block
 
@@ -2007,6 +2008,7 @@ async def _hot_swap_provider(
             default_model=default_model,
             plugin_entries=plugin_entries,
             ceo_model=ceo_model,
+            model_policy=model_policy_block(new_provider, default_model).get("modelPolicy"),
             cheap_model=cheap_model,
             heartbeat_model=heartbeat_model,
             utility_model=utility_model,

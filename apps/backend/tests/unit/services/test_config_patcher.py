@@ -1044,6 +1044,53 @@ async def test_replace_provider_block_swaps_bedrock_for_chatgpt(tmp_efs_with_bed
 
 
 @pytest.mark.asyncio
+async def test_replace_provider_block_sets_model_policy_on_switch_to_oauth(tmp_efs_with_bedrock_provider):
+    """Bedrock -> ChatGPT: the hot path must write the discovery-enabling
+    allowlist, or the switched owner keeps the static-manifest picker the
+    cold provision path no longer produces."""
+    await replace_provider_block(
+        "user_p",
+        providers={},
+        default_model={"primary": "openai/gpt-5.6-sol", "fallbacks": ["openai/gpt-5.4"]},
+        plugin_entries={},
+        ceo_model=None,
+        model_policy={"allow": ["openai/*"]},
+    )
+    with open(os.path.join(tmp_efs_with_bedrock_provider, "user_p", "openclaw.json")) as f:
+        result = json.load(f)
+    assert result["agents"]["defaults"]["modelPolicy"] == {"allow": ["openai/*"]}
+
+
+@pytest.mark.asyncio
+async def test_replace_provider_block_clears_model_policy_on_switch_to_bedrock(tmp_efs_with_bedrock_provider):
+    """ChatGPT -> Bedrock: ``modelPolicy.allow`` is RESTRICTIVE. Leaving
+    ``["openai/*"]`` behind after the switch would reject every
+    amazon-bedrock model at selection time and the configured default would
+    throw ("not allowed by agents.defaults.modelPolicy.allow") -- the owner
+    would be locked out of their new provider entirely."""
+    # Seed the stale policy an OAuth owner carries into the switch.
+    await replace_provider_block(
+        "user_p",
+        providers={},
+        default_model={"primary": "openai/gpt-5.6-sol", "fallbacks": ["openai/gpt-5.4"]},
+        plugin_entries={},
+        ceo_model=None,
+        model_policy={"allow": ["openai/*"]},
+    )
+    await replace_provider_block(
+        "user_p",
+        providers={"amazon-bedrock": {"baseUrl": "x", "models": []}},
+        default_model={"primary": "amazon-bedrock/arn:sonnet", "fallbacks": []},
+        plugin_entries={},
+        ceo_model=None,
+        model_policy=None,
+    )
+    with open(os.path.join(tmp_efs_with_bedrock_provider, "user_p", "openclaw.json")) as f:
+        result = json.load(f)
+    assert "modelPolicy" not in result["agents"]["defaults"]
+
+
+@pytest.mark.asyncio
 async def test_replace_provider_block_preserves_workflow_plugins(tmp_efs_with_bedrock_provider):
     """A provider swap must not drop lobster / llm-task. They are bundled
     workflow extensions enabled at provision time and are independent of the

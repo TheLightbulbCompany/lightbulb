@@ -222,6 +222,7 @@ async def test_org_owner_can_switch_to_chatgpt_oauth_and_is_recorded(
         tool_search_mode,
         acp_block,
         acpx_entry,
+        model_policy=None,
     ):
         # Hot swap into chatgpt_oauth — shape pinned by the personal hot-path
         # test; here we only care that the org claim + connector write happen.
@@ -748,6 +749,7 @@ async def test_change_provider_bedrock_to_chatgpt_hot_path_no_restart(async_clie
         tool_search_mode,
         acp_block,
         acpx_entry,
+        model_policy=None,
     ):
         call_order.append("replace")
         # The chatgpt_oauth branch sets ``models.providers`` to {} and the
@@ -756,7 +758,7 @@ async def test_change_provider_bedrock_to_chatgpt_hot_path_no_restart(async_clie
         # than landing the wrong block on the running container.
         assert providers == {}
         assert default_model == {
-            "primary": "openai/gpt-5.5",
+            "primary": "openai/gpt-5.6-sol",
             "fallbacks": ["openai/gpt-5.4"],
         }
         assert plugin_entries == {}
@@ -779,13 +781,17 @@ async def test_change_provider_bedrock_to_chatgpt_hot_path_no_restart(async_clie
         # tier on this path (cheap_model is None) and goes enable-only.
         assert heartbeat_model == "openai/gpt-5.4-mini"
         assert utility_model == "openai/gpt-5.4-mini"
-        assert subagent_model == "openai/gpt-5.5"
+        assert subagent_model == "openai/gpt-5.6-sol"
         assert llm_task_model is None
         # The search pin SURVIVES the swap (mirrors provision-time, which now
         # pins on every path). Dropping it here used to be justified by
         # "Codex-native hosted search engages" — but chatgpt_oauth owners run
         # the EMBEDDED runtime, so dropping it left them with no web search.
         assert web_search_provider == "parallel-free"
+        # Bedrock -> ChatGPT must carry the discovery-enabling allowlist the
+        # cold provision path emits, or the switched owner keeps the static-
+        # manifest picker (config.model_policy_block).
+        assert model_policy == {"allow": ["openai/*"]}
         # Same story for toolSearch, and the same fix. It used to be skipped for
         # chatgpt_oauth at provision time, so the swap deleted it; it is now
         # written unconditionally, so the swap must RE-PIN it. Passing None here

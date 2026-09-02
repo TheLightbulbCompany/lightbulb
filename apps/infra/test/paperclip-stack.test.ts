@@ -169,6 +169,10 @@ describe("PaperclipStack — Fargate service shape", () => {
     expect(envMap.PAPERCLIP_AUTH_DISABLE_SIGN_UP).toBe("false");
     expect(envMap.PAPERCLIP_DEPLOYMENT_MODE).toBe("authenticated");
     expect(envMap.PAPERCLIP_DEPLOYMENT_EXPOSURE).toBe("public");
+    // The sign-in limiter shares one bucket across every backend sign-in
+    // (in-VPC, no X-Forwarded-For); a dropped or flipped line here silently
+    // reintroduces cross-owner 429s, so pin it rather than trust the string.
+    expect(envMap.PAPERCLIP_AUTH_RATE_LIMIT_ENABLED).toBe("false");
     expect(envMap.PAPERCLIP_REQUIRE_GOVERNED_AGENT_CREATION).toBe("1");
     // Without auto-apply, the server refuses to start on a fresh schema.
     expect(envMap.PAPERCLIP_MIGRATION_AUTO_APPLY).toBe("true");
@@ -428,6 +432,7 @@ describe("PaperclipStack — prod public URL", () => {
     }>;
     const envMap = Object.fromEntries(envArr.map((e) => [e.Name, e.Value]));
     expect(envMap.PAPERCLIP_AUTH_DISABLE_SIGN_UP).toBe("false");
+    expect(envMap.PAPERCLIP_AUTH_RATE_LIMIT_ENABLED).toBe("false");
   });
 
   test("prod leaves governed agent creation off until dev has validated it", () => {

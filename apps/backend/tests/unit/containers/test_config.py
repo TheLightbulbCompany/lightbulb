@@ -236,12 +236,21 @@ class TestOpenclawConfigShape:
         the plugin then resolves the vault to its `~/.openclaw/wiki/main`
         default, which is what routers/brain.py's BRAIN_SUBTREE roots the
         owner's Brain panel at. Setting a path here without moving that
-        constant points the panel at an empty directory."""
+        constant points the panel at an empty directory.
+
+        vaultMode "bridge" + bridge.enabled are what FEED that panel: the
+        plugin imports memory-core's daily notes, dream reports and MEMORY.md
+        into sources/ pages. Both are load-bearing — the import is gated on
+        vaultMode AND bridge.enabled, whose plugin defaults are "isolated" and
+        false, so dropping either leaves the vault empty of anything an agent
+        did not file by hand."""
         config = _cfg()
         entry = config["plugins"]["entries"]["memory-wiki"]
         assert entry["enabled"] is True
         assert entry["config"]["vault"] == {"scope": "global", "renderMode": "obsidian"}
-        assert set(entry["config"].keys()) == {"vault"}
+        assert entry["config"]["vaultMode"] == "bridge"
+        assert entry["config"]["bridge"] == {"enabled": True}
+        assert set(entry["config"].keys()) == {"vault", "vaultMode", "bridge"}
 
     def test_tools_exec_approval_policy(self):
         """mode="full" runs exec without an approval gate. Agents run

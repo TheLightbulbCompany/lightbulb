@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import type { SWRResponse } from "swr";
 import {
   InlineTeamsNavProvider,
@@ -151,6 +151,9 @@ function cardFor(title: string): HTMLElement {
 }
 
 beforeEach(() => {
+  // A search test that throws before its own `useRealTimers` must not leave
+  // fake timers installed for every test after it.
+  vi.useRealTimers();
   reads = {};
   readPaths.length = 0;
   mutate.mockClear();
@@ -549,7 +552,85 @@ describe("ArtifactsPanel — sort", () => {
   });
 });
 
-describe("ArtifactsPanel — honest states", () => {
+describe("ArtifactsPanel \u2014 search", () => {
+  it("debounces the box and re-reads with q on both views", () => {
+    vi.useFakeTimers();
+    stubRecent([DOC]);
+    stubStackList([group()]);
+    render(<ArtifactsPanel />);
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search the Library" }), {
+      target: { value: "pricing" },
+    });
+    // Still the unsuffixed key \u2014 a keystroke must not be a BFF search.
+    expect(readPaths).not.toContain(`${RECENT_PATH}&q=pricing`);
+
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    expect(readPaths).toContain(`${RECENT_PATH}&q=pricing`);
+
+    // The query rides the By task read too \u2014 it is one box over the whole panel.
+    switchToByTask();
+    expect(readPaths).toContain("/artifacts?groupBy=task&q=pricing");
+    vi.useRealTimers();
+  });
+
+  it("shows a no-match notice with a Clear exit instead of the zero copy", () => {
+    vi.useFakeTimers();
+    stubRecent([DOC]);
+    render(<ArtifactsPanel />);
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search the Library" }), {
+      target: { value: "zzz" },
+    });
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+
+    // No stub for the q path \u2192 empty. That is a search miss, not an empty Library.
+    expect(screen.getByText("Nothing in the Library matches \u201Czzz\u201D.")).toBeInTheDocument();
+    expect(screen.queryByText("Nothing made yet.")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    expect(screen.getByTestId("artifact-card")).toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it("revalidates the q-suffixed gallery key when a delete happens under a search", async () => {
+    vi.useFakeTimers();
+    stubRecent([DOC]);
+    reads[`${RECENT_PATH}&q=pricing`] = {
+      data: { artifacts: [DOC], nextCursor: null },
+      isLoading: false,
+      error: undefined,
+    };
+    render(<ArtifactsPanel />);
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search the Library" }), {
+      target: { value: "pricing" },
+    });
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    vi.useRealTimers();
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete Implementation plan" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(del).toHaveBeenCalledWith("/issues/iss_1/documents/plan"));
+    // The hook is subscribed to the SUFFIXED key; revalidating the bare one
+    // would leave the deleted deliverable on screen until the search changed.
+    await waitFor(() =>
+      expect(globalMutate).toHaveBeenCalledWith(`/teams${RECENT_PATH}&q=pricing`),
+    );
+    expect(globalMutate).toHaveBeenCalledWith("/teams/artifacts?groupBy=task&q=pricing");
+  });
+});
+
+describe("ArtifactsPanel \u2014 honest states", () => {
   it("renders the zero notice when there is genuinely nothing", () => {
     stubRecent([]);
     render(<ArtifactsPanel />);

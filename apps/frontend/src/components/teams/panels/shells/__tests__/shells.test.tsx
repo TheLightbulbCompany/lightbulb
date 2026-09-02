@@ -89,12 +89,14 @@ describe("DomainSitePanel", () => {
       error: null,
       isLoading: false,
       byProvider: new Map([
-        ["cloudflare", [{ resource_id: "r1", provider: "cloudflare", service: "domain", status: "complete", resource_name: "flickmeon.ai", env_keys: [], level: "free" }]],
-        ["posthog", [{ resource_id: "r2", provider: "posthog", service: "project", status: "complete", resource_name: "analytics", env_keys: [], level: "free" }]],
+        // `active` is the only status the rail writes; the name is
+        // `<service>-<6 chars>`, never the domain itself.
+        ["cloudflare", [{ resource_id: "r1", provider: "cloudflare", service: "domain", status: "active", resource_name: "svc_domain-1a2b3c", env_keys: [], level: "free" }]],
+        ["posthog", [{ resource_id: "r2", provider: "posthog", service: "project", status: "active", resource_name: "analytics", env_keys: [], level: "free" }]],
       ]),
     });
     render(<DomainSitePanel />);
-    expect(screen.getByText("flickmeon.ai")).toBeInTheDocument();
+    expect(screen.getByText("svc_domain-1a2b3c")).toBeInTheDocument();
     // PostHog is analytics, not a domain or host — it belongs to another tab.
     expect(screen.queryByText("analytics")).not.toBeInTheDocument();
     expect(screen.getByText("Live")).toBeInTheDocument();

@@ -1391,12 +1391,24 @@ async def _guard_seeded_delete(
 # Methods that carry a CLIENT-SUPPLIED session key which MUST be
 # ownership-checked before we forward it to the shared per-owner container.
 # Maps method -> the param name that holds the key. sessions.patch/reset/delete
-# use ``key``; the chat.history read uses ``sessionKey``.
+# use ``key``; the chat.history read and OpenClaw 8.1's transcript-DAG RPCs use
+# ``sessionKey``.
+#
+# ANY new gateway method that takes a caller-supplied session key belongs in
+# this table. Omitting one is a cross-tenant IDOR on every org: every member
+# shares ONE per-owner container, so an unguarded key param lets member A name
+# member B's session (or a ``paperclip:``/``cron:`` one).
 _SESSION_KEY_PARAM_BY_METHOD = {
     "sessions.patch": "key",
     "sessions.reset": "key",
     "sessions.delete": "key",
     "chat.history": "sessionKey",
+    # sessions.rewind and sessions.branches.switch destructively repoint the
+    # transcript; sessions.branches.list leaks another member's branch
+    # headlines and message counts.
+    "sessions.rewind": "sessionKey",
+    "sessions.branches.list": "sessionKey",
+    "sessions.branches.switch": "sessionKey",
 }
 
 

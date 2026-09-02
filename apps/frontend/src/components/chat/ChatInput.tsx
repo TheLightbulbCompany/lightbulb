@@ -81,6 +81,22 @@ interface ChatInputProps {
    * AgentChatWindow supplies the wired pill.
    */
   controls?: React.ReactNode;
+  /**
+   * Text the OWNER of this composer wants loaded into it — today, the user
+   * message a rewind removed, handed back as `editorText` to edit and resend.
+   *
+   * A prop and not an imperative handle, deliberately: a rewind invalidates
+   * history, which flips AgentChatWindow to its loading shell (and possibly on
+   * to the empty state), and each of those branches mounts a DIFFERENT
+   * ChatInput. An imperative `setDraft` call lands on a composer that is about
+   * to unmount and the text is silently lost. Held by the parent, the draft
+   * simply re-applies on the composer that survives.
+   *
+   * `nonce` is what makes it a request rather than a value: it must change on
+   * every new request, so repeating the same text still loads, and so each
+   * mounted composer applies a given request exactly once.
+   */
+  draft?: { text: string; nonce: number };
 }
 
 function formatFileSize(bytes: number): string {
@@ -107,6 +123,7 @@ export function ChatInput({
   onEditQueued,
   onMoveQueued,
   controls,
+  draft,
 }: ChatInputProps) {
   const [input, setInput] = React.useState("");
   // Edit-in-place buffer for the queued list below — at most one row edits
@@ -219,6 +236,17 @@ export function ChatInput({
     if (focusRafRef.current) cancelAnimationFrame(focusRafRef.current);
     tryFocus(0);
   }, []);
+
+  // Load a parent-supplied draft, once per request per mounted composer. The
+  // ref starts at 0 on every mount, so a composer that mounts AFTER the request
+  // (the render-branch swap a rewind causes) still picks it up.
+  const appliedDraftNonceRef = React.useRef(0);
+  React.useEffect(() => {
+    if (!draft || draft.nonce === appliedDraftNonceRef.current) return;
+    appliedDraftNonceRef.current = draft.nonce;
+    setInput(draft.text);
+    runFocusRoutine();
+  }, [draft, runFocusRoutine]);
 
   React.useEffect(() => {
     const onFocusRequest = (e: Event) => {

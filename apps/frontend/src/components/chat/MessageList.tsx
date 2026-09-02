@@ -41,6 +41,7 @@ import {
   resolveMessageBlocks,
   type ToolBlockPair,
 } from "@/hooks/internal/toolBlockExtract";
+import { persistedEntryId } from "@lightbulb/shared";
 import type {
   ChatRenderItem,
   ContentBlock,
@@ -62,6 +63,12 @@ export interface MessageListProps {
   hasOlder?: boolean;
   isLoadingOlder?: boolean;
   onLoadOlder?: () => void;
+  /** Cut the transcript back to just before this persisted user message
+   *  (`sessions.rewind`). Omit to hide the affordance entirely. */
+  onRewind?: (entryId: string) => void;
+  /** Rewind is refused server-side while a run is live — disable rather than
+   *  hide, so the affordance stays where the user learned it is. */
+  rewindDisabled?: boolean;
 }
 
 /**
@@ -721,7 +728,15 @@ function MessageBlocks({
   return <>{rendered}</>;
 }
 
-function UserMessageRow({ message }: { message: HistoryMessage }) {
+function UserMessageRow({
+  message,
+  onRewind,
+  rewindDisabled,
+}: {
+  message: HistoryMessage;
+  onRewind?: (entryId: string) => void;
+  rewindDisabled?: boolean;
+}) {
   // Same three-shape normalization as MessageBlocks — a typed user message
   // arrives from chat.history with `content` as a bare string, which the old
   // `Array.isArray ? … : message.text ?? ""` ternary rendered as empty.
@@ -729,12 +744,51 @@ function UserMessageRow({ message }: { message: HistoryMessage }) {
     .filter(isTextBlock)
     .map((b) => (b.text ?? "") as string)
     .join("");
+  // Null on an optimistic turn the server has not persisted yet — there is no
+  // entryId for sessions.rewind to cut at, so the affordance must not appear.
+  const entryId = persistedEntryId(message);
+  const [confirming, setConfirming] = React.useState(false);
   return (
-    <div className="flex w-full justify-end" data-role="user">
-      <div className="flex flex-col min-w-0 max-w-[85%]">
+    <div className="group flex w-full justify-end" data-role="user">
+      <div className="flex flex-col items-end min-w-0 max-w-[85%]">
         <div className="relative text-sm leading-relaxed bg-[var(--cream-deep)] text-[var(--midnight)] rounded-lg rounded-br-sm px-4 py-2.5">
           <div className="wrap-break-word whitespace-pre-wrap">{text}</div>
         </div>
+        {entryId && onRewind && (
+          confirming ? (
+            <div className="mt-1 flex items-center gap-2 text-caption text-[var(--midnight-muted)]">
+              <span>Rewind — this removes everything after this message.</span>
+              <button
+                type="button"
+                className="text-[var(--warn)] hover:underline"
+                onClick={() => {
+                  setConfirming(false);
+                  onRewind(entryId);
+                }}
+              >
+                Rewind
+              </button>
+              <button
+                type="button"
+                className="hover:text-[var(--midnight-soft)]"
+                onClick={() => setConfirming(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              // Hover-revealed, but focusable at all times so keyboard users
+              // reach it: opacity, not conditional rendering.
+              className="mt-1 text-caption text-[var(--midnight-muted)] opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:text-[var(--midnight-soft)] disabled:cursor-not-allowed"
+              disabled={rewindDisabled}
+              onClick={() => setConfirming(true)}
+            >
+              Rewind to here
+            </button>
+          )
+        )}
       </div>
     </div>
   );
@@ -891,6 +945,8 @@ function groupEquals(a: RenderGroup, b: RenderGroup): boolean {
  */
 const BubbleGroup = React.memo(BubbleGroupImpl, (prev, next) =>
   prev.agentName === next.agentName &&
+  prev.onRewind === next.onRewind &&
+  prev.rewindDisabled === next.rewindDisabled &&
   prev.isStreaming === next.isStreaming &&
   prev.isLastAssistantGroup === next.isLastAssistantGroup &&
   prev.paywallItemKey === next.paywallItemKey &&
@@ -1005,11 +1061,15 @@ function BubbleGroupImpl({
   isLastAssistantGroup,
   paywallItemKey,
   onOpenFile,
+  onRewind,
+  rewindDisabled,
 }: {
   group: RenderGroup;
   agentName?: string;
   isStreaming?: boolean;
   isLastAssistantGroup?: boolean;
+  onRewind?: (entryId: string) => void;
+  rewindDisabled?: boolean;
   /** Key of the ONE transcript item allowed to render the live conversion
    *  paywall — the newest trial-coded error card. See the computation at the
    *  call site for why this is not simply the newest bubble. */
@@ -1040,7 +1100,12 @@ function BubbleGroupImpl({
       <>
         {group.items.map((item) =>
           item.kind === "message" ? (
-            <UserMessageRow key={item.key} message={item.message} />
+            <UserMessageRow
+              key={item.key}
+              message={item.message}
+              onRewind={onRewind}
+              rewindDisabled={rewindDisabled}
+            />
           ) : null
         )}
       </>
@@ -1121,7 +1186,18 @@ export interface MessageListHandle {
 
 export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(
   function MessageList(
-    { renderGroups, isStreaming, isTyping, agentName, onOpenFile, hasOlder, isLoadingOlder, onLoadOlder },
+    {
+      renderGroups,
+      isStreaming,
+      isTyping,
+      agentName,
+      onOpenFile,
+      hasOlder,
+      isLoadingOlder,
+      onLoadOlder,
+      onRewind,
+      rewindDisabled,
+    },
     ref
   ) {
     const { containerRef, scrollToBottom, isAutoScrollingRef, markAutoScroll } = useScrollToBottom();
@@ -1335,6 +1411,8 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
               isLastAssistantGroup={idx === lastAssistantGroupIndex}
               paywallItemKey={paywallItemKey}
               onOpenFile={onOpenFile}
+              onRewind={onRewind}
+              rewindDisabled={rewindDisabled}
             />
           ))}
           {showTypingPlaceholder && <TypingPlaceholder agentName={agentName} />}

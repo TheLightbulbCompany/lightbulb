@@ -12,21 +12,21 @@ export const INBOX_DIR = "inbox";
 /** The plugin's root index — created on vault init, rewritten on every compile. */
 export const LANDING_PATH = "index.md";
 
-// markdown.ts FRONTMATTER_PATTERN, verbatim.
-const FRONTMATTER = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/;
 // markdown.ts OBSIDIAN_LINK_PATTERN plus an optional #heading we drop.
 const WIKILINK = /\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]+))?\]\]/g;
 
 /** A page as the plugin writes it → a page as react-markdown should see it:
- *  frontmatter gone, `[[target|alias]]` → `[alias](<target>)` (a relative
- *  href survives react-markdown's defaultUrlTransform; `wiki:` would not). */
+ *  `[[target|alias]]` → `[alias](<target>)` (a relative href survives
+ *  react-markdown's defaultUrlTransform; `wiki:` would not); the caller
+ *  strips frontmatter with `parseFrontmatter` first. */
 export function toReadableMarkdown(raw: string): string {
   // ponytail: a plain regex also rewrites a [[link]] inside a code span;
   // move to a remark text-node plugin (see remark-soft-breaks.ts) if a page
   // ever needs to DEMO wikilink syntax in code.
-  return raw
-    .replace(FRONTMATTER, "")
-    .replace(WIKILINK, (_m, target: string, alias?: string) => `[${(alias ?? target).trim()}](<${target.trim()}>)`);
+  return raw.replace(
+    WIKILINK,
+    (_m, target: string, alias?: string) => `[${(alias ?? target).trim()}](<${target.trim()}>)`,
+  );
 }
 
 function topDir(path: string): string {
@@ -130,4 +130,188 @@ export function formatVaultDate(timestamp: number): string {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+// markdown.ts FRONTMATTER_PATTERN, verbatim — plus the capture group, because
+// we now READ the block instead of deleting it.
+const FRONTMATTER_BLOCK = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
+
+/** The four frontmatter fields the owner is shown. The plugin writes more
+ *  (id, title, claims, confidence); everything else is the agent's business. */
+export interface VaultMeta {
+  pageType?: string;
+  status?: string;
+  updatedAt?: string;
+  sourceIds?: string[];
+}
+
+/** A `[[target|alias]]` as data. */
+export interface VaultLinkRef {
+  target: string;
+  alias: string;
+}
+
+const META_KEYS = ["pageType", "status", "updatedAt", "sourceIds"] as const;
+
+function unquote(v: string): string {
+  return v.trim().replace(/^["']|["']$/g, "").trim();
+}
+
+/** Split the plugin's YAML head off a page.
+ *
+ *  Deliberately NOT a YAML parser: we read three scalars and one flat string
+ *  list out of a block another program owns and we never write. A line scan
+ *  that ignores everything it doesn't recognise (`claims:` is a list of MAPS)
+ *  is smaller than a dependency and cannot fail in a way that loses the page —
+ *  the worst case is a pill we don't draw.
+ *  // ponytail: line scan, four keys. Reach for a YAML lib only if the panel
+ *  // ever needs a nested field (claims[], confidence maps). */
+export function parseFrontmatter(markdown: string): { meta: VaultMeta; body: string } {
+  const m = FRONTMATTER_BLOCK.exec(markdown);
+  if (!m) return { meta: {}, body: markdown };
+  const meta: VaultMeta = {};
+  let listKey: "sourceIds" | null = null;
+  for (const line of m[1].split(/\r?\n/)) {
+    const item = /^\s*-\s+(.+)$/.exec(line);
+    if (item) {
+      if (listKey) (meta.sourceIds ??= []).push(unquote(item[1]));
+      continue;
+    }
+    const kv = /^([A-Za-z][\w-]*):[ \t]*(.*)$/.exec(line);
+    if (!kv) continue;
+    listKey = null;
+    const [, key, raw] = kv;
+    if (!(META_KEYS as readonly string[]).includes(key)) continue;
+    const value = raw.trim();
+    if (key === "sourceIds") {
+      if (value.startsWith("[")) {
+        meta.sourceIds = value.replace(/^\[|\]$/g, "").split(",").map(unquote).filter(Boolean);
+      } else if (!value) {
+        meta.sourceIds = [];
+        listKey = "sourceIds"; // a block list follows
+      }
+      continue;
+    }
+    if (value) meta[key as "pageType" | "status" | "updatedAt"] = unquote(value);
+  }
+  return { meta, body: markdown.slice(m[0].length) };
+}
+
+/** The page's own metadata as up to four neutral chips, in reading order.
+ *
+ *  Never coloured by value. PanelNotice's header spells out the rule: only
+ *  `locked` — the one state the owner is BLOCKED by — takes a state token. A
+ *  page's `status` is the PLUGIN's lifecycle field over an open value set we
+ *  neither write nor enumerate, and "unknown renders neutral, never ok" makes
+ *  neutral the only rule true for all of them. An amber `draft` would make a
+ *  healthy first-week brain look broken. */
+export function pagePills(meta: VaultMeta): string[] {
+  const pills: string[] = [];
+  if (meta.pageType) pills.push(meta.pageType);
+  if (meta.status) pills.push(meta.status);
+  const day = meta.updatedAt ? new Date(meta.updatedAt) : null;
+  // Locale AND timezone pinned, for formatVaultDate's reason: the agent writes
+  // updatedAt in UTC, and a date that slides a day for a viewer in Tokyo is a
+  // fact the owner can't check against the page's own raw text.
+  if (day && !Number.isNaN(day.getTime())) {
+    pills.push(
+      `Updated ${day.toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+        timeZone: "UTC",
+      })}`,
+    );
+  }
+  const n = meta.sourceIds?.length ?? 0;
+  if (n > 0) pills.push(`${n} ${n === 1 ? "source" : "sources"}`);
+  return pills;
+}
+
+/** WIKILINK is module-global (`/g`) and shared with toReadableMarkdown's
+ *  .replace; matchAll on a fresh clone keeps lastIndex out of the picture. */
+function wikilinksIn(text: string): VaultLinkRef[] {
+  const out: VaultLinkRef[] = [];
+  for (const m of text.matchAll(new RegExp(WIKILINK.source, "g"))) {
+    const target = m[1].trim();
+    out.push({ target, alias: (m[2] ?? target).trim() });
+  }
+  return out;
+}
+
+// The trailing backlinks section a compiled page carries: a `## Related`
+// heading over a wikilink list, wrapped by the plugin's own managed block
+// (`<!-- openclaw:wiki:related:start -->`). We slice on the HEADING, not the
+// markers, so a hand-written Related list is caught too and the marker names
+// stay the plugin's business.
+const RELATED_HEADING = /^#{1,6}[ \t]+Related[ \t]*$/im;
+const ANY_HEADING = /^#{1,6}[ \t]+\S/m;
+
+/** Lift `## Related` out of the body so the page can render it as a block
+ *  instead of as more prose. The section runs to the next heading of any
+ *  level, or to the end. An empty one is removed too — a bare "Related"
+ *  heading over nothing is noise the compiler, not the owner, left behind. */
+export function splitRelated(body: string): { body: string; related: VaultLinkRef[] } {
+  const m = RELATED_HEADING.exec(body);
+  if (!m) return { body, related: [] };
+  const after = body.slice(m.index + m[0].length);
+  const next = ANY_HEADING.exec(after);
+  const section = next ? after.slice(0, next.index) : after;
+  return {
+    body: body.slice(0, m.index) + (next ? after.slice(next.index) : ""),
+    related: wikilinksIn(section),
+  };
+}
+
+// The compiled root index: compile rewrites everything between these two
+// markers on every wiki_apply, and vault init writes them, so they exist from
+// the vault's first moment.
+const INDEX_START = "<!-- openclaw:wiki:index:start -->";
+const INDEX_END = "<!-- openclaw:wiki:index:end -->";
+
+export interface IndexSection {
+  section: string;
+  count: number;
+  links: VaultLinkRef[];
+}
+
+/** The compiled index as data: one entry per `### Sources|Entities|Concepts|
+ *  Syntheses|Reports` heading INSIDE the managed block, with the wikilinks
+ *  compile listed under it.
+ *
+ *  `count` is that list's length, not the plugin's own count line: the
+ *  headings and the links are what this repo has pinned, the count line's
+ *  exact wording is not, and a number derived from the links can never
+ *  disagree with the links rendered beside it.
+ *
+ *  Empty when there is no block, or when the block is the scaffold's
+ *  "- No compiled pages yet." — the caller falls back to rendering index.md
+ *  as an ordinary page. */
+export function parseIndexSections(markdown: string): IndexSection[] {
+  const from = markdown.indexOf(INDEX_START);
+  const to = markdown.indexOf(INDEX_END);
+  if (from === -1 || to === -1 || to < from) return [];
+  const block = markdown.slice(from + INDEX_START.length, to);
+  const out: IndexSection[] = [];
+  for (const part of block.split(/^###[ \t]+/m).slice(1)) {
+    const nl = part.indexOf("\n");
+    const section = (nl === -1 ? part : part.slice(0, nl)).trim();
+    if (!section) continue;
+    const links = wikilinksIn(nl === -1 ? "" : part.slice(nl));
+    out.push({ section, count: links.length, links });
+  }
+  return out;
+}
+
+/** The n most recently written pages, newest first. Scoped to isFiledPage, so
+ *  inbox/ (which wiki_search cannot see) and every index.md (compile's own
+ *  output, which would otherwise top this list after EVERY wiki_apply) are
+ *  excluded by construction — one predicate, already tested above.
+ *  `modified_at` is st_mtime: POSIX SECONDS, which is why formatVaultDate
+ *  multiplies by 1000 and so does the renderer. */
+export function recentlyUpdated(files: FileEntry[], n = 5): FileEntry[] {
+  return files
+    .filter(isFiledPage)
+    .sort((a, b) => b.modified_at - a.modified_at)
+    .slice(0, n);
 }

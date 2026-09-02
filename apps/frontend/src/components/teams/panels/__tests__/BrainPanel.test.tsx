@@ -75,6 +75,22 @@ const REPORT = f("reports/state-of-the-vault.md");
 const SCAFFOLD = [INDEX, ENTITIES, ENTITIES_INDEX];
 const REPORTS_ONLY = [INDEX, REPORTS_DIR, REPORT];
 const POPULATED = [INDEX, ENTITIES, ENTITIES_INDEX, ADA, INBOX_DIR_ENTRY, DECK];
+// A vault compile has actually run over: index.md carries the managed block.
+const COMPILED_INDEX = [
+  "# Wiki Index",
+  "",
+  "## Generated",
+  "<!-- openclaw:wiki:index:start -->",
+  "### Sources",
+  "- [[sources/deck|Pitch deck]]",
+  "### Entities",
+  "- [[entities/ada-lovelace|Ada Lovelace]]",
+  "<!-- openclaw:wiki:index:end -->",
+].join("\n");
+const SOURCES = f("sources", "dir");
+const SOURCES_INDEX = f("sources/index.md");
+const DECK_MD = f("sources/deck.md");
+const COMPILED = [...POPULATED, SOURCES, SOURCES_INDEX, DECK_MD];
 
 const md = (path: string, content: string): FileInfo => ({
   name: path.slice(path.lastIndexOf("/") + 1),
@@ -123,6 +139,58 @@ describe("BrainPanel", () => {
     expect(useBrainFileSpy).toHaveBeenLastCalledWith("index.md");
     expect(screen.getByText("Nothing filed yet.")).toBeInTheDocument();
     expect(screen.getByTestId("panel-masthead-meta").textContent).toMatch(/0 filed · 0 in inbox/);
+  });
+
+  it("the compiled landing is type cards, not the index's own bullet list", () => {
+    treeState.files = COMPILED;
+    fileState.file = md("index.md", COMPILED_INDEX);
+    render(<BrainPanel />);
+    expect(screen.getByText("Sources")).toBeInTheDocument();
+    expect(screen.getByText("Entities")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Wiki Index" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Pitch deck" }));
+    expect(useBrainFileSpy).toHaveBeenLastCalledWith("sources/deck.md");
+  });
+
+  it("a card's Open goes to the section index compile wrote", () => {
+    treeState.files = COMPILED;
+    fileState.file = md("index.md", COMPILED_INDEX);
+    render(<BrainPanel />);
+    // sources/index.md is in the tree, entities/index.md is too — one Open each.
+    fireEvent.click(screen.getAllByRole("button", { name: "Open" })[0]);
+    expect(useBrainFileSpy).toHaveBeenLastCalledWith("sources/index.md");
+  });
+
+  it("a section with no index.md written yet has no Open", () => {
+    treeState.files = COMPILED.filter((e) => e.path !== "sources/index.md");
+    fileState.file = md("index.md", COMPILED_INDEX);
+    render(<BrainPanel />);
+    expect(screen.getAllByRole("button", { name: "Open" })).toHaveLength(1);
+  });
+
+  it("an index with no managed block falls back to the plain rendered page", () => {
+    treeState.files = POPULATED;
+    fileState.file = md("index.md", "# Wiki Index\n\n[[entities/ada-lovelace|Ada Lovelace]]");
+    render(<BrainPanel />);
+    expect(screen.getByRole("heading", { name: "Wiki Index" })).toBeInTheDocument();
+    expect(screen.queryByText("Recently updated")).toBeNull();
+  });
+
+  it("Recently updated lists filed pages under the cards and opens one", () => {
+    treeState.files = COMPILED;
+    fileState.file = md("index.md", COMPILED_INDEX);
+    render(<BrainPanel />);
+    expect(screen.getByText("Recently updated")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /ada-lovelace/ }));
+    expect(useBrainFileSpy).toHaveBeenLastCalledWith("entities/ada-lovelace.md");
+  });
+
+  it("Edit on the compiled landing still opens the raw index.md", () => {
+    treeState.files = COMPILED;
+    fileState.file = md("index.md", COMPILED_INDEX);
+    render(<BrainPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(COMPILED_INDEX);
   });
 
   it("inbox files get the partial notice whose exit drafts the filing prompt", () => {

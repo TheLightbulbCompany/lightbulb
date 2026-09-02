@@ -186,6 +186,92 @@ describe("BrainPage", () => {
     expect(screen.queryByRole("heading")).toBeNull();
   });
 
+  it("frontmatter renders as pills, never as YAML", () => {
+    render(
+      <BrainPage
+        path="entities/ada-lovelace.md"
+        files={FILES}
+        editing={false}
+        isLoading={false}
+        error={null}
+        onNavigate={() => {}}
+        {...noop}
+        file={page(
+          "---\npageType: entity\nstatus: draft\nupdatedAt: 2026-08-31T23:30:00Z\nsourceIds:\n  - s-1\n---\n# Ada\n",
+          "entities/ada-lovelace.md",
+        )}
+      />,
+    );
+    expect(screen.getByText("entity")).toBeInTheDocument();
+    expect(screen.getByText("draft")).toBeInTheDocument();
+    expect(screen.getByText("Updated Aug 31, 2026")).toBeInTheDocument();
+    expect(screen.getByText("1 source")).toBeInTheDocument();
+    expect(screen.queryByText(/pageType|sourceIds/)).toBeNull();
+    expect(screen.getByRole("heading", { name: "Ada" })).toBeInTheDocument();
+  });
+
+  it("a ## Related section becomes a chip block, not body markdown", () => {
+    const onNavigate = vi.fn();
+    render(
+      <BrainPage
+        path="entities/x.md"
+        files={FILES}
+        editing={false}
+        isLoading={false}
+        error={null}
+        onNavigate={onNavigate}
+        {...noop}
+        file={page(
+          "# X\n\nText.\n\n## Related\n\n- [[entities/ada-lovelace|Ada Lovelace]]\n",
+          "entities/x.md",
+        )}
+      />,
+    );
+    // The label is ours, not a rendered `##` — so no heading of that name exists.
+    expect(screen.queryAllByRole("heading", { name: "Related" })).toHaveLength(0);
+    expect(screen.getByText("Related")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "Ada Lovelace" }));
+    expect(onNavigate).toHaveBeenCalledWith("entities/ada-lovelace.md");
+  });
+
+  it("no Related section renders no Related block, and no pills without frontmatter", () => {
+    const { container } = render(
+      <BrainPage
+        path="entities/x.md"
+        files={FILES}
+        editing={false}
+        isLoading={false}
+        error={null}
+        onNavigate={() => {}}
+        {...noop}
+        file={page("# X\n", "entities/x.md")}
+      />,
+    );
+    expect(screen.queryByText("Related")).toBeNull();
+    // Pills and the Related label are the only .label-caps this page can draw.
+    expect(container.querySelector(".label-caps")).toBeNull();
+  });
+
+  it("a page whose only body is a Related list is the chip block, not the empty notice", () => {
+    render(
+      <BrainPage
+        path="entities/x.md"
+        files={FILES}
+        editing={false}
+        isLoading={false}
+        error={null}
+        onNavigate={() => {}}
+        {...noop}
+        file={page(
+          "---\npageType: entity\n---\n\n## Related\n\n- [[entities/ada-lovelace|Ada Lovelace]]\n",
+          "entities/x.md",
+        )}
+      />,
+    );
+    expect(screen.queryByText("This page is empty.")).toBeNull();
+    expect(screen.getByRole("link", { name: "Ada Lovelace" })).toBeInTheDocument();
+  });
+
   it("a 404 is the missing-page notice with an exit to the index", () => {
     const onNavigate = vi.fn();
     const err = Object.assign(new Error("API 404"), { status: 404 });

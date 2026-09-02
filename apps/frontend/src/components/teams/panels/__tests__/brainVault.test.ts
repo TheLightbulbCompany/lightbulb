@@ -2,6 +2,11 @@ import { describe, it, expect } from "vitest";
 import type { FileEntry } from "@/hooks/useWorkspaceFiles";
 import {
   toReadableMarkdown,
+  parseFrontmatter,
+  pagePills,
+  splitRelated,
+  parseIndexSections,
+  recentlyUpdated,
   resolveVaultLink,
   vaultCounts,
   searchVault,
@@ -25,15 +30,161 @@ const TREE = [
 ];
 
 describe("toReadableMarkdown", () => {
-  it("strips YAML frontmatter (memory-wiki FRONTMATTER_PATTERN)", () => {
-    expect(toReadableMarkdown("---\npageType: entity\ntitle: Ada\n---\n\n# Ada\n")).toBe("\n# Ada\n");
-  });
   it("turns obsidian wikilinks into relative markdown links, alias first", () => {
     expect(toReadableMarkdown("see [[entities/ada-lovelace|Ada Lovelace]] and [[ada-lovelace]]"))
       .toBe("see [Ada Lovelace](<entities/ada-lovelace>) and [ada-lovelace](<ada-lovelace>)");
   });
   it("drops a #heading suffix from the target", () => {
     expect(toReadableMarkdown("[[entities/ada#Bio|Ada]]")).toBe("[Ada](<entities/ada>)");
+  });
+});
+
+describe("parseFrontmatter", () => {
+  it("reads the four fields we show and hands back the body (markdown.ts FRONTMATTER_PATTERN)", () => {
+    const { meta, body } = parseFrontmatter(
+      "---\npageType: entity\nid: e-1\ntitle: Ada\nstatus: draft\nupdatedAt: 2026-08-31T23:30:00Z\n" +
+        "sourceIds:\n  - src-1\n  - src-2\nclaims:\n  - text: born 1815\n---\n\n# Ada\n",
+    );
+    expect(meta).toEqual({
+      pageType: "entity",
+      status: "draft",
+      updatedAt: "2026-08-31T23:30:00Z",
+      sourceIds: ["src-1", "src-2"],
+    });
+    expect(body).toBe("\n# Ada\n");
+  });
+  it("reads an inline list and ignores keys we don't render", () => {
+    expect(parseFrontmatter('---\nsourceIds: ["a", "b"]\nconfidence: 0.4\n---\nx').meta).toEqual({
+      sourceIds: ["a", "b"],
+    });
+  });
+  it("no frontmatter is empty meta and an untouched body", () => {
+    expect(parseFrontmatter("# Ada\n")).toEqual({ meta: {}, body: "# Ada\n" });
+  });
+});
+
+describe("pagePills", () => {
+  it("orders the four; the date is pinned to en-US/UTC", () => {
+    // 23:30Z is Aug 31 in UTC and Sep 1 in Tokyo — this case fails if the pin is dropped.
+    expect(
+      pagePills({
+        pageType: "source",
+        status: "verified",
+        updatedAt: "2026-08-31T23:30:00Z",
+        sourceIds: ["a"],
+      }),
+    ).toEqual(["source", "verified", "Updated Aug 31, 2026", "1 source"]);
+  });
+  it("omits what the page doesn't carry; an unparseable date is silent", () => {
+    expect(pagePills({})).toEqual([]);
+    expect(pagePills({ updatedAt: "soon", sourceIds: [] })).toEqual([]);
+    expect(pagePills({ sourceIds: ["a", "b"] })).toEqual(["2 sources"]);
+  });
+});
+
+describe("splitRelated", () => {
+  it("lifts the trailing Related list out of the body", () => {
+    const { body, related } = splitRelated(
+      "# Ada\n\nText.\n\n## Related\n\n- [[entities/babbage|Charles Babbage]]\n- [[concepts/analytical-engine]]\n",
+    );
+    expect(body).toBe("# Ada\n\nText.\n\n");
+    expect(related).toEqual([
+      { target: "entities/babbage", alias: "Charles Babbage" },
+      { target: "concepts/analytical-engine", alias: "concepts/analytical-engine" },
+    ]);
+  });
+  it("keeps a section that follows Related in the body", () => {
+    const { body, related } = splitRelated("a\n\n## Related\n\n- [[x|X]]\n\n## Sources\n\nb\n");
+    expect(body).toBe("a\n\n## Sources\n\nb\n");
+    expect(related).toHaveLength(1);
+  });
+  it("an empty Related section leaves no links and no heading (the plugin's markers carry none)", () => {
+    expect(
+      splitRelated(
+        "a\n\n## Related\n\n<!-- openclaw:wiki:related:start -->\n<!-- openclaw:wiki:related:end -->\n",
+      ),
+    ).toEqual({ body: "a\n\n", related: [] });
+  });
+  it("no Related section is a no-op", () => {
+    expect(splitRelated("# Ada\n")).toEqual({ body: "# Ada\n", related: [] });
+  });
+});
+
+describe("parseIndexSections", () => {
+  const COMPILED = [
+    "# Wiki Index",
+    "",
+    "## Generated",
+    "<!-- openclaw:wiki:index:start -->",
+    "### Sources",
+    "- [[sources/deck|Pitch deck]]",
+    "- [[sources/notes|Call notes]]",
+    "### Entities",
+    "- [[entities/ada-lovelace|Ada Lovelace]]",
+    "<!-- openclaw:wiki:index:end -->",
+  ].join("\n");
+
+  it("reads the managed block into sections whose count is the list beside it", () => {
+    expect(parseIndexSections(COMPILED)).toEqual([
+      {
+        section: "Sources",
+        count: 2,
+        links: [
+          { target: "sources/deck", alias: "Pitch deck" },
+          { target: "sources/notes", alias: "Call notes" },
+        ],
+      },
+      {
+        section: "Entities",
+        count: 1,
+        links: [{ target: "entities/ada-lovelace", alias: "Ada Lovelace" }],
+      },
+    ]);
+  });
+  it("ignores headings outside the managed block", () => {
+    expect(
+      parseIndexSections(
+        "### Not generated\n- [[x|X]]\n<!-- openclaw:wiki:index:start -->\n<!-- openclaw:wiki:index:end -->",
+      ),
+    ).toEqual([]);
+  });
+  it("is empty with no managed block, and on the scaffold block — the caller renders the page", () => {
+    expect(parseIndexSections("# Wiki Index\n\n- [[sources/deck|Pitch deck]]\n")).toEqual([]);
+    expect(parseIndexSections("")).toEqual([]);
+    // vault.ts, the block a brand-new vault ships with.
+    expect(
+      parseIndexSections(
+        "# Wiki Index\n\n## Generated\n<!-- openclaw:wiki:index:start -->\n- No compiled pages yet.\n<!-- openclaw:wiki:index:end -->",
+      ),
+    ).toEqual([]);
+  });
+  it("keeps a section compile wrote with nothing under it", () => {
+    expect(
+      parseIndexSections("<!-- openclaw:wiki:index:start -->\n### Concepts\n<!-- openclaw:wiki:index:end -->"),
+    ).toEqual([{ section: "Concepts", count: 0, links: [] }]);
+  });
+});
+
+describe("recentlyUpdated", () => {
+  it("newest first, filed pages only — never inbox/, never an index.md", () => {
+    const t = (path: string, modified_at: number): FileEntry => ({ ...f(path), modified_at });
+    const files = [
+      t("entities/ada-lovelace.md", 300),
+      t("index.md", 900),
+      t("entities/index.md", 800),
+      t("inbox/deck.pdf", 700),
+      t("sources/deck.md", 500),
+      t("concepts/engine.md", 100),
+    ];
+    expect(recentlyUpdated(files, 2).map((e) => e.path)).toEqual([
+      "sources/deck.md",
+      "entities/ada-lovelace.md",
+    ]);
+    expect(recentlyUpdated(files, 5).map((e) => e.path)).toEqual([
+      "sources/deck.md",
+      "entities/ada-lovelace.md",
+      "concepts/engine.md",
+    ]);
   });
 });
 

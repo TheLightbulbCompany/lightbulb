@@ -4,8 +4,10 @@
 // (wiki/main/, served by routers/brain.py) — read like a wiki, not a
 // directory: pages render as markdown, [[wikilinks]] navigate in-panel, the
 // vault's own index.md (plugin-maintained on every wiki_apply compile) is the
-// landing page, and an explicit Edit toggle opens the raw-text editor
-// (FileContentViewer: dirty tracking + scoped Cmd+S) for the audit/fix case.
+// landing page — read as type cards over what changed lately once compile has
+// written its managed block — and an explicit Edit toggle opens the raw-text
+// editor (FileContentViewer: dirty tracking + scoped Cmd+S) for the audit/fix
+// case.
 // No file tree: navigation is links + breadcrumb + a name search; ASK hands
 // the question to the agent, which owns wiki_search — no second index.
 //
@@ -31,9 +33,11 @@ import { openChatPanelWithDraft } from "@/components/workspace/workspaceControll
 import { notifyApiError } from "@/lib/notify";
 import { formatBytes } from "@/lib/utils";
 import { BrainFileList } from "./BrainFileList";
+import { BrainLanding } from "./BrainLanding";
 import { BrainPage } from "./BrainPage";
 import {
-  LANDING_PATH, askBrainDraft, fileInboxDraft, formatVaultDate, isInboxFile, searchVault, vaultCounts,
+  LANDING_PATH, askBrainDraft, fileInboxDraft, formatVaultDate, isInboxFile, parseIndexSections,
+  recentlyUpdated, searchVault, vaultCounts,
 } from "./brainVault";
 
 type BrainTab = "notes" | "dreams";
@@ -235,6 +239,15 @@ export function BrainPanel({ initialPath, initialTab, onPathUnavailable }: Brain
   const searching = query.trim().length > 0;
   const results = React.useMemo(() => searchVault(files, query), [files, query]);
   const inboxFiles = React.useMemo(() => files.filter(isInboxFile), [files]);
+  // The compiled landing. Only for the vault's own index.md, only in read
+  // mode, and only when compile has actually written the managed block — a
+  // scaffold vault ("- No compiled pages yet.") and a hand-written index both
+  // parse to [], and fall through to the ordinary rendered page below.
+  const indexSections = React.useMemo(
+    () => (pagePath === LANDING_PATH && !editing ? parseIndexSections(file?.content ?? "") : []),
+    [pagePath, editing, file],
+  );
+  const recent = React.useMemo(() => recentlyUpdated(files, 5), [files]);
   const isMarkdownPage = Boolean(file && !file.binary && file.content != null && file.name.endsWith(".md"));
   const showPage = tab === "notes" && !searching && view === "page" && Boolean(pagePath);
 
@@ -505,21 +518,30 @@ export function BrainPanel({ initialPath, initialTab, onPathUnavailable }: Brain
                       )}
                     </nav>
                     <div className="flex-1 min-h-0 overflow-y-auto">
-                      <BrainPage
-                        path={pagePath}
-                        file={file}
-                        isLoading={fileLoading}
-                        error={fileError ?? null}
-                        files={files}
-                        editing={editing}
-                        onNavigate={handleSelect}
-                        onRetry={() => {
-                          void refresh();
-                          if (fileKey) void mutateCache(fileKey);
-                        }}
-                        onSave={handleSave}
-                        onDirtyChange={setEditorDirty}
-                      />
+                      {indexSections.length > 0 ? (
+                        <BrainLanding
+                          sections={indexSections}
+                          recent={recent}
+                          files={files}
+                          onNavigate={handleSelect}
+                        />
+                      ) : (
+                        <BrainPage
+                          path={pagePath}
+                          file={file}
+                          isLoading={fileLoading}
+                          error={fileError ?? null}
+                          files={files}
+                          editing={editing}
+                          onNavigate={handleSelect}
+                          onRetry={() => {
+                            void refresh();
+                            if (fileKey) void mutateCache(fileKey);
+                          }}
+                          onSave={handleSave}
+                          onDirtyChange={setEditorDirty}
+                        />
+                      )}
                     </div>
                   </div>
                 ) : (

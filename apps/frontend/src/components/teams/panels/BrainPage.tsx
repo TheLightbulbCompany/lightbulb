@@ -1,9 +1,10 @@
 "use client";
 
 // One vault page. Read mode renders the plugin's markdown as a wiki page —
-// frontmatter hidden, managed-block comments skipped, [[wikilinks]] resolved
-// against the tree and navigated IN-PANEL (href stays a real deep link so
-// middle-click / new-tab work). Edit mode is the untouched FileContentViewer
+// managed-block comments skipped, [[wikilinks]] resolved against the tree and
+// navigated IN-PANEL (href stays a real deep link so middle-click / new-tab
+// work), the YAML head lifted out as pills and the trailing `## Related` list
+// as a chip block. Edit mode is the untouched FileContentViewer
 // (raw text incl. frontmatter — the audit view — dirty tracking, scoped Cmd+S).
 // Non-markdown and binary files always go to FileContentViewer (image
 // preview / "binary" notice come free).
@@ -16,7 +17,14 @@ import { MarkdownView, markdownComponents } from "@/components/teams/shared/comp
 import { PanelNotice } from "@/components/teams/shell";
 import { buildPanelUrl } from "@/components/workspace/urlChannel";
 import type { FileEntry, FileInfo } from "@/hooks/useWorkspaceFiles";
-import { LANDING_PATH, resolveVaultLink, toReadableMarkdown } from "./brainVault";
+import {
+  LANDING_PATH,
+  pagePills,
+  parseFrontmatter,
+  resolveVaultLink,
+  splitRelated,
+  toReadableMarkdown,
+} from "./brainVault";
 
 export interface BrainPageProps {
   path: string;
@@ -35,6 +43,46 @@ export interface BrainPageProps {
 // attachment → authed download, Paperclip path → in-shell). Typed loosely:
 // react-markdown's Components["a"] admits a string tag we never use.
 const DefaultAnchor = markdownComponents.a as React.FC<React.ComponentPropsWithoutRef<"a">>;
+
+const PILL =
+  "inline-flex items-center rounded-full border border-[var(--edge)] " +
+  "bg-[var(--cream-deep)] px-2.5 py-1 label-caps text-[var(--midnight-soft)]";
+
+/** One in-vault navigation. The href stays a real deep link so middle-click
+ *  and "open in new tab" work; a plain left-click is intercepted and handled
+ *  in-panel. Used by both the markdown `a` override and the Related chips. */
+function VaultLink({
+  link,
+  onNavigate,
+  className,
+  children,
+}: {
+  link: { path: string; exists: boolean };
+  onNavigate: (path: string) => void;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <a
+      href={buildPanelUrl("teams-brain", { path: link.path })}
+      title={link.exists ? undefined : "No page here yet"}
+      className={
+        className ??
+        (link.exists
+          ? "underline text-[var(--midnight)]"
+          : "underline decoration-dotted text-[var(--midnight-muted)]")
+      }
+      onClick={(e) => {
+        // Modified / non-left clicks keep the native deep link.
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+        e.preventDefault();
+        onNavigate(link.path);
+      }}
+    >
+      {children}
+    </a>
+  );
+}
 
 export function BrainPage({
   path,
@@ -61,23 +109,9 @@ export function BrainPage({
             </DefaultAnchor>
           );
         return (
-          <a
-            href={buildPanelUrl("teams-brain", { path: link.path })}
-            title={link.exists ? undefined : "No page here yet"}
-            className={
-              link.exists
-                ? "underline text-[var(--midnight)]"
-                : "underline decoration-dotted text-[var(--midnight-muted)]"
-            }
-            onClick={(e) => {
-              // Modified / non-left clicks keep the native deep link.
-              if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
-              e.preventDefault();
-              onNavigate(link.path);
-            }}
-          >
+          <VaultLink link={link} onNavigate={onNavigate}>
             {children}
-          </a>
+          </VaultLink>
         );
       },
       // Reading-pane scale; the shared set is tuned for comment threads.
@@ -139,11 +173,23 @@ export function BrainPage({
     );
   }
 
+  // The page's own metadata, lifted out of the body: YAML head → pills, the
+  // trailing `## Related` list → a block. Both are page-level facts, and the
+  // breadcrumb directly above already names the page, so the pills sit under
+  // that title rather than being threaded between the body's h1 and its first
+  // paragraph — which would need string surgery on markdown the plugin owns,
+  // and would silently drop the metadata on any page with no h1.
+  const { meta, body } = parseFrontmatter(file.content ?? "");
+  const { body: prose, related } = splitRelated(body);
+  const pills = pagePills(meta);
+  const readable = toReadableMarkdown(prose).trim();
+
   // The plugin's stub shape is frontmatter and nothing else, so a real page can
-  // read as "" once the frontmatter is stripped — an empty <article> would be
-  // indistinguishable from a broken panel.
-  const body = toReadableMarkdown(file.content ?? "").trim();
-  if (!body) {
+  // read as "" once the head is lifted off — an empty <article> would be
+  // indistinguishable from a broken panel. Pills alone are not content: they
+  // describe a page that says nothing. A compiled Related list IS content —
+  // it is the only thing on a freshly linked stub, and it navigates.
+  if (!readable && related.length === 0) {
     return (
       <PanelNotice
         state="zero"
@@ -155,9 +201,33 @@ export function BrainPage({
 
   return (
     <article className="max-w-prose px-4 py-3 font-serif text-[var(--midnight)]">
+      {pills.length > 0 && (
+        <div className="mb-3 flex flex-wrap gap-1.5">
+          {pills.map((p) => (
+            <span key={p} className={PILL}>
+              {p}
+            </span>
+          ))}
+        </div>
+      )}
       <MarkdownView skipHtml components={components}>
-        {body}
+        {readable}
       </MarkdownView>
+      {related.length > 0 && (
+        <section className="mt-6 border-t border-[var(--edge)] pt-3">
+          <p className="label-caps mb-2">Related</p>
+          <div className="flex flex-wrap gap-1.5">
+            {related.map((r) => {
+              const link = resolveVaultLink(r.target, files);
+              return link ? (
+                <VaultLink key={r.target} link={link} onNavigate={onNavigate} className={PILL}>
+                  {r.alias}
+                </VaultLink>
+              ) : null;
+            })}
+          </div>
+        </section>
+      )}
     </article>
   );
 }

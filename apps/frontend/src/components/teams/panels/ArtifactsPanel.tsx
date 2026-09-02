@@ -8,12 +8,15 @@
 // (c) 2025 Paperclip AI), adapted to our editorial styling and our in-app
 // viewer.
 //
-// Two views, held in component state (upstream drives them via URL params):
-//   1. STACK LIST (default) — `GET /artifacts?groupBy=task` → a grid of
-//      ArtifactStackCards, one per task. Clicking a stack EXPANDS it inline.
-//   2. EXPANDED STACK — `GET /artifacts?groupBy=task&groupIssueId={id}` → that
-//      task's artifacts as ArtifactGalleryCards, with a "← All artifacts" back
-//      control. Clicking a card opens the in-app ArtifactViewerDialog.
+// Three views, held in component state (upstream drives them via URL params):
+//   1. RECENT (default) — `GET /artifacts?groupBy=none&limit=100` → the flat
+//      newest-first feed, bucketed by date. It answers the owner's actual
+//      question ("what did my agents make this week?") in one glance.
+//   2. BY TASK — `GET /artifacts?groupBy=task` → a grid of ArtifactStackCards,
+//      one per task. Clicking a stack EXPANDS it inline.
+//   3. EXPANDED STACK — `GET /artifacts?groupBy=task&groupIssueId={id}` → that
+//      task's artifacts as ArtifactGalleryCards, with a back control. Clicking
+//      a card opens the in-app ArtifactViewerDialog.
 //
 // Capabilities preserved from the previous list impl (do not regress):
 //   - VIEW   — clicking an artifact card opens ArtifactViewerDialog, which
@@ -21,24 +24,30 @@
 //     prefix; see artifactRouting.ts).
 //   - DELETE — an artifact card's trash icon (and the viewer's Delete button)
 //     runs a confirm-then-delete flow against the correct BFF DELETE endpoint,
-//     then revalidates BOTH the gallery and the issue-scoped SWR cache. A failed
-//     delete keeps the confirm dialog open with an error rather than closing.
+//     then revalidates EVERY gallery key (one key filter over the global SWR
+//     cache, so the view the owner is NOT on — and any other search — refreshes
+//     too) and the issue-scoped SWR cache. A failed delete keeps the confirm
+//     dialog open with an error rather than closing.
 //   - SORT   — a Newest/Oldest control sorts the current view client-side.
+//   - SEARCH — one debounced box, suffixed as `&q=` onto whichever read is
+//     active. It is SERVER-side on purpose: upstream matches a document's BODY,
+//     not just its title, so a client filter over the loaded page would answer a
+//     narrower question than the owner asked.
 //
-// Deferred (follow-up): the flat/ungrouped view (`groupBy=none`), kind facets,
-// cursor pagination, and lazy image-thumbnail loading — the BFF route already
-// forwards those params.
+// Deferred (follow-up): kind facets, cursor pagination, and lazy image-thumbnail
+// loading — the BFF route already forwards those params.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useSWRConfig } from "swr";
 import { ArrowLeft, Images } from "lucide-react";
-import { PanelMasthead } from "@/components/teams/shell";
+import { PanelMasthead, PanelNotice, PanelTabs, PanelToolbar } from "@/components/teams/shell";
 import { EditorialDialog } from "@/components/teams/shell/EditorialDialog";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { ArtifactViewerDialog } from "./ArtifactViewerDialog";
 import { ArtifactGalleryCard, ArtifactStackCard } from "./ArtifactCards";
 import {
   artifactContentPath,
+  bucketByRecency,
   deletePathForArtifact,
   issueListPathForArtifact,
   sortArtifactsByUpdated,
@@ -49,6 +58,17 @@ import type {
   CompanyArtifact,
   CompanyArtifactsResponse,
 } from "@/components/teams/shared/types";
+
+/** Which list the panel is showing. `recent` is the default — a flat,
+ * date-bucketed feed; `by-task` is the ported stack view. */
+export type LibraryView = "recent" | "by-task";
+
+const RECENT_PATH = "/artifacts?groupBy=none&limit=100";
+const STACK_PATH = "/artifacts?groupBy=task";
+const SEARCH_DEBOUNCE_MS = 250;
+/** The BFF's `q` max_length (upstream COMPANY_ARTIFACTS_MAX_QUERY_LENGTH).
+ *  Trim to it here so a paste never comes back a 422. */
+const SEARCH_MAX = 160;
 
 function SortControl({
   sort,
@@ -95,28 +115,62 @@ export function ArtifactsPanel() {
   const { read, del, download } = useTeamsApi();
   // The gallery and the issue-detail sections keep SEPARATE SWR caches; deleting
   // here must also invalidate the issue-scoped list (documents/attachments/
-  // work-products) or the removed artifact lingers in the task detail. Each
-  // view's own gallery key is refreshed via its bound `mutate`.
+  // work-products) or the removed artifact lingers in the task detail. Both
+  // gallery keys go through this global cache mutate — see `confirmDelete`.
   const { mutate: mutateCache } = useSWRConfig();
 
   // View state: null = the stack list; an issue id = that expanded stack. Upstream
   // holds this in a URL param (`groupIssueId`); we keep it in component state.
   const [expandedIssueId, setExpandedIssueId] = useState<string | null>(null);
+  const [view, setView] = useState<LibraryView>("recent");
   const [sort, setSort] = useState<ArtifactSort>("newest");
   const [viewing, setViewing] = useState<CompanyArtifact | null>(null);
   const [pendingDelete, setPendingDelete] = useState<CompanyArtifact | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
 
+  // Debounce the raw box so each keystroke isn't a BFF search (SearchPanel's
+  // pattern). Trim + cap before it can reach a key: the suffix is part of the
+  // SWR key, so an untrimmed one would fetch twice for "plan" and "plan ".
+  useEffect(() => {
+    const id = setTimeout(
+      () => setDebouncedQuery(query.trim().slice(0, SEARCH_MAX)),
+      SEARCH_DEBOUNCE_MS,
+    );
+    return () => clearTimeout(id);
+  }, [query]);
+  const qParam = debouncedQuery ? `&q=${encodeURIComponent(debouncedQuery)}` : "";
+
+  // Recent — the flat newest-first feed, bucketed by date. Only the active view
+  // is read; the other key stays null so switching tabs costs one fetch, not two.
+  // `keepPreviousData` holds the loaded feed on screen while the next
+  // (q-suffixed) key is in flight, so every debounce settle does not blank the
+  // grid to "Loading the Library…". Deliberately NOT on the two stack reads:
+  // their keys go null on tab/back, and lagging data there would show one
+  // task's deliverables under another's heading.
+  const recent = read<CompanyArtifactsResponse>(
+    view === "recent" ? `${RECENT_PATH}${qParam}` : null,
+    { keepPreviousData: true },
+  );
   // Stack list — groupBy=task clusters deliverables under the issue that produced
   // them (the ported grouped shape, not a flat firehose).
-  const stackList = read<CompanyArtifactsResponse>("/artifacts?groupBy=task");
+  const stackList = read<CompanyArtifactsResponse>(
+    view === "by-task" ? `${STACK_PATH}${qParam}` : null,
+  );
   // Expanded stack — a conditional (null-keyed) read until a stack is opened.
   const expanded = read<CompanyArtifactsResponse>(
     expandedIssueId
-      ? `/artifacts?groupBy=task&groupIssueId=${encodeURIComponent(expandedIssueId)}`
+      ? `${STACK_PATH}&groupIssueId=${encodeURIComponent(expandedIssueId)}${qParam}`
       : null,
   );
+
+  // A read failure is never rendered as results, retained or otherwise: with
+  // `keepPreviousData` the PREVIOUS query's data survives an error on the new
+  // key, which would list unrelated cards as though they matched the new search.
+  // The By-task reads don't opt into keepPreviousData, so they keep their posture.
+  const recentArtifacts = recent.error ? [] : (recent.data?.artifacts ?? []);
 
   const groups = stackList.data?.groups ?? [];
   const sortedGroups = sortGroupsByUpdated(groups, sort);
@@ -126,10 +180,19 @@ export function ArtifactsPanel() {
   const selectedGroup =
     expanded.data?.selectedGroup ?? groups.find((g) => g.issue?.id === expandedIssueId) ?? null;
 
+  const isRecent = view === "recent";
   const isExpanded = expandedIssueId !== null;
-  const activeLoading = isExpanded ? expanded.isLoading : stackList.isLoading;
-  const activeError = isExpanded ? expanded.error : stackList.error;
-  const hasItems = isExpanded ? expandedArtifacts.length > 0 : groups.length > 0;
+  const activeLoading = isRecent
+    ? recent.isLoading
+    : isExpanded
+      ? expanded.isLoading
+      : stackList.isLoading;
+  const activeError = isRecent ? recent.error : isExpanded ? expanded.error : stackList.error;
+  const hasItems = isRecent
+    ? recentArtifacts.length > 0
+    : isExpanded
+      ? expandedArtifacts.length > 0
+      : groups.length > 0;
 
   async function handleDownload(artifact: CompanyArtifact) {
     const path = artifactContentPath(artifact);
@@ -174,12 +237,21 @@ export function ArtifactsPanel() {
     // that also holds it (separate SWR caches) so the task detail stops showing
     // it. A revalidation hiccup must not reopen the dialog — the delete
     // succeeded.
+    //
+    // The gallery goes through the GLOBAL cache mutate, not each read's bound
+    // one: only the active view is keyed (the other is null-keyed), and a bound
+    // mutate on a null-keyed hook is a no-op — so the inactive view would keep
+    // serving the deleted deliverable for the read layer's 15s dedupe window.
+    // It is SWR's key-filter form rather than the two exact keys, because every
+    // `q` is its own key: deleting under a search and then clearing the box
+    // would otherwise still list the deleted deliverable. The issue-scoped list
+    // is a different resource and stays an exact key.
     setViewing((cur) => (cur && cur.id === artifact.id ? null : cur));
     setPendingDelete(null);
     setDeleting(false);
     const issueListPath = issueListPathForArtifact(artifact);
     void Promise.all([
-      stackList.mutate(),
+      mutateCache((key) => typeof key === "string" && key.startsWith("/teams/artifacts?")),
       expandedIssueId ? expanded.mutate() : Promise.resolve(undefined),
       issueListPath ? mutateCache(`/teams${issueListPath}`) : Promise.resolve(undefined),
     ]).catch(() => {});
@@ -187,12 +259,32 @@ export function ArtifactsPanel() {
 
   return (
     <div className="editorial-page p-4 sm:p-5 lg:p-6 flex flex-col gap-4 max-w-4xl mx-auto w-full">
-      <div className="flex items-center justify-between gap-3">
-        <PanelMasthead overline="Knowledge" title="Library" />
-        {hasItems ? <SortControl sort={sort} onChange={setSort} /> : null}
-      </div>
+      <PanelMasthead overline="Knowledge" title="Library" />
+      <PanelToolbar
+        searchValue={query}
+        onSearchChange={setQuery}
+        searchPlaceholder="Search the Library…"
+        searchAriaLabel="Search the Library"
+        filters={
+          <PanelTabs
+            variant="pill"
+            ariaLabel="Library view"
+            value={view}
+            onValueChange={(v) => {
+              setView(v as LibraryView);
+              setExpandedIssueId(null);
+            }}
+            tabs={[
+              { value: "recent", label: "Recent" },
+              { value: "by-task", label: "By task" },
+            ]}
+          />
+        }
+        // Recent is date-ordered by definition; sort belongs to the stacks.
+        actions={!isRecent && hasItems ? <SortControl sort={sort} onChange={setSort} /> : null}
+      />
 
-      {isExpanded ? (
+      {!isRecent && isExpanded ? (
         <div className="flex flex-wrap items-center gap-2 text-sm">
           <button
             type="button"
@@ -221,22 +313,62 @@ export function ArtifactsPanel() {
             Loading the Library…
           </p>
         ) : activeError && !hasItems ? (
-          <p
-            role="alert"
-            className="font-editorial-serif text-base italic"
-            style={{ color: "var(--err)" }}
-          >
-            Failed to load the Library.
-          </p>
+          // A read failure is not an empty Library. A zero here is a claim we
+          // have not earned.
+          <PanelNotice
+            state="unavailable"
+            icon={Images}
+            headline="We couldn't load the Library right now."
+            supporting="This is a temporary read failure, not an empty Library. Check back shortly."
+          />
+        ) : !hasItems && debouncedQuery ? (
+          // A miss under a query is not an empty Library — this branch has to
+          // come first, or every search for something we don't have reads as
+          // “your agents have made nothing”.
+          <PanelNotice
+            state="zero"
+            icon={Images}
+            headline={`Nothing in the Library matches “${debouncedQuery}”.`}
+            supporting="Search covers titles, the text of documents, summaries and file names."
+            action={{ label: "Clear search", onClick: () => setQuery("") }}
+          />
         ) : !hasItems ? (
-          <div className="flex flex-col items-center gap-2 py-12 text-center">
-            <Images size={20} style={{ color: "var(--midnight-muted)" }} />
-            <p className="font-editorial-serif text-base italic" style={{ color: "var(--midnight-muted)" }}>
-              {isExpanded ? "No deliverables in this task." : "Nothing in the Library yet."}
-            </p>
-            {!isExpanded ? (
-              <p className="text-xs" style={{ color: "var(--midnight-muted)" }}>
-                Deliverables your agents produce show up here.
+          isExpanded ? (
+            <PanelNotice state="zero" icon={Images} headline="No deliverables in this task." />
+          ) : (
+            // Calm: empty is the default state of most companies' first week.
+            <PanelNotice
+              state="zero"
+              icon={Images}
+              headline="Nothing made yet."
+              supporting="The first deliverable your agents finish lands here — plans they write, files they upload, pages they publish."
+            />
+          )
+        ) : isRecent ? (
+          <div className="flex flex-col gap-5">
+            {bucketByRecency(recentArtifacts).map(({ label, artifacts }) => (
+              <section key={label} aria-label={label} className="flex flex-col gap-2">
+                <h2 className="label-caps">{label}</h2>
+                <div className="grid grid-cols-1 gap-3 @xl:grid-cols-2 @4xl:grid-cols-3">
+                  {artifacts.map((artifact) => (
+                    <ArtifactGalleryCard
+                      key={artifact.id}
+                      artifact={artifact}
+                      onOpen={setViewing}
+                      onDownload={handleDownload}
+                      onRequestDelete={setPendingDelete}
+                    />
+                  ))}
+                </div>
+              </section>
+            ))}
+            {recent.data?.nextCursor ? (
+              // ponytail: limit=100 + this line instead of cursor paging; add useSWRInfinite over nextCursor when a Library passes 100 and search is not enough.
+              <p className="text-caption" style={{ color: "var(--midnight-muted)" }}>
+                Showing the latest 100.{" "}
+                {debouncedQuery
+                  ? "Narrow your search to find older deliverables."
+                  : "Search to find older deliverables."}
               </p>
             ) : null}
           </div>

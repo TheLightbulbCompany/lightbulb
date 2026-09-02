@@ -20,7 +20,7 @@
 // The preview region is the load-bearing port: a fixed aspect box that keeps
 // image / text / placeholder cards from shifting layout as previews load. Image
 // bytes are fetched through the BFF content route (Clerk bearer) into an object
-// URL — the same pattern ArtifactViewerDialog's AttachmentBody uses, including
+// URL — the same pattern ArtifactViewerDialog's ContentBody uses, including
 // the mount-ref stability fix — because a bare <img src> to the upstream path
 // can't authenticate.
 
@@ -118,7 +118,7 @@ function TextPreview({ text }: { text: string }) {
 // Authenticated image thumbnail. Fetches bytes via the BFF content route into an
 // object URL. Keyed per-artifact at the call site so it remounts (fresh
 // "loading") when the previewed artifact changes — which is why the effect
-// captures `download` once at mount (see AttachmentBody for the loop this
+// captures `download` once at mount (see ContentBody for the loop this
 // mount-ref avoids) and depends only on `path`.
 function ImagePreview({ path, alt }: { path: string; alt: string }) {
   const { download } = useTeamsApi();

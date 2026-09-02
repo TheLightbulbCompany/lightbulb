@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import type { SWRResponse } from "swr";
 import {
   InlineTeamsNavProvider,
@@ -14,16 +14,39 @@ import {
 let reads: Record<string, Partial<SWRResponse<unknown, Error>>> = {};
 const readPaths: string[] = [];
 const mutate = vi.fn().mockResolvedValue(undefined);
+// A null-keyed read is SWR's "don't fetch" signal; its bound mutate is a no-op.
+// Distinct spy so a test can prove the panel never leans on one to revalidate.
+const nullMutate = vi.fn().mockResolvedValue(undefined);
 const del = vi.fn().mockResolvedValue({});
 const download = vi.fn();
+// SWR's `keepPreviousData`: while a NEW key is in flight the hook keeps serving
+// the previous key's data (with isLoading still true). Modelled here for the
+// reads that opt in, so an unstubbed path reads as "in flight", not as "empty".
+let keptData: unknown;
 
 vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: () => ({
-    read: (path: string | null) => {
-      if (path !== null) readPaths.push(path);
-      return path !== null && reads[path]
-        ? { data: undefined, isLoading: false, error: undefined, mutate, ...reads[path] }
-        : { data: undefined, isLoading: false, error: undefined, mutate };
+    read: (path: string | null, opts?: { keepPreviousData?: boolean }) => {
+      if (path === null) {
+        return { data: undefined, isLoading: false, error: undefined, mutate: nullMutate };
+      }
+      readPaths.push(path);
+      const stub = reads[path];
+      if (stub) {
+        if (opts?.keepPreviousData) {
+          if (stub.data !== undefined) keptData = stub.data;
+          // SWR keeps serving the PREVIOUS key's data when the new key errors —
+          // the case the Recent view must refuse to render as results.
+          else if (stub.error !== undefined) {
+            return { isLoading: false, mutate, ...stub, data: keptData };
+          }
+        }
+        return { data: undefined, isLoading: false, error: undefined, mutate, ...stub };
+      }
+      if (opts?.keepPreviousData && keptData !== undefined) {
+        return { data: keptData, isLoading: true, error: undefined, mutate };
+      }
+      return { data: undefined, isLoading: false, error: undefined, mutate };
     },
     del,
     download,
@@ -65,6 +88,17 @@ const WORK_PRODUCT = {
   updatedAt: "2026-01-01T00:00:00Z",
   href: "/ACME/issues/ISO-1#work-product-wp1",
 };
+// The agent skill's DEFAULT upload: a work product whose bytes sit behind an
+// attachment, reachable only through `downloadPath`.
+const WORK_PRODUCT_FILE = {
+  ...WORK_PRODUCT,
+  id: "work_product:wp9",
+  title: "Pricing proposal",
+  mediaKind: "text",
+  contentType: "text/markdown",
+  downloadPath: "/api/attachments/att9/content?download=1",
+  href: "/ACME/issues/ISO-1#work-product-wp9",
+};
 const ATTACHMENT = {
   id: "attachment:att1",
   source: "attachment",
@@ -95,7 +129,14 @@ function group(over: Record<string, unknown> = {}) {
   };
 }
 
-// Stack-list read (default view).
+// Flat newest-first read (the default Recent view).
+const RECENT_PATH = "/artifacts?groupBy=none&limit=100";
+const STACK_PATH = "/artifacts?groupBy=task";
+function stubRecent(artifacts: unknown[], nextCursor: string | null = null) {
+  reads[RECENT_PATH] = { data: { artifacts, nextCursor }, isLoading: false, error: undefined };
+}
+
+// Stack-list read (the By task tab).
 function stubStackList(groups: unknown[]) {
   reads["/artifacts?groupBy=task"] = {
     data: { artifacts: [], groups, nextCursor: null },
@@ -117,9 +158,27 @@ function stubExpanded(
   };
 }
 
-// Default view renders stack cards; click the (single) stack to expand it.
+// Radix tabs activate on mousedown, not click (see InboxToolbar.test.tsx).
+function switchToByTask() {
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "By task" }));
+}
+function switchToRecent() {
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "Recent" }));
+}
+
+// The By task tab renders stack cards; click the (single) stack to expand it.
 function expandStack() {
   fireEvent.click(screen.getByTestId("artifact-stack-card"));
+}
+
+// Deleting revalidates the gallery with ONE key filter over every
+// `/teams/artifacts?…` key (see `confirmDelete`) rather than the exact keys the
+// panel happens to be subscribed to. Pull the predicate off the spy so tests
+// assert on what it MATCHES, not on its identity.
+function galleryKeyFilter(): (key?: unknown) => boolean {
+  const call = globalMutate.mock.calls.find(([k]) => typeof k === "function");
+  if (!call) throw new Error("no key-filter mutate call");
+  return call[0] as (key?: unknown) => boolean;
 }
 
 function cardFor(title: string): HTMLElement {
@@ -131,9 +190,14 @@ function cardFor(title: string): HTMLElement {
 }
 
 beforeEach(() => {
+  // A search test that throws before its own `useRealTimers` must not leave
+  // fake timers installed for every test after it.
+  vi.useRealTimers();
   reads = {};
+  keptData = undefined;
   readPaths.length = 0;
   mutate.mockClear();
+  nullMutate.mockClear();
   globalMutate.mockClear();
   del.mockClear();
   del.mockResolvedValue({});
@@ -145,11 +209,92 @@ beforeEach(() => {
   (globalThis.URL.revokeObjectURL as unknown) = vi.fn();
 });
 
+describe("ArtifactsPanel — Recent view (default)", () => {
+  it("opens on a flat newest-first feed bucketed by date, without a task stack", async () => {
+    stubRecent([
+      { ...DOC, updatedAt: new Date().toISOString() },
+      { ...ATTACHMENT, updatedAt: "2020-01-01T00:00:00Z" },
+    ]);
+    render(<ArtifactsPanel />);
+    expect(readPaths).toContain(RECENT_PATH);
+    expect(readPaths).not.toContain("/artifacts?groupBy=task");
+    expect(screen.getByRole("heading", { name: "Past 7 days" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Older" })).toBeInTheDocument();
+    expect(screen.getAllByTestId("artifact-card")).toHaveLength(2);
+    expect(screen.queryByTestId("artifact-stack-card")).not.toBeInTheDocument();
+    // The image card's thumbnail resolves off-render; flush it inside the test.
+    await waitFor(() => expect(download).toHaveBeenCalledWith("/attachments/att1/content"));
+  });
+
+  it("says when the feed is capped so an owner never mistakes 100 for everything", () => {
+    stubRecent([DOC], "cursor-1");
+    render(<ArtifactsPanel />);
+    expect(
+      screen.getByText("Showing the latest 100. Search to find older deliverables."),
+    ).toBeInTheDocument();
+  });
+
+  it("tells an owner who is already searching to narrow, not to search", () => {
+    vi.useFakeTimers();
+    stubRecent([DOC], "cursor-1");
+    reads[`${RECENT_PATH}&q=plan`] = {
+      data: { artifacts: [DOC], nextCursor: "cursor-2" },
+      isLoading: false,
+      error: undefined,
+    };
+    render(<ArtifactsPanel />);
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search the Library" }), {
+      target: { value: "plan" },
+    });
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+
+    expect(
+      screen.getByText("Showing the latest 100. Narrow your search to find older deliverables."),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Showing the latest 100. Search to find older deliverables."),
+    ).not.toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it("switches to the By task stacks and back", () => {
+    stubRecent([DOC]);
+    stubStackList([group()]);
+    render(<ArtifactsPanel />);
+    switchToByTask();
+    expect(screen.getByTestId("artifact-stack-card")).toBeInTheDocument();
+    switchToRecent();
+    expect(screen.getByTestId("artifact-card")).toBeInTheDocument();
+  });
+});
+
+describe("ArtifactsPanel — expanded stack survives a tab round trip", () => {
+  it("comes back to the stack LIST, not the stack it had open", () => {
+    stubRecent([DOC]);
+    stubStackList([group()]);
+    stubExpanded("iss_1", [WORK_PRODUCT]);
+    render(<ArtifactsPanel />);
+    switchToByTask();
+    expandStack();
+    expect(screen.getByTestId("artifact-card")).toBeInTheDocument();
+
+    switchToRecent();
+    switchToByTask();
+
+    expect(screen.getByTestId("artifact-stack-card")).toBeInTheDocument();
+    expect(screen.queryByTestId("artifact-card")).not.toBeInTheDocument();
+  });
+});
+
 describe("ArtifactsPanel — stack list + expand", () => {
   it("shows a stack card by default and expands it into artifact cards, fetching by groupIssueId", () => {
     stubStackList([group()]);
     stubExpanded("iss_1", [DOC, WORK_PRODUCT]);
     render(<ArtifactsPanel />);
+    switchToByTask();
 
     // Default view: the stack card, no per-artifact cards yet.
     expect(screen.getByTestId("artifact-stack-card")).toBeInTheDocument();
@@ -167,6 +312,7 @@ describe("ArtifactsPanel — stack list + expand", () => {
     stubStackList([group()]);
     stubExpanded("iss_1", [DOC]);
     render(<ArtifactsPanel />);
+    switchToByTask();
 
     expandStack();
     expect(screen.getByTestId("artifact-card")).toBeInTheDocument();
@@ -182,6 +328,7 @@ describe("ArtifactsPanel — artifact card previews", () => {
     stubStackList([group()]);
     stubExpanded("iss_1", [DOC, WORK_PRODUCT]);
     render(<ArtifactsPanel />);
+    switchToByTask();
     expandStack();
 
     const docCard = cardFor("Implementation plan");
@@ -206,6 +353,7 @@ describe("ArtifactsPanel — view on click", () => {
       data: { id: "doc1", key: "plan", body: "Implementation details here" },
     };
     render(<ArtifactsPanel />);
+    switchToByTask();
     expandStack();
 
     fireEvent.click(cardFor("Implementation plan"));
@@ -224,6 +372,7 @@ describe("ArtifactsPanel — view on click", () => {
       },
     };
     render(<ArtifactsPanel />);
+    switchToByTask();
     expandStack();
 
     fireEvent.click(cardFor("Deploy preview"));
@@ -241,6 +390,7 @@ describe("ArtifactsPanel — view on click", () => {
       isValidating: true,
     };
     render(<ArtifactsPanel />);
+    switchToByTask();
     expandStack();
 
     fireEvent.click(cardFor("Deploy preview"));
@@ -256,6 +406,7 @@ describe("ArtifactsPanel — view on click", () => {
     stubStackList([group()]);
     stubExpanded("iss_1", [ATTACHMENT]);
     render(<ArtifactsPanel />);
+    switchToByTask();
     expandStack();
 
     fireEvent.click(cardFor("Screenshot.png"));
@@ -264,6 +415,101 @@ describe("ArtifactsPanel — view on click", () => {
     // authenticated content route was hit for it.
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
     expect(download).toHaveBeenCalledWith("/attachments/att1/content");
+  });
+
+  it("renders a file-backed work product's markdown bytes inline, below its summary", async () => {
+    stubRecent([WORK_PRODUCT_FILE]);
+    reads["/issues/iss_1/work-products"] = {
+      data: {
+        workProducts: [
+          { id: "wp9", title: "Pricing proposal", summary: "Three tiers", url: null },
+        ],
+      },
+    };
+    download.mockResolvedValueOnce({
+      size: 7,
+      type: "text/markdown",
+      text: async () => "# Tiers",
+    } as unknown as Blob);
+    render(<ArtifactsPanel />);
+
+    fireEvent.click(cardFor("Pricing proposal"));
+
+    expect(await screen.findByText("Three tiers")).toBeInTheDocument();
+    expect(download).toHaveBeenCalledWith("/attachments/att9/content");
+    const md = await screen.findAllByTestId("md");
+    expect(md.map((m) => m.textContent)).toContain("# Tiers");
+  });
+
+  it("does not claim a missing summary above the deliverable it is missing from", async () => {
+    stubRecent([WORK_PRODUCT_FILE]);
+    // The agent upload helper's default: no summary, bytes behind an attachment.
+    reads["/issues/iss_1/work-products"] = {
+      data: { workProducts: [{ id: "wp9", title: "Pricing proposal", summary: "", url: null }] },
+    };
+    download.mockResolvedValueOnce({
+      size: 7,
+      type: "text/markdown",
+      text: async () => "# Tiers",
+    } as unknown as Blob);
+    render(<ArtifactsPanel />);
+
+    fireEvent.click(cardFor("Pricing proposal"));
+
+    const md = await screen.findAllByTestId("md");
+    expect(md.map((m) => m.textContent)).toContain("# Tiers");
+    expect(screen.queryByText("No summary provided.")).not.toBeInTheDocument();
+  });
+
+  it("still renders the readable bytes when the work-products list read fails", async () => {
+    stubRecent([WORK_PRODUCT_FILE]);
+    // The list read carries the SUMMARY only. Losing it must not hide the file.
+    reads["/issues/iss_1/work-products"] = {
+      data: undefined,
+      isLoading: false,
+      error: new Error("boom"),
+    };
+    download.mockResolvedValueOnce({
+      size: 7,
+      type: "text/markdown",
+      text: async () => "# Tiers",
+    } as unknown as Blob);
+    render(<ArtifactsPanel />);
+
+    fireEvent.click(cardFor("Pricing proposal"));
+
+    expect(await screen.findByText("Could not load this output.")).toBeInTheDocument();
+    expect(download).toHaveBeenCalledWith("/attachments/att9/content");
+    const md = await screen.findAllByTestId("md");
+    expect(md.map((m) => m.textContent)).toContain("# Tiers");
+  });
+
+  it("says a row it cannot route is unopenable, in the reader's words", async () => {
+    stubRecent([{ ...DOC, id: "mystery:x1", title: "Mystery" }]);
+    render(<ArtifactsPanel />);
+
+    fireEvent.click(cardFor("Mystery"));
+
+    expect(await screen.findByText("This can’t be opened here.")).toBeInTheDocument();
+    // Same rule as the zero notice: the reader never sees the internal word.
+    expect(screen.queryByText(/artifacts?/i)).not.toBeInTheDocument();
+  });
+
+  it("renders a plain-text attachment inline in a <pre>", async () => {
+    stubRecent([
+      { ...ATTACHMENT, id: "attachment:att2", title: "notes.txt", contentType: "text/plain", mediaKind: "text" },
+    ]);
+    download.mockResolvedValueOnce({
+      size: 5,
+      type: "text/plain",
+      text: async () => "hello",
+    } as unknown as Blob);
+    render(<ArtifactsPanel />);
+
+    fireEvent.click(cardFor("notes.txt"));
+
+    expect(await screen.findByText("hello")).toBeInTheDocument();
+    expect(download).toHaveBeenCalledWith("/attachments/att2/content");
   });
 });
 
@@ -278,6 +524,7 @@ describe("ArtifactsPanel — secondary icons stop propagation (do not open the v
         <ArtifactsPanel />
       </InlineTeamsNavProvider>,
     );
+    switchToByTask();
     expandStack();
 
     const link = within(cardFor("Implementation plan")).getByRole("link", {
@@ -301,6 +548,7 @@ describe("ArtifactsPanel — secondary icons stop propagation (do not open the v
       .spyOn(HTMLAnchorElement.prototype, "click")
       .mockImplementation(() => {});
     render(<ArtifactsPanel />);
+    switchToByTask();
     expandStack();
 
     fireEvent.click(
@@ -317,6 +565,7 @@ describe("ArtifactsPanel — secondary icons stop propagation (do not open the v
     stubStackList([group()]);
     stubExpanded("iss_1", [DOC]);
     render(<ArtifactsPanel />);
+    switchToByTask();
     expandStack();
 
     fireEvent.click(
@@ -338,6 +587,7 @@ describe("ArtifactsPanel — delete", () => {
     stubStackList([group()]);
     stubExpanded("iss_1", [DOC]);
     render(<ArtifactsPanel />);
+    switchToByTask();
     expandStack();
 
     fireEvent.click(screen.getByRole("button", { name: "Delete Implementation plan" }));
@@ -346,18 +596,37 @@ describe("ArtifactsPanel — delete", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     await waitFor(() => expect(del).toHaveBeenCalledWith("/issues/iss_1/documents/plan"));
-    // Invalidates BOTH a gallery key (bound mutate) and the issue-scoped
-    // documents list so the task detail drops the deleted artifact too.
+    // Invalidates the open stack (bound mutate) and the issue-scoped documents
+    // list so the task detail drops the deleted artifact too.
     expect(mutate).toHaveBeenCalled();
     await waitFor(() =>
       expect(globalMutate).toHaveBeenCalledWith("/teams/issues/iss_1/documents"),
     );
+    // …and the OTHER view's key, which is null-keyed right now: its bound mutate
+    // is dead, so the refresh has to go through the global cache or the deleted
+    // deliverable is still listed when the owner flips to Recent.
+    expect(galleryKeyFilter()(`/teams${RECENT_PATH}`)).toBe(true);
+    expect(nullMutate).not.toHaveBeenCalled();
+  });
+
+  it("revalidates the By task list when the delete happens in Recent", async () => {
+    stubRecent([DOC]);
+    render(<ArtifactsPanel />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete Implementation plan" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(del).toHaveBeenCalledWith("/issues/iss_1/documents/plan"));
+    await waitFor(() => expect(globalMutate).toHaveBeenCalledWith(expect.any(Function)));
+    expect(galleryKeyFilter()(`/teams${STACK_PATH}`)).toBe(true);
+    expect(nullMutate).not.toHaveBeenCalled();
   });
 
   it("routes a work-product delete to the work-products DELETE endpoint", async () => {
     stubStackList([group()]);
     stubExpanded("iss_1", [WORK_PRODUCT]);
     render(<ArtifactsPanel />);
+    switchToByTask();
     expandStack();
 
     fireEvent.click(screen.getByRole("button", { name: "Delete Deploy preview" }));
@@ -372,6 +641,7 @@ describe("ArtifactsPanel — delete", () => {
     stubStackList([group()]);
     stubExpanded("iss_1", [ATTACHMENT]);
     render(<ArtifactsPanel />);
+    switchToByTask();
     expandStack();
 
     fireEvent.click(screen.getByRole("button", { name: "Delete Screenshot.png" }));
@@ -387,6 +657,7 @@ describe("ArtifactsPanel — delete", () => {
     stubExpanded("iss_1", [DOC]);
     del.mockRejectedValueOnce(new Error("boom"));
     render(<ArtifactsPanel />);
+    switchToByTask();
     expandStack();
 
     fireEvent.click(screen.getByRole("button", { name: "Delete Implementation plan" }));
@@ -404,6 +675,7 @@ describe("ArtifactsPanel — delete", () => {
     stubStackList([group()]);
     stubExpanded("iss_1", [DOC]);
     render(<ArtifactsPanel />);
+    switchToByTask();
     expandStack();
 
     fireEvent.click(screen.getByRole("button", { name: "Delete Implementation plan" }));
@@ -429,6 +701,7 @@ describe("ArtifactsPanel — sort", () => {
       }),
     ]);
     render(<ArtifactsPanel />);
+    switchToByTask();
 
     const identifiersNewest = screen.getAllByText(/^ISO-\d$/).map((el) => el.textContent);
     expect(identifiersNewest).toEqual(["ISO-2", "ISO-1"]);
@@ -439,14 +712,192 @@ describe("ArtifactsPanel — sort", () => {
   });
 });
 
-describe("ArtifactsPanel — empty", () => {
-  it("shows the empty state when there are no stacks", () => {
-    stubStackList([]);
+describe("ArtifactsPanel \u2014 search", () => {
+  it("debounces the box and re-reads with q on both views", () => {
+    vi.useFakeTimers();
+    stubRecent([DOC]);
+    stubStackList([group()]);
     render(<ArtifactsPanel />);
-    expect(screen.getByText("Nothing in the Library yet.")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search the Library" }), {
+      target: { value: "pricing" },
+    });
+    // Still the unsuffixed key \u2014 a keystroke must not be a BFF search.
+    expect(readPaths).not.toContain(`${RECENT_PATH}&q=pricing`);
+
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    expect(readPaths).toContain(`${RECENT_PATH}&q=pricing`);
+
+    // The query rides the By task read too \u2014 it is one box over the whole panel.
+    switchToByTask();
+    expect(readPaths).toContain("/artifacts?groupBy=task&q=pricing");
+    vi.useRealTimers();
+  });
+
+  it("shows a no-match notice with a Clear exit instead of the zero copy", () => {
+    vi.useFakeTimers();
+    stubRecent([DOC]);
+    // The q read RESOLVES empty. An unstubbed path now reads as "still in
+    // flight" (the feed keeps previous data), and a miss is only a miss once
+    // the search has actually come back.
+    reads[`${RECENT_PATH}&q=zzz`] = {
+      data: { artifacts: [], nextCursor: null },
+      isLoading: false,
+      error: undefined,
+    };
+    render(<ArtifactsPanel />);
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search the Library" }), {
+      target: { value: "zzz" },
+    });
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+
+    // A search miss, not an empty Library.
+    expect(screen.getByText("Nothing in the Library matches \u201Czzz\u201D.")).toBeInTheDocument();
+    expect(screen.queryByText("Nothing made yet.")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    expect(screen.getByTestId("artifact-card")).toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it("keeps the loaded cards on screen while the settled search is still in flight", () => {
+    vi.useFakeTimers();
+    stubRecent([DOC]);
+    const { rerender } = render(<ArtifactsPanel />);
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search the Library" }), {
+      target: { value: "pricing" },
+    });
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+
+    // The new key is in flight: the feed the owner was reading stays put — no
+    // blank "Loading the Library…", and no premature no-match claim.
+    expect(readPaths).toContain(`${RECENT_PATH}&q=pricing`);
+    expect(screen.getByTestId("artifact-card")).toBeInTheDocument();
+    expect(screen.queryByText("Loading the Library…")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Nothing in the Library matches “pricing”."),
+    ).not.toBeInTheDocument();
+
+    // …and the notice lands once that read actually comes back empty.
+    reads[`${RECENT_PATH}&q=pricing`] = {
+      data: { artifacts: [], nextCursor: null },
+      isLoading: false,
+      error: undefined,
+    };
+    rerender(<ArtifactsPanel />);
+    expect(screen.getByText("Nothing in the Library matches “pricing”.")).toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it("shows unavailable — not the previous query's cards — when a search fails", () => {
+    vi.useFakeTimers();
+    stubRecent([DOC]);
+    reads[`${RECENT_PATH}&q=plan`] = {
+      data: { artifacts: [DOC], nextCursor: null },
+      isLoading: false,
+      error: undefined,
+    };
+    reads[`${RECENT_PATH}&q=planning`] = {
+      data: undefined,
+      isLoading: false,
+      error: new Error("boom"),
+    };
+    render(<ArtifactsPanel />);
+    const box = screen.getByRole("searchbox", { name: "Search the Library" });
+
+    fireEvent.change(box, { target: { value: "plan" } });
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    expect(screen.getByTestId("artifact-card")).toBeInTheDocument();
+
+    fireEvent.change(box, { target: { value: "planning" } });
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    vi.useRealTimers();
+
+    // `keepPreviousData` still holds the "plan" results. Rendering them here
+    // would claim they matched "planning" — a read failure is never results.
+    expect(screen.queryByTestId("artifact-card")).not.toBeInTheDocument();
+    const notice = screen.getByRole("status");
+    expect(notice).toHaveAttribute("data-panel-notice", "unavailable");
+    expect(
+      within(notice).getByText("We couldn't load the Library right now."),
+    ).toBeInTheDocument();
+  });
+
+  it("revalidates the q-suffixed gallery key when a delete happens under a search", async () => {
+    vi.useFakeTimers();
+    stubRecent([DOC]);
+    reads[`${RECENT_PATH}&q=pricing`] = {
+      data: { artifacts: [DOC], nextCursor: null },
+      isLoading: false,
+      error: undefined,
+    };
+    render(<ArtifactsPanel />);
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search the Library" }), {
+      target: { value: "pricing" },
+    });
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    vi.useRealTimers();
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete Implementation plan" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(del).toHaveBeenCalledWith("/issues/iss_1/documents/plan"));
+    // Every `q` is its own key. Revalidating only the pair the panel is
+    // subscribed to leaves the deleted deliverable listed under the bare feed
+    // the owner sees the moment they clear the box — so one key filter covers
+    // the whole gallery, and nothing else.
+    await waitFor(() => expect(globalMutate).toHaveBeenCalledWith(expect.any(Function)));
+    const matches = galleryKeyFilter();
+    expect(matches(`/teams${RECENT_PATH}`)).toBe(true);
+    expect(matches(`/teams${RECENT_PATH}&q=pricing`)).toBe(true);
+    expect(matches(`/teams${RECENT_PATH}&q=foo`)).toBe(true);
+    expect(matches(`/teams${STACK_PATH}`)).toBe(true);
+    expect(matches("/teams/issues")).toBe(false);
+  });
+});
+
+describe("ArtifactsPanel \u2014 honest states", () => {
+  it("renders the zero notice when there is genuinely nothing", () => {
+    stubRecent([]);
+    render(<ArtifactsPanel />);
+    const notice = screen.getByRole("status");
+    expect(notice).toHaveAttribute("data-panel-notice", "zero");
+    expect(within(notice).getByText("Nothing made yet.")).toBeInTheDocument();
     // The panel is "Library" everywhere else (masthead, sidebar, tab title);
     // the IA rename left "artifacts" behind in the body copy. Nothing the
     // reader sees may say it.
     expect(screen.queryByText(/artifacts?/i)).not.toBeInTheDocument();
+  });
+
+  it("renders unavailable — never zero — when the read fails", () => {
+    reads[RECENT_PATH] = {
+      data: undefined,
+      isLoading: false,
+      error: new Error("boom"),
+    };
+    render(<ArtifactsPanel />);
+    const notice = screen.getByRole("status");
+    expect(notice).toHaveAttribute("data-panel-notice", "unavailable");
+    expect(
+      within(notice).getByText("We couldn't load the Library right now."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Nothing made yet.")).not.toBeInTheDocument();
   });
 });

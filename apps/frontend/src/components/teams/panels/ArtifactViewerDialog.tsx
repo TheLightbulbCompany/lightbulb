@@ -8,13 +8,14 @@
 // prefix (see artifactRouting.ts):
 //   - document:     GET /teams/issues/{issueId}/documents/{key}  → markdown body
 //   - work_product: GET /teams/issues/{issueId}/work-products    → matched row
+//                   + its attachment bytes when file-backed
 //   - attachment:   GET /teams/attachments/{id}/content (bytes)  → inline media
 //
 // Attachment bytes are fetched through the BFF content route (which carries the
 // Clerk bearer + forwards upstream's CSP / nosniff headers) and turned into an
 // object URL — a bare <img src> to the upstream path can't authenticate and
-// would trip CSP. Images render inline; PDFs embed in an iframe; anything else
-// falls back to a download link.
+// would trip CSP. Text and markdown render inline; images render inline; PDFs
+// embed in an iframe; anything else falls back to a download link.
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
@@ -25,6 +26,7 @@ import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { teamsDetailUrl } from "@/lib/shellNav";
 import {
+  artifactContentPath,
   artifactKind,
   artifactRawId,
   documentKeyFromArtifact,
@@ -35,34 +37,48 @@ import type {
   IssueWorkProduct,
 } from "@/components/teams/shared/types";
 
-type AttachmentState =
+const TEXT_INLINE_MAX_BYTES = 256 * 1024; // ponytail: bigger text → download link; add ranged reads if owners hit it
+
+type ContentState =
   | { status: "loading" }
-  | { status: "ready"; url: string }
+  | { status: "ready"; url: string; text: string | null }
   | { status: "error" };
 
-// Keyed by artifact id at the call site so it remounts (fresh "loading") when
-// the viewed attachment changes — which is why the effect never needs to reset
-// state synchronously.
-function AttachmentBody({ artifact }: { artifact: CompanyArtifact }) {
+function isTextType(contentType: string, mediaKind: string) {
+  return (
+    contentType.startsWith("text/") ||
+    contentType === "application/json" ||
+    contentType.endsWith("+json") ||
+    mediaKind === "text"
+  );
+}
+
+// The bytes behind an artifact, rendered by type. Keyed by artifact id at the
+// call site so it remounts (fresh "loading") when the viewed artifact changes —
+// which is why the effect never needs to reset state synchronously.
+function ContentBody({ artifact, path }: { artifact: CompanyArtifact; path: string }) {
   const { download } = useTeamsApi();
   // useTeamsApi() returns a fresh `download` each render; capturing it once at
-  // mount lets the fetch effect depend only on `attachmentId`. Otherwise the
-  // success setState re-renders → new `download` identity → effect re-runs →
-  // revokes the just-made object URL and re-downloads, looping until closed.
-  // This component is keyed per-artifact (it remounts when the attachment
-  // changes), so the mount-time `download` is always the right one.
+  // mount lets the fetch effect depend only on `path`. Otherwise the success
+  // setState re-renders → new `download` identity → effect re-runs → revokes
+  // the just-made object URL and re-downloads, looping until closed. This
+  // component is keyed per-artifact (it remounts when the artifact changes), so
+  // the mount-time `download` is always the right one.
   const downloadRef = useRef(download);
-  const [state, setState] = useState<AttachmentState>({ status: "loading" });
-  const attachmentId = artifactRawId(artifact.id);
+  const [state, setState] = useState<ContentState>({ status: "loading" });
+  const contentType = (artifact.contentType ?? "").toLowerCase();
+  const textual = isTextType(contentType, String(artifact.mediaKind));
 
   useEffect(() => {
     let cancelled = false;
     let objectUrl: string | undefined;
-    downloadRef.current(`/attachments/${attachmentId}/content`)
-      .then((blob) => {
+    downloadRef.current(path)
+      .then(async (blob) => {
         if (cancelled) return;
         objectUrl = URL.createObjectURL(blob);
-        setState({ status: "ready", url: objectUrl });
+        const text =
+          textual && blob.size <= TEXT_INLINE_MAX_BYTES ? await blob.text() : null;
+        if (!cancelled) setState({ status: "ready", url: objectUrl, text });
       })
       .catch(() => {
         if (!cancelled) setState({ status: "error" });
@@ -71,24 +87,23 @@ function AttachmentBody({ artifact }: { artifact: CompanyArtifact }) {
       cancelled = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [attachmentId]);
+  }, [path, textual]);
 
   if (state.status === "loading") {
     return (
       <p className="text-sm italic" style={{ color: "var(--midnight-muted)" }}>
-        Loading attachment…
+        Loading…
       </p>
     );
   }
   if (state.status === "error") {
     return (
       <p role="alert" className="text-sm italic" style={{ color: "var(--err)" }}>
-        Could not load this attachment.
+        Could not load this file.
       </p>
     );
   }
 
-  const contentType = (artifact.contentType ?? "").toLowerCase();
   const isImage = contentType.startsWith("image/") || artifact.mediaKind === "image";
   const isPdf = contentType === "application/pdf";
 
@@ -112,6 +127,18 @@ function AttachmentBody({ artifact }: { artifact: CompanyArtifact }) {
         className="h-[60vh] w-full rounded-sm border"
         style={{ borderColor: "var(--edge)" }}
       />
+    );
+  }
+  if (state.text !== null) {
+    return contentType === "text/markdown" || contentType === "application/markdown" ? (
+      <MarkdownView>{state.text}</MarkdownView>
+    ) : (
+      <pre
+        className="whitespace-pre-wrap break-words text-xs leading-5"
+        style={{ color: "var(--midnight-soft)" }}
+      >
+        {state.text}
+      </pre>
     );
   }
   return (
@@ -191,6 +218,9 @@ function WorkProductBody({
     revalidateOnMount: true,
   });
   const wp = data?.workProducts?.find((w) => w.id === artifactRawId(artifact.id));
+  // The skill's default upload puts the deliverable's BYTES behind an
+  // attachment, reachable only through the artifact's download/open path.
+  const contentPath = artifactContentPath(artifact);
 
   // Force a fresh fetch when the viewer opens (an explicit mutate bypasses the
   // read layer's dedupe window, unlike a mount-time auto-revalidation). Without
@@ -209,19 +239,34 @@ function WorkProductBody({
       </p>
     );
   }
-  if ((error && !data) || (data && !wp)) {
+  // The list read supplies the SUMMARY only; the deliverable's bytes hang off
+  // the artifact row and are readable whether or not that read landed. So the
+  // content renders in every branch below, including the failure ones — an
+  // owner whose list read 500s can still read the file they clicked.
+  const content = contentPath ? (
+    <ContentBody key={artifact.id} artifact={artifact} path={contentPath} />
+  ) : null;
+
+  if (!wp) {
     return (
-      <p role="alert" className="text-sm italic" style={{ color: "var(--err)" }}>
-        Could not load this output.
-      </p>
+      <div className="flex flex-col gap-2">
+        {error || data ? (
+          <p role="alert" className="text-sm italic" style={{ color: "var(--err)" }}>
+            Could not load this output.
+          </p>
+        ) : null}
+        {content}
+      </div>
     );
   }
-  if (!wp) return null;
   return (
     <div className="flex flex-col gap-2">
+      {/* The agent upload helper defaults the summary to "", so a file-backed
+          deliverable usually has none. Saying "no summary" directly above the
+          thing itself is noise — only claim it when there is nothing else. */}
       {wp.summary?.trim() ? (
         <MarkdownView>{wp.summary}</MarkdownView>
-      ) : (
+      ) : contentPath ? null : (
         <p className="text-sm italic" style={{ color: "var(--midnight-muted)" }}>
           No summary provided.
         </p>
@@ -238,6 +283,7 @@ function WorkProductBody({
           {wp.url}
         </a>
       ) : null}
+      {content}
     </div>
   );
 }
@@ -274,7 +320,7 @@ export function ArtifactViewerDialog({
         if (!next) onClose();
       }}
       className="sm:max-w-[720px]"
-      title={artifact.title || "Artifact"}
+      title={artifact.title || "Untitled"}
       description={
         artifact.issue?.identifier
           ? `${artifact.issue.identifier} · ${artifact.issue.title}`
@@ -310,10 +356,15 @@ export function ArtifactViewerDialog({
         ) : kind === "work_product" ? (
           <WorkProductBody artifact={artifact} issueId={issueId} />
         ) : kind === "attachment" ? (
-          <AttachmentBody key={artifact.id} artifact={artifact} />
+          // An `attachment:` row always resolves a content path from its own id.
+          <ContentBody
+            key={artifact.id}
+            artifact={artifact}
+            path={artifactContentPath(artifact)!}
+          />
         ) : (
           <p role="alert" className="text-sm italic" style={{ color: "var(--err)" }}>
-            Unsupported artifact type.
+            This can’t be opened here.
           </p>
         )}
       </div>

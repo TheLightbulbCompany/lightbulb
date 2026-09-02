@@ -149,3 +149,33 @@ export function sortArtifactsByUpdated(
 ): CompanyArtifact[] {
   return sortByUpdated(artifacts, dir);
 }
+
+export type RecencyBucket = "Past 7 days" | "Past 30 days" | "Older";
+const BUCKET_ORDER: RecencyBucket[] = ["Past 7 days", "Past 30 days", "Older"];
+
+/** Split a newest-first artifact list into date buckets for the Recent view.
+ * The labels name ELAPSED time, not calendar periods, because that is what the
+ * arithmetic below measures: "this month" would put an Aug 10 deliverable in
+ * "earlier this month" on Sep 1, and the 1st of a 31-day month in "older".
+ * Unparseable dates fall to "Older" rather than "Past 7 days" (a claim we can't
+ * make). Order inside a bucket is the input order (server is newest-first). */
+export function bucketByRecency(
+  artifacts: CompanyArtifact[],
+  now: number = Date.now(),
+): { label: RecencyBucket; artifacts: CompanyArtifact[] }[] {
+  const DAY = 86_400_000;
+  const by: Record<RecencyBucket, CompanyArtifact[]> = {
+    "Past 7 days": [],
+    "Past 30 days": [],
+    Older: [],
+  };
+  for (const a of artifacts) {
+    const age = now - Date.parse(a.updatedAt);
+    const label: RecencyBucket =
+      age < 7 * DAY ? "Past 7 days" : age < 30 * DAY ? "Past 30 days" : "Older";
+    by[label].push(a);
+  }
+  return BUCKET_ORDER.map((label) => ({ label, artifacts: by[label] })).filter(
+    (b) => b.artifacts.length > 0,
+  );
+}

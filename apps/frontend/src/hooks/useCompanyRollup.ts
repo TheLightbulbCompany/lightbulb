@@ -15,9 +15,10 @@ import { useApi } from "@/lib/api";
  *    total onto every current-month row, so summing a per-day column
  *    double-counts by roughly the number of days elapsed — and looks entirely
  *    plausible while doing it. There is no per-day spend series to plot.
- *    Not rendered anywhere since the Home rework — Home's spend tile reads
- *    the Metronome figure from `/teams/dashboard.costs`. Served for API
- *    completeness only.
+ *    Home's spend tile still reads this scalar today; the Home rework moves
+ *    that tile to the Metronome-billed figure in `/teams/dashboard.costs`
+ *    (the DDB counter was removed from the Spend tab's UI), after which
+ *    this field is served for API completeness only.
  *
  * 2. `unavailable` names columns the backend knows it cannot serve
  *    (`followers`, `open_threads` are hardcoded 0 upstream: bundle.social is

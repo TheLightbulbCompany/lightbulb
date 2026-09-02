@@ -3,7 +3,20 @@
 import * as React from "react";
 import { Button } from "@/components/ui/button";
 import { capture } from "@/lib/analytics";
-import { ArrowUp, Plus, X, FileIcon, Loader2, Square, CornerDownRight, RefreshCw } from "lucide-react";
+import {
+  ArrowUp,
+  Plus,
+  X,
+  FileIcon,
+  Loader2,
+  Square,
+  CornerDownRight,
+  RefreshCw,
+  Pencil,
+  Check,
+  ChevronUp,
+  ChevronDown,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { parseSlashInput } from "@/lib/slashCommands";
 import { consumeFocusComposerRequest } from "@/lib/focusComposerRequest";
@@ -57,6 +70,10 @@ interface ChatInputProps {
   onClearQueue?: () => void;
   onSteerQueued?: (id: string) => void;
   onRetryQueued?: (id: string) => void;
+  /** Commit an in-place text edit for a queued prompt. Omit to hide the Edit affordance. */
+  onEditQueued?: (id: string, text: string) => void;
+  /** Move a queued prompt up/down by one position. Omit to hide reorder controls. */
+  onMoveQueued?: (id: string, direction: "up" | "down") => void;
   /**
    * Composer controls (the model · effort pill) rendered inside the
    * composer card's bottom rail, next to the attach button. Kept as a slot
@@ -87,9 +104,26 @@ export function ChatInput({
   onClearQueue,
   onSteerQueued,
   onRetryQueued,
+  onEditQueued,
+  onMoveQueued,
   controls,
 }: ChatInputProps) {
   const [input, setInput] = React.useState("");
+  // Edit-in-place buffer for the queued list below — at most one row edits
+  // at a time, mirroring the composer's own single-input model. Local to
+  // the component: the hook only needs the committed text on Enter/Save.
+  const [editingQueuedId, setEditingQueuedId] = React.useState<string | null>(null);
+  const [editingQueuedText, setEditingQueuedText] = React.useState("");
+  const cancelQueuedEdit = React.useCallback(() => {
+    setEditingQueuedId(null);
+    setEditingQueuedText("");
+  }, []);
+  const commitQueuedEdit = React.useCallback(() => {
+    if (editingQueuedId) {
+      onEditQueued?.(editingQueuedId, editingQueuedText);
+    }
+    cancelQueuedEdit();
+  }, [editingQueuedId, editingQueuedText, onEditQueued, cancelQueuedEdit]);
   const [activeIndex, setActiveIndex] = React.useState(0);
   const [pendingFiles, setPendingFiles] = React.useState<PendingFile[]>([]);
   const [sizeError, setSizeError] = React.useState<{ id: number; message: string } | null>(null);
@@ -425,7 +459,7 @@ export function ChatInput({
                 </button>
               )}
             </div>
-            {queuedMessages.map((q) => {
+            {queuedMessages.map((q, index) => {
               const stateLabel =
                 q.sendState === "waiting-reconnect"
                   ? "Waiting for reconnect"
@@ -434,58 +468,139 @@ export function ChatInput({
                     : q.sendState === "sending"
                       ? "Sending"
                       : null;
+              const isEditing = editingQueuedId === q.id;
               // Steer is only meaningful while a run is live and the item is
               // a plain queued send (not failed / waiting). Mirrors upstream
               // chat-queue.ts (canAbort && !sendState).
               const canSteer =
-                !!isStreaming && !!onSteerQueued && !q.sendState;
-              const canRetry = q.sendState === "failed" && !!onRetryQueued;
+                !isEditing && !!isStreaming && !!onSteerQueued && !q.sendState;
+              const canRetry = !isEditing && q.sendState === "failed" && !!onRetryQueued;
+              const canEdit = !isEditing && !!onEditQueued;
+              // Reordering a single-row queue is a no-op, so the handles only
+              // appear once there is somewhere to move to (mirrors upstream's
+              // `reorder.offered`).
+              const canMove = !isEditing && !!onMoveQueued && queuedMessages.length > 1;
               return (
                 <div
                   key={q.id}
                   className="flex flex-col gap-0.5 text-sm text-[var(--midnight)]"
                 >
                   <div className="flex items-center gap-2">
-                    {stateLabel && (
-                      <span className="shrink-0 label-caps">
-                        {stateLabel}
-                      </span>
-                    )}
-                    <span className="flex-1 truncate">{q.text}</span>
-                    {canRetry && (
-                      <button
-                        type="button"
-                        aria-label="Retry queued message"
-                        onClick={() => onRetryQueued!(q.id)}
-                        className="flex items-center gap-1 text-[var(--midnight-muted)] hover:text-[var(--midnight)]"
-                      >
-                        <RefreshCw className="h-3 w-3" />
-                        <span className="text-xs">Retry</span>
-                      </button>
-                    )}
-                    {canSteer && (
-                      <button
-                        type="button"
-                        aria-label="Steer queued message"
-                        onClick={() => onSteerQueued!(q.id)}
-                        className="flex items-center gap-1 text-[var(--midnight-muted)] hover:text-[var(--midnight)]"
-                      >
-                        <CornerDownRight className="h-3 w-3" />
-                        <span className="text-xs">Steer</span>
-                      </button>
-                    )}
-                    {onRemoveQueued && (
-                      <button
-                        type="button"
-                        aria-label="Remove queued message"
-                        onClick={() => onRemoveQueued(q.id)}
-                        className="text-[var(--midnight-faint)] hover:text-[var(--midnight)]"
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
+                    {isEditing ? (
+                      <>
+                        <input
+                          type="text"
+                          value={editingQueuedText}
+                          aria-label="Edit queued message"
+                          autoFocus
+                          onChange={(e) => setEditingQueuedText(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              commitQueuedEdit();
+                            } else if (e.key === "Escape") {
+                              e.preventDefault();
+                              cancelQueuedEdit();
+                            }
+                          }}
+                          className="flex-1 min-w-0 bg-transparent border-b border-[var(--edge)] focus:outline-none focus:border-[var(--midnight)]"
+                        />
+                        <button
+                          type="button"
+                          aria-label="Save queued message"
+                          onClick={commitQueuedEdit}
+                          className="text-[var(--midnight-muted)] hover:text-[var(--midnight)]"
+                        >
+                          <Check className="h-3 w-3" />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="Cancel edit"
+                          onClick={cancelQueuedEdit}
+                          className="text-[var(--midnight-faint)] hover:text-[var(--midnight)]"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        {stateLabel && (
+                          <span className="shrink-0 label-caps">
+                            {stateLabel}
+                          </span>
+                        )}
+                        <span className="flex-1 truncate">{q.text}</span>
+                        {canMove && (
+                          <span className="flex items-center">
+                            <button
+                              type="button"
+                              aria-label="Move queued message up"
+                              disabled={index === 0}
+                              onClick={() => onMoveQueued!(q.id, "up")}
+                              className="text-[var(--midnight-faint)] hover:text-[var(--midnight)] disabled:opacity-30 disabled:hover:text-[var(--midnight-faint)]"
+                            >
+                              <ChevronUp className="h-3 w-3" />
+                            </button>
+                            <button
+                              type="button"
+                              aria-label="Move queued message down"
+                              disabled={index === queuedMessages.length - 1}
+                              onClick={() => onMoveQueued!(q.id, "down")}
+                              className="text-[var(--midnight-faint)] hover:text-[var(--midnight)] disabled:opacity-30 disabled:hover:text-[var(--midnight-faint)]"
+                            >
+                              <ChevronDown className="h-3 w-3" />
+                            </button>
+                          </span>
+                        )}
+                        {canRetry && (
+                          <button
+                            type="button"
+                            aria-label="Retry queued message"
+                            onClick={() => onRetryQueued!(q.id)}
+                            className="flex items-center gap-1 text-[var(--midnight-muted)] hover:text-[var(--midnight)]"
+                          >
+                            <RefreshCw className="h-3 w-3" />
+                            <span className="text-xs">Retry</span>
+                          </button>
+                        )}
+                        {canSteer && (
+                          <button
+                            type="button"
+                            aria-label="Steer queued message"
+                            onClick={() => onSteerQueued!(q.id)}
+                            className="flex items-center gap-1 text-[var(--midnight-muted)] hover:text-[var(--midnight)]"
+                          >
+                            <CornerDownRight className="h-3 w-3" />
+                            <span className="text-xs">Steer</span>
+                          </button>
+                        )}
+                        {canEdit && (
+                          <button
+                            type="button"
+                            aria-label="Edit queued message"
+                            onClick={() => {
+                              setEditingQueuedId(q.id);
+                              setEditingQueuedText(q.text);
+                            }}
+                            className="text-[var(--midnight-faint)] hover:text-[var(--midnight)]"
+                          >
+                            <Pencil className="h-3 w-3" />
+                          </button>
+                        )}
+                        {onRemoveQueued && (
+                          <button
+                            type="button"
+                            aria-label="Remove queued message"
+                            onClick={() => onRemoveQueued(q.id)}
+                            className="text-[var(--midnight-faint)] hover:text-[var(--midnight)]"
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        )}
+                      </>
                     )}
                   </div>
-                  {q.sendError && (
+                  {q.sendError && !isEditing && (
                     <span className="text-xs text-[var(--err)] truncate">
                       {q.sendError}
                     </span>

@@ -7,29 +7,38 @@
 // composer) consumes the slot too, so the two delivery paths never
 // double-fire.
 //
+// The request may carry a DRAFT: the Brain's "Ask Friday" exits hand the
+// composer a pre-written message, seeded only into an empty composer.
+//
 // One pending slot only (a newer request replaces an older one) with a short
 // expiry so a request whose panel never materializes can't focus a composer
 // minutes later.
 
 const PENDING_TTL_MS = 5_000;
 
-let _pending: { agentId: string; requestedAt: number } | null = null;
-
-export function requestFocusComposer(agentId: string): void {
-  _pending = { agentId, requestedAt: Date.now() };
+export interface FocusComposerRequest {
+  /** Text to seed the composer with (the Brain's ASK / "file the inbox"). */
+  draft?: string;
 }
 
-/** Consume the pending request for this agent. Returns true exactly once per
+let _pending: { agentId: string; draft?: string; requestedAt: number } | null = null;
+
+export function requestFocusComposer(agentId: string, draft?: string): void {
+  _pending = { agentId, draft, requestedAt: Date.now() };
+}
+
+/** Consume the pending request for this agent. Non-null exactly once per
  *  request, and only for the requested agent within the expiry window. */
-export function consumeFocusComposerRequest(agentId: string): boolean {
-  if (!_pending) return false;
+export function consumeFocusComposerRequest(agentId: string): FocusComposerRequest | null {
+  if (!_pending) return null;
   if (Date.now() - _pending.requestedAt > PENDING_TTL_MS) {
     _pending = null;
-    return false;
+    return null;
   }
-  if (_pending.agentId !== agentId) return false;
+  if (_pending.agentId !== agentId) return null;
+  const { draft } = _pending;
   _pending = null;
-  return true;
+  return draft === undefined ? {} : { draft };
 }
 
 export function _resetFocusComposerRequestForTests(): void {

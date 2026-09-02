@@ -50,7 +50,23 @@ function renderAgentSessions(agentId: string | null, userId: string | null) {
   });
 }
 
-import { useAgentSessions } from "../useAgentSessions";
+import { sessionIdFromKey, useAgentSessions } from "../useAgentSessions";
+
+describe("sessionIdFromKey", () => {
+  it("extracts the trailing UUID from a 4-part named session key", () => {
+    expect(
+      sessionIdFromKey("agent:agent-x:user-1:11111111-1111-4111-8111-111111111111"),
+    ).toBe("11111111-1111-4111-8111-111111111111");
+  });
+
+  it("resolves the legacy 3-part General key to null", () => {
+    expect(sessionIdFromKey("agent:agent-x:user-1")).toBeNull();
+  });
+
+  it("resolves a malformed trailing segment to null, never surfacing it as selectable", () => {
+    expect(sessionIdFromKey("agent:agent-x:user-1:not-a-uuid")).toBeNull();
+  });
+});
 
 describe("useAgentSessions — filtered per-agent 4-part rows", () => {
   beforeEach(() => {

@@ -26,10 +26,14 @@ import { useApi } from "@/lib/api";
  *    rather than null, which makes a client sum NaN. Render them
  *    `unavailable`, never empty.
  *
- * 3. `first_day` is when rollups BEGAN for this owner, which is when their
- *    Stripe account was bound. There is no backfill. A 30-day window whose
- *    `first_day` is three days ago genuinely under-reports, so label the range
- *    from `first_day` — never imply the window that was requested.
+ * 3. `first_day` is the first STORED ROW INSIDE THE REQUESTED RANGE —
+ *    `rows[0]["day"]` over `[start, end]` (routers/company_money.py). It is
+ *    range-scoped, not owner-scoped: it can never precede `start`, and the
+ *    route serves no owner-level origin at all. So it bounds the RANGE LABEL
+ *    honestly ("Since Aug 30" is true of the window shown) and nothing more.
+ *    Do not read it as "readings began here" — for an owner bound months ago
+ *    it is simply the oldest row the window reached. A genuinely owner-scoped
+ *    first day would need a new backend field; out of scope here.
  *
  * And `stripe_bound: false` returns `200` with empty `days[]`, never a 404 or
  * 409. Empty-because-unbound and empty-because-nothing-happened are different
@@ -72,9 +76,9 @@ export function dayOffset(day: string, delta: number): string {
 /**
  * Request TWICE the span: rows before `windowStart` are the previous period,
  * which each tile compares against ("$40 in the previous 30 days"). 2 × 90 =
- * 180 days, under the route's MAX_SPAN_DAYS of 366. `first_day` still comes
- * back as the first row in the whole range — there is no backfill, so that is
- * genuinely when readings began.
+ * 180 days, under the route's MAX_SPAN_DAYS of 366. `first_day` comes back as
+ * the first row in the DOUBLED range, which is what makes it usable as a
+ * previous-period coverage test — see contract 3 for what it does not mean.
  */
 export function rollupWindow(span: RollupSpan, now: Date = new Date()) {
   const end = now.toISOString().slice(0, 10);

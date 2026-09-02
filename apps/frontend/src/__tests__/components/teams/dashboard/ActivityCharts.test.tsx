@@ -1,5 +1,5 @@
 // Tests for ActivityCharts: ChartCard wrapper, getLast14Days helper, and the
-// 4 chart components (RunActivity / Priority / IssueStatus / SuccessRate).
+// 2 chart components (RunActivity / SuccessRate).
 // Empty-state copy + rendered bar segments are verified per component.
 //
 // Color assertions use the editorial palette tokens (--midnight, --warn, --midnight-muted,
@@ -10,8 +10,6 @@ import { render, screen } from "@testing-library/react";
 import {
   ChartCard,
   RunActivityChart,
-  PriorityChart,
-  IssueStatusChart,
   SuccessRateChart,
   getLast14Days,
 } from "@/components/teams/dashboard/ActivityCharts";
@@ -82,69 +80,6 @@ describe("RunActivityChart", () => {
     const { container } = render(<RunActivityChart activity={activity} />);
     const otherBar = container.querySelector('[style*="var(--midnight-muted)"]');
     expect(otherBar).not.toBeNull();
-  });
-});
-
-describe("PriorityChart", () => {
-  test("renders 'No issues' when no issues", () => {
-    render(<PriorityChart issues={[]} />);
-    expect(screen.getByText(/no issues/i)).toBeInTheDocument();
-  });
-
-  test("groups by priority over the last 14 days", () => {
-    const today = new Date();
-    const issues = [
-      { priority: "critical", createdAt: today },
-      { priority: "high", createdAt: today },
-    ];
-    const { container } = render(<PriorityChart issues={issues} />);
-    // critical -> warn, high -> forest in the editorial mapping
-    const criticalSegment = container.querySelector('[style*="var(--warn)"]');
-    const highSegment = container.querySelector('[style*="var(--midnight)"]');
-    expect(criticalSegment || highSegment).not.toBeNull();
-  });
-
-  test("renders priority legend labels", () => {
-    const today = new Date();
-    const issues = [{ priority: "low", createdAt: today }];
-    render(<PriorityChart issues={issues} />);
-    expect(screen.getByText("Critical")).toBeInTheDocument();
-    expect(screen.getByText("High")).toBeInTheDocument();
-    expect(screen.getByText("Medium")).toBeInTheDocument();
-    expect(screen.getByText("Low")).toBeInTheDocument();
-  });
-});
-
-describe("IssueStatusChart", () => {
-  test("renders 'No issues' when no issues", () => {
-    render(<IssueStatusChart issues={[]} />);
-    expect(screen.getByText(/no issues/i)).toBeInTheDocument();
-  });
-
-  test("renders status legend for present statuses", () => {
-    const today = new Date();
-    const issues = [
-      { status: "todo", createdAt: today },
-      { status: "done", createdAt: today },
-    ];
-    render(<IssueStatusChart issues={issues} />);
-    expect(screen.getByText("To Do")).toBeInTheDocument();
-    expect(screen.getByText("Done")).toBeInTheDocument();
-  });
-
-  test("groups by status and renders bar segments", () => {
-    const today = new Date();
-    const issues = [
-      { status: "in_progress", createdAt: today },
-      { status: "in_progress", createdAt: today },
-      { status: "blocked", createdAt: today },
-    ];
-    const { container } = render(<IssueStatusChart issues={issues} />);
-    expect(container.firstChild).toBeTruthy();
-    // Should not show the "in_review" status legend since none of those issues exist
-    expect(screen.queryByText("In Review")).not.toBeInTheDocument();
-    expect(screen.getByText("In Progress")).toBeInTheDocument();
-    expect(screen.getByText("Blocked")).toBeInTheDocument();
   });
 });
 

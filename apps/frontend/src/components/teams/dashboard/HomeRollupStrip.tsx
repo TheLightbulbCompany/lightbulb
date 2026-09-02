@@ -139,6 +139,10 @@ function Tile({
 }) {
   return (
     <div
+      // `role="group"`, not a bare div: aria-label only names an element with
+      // a role that supports naming, so without this the label is ignored by
+      // the a11y tree (and `getByLabelText` only found it via the fallback).
+      role="group"
       aria-label={label}
       data-hero={hero ? "true" : undefined}
       className={
@@ -194,8 +198,13 @@ const SPANS: { value: string; label: string }[] = [
 ];
 
 /** "$40 in the previous 30 days" when the previous period is fully inside the
- *  readings; otherwise say when readings began — never a zero for days that
- *  were never measured (there is no backfill). */
+ *  readings; otherwise say there is nothing to compare against — never a zero
+ *  for days that were never measured (there is no backfill).
+ *
+ *  The fallback deliberately does NOT name a date. `first_day` is the first row
+ *  in the REQUESTED RANGE, not the owner's first ever reading (useCompanyRollup
+ *  contract 3), so "Readings began <first_day>" was an origin claim the route
+ *  never made. What we actually know is narrower and is what we now say. */
 function comparison(
   prevSum: number | null,
   span: number,
@@ -203,10 +212,17 @@ function comparison(
   fmt: (n: number) => string,
 ): string {
   if (prevSum !== null) return `${fmt(prevSum)} in the previous ${span} days`;
-  return firstDay ? `Readings began ${formatDay(firstDay)}` : `No reading for the previous ${span} days`;
+  return firstDay ? "No previous period to compare" : `No reading for the previous ${span} days`;
 }
 
-export function HomeRollupStrip({ spendCents }: { spendCents: number | null }) {
+export function HomeRollupStrip({
+  spendCents,
+}: {
+  /** Billed spend from `/teams/dashboard.costs`. THREE states, all distinct:
+   *  a number is the figure, `null` is "the backend omitted the block", and
+   *  `undefined` is "that request has not come back yet". */
+  spendCents: number | null | undefined;
+}) {
   const [span, setSpan] = useState<RollupSpan>(30);
   const { rollup, windowStart, isLoading, error, isUnavailable } = useCompanyRollup(span);
   // Deduped with Accounts' read of the same key. Only `details_submitted` is
@@ -263,8 +279,13 @@ export function HomeRollupStrip({ spendCents }: { spendCents: number | null }) {
   const all = rollup?.days ?? [];
   const days = all.filter((d) => d.day >= windowStart);
   const previous = all.filter((d) => d.day < windowStart);
-  // A previous-period figure is only honest when readings cover that whole
-  // period: first_day at or before the 2×-window start.
+  // What this ACTUALLY tests: a row exists on the very first day of the
+  // doubled window. `first_day` is range-scoped (`rows[0].day` over the
+  // requested range), so it can never precede `rollup.start` — the comparison
+  // is an equality in all but name. It is a sound coverage test only because
+  // the rollup writer is dense for a bound owner: a gap on exactly that first
+  // day would read as "previous period not covered" and suppress an otherwise
+  // honest comparison. Suppressing is the safe direction, so this stays.
   const previousCovered = !!rollup?.first_day && rollup.first_day <= rollup.start;
   const prev = (k: "revenue_microcents" | "signups" | "visitors") =>
     previousCovered ? sum(previous, k) : null;
@@ -291,7 +312,13 @@ export function HomeRollupStrip({ spendCents }: { spendCents: number | null }) {
   // zero sales and real costs — collapsing to "nothing to report" would hide
   // the one number that owner most needs to see. `null` is "we cannot see it",
   // which is not the same as zero and must not keep the tiles alive.
-  const spendKnown = spendCents !== null && spendCents !== 0;
+  //
+  // `undefined` is the THIRD state and the bug this guard exists for:
+  // /dashboard is still in flight, so a rows-but-no-sales owner was told
+  // "Nothing to report in the last 30 days" and then, a beat later, shown four
+  // tiles. A verdict is not something to render from an unread request.
+  const spendPending = spendCents === undefined;
+  const spendKnown = spendCents !== null && spendCents !== undefined && spendCents !== 0;
 
   // Label the range from first_day, never from the window we asked for —
   // there is no backfill, so rollups start at the Stripe binding.
@@ -306,6 +333,8 @@ export function HomeRollupStrip({ spendCents }: { spendCents: number | null }) {
   // days actually carry a reading; plotting against the date is the real fix
   // and is deferred until the strip is worth a charting dependency.
   const readings = `${days.length} ${days.length === 1 ? "day" : "days"} with readings`;
+
+  const prevRevenue = prev("revenue_microcents");
 
   let body: ReactNode;
   // A span change re-keys SWR, so `rollup` goes undefined mid-toggle. The
@@ -348,7 +377,7 @@ export function HomeRollupStrip({ spendCents }: { spendCents: number | null }) {
         supporting="Your Stripe account is connected. The first daily reading lands within the hour."
       />
     );
-  } else if (!anyReading && !spendKnown) {
+  } else if (!anyReading && !spendKnown && !spendPending) {
     body = (
       <PanelNotice
         state="zero"
@@ -372,9 +401,7 @@ export function HomeRollupStrip({ spendCents }: { spendCents: number | null }) {
           label="Revenue"
           value={formatSignedUsdCents(microcentsToCents(sum(days, "revenue_microcents")))}
           caption={comparison(
-            prev("revenue_microcents") === null
-              ? null
-              : microcentsToCents(prev("revenue_microcents")!),
+            prevRevenue === null ? null : microcentsToCents(prevRevenue),
             span,
             rollup.first_day,
             formatSignedUsdCents,
@@ -421,10 +448,17 @@ export function HomeRollupStrip({ spendCents }: { spendCents: number | null }) {
             Spend prints. `null` = the backend omitted the block (OAuth, BYOK,
             trial, non-admin member, or a resolver failure); "Not shown" is the
             honest word, never $0. No sparkline: it is a month scalar. */}
+        {/* While /dashboard is in flight the value is an ellipsis and only this
+            cell settles. The alternative — dropping the whole body back to the
+            h-[220px] placeholder — would blank rollup figures we have ALREADY
+            read to wait on a second, unrelated request, and flash box → tiles.
+            One cell resolving is the calmer of the two. */}
         <Tile
           icon={Wallet}
           label="Agent spend"
-          value={spendCents === null ? "Not shown" : formatUsdCents(spendCents)}
+          value={
+            spendPending ? "…" : spendCents === null ? "Not shown" : formatUsdCents(spendCents)
+          }
           caption={spendCents === null ? "Open Spend for what your plan meters" : "Billed this month"}
           href={teamsPanelUrl("spend")}
           linkLabel="Open Spend"

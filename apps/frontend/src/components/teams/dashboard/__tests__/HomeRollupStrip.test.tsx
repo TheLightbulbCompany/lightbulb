@@ -1,12 +1,15 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 
 import { HomeRollupStrip } from "../HomeRollupStrip";
 
+// The span argument is FORWARDED, not discarded: the toggle's only job is to
+// change what the hook is asked for, and a mock that swallows the argument
+// cannot fail when that wiring breaks.
 const mockRollup = vi.fn();
 vi.mock("@/hooks/useCompanyRollup", () => ({
-  useCompanyRollup: () => mockRollup(),
+  useCompanyRollup: (span: number) => mockRollup(span),
 }));
 
 // Only `details_submitted` is read, and only when there are no rows at all —
@@ -102,7 +105,7 @@ describe("HomeRollupStrip honesty", () => {
     expect(screen.getByText(/Since Aug 30/)).toBeInTheDocument();
   });
 
-  
+
   it("never plots agent spend as a series — it is month-to-date on every row", () => {
     // The writer stamps the running month total onto each current-month row,
     // so a sparkline would draw a staircase that reads as growth, and a sum
@@ -135,7 +138,7 @@ describe("HomeRollupStrip honesty — regressions found in review", () => {
     expect(screen.queryByLabelText("Signups over the period")).not.toBeInTheDocument();
   });
 
-  
+
   
   it("keeps a negative revenue day inside the sparkline's viewBox", () => {
     // `_read_day` sums balance-transaction `net` over all types, so refunds and
@@ -321,11 +324,15 @@ describe("HomeRollupStrip — business-first hero", () => {
     );
   });
 
-  it("says when readings began instead of inventing a previous period", () => {
-    // first_day Aug 30 is inside the current 30d window: no previous period exists.
+  it("says there is nothing to compare against, without claiming an origin", () => {
+    // first_day Aug 30 is inside the current 30d window: no previous period is
+    // covered. The old copy said "Readings began Aug 30" — an owner-level
+    // origin claim the route never makes, since `first_day` is only the first
+    // row IN THE REQUESTED RANGE (useCompanyRollup contract 3).
     mockRollup.mockReturnValue(view({ rollup: LIVE }));
     render(<HomeRollupStrip spendCents={1400} />);
-    expect(screen.getAllByText("Readings began Aug 30").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("No previous period to compare").length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Readings began/)).not.toBeInTheDocument();
     expect(screen.queryByText(/in the previous 30 days/)).not.toBeInTheDocument();
   });
 
@@ -406,7 +413,10 @@ describe("HomeRollupStrip — business-first hero", () => {
     expect(placeholder!.className).toContain("h-[220px]");
   });
 
-  it("exposes the period toggle beside the range label and re-requests on change", () => {
+  it("asks the hook for the selected span — 30 on mount, 7 after the toggle", () => {
+    // The seam the toggle exists for. Radix Tabs commit on mouseDown, not
+    // click, so `fireEvent.click` alone leaves the value unchanged and the
+    // assertion below passes for the wrong reason.
     mockRollup.mockReturnValue(view({ rollup: LIVE }));
     render(<HomeRollupStrip spendCents={1400} />);
     const tabs = screen.getByRole("tablist", { name: "Period" });
@@ -415,5 +425,53 @@ describe("HomeRollupStrip — business-first hero", () => {
       "30d",
       "90d",
     ]);
+    expect(mockRollup).toHaveBeenCalledWith(30);
+    expect(mockRollup).not.toHaveBeenCalledWith(7);
+
+    fireEvent.mouseDown(within(tabs).getByRole("tab", { name: "7d" }));
+    expect(mockRollup).toHaveBeenCalledWith(7);
+  });
+
+  it("puts a thousands separator in the revenue hero", () => {
+    // The hand-rolled formatter printed "$1234567.89". Nothing else in the
+    // suite asserts a four-or-more digit dollar string, so this is the only
+    // thing standing between the hero and an unreadable number.
+    mockRollup.mockReturnValue(
+      view({
+        rollup: {
+          ...LIVE,
+          days: [
+            { day: "2026-08-30", revenue_microcents: 1_234_567_890_000, signups: 0, visitors: 0 },
+          ],
+        },
+      }),
+    );
+    render(<HomeRollupStrip spendCents={1400} />);
+    expect(screen.getByText("$1,234,567.89")).toBeInTheDocument();
+  });
+
+  it("holds the all-zero collapse until spend has actually been read", () => {
+    // `undefined` = /dashboard still in flight. Collapsing on it told a
+    // rows-but-no-sales owner "Nothing to report" and then swapped to four
+    // tiles a beat later — a verdict rendered off an unread request.
+    mockRollup.mockReturnValue(
+      view({
+        rollup: {
+          ...LIVE,
+          agent_spend_month_to_date_microcents: 0,
+          unavailable: ["followers", "open_threads", "visitors"],
+          days: [
+            { day: "2026-08-30", revenue_microcents: 0, signups: 0 },
+            { day: "2026-08-31", revenue_microcents: 0, signups: 0 },
+          ],
+        },
+      }),
+    );
+    render(<HomeRollupStrip spendCents={undefined} />);
+    expect(screen.queryByText(/Nothing to report/i)).not.toBeInTheDocument();
+    expect(screen.getByText("Agent spend")).toBeInTheDocument();
+    // ...and the one unread cell says so, rather than printing a figure.
+    expect(screen.getByText("…")).toBeInTheDocument();
+    expect(screen.queryByText("Not shown")).not.toBeInTheDocument();
   });
 });

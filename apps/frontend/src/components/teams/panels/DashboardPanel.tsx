@@ -217,7 +217,12 @@ export function DashboardPanel() {
           busy", a different and less urgent one. Rendered independently of
           Paperclip's /dashboard (which does an ECS probe), so a slow or
           provisioning agent runtime never holds the revenue hero. */}
-      <HomeRollupStrip spendCents={dashboard.costs?.monthSpendCents ?? null} />
+      {/* Three states, not two. `undefined` while /dashboard is in flight keeps
+          the strip from rendering an all-zero verdict off a request that has
+          not come back; `null` is the settled "the backend omitted `costs`". */}
+      <HomeRollupStrip
+        spendCents={dashboardLoading ? undefined : (dashboard.costs?.monthSpendCents ?? null)}
+      />
       <HomeQuickActions stripeBound={!!rollup?.stripe_bound} />
 
       {/* "Are my agents busy" — real, and second. */}

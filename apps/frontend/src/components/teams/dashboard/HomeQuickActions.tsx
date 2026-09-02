@@ -45,7 +45,16 @@ export function HomeQuickActions({ stripeBound }: { stripeBound: boolean }) {
   // Mobile has no dock (`openChatPanel` no-ops on `!_api`), so it swaps the
   // URL to the bare chat view instead; its composer is always mounted.
   const askFriday = (e: MouseEvent<HTMLAnchorElement>) => {
-    if (!defaultId || !isPlainClick(e)) return; // href="/chat" falls through natively
+    // Modifier / middle click: leave it alone, the href opens a real tab.
+    if (!isPlainClick(e)) return;
+    // No default agent yet (roster still loading, or an owner with none). The
+    // href="/chat" would then HARD-navigate — a full SPA reload of the page the
+    // owner is already on, losing the dock layout — so a plain click here does
+    // nothing rather than something destructive.
+    if (!defaultId) {
+      e.preventDefault();
+      return;
+    }
     if (isDesktop) {
       e.preventDefault();
       requestFocusComposer(defaultId);

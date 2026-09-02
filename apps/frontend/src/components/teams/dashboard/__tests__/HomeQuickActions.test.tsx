@@ -44,10 +44,26 @@ describe("HomeQuickActions — every verb resolves to something real", () => {
 
   it("Ask Friday swaps to the chat view on mobile, where the dock is not mounted", () => {
     desktop = false;
+    const order: Array<{ type: string; agentId: string }> = [];
+    const onSelectAgent = (e: Event) =>
+      order.push({ type: "selectAgent", agentId: (e as CustomEvent).detail.agentId });
+    const onFocusComposer = (e: Event) =>
+      order.push({ type: "getstarted:focus-composer", agentId: (e as CustomEvent).detail.agentId });
+    window.addEventListener("selectAgent", onSelectAgent);
+    window.addEventListener("getstarted:focus-composer", onFocusComposer);
     render(<HomeQuickActions stripeBound />);
     fireEvent.click(screen.getByRole("link", { name: /Ask Friday/ }));
     expect(openChatPanel).not.toHaveBeenCalled();
     expect(window.location.pathname + window.location.search).toBe("/chat");
+    // The mobile shell keeps its own selectedAgentId, which would otherwise
+    // outrank defaultId and strand the focus event on the wrong agent — so
+    // selectAgent must fire, and fire before the focus event.
+    expect(order).toEqual([
+      { type: "selectAgent", agentId: "agent_1" },
+      { type: "getstarted:focus-composer", agentId: "agent_1" },
+    ]);
+    window.removeEventListener("selectAgent", onSelectAgent);
+    window.removeEventListener("getstarted:focus-composer", onFocusComposer);
   });
 
   it("does nothing on a plain Ask Friday click before the roster resolves", () => {

@@ -60,6 +60,11 @@ export function HomeQuickActions({ stripeBound }: { stripeBound: boolean }) {
       requestFocusComposer(defaultId);
       openChatPanel(defaultId);
     } else {
+      // The mobile chat shell keeps its own `selectedAgentId` (app/chat/page.tsx),
+      // which outranks `defaultId` once the owner has tapped any other agent —
+      // without this, the URL swap can land back on a stale agent's composer,
+      // which then ignores a focus event addressed to Friday.
+      window.dispatchEvent(new CustomEvent("selectAgent", { detail: { agentId: defaultId } }));
       handleShellLinkClick(e, "/chat");
     }
     window.dispatchEvent(

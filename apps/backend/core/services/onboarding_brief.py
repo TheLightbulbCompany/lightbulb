@@ -327,9 +327,12 @@ _NAMING_STEP_SENTENCE = (
 # calls on a first run — the whole $3 trial cap — most of it plumbing the
 # backend already does (see render_integrations_md). Every bound below is a
 # number the model can count.
-_RESEARCH_BOUND = (
-    "Read BRIEF.md first. Use at most two web searches, then give me the market in five bullets — no report. "
-)
+#
+# The read comes BEFORE this, not in it: the order is read → rename → research
+# → moves, so the company is named from the brief rather than guessed at. The
+# with-brief path prepends "Read BRIEF.md first."; the no-brief path already
+# opens with "read BRIEF.md and pick…" and must not repeat it.
+_RESEARCH_BOUND = "Use at most two web searches, then give me the market in five bullets — no report. "
 
 # "three best next moves" is pinned by tests and by the naming-order rule:
 # the company is named BEFORE anything reaches the board.
@@ -425,9 +428,8 @@ def build_first_run_message(brief_text: str | None) -> str:
     if not brief:
         return FIRST_RUN_NO_BRIEF_MESSAGE + _INTEGRATIONS_STEP + _CLOSING_STEPS
     return (
-        f"I'm starting {brief}. {_NAMING_STEP_SENTENCE} {_RESEARCH_BOUND}{_MOVES_STEP}I'm watching."
-        + _INTEGRATIONS_STEP
-        + _CLOSING_STEPS
+        f"I'm starting {brief}. Read BRIEF.md first. "
+        f"{_NAMING_STEP_SENTENCE} {_RESEARCH_BOUND}{_MOVES_STEP}I'm watching." + _INTEGRATIONS_STEP + _CLOSING_STEPS
     )
 
 

@@ -437,8 +437,11 @@ describe("ArtifactsPanel — view on click", () => {
 
     expect(await screen.findByText("Three tiers")).toBeInTheDocument();
     expect(download).toHaveBeenCalledWith("/attachments/att9/content");
-    const md = await screen.findAllByTestId("md");
-    expect(md.map((m) => m.textContent)).toContain("# Tiers");
+    // The file bytes render after an async blob read; the summary's md node
+    // is on screen first, so wait for the one that carries the file.
+    await waitFor(() =>
+      expect(screen.getAllByTestId("md").map((m) => m.textContent)).toContain("# Tiers"),
+    );
   });
 
   it("does not claim a missing summary above the deliverable it is missing from", async () => {
@@ -456,8 +459,11 @@ describe("ArtifactsPanel — view on click", () => {
 
     fireEvent.click(cardFor("Pricing proposal"));
 
-    const md = await screen.findAllByTestId("md");
-    expect(md.map((m) => m.textContent)).toContain("# Tiers");
+    // The file bytes render after an async blob read; the summary's md node
+    // is on screen first, so wait for the one that carries the file.
+    await waitFor(() =>
+      expect(screen.getAllByTestId("md").map((m) => m.textContent)).toContain("# Tiers"),
+    );
     expect(screen.queryByText("No summary provided.")).not.toBeInTheDocument();
   });
 
@@ -480,8 +486,11 @@ describe("ArtifactsPanel — view on click", () => {
 
     expect(await screen.findByText("Could not load this output.")).toBeInTheDocument();
     expect(download).toHaveBeenCalledWith("/attachments/att9/content");
-    const md = await screen.findAllByTestId("md");
-    expect(md.map((m) => m.textContent)).toContain("# Tiers");
+    // The file bytes render after an async blob read; the summary's md node
+    // is on screen first, so wait for the one that carries the file.
+    await waitFor(() =>
+      expect(screen.getAllByTestId("md").map((m) => m.textContent)).toContain("# Tiers"),
+    );
   });
 
   it("says a row it cannot route is unopenable, in the reader's words", async () => {

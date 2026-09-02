@@ -168,7 +168,11 @@ export function BrainPanel({ initialPath, initialTab, onPathUnavailable }: Brain
   // first, like every other navigation.
   const handleRefresh = React.useCallback(() => {
     if (!confirmDiscardIfDirty()) return;
+    // A discarded draft ends the edit: if the server hands back identical
+    // content the viewer's sync effect would not run and the stale draft would
+    // linger with the dirty flag already cleared. Reading mode has no draft.
     setEditorDirty(false);
+    setEditing(false);
     void refresh();
     if (fileKey) void mutateCache(fileKey);
   }, [confirmDiscardIfDirty, refresh, fileKey, mutateCache]);
@@ -606,7 +610,10 @@ export function BrainPanel({ initialPath, initialTab, onPathUnavailable }: Brain
                       )}
                     </nav>
                     <div className="flex-1 min-h-0 overflow-y-auto">
-                      {indexSections.length > 0 ? (
+                      {/* A failed revalidation over a cached index falls through to
+                          BrainPage, whose unavailable notice + Retry says so —
+                          stale cards with no signal would be a lie. */}
+                      {indexSections.length > 0 && !fileError ? (
                         <BrainLanding
                           sections={indexSections}
                           recent={recent}

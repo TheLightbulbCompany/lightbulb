@@ -25,6 +25,10 @@ const mockRead = vi.fn((path: string) => {
       mutate: vi.fn(),
     };
   }
+  if (path === "/settings") {
+    // The Paperclip company record — `name` is the H1.
+    return { data: { name: "Phomo" }, isLoading: false, error: null, mutate: vi.fn() };
+  }
   // /issues + /activity etc.
   return {
     data: [],
@@ -60,22 +64,34 @@ vi.mock("@/hooks/useCompanyRollup", () => ({
     isUnavailable: () => false,
   }),
 }));
+vi.mock("@/components/settings/CompanyStripeSection", () => ({
+  useCompanyStripeStatus: () => ({ data: undefined }),
+}));
+// Quick actions pull the marketplace drawer context + agent roster; this file
+// asserts Home's composition, not the chips (HomeQuickActions.test.tsx does).
+vi.mock("@/components/teams/dashboard/HomeQuickActions", () => ({
+  HomeQuickActions: () => <section aria-label="Quick actions" />,
+}));
 
 
 describe("DashboardPanel", () => {
   it("renders metric cards with values from the un-flattened dashboard shape", () => {
     render(<DashboardPanel />);
-    // Header — PanelMasthead overline + h1 (editorial atom layer, PR 8)
-    expect(screen.getByText("Operations")).toBeInTheDocument();
+    // Header — the company's own name is the h1; "Home" demotes to the overline.
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Phomo" }),
+    ).toBeInTheDocument();
     expect(screen.getByText("Home")).toBeInTheDocument();
-    // 4 tile labels — scoped to the metrics strip ("Agents" also names the
-    // ActiveAgentsPanel section heading).
+    expect(screen.getByLabelText("Quick actions")).toBeInTheDocument();
+    // Agent telemetry is second, behind a collapsible section.
+    expect(screen.getByText("Your team")).toBeInTheDocument();
+    // 3 tile labels — scoped to the metrics strip ("Agents" also names the
+    // ActiveAgentsPanel section heading). Spend is no longer one of them: it
+    // moved to the Business section, which is mocked as loading here and
+    // asserted in HomeRollupStrip.test.tsx.
     const metrics = within(screen.getByLabelText("Key metrics"));
     expect(metrics.getByText("Agents")).toBeInTheDocument();
     expect(metrics.getByText("Open Tasks")).toBeInTheDocument();
-    expect(metrics.getByText("Month Spend")).toBeInTheDocument();
     expect(metrics.getByText("Pending Approvals")).toBeInTheDocument();
-    // 4250 cents → $42.50 (unique enough to avoid description-text collisions)
-    expect(screen.getByText("$42.50")).toBeInTheDocument();
   });
 });

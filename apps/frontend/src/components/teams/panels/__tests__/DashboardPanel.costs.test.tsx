@@ -1,8 +1,8 @@
-// Covers the Month Spend card's provider-aware re-point (Task 8): the card
-// now renders straight off /teams/dashboard's optional `costs` block
-// ({ monthSpendCents }) rather than the removed budget/utilization fields,
-// and disappears entirely when the backend omits `costs` (e.g. an owner on
-// a provider path the meter doesn't cover yet).
+// Covers the billed-spend figure's provider-aware re-point: it renders
+// straight off /teams/dashboard's optional `costs` block ({ monthSpendCents }),
+// now through the Business section's Agent spend tile rather than a second
+// MetricCard, and says "Not shown" — never $0 — when the backend omits `costs`
+// (e.g. an owner on a provider path the meter doesn't cover yet).
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, within } from "@testing-library/react";
@@ -13,6 +13,39 @@ vi.mock("@/components/teams/dashboard/hooks/useActivityFeed", () => ({
 }));
 vi.mock("@/components/teams/dashboard/hooks/useLiveRuns", () => ({
   useLiveRuns: vi.fn(),
+}));
+// The Business section is the surface under test here, so its rollup is a
+// bound fixture rather than the loading stub the other DashboardPanel files
+// use. Two days inside the 30-day window that starts at `windowStart`.
+vi.mock("@/hooks/useCompanyRollup", () => ({
+  useCompanyRollup: () => ({
+    rollup: {
+      start: "2026-08-03",
+      end: "2026-09-01",
+      stripe_bound: true,
+      first_day: "2026-08-30",
+      days: [
+        { day: "2026-08-30", revenue_microcents: 1_000_000, signups: 1, visitors: 10 },
+        { day: "2026-08-31", revenue_microcents: 2_000_000, signups: 2, visitors: 20 },
+      ],
+      agent_spend_month_to_date_microcents: 1_400_000,
+      unavailable: ["followers", "open_threads"],
+    },
+    windowStart: "2026-08-03",
+    span: 30,
+    error: undefined,
+    isLoading: false,
+    refresh: vi.fn(),
+    isUnavailable: () => false,
+  }),
+}));
+vi.mock("@/components/settings/CompanyStripeSection", () => ({
+  useCompanyStripeStatus: () => ({ data: undefined }),
+}));
+// Quick actions pull the marketplace drawer context + agent roster; this file
+// asserts the spend tile, not the chips (HomeQuickActions.test.tsx does).
+vi.mock("@/components/teams/dashboard/HomeQuickActions", () => ({
+  HomeQuickActions: () => <section aria-label="Quick actions" />,
 }));
 
 import { DashboardPanel } from "../DashboardPanel";
@@ -65,8 +98,8 @@ beforeEach(() => {
   });
 });
 
-describe("DashboardPanel month spend card", () => {
-  it("renders the card from billed cents when costs present", async () => {
+describe("DashboardPanel agent spend tile", () => {
+  it("renders the tile from billed cents when costs present", async () => {
     mockApi(
       makeRead({
         "/dashboard": {
@@ -86,13 +119,13 @@ describe("DashboardPanel month spend card", () => {
       }),
     );
     render(<DashboardPanel />);
-    expect(await screen.findByText("Month Spend")).toBeInTheDocument();
-    const metrics = within(screen.getByLabelText("Key metrics"));
-    expect(metrics.getByText("$12.34")).toBeInTheDocument();
-    expect(metrics.getByText(/Billed credits this month/i)).toBeInTheDocument();
+    expect(await screen.findByText("Agent spend")).toBeInTheDocument();
+    const business = within(screen.getByLabelText("Business summary"));
+    expect(business.getByText("$12.34")).toBeInTheDocument();
+    expect(business.getByText("Billed this month")).toBeInTheDocument();
   });
 
-  it("hides the card when costs block absent", async () => {
+  it("says Not shown — never $0 — when the costs block is absent", async () => {
     mockApi(
       makeRead({
         "/dashboard": {
@@ -112,6 +145,6 @@ describe("DashboardPanel month spend card", () => {
     );
     render(<DashboardPanel />);
     expect(await screen.findByText(/Pending Approvals/)).toBeInTheDocument();
-    expect(screen.queryByText("Month Spend")).toBeNull();
+    expect(screen.getByText("Not shown")).toBeInTheDocument();
   });
 });

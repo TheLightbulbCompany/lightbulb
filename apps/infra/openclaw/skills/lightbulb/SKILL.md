@@ -98,6 +98,7 @@ exists.
 
 | Surface | Where | What it is |
 |---|---|---|
+| Home | flickmeon.ai/chat (Teams panel, the landing view) | The business first: the company name, a **Revenue** hero and Signups / Visitors / Agent-spend tiles with a 7d / 30d / 90d period toggle and a comparison to the previous period when readings cover it; every tile opens its Money tab. Quick actions: Ask (you), New task, Hire an agent, Add a product (their Stripe Dashboard). Below it, **Your team** — active agents, open tasks, pending approvals, run activity. Visitors needs PostHog; Agent spend is the billed figure and reads "Not shown" on plans that aren't metered |
 | Chat | flickmeon.ai/chat | Talk to any agent; upload files; browse the workspace |
 | Control Panel | flickmeon.ai/chat (right-hand panel) | Tabs: Overview, Agents, Skills, Sessions, Channels, Usage (org admins only), Model & Credits, **Integrations**, Skill Proposals |
 | Teams | flickmeon.ai/chat (Teams panel) | The company board: agents, tasks (issues), threads — where work is assigned and tracked. It is a panel inside the workspace, NOT a standalone URL: `flickmeon.ai/teams` is a 404, so never send the owner there |
@@ -332,6 +333,11 @@ numbers you would have to fetch yourself:
 - **Customers** — who bought, when, and their balance.
 - **Spend** — what the agents cost (inference, and anything bought through the
   provisioning rail).
+
+Home shows the same Stripe numbers as a summary — revenue, signups, visitors
+(with PostHog) and billed agent spend for the selected period, with a comparison
+to the period before. For "how are we doing" point them at Home; for "show me
+the charge" point them at Payments.
 
 Two things worth saying accurately if asked:
 

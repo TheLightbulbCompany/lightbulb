@@ -15,6 +15,9 @@ import { useApi } from "@/lib/api";
  *    total onto every current-month row, so summing a per-day column
  *    double-counts by roughly the number of days elapsed — and looks entirely
  *    plausible while doing it. There is no per-day spend series to plot.
+ *    It is not rendered anywhere: Home's spend tile reads the Metronome-billed
+ *    figure in `/teams/dashboard.costs` (the DDB counter was removed from the
+ *    Spend tab's UI too), so this field is served for API completeness only.
  *
  * 2. `unavailable` names columns the backend knows it cannot serve
  *    (`followers`, `open_threads` are hardcoded 0 upstream: bundle.social is
@@ -23,10 +26,14 @@ import { useApi } from "@/lib/api";
  *    rather than null, which makes a client sum NaN. Render them
  *    `unavailable`, never empty.
  *
- * 3. `first_day` is when rollups BEGAN for this owner, which is when their
- *    Stripe account was bound. There is no backfill. A 30-day window whose
- *    `first_day` is three days ago genuinely under-reports, so label the range
- *    from `first_day` — never imply the window that was requested.
+ * 3. `first_day` is the first STORED ROW INSIDE THE REQUESTED RANGE —
+ *    `rows[0]["day"]` over `[start, end]` (routers/company_money.py). It is
+ *    range-scoped, not owner-scoped: it can never precede `start`, and the
+ *    route serves no owner-level origin at all. So it bounds the RANGE LABEL
+ *    honestly ("Since Aug 30" is true of the window shown) and nothing more.
+ *    Do not read it as "readings began here" — for an owner bound months ago
+ *    it is simply the oldest row the window reached. A genuinely owner-scoped
+ *    first day would need a new backend field; out of scope here.
  *
  * And `stripe_bound: false` returns `200` with empty `days[]`, never a 404 or
  * 409. Empty-because-unbound and empty-because-nothing-happened are different
@@ -55,24 +62,34 @@ export interface CompanyRollup {
   direction?: Record<string, RollupDirection>;
 }
 
-/** Home's masthead says "Last 14 days". The route defaults to 30, so asking
- *  for the default put a 30-day total under a 14-day heading — two different
- *  periods stated on one screen, with the wider one silently winning. Ask for
- *  the window the page advertises. */
-export const ROLLUP_SPAN_DAYS = 14;
+/** The Business section's period toggle. 30 is the route's own default
+ *  (company_money.DEFAULT_SPAN_DAYS). */
+export type RollupSpan = 7 | 30 | 90;
 
-function rollupPath(): string {
-  const end = new Date();
-  const start = new Date(end);
-  start.setUTCDate(start.getUTCDate() - (ROLLUP_SPAN_DAYS - 1));
-  const day = (d: Date) => d.toISOString().slice(0, 10);
-  return `/company/rollup?start=${day(start)}&end=${day(end)}`;
+/** UTC day arithmetic on YYYY-MM-DD. `Date.UTC` so a viewer in UTC-7 on the
+ *  evening of the 31st still computes the same window the server will label. */
+export function dayOffset(day: string, delta: number): string {
+  const [y, m, d] = day.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + delta)).toISOString().slice(0, 10);
 }
 
-export function useCompanyRollup() {
+/**
+ * Request TWICE the span: rows before `windowStart` are the previous period,
+ * which each tile compares against ("$40 in the previous 30 days"). 2 × 90 =
+ * 180 days, under the route's MAX_SPAN_DAYS of 366. `first_day` comes back as
+ * the first row in the DOUBLED range, which is what makes it usable as a
+ * previous-period coverage test — see contract 3 for what it does not mean.
+ */
+export function rollupWindow(span: RollupSpan, now: Date = new Date()) {
+  const end = now.toISOString().slice(0, 10);
+  return { start: dayOffset(end, -(2 * span - 1)), windowStart: dayOffset(end, -(span - 1)), end };
+}
+
+export function useCompanyRollup(span: RollupSpan = 30) {
   const api = useApi();
+  const { start, windowStart, end } = rollupWindow(span);
   const { data, error, isLoading, mutate } = useSWR<CompanyRollup>(
-    rollupPath(),
+    `/company/rollup?start=${start}&end=${end}`,
     (path: string) => api.get(path) as Promise<CompanyRollup>,
     {
       // The hourly writer is the only thing that moves these numbers, so a
@@ -85,6 +102,9 @@ export function useCompanyRollup() {
 
   return {
     rollup: data,
+    /** First day of the CURRENT period; earlier rows are the previous one. */
+    windowStart,
+    span,
     error,
     isLoading,
     refresh: mutate,

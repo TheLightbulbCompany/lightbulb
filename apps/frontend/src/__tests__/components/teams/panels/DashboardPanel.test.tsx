@@ -20,6 +20,14 @@ vi.mock("@/hooks/useCompanyRollup", () => ({
     isUnavailable: () => false,
   }),
 }));
+vi.mock("@/components/settings/CompanyStripeSection", () => ({
+  useCompanyStripeStatus: () => ({ data: undefined }),
+}));
+// Quick actions pull the marketplace drawer context + agent roster; this file
+// asserts Home's composition, not the chips (HomeQuickActions.test.tsx does).
+vi.mock("@/components/teams/dashboard/HomeQuickActions", () => ({
+  HomeQuickActions: () => <section aria-label="Quick actions" />,
+}));
 vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: vi.fn() }));
 vi.mock("@/components/teams/dashboard/hooks/useActivityFeed", () => ({
   useActivityFeed: vi.fn(),
@@ -78,7 +86,7 @@ describe("DashboardPanel", () => {
     expect(screen.getByRole("alert")).toBeInTheDocument();
   });
 
-  test("renders 4 metric tiles when dashboard loaded", () => {
+  test("renders the three agent metric tiles when dashboard loaded", () => {
     mockApi(
       makeRead({
         "/dashboard": {
@@ -102,11 +110,10 @@ describe("DashboardPanel", () => {
     const metrics = within(screen.getByLabelText("Key metrics"));
     expect(metrics.getByText("Agents")).toBeInTheDocument();
     expect(metrics.getByText("Open Tasks")).toBeInTheDocument();
-    expect(metrics.getByText("Month Spend")).toBeInTheDocument();
     expect(metrics.getByText("Pending Approvals")).toBeInTheDocument();
   });
 
-  test("renders 4 chart cards when dashboard loaded", () => {
+  test("renders the two run charts inside Your team", () => {
     mockApi(
       makeRead({
         "/dashboard": {
@@ -126,9 +133,10 @@ describe("DashboardPanel", () => {
     );
     render(<DashboardPanel />);
     expect(screen.getByText("Run Activity")).toBeInTheDocument();
-    expect(screen.getByText("Issues by Priority")).toBeInTheDocument();
-    expect(screen.getByText("Issues by Status")).toBeInTheDocument();
     expect(screen.getByText("Success Rate")).toBeInTheDocument();
+    // The Issues charts are Tasks analytics; Home no longer carries them.
+    expect(screen.queryByText("Issues by Priority")).not.toBeInTheDocument();
+    expect(screen.queryByText("Issues by Status")).not.toBeInTheDocument();
   });
 
   test("renders empty activity message when no events", () => {
@@ -184,29 +192,6 @@ describe("DashboardPanel", () => {
     });
     render(<DashboardPanel />);
     expect(screen.queryByText(/no recent activity/i)).not.toBeInTheDocument();
-  });
-
-  test("formats month spend as currency", () => {
-    mockApi(
-      makeRead({
-        "/dashboard": {
-          data: {
-            dashboard: {
-              agents: {},
-              tasks: {},
-              runActivity: [],
-              costs: { monthSpendCents: 12345 },
-              pendingApprovals: 0,
-              budgets: { pendingApprovals: 0 },
-            },
-          },
-        },
-        "/issues": { data: [] },
-      }),
-    );
-    render(<DashboardPanel />);
-    expect(screen.getByText("$123.45")).toBeInTheDocument();
-    expect(screen.getByText(/Billed credits this month/i)).toBeInTheDocument();
   });
 
   test("renders Recent Tasks sorted by updatedAt desc, newest first", () => {
@@ -297,6 +282,52 @@ describe("DashboardPanel", () => {
     expect(screen.getByText(/no recent tasks/i)).toBeInTheDocument();
   });
 
+  test("says Loading tasks — never 'No recent tasks' — while /issues is in flight", () => {
+    mockApi(
+      makeRead({
+        "/dashboard": {
+          data: {
+            dashboard: {
+              agents: {},
+              tasks: {},
+              runActivity: [],
+              costs: { monthSpendCents: 0 },
+              pendingApprovals: 0,
+              budgets: { pendingApprovals: 0 },
+            },
+          },
+        },
+        "/issues": { isLoading: true },
+      }),
+    );
+    render(<DashboardPanel />);
+    expect(screen.getByText("Loading tasks…")).toBeInTheDocument();
+    expect(screen.queryByText(/no recent tasks/i)).not.toBeInTheDocument();
+  });
+
+  test("says the tasks read failed — never 'No recent tasks' — when /issues errors", () => {
+    mockApi(
+      makeRead({
+        "/dashboard": {
+          data: {
+            dashboard: {
+              agents: {},
+              tasks: {},
+              runActivity: [],
+              costs: { monthSpendCents: 0 },
+              pendingApprovals: 0,
+              budgets: { pendingApprovals: 0 },
+            },
+          },
+        },
+        "/issues": { error: new Error("boom") },
+      }),
+    );
+    render(<DashboardPanel />);
+    expect(screen.getByText(/couldn.t load recent tasks/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no recent tasks/i)).not.toBeInTheDocument();
+  });
+
   test("normalizes /issues envelope { items: [...] }", () => {
     mockApi(
       makeRead({
@@ -330,6 +361,45 @@ describe("DashboardPanel", () => {
     // No throw + chart cards still present is sufficient signal that the
     // envelope-normalization branch is exercised.
     render(<DashboardPanel />);
-    expect(screen.getByText("Issues by Priority")).toBeInTheDocument();
+    expect(screen.getByText("Run Activity")).toBeInTheDocument();
+  });
+
+  test("falls back to Home as the H1 while the company name has not loaded", () => {
+    mockApi(
+      makeRead({
+        "/dashboard": {
+          data: {
+            dashboard: {
+              agents: {},
+              tasks: {},
+              runActivity: [],
+              costs: { monthSpendCents: 0 },
+              pendingApprovals: 0,
+              budgets: { pendingApprovals: 0 },
+            },
+          },
+        },
+        "/issues": { data: [] },
+      }),
+    );
+    render(<DashboardPanel />);
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Home" }),
+    ).toBeInTheDocument();
+    // PanelMasthead suppresses the overline when it equals the title, so the
+    // fallback reads as one "Home" — never "Home Home".
+    expect(screen.getAllByText("Home")).toHaveLength(1);
+  });
+
+  test("renders the Business section before the team section", () => {
+    // /dashboard still loading: the business strip and quick actions must
+    // render anyway, above "Your team" and its loading state.
+    mockApi(makeRead({ "/dashboard": { isLoading: true } }));
+    render(<DashboardPanel />);
+    const quickActions = screen.getByLabelText("Quick actions");
+    expect(
+      quickActions.compareDocumentPosition(screen.getByText("Your team")) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 });

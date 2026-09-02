@@ -958,13 +958,27 @@ export function useAgentChat(
     // recent setup's cleanup — so historyEffectMountedRef stays true forever
     // and the wake-phase retry chain keeps firing RPCs and mutating module
     // state from a dead hook (Codex P2 on this PR).
-    const alreadyLatched = historyLoadedRef.current.has(cacheKey);
+    // A session the empty-ladder already concluded "bootstrap" is NOT latched.
+    // One transient empty-but-200 read otherwise strands the new-chat
+    // suggestion over a real transcript for the page's LIFE, because the latch
+    // blocks the very chat.history that would correct it (prod, 8.1 walk: a
+    // gateway reconnect, sessions.list showing the session and a hand-issued
+    // chat.history returning its two messages, while re-selecting the session
+    // issued zero RPCs). A bootstrap conclusion is a guess; it must never block
+    // a revisit. Each revisit re-reads exactly once — the flag is cleared by
+    // the first non-empty read below, which re-arms the latch.
+    const bootstrapConcluded = _needsBootstrap.has(cacheKey);
+    const alreadyLatched = historyLoadedRef.current.has(cacheKey) && !bootstrapConcluded;
     // Cached transcript paints instantly, but a run that completed while
     // this hook was unmounted only exists server-side — so always fetch
     // once per mount and let the server result replace the cache.
     const hasCache = _messageCache.has(cacheKey);
     const sessionKey = buildChatSessionKey(agentId, sessionName, activeSessionId);
-    if (!alreadyLatched && !hasCache) {
+    // The bootstrap re-read is SILENT — same amnesia invariant as the cached
+    // mount: never blank what is already on screen for a revalidation. Flipping
+    // to "loading" here would swap the bootstrap card for a skeleton on every
+    // revisit of a genuinely empty session.
+    if (!alreadyLatched && !hasCache && !bootstrapConcluded) {
       Promise.resolve().then(() => setHistoryLoadState("loading"));
     }
     const mutationSeqAtIssue = transcriptMutationSeqRef.current;
@@ -1118,6 +1132,13 @@ export function useAgentChat(
             setHistoryLoadState("done");
             return;
           }
+          // The server HAS content for this key, so any bootstrap conclusion a
+          // previous transient empty read left behind is now known wrong —
+          // drop it (which also re-arms the latch above, so the next revisit
+          // is an ordinary cached mount rather than another re-read). Outside
+          // the staleSnapshot guard on purpose: this describes the SERVER, not
+          // the page whose message-apply is skipped below.
+          _needsBootstrap.delete(cacheKey);
           setHistoryLoadState("done");
           if (staleSnapshot) return;
           if (agentIdRef.current !== agentId) return;

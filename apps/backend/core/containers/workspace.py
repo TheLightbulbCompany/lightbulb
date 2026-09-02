@@ -796,7 +796,7 @@ class Workspace:
 # resolver filters profiles by the credential's provider field and there is NO
 # runtime alias from the retired "openai-codex" to "openai" (only
 # ``openclaw doctor`` migrates it), so a key of "openai-codex" is silently
-# dropped. The deployed chatgpt model ref is ``openai/gpt-5.5`` (config.py),
+# dropped. The deployed chatgpt model ref is ``openai/gpt-5.6-sol`` (config.py),
 # which resolves ``openai:default``.
 _OAUTH_PROVIDER_KEY = "openai"
 

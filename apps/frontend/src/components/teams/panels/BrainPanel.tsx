@@ -373,7 +373,18 @@ export function BrainPanel({ initialPath, initialTab, onPathUnavailable }: Brain
             <>
               <PanelToolbar
                 searchValue={query}
-                onSearchChange={setQuery}
+                // Searching short-circuits the pane, so it unmounts BrainPage
+                // (and with it FileContentViewer's draft) exactly like a tab
+                // switch does — it takes the same guard. FileContentViewer
+                // never reports dirty=false on unmount, so an unguarded search
+                // would also leave `editorDirty` stuck true and fire a phantom
+                // prompt on the next navigation.
+                onSearchChange={(v) => {
+                  if (editing && !confirmDiscardIfDirty()) return;
+                  setEditorDirty(false);
+                  setEditing(false);
+                  setQuery(v);
+                }}
                 searchPlaceholder="Find a page by name…"
                 searchAriaLabel="Find a page by name"
                 actions={
@@ -408,13 +419,23 @@ export function BrainPanel({ initialPath, initialTab, onPathUnavailable }: Brain
                 />
               )}
               {!searching && view === "page" && counts.inbox === 0 && counts.knowledge === 0 && (
+                // The plugin's first compile writes four reports/ dashboards
+                // into an otherwise empty vault, so "Nothing filed yet." beside
+                // an honest "4 filed" is every account's first post-compile
+                // state. Name what those pages actually are instead.
                 <PanelNotice
                   state="zero"
-                  headline="Nothing filed yet."
-                  supporting="Friday fills the brain as it works. Drop a file here to give it something to read."
+                  headline={
+                    counts.filed > 0 ? "Only the auto-written reports so far." : "Nothing filed yet."
+                  }
+                  supporting={
+                    counts.filed > 0
+                      ? "Those dashboards are compiled from the vault itself — no one has filed anything into it yet. Drop a file here to give Friday something to read."
+                      : "Friday fills the brain as it works. Drop a file here to give it something to read."
+                  }
                   prompt={EMPTY_VAULT_PROMPT}
                   action={{
-                    label: "Ask Friday",
+                    label: "Ask Friday what we know",
                     onClick: () => openChatPanelWithDraft(EMPTY_VAULT_PROMPT),
                   }}
                 />

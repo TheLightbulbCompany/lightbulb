@@ -70,7 +70,10 @@ const ENTITIES_INDEX = f("entities/index.md");
 const ADA = f("entities/ada-lovelace.md");
 const INBOX_DIR_ENTRY = f("inbox", "dir");
 const DECK = f("inbox/deck.pdf");
+const REPORTS_DIR = f("reports", "dir");
+const REPORT = f("reports/state-of-the-vault.md");
 const SCAFFOLD = [INDEX, ENTITIES, ENTITIES_INDEX];
+const REPORTS_ONLY = [INDEX, REPORTS_DIR, REPORT];
 const POPULATED = [INDEX, ENTITIES, ENTITIES_INDEX, ADA, INBOX_DIR_ENTRY, DECK];
 
 const md = (path: string, content: string): FileInfo => ({
@@ -196,12 +199,15 @@ describe("BrainPanel", () => {
     fileState.error = Object.assign(new Error("API 404"), { status: 404 });
     const onPathUnavailable = vi.fn();
     const { rerender } = render(
-      <BrainPanel initialPath="main/index.md" onPathUnavailable={onPathUnavailable} />,
+      <BrainPanel initialPath="main/index.md" onPathUnavailable={(pth) => onPathUnavailable(pth)} />,
     );
     expect(screen.getByText(/No page at main\/index\.md/)).toBeInTheDocument();
-    // Once per stale path, not once per render — the shell hands a fresh
-    // inline callback down on every render of its own.
-    rerender(<BrainPanel initialPath="main/index.md" onPathUnavailable={onPathUnavailable} />);
+    // Once per stale path, not once per render. The shell hands a FRESH inline
+    // arrow down on every render (TeamsPanelRouter's brain branch), so the
+    // effect's deps really do change — only clearedRef keeps this at 1.
+    rerender(
+      <BrainPanel initialPath="main/index.md" onPathUnavailable={(pth) => onPathUnavailable(pth)} />,
+    );
     expect(onPathUnavailable).toHaveBeenCalledTimes(1);
     expect(onPathUnavailable).toHaveBeenCalledWith("main/index.md");
   });
@@ -217,6 +223,45 @@ describe("BrainPanel", () => {
     expect(screen.getByText("No page named that.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /ask friday to search/i }));
     expect(openChatPanelWithDraft).toHaveBeenCalledWith(expect.stringContaining('"pricing"'));
+  });
+
+  it("a reports-only vault names the reports instead of claiming nothing is filed", () => {
+    treeState.files = REPORTS_ONLY;
+    fileState.file = md("index.md", "# Wiki Index");
+    render(<BrainPanel />);
+    expect(screen.getByText("Only the auto-written reports so far.")).toBeInTheDocument();
+    expect(screen.queryByText("Nothing filed yet.")).toBeNull();
+    // The count stays honest — wiki_search does index reports/.
+    expect(screen.getByTestId("panel-masthead-meta").textContent).toMatch(/1 filed · 0 in inbox/);
+  });
+
+  it("searching guards a dirty editor, and an accepted discard does not re-prompt", () => {
+    treeState.files = POPULATED;
+    fileState.file = md("entities/ada-lovelace.md", "# Ada");
+    render(<BrainPanel initialPath="entities/ada-lovelace.md" />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "# Ada — DRAFT" } });
+    const box = screen.getByRole("searchbox", { name: /find a page by name/i });
+
+    // Searching unmounts the editor, so it takes the same guard as a tab
+    // switch. Declining keeps both the query and the draft.
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    fireEvent.change(box, { target: { value: "ada" } });
+    expect((box as HTMLInputElement).value).toBe("");
+    expect(screen.getByDisplayValue("# Ada — DRAFT")).toBeInTheDocument();
+
+    confirmSpy.mockReturnValue(true);
+    fireEvent.change(box, { target: { value: "ada" } });
+    expect((box as HTMLInputElement).value).toBe("ada");
+    expect(screen.queryByRole("textbox")).toBeNull();
+
+    // The accepted discard must clear the lifted dirty flag — FileContentViewer
+    // never reports dirty=false on unmount, so a stale flag would fire a
+    // phantom prompt here.
+    expect(confirmSpy).toHaveBeenCalledTimes(2);
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Dreams" }));
+    expect(confirmSpy).toHaveBeenCalledTimes(2);
+    expect(screen.getByTestId("dreams-panel-body")).toBeInTheDocument();
   });
 
   it("the toolbar ASK button drafts the open-ended prompt", () => {

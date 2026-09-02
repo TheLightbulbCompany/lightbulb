@@ -73,6 +73,7 @@ const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
   "domain-site": "Domain & Site",
   compliance: "Compliance",
   contracts: "Contracts",
+  leads: "Leads",
 };
 
 const TEAMS_DETAIL_KEYS: Readonly<Record<string, string>> = {

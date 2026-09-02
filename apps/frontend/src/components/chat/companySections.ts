@@ -31,6 +31,7 @@ import {
   Globe,
   ShieldCheck,
   FileSignature,
+  Users2,
 } from "lucide-react";
 import type { ComponentType, SVGProps } from "react";
 
@@ -86,8 +87,8 @@ export const COMPANY_SECTIONS: { label: string | null; items: CompanySectionItem
     ],
   },
   {
-    // Spec §5.1 Growth. All shells today — each states its exit (connect
-    // accounts, or a prompt Friday can act on). Content, Leads and Blog wait
+    // Spec §5.1 Growth. Shells state their exit (connect accounts, or a
+    // prompt Friday can act on); Leads is a real read. Content and Blog wait
     // for their rails and are deliberately absent rather than shown as cards
     // with no exit.
     label: "Growth",
@@ -95,6 +96,9 @@ export const COMPANY_SECTIONS: { label: string | null; items: CompanySectionItem
       { panel: "teams-publish", label: "Publish", Icon: Send },
       { panel: "teams-seo", label: "SEO & AEO", Icon: SearchCheck },
       { panel: "teams-ads", label: "Ads", Icon: Megaphone },
+      // The first Growth tab with a real read behind it — the owner's pasted
+      // Apollo key, held backend-side.
+      { panel: "teams-leads", label: "Leads", Icon: Users2 },
     ],
   },
   {

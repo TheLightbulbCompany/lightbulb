@@ -42,6 +42,7 @@ import { NodeStatusPill } from "@/components/desktop/NodeStatusPill";
 import { emitStep } from "@/components/getstarted/getStartedEvents";
 import { TEAMS_PANEL_PREFIX } from "@/components/chat/InlineTeamsPanel";
 import { SessionList } from "@/components/chat/SessionList";
+import { SessionSearch } from "@/components/chat/SessionSearch";
 import { useActiveSession } from "@/hooks/useActiveSession";
 import { useAgentSessions, type AgentSession } from "@/hooks/useAgentSessions";
 import { useSellerPublishedAgents } from "@/components/chat/shell/useSellerPublishedAgents";
@@ -201,16 +202,27 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
           onRename={setRenameTarget}
           onDelete={setDeleteTarget}
           renderSessions={() => (
-            <SessionList
-              sessions={agentSessions}
-              activeSessionId={activeSessionId}
-              onSelect={(sid) => selectSession(sid)}
-              onNew={() => newSession()}
-              onRename={(s, label) => {
-                void renameSession(s.key, label);
-              }}
-              onDelete={(s) => setDeleteSessionTarget(s)}
-            />
+            <>
+              {/* Note: the messageId a hit carries isn't consumed yet — the
+                  transcript has no per-bubble id to scroll to. Jumping to the
+                  right session is the shipped behavior; landing on the exact
+                  message is a follow-up once HistoryMessage carries an id. */}
+              <SessionSearch
+                agentId={currentAgentId}
+                sessions={agentSessions}
+                onSelect={(sid) => selectSession(sid)}
+              />
+              <SessionList
+                sessions={agentSessions}
+                activeSessionId={activeSessionId}
+                onSelect={(sid) => selectSession(sid)}
+                onNew={() => newSession()}
+                onRename={(s, label) => {
+                  void renameSession(s.key, label);
+                }}
+                onDelete={(s) => setDeleteSessionTarget(s)}
+              />
+            </>
           )}
         />
         {/* CompanyNav (Home / Inbox / Work / Knowledge / Company) plus the marketplace

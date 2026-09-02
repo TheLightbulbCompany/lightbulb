@@ -32,7 +32,7 @@
 import { useState } from "react";
 import { useSWRConfig } from "swr";
 import { ArrowLeft, Images } from "lucide-react";
-import { PanelMasthead } from "@/components/teams/shell";
+import { PanelMasthead, PanelNotice } from "@/components/teams/shell";
 import { EditorialDialog } from "@/components/teams/shell/EditorialDialog";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { ArtifactViewerDialog } from "./ArtifactViewerDialog";
@@ -221,25 +221,26 @@ export function ArtifactsPanel() {
             Loading the Library…
           </p>
         ) : activeError && !hasItems ? (
-          <p
-            role="alert"
-            className="font-editorial-serif text-base italic"
-            style={{ color: "var(--err)" }}
-          >
-            Failed to load the Library.
-          </p>
+          // A read failure is not an empty Library. A zero here is a claim we
+          // have not earned.
+          <PanelNotice
+            state="unavailable"
+            icon={Images}
+            headline="We couldn't load the Library right now."
+            supporting="This is a temporary read failure, not an empty Library. Check back shortly."
+          />
         ) : !hasItems ? (
-          <div className="flex flex-col items-center gap-2 py-12 text-center">
-            <Images size={20} style={{ color: "var(--midnight-muted)" }} />
-            <p className="font-editorial-serif text-base italic" style={{ color: "var(--midnight-muted)" }}>
-              {isExpanded ? "No deliverables in this task." : "Nothing in the Library yet."}
-            </p>
-            {!isExpanded ? (
-              <p className="text-xs" style={{ color: "var(--midnight-muted)" }}>
-                Deliverables your agents produce show up here.
-              </p>
-            ) : null}
-          </div>
+          isExpanded ? (
+            <PanelNotice state="zero" icon={Images} headline="No deliverables in this task." />
+          ) : (
+            // Calm: empty is the default state of most companies' first week.
+            <PanelNotice
+              state="zero"
+              icon={Images}
+              headline="Nothing made yet."
+              supporting="The first deliverable your agents finish lands here — plans they write, files they upload, pages they publish."
+            />
+          )
         ) : isExpanded ? (
           <div className="grid grid-cols-1 gap-3 @xl:grid-cols-2 @4xl:grid-cols-3">
             {sortedArtifacts.map((artifact) => (

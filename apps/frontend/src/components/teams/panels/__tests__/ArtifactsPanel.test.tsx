@@ -439,14 +439,31 @@ describe("ArtifactsPanel — sort", () => {
   });
 });
 
-describe("ArtifactsPanel — empty", () => {
-  it("shows the empty state when there are no stacks", () => {
+describe("ArtifactsPanel — honest states", () => {
+  it("renders the zero notice when there is genuinely nothing", () => {
     stubStackList([]);
     render(<ArtifactsPanel />);
-    expect(screen.getByText("Nothing in the Library yet.")).toBeInTheDocument();
+    const notice = screen.getByRole("status");
+    expect(notice).toHaveAttribute("data-panel-notice", "zero");
+    expect(within(notice).getByText("Nothing made yet.")).toBeInTheDocument();
     // The panel is "Library" everywhere else (masthead, sidebar, tab title);
     // the IA rename left "artifacts" behind in the body copy. Nothing the
     // reader sees may say it.
     expect(screen.queryByText(/artifacts?/i)).not.toBeInTheDocument();
+  });
+
+  it("renders unavailable — never zero — when the read fails", () => {
+    reads["/artifacts?groupBy=task"] = {
+      data: undefined,
+      isLoading: false,
+      error: new Error("boom"),
+    };
+    render(<ArtifactsPanel />);
+    const notice = screen.getByRole("status");
+    expect(notice).toHaveAttribute("data-panel-notice", "unavailable");
+    expect(
+      within(notice).getByText("We couldn't load the Library right now."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Nothing made yet.")).not.toBeInTheDocument();
   });
 });

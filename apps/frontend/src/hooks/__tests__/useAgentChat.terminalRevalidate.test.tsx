@@ -68,11 +68,22 @@ function historyCalls(): number {
   ).length;
 }
 
+const SEED = {
+  role: "assistant",
+  content: [{ type: "text", text: "seed" }],
+  timestamp: 0,
+  __openclaw: { id: "entry-seed" },
+};
+
 /** The server's view once the turn is persisted: the user message now has the
- *  entryId `sessions.rewind` cuts at. */
+ *  entryId `sessions.rewind` cuts at. Never SHORTER than the local transcript
+ *  at terminal time (seed + optimistic user + folded assistant) — a shorter
+ *  snapshot is the projection-lag case the shrink guard covers, exercised on
+ *  its own below. */
 function persistedTurn(): { messages: Array<Record<string, unknown>> } {
   return {
     messages: [
+      SEED,
       {
         role: "user",
         content: [{ type: "text", text: "hello there" }],
@@ -105,9 +116,7 @@ describe("useAgentChat — the run terminal soft-revalidates history", () => {
         reads += 1;
         // First read (mount) seeds a transcript so the session is not the
         // bootstrap case; the post-terminal read carries the persisted ids.
-        return reads === 1
-          ? { messages: [{ role: "assistant", content: [{ type: "text", text: "seed" }], timestamp: 0 }] }
-          : persistedTurn();
+        return reads === 1 ? { messages: [SEED] } : persistedTurn();
       }
       return { messages: [] };
     });
@@ -173,5 +182,79 @@ describe("useAgentChat — the run terminal soft-revalidates history", () => {
       await Promise.resolve();
     });
     expect(historyCalls()).toBe(callsBefore + 1);
+  });
+
+  it("never SHRINKS the transcript on a soft refetch — a lagging projection can't erase the reply", async () => {
+    // 8.1 serves chat.history from a projection. If the post-terminal read
+    // lags the transcript write by a beat it returns a SHORTER snapshot, and
+    // applying it would delete the assistant turn that just streamed AND cache
+    // the truncated view.
+    let reads = 0;
+    sendReq.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      if (method === "chat.history" && params?.sessionKey === GENERAL_KEY) {
+        reads += 1;
+        // Mount: the seed. Post-terminal: the projection has not caught up and
+        // returns only the seed again — 1 message against a local 3.
+        return { messages: [SEED] };
+      }
+      return { messages: [] };
+    });
+
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result } = renderHook(() => useAgentChat("agent-X", "user-1"));
+    await waitFor(() => expect(historyCalls()).toBe(1));
+
+    await act(async () => {
+      await result.current.sendMessage("hello there");
+    });
+    const runId = lastClientRunId();
+    await act(async () => {
+      dispatch({ type: "chunk", agent_id: "agent-X", content: "hi back", runId } as ChatIncomingMessage);
+      dispatch({ type: "done", agent_id: "agent-X", runId } as ChatIncomingMessage);
+    });
+    const localAfterTerminal = result.current.chatMessages.length;
+    expect(localAfterTerminal).toBe(3); // seed + user + folded assistant
+
+    await waitFor(() => expect(reads).toBeGreaterThan(1));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // The short snapshot was refused: the streamed reply is still on screen.
+    expect(result.current.chatMessages).toHaveLength(3);
+    expect(JSON.stringify(result.current.renderItems)).toContain("hi back");
+  });
+
+  it("applies a soft refetch that is the same length or longer", async () => {
+    let reads = 0;
+    sendReq.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      if (method === "chat.history" && params?.sessionKey === GENERAL_KEY) {
+        reads += 1;
+        // Post-terminal read matches the local length exactly (3) — the normal
+        // case, and the boundary the guard must NOT refuse.
+        return reads === 1 ? { messages: [SEED] } : persistedTurn();
+      }
+      return { messages: [] };
+    });
+
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result } = renderHook(() => useAgentChat("agent-X", "user-1"));
+    await waitFor(() => expect(historyCalls()).toBe(1));
+
+    await act(async () => {
+      await result.current.sendMessage("hello there");
+    });
+    const runId = lastClientRunId();
+    await act(async () => {
+      dispatch({ type: "chunk", agent_id: "agent-X", content: "hi back", runId } as ChatIncomingMessage);
+      dispatch({ type: "done", agent_id: "agent-X", runId } as ChatIncomingMessage);
+    });
+    expect(result.current.chatMessages).toHaveLength(3);
+
+    await waitFor(() => {
+      const user = result.current.chatMessages.find((m) => m.role === "user");
+      expect(user?.__openclaw?.id).toBe("entry-user-1");
+    });
+    expect(result.current.chatMessages).toHaveLength(3);
   });
 });

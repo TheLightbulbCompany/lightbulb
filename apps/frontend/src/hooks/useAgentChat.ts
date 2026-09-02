@@ -921,6 +921,12 @@ export function useAgentChat(
 
   // ---- Fetch history on mount / agent change ----
   const historyLoadedRef = useRef<Set<string>>(new Set());
+  // cacheKeys whose next fetch was requested by softRevalidateHistory (the
+  // run-terminal entryId refresh), read-and-cleared by the effect when it
+  // issues that fetch. Only the SOFT path may refuse to shrink the transcript
+  // — a mount read and invalidateHistoryAndRefetch (a rewind) legitimately
+  // return fewer messages than are on screen.
+  const softRevalidatePendingRef = useRef<Set<string>>(new Set());
   // Pending empty-history retry timer (see the history-fetch effect). Held in a
   // ref so the effect cleanup can cancel it on unmount / session switch.
   const historyRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -969,6 +975,8 @@ export function useAgentChat(
     // the first non-empty read below, which re-arms the latch.
     const bootstrapConcluded = _needsBootstrap.has(cacheKey);
     const alreadyLatched = historyLoadedRef.current.has(cacheKey) && !bootstrapConcluded;
+    // Read-and-clear: the mark belongs to the fetch THIS run issues.
+    const isSoftRevalidate = softRevalidatePendingRef.current.delete(cacheKey);
     // Cached transcript paints instantly, but a run that completed while
     // this hook was unmounted only exists server-side — so always fetch
     // once per mount and let the server result replace the cache.
@@ -1142,6 +1150,22 @@ export function useAgentChat(
           setHistoryLoadState("done");
           if (staleSnapshot) return;
           if (agentIdRef.current !== agentId) return;
+          // A SOFT revalidation must never shrink the transcript. It fires on
+          // the run's terminal, when the local view already holds the folded
+          // assistant turn; 8.1 serves chat.history from a projection, so a
+          // read that lags the transcript write by a beat returns a SHORTER
+          // snapshot — applying it would erase the reply that just streamed
+          // and cache the truncated view. Keep local and un-latch, so the next
+          // revisit/mount re-reads and self-heals. Deliberately NOT applied to
+          // the mount or invalidateHistoryAndRefetch paths: a rewind shrinks
+          // the transcript on purpose.
+          if (
+            isSoftRevalidate &&
+            projected.length < (_messageCache.get(cacheKey)?.length ?? 0)
+          ) {
+            loadedKeys.delete(cacheKey);
+            return;
+          }
           // Always cache under the key this fetch was issued for; only touch
           // the live transcript if the user is still ON that session. A fetch
           // that resolves after a session switch must not stomp the new view.
@@ -1368,6 +1392,7 @@ export function useAgentChat(
       ? `${agentIdRef.current}:${sessionName}:${activeSessionIdRef.current ?? ""}`
       : null;
     if (!key) return;
+    softRevalidatePendingRef.current.add(key);
     historyLoadedRef.current.delete(key);
     setHistoryRefetchNonce((n) => n + 1);
     setBranchRefreshToken((n) => n + 1);

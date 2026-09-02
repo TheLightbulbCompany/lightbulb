@@ -75,6 +75,8 @@ const baseChat = {
 let chatState: Record<string, unknown> = {};
 vi.mock("@/hooks/useAgentChat", () => ({
   useAgentChat: () => ({ ...baseChat, ...chatState }),
+  buildChatSessionKey: (agentId: string, sessionName: string, sessionId: string | null) =>
+    sessionId ? `agent:${agentId}:${sessionName}:${sessionId}` : `agent:${agentId}:${sessionName}`,
   BOOTSTRAP_MESSAGE: "bootstrap",
 }));
 

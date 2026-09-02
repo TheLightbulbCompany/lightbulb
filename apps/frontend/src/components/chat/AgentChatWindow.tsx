@@ -8,9 +8,10 @@ import { ChatInput } from "./ChatInput";
 import { ModelEffortPill } from "./ModelEffortPill";
 import { useBilling } from "@/hooks/useBilling";
 import { ExecApprovalCards } from "./ExecApprovalCards";
+import { AgentProgressCard } from "./AgentProgressCard";
 import { MessageList, MessageListHandle } from "./MessageList";
 import { StreamingStatusBar } from "./StreamingStatusBar";
-import { useAgentChat, BOOTSTRAP_MESSAGE } from "@/hooks/useAgentChat";
+import { useAgentChat, buildChatSessionKey, BOOTSTRAP_MESSAGE } from "@/hooks/useAgentChat";
 import { useAgentSessions } from "@/hooks/useAgentSessions";
 import { resolveSessionModelRef } from "@/lib/models";
 import { useAgents, agentDisplayName } from "@/hooks/useAgents";
@@ -292,6 +293,12 @@ export function AgentChatWindow({
     loadOlderMessages,
   } = useAgentChat(agentId, sessionName, handleChatCompleted);
 
+  // Mirrors the sessionKey useAgentChat's own history reads use (chat.history,
+  // buildChatItems) — the durable progress card is keyed the same way.
+  const progressSessionKey = agentId
+    ? buildChatSessionKey(agentId, sessionName, activeSessionId)
+    : null;
+
   // Hydrate the composer pill from the ACTIVE session's persisted row so it
   // reflects what sessions.patch wrote, not a stub. useAgentSessions shares its
   // SWR cache with the sidebar (same key), so this is not a second fetch; the
@@ -532,6 +539,7 @@ export function AgentChatWindow({
       />
       <UpdateBanner />
       <StreamingStatusBar isStreaming={isStreaming} active={busy} />
+      <AgentProgressCard sessionKey={progressSessionKey} />
       <ExecApprovalCards />
       <ChatInput
         onSend={handleSend}

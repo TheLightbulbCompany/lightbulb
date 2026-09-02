@@ -425,6 +425,15 @@ export class PaperclipStack extends cdk.Stack {
         HOST: "0.0.0.0",
         SERVE_UI: "true",
         PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+        // Better Auth's sign-in limiter (3 per 10s, keyed by client IP) is a
+        // browser brute-force guard. It defaults ON in authenticated mode, but
+        // here it only ever throttles US: the backend signs in as each owner
+        // over the in-VPC Cloud Map host with no X-Forwarded-For, so every
+        // fleet sign-in shares ONE bucket, and one owner's onboarding brief
+        // 429s another owner's Teams session. Paperclip is not reachable from
+        // outside the VPC (no public IP, no ALB rule), so the network edge is
+        // the real fence. Upstream's own knob; "false" disables it.
+        PAPERCLIP_AUTH_RATE_LIMIT_ENABLED: "false",
         // Isol8 tenants must contain EXACTLY the Isol8-seeded agents
         // (Friday + Atlas). The fork (v2026.7-isol8.5+) gates its built-in
         // starter-agent auto-provisioning (Reflection Coach / Summarizer)

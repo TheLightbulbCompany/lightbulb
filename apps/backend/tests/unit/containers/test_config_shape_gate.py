@@ -141,7 +141,14 @@ def test_node_command_allowlist_is_identical_across_shapes(monkeypatch, emit_81)
     assert "screen.snapshot" in allow
     assert "system.run" in allow
     assert "mcp.tools.call.v1" in allow
-    assert len(allow) == 17
+    # 2026.8.1's node host / bundled browser plugin declare these unconditionally
+    # (upstream node-host/runtime.ts + browser plugin-registration.ts); missing
+    # any of them fails the gateway's `declared <= allowed` node-surface check
+    # on every reconnect (see desktop_pair_live.approve_pending_node_surface).
+    assert "fs.listDir" in allow
+    assert "terminal.upload" in allow
+    assert "browser.proxy.upload.v1" in allow
+    assert len(allow) == 20
 
 
 # --- target-image derivation ------------------------------------------------

@@ -106,9 +106,45 @@ DESKTOP_CLI_SHELL_COMMANDS: tuple[str, ...] = (
     # (gateway/node-plugin-tool-snapshot.ts `allowedCommands.has(command)`),
     # so the agent simply never sees the tools. No error anywhere.
     "mcp.tools.call.v1",
+    # The 2026.8.1 node host declares these four UNCONDITIONALLY in its connect
+    # manifest (upstream src/node-host/runtime.ts:374-378), regardless of the
+    # owner's permission grant. Withholding any of them makes
+    # `declared <= allowed` false on every reconnect
+    # (gateway/node-connect-reconcile.ts `hasCommandUpgrade`), so the gateway
+    # re-files a pending node-surface request on every reconnect and
+    # `desktop_pair_live.approve_pending_node_surface` refuses it forever —
+    # the node connects but its effective commands are stripped to [].
+    "system.execApprovals.get",
+    "system.execApprovals.set",
+    "fs.listDir",
+    "terminal.upload",
 )
 
-DESKTOP_CLI_BROWSER_COMMANDS: tuple[str, ...] = ("browser.proxy",)
+# The bundled browser plugin also declares its upload command unconditionally
+# at 8.1 (upstream extensions/browser/plugin-registration.ts:221-223) — same
+# `declared <= allowed` failure mode as the shell commands above.
+DESKTOP_CLI_BROWSER_COMMANDS: tuple[str, ...] = ("browser.proxy", "browser.proxy.upload.v1")
+
+# The subset of the above that the 2026.8.1 sidecar declares in its connect
+# manifest REGARDLESS of the owner's grant (node host: system.execApprovals.get/
+# set, fs.listDir, terminal.upload; bundled browser plugin: browser.proxy.upload.v1
+# — see the comments on the two constants above). node.pair.approve's params
+# are a closed {requestId} schema (packages/gateway-protocol/src/schema/nodes.ts
+# NodePairApproveParamsSchema) — approving a pending node surface always grants
+# EVERYTHING it declared, filtered only by the container-wide command allowlist,
+# never by this per-device grant. desktop_pair_live.approve_pending_node_surface
+# uses this set to tell "declared exceeds grant because of known upstream noise"
+# (tolerable — approve anyway) from "declared exceeds grant for an unrecognised
+# reason" (a future plugin's own unconditional command — still refuse).
+NODE_COMMANDS_DECLARED_UNCONDITIONALLY: frozenset[str] = frozenset(
+    {
+        "system.execApprovals.get",
+        "system.execApprovals.set",
+        "fs.listDir",
+        "terminal.upload",
+        "browser.proxy.upload.v1",
+    }
+)
 
 DESKTOP_CLI_FILE_COMMANDS: tuple[str, ...] = (
     "file.fetch",

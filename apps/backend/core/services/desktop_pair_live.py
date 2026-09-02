@@ -59,6 +59,7 @@ import os
 import secrets
 
 from core.observability.metrics import put_metric
+from core.services.desktop_pair import NODE_COMMANDS_DECLARED_UNCONDITIONALLY
 from core.services.paperclip_openclaw_pairing import approve_pending_device_from_rejection
 
 logger = logging.getLogger(__name__)
@@ -188,13 +189,43 @@ async def approve_pending_node_surface(
             return False
         allowed = set(entry.get("commands") or [])
         declared = set(pending.get("commands") or [])
-        if not declared <= allowed:
+        excess = declared - allowed
+        # The 2026.8.1 sidecar declares several commands unconditionally,
+        # regardless of the owner's grant (NODE_COMMANDS_DECLARED_UNCONDITIONALLY
+        # -- see its comment for why declared <= allowed cannot hold for a
+        # partial grant even when the node behaves exactly as configured).
+        # Refusing on ANY excess left every partial grant permanently pending,
+        # even one that granted real commands (e.g. browser-only): the
+        # always-declared noise alone tripped this gate.
+        #
+        # Tolerate exactly that known noise as long as the owner granted
+        # something for this device; an all-denied grant still gets nothing,
+        # and an excess containing anything unrecognised (a future plugin
+        # declaring its own unconditional command, e.g. google-meet/ollama)
+        # still leaves the surface pending rather than silently widen it.
+        #
+        # This is an approximation, not an exact per-command grant.
+        # node.pair.approve's params are a closed {requestId} schema (no
+        # commands field -- packages/gateway-protocol/src/schema/nodes.ts
+        # NodePairApproveParamsSchema), so approving hands the node everything
+        # it declared, filtered only by the container-wide command allowlist,
+        # never by this per-owner grant. Two of the five unconditional
+        # commands (system.execApprovals.get/set) are inert regardless: the
+        # node.invoke handler hard-refuses them directly (points callers at
+        # exec.approvals.node.*), and that RPC family requires operator.admin,
+        # which only this backend's own pooled connection holds -- the agent
+        # can never reach them. The other three (fs.listDir, terminal.upload,
+        # browser.proxy.upload.v1) ARE agent-invocable, so on a partial grant
+        # missing their family they can ride along live beyond what was
+        # granted until the next container boot, when the SQLite import
+        # applies this device's exact entry commands with no such slack.
+        if excess and (not allowed or excess - NODE_COMMANDS_DECLARED_UNCONDITIONALLY):
             logger.warning(
                 "approve_pending_node_surface: node=%s owner=%s declares commands beyond the "
                 "owner's grant (%s) — leaving the surface pending",
                 device_id[:16],
                 owner_id,
-                sorted(declared - allowed),
+                sorted(excess),
             )
             put_metric("desktop_pair.node_surface_exceeds_grant")
             return False

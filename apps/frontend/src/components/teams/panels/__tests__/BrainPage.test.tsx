@@ -168,6 +168,24 @@ describe("BrainPage", () => {
     expect(screen.getByRole("img", { name: "chart.png" })).toBeInTheDocument();
   });
 
+  it("a frontmatter-only stub reads as empty, not as a blank panel", () => {
+    const { container } = render(
+      <BrainPage
+        path="entities/ada-lovelace.md"
+        files={FILES}
+        editing={false}
+        isLoading={false}
+        error={null}
+        onNavigate={() => {}}
+        {...noop}
+        file={page("---\npageType: entity\n---\n", "entities/ada-lovelace.md")}
+      />,
+    );
+    expect(screen.getByText("This page is empty.")).toBeInTheDocument();
+    expect(container.querySelector("article")).toBeNull();
+    expect(screen.queryByRole("heading")).toBeNull();
+  });
+
   it("a 404 is the missing-page notice with an exit to the index", () => {
     const onNavigate = vi.fn();
     const err = Object.assign(new Error("API 404"), { status: 404 });

@@ -139,10 +139,24 @@ export function BrainPage({
     );
   }
 
+  // The plugin's stub shape is frontmatter and nothing else, so a real page can
+  // read as "" once the frontmatter is stripped — an empty <article> would be
+  // indistinguishable from a broken panel.
+  const body = toReadableMarkdown(file.content ?? "").trim();
+  if (!body) {
+    return (
+      <PanelNotice
+        state="zero"
+        headline="This page is empty."
+        supporting="Nothing has been written here yet."
+      />
+    );
+  }
+
   return (
     <article className="max-w-prose px-4 py-3 font-serif text-[var(--midnight)]">
       <MarkdownView skipHtml components={components}>
-        {toReadableMarkdown(file.content ?? "")}
+        {body}
       </MarkdownView>
     </article>
   );

@@ -194,6 +194,16 @@ export interface UseAgentChatReturn {
   isLoadingOlder: boolean;
   /** Fetch and prepend the next older page of history (walks the module-level paging cursor backward). */
   loadOlderMessages: () => Promise<void>;
+  /** Repoint the session to the state BEFORE the persisted user message with
+   *  this entryId (`persistedEntryId`), discarding everything after it onto a
+   *  branch. Resolves to the removed message's text for the composer, or null
+   *  if the RPC failed (the error is toasted and state is left untouched). */
+  rewindToMessage: (entryId: string) => Promise<string | null>;
+  /** Repoint the active transcript path to an existing branch tip. */
+  switchBranch: (leafEntryId: string) => Promise<boolean>;
+  /** Bumped whenever a rewind/switch changed the session's branch DAG — the
+   *  branch reader re-lists on the edge. */
+  branchRefreshToken: number;
 }
 
 // =============================================================================
@@ -1240,9 +1250,78 @@ export function useAgentChat(
     _messageCache.delete(key);
     historyLoadedRef.current.delete(key);
     _historyPaging.delete(key);
+    // Wiping the transcript IS a local mutation: a chat.history read already in
+    // flight when the server-side mutation landed carries the PRE-mutation
+    // snapshot, and applying it would repaint the transcript we just
+    // invalidated. Bumping the seq makes the fetch effect discard it; the fresh
+    // fetch the nonce below triggers reads the seq after this bump, so it still
+    // applies normally.
+    transcriptMutationSeqRef.current += 1;
     setChatMessages([]);
     setHistoryRefetchNonce((n) => n + 1);
   }, [sessionName, setChatMessages]);
+
+  // ---- Rewind + branch switching (OpenClaw 8.1 sessions.* RPCs) ----
+  //
+  // `sessions.rewind` repoints the session to the state BEFORE one persisted
+  // user message and hands its text back for the composer; the discarded tail
+  // survives as a DAG branch that `sessions.branches.switch` can return to.
+  // Both mutate the server transcript, so both invalidate + refetch history
+  // exactly like /reset — and both change the branch set, so both bump
+  // `branchRefreshToken` for the branch reader mounted alongside.
+  //
+  // Neither is gated here: the container refuses a cut while a run is live
+  // (session-lifecycle-admission), and the UI hides the affordance while busy.
+  const [branchRefreshToken, setBranchRefreshToken] = useState(0);
+
+  const sessionKeyNow = useCallback(
+    (): string | null =>
+      agentIdRef.current
+        ? buildChatSessionKey(agentIdRef.current, sessionName, activeSessionIdRef.current)
+        : null,
+    [sessionName],
+  );
+
+  const rewindToMessage = useCallback(
+    async (entryId: string): Promise<string | null> => {
+      const sessionKey = sessionKeyNow();
+      if (!sessionKey) return null;
+      try {
+        const res = (await sendReq("sessions.rewind", { sessionKey, entryId })) as {
+          editorText?: string;
+        } | null;
+        invalidateHistoryAndRefetch();
+        setBranchRefreshToken((n) => n + 1);
+        // editorAttachments are deliberately dropped: the composer has no
+        // programmatic attachment channel, and restoring images the user
+        // cannot see re-attached would be worse than losing them.
+        return res?.editorText ?? "";
+      } catch (err) {
+        notifyApiError(err, "Couldn't rewind this conversation", {
+          dedupeKey: "session-rewind",
+        });
+        return null;
+      }
+    },
+    [sendReq, invalidateHistoryAndRefetch, sessionKeyNow],
+  );
+
+  const switchBranch = useCallback(
+    async (leafEntryId: string): Promise<boolean> => {
+      const sessionKey = sessionKeyNow();
+      if (!sessionKey) return false;
+      try {
+        await sendReq("sessions.branches.switch", { sessionKey, leafEntryId });
+        invalidateHistoryAndRefetch();
+        setBranchRefreshToken((n) => n + 1);
+        return true;
+      } catch (err) {
+        notifyApiError(err, "Couldn't switch branch", { dedupeKey: "session-branch" });
+        return false;
+      }
+    },
+    [sendReq, invalidateHistoryAndRefetch, sessionKeyNow],
+  );
 
   // ---- Load older history (paging backward) ----
   //
@@ -2689,5 +2768,8 @@ export function useAgentChat(
     hasOlderMessages: !!(cacheKey && _historyPaging.get(cacheKey)?.hasMore),
     isLoadingOlder,
     loadOlderMessages,
+    rewindToMessage,
+    switchBranch,
+    branchRefreshToken,
   };
 }

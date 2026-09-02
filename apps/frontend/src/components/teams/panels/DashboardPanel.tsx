@@ -349,7 +349,23 @@ export function DashboardPanel() {
               className="editorial-card overflow-hidden"
               style={{ borderColor: "var(--edge)" }}
             >
-              {recentTasks.length === 0 ? (
+              {/* Mirrors the Recent activity card below: an in-flight or
+                  failed /issues read must not be reported as "no tasks". */}
+              {issuesQuery.isLoading && issues.length === 0 ? (
+                <div
+                  className="px-4 py-3 font-editorial-serif text-base italic"
+                  style={{ color: "var(--midnight-muted)" }}
+                >
+                  Loading tasks…
+                </div>
+              ) : issuesQuery.error && !issuesQuery.data ? (
+                <div
+                  className="px-4 py-3 font-editorial-serif text-base italic"
+                  style={{ color: "var(--midnight-muted)" }}
+                >
+                  Couldn&apos;t load recent tasks.
+                </div>
+              ) : recentTasks.length === 0 ? (
                 <div
                   className="px-4 py-3 font-editorial-serif text-base italic"
                   style={{ color: "var(--midnight-muted)" }}

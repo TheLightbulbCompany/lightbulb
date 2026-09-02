@@ -282,6 +282,52 @@ describe("DashboardPanel", () => {
     expect(screen.getByText(/no recent tasks/i)).toBeInTheDocument();
   });
 
+  test("says Loading tasks — never 'No recent tasks' — while /issues is in flight", () => {
+    mockApi(
+      makeRead({
+        "/dashboard": {
+          data: {
+            dashboard: {
+              agents: {},
+              tasks: {},
+              runActivity: [],
+              costs: { monthSpendCents: 0 },
+              pendingApprovals: 0,
+              budgets: { pendingApprovals: 0 },
+            },
+          },
+        },
+        "/issues": { isLoading: true },
+      }),
+    );
+    render(<DashboardPanel />);
+    expect(screen.getByText("Loading tasks…")).toBeInTheDocument();
+    expect(screen.queryByText(/no recent tasks/i)).not.toBeInTheDocument();
+  });
+
+  test("says the tasks read failed — never 'No recent tasks' — when /issues errors", () => {
+    mockApi(
+      makeRead({
+        "/dashboard": {
+          data: {
+            dashboard: {
+              agents: {},
+              tasks: {},
+              runActivity: [],
+              costs: { monthSpendCents: 0 },
+              pendingApprovals: 0,
+              budgets: { pendingApprovals: 0 },
+            },
+          },
+        },
+        "/issues": { error: new Error("boom") },
+      }),
+    );
+    render(<DashboardPanel />);
+    expect(screen.getByText(/couldn.t load recent tasks/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no recent tasks/i)).not.toBeInTheDocument();
+  });
+
   test("normalizes /issues envelope { items: [...] }", () => {
     mockApi(
       makeRead({
@@ -340,6 +386,9 @@ describe("DashboardPanel", () => {
     expect(
       screen.getByRole("heading", { level: 1, name: "Home" }),
     ).toBeInTheDocument();
+    // PanelMasthead suppresses the overline when it equals the title, so the
+    // fallback reads as one "Home" — never "Home Home".
+    expect(screen.getAllByText("Home")).toHaveLength(1);
   });
 
   test("renders the Business section before the team section", () => {

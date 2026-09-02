@@ -834,6 +834,13 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
             project_id=project_id,
             owner_id=owner_id,
         )
+        from core.repositories import billing_repo
+
+        # Deterministic menu + Stripe status for the first run (see the
+        # render_integrations_md header). A missing billing row renders the
+        # trial wording, which is the safe default: "set up when you subscribe".
+        billing_row = await billing_repo.get_by_owner_id(owner_id) or {}
+        integrations_md = render_integrations_md(integration_rows_from_registry(), billing_row)
         stage_first_run_files(
             workspace=get_workspace(),
             owner_id=owner_id,
@@ -845,6 +852,7 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
                 display_name=first_name,
                 email=email or "",
             ),
+            integrations_md=integrations_md,
         )
     except BaseException:
         # BaseException, not Exception: asyncio.CancelledError (backend
@@ -1002,8 +1010,9 @@ def stage_first_run_files(
     owner_id: str,
     friday_agent_id: str,
     brief_md: str,
+    integrations_md: str = "",
 ) -> None:
-    """Write BRIEF.md, unconditionally.
+    """Write BRIEF.md (brief + the staged integrations section), unconditionally.
 
     Used to be write-if-missing because its existence WAS the one-shot
     marker for the flow. The generation-fenced ``funnel_state`` claim on the
@@ -1014,4 +1023,4 @@ def stage_first_run_files(
     moments earlier.
     """
     base = f"workspace-{friday_agent_id}"
-    workspace.write_file(owner_id, f"{base}/BRIEF.md", brief_md)
+    workspace.write_file(owner_id, f"{base}/BRIEF.md", brief_md + integrations_md)

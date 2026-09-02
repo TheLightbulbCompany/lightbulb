@@ -12,11 +12,14 @@ import pytest
 
 from core.services.onboarding_brief import (
     FIRST_RUN_NO_BRIEF_MESSAGE,
+    IntegrationRow,
     build_first_run_message,
     build_onboarding_brief_text,
     derive_goal_title,
+    integration_rows_from_registry,
     project_name_for,
     render_brief_md,
+    render_integrations_md,
     seed_goal_and_project,
     stage_first_run_files,
 )
@@ -390,13 +393,6 @@ def test_kickoff_never_inlines_an_authorization_header():
         assert "Integrations tab" in msg, "the fallback clause is load-bearing"
 
 
-from core.services.onboarding_brief import (  # noqa: E402 — appended block
-    IntegrationRow,
-    integration_rows_from_registry,
-    render_integrations_md,
-)
-
-
 def _rows():
     return [
         IntegrationRow(key="stripe", display_name="Stripe", byo_required=False, requestable=False),
@@ -437,7 +433,7 @@ def test_integrations_md_stripe_line_connected_wins_over_status():
     md = render_integrations_md(
         _rows(), {"subscription_status": "trial_local", "company_stripe_account_id": "acct_123"}
     )
-    assert "connected" in md
+    assert "account): connected." in md
     assert "do not request it" not in md
 
 
@@ -482,3 +478,35 @@ def test_integration_rows_drop_providers_gated_out_of_this_env(monkeypatch):
     assert "gated" not in rows
     assert rows["here"].requestable is False
     assert rows["askable"].requestable is True
+
+
+class _CapturingWorkspace:
+    def __init__(self):
+        self.writes: list[tuple[str, str, str]] = []
+
+    def write_file(self, owner_id, rel_path, content):
+        self.writes.append((owner_id, rel_path, content))
+
+
+def test_stage_first_run_files_appends_the_integrations_section_to_brief_md():
+    ws = _CapturingWorkspace()
+    stage_first_run_files(
+        workspace=ws,
+        owner_id="user_1",
+        friday_agent_id="friday-uuid",
+        brief_md="# BRIEF.md — Onboarding brief\n",
+        integrations_md="\n## Integrations\n\n- Stripe (`stripe`): one-click\n",
+    )
+    assert ws.writes == [
+        (
+            "user_1",
+            "workspace-friday-uuid/BRIEF.md",
+            "# BRIEF.md — Onboarding brief\n\n## Integrations\n\n- Stripe (`stripe`): one-click\n",
+        )
+    ]
+
+
+def test_stage_first_run_files_without_a_section_is_unchanged():
+    ws = _CapturingWorkspace()
+    stage_first_run_files(workspace=ws, owner_id="u", friday_agent_id="f", brief_md="brief\n")
+    assert ws.writes == [("u", "workspace-f/BRIEF.md", "brief\n")]

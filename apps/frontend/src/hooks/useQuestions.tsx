@@ -52,6 +52,9 @@ export interface UseQuestionsReturn {
   error: string | null;
 }
 
+/** Display-only fallback when a record arrives without a usable expiry. */
+const DEFAULT_EXPIRY_MS = 10 * 60 * 1000;
+
 /** Structural check — the payload crosses a WS boundary untyped. */
 function parseRecord(payload: unknown): QuestionRecord | null {
   if (!payload || typeof payload !== "object") return null;
@@ -60,7 +63,10 @@ function parseRecord(payload: unknown): QuestionRecord | null {
   if (!Array.isArray(p.questions) || p.questions.length === 0) return null;
   if (!p.questions.every((q) => q && typeof q.questionId === "string")) return null;
   if (p.status !== "pending") return null; // resolved records are not actionable
-  return p as QuestionRecord;
+  // The gateway owns expiry, so a missing/malformed timestamp must not kill
+  // the card -- only the countdown, which would otherwise render "NaN:NaN".
+  const expiresAtMs = Number.isFinite(p.expiresAtMs) ? (p.expiresAtMs as number) : Date.now() + DEFAULT_EXPIRY_MS;
+  return { ...p, expiresAtMs } as QuestionRecord;
 }
 
 export function useQuestions(): UseQuestionsReturn {

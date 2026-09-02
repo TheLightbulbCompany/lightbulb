@@ -106,6 +106,14 @@ describe("useQuestions", () => {
     expect(result.current.questions).toHaveLength(0);
   });
 
+  it("keeps a record whose expiry is missing, with a finite fallback countdown", () => {
+    const { result } = renderHook(() => useQuestions());
+    act(() => emit("question.requested", record({ expiresAtMs: undefined as unknown as number })));
+    expect(result.current.questions).toHaveLength(1);
+    expect(Number.isFinite(result.current.questions[0].expiresAtMs)).toBe(true);
+    expect(result.current.questions[0].expiresAtMs).toBeGreaterThan(Date.now());
+  });
+
   it("question.resolved clears the card (answered elsewhere / expired)", () => {
     const { result } = renderHook(() => useQuestions());
     act(() => emit("question.requested", record()));

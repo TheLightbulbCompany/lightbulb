@@ -65,8 +65,10 @@ function QuestionCard({ record }: { record: QuestionRecord }) {
   const [failed, setFailed] = useState(false);
   const countdown = useCountdown(record.expiresAtMs);
 
-  // A store-bound secret is always the only question in its request (the
-  // gateway rejects any other shape), so the binding is the card's.
+  // A store-bound secret is always the only question in its request: the
+  // secrets tool emits exactly one (`src/agents/tools/secrets-tool.ts`) and the
+  // gateway's own resolve path reads `questions[0].secretStore`
+  // (`src/gateway/server-methods/question.ts`), so this mirrors the server.
   const secretStore = record.questions[0]?.secretStore;
 
   const values = (q: Question): string[] => {

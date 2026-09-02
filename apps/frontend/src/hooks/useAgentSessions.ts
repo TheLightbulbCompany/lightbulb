@@ -11,21 +11,6 @@ import { notifyApiError } from "@/lib/notify";
 const SESSION_ID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-/**
- * Resolve a full OpenClaw session key to the `sessionId` shape this app's
- * session state uses (see AgentSession.sessionId): the trailing UUID for a
- * named 4-part key, or `null` for the legacy 3-part "General" key — mirrors
- * the parsing this hook does for its own rows, so any other caller resolving
- * a bare key (e.g. a `sessions.search` hit) agrees with the sidebar on what
- * counts as General.
- */
-export function sessionIdFromKey(key: string): string | null {
-  const parts = key.split(":");
-  if (parts.length !== 4) return null;
-  const tail = parts[3];
-  return SESSION_ID_RE.test(tail) ? tail : null;
-}
-
 export interface AgentSession {
   /** Trailing UUID for a real session; null == the legacy "General" session. */
   sessionId: string | null;

@@ -3,8 +3,9 @@
 // Full-text search over the current agent's session transcripts (OpenClaw
 // 8.1's `sessions.search` RPC). Presentational shell over useSessionSearch;
 // clicking a hit resolves the OpenClaw session key to this app's sessionId
-// shape (see sessionIdFromKey) and hands the caller that plus the hit's
-// messageId — the caller wires the switch (see WorkspaceSidebar's
+// shape (see @lightbulb/shared's sessionIdFromKey — the ONE cross-client copy
+// of this parsing, already used by mobile) and hands the caller that plus the
+// hit's messageId — the caller wires the switch (see WorkspaceSidebar's
 // `selectSession`). Highlighting reuses the Teams search HighlightedText
 // component (text-node rendering, never dangerouslySetInnerHTML); this is the
 // one client that has to compute its own match ranges, since sessions.search
@@ -12,8 +13,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Search } from "lucide-react";
+import { sessionIdFromKey } from "@lightbulb/shared";
 import { HighlightedText } from "@/components/teams/search/HighlightedText";
-import { sessionIdFromKey, type AgentSession } from "@/hooks/useAgentSessions";
+import type { AgentSession } from "@/hooks/useAgentSessions";
 import { useSessionSearch, type SessionSearchHit } from "@/hooks/useSessionSearch";
 import { notifyApiError } from "@/lib/notify";
 

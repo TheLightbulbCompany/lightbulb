@@ -316,3 +316,12 @@ def test_72_shape_still_emits_the_agents_list_array():
     ids = [entry["id"] for entry in agents["list"]]
     assert ids == [_FRIDAY, _ATLAS]
     assert agents["list"][0]["default"] is True
+
+
+def test_model_policy_is_81_only(monkeypatch):
+    """``agents.defaults.modelPolicy`` does not exist in the 7.2 schema and
+    ``agents.defaults`` is ``.strict()`` there, so emitting it onto a 7.2 image
+    fails config validation and the gateway refuses to start. On 8.1 it is what
+    makes the picker resolve against the account-scoped catalog (#115953)."""
+    assert _cfg(monkeypatch, emit_81=True)["agents"]["defaults"]["modelPolicy"] == {"allow": ["openai/*"]}
+    assert "modelPolicy" not in _cfg(monkeypatch, emit_81=False)["agents"]["defaults"]

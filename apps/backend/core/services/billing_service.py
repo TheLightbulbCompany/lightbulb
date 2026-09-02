@@ -1904,6 +1904,7 @@ async def _hot_swap_provider(
         derive_enabled_harnesses,
         heartbeat_model_ref,
         premium_model_ref,
+        model_policy_block,
     )
     from core.services.config_patcher import ConfigPatchError, replace_provider_block
 
@@ -1960,6 +1961,14 @@ async def _hot_swap_provider(
         user_id=clerk_user_id,
         byo_provider=None,  # hot path never carries byo_key
     )
+    # The image the owner's container is ACTUALLY running, not the env pin:
+    # `modelPolicy` is an 8.1-only key and `agents.defaults` is strict on 7.2,
+    # so writing it from the pin during a rollback/promotion-lag window would
+    # crash-loop a 7.2 container on its next config reload. Same accessor
+    # write_user_configs uses for the same reason.
+    from core.containers import get_ecs_manager
+
+    deployed_tag = await get_ecs_manager()._deployed_image_tag(owner_id)
     # The CEO (Friday) runs on the premium tier via a per-agent override; the
     # hot swap must re-pin (or clear) it so it tracks the new provider. None on
     # flat-rate paths (chatgpt_oauth), which drops any stale override.
@@ -2007,6 +2016,7 @@ async def _hot_swap_provider(
             default_model=default_model,
             plugin_entries=plugin_entries,
             ceo_model=ceo_model,
+            model_policy=model_policy_block(new_provider, default_model, deployed_tag=deployed_tag).get("modelPolicy"),
             cheap_model=cheap_model,
             heartbeat_model=heartbeat_model,
             utility_model=utility_model,

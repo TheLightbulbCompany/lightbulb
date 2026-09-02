@@ -1018,6 +1018,9 @@ async def test_hot_swap_pre_stages_under_owner_id(monkeypatch):
     monkeypatch.setattr("core.containers.config.premium_model_ref", lambda *a, **k: None)
     monkeypatch.setattr("core.containers.config.cheap_model_ref", lambda *a, **k: "cheap")
     monkeypatch.setattr("core.services.config_patcher.replace_provider_block", AsyncMock())
+    fake_manager = MagicMock()
+    fake_manager._deployed_image_tag = AsyncMock(return_value=None)
+    monkeypatch.setattr("core.containers.get_ecs_manager", lambda: fake_manager)
 
     await billing_service._hot_swap_provider(
         owner_id="org_1",
@@ -1029,6 +1032,43 @@ async def test_hot_swap_pre_stages_under_owner_id(monkeypatch):
     get_tokens.assert_awaited_once_with(user_id="user_a", bound_to="org_1")
     # Auth file written under the container owner (org_1), not the connector.
     pre_stage.assert_awaited_once_with(user_id="org_1", oauth_tokens={"access_token": "tok", "account_id": "acc"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("deployed_tag", "expected_policy"),
+    [
+        ("2026.7.2-isol8.4-abc1234", None),
+        ("2026.8.1-isol8.2-035a60f", {"allow": ["openai/*"]}),
+    ],
+)
+async def test_hot_swap_gates_model_policy_on_the_running_image(monkeypatch, deployed_tag, expected_policy):
+    """``modelPolicy`` is an 8.1-only key and ``agents.defaults`` is strict on
+    7.2, so the hot swap must gate it on the image the owner's container is
+    ACTUALLY running -- not the env pin, which a live container lags by a whole
+    upstream version during a rollback or promotion window. Writing it from the
+    pin would crash-loop a 7.2 container on its next config reload."""
+    monkeypatch.setattr(
+        "core.services.oauth_service.get_decrypted_tokens",
+        AsyncMock(return_value={"access_token": "tok", "account_id": "acc"}),
+    )
+    monkeypatch.setattr("core.containers.workspace.pre_stage_auth_profile_store", AsyncMock())
+    monkeypatch.setattr("core.containers.config.premium_model_ref", lambda *a, **k: None)
+    monkeypatch.setattr("core.containers.config.cheap_model_ref", lambda *a, **k: "cheap")
+    replace = AsyncMock()
+    monkeypatch.setattr("core.services.config_patcher.replace_provider_block", replace)
+    fake_manager = MagicMock()
+    fake_manager._deployed_image_tag = AsyncMock(return_value=deployed_tag)
+    monkeypatch.setattr("core.containers.get_ecs_manager", lambda: fake_manager)
+
+    await billing_service._hot_swap_provider(
+        owner_id="org_1",
+        clerk_user_id="user_a",
+        new_provider="chatgpt_oauth",
+    )
+
+    fake_manager._deployed_image_tag.assert_awaited_once_with("org_1")
+    assert replace.await_args.kwargs["model_policy"] == expected_policy
 
 
 @pytest.mark.asyncio

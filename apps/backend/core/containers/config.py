@@ -599,15 +599,28 @@ def build_provider_block(
         # openai-codex/…" at first chat (nothing migrates it at runtime; only
         # `openclaw doctor --fix` would). The canonical ref is `openai/*`.
         #
+        # gpt-5.6-sol, not gpt-5.5: at 2026.8.1 the openai manifest marks
+        # gpt-5.5 `status: deprecated` (replacedBy gpt-5.6-sol -- identical
+        # cost, context window and reasoning class), and upstream's own
+        # fresh-setup default moved to gpt-5.6-sol (#122178). Deliberately NOT
+        # gated on _emit_81_shape like modelPolicy below: gpt-5.6-sol is
+        # already in the 7.2 manifest (verified at fork tag v2026.7.2-isol8.8),
+        # so a 7.2 rollback resolves it fine. Deprecated refs
+        # still RESOLVE (only picker visibility changes, and a configured
+        # ref stays visible), so this was latent rather than live -- but the
+        # account-scoped discovery enabled by model_policy_block() drops
+        # manifest rows the account no longer lists, and a primary that
+        # vanishes from the live list fails every run.
+        #
         # The fallback must be a DIFFERENT model: upstream's fallback runner
         # dedupes candidates by provider/model key, so a self-fallback leaves
         # zero failover candidates and a single provider 5xx kills the run
         # (FailoverError, next=none). gpt-5.4 is the closest tier in the
         # Codex-routable OAuth allowlist; fallbacks are error-only, and the
-        # plan is flat-rate, so it engages only when gpt-5.5 itself errors.
+        # plan is flat-rate, so it engages only when the primary itself errors.
         return (
             {},
-            {"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.4"]},
+            {"primary": "openai/gpt-5.6-sol", "fallbacks": ["openai/gpt-5.4"]},
             {},
         )
     if provider_choice == "byo_key":
@@ -795,6 +808,52 @@ def build_provider_block(
     raise ValueError(f"Unknown provider_choice: {provider_choice!r}")
 
 
+def model_policy_block(
+    provider_choice: str,
+    default_model: dict,
+    *,
+    deployed_tag: str | None = None,
+) -> dict:
+    """``agents.defaults.modelPolicy`` for the owner's provider path, or ``{}``.
+
+    WHY: the model picker resolves against the STATIC plugin manifest unless
+    full discovery is escalated, and the manifest is why a ChatGPT-OAuth owner
+    was offered a model their account cannot serve (bodyless 400 on select).
+    Upstream #115953/#116857 escalates to the ACCOUNT-scoped catalog when
+    ``agents.defaults.modelPolicy.allow`` carries a provider wildcard
+    (modelCatalogBrowseRequiresFullDiscovery, model-catalog-browse.ts). It has
+    to be this key: the legacy ``agents.defaults.models`` map escalates only
+    the ``configured`` view, never the ``default`` view the picker sends.
+
+    Emitted only for providers with a live or key-scoped discovery source
+    (chatgpt_oauth, byo_key). NEVER for Bedrock: we ship an explicit static,
+    pricing-matched catalog with plugin discovery disabled, so there is
+    nothing to discover -- and ``allow`` is a RESTRICTIVE allowlist (allowAny
+    flips false the moment it has an entry), so on Bedrock it would only add
+    a way to lock an owner out of their own catalog.
+
+    The wildcard is derived from the primary's provider segment rather than
+    hardcoded per path so it cannot drift from ``build_provider_block``.
+
+    8.1-only: ``modelPolicy`` does not exist in the 7.2 schema and
+    ``agents.defaults`` is ``.strict()`` there, so emitting it onto a 7.2
+    image fails validation and the gateway refuses to start.
+
+    SINGLE source of truth for this block. The provider-switch hot path
+    (``config_patcher.replace_provider_block``) must be handed its result,
+    because the allowlist is restrictive: a ChatGPT -> Bedrock switch that
+    left ``["openai/*"]`` behind would reject every amazon-bedrock model.
+    """
+    if provider_choice not in ("chatgpt_oauth", "byo_key"):
+        return {}
+    if not _emits_81_shape(deployed_tag):
+        return {}
+    provider = str(default_model.get("primary", "")).split("/", 1)[0]
+    if not provider:
+        return {}
+    return {"modelPolicy": {"allow": [f"{provider}/*"]}}
+
+
 def premium_model_ref(
     provider_choice: str, byo_provider: str | None, *, aip_arns: dict[str, str] | None = None
 ) -> str | None:
@@ -826,7 +885,11 @@ def premium_model_ref(
             # Anthropic-DIRECT id — no Bedrock "-v1" suffix / date-stamp.
             return "anthropic/claude-opus-4-6"
         if byo_provider == "openai":
-            return "openai/gpt-5.5"
+            # Same swap as the OAuth primary: gpt-5.5 is deprecated at 8.1 and
+            # the BYO path now runs key-scoped discovery too (model_policy_block),
+            # so a CEO pinned to a ref the key's live list omits would fail
+            # every Friday run. gpt-5.6-sol is the drop-in replacement.
+            return "openai/gpt-5.6-sol"
     return None
 
 
@@ -848,7 +911,7 @@ def cheap_model_ref(
     ignored or rejected by the Codex backend, so the aux call fails, compaction
     never runs, context grows unbounded, and the turn dies with "Context overflow:
     prompt too large". Returning ``None`` lets compaction / memory-flush /
-    heartbeat inherit the primary (gpt-5.5), which the OAuth token can actually
+    heartbeat inherit the primary (gpt-5.6-sol), which the OAuth token can actually
     invoke — so compaction runs. The general rule: only return a model the
     selected provider/auth path can actually invoke as a summarizer.
 
@@ -1573,6 +1636,7 @@ def build_openclaw_config_dict(
         "agents": {
             "defaults": {
                 "model": default_model,
+                **model_policy_block(provider_choice, default_model, deployed_tag=deployed_tag),
                 # All three left agents.defaults at 2026.8.1: runRetries has no
                 # replacement, memorySearch moved to root memory.search, and
                 # contextTokens moved onto the per-model Bedrock entries. A 7.2

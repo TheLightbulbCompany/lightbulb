@@ -38,9 +38,17 @@ export interface UseAgentModelsResult {
  * doc's error-handling section.
  */
 export function useAgentModels(agentId: string | null): UseAgentModelsResult {
+  // `view: "configured"` + `agentId`, the request the upstream Control UI
+  // sends (ui/src/lib/model-catalog-store.ts). Without a view the gateway
+  // serves `default`, which resolves against the STATIC plugin manifest and
+  // races account-scoped discovery at 750ms, returning the stale static list
+  // on timeout -- and SWR here never revalidates, so the tab keeps it. The
+  // `configured` view waits for discovery and re-adds the agent's pinned
+  // model so it never vanishes from the picker. Discovery itself is enabled
+  // by agents.defaults.modelPolicy.allow (backend config.model_policy_block).
   const { data, error, isLoading } = useGatewayRpc<ModelsListResponse | ModelEntry[]>(
     agentId ? "models.list" : null,
-    undefined,
+    agentId ? { view: "configured", agentId } : undefined,
   );
   const { data: cfg } = useGatewayRpc<ConfigGet>("config.get");
 

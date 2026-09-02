@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 
 // OpenClaw 8.1's `sessions.search` scans every session store for ONE agent per
@@ -10,6 +10,11 @@ import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 const MIN_QUERY_LENGTH = 2;
 const DEBOUNCE_MS = 300;
 const RESULT_LIMIT = 20;
+// `sessions.search` scopes to the keys we hand it, and the whole list rides one
+// WS frame. An agent with hundreds of sessions would bloat that frame for no
+// gain — the newest sessions are the ones anyone searches. The sidebar already
+// pages, so in practice this cap is never reached.
+const MAX_SESSION_KEYS = 200;
 
 /** One `sessions.search` hit (gateway-protocol `SessionsSearchHitSchema`). */
 export interface SessionSearchHit {
@@ -50,7 +55,17 @@ export interface UseSessionSearchReturn {
  * `sessions.search` RPC). Debounces the raw input and never fires under
  * MIN_QUERY_LENGTH chars.
  */
-export function useSessionSearch(agentId: string | null, query: string): UseSessionSearchReturn {
+export function useSessionSearch(
+  agentId: string | null,
+  query: string,
+  // The keys of the agent's sessions the caller already has (the sidebar's
+  // useAgentSessions rows). REQUIRED by the gateway: for a configured agent,
+  // sessions-read.ts answers INVALID_REQUEST "agentId requires sessionKeys"
+  // when `agentId` arrives without them — every keystroke was rejected on
+  // prod — and dropping `agentId` instead would search the "main" agent,
+  // which is the wrong agent, not a lesser search.
+  sessionKeys: string[],
+): UseSessionSearchReturn {
   const [debounced, setDebounced] = useState("");
 
   useEffect(() => {
@@ -58,10 +73,16 @@ export function useSessionSearch(agentId: string | null, query: string): UseSess
     return () => clearTimeout(handle);
   }, [query]);
 
+  const scopedKeys = useMemo(() => sessionKeys.slice(0, MAX_SESSION_KEYS), [sessionKeys]);
   const trimmed = debounced.trim();
-  const isActive = Boolean(agentId) && trimmed.length >= MIN_QUERY_LENGTH;
+  // No keys means there is nothing to scope to — the call could only be
+  // rejected, so don't make it.
+  const isActive =
+    Boolean(agentId) && trimmed.length >= MIN_QUERY_LENGTH && scopedKeys.length > 0;
   const method = isActive ? "sessions.search" : null;
-  const params = isActive ? { agentId: agentId as string, query: trimmed, limit: RESULT_LIMIT } : undefined;
+  const params = isActive
+    ? { agentId: agentId as string, sessionKeys: scopedKeys, query: trimmed, limit: RESULT_LIMIT }
+    : undefined;
 
   const { data, error, isLoading } = useGatewayRpc<SessionsSearchResult>(method, params);
 

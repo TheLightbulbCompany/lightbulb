@@ -10,12 +10,16 @@ vi.mock("@/hooks/useGatewayRpc", () => ({
 
 import { useSessionSearch } from "../useSessionSearch";
 
-function renderSearch(agentId: string | null, query: string) {
-  return renderHook(({ agentId, query }: { agentId: string | null; query: string }) =>
-    useSessionSearch(agentId, query),
-  {
-    initialProps: { agentId, query },
-  });
+const KEYS = ["agent:agent-1:user_1", "agent:agent-1:user_1:11111111-1111-4111-8111-111111111111"];
+
+function renderSearch(agentId: string | null, query: string, sessionKeys: string[] = KEYS) {
+  return renderHook(
+    ({ agentId, query, sessionKeys }: { agentId: string | null; query: string; sessionKeys: string[] }) =>
+      useSessionSearch(agentId, query, sessionKeys),
+    {
+      initialProps: { agentId, query, sessionKeys },
+    },
+  );
 }
 
 describe("useSessionSearch", () => {
@@ -43,7 +47,7 @@ describe("useSessionSearch", () => {
     const { rerender } = renderSearch("agent-1", "h");
     for (const q of ["he", "hel", "hell", "hello"]) {
       act(() => { vi.advanceTimersByTime(50); }); // well under the 300ms window
-      rerender({ agentId: "agent-1", query: q });
+      rerender({ agentId: "agent-1", query: q, sessionKeys: KEYS });
     }
     // Before the debounce settles, no search call has fired yet.
     expect(useGatewayRpc).toHaveBeenLastCalledWith(null, undefined);
@@ -52,7 +56,7 @@ describe("useSessionSearch", () => {
 
     expect(useGatewayRpc).toHaveBeenLastCalledWith(
       "sessions.search",
-      { agentId: "agent-1", query: "hello", limit: expect.any(Number) },
+      { agentId: "agent-1", sessionKeys: KEYS, query: "hello", limit: expect.any(Number) },
     );
     // Only the trailing value was ever searched.
     const searchCalls = useGatewayRpc.mock.calls.filter(([method]) => method === "sessions.search");
@@ -64,7 +68,7 @@ describe("useSessionSearch", () => {
     act(() => { vi.advanceTimersByTime(300); });
     expect(useGatewayRpc).toHaveBeenLastCalledWith(
       "sessions.search",
-      { agentId: "agent-1", query: "taxes", limit: expect.any(Number) },
+      { agentId: "agent-1", sessionKeys: KEYS, query: "taxes", limit: expect.any(Number) },
     );
   });
 
@@ -121,6 +125,33 @@ describe("useSessionSearch", () => {
     expect(result.current.error).toBe(err);
   });
 
+  it("sends sessionKeys alongside agentId — the gateway refuses one without the other", () => {
+    // OpenClaw 8.1 sessions-read.ts: for a CONFIGURED agent, `agentId` with no
+    // `sessionKeys` is INVALID_REQUEST "agentId requires sessionKeys" (and
+    // dropping agentId would search the "main" agent instead). Prod answered
+    // exactly that on every keystroke during the 8.1 walk.
+    renderSearch("agent-1", "taxes");
+    act(() => { vi.advanceTimersByTime(300); });
+    const [, params] = useGatewayRpc.mock.calls.at(-1) as [string, Record<string, unknown>];
+    expect(params.sessionKeys).toEqual(KEYS);
+    expect(params.agentId).toBe("agent-1");
+  });
+
+  it("does not call the RPC when the agent has no sessions to scope the search to", () => {
+    renderSearch("agent-1", "taxes", []);
+    act(() => { vi.advanceTimersByTime(300); });
+    expect(useGatewayRpc).toHaveBeenLastCalledWith(null, undefined);
+  });
+
+  it("caps the key list so a long-lived agent cannot blow the frame", () => {
+    const many = Array.from({ length: 250 }, (_, i) => `agent:agent-1:user_1:s${i}`);
+    renderSearch("agent-1", "taxes", many);
+    act(() => { vi.advanceTimersByTime(300); });
+    const [, params] = useGatewayRpc.mock.calls.at(-1) as [string, Record<string, unknown>];
+    expect((params.sessionKeys as string[]).length).toBe(200);
+    expect((params.sessionKeys as string[])[0]).toBe("agent:agent-1:user_1:s0");
+  });
+
   it("clears results once the query drops back under the minimum", () => {
     useGatewayRpc.mockReturnValue({
       data: { results: [{ sessionKey: "k", sessionId: "s", messageId: "m", role: "user", timestamp: 1, snippet: "x", score: 1 }] },
@@ -132,7 +163,7 @@ describe("useSessionSearch", () => {
     expect(result.current.results).toHaveLength(1);
 
     useGatewayRpc.mockReturnValue({ data: undefined, error: undefined, isLoading: false });
-    rerender({ agentId: "agent-1", query: "t" });
+    rerender({ agentId: "agent-1", query: "t", sessionKeys: KEYS });
     act(() => { vi.advanceTimersByTime(300); });
     expect(result.current.isActive).toBe(false);
     expect(result.current.results).toHaveLength(0);

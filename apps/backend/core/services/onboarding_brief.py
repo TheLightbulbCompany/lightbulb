@@ -311,22 +311,37 @@ _NAMING_STEP_SENTENCE = (
 
 # No idea given ("I don't know yet — you pick"): there is no brief to lead
 # with, so the visible first message still reads in the user's voice and still
-# carries the same research → write-up → three-next-moves-on-the-board ask the
-# with-brief message does. BRIEF.md (staged pre-boot) carries the email lead +
-# "job zero" instructions Friday needs to actually choose one.
-# NB: the kickoff must leave the three tasks in the BACKLOG and NOT start them.
-# Starting a task wakes the assignee to work it, and that auto-work (on tasks
-# the user never prioritized) is what burned the trial's daily cap and produced
-# the round-1 retry storm (Isol8AI/isol8#1426). The user prioritizes; Friday
-# only does the research/write-up the user is watching, then hands the board
-# back. "in the backlog … don't start any yet … tell me which to tackle first"
-# makes the (nondeterministic) good round-2 behavior deterministic.
+# carries the same bounded research → three-moves ask the with-brief message
+# does. BRIEF.md (staged pre-boot) carries the email lead + "job zero"
+# instructions Friday needs to actually choose one.
+# NB: the kickoff must leave the three moves PROPOSED and NOT file them.
+# Filing a task starts it, starting a task wakes the assignee to work it, and
+# that auto-work (on moves the user never prioritized) is what burned the
+# trial's daily cap and produced the round-1 retry storm (Isol8AI/isol8#1426).
+# The user prioritizes; Friday only does the bounded research the user is
+# watching, then asks. "Do not create any issues yet … asking me which move to
+# start" makes the (nondeterministic) good round-2 behavior deterministic.
+
+# The research is bounded in the MESSAGE, not hoped for from the playbook:
+# two runs traced on 2026-09-01 spent 26–40 shell commands and 47–71 model
+# calls on a first run — the whole $3 trial cap — most of it plumbing the
+# backend already does (see render_integrations_md). Every bound below is a
+# number the model can count.
+_RESEARCH_BOUND = (
+    "Read BRIEF.md first. Use at most two web searches, then give me the market in five bullets — no report. "
+)
+
+# "three best next moves" is pinned by tests and by the naming-order rule:
+# the company is named BEFORE anything reaches the board.
+_MOVES_STEP = (
+    "Then propose my three best next moves, one line each. Do not create any "
+    "issues yet — I'll tell you which to start. "
+)
+
 FIRST_RUN_NO_BRIEF_MESSAGE = (
-    "I'm not sure what to build yet — take a look and pick something promising for "
-    "me, then dig into it and write up what you find. "
-    f"{_NAMING_STEP_SENTENCE} "
-    "Then put my three best next moves in the backlog. Don't start any of them yet "
-    "— just tell me which to tackle first. I'm watching."
+    "I'm not sure what to build yet — read BRIEF.md and pick something promising "
+    f"for me, then tell me what you chose and why. {_NAMING_STEP_SENTENCE} "
+    f"{_RESEARCH_BOUND}{_MOVES_STEP}I'm watching."
 )
 
 
@@ -361,50 +376,15 @@ def build_onboarding_brief_text(*, path: str, user_input: str | None, detail: st
     return idea
 
 
-# Appended to BOTH kickoff paths, ahead of _CLOSING_STEPS. Research alone
-# names the right next moves and then recommends none of the connections that
-# would let the agent DO them: the first prod run on this kickoff (2026-08-08)
-# produced three backlog items that each mapped onto an integration already in
-# credentials/providers.yaml — waitlist email, social posting, payments — and
-# offered zero of them.
-#
-# The isol8 skill has a first-run rule for exactly this, but it covers only
-# `requestable` (not-yet-available) integrations, and the agent has to open the
-# skill to see it — which the 2026-07-26 run below proved she may not do. So the
-# endpoint is handed over directly, same as the email script: it is public and
-# unauthenticated, so it answers before anything is connected. The one-click
-# connections she can now START herself (routers/connections.py
-# authorize_from_container — hook-token sibling of the tab's Connect); that
-# curl rides along for the same reason the catalog one does.
-# The mint step calls a SCRIPT, never an inline curl. An Authorization header
-# written into a turn is redacted on the session-append path
-# (AUTHORIZATION_BEARER_REDACT_PATTERN), and that pattern is NOT in OpenClaw's
-# SHELL_REFERENCE_PRESERVING_PATTERN_SOURCES — the opaque-credential class
-# `[^\s\\"\',;&#?<>)}\]]+` does not exclude `$`, so even the SHELL REFERENCE
-# `$OPENCLAW_HOOK_TOKEN` is stored as `***`. The turn that emits it executes
-# fine; the NEXT turn reads its own history, copies `Bearer ***`, and gets a
-# 401 "invalid hook token". Prod 2026-08-30 cost an owner ~15 minutes of first
-# run to that loop. Keep the credential out of the agent's typed text.
-#
-# The "if that script is not on this machine" clause is the backend/image
-# seam: the script ships in the extended IMAGE, this text ships in the
-# BACKEND, and a prod.tag flip does not move running containers until they
-# are rerolled. If a backend promotion ever gets ahead of the reroll, first
-# run degrades to "use the Integrations tab" instead of Friday hunting for a
-# missing file — and the clause forbids the hand-rolled curl that would put
-# us straight back in the redaction loop.
+# Name kept: the lightbulb skill's maintenance header anchors on
+# `_INTEGRATIONS_STEP`. The catalog is now staged into BRIEF.md by the backend
+# (render_integrations_md); Friday's only job here is the judgment call.
 _INTEGRATIONS_STEP = (
-    "\n\nAlong with those moves, tell me which integrations to connect. Read the "
-    "live catalog first — `curl -s $ISOL8_API_URL/api/v1/platform-info` — then "
-    "name only the ones that serve the moves you picked, say what each one "
-    "unlocks, and say what it costs me to set up (each entry's `requestable` and "
-    "`byo_required` flags tell you that — don't promise me one click without "
-    "checking them). For the one-click ones (both flags false) don't wait on me: "
-    "mint the sign-in link yourself — `/app/skills/lightbulb/scripts/"
-    "lightbulb-connect.sh link <provider>` prints it — open it in your browser, "
-    "and tell me to sign in in the Browser panel. If that script is not on this "
-    "machine, don't improvise the call — just tell me to connect it from the "
-    "Integrations tab. Anything else, just tell me which are worth my time."
+    "\n\nFrom the Integrations list in BRIEF.md, name the two or three that serve "
+    "those moves, one line each on what they unlock — I'll connect them from the "
+    "Integrations tab. Don't fetch the catalog and don't open sign-in pages; the "
+    "list is already there. Whatever BRIEF.md says about Stripe, repeat it and "
+    "say nothing more about Stripe."
 )
 
 
@@ -423,12 +403,12 @@ _INTEGRATIONS_STEP = (
 # first task mints the issue prefix — the email subdomain was never the only
 # thing frozen by the name. By the time this send runs, the company is named.
 _CLOSING_STEPS = (
-    "\n\nOne more thing before you stop: email me a short note in your own "
-    "voice about what you found:\n"
+    "\n\nThen email me three lines in your own voice — what you found and the one "
+    "move you'd start with:\n"
     "printf '%s' \"<your note>\" | /app/skills/lightbulb/scripts/lightbulb-mail.sh send --owner "
     '--subject "<subject>"\n'
     "That script is how you send email here — there is no Gmail, himalaya, or "
-    "email channel to configure."
+    "email channel to configure. Finish by asking me which move to start."
 )
 
 
@@ -436,24 +416,16 @@ def build_first_run_message(brief_text: str | None) -> str:
     """Friday's first-run kickoff chat.send message — the VISIBLE first user
     message in her chat.
 
-    ``brief_text`` is the persisted ``onboarding_brief_text``
-    (``build_onboarding_brief_text``'s output). When present, the message leads
-    with the user's own ask and carries the research → write-up → three-next-
-    moves instruction in that same message (deterministic, not a hoped-for
-    system-prompt behavior). When absent/blank (the "you pick" path, or a legacy
-    row with no persisted brief), it falls back to ``FIRST_RUN_NO_BRIEF_MESSAGE``
-    — so a missing field degrades to a sensible default, never an empty send.
+    Bounded on purpose (see _RESEARCH_BOUND). ``brief_text`` present → lead with
+    the owner's ask; absent/blank → the "you pick" default. Both paths carry the
+    same bounds, the same staged-integrations instruction, the same three-line
+    email (first contact), and end with the same question.
     """
     brief = (brief_text or "").strip()
     if not brief:
         return FIRST_RUN_NO_BRIEF_MESSAGE + _INTEGRATIONS_STEP + _CLOSING_STEPS
     return (
-        (
-            f"I'm starting {brief}. Dig into the business and market and write it up. "
-            f"{_NAMING_STEP_SENTENCE} "
-            "Then put my three best next moves in the backlog — don't start any of them "
-            "yet, just tell me which to tackle first. I'm watching."
-        )
+        f"I'm starting {brief}. {_NAMING_STEP_SENTENCE} {_RESEARCH_BOUND}{_MOVES_STEP}I'm watching."
         + _INTEGRATIONS_STEP
         + _CLOSING_STEPS
     )

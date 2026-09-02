@@ -155,16 +155,13 @@ def test_brief_text_is_none_on_the_you_pick_path():
 
 
 def test_first_run_message_with_brief_leads_with_the_users_ask():
-    brief = "a social media agency for small restaurants — it's for busy owners"
-    msg = build_first_run_message(brief)
-    assert msg.startswith(f"I'm starting {brief}.")
-    # The research → write-up → three-next-moves ask is woven into the SAME
-    # message (deterministic, not a hoped-for system-prompt behavior).
-    assert "Dig into the business and market" in msg
-    assert "three best next moves in the backlog" in msg
-    # Tasks land in the backlog and are NOT auto-started — the user prioritizes.
-    # Auto-starting them is what burned the trial cap / stormed in round 1 (#1426).
-    assert "don't start any of them yet" in msg
+    msg = build_first_run_message("a coffee subscription business")
+    assert msg.startswith("I'm starting a coffee subscription business.")
+    assert "Read BRIEF.md first" in msg
+    assert "at most two web searches" in msg
+    assert "five bullets" in msg
+    assert "three best next moves" in msg
+    assert "Do not create any issues yet" in msg
     assert "I'm watching" in msg
 
 
@@ -174,17 +171,12 @@ def test_first_run_message_grow_brief_reads_naturally():
 
 
 def test_first_run_message_no_brief_falls_back_to_the_you_pick_default():
-    # startswith, not equality: every kickoff now carries the closing steps
-    # (email the owner). The fallback body itself is unchanged — it just isn't
-    # the whole message any more.
-    assert build_first_run_message(None).startswith(FIRST_RUN_NO_BRIEF_MESSAGE)
-    assert build_first_run_message("").startswith(FIRST_RUN_NO_BRIEF_MESSAGE)
-    assert build_first_run_message("   ").startswith(FIRST_RUN_NO_BRIEF_MESSAGE)
-    # The default still reads as the user and still names the same ask.
-    assert "I'm not sure what to build yet" in FIRST_RUN_NO_BRIEF_MESSAGE
-    assert "in the backlog" in FIRST_RUN_NO_BRIEF_MESSAGE
-    assert "Don't start any of them yet" in FIRST_RUN_NO_BRIEF_MESSAGE
+    msg = build_first_run_message(None)
+    assert msg.startswith(FIRST_RUN_NO_BRIEF_MESSAGE)
+    assert "pick something promising" in FIRST_RUN_NO_BRIEF_MESSAGE
+    assert "three best next moves" in FIRST_RUN_NO_BRIEF_MESSAGE
     assert "I'm watching" in FIRST_RUN_NO_BRIEF_MESSAGE
+    assert build_first_run_message("   ") == build_first_run_message(None)
 
 
 @pytest.mark.asyncio
@@ -289,43 +281,26 @@ def test_staging_overwrites_a_partial_prior_attempt():
     ws.write_file_if_missing.assert_not_called()
 
 
-# --- First-run kickoff: recommend integrations -----------------------------
+# --- First-run kickoff: point at the staged integrations list --------------
 #
-# Same discovery problem as the email step below. The first prod run on this
-# kickoff picked three next moves that each needed an integration already in
-# providers.yaml (waitlist email, social posting, payments) and recommended
-# none of them, because nothing in the kickoff asked and it never opened the
-# isol8 skill. The catalog endpoint is handed over directly instead.
-
-CATALOG = "/api/v1/platform-info"
+# The catalog is staged into BRIEF.md at provisioning (render_integrations_md),
+# so the kickoff no longer hands over an endpoint to fetch or a link to mint —
+# Friday's only job here is the judgment call over a list she already has.
 
 
 @pytest.mark.parametrize("brief", ["a coffee subscription business", None])
-def test_first_run_message_asks_for_integration_recommendations(brief):
-    from core.services.onboarding_brief import build_first_run_message
-
+def test_first_run_message_points_at_the_staged_integrations_list(brief):
     msg = build_first_run_message(brief)
-    # Both kickoff paths: the "you pick" fallback is the same product moment.
-    assert CATALOG in msg
-    assert "integrations to connect" in msg
-    # The one-click mint path is handed over too (the agent may never open the
-    # skill) — as the SCRIPT, never an inline Authorization header, which the
-    # transcript redaction would store as `Bearer ***` and poison the next turn.
-    # See test_kickoff_never_inlines_an_authorization_header.
-    assert "lightbulb-connect.sh link <provider>" in msg
-
-
-def test_kickoff_names_the_flags_that_gate_a_one_click_promise():
-    """`requestable` / `byo_required` decide whether a row is one click, a BYO
-    OAuth form, or an email to a human. Recommending one without reading them
-    is how the owner gets promised a click that isn't there."""
-    from core.services.onboarding_brief import build_first_run_message
-
-    msg = build_first_run_message("a coffee subscription business")
-    assert "requestable" in msg
-    assert "byo_required" in msg
-    # The user's own ask still leads; integrations come after the moves.
-    assert msg.index("coffee subscription") < msg.index(CATALOG)
+    assert "Integrations list in BRIEF.md" in msg
+    assert "two or three" in msg
+    assert "Integrations tab" in msg
+    # The plumbing is gone: no catalog fetch, no link minting, no browser.
+    assert "platform-info" not in msg
+    assert "lightbulb-connect.sh" not in msg
+    assert "authorize" not in msg
+    assert "Browser panel" not in msg
+    # Stripe is stated by BRIEF.md, never requested by Friday on a first run.
+    assert "nothing more about Stripe" in msg
 
 
 # --- First-run kickoff: name the company, then email the owner -------------
@@ -336,73 +311,54 @@ def test_kickoff_names_the_flags_that_gate_a_one_click_promise():
 # hands it the command directly so first contact does not depend on the agent
 # making that leap.
 
-SCRIPT = "/app/skills/lightbulb/scripts/lightbulb-mail.sh"
-
 
 def test_first_run_message_instructs_naming_and_email():
-    from core.services.onboarding_brief import build_first_run_message
-
     msg = build_first_run_message("a coffee subscription business")
-    assert SCRIPT in msg
-    assert "name" in msg.lower()
-    # The user's own ask must still lead the message.
-    assert msg.index("coffee subscription") < msg.index(SCRIPT)
+    assert "lightbulb-mail.sh send --owner" in msg
+    assert "three lines" in msg
+    assert "company's name" in msg
 
 
 def test_no_brief_path_also_instructs_email():
     """The 'you pick' path gets first contact too — it is the same product
     moment."""
-    from core.services.onboarding_brief import build_first_run_message
-
-    msg = build_first_run_message(None)
-    assert SCRIPT in msg
+    assert "lightbulb-mail.sh send --owner" in build_first_run_message(None)
 
 
 def test_kickoff_says_the_name_becomes_the_address():
     """The name is frozen at the first send, so the agent must know that
     BEFORE it sends, not after."""
-    from core.services.onboarding_brief import build_first_run_message
-
-    msg = build_first_run_message("a coffee subscription business").lower()
-    assert "email address" in msg or "address" in msg
+    msg = build_first_run_message("a coffee subscription business")
+    assert "email address" in msg
 
 
 def test_kickoff_names_the_company_before_the_board():
     """The issue prefix freezes when the first task is minted, and Paperclip
     only re-derives it on rename while the board is still empty — so the
-    naming ask must come BEFORE the backlog ask on both kickoff paths, or
+    naming ask must come BEFORE the moves ask on both kickoff paths, or
     every board keys its tasks off the signup placeholder (PRA-1 instead of
     GOO-1)."""
-    from core.services.onboarding_brief import build_first_run_message
-
     for brief in ("a coffee subscription business", None):
         msg = build_first_run_message(brief)
         assert msg.index("company's name") < msg.index("three best next moves")
 
 
-def test_kickoff_never_inlines_an_authorization_header():
-    """The kickoff must not hand the agent a curl carrying the hook token.
+def test_kickoff_ends_by_asking_which_move_to_start():
+    """The run ends on a question, not on work — the owner picks what starts."""
+    for brief in ("a coffee subscription business", None):
+        assert build_first_run_message(brief).rstrip().endswith("asking me which move to start.")
 
-    OpenClaw redacts `Authorization: Bearer <x>` on the session-append path,
-    and that pattern is NOT shell-reference-preserving — the opaque-credential
-    class does not exclude `$`, so `$OPENCLAW_HOOK_TOKEN` is stored as `***`
-    and `${OPENCLAW_HOOK_TOKEN:-}` as `***}`. The turn that emits it runs; the
-    NEXT turn copies the masked form and gets 401 "invalid hook token".
-    Prod 2026-08-30 lost an owner ~15 minutes of first run to that loop.
-    Mint links through scripts/lightbulb-connect.sh instead — a file on disk
-    never round-trips through the transcript.
-    """
+
+def test_kickoff_never_inlines_an_authorization_header():
+    """Unchanged rationale: OpenClaw redacts `Authorization: Bearer <x>` on the
+    session-append path including a `$VAR` reference; an agent-typed curl works
+    once and poisons the next turn (prod 2026-08-30)."""
     for brief in (None, "an online store that sells handmade candles"):
         msg = build_first_run_message(brief)
-        assert "Authorization" not in msg, "kickoff inlines an Authorization header"
-        assert "OPENCLAW_HOOK_TOKEN" not in msg, "kickoff exposes the hook token"
-        assert "bearer" not in msg.lower(), "kickoff inlines a bearer header (any case)"
-        assert "lightbulb-connect.sh" in msg
-        # The backend/image seam depends on this sentence: the script ships in
-        # the image, this text in the backend, and containers only get the
-        # script after a reroll. Without the fallback a stale container's
-        # Friday hunts for a missing file.
-        assert "Integrations tab" in msg, "the fallback clause is load-bearing"
+        assert "Authorization" not in msg
+        assert "OPENCLAW_HOOK_TOKEN" not in msg
+        assert "bearer" not in msg.lower()
+        assert "Integrations tab" in msg
 
 
 def _rows():

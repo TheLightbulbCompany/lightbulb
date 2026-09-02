@@ -1178,11 +1178,27 @@ def memory_plugin_entries() -> dict:
     company brain. ``renderMode: "obsidian"`` writes Obsidian-flavored
     ``[[wikilink]]`` markdown; the vault stays browsable in the file viewer.
 
+    The vault is BRIDGE-BACKED (``vaultMode: "bridge"`` + ``bridge.enabled``,
+    which defaults OFF upstream). The plugin's default ``isolated`` vault only
+    ever gains pages an agent files by hand, which is why the brain reads empty
+    on a real org: memory-core writes to its own store and nothing crosses over.
+    In bridge mode every ``wiki_*`` tool call first imports memory-core's
+    public artifacts — daily notes, dream reports, ``MEMORY.md``, event logs —
+    into ``sources/`` pages and recompiles the index (sync-on-read, upstream's
+    own design: ``extensions/memory-wiki/src/tool.ts`` calls
+    ``syncMemoryWikiImportedSources`` before each tool body; deterministic, no
+    inference, no cron and no routine). The skill tells agents to consult the
+    wiki before answering, so the first consult is what fills it.
+    ``wiki_apply`` stays the way agents file syntheses on top of those
+    sources. The remaining ``bridge.*`` flags default true, so enabling is the
+    whole configuration.
+
     Keys are restricted to the upstream configSchemas, which are strict
     (``additionalProperties:false``) at every level — the only key under
-    memory-core's ``config`` is ``dreaming``, and memory-wiki's ``vault``
-    accepts only ``scope``/``path``/``renderMode``. A stray key crash-loops
-    the container at boot.
+    memory-core's ``config`` is ``dreaming``; memory-wiki takes ``vaultMode``
+    and ``bridge`` at its config root, and its ``vault`` accepts only
+    ``scope``/``path``/``renderMode``. A stray key crash-loops the container
+    at boot.
 
     Returned fresh each call so callers may merge/mutate without corrupting
     shared module state.
@@ -1213,6 +1229,12 @@ def memory_plugin_entries() -> dict:
                     "scope": "global",  # ONE shared vault = the company brain
                     "renderMode": "obsidian",
                 },
+                # Bridge mode is what fills the brain: memory-core's public
+                # artifacts are imported as sources/ pages. Both keys are
+                # required — the plugin gates the import on vaultMode AND
+                # bridge.enabled, which is off by default.
+                "vaultMode": "bridge",
+                "bridge": {"enabled": True},
             },
         },
     }

@@ -575,6 +575,7 @@ async def _apply_claimed_update(update: dict, claim_id: str) -> bool:
                     # Additive and behaviour-free, so it is safe on every owner.
                     from core.containers.config import REDACT_PATTERNS, memory_plugin_entries
                     from core.services.config_patcher import (
+                        ensure_plugin_config_keys,
                         ensure_plugin_entries,
                         ensure_redact_patterns,
                     )
@@ -608,6 +609,28 @@ async def _apply_claimed_update(update: dict, claim_id: str) -> bool:
                         )
                     except Exception:  # noqa: BLE001 — never block a roll on a safety-net patch
                         logger.exception("update_service: plugin-enable patch failed for owner=%s", owner_id)
+
+                    # The bridge keys are what FILL the brain — memory-core's
+                    # artifacts only cross into the wiki when vaultMode/bridge
+                    # are set. On the regen path above, reapply_owner_config
+                    # already wrote them: `plugins` is generator-owned wholesale
+                    # (_runtime_only_delta), so this is a no-op there. It exists
+                    # for the fallback path — legacy rows regen cannot reach —
+                    # where ensure_plugin_entries is additive at the ENTRY level
+                    # and skips every owner who already has a memory-wiki entry:
+                    # exactly the cohort provisioned before those keys existed.
+                    # No product surface lets an owner opt OUT of bridge mode,
+                    # so "preserve an explicit isolated choice" is not a contract
+                    # either path makes; the deep-fill's never-overwrite rule is
+                    # about not clobbering unrelated keys, not about opt-outs.
+                    try:
+                        await ensure_plugin_config_keys(
+                            owner_id,
+                            "memory-wiki",
+                            memory_plugin_entries()["memory-wiki"]["config"],
+                        )
+                    except Exception:  # noqa: BLE001 — never block a roll on a safety-net patch
+                        logger.exception("update_service: memory-wiki config patch failed for owner=%s", owner_id)
 
                     # Image rolls are the fleet's routine touch-point, but they
                     # never rewrite configs — so the seeded-file heal pass that

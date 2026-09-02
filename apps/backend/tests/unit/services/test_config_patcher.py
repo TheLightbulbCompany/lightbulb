@@ -17,6 +17,7 @@ from core.services.config_patcher import (  # noqa: E402
     delete_provider_level_channel_secrets,
     patch_openclaw_config,
     remove_from_openclaw_config_list,
+    ensure_plugin_config_keys,
     replace_provider_block,
     set_openclaw_config_path,
     strip_removed_agent_keys,
@@ -2234,3 +2235,94 @@ async def test_strip_removed_agent_keys_works_on_the_keyed_entries_shape(tmp_pat
     assert entry["default"] is True
     assert "id" not in entry
     assert "list" not in written["agents"]
+
+
+def _write_plugin_entries(tmpdir, entries, owner="user_w"):
+    """Write a minimal openclaw.json carrying ``entries`` and return its path."""
+    user_dir = os.path.join(tmpdir, owner)
+    os.makedirs(user_dir)
+    path = os.path.join(user_dir, "openclaw.json")
+    with open(path, "w") as f:
+        json.dump(
+            {
+                "gateway": {"mode": "local"},
+                "agents": {"defaults": {"model": {"primary": "amazon-bedrock/x"}}},
+                "plugins": {"entries": entries},
+                "tools": {"profile": "full"},
+            },
+            f,
+        )
+    return path
+
+
+@pytest.mark.asyncio
+async def test_ensure_plugin_config_keys_fills_bridge_keys():
+    """An owner provisioned before bridge mode has memory-wiki with only
+    ``vault``. The roll must deep-fill the keys that actually import
+    memory-core's artifacts — the entry-level healer cannot reach inside an
+    entry that already exists."""
+    from core.containers.config import memory_plugin_entries
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = _write_plugin_entries(
+            tmpdir, {"memory-wiki": {"enabled": True, "config": {"vault": {"scope": "global"}}}}
+        )
+        with patch("core.services.config_patcher._efs_mount_path", tmpdir):
+            await ensure_plugin_config_keys("user_w", "memory-wiki", memory_plugin_entries()["memory-wiki"]["config"])
+        with open(path) as f:
+            entry_config = json.load(f)["plugins"]["entries"]["memory-wiki"]["config"]
+
+    assert entry_config["vaultMode"] == "bridge"
+    assert entry_config["bridge"] == {"enabled": True}
+    # The owner's existing subtree gains its missing leaf, keeps its own value.
+    assert entry_config["vault"]["scope"] == "global"
+    assert entry_config["vault"]["renderMode"] == "obsidian"
+
+
+@pytest.mark.asyncio
+async def test_ensure_plugin_config_keys_never_overwrites_an_owners_choice():
+    """An owner who deliberately turned the bridge OFF keeps it off. Present
+    values are never overwritten, and with nothing missing the write is
+    skipped entirely (no .bak)."""
+    from core.containers.config import memory_plugin_entries
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = _write_plugin_entries(
+            tmpdir,
+            {
+                "memory-wiki": {
+                    "enabled": True,
+                    "config": {
+                        "vault": {"scope": "global", "renderMode": "obsidian"},
+                        "vaultMode": "isolated",
+                        "bridge": {"enabled": False},
+                    },
+                }
+            },
+        )
+        with patch("core.services.config_patcher._efs_mount_path", tmpdir):
+            await ensure_plugin_config_keys("user_w", "memory-wiki", memory_plugin_entries()["memory-wiki"]["config"])
+        with open(path) as f:
+            result = json.load(f)
+        # No-op: _locked_rmw skips the backup entirely when nothing changed.
+        assert not os.path.exists(os.path.join(tmpdir, "user_w", "openclaw.json.bak"))
+
+    assert result["plugins"]["entries"]["memory-wiki"]["config"]["vaultMode"] == "isolated"
+    assert result["plugins"]["entries"]["memory-wiki"]["config"]["bridge"] == {"enabled": False}
+
+
+@pytest.mark.asyncio
+async def test_ensure_plugin_config_keys_noop_when_entry_absent():
+    """Creating the entry is ensure_plugin_entries' job (it runs first). With
+    no entry there is nothing to fill, and no half-built entry is left behind."""
+    from core.containers.config import memory_plugin_entries
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = _write_plugin_entries(tmpdir, {"lobster": {"enabled": True}})
+        with patch("core.services.config_patcher._efs_mount_path", tmpdir):
+            await ensure_plugin_config_keys("user_w", "memory-wiki", memory_plugin_entries()["memory-wiki"]["config"])
+        with open(path) as f:
+            result = json.load(f)
+        assert not os.path.exists(os.path.join(tmpdir, "user_w", "openclaw.json.bak"))
+
+    assert "memory-wiki" not in result["plugins"]["entries"]

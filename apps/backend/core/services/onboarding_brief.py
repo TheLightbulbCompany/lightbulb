@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 
@@ -90,6 +92,119 @@ def render_brief_md(
         display_name=display_name,
         email=email,
     )
+
+
+# ---------------------------------------------------------------------------
+# Integrations section of BRIEF.md — rendered by the BACKEND at brief fulfilment.
+#
+# The first run used to have Friday curl /platform-info, read the JSON, interpret
+# `requestable`/`byo_required`, mint OAuth links and open browser tabs — 26–40
+# shell commands per run, the bulk of a $3 trial cap, and the part that broke on
+# 2026-08-30 (the hook-token redaction loop). Everything in that chain except
+# "which of these serve the plan" is data the backend already holds. So the menu
+# is staged into BRIEF.md as of provisioning (the same live registry
+# /platform-info reads — nothing baked into the image), Friday makes the one
+# judgment call, and the owner connects from the Integrations tab in their own
+# browser (useConnections.ts -> /connections/{provider}/authorize). Later turns
+# still read the live catalog per the skill; this covers the first run.
+#
+# Stripe is handled separately because it is move-independent: the company's own
+# Stripe account is the eligibility gate for the whole Projects rail. The line is
+# rendered from the billing row and Friday NEVER files the Stripe request on a
+# first run — #2254 files it when a subscription goes live, and a trial owner
+# cannot act on the card anyway.
+
+
+@dataclass(frozen=True)
+class IntegrationRow:
+    key: str
+    display_name: str
+    byo_required: bool
+    requestable: bool
+
+
+def integration_rows_from_registry() -> list[IntegrationRow]:
+    """Every connectable provider, with the same two flags /platform-info exposes.
+
+    ``requestable`` mirrors routers/platform_info.py: ``not visible_in_env`` —
+    the owner cannot START that connection themselves in this environment.
+
+    The visibility filter mirrors that route too, and for the same reason: a
+    provider gated out of this environment that does not opt into
+    ``offer_request_access`` is HIDDEN, not "by request". Without the filter a
+    half-wired provider pinned to ``environments: [local, dev]`` would be
+    pitched to owners in prod, where neither this catalog nor their own
+    Integrations tab (``registry.is_listable``) offers any way to get it.
+    """
+    from core.services.credentials import registry
+
+    rows = [
+        IntegrationRow(
+            key=p.key,
+            display_name=p.display_name,
+            byo_required=bool(p.byo_required),
+            requestable=not registry.visible_in_env(p),
+        )
+        for p in registry.all_providers().values()
+        if registry.visible_in_env(p) or p.offer_request_access
+    ]
+    return sorted(rows, key=lambda r: r.display_name.lower())
+
+
+# Statuses under which #2254 has already filed the company-Stripe setup card
+# (it fires on the trial_local -> active transition and on direct-to-paid entry;
+# renewals and past-due keep the existing card).
+_PAID_SUBSCRIPTION_STATUSES = frozenset({"active", "trialing", "past_due"})
+
+
+def _stripe_line(billing_row: Mapping[str, object]) -> str:
+    if billing_row.get("company_stripe_account_id"):
+        return (
+            "- **Stripe (the company's own account): connected.** Payments and "
+            "provisioning are unlocked; nothing to ask for."
+        )
+    if str(billing_row.get("subscription_status") or "") in _PAID_SUBSCRIPTION_STATUSES:
+        return (
+            "- **Stripe (the company's own account): required — a setup card is "
+            "already in the owner's Inbox.** Do not file another request; say the "
+            "card is waiting for them."
+        )
+    return (
+        "- **Stripe (the company's own account): required** for payments and for "
+        "provisioning hosting and analytics. It is set up when the owner subscribes "
+        "— say so; do not request it."
+    )
+
+
+def render_integrations_md(rows: Sequence[IntegrationRow], billing_row: Mapping[str, object]) -> str:
+    """The ``## Integrations`` section appended to BRIEF.md."""
+    lines = [
+        "",
+        "## Integrations",
+        "",
+        "What can be connected here, as of provisioning. The owner connects from",
+        "the Integrations tab in their own browser. On a first run you",
+        "never fetch this catalog and never open sign-in pages — name the two or",
+        "three the plan needs, one line each on what they unlock, and leave the",
+        "connecting to them.",
+        "",
+        _stripe_line(billing_row),
+        "",
+    ]
+    for r in rows:
+        # The dedicated line above owns Stripe on a first run: connected-vs-required
+        # is what matters on day one, and a second "one-click" row here reads as
+        # permission to do what that line just forbade.
+        if r.key == "stripe":
+            continue
+        if r.byo_required:
+            how = "needs you (bring your own app)"
+        elif r.requestable:
+            how = "by request"
+        else:
+            how = "one-click"
+        lines.append(f"- {r.display_name} (`{r.key}`): {how}")
+    return "\n".join(lines) + "\n"
 
 
 _MAX_GOAL_TITLE = 120

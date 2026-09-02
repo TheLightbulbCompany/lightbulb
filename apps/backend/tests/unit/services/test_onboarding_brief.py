@@ -388,3 +388,97 @@ def test_kickoff_never_inlines_an_authorization_header():
         # script after a reroll. Without the fallback a stale container's
         # Friday hunts for a missing file.
         assert "Integrations tab" in msg, "the fallback clause is load-bearing"
+
+
+from core.services.onboarding_brief import (  # noqa: E402 — appended block
+    IntegrationRow,
+    integration_rows_from_registry,
+    render_integrations_md,
+)
+
+
+def _rows():
+    return [
+        IntegrationRow(key="stripe", display_name="Stripe", byo_required=False, requestable=False),
+        IntegrationRow(key="instagram", display_name="Instagram", byo_required=False, requestable=False),
+        IntegrationRow(key="google", display_name="Google Workspace", byo_required=True, requestable=False),
+        IntegrationRow(key="meta_ads", display_name="Meta Ads", byo_required=False, requestable=True),
+    ]
+
+
+def test_integrations_md_labels_each_provider_from_the_two_flags():
+    md = render_integrations_md(_rows(), {})
+    assert "## Integrations" in md
+    assert "- Instagram (`instagram`): one-click" in md
+    assert "- Google Workspace (`google`): needs you (bring your own app)" in md
+    assert "- Meta Ads (`meta_ads`): by request" in md
+    # Stripe is owned by the dedicated line, never repeated as a generic row.
+    assert "- Stripe (`stripe`)" not in md
+    assert "Stripe (the company's own account)" in md
+    # The section tells Friday NOT to re-fetch or open sign-in pages on a first run.
+    assert "never fetch this catalog" in md
+    assert "Integrations tab" in md
+
+
+def test_integrations_md_stripe_line_trial_says_it_comes_with_subscribing():
+    md = render_integrations_md(_rows(), {"subscription_status": "trial_local"})
+    assert "set up when the owner subscribes" in md
+    assert "do not request it" in md
+
+
+def test_integrations_md_stripe_line_paid_says_the_card_is_already_filed():
+    for status in ("active", "trialing", "past_due"):
+        md = render_integrations_md(_rows(), {"subscription_status": status})
+        assert "already in the owner's Inbox" in md, status
+        assert "Do not file another request" in md, status
+
+
+def test_integrations_md_stripe_line_connected_wins_over_status():
+    md = render_integrations_md(
+        _rows(), {"subscription_status": "trial_local", "company_stripe_account_id": "acct_123"}
+    )
+    assert "connected" in md
+    assert "do not request it" not in md
+
+
+def test_integration_rows_come_from_the_live_registry_sorted():
+    rows = integration_rows_from_registry()
+    assert rows, "registry returned no providers"
+    names = [r.display_name.lower() for r in rows]
+    assert names == sorted(names)
+    keys = {r.key for r in rows}
+    assert "stripe" in keys  # the one every company needs
+    assert all(isinstance(r.byo_required, bool) and isinstance(r.requestable, bool) for r in rows)
+
+
+def test_integration_rows_drop_providers_gated_out_of_this_env(monkeypatch):
+    """Mirrors the /platform-info filter: a provider gated out of this
+    environment that does not opt into request-access is HIDDEN, not "by
+    request". Rendering it would have Friday pitch an integration the owner
+    cannot find in their own Integrations tab. Hermetic — the real registry's
+    gates move with ENVIRONMENT and providers.yaml."""
+    from types import SimpleNamespace
+
+    from core.services.credentials import registry
+
+    def _p(key, *, visible, offer_request_access=False):
+        return SimpleNamespace(
+            key=key,
+            display_name=key.title(),
+            byo_required=False,
+            offer_request_access=offer_request_access,
+            visible=visible,
+        )
+
+    providers = {
+        "here": _p("here", visible=True),
+        "gated": _p("gated", visible=False),
+        "askable": _p("askable", visible=False, offer_request_access=True),
+    }
+    monkeypatch.setattr(registry, "all_providers", lambda: providers)
+    monkeypatch.setattr(registry, "visible_in_env", lambda p: p.visible)
+
+    rows = {r.key: r for r in integration_rows_from_registry()}
+    assert "gated" not in rows
+    assert rows["here"].requestable is False
+    assert rows["askable"].requestable is True

@@ -9,6 +9,7 @@ import { useAgents } from "@/hooks/useAgents";
 import { ControlPanelRouter } from "@/components/control/ControlPanelRouter";
 import { GatewayProvider } from "@/hooks/useGateway";
 import { ExecApprovalsProvider } from "@/hooks/useExecApprovals";
+import { QuestionsProvider } from "@/hooks/useQuestions";
 import { MarketplaceDrawerProvider } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { MarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawer";
 import { MarketplaceToast } from "@/components/marketplace/drawer/MarketplaceToast";
@@ -72,7 +73,9 @@ function ChatPageInner() {
     <MarketplaceDrawerProvider>
       <GatewayProvider>
         <ExecApprovalsProvider>
-          {isDesktop ? <WorkspaceShell /> : <MobileChatShell />}
+          <QuestionsProvider>
+            {isDesktop ? <WorkspaceShell /> : <MobileChatShell />}
+          </QuestionsProvider>
         </ExecApprovalsProvider>
         {/* Drawer + toast must live INSIDE GatewayProvider — useHire() and
             PickAgentStep both call useAgents() which calls useGateway(). */}

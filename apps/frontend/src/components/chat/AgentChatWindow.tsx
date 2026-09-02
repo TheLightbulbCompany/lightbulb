@@ -9,6 +9,7 @@ import { ModelEffortPill } from "./ModelEffortPill";
 import { useBilling } from "@/hooks/useBilling";
 import { ExecApprovalCards } from "./ExecApprovalCards";
 import { AgentProgressCard } from "./AgentProgressCard";
+import { QuestionCards } from "./QuestionCards";
 import { MessageList, MessageListHandle } from "./MessageList";
 import { SessionBranchBar } from "./SessionBranchBar";
 import { StreamingStatusBar } from "./StreamingStatusBar";
@@ -576,6 +577,7 @@ export function AgentChatWindow({
       <StreamingStatusBar isStreaming={isStreaming} active={busy} />
       <AgentProgressCard sessionKey={progressSessionKey} />
       <ExecApprovalCards />
+      <QuestionCards />
       <ChatInput
         draft={composerDraft}
         onSend={handleSend}

@@ -326,6 +326,26 @@ describe("BrainPage", () => {
     expect(onNavigate).toHaveBeenCalledWith("index.md");
   });
 
+  it("an expired session (401) is an outage with Retry, never a stale link", () => {
+    // Only the path-validation statuses mean the LINK is wrong. A 401 or 429
+    // is the platform's moment, and calling the page "renamed or never
+    // written" would send the owner hunting for a page that exists.
+    render(
+      <BrainPage
+        path="entities/ada-lovelace.md"
+        files={FILES}
+        editing={false}
+        isLoading={false}
+        error={Object.assign(new Error("API 401"), { status: 401 })}
+        onNavigate={() => {}}
+        {...noop}
+        file={null}
+      />,
+    );
+    expect(screen.queryByText(/No page at/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+  });
+
   it("a refused path (403) is the same stale-link notice, not an outage", () => {
     // _guard_brain_path refuses a traversal-shaped wikilink with 400/403. The
     // link is what is wrong; offering Retry would be a lie.

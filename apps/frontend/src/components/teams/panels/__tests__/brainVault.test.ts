@@ -148,6 +148,12 @@ describe("splitRelated", () => {
     const page = "# Ada\n\n## Related\n\nAsk Charles about the engine notes.\n";
     expect(splitRelated(page)).toEqual({ body: page, related: [] });
   });
+
+  it("keeps a Related section that annotates its links — chips cannot carry the why", () => {
+    const page =
+      "# Ada\n\n## Related\n\n- [[entities/babbage|Charles Babbage]] — funded the first engine.\n";
+    expect(splitRelated(page)).toEqual({ body: page, related: [] });
+  });
   it("an empty Related section leaves no links and no heading (the plugin's markers carry none)", () => {
     expect(
       splitRelated(

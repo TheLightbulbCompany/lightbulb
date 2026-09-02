@@ -268,7 +268,10 @@ function hasOwnerProse(section: string): boolean {
     .replace(/<!--[\s\S]*?-->/g, "")
     .replace(new RegExp(WIKILINK.source, "g"), "")
     .split(/\r?\n/)
-    .map((line) => line.replace(/^[ \t]*(?:[-*+][ \t]+|#{1,6}[ \t]+)?/, "").trim())
+    // A heading line is furniture whole — its text ("Sources", "Referenced
+    // By") is compile's label, not the owner's sentence.
+    .filter((line) => !/^[ \t]*#{1,6}[ \t]+/.test(line))
+    .map((line) => line.replace(/^[ \t]*(?:[-*+][ \t]+)?/, "").trim())
     .some((line) => line !== "" && !NO_RELATED_SENTINEL.test(line));
 }
 
@@ -281,17 +284,21 @@ function hasOwnerProse(section: string): boolean {
  *
  *  An empty section is removed too — a bare "Related" heading over compile's
  *  "No related pages yet." is noise the compiler, not the owner, left behind.
- *  But a Related section carrying no links and some PROSE is left exactly
- *  where it is: it is the owner's writing, and this function never deletes
- *  text it cannot re-render. */
+ *  But a Related section carrying any PROSE — links beside it or not — is
+ *  left exactly where it is: it is the owner's writing, and this function
+ *  never deletes text it cannot re-render. */
 export function splitRelated(body: string): { body: string; related: VaultLinkRef[] } {
   const m = RELATED_HEADING.exec(body);
   if (!m) return { body, related: [] };
   const after = body.slice(m.index + m[0].length);
   const next = new RegExp(`^#{1,${m[1].length}}[ \\t]+\\S`, "m").exec(after);
   const section = next ? after.slice(0, next.index) : after;
+  // Owner prose in the section — with or without links beside it — stays in
+  // the body untouched: chips cannot carry an explanation of why a page is
+  // related, and lifting the section would delete it. Compile's own block
+  // never has prose, so the compiled shape still splits.
+  if (hasOwnerProse(section)) return { body, related: [] };
   const related = wikilinksIn(section);
-  if (related.length === 0 && hasOwnerProse(section)) return { body, related: [] };
   return {
     body: body.slice(0, m.index) + (next ? after.slice(next.index) : ""),
     related,

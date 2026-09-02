@@ -149,6 +149,12 @@ describe("splitRelated", () => {
     expect(splitRelated(page)).toEqual({ body: page, related: [] });
   });
 
+  it("keeps a Related section the owner structured with their own sub-headings", () => {
+    const page =
+      "# Ada\n\n## Related\n\n### Customers\n- [[entities/acme|Acme]]\n### Competitors\n- [[entities/globex|Globex]]\n";
+    expect(splitRelated(page)).toEqual({ body: page, related: [] });
+  });
+
   it("keeps a Related section that annotates its links — chips cannot carry the why", () => {
     const page =
       "# Ada\n\n## Related\n\n- [[entities/babbage|Charles Babbage]] — funded the first engine.\n";

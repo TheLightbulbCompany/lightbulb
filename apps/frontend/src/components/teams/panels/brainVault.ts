@@ -258,6 +258,9 @@ function wikilinksIn(text: string): VaultLinkRef[] {
 const RELATED_HEADING = /^(#{1,6})[ \t]+Related[ \t]*$/im;
 // compile's body when every section is empty. Not ours to render.
 const NO_RELATED_SENTINEL = /^no related pages yet\.?$/i;
+// The three sub-headings compile writes inside the block (compile.ts
+// buildRelatedBlockBody). Any other heading in a Related section is the owner's.
+const COMPILE_RELATED_HEADING = /^[ \t]*#{1,6}[ \t]+(?:Sources|Referenced By|Related Pages)[ \t]*$/i;
 
 /** Whatever the section says besides its links. The managed-block markers,
  *  the sub-headings, the list bullets and compile's own "no related pages
@@ -268,9 +271,9 @@ function hasOwnerProse(section: string): boolean {
     .replace(/<!--[\s\S]*?-->/g, "")
     .replace(new RegExp(WIKILINK.source, "g"), "")
     .split(/\r?\n/)
-    // A heading line is furniture whole — its text ("Sources", "Referenced
-    // By") is compile's label, not the owner's sentence.
-    .filter((line) => !/^[ \t]*#{1,6}[ \t]+/.test(line))
+    // Only compile's own sub-headings are furniture; a heading the owner
+    // wrote ("### Customers") is structure the chips cannot carry.
+    .filter((line) => !COMPILE_RELATED_HEADING.test(line))
     .map((line) => line.replace(/^[ \t]*(?:[-*+][ \t]+)?/, "").trim())
     .some((line) => line !== "" && !NO_RELATED_SENTINEL.test(line));
 }

@@ -156,14 +156,6 @@ export const markdownComponents: Components = {
   ),
 };
 
-/** Shared read-only markdown renderer (gfm, no raw HTML, link-guarded, CSS-var themed).
- *
- * `min-w-0` + `[overflow-wrap:anywhere]` are load-bearing: agent output routinely
- * contains long unbreakable tokens (URLs, error strings like `getaddrinfoENOTFOUND`,
- * hashes) with no whitespace to break on. Without these, such a token can't wrap and
- * overflows its column — in the Teams task view it bled off the right edge into the
- * metadata panel. `min-w-0` lets this shrink below its content's intrinsic width inside
- * a flex/grid parent; `overflow-wrap:anywhere` forces a break inside the long token. */
 export interface MarkdownViewProps {
   children: string;
   /** Per-surface overrides merged over the shared set — the Brain swaps `a`
@@ -175,6 +167,14 @@ export interface MarkdownViewProps {
   skipHtml?: boolean;
 }
 
+/** Shared read-only markdown renderer (gfm, no raw HTML, link-guarded, CSS-var themed).
+ *
+ * `min-w-0` + `[overflow-wrap:anywhere]` are load-bearing: agent output routinely
+ * contains long unbreakable tokens (URLs, error strings like `getaddrinfoENOTFOUND`,
+ * hashes) with no whitespace to break on. Without these, such a token can't wrap and
+ * overflows its column — in the Teams task view it bled off the right edge into the
+ * metadata panel. `min-w-0` lets this shrink below its content's intrinsic width inside
+ * a flex/grid parent; `overflow-wrap:anywhere` forces a break inside the long token. */
 export function MarkdownView({ children, components, skipHtml }: MarkdownViewProps) {
   const merged = useMemo(
     () => (components ? { ...markdownComponents, ...components } : markdownComponents),

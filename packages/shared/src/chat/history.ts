@@ -101,7 +101,54 @@ export interface HistoryMessage {
    *  state at message level. */
   isError?: boolean;
   errorCode?: string;
-  __openclaw?: { kind?: string };
+  /** OpenClaw's transcript metadata envelope. `id` is the PERSISTED
+   *  transcript-entry id — the `entryId` `sessions.rewind` takes. The gateway
+   *  stamps it on every `chat.history` row from the transcript event's own id
+   *  (`attachOpenClawTranscriptMeta`, src/gateway/session-transcript-readers.ts). */
+  __openclaw?: { kind?: string; id?: string };
+  /** Surface spellings of the same persisted entry id, carried by projections
+   *  that flatten the `__openclaw` envelope. Read them through
+   *  `persistedEntryId`, never directly. */
+  id?: string;
+  messageId?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Persisted entry id (the `entryId` sessions.rewind takes)
+// ---------------------------------------------------------------------------
+
+/** Placeholder-id namespace for queued-but-unsent inputs — never rewindable.
+ *  Mirrors CHAT_PENDING_INPUT_MESSAGE_PREFIX in the fork's gateway-protocol. */
+const PENDING_INPUT_ID_PREFIX = "pending:";
+
+function nonEmptyString(v: unknown): string | null {
+  return typeof v === "string" && v.trim().length > 0 ? v : null;
+}
+
+/**
+ * The persisted transcript-entry id for one message, or `null` when it has
+ * none and therefore cannot be rewound to.
+ *
+ * `null` covers the two cases that MUST NOT offer a rewind affordance: an
+ * optimistic local turn (useAgentChat appends the user's bubble before the
+ * server has persisted anything, so it carries no id at all), and a `pending:`
+ * queued-input placeholder row.
+ *
+ * Resolution order mirrors upstream — `readSessionMessageIdentity`
+ * (packages/gateway-client/src/session-projection-message-identity.ts) reads
+ * the envelope's `__openclaw.id` first, and `readChatThreadMessageIdentity`
+ * (ui/src/pages/chat/chat-thread-items.ts) supplies `messageId ?? id` as the
+ * surface fallback. `__openclaw.id` is the one `chat.history` actually sets,
+ * so it must be checked FIRST: a surface-only read resolves nothing on a real
+ * transcript row.
+ */
+export function persistedEntryId(message: HistoryMessage): string | null {
+  const id =
+    nonEmptyString(message?.__openclaw?.id) ??
+    nonEmptyString(message?.messageId) ??
+    nonEmptyString(message?.id);
+  if (id === null || id.startsWith(PENDING_INPUT_ID_PREFIX)) return null;
+  return id;
 }
 
 // ---------------------------------------------------------------------------

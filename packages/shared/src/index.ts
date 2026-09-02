@@ -104,6 +104,7 @@ export {
   isToolResultBlock,
   isToolResultRole,
   isToolUseBlock,
+  persistedEntryId,
   resolveMessageBlocks,
   resolveToolArgs,
   resolveToolUseId,

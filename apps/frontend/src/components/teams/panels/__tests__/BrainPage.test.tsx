@@ -272,6 +272,40 @@ describe("BrainPage", () => {
     expect(screen.getByRole("link", { name: "Ada Lovelace" })).toBeInTheDocument();
   });
 
+  it("renders the compiled Related block as chips, label and all", () => {
+    const onNavigate = vi.fn();
+    render(
+      <BrainPage
+        path="entities/ada-lovelace.md"
+        files={FILES}
+        editing={false}
+        isLoading={false}
+        error={null}
+        onNavigate={onNavigate}
+        {...noop}
+        file={page(
+          [
+            "# Ada",
+            "",
+            "She wrote the first algorithm.",
+            "",
+            "## Related",
+            "<!-- openclaw:wiki:related:start -->",
+            "### Referenced By",
+            "- [[entities/ada-lovelace|Ada Lovelace]]",
+            "<!-- openclaw:wiki:related:end -->",
+          ].join("\n"),
+          "entities/ada-lovelace.md",
+        )}
+      />,
+    );
+    // The sub-heading came out of the body with the section — no orphan.
+    expect(screen.queryByRole("heading", { name: "Referenced By" })).toBeNull();
+    expect(screen.getByText("Related")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "Ada Lovelace" }));
+    expect(onNavigate).toHaveBeenCalledWith("entities/ada-lovelace.md");
+  });
+
   it("a 404 is the missing-page notice with an exit to the index", () => {
     const onNavigate = vi.fn();
     const err = Object.assign(new Error("API 404"), { status: 404 });
@@ -292,7 +326,26 @@ describe("BrainPage", () => {
     expect(onNavigate).toHaveBeenCalledWith("index.md");
   });
 
-  it("any other error is the unavailable notice with Retry", () => {
+  it("a refused path (403) is the same stale-link notice, not an outage", () => {
+    // _guard_brain_path refuses a traversal-shaped wikilink with 400/403. The
+    // link is what is wrong; offering Retry would be a lie.
+    render(
+      <BrainPage
+        path="../secrets.md"
+        files={FILES}
+        editing={false}
+        isLoading={false}
+        error={Object.assign(new Error("API 403"), { status: 403 })}
+        onNavigate={() => {}}
+        {...noop}
+        file={null}
+      />,
+    );
+    expect(screen.getByText(/No page at \.\.\/secrets\.md/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  });
+
+  it("a 5xx or a network failure is the unavailable notice with Retry", () => {
     const onRetry = vi.fn();
     render(
       <BrainPage

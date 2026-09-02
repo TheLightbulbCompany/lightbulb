@@ -98,6 +98,56 @@ describe("splitRelated", () => {
     expect(body).toBe("a\n\n## Sources\n\nb\n");
     expect(related).toHaveLength(1);
   });
+  it("reads the block compile actually writes: nested sub-headings, both markers, every link", () => {
+    // memory-wiki's own output — buildRelatedBlockBody's `### Sources` /
+    // `### Referenced By` / `### Related Pages` nested INSIDE the managed
+    // block, with `## Related` on the line above the start marker
+    // (plugin-sdk/memory-host-markdown.ts). Bounding on ANY heading ends the
+    // section at the first `###`: no chips, and an orphaned `## Related`.
+    const { body, related } = splitRelated(
+      [
+        "# Ada Lovelace",
+        "",
+        "She wrote the first algorithm.",
+        "",
+        "## Related",
+        "<!-- openclaw:wiki:related:start -->",
+        "### Sources",
+        "- [[sources/alpha|Alpha]]",
+        "### Referenced By",
+        "- [[entities/beta|Beta]]",
+        "### Related Pages",
+        "- [[concepts/gamma|Gamma]]",
+        "<!-- openclaw:wiki:related:end -->",
+        "",
+      ].join("\n"),
+    );
+    expect(body).toBe("# Ada Lovelace\n\nShe wrote the first algorithm.\n\n");
+    expect(related).toEqual([
+      { target: "sources/alpha", alias: "Alpha" },
+      { target: "entities/beta", alias: "Beta" },
+      { target: "concepts/gamma", alias: "Gamma" },
+    ]);
+  });
+  it("compile's empty body — the sentinel — is no chips and a clean page", () => {
+    const { body, related } = splitRelated(
+      [
+        "# Ada",
+        "",
+        "## Related",
+        "<!-- openclaw:wiki:related:start -->",
+        "- No related pages yet.",
+        "<!-- openclaw:wiki:related:end -->",
+        "",
+      ].join("\n"),
+    );
+    expect(body).toBe("# Ada\n\n");
+    expect(related).toEqual([]);
+  });
+  it("leaves a linkless Related section the OWNER wrote exactly where it is", () => {
+    const page = "# Ada\n\n## Related\n\nAsk Charles about the engine notes.\n";
+    expect(splitRelated(page)).toEqual({ body: page, related: [] });
+  });
   it("an empty Related section leaves no links and no heading (the plugin's markers carry none)", () => {
     expect(
       splitRelated(
@@ -173,6 +223,10 @@ describe("recentlyUpdated", () => {
       t("index.md", 900),
       t("entities/index.md", 800),
       t("inbox/deck.pdf", 700),
+      // compile rewrites its dashboards on essentially every wiki_apply, so a
+      // reports/ page is always the newest thing in the vault. It is never
+      // what "recently updated" means.
+      t("reports/open-questions.md", 950),
       t("sources/deck.md", 500),
       t("concepts/engine.md", 100),
     ];

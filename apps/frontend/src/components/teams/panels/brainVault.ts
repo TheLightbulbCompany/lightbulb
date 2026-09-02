@@ -53,15 +53,22 @@ export function isPlumbing(e: FileEntry): boolean {
   return e.path.split("/").some((seg) => seg.startsWith("."));
 }
 
+/** A filed page that someone (or some agent) wrote ON PURPOSE: isFiledPage
+ *  minus the reports/ dashboards, which compile rewrites on essentially every
+ *  wiki_apply. Both "is this vault empty?" and "what changed lately?" mean
+ *  this question, not the raw filed count. */
+export function isKnowledgePage(e: FileEntry): boolean {
+  return isFiledPage(e) && topDir(e.path) !== "reports";
+}
+
 /** filed = what wiki_search indexes; knowledge = filed minus the auto-maintained
  *  reports/ dashboards (compile writes four of them into an otherwise empty
  *  vault, so "empty" must be judged on the other four sections); inbox = the
  *  un-indexed drop-zone. */
 export function vaultCounts(files: FileEntry[]): { filed: number; knowledge: number; inbox: number } {
-  const filed = files.filter(isFiledPage);
   return {
-    filed: filed.length,
-    knowledge: filed.filter((e) => topDir(e.path) !== "reports").length,
+    filed: files.filter(isFiledPage).length,
+    knowledge: files.filter(isKnowledgePage).length,
     inbox: files.filter(isInboxFile).length,
   };
 }
@@ -240,26 +247,54 @@ function wikilinksIn(text: string): VaultLinkRef[] {
 }
 
 // The trailing backlinks section a compiled page carries: a `## Related`
-// heading over a wikilink list, wrapped by the plugin's own managed block
-// (`<!-- openclaw:wiki:related:start -->`). We slice on the HEADING, not the
-// markers, so a hand-written Related list is caught too and the marker names
-// stay the plugin's business.
-const RELATED_HEADING = /^#{1,6}[ \t]+Related[ \t]*$/im;
-const ANY_HEADING = /^#{1,6}[ \t]+\S/m;
+// heading over the plugin's managed block, which nests `### Sources` /
+// `### Referenced By` / `### Related Pages` INSIDE itself (compile.ts
+// buildRelatedBlockBody). We slice on the HEADING, not the markers, so a
+// hand-written Related list is caught too and the marker names stay the
+// plugin's business — but the section must therefore end at the next heading
+// of the SAME OR SHALLOWER level. Stopping at any heading would end it at the
+// first nested `###`: no chips, and the `## Related` label lifted off the
+// sub-headings it belonged to.
+const RELATED_HEADING = /^(#{1,6})[ \t]+Related[ \t]*$/im;
+// compile's body when every section is empty. Not ours to render.
+const NO_RELATED_SENTINEL = /^no related pages yet\.?$/i;
+
+/** Whatever the section says besides its links. The managed-block markers,
+ *  the sub-headings, the list bullets and compile's own "no related pages
+ *  yet" line are all compiler furniture; anything left is the owner's, and
+ *  lifting THAT out of the body would silently delete it. */
+function hasOwnerProse(section: string): boolean {
+  return section
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(new RegExp(WIKILINK.source, "g"), "")
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^[ \t]*(?:[-*+][ \t]+|#{1,6}[ \t]+)?/, "").trim())
+    .some((line) => line !== "" && !NO_RELATED_SENTINEL.test(line));
+}
 
 /** Lift `## Related` out of the body so the page can render it as a block
- *  instead of as more prose. The section runs to the next heading of any
- *  level, or to the end. An empty one is removed too — a bare "Related"
- *  heading over nothing is noise the compiler, not the owner, left behind. */
+ *  instead of as more prose. The section runs to the next heading of the same
+ *  or shallower level, or to the end — so the nested `### Sources` /
+ *  `### Referenced By` / `### Related Pages` compile writes, and both managed
+ *  markers, come out with it. Every wikilink in the section is a chip,
+ *  whichever sub-heading it sat under.
+ *
+ *  An empty section is removed too — a bare "Related" heading over compile's
+ *  "No related pages yet." is noise the compiler, not the owner, left behind.
+ *  But a Related section carrying no links and some PROSE is left exactly
+ *  where it is: it is the owner's writing, and this function never deletes
+ *  text it cannot re-render. */
 export function splitRelated(body: string): { body: string; related: VaultLinkRef[] } {
   const m = RELATED_HEADING.exec(body);
   if (!m) return { body, related: [] };
   const after = body.slice(m.index + m[0].length);
-  const next = ANY_HEADING.exec(after);
+  const next = new RegExp(`^#{1,${m[1].length}}[ \\t]+\\S`, "m").exec(after);
   const section = next ? after.slice(0, next.index) : after;
+  const related = wikilinksIn(section);
+  if (related.length === 0 && hasOwnerProse(section)) return { body, related: [] };
   return {
     body: body.slice(0, m.index) + (next ? after.slice(next.index) : ""),
-    related: wikilinksIn(section),
+    related,
   };
 }
 
@@ -303,15 +338,16 @@ export function parseIndexSections(markdown: string): IndexSection[] {
   return out;
 }
 
-/** The n most recently written pages, newest first. Scoped to isFiledPage, so
- *  inbox/ (which wiki_search cannot see) and every index.md (compile's own
- *  output, which would otherwise top this list after EVERY wiki_apply) are
- *  excluded by construction — one predicate, already tested above.
+/** The n most recently written pages, newest first. Scoped to isKnowledgePage,
+ *  so inbox/ (which wiki_search cannot see), every index.md AND the reports/
+ *  dashboards are excluded by construction — all three are compile's own
+ *  output, rewritten on essentially every wiki_apply, and would otherwise BE
+ *  this list on a young vault. One predicate, already tested above.
  *  `modified_at` is st_mtime: POSIX SECONDS, which is why formatVaultDate
  *  multiplies by 1000 and so does the renderer. */
 export function recentlyUpdated(files: FileEntry[], n = 5): FileEntry[] {
   return files
-    .filter(isFiledPage)
+    .filter(isKnowledgePage)
     .sort((a, b) => b.modified_at - a.modified_at)
     .slice(0, n);
 }

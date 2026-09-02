@@ -22,15 +22,20 @@
 
 import * as React from "react";
 import { useSWRConfig } from "swr";
-import { BookOpen, Eye, MessageCircleQuestion, Pencil, Trash2, TriangleAlert, Upload } from "lucide-react";
+import {
+  BookOpen, Eye, MessageCircleQuestion, Pencil, RefreshCw, Trash2, TriangleAlert, Upload,
+} from "lucide-react";
 import {
   EditorialButton, PanelEmptyState, PanelMasthead, PanelNotice, PanelTabs, PanelToolbar,
 } from "@/components/teams/shell";
 import { DreamsPanel } from "@/components/control/panels/DreamsPanel";
+import { useAgents } from "@/hooks/useAgents";
 import { useBrainTree, useBrainFile, useBrainMutations } from "@/hooks/useBrainFiles";
 import type { FileInfo } from "@/hooks/useWorkspaceFiles";
 import { openChatPanelWithDraft } from "@/components/workspace/workspaceController";
-import { notifyApiError } from "@/lib/notify";
+import { requestFocusComposer } from "@/lib/focusComposerRequest";
+import { notifyApiError, notifyError } from "@/lib/notify";
+import { navigateShell } from "@/lib/shellNav";
 import { formatBytes } from "@/lib/utils";
 import { BrainFileList } from "./BrainFileList";
 import { BrainLanding } from "./BrainLanding";
@@ -45,6 +50,9 @@ const BRAIN_TABS = [
   { value: "notes", label: "Notes" },
   { value: "dreams", label: "Dreams" },
 ];
+
+const CRUMB_BAR =
+  "flex items-center gap-1 border-b border-[var(--edge)] px-3 py-1.5 text-xs text-[var(--midnight-muted)]";
 
 const EMPTY_VAULT_PROMPT =
   "What do you know about our company so far? File anything durable into the brain.";
@@ -89,6 +97,7 @@ export function BrainPanel({ initialPath, initialTab, onPathUnavailable }: Brain
   }
 
   const { files, isLoading: treeLoading, error: treeError, refresh } = useBrainTree();
+  const { defaultId } = useAgents();
   const counts = React.useMemo(() => vaultCounts(files), [files]);
   const hasLanding = files.some((f) => f.type === "file" && f.path === LANDING_PATH);
   // Land on the vault's own index.md: the plugin creates it on init and
@@ -140,6 +149,13 @@ export function BrainPanel({ initialPath, initialTab, onPathUnavailable }: Brain
     },
     [uploading, uploadBrainFiles, refresh],
   );
+
+  // Nothing revalidates on its own — SwrProvider sets revalidateOnFocus:false
+  // app-wide — so watching Friday file a page needs an explicit ask.
+  const handleRefresh = React.useCallback(() => {
+    void refresh();
+    if (fileKey) void mutateCache(fileKey);
+  }, [refresh, fileKey, mutateCache]);
 
   const confirmDiscardIfDirty = React.useCallback((): boolean => {
     if (!editorDirty) return true;
@@ -217,9 +233,30 @@ export function BrainPanel({ initialPath, initialTab, onPathUnavailable }: Brain
     void refresh();
   }, [pagePath, deleteBrainFile, refresh]);
 
-  const ask = React.useCallback(() => {
-    openChatPanelWithDraft(askBrainDraft(query));
-  }, [query]);
+  // Every ASK exit. The dock belongs to the DESKTOP shell — mobile renders
+  // MobileChatShell instead, so attachDockviewApi is never called and
+  // openChatPanelWithDraft returns false (as it does on desktop before the
+  // roster resolves). Same fallback as HomeQuickActions' mobile branch:
+  // record the draft, name the agent the mobile shell should select, swap the
+  // URL to /chat, then fire the event for the already-mounted composer.
+  const ask = React.useCallback(
+    (draft: string) => {
+      if (openChatPanelWithDraft(draft)) return;
+      if (!defaultId) {
+        notifyError("Friday isn't ready yet — try again in a moment.");
+        return;
+      }
+      requestFocusComposer(defaultId, draft);
+      window.dispatchEvent(
+        new CustomEvent("selectAgent", { detail: { agentId: defaultId, source: "notification" } }),
+      );
+      navigateShell("/chat");
+      window.dispatchEvent(
+        new CustomEvent("getstarted:focus-composer", { detail: { agentId: defaultId } }),
+      );
+    },
+    [defaultId],
+  );
 
   const dropHandlers = {
     onDragOver: (e: React.DragEvent) => {
@@ -266,17 +303,25 @@ export function BrainPanel({ initialPath, initialTab, onPathUnavailable }: Brain
         // The masthead meta slot is mono by default (it usually carries a
         // stat line); this is a sentence, so it takes the UI face back. The
         // size · modified pair in `actions` keeps the mono.
+        // Withheld until the tree is READ: `counts` is {0,0,0} while it
+        // loads, and "0 filed" is a claim we have not earned yet. The count
+        // is a button only when the inbox has something in it — at zero it
+        // opens an empty list with nothing to do there.
         meta={
-          tab === "notes" && !treeError ? (
+          tab === "notes" && !treeError && !treeLoading ? (
             <span className="font-sans">
               {counts.filed} filed ·{" "}
-              <button
-                type="button"
-                onClick={showInbox}
-                className="underline decoration-dotted hover:text-[var(--midnight)]"
-              >
-                {counts.inbox} in inbox awaiting filing
-              </button>
+              {counts.inbox > 0 ? (
+                <button
+                  type="button"
+                  onClick={showInbox}
+                  className="underline decoration-dotted hover:text-[var(--midnight)]"
+                >
+                  {counts.inbox} in inbox awaiting filing
+                </button>
+              ) : (
+                "0 in inbox awaiting filing"
+              )}
             </span>
           ) : undefined
         }
@@ -371,7 +416,7 @@ export function BrainPanel({ initialPath, initialTab, onPathUnavailable }: Brain
                 icon={BookOpen}
                 headline="No pages yet."
                 supporting="Your company's brain fills as your agents learn."
-                action={{ label: "Ask Friday", onClick: ask }}
+                action={{ label: "Ask Friday", onClick: () => ask(askBrainDraft(query)) }}
               />
               <button
                 type="button"
@@ -407,9 +452,17 @@ export function BrainPanel({ initialPath, initialTab, onPathUnavailable }: Brain
                 searchAriaLabel="Find a page by name"
                 actions={
                   <div className="flex items-center gap-2">
-                    <EditorialButton variant="secondary" size="sm" onClick={ask}>
+                    <EditorialButton
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => ask(askBrainDraft(query))}
+                    >
                       <MessageCircleQuestion className="h-3.5 w-3.5" aria-hidden="true" />
                       Ask Friday
+                    </EditorialButton>
+                    <EditorialButton variant="ghost" size="sm" onClick={handleRefresh}>
+                      <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+                      Refresh
                     </EditorialButton>
                     <EditorialButton
                       variant="ghost"
@@ -424,7 +477,7 @@ export function BrainPanel({ initialPath, initialTab, onPathUnavailable }: Brain
                 }
               />
 
-              {!searching && view === "page" && counts.inbox > 0 && (
+              {!treeLoading && !searching && view === "page" && counts.inbox > 0 && (
                 <PanelNotice
                   state="partial"
                   headline={`${counts.inbox} ${counts.inbox === 1 ? "file" : "files"} in the inbox awaiting filing.`}
@@ -432,11 +485,11 @@ export function BrainPanel({ initialPath, initialTab, onPathUnavailable }: Brain
                   prompt={fileInboxDraft(counts.inbox)}
                   action={{
                     label: counts.inbox === 1 ? "Ask Friday to file it" : "Ask Friday to file them",
-                    onClick: () => openChatPanelWithDraft(fileInboxDraft(counts.inbox)),
+                    onClick: () => ask(fileInboxDraft(counts.inbox)),
                   }}
                 />
               )}
-              {!searching && view === "page" && counts.inbox === 0 && counts.knowledge === 0 && (
+              {!treeLoading && !searching && view === "page" && counts.inbox === 0 && counts.knowledge === 0 && (
                 // The plugin's first compile writes four reports/ dashboards
                 // into an otherwise empty vault, so "Nothing filed yet." beside
                 // an honest "4 filed" is every account's first post-compile
@@ -454,7 +507,7 @@ export function BrainPanel({ initialPath, initialTab, onPathUnavailable }: Brain
                   prompt={EMPTY_VAULT_PROMPT}
                   action={{
                     label: "Ask Friday what we know",
-                    onClick: () => openChatPanelWithDraft(EMPTY_VAULT_PROMPT),
+                    onClick: () => ask(EMPTY_VAULT_PROMPT),
                   }}
                 />
               )}
@@ -466,27 +519,30 @@ export function BrainPanel({ initialPath, initialTab, onPathUnavailable }: Brain
                 }`}
                 {...dropHandlers}
               >
-                {searching ? (
+                {treeLoading ? (
+                  <div className="p-6 font-editorial-serif text-xl italic text-[var(--midnight-muted)]">
+                    Loading…
+                  </div>
+                ) : searching ? (
                   <div className="p-3 flex flex-col gap-3">
                     <p className="text-xs text-[var(--midnight-muted)]">
                       Matching page names only — contents aren&rsquo;t searched here.
                     </p>
                     <BrainFileList files={results} onSelect={handleSelect} emptyText="No page named that." />
-                    <EditorialButton variant="secondary" size="sm" onClick={ask} className="self-start">
+                    <EditorialButton
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => ask(askBrainDraft(query))}
+                      className="self-start"
+                    >
                       Ask Friday to search the contents
                     </EditorialButton>
                   </div>
                 ) : view === "inbox" ? (
-                  <div className="p-3">
-                    <p className="label-caps mb-2">Inbox</p>
-                    <BrainFileList files={inboxFiles} onSelect={handleSelect} emptyText="The inbox is empty." />
-                  </div>
-                ) : pagePath ? (
+                  // Same breadcrumb the page view has: without it the inbox is
+                  // a one-way door — nothing else sets `view` back to "page".
                   <div className="flex flex-col h-full">
-                    <nav
-                      aria-label="Breadcrumb"
-                      className="flex items-center gap-1 border-b border-[var(--edge)] px-3 py-1.5 text-xs text-[var(--midnight-muted)]"
-                    >
+                    <nav aria-label="Breadcrumb" className={CRUMB_BAR}>
                       <button
                         type="button"
                         onClick={() => handleSelect(LANDING_PATH)}
@@ -494,22 +550,43 @@ export function BrainPanel({ initialPath, initialTab, onPathUnavailable }: Brain
                       >
                         Index
                       </button>
-                      {crumbs.length > 1 && (
-                        <>
+                      <span aria-hidden="true">›</span>
+                      <span className="text-[var(--midnight)]">Inbox</span>
+                    </nav>
+                    <div className="flex-1 min-h-0 overflow-y-auto p-3">
+                      <BrainFileList files={inboxFiles} onSelect={handleSelect} emptyText="The inbox is empty." />
+                    </div>
+                  </div>
+                ) : pagePath ? (
+                  <div className="flex flex-col h-full">
+                    <nav aria-label="Breadcrumb" className={CRUMB_BAR}>
+                      <button
+                        type="button"
+                        onClick={() => handleSelect(LANDING_PATH)}
+                        className="hover:text-[var(--midnight)]"
+                      >
+                        Index
+                      </button>
+                      {/* EVERY directory, not just the first — the vault is a
+                          tree and dropping the middle of a nested path names a
+                          page that isn't where the breadcrumb says it is. Only
+                          the top-level dir has an index.md to open. */}
+                      {crumbs.slice(0, -1).map((seg, i) => (
+                        <React.Fragment key={`${i}-${seg}`}>
                           <span aria-hidden="true">›</span>
-                          {sectionIndexPath ? (
+                          {i === 0 && sectionIndexPath ? (
                             <button
                               type="button"
                               onClick={() => handleSelect(sectionIndexPath)}
                               className="hover:text-[var(--midnight)]"
                             >
-                              {crumbs[0]}
+                              {seg}
                             </button>
                           ) : (
-                            <span>{crumbs[0]}</span>
+                            <span>{seg}</span>
                           )}
-                        </>
-                      )}
+                        </React.Fragment>
+                      ))}
                       {pagePath !== LANDING_PATH && (
                         <>
                           <span aria-hidden="true">›</span>
@@ -534,10 +611,7 @@ export function BrainPanel({ initialPath, initialTab, onPathUnavailable }: Brain
                           files={files}
                           editing={editing}
                           onNavigate={handleSelect}
-                          onRetry={() => {
-                            void refresh();
-                            if (fileKey) void mutateCache(fileKey);
-                          }}
+                          onRetry={handleRefresh}
                           onSave={handleSave}
                           onDirtyChange={setEditorDirty}
                         />

@@ -131,7 +131,11 @@ export function BrainPage({
     // ApiError carries `status`; duck-typed so this file never imports
     // @/lib/api (Clerk) into a unit test.
     const status = (error as { status?: number }).status;
-    if (status === 404) {
+    // Any 4xx is the LINK's problem, not the platform's: a wikilink whose
+    // target was renamed 404s, and a traversal-shaped one (`[[../secrets]]`)
+    // is refused 400/403 by _guard_brain_path. Both mean "this link does not
+    // go anywhere" — the outage copy plus a Retry button would be a lie.
+    if (status !== undefined && status >= 400 && status < 500) {
       return (
         <PanelNotice
           state="zero"

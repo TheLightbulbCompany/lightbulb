@@ -39,6 +39,14 @@ export function teamsDetailUrl(
   return `/chat?panel=teams-${kind}-detail&detailId=${encodeURIComponent(id)}`;
 }
 
+// Commit an in-shell URL with no anchor to fall through to — a button, or a
+// notice's action. The App Router integrates with pushState, so this is the
+// whole client-side swap; handleShellLinkClick is this plus the
+// modified-click bail-out.
+export function navigateShell(url: string): void {
+  window.history.pushState(null, "", url);
+}
+
 // Anchor onClick companion for the URL builders above: plain left-clicks
 // commit through pushState (client-side swap); modified clicks and non-left
 // buttons fall through to the href's native behavior.
@@ -57,5 +65,5 @@ export function handleShellLinkClick(
   if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0)
     return;
   e.preventDefault();
-  window.history.pushState(null, "", url);
+  navigateShell(url);
 }

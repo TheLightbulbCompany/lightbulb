@@ -34,6 +34,18 @@ vi.mock("@/components/workspace/workspaceController", () => ({
   openChatPanelWithDraft: (d: string) => openChatPanelWithDraft(d),
 }));
 
+// The ASK fallback needs the default agent by name when there is no dock.
+let agentsState: { defaultId: string | undefined };
+vi.mock("@/hooks/useAgents", () => ({ useAgents: () => agentsState }));
+
+// Only notifyError is spied — notifyApiError stays real, since the upload
+// tests below exercise it end to end.
+const notifyErrorSpy = vi.fn();
+vi.mock("@/lib/notify", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/notify")>();
+  return { ...actual, notifyError: (m: string) => notifyErrorSpy(m) };
+});
+
 // The panel merges the PUT's fresh stat into the file's own SWR cache entry
 // via useSWRConfig().mutate — spy on it the same way ArtifactsPanel.test.tsx does.
 const globalMutate = vi.fn();
@@ -55,6 +67,10 @@ vi.mock("@/components/control/panels/DreamsPanel", () => ({
   DreamsPanel: () => <div data-testid="dreams-panel-body">DreamsPanel</div>,
 }));
 
+import {
+  consumeFocusComposerRequest,
+  _resetFocusComposerRequestForTests,
+} from "@/lib/focusComposerRequest";
 import { BrainPanel } from "../BrainPanel";
 
 const f = (path: string, type: "file" | "dir" = "file", size = 42): FileEntry => ({
@@ -111,7 +127,12 @@ beforeEach(() => {
   uploadBrainFiles.mockClear();
   uploadBrainFiles.mockResolvedValue({ uploaded: [] });
   openChatPanelWithDraft.mockClear();
+  openChatPanelWithDraft.mockReturnValue(true);
+  notifyErrorSpy.mockClear();
+  agentsState = { defaultId: "agent_1" };
   globalMutate.mockClear();
+  _resetFocusComposerRequestForTests();
+  window.history.replaceState(null, "", "/chat?panel=teams-brain");
 });
 
 afterEach(() => {
@@ -507,6 +528,99 @@ describe("BrainPanel", () => {
     // remounting — simulate that by rerendering with a new initialPath prop.
     rerender(<BrainPanel initialPath="concepts/icp.md" />);
     expect(useBrainFileSpy).toHaveBeenLastCalledWith("concepts/icp.md");
+  });
+
+  describe("ASK with no dock attached (mobile, or pre-roster desktop)", () => {
+    it("hands the draft to the mobile chat shell instead of dropping it", () => {
+      // attachDockviewApi is the desktop shell's; chat/page.tsx renders
+      // MobileChatShell instead, so openChatPanelWithDraft returns false.
+      treeState.files = POPULATED;
+      openChatPanelWithDraft.mockReturnValue(false);
+      const selected: unknown[] = [];
+      const focused: unknown[] = [];
+      window.addEventListener("selectAgent", (e) => selected.push((e as CustomEvent).detail));
+      window.addEventListener("getstarted:focus-composer", (e) =>
+        focused.push((e as CustomEvent).detail),
+      );
+
+      render(<BrainPanel />);
+      fireEvent.click(screen.getByRole("button", { name: "Ask Friday" }));
+
+      expect(consumeFocusComposerRequest("agent_1")).toEqual({
+        draft: "Look in our brain and tell me what we know about: ",
+      });
+      expect(selected).toEqual([{ agentId: "agent_1", source: "notification" }]);
+      expect(focused).toEqual([{ agentId: "agent_1" }]);
+      expect(window.location.pathname).toBe("/chat");
+      expect(notifyErrorSpy).not.toHaveBeenCalled();
+    });
+
+    it("says so, and navigates nowhere, when no agent has resolved yet", () => {
+      treeState.files = POPULATED;
+      openChatPanelWithDraft.mockReturnValue(false);
+      agentsState = { defaultId: undefined };
+      render(<BrainPanel />);
+      fireEvent.click(screen.getByRole("button", { name: "Ask Friday" }));
+      expect(notifyErrorSpy).toHaveBeenCalledWith(
+        "Friday isn't ready yet — try again in a moment.",
+      );
+      expect(consumeFocusComposerRequest("agent_1")).toBeNull();
+      expect(window.location.pathname).toBe("/chat");
+      expect(window.location.search).toBe("?panel=teams-brain");
+    });
+  });
+
+  describe("the inbox is not a one-way door (I2)", () => {
+    it("has an Index exit back to the landing", () => {
+      treeState.files = POPULATED;
+      render(<BrainPanel />);
+      fireEvent.click(screen.getByRole("button", { name: /1 in inbox/ }));
+      expect(screen.getByRole("button", { name: /inbox\/deck\.pdf/ })).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Index" }));
+      expect(useBrainFileSpy).toHaveBeenLastCalledWith("index.md");
+      expect(screen.queryByRole("button", { name: /inbox\/deck\.pdf/ })).toBeNull();
+    });
+
+    it("does not offer the count as a button when the inbox is empty", () => {
+      treeState.files = SCAFFOLD;
+      fileState.file = md("index.md", "# Wiki Index");
+      render(<BrainPanel />);
+      expect(screen.getByTestId("panel-masthead-meta").textContent).toMatch(/0 in inbox/);
+      expect(screen.queryByRole("button", { name: /in inbox/ })).toBeNull();
+    });
+  });
+
+  it("claims no counts and no zero notice before the tree has been read (I3)", () => {
+    treeState.isLoading = true;
+    treeState.files = [];
+    render(<BrainPanel />);
+    expect(screen.queryByTestId("panel-masthead-meta")).toBeNull();
+    expect(screen.queryByText("Nothing filed yet.")).toBeNull();
+    expect(screen.queryByTestId("brain-empty-drop-zone")).toBeNull();
+    expect(screen.getByText("Loading…")).toBeInTheDocument();
+  });
+
+  it("Refresh re-reads the tree and the open page (I4)", () => {
+    treeState.files = POPULATED;
+    fileState.file = md("entities/ada-lovelace.md", "# Ada");
+    fileState.key = "/container/brain/file?path=entities%2Fada-lovelace.md";
+    render(<BrainPanel initialPath="entities/ada-lovelace.md" />);
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(treeState.refresh).toHaveBeenCalled();
+    expect(globalMutate).toHaveBeenCalledWith(fileState.key);
+  });
+
+  it("the breadcrumb keeps every directory of a nested page", () => {
+    const NESTED = f("entities/people/ada.md");
+    treeState.files = [...POPULATED, f("entities/people", "dir"), NESTED];
+    fileState.file = md("entities/people/ada.md", "# Ada");
+    render(<BrainPanel initialPath="entities/people/ada.md" />);
+    const crumbs = screen.getByRole("navigation", { name: "Breadcrumb" });
+    expect(crumbs.textContent).toContain("people");
+    // Only the top-level dir has a section index to open.
+    fireEvent.click(screen.getByRole("button", { name: "entities" }));
+    expect(useBrainFileSpy).toHaveBeenLastCalledWith("entities/index.md");
   });
 
   describe("Notes | Dreams tabs", () => {

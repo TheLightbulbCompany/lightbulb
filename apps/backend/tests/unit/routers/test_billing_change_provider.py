@@ -61,6 +61,9 @@ def cold_reprovision():
     manager.stop_user_service = AsyncMock(return_value=None)
     manager.drain_then_dispatch_provision = AsyncMock(return_value={"status": "reprovisioning"})
     manager.resolve_running_container = AsyncMock(return_value=(None, None))
+    # The hot swap reads the owner's running image to shape-gate the 8.1-only
+    # modelPolicy key; None = "no task def yet", i.e. the env pin decides.
+    manager._deployed_image_tag = AsyncMock(return_value=None)
     with (
         patch("core.containers.get_ecs_manager", return_value=manager),
         patch(

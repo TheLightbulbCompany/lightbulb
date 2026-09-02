@@ -14,9 +14,19 @@ via ``hmac.compare_digest``. Do not add Clerk auth — it would break every
 real webhook source.
 
 **Forwarded headers.** X-Forwarded-* values from the public caller are
-NOT trusted (they could be spoofed). We strip and re-assert the chain
-with values we control. OpenClaw on the container side trusts these
-headers because our backend's subnet is in ``gateway.trustedProxies``.
+NOT trusted (they could be spoofed), so they are stripped -- and NOT
+re-asserted. This used to re-assert the chain on the premise that the
+backend's subnet was in ``gateway.trustedProxies``; that premise died
+when the container config narrowed ``trustedProxies`` to 127.0.0.1/::1
+after the WS-path 403 incident, and 2026.8.1's ingress attribution
+(gateway/ingress-attribution.ts) turned the leftover headers from inert
+into fatal: any forwarded header from an untrusted address fails closed
+with 403 ``proxy_attribution_required`` BEFORE the hooks handler runs.
+Verified live on a rolled 8.1 dev container 2026-09-02 -- same request,
+same token: 400 "message required" without the headers, 403 with them.
+Every external webhook through this proxy was dead on every 8.1
+container until the headers came out. Nothing upstream needs the
+caller's IP; the hook token is the whole trust model.
 
 **Rate limit.** In-process sliding-window bucket, 60/min per ``owner_id``.
 Fine for the current single-task backend; needs DDB-backed counter when
@@ -25,12 +35,10 @@ we scale out (flagged in the spec, not v1 work).
 
 import hmac
 import logging
-from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
 
-from core.config import settings
 from core.containers import get_ecs_manager
 from core.repositories import billing_repo, container_repo
 from core.services.provision_gate import has_always_on_entitlement
@@ -62,6 +70,8 @@ def _check_rate_limit(owner_id: str) -> bool:
 
 
 def _extract_caller_ip(request: Request) -> str:
+    # Kept for routers/paperclip_trigger_proxy, which forwards to the Paperclip
+    # BFF (no ingress-attribution gate there). NOT used on the container hop.
     """Get the immediate TCP-peer IP, ignoring inbound X-Forwarded-* (untrusted).
 
     In production this is the ALB's private IP. When uvicorn is configured
@@ -77,25 +87,21 @@ def _extract_caller_ip(request: Request) -> str:
 
 
 def _build_forwarded_headers(request: Request, hook_token: str) -> dict[str, str]:
-    """Strip inbound X-Forwarded-* and re-assert them with values we control."""
-    caller_ip = _extract_caller_ip(request)
+    """Headers for the container hop: the caller's headers minus everything we
+    must own (auth, hop-by-hop, host) and minus EVERY forwarded-chain header,
+    plus our bearer. No X-Forwarded-* is added -- see the module docstring:
+    the container fails closed on forwarded headers from an address outside
+    its ``trustedProxies``, and the backend is deliberately not in that list.
+    """
     headers: dict[str, str] = {}
     for k, v in request.headers.items():
         kl = k.lower()
         if kl in ("host", "content-length", "authorization"):
             continue
-        if kl.startswith("x-forwarded-"):
+        if kl.startswith("x-forwarded-") or kl == "forwarded" or kl == "x-real-ip":
             continue
         headers[k] = v
     headers["Authorization"] = f"Bearer {hook_token}"
-    headers["X-Forwarded-For"] = caller_ip
-    headers["X-Forwarded-Proto"] = "https"
-    # Derive from PUBLIC_API_BASE so dev/staging containers see their own
-    # hostname instead of the prod literal. Today no upstream consumer reads
-    # this value meaningfully, but pinning the prod hostname in non-prod
-    # poisons audit trails and pre-stages a footgun for any future OAuth-
-    # callback / absolute-URL builder that reads X-Forwarded-Host.
-    headers["X-Forwarded-Host"] = urlparse(settings.PUBLIC_API_BASE).netloc
     return headers
 
 

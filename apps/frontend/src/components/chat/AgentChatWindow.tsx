@@ -10,6 +10,7 @@ import { useBilling } from "@/hooks/useBilling";
 import { ExecApprovalCards } from "./ExecApprovalCards";
 import { AgentProgressCard } from "./AgentProgressCard";
 import { MessageList, MessageListHandle } from "./MessageList";
+import { SessionBranchBar } from "./SessionBranchBar";
 import { StreamingStatusBar } from "./StreamingStatusBar";
 import { useAgentChat, buildChatSessionKey, BOOTSTRAP_MESSAGE } from "@/hooks/useAgentChat";
 import { useAgentSessions } from "@/hooks/useAgentSessions";
@@ -291,6 +292,9 @@ export function AgentChatWindow({
     hasOlderMessages,
     isLoadingOlder,
     loadOlderMessages,
+    rewindToMessage,
+    switchBranch,
+    branchRefreshToken,
   } = useAgentChat(agentId, sessionName, handleChatCompleted);
 
   // Mirrors the sessionKey useAgentChat's own history reads use (chat.history,
@@ -343,6 +347,27 @@ export function AgentChatWindow({
   const api = useApi();
   const [isUploading, setIsUploading] = useState(false);
   const messageListRef = useRef<MessageListHandle>(null);
+
+  // Rewind hands back the removed user message so the owner can edit and
+  // resend it. The hook already refetched history and bumped the branch token;
+  // the only thing left here is the composer, which the hook cannot reach.
+  //
+  // The draft is held HERE, not pushed into the composer, because that same
+  // refetch flips this component to its loading shell — and, if the rewind
+  // emptied the session, on to the empty state. Each branch mounts its own
+  // ChatInput, so a push would land on one that is about to unmount. Every
+  // branch is handed this draft; whichever composer survives loads it.
+  //
+  // A null return means the RPC failed and was toasted — leave the draft alone.
+  const [composerDraft, setComposerDraft] = useState<{ text: string; nonce: number }>();
+  const handleRewind = useCallback(
+    async (entryId: string) => {
+      const editorText = await rewindToMessage(entryId);
+      if (editorText === null) return;
+      setComposerDraft((prev) => ({ text: editorText, nonce: (prev?.nonce ?? 0) + 1 }));
+    },
+    [rewindToMessage],
+  );
 
   const isInitialState = renderGroups.length === 0;
 
@@ -448,6 +473,7 @@ export function AgentChatWindow({
           </div>
         </div>
         <ChatInput
+          draft={composerDraft}
           onSend={handleSend}
           onStop={cancelMessage}
           agentId={agentId}
@@ -495,6 +521,7 @@ export function AgentChatWindow({
           <div className="w-full max-w-2xl">
             <UpdateBanner />
             <ChatInput
+              draft={composerDraft}
               onSend={handleSend}
               onStop={cancelMessage}
               agentId={agentId}
@@ -526,6 +553,12 @@ export function AgentChatWindow({
           Some large tool output in this conversation was shortened to fit.
         </div>
       )}
+      <SessionBranchBar
+        sessionKey={progressSessionKey}
+        onSwitch={switchBranch}
+        branchRefreshToken={branchRefreshToken}
+        disabled={busy}
+      />
       <MessageList
         ref={messageListRef}
         renderGroups={renderGroups}
@@ -536,12 +569,15 @@ export function AgentChatWindow({
         hasOlder={hasOlderMessages}
         isLoadingOlder={isLoadingOlder}
         onLoadOlder={loadOlderMessages}
+        onRewind={handleRewind}
+        rewindDisabled={busy}
       />
       <UpdateBanner />
       <StreamingStatusBar isStreaming={isStreaming} active={busy} />
       <AgentProgressCard sessionKey={progressSessionKey} />
       <ExecApprovalCards />
       <ChatInput
+        draft={composerDraft}
         onSend={handleSend}
         onStop={cancelMessage}
         agentId={agentId}

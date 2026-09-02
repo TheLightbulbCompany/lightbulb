@@ -1271,7 +1271,8 @@ export function useAgentChat(
   // `branchRefreshToken` for the branch reader mounted alongside.
   //
   // Neither is gated here: the container refuses a cut while a run is live
-  // (session-lifecycle-admission), and the UI hides the affordance while busy.
+  // (session-lifecycle-admission) and is the real fence; the UI disables both
+  // affordances while `busy` so the refusal is never what the owner meets.
   const [branchRefreshToken, setBranchRefreshToken] = useState(0);
 
   const sessionKeyNow = useCallback(

@@ -459,7 +459,13 @@ export function HomeRollupStrip({
           value={
             spendPending ? "…" : spendCents === null ? "Not shown" : formatUsdCents(spendCents)
           }
-          caption={spendCents === null ? "Open Spend for what your plan meters" : "Billed this month"}
+          caption={
+            spendPending
+              ? "Reading your bill"
+              : spendCents === null
+                ? "Open Spend for what your plan meters"
+                : "Billed this month"
+          }
           href={teamsPanelUrl("spend")}
           linkLabel="Open Spend"
         />

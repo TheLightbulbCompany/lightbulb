@@ -139,7 +139,7 @@ describe("HomeRollupStrip honesty — regressions found in review", () => {
   });
 
 
-  
+
   it("keeps a negative revenue day inside the sparkline's viewBox", () => {
     // `_read_day` sums balance-transaction `net` over all types, so refunds and
     // disputes can push a day below zero. A max-only scale mapped those points

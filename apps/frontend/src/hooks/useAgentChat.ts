@@ -178,6 +178,10 @@ export interface UseAgentChatReturn {
   clearQueue: () => void;
   steerMessage: (id: string) => void;
   retryQueuedMessage: (id: string) => void;
+  /** Edit a queued prompt's text in place, keeping its id/position/sendState. No-op if blank or not found. */
+  editQueuedMessage: (id: string, text: string) => void;
+  /** Move a queued prompt up/down by one position. No-op at the queue's edges or if not found. */
+  moveQueuedMessage: (id: string, direction: "up" | "down") => void;
   /** The active session id for this agent; null == the legacy General session. */
   activeSessionId: string | null;
   /** Mint + switch to a fresh session. Returns the new session id. */
@@ -734,6 +738,40 @@ export function useAgentChat(
 
   const clearQueue = useCallback(() => {
     setQueuedMessages([]);
+  }, []);
+
+  // Edit a queued prompt's text in place. `queuedMessages` array order IS
+  // send order (drainQueue walks it front-to-back looking for the first
+  // plain item), so this only rewrites the matching item's `text` —
+  // position, id, and sendState are untouched. A blank edit is a no-op
+  // (mirrors sendMessage's own empty-trim guard) rather than leaving an
+  // unsendable empty queued item. Can never touch the active run: the
+  // in-flight turn isn't a queue entry at all — it's tracked separately via
+  // clientRunIdRef — so an id that doesn't resolve in the queue is just a
+  // no-op. Ports upstream OpenClaw "editable queues" behaviour
+  // (#121682/#121692/#124298) against our simpler QueuedMessage shape.
+  const editQueuedMessage = useCallback((id: string, text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    setQueuedMessages((prev) => prev.map((m) => (m.id === id ? { ...m, text: trimmed } : m)));
+  }, []);
+
+  // Reorder a queued prompt by swapping it with its immediate neighbor. A
+  // plain array swap is enough here — unlike upstream's orderKey/segments
+  // machinery, our queue has no "locked" rows to protect a move from
+  // crossing (a joined/in-flight message is never a queue entry in this
+  // model), so array order alone is both display order and send order.
+  // No-op at the queue's edges or if the id isn't queued.
+  const moveQueuedMessage = useCallback((id: string, direction: "up" | "down") => {
+    setQueuedMessages((prev) => {
+      const index = prev.findIndex((m) => m.id === id);
+      if (index < 0) return prev;
+      const swapWith = direction === "up" ? index - 1 : index + 1;
+      if (swapWith < 0 || swapWith >= prev.length) return prev;
+      const next = [...prev];
+      [next[index], next[swapWith]] = [next[swapWith], next[index]];
+      return next;
+    });
   }, []);
 
   // Steer a queued message INTO the live run. Only valid while a run is
@@ -2643,6 +2681,8 @@ export function useAgentChat(
     clearQueue,
     steerMessage,
     retryQueuedMessage,
+    editQueuedMessage,
+    moveQueuedMessage,
     activeSessionId,
     newSession,
     selectSession,

@@ -283,6 +283,8 @@ export function AgentChatWindow({
     clearQueue,
     steerMessage,
     retryQueuedMessage,
+    editQueuedMessage,
+    moveQueuedMessage,
     activeSessionId,
     historyTruncated,
     hasOlderMessages,
@@ -451,6 +453,8 @@ export function AgentChatWindow({
           onClearQueue={clearQueue}
           onSteerQueued={steerMessage}
           onRetryQueued={retryQueuedMessage}
+          onEditQueued={editQueuedMessage}
+          onMoveQueued={moveQueuedMessage}
           controls={modelEffortPill}
         />
       </div>
@@ -498,6 +502,8 @@ export function AgentChatWindow({
               onClearQueue={clearQueue}
               onSteerQueued={steerMessage}
               onRetryQueued={retryQueuedMessage}
+              onEditQueued={editQueuedMessage}
+              onMoveQueued={moveQueuedMessage}
               controls={modelEffortPill}
             />
           </div>
@@ -540,6 +546,8 @@ export function AgentChatWindow({
         onClearQueue={clearQueue}
         onSteerQueued={steerMessage}
         onRetryQueued={retryQueuedMessage}
+        onEditQueued={editQueuedMessage}
+        onMoveQueued={moveQueuedMessage}
         controls={modelEffortPill}
       />
     </div>

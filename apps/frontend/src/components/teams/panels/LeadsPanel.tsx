@@ -198,7 +198,7 @@ export function LeadsPanel() {
           {hasMore && (
             <div className="flex flex-col items-center gap-1">
               <EditorialButton size="sm" variant="secondary" onClick={next}>
-                Load more
+                {moreFailed ? "Try again" : "Load more"}
               </EditorialButton>
               {moreFailed && (
                 <p className="text-xs text-[var(--midnight-muted)]">

@@ -50,7 +50,7 @@ def _owner(auth: AuthContext) -> str:
 async def leads(
     auth: Annotated[AuthContext, Depends(get_current_user)],
     q: Annotated[str, Query(min_length=2, max_length=200)],
-    page: Annotated[int, Query(ge=1, le=50)] = 1,
+    page: Annotated[int, Query(ge=1, le=company_leads.MAX_PAGE)] = 1,
 ) -> dict:
     owner_id = _owner(auth)
     try:

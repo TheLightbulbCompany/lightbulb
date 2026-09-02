@@ -35,7 +35,9 @@ async def test_projects_apollo_shape_honestly():
     """Apollo's free search returns a MASKED surname and a has_email flag —
     not an email, not a LinkedIn URL. Nothing is invented."""
     apollo = {
-        "total_entries": 40,
+        # Apollo's envelope: the count is nested under `pagination`, never at
+        # the root. A root-level read silently reports 0 and never pages.
+        "pagination": {"page": 1, "per_page": 25, "total_entries": 40, "total_pages": 2},
         "people": [
             {
                 "id": "p1",
@@ -93,8 +95,25 @@ async def test_per_page_is_capped():
     with (
         patch.object(company_leads.integration_secret_store, "get", AsyncMock(return_value={"token": "k"})),
         patch.object(
-            httpx.AsyncClient, "post", AsyncMock(return_value=_resp(200, {"people": [], "total_entries": 0}))
+            httpx.AsyncClient,
+            "post",
+            AsyncMock(return_value=_resp(200, {"people": [], "pagination": {"total_entries": 0}})),
         ) as post,
     ):
         await company_leads.search_people("owner", query="x", per_page=999)
     assert post.call_args.kwargs["params"]["per_page"] == company_leads.MAX_PER_PAGE
+
+
+@pytest.mark.asyncio
+async def test_has_more_stops_at_the_last_page_the_router_serves():
+    """A broad query can have thousands of matches; page 50 is the last one
+    Apollo (and our router) will serve, so it must not advertise a page 51."""
+    apollo = {"pagination": {"total_entries": 5000}, "people": []}
+    with (
+        patch.object(company_leads.integration_secret_store, "get", AsyncMock(return_value={"token": "k"})),
+        patch.object(httpx.AsyncClient, "post", AsyncMock(return_value=_resp(200, apollo))),
+    ):
+        last = await company_leads.search_people("owner", query="founders", page=company_leads.MAX_PAGE)
+        before = await company_leads.search_people("owner", query="founders", page=company_leads.MAX_PAGE - 1)
+    assert last["has_more"] is False
+    assert before["has_more"] is True

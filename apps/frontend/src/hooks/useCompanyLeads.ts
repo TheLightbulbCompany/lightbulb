@@ -82,10 +82,13 @@ export function useCompanyLeads() {
   const [earlier, setEarlier] = useState<LeadRow[]>([]);
 
   const key = query ? `/company/leads?q=${encodeURIComponent(query)}&page=${page}` : null;
-  const { data, error, isLoading } = useSWR<LeadsEnvelope>(
+  // No keepPreviousData: `earlier` is what keeps the table on screen between
+  // pages. Lagged data here rendered the current page twice while the next
+  // one loaded, and after a failed page it was re-appended as if it were new.
+  const { data, error, isLoading, mutate } = useSWR<LeadsEnvelope>(
     key,
     (path: string) => api.get(path) as Promise<LeadsEnvelope>,
-    { dedupingInterval: 60_000, keepPreviousData: true, revalidateOnFocus: false },
+    { dedupingInterval: 60_000, revalidateOnFocus: false },
   );
 
   const search = useCallback((q: string) => {
@@ -95,21 +98,29 @@ export function useCompanyLeads() {
   }, []);
 
   const next = useCallback(() => {
-    if (!data?.has_more) return;
+    // The requested page has not arrived (in flight, or it failed): retry the
+    // same key rather than advancing past a page nobody has seen.
+    if (!data) {
+      void mutate();
+      return;
+    }
+    if (!data.has_more) return;
     setEarlier((prev) => [...prev, ...data.data]);
     setPage((p) => p + 1);
-  }, [data]);
+  }, [data, mutate]);
 
   const rows = [...earlier, ...(data?.data ?? [])];
+  // A later page failed while a table is on screen: keep the rows, say so.
+  const moreFailed = !!error && earlier.length > 0;
   return {
     query,
     search,
     rows,
     total: data?.total ?? 0,
     view: leadsView(query, data, error, isLoading, earlier.length),
-    hasMore: !!data?.has_more,
-    // A later page failed while a table is on screen: keep the rows, say so.
-    moreFailed: !!error && earlier.length > 0,
+    // Mid-pagination with nothing back yet, the button stays so it can retry.
+    hasMore: data ? data.has_more : earlier.length > 0,
+    moreFailed,
     next,
   };
 }

@@ -47,6 +47,9 @@ PROVIDER = "apollo_api"
 _URL = "https://api.apollo.io/api/v1/mixed_people/api_search"
 _TIMEOUT_S = 15.0
 MAX_PER_PAGE = 25
+# Apollo's search never returns more than 50 pages; the router refuses page 51
+# for the same reason, so `has_more` must stop advertising it.
+MAX_PAGE = 50
 
 
 class ApolloError(RuntimeError):
@@ -108,11 +111,14 @@ async def search_people(
 
     body = resp.json() if resp.content else {}
     people = [_project(p) for p in body.get("people") or []]
-    total = int(body.get("total_entries") or 0)
+    # The count lives in the `pagination` envelope, not at the root — reading
+    # the root reported "0 people" over a full first page and never paged.
+    pagination = body.get("pagination") or {}
+    total = int(pagination.get("total_entries") or 0)
     return {
         "connected": True,
         "data": people,
         "total": total,
         "page": page,
-        "has_more": page * params["per_page"] < total,
+        "has_more": page < MAX_PAGE and page * params["per_page"] < total,
     }

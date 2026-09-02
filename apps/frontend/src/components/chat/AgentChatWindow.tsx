@@ -360,7 +360,16 @@ export function AgentChatWindow({
   // branch is handed this draft; whichever composer survives loads it.
   //
   // A null return means the RPC failed and was toasted — leave the draft alone.
+  //
+  // The request is retired the moment a composer the owner can type into
+  // reports applying it. Without that, `appliedDraftNonceRef` (per mounted
+  // composer, reset on every mount) let a branch switch re-load a
+  // long-finished rewind draft on top of what had since been typed — prod
+  // sent "queued oneUse your ask_user tool…" during the 8.1 walk.
   const [composerDraft, setComposerDraft] = useState<{ text: string; nonce: number }>();
+  const handleDraftApplied = useCallback((nonce: number) => {
+    setComposerDraft((prev) => (prev?.nonce === nonce ? undefined : prev));
+  }, []);
   const handleRewind = useCallback(
     async (entryId: string) => {
       const editorText = await rewindToMessage(entryId);
@@ -473,6 +482,10 @@ export function AgentChatWindow({
             </div>
           </div>
         </div>
+        {/* No onDraftApplied here: this shell is transient by construction (the
+            rewind's own refetch put it up) and always gives way, so consuming
+            the request here would lose the text before the surviving composer
+            ever sees it. */}
         <ChatInput
           draft={composerDraft}
           onSend={handleSend}
@@ -523,6 +536,7 @@ export function AgentChatWindow({
             <UpdateBanner />
             <ChatInput
               draft={composerDraft}
+              onDraftApplied={handleDraftApplied}
               onSend={handleSend}
               onStop={cancelMessage}
               agentId={agentId}
@@ -580,6 +594,7 @@ export function AgentChatWindow({
       <QuestionCards />
       <ChatInput
         draft={composerDraft}
+        onDraftApplied={handleDraftApplied}
         onSend={handleSend}
         onStop={cancelMessage}
         agentId={agentId}

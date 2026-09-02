@@ -1,6 +1,7 @@
 import { useCallback, useEffect } from "react";
 import useSWR, { type SWRConfiguration } from "swr";
 
+import { GatewayRpcError } from "../gateway/error";
 import type { GatewayConnectionValue } from "../gateway/useGatewayConnection";
 
 /** The slice of the gateway connection the RPC hooks actually need. */
@@ -161,7 +162,15 @@ export function useGatewayRpc<T = unknown>(
       // gateway. Retry at a fixed cadence instead, capped so we don't
       // poll forever on a permanently broken container.
       errorRetryInterval: 3000,
-      onErrorRetry: (_err, _key, swrCfg, revalidate, opts) => {
+      onErrorRetry: (err, _key, swrCfg, revalidate, opts) => {
+        // A failure the gateway ANSWERED and did not mark retryable —
+        // INVALID_REQUEST, an ownership rejection — will fail identically
+        // forever, so the ladder is pure noise on the container and in the
+        // backend log (prod, 8.1 walk: a malformed sessions.search re-fired
+        // every 3s, 12+ rejections in one minute). Everything else — a
+        // timeout, a dead socket, a waking container, an explicitly
+        // retryable gateway error — keeps the ladder below.
+        if (err instanceof GatewayRpcError && !err.retryable) return;
         const retryCount = opts?.retryCount ?? 0;
         if (retryCount >= 100) return; // ~5 min at 3s
         const delay =

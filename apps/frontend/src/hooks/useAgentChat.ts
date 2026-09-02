@@ -921,6 +921,12 @@ export function useAgentChat(
 
   // ---- Fetch history on mount / agent change ----
   const historyLoadedRef = useRef<Set<string>>(new Set());
+  // cacheKeys whose next fetch was requested by softRevalidateHistory (the
+  // run-terminal entryId refresh), read-and-cleared by the effect when it
+  // issues that fetch. Only the SOFT path may refuse to shrink the transcript
+  // — a mount read and invalidateHistoryAndRefetch (a rewind) legitimately
+  // return fewer messages than are on screen.
+  const softRevalidatePendingRef = useRef<Set<string>>(new Set());
   // Pending empty-history retry timer (see the history-fetch effect). Held in a
   // ref so the effect cleanup can cancel it on unmount / session switch.
   const historyRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -958,13 +964,29 @@ export function useAgentChat(
     // recent setup's cleanup — so historyEffectMountedRef stays true forever
     // and the wake-phase retry chain keeps firing RPCs and mutating module
     // state from a dead hook (Codex P2 on this PR).
-    const alreadyLatched = historyLoadedRef.current.has(cacheKey);
+    // A session the empty-ladder already concluded "bootstrap" is NOT latched.
+    // One transient empty-but-200 read otherwise strands the new-chat
+    // suggestion over a real transcript for the page's LIFE, because the latch
+    // blocks the very chat.history that would correct it (prod, 8.1 walk: a
+    // gateway reconnect, sessions.list showing the session and a hand-issued
+    // chat.history returning its two messages, while re-selecting the session
+    // issued zero RPCs). A bootstrap conclusion is a guess; it must never block
+    // a revisit. Each revisit re-reads exactly once — the flag is cleared by
+    // the first non-empty read below, which re-arms the latch.
+    const bootstrapConcluded = _needsBootstrap.has(cacheKey);
+    const alreadyLatched = historyLoadedRef.current.has(cacheKey) && !bootstrapConcluded;
+    // Read-and-clear: the mark belongs to the fetch THIS run issues.
+    const isSoftRevalidate = softRevalidatePendingRef.current.delete(cacheKey);
     // Cached transcript paints instantly, but a run that completed while
     // this hook was unmounted only exists server-side — so always fetch
     // once per mount and let the server result replace the cache.
     const hasCache = _messageCache.has(cacheKey);
     const sessionKey = buildChatSessionKey(agentId, sessionName, activeSessionId);
-    if (!alreadyLatched && !hasCache) {
+    // The bootstrap re-read is SILENT — same amnesia invariant as the cached
+    // mount: never blank what is already on screen for a revalidation. Flipping
+    // to "loading" here would swap the bootstrap card for a skeleton on every
+    // revisit of a genuinely empty session.
+    if (!alreadyLatched && !hasCache && !bootstrapConcluded) {
       Promise.resolve().then(() => setHistoryLoadState("loading"));
     }
     const mutationSeqAtIssue = transcriptMutationSeqRef.current;
@@ -1118,9 +1140,32 @@ export function useAgentChat(
             setHistoryLoadState("done");
             return;
           }
+          // The server HAS content for this key, so any bootstrap conclusion a
+          // previous transient empty read left behind is now known wrong —
+          // drop it (which also re-arms the latch above, so the next revisit
+          // is an ordinary cached mount rather than another re-read). Outside
+          // the staleSnapshot guard on purpose: this describes the SERVER, not
+          // the page whose message-apply is skipped below.
+          _needsBootstrap.delete(cacheKey);
           setHistoryLoadState("done");
           if (staleSnapshot) return;
           if (agentIdRef.current !== agentId) return;
+          // A SOFT revalidation must never shrink the transcript. It fires on
+          // the run's terminal, when the local view already holds the folded
+          // assistant turn; 8.1 serves chat.history from a projection, so a
+          // read that lags the transcript write by a beat returns a SHORTER
+          // snapshot — applying it would erase the reply that just streamed
+          // and cache the truncated view. Keep local and un-latch, so the next
+          // revisit/mount re-reads and self-heals. Deliberately NOT applied to
+          // the mount or invalidateHistoryAndRefetch paths: a rewind shrinks
+          // the transcript on purpose.
+          if (
+            isSoftRevalidate &&
+            projected.length < (_messageCache.get(cacheKey)?.length ?? 0)
+          ) {
+            loadedKeys.delete(cacheKey);
+            return;
+          }
           // Always cache under the key this fetch was issued for; only touch
           // the live transcript if the user is still ON that session. A fetch
           // that resolves after a session switch must not stomp the new view.
@@ -1323,6 +1368,35 @@ export function useAgentChat(
     },
     [sendReq, invalidateHistoryAndRefetch, sessionKeyNow],
   );
+
+  // ---- Soft history revalidation on a run's terminal ----
+  //
+  // The optimistic user bubble sendMessage appends has no `__openclaw.id`, and
+  // nothing refetched history when the run ended — so MessageList's "Rewind to
+  // here" (gated on persistedEntryId) never appeared on anything typed in the
+  // current session until a full reload (prod 8.1 walk: 0/7 bubbles live, 7/7
+  // after F5). Re-read on the terminal so the server's entryIds land on the
+  // bubbles already on screen.
+  //
+  // SOFT, unlike invalidateHistoryAndRefetch: `_messageCache` and
+  // `chatMessages` are left untouched, so the fetch effect takes its cached-
+  // mount path — no skeleton, no blanked transcript, the composer never
+  // disables. `transcriptMutationSeqRef` still arbitrates: a send racing this
+  // refetch discards the snapshot, and that send's own terminal re-issues it.
+  //
+  // It also bumps `branchRefreshToken`: a new turn changes the active branch's
+  // message count and SessionBranchBar re-lists on that token alone, so the
+  // pill read "· 4 messages" for a 6-message branch.
+  const softRevalidateHistory = useCallback(() => {
+    const key = agentIdRef.current
+      ? `${agentIdRef.current}:${sessionName}:${activeSessionIdRef.current ?? ""}`
+      : null;
+    if (!key) return;
+    softRevalidatePendingRef.current.add(key);
+    historyLoadedRef.current.delete(key);
+    setHistoryRefetchNonce((n) => n + 1);
+    setBranchRefreshToken((n) => n + 1);
+  }, [sessionName]);
 
   // ---- Load older history (paging backward) ----
   //
@@ -1893,6 +1967,9 @@ export function useAgentChat(
           clientRunIdRef.current = null;
           resumeExpectedRef.current = false;
         }
+        // Runs at most once per runId (the addCappedRunId dedupe above), so a
+        // `done` that already revalidated is not repeated here.
+        softRevalidateHistory();
         drainQueueRef.current();
         return;
       }
@@ -2002,6 +2079,9 @@ export function useAgentChat(
         // run-ended signal, so the drain must happen here too.
         if (endedActiveRun && !drainedRunIdsRef.current.has(runId)) {
           addCappedRunId(drainedRunIdsRef.current, runId);
+          // Same runId dedupe as the drain: whichever terminal gets here first
+          // (this `done`, or the trailing `run_ended`) revalidates, never both.
+          softRevalidateHistory();
           drainQueueRef.current();
         }
         return;

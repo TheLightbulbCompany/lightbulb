@@ -67,7 +67,18 @@ export function useProgressCard(sessionKey: string | null): UseProgressCardResul
         payload && typeof payload === "object"
           ? (payload as Record<string, unknown>).sessionKey
           : undefined;
-      if (eventSessionKey !== sessionKey) return;
+      // Case-INSENSITIVE: OpenClaw lowercases session keys, so the event
+      // carries the container's canonical `agent:<id>:user_3h3v…` while ours
+      // holds the mixed-case Clerk id (`user_3H3v…`). An exact compare never
+      // matched on prod and the card stayed stale until a reload, even though
+      // progressCard.get accepts either casing. Same rule the backend applies
+      // in routers/websocket_chat.py::_user_owns_session_key.
+      if (
+        typeof eventSessionKey !== "string" ||
+        eventSessionKey.toLowerCase() !== sessionKey.toLowerCase()
+      ) {
+        return;
+      }
       void mutate();
     });
   }, [sessionKey, onEvent, mutate]);

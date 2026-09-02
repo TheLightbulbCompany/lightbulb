@@ -70,8 +70,11 @@ function sessionLabel(sessionKey: string, sessions: AgentSession[]): string {
 
 export function SessionSearch({ agentId, sessions, onSelect }: SessionSearchProps): React.JSX.Element {
   const [query, setQuery] = useState("");
+  // The gateway scopes the scan to these keys — the sidebar rows we already
+  // have. Memoized so the RPC key is stable across renders of the same list.
+  const sessionKeys = useMemo(() => sessions.map((s) => s.key), [sessions]);
   const { isActive, effectiveQuery, results, isLoading, indexing, truncated, error } =
-    useSessionSearch(agentId, query);
+    useSessionSearch(agentId, query, sessionKeys);
 
   useEffect(() => {
     if (error) notifyApiError(error, "Search failed", { dedupeKey: "session-search" });

@@ -97,6 +97,19 @@ interface ChatInputProps {
    * mounted composer applies a given request exactly once.
    */
   draft?: { text: string; nonce: number };
+  /**
+   * Reports that this composer just loaded `draft`, so the OWNER can retire
+   * the request. Per-instance de-duplication is not enough: the ref below
+   * resets on every mount, so a composer mounting much later — a branch
+   * switch, a session swap — re-applied a long-finished rewind draft over
+   * what the owner had since typed (prod, 8.1 walk).
+   *
+   * Deliberately NOT wired on the transient loading-shell composer: the shell
+   * exists precisely because the rewind's own refetch swaps the panel, and it
+   * always gives way, so consuming there would drop the text before any
+   * composer the owner can type into ever saw it.
+   */
+  onDraftApplied?: (nonce: number) => void;
 }
 
 function formatFileSize(bytes: number): string {
@@ -124,6 +137,7 @@ export function ChatInput({
   onMoveQueued,
   controls,
   draft,
+  onDraftApplied,
 }: ChatInputProps) {
   const [input, setInput] = React.useState("");
   // Edit-in-place buffer for the queued list below — at most one row edits
@@ -246,7 +260,10 @@ export function ChatInput({
     appliedDraftNonceRef.current = draft.nonce;
     setInput(draft.text);
     runFocusRoutine();
-  }, [draft, runFocusRoutine]);
+    // Global consumption — the parent stops handing this request to composers
+    // that mount later. See onDraftApplied's doc comment.
+    onDraftApplied?.(draft.nonce);
+  }, [draft, runFocusRoutine, onDraftApplied]);
 
   React.useEffect(() => {
     const onFocusRequest = (e: Event) => {

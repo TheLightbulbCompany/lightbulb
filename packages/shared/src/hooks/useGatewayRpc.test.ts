@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, renderHook, waitFor } from "@testing-library/react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 
+import { GatewayRpcError } from "../gateway/error";
 import {
   __resetPushRevalidateThrottle,
   useGatewayRpc,
@@ -130,5 +131,77 @@ describe("useGatewayRpc event-driven revalidation", () => {
     gw.emit("onboarding_status_changed", {});
     await new Promise((r) => setTimeout(r, 50));
     expect(gw.sendReq).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("useGatewayRpc error-retry ladder", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("stops retrying when the gateway ANSWERED and said the condition will not clear", async () => {
+    // Prod, 8.1 walk: `sessions.search` came back INVALID_REQUEST "agentId
+    // requires sessionKeys" and the fixed 3s ladder re-fired the identical
+    // rejected call for minutes — the backend log carried 12+ in one minute.
+    // The responder has told us the answer will not change.
+    vi.useFakeTimers();
+    const gw = makeGateway();
+    gw.sendReq = vi.fn().mockRejectedValue(
+      new GatewayRpcError({
+        code: "INVALID_REQUEST",
+        message: "agentId requires sessionKeys",
+      }),
+    );
+
+    renderHook(() => useGatewayRpc(gw, "sessions.search", { q: "terminal" }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(gw.sendReq).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(gw.sendReq).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the ladder for a failure the gateway never answered (timeout, dead socket)", async () => {
+    vi.useFakeTimers();
+    const gw = makeGateway();
+    gw.sendReq = vi.fn().mockRejectedValue(new Error("RPC timeout"));
+
+    renderHook(() => useGatewayRpc(gw, "sessions.search", { q: "transport" }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(gw.sendReq).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000);
+    });
+    expect((gw.sendReq as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("keeps the ladder for a gateway error the responder marked retryable", async () => {
+    vi.useFakeTimers();
+    const gw = makeGateway();
+    gw.sendReq = vi.fn().mockRejectedValue(
+      new GatewayRpcError({
+        code: "UNAVAILABLE",
+        message: "session history is rebuilding; retry shortly",
+        retryable: true,
+      }),
+    );
+
+    renderHook(() => useGatewayRpc(gw, "sessions.search", { q: "rebuilding" }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(gw.sendReq).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000);
+    });
+    expect((gw.sendReq as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(1);
   });
 });

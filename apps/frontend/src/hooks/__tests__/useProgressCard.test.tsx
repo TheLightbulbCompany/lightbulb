@@ -86,6 +86,21 @@ describe("useProgressCard", () => {
     expect(mutate).toHaveBeenCalledTimes(1);
   });
 
+  it("revalidates when the event key differs only in case — the real prod shape", () => {
+    // OpenClaw lowercases the whole session key, so the container's
+    // progressCard.changed carries `agent:<id>:user_3h3v…` while ours holds
+    // the mixed-case Clerk id `user_3H3v…`. Case-sensitive matching meant the
+    // card never updated live on prod (progressCard.get itself accepts either
+    // casing). Same rule as the backend's _user_owns_session_key.
+    const mutate = vi.fn(async () => undefined);
+    mockRpc.mockReturnValue(rpc({ data: { card: CARD }, mutate }));
+    renderHook(() => useProgressCard("agent:agent_a:user_3H3vAbC"));
+
+    act(() => emit("progressCard.changed", { sessionKey: "agent:agent_a:user_3h3vabc", revision: 4 }));
+
+    expect(mutate).toHaveBeenCalledTimes(1);
+  });
+
   it("ignores a progressCard.changed event for a different sessionKey", () => {
     const mutate = vi.fn(async () => undefined);
     mockRpc.mockReturnValue(rpc({ data: { card: CARD }, mutate }));

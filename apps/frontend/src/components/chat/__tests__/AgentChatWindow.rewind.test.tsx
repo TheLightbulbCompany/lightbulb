@@ -149,16 +149,21 @@ describe("AgentChatWindow — rewind + branch wiring", () => {
   it("keeps the restored draft when the refetch flips the panel to its loading shell", async () => {
     // The rewind's own history invalidation puts isLoadingHistory true, which
     // swaps the whole panel — and its ChatInput — for the loading shell. The
-    // draft has to survive that, or the feature delivers nothing.
+    // draft has to survive that, or the feature delivers nothing. Driven in
+    // the order the real hook produces: invalidateHistoryAndRefetch lands
+    // BEFORE setComposerDraft, so the shell is already up when the draft
+    // appears, and the survivor mounts after.
     rewindToMessage.mockResolvedValue("survives the shell");
     const { rerender } = render(<AgentChatWindow agentId="a1" />);
-
-    await act(async () => {
-      await messageListProps!.onRewind!("entry-7");
-    });
+    const onRewind = messageListProps!.onRewind!;
 
     chatState = { isLoadingHistory: true };
     rerender(<AgentChatWindow agentId="a1" />);
+    await act(async () => {
+      await onRewind("entry-7");
+    });
+    // The shell's (disabled) composer holds the text but does NOT consume the
+    // request — it is never the composer that survives.
     expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("survives the shell");
 
     chatState = {};
@@ -171,14 +176,43 @@ describe("AgentChatWindow — rewind + branch wiring", () => {
     // panel falls to its empty state — a third ChatInput.
     rewindToMessage.mockResolvedValue("the only message");
     const { rerender } = render(<AgentChatWindow agentId="a1" />);
+    const onRewind = messageListProps!.onRewind!;
 
+    chatState = { isLoadingHistory: true };
+    rerender(<AgentChatWindow agentId="a1" />);
     await act(async () => {
-      await messageListProps!.onRewind!("entry-1");
+      await onRewind("entry-1");
     });
 
     chatState = { renderGroups: [] };
     rerender(<AgentChatWindow agentId="a1" />);
     expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("the only message");
+  });
+
+  it("a consumed draft is never re-applied to a composer that mounts later", async () => {
+    // Prod, 8.1 walk: the rewind draft (nonce 1) was applied a second time when
+    // a branch switch remounted the composer, and prepended itself to what the
+    // owner had typed — the container received
+    // "queued oneUse your ask_user tool…". Consumption has to be global to the
+    // REQUEST, not per mounted composer.
+    rewindToMessage.mockResolvedValue("the rewound prompt");
+    const { rerender } = render(<AgentChatWindow agentId="a1" />);
+
+    await act(async () => {
+      await messageListProps!.onRewind!("entry-7");
+    });
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("the rewound prompt");
+
+    // A branch switch empties the transcript and swaps render branches, so a
+    // fresh ChatInput mounts. It must come up empty.
+    chatState = { renderGroups: [] };
+    rerender(<AgentChatWindow agentId="a1" />);
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
+
+    // ...and back again — still no resurrection.
+    chatState = {};
+    rerender(<AgentChatWindow agentId="a1" />);
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
   });
 
   it("a failed rewind leaves the composer alone", async () => {

@@ -94,6 +94,19 @@ export function useVaultMarkdownComponents(
 ): Partial<Components> {
   return React.useMemo<Partial<Components>>(
     () => ({
+      // A vault-relative image (`![chart](inbox/chart.png)`) would be fetched
+      // unauthenticated from the frontend origin and break. Render it as an
+      // in-panel link instead — the viewer shows the image when opened.
+      // Absolute/external images keep the default renderer.
+      img: ({ src, alt, ...rest }) => {
+        const link = typeof src === "string" ? resolveVaultLink(src, files) : null;
+        if (!link) return <img src={src} alt={alt} {...rest} />;
+        return (
+          <VaultLink link={link} onNavigate={onNavigate}>
+            {alt || link.path}
+          </VaultLink>
+        );
+      },
       a: ({ href, children, ...rest }) => {
         const link = href ? resolveVaultLink(href, files) : null;
         if (!link)

@@ -319,6 +319,20 @@ describe("BrainPanel", () => {
     expect(onPathUnavailable).toHaveBeenCalledWith("../secrets.md");
   });
 
+  it("Refresh asks before replacing a dirty draft", () => {
+    treeState.files = POPULATED;
+    fileState.file = md("entities/ada-lovelace.md", "# Ada\n");
+    render(<BrainPanel initialPath="entities/ada-lovelace.md" />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "# Ada — DRAFT" } });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    expect(treeState.refresh).not.toHaveBeenCalled();
+    expect(screen.getByRole("textbox")).toHaveValue("# Ada — DRAFT");
+    confirmSpy.mockRestore();
+  });
+
   it("name search filters the tree and says it cannot see contents; no match hands off to ASK with the query", () => {
     treeState.files = POPULATED;
     render(<BrainPanel />);

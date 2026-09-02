@@ -326,6 +326,25 @@ describe("BrainPage", () => {
     expect(onNavigate).toHaveBeenCalledWith("index.md");
   });
 
+  it("a vault-relative markdown image renders as an in-panel link, not a broken <img>", () => {
+    const onNavigate = vi.fn();
+    render(
+      <BrainPage
+        path="entities/x.md"
+        files={[...FILES, { name: "chart.png", path: "inbox/chart.png", type: "file", size: 1, modified_at: 0 }]}
+        editing={false}
+        isLoading={false}
+        error={null}
+        onNavigate={onNavigate}
+        {...noop}
+        file={page("# X\n\n![the chart](inbox/chart.png)\n", "entities/x.md")}
+      />,
+    );
+    expect(screen.queryByRole("img")).toBeNull();
+    fireEvent.click(screen.getByRole("link", { name: "the chart" }));
+    expect(onNavigate).toHaveBeenCalledWith("inbox/chart.png");
+  });
+
   it("an expired session (401) is an outage with Retry, never a stale link", () => {
     // Only the path-validation statuses mean the LINK is wrong. A 401 or 429
     // is the platform's moment, and calling the page "renamed or never

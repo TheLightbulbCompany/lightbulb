@@ -157,15 +157,21 @@ export function BrainPanel({ initialPath, initialTab, onPathUnavailable }: Brain
 
   // Nothing revalidates on its own — SwrProvider sets revalidateOnFocus:false
   // app-wide — so watching Friday file a page needs an explicit ask.
-  const handleRefresh = React.useCallback(() => {
-    void refresh();
-    if (fileKey) void mutateCache(fileKey);
-  }, [refresh, fileKey, mutateCache]);
-
   const confirmDiscardIfDirty = React.useCallback((): boolean => {
     if (!editorDirty) return true;
     return window.confirm("You have unsaved changes. Discard them?");
   }, [editorDirty]);
+
+  // Nothing revalidates on its own — SwrProvider sets revalidateOnFocus:false
+  // app-wide — so watching Friday file a page needs an explicit ask. A fresh
+  // file body re-seeds FileContentViewer, so a dirty draft is asked about
+  // first, like every other navigation.
+  const handleRefresh = React.useCallback(() => {
+    if (!confirmDiscardIfDirty()) return;
+    setEditorDirty(false);
+    void refresh();
+    if (fileKey) void mutateCache(fileKey);
+  }, [confirmDiscardIfDirty, refresh, fileKey, mutateCache]);
 
   const handleSelect = React.useCallback(
     (path: string) => {

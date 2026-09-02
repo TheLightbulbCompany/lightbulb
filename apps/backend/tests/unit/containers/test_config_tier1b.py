@@ -353,7 +353,7 @@ class TestWebFetchAndSearch:
 class TestToolDeny:
     def test_deny_includes_media_egress_tools(self):
         deny = set(_cfg()["tools"]["deny"])
-        assert {"canvas", "nodes", "cron", "tts", "music_generate", "video_generate"} <= deny
+        assert {"canvas", "nodes", "cron", "tts", "music_generate", "video_generate", "dashboard"} <= deny
         # image_generate deliberately NOT denied — chat renders images and the
         # bill is the owner's own credential.
         assert "image_generate" not in deny

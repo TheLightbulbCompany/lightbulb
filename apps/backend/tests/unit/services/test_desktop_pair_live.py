@@ -166,6 +166,39 @@ async def test_surface_approval_blocks_commands_beyond_grant(mock_pool):
 
 
 @pytest.mark.asyncio
+async def test_surface_approval_allows_the_81_sidecars_unconditional_declarations(mock_pool):
+    """The 2026.8.1 sidecar declares system.execApprovals.get/set, fs.listDir,
+    terminal.upload and browser.proxy.upload.v1 unconditionally, regardless of
+    the owner's permission grant. A full-grant node's declared surface must
+    stay a subset of the backend-written allowed set so the approval is not
+    left pending forever."""
+    from core.services.desktop_pair import DESKTOP_CLI_COMMANDS
+
+    declared = [
+        "system.run",
+        "system.execApprovals.get",
+        "system.execApprovals.set",
+        "fs.listDir",
+        "terminal.upload",
+        "browser.proxy.upload.v1",
+    ]
+
+    async def _rpc(**kwargs):
+        if kwargs["method"] == "node.pair.list":
+            return {"pending": [{"requestId": "surf-1", "nodeId": "dev_cli", "commands": declared}]}
+        return {}
+
+    mock_pool.send_rpc = AsyncMock(side_effect=_rpc)
+    nodes_file = {"dev_cli": {"commands": list(DESKTOP_CLI_COMMANDS)}}
+    with patch("core.services.desktop_pair_live._read_backend_pairing_file", return_value=nodes_file):
+        ok = await approve_pending_node_surface(owner_id="user_1", ip=IP, gateway_token="tok123", device_id="dev_cli")
+
+    assert ok is True
+    approves = rpc_calls(mock_pool, "node.pair.approve")
+    assert [c.kwargs["params"] for c in approves] == [{"requestId": "surf-1"}]
+
+
+@pytest.mark.asyncio
 async def test_surface_approval_skips_device_not_in_backend_file(mock_pool):
     """A node the owner never paired through /desktop/pair gets no approval —
     and no RPC is even attempted (the gate fails closed before the list)."""

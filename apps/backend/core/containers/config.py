@@ -280,8 +280,11 @@ BEDROCK_CONTEXT_TOKENS = 200_000
 #   but no product surface renders the output and autonomous runs should not
 #   discover a surprise-spend tool. image_generate deliberately stays: chat
 #   renders images and the spend is equally the owner's.
+# - dashboard: 8.1's interactive-widget tool renders as an iframe served over
+#   gateway HTTP — a surface we have no door for (we only relay WS) — so an
+#   agent could burn owner spend building widgets nobody can ever see.
 # ---------------------------------------------------------------------------
-TOOL_DENY_BASE = ("canvas", "cron", "tts", "music_generate", "video_generate")
+TOOL_DENY_BASE = ("canvas", "cron", "tts", "music_generate", "video_generate", "dashboard")
 # The provision-time variant: node tools stay denied until node_proxy flips
 # them on for a paired desktop.
 TOOL_DENY_WITH_NODES = TOOL_DENY_BASE + ("nodes",)
@@ -1361,6 +1364,14 @@ _NODE_ALLOW_COMMANDS = [
     "dir.list",
     "dir.fetch",
     "screen.snapshot",
+    # The 2026.8.1 node host / bundled browser plugin declare these
+    # unconditionally (see desktop_pair.DESKTOP_CLI_SHELL_COMMANDS /
+    # DESKTOP_CLI_BROWSER_COMMANDS for the upstream source refs) — this is the
+    # container-side mirror of that same grant, so both allowlists must move
+    # together.
+    "fs.listDir",
+    "terminal.upload",
+    "browser.proxy.upload.v1",
 ]
 
 

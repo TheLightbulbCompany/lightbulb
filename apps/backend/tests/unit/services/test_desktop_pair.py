@@ -52,6 +52,18 @@ def test_cli_commands_include_cross_platform_only():
     )
 
 
+def test_cli_commands_cover_everything_the_81_sidecar_declares_unconditionally():
+    """The 2026.8.1 node host/browser-plugin declare system.execApprovals.get/set,
+    fs.listDir, terminal.upload and browser.proxy.upload.v1 unconditionally in
+    their connect manifest — not gated on any grant. A grant missing one of
+    these makes `declared <= allowed` false on every reconnect (see
+    desktop_pair_live.approve_pending_node_surface), so the node's live
+    surface never gets approved."""
+    for cmd in ("system.execApprovals.get", "system.execApprovals.set", "fs.listDir", "terminal.upload"):
+        assert cmd in DESKTOP_CLI_SHELL_COMMANDS, cmd
+    assert "browser.proxy.upload.v1" in DESKTOP_CLI_BROWSER_COMMANDS
+
+
 def test_assert_disjoint_raises_on_overlap():
     with pytest.raises(AssertionError):
         assert_command_sets_disjoint(["a", "b"], ["b", "c"])
@@ -383,7 +395,7 @@ async def test_pair_desktop_devices_honors_explicit_permission_groups():
     )
 
     assert "screen.snapshot" not in result.commands_mac
-    assert result.commands_cli == ("browser.proxy",)
+    assert result.commands_cli == DESKTOP_CLI_BROWSER_COMMANDS
 
     written = workspace.state
     assert written[result.device_id_mac]["commands"] == [
@@ -393,7 +405,7 @@ async def test_pair_desktop_devices_honors_explicit_permission_groups():
         "device.health",
         "device.permissions",
     ]
-    assert written[result.device_id_cli]["commands"] == ["browser.proxy"]
+    assert written[result.device_id_cli]["commands"] == list(DESKTOP_CLI_BROWSER_COMMANDS)
 
     node_paired = workspace.node_paired_state
     assert node_paired[result.device_id_mac]["caps"] == ["system"]
@@ -401,7 +413,7 @@ async def test_pair_desktop_devices_honors_explicit_permission_groups():
     # connect, and an approved set missing a declared cap makes the gateway
     # file a pending pairing request on every reconnect.
     assert node_paired[result.device_id_cli]["caps"] == ["system", "mcp", "browser"]
-    assert node_paired[result.device_id_cli]["commands"] == ["browser.proxy"]
+    assert node_paired[result.device_id_cli]["commands"] == list(DESKTOP_CLI_BROWSER_COMMANDS)
 
 
 async def test_node_paired_entry_carries_both_local_mcp_gates():

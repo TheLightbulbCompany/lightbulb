@@ -365,3 +365,27 @@ export function recentlyUpdated(files: FileEntry[], n = 5): FileEntry[] {
     .sort((a, b) => b.modified_at - a.modified_at)
     .slice(0, n);
 }
+
+// The scaffold lines vault init writes into index.md (vault.ts). Not the
+// owner's; the masthead already says "Brain".
+const INDEX_SCAFFOLD_LINE = /^(?:#\s+Wiki Index|##\s+Generated|Render mode:.*)\s*$/im;
+
+/** Whatever the OWNER wrote in index.md outside compile's managed block —
+ *  the editor allows it and `replaceManagedMarkdownBlock` preserves it, so
+ *  the landing must show it or a save silently vanishes from read mode.
+ *  Frontmatter, both markers and everything between, and the plugin's own
+ *  scaffold lines are removed; what is left, trimmed, is the owner's intro.
+ *  "" when there is none. */
+export function indexOwnerProse(markdown: string): string {
+  const { body } = parseFrontmatter(markdown);
+  const from = body.indexOf(INDEX_START);
+  const to = body.indexOf(INDEX_END);
+  const outside =
+    from !== -1 && to !== -1 && to >= from ? body.slice(0, from) + body.slice(to + INDEX_END.length) : body;
+  return outside
+    .split(/\r?\n/)
+    .filter((line) => !INDEX_SCAFFOLD_LINE.test(line))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n") // the removed block leaves a gap; markdown needs one blank line
+    .trim();
+}

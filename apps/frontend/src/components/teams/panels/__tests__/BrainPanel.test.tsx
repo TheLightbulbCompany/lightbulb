@@ -189,6 +189,15 @@ describe("BrainPanel", () => {
     expect(screen.getAllByRole("button", { name: "Open" })).toHaveLength(1);
   });
 
+  it("owner prose in a compiled index.md renders above the cards, not behind them", () => {
+    treeState.files = COMPILED;
+    fileState.file = md("index.md", `# Wiki Index\n\nWe sell candles.\n\n## Generated\n${COMPILED_INDEX.split("## Generated\n")[1]}`);
+    render(<BrainPanel />);
+    expect(screen.getByText("We sell candles.")).toBeInTheDocument();
+    expect(screen.getByText("Sources")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Wiki Index" })).toBeNull();
+  });
+
   it("an index with no managed block falls back to the plain rendered page", () => {
     treeState.files = POPULATED;
     fileState.file = md("index.md", "# Wiki Index\n\n[[entities/ada-lovelace|Ada Lovelace]]");

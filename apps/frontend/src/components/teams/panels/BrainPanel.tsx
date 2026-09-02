@@ -42,6 +42,7 @@ import { BrainLanding } from "./BrainLanding";
 import { BrainPage } from "./BrainPage";
 import {
   LANDING_PATH, askBrainDraft, fileInboxDraft, formatVaultDate, isInboxFile, parseIndexSections,
+  indexOwnerProse,
   recentlyUpdated, searchVault, vaultCounts,
 } from "./brainVault";
 
@@ -605,6 +606,7 @@ export function BrainPanel({ initialPath, initialTab, onPathUnavailable }: Brain
                           recent={recent}
                           files={files}
                           onNavigate={handleSelect}
+                          intro={indexOwnerProse(file?.content ?? "")}
                         />
                       ) : (
                         <BrainPage

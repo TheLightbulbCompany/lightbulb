@@ -11,21 +11,34 @@
 
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import type { FileEntry } from "@/hooks/useWorkspaceFiles";
-import { resolveVaultLink, type IndexSection } from "./brainVault";
+import { resolveVaultLink, toReadableMarkdown, type IndexSection } from "./brainVault";
+import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
+import { useVaultMarkdownComponents } from "./BrainPage";
 
 export function BrainLanding({
   sections,
   recent,
   files,
   onNavigate,
+  intro = "",
 }: {
   sections: IndexSection[];
   recent: FileEntry[];
   files: FileEntry[];
   onNavigate: (path: string) => void;
+  /** The owner's own prose from index.md, outside the managed block. */
+  intro?: string;
 }) {
+  const components = useVaultMarkdownComponents(files, onNavigate);
   return (
     <div className="flex flex-col gap-5 p-3">
+      {intro && (
+        <article className="max-w-prose font-serif text-[var(--midnight)]">
+          <MarkdownView skipHtml components={components}>
+            {toReadableMarkdown(intro)}
+          </MarkdownView>
+        </article>
+      )}
       <div className="grid gap-3 sm:grid-cols-2">
         {sections.map((s) => {
           // `### Sources` is the heading over `sources/`; compile writes a

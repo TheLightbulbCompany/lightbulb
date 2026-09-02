@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { FileEntry } from "@/hooks/useWorkspaceFiles";
 import {
+  indexOwnerProse,
   toReadableMarkdown,
   parseFrontmatter,
   pagePills,
@@ -316,5 +317,22 @@ describe("formatVaultDate", () => {
   // move the rendered date.
   it("reads modified_at as seconds, in UTC", () => {
     expect(formatVaultDate(1756771200)).toBe("Sep 2, 2025, 12:00 AM");
+  });
+});
+
+describe("indexOwnerProse", () => {
+  const BLOCK =
+    "<!-- openclaw:wiki:index:start -->\n### Sources\n- [[sources/deck|Deck]]\n<!-- openclaw:wiki:index:end -->";
+  it("is empty for the plugin's own scaffold", () => {
+    expect(indexOwnerProse(`# Wiki Index\n\n## Generated\n${BLOCK}\n`)).toBe("");
+    expect(indexOwnerProse(`---\npageType: index\n---\n# Wiki Index\nRender mode: obsidian\n\n## Generated\n${BLOCK}`)).toBe("");
+  });
+  it("returns what the owner wrote outside the managed block, wherever it sits", () => {
+    expect(indexOwnerProse(`# Wiki Index\n\nWe sell candles.\n\n## Generated\n${BLOCK}\n\nSee [[entities/acme|Acme]].\n`)).toBe(
+      "We sell candles.\n\nSee [[entities/acme|Acme]].",
+    );
+  });
+  it("with no managed block, the whole page minus scaffold is the prose", () => {
+    expect(indexOwnerProse("# Wiki Index\n\nHello.\n")).toBe("Hello.");
   });
 });

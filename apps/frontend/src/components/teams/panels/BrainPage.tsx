@@ -84,21 +84,15 @@ function VaultLink({
   );
 }
 
-export function BrainPage({
-  path,
-  file,
-  isLoading,
-  error,
-  files,
-  editing,
-  onNavigate,
-  onRetry,
-  onSave,
-  onDirtyChange,
-}: BrainPageProps) {
-  // Hoisted out of the JSX: an inline literal is a new object every render and
-  // would defeat MarkdownView's own memo on `components`.
-  const components = React.useMemo<Partial<Components>>(
+/** The vault-aware markdown component set: wikilinks navigate in-panel,
+ *  headings/prose at reading scale. Shared by BrainPage and BrainLanding so
+ *  owner prose renders the same everywhere. Memoised on its two inputs —
+ *  an inline literal would defeat MarkdownView's own memo. */
+export function useVaultMarkdownComponents(
+  files: FileEntry[],
+  onNavigate: (path: string) => void,
+): Partial<Components> {
+  return React.useMemo<Partial<Components>>(
     () => ({
       a: ({ href, children, ...rest }) => {
         const link = href ? resolveVaultLink(href, files) : null;
@@ -126,6 +120,21 @@ export function BrainPage({
     }),
     [files, onNavigate],
   );
+}
+
+export function BrainPage({
+  path,
+  file,
+  isLoading,
+  error,
+  files,
+  editing,
+  onNavigate,
+  onRetry,
+  onSave,
+  onDirtyChange,
+}: BrainPageProps) {
+  const components = useVaultMarkdownComponents(files, onNavigate);
 
   if (error) {
     // ApiError carries `status`; duck-typed so this file never imports

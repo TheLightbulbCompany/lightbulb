@@ -1,4 +1,5 @@
 import * as cdk from "aws-cdk-lib";
+import { resourcePrefix } from "../table-names";
 import { alertTopicArn } from "../table-names";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as cloudwatchActions from "aws-cdk-lib/aws-cloudwatch-actions";
@@ -113,7 +114,7 @@ export class AgentMailOutboundStack extends cdk.Stack {
     // ObservabilityStack creates it per env with this fixed name, and a real
     // prop would add a cross-stack dependency for one alarm action.
     const alarm = new cloudwatch.Alarm(this, "ComplaintDlqNotEmptyAlarm", {
-      alarmName: `lightbulb-${envName}-agent-mail-complaint-dlq`,
+      alarmName: `${resourcePrefix(envName)}agent-mail-complaint-dlq`,
       alarmDescription:
         "SES complaint events failed delivery to the backend ses-events webhook and are held for replay. Until they are replayed the affected owners' agent outbound is still ENABLED after a spam complaint. See the replay note in agent-mail-outbound-stack.ts.",
       metric: dlq.metricApproximateNumberOfMessagesVisible({

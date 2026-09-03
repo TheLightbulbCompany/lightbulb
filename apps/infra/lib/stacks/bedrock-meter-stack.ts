@@ -1,5 +1,6 @@
 import * as path from "path";
 import * as cdk from "aws-cdk-lib";
+import { resourcePrefix } from "../table-names";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
@@ -527,7 +528,7 @@ export class BedrockMeterStack extends cdk.Stack {
       ]);
 
       const dlqAlarm = new cloudwatch.Alarm(this, `MeterDlqNotEmptyAlarm${idSuffix}`, {
-        alarmName: `lightbulb-${meterEnv}-bedrock-meter-dlq-not-empty`,
+        alarmName: `${resourcePrefix(meterEnv)}bedrock-meter-dlq-not-empty`,
         alarmDescription:
           "Bedrock meter DLQ has messages - a record failed Metronome ingest, was unattributed, or was unparseable and is held for redrive. Investigate before billing reconciles.",
         metric: dlq.metricApproximateNumberOfMessagesVisible({
@@ -548,7 +549,7 @@ export class BedrockMeterStack extends cdk.Stack {
       // few times and then drops it silently. The function's own Errors
       // metric is the only signal for that failure class.
       const errorsAlarm = new cloudwatch.Alarm(this, `MeterFnErrorsAlarm${idSuffix}`, {
-        alarmName: `lightbulb-${meterEnv}-bedrock-meter-fn-errors`,
+        alarmName: `${resourcePrefix(meterEnv)}bedrock-meter-fn-errors`,
         alarmDescription:
           "Bedrock meter Lambda invocation errored - a WHOLE batch failed (cold-start import error, timeout, or transport-retry exhaustion) and never reached the per-record DLQ. CloudWatch Logs retries then drops the batch, so investigate before records age out.",
         metric: fn.metricErrors({
@@ -595,7 +596,7 @@ export class BedrockMeterStack extends cdk.Stack {
       ];
       for (const [metricName, alarmId] of skipMetrics) {
         const alarm = new cloudwatch.Alarm(this, `${alarmId}${idSuffix}`, {
-          alarmName: `lightbulb-${meterEnv}-${metricName.replace(/\./g, "-")}`,
+          alarmName: `${resourcePrefix(meterEnv)}${metricName.replace(/\./g, "-")}`,
           alarmDescription: `Bedrock meter (${meterEnv}) emitted ${metricName} - invocations are being skipped or failed in transport (potential revenue leak). Investigate.`,
           metric: new cloudwatch.Metric({
             namespace: "LightbulbAI",

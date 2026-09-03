@@ -293,11 +293,15 @@ export class ObservabilityStack extends cdk.Stack {
   /**
    * Let same-account CloudWatch alarms publish to an alert topic.
    *
-   * The ARN pattern is built from `resourcePrefix` — the SAME helper that
-   * names the alarms (see `createAlarm`) — deliberately. A previous attempt at
-   * this fix hard-coded an `isol8-${env}-*` pattern; the rebrand later renamed
-   * every alarm to `lightbulb-${env}-*` and the grant silently matched nothing.
-   * Deriving both from one helper means a future rename cannot reopen the hole.
+   * The ARN pattern is built from `resourcePrefix`, and so is every alarm name
+   * that can publish here — this stack's (`createAlarm` and the one-off
+   * constructors) AND the alarms in bedrock-gate, bedrock-meter, service and
+   * agent-mail-outbound, which import these topics by ARN. That shared helper
+   * is load-bearing, not cosmetic: a previous attempt at this fix hard-coded an
+   * `isol8-${env}-*` pattern, the rebrand later renamed every alarm to
+   * `lightbulb-*`, and the grant silently matched nothing while its test stayed
+   * green. Two independently-maintained strings that happen to agree today are
+   * exactly how that recurs, so both sides now read from one source.
    */
   private allowCloudWatchAlarmPublish(topic: sns.Topic): void {
     topic.addToResourcePolicy(
@@ -340,7 +344,7 @@ export class ObservabilityStack extends cdk.Stack {
       });
 
     const alarm = new cloudwatch.Alarm(this, def.id, {
-      alarmName: `lightbulb-${this.envName}-${def.id}-${def.name}`,
+      alarmName: `${resourcePrefix(this.envName)}${def.id}-${def.name}`,
       alarmDescription: def.description,
       metric,
       threshold: def.threshold,
@@ -591,7 +595,7 @@ export class ObservabilityStack extends cdk.Stack {
     });
 
     const p9 = new cloudwatch.Alarm(this, "P9", {
-      alarmName: `lightbulb-${this.envName}-P9-alb-5xx-rate`,
+      alarmName: `${resourcePrefix(this.envName)}P9-alb-5xx-rate`,
       alarmDescription: "ALB 5xx error rate exceeds 5%",
       metric: albErrorRate,
       threshold: 5,
@@ -623,7 +627,7 @@ export class ObservabilityStack extends cdk.Stack {
     });
 
     const p10 = new cloudwatch.Alarm(this, "P10", {
-      alarmName: `lightbulb-${this.envName}-P10-apigw-ws-5xx-rate`,
+      alarmName: `${resourcePrefix(this.envName)}P10-apigw-ws-5xx-rate`,
       alarmDescription: "API Gateway WebSocket 5xx error rate exceeds 5%",
       metric: apiGwErrorRate,
       threshold: 5,
@@ -654,7 +658,7 @@ export class ObservabilityStack extends cdk.Stack {
     });
 
     const heartbeatAlarm = new cloudwatch.Alarm(this, "ReaperHeartbeatAlarm", {
-      alarmName: `lightbulb-${this.envName}-P12-backend-liveness`,
+      alarmName: `${resourcePrefix(this.envName)}P12-backend-liveness`,
       alarmDescription:
         "PAGE: backend metrics loop has emitted no heartbeat in 10 minutes. " +
         "The backend emits gateway.running.count every ~60s regardless of " +
@@ -938,7 +942,7 @@ export class ObservabilityStack extends cdk.Stack {
       period: cdk.Duration.minutes(5),
     });
     const w10 = new cloudwatch.Alarm(this, "W10", {
-      alarmName: `lightbulb-${this.envName}-W10-chat-error-rate`,
+      alarmName: `${resourcePrefix(this.envName)}W10-chat-error-rate`,
       alarmDescription: "Chat error rate exceeds 1%",
       metric: chatErrorRate,
       threshold: 1,
@@ -956,7 +960,7 @@ export class ObservabilityStack extends cdk.Stack {
     // never normal. Bucket name is the literal deterministic one (no
     // cross-stack ref — same anti-KMS-cycle posture as the rest of the repo).
     const litestreamPuts = new cloudwatch.Alarm(this, "W10B", {
-      alarmName: `lightbulb-${this.envName}-W10B-litestream-put-requests`,
+      alarmName: `${resourcePrefix(this.envName)}W10B-litestream-put-requests`,
       alarmDescription:
         "Litestream S3 PUT volume far above the active-fleet ceiling - idle-PUT pathology or a runaway checkpoint loop",
       metric: new cloudwatch.Metric({
@@ -1758,7 +1762,7 @@ def handler(event, _ctx):
         this,
         `W40-${shortName}`,
         {
-          alarmName: `lightbulb-${this.envName}-W40-ddb-read-${shortName}`,
+          alarmName: `${resourcePrefix(this.envName)}W40-ddb-read-${shortName}`,
           alarmDescription: `DynamoDB ${shortName} read capacity anomaly`,
           metric: new cloudwatch.Metric({
             namespace: "AWS/DynamoDB",
@@ -1786,7 +1790,7 @@ def handler(event, _ctx):
         this,
         `W41-${shortName}`,
         {
-          alarmName: `lightbulb-${this.envName}-W41-ddb-write-${shortName}`,
+          alarmName: `${resourcePrefix(this.envName)}W41-ddb-write-${shortName}`,
           alarmDescription: `DynamoDB ${shortName} write capacity anomaly`,
           metric: new cloudwatch.Metric({
             namespace: "AWS/DynamoDB",
@@ -1813,7 +1817,7 @@ def handler(event, _ctx):
         this,
         `W42-${shortName}`,
         {
-          alarmName: `lightbulb-${this.envName}-W42-ddb-errors-${shortName}`,
+          alarmName: `${resourcePrefix(this.envName)}W42-ddb-errors-${shortName}`,
           alarmDescription: `DynamoDB ${shortName} system errors > 0`,
           metric: new cloudwatch.Metric({
             namespace: "AWS/DynamoDB",
@@ -1856,7 +1860,7 @@ def handler(event, _ctx):
 
     // W44: EFS BurstCreditBalance low
     const w44 = new cloudwatch.Alarm(this, "W44", {
-      alarmName: `lightbulb-${this.envName}-W44-efs-burst-credits`,
+      alarmName: `${resourcePrefix(this.envName)}W44-efs-burst-credits`,
       alarmDescription: "EFS burst credit balance is low",
       metric: new cloudwatch.Metric({
         namespace: "AWS/EFS",
@@ -2194,7 +2198,7 @@ def handler(event, _ctx):
     // W50: Bedrock spend anomaly
     // Use CloudWatch alarm on AWS/Bedrock InvocationCount as a proxy for cost
     const w50 = new cloudwatch.Alarm(this, "W50", {
-      alarmName: `lightbulb-${this.envName}-W50-bedrock-spend-anomaly`,
+      alarmName: `${resourcePrefix(this.envName)}W50-bedrock-spend-anomaly`,
       alarmDescription:
         "Bedrock invocation count spike - potential cost anomaly",
       metric: new cloudwatch.Metric({
@@ -2214,7 +2218,7 @@ def handler(event, _ctx):
 
     // W51: NAT Gateway data transfer anomaly
     const w51 = new cloudwatch.Alarm(this, "W51", {
-      alarmName: `lightbulb-${this.envName}-W51-nat-gateway-data-transfer`,
+      alarmName: `${resourcePrefix(this.envName)}W51-nat-gateway-data-transfer`,
       alarmDescription:
         "NAT Gateway data transfer spike - potential cost anomaly",
       metric: new cloudwatch.Metric({
@@ -2239,7 +2243,7 @@ def handler(event, _ctx):
     // weeks). Pages so it can't go unnoticed again. Threshold lives in
     // BEDROCK_DAILY_CACHE_WRITE_TOKEN_THRESHOLD — tune as the fleet grows.
     const w52 = new cloudwatch.Alarm(this, "W52", {
-      alarmName: `lightbulb-${this.envName}-W52-bedrock-cache-write-token-volume`,
+      alarmName: `${resourcePrefix(this.envName)}W52-bedrock-cache-write-token-volume`,
       alarmDescription:
         "Bedrock cache-write input tokens exceeded the daily ceiling - " +
         "possible runaway inference loop driving cost",
@@ -2357,7 +2361,7 @@ def handler(event, _ctx):
       });
 
       const alarm = new cloudwatch.Alarm(this, target.id, {
-        alarmName: `lightbulb-${this.envName}-${target.id}-${target.name}`,
+        alarmName: `${resourcePrefix(this.envName)}${target.id}-${target.name}`,
         alarmDescription: target.description,
         metric,
         threshold: 1,

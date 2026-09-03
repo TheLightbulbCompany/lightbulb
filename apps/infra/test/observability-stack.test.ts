@@ -1,4 +1,9 @@
-import { legacyTablePrefix, tablePrefix } from "../lib/table-names";
+import {
+  legacyTablePrefix,
+  resourcePrefix,
+  tablePrefix,
+} from "../lib/table-names";
+import { LightbulbStage } from "../lib/lightbulb-stage";
 import * as cdk from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecs from "aws-cdk-lib/aws-ecs";
@@ -600,6 +605,72 @@ describe("ObservabilityStack — CloudWatch alarms can publish", () => {
         const outside = alarmNames.filter((n) => !n.startsWith(prefix));
         expect(outside).toEqual([]);
       }
+    },
+  );
+});
+
+describe("alert topic grant covers alarms in EVERY stack", () => {
+  // The grant lives in observability-stack, but FOUR other stacks import these
+  // topics by ARN and attach alarm actions: bedrock-gate, bedrock-meter,
+  // service and agent-mail-outbound. A test that only inspected
+  // observability-stack's own alarms would not notice those drifting outside
+  // the granted ARN pattern — #1947's failure relocated one stack over.
+  //
+  // The invariant is NOT "every alarm matches its stage's prefix". The gate and
+  // meter stacks deliberately render BOTH a dev and a prod instance from one
+  // stage and wire each instance to ITS OWN env's topics, so a prod stage
+  // legitimately contains `lightbulb-dev-*` alarms pointing at dev topics.
+  //
+  // The real invariant is the PAIRING: an alarm publishing to some env's alert
+  // topic must fall inside the ARN prefix that env's topic policy grants.
+  test.each(["dev", "prod"] as const)(
+    "%s stage: every alarm is inside the granted prefix of the topic it pages",
+    (envName) => {
+      const app = new cdk.App();
+      const stage = new LightbulbStage(app, envName, {
+        environment: envName,
+        env: { account: "123456789012", region: "us-east-1" },
+      } as any);
+
+      const alarms = stage.node
+        .findAll()
+        .filter((c): c is cdk.Stack => c instanceof cdk.Stack)
+        .flatMap((stack) =>
+          Object.values(
+            Template.fromStack(stack).findResources("AWS::CloudWatch::Alarm"),
+          ),
+        );
+      expect(alarms.length).toBeGreaterThan(0);
+
+      // "arn:aws:sns:<region>:<account>:lightbulb-<env>-alerts-<page|warn>"
+      const topicEnv = /:([a-z0-9-]+)-alerts-(?:page|warn)$/;
+
+      const mismatched: string[] = [];
+      let checked = 0;
+      for (const alarm of alarms as any[]) {
+        const name = alarm.Properties?.AlarmName;
+        if (typeof name !== "string") continue;
+        const actions = [
+          ...(alarm.Properties?.AlarmActions ?? []),
+          ...(alarm.Properties?.OKActions ?? []),
+        ];
+        for (const action of actions) {
+          if (typeof action !== "string") continue; // same-stack Ref
+          const match = topicEnv.exec(action);
+          if (!match) continue;
+          checked += 1;
+          // match[1] is "lightbulb-dev" / "lightbulb-prod"; the granted prefix
+          // for that env is resourcePrefix(env) === `${match[1]}-`.
+          if (!name.startsWith(`${match[1]}-`)) {
+            mismatched.push(`${name} -> ${action}`);
+          }
+        }
+      }
+
+      // Guard the guard: if nothing resolved to a literal topic ARN the loop
+      // above would vacuously pass.
+      expect(checked).toBeGreaterThan(0);
+      expect(mismatched).toEqual([]);
     },
   );
 });

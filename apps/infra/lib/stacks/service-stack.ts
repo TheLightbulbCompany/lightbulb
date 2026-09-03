@@ -2262,7 +2262,7 @@ export class ServiceStack extends cdk.Stack {
     );
 
     const provisionFailed = new cloudwatch.Alarm(this, "ProvisionExecutionsFailedAlarm", {
-      alarmName: `lightbulb-${env}-provision-executions-failed`,
+      alarmName: `${resourcePrefix(env)}provision-executions-failed`,
       alarmDescription:
         "PAGE: a provisioning Step Functions execution FAILED. New signups are " +
         "not getting containers.",
@@ -2274,7 +2274,7 @@ export class ServiceStack extends cdk.Stack {
     provisionFailed.addAlarmAction(pageAction);
 
     const provisionTimedOut = new cloudwatch.Alarm(this, "ProvisionExecutionsTimedOutAlarm", {
-      alarmName: `lightbulb-${env}-provision-executions-timedout`,
+      alarmName: `${resourcePrefix(env)}provision-executions-timedout`,
       alarmDescription:
         "PAGE: a provisioning Step Functions execution TIMED OUT. New signups " +
         "are not getting containers.",
@@ -2295,7 +2295,7 @@ export class ServiceStack extends cdk.Stack {
     // inline-timeout page covers the in-flight 1800s mark). Normal executions
     // close in 3-10 min; 20 min is comfortably above that.
     const provisionSlow = new cloudwatch.Alarm(this, "ProvisionExecutionSlowAlarm", {
-      alarmName: `lightbulb-${env}-provision-executions-slow`,
+      alarmName: `${resourcePrefix(env)}provision-executions-slow`,
       alarmDescription:
         "PAGE: a provisioning Step Functions execution took over 20 minutes " +
         "to close. An owner sat without a container for that whole time, " +

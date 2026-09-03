@@ -60,7 +60,17 @@ export function LaunchJoinModal() {
   const open = info?.phase === "open";
   // The brief is in. Anything other than "not_started" means the funnel has
   // been answered, so we are past the one screen we must not cover.
-  const briefDone = !!container && container.funnel?.state !== "not_started";
+  //
+  // The `?? "not_started"` is load-bearing, not defensive noise. `funnel` is
+  // OPTIONAL on the wire (`routers/container.py` builds it with
+  // `contract.get("funnel")`), and `useProvisioningState` hands back the RAW
+  // cast of the response body — it never runs through `deriveUIPhase`, whose
+  // EMPTY_FUNNEL fallback exists for exactly this. Without the coalesce a
+  // missing funnel reads as `undefined !== "not_started"` → true → "brief
+  // done", and this dialog opens on top of FirstRunFunnel, which is the one
+  // thing its module doc says must never happen. Defaulting a missing state
+  // to "not_started" matches every other reader of this field.
+  const briefDone = !!container && (container.funnel?.state ?? "not_started") !== "not_started";
   const eligible = open && !orgId && briefDone;
 
   const { data: me, mutate } = useSWR<LaunchMe>(

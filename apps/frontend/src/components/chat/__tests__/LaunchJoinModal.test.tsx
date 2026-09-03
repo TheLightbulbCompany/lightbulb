@@ -94,6 +94,22 @@ describe("LaunchJoinModal", () => {
     expect(get).not.toHaveBeenCalled(); // not even fetched yet
   });
 
+  it.each([
+    ["a null funnel object", { container: { funnel: null } }],
+    ["a funnel object with no state", { container: { funnel: {} } }],
+    ["no funnel key at all", { container: {} }],
+  ])("treats %s as brief-NOT-done, so it can never open over FirstRunFunnel", async (_label, state) => {
+    // `funnel` is optional on the wire (routers/container.py builds it with
+    // contract.get("funnel")) and useProvisioningState hands back the raw cast,
+    // never deriveUIPhase's EMPTY_FUNNEL fallback. A naive
+    // `funnel?.state !== "not_started"` reads a missing funnel as "done".
+    provisioning.mockReturnValue(state);
+    get.mockResolvedValue(me());
+    const { container: dom } = mount();
+    await waitFor(() => expect(dom).toBeEmptyDOMElement());
+    expect(get).not.toHaveBeenCalled();
+  });
+
   it("never shows in an org context, where joining can only fail", async () => {
     // POST /launch/join refuses every org caller with org_not_supported.
     orgId.mockReturnValue("org_1");

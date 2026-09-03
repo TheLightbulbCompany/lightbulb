@@ -504,6 +504,15 @@
   margin-bottom: 20px;
 }
 
+/* The recommended card is dark, and --midnight-muted on it measured ~2.7:1
+   against rgb(15,26,43) — under the 4.5:1 floor, and dimmer than every other
+   line on the card. That inverts the point of this line: the "you will be
+   charged" warning ended up least legible on the card people are most likely
+   to click. Same treatment the sibling .ld-pc-sub already gets. */
+.ld-price-card--hi .ld-pc-charge {
+  color: color-mix(in srgb, var(--cream) 65%, transparent);
+}
+
 .ld-price-card--hi .ld-pc-trial {
   color: var(--brass);
 }

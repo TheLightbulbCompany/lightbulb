@@ -110,13 +110,21 @@ export function SheetCard({ info }: { info: LaunchInfo }) {
               <ReferralLink code={me.referral_code} link={me.referral_link} />
             </div>
           ) : null}
-          {/* Renameable while the sheet is open — owners now join during
-              provisioning, before Friday has named their company. */}
-          <RenameForm
-            current={me.display_name}
-            onRenamed={(display_name) => mutate({ ...me, display_name }, { revalidate: false })}
-          />
         </div>
+      ) : null}
+
+      {/* Renameable for as long as the backend allows it (joined, eligible,
+          competition not over) — NOT only while the sheet is open. Owners now
+          join during provisioning, before Friday has named their company, and
+          the public board does not go live until the `competition` phase,
+          which is exactly when someone is most likely to want their name
+          fixed. Gating this on `open` would close the door right as the board
+          opens. `rename_display_name` refuses the `ended` phase itself. */}
+      {info.phase !== "ended" && me.compete_eligible ? (
+        <RenameForm
+          current={me.display_name}
+          onRenamed={(display_name) => mutate({ ...me, display_name }, { revalidate: false })}
+        />
       ) : null}
 
       {info.phase === "competition" && me.compete_eligible ? (

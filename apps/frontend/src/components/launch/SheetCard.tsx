@@ -1,13 +1,13 @@
 "use client";
 
 import * as React from "react";
-import Link from "next/link";
 import useSWR from "swr";
 import { useApi } from "@/lib/api";
 import { formatMoney, type LaunchInfo, type LaunchMe, type LaunchMeEntry } from "@/lib/launch";
 import { ConnectStripeForm } from "./ConnectStripeForm";
 import { JoinForm } from "./JoinForm";
 import { ReferralLink } from "./ReferralLink";
+import { RenameForm } from "./RenameForm";
 import { useLaunchRef } from "./useLaunchRef";
 import { useReferralAttribution } from "./useReferralAttribution";
 
@@ -54,14 +54,11 @@ export function SheetCard({ info }: { info: LaunchInfo }) {
     return (
       <div className="lc-card" data-testid="sheet-card">
         <p className="ld-kicker">Your launch</p>
-        {!me.onboarded ? (
-          <div>
-            <p className="lc-fine">Onboard first — Friday&apos;s first run has to complete. Then come back and join.</p>
-            <div className="lc-actions">
-              <Link href="/chat" className="ld-btn">Onboard first <span className="ld-btn-arrow" aria-hidden="true">→</span></Link>
-            </div>
-          </div>
-        ) : open ? (
+        {open ? (
+          // No onboarding wall. It used to say "Onboard first — Friday's first
+          // run has to complete. Then come back and join." Nobody came back,
+          // and the backend no longer refuses an unonboarded join anyway
+          // (launch_service.join_sheet).
           <JoinForm onJoined={() => mutate()} suggestedName={me.suggested_display_name} />
         ) : (
           <p className="lc-fine">The sheet has closed — you can&apos;t join the competition anymore, and nothing else changes.</p>
@@ -113,6 +110,12 @@ export function SheetCard({ info }: { info: LaunchInfo }) {
               <ReferralLink code={me.referral_code} link={me.referral_link} />
             </div>
           ) : null}
+          {/* Renameable while the sheet is open — owners now join during
+              provisioning, before Friday has named their company. */}
+          <RenameForm
+            current={me.display_name}
+            onRenamed={(display_name) => mutate({ ...me, display_name }, { revalidate: false })}
+          />
         </div>
       ) : null}
 

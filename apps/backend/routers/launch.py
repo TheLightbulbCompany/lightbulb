@@ -23,6 +23,7 @@ from core.services.rate_bucket import RateBucket
 from routers.hooks_proxy import _extract_caller_ip
 from schemas.launch import (
     ConnectStripeRequest,
+    DisplayNamePatchRequest,
     EntryPatchRequest,
     JoinRequest,
     LaunchInfo,
@@ -133,9 +134,14 @@ async def join(
     s: Schedule = Depends(require_launch),
 ) -> dict:
     """Explicit competition-sheet join — the only door onto the sheet.
-    Refused with 409 {"reason": "not_onboarded"} until Friday's first run has
-    delivered, and 409 {"reason": "closed"} once the sheet is no longer open.
-    Idempotent: joining twice returns the existing membership."""
+    Refused with 409 {"reason": "closed"} once the sheet is no longer open.
+    Idempotent: joining twice returns the existing membership.
+
+    No onboarding gate: an owner can join while their container is still
+    provisioning, which is the whole point of the sign-up modal (see
+    ``launch_service.join_sheet``). ``not_onboarded`` is kept in the 409 set
+    below purely so a client running against an older backend still maps the
+    refusal to copy rather than a bare 400."""
     _rate_limit(request, "join")
     # Org contexts can't join AT ALL: the sheet row keys to the personal
     # email/user_id while org billing keys by org_id, so every money leg
@@ -207,6 +213,28 @@ async def set_public(
         raise HTTPException(status_code=403, detail="org_admin_required")
     try:
         return await launch_service.set_public(auth, s, public=body.public)
+    except launch_service.LaunchRefused as e:
+        raise HTTPException(status_code=400, detail=e.reason)
+
+
+@router.patch("/display-name", operation_id="launch_rename")
+async def rename_display_name(
+    body: DisplayNamePatchRequest,
+    request: Request,
+    auth: AuthContext = Depends(get_current_user),
+    s: Schedule = Depends(require_launch),
+) -> dict:
+    """Rename the caller on the sheet (and on the board entry if they have
+    one). Exists because joining is no longer gated on onboarding, so the
+    first name an owner types is no longer one they had Friday's help
+    choosing — see ``launch_service.rename_display_name``."""
+    _rate_limit(request, "display_name")
+    # Same one-row-per-owner rule as /entry: an org member renaming would
+    # touch the org's row under their own identity.
+    if auth.is_org_context and not auth.is_org_admin:
+        raise HTTPException(status_code=403, detail="org_admin_required")
+    try:
+        return await launch_service.rename_display_name(auth, s, display_name=body.display_name)
     except launch_service.LaunchRefused as e:
         raise HTTPException(status_code=400, detail=e.reason)
 

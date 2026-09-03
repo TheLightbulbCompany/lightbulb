@@ -32,6 +32,7 @@ def _row(**over):
         "referrals_signed_up": 0,
         "referrals_subscribed": 0,
         "joined_at": "2026-09-10T00:00:00+00:00",
+        "display_name": "Northwind Ceramics",
     }
     row.update(over)
     return row
@@ -120,6 +121,10 @@ async def test_me_shape_for_a_joined_owner():
         "winner": False,
         "compete_eligible": True,
         "onboarded": True,
+        # The board name, projected off the SHEET row — the rename affordance
+        # prefills from this, and a joined owner with no board entry (the
+        # common case) has nowhere else to read it from.
+        "display_name": "Northwind Ceramics",
         "suggested_display_name": None,
         "entry": None,
     }

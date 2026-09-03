@@ -24,9 +24,32 @@ export function PricingThreeCard() {
             <sup>$</sup>50
           </span>
           <span className="ld-price-per">
-            / month · flat · 3-day free trial · no card
+            / month · flat · after your free trial
           </span>
         </div>
+
+        {/* The free tier used to be an 11px aside on the price line, while all
+            three card CTAs below carry a ?provider= that SKIPS it and lands
+            the visitor straight in Stripe Checkout. So the cheapest way in was
+            reachable only by the one route that never mentioned it, and people
+            reasonably concluded it costs $50 to try. This is the free path,
+            stated once, at the size the claim deserves — and it deliberately
+            links to a bare /sign-up with no provider attached. */}
+        <p className="ld-price-free">
+          <strong>Start free for 3 days — no credit card.</strong>{" "}
+          <Link
+            href="/sign-up"
+            onClick={() => {
+              capture("signup_started", {
+                source: "landing_pricing_free",
+                destination: "/sign-up",
+              });
+            }}
+          >
+            Try it first
+          </Link>{" "}
+          and pick how you pay later.
+        </p>
 
         <div className="ld-price-grid">
           {PROVIDER_CARDS.map((card) => (

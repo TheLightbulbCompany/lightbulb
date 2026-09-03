@@ -5,6 +5,13 @@ import { ApiError, useApi } from "@/lib/api";
 import { capture } from "@/lib/analytics";
 
 const REASON_COPY: Record<string, string> = {
+  // DEPLOY-SKEW ONLY. The backend no longer refuses an unonboarded join — the
+  // sign-up modal asks during provisioning on purpose. But Vercel ships this
+  // file independently of (and usually ahead of) the ECS backend, so for the
+  // length of a deploy window the OLD backend still answers 409 not_onboarded.
+  // Without this entry those users get "Couldn't join — try again." on a
+  // refusal that is actually explainable. Safe to delete once the backend is
+  // deployed everywhere.
   not_onboarded: "Finish onboarding first — Friday's first run has to complete.",
   closed: "The sheet has closed.",
   org_not_supported: "Switch to your personal workspace to join.",

@@ -66,14 +66,19 @@ export interface LaunchMe {
   credits_milestone_reached: 0 | 5 | 20;
   winner: boolean;
   compete_eligible: boolean;
-  /** Friday's first run delivered — the join precondition. */
+  /** Friday's first run delivered. NOT a join precondition any more — joining
+   * while the container provisions is the point of the sign-up modal — but
+   * still what decides whether `suggested_display_name` can be trusted. */
   onboarded: boolean;
+  /** The name currently on the sheet, so a rename affordance can prefill what
+   * the public board actually shows. Null until joined. */
+  display_name: string | null;
   /** The owner's current Paperclip company name (Friday renames it during
    * onboarding), offered as the join field's prefill so the public board
-   * shows the business, not the person. Only ever non-null when onboarded
-   * and not yet joined — a joined row's name is already locked in, and an
-   * unonboarded caller can't join yet, so the backend skips the Paperclip
-   * lookup and this is null in every other case. */
+   * shows the business, not the person. Only ever non-null when onboarded and
+   * not yet joined: before Friday's first run the company is still named off
+   * the owner's email local part, and proposing a PERSON's name for a board
+   * that ranks businesses is worse than an empty box. */
   suggested_display_name: string | null;
   /** The board attachment; null until joined AND connected. */
   entry: LaunchMeEntry | null;

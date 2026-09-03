@@ -163,6 +163,9 @@ export type AnalyticsEvent =
 
   // Launch competition
   | "launch_joined"
+  | "launch_modal_shown"
+  | "launch_modal_dismissed"
+  | "launch_renamed"
   | "launch_stripe_connected"
   | "launch_referral_copied"
   | "launch_team_interest";

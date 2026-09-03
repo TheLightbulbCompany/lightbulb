@@ -236,8 +236,14 @@ export default function Page() {
                   </svg>
                 </div>
                 <div>
-                  <div className="auth-feat-title">Always running</div>
-                  <div className="auth-feat-desc">Works in the background, even when you&#39;re offline.</div>
+                  {/* Was "Always running / Works in the background, even when
+                      you're offline." That is a PAID-plan property: a free-tier
+                      container is parked when idle and woken on intent, so this
+                      promised the one thing the tier the reader is about to get
+                      does not do. Replaced with the thing they most want to
+                      know here and were never told anywhere in this flow. */}
+                  <div className="auth-feat-title">Free for 3 days</div>
+                  <div className="auth-feat-desc">No credit card. Nothing to cancel.</div>
                 </div>
               </div>
               <div className="auth-feat" role="listitem">

@@ -36,6 +36,7 @@ import { AgentCreateDialog, AgentRenameDialog, AgentDeleteDialog, SessionDeleteD
 import { AgentRoster } from "@/components/agents/AgentRoster";
 import { useRosterEntries } from "@/components/agents/useRosterEntries";
 import { planLabel, isFreeTierExpired } from "@/lib/planLabel";
+import { FreeTierNote } from "@/components/chat/FreeTierNote";
 import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { DesktopUpdater } from "@/components/desktop/DesktopUpdater";
 import { NodeStatusPill } from "@/components/desktop/NodeStatusPill";
@@ -251,6 +252,7 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
             <span className="plan-badge">{planLabel(subscriptionStatus, { expired: isTrialExpired })}</span>
           )}
         </div>
+        <FreeTierNote />
         <DesktopUpdater version="0.1" />
       </div>
 

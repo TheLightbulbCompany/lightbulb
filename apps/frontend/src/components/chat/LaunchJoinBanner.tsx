@@ -5,24 +5,26 @@ import useSWR from "swr";
 import { useUser } from "@clerk/nextjs";
 import { useApi } from "@/lib/api";
 import { useLaunchInfo } from "@/components/launch/useLaunchInfo";
-import { joinErrorCopy } from "@/components/launch/JoinForm";
 import { useReferralAttribution } from "@/components/launch/useReferralAttribution";
 import type { LaunchMe } from "@/lib/launch";
 
 /**
- * The in-product competition-sheet join surface: a slim banner in the
- * workspace shell (next to TrialBanner/OutOfCreditsBanner), shown while the
- * sheet is open to an onboarded owner who hasn't joined. Join POSTs inline —
- * no navigation — with a display-name field prefilled from
- * `me.suggested_display_name` (POST /launch/join REQUIRES display_name).
- * Onboarding requires Friday's first run, and Friday renames the Paperclip
- * company during that run — so by the time this banner can show at all, the
- * suggestion is essentially always there; a null (a Paperclip hiccup on the
- * backend) falls back to an empty field with a "Your company name"
- * placeholder rather than the Clerk first name — the board ranks
- * businesses, not people. After joining it shows the position + referral
- * link, and only then becomes dismissible (per-user localStorage key): the
- * join nudge itself stays until they join, /launch has the full rules.
+ * The in-product competition-sheet status strip: position + referral link for
+ * an owner who has ALREADY joined, dismissible per user.
+ *
+ * It no longer asks anyone to join — {@link LaunchJoinModal} owns that now,
+ * for two reasons. The join form here was gated on `me.onboarded`, so it was
+ * invisible for the whole provisioning window; and because `/launch/me` is
+ * read once per page load with focus revalidation off app-wide (`SwrProvider`),
+ * nothing ever re-asked once Friday's first run landed. The strip only
+ * appeared after a full reload, which is exactly how it was reported. Beyond
+ * the bug, a slim line beside two other banners was losing to everything else
+ * on the page: 200 comped months on offer, three signups taken.
+ *
+ * So the ask is one deliberate modal and this is the receipt. It still mounts
+ * unconditionally in both shells because it also carries
+ * `useReferralAttribution`, which must run for every signed-in owner whether
+ * or not they ever join.
  */
 
 function dismissKey(userId: string): string {
@@ -34,18 +36,11 @@ export function LaunchJoinBanner() {
   const { user } = useUser();
   const info = useLaunchInfo();
   const open = info?.phase === "open";
-  const { data: me, mutate } = useSWR<LaunchMe>(open ? "/launch/me" : null, (k: string) => api.get(k) as Promise<LaunchMe>);
+  // Same SWR key as LaunchJoinModal, so joining there flips this strip to its
+  // joined state in the same render — no refetch, no reload.
+  const { data: me } = useSWR<LaunchMe>(open ? "/launch/me" : null, (k: string) => api.get(k) as Promise<LaunchMe>);
   useReferralAttribution(api, open ? me : null);
 
-  // `me.suggested_display_name` (the owner's live Paperclip company name —
-  // see schemas.launch.LaunchMe) is the prefill; null falls back to the
-  // empty-field placeholder. `null` here means "untouched, use prefill" so
-  // the derived value updates once `me` resolves (it starts undefined on
-  // first render) without an extra effect.
-  const prefill = me?.suggested_display_name ?? "";
-  const [name, setName] = React.useState<string | null>(null);
-  const [busy, setBusy] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
   const [dismissed, setDismissed] = React.useState(false);
   const [copied, setCopied] = React.useState(false);
 
@@ -58,35 +53,17 @@ export function LaunchJoinBanner() {
     }
   }, [user]);
 
-  if (!open || !me || !me.onboarded || dismissed || !user) return null;
-
-  const displayName = (name ?? prefill).trim();
-
-  const join = async () => {
-    if (displayName.length < 2 || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const joined = (await api.post("/launch/join", { display_name: displayName.slice(0, 40), public: true })) as LaunchMe;
-      await mutate(joined, { revalidate: false });
-    } catch (err) {
-      setError(joinErrorCopy(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const dismiss = () => {
     setDismissed(true);
     try {
-      window.localStorage.setItem(dismissKey(user.id), "1");
+      if (user) window.localStorage.setItem(dismissKey(user.id), "1");
     } catch {
       /* per-session dismiss only */
     }
   };
 
   const copyLink = async () => {
-    if (!me.referral_link) return;
+    if (!me?.referral_link) return;
     try {
       await navigator.clipboard.writeText(me.referral_link);
       setCopied(true);
@@ -96,45 +73,28 @@ export function LaunchJoinBanner() {
     }
   };
 
-  if (me.joined) {
-    return (
-      <div className="bg-cream border-b border-info px-4 py-2 text-ui text-info flex items-center gap-3 flex-wrap" data-testid="launch-join-banner">
-        <span>
-          You&apos;re #{me.effective_position ?? me.position} on the launch sheet. Every referral who subscribes moves you up.
-        </span>
-        {me.referral_link ? (
-          <span className="flex items-center gap-2 min-w-0">
-            <span className="font-mono truncate max-w-64">{me.referral_link}</span>
-            <button type="button" onClick={copyLink} className="underline">
-              {copied ? "Copied" : "Copy"}
-            </button>
-          </span>
-        ) : null}
-        <button type="button" onClick={dismiss} aria-label="Dismiss" className="ml-auto underline">
-          Dismiss
-        </button>
-      </div>
-    );
-  }
+  if (!open || !me || !me.joined || dismissed || !user) return null;
 
   return (
-    <div className="bg-cream border-b border-info px-4 py-2 text-ui text-info flex items-center gap-3 flex-wrap" data-testid="launch-join-banner">
-      <span>The launch competition is open — first {info.comp_slots.toLocaleString("en-US")} get a month free.</span>
-      <div className="flex flex-col gap-0.5">
-        <input
-          aria-label="Display name"
-          value={name ?? prefill}
-          maxLength={40}
-          placeholder="Your company name"
-          onChange={(e) => setName(e.target.value)}
-          className="border border-edge rounded px-2 py-0.5 bg-transparent text-foreground w-40"
-        />
-        <span className="text-2xs text-[var(--midnight-muted)]">Shown on the public board</span>
-      </div>
-      <button type="button" onClick={join} disabled={busy || displayName.length < 2} className="underline disabled:opacity-50">
-        {busy ? "Joining…" : "Join"}
+    <div
+      className="bg-cream border-b border-info px-4 py-2 text-ui text-info flex items-center gap-3 flex-wrap"
+      data-testid="launch-join-banner"
+    >
+      <span>
+        You&apos;re #{me.effective_position ?? me.position} on the launch sheet. Every referral who subscribes moves you
+        up.
+      </span>
+      {me.referral_link ? (
+        <span className="flex items-center gap-2 min-w-0">
+          <span className="font-mono truncate max-w-64">{me.referral_link}</span>
+          <button type="button" onClick={copyLink} className="underline">
+            {copied ? "Copied" : "Copy"}
+          </button>
+        </span>
+      ) : null}
+      <button type="button" onClick={dismiss} aria-label="Dismiss" className="ml-auto underline">
+        Dismiss
       </button>
-      {error ? <span role="alert" className="text-err">{error}</span> : null}
     </div>
   );
 }

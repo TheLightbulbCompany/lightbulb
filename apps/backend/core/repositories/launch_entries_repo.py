@@ -127,6 +127,20 @@ async def set_public(owner_id: str, public: bool) -> None:
     )
 
 
+async def set_display_name(owner_id: str, display_name: str) -> None:
+    """Rename an existing board entry. The entry copies the sheet row's name
+    at connect time, so a rename after connecting has to reach both rows or
+    the leaderboard keeps rendering the old one — see
+    ``launch_service.rename_display_name``, which owns that pairing."""
+    await run_in_thread(
+        _table().update_item,
+        Key={"owner_id": owner_id},
+        UpdateExpression="SET display_name = :d",
+        ConditionExpression="attribute_exists(owner_id)",
+        ExpressionAttributeValues={":d": display_name},
+    )
+
+
 async def set_revenue(
     owner_id: str,
     *,

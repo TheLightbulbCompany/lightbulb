@@ -48,10 +48,22 @@ const me = (over: Partial<LaunchMe> = {}): LaunchMe => ({
   winner: false,
   compete_eligible: false,
   onboarded: true,
+  display_name: null,
   suggested_display_name: null,
   entry: null,
   ...over,
 });
+
+const joined = (over: Partial<LaunchMe> = {}) =>
+  me({
+    joined: true,
+    position: 7,
+    effective_position: 7,
+    referral_code: "X",
+    referral_link: "https://flickmeon.ai/?ref=X",
+    compete_eligible: true,
+    ...over,
+  });
 
 function mount() {
   return render(<SWRConfig value={{ provider: () => new Map() }}><LaunchJoinBanner /></SWRConfig>);
@@ -65,35 +77,34 @@ describe("LaunchJoinBanner", () => {
     localStorage.clear();
   });
 
-  it("shows the open-sheet nudge with an empty, placeholder-labeled field when there's no suggested name", async () => {
-    get.mockResolvedValue(me({ suggested_display_name: null }));
+  it("shows the sheet position and referral link once joined", async () => {
+    get.mockResolvedValue(joined({ effective_position: 41, referral_link: "https://flickmeon.ai/?ref=P9AB3CDE" }));
     mount();
-    expect(await screen.findByText(/launch competition is open — first 200 get a month free/)).toBeInTheDocument();
-    const input = screen.getByLabelText(/display name/i);
-    expect(input).toHaveValue("");
-    expect(input).toHaveAttribute("placeholder", "Your company name");
-    expect(screen.getByText(/shown on the public board/i)).toBeInTheDocument();
+    expect(await screen.findByText(/You're #41 on the launch sheet/)).toBeInTheDocument();
+    expect(screen.getByText("https://flickmeon.ai/?ref=P9AB3CDE")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /copy/i })).toBeInTheDocument();
   });
 
-  it("prefills the display name from the owner's suggested (Paperclip) company name", async () => {
-    get.mockResolvedValue(me({ suggested_display_name: "Northwind Ceramics" }));
-    mount();
-    expect(await screen.findByLabelText(/display name/i)).toHaveValue("Northwind Ceramics");
-  });
-
-  it("keeps Join disabled until a valid (2+ char) name is typed", async () => {
+  it("never asks an unjoined owner to join — that is the modal's job now", async () => {
+    // Regression: the strip used to carry the whole join form behind an
+    // `onboarded` gate, so it was invisible during provisioning and then only
+    // appeared after a full page reload (/launch/me is read once per load and
+    // focus revalidation is off app-wide). Owners reported never seeing it.
     get.mockResolvedValue(me());
-    mount();
-    const input = await screen.findByLabelText(/display name/i);
-    const joinBtn = screen.getByRole("button", { name: /^join$/i });
-    expect(joinBtn).toBeDisabled();
-    fireEvent.change(input, { target: { value: "N" } });
-    expect(joinBtn).toBeDisabled();
-    fireEvent.change(input, { target: { value: "Northwind Ceramics" } });
-    expect(joinBtn).toBeEnabled();
+    const { container } = mount();
+    await waitFor(() => expect(get).toHaveBeenCalled());
+    expect(container).toBeEmptyDOMElement();
+    expect(screen.queryByLabelText(/display name/i)).not.toBeInTheDocument();
+    expect(post).not.toHaveBeenCalled();
   });
 
-  it("renders nothing when the launch is off (404), closed, or the owner isn't onboarded", async () => {
+  it("shows a joined owner whose bootstrap hasn't delivered — joining no longer needs onboarding", async () => {
+    get.mockResolvedValue(joined({ onboarded: false }));
+    mount();
+    expect(await screen.findByText(/You're #7 on the launch sheet/)).toBeInTheDocument();
+  });
+
+  it("renders nothing when the launch is off (404) or the sheet has closed", async () => {
     launchInfo.mockReturnValue(null);
     const { container, unmount } = mount();
     expect(container).toBeEmptyDOMElement();
@@ -103,51 +114,10 @@ describe("LaunchJoinBanner", () => {
     const closed = mount();
     expect(closed.container).toBeEmptyDOMElement();
     expect(get).not.toHaveBeenCalled(); // /launch/me isn't even fetched off-phase
-    closed.unmount();
-
-    launchInfo.mockReturnValue(info());
-    get.mockResolvedValue(me({ onboarded: false }));
-    const notOnboarded = mount();
-    await waitFor(() => expect(get).toHaveBeenCalled());
-    expect(notOnboarded.container).toBeEmptyDOMElement();
   });
 
-  it("joins inline with an edit that overrides the suggested name, and flips to the position + referral link", async () => {
-    // Starts from a suggested name (proving it's editable, not a locked
-    // default) and types over it — the POST must carry what the user
-    // actually typed, not the suggestion.
-    get.mockResolvedValue(me({ suggested_display_name: "Northwind Ceramics" }));
-    post.mockResolvedValue(me({
-      joined: true,
-      position: 41,
-      effective_position: 41,
-      referral_code: "P9AB3CDE",
-      referral_link: "https://flickmeon.ai/?ref=P9AB3CDE",
-      compete_eligible: true,
-    }));
-    mount();
-    const input = await screen.findByLabelText(/display name/i);
-    expect(input).toHaveValue("Northwind Ceramics");
-    fireEvent.change(input, { target: { value: "Ada L" } });
-    fireEvent.click(screen.getByRole("button", { name: /^join$/i }));
-    await waitFor(() => expect(post).toHaveBeenCalledWith("/launch/join", { display_name: "Ada L", public: true }));
-    expect(await screen.findByText(/You're #41 on the launch sheet/)).toBeInTheDocument();
-    expect(screen.getByText("https://flickmeon.ai/?ref=P9AB3CDE")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /copy/i })).toBeInTheDocument();
-  });
-
-  it("surfaces the org refusal copy instead of joining", async () => {
-    const { ApiError } = await import("@/lib/api");
-    get.mockResolvedValue(me());
-    post.mockRejectedValue(new ApiError(409, { detail: { reason: "org_not_supported" } }, "API 409"));
-    mount();
-    fireEvent.change(await screen.findByLabelText(/display name/i), { target: { value: "Northwind Ceramics" } });
-    fireEvent.click(screen.getByRole("button", { name: /^join$/i }));
-    expect(await screen.findByRole("alert")).toHaveTextContent(/Switch to your personal workspace/);
-  });
-
-  it("already joined: shows the sheet line and Dismiss hides it via the per-user key", async () => {
-    get.mockResolvedValue(me({ joined: true, position: 7, effective_position: 7, referral_link: "https://flickmeon.ai/?ref=X", referral_code: "X", compete_eligible: true }));
+  it("Dismiss hides it via the per-user key", async () => {
+    get.mockResolvedValue(joined());
     const { container } = mount();
     fireEvent.click(await screen.findByRole("button", { name: /dismiss/i }));
     expect(container).toBeEmptyDOMElement();
@@ -156,7 +126,7 @@ describe("LaunchJoinBanner", () => {
 
   it("stays hidden on the next mount once dismissed", async () => {
     localStorage.setItem("launch_sheet_banner_dismissed:user_1", "1");
-    get.mockResolvedValue(me({ joined: true, position: 7, effective_position: 7, compete_eligible: true }));
+    get.mockResolvedValue(joined());
     const { container } = mount();
     await waitFor(() => expect(container).toBeEmptyDOMElement());
   });

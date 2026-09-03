@@ -113,9 +113,18 @@ async def me(auth: AuthContext, s: Schedule) -> dict:
     # rows only — the entry can't exist otherwise.
     entry = await launch_entries_repo.get(owner_id) if joined else None
     # Only worth the cross-service Paperclip call when the suggestion would
-    # actually be used: an onboarded caller who hasn't joined yet. A joined
-    # row's display_name is already locked in; an unonboarded caller is
-    # refused at /join anyway (`not_onboarded`) so there's nothing to prefill.
+    # actually be USEFUL: an onboarded caller who hasn't joined yet.
+    #
+    # The `onboarded` term is now a correctness gate, not just a cost one.
+    # Joining no longer requires onboarding (see `join_sheet`), so an
+    # unonboarded caller CAN reach `/join` — but a suggestion for them would be
+    # actively wrong. Before Friday's first run renames the company,
+    # `company_identity.generate_company_name` has seeded it from the owner's
+    # email local part, so this would propose the PERSON's name for a board
+    # that deliberately ranks businesses. An empty field with a "Your company
+    # name" placeholder beats a plausible-looking wrong default the owner
+    # accepts by inertia. They can rename later via `rename_display_name`.
+    #
     # Org callers are ALSO excluded: POST /launch/join permanently refuses
     # `org_not_supported` for any is_org_context caller (see the `join`
     # route), so an org owner can never reach joined=True — without this,
@@ -138,6 +147,11 @@ async def me(auth: AuthContext, s: Schedule) -> dict:
         "winner": bool(row and row.get("winner")),
         "compete_eligible": bool(row.get("compete_eligible", True)) if joined else False,
         "onboarded": onboarded,
+        # The name currently on the sheet, so the rename affordance can prefill
+        # what the board actually shows. Read off the sheet row, NOT the board
+        # entry: an owner who joined but never connected Stripe has no entry,
+        # and that is the common case.
+        "display_name": row.get("display_name") if joined else None,
         "suggested_display_name": suggested_display_name,
         "entry": {
             "has_key": bool(entry.get("has_key", False)),
@@ -160,14 +174,26 @@ class LaunchRefused(Exception):
 
 
 async def join_sheet(auth: AuthContext, s: Schedule, *, display_name: str, public: bool) -> dict:
-    """Explicit sheet join — the only door onto the sheet. Requires an
-    ONBOARDED owner (Friday's first run delivered) and the ``open`` phase.
+    """Explicit sheet join — the only door onto the sheet. Requires the
+    ``open`` phase and nothing else.
+
+    Deliberately NOT gated on onboarding. It used to be: joining required
+    ``bootstrap_state == "delivered"`` (Friday's first run), on the reasoning
+    that the sheet row IS the competition entry and an entry should mean a
+    real, provisioned business. In practice the gate was a funnel leak — the
+    join surfaces are invisible for the whole provisioning window, which is
+    exactly when a new owner is most engaged and has nothing else to do, and
+    the /launch page could only tell them to come back later. Nobody came
+    back. The close still counts only rows that actually joined
+    (``launch_close``'s ``joined_at`` filter), an unpaid winner is simply
+    emailed a pre-applied free month at checkout, and an owner who never
+    activates costs us a comp slot we were not otherwise selling.
+
     Idempotent: joining twice returns the existing membership untouched (no
-    second email, first display_name wins)."""
+    second email, first display_name wins) — but the name is renameable via
+    ``rename_display_name`` below, which matters far more now that owners join
+    before Friday has named their company."""
     owner_id = resolve_owner_id(auth)
-    onboarding = await readiness_state.resolve_onboarding_state(owner_id)
-    if onboarding.get("bootstrap_state") != "delivered":
-        raise LaunchRefused("not_onboarded")
     if phase(s) != "open":
         raise LaunchRefused("closed")
     email = await resolve_email(auth)
@@ -285,6 +311,35 @@ async def connect_stripe(auth: AuthContext, s: Schedule, *, stripe_key: str) -> 
     return _public_entry(
         {**entry, "has_key": True, "currency": currency, "baseline_cents": baseline_cents, "baseline_at": baseline_at}
     )
+
+
+async def rename_display_name(auth: AuthContext, s: Schedule, *, display_name: str) -> dict:
+    """Rename the caller on the sheet — and on the board entry too once one
+    exists, since ``connect_stripe`` copies the name across and the
+    leaderboard reads the copy.
+
+    This exists because joining is no longer gated on onboarding (see
+    ``join_sheet``). ``mark_joined`` writes ``display_name`` exactly once
+    under ``attribute_not_exists(joined_at)``, so before this the FIRST name
+    an owner typed was their permanent identity on a public leaderboard. That
+    was tolerable while joining happened after Friday had already researched
+    and renamed their company; it is not tolerable now that we ask during
+    provisioning, minutes after signup, before the owner has necessarily
+    settled on a name at all.
+
+    Gated exactly like the other board actions via ``_sheet_row_for``: joined,
+    competition not over, not ruled out by the close."""
+    owner_id = resolve_owner_id(auth)
+    sheet_row = await _sheet_row_for(auth, s)
+    name = display_name.strip()
+    await launch_waitlist_repo.update_fields(sheet_row["email"], {"display_name": name})
+    # Best-effort second leg: an owner who has not connected Stripe has no
+    # entry, which is the common case and not an error.
+    entry = await launch_entries_repo.get(owner_id)
+    if entry:
+        await launch_entries_repo.set_display_name(owner_id, name)
+    logger.info("launch: %s renamed on the sheet", owner_id)
+    return {"display_name": name}
 
 
 async def set_public(auth: AuthContext, s: Schedule, *, public: bool) -> dict:

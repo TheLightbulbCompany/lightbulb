@@ -331,6 +331,34 @@
   color: var(--midnight-muted);
 }
 
+/* The free path. Deliberately at body size, not the 11px uppercase mono of
+   .ld-price-per: the free trial used to be set five times smaller than the
+   price it qualifies, on the same baseline, which is how visitors came away
+   certain it costs $50 just to try. */
+.ld-price-free {
+  margin-top: 14px;
+  max-width: 46ch;
+  font-size: var(--text-ui);
+  line-height: 1.6;
+  color: var(--midnight-muted);
+}
+
+.ld-price-free strong {
+  color: var(--midnight);
+  font-weight: 600;
+}
+
+.ld-price-free a {
+  color: var(--midnight);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--brass);
+}
+
+.ld-price-free a:hover {
+  text-decoration-color: var(--midnight);
+}
+
 .ld-price-grid {
   margin-top: 40px;
   display: grid;

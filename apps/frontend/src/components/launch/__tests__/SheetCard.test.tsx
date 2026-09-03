@@ -51,6 +51,7 @@ const me = (over: Partial<LaunchMe> = {}): LaunchMe => ({
   winner: false,
   compete_eligible: false,
   onboarded: true,
+  display_name: null,
   suggested_display_name: null,
   entry: null,
   ...over,
@@ -75,11 +76,14 @@ function mount(i: LaunchInfo = info()) {
 describe("SheetCard", () => {
   beforeEach(() => { get.mockReset(); post.mockReset(); patch.mockReset(); useLaunchRef.mockReturnValue(null); localStorage.clear(); });
 
-  it("not onboarded: Onboard-first CTA into /chat, no join form", async () => {
+  it("not onboarded: still renders the join form, with no onboard-first wall", async () => {
+    // This page used to answer a brand-new owner with "Onboard first —
+    // Friday's first run has to complete. Then come back and join." Nobody
+    // came back, and the backend no longer refuses an unonboarded join.
     get.mockResolvedValue(me({ onboarded: false }));
     mount();
-    expect(await screen.findByRole("link", { name: /onboard first/i })).toHaveAttribute("href", "/chat");
-    expect(screen.queryByTestId("join-form")).not.toBeInTheDocument();
+    expect(await screen.findByTestId("join-form")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /onboard first/i })).not.toBeInTheDocument();
   });
 
   it("onboarded, open, not joined: renders the join form", async () => {

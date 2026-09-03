@@ -73,6 +73,19 @@ class EntryPatchRequest(BaseModel):
     public: bool
 
 
+class DisplayNamePatchRequest(BaseModel):
+    """Rename on the sheet after joining. Same bounds and same
+    strip-before-validate as ``JoinRequest`` so a name can never be renamed
+    into something ``join`` would have rejected."""
+
+    display_name: str = Field(min_length=2, max_length=40)
+
+    @field_validator("display_name", mode="before")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        return v.strip() if isinstance(v, str) else v
+
+
 class LeaderboardRow(BaseModel):
     rank: int
     display_name: str

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { planLabel, isFreeTierExpired } from "../planLabel";
+import { planLabel, isFreeTierExpired, freeTierDaysLeft } from "../planLabel";
 
 describe("planLabel", () => {
   it("never leaks the raw trial_local enum", () => {
@@ -56,5 +56,31 @@ describe("isFreeTierExpired", () => {
   it("is false when trial_end is null or undefined", () => {
     expect(isFreeTierExpired("trial_local", null, nowMs)).toBe(false);
     expect(isFreeTierExpired("trial_local", undefined, nowMs)).toBe(false);
+  });
+});
+
+const DAY = 86_400_000;
+
+describe("freeTierDaysLeft", () => {
+  it("rounds up, so a partly-spent day still reads as a day left", () => {
+    // The badge is a nudge. Telling someone with six hours left that they have
+    // none is the one direction worth avoiding.
+    const now = Date.UTC(2026, 0, 1, 0, 0, 0);
+    expect(freeTierDaysLeft("trial_local", (now + 6 * 3_600_000) / 1000, now)).toBe(1);
+    expect(freeTierDaysLeft("trial_local", (now + 2 * DAY) / 1000, now)).toBe(2);
+  });
+
+  it("floors at 0 once the window has elapsed", () => {
+    const now = Date.UTC(2026, 0, 5);
+    expect(freeTierDaysLeft("trial_local", (now - 3 * DAY) / 1000, now)).toBe(0);
+  });
+
+  it("is null when there is no window to describe", () => {
+    const now = Date.UTC(2026, 0, 1);
+    expect(freeTierDaysLeft("active", (now + DAY) / 1000, now)).toBeNull();
+    // Legacy dev rows carry no trial_end, and the backend reads a missing
+    // stamp as NOT expired — so we must not invent a countdown for them.
+    expect(freeTierDaysLeft("trial_local", null, now)).toBeNull();
+    expect(freeTierDaysLeft("trial_local", undefined, now)).toBeNull();
   });
 });

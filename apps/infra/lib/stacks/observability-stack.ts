@@ -274,22 +274,6 @@ export class ObservabilityStack extends cdk.Stack {
     });
   }
 
-  // =========================================================================
-  // Alarm helper
-  // =========================================================================
-
-  /**
-   * Creates a single CloudWatch alarm from a definition object.
-   *
-   * Wires the alarm to its severity's SNS topic. EVERY alarm in this stack
-   * goes through here.
-   *
-   * Pass `metricName` for a custom Isol8-namespace metric -- `env` and
-   * `service` dimensions are auto-injected to match the EMF emitter output.
-   * Pass `metric` instead for anything else: a MathExpression, an AWS-native
-   * namespace (AWS/ApplicationELB, AWS/ApiGateway, ...) with its own
-   * dimension scheme, or a metric built from a construct reference.
-   */
   /**
    * Let same-account CloudWatch alarms publish to an alert topic.
    *
@@ -322,6 +306,22 @@ export class ObservabilityStack extends cdk.Stack {
     );
   }
 
+  // =========================================================================
+  // Alarm helper
+  // =========================================================================
+
+  /**
+   * Creates a single CloudWatch alarm from a definition object.
+   *
+   * Wires the alarm to its severity's SNS topic. EVERY alarm in this stack
+   * goes through here.
+   *
+   * Pass `metricName` for a custom Isol8-namespace metric -- `env` and
+   * `service` dimensions are auto-injected to match the EMF emitter output.
+   * Pass `metric` instead for anything else: a MathExpression, an AWS-native
+   * namespace (AWS/ApplicationELB, AWS/ApiGateway, ...) with its own
+   * dimension scheme, or a metric built from a construct reference.
+   */
   private createAlarm(def: AlarmDef): cloudwatch.Alarm {
     // Auto-inject env and service dimensions for custom Isol8 namespace
     const isCustomNamespace = !def.namespace || def.namespace === "LightbulbAI";

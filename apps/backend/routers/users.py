@@ -35,15 +35,34 @@ async def sync_user(
 
     existing = await user_repo.get(user_id)
 
+    # The JWT's `email` claim is the same primary address the Clerk
+    # `user.created` webhook would send, and until now that webhook was the
+    # ONLY writer of this column. `launch_referral._email_for_owner` reads it
+    # from inside a Stripe webhook, where there is no JWT to fall back on — so
+    # a row without it silently kills referral counting for that owner. Write
+    # it here too, and heal rows that predate this (the rebrand left the Clerk
+    # webhook pointing at the retired domain, so every signup in that window
+    # has an email-less row).
     if not existing:
         try:
-            await user_repo.put(user_id)
+            await user_repo.put(user_id, auth.email)
             status = "created"
         except Exception as e:
             logger.error("Database error on user sync for %s: %s", user_id, e)
             raise HTTPException(status_code=500, detail="Database operation failed")
     else:
         status = "exists"
+        if not existing.get("email"):
+            try:
+                await user_repo.backfill_email(user_id, auth.email)
+            except Exception:
+                # Never fail a sync over the heal: a bug here would 500 sync for
+                # every existing user, and sync is on the critical path. The
+                # client latches success in sessionStorage on any resolved
+                # response, so this will NOT be retried until a new browser
+                # session — which is why `launch_referral._email_for_owner`
+                # falls back to Clerk rather than trusting this column.
+                logger.exception("users/sync: email backfill failed for %s", user_id)
 
     # The canonical write path for provider_choice is POST
     # /billing/trial-checkout, which persists synchronously to billing_accounts

@@ -223,3 +223,54 @@ async def test_never_raises_even_on_a_repo_blowup():
     with _Harness() as h:
         h.get.side_effect = RuntimeError("ddb down")
         await launch_referral.on_subscription_activated("user_referee")
+
+
+async def test_email_for_owner_falls_back_to_clerk(monkeypatch):
+    """A users row with no email must not silently kill referral counting.
+
+    Rows created while the Clerk `user.created` webhook was dead carry no
+    email, and this runs inside a Stripe webhook with no JWT to fall back on —
+    so it asks Clerk rather than dropping the once-only count.
+    """
+    from core.services import clerk_admin, launch_referral
+
+    async def _row(_owner_id):
+        return {"user_id": "user_x"}  # no email
+
+    async def _clerk(_owner_id):
+        return "Them@Example.COM"
+
+    monkeypatch.setattr(launch_referral.user_repo, "get", _row)
+    monkeypatch.setattr(clerk_admin, "get_primary_email", _clerk)
+
+    assert await launch_referral._email_for_owner("user_x") == "them@example.com"
+
+
+async def test_email_for_owner_prefers_the_row_and_skips_clerk(monkeypatch):
+    from core.services import clerk_admin, launch_referral
+
+    async def _row(_owner_id):
+        return {"user_id": "user_x", "email": "Row@Example.COM"}
+
+    async def _clerk(_owner_id):
+        raise AssertionError("Clerk must not be called when the row has an email")
+
+    monkeypatch.setattr(launch_referral.user_repo, "get", _row)
+    monkeypatch.setattr(clerk_admin, "get_primary_email", _clerk)
+
+    assert await launch_referral._email_for_owner("user_x") == "row@example.com"
+
+
+async def test_email_for_owner_returns_none_when_clerk_has_nothing(monkeypatch):
+    from core.services import clerk_admin, launch_referral
+
+    async def _row(_owner_id):
+        return None
+
+    async def _clerk(_owner_id):
+        raise RuntimeError("clerk has no user with id user_x")
+
+    monkeypatch.setattr(launch_referral.user_repo, "get", _row)
+    monkeypatch.setattr(clerk_admin, "get_primary_email", _clerk)
+
+    assert await launch_referral._email_for_owner("user_x") is None

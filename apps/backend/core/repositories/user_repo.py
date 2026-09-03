@@ -41,6 +41,36 @@ async def put(user_id: str, email: str | None = None) -> dict:
     return item
 
 
+async def backfill_email(user_id: str, email: str | None) -> None:
+    """Write ``email`` onto an existing row that has none. No-op otherwise.
+
+    A targeted UpdateItem, NOT ``put`` — ``put`` is a whole-item overwrite and
+    would drop ``push_tokens`` and anything else already on the row.
+
+    Exists because the users-table email had exactly one writer, the Clerk
+    ``user.created`` webhook, and that webhook is the only source
+    ``launch_referral._email_for_owner`` can read (it runs inside a Stripe
+    webhook, so there is no JWT to fall back to). When the webhook was left
+    pointing at the retired domain through the rebrand, every row created in
+    that window came out email-less and referral counting went silently dead.
+    /users/sync now heals those rows from the caller's own JWT claim.
+    """
+    if not email:
+        return
+    table = _get_table()
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"user_id": user_id},
+            UpdateExpression="SET email = :e",
+            ConditionExpression="attribute_exists(user_id) AND attribute_not_exists(email)",
+            ExpressionAttributeValues={":e": email},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+
 async def delete(user_id: str) -> None:
     table = _get_table()
     await run_in_thread(table.delete_item, Key={"user_id": user_id})

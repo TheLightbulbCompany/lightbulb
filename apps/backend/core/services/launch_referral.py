@@ -41,9 +41,27 @@ def _milestone_field(threshold: int) -> str:
 
 
 async def _email_for_owner(owner_id: str) -> str | None:
+    """The users-table email, falling back to Clerk.
+
+    The row is the fast path but is NOT guaranteed to carry an email: it is
+    written email-less whenever /users/sync's heal fails, and every row
+    created while the Clerk `user.created` webhook pointed at the retired
+    domain has none at all. This runs inside a Stripe webhook, so there is no
+    JWT to fall back on — and a missing email here drops the referral count
+    for good, because ``mark_referral_counted`` is once-only and this is the
+    single moment it fires. A Clerk round trip is cheap next to that.
+    """
     row = await user_repo.get(owner_id)
     email = (row or {}).get("email")
-    return email.strip().lower() if email else None
+    if email:
+        return email.strip().lower()
+    from core.services import clerk_admin
+
+    try:
+        return (await clerk_admin.get_primary_email(owner_id)).strip().lower()
+    except Exception as e:  # noqa: BLE001 — no email anywhere; log and skip counting
+        logger.warning("launch_referral: no email for %s in users or Clerk: %s", owner_id, e)
+        return None
 
 
 async def _grant_credits(owner_id: str, amount_cents: int, idempotency_key: str) -> bool:

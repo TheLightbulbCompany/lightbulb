@@ -1,4 +1,9 @@
-import { legacyTablePrefix, tablePrefix } from "../lib/table-names";
+import {
+  legacyTablePrefix,
+  resourcePrefix,
+  tablePrefix,
+} from "../lib/table-names";
+import { LightbulbStage } from "../lib/lightbulb-stage";
 import * as cdk from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecs from "aws-cdk-lib/aws-ecs";
@@ -525,6 +530,149 @@ describe("ObservabilityStack", () => {
   // and had been failing on main since Phase 1. The heartbeat test above still
   // holds — Phase 1 kept gateway.running.count, renaming its alarm to
   // backend-liveness.
+});
+
+describe("ObservabilityStack — CloudWatch alarms can publish", () => {
+  // A CloudWatch alarm action publishes as the CloudWatch SERVICE principal.
+  // Attaching an EventBridge rule to a topic makes CDK emit an
+  // AWS::SNS::TopicPolicy, which REPLACES the topic's default account-owner
+  // statement — so without an explicit grant the alarm silently fails its
+  // action with `CloudWatch Alarms is not authorized to perform: SNS:Publish`.
+  // A failed alarm action is not itself an alarm, so nothing surfaces it.
+  test.each(["dev", "prod"] as const)(
+    "%s: both alert topics grant CloudWatch sns:Publish",
+    (env) => {
+      const statements = Object.values(
+        buildTemplate(env).findResources("AWS::SNS::TopicPolicy"),
+      ).flatMap((p: any) => p.Properties.PolicyDocument.Statement ?? []);
+
+      const grants = statements.filter(
+        (st: any) =>
+          st.Principal?.Service === "cloudwatch.amazonaws.com" &&
+          st.Action === "sns:Publish" &&
+          st.Effect === "Allow",
+      );
+
+      // One for the page topic, one for the warn topic.
+      expect(grants).toHaveLength(2);
+      for (const grant of grants) {
+        expect(grant.Condition.StringEquals["AWS:SourceAccount"]).toEqual({
+          Ref: "AWS::AccountId",
+        });
+      }
+    },
+  );
+
+  // THIS is the test that matters. A previous attempt at this fix hard-coded
+  // an `isol8-${env}-*` source-ARN pattern AND hard-coded the same string in
+  // its assertion. The rebrand later renamed every alarm to `lightbulb-*`, the
+  // grant stopped matching anything, and the test stayed green — a passing
+  // suite blessing a permission that granted nothing.
+  //
+  // So do not assert a literal prefix here. Derive it from the alarm names the
+  // template actually renders, so any future rename that misses one side fails
+  // this test instead of silently disarming production alerting.
+  test.each(["dev", "prod"] as const)(
+    "%s: the granted alarm-ARN pattern actually matches the rendered alarm names",
+    (env) => {
+      const built = buildTemplate(env);
+
+      const patterns = Object.values(
+        built.findResources("AWS::SNS::TopicPolicy"),
+      )
+        .flatMap((p: any) => p.Properties.PolicyDocument.Statement ?? [])
+        .filter(
+          (st: any) => st.Principal?.Service === "cloudwatch.amazonaws.com",
+        )
+        .map((st: any) => {
+          const join = st.Condition.ArnLike["AWS:SourceArn"]["Fn::Join"][1];
+          const tail = join[join.length - 1] as string;
+          // e.g. ":alarm:lightbulb-prod-*" -> "lightbulb-prod-"
+          const match = /:alarm:(.*)\*$/.exec(tail);
+          expect(match).not.toBeNull();
+          return match![1];
+        });
+
+      expect(patterns.length).toBeGreaterThan(0);
+
+      const alarmNames = Object.values(
+        built.findResources("AWS::CloudWatch::Alarm"),
+      ).map((a: any) => a.Properties.AlarmName as string);
+
+      // Every alarm this stack creates must fall inside every granted pattern.
+      expect(alarmNames.length).toBeGreaterThan(0);
+      for (const prefix of patterns) {
+        const outside = alarmNames.filter((n) => !n.startsWith(prefix));
+        expect(outside).toEqual([]);
+      }
+    },
+  );
+});
+
+describe("alert topic grant covers alarms in EVERY stack", () => {
+  // The grant lives in observability-stack, but FOUR other stacks import these
+  // topics by ARN and attach alarm actions: bedrock-gate, bedrock-meter,
+  // service and agent-mail-outbound. A test that only inspected
+  // observability-stack's own alarms would not notice those drifting outside
+  // the granted ARN pattern — #1947's failure relocated one stack over.
+  //
+  // The invariant is NOT "every alarm matches its stage's prefix". The gate and
+  // meter stacks deliberately render BOTH a dev and a prod instance from one
+  // stage and wire each instance to ITS OWN env's topics, so a prod stage
+  // legitimately contains `lightbulb-dev-*` alarms pointing at dev topics.
+  //
+  // The real invariant is the PAIRING: an alarm publishing to some env's alert
+  // topic must fall inside the ARN prefix that env's topic policy grants.
+  test.each(["dev", "prod"] as const)(
+    "%s stage: every alarm is inside the granted prefix of the topic it pages",
+    (envName) => {
+      const app = new cdk.App();
+      const stage = new LightbulbStage(app, envName, {
+        environment: envName,
+        env: { account: "123456789012", region: "us-east-1" },
+      } as any);
+
+      const alarms = stage.node
+        .findAll()
+        .filter((c): c is cdk.Stack => c instanceof cdk.Stack)
+        .flatMap((stack) =>
+          Object.values(
+            Template.fromStack(stack).findResources("AWS::CloudWatch::Alarm"),
+          ),
+        );
+      expect(alarms.length).toBeGreaterThan(0);
+
+      // "arn:aws:sns:<region>:<account>:lightbulb-<env>-alerts-<page|warn>"
+      const topicEnv = /:([a-z0-9-]+)-alerts-(?:page|warn)$/;
+
+      const mismatched: string[] = [];
+      let checked = 0;
+      for (const alarm of alarms as any[]) {
+        const name = alarm.Properties?.AlarmName;
+        if (typeof name !== "string") continue;
+        const actions = [
+          ...(alarm.Properties?.AlarmActions ?? []),
+          ...(alarm.Properties?.OKActions ?? []),
+        ];
+        for (const action of actions) {
+          if (typeof action !== "string") continue; // same-stack Ref
+          const match = topicEnv.exec(action);
+          if (!match) continue;
+          checked += 1;
+          // match[1] is "lightbulb-dev" / "lightbulb-prod"; the granted prefix
+          // for that env is resourcePrefix(env) === `${match[1]}-`.
+          if (!name.startsWith(`${match[1]}-`)) {
+            mismatched.push(`${name} -> ${action}`);
+          }
+        }
+      }
+
+      // Guard the guard: if nothing resolved to a literal topic ARN the loop
+      // above would vacuously pass.
+      expect(checked).toBeGreaterThan(0);
+      expect(mismatched).toEqual([]);
+    },
+  );
 });
 
 describe("ObservabilityStack — prod-only paths", () => {

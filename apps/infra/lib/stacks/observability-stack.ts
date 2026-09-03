@@ -149,6 +149,26 @@ export class ObservabilityStack extends cdk.Stack {
       displayName: "Isol8 Warn",
     });
 
+    // A CloudWatch alarm action publishes as the CloudWatch SERVICE principal,
+    // not as this stack's deploy role, so it needs an explicit resource-policy
+    // grant. That is not belt-and-braces: attaching an EventBridge rule to a
+    // topic (the Aurora and GuardDuty rules further down both target the WARN
+    // topic) makes CDK emit an `AWS::SNS::TopicPolicy`, and a TopicPolicy
+    // REPLACES the topic's default account-owner statement rather than merging
+    // with it. That is exactly how the warn topic ended up granting only
+    // events.amazonaws.com while all 89 warn alarms failed their action with
+    // `CloudWatch Alarms is not authorized to perform: SNS:Publish` — silently,
+    // because a failed alarm action is not itself an alarm. The page tier
+    // survived only because nothing targets it from EventBridge.
+    //
+    // Granting BOTH topics also narrows the page topic from the AWS default
+    // policy to an explicit one. That is safe: only SERVICE principals need the
+    // resource policy, and the two that publish here (cloudwatch, events) are
+    // both granted. Same-account IAM principals are unaffected, because SNS
+    // honours identity-based policies independently.
+    this.allowCloudWatchAlarmPublish(this.pageTopic);
+    this.allowCloudWatchAlarmPublish(this.warnTopic);
+
     // -----------------------------------------------------------------------
     // Alert destinations
     // -----------------------------------------------------------------------
@@ -270,6 +290,34 @@ export class ObservabilityStack extends cdk.Stack {
    * namespace (AWS/ApplicationELB, AWS/ApiGateway, ...) with its own
    * dimension scheme, or a metric built from a construct reference.
    */
+  /**
+   * Let same-account CloudWatch alarms publish to an alert topic.
+   *
+   * The ARN pattern is built from `resourcePrefix` — the SAME helper that
+   * names the alarms (see `createAlarm`) — deliberately. A previous attempt at
+   * this fix hard-coded an `isol8-${env}-*` pattern; the rebrand later renamed
+   * every alarm to `lightbulb-${env}-*` and the grant silently matched nothing.
+   * Deriving both from one helper means a future rename cannot reopen the hole.
+   */
+  private allowCloudWatchAlarmPublish(topic: sns.Topic): void {
+    topic.addToResourcePolicy(
+      new iam.PolicyStatement({
+        sid: "AllowSameAccountCloudWatchAlarmsPublish",
+        principals: [new iam.ServicePrincipal("cloudwatch.amazonaws.com")],
+        actions: ["sns:Publish"],
+        resources: [topic.topicArn],
+        conditions: {
+          StringEquals: {
+            "AWS:SourceAccount": cdk.Aws.ACCOUNT_ID,
+          },
+          ArnLike: {
+            "AWS:SourceArn": `arn:${cdk.Aws.PARTITION}:cloudwatch:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:alarm:${resourcePrefix(this.envName)}*`,
+          },
+        },
+      }),
+    );
+  }
+
   private createAlarm(def: AlarmDef): cloudwatch.Alarm {
     // Auto-inject env and service dimensions for custom Isol8 namespace
     const isCustomNamespace = !def.namespace || def.namespace === "LightbulbAI";

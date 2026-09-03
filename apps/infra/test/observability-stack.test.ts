@@ -527,6 +527,83 @@ describe("ObservabilityStack", () => {
   // backend-liveness.
 });
 
+describe("ObservabilityStack — CloudWatch alarms can publish", () => {
+  // A CloudWatch alarm action publishes as the CloudWatch SERVICE principal.
+  // Attaching an EventBridge rule to a topic makes CDK emit an
+  // AWS::SNS::TopicPolicy, which REPLACES the topic's default account-owner
+  // statement — so without an explicit grant the alarm silently fails its
+  // action with `CloudWatch Alarms is not authorized to perform: SNS:Publish`.
+  // A failed alarm action is not itself an alarm, so nothing surfaces it.
+  test.each(["dev", "prod"] as const)(
+    "%s: both alert topics grant CloudWatch sns:Publish",
+    (env) => {
+      const statements = Object.values(
+        buildTemplate(env).findResources("AWS::SNS::TopicPolicy"),
+      ).flatMap((p: any) => p.Properties.PolicyDocument.Statement ?? []);
+
+      const grants = statements.filter(
+        (st: any) =>
+          st.Principal?.Service === "cloudwatch.amazonaws.com" &&
+          st.Action === "sns:Publish" &&
+          st.Effect === "Allow",
+      );
+
+      // One for the page topic, one for the warn topic.
+      expect(grants).toHaveLength(2);
+      for (const grant of grants) {
+        expect(grant.Condition.StringEquals["AWS:SourceAccount"]).toEqual({
+          Ref: "AWS::AccountId",
+        });
+      }
+    },
+  );
+
+  // THIS is the test that matters. A previous attempt at this fix hard-coded
+  // an `isol8-${env}-*` source-ARN pattern AND hard-coded the same string in
+  // its assertion. The rebrand later renamed every alarm to `lightbulb-*`, the
+  // grant stopped matching anything, and the test stayed green — a passing
+  // suite blessing a permission that granted nothing.
+  //
+  // So do not assert a literal prefix here. Derive it from the alarm names the
+  // template actually renders, so any future rename that misses one side fails
+  // this test instead of silently disarming production alerting.
+  test.each(["dev", "prod"] as const)(
+    "%s: the granted alarm-ARN pattern actually matches the rendered alarm names",
+    (env) => {
+      const built = buildTemplate(env);
+
+      const patterns = Object.values(
+        built.findResources("AWS::SNS::TopicPolicy"),
+      )
+        .flatMap((p: any) => p.Properties.PolicyDocument.Statement ?? [])
+        .filter(
+          (st: any) => st.Principal?.Service === "cloudwatch.amazonaws.com",
+        )
+        .map((st: any) => {
+          const join = st.Condition.ArnLike["AWS:SourceArn"]["Fn::Join"][1];
+          const tail = join[join.length - 1] as string;
+          // e.g. ":alarm:lightbulb-prod-*" -> "lightbulb-prod-"
+          const match = /:alarm:(.*)\*$/.exec(tail);
+          expect(match).not.toBeNull();
+          return match![1];
+        });
+
+      expect(patterns.length).toBeGreaterThan(0);
+
+      const alarmNames = Object.values(
+        built.findResources("AWS::CloudWatch::Alarm"),
+      ).map((a: any) => a.Properties.AlarmName as string);
+
+      // Every alarm this stack creates must fall inside every granted pattern.
+      expect(alarmNames.length).toBeGreaterThan(0);
+      for (const prefix of patterns) {
+        const outside = alarmNames.filter((n) => !n.startsWith(prefix));
+        expect(outside).toEqual([]);
+      }
+    },
+  );
+});
+
 describe("ObservabilityStack — prod-only paths", () => {
   const template = PROD_TEMPLATE;
 

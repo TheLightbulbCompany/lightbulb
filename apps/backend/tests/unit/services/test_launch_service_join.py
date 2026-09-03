@@ -1,5 +1,7 @@
-"""join_sheet — the explicit sheet join: onboarding gate, phase gate,
-idempotency, and the join-confirmation email."""
+"""join_sheet — the explicit sheet join: phase gate, idempotency, and the
+join-confirmation email. There is deliberately NO onboarding gate; the first
+two tests pin that, because the competition sign-up modal asks while the
+owner's container is still provisioning."""
 
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
@@ -79,12 +81,23 @@ class _Harness:
         return False
 
 
-async def test_join_refuses_when_not_onboarded():
+async def test_join_allows_an_owner_whose_container_is_still_provisioning():
+    """The competition sign-up modal asks DURING provisioning — that is the
+    whole point of it — so an owner whose bootstrap has not delivered must be
+    able to join. This used to raise LaunchRefused("not_onboarded")."""
     with _Harness(onboarding=NOT_ONBOARDED) as h:
-        with pytest.raises(launch_service.LaunchRefused) as exc:
-            await launch_service.join_sheet(AUTH, _sched(), display_name="Acme", public=True)
-    assert exc.value.reason == "not_onboarded"
-    h.join.assert_not_awaited()
+        out = await launch_service.join_sheet(AUTH, _sched(), display_name="Acme", public=True)
+    assert out == {"joined": True}
+    h.join.assert_awaited_once()
+    h.mark_joined.assert_awaited_once()
+
+
+async def test_join_never_reads_onboarding_state():
+    """Not merely permissive — the read is gone. It was a Paperclip round trip
+    on the join path that could only ever refuse a caller."""
+    with _Harness(onboarding=NOT_ONBOARDED) as h:
+        await launch_service.join_sheet(AUTH, _sched(), display_name="Acme", public=True)
+    h.onb.assert_not_awaited()
 
 
 async def test_join_refuses_when_sheet_closed_by_time():
@@ -223,3 +236,108 @@ async def test_leaderboard_filters_ruled_out_rows():
     names = [r["display_name"] for r in board["rows"]]
     assert names == ["In", "Legacy"]  # ruled-out row gone, ranked by delta
     assert board["competing"] == 2 and board["on_board"] == 2
+
+
+# --- rename_display_name -----------------------------------------------------
+# The sheet's display_name is written ONCE by mark_joined
+# (attribute_not_exists(joined_at)), so before this the first name an owner
+# typed was permanent on a public board. That was survivable while joining
+# happened after Friday had named the company; it is not, now that the modal
+# asks during provisioning.
+
+
+async def test_rename_writes_the_sheet_row_and_skips_a_missing_entry():
+    row = dict(ROW, joined_at="t", display_name="Old")
+    p0, p1 = _board_patches(row)
+    with p0, p1:
+        with (
+            patch("core.services.launch_service.launch_waitlist_repo.update_fields", AsyncMock()) as update,
+            patch("core.services.launch_service.launch_entries_repo.get", AsyncMock(return_value=None)),
+            patch("core.services.launch_service.launch_entries_repo.set_display_name", AsyncMock()) as set_name,
+        ):
+            out = await launch_service.rename_display_name(AUTH, _sched(), display_name="  New Co  ")
+    assert out == {"display_name": "New Co"}  # stripped
+    update.assert_awaited_once_with("me@x.com", {"display_name": "New Co"})
+    set_name.assert_not_awaited()  # no board entry to carry it to
+
+
+async def test_rename_also_updates_the_board_entry_when_one_exists():
+    """connect_stripe COPIES the name onto the entry, and the leaderboard reads
+    the copy — a rename that only wrote the sheet row would leave the public
+    board showing the old name forever."""
+    row = dict(ROW, joined_at="t", display_name="Old")
+    p0, p1 = _board_patches(row)
+    with p0, p1:
+        with (
+            patch("core.services.launch_service.launch_waitlist_repo.update_fields", AsyncMock()),
+            patch(
+                "core.services.launch_service.launch_entries_repo.get", AsyncMock(return_value={"owner_id": "user_1"})
+            ),
+            patch("core.services.launch_service.launch_entries_repo.set_display_name", AsyncMock()) as set_name,
+        ):
+            await launch_service.rename_display_name(AUTH, _sched(), display_name="New Co")
+    set_name.assert_awaited_once_with("user_1", "New Co")
+
+
+async def test_rename_refused_for_a_row_that_never_joined():
+    p0, p1 = _board_patches(dict(ROW))  # no joined_at
+    with p0, p1:
+        with pytest.raises(launch_service.LaunchRefused) as exc:
+            await launch_service.rename_display_name(AUTH, _sched(), display_name="New Co")
+    assert exc.value.reason == "not_joined"
+
+
+async def test_rename_survives_the_board_entry_vanishing_mid_write():
+    """The entry can be deleted (admin takedown) between the read and the
+    write. The sheet row is ALREADY renamed by then, so raising would 500 a
+    half-done request and RenameForm would loop the owner on "try again"
+    forever. connect_stripe handles the same race explicitly."""
+    from botocore.exceptions import ClientError
+
+    row = dict(ROW, joined_at="t", display_name="Old")
+    p0, p1 = _board_patches(row)
+    conditional = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
+    with p0, p1:
+        with (
+            patch("core.services.launch_service.launch_waitlist_repo.update_fields", AsyncMock()) as update,
+            patch(
+                "core.services.launch_service.launch_entries_repo.get", AsyncMock(return_value={"owner_id": "user_1"})
+            ),
+            patch(
+                "core.services.launch_service.launch_entries_repo.set_display_name",
+                AsyncMock(side_effect=conditional),
+            ),
+        ):
+            out = await launch_service.rename_display_name(AUTH, _sched(), display_name="New Co")
+    assert out == {"display_name": "New Co"}
+    update.assert_awaited_once_with("me@x.com", {"display_name": "New Co"})
+
+
+async def test_rename_still_raises_a_real_dynamo_error():
+    """Only the vanished-entry condition is swallowed — a throttle or an IAM
+    failure must still surface rather than reporting a rename that half ran."""
+    from botocore.exceptions import ClientError
+
+    row = dict(ROW, joined_at="t", display_name="Old")
+    p0, p1 = _board_patches(row)
+    boom = ClientError({"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem")
+    with p0, p1:
+        with (
+            patch("core.services.launch_service.launch_waitlist_repo.update_fields", AsyncMock()),
+            patch(
+                "core.services.launch_service.launch_entries_repo.get", AsyncMock(return_value={"owner_id": "user_1"})
+            ),
+            patch("core.services.launch_service.launch_entries_repo.set_display_name", AsyncMock(side_effect=boom)),
+        ):
+            with pytest.raises(ClientError):
+                await launch_service.rename_display_name(AUTH, _sched(), display_name="New Co")
+
+
+async def test_rename_refused_once_the_competition_has_ended():
+    """Same gate as the other board actions: the board is frozen at the end."""
+    row = dict(ROW, joined_at="t")
+    p0, p1 = _board_patches(row)
+    with p0, p1:
+        with pytest.raises(launch_service.LaunchRefused) as exc:
+            await launch_service.rename_display_name(AUTH, _sched(-100), display_name="New Co")
+    assert exc.value.reason == "ended"

@@ -21,6 +21,10 @@ export function planLabel(
 ): string | null {
   if (!status) return null;
   if (status === "trial_local") {
+    // Stays SHORT deliberately. This badge shares a 280px sidebar footer row
+    // with the user's name, which already ellipsizes, so a longer label here
+    // squeezes the name away. The free-tier countdown lives on its own line
+    // instead — see FreeTierNote, which is the ONE place that copy exists.
     return opts?.expired ? "Free tier ended" : "Free tier";
   }
   const spaced = status.replace(/_/g, " ");
@@ -44,4 +48,28 @@ export function isFreeTierExpired(
   nowMs: number,
 ): boolean {
   return status === "trial_local" && trialEndSec != null && trialEndSec * 1000 < nowMs;
+}
+
+/**
+ * Whole days left in the free-tier window. Consumed by `FreeTierNote`, which is
+ * the one surface that renders this count — `planLabel` deliberately does NOT
+ * take it (the badge shares a cramped footer row; see above).
+ *
+ * Rounds UP, so a window with six hours to run reads "1 day left" rather than
+ * "0": the badge is a nudge, and telling someone who still has time that they
+ * have none is the one direction worth avoiding. Returns null when there is no
+ * window to describe (not on the free tier, or no `trial_end` — legacy dev
+ * rows have none, and the backend treats a missing stamp as NOT expired).
+ *
+ * Because it rounds up, a 0 is only reachable at exact millisecond equality,
+ * and callers check `isFreeTierExpired` first anyway — so there is no "last
+ * day" case to render, and FreeTierNote deliberately has no branch for one.
+ */
+export function freeTierDaysLeft(
+  status: string | null | undefined,
+  trialEndSec: number | null | undefined,
+  nowMs: number,
+): number | null {
+  if (status !== "trial_local" || trialEndSec == null) return null;
+  return Math.max(0, Math.ceil((trialEndSec * 1000 - nowMs) / 86_400_000));
 }

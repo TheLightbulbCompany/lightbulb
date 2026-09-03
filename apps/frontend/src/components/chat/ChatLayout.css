@@ -753,6 +753,23 @@
   background: var(--cream);
   color: var(--midnight-label);
 }
+/* The free-tier countdown, on its own line under the user row so it gets the
+   full footer width. The .plan-badge above shares a 280px row with a name that
+   already ellipsizes, so a longer label there would squeeze the name away. */
+.free-tier-note {
+  margin-top: 8px;
+  font-size: var(--text-2xs);
+  line-height: 1.4;
+  color: var(--midnight-muted);
+}
+.free-tier-note a {
+  color: var(--midnight-label);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.free-tier-note a:hover {
+  color: var(--midnight);
+}
 .version-text {
   text-align: center;
   font-size: var(--text-2xs);

@@ -51,6 +51,7 @@ const me = (over: Partial<LaunchMe> = {}): LaunchMe => ({
   winner: false,
   compete_eligible: false,
   onboarded: true,
+  display_name: null,
   suggested_display_name: null,
   entry: null,
   ...over,
@@ -75,11 +76,14 @@ function mount(i: LaunchInfo = info()) {
 describe("SheetCard", () => {
   beforeEach(() => { get.mockReset(); post.mockReset(); patch.mockReset(); useLaunchRef.mockReturnValue(null); localStorage.clear(); });
 
-  it("not onboarded: Onboard-first CTA into /chat, no join form", async () => {
+  it("not onboarded: still renders the join form, with no onboard-first wall", async () => {
+    // This page used to answer a brand-new owner with "Onboard first —
+    // Friday's first run has to complete. Then come back and join." Nobody
+    // came back, and the backend no longer refuses an unonboarded join.
     get.mockResolvedValue(me({ onboarded: false }));
     mount();
-    expect(await screen.findByRole("link", { name: /onboard first/i })).toHaveAttribute("href", "/chat");
-    expect(screen.queryByTestId("join-form")).not.toBeInTheDocument();
+    expect(await screen.findByTestId("join-form")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /onboard first/i })).not.toBeInTheDocument();
   });
 
   it("onboarded, open, not joined: renders the join form", async () => {
@@ -199,5 +203,41 @@ describe("SheetCard", () => {
     expect(checkbox).toBeChecked();
     fireEvent.click(checkbox);
     await waitFor(() => expect(patch).toHaveBeenCalledWith("/launch/entry", { public: false }));
+  });
+
+  // --- rename affordance ---------------------------------------------------
+  // Joining now happens during provisioning, before Friday has named the
+  // company, so the typed name is a placeholder far more often than it used to
+  // be. mark_joined writes display_name ONCE, so without a rename it is
+  // permanent on a public leaderboard.
+
+  it("offers a rename while the sheet is open, prefilled with the board name", async () => {
+    get.mockResolvedValue(joined({ display_name: "Northwind Ceramics" }));
+    mount();
+    expect(await screen.findByText("Northwind Ceramics")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /change/i })).toBeInTheDocument();
+  });
+
+  it("still offers it during the competition, when the board is actually public", async () => {
+    // The gap this pins: the rename first shipped inside the `open` branch, so
+    // it disappeared exactly when the leaderboard went live and someone would
+    // most want their name fixed. The backend only refuses `ended`.
+    get.mockResolvedValue(joined({ phase: "competition", display_name: "Northwind Ceramics" }));
+    mount(info({ phase: "competition" }));
+    expect(await screen.findByRole("button", { name: /change/i })).toBeInTheDocument();
+  });
+
+  it("drops the rename once the competition has ended", async () => {
+    get.mockResolvedValue(joined({ phase: "ended", display_name: "Northwind Ceramics" }));
+    mount(info({ phase: "ended" }));
+    await waitFor(() => expect(get).toHaveBeenCalled());
+    expect(screen.queryByRole("button", { name: /change/i })).not.toBeInTheDocument();
+  });
+
+  it("drops the rename for a row the close ruled out", async () => {
+    get.mockResolvedValue(joined({ phase: "competition", compete_eligible: false }));
+    mount(info({ phase: "competition" }));
+    await waitFor(() => expect(get).toHaveBeenCalled());
+    expect(screen.queryByRole("button", { name: /change/i })).not.toBeInTheDocument();
   });
 });

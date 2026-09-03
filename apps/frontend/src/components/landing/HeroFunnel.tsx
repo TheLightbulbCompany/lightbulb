@@ -119,6 +119,14 @@ export function HeroFunnel() {
           Your company gets a name, a working email address, and its first
           three moves — in its own persistent, isolated container.
         </p>
+        {/* The price is the first question every visitor has, and until this
+            line the only answer above the fold was a 64px "$50" further down
+            the page. Free-to-try is the strongest thing we offer and it was
+            invisible: owners were arriving in the product believing they had
+            already been charged. */}
+        <p className="ld-funnel-fine">
+          <strong>Free for 3 days. No credit card.</strong>
+        </p>
         <button
           type="button"
           className="ld-funnel-swap"

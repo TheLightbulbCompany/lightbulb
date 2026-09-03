@@ -3,6 +3,7 @@ import Link from "next/link";
 
 import { Logo } from "@/components/Logo";
 import { SignupIntentCookie } from "@/components/SignupIntentCookie";
+import { SignupPlanPill } from "@/components/SignupPlanPill";
 
 export default function Page() {
   return (
@@ -235,10 +236,14 @@ export default function Page() {
                     <polyline points="12 6 12 12 16 14" />
                   </svg>
                 </div>
-                <div>
-                  <div className="auth-feat-title">Always running</div>
-                  <div className="auth-feat-desc">Works in the background, even when you&#39;re offline.</div>
-                </div>
+                {/* Was "Always running / Works in the background, even when
+                    you're offline." That is a PAID-plan property: a free-tier
+                    container parks when idle, so it promised the one thing the
+                    tier the reader is about to get does not do. Replaced with
+                    the cost line, which this flow never stated anywhere — but
+                    branched, because a TEAM signup gets no free tier at all
+                    (see SignupPlanPill). */}
+                <SignupPlanPill />
               </div>
               <div className="auth-feat" role="listitem">
                 <div className="auth-feat-icon" aria-hidden="true">

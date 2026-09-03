@@ -331,6 +331,34 @@
   color: var(--midnight-muted);
 }
 
+/* The free path. Deliberately at body size, not the 11px uppercase mono of
+   .ld-price-per: the free trial used to be set five times smaller than the
+   price it qualifies, on the same baseline, which is how visitors came away
+   certain it costs $50 just to try. */
+.ld-price-free {
+  margin-top: 14px;
+  max-width: 46ch;
+  font-size: var(--text-ui);
+  line-height: 1.6;
+  color: var(--midnight-muted);
+}
+
+.ld-price-free strong {
+  color: var(--midnight);
+  font-weight: 600;
+}
+
+.ld-price-free a {
+  color: var(--midnight);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--brass);
+}
+
+.ld-price-free a:hover {
+  text-decoration-color: var(--midnight);
+}
+
 .ld-price-grid {
   margin-top: 40px;
   display: grid;
@@ -463,6 +491,16 @@
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--midnight);
+  margin-bottom: 6px;
+}
+
+/* What the button below actually does. These three CTAs carry a ?provider=
+   that skips the free tier and opens Stripe Checkout, so the card has to say
+   so — otherwise the free line above this grid reads as a promise the buttons
+   break. */
+.ld-pc-charge {
+  font-size: var(--text-caption);
+  color: var(--midnight-muted);
   margin-bottom: 20px;
 }
 

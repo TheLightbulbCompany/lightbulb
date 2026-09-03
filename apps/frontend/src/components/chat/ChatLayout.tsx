@@ -15,6 +15,7 @@ import { HealthIndicator } from "@/components/chat/HealthIndicator";
 import { TrialBanner } from "@/components/chat/TrialBanner";
 import { OutOfCreditsBanner } from "@/components/chat/OutOfCreditsBanner";
 import { LaunchJoinBanner } from "@/components/chat/LaunchJoinBanner";
+import { LaunchJoinModal } from "@/components/chat/LaunchJoinModal";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { useAgents, type Agent } from "@/hooks/useAgents";
 import { useBilling } from "@/hooks/useBilling";
@@ -27,6 +28,7 @@ import { AgentCreateDialog, AgentRenameDialog, AgentDeleteDialog, SessionDeleteD
 import { AgentRoster } from "@/components/agents/AgentRoster";
 import { useRosterEntries } from "@/components/agents/useRosterEntries";
 import { planLabel, isFreeTierExpired } from "@/lib/planLabel";
+import { FreeTierNote } from "@/components/chat/FreeTierNote";
 import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { NodeStatusPill } from "@/components/desktop/NodeStatusPill";
 import { DesktopUpdater } from "@/components/desktop/DesktopUpdater";
@@ -389,6 +391,7 @@ export function ChatLayout({
                 <span className="plan-badge">{planLabel(subscriptionStatus, { expired: isTrialExpired })}</span>
               )}
             </div>
+            <FreeTierNote />
             <DesktopUpdater version="0.1" />
           </div>
         </div>
@@ -491,6 +494,7 @@ export function ChatLayout({
             <TrialBanner />
             <OutOfCreditsBanner />
             <LaunchJoinBanner />
+            <LaunchJoinModal />
             {showSubscriptionSuccess && (
               <div className="subscription-banner">
                 <CheckCircle size={16} />

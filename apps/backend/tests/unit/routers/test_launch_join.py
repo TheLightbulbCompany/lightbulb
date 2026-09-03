@@ -93,3 +93,29 @@ async def test_enter_route_is_gone(configured, async_client):
         "/api/v1/launch/enter", json={"display_name": "Ada", "stripe_key": "rk_test_" + "x" * 20, "public": True}
     )
     assert r.status_code in (404, 405)
+
+
+# --- PATCH /display-name ----------------------------------------------------
+
+
+@patch("routers.launch.launch_service.rename_display_name", AsyncMock(return_value={"display_name": "New Co"}))
+async def test_rename_ok(configured, async_client):
+    r = await async_client.patch("/api/v1/launch/display-name", json={"display_name": "New Co"})
+    assert r.status_code == 200 and r.json() == {"display_name": "New Co"}
+
+
+@pytest.mark.parametrize("name", ["", " ", "a", "   x   "])
+async def test_rename_rejects_names_join_would_have_rejected(configured, async_client, name):
+    """Same bounds as JoinRequest, strip-before-validate — otherwise a rename
+    is a way to put a name on the public board that joining could not."""
+    r = await async_client.patch("/api/v1/launch/display-name", json={"display_name": name})
+    assert r.status_code == 422
+
+
+@patch(
+    "routers.launch.launch_service.rename_display_name",
+    AsyncMock(side_effect=launch_service.LaunchRefused("not_joined")),
+)
+async def test_rename_refusal_is_a_400_with_the_reason(configured, async_client):
+    r = await async_client.patch("/api/v1/launch/display-name", json={"display_name": "New Co"})
+    assert r.status_code == 400 and r.json()["detail"] == "not_joined"

@@ -118,6 +118,9 @@ vi.mock("@/components/chat/OutOfCreditsBanner", () => ({
 vi.mock("@/components/chat/LaunchJoinBanner", () => ({
   LaunchJoinBanner: () => <div data-testid="launch-join-banner" />,
 }));
+vi.mock("@/components/chat/LaunchJoinModal", () => ({
+  LaunchJoinModal: () => null,
+}));
 vi.mock("@/components/chat/FileViewer", () => ({
   FileViewer: () => null,
 }));

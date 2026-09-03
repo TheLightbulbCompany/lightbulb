@@ -64,5 +64,5 @@ export const ARTICLES: Article[] = [
   { id: "channels", tag: "Reach", title: "Channels",
     body: (<><p className={P}>Connect Slack, Discord or Telegram to talk to your agents from the apps you already use. Set one up from an agent&rsquo;s <b>Channels</b> tab; each agent can have its own bot.</p></>) },
   { id: "billing-providers", tag: "Reference", title: "Billing & AI providers",
-    body: (<><p className={P}>New accounts start on the <b>free tier</b>: 3 days, no card, with $3 of Claude a day. When you&rsquo;re ready to keep going there are three ways to power inference: managed <b>Claude credits</b>, your own <b>ChatGPT</b> account, or your own <b>API key</b>. Manage all of it in <b>Settings → Billing</b>.</p></>) },
+    body: (<><p className={P}>New accounts start on the <b>free tier</b>: 3 days, no card, with up to $3 of Claude a day. When you&rsquo;re ready to keep going there are three ways to power inference: managed <b>Claude credits</b>, your own <b>ChatGPT</b> account, or your own <b>API key</b>. Manage all of it in <b>Settings → Billing</b>.</p></>) },
 ];

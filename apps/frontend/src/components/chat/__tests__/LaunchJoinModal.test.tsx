@@ -261,4 +261,16 @@ describe("LaunchJoinModal", () => {
     expect(await screen.findByRole("alert")).toBeInTheDocument();
     expect(localStorage.getItem("launch_sheet_modal_seen:user_1")).toBeNull();
   });
+
+  it("trusts the authenticated phase over a stale public one", async () => {
+    // useLaunchInfo fetches GET /launch once on mount and never revalidates,
+    // so a tab open since before the sheet closed still reports "open".
+    // /launch/me carries a fresher phase from a read this component already
+    // makes — offering a join that could only 409 is worse than staying shut.
+    launchInfo.mockReturnValue(info({ phase: "open" }));
+    get.mockResolvedValue(me({ phase: "closed" }));
+    const { container: dom } = mount();
+    await waitFor(() => expect(get).toHaveBeenCalled());
+    await waitFor(() => expect(dom).toBeEmptyDOMElement());
+  });
 });

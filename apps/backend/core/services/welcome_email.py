@@ -32,8 +32,8 @@ def _render_welcome_html(first_name: str | None, base_url: str) -> str:
   </p>
   <p>
     <strong>It's free for your first 3 days</strong> — no credit card, nothing
-    to cancel. You get $3 of Claude a day to try the whole thing, and your
-    workspace sleeps when you're not using it.
+    to cancel. You get up to $3 of Claude a day to try the whole thing, and
+    your workspace sleeps when you're not using it.
   </p>
   <p>
     Start with <strong>Friday</strong>. She's your orchestrator: give her a goal
@@ -83,8 +83,8 @@ You now have your own private AI team, running in a container that belongs
 only to you. Nothing is shared with anyone else.
 
 It's free for your first 3 days — no credit card, nothing to cancel. You get
-$3 of Claude a day to try the whole thing, and your workspace sleeps when
-you're not using it.
+up to $3 of Claude a day to try the whole thing, and your workspace sleeps
+when you're not using it.
 
 Start with Friday. She's your orchestrator: give her a goal in plain English
 and she'll break it into work, pull in the right teammates, and report back.

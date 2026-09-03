@@ -51,15 +51,19 @@ export function isFreeTierExpired(
 }
 
 /**
- * Whole days left in the free-tier window, for `planLabel`'s `daysLeft`.
+ * Whole days left in the free-tier window. Consumed by `FreeTierNote`, which is
+ * the one surface that renders this count — `planLabel` deliberately does NOT
+ * take it (the badge shares a cramped footer row; see above).
  *
  * Rounds UP, so a window with six hours to run reads "1 day left" rather than
  * "0": the badge is a nudge, and telling someone who still has time that they
  * have none is the one direction worth avoiding. Returns null when there is no
  * window to describe (not on the free tier, or no `trial_end` — legacy dev
- * rows have none, and the backend treats a missing stamp as NOT expired), and
- * 0 once elapsed, which `planLabel` renders as "last day". Callers should pass
- * `expired` alongside so a truly elapsed window wins.
+ * rows have none, and the backend treats a missing stamp as NOT expired).
+ *
+ * Because it rounds up, a 0 is only reachable at exact millisecond equality,
+ * and callers check `isFreeTierExpired` first anyway — so there is no "last
+ * day" case to render, and FreeTierNote deliberately has no branch for one.
  */
 export function freeTierDaysLeft(
   status: string | null | undefined,

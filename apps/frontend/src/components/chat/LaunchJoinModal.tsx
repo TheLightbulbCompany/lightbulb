@@ -148,7 +148,19 @@ export function LaunchJoinModal() {
     persistSeen();
   }, [persistSeen]);
 
-  const isOpen = !!(eligible && user && seen === false && me && (!me.joined || justJoined));
+  // `me.phase` as well as `info.phase`: `useLaunchInfo` fetches GET /launch
+  // ONCE on mount and never revalidates, so a tab open since before the sheet
+  // closed still holds "open". `/launch/me` carries its own, fresher phase from
+  // the same authenticated read this component already makes — so prefer it and
+  // stop offering a join that could only 409.
+  const isOpen = !!(
+    eligible &&
+    user &&
+    seen === false &&
+    me &&
+    me.phase === "open" &&
+    (!me.joined || justJoined)
+  );
 
   React.useEffect(() => {
     if (!isOpen || shownRef.current) return;

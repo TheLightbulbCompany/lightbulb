@@ -15,6 +15,8 @@ The gate flips per environment as each tag is promoted, so during the rollout
 one environment is on each side of it. These tests pin both.
 """
 
+import json
+
 import pytest
 
 from core.containers.config import build_openclaw_config_dict
@@ -305,6 +307,52 @@ def test_81_shape_keys_the_unprovisioned_fallback_agent_too():
     assert list(agents["entries"]) == ["main"]
     assert "id" not in agents["entries"]["main"]
     assert config_schema.schema_errors(cfg) == []
+
+
+def test_81_shape_names_the_system_agent_owner_explicitly():
+    """The marker alone is not enough on a RUNNING 8.1 container: boot doctor
+    turns it into agents.defaults.systemAgent.agentId, but a config regenerate
+    without a restart does not, and a multi-agent roster with no explicit owner
+    fails the gateway's own health RPC (AgentSelectionRequiredError). The
+    generator names the owner itself, and it is the same agent the marker is on."""
+    cfg = build_openclaw_config_dict(**_COMMON, deployed_tag="2026.8.1-isol8.1-1c67107", paperclip_agents=_ROSTER)
+    assert cfg["agents"]["defaults"]["systemAgent"] == {"agentId": _FRIDAY}
+    assert config_schema.schema_errors(cfg) == []
+
+    # No CEO -> the first agent owns ambient work, marker and owner agree.
+    no_ceo = [{"id": _ATLAS, "name": "Atlas", "role": "general"}, {"id": _FRIDAY, "name": "Friday", "role": "general"}]
+    cfg = build_openclaw_config_dict(**_COMMON, deployed_tag="2026.8.1-isol8.1-1c67107", paperclip_agents=no_ceo)
+    assert cfg["agents"]["defaults"]["systemAgent"] == {"agentId": _ATLAS}
+    assert cfg["agents"]["entries"][_ATLAS]["default"] is True
+
+    # Unprovisioned fallback: the legacy single entry owns itself.
+    cfg = build_openclaw_config_dict(**_COMMON, deployed_tag="2026.8.1-isol8.1-1c67107")
+    assert cfg["agents"]["defaults"]["systemAgent"] == {"agentId": "main"}
+
+
+def test_81_roster_lists_the_ceo_first():
+    """After the loader strips the marker, agents.list reports the FIRST entry
+    as defaultId (the explicit-ownership fallback). The founder's roster listed
+    Tally before Friday, and every "Ask Friday" exit opened Tally. Order is the
+    only signal that resolver reads, so the CEO goes first; the rest keep
+    Paperclip's order."""
+    tally = "11111111-1111-1111-1111-111111111111"
+    pulse = "22222222-2222-2222-2222-222222222222"
+    roster = [
+        {"id": tally, "name": "Tally", "role": "general"},
+        {"id": pulse, "name": "Pulse", "role": "general"},
+        {"id": _FRIDAY, "name": "Friday", "role": "ceo"},
+    ]
+    cfg = build_openclaw_config_dict(**_COMMON, deployed_tag="2026.8.1-isol8.1-1c67107", paperclip_agents=roster)
+    assert list(cfg["agents"]["entries"]) == [_FRIDAY, tally, pulse]
+    # json.dumps preserves dict order, so the file the gateway reads does too.
+    assert list(json.loads(json.dumps(cfg))["agents"]["entries"]) == [_FRIDAY, tally, pulse]
+
+
+def test_72_shape_has_no_system_agent_key():
+    """7.2's agents.defaults is .strict(); the key would fail the whole file."""
+    cfg = build_openclaw_config_dict(**_COMMON, deployed_tag="2026.7.2-isol8.8-8f700f0", paperclip_agents=_ROSTER)
+    assert "systemAgent" not in cfg["agents"]["defaults"]
 
 
 def test_72_shape_still_emits_the_agents_list_array():

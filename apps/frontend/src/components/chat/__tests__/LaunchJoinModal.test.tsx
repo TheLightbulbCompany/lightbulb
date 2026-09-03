@@ -273,4 +273,36 @@ describe("LaunchJoinModal", () => {
     await waitFor(() => expect(get).toHaveBeenCalled());
     await waitFor(() => expect(dom).toBeEmptyDOMElement());
   });
+
+  it("prefills the business name from the owner's real company name", async () => {
+    // The backend only sends a suggestion for an ONBOARDED, non-org, unjoined
+    // caller — i.e. only once Friday has renamed the company to something real
+    // — so prefilling can't reintroduce the "person's name on a business board"
+    // problem. Found live on dev: /launch/me returned "Toolchain" and this
+    // dialog was still making the owner retype it.
+    get.mockResolvedValue(me({ onboarded: true, suggested_display_name: "Toolchain" }));
+    mount();
+    expect(await screen.findByLabelText(/business name/i)).toHaveValue("Toolchain");
+    expect(screen.getByRole("button", { name: /join the sheet/i })).toBeEnabled();
+  });
+
+  it("lets a typed edit beat the prefill, and posts what was typed", async () => {
+    get.mockResolvedValue(me({ onboarded: true, suggested_display_name: "Toolchain" }));
+    post.mockResolvedValue(me({ joined: true, position: 9, effective_position: 9 }));
+    mount();
+    const input = await screen.findByLabelText(/business name/i);
+    fireEvent.change(input, { target: { value: "Northwind Ceramics" } });
+    fireEvent.click(screen.getByRole("button", { name: /join the sheet/i }));
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith("/launch/join", { display_name: "Northwind Ceramics", public: true }),
+    );
+  });
+
+  it("falls back to the placeholder when there is no suggestion to trust", async () => {
+    get.mockResolvedValue(me({ onboarded: false, suggested_display_name: null }));
+    mount();
+    const input = await screen.findByLabelText(/business name/i);
+    expect(input).toHaveValue("");
+    expect(input).toHaveAttribute("placeholder", "Your company name");
+  });
 });

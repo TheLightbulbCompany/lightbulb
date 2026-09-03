@@ -101,7 +101,19 @@ export function LaunchJoinModal() {
   );
 
   const [seen, setSeen] = React.useState<boolean | null>(null);
-  const [name, setName] = React.useState("");
+  // `null` means "untouched, use the prefill" — so the field picks up
+  // `suggested_display_name` once `me` resolves (it starts undefined on the
+  // first render) WITHOUT an effect, and a real edit still wins. Same shape the
+  // banner's join form used before this replaced it.
+  //
+  // Safe to prefill because the backend only populates the suggestion for an
+  // ONBOARDED, non-org, unjoined caller (`launch_service.me`) — i.e. only once
+  // Friday has renamed the company to something real. Before that it is null
+  // and we fall through to the placeholder, which is exactly the "don't propose
+  // a person's name for a business board" rule. Verified live on dev: an
+  // onboarded owner's /launch/me returns "Toolchain", and this dialog was
+  // making them retype it.
+  const [name, setName] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [copied, setCopied] = React.useState(false);
@@ -168,8 +180,11 @@ export function LaunchJoinModal() {
     capture("launch_modal_shown", { onboarded: !!me?.onboarded });
   }, [isOpen, me?.onboarded]);
 
+  const prefill = me?.suggested_display_name ?? "";
+  const typed = name ?? prefill;
+
   const join = async () => {
-    const displayName = name.trim();
+    const displayName = typed.trim();
     if (displayName.length < 2 || busy) return;
     setBusy(true);
     setError(null);
@@ -277,7 +292,7 @@ export function LaunchJoinModal() {
           >
             Not now
           </Button>
-          <Button type="button" onClick={join} disabled={busy || name.trim().length < 2}>
+          <Button type="button" onClick={join} disabled={busy || typed.trim().length < 2}>
             {busy ? "Joining…" : "Join the sheet"}
           </Button>
         </>
@@ -289,7 +304,7 @@ export function LaunchJoinModal() {
         </span>
         <input
           id="launch-modal-name"
-          value={name}
+          value={typed}
           maxLength={40}
           placeholder="Your company name"
           autoComplete="organization"

@@ -96,3 +96,41 @@ async def test_delete_nonexistent_no_error(dynamodb_table):
 
     # Should not raise
     await user_repo.delete("ghost_user")
+
+
+@pytest.mark.asyncio
+async def test_backfill_email_fills_a_row_that_has_none(dynamodb_table):
+    from core.repositories import user_repo
+
+    await user_repo.put("user_nomail")
+    await user_repo.backfill_email("user_nomail", "them@example.com")
+
+    item = await user_repo.get("user_nomail")
+    assert item["email"] == "them@example.com"
+
+
+@pytest.mark.asyncio
+async def test_backfill_email_never_overwrites_or_clobbers(dynamodb_table):
+    """Conditional on ``attribute_not_exists(email)``, and an UpdateItem rather
+    than ``put`` — a whole-item overwrite here would drop ``push_tokens``."""
+    from core.repositories import user_repo
+
+    dynamodb_table.put_item(
+        Item={"user_id": "user_has", "email": "real@example.com", "push_tokens": {"dev1": {"token": "t"}}}
+    )
+
+    await user_repo.backfill_email("user_has", "wrong@example.com")
+
+    item = await user_repo.get("user_has")
+    assert item["email"] == "real@example.com"
+    assert item["push_tokens"] == {"dev1": {"token": "t"}}
+
+
+@pytest.mark.asyncio
+async def test_backfill_email_is_a_noop_without_an_email(dynamodb_table):
+    from core.repositories import user_repo
+
+    await user_repo.put("user_nomail2")
+    await user_repo.backfill_email("user_nomail2", None)
+
+    assert "email" not in (await user_repo.get("user_nomail2"))

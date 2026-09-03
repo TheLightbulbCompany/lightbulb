@@ -56,6 +56,65 @@ class TestSyncUser:
         mock_billing_repo.create_if_not_exists.assert_not_called()
 
     @pytest.mark.asyncio
+    @patch("routers.users.user_repo")
+    async def test_sync_persists_the_jwt_email_on_create(self, mock_repo, mock_auth_context, async_client):
+        """The users-table email is what ``launch_referral._email_for_owner``
+        reads from inside a Stripe webhook, where no JWT exists. Sync must
+        write it rather than leaving the Clerk webhook as its only source."""
+        mock_auth_context.email = "test@example.com"
+        mock_repo.get = AsyncMock(return_value=None)
+        mock_repo.put = AsyncMock(return_value=None)
+
+        response = await async_client.post("/api/v1/users/sync")
+
+        assert response.status_code == 200
+        mock_repo.put.assert_awaited_once_with("user_test_123", "test@example.com")
+
+    @pytest.mark.asyncio
+    @patch("routers.users.user_repo")
+    async def test_sync_heals_a_row_with_no_email(self, mock_repo, mock_auth_context, async_client):
+        """Rows created while the Clerk webhook pointed at the retired domain
+        have no email at all. The next sync fills it in."""
+        mock_auth_context.email = "test@example.com"
+        mock_repo.get = AsyncMock(return_value={"user_id": "user_test_123", "created_at": "2026-01-01T00:00:00Z"})
+        mock_repo.backfill_email = AsyncMock(return_value=None)
+
+        response = await async_client.post("/api/v1/users/sync")
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "exists"
+        mock_repo.backfill_email.assert_awaited_once_with("user_test_123", "test@example.com")
+
+    @pytest.mark.asyncio
+    @patch("routers.users.user_repo")
+    async def test_sync_leaves_an_existing_email_alone(self, mock_repo, async_client):
+        """A row that already carries an email is never rewritten — ``put`` is
+        a whole-item overwrite and the backfill is conditional anyway."""
+        mock_repo.get = AsyncMock(
+            return_value={"user_id": "user_test_123", "email": "real@example.com", "push_tokens": {"d": {}}}
+        )
+        mock_repo.backfill_email = AsyncMock(return_value=None)
+        mock_repo.put = AsyncMock(return_value=None)
+
+        response = await async_client.post("/api/v1/users/sync")
+
+        assert response.status_code == 200
+        mock_repo.backfill_email.assert_not_awaited()
+        mock_repo.put.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("routers.users.user_repo")
+    async def test_sync_survives_a_failed_backfill(self, mock_repo, async_client):
+        """The heal is best-effort: a DDB blip must not fail the sync."""
+        mock_repo.get = AsyncMock(return_value={"user_id": "user_test_123"})
+        mock_repo.backfill_email = AsyncMock(side_effect=RuntimeError("ddb down"))
+
+        response = await async_client.post("/api/v1/users/sync")
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "exists"
+
+    @pytest.mark.asyncio
     async def test_sync_requires_authentication(self, unauthenticated_async_client):
         """Sync requires authentication."""
         response = await unauthenticated_async_client.post("/api/v1/users/sync")

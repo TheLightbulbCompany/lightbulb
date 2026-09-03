@@ -12,8 +12,15 @@ import {
   identify,
   init as initAnalytics,
   pageview,
+  register,
   reset,
 } from "@/lib/analytics";
+import {
+  browserContext,
+  currentSignupStep,
+  setSignupStep,
+  signupFlowId,
+} from "@/lib/signupFlow";
 
 const POSTHOG_KEY = process.env.NEXT_PUBLIC_POSTHOG_KEY;
 // Route PostHog through our own domain via the Next rewrite in
@@ -139,6 +146,47 @@ function PostHogInit() {
       // behave the same as prod.
       disable_session_recording: false,
     });
+    // Super properties: merged by PostHog into every subsequent event, so
+    // `signup_flow_id` reaches call sites that know nothing about it, and
+    // the browser context names in-app webviews that `$browser` reports
+    // indistinguishably as "Mobile Safari". Must come after init() —
+    // register() no-ops until the SDK has loaded.
+    register({ signup_flow_id: signupFlowId(), ...browserContext() });
+  }, []);
+  return null;
+}
+
+/**
+ * `signup_exit` — the user left while still inside the signup/onboarding
+ * flow, tagged with the step they left FROM. This is the event that turns
+ * "people drop off somewhere" into "people drop off HERE".
+ *
+ * `pagehide`, not `beforeunload`: mobile Safari fires `beforeunload`
+ * unreliably or not at all (it is skipped entirely when the page goes
+ * into the back/forward cache, which is the normal way an iOS user leaves
+ * a tab), and the in-app-webview cohort we are chasing is all mobile
+ * Safari underneath. `sendBeacon` because an XHR started during page
+ * dismissal is cancelled with the document.
+ *
+ * Fires at most once per step per page session: a bfcache restore/freeze
+ * cycle can dispatch `pagehide` repeatedly from the same step, and a
+ * drop-off count that double-counts one user is worse than useless.
+ */
+function SignupExitTracker() {
+  const firedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const onHide = () => {
+      const step = currentSignupStep();
+      if (!step || firedRef.current.has(step)) return;
+      firedRef.current.add(step);
+      capture(
+        "signup_exit",
+        { step, route: window.location.pathname },
+        { transport: "sendBeacon" },
+      );
+    };
+    window.addEventListener("pagehide", onHide);
+    return () => window.removeEventListener("pagehide", onHide);
   }, []);
   return null;
 }
@@ -156,6 +204,17 @@ function PostHogPageview() {
     pageview(url);
     if (pathname === "/") {
       capture("landing_viewed", { path: url });
+    }
+
+    // Which step `signup_exit` reports. /chat and /onboarding are owned by
+    // ProvisioningStepper (it knows the provisioning phase); every route
+    // outside the flow clears it so a later exit reports nothing.
+    if (pathname?.startsWith("/sign-up")) {
+      setSignupStep("sign_up");
+    } else if (pathname?.startsWith("/sign-in")) {
+      setSignupStep("sign_in");
+    } else if (!pathname?.startsWith("/chat") && !pathname?.startsWith("/onboarding")) {
+      setSignupStep(null);
     }
 
     if (!isSignedIn && pathname?.startsWith("/sign-up")) {
@@ -197,6 +256,10 @@ function PostHogIdentify() {
         email: user?.primaryEmailAddress?.emailAddress,
         firstName: user?.firstName,
         lastName: user?.lastName,
+        // Also a PERSON property, not just a super property: it is the
+        // fallback join key for server-side events (trial_started) if the
+        // `?flow=` hand-off on the status poll never lands.
+        signup_flow_id: signupFlowId(),
       });
       identifiedRef.current = userId;
 
@@ -222,6 +285,9 @@ function PostHogIdentify() {
     } else if (!isSignedIn && identifiedRef.current) {
       reset();
       identifiedRef.current = null;
+      // reset() clears super properties too — re-register so events after a
+      // sign-out (a second signup on the same browser) still carry a flow id.
+      register({ signup_flow_id: signupFlowId(), ...browserContext() });
     }
   }, [isSignedIn, userId, user]);
 
@@ -275,6 +341,7 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
         <PostHogPageview />
       </Suspense>
       <PostHogIdentify />
+      <SignupExitTracker />
       <PostHogErrorForwarder />
       {children}
     </AnalyticsProvider>

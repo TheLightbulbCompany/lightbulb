@@ -192,6 +192,7 @@ export function Counters({ seg, data }: { seg: GrowthSegment; data: GrowthData }
 
 const FUNNEL_EVENTS = [
   "landing_viewed",
+  "signup_cta_clicked",
   "signup_started",
   "trial_started",
   "first_run_brief_submitted",

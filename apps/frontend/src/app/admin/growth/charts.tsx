@@ -185,6 +185,15 @@ export function KpiStrip({ seg }: { seg: GrowthSegment }) {
 // Charts grid
 // ---------------------------------------------------------------------------
 
+// Four lines, deliberately: the fifth funnel step (`signup_cta_clicked`)
+// lives in the weekly table in sections.tsx instead, because the only
+// unused series token here is CHART_4 and CHART_4 means "alert" — a series
+// that is not an alert never takes it (see the palette note above).
+//
+// NOTE the "signup started" line STEPS DOWN around 2026-09-03. Nothing
+// broke: until then CTA clicks and real Clerk completions shared this one
+// event name, and clicks were ~4x completions. Clicks are now
+// `signup_cta_clicked`; this line finally means accounts created.
 const FUNNEL_DAILY_EVENTS = ["landing_viewed", "signup_started", "trial_started", "trial_converted"] as const;
 const FUNNEL_DAILY_CONFIG: ChartConfig = {
   landing_viewed: { label: "landing viewed", color: CHART_5 },

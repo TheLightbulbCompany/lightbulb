@@ -114,7 +114,7 @@ group by week, kind order by week, kind limit 500
 HOGQL_FUNNEL = f"""
 select toStartOfWeek(timestamp, 1) as week, event, uniq(distinct_id) as owners
 from events
-where event in ('landing_viewed', 'signup_started', 'trial_started', 'first_run_brief_submitted',
+where event in ('landing_viewed', 'signup_cta_clicked', 'signup_started', 'trial_started', 'first_run_brief_submitted',
                 'trial_first_agent_response', 'chat_completed', 'trial_converted',
                 'subscription_activated', 'subscription_cancelled', 'automation_armed')
   and timestamp > now() - interval {WINDOW_WEEKS + 1} week
@@ -125,18 +125,22 @@ group by week, event order by week, event limit 500
 HOGQL_FUNNEL_DAILY = f"""
 select toDate(timestamp) as day, event, uniq(distinct_id) as owners
 from events
-where event in ('landing_viewed', 'signup_started', 'trial_started', 'first_run_brief_submitted',
+where event in ('landing_viewed', 'signup_cta_clicked', 'signup_started', 'trial_started', 'first_run_brief_submitted',
                 'trial_first_agent_response', 'chat_completed', 'trial_converted',
                 'subscription_activated', 'subscription_cancelled', 'automation_armed')
   and timestamp > now() - interval {WINDOW_WEEKS + 1} week
 group by day, event order by day, event limit 2000
 """
 
-# Organic / referral share of signups (SEO plan §6). person_profiles is
-# identified_only and signup_started fires pre-identify, so
-# person.properties.$initial_* is empty here — read the EVENT's own
-# first-touch properties instead (stamped on every capture by the frontend's
-# attributionProperties(), src/lib/analytics.ts).
+# Organic / referral share of signups (SEO plan §6). Reads the EVENT's own
+# first-touch properties (stamped on every capture by the frontend's
+# attributionProperties(), src/lib/analytics.ts) rather than
+# person.properties.$initial_*, which is empty under identified_only
+# profiles for anything captured before the person exists.
+#
+# `signup_started` now means ONLY "Clerk account created" — CTA clicks moved
+# to `signup_cta_clicked`. So this is genuinely signups-by-source; switch the
+# event if you want clicks-by-source (a much larger, much less useful number).
 HOGQL_SIGNUP_SOURCES = f"""
 select coalesce(nullIf(properties.first_touch_utm_source, ''),
                 nullIf(properties.first_touch_referring_domain, ''), 'direct') as source,

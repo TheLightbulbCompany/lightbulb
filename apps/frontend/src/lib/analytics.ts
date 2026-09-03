@@ -123,7 +123,6 @@ export type AnalyticsEvent =
   | "get_started_opened"
   | "get_started_step_clicked"
   // Landing
-  | "landing_cta_clicked"
   | "landing_download_clicked"
   | "landing_pricing_card_clicked"
   | "landing_viewed"
@@ -148,6 +147,8 @@ export type AnalyticsEvent =
   | "trial_started"
   | "workspace_type_selected"
   // Signup
+  | "signup_cta_clicked"
+  | "signup_exit"
   | "signup_started"
   // Skills
   | "skill_api_key_saved"
@@ -355,10 +356,26 @@ export function init(
 export function capture(
   event: AnalyticsEvent,
   properties?: Record<string, unknown>,
+  options?: Parameters<typeof posthog.capture>[2],
 ): void {
   if (typeof window === "undefined") return;
   if (!isLoaded()) return;
-  posthog.capture(event, { ...attributionProperties(), ...properties });
+  posthog.capture(event, { ...attributionProperties(), ...properties }, options);
+}
+
+/**
+ * Register super properties — merged into EVERY subsequent event by
+ * PostHog itself. Used for ``signup_flow_id`` and the browser-context
+ * pair, which have to ride events emitted from call sites that have no
+ * business knowing about either.
+ *
+ * Note ``reset()`` clears super properties, so anything registered here
+ * must be re-registered after a sign-out (see PostHogProvider).
+ */
+export function register(properties: Record<string, unknown>): void {
+  if (typeof window === "undefined") return;
+  if (!isLoaded()) return;
+  posthog.register(properties);
 }
 
 /**

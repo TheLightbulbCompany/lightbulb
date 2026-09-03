@@ -234,6 +234,18 @@ async def container_status(
             "param entirely."
         ),
     ),
+    flow: str | None = Query(
+        default=None,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_-]+$",
+        description=(
+            "Client-minted signup_flow_id, joining this owner's server-side "
+            "trial events back to the anonymous half of their signup journey "
+            "(apps/frontend/src/lib/signupFlow.ts). Opaque and untrusted — it "
+            "only ever lands in a PostHog property, never in a query or a "
+            "log line that grants anything. Absent for older clients."
+        ),
+    ),
 ):
     owner_id = resolve_owner_id(auth)
     # Opportunistic seat reconcile for org owners: converges the Stripe seat
@@ -280,7 +292,7 @@ async def container_status(
         # personal signup on the ProviderPicker instead of provisioning the trial container.
         # Idempotent conditional put; no-op for orgs and for owners who already
         # have a row.
-        await ensure_personal_trial_default(auth, owner_id)
+        await ensure_personal_trial_default(auth, owner_id, signup_flow_id=flow)
         gate = await evaluate_provision_gate(
             owner_id=owner_id,
             is_admin=is_admin,

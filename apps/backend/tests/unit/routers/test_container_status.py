@@ -686,8 +686,11 @@ class TestContainerStatusGate:
 
         order: list[str] = []
 
-        async def rec_trial(auth, owner_id):
+        seen_flow: list[str | None] = []
+
+        async def rec_trial(auth, owner_id, *, signup_flow_id=None):
             order.append("trial")
+            seen_flow.append(signup_flow_id)
 
         async def rec_gate(**kwargs):
             order.append("gate")
@@ -704,9 +707,13 @@ class TestContainerStatusGate:
             patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
             patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
         ):
-            result = await container_status(_personal_auth())
+            result = await container_status(_personal_auth(), flow="flow-abc")
 
         assert order == ["trial", "gate"], f"trial must be created before the gate, got {order}"
+        # The client's signup_flow_id must reach the one function that emits
+        # the server-side trial events, or the funnel cannot be joined back
+        # to the anonymous half of the journey.
+        assert seen_flow == ["flow-abc"]
         assert result["container_status"] == "provisioning"
         assert result["runtime_phase"] == "provisioning"
 

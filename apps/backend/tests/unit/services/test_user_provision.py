@@ -1,11 +1,13 @@
 """Unit tests for the unified ensure_user_ready helper."""
 
 import asyncio
+import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from core.auth import AuthContext
+from core.services import user_provision
 from core.services.provision_gate import has_always_on_entitlement
 from core.services.user_provision import (
     _ensure_paperclip_for_member,
@@ -1370,9 +1372,13 @@ async def test_org_admin_join_existing_company_creates_no_trial(_mock_create_tri
 
 
 # ---------------------------------------------------------------------------
-# trial_started telemetry (Task 16) — fires ONLY on the call that actually
+# Trial funnel telemetry. `trial_started` fires ONLY on the call that actually
 # creates the row, never on a later idempotent no-op (each ~3s poll calls
-# ensure_personal_trial_default again).
+# ensure_personal_trial_default again), and carries a DETERMINISTIC event uuid
+# so PostHog drops a duplicate the `created` flag cannot see. It is bracketed
+# by `trial_start_requested` (an attempt began) and `trial_start_failed` (the
+# attempt was refused or the write blew up), which is what makes a stalled
+# signup visible at all.
 # ---------------------------------------------------------------------------
 
 
@@ -1397,12 +1403,23 @@ async def test_ensure_personal_trial_default_fires_trial_started_on_create(
     _fresh_personal_signup,
 ):
     """billing_repo.create_trial_local_if_absent returning True (this call
-    actually wrote the row) fires trial_started keyed on the owner id."""
+    actually wrote the row) fires trial_started keyed on the owner id, after
+    the trial_start_requested that opened the attempt."""
     _mock_create_trial_local_if_absent.return_value = True
     with patch("core.services.user_provision.capture_product_event") as mock_capture:
-        await ensure_personal_trial_default(_personal_auth("user_p", "p@example.com"), "user_p")
+        await ensure_personal_trial_default(
+            _personal_auth("user_p", "p@example.com"), "user_p", signup_flow_id="flow-abc"
+        )
 
-    mock_capture.assert_called_once_with(distinct_id="user_p", event="trial_started")
+    events = [c.kwargs["event"] for c in mock_capture.call_args_list]
+    assert events == ["trial_start_requested", "trial_started"]
+    started = mock_capture.call_args_list[-1].kwargs
+    assert started["distinct_id"] == "user_p"
+    assert started["properties"] == {"signup_flow_id": "flow-abc", "owner_type": "personal"}
+    # Deterministic: the SAME owner must always produce the SAME uuid, or the
+    # dedup it exists for does nothing.
+    assert started["event_uuid"] == str(uuid.uuid5(user_provision._TRIAL_STARTED_NAMESPACE, "user_p"))
+    assert started["event_uuid"] != str(uuid.uuid5(user_provision._TRIAL_STARTED_NAMESPACE, "user_other"))
 
 
 @pytest.mark.asyncio
@@ -1410,13 +1427,15 @@ async def test_ensure_personal_trial_default_does_not_refire_on_noop(
     _mock_create_trial_local_if_absent,
     _fresh_personal_signup,
 ):
-    """A pre-existing row (the idempotent no-op branch, e.g. the SECOND of
-    two ~3s polls) returns False -- must not re-fire trial_started."""
+    """The conditional put losing its race (returns False) must not fire
+    trial_started. The attempt itself is still real, so the bracketing
+    trial_start_requested does fire — it is an attempt count, not a success
+    count."""
     _mock_create_trial_local_if_absent.return_value = False
     with patch("core.services.user_provision.capture_product_event") as mock_capture:
         await ensure_personal_trial_default(_personal_auth("user_p", "p@example.com"), "user_p")
 
-    mock_capture.assert_not_called()
+    assert [c.kwargs["event"] for c in mock_capture.call_args_list] == ["trial_start_requested"]
 
 
 @pytest.mark.asyncio
@@ -1424,12 +1443,60 @@ async def test_ensure_personal_trial_default_org_context_never_captures(
     _mock_create_trial_local_if_absent,
 ):
     """Org context never even calls create_trial_local_if_absent (free tier
-    is personal-only) so trial_started can never fire for an org."""
+    is personal-only), so NONE of the three trial events can fire for an org.
+    This is why org owners are structurally absent from the trial funnel —
+    two of the three prod "ready without a trial" people are exactly this."""
     with patch("core.services.user_provision.capture_product_event") as mock_capture:
         await ensure_personal_trial_default(_org_admin_auth("user_admin", "org_xyz", "a@example.com"), "org_xyz")
 
     _mock_create_trial_local_if_absent.assert_not_awaited()
-    mock_capture.assert_not_called()
+    # The refusal now DOES emit (requested + failed, see the telemetry block
+    # above); what must never fire is the success event.
+    assert "trial_started" not in [c.kwargs["event"] for c in mock_capture.call_args_list]
+
+
+@pytest.mark.asyncio
+async def test_ensure_personal_trial_default_fires_failed_on_pending_invitation(
+    _mock_create_trial_local_if_absent,
+    _fresh_personal_signup,
+):
+    """Gate B refusal is a dead end for the user — it must leave an event
+    naming the reason, not just a log line and a spinner."""
+    _fresh_personal_signup.return_value = [{"id": "inv_1"}]
+    with patch("core.services.user_provision.capture_product_event") as mock_capture:
+        await ensure_personal_trial_default(
+            _personal_auth("user_p", "p@example.com"), "user_p", signup_flow_id="flow-abc"
+        )
+
+    assert [c.kwargs["event"] for c in mock_capture.call_args_list] == [
+        "trial_start_requested",
+        "trial_start_failed",
+    ]
+    assert mock_capture.call_args_list[-1].kwargs["properties"] == {
+        "signup_flow_id": "flow-abc",
+        "error_code": "pending_org_invitation",
+    }
+    _mock_create_trial_local_if_absent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ensure_personal_trial_default_fires_failed_and_reraises_on_write_error(
+    _mock_create_trial_local_if_absent,
+    _fresh_personal_signup,
+):
+    """A failed write is the one way a user ends up permanently stuck on the
+    ProviderPicker. Name it, and still re-raise — telemetry must not swallow
+    the caller's error."""
+    _mock_create_trial_local_if_absent.side_effect = RuntimeError("ddb down")
+    with patch("core.services.user_provision.capture_product_event") as mock_capture:
+        with pytest.raises(RuntimeError):
+            await ensure_personal_trial_default(_personal_auth("user_p", "p@example.com"), "user_p")
+
+    assert [c.kwargs["event"] for c in mock_capture.call_args_list] == [
+        "trial_start_requested",
+        "trial_start_failed",
+    ]
+    assert mock_capture.call_args_list[-1].kwargs["properties"] == {"error_code": "RuntimeError"}
 
 
 # ---------------------------------------------------------------------------
@@ -1460,7 +1527,10 @@ async def test_pending_org_invitation_refuses_the_personal_trial_default(
         await ensure_personal_trial_default(_personal_auth("user_p", "p@example.com"), "user_p")
 
     _mock_create_trial_local_if_absent.assert_not_awaited()
-    mock_capture.assert_not_called()
+    # The refusal now DOES emit (trial_start_requested + trial_start_failed,
+    # see the telemetry block above); what must never fire is the success
+    # event, which is what this test has always been about.
+    assert "trial_started" not in [c.kwargs["event"] for c in mock_capture.call_args_list]
 
 
 @pytest.mark.asyncio

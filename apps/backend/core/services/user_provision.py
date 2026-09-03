@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from collections import defaultdict
 
 from core.auth import AuthContext, is_org_owner_id
@@ -55,8 +56,14 @@ logger = logging.getLogger(__name__)
 # of a cross-instance race resolves to the join path on its next poll.
 _org_provision_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
+# Namespace for the deterministic ``trial_started`` event uuid. A fixed,
+# arbitrary uuid4 — its only job is to keep uuid5(owner_id) from colliding
+# with any other uuid5 we might derive from an owner id later. Changing it
+# would let every existing owner emit a second trial_started, so: don't.
+_TRIAL_STARTED_NAMESPACE = uuid.UUID("6f6c9f2e-2d5b-4a1c-9a3f-3d5c8e1b7a40")
 
-async def ensure_personal_trial_default(auth: AuthContext, owner_id: str) -> None:
+
+async def ensure_personal_trial_default(auth: AuthContext, owner_id: str, *, signup_flow_id: str | None = None) -> None:
     """Auto-default a brand-new PERSONAL owner into a card-less ``trial_local``
     billing row (idempotent conditional put — no-op if any row already exists).
 
@@ -80,6 +87,31 @@ async def ensure_personal_trial_default(auth: AuthContext, owner_id: str) -> Non
     personal container. The frontend normally routes them to the invitation
     screen, but a direct poll or a routing race must not be able to violate a
     backend invariant.
+
+    ANALYTICS. This function is the sole emitter of the trial funnel's three
+    server events, because it is the only place that decides whether a trial
+    exists:
+
+    - ``trial_start_requested`` — a personal owner with no billing row is
+      about to be given one. Fires once per attempt.
+    - ``trial_started`` — the conditional put actually wrote the row.
+      Carries a DETERMINISTIC ``event_uuid`` (uuid5 over the owner id), so
+      PostHog ingestion drops duplicates: a backend restart, the transient
+      second task during a rolling deploy, or a re-signup after an account
+      wipe can no longer re-count a person into the conversion denominator.
+      There was a second, CLIENT-side emitter until this change; it
+      double-counted every trial started in a browser that kept its storage
+      and single-counted the rest.
+    - ``trial_start_failed`` — a personal owner who wanted a trial did not
+      get one, with the reason in ``error_code``. Previously invisible: a
+      user blocked by Gate B just sat on a spinner and left no event.
+
+    ``signup_flow_id`` comes from the client on the ``/container/status``
+    poll (``?flow=``) and is the join key back to the anonymous half of the
+    journey, for the cases where PostHog's own identity stitch breaks.
+    An org context emits NOTHING here — orgs are excluded from the free
+    tier by design, so an org owner never appears in the trial funnel at
+    all. Read org activation off the subscription events, not these.
     """
     if auth.is_org_context:
         return
@@ -93,22 +125,50 @@ async def ensure_personal_trial_default(auth: AuthContext, owner_id: str) -> Non
     if await billing_repo.get_by_owner_id(owner_id):
         return
 
+    flow_props = {"signup_flow_id": signup_flow_id} if signup_flow_id else {}
+    capture_product_event(distinct_id=owner_id, event="trial_start_requested", properties=flow_props)
+
     pending = await clerk_admin.list_pending_invitations_for_user(auth.user_id)
     if pending:
         logger.info(
             "user_provision: personal trial default refused for user=%s — pending org invitation",
             auth.user_id,
         )
+        capture_product_event(
+            distinct_id=owner_id,
+            event="trial_start_failed",
+            properties={**flow_props, "error_code": "pending_org_invitation"},
+        )
         return
 
-    created = await billing_repo.create_trial_local_if_absent(
-        owner_id=owner_id,
-        owner_type="personal",
-    )
+    try:
+        created = await billing_repo.create_trial_local_if_absent(
+            owner_id=owner_id,
+            owner_type="personal",
+        )
+    except Exception as exc:
+        # The write is the one step here that can fail on us rather than on
+        # a policy decision, and a user whose trial row never landed is a
+        # user stuck on the ProviderPicker forever. Name it, then re-raise —
+        # the caller's own error handling is unchanged.
+        capture_product_event(
+            distinct_id=owner_id,
+            event="trial_start_failed",
+            properties={**flow_props, "error_code": type(exc).__name__},
+        )
+        raise
+
     if created:
         # Only the call that actually wrote the row fires this — every
-        # later idempotent no-op (each ~3s poll) must not re-fire it.
-        capture_product_event(distinct_id=owner_id, event="trial_started")
+        # later idempotent no-op (each ~3s poll) must not re-fire it. The
+        # deterministic uuid is the second line of defence, covering the
+        # cases the `created` flag cannot see (see the docstring).
+        capture_product_event(
+            distinct_id=owner_id,
+            event="trial_started",
+            properties={**flow_props, "owner_type": "personal"},
+            event_uuid=str(uuid.uuid5(_TRIAL_STARTED_NAMESPACE, owner_id)),
+        )
 
 
 async def ensure_user_ready(auth: AuthContext) -> None:

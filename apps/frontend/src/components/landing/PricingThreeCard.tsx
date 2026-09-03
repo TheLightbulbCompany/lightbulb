@@ -3,6 +3,7 @@ import Link from "next/link";
 
 import { capture } from "@/lib/analytics";
 import { PROVIDER_CARDS } from "@/lib/providerCards";
+import { captureSignupCta } from "@/lib/signupFlow";
 import { writeSignupIntentCookie } from "@/lib/signupIntent";
 
 export function PricingThreeCard() {
@@ -40,9 +41,10 @@ export function PricingThreeCard() {
           <Link
             href="/sign-up"
             onClick={() => {
-              capture("signup_started", {
-                source: "landing_pricing_free",
-                destination: "/sign-up",
+              captureSignupCta({
+                ctaId: "pricing_free_try_it_first",
+                label: "Try it first",
+                surface: "landing_pricing",
               });
             }}
           >
@@ -87,10 +89,12 @@ export function PricingThreeCard() {
                     provider_choice: card.id,
                     destination: card.href,
                   });
-                  capture("signup_started", {
-                    source: "landing_pricing_card",
-                    provider_choice: card.id,
+                  captureSignupCta({
+                    ctaId: `pricing_card_${card.id}`,
+                    label: card.cta,
+                    surface: "landing_pricing",
                     destination: card.href,
+                    providerChoice: card.id,
                   });
                 }}
               >
@@ -120,10 +124,12 @@ export function PricingThreeCard() {
                 provider_choice: "team",
                 destination: "/sign-up?intent=team",
               });
-              capture("signup_started", {
-                source: "landing_pricing_teams",
-                provider_choice: "team",
+              captureSignupCta({
+                ctaId: "pricing_create_a_team",
+                label: "Create a team",
+                surface: "landing_pricing",
                 destination: "/sign-up?intent=team",
+                providerChoice: "team",
               });
             }}
           >

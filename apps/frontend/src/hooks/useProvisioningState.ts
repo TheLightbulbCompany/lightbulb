@@ -5,6 +5,7 @@ import { useOnboardingStatus, type StatusContract } from "@lightbulb/shared";
 
 import { recordRequestId } from "@/lib/requestIdLog";
 import { isPresent } from "@/lib/presence";
+import { signupFlowId } from "@/lib/signupFlow";
 import { hasTeamSignupIntentCookie } from "@/lib/signupIntent";
 import { webVisibilityAdapter } from "@/lib/visibility";
 
@@ -160,6 +161,10 @@ export function useProvisioningState(
     // otherwise, which tells the backend to report a parked trial
     // container instead of starting it.
     wake: () => isPresent(),
+    // This poll is what creates a brand-new personal owner's trial_local
+    // row, so it is the only request that can carry the client's
+    // signup_flow_id to the server-side trial events.
+    flow: signupFlowId,
     visibility: webVisibilityAdapter,
   });
 

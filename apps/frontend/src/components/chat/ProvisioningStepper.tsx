@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 
 import { capture } from "@/lib/analytics";
+import { setSignupStep } from "@/lib/signupFlow";
 import { useApi } from "@/lib/api";
 import {
   Loader2,
@@ -143,12 +144,6 @@ const ONBOARDING_PHASE_ORDER: Phase[] = [
 // alone can't distinguish a first activation from a replay.
 const ONBOARDING_READY_STORAGE_KEY = "isol8_onboarding_ready_v1";
 
-// Same idiom as ONBOARDING_READY_STORAGE_KEY above, for the free-tier
-// `trial_started` funnel milestone — a distinct marker because a trial owner
-// who later converts to paid must NOT re-fire this on a subsequent
-// container recovery pass.
-const TRIAL_STARTED_STORAGE_KEY = "isol8_trial_started_v1";
-
 function RotatingIdeas({ eyebrow }: { eyebrow: string }) {
   const [idx, setIdx] = useState(0);
   const [visible, setVisible] = useState(true);
@@ -226,8 +221,6 @@ export function ProvisioningStepper({
   // identified by Clerk user), so scope the once-ever marker to the owner
   // (org id for org workspaces, else the Clerk user id).
   const readyStorageKey = `${ONBOARDING_READY_STORAGE_KEY}:${organization?.id ?? clerkUserId ?? "anon"}`;
-  // Same owner-scoping for the trial_started once-marker (see below).
-  const trialStartedStorageKey = `${TRIAL_STARTED_STORAGE_KEY}:${organization?.id ?? clerkUserId ?? "anon"}`;
   const {
     account,
     isLoading: billingLoading,
@@ -546,6 +539,9 @@ export function ProvisioningStepper({
     const prev = prevPhaseRef.current;
     prevPhaseRef.current = phase;
     if (prev === phase) return;
+    // Tell the app-root `signup_exit` listener which step the user is on;
+    // null at "ready" means an exit after this point is not a drop-off.
+    setSignupStep(phase === "ready" ? null : phase);
     capture("onboarding_step_entered", {
       step_name: phase,
       step_index: ONBOARDING_PHASE_ORDER.indexOf(phase),
@@ -598,38 +594,15 @@ export function ProvisioningStepper({
     if (completion) capture("onboarding_step_completed", { ...completion });
   }, [phase, providerChoice, readyStorageKey]);
 
-  // `trial_started`: the free-tier equivalent of an activation milestone.
-  // trial_local accounts skip payment/provider entirely (see the `phase`
-  // memo above), so there's no natural "step_completed" transition to hang
-  // this off of — it has to be driven directly off `isTrialLocal` becoming
-  // true. Fires on the RISING EDGE only (false -> true), guarded by the same
-  // owner-scoped once-ever localStorage marker idiom as `onboarding_ready`
-  // above, so a returning trial user re-opening /chat doesn't re-fire it.
-  const prevIsTrialLocalRef = useRef(false);
-  useEffect(() => {
-    const wasTrialLocal = prevIsTrialLocalRef.current;
-    prevIsTrialLocalRef.current = isTrialLocal;
-    if (!isTrialLocal || wasTrialLocal) return;
-    // A "recovery" restart (existing trial owner's stopped container
-    // auto-restarting) also re-mounts this component, resetting the ref
-    // above to `false` and thus looking like a rising edge again. Same
-    // reasoning as the onboarding_ready trigger guard: only the "onboarding"
-    // trigger represents a genuine (first) trial start.
-    if (trigger !== "onboarding") return;
-    let alreadyStarted = false;
-    try {
-      alreadyStarted = window.localStorage.getItem(trialStartedStorageKey) === "1";
-    } catch {
-      // storage-disabled browser: best-effort only, may re-fire on reload
-    }
-    if (alreadyStarted) return;
-    try {
-      window.localStorage.setItem(trialStartedStorageKey, "1");
-    } catch {
-      /* best-effort */
-    }
-    capture("trial_started");
-  }, [isTrialLocal, trigger, trialStartedStorageKey]);
+  // `trial_started` is emitted SERVER-SIDE ONLY, by the one write that
+  // actually creates the trial_local row (core/services/user_provision.py).
+  // It used to fire from here as well, guarded by an owner-scoped
+  // localStorage marker — and the two emitters disagreed: 161 events over
+  // 93 people in 90 days (106 server / 55 client), i.e. every trial that
+  // started in a browser that kept its storage was counted twice, and
+  // every trial started in one that did not (in-app webviews, private
+  // mode) was counted once. A conversion denominator cannot be a
+  // best-effort client guess about a row the server alone writes.
 
   // Record provision-gate blocks (subscription_required / oauth-missing /
   // credits_required / signup_required) keyed to the PERSON, once per code

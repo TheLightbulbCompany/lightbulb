@@ -56,7 +56,12 @@ async def sync_user(
             try:
                 await user_repo.backfill_email(user_id, auth.email)
             except Exception:
-                # Never fail a sync over the heal — the next mount retries.
+                # Never fail a sync over the heal: a bug here would 500 sync for
+                # every existing user, and sync is on the critical path. The
+                # client latches success in sessionStorage on any resolved
+                # response, so this will NOT be retried until a new browser
+                # session — which is why `launch_referral._email_for_owner`
+                # falls back to Clerk rather than trusting this column.
                 logger.exception("users/sync: email backfill failed for %s", user_id)
 
     # The canonical write path for provider_choice is POST

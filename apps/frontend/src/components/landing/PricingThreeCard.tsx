@@ -65,6 +65,15 @@ export function PricingThreeCard() {
               <h3>{card.title}</h3>
               <p className="ld-pc-sub">{card.subtitle}</p>
               <p className="ld-pc-trial">{card.trialNote}</p>
+              {/* Says out loud what these three buttons actually do. Each one
+                  carries a `?provider=` that skips the free tier and goes
+                  straight to Stripe Checkout — which is the whole reason people
+                  believe it costs $50 to try. Putting a free path above them
+                  (see .ld-price-free) without labelling these would just make
+                  the section contradict itself: "start free" directly over a
+                  button that charges. The route itself is unchanged; this makes
+                  the choice honest at the point of click. */}
+              <p className="ld-pc-charge">Billed today — skips the free trial</p>
               <ul>
                 {card.bullets.map((b) => (
                   <li key={b}>{b}</li>

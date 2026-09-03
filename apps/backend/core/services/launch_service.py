@@ -331,14 +331,30 @@ async def rename_display_name(auth: AuthContext, s: Schedule, *, display_name: s
     competition not over, not ruled out by the close."""
     owner_id = resolve_owner_id(auth)
     sheet_row = await _sheet_row_for(auth, s)
+    previous = sheet_row.get("display_name")
     name = display_name.strip()
     await launch_waitlist_repo.update_fields(sheet_row["email"], {"display_name": name})
     # Best-effort second leg: an owner who has not connected Stripe has no
     # entry, which is the common case and not an error.
     entry = await launch_entries_repo.get(owner_id)
     if entry:
-        await launch_entries_repo.set_display_name(owner_id, name)
-    logger.info("launch: %s renamed on the sheet", owner_id)
+        try:
+            await launch_entries_repo.set_display_name(owner_id, name)
+        except ClientError as e:
+            # The entry was removed between the read above and this write (an
+            # admin takedown mid-flight) — the same race `connect_stripe`
+            # handles explicitly. The sheet row is ALREADY renamed at this
+            # point, so raising would 500 a request that half-succeeded and
+            # leave the caller retrying into the same 500 forever. A row that
+            # no longer exists has no stale name to carry, so there is nothing
+            # left to reconcile.
+            if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+            logger.info("launch: %s board entry vanished mid-rename; sheet row renamed", owner_id)
+    # Logged old -> new: this is the only writer that can change a name already
+    # on a public leaderboard, and it can run repeatedly, so an operator
+    # investigating an abusive board entry needs the history.
+    logger.info("launch: %s renamed on the sheet (%r -> %r)", owner_id, previous, name)
     return {"display_name": name}
 
 

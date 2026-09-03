@@ -16,6 +16,12 @@ const REASON_COPY: Record<string, string> = {
   closed: "The sheet has closed.",
   org_not_supported: "Switch to your personal workspace to join.",
   no_email: "We couldn't find an email on your account — contact support.",
+  // Board-action refusals (`_sheet_row_for`), shared with RenameForm. None of
+  // these are retryable, so they must never fall through to the generic
+  // "try again" — that loops the owner on a decision that is already final.
+  ended: "The competition has ended — the board is final.",
+  not_joined: "You're not on the sheet yet.",
+  not_eligible: "You're not in the competition, so the board is read-only for you.",
 };
 
 /** POST /launch/join refusals arrive two ways: 409s carry

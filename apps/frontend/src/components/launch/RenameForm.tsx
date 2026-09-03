@@ -1,7 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { ApiError, useApi } from "@/lib/api";
+import { useApi } from "@/lib/api";
+import { joinErrorCopy } from "./JoinForm";
 import { capture } from "@/lib/analytics";
 
 /**
@@ -18,6 +19,14 @@ import { capture } from "@/lib/analytics";
  * Collapsed to a button until used: for the owners who already have the right
  * name (everyone who joined the old way) this should be a footnote, not a form.
  */
+/** Reuses the join surface's refusal decoder — same endpoint family, same two
+ * error envelopes — and only overrides the generic fallback, since "Couldn't
+ * join" would be nonsense on a rename. */
+function renameErrorCopy(err: unknown): string {
+  const copy = joinErrorCopy(err);
+  return copy === "Couldn't join — try again." ? "Couldn't rename — try again." : copy;
+}
+
 export function RenameForm({ current, onRenamed }: { current: string | null; onRenamed: (name: string) => void }) {
   const api = useApi();
   const [editing, setEditing] = React.useState(false);
@@ -37,11 +46,12 @@ export function RenameForm({ current, onRenamed }: { current: string | null; onR
       onRenamed(next);
       setEditing(false);
     } catch (err) {
-      setError(
-        err instanceof ApiError && err.status === 429
-          ? "Too many tries — wait a minute and try again."
-          : "Couldn't rename — try again.",
-      );
+      // The route maps LaunchRefused to a 400 whose detail is the bare reason
+      // string, so `ended` / `not_joined` / `not_eligible` all arrive looking
+      // retryable. Telling an owner whose competition has ended to "try again"
+      // loops them forever. `joinErrorCopy` already decodes both envelopes
+      // (409 {detail:{reason}} and 400 plain-string detail) plus the 429.
+      setError(renameErrorCopy(err));
     } finally {
       setBusy(false);
     }

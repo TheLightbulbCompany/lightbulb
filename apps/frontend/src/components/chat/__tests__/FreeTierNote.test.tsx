@@ -26,10 +26,14 @@ describe("FreeTierNote", () => {
     expect(screen.getByRole("link", { name: /see plans/i })).toHaveAttribute("href", "/settings?panel=billing");
   });
 
-  it("singularizes the last full day", () => {
+  it("rounds a part-day UP, so the last hours read as a day rather than zero", () => {
+    // freeTierDaysLeft ceils and anything past trial_end already returned null,
+    // so a "0 days"/"last day" branch is unreachable by construction — "1 day
+    // left" IS the last day. A branch that can never render is worse than none.
     billing.mockReturnValue(account({ trial_end: Math.floor(Date.now() / 1000) + 3600 }));
     render(<FreeTierNote />);
     expect(screen.getByText(/1 day left on your free trial/)).toBeInTheDocument();
+    expect(screen.queryByText(/last day/i)).not.toBeInTheDocument();
   });
 
   it("renders nothing for a paid owner", () => {

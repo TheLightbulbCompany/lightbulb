@@ -491,6 +491,16 @@
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--midnight);
+  margin-bottom: 6px;
+}
+
+/* What the button below actually does. These three CTAs carry a ?provider=
+   that skips the free tier and opens Stripe Checkout, so the card has to say
+   so — otherwise the free line above this grid reads as a promise the buttons
+   break. */
+.ld-pc-charge {
+  font-size: var(--text-caption);
+  color: var(--midnight-muted);
   margin-bottom: 20px;
 }
 

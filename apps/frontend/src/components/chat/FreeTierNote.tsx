@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useBilling } from "@/hooks/useBilling";
 import { freeTierDaysLeft, isFreeTierExpired } from "@/lib/planLabel";
 
@@ -27,20 +27,38 @@ import { freeTierDaysLeft, isFreeTierExpired } from "@/lib/planLabel";
  * the "Free tier ended" badge), which say it far better than one line here
  * could — and which the owner is about to hit anyway.
  */
+/** How often the clock below re-reads. Hourly is plenty for a day counter and
+ * costs nothing; the point is only that it re-reads at all. */
+const TICK_MS = 60 * 60 * 1000;
+
 export function FreeTierNote() {
   const { account } = useBilling();
-  // Date.now() is impure; capture once so this is stable across re-renders.
-  // Same pattern as the two shells' own `nowMs`.
-  const [nowMs] = useState(() => Date.now());
+  // Date.now() is impure, so it cannot be read during render — but it also
+  // cannot be frozen at mount. This sits in a sidebar footer that mounts once
+  // per session, and a workspace tab routinely stays open for days. With a
+  // frozen `nowMs` an owner who opened the app with 2 days left would still
+  // read "2 days left" forty-eight hours later, and `isFreeTierExpired` would
+  // never flip — the note would keep promising runway while the backend was
+  // already returning the paywall mid-conversation, which is the exact failure
+  // this component exists to prevent.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), TICK_MS);
+    return () => clearInterval(id);
+  }, []);
 
   const status = account?.subscription_status;
   if (isFreeTierExpired(status, account?.trial_end, nowMs)) return null;
   const daysLeft = freeTierDaysLeft(status, account?.trial_end, nowMs);
   if (daysLeft == null) return null;
 
+  // No "last day" special case: `freeTierDaysLeft` rounds UP and anything past
+  // `trial_end` has already returned null above, so a zero is only reachable at
+  // exact millisecond equality. "1 day left" IS the last day, and a branch that
+  // can never render is worse than no branch.
   return (
     <p className="free-tier-note">
-      {daysLeft <= 0 ? "Last day of your free trial" : `${daysLeft} day${daysLeft === 1 ? "" : "s"} left on your free trial`}
+      {`${daysLeft} day${daysLeft === 1 ? "" : "s"} left on your free trial`}
       {" · "}
       <Link href="/settings?panel=billing">See plans</Link>
     </p>

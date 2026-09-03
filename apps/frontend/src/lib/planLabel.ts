@@ -17,20 +17,15 @@
  */
 export function planLabel(
   status: string | null | undefined,
-  opts?: { expired?: boolean; daysLeft?: number | null },
+  opts?: { expired?: boolean },
 ): string | null {
   if (!status) return null;
   if (status === "trial_local") {
-    if (opts?.expired) return "Free tier ended";
-    // Runway, when the caller can supply it. This badge was a dead label: it
-    // read "Free tier" and nothing else for the whole window, and that window
-    // is wall-clock from signup, so an owner could burn all of it without one
-    // surface ever showing a clock. There is no countdown banner for this tier
-    // either (TrialBanner only matches legacy Stripe trials), so the first
-    // news of the deadline was the paywall itself.
-    const d = opts?.daysLeft;
-    if (d != null) return d <= 0 ? "Free tier · last day" : `Free tier · ${d} day${d === 1 ? "" : "s"} left`;
-    return "Free tier";
+    // Stays SHORT deliberately. This badge shares a 280px sidebar footer row
+    // with the user's name, which already ellipsizes, so a longer label here
+    // squeezes the name away. The free-tier countdown lives on its own line
+    // instead — see FreeTierNote, which is the ONE place that copy exists.
+    return opts?.expired ? "Free tier ended" : "Free tier";
   }
   const spaced = status.replace(/_/g, " ");
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);

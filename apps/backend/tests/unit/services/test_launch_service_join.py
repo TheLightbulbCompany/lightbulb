@@ -287,6 +287,52 @@ async def test_rename_refused_for_a_row_that_never_joined():
     assert exc.value.reason == "not_joined"
 
 
+async def test_rename_survives_the_board_entry_vanishing_mid_write():
+    """The entry can be deleted (admin takedown) between the read and the
+    write. The sheet row is ALREADY renamed by then, so raising would 500 a
+    half-done request and RenameForm would loop the owner on "try again"
+    forever. connect_stripe handles the same race explicitly."""
+    from botocore.exceptions import ClientError
+
+    row = dict(ROW, joined_at="t", display_name="Old")
+    p0, p1 = _board_patches(row)
+    conditional = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
+    with p0, p1:
+        with (
+            patch("core.services.launch_service.launch_waitlist_repo.update_fields", AsyncMock()) as update,
+            patch(
+                "core.services.launch_service.launch_entries_repo.get", AsyncMock(return_value={"owner_id": "user_1"})
+            ),
+            patch(
+                "core.services.launch_service.launch_entries_repo.set_display_name",
+                AsyncMock(side_effect=conditional),
+            ),
+        ):
+            out = await launch_service.rename_display_name(AUTH, _sched(), display_name="New Co")
+    assert out == {"display_name": "New Co"}
+    update.assert_awaited_once_with("me@x.com", {"display_name": "New Co"})
+
+
+async def test_rename_still_raises_a_real_dynamo_error():
+    """Only the vanished-entry condition is swallowed — a throttle or an IAM
+    failure must still surface rather than reporting a rename that half ran."""
+    from botocore.exceptions import ClientError
+
+    row = dict(ROW, joined_at="t", display_name="Old")
+    p0, p1 = _board_patches(row)
+    boom = ClientError({"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem")
+    with p0, p1:
+        with (
+            patch("core.services.launch_service.launch_waitlist_repo.update_fields", AsyncMock()),
+            patch(
+                "core.services.launch_service.launch_entries_repo.get", AsyncMock(return_value={"owner_id": "user_1"})
+            ),
+            patch("core.services.launch_service.launch_entries_repo.set_display_name", AsyncMock(side_effect=boom)),
+        ):
+            with pytest.raises(ClientError):
+                await launch_service.rename_display_name(AUTH, _sched(), display_name="New Co")
+
+
 async def test_rename_refused_once_the_competition_has_ended():
     """Same gate as the other board actions: the board is frozen at the end."""
     row = dict(ROW, joined_at="t")

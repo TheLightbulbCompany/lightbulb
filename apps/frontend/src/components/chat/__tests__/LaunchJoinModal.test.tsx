@@ -18,10 +18,11 @@ vi.mock("@/components/launch/useLaunchInfo", () => ({ useLaunchInfo: () => launc
 const provisioning = vi.fn<() => unknown>();
 vi.mock("@/hooks/useProvisioningState", () => ({ useProvisioningState: () => provisioning() }));
 
-const orgId = vi.fn<() => string | null>(() => null);
+const orgId = vi.fn<() => string | null | undefined>(() => null);
+const authLoaded = vi.fn<() => boolean>(() => true);
 vi.mock("@clerk/nextjs", () => ({
   useUser: () => ({ user: { id: "user_1" }, isLoaded: true }),
-  useAuth: () => ({ orgId: orgId() }),
+  useAuth: () => ({ orgId: orgId(), isLoaded: authLoaded() }),
 }));
 
 import type { LaunchMe } from "@/lib/launch";
@@ -57,7 +58,9 @@ const me = (over: Partial<LaunchMe> = {}): LaunchMe => ({
 });
 
 /** `/container/status` shape, reduced to the one field this component reads. */
-const container = (funnelState: string) => ({ container: { funnel: { state: funnelState } } });
+const container = (funnelState: string, over: Record<string, unknown> = {}) => ({
+  container: { funnel: { state: funnelState }, runtime_phase: "ready", ...over },
+});
 
 function mount() {
   return render(<SWRConfig value={{ provider: () => new Map() }}><LaunchJoinModal /></SWRConfig>);
@@ -70,6 +73,7 @@ describe("LaunchJoinModal", () => {
     launchInfo.mockReturnValue(info());
     provisioning.mockReturnValue(container("complete"));
     orgId.mockReturnValue(null);
+    authLoaded.mockReturnValue(true);
     localStorage.clear();
   });
 
@@ -188,5 +192,73 @@ describe("LaunchJoinModal", () => {
     const { container: dom } = mount();
     await waitFor(() => expect(dom).toBeEmptyDOMElement());
     expect(get).not.toHaveBeenCalled();
+  });
+
+  it("holds off until Clerk has resolved, so an org member never leaks a fetch", async () => {
+    // useAuth() reports orgId: undefined until Clerk settles. Without the
+    // isLoaded term, `!orgId` passes on the first frames and an org member —
+    // who POST /launch/join refuses outright — fires a /launch/me they can
+    // never act on.
+    authLoaded.mockReturnValue(false);
+    orgId.mockReturnValue(undefined);
+    get.mockResolvedValue(me());
+    const { container: dom } = mount();
+    await waitFor(() => expect(dom).toBeEmptyDOMElement());
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it("still asks a legacy owner whose funnel never ran but who IS onboarded", async () => {
+    // ProvisioningStepper documents this cohort: onboarded via the old
+    // `onboarded_at` fact, funnel.state stuck at "not_started". Gating purely
+    // on the funnel would lock them out permanently — and the banner no longer
+    // carries a join form, so they would have no in-product path at all.
+    provisioning.mockReturnValue(container("not_started", { onboarded: true }));
+    get.mockResolvedValue(me({ onboarded: true }));
+    mount();
+    expect(await screen.findByText(/The launch competition is open/)).toBeInTheDocument();
+  });
+
+  it("does not tell an established owner their workspace is still building", async () => {
+    provisioning.mockReturnValue(container("complete", { runtime_phase: "ready" }));
+    get.mockResolvedValue(me({ onboarded: true }));
+    mount();
+    expect(await screen.findByText(/The launch competition is open/)).toBeInTheDocument();
+    expect(screen.queryByText(/still building/i)).not.toBeInTheDocument();
+  });
+
+  it("does say so while the container really is building", async () => {
+    provisioning.mockReturnValue(container("complete", { runtime_phase: "provisioning" }));
+    get.mockResolvedValue(me());
+    mount();
+    expect(await screen.findByText(/still building/i)).toBeInTheDocument();
+  });
+
+  it("asks only ONCE against a backend that still refuses not_onboarded", async () => {
+    // Deploy skew: Vercel ships this file to prod on merge, the backend that
+    // drops the gate waits for a manual dispatch. Without burning the flag the
+    // owner is re-prompted every single page load with copy this PR deleted.
+    const { ApiError } = await import("@/lib/api");
+    get.mockResolvedValue(me());
+    post.mockRejectedValue(new ApiError(409, { detail: { reason: "not_onboarded" } }, "API 409"));
+    const first = mount();
+    fireEvent.change(await screen.findByLabelText(/business name/i), { target: { value: "Northwind Ceramics" } });
+    fireEvent.click(screen.getByRole("button", { name: /join the sheet/i }));
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    await waitFor(() => expect(localStorage.getItem("launch_sheet_modal_seen:user_1")).toBe("1"));
+    first.unmount();
+
+    const second = mount();
+    await waitFor(() => expect(second.container).toBeEmptyDOMElement());
+  });
+
+  it("keeps asking after a retryable failure, which is not the skew case", async () => {
+    const { ApiError } = await import("@/lib/api");
+    get.mockResolvedValue(me());
+    post.mockRejectedValue(new ApiError(429, { detail: "rate_limited" }, "API 429"));
+    mount();
+    fireEvent.change(await screen.findByLabelText(/business name/i), { target: { value: "Northwind Ceramics" } });
+    fireEvent.click(screen.getByRole("button", { name: /join the sheet/i }));
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(localStorage.getItem("launch_sheet_modal_seen:user_1")).toBeNull();
   });
 });

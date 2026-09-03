@@ -50,10 +50,17 @@ function seenKey(userId: string): string {
   return `launch_sheet_modal_seen:${userId}`;
 }
 
+/** A 409 `not_onboarded` means we are talking to a backend that predates this
+ * PR — the gate is gone on current main. See the call site. */
+function isNotOnboardedRefusal(err: unknown): boolean {
+  const body = (err as { body?: { detail?: { reason?: string } } })?.body;
+  return body?.detail?.reason === "not_onboarded";
+}
+
 export function LaunchJoinModal() {
   const api = useApi();
   const { user } = useUser();
-  const { orgId } = useAuth();
+  const { orgId, isLoaded: authLoaded } = useAuth();
   const info = useLaunchInfo();
   const { container } = useProvisioningState();
 
@@ -71,7 +78,22 @@ export function LaunchJoinModal() {
   // thing its module doc says must never happen. Defaulting a missing state
   // to "not_started" matches every other reader of this field.
   const briefDone = !!container && (container.funnel?.state ?? "not_started") !== "not_started";
-  const eligible = open && !orgId && briefDone;
+  // `|| container.onboarded` catches the legacy cohort ProvisioningStepper
+  // documents: owners onboarded through the old `onboarded_at` fact whose
+  // `funnel.state` is still "not_started" and for whom the funnel must never
+  // re-show. Without this term they fail `briefDone` forever — and since the
+  // banner no longer carries a join form, they would have NO in-product way to
+  // join at all, despite being exactly the provisioned, established businesses
+  // the competition most wants.
+  const pastBrief = !!container && (briefDone || !!container.onboarded);
+  // `authLoaded` is load-bearing, not belt-and-braces: `useAuth()` reports
+  // `orgId: undefined` until Clerk resolves, so without it an org member passes
+  // `!orgId` on the first frames and fires a `/launch/me` they can never act
+  // on. Org exclusion is meant to be absolute (POST /launch/join refuses every
+  // org context), so it has to hold before the session settles too.
+  const eligible = open && authLoaded && !orgId && pastBrief;
+  // "still building" is a claim about the container, not about the gate above.
+  const stillBuilding = !!container && container.runtime_phase !== "ready";
 
   const { data: me, mutate } = useSWR<LaunchMe>(
     eligible ? "/launch/me" : null,
@@ -87,29 +109,44 @@ export function LaunchJoinModal() {
   // be read instead of the dialog vanishing the instant `me.joined` flips.
   const [justJoined, setJustJoined] = React.useState(false);
 
+  // Keyed on the USER ID, not the user object. Depending on the object makes
+  // this re-run on every render that hands back a fresh reference, which turns
+  // a localStorage WRITE elsewhere in this component (the deploy-skew path
+  // below persists the flag without closing) into an immediate re-read that
+  // yanks the dialog off screen mid-error. The id is a stable primitive, so
+  // this reads storage once per user, which is the intent.
+  const userId = user?.id;
   React.useEffect(() => {
-    if (!user) return;
+    if (!userId) return;
     try {
-      setSeen(window.localStorage.getItem(seenKey(user.id)) === "1");
+      setSeen(window.localStorage.getItem(seenKey(userId)) === "1");
     } catch {
       setSeen(false); /* storage unavailable — show it, don't swallow the ask */
     }
-  }, [user]);
+  }, [userId]);
 
   // Conversion needs a denominator: without a "shown" event the join rate is
   // unmeasurable, and this whole surface exists to be measured against the
   // banner it replaced. Fires once per mount, only when actually visible.
   const shownRef = React.useRef(false);
 
-  const markSeen = React.useCallback(() => {
-    setSeen(true);
-    if (!user) return;
+  // Persist the once-only flag WITHOUT closing the dialog. Split out because
+  // the deploy-skew path below needs "don't ask again" while still leaving the
+  // error on screen — closing instantly would make the button look like it
+  // silently did nothing.
+  const persistSeen = React.useCallback(() => {
+    if (!userId) return;
     try {
-      window.localStorage.setItem(seenKey(user.id), "1");
+      window.localStorage.setItem(seenKey(userId), "1");
     } catch {
       /* per-session only */
     }
-  }, [user]);
+  }, [userId]);
+
+  const markSeen = React.useCallback(() => {
+    setSeen(true);
+    persistSeen();
+  }, [persistSeen]);
 
   const isOpen = !!(eligible && user && seen === false && me && (!me.joined || justJoined));
 
@@ -129,14 +166,28 @@ export function LaunchJoinModal() {
         display_name: displayName.slice(0, 40),
         public: true,
       })) as LaunchMe;
+      // BEFORE the mutate, deliberately. `isOpen` requires
+      // `(!me.joined || justJoined)`, and `mutate` broadcasts `joined: true`
+      // into the shared cache synchronously while the `await` yields — so
+      // setting this afterwards leaves a window where React can commit a frame
+      // with `me.joined === true` and `justJoined === false`, tearing the
+      // dialog down and remounting it (losing focus and the exit animation).
+      setJustJoined(true);
       // Shared SWR key, so the banner's joined state updates from this too.
       await mutate(joined, { revalidate: false });
       // `source` separates the modal's joins from /launch's JoinForm, which
       // fires the same event.
       capture("launch_joined", { public: true, source: "signup_modal", onboarded: !!me?.onboarded });
-      setJustJoined(true);
     } catch (err) {
       setError(joinErrorCopy(err));
+      // DEPLOY SKEW. Vercel ships this file to prod on merge; the backend that
+      // drops the `not_onboarded` refusal only ships on a manual prod dispatch
+      // (see CLAUDE.md — "main IS AHEAD OF PROD BY DEFAULT"). In that window
+      // the old backend refuses exactly the owners this modal targets. Burn the
+      // once-only flag so they are asked ONCE and then left alone, instead of
+      // being re-prompted on every page load with copy this PR set out to
+      // delete. They can still join from /launch once the backend catches up.
+      if (isNotOnboardedRefusal(err)) persistSeen();
     } finally {
       setBusy(false);
     }
@@ -193,7 +244,15 @@ export function LaunchJoinModal() {
       open
       onOpenChange={markSeen}
       title="The launch competition is open"
-      description={`The first ${info.comp_slots.toLocaleString("en-US")} businesses on the sheet get their first month free. Your workspace is still building — this takes a second.`}
+      // Only claim the workspace is building when it actually is. The gate is
+      // "past the brief", not "currently provisioning", so the largest audience
+      // for this dialog is every existing owner who never joined — telling them
+      // their long-running container is still building would be plainly false.
+      description={
+        stillBuilding
+          ? `The first ${info.comp_slots.toLocaleString("en-US")} businesses on the sheet get their first month free. Your workspace is still building — this takes a second.`
+          : `The first ${info.comp_slots.toLocaleString("en-US")} businesses on the sheet get their first month free. This takes a second.`
+      }
       footer={
         <>
           <Button

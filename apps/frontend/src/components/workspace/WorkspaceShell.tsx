@@ -407,6 +407,17 @@ export function WorkspaceShell(): React.ReactElement {
         theme={ISOL8_THEME}
         onReady={onReady}
         disableFloatingGroups
+        // Tabs only. This kills BOTH drag backends at the source
+        // (resolveDndCapabilities returns html5:false + pointer:false), which
+        // is why it is one option rather than four handler removals: tab
+        // reorder, cross-group drags, dock-edge drops and the group-void drag
+        // handle all go together, and a dockview upgrade cannot quietly
+        // reintroduce one of them.
+        //
+        // Splitting is now unreachable: the default layout is a single group
+        // and dragging is the only other way to make one. Sashes disappear
+        // with it — one group has nothing to resize.
+        disableDnd
       />
     </div>
   );

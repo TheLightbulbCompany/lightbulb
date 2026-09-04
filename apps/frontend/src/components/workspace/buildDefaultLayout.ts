@@ -1,13 +1,22 @@
-// Mission Control: sentinel CEO chat on the left, Browser and Inbox stacked
-// on the right. Browser, not Dashboard: the live view of the agent working
-// is the thing a non-technical owner understands at a glance; the metrics
-// dashboard overwhelmed them. Two deliberate costs: the panel's mount effect
-// starts the container's Chrome (one idempotent launch per container
-// lifetime), so every owner carries a headful Chrome from first load rather
-// than from first browser-tool use; and the panel resizes the real display
-// (BrowserDockPanel resizeSession), so the slot's size here IS the agent's
-// Chrome viewport. Built by code (never persisted as a preset blob) so the
-// default evolves with releases; Reset re-applies it.
+// Mission Control: one tab group — CEO chat in front, Browser and Inbox behind
+// it. The shell is tabs-only (see WorkspaceShell's `disableDnd`), so these are
+// three tabs in a single group rather than three tiled panes.
+//
+// Browser, not Dashboard: the live view of the agent working is the thing a
+// non-technical owner understands at a glance; the metrics dashboard
+// overwhelmed them.
+//
+// Tabbing it also RETIRES a cost the tiled layout paid. Dockview's default
+// renderer is `onlyWhenVisible`, so an inactive tab never mounts: Browser's
+// mount effect — which starts the container's headful Chrome, one idempotent
+// launch per container lifetime — no longer fires for every owner on first
+// load, only for owners who actually open the tab. Chat keeps
+// `renderer: "always"` because its state must survive being tabbed away from.
+//
+// BrowserDockPanel still resizes the real display, so the slot IS the agent's
+// Chrome viewport — as a full-width tab that viewport gets wider, never
+// smaller. Built by code (never persisted as a preset blob) so the default
+// evolves with releases; Reset re-applies it.
 import type { DockviewApi } from "dockview-react";
 import { chatPanelId, DEFAULT_AGENT_SENTINEL } from "./panelRegistry";
 
@@ -20,22 +29,19 @@ export function buildMissionControlLayout(api: DockviewApi): void {
     params: { agentId: DEFAULT_AGENT_SENTINEL },
     renderer: "always",
   });
+  // No `position`: dockview falls back to the active group, so each of these
+  // stacks as a tab beside Chat instead of splitting the dock.
   api.addPanel({
     id: "browser",
     component: "browser",
     title: "Browser",
     params: {},
-    position: { referencePanel: chatId, direction: "right" },
-    // Chat keeps ~55% — dockview splits 50/50 by default; initialWidth on
-    // the right group nudges it. 45% of a 1440 dock ≈ 648.
-    initialWidth: 648,
   });
   api.addPanel({
     id: "teams-inbox",
     component: "teams",
     title: "Inbox",
     params: { teamsKey: "inbox" },
-    position: { referencePanel: "browser", direction: "below" },
   });
   api.getPanel(chatId)?.api.setActive();
 }

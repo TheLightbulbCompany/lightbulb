@@ -378,3 +378,24 @@ describe("DatabaseStack — provisioning-workflows table", () => {
     }));
   });
 });
+
+describe("DatabaseStack — slack-installs table", () => {
+  let template: Template;
+  beforeAll(() => {
+    template = buildStack("dev");
+  });
+
+  test("creates slack-installs keyed by team_id with a by-owner GSI", () => {
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: Match.stringLikeRegexp("slack-installs$"),
+      KeySchema: [{ AttributeName: "team_id", KeyType: "HASH" }],
+      GlobalSecondaryIndexes: Match.arrayWith([
+        Match.objectLike({
+          IndexName: "by-owner",
+          KeySchema: [{ AttributeName: "owner_id", KeyType: "HASH" }],
+          Projection: { ProjectionType: "ALL" },
+        }),
+      ]),
+    });
+  });
+});

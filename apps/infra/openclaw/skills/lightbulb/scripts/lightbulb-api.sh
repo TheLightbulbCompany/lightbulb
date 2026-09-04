@@ -45,6 +45,17 @@ command -v curl >/dev/null || die 'Missing curl'
 [[ -n "${ISOL8_API_URL:-}" ]] || die 'Missing ISOL8_API_URL.'
 
 [[ "$path" != *//* ]] || die "empty path segment in $path — is ISOL8_OWNER_ID set?"
+# Every hook-token route embeds the owner: /api/v1/<area>/u/<owner_id>/...
+# (platform-info is the one public exception). Anything else — /api/v1/teams/*,
+# /api/v1/container/*, ... — is the owner's BROWSER API: a Clerk session, never a
+# container token, so it 401s by design. Refuse up front so the agent reads
+# "wrong door", not "platform fault" (prod 2026-09-03: Friday hit /teams/routines
+# through this script, read the 401 as a platform bug, and fell back to
+# browsing the Teams UI).
+case "$path" in
+  */u/*|/api/v1/platform-info*) ;;
+  *) die "owner-only route: $path takes the owner's browser session, not a container token. Hook-token routes look like /api/v1/<area>/u/\$ISOL8_OWNER_ID/...; Teams objects (routines, tasks, agents, projects) are managed through the Paperclip API (\$PAPERCLIP_API_URL). Nothing to retry." ;;
+esac
 # A bodiless POST/PUT/PATCH 422s on FastAPI ("body: Field required"); send {}.
 case "$method" in POST|PUT|PATCH) [[ -n "$body" ]] || body='{}' ;; esac
 args=(-sS -w $'\n%{http_code}' -X "$method" -H "Authorization: Bearer ${OPENCLAW_HOOK_TOKEN}")

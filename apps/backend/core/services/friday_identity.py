@@ -1556,6 +1556,64 @@ async def pre_stage_friday_identity(
     )
 
 
+def _refresh_stale_api_url(
+    owner_id: str,
+    agent_id: str,
+    rel_path: str,
+    api_url: str,
+    workspace: Workspace,
+) -> bool:
+    """Bring an EXISTING identity file's ``apiUrl`` up to the platform's current
+    Paperclip host, leaving every other field (the agent's own, possibly
+    rotated, ``token``) exactly as found.
+
+    ``apiUrl`` is platform config that happens to live in a per-agent file: the
+    file is write-if-missing so a reprovision never clobbers a token, but that
+    same property stranded every pre-2026-08-30 container on the retired
+    ``paperclip.isol8-{env}.local`` host when the Cloud Map namespace moved
+    (#2115/#2132) — nothing else in the container carries the URL, so webchat
+    Paperclip calls failed DNS fleet-wide. Refreshing the one platform-owned
+    field on every provision is what keeps the next rename from doing it again.
+
+    Returns True when the file was rewritten. Best-effort: an unreadable or
+    malformed file is left alone (a half-understood file must never be replaced
+    with a guess), and a failed write logs + emits a metric, never raises.
+    """
+    try:
+        existing = json.loads(workspace.read_file(owner_id, rel_path))
+    except Exception as exc:  # noqa: BLE001 — best-effort, leave the file be
+        put_metric("paperclip_identity.refresh.unreadable")
+        logger.warning(
+            "paperclip_identity: cannot read existing file for owner=%s agent=%s: %s",
+            owner_id,
+            agent_id,
+            exc,
+        )
+        return False
+    if not isinstance(existing, dict) or existing.get("apiUrl") == api_url:
+        return False
+    try:
+        workspace.write_file(owner_id, rel_path, json.dumps({**existing, "apiUrl": api_url}))
+    except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
+        put_metric("paperclip_identity.refresh.error")
+        logger.error(
+            "paperclip_identity: apiUrl refresh failed for owner=%s agent=%s: %s",
+            owner_id,
+            agent_id,
+            exc,
+        )
+        return False
+    put_metric("paperclip_identity.refresh.api_url")
+    logger.info(
+        "paperclip_identity: refreshed apiUrl for owner=%s agent=%s (%s -> %s)",
+        owner_id,
+        agent_id,
+        existing.get("apiUrl"),
+        api_url,
+    )
+    return True
+
+
 async def stage_paperclip_identity_for_agent(
     *,
     owner_id: str,
@@ -1615,6 +1673,7 @@ async def stage_paperclip_identity_for_agent(
         put_metric("paperclip_identity.seed.success")
     else:
         put_metric("paperclip_identity.seed.skipped_existing")
+        _refresh_stale_api_url(owner_id, agent_id, rel_path, api_url, workspace)
     logger.info(
         "paperclip_identity: owner=%s agent=%s wrote=%s",
         owner_id,
@@ -1645,7 +1704,9 @@ async def pre_stage_paperclip_identities(
     collides). The seed prompt instructs the agent to load it before any
     Paperclip call so it authenticates AS ITSELF, not as Friday. Written with
     write-if-missing semantics so an agent's evolved/rotated file isn't
-    clobbered on reprovision.
+    clobbered on reprovision — except the platform-owned ``apiUrl`` field,
+    which ``_refresh_stale_api_url`` brings up to date in place (see it for
+    why: the 2026-08-30 Cloud Map rename stranded every existing file).
 
     Best-effort: per-file failures log + emit metrics and are skipped; this
     never raises. A missing ``company_id``/``api_url`` (Paperclip unreachable
@@ -1701,6 +1762,7 @@ async def pre_stage_paperclip_identities(
             written.append(agent_id)
         else:
             skipped.append(agent_id)
+            _refresh_stale_api_url(owner_id, agent_id, rel_path, api_url, workspace)
 
     if written:
         put_metric("paperclip_identity.seed.success", value=len(written))

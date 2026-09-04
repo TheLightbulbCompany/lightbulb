@@ -1682,3 +1682,130 @@ def test_inline_quote_of_a_retired_heading_is_not_a_grounding_section():
     assert sum(line.strip() == friday_identity._SELF_GROUNDING_HEADING for line in migrated.splitlines()) == 1
 
     assert friday_identity._migrate_add_soul_grounding(ws, "owner_1", _UUID) is False
+
+
+@pytest.mark.asyncio
+async def test_paperclip_identities_refreshes_stale_api_url_keeping_token():
+    """An EXISTING file whose apiUrl names a retired host is rewritten with the
+    current URL, everything else (the agent's own, possibly rotated, token)
+    untouched. The 2026-08-30 Cloud Map rename left every pre-rename container
+    pointing at ``paperclip.isol8-{env}.local`` because this file was
+    write-if-missing and nothing ever refreshed it."""
+    import json as _json
+
+    workspace = MagicMock()
+    workspace.write_file_if_missing = MagicMock(return_value=False)
+    workspace.read_file = MagicMock(
+        return_value=_json.dumps(
+            {
+                "token": "rotated-key",
+                "agentId": "agent-friday",
+                "companyId": "comp-1",
+                "apiUrl": "http://paperclip.isol8-prod.local:3100",
+            }
+        )
+    )
+
+    await friday_identity.pre_stage_paperclip_identities(
+        owner_id="user_abc",
+        paperclip_agents=[{"id": "agent-friday", "role": "ceo"}],
+        agent_keys={"agent-friday": "key-f"},
+        company_id="comp-1",
+        api_url="http://paperclip.lightbulb-prod.local:3100",
+        workspace=workspace,
+    )
+
+    workspace.read_file.assert_called_once_with("user_abc", "workspace-agent-friday/paperclip-claimed-api-key.json")
+    workspace.write_file.assert_called_once()
+    owner, rel_path, content = workspace.write_file.call_args.args
+    assert (owner, rel_path) == ("user_abc", "workspace-agent-friday/paperclip-claimed-api-key.json")
+    assert _json.loads(content) == {
+        "token": "rotated-key",
+        "agentId": "agent-friday",
+        "companyId": "comp-1",
+        "apiUrl": "http://paperclip.lightbulb-prod.local:3100",
+    }
+
+
+@pytest.mark.asyncio
+async def test_paperclip_identities_leaves_a_current_file_alone():
+    """Same apiUrl on disk → no rewrite (reprovision stays a no-op on EFS)."""
+    import json as _json
+
+    workspace = MagicMock()
+    workspace.write_file_if_missing = MagicMock(return_value=False)
+    workspace.read_file = MagicMock(
+        return_value=_json.dumps(
+            {"token": "k", "agentId": "agent-friday", "companyId": "comp-1", "apiUrl": "http://pc:3100"}
+        )
+    )
+
+    await friday_identity.pre_stage_paperclip_identities(
+        owner_id="user_abc",
+        paperclip_agents=[{"id": "agent-friday", "role": "ceo"}],
+        agent_keys={"agent-friday": "key-f"},
+        company_id="comp-1",
+        api_url="http://pc:3100",
+        workspace=workspace,
+    )
+
+    workspace.write_file.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_paperclip_identities_unreadable_existing_file_is_left_alone():
+    """Best-effort: a file we cannot read or parse is neither rewritten nor
+    fatal — a half-understood file must never be replaced with a guess."""
+    from core.containers.workspace import WorkspaceError
+
+    workspace = MagicMock()
+    workspace.write_file_if_missing = MagicMock(return_value=False)
+    workspace.read_file = MagicMock(side_effect=WorkspaceError("nope", user_id="user_abc"))
+
+    await friday_identity.pre_stage_paperclip_identities(
+        owner_id="user_abc",
+        paperclip_agents=[{"id": "agent-friday", "role": "ceo"}],
+        agent_keys={"agent-friday": "key-f"},
+        company_id="comp-1",
+        api_url="http://pc:3100",
+        workspace=workspace,
+    )
+
+    workspace.write_file.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_stage_agent_paperclip_identity_refreshes_stale_api_url():
+    """The single-agent path (post-create pairing) refreshes a stale apiUrl too."""
+    import json as _json
+
+    workspace = MagicMock()
+    workspace.write_file_if_missing = MagicMock(return_value=False)
+    workspace.read_file = MagicMock(
+        return_value=_json.dumps(
+            {
+                "token": "own-key",
+                "agentId": "agent-new",
+                "companyId": "comp-1",
+                "apiUrl": "http://paperclip.isol8-dev.local:3100",
+            }
+        )
+    )
+
+    await friday_identity.stage_paperclip_identity_for_agent(
+        owner_id="user_abc",
+        agent_id="agent-new",
+        token="minted-key",
+        company_id="comp-1",
+        api_url="http://paperclip.lightbulb-dev.local:3100",
+        workspace=workspace,
+    )
+
+    workspace.write_file.assert_called_once()
+    content = workspace.write_file.call_args.args[2]
+    assert _json.loads(content) == {
+        "token": "own-key",
+        "agentId": "agent-new",
+        "companyId": "comp-1",
+        "apiUrl": "http://paperclip.lightbulb-dev.local:3100",
+    }

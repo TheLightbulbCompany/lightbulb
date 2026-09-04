@@ -18,6 +18,7 @@ import {
 import {
   browserContext,
   currentSignupStep,
+  rotateSignupFlowId,
   setSignupStep,
   signupFlowId,
 } from "@/lib/signupFlow";
@@ -157,16 +158,28 @@ function PostHogInit() {
 }
 
 /**
- * `signup_exit` — the user left while still inside the signup/onboarding
- * flow, tagged with the step they left FROM. This is the event that turns
+ * `signup_exit` — the user left while still inside the onboarding flow,
+ * tagged with the step they left FROM. This is the event that turns
  * "people drop off somewhere" into "people drop off HERE".
  *
- * `pagehide`, not `beforeunload`: mobile Safari fires `beforeunload`
- * unreliably or not at all (it is skipped entirely when the page goes
- * into the back/forward cache, which is the normal way an iOS user leaves
- * a tab), and the in-app-webview cohort we are chasing is all mobile
- * Safari underneath. `sendBeacon` because an XHR started during page
- * dismissal is cancelled with the document.
+ * It is NOT emitted from /sign-up or /sign-in, on purpose. A `pagehide`
+ * there is ambiguous by construction: "Continue with Google/Apple" is a
+ * cross-origin full-document navigation that fires `pagehide` for every
+ * SUCCESSFUL OAuth signup, and there is no way to tell it from an abandon at
+ * the moment it happens. Emitting there would count every OAuth success as
+ * a drop-off — in exactly the in-app-webview cohort this exists to measure.
+ * The sign-up page's own drop-off is `reached /sign-up AND never
+ * $identify`, which needs no event and cannot be fooled by a redirect;
+ * autocapture (on for every route but /chat) already records the OAuth
+ * button click itself.
+ *
+ * `pagehide`, not `beforeunload`: mobile Safari skips `beforeunload`
+ * entirely when a page enters the back/forward cache, which is the normal
+ * way an iOS user leaves a tab. `send_instantly` bypasses PostHog's batch
+ * queue so the request is at least issued before the document goes away
+ * (posthog-js ignores a `transport` option on capture — its own pageleave
+ * path is the only thing that gets sendBeacon; for a custom event the
+ * keepalive fetch this produces is the best available).
  *
  * Fires at most once per step per page session: a bfcache restore/freeze
  * cycle can dispatch `pagehide` repeatedly from the same step, and a
@@ -182,7 +195,7 @@ function SignupExitTracker() {
       capture(
         "signup_exit",
         { step, route: window.location.pathname },
-        { transport: "sendBeacon" },
+        { send_instantly: true },
       );
     };
     window.addEventListener("pagehide", onHide);
@@ -206,14 +219,16 @@ function PostHogPageview() {
       capture("landing_viewed", { path: url });
     }
 
-    // Which step `signup_exit` reports. /chat and /onboarding are owned by
-    // ProvisioningStepper (it knows the provisioning phase); every route
-    // outside the flow clears it so a later exit reports nothing.
-    if (pathname?.startsWith("/sign-up")) {
-      setSignupStep("sign_up");
-    } else if (pathname?.startsWith("/sign-in")) {
-      setSignupStep("sign_in");
-    } else if (!pathname?.startsWith("/chat") && !pathname?.startsWith("/onboarding")) {
+    // Which step `signup_exit` reports. /chat is owned by ProvisioningStepper
+    // (it knows the provisioning phase and whether this is a genuine first
+    // run). /onboarding is Clerk's team-creation / invitation screen — an
+    // expensive, unambiguous place to abandon, so it gets its own step.
+    // /sign-up and /sign-in deliberately get NONE: see SignupExitTracker for
+    // why an exit there cannot be told from an OAuth redirect. Every other
+    // route clears it so a later exit reports nothing.
+    if (pathname?.startsWith("/onboarding")) {
+      setSignupStep("team_setup");
+    } else if (!pathname?.startsWith("/chat")) {
       setSignupStep(null);
     }
 
@@ -285,8 +300,10 @@ function PostHogIdentify() {
     } else if (!isSignedIn && identifiedRef.current) {
       reset();
       identifiedRef.current = null;
-      // reset() clears super properties too — re-register so events after a
-      // sign-out (a second signup on the same browser) still carry a flow id.
+      // A sign-out ends the journey. Mint a NEW flow id before re-registering
+      // — reset() clears super properties, and the next person to sign up on
+      // this browser must not inherit the previous journey's id.
+      rotateSignupFlowId();
       register({ signup_flow_id: signupFlowId(), ...browserContext() });
     }
   }, [isSignedIn, userId, user]);

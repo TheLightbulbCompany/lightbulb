@@ -20,13 +20,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from collections import defaultdict
 
 from core.auth import AuthContext, is_org_owner_id
 from core.billing.metronome_provisioning import ensure_metronome_customer
 from core.observability.metrics import put_metric
-from core.observability.product_analytics import capture_product_event
+from core.observability.product_analytics import (
+    capture_once_per_owner_per_day,
+    capture_product_event,
+)
 from core.repositories import billing_repo, container_repo
 from core.services import clerk_admin, wake_policy
 from core.services.agent_routine_provisioning import (
@@ -44,6 +48,7 @@ from core.services.paperclip_provisioning import (
     close_paperclip_provisioning,
 )
 from core.services.provision_gate import evaluate_provision_gate, has_always_on_entitlement
+from core.services.trial_cap import utc_today
 
 logger = logging.getLogger(__name__)
 
@@ -57,10 +62,23 @@ logger = logging.getLogger(__name__)
 _org_provision_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 # Namespace for the deterministic ``trial_started`` event uuid. A fixed,
-# arbitrary uuid4 — its only job is to keep uuid5(owner_id) from colliding
-# with any other uuid5 we might derive from an owner id later. Changing it
-# would let every existing owner emit a second trial_started, so: don't.
+# arbitrary uuid4 — its only job is to keep our uuid5 from colliding with any
+# other uuid5 we might derive from an owner id later. Changing it would let
+# every existing owner emit a second trial_started, so: don't.
 _TRIAL_STARTED_NAMESPACE = uuid.UUID("6f6c9f2e-2d5b-4a1c-9a3f-3d5c8e1b7a40")
+
+# What the client is allowed to hand us as a signup_flow_id. Anything else is
+# DROPPED, never rejected: the id is telemetry, and a polluted localStorage
+# value must not be able to turn the readiness poll into a 422 and strand the
+# user on a spinner. Sanitised here rather than at the route so every caller
+# — present and future — gets the same guarantee.
+_SIGNUP_FLOW_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _clean_signup_flow_id(value: str | None) -> str | None:
+    if value and _SIGNUP_FLOW_ID_RE.fullmatch(value):
+        return value
+    return None
 
 
 async def ensure_personal_trial_default(auth: AuthContext, owner_id: str, *, signup_flow_id: str | None = None) -> None:
@@ -95,20 +113,34 @@ async def ensure_personal_trial_default(auth: AuthContext, owner_id: str, *, sig
     - ``trial_start_requested`` — a personal owner with no billing row is
       about to be given one. Fires once per attempt.
     - ``trial_started`` — the conditional put actually wrote the row.
-      Carries a DETERMINISTIC ``event_uuid`` (uuid5 over the owner id), so
-      PostHog ingestion drops duplicates: a backend restart, the transient
-      second task during a rolling deploy, or a re-signup after an account
-      wipe can no longer re-count a person into the conversion denominator.
-      There was a second, CLIENT-side emitter until this change; it
+      Carries a DETERMINISTIC ``event_uuid`` (uuid5 over owner id + UTC day),
+      so PostHog ingestion drops the duplicates the ``created`` flag cannot
+      see — a backend restart, the transient second task during a rolling
+      deploy — while a GENUINE second trial on a later day (a re-signup after
+      an account wipe, a dev clean-slate reset, the founder re-testing) still
+      counts. Keying on the owner alone would have silently zeroed every one
+      of those. There was a second, CLIENT-side emitter until this change; it
       double-counted every trial started in a browser that kept its storage
       and single-counted the rest.
     - ``trial_start_failed`` — a personal owner who wanted a trial did not
       get one, with the reason in ``error_code``. Previously invisible: a
       user blocked by Gate B just sat on a spinner and left no event.
 
+    ``requested`` and ``failed`` go through ``capture_once_per_owner_per_day``
+    (the helper ``trial_cap_reached``/``trial_expired_block`` already use)
+    because both sit on a path the status poll re-enters indefinitely while the
+    owner stays blocked. ``trial_started`` does not need it — it fires only on
+    the write that created the row, and carries its own deterministic uuid.
+
     ``signup_flow_id`` comes from the client on the ``/container/status``
     poll (``?flow=``) and is the join key back to the anonymous half of the
-    journey, for the cases where PostHog's own identity stitch breaks.
+    journey, for the cases where PostHog's own identity stitch breaks. The
+    ``ensure_user_ready`` path also reaches here (from the Paperclip-proxy
+    handshake and the Teams reconcile) and has no flow id to give — if that
+    path wins the race for a brand-new owner, ``trial_started`` lands without
+    one. The status poll is the first thing /chat does, so in practice it
+    wins; when it does not, the person-level ``signup_flow_id`` set at
+    identify() is the fallback join.
     An org context emits NOTHING here — orgs are excluded from the free
     tier by design, so an org owner never appears in the trial funnel at
     all. Read org activation off the subscription events, not these.
@@ -125,8 +157,16 @@ async def ensure_personal_trial_default(auth: AuthContext, owner_id: str, *, sig
     if await billing_repo.get_by_owner_id(owner_id):
         return
 
+    signup_flow_id = _clean_signup_flow_id(signup_flow_id)
     flow_props = {"signup_flow_id": signup_flow_id} if signup_flow_id else {}
-    capture_product_event(distinct_id=owner_id, event="trial_start_requested", properties=flow_props)
+    # Once per owner per UTC day, NOT once per call. Everything below this line
+    # runs on EVERY status poll for as long as the owner stays blocked, because
+    # the only short-circuit above is "a billing row exists" and a blocked owner
+    # never gets one. At the 15s steady-state poll cadence that is ~480 events
+    # an hour from one person sitting on the invitation screen, which would make
+    # these two events a measure of how long tabs stay open rather than of how
+    # many people hit the block.
+    capture_once_per_owner_per_day(owner_id=owner_id, event="trial_start_requested", properties=flow_props)
 
     pending = await clerk_admin.list_pending_invitations_for_user(auth.user_id)
     if pending:
@@ -134,8 +174,8 @@ async def ensure_personal_trial_default(auth: AuthContext, owner_id: str, *, sig
             "user_provision: personal trial default refused for user=%s — pending org invitation",
             auth.user_id,
         )
-        capture_product_event(
-            distinct_id=owner_id,
+        capture_once_per_owner_per_day(
+            owner_id=owner_id,
             event="trial_start_failed",
             properties={**flow_props, "error_code": "pending_org_invitation"},
         )
@@ -151,8 +191,13 @@ async def ensure_personal_trial_default(auth: AuthContext, owner_id: str, *, sig
         # a policy decision, and a user whose trial row never landed is a
         # user stuck on the ProviderPicker forever. Name it, then re-raise —
         # the caller's own error handling is unchanged.
-        capture_product_event(
-            distinct_id=owner_id,
+        # Same daily gate. Note the consequence: a second, DIFFERENT failure for
+        # the same owner on the same day is suppressed, because the key is
+        # (event, owner, day) and not the error code. That is the right trade
+        # for a funnel signal — the operational channel for a repeated write
+        # failure is the raised exception, not PostHog.
+        capture_once_per_owner_per_day(
+            owner_id=owner_id,
             event="trial_start_failed",
             properties={**flow_props, "error_code": type(exc).__name__},
         )
@@ -167,7 +212,7 @@ async def ensure_personal_trial_default(auth: AuthContext, owner_id: str, *, sig
             distinct_id=owner_id,
             event="trial_started",
             properties={**flow_props, "owner_type": "personal"},
-            event_uuid=str(uuid.uuid5(_TRIAL_STARTED_NAMESPACE, owner_id)),
+            event_uuid=str(uuid.uuid5(_TRIAL_STARTED_NAMESPACE, f"{owner_id}:{utc_today()}")),
         )
 
 

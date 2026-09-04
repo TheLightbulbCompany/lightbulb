@@ -1,7 +1,6 @@
 "use client";
 import Link from "next/link";
 
-import { capture } from "@/lib/analytics";
 import { PROVIDER_CARDS } from "@/lib/providerCards";
 import { captureSignupCta } from "@/lib/signupFlow";
 import { writeSignupIntentCookie } from "@/lib/signupIntent";
@@ -85,10 +84,6 @@ export function PricingThreeCard() {
                 href={card.href}
                 className="ld-btn"
                 onClick={() => {
-                  capture("landing_pricing_card_clicked", {
-                    provider_choice: card.id,
-                    destination: card.href,
-                  });
                   captureSignupCta({
                     ctaId: `pricing_card_${card.id}`,
                     label: card.cta,
@@ -120,10 +115,6 @@ export function PricingThreeCard() {
               // multi-step signup (which drops the ?intent=team query); the
               // gate reads it on /chat and routes to team creation.
               writeSignupIntentCookie("team");
-              capture("landing_pricing_card_clicked", {
-                provider_choice: "team",
-                destination: "/sign-up?intent=team",
-              });
               captureSignupCta({
                 ctaId: "pricing_create_a_team",
                 label: "Create a team",

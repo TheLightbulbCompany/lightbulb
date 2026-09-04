@@ -73,6 +73,9 @@ export function HeroFunnel() {
       ctaId: "hero_funnel_submit",
       label: launchFraming ? "Join the launch" : "Start",
       surface: "landing_hero_funnel",
+      // new-business vs grow-existing — the one signal that separates the
+      // two framings this hero sells, so it must survive the event rename.
+      properties: { path },
     });
     router.push("/sign-up");
   };

@@ -539,9 +539,20 @@ export function ProvisioningStepper({
     const prev = prevPhaseRef.current;
     prevPhaseRef.current = phase;
     if (prev === phase) return;
-    // Tell the app-root `signup_exit` listener which step the user is on;
-    // null at "ready" means an exit after this point is not a drop-off.
-    setSignupStep(phase === "ready" ? null : phase);
+    // Tell the app-root `signup_exit` listener which step the user is on.
+    // Only while this is a GENUINE first-time flow: the "recovery" trigger is
+    // an existing customer's container restarting, and even on the onboarding
+    // trigger an already-provisioned user's /chat load renders phase="container"
+    // for a frame before the data arrives. Neither is a signup, and an exit
+    // during either must not be counted as a drop-off — so the same
+    // witnessed-cold-start guard `onboarding_ready` uses applies here. The
+    // pre-container phases (payment/provider) only render for owners who have
+    // not provisioned yet, so they need no such witness.
+    const inSignupFlow =
+      trigger === "onboarding" &&
+      phase !== "ready" &&
+      (phase === "payment" || phase === "provider" || sawColdStartRef.current);
+    setSignupStep(inSignupFlow ? phase : null);
     capture("onboarding_step_entered", {
       step_name: phase,
       step_index: ONBOARDING_PHASE_ORDER.indexOf(phase),
@@ -592,7 +603,7 @@ export function ProvisioningStepper({
     if (prev === null) return;
     const completion = nextOnboardingCompletion(prev, phase, STEPS_PAID);
     if (completion) capture("onboarding_step_completed", { ...completion });
-  }, [phase, providerChoice, readyStorageKey]);
+  }, [phase, providerChoice, readyStorageKey, trigger]);
 
   // `trial_started` is emitted SERVER-SIDE ONLY, by the one write that
   // actually creates the trial_local row (core/services/user_provision.py).

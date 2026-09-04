@@ -1,6 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { browserContext, currentSignupStep, setSignupStep, signupFlowId } from "@/lib/signupFlow";
+const mockCapture = vi.fn();
+vi.mock("@/lib/analytics", () => ({ capture: (...args: unknown[]) => mockCapture(...args) }));
+
+import {
+  browserContext,
+  captureSignupCta,
+  currentSignupStep,
+  rotateSignupFlowId,
+  setSignupStep,
+  signupFlowId,
+} from "@/lib/signupFlow";
 
 const FLOW_ID_KEY = "lightbulb:signup_flow_id:v1";
 
@@ -13,6 +23,30 @@ describe("signupFlowId", () => {
     expect(first).toBeTruthy();
     expect(signupFlowId()).toBe(first);
     expect(window.localStorage.getItem(FLOW_ID_KEY)).toBe(first);
+  });
+
+  it("rotates to a NEW id on demand, so a second signup on one browser gets its own journey", () => {
+    const first = signupFlowId();
+    rotateSignupFlowId();
+    const second = signupFlowId();
+    expect(second).toBeTruthy();
+    expect(second).not.toBe(first);
+    expect(window.localStorage.getItem(FLOW_ID_KEY)).toBe(second);
+  });
+
+  it("rotates even when storage throws (memory fallback is cleared too)", () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("SecurityError");
+    });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("SecurityError");
+    });
+    vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
+      throw new Error("SecurityError");
+    });
+    const first = signupFlowId();
+    rotateSignupFlowId();
+    expect(signupFlowId()).not.toBe(first);
   });
 
   it("still returns a stable id when storage throws", () => {
@@ -85,5 +119,28 @@ describe("browserContext", () => {
     expect(browserContext(instagram).browser_context).not.toBe(
       browserContext(safari).browser_context,
     );
+  });
+});
+
+describe("captureSignupCta", () => {
+  beforeEach(() => mockCapture.mockClear());
+
+  it("carries the five required fields, the optional provider, and any extra properties", () => {
+    captureSignupCta({
+      ctaId: "hero_funnel_submit",
+      label: "Start",
+      surface: "landing_hero_funnel",
+      providerChoice: "byo_key",
+      properties: { path: "grow" },
+    });
+    expect(mockCapture).toHaveBeenCalledWith("signup_cta_clicked", {
+      cta_id: "hero_funnel_submit",
+      cta_label: "Start",
+      surface: "landing_hero_funnel",
+      destination: "/sign-up",
+      route: window.location.pathname,
+      provider_choice: "byo_key",
+      path: "grow",
+    });
   });
 });

@@ -42,6 +42,24 @@ function newId(): string {
   return `f-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
 }
 
+/**
+ * Start a NEW journey: drop the stored id so the next `signupFlowId()` mints
+ * a fresh one. Called on sign-out. Without this, two people signing up on one
+ * browser (a shared machine, a QA device, a user re-signing-up after a wipe)
+ * would share a single flow id, and joining on it would MERGE two unrelated
+ * journeys — strictly worse than the identity-stitch failure the id exists
+ * to work around.
+ */
+export function rotateSignupFlowId(): void {
+  memoryFlowId = null;
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(FLOW_ID_KEY);
+  } catch {
+    /* storage-disabled: memory id was already cleared above */
+  }
+}
+
 /** The current journey's flow id, minting one on first call. */
 export function signupFlowId(): string {
   if (typeof window === "undefined") return "";
@@ -149,6 +167,10 @@ export function captureSignupCta(opts: {
   surface: string;
   destination?: string;
   providerChoice?: string;
+  /** Anything else worth segmenting this click on (the hero's
+   *  new-vs-grow path, say). Kept separate from the named fields so the
+   *  five every CTA must carry cannot be forgotten. */
+  properties?: Record<string, unknown>;
 }): void {
   capture("signup_cta_clicked", {
     cta_id: opts.ctaId,
@@ -157,5 +179,6 @@ export function captureSignupCta(opts: {
     destination: opts.destination ?? "/sign-up",
     route: typeof window === "undefined" ? null : window.location.pathname,
     ...(opts.providerChoice ? { provider_choice: opts.providerChoice } : {}),
+    ...opts.properties,
   });
 }

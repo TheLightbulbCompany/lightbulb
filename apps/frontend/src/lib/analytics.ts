@@ -124,7 +124,6 @@ export type AnalyticsEvent =
   | "get_started_step_clicked"
   // Landing
   | "landing_download_clicked"
-  | "landing_pricing_card_clicked"
   | "landing_viewed"
   // Integrations
   | "integration_access_requested"

@@ -207,7 +207,10 @@ describe("PostHogProvider", () => {
       </mod.PostHogProvider>
     );
 
-    expect(mockCapture).not.toHaveBeenCalledWith("signup_started", expect.anything());
+    // capture() always forwards a third (options) argument, so a two-argument
+    // matcher here could never match and the assertion would be vacuous.
+    expect(mockCapture).not.toHaveBeenCalledWith("signup_started", expect.anything(), undefined);
+    expect(mockCapture.mock.calls.map((c) => c[0])).not.toContain("signup_started");
   });
 
   it("forwards uncaught window errors to posthog.captureException", async () => {

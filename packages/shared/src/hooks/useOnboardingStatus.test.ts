@@ -247,6 +247,46 @@ describe("useOnboardingStatus", () => {
     }
   });
 
+  it("appends the signup flow id as ?flow= WITHOUT letting it reach the SWR key", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchSpy = vi.fn().mockImplementation(
+        jsonResponder(200, contractBody({ lifecycle: "ready", runtime_phase: "ready", chat_available: true })),
+      );
+      global.fetch = fetchSpy;
+      // A provider map we can read back, so the cache-key assertion below is
+      // real rather than assumed.
+      const cache = new Map();
+      const keyedWrapper = ({ children }: { children: React.ReactNode }) =>
+        React.createElement(SWRConfig, { value: { provider: () => cache } }, children);
+      renderHook(
+        () =>
+          useOnboardingStatus({
+            api: makeApi(),
+            enabled: true,
+            wake: () => true,
+            flow: () => "flow-abc",
+          }),
+        { wrapper: keyedWrapper },
+      );
+      await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+      const url = fetchSpy.mock.calls.at(-1)?.[0] as string;
+      // Both params ride the REQUEST, with exactly one "?" between them.
+      expect(url).toContain("wake=1");
+      expect(url).toContain("flow=flow-abc");
+      expect(url.match(/\?/g)?.length).toBe(1);
+      // ...and the SWR cache key stays the bare path. Every
+      // `mutate("/container/status")` call in the web app targets that
+      // literal, so a param leaking into the key would silently orphan all
+      // of them — which is the one way this change could break the app.
+      const keys = [...cache.keys()].map(String);
+      expect(keys).toContain("/container/status");
+      expect(keys.some((k) => k.includes("flow="))).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("bounded loop converges after simulating occlusion-throttling: a hung fetcher times out via AbortController and the loop keeps trying until the network recovers", async () => {
     vi.useFakeTimers();
     try {

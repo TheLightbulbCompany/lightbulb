@@ -20,7 +20,7 @@ import { LaunchHeroPill } from "@/components/launch/LaunchHeroPill";
 import { useLaunchInfo } from "@/components/launch/useLaunchInfo";
 import { LANDING_BRIEF_STORAGE_KEY } from "@/hooks/useLandingBriefReplay";
 import { clearSignupIntentCookie } from "@/lib/signupIntent";
-import { capture } from "@/lib/analytics";
+import { captureSignupCta } from "@/lib/signupFlow";
 import { HeroLamp } from "./HeroLamp";
 import { lightOn } from "./HeroLamp/lampStore";
 
@@ -56,6 +56,11 @@ export function HeroFunnel() {
   // rejected by the replay hook AFTER signup, silently losing the brief.
   const canSubmit = input.trim().length >= 3 && input.trim().length <= 2000;
 
+  // Launch sheet open: the same funnel, framed as joining the launch. The
+  // stash → /sign-up flow is unchanged — the sheet itself is joined
+  // in-product, after onboarding.
+  const launchFraming = launch?.phase === "open";
+
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!canSubmit) return;
@@ -64,18 +69,16 @@ export function HeroFunnel() {
     // creation and strand the stashed brief in an org context.
     clearSignupIntentCookie();
     stash(path, input.trim());
-    capture("signup_started", {
-      source: "landing_hero_funnel",
-      path,
-      destination: "/sign-up",
+    captureSignupCta({
+      ctaId: "hero_funnel_submit",
+      label: launchFraming ? "Join the launch" : "Start",
+      surface: "landing_hero_funnel",
+      // new-business vs grow-existing — the one signal that separates the
+      // two framings this hero sells, so it must survive the event rename.
+      properties: { path },
     });
     router.push("/sign-up");
   };
-
-  // Launch sheet open: the same funnel, framed as joining the launch. The
-  // stash → /sign-up flow is unchanged — the sheet itself is joined
-  // in-product, after onboarding.
-  const launchFraming = launch?.phase === "open";
 
   return (
     <section className="ld-funnel" id="start">

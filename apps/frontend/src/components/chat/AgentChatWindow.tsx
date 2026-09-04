@@ -34,7 +34,8 @@ interface AgentChatWindowProps {
 
 // Owner-scoped once-ever marker so `trial_first_agent_response` fires at most
 // once per trial owner — same idiom as ProvisioningStepper's
-// ONBOARDING_READY_STORAGE_KEY / TRIAL_STARTED_STORAGE_KEY.
+// ONBOARDING_READY_STORAGE_KEY. (A TRIAL_STARTED_STORAGE_KEY lived there too;
+// `trial_started` is server-side only now, so it is gone.)
 const TRIAL_FIRST_RESPONSE_STORAGE_KEY = "isol8_trial_first_response_v1";
 
 // =============================================================================

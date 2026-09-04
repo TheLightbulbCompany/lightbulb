@@ -83,7 +83,7 @@ describe("analytics.capture", () => {
     expect(mockCapture).toHaveBeenCalledWith("chat_message_sent", {
       agent_id: "a1",
       message_length: 42,
-    });
+    }, undefined);
   });
 
   it("captureException forwards to posthog.captureException when loaded", async () => {
@@ -107,9 +107,9 @@ describe("analytics.capture", () => {
     const { capture, refreshAttribution } = await importAnalytics();
 
     refreshAttribution();
-    capture("landing_cta_clicked", { cta_id: "hero_start_pod" });
+    capture("signup_cta_clicked", { cta_id: "hero_funnel_submit" });
 
-    expect(mockCapture).toHaveBeenCalledWith("landing_cta_clicked", {
+    expect(mockCapture).toHaveBeenCalledWith("signup_cta_clicked", {
       first_touch_timestamp: expect.any(String),
       first_touch_landing_path: "/?utm_source=hn&utm_campaign=launch",
       first_touch_utm_source: "hn",
@@ -118,8 +118,8 @@ describe("analytics.capture", () => {
       last_touch_landing_path: "/?utm_source=hn&utm_campaign=launch",
       last_touch_utm_source: "hn",
       last_touch_utm_campaign: "launch",
-      cta_id: "hero_start_pod",
-    });
+      cta_id: "hero_funnel_submit",
+    }, undefined);
   });
 
   it("attaches stored attribution on identify", async () => {

@@ -22,6 +22,8 @@
 import * as React from "react";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
+
+import { captureSignupCta } from "@/lib/signupFlow";
 import {
   ArrowUp,
   Bot,
@@ -150,6 +152,18 @@ function TabStrip({ label }: { label: string }) {
 
 export function WorkspaceDemo() {
   const router = useRouter();
+  // Every interactive control in the demo is a signup door — clicking any
+  // of them routes to /sign-up. All thirteen used to be a bare
+  // `router.push("/sign-up")` emitting nothing, so PostHog saw one
+  // undifferentiated arrival on /sign-up and could not say which control
+  // in the product tour actually sells it. Named, they can.
+  const goSignUp = React.useCallback(
+    (ctaId: string, label: string) => {
+      captureSignupCta({ ctaId, label, surface: "landing_workspace_demo" });
+      router.push("/sign-up");
+    },
+    [router],
+  );
   const [view, setView] = React.useState<DemoView>("chat");
   const [selectedAgentId, setSelectedAgentId] = React.useState(FRIDAY_ID);
   const [detailIssueId, setDetailIssueId] = React.useState<string | null>(null);
@@ -302,7 +316,7 @@ export function WorkspaceDemo() {
         className="px-4 pb-4 pt-1"
         onSubmit={(e) => {
           e.preventDefault();
-          router.push("/sign-up");
+          goSignUp("demo_composer_send", "Send (chat composer)");
         }}
       >
         <div className="flex flex-col rounded-2xl border border-[var(--edge)] bg-white shadow-[0_1px_2px_rgba(26,26,26,0.03),0_4px_16px_rgba(26,26,26,0.05)] transition-[border-color] focus-within:border-[var(--midnight)]/25">
@@ -355,7 +369,7 @@ export function WorkspaceDemo() {
           onUpdateIssue={updateIssue}
           // Creating tasks is the product — the demo's "New task" is a
           // signup door, same as the composer.
-          onNewTask={() => router.push("/sign-up")}
+          onNewTask={() => goSignUp("demo_tasks_new_task", "New task (tasks panel)")}
         />
       </div>
     </div>
@@ -532,7 +546,7 @@ export function WorkspaceDemo() {
                 variant="primary"
                 size="sm"
                 className="shrink-0"
-                onClick={() => router.push("/sign-up")}
+                onClick={() => goSignUp("demo_inbox_new_task", "New task (inbox toolbar)")}
               >
                 <Plus className="h-3 w-3" />
                 <span>New task</span>
@@ -650,7 +664,7 @@ export function WorkspaceDemo() {
                     type="button"
                     className="create-pill__seg"
                     aria-label="New agent"
-                    onClick={() => router.push("/sign-up")}
+                    onClick={() => goSignUp("demo_create_new_agent", "New agent")}
                   >
                     <Plus size={13} />
                     Agent
@@ -660,7 +674,7 @@ export function WorkspaceDemo() {
                     type="button"
                     className="create-pill__seg"
                     aria-label="New task"
-                    onClick={() => router.push("/sign-up")}
+                    onClick={() => goSignUp("demo_create_new_task", "New task (create pill)")}
                   >
                     <Plus size={13} />
                     Task
@@ -719,7 +733,7 @@ export function WorkspaceDemo() {
                                 className="session-new"
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  router.push("/sign-up");
+                                  goSignUp("demo_new_session", "New session");
                                 }}
                               >
                                 <Plus size={12} />
@@ -744,7 +758,7 @@ export function WorkspaceDemo() {
                     <NavRow
                       Icon={Search}
                       label="Search"
-                      onClick={() => router.push("/sign-up")}
+                      onClick={() => goSignUp("demo_nav_search", "Search")}
                     />
                     <NavRow
                       Icon={Inbox}
@@ -771,17 +785,17 @@ export function WorkspaceDemo() {
                     <NavRow
                       Icon={Repeat}
                       label="Automations"
-                      onClick={() => router.push("/sign-up")}
+                      onClick={() => goSignUp("demo_nav_automations", "Automations")}
                     />
                     <NavRow
                       Icon={Target}
                       label="Goals"
-                      onClick={() => router.push("/sign-up")}
+                      onClick={() => goSignUp("demo_nav_goals", "Goals")}
                     />
                     <NavRow
                       Icon={FolderKanban}
                       label="Projects"
-                      onClick={() => router.push("/sign-up")}
+                      onClick={() => goSignUp("demo_nav_projects", "Projects")}
                     />
                     <div className="agent-section-label">
                       <span>Company</span>
@@ -789,17 +803,17 @@ export function WorkspaceDemo() {
                     <NavRow
                       Icon={Network}
                       label="Org chart"
-                      onClick={() => router.push("/sign-up")}
+                      onClick={() => goSignUp("demo_nav_org_chart", "Org chart")}
                     />
                     <NavRow
                       Icon={Images}
                       label="Artifacts"
-                      onClick={() => router.push("/sign-up")}
+                      onClick={() => goSignUp("demo_nav_artifacts", "Artifacts")}
                     />
                     <NavRow
                       Icon={History}
                       label="Activity"
-                      onClick={() => router.push("/sign-up")}
+                      onClick={() => goSignUp("demo_nav_activity", "Activity")}
                     />
                   </nav>
                   <div className="mt-3 border-t border-[var(--edge)] px-3 pb-2 pt-3">

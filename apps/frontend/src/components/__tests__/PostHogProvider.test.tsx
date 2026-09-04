@@ -8,6 +8,7 @@ const mockCapture = vi.fn();
 const mockCaptureException = vi.fn();
 const mockIdentify = vi.fn();
 const mockReset = vi.fn();
+const mockRegister = vi.fn();
 const mockRouterState = vi.hoisted(() => ({
   pathname: "/",
   search: "",
@@ -30,6 +31,7 @@ vi.mock("posthog-js", () => {
     captureException: mockCaptureException,
     identify: mockIdentify,
     reset: mockReset,
+    register: mockRegister,
   };
   return { default: posthog };
 });
@@ -179,12 +181,14 @@ describe("PostHogProvider", () => {
     expect(mockIdentify).toHaveBeenCalledWith("user_123", expect.objectContaining({
       email: "user@example.com",
     }));
+    // Trailing `undefined` is capture()'s CaptureOptions passthrough — this
+    // call site sends none.
     expect(mockCapture).toHaveBeenCalledWith("signup_started", expect.objectContaining({
       source: "clerk_signup_completed",
       identity_stitched: true,
       provider_choice: "byo_key",
       signup_path: "/sign-up?provider=byo_key",
-    }));
+    }), undefined);
   });
 
   it("does not recapture stitched signup_started for the same user", async () => {
@@ -203,7 +207,10 @@ describe("PostHogProvider", () => {
       </mod.PostHogProvider>
     );
 
-    expect(mockCapture).not.toHaveBeenCalledWith("signup_started", expect.anything());
+    // capture() always forwards a third (options) argument, so a two-argument
+    // matcher here could never match and the assertion would be vacuous.
+    expect(mockCapture).not.toHaveBeenCalledWith("signup_started", expect.anything(), undefined);
+    expect(mockCapture.mock.calls.map((c) => c[0])).not.toContain("signup_started");
   });
 
   it("forwards uncaught window errors to posthog.captureException", async () => {

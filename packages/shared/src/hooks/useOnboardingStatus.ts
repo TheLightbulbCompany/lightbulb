@@ -98,6 +98,11 @@ export interface UseOnboardingStatusOptions {
   /** Computed fresh at each fetch ATTEMPT and appended as `?wake=0|1`. Omit
    * to never send the param (an old backend simply ignores it). */
   wake?: () => boolean;
+  /** Client-minted signup_flow_id, appended as `?flow=`. This poll is what
+   * creates a new personal owner's trial row, so it is the one request that
+   * can hand the id to the server-side `trial_started`. Omit to never send
+   * it (mobile does not run the web signup funnel). */
+  flow?: () => string | undefined;
   /** Omit to never gate/pause — the hook then always treats itself as visible. */
   visibility?: VisibilityAdapter;
 }
@@ -151,7 +156,7 @@ function cadenceFor(ready: boolean, windowStartedAt: number, now: number): numbe
 export function useOnboardingStatus(
   options: UseOnboardingStatusOptions,
 ): UseOnboardingStatusResult {
-  const { api, enabled, swrKey = "/container/status", wake, visibility } = options;
+  const { api, enabled, swrKey = "/container/status", wake, flow, visibility } = options;
 
   // Timestamp of the most recent fetch ATTEMPT (not completion) — read by
   // the backstop to decide whether the SWR chain looks stalled.
@@ -167,8 +172,15 @@ export function useOnboardingStatus(
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     try {
       const wakeFlag = wake ? (wake() ? "1" : "0") : undefined;
-      const sep = swrKey.includes("?") ? "&" : "?";
-      const url = wakeFlag !== undefined ? `${swrKey}${sep}wake=${wakeFlag}` : swrKey;
+      const flowId = flow?.();
+      const params = new URLSearchParams();
+      if (wakeFlag !== undefined) params.set("wake", wakeFlag);
+      if (flowId) params.set("flow", flowId);
+      const query = params.toString();
+      // NOTE the SWR key stays `swrKey` — these params must never reach it,
+      // or the `mutate("/container/status")` calls scattered across the web
+      // app would target a key nothing is subscribed to.
+      const url = query ? `${swrKey}${swrKey.includes("?") ? "&" : "?"}${query}` : swrKey;
       const { status, body } = await fetchJsonWithStatus(api, url, controller.signal);
       return { kind: "classified", classified: classifyContainerStatus({ status, body }) };
     } catch (err) {
@@ -188,7 +200,7 @@ export function useOnboardingStatus(
     } finally {
       clearTimeout(timer);
     }
-  }, [api, swrKey, wake]);
+  }, [api, swrKey, wake, flow]);
 
   const key = enabled ? swrKey : null;
 

@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { useAuth, UserButton } from "@clerk/nextjs";
 
 import { Logo } from "@/components/Logo";
-import { capture } from "@/lib/analytics";
+import { captureSignupCta } from "@/lib/signupFlow";
 
 export function Navbar() {
   const linksRef = useRef<HTMLDivElement>(null);
@@ -148,9 +148,10 @@ export function Navbar() {
               href="/sign-up"
               className="btn-primary"
               onClick={() =>
-                capture("signup_started", {
-                  source: "landing_nav",
-                  destination: "/sign-up",
+                captureSignupCta({
+                  ctaId: "nav_sign_up",
+                  label: "Sign up",
+                  surface: "landing_nav",
                 })
               }
             >

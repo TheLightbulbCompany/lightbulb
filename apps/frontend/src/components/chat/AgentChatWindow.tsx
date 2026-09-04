@@ -268,13 +268,6 @@ export function AgentChatWindow({
     branchRefreshToken,
   } = useAgentChat(agentId, sessionName);
 
-  // `trial_first_agent_response` is emitted SERVER-SIDE (product_analytics
-  // .capture_trial_first_agent_response): on the first-run delivered CAS and
-  // on the first true-terminal chat.final. It was a client event here twice
-  // — first bound to the USER's turn completing (missed Friday's autonomous
-  // first report, the reply most trial owners read first), then a scan of
-  // the rendered transcript (fired on error bubbles and "waking" notices).
-  // The backend already knows the moment; the browser never reliably did.
 
   // Mirrors the sessionKey useAgentChat's own history reads use (chat.history,
   // buildChatItems) — the durable progress card is keyed the same way.

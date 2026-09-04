@@ -894,6 +894,37 @@ async def create_trial_local_if_absent(owner_id: str, owner_type: str) -> bool:
     return True
 
 
+async def mark_trial_first_agent_response(owner_id: str) -> bool:
+    """Stamp ``first_agent_response_at`` on a ``trial_local`` row, once.
+
+    The durable gate for the ``trial_first_agent_response`` product event
+    (``product_analytics.schedule_trial_first_agent_response``). Same
+    conditional-write idiom as ``create_trial_local_if_absent``: exactly one
+    caller wins, across processes and restarts; every later call — and every
+    call for a paid or org owner, whose row is not ``trial_local`` — no-ops.
+
+    The stamp doubles as the owner's time-to-first-value. Returns ``True``
+    iff THIS call wrote it.
+    """
+    table = _get_table()
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET first_agent_response_at = :now, updated_at = :now",
+            ConditionExpression=(
+                "attribute_exists(owner_id) AND attribute_not_exists(first_agent_response_at) "
+                "AND subscription_status = :trial"
+            ),
+            ExpressionAttributeValues={":now": utc_now_iso(), ":trial": "trial_local"},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+    return True
+
+
 async def set_subscription(
     *,
     owner_id: str,

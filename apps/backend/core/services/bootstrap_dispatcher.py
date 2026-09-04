@@ -263,7 +263,6 @@ from core.gateway.connection_pool import GatewayReconnectThrottled
 from core.gateway.operator_rpc import GATEWAY_PORT, GatewayConnectUnavailableError
 from core.services.agent_roster import roster_entries
 from core.observability.metrics import put_metric
-from core.observability.product_analytics import capture_trial_first_agent_response
 from core.repositories.paperclip_repo import BootstrapClaimResult
 from core.services.onboarding_brief import build_first_run_message
 
@@ -974,11 +973,6 @@ def _kickoff_observer(
                 # winner owns the delivered-only follow-up, or Friday gets two
                 # nudges for one run.
                 if won:
-                    # The first thing most trial owners ever read from an agent
-                    # is this report, and it completes with no user turn — so
-                    # the activation milestone is emitted here, on the CAS
-                    # winner, not from the browser.
-                    await capture_trial_first_agent_response(owner_id, source="first_run")
                     await _maybe_nudge_first_contact(
                         repo,
                         row_user_id,

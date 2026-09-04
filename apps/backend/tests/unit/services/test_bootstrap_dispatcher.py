@@ -1048,36 +1048,6 @@ async def test_completion_observer_nudges_only_when_it_won_the_delivered_cas():
 
 
 @pytest.mark.asyncio
-async def test_completion_observer_emits_trial_first_response_only_when_it_won():
-    """The activation milestone rides the delivered CAS: the winner emits it
-    (source=first_run), a re-attached loser does not — the helper's own
-    per-owner uuid is the second line of defence, not the first."""
-    repo = _fake_repo()
-    repo.mark_bootstrap_delivered = AsyncMock(return_value=False)
-    emit = AsyncMock()
-    with (
-        patch.object(bootstrap_dispatcher, "_maybe_nudge_first_contact", new=AsyncMock()),
-        patch.object(bootstrap_dispatcher, "capture_trial_first_agent_response", new=emit),
-    ):
-        repo, ecs, pool, _ = await _run(_onboarding(), repo=repo)
-        callback = pool.register_run_completion_callback.call_args.args[2]
-        await callback("final", {"runId": "dispatch-1"})
-    emit.assert_not_awaited()
-
-    repo = _fake_repo()  # default: the CAS lands
-    emit = AsyncMock()
-    with (
-        patch.object(bootstrap_dispatcher, "_maybe_nudge_first_contact", new=AsyncMock()),
-        patch.object(bootstrap_dispatcher, "capture_trial_first_agent_response", new=emit),
-    ):
-        repo, ecs, pool, _ = await _run(_onboarding(), repo=repo)
-        callback = pool.register_run_completion_callback.call_args.args[2]
-        await callback("final", {"runId": "dispatch-1"})
-    emit.assert_awaited_once()
-    assert emit.await_args.kwargs == {"source": "first_run"}
-
-
-@pytest.mark.asyncio
 async def test_completion_observer_marks_failed_on_error():
     onboarding = _onboarding()
     repo, ecs, pool, _ = await _run(onboarding)

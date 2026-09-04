@@ -657,7 +657,6 @@ export function useAgentChat(
   // agentId mirror for callback access without stale closures.
   const agentIdRef = useRef(agentId);
 
-
   // Busy gate. The approval-pause guard is implemented below via the
   // approvalQueueRef + queue-drain effect — OpenClaw emits chat.final
   // mid-turn while awaiting an exec approval and only starts the real

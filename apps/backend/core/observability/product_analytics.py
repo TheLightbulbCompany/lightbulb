@@ -23,6 +23,7 @@ path, so every failure is swallowed (logged) rather than raised.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from typing import Any
@@ -139,61 +140,60 @@ def capture_once_per_owner_per_day(
 
 
 # ---------------------------------------------------------------------------
-# trial_first_agent_response — the trial owner's first agent reply, once ever
+# trial_first_agent_response — a trial owner's first agent reply, once ever
 # ---------------------------------------------------------------------------
 
-# Deterministic capture uuid: uuid5(namespace, owner_id). ONE per owner for
-# life, not per day — "first agent response" is a lifetime milestone, and
-# keying it per day would re-fire it every day the owner chats. Two emit
-# sites can both observe the same first reply (the first-run kickoff is
-# seen by the bootstrap observer AND by the gateway reader loop); PostHog
-# keeps whichever lands first and drops the other on this uuid.
+# Owners this process has already RESOLVED (fired, already stamped, or not
+# on a trial). Added only after the durable check answered, never before an
+# await, so a cancelled task cannot leave an owner marked resolved with
+# nothing emitted. Unbounded on purpose: one string per owner per process.
+_first_response_done: set[str] = set()
+
+# Same-day belt for the durable gate below — PostHog dedups a repeated uuid
+# only within one UTC day (ClickHouse sorts on toDate(timestamp)), so this is
+# NOT a lifetime key; the billing-row CAS is what makes the event once-ever.
 _TRIAL_FIRST_RESPONSE_NS = uuid.uuid5(uuid.NAMESPACE_URL, "lightbulb:trial_first_agent_response")
 
-# Owners this process has already resolved (fired, or found not to be on a
-# trial). The gateway site runs on EVERY successful chat turn for EVERY
-# owner, so without this it would cost a billing-row read per turn. Bounded
-# FIFO like ``_daily_dedup_seen``; a restart simply re-reads once per owner
-# and the uuid above makes the re-capture a no-op at ingestion.
-_first_response_resolved: dict[str, None] = {}
 
+def schedule_trial_first_agent_response(owner_id: str) -> "asyncio.Task[None] | None":
+    """Spawn the once-ever ``trial_first_agent_response`` capture for an owner.
 
-async def capture_trial_first_agent_response(owner_id: str, *, source: str) -> None:
-    """Emit ``trial_first_agent_response`` for a ``trial_local`` owner, once.
+    Synchronous and I/O-free — safe on the gateway reader loop. Returns the
+    task for the caller's drain set, or None when the PostHog bridge is off
+    (unit tests, local dev) or this process already resolved the owner.
 
-    Server-side on purpose. This used to be a client event bound to the
-    completion of the USER's first chat turn, which missed the reply most
-    trial owners read first — Friday's autonomous first-run report, which
-    lands with nobody having typed — and a later client rewrite that scanned
-    the rendered transcript fired on error bubbles and "waking" notices too.
-    The backend already knows the moment: the first-run delivered CAS
-    (``mark_bootstrap_delivered``) and the reader loop's true-terminal
-    ``chat.final``. Emitting here is device-independent, covers the Teams
-    inbox and mobile, and cannot be fooled by what the browser renders.
-
-    ``source`` is best-effort ("first_run" | "chat"): when both sites see the
-    same first reply, whichever capture wins at ingestion carries its own.
-    Never raises — a telemetry read must not take a chat turn down with it.
+    Invariants:
+    - Once ever per owner: gated by a conditional write of
+      ``first_agent_response_at`` on the billing row, which also records the
+      time-to-first-value. Survives restarts, deploys and races; the uuid is
+      only a same-day belt.
+    - Trial owners only (``subscription_status == trial_local`` at the moment
+      of the reply); paid and org owners never fire it.
+    - Never raises; a failed write is logged and the owner is NOT memoised, so
+      a later reply retries.
     """
-    if owner_id in _first_response_resolved:
-        return
-    _first_response_resolved[owner_id] = None
-    while len(_first_response_resolved) > _DAILY_DEDUP_CAP:
-        del _first_response_resolved[next(iter(_first_response_resolved))]
+    if not settings.POSTHOG_PROJECT_WRITE_KEY:
+        return None
+    if owner_id in _first_response_done:
+        return None
+    return asyncio.create_task(_capture_trial_first_agent_response(owner_id))
+
+
+async def _capture_trial_first_agent_response(owner_id: str) -> None:
     try:
         from core.repositories import billing_repo
 
-        row = await billing_repo.get_by_owner_id(owner_id)
+        won = await billing_repo.mark_trial_first_agent_response(owner_id)
+    except asyncio.CancelledError:
+        raise
     except Exception:
-        logger.warning("trial_first_agent_response: billing read failed for %s", owner_id, exc_info=True)
-        # Let a later turn try again — the read, not the owner, failed.
-        _first_response_resolved.pop(owner_id, None)
+        logger.warning("trial_first_agent_response: billing CAS failed for %s", owner_id, exc_info=True)
         return
-    if not row or row.get("subscription_status") != "trial_local":
+    _first_response_done.add(owner_id)
+    if not won:
         return
     capture_product_event(
         distinct_id=owner_id,
         event="trial_first_agent_response",
-        properties={"source": source},
-        event_uuid=str(uuid.uuid5(_TRIAL_FIRST_RESPONSE_NS, owner_id)),
+        event_uuid=str(uuid.uuid5(_TRIAL_FIRST_RESPONSE_NS, f"{owner_id}:{utc_today()}")),
     )

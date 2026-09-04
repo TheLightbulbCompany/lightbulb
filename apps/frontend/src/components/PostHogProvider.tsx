@@ -210,27 +210,30 @@ function PostHogPageview() {
   const { isSignedIn } = useAuth();
   const queryString = searchParams?.toString() ?? "";
   const url = pathname + (queryString ? `?${queryString}` : "");
-  // The URL the last pageview was actually SENT for. Set only after a real
-  // send: pageview() no-ops until posthog has loaded, and a ref written
-  // before the send would turn "not loaded yet" into "never sent".
-  const lastPageviewUrlRef = useRef<string | null>(null);
+  // The URL whose per-URL events were last SENT. Set only after a real send
+  // (pageview() reports whether posthog was loaded). One ref guards every
+  // capture in the block — pageview, landing_viewed, the checkout return —
+  // so a StrictMode dev double-invoke cannot double any of them.
+  const lastSentUrlRef = useRef<string | null>(null);
 
-  // Per-URL work. Keyed on the URL STRING, deliberately: this used to share
-  // one effect with the sign-up-intent stash below, which depends on
-  // `isSignedIn`, and Clerk resolves that from `undefined` to a boolean after
-  // first mount — so every cold landing ran the effect twice and sent two
-  // `$pageview`s and two `landing_viewed`s ~200ms apart (3 loads → 6 each on
-  // a live prod signup). A value-compared string dep cannot re-run on an
-  // object-identity churn either.
+  // Per-URL effect, keyed on the URL STRING. Invariants: one send per
+  // navigation; independent of when Clerk resolves `isSignedIn` (that lives
+  // in the second effect); immune to searchParams object-identity churn.
   useEffect(() => {
     if (!POSTHOG_KEY) return;
-    if (lastPageviewUrlRef.current !== url) {
-      const sent = pageview(url);
-      if (sent) {
-        lastPageviewUrlRef.current = url;
-        if (pathname === "/") {
-          capture("landing_viewed", { path: url });
-        }
+    if (lastSentUrlRef.current !== url && pageview(url)) {
+      lastSentUrlRef.current = url;
+      if (pathname === "/") {
+        capture("landing_viewed", { path: url });
+      }
+      const checkoutStatus = searchParams.get("checkout") ?? searchParams.get("subscription");
+      if (checkoutStatus === "success" || checkoutStatus === "cancel") {
+        capture(
+          checkoutStatus === "success"
+            ? "subscription_checkout_returned_success"
+            : "subscription_checkout_canceled",
+          { path: pathname, provider_choice: searchParams.get("provider") },
+        );
       }
     }
 
@@ -246,28 +249,14 @@ function PostHogPageview() {
     } else if (!pathname?.startsWith("/chat")) {
       setSignupStep(null);
     }
-
-    const checkoutStatus = searchParams.get("checkout") ?? searchParams.get("subscription");
-    if (checkoutStatus === "success" || checkoutStatus === "cancel") {
-      capture(
-        checkoutStatus === "success"
-          ? "subscription_checkout_returned_success"
-          : "subscription_checkout_canceled",
-        {
-          path: pathname,
-          provider_choice: searchParams.get("provider"),
-        },
-      );
-    }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `url` is derived from pathname + searchParams; keying on the string is the point.
   }, [url]);
 
-  // Sign-up intent stash — the one thing that needs Clerk's answer. Strictly
-  // `=== false`: `undefined` means "Clerk has not resolved yet", and treating
-  // it as signed-out stashed an intent for SIGNED-IN users who opened
-  // /sign-up (nothing redirects them off it), which PostHogIdentify then
-  // replayed as a spurious `signup_started{clerk_signup_completed}` on any
-  // browser that had not seen that account before.
+  // Sign-up intent stash — the one thing that needs Clerk's answer.
+  // Invariant: stash ONLY when Clerk has resolved to signed-out
+  // (`=== false`); `undefined` is "not resolved yet", and a signed-in user
+  // opening /sign-up must never leave an intent for PostHogIdentify to replay
+  // as a signup.
   useEffect(() => {
     if (!POSTHOG_KEY) return;
     if (isSignedIn === false && pathname?.startsWith("/sign-up")) {

@@ -313,7 +313,15 @@ export function AgentChatWindow({
   // tester's own message. A trial owner who reads the report and never types
   // never fired it at all — activation under-counted, time-to-value over-stated.
   // Driven off the rendered groups so it means what it says.
-  const sawAgentText = useMemo(() => hasVisibleAssistantText(renderGroups), [renderGroups]);
+  // Short-circuit before scanning: `renderGroups` is rebuilt on every
+  // streamed token, and the milestone applies to trial owners only, once.
+  const sawAgentText = useMemo(
+    () =>
+      !isTrialLocal || trialFirstResponseFiredRef.current
+        ? false
+        : hasVisibleAssistantText(renderGroups),
+    [isTrialLocal, renderGroups],
+  );
   useEffect(() => {
     if (!isTrialLocal || !sawAgentText || trialFirstResponseFiredRef.current) return;
     trialFirstResponseFiredRef.current = true;

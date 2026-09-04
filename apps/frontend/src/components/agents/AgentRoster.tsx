@@ -21,13 +21,23 @@
 //      happened to return.
 //   3. It is reachable by keyboard. The old row was a bare `<div onClick>`.
 //
-// Deliberately NOT here: folders / collapsible groups / manual drag-order.
-// Plans cap an owner at 10 agents, so grouping hides four rows behind a
-// chevron and manual ordering asks the user to maintain what the sort already
-// derives. See the PR for the full argument.
+// The roster COLLAPSES to Friday plus any pinned agents, and expands on a
+// chevron. An earlier version of this comment argued the opposite — that with
+// a 10-agent plan cap the whole cast fits on screen, so hiding rows behind a
+// chevron buys nothing. That argument was about screen SPACE and it was right
+// about screen space. Collapsing is not here to save room: it is here because
+// Friday is the product and a first-time owner reading ten equal rows cannot
+// tell who to talk to. Pinning is the escape hatch for owners who work with a
+// specific teammate often, and it is the reason manual drag-ordering is still
+// not here — a pin is one bit the user sets deliberately, not an ordering they
+// have to maintain.
+//
+// Nothing about the indicators changes when collapsed: the section header
+// already leads with "N needs you" / "N working", so a hidden agent that wants
+// attention still says so.
 
 import { useMemo, useState, type ReactNode } from "react";
-import { Pencil, Trash2, ListTodo, SlidersHorizontal } from "lucide-react";
+import { Pencil, Trash2, ListTodo, SlidersHorizontal, Pin, PinOff, ChevronDown } from "lucide-react";
 
 import { Monogram } from "@/components/agents/AgentIdentity";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -36,6 +46,11 @@ import { fromInstalledAgent } from "@/lib/agentDesign";
 import { agentDisplayName, getAgentModelString, type Agent } from "@/hooks/useAgents";
 import { buildModelNameMap, displayModelName } from "@/lib/modelDisplay";
 import { classifyAgentStatus } from "@/components/teams/shared/lib/agentStatus";
+import {
+  setRosterExpanded,
+  toggleRosterPin,
+  useRosterPrefs,
+} from "@/components/agents/rosterPrefs";
 
 /**
  * The roster's view of an agent's runtime state.
@@ -162,20 +177,46 @@ export interface RosterEntry {
  * Derive the roster's order. Pure and total — no persistence, no localStorage,
  * no `Date.now()`. (An earlier "recent assignees" ordering read localStorage
  * from inside a `useMemo` during render and shipped a real bug; ordering that
- * is a pure function of props cannot repeat it.)
+ * is a pure function of its ARGUMENTS cannot repeat it. That is why pins
+ * arrive as a parameter here and are read by the host, not looked up inside.)
  *
- * Friday is pinned to the top regardless of state: she is the front door to
- * the whole company, and a front door that moves is a bad front door. Everyone
- * else sorts by attention rank, then by name so the order is stable and
- * repeatable rather than dependent on whatever `agents.list` returned.
+ * Friday is first regardless of state: she is the front door to the whole
+ * company, and a front door that moves is a bad front door. Pinned agents come
+ * next — the owner said these matter, which outranks anything derived. Then
+ * attention rank, then name, so the order is stable and repeatable rather than
+ * dependent on whatever `agents.list` returned.
  */
-export function orderRoster(entries: RosterEntry[]): RosterEntry[] {
+export function orderRoster(
+  entries: RosterEntry[],
+  pinnedIds: ReadonlySet<string> = new Set(),
+): RosterEntry[] {
   return [...entries].sort((a, b) => {
     if (a.isCeo !== b.isCeo) return a.isCeo ? -1 : 1;
+    const aPin = pinnedIds.has(a.agent.id);
+    const bPin = pinnedIds.has(b.agent.id);
+    if (aPin !== bPin) return aPin ? -1 : 1;
     const rank = STATE_RANK[a.state] - STATE_RANK[b.state];
     if (rank !== 0) return rank;
     return agentDisplayName(a.agent).localeCompare(agentDisplayName(b.agent));
   });
+}
+
+/**
+ * Who stays visible while the roster is collapsed: Friday plus every pinned
+ * agent.
+ *
+ * The CEO fallback matters. `defaultId` and CEO-ness are deliberately
+ * decoupled (see `useRosterEntries`) — on a company with no `role: "ceo"` agent
+ * the backend falls back to index 0, so `isCeo` can be false for EVERY entry.
+ * Without a fallback the collapsed roster would then be empty and the owner
+ * would have no agent to click at all.
+ */
+export function collapsedRoster(
+  ordered: RosterEntry[],
+  pinnedIds: ReadonlySet<string>,
+): RosterEntry[] {
+  const kept = ordered.filter((e) => e.isCeo || pinnedIds.has(e.agent.id));
+  return kept.length > 0 ? kept : ordered.slice(0, 1);
 }
 
 interface AgentRosterProps {
@@ -232,9 +273,11 @@ export function AgentRoster({
   // and everything re-settles the moment the user looks away.
   const [frozenIds, setFrozenIds] = useState<string[] | null>(null);
 
+  const { pinned, expanded } = useRosterPrefs();
+
   const { ordered, workingCount, attentionCount } = useMemo(
     () => ({
-      ordered: orderRoster(entries),
+      ordered: orderRoster(entries, pinned),
       ...entries.reduce(
         (acc, e) => {
           if (e.state === "running") acc.workingCount += 1;
@@ -244,22 +287,30 @@ export function AgentRoster({
         { workingCount: 0, attentionCount: 0 },
       ),
     }),
-    [entries],
+    [entries, pinned],
   );
 
+  // Collapsed shows Friday + pins; expanded shows everyone. Computed from the
+  // FULL ordered list so the counts in the header stay honest either way.
+  const visible = useMemo(
+    () => (expanded ? ordered : collapsedRoster(ordered, pinned)),
+    [expanded, ordered, pinned],
+  );
+  const hiddenCount = ordered.length - visible.length;
+
   const displayed = useMemo(() => {
-    if (!frozenIds) return ordered;
+    if (!frozenIds) return visible;
     const rank = new Map(frozenIds.map((id, i) => [id, i]));
     // Array.prototype.sort is stable, so ids absent from the snapshot (agents
     // hired while frozen) keep their computed order at the end of the list.
-    return [...ordered].sort(
+    return [...visible].sort(
       (a, b) =>
         (rank.get(a.agent.id) ?? Number.MAX_SAFE_INTEGER) -
         (rank.get(b.agent.id) ?? Number.MAX_SAFE_INTEGER),
     );
-  }, [ordered, frozenIds]);
+  }, [visible, frozenIds]);
 
-  const freeze = (): void => setFrozenIds((prev) => prev ?? ordered.map((e) => e.agent.id));
+  const freeze = (): void => setFrozenIds((prev) => prev ?? visible.map((e) => e.agent.id));
   const thaw = (): void => setFrozenIds(null);
 
   return (
@@ -369,6 +420,30 @@ export function AgentRoster({
             </button>
 
             <div className="agent-row-actions">
+              {/* No pin control on the CEO: she is always visible, so the
+                  button could only ever be a no-op the owner can press. */}
+              {!isCeo && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      className="agent-row-action"
+                      aria-label={
+                        pinned.has(agent.id)
+                          ? `Unpin ${name} from the collapsed roster`
+                          : `Pin ${name} to the collapsed roster`
+                      }
+                      aria-pressed={pinned.has(agent.id)}
+                      onClick={() => toggleRosterPin(agent.id)}
+                    >
+                      {pinned.has(agent.id) ? <PinOff size={12} /> : <Pin size={12} />}
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {pinned.has(agent.id) ? `Unpin ${name}` : `Keep ${name} visible`}
+                  </TooltipContent>
+                </Tooltip>
+              )}
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
@@ -429,6 +504,27 @@ export function AgentRoster({
           </div>
         );
       })}
+
+      {/* Only rendered when it would do something. With one agent, or with
+          everyone pinned, there is nothing behind the chevron and a control
+          that reveals nothing is worse than no control. */}
+      {(hiddenCount > 0 || expanded) && (
+        <button
+          type="button"
+          className="agent-list__expander"
+          aria-expanded={expanded}
+          onClick={() => setRosterExpanded(!expanded)}
+        >
+          <ChevronDown
+            size={12}
+            className={expanded ? "agent-list__expander-chevron--open" : undefined}
+            aria-hidden
+          />
+          {expanded
+            ? "Show fewer"
+            : `Show ${hiddenCount} more agent${hiddenCount === 1 ? "" : "s"}`}
+        </button>
+      )}
     </div>
   );
 }

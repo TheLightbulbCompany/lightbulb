@@ -148,6 +148,12 @@ vi.mock("./ChatLayout.css", () => ({}));
 
 describe("ChatLayout — needsInvitationFlow", () => {
   beforeEach(() => {
+  // The roster collapses to Friday + pins by default; these assertions are
+  // about the full roster, so run it expanded.
+  localStorage.setItem(
+    "lightbulb:roster:prefs",
+    JSON.stringify({ pinned: [], expanded: true }),
+  );
     replaceMock.mockReset();
     vi.resetModules();
   });

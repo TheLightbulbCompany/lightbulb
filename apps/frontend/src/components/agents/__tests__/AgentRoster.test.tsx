@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/react";
 
 vi.mock("@/components/agents/AgentIdentity", () => ({
@@ -14,8 +14,31 @@ vi.mock("@/lib/modelDisplay", () => ({
   displayModelName: (m: string | null) => m || null,
 }));
 
-import { AgentRoster, orderRoster, rosterStateFor, type RosterEntry } from "../AgentRoster";
+import {
+  AgentRoster,
+  collapsedRoster,
+  orderRoster,
+  rosterStateFor,
+  type RosterEntry,
+} from "../AgentRoster";
 import type { Agent } from "@/hooks/useAgents";
+
+const PREFS_KEY = "lightbulb:roster:prefs";
+
+function seedPrefs(prefs: { pinned?: string[]; expanded?: boolean }): void {
+  localStorage.setItem(
+    PREFS_KEY,
+    JSON.stringify({ pinned: prefs.pinned ?? [], expanded: prefs.expanded ?? false }),
+  );
+}
+
+beforeEach(() => {
+  localStorage.clear();
+  // The roster now collapses to Friday + pins by default. These suites were
+  // written against the always-full roster and assert on every row, so they
+  // run expanded; the collapse behaviour has its own describe below.
+  seedPrefs({ expanded: true });
+});
 
 const agent = (id: string, name: string, model?: string): Agent => ({ id, name, model });
 
@@ -38,7 +61,7 @@ function renderRoster(entries: RosterEntry[], props: Partial<Parameters<typeof A
     onRename: vi.fn(),
     onDelete: vi.fn(),
   };
-  render(
+  const { unmount } = render(
     <AgentRoster
       entries={entries}
       activeAgentId={null}
@@ -47,7 +70,7 @@ function renderRoster(entries: RosterEntry[], props: Partial<Parameters<typeof A
       {...props}
     />,
   );
-  return handlers;
+  return { ...handlers, unmount };
 }
 
 /** Like `renderRoster` but hands back a `rerender` that swaps only `entries`,
@@ -373,5 +396,112 @@ describe("AgentRoster rendering", () => {
     });
     expect(screen.getByTestId("sessions-a")).toBeInTheDocument();
     expect(screen.queryByTestId("sessions-b")).not.toBeInTheDocument();
+  });
+});
+
+describe("collapsedRoster", () => {
+  const ceo = entry("f", "Friday", "idle", true);
+  const a = entry("a", "Atlas", "idle");
+  const b = entry("b", "Bee", "idle");
+
+  it("keeps the CEO and the pins, drops the rest", () => {
+    const kept = collapsedRoster([ceo, a, b], new Set(["b"]));
+    expect(kept.map((e) => e.agent.id)).toEqual(["f", "b"]);
+  });
+
+  it("falls back to the first row when NO entry is the CEO", () => {
+    // `defaultId` and CEO-ness are decoupled: on a company with no role:"ceo"
+    // agent the backend falls back to index 0, so isCeo can be false for every
+    // entry. Without this the collapsed roster would be empty and the owner
+    // would have nothing to click.
+    const kept = collapsedRoster([a, b], new Set());
+    expect(kept.map((e) => e.agent.id)).toEqual(["a"]);
+  });
+});
+
+describe("orderRoster with pins", () => {
+  it("sorts pinned agents above unpinned ones, but still under the CEO", () => {
+    const ordered = orderRoster(
+      [
+        entry("a", "Alpha", "attention"),
+        entry("f", "Friday", "idle", true),
+        entry("z", "Zeta", "idle"),
+      ],
+      new Set(["z"]),
+    );
+    // Zeta is idle and last alphabetically, but the owner pinned it, and an
+    // explicit choice outranks a derived attention rank.
+    expect(ordered.map((e) => e.agent.id)).toEqual(["f", "z", "a"]);
+  });
+});
+
+describe("AgentRoster collapse", () => {
+  const entries = [
+    entry("f", "Friday", "idle", true),
+    entry("a", "Atlas", "idle"),
+    entry("b", "Bee", "attention"),
+  ];
+
+  it("shows only the CEO by default, with the others behind the expander", () => {
+    localStorage.clear();
+    renderRoster(entries);
+    expect(rowNames()).toEqual(["Friday"]);
+    expect(screen.getByRole("button", { name: /show 2 more agents/i })).toBeInTheDocument();
+  });
+
+  it("still reports that a hidden agent needs attention", () => {
+    // The whole risk of collapsing: burying the one row that wanted the owner.
+    // The section header carries the count for the FULL roster, not the
+    // visible slice, so a hidden "needs you" is still announced.
+    localStorage.clear();
+    renderRoster(entries);
+    expect(rowNames()).toEqual(["Friday"]);
+    expect(screen.getByText(/1 needs you/i)).toBeInTheDocument();
+  });
+
+  it("reveals the rest when the expander is pressed", () => {
+    localStorage.clear();
+    renderRoster(entries);
+    fireEvent.click(screen.getByRole("button", { name: /show 2 more agents/i }));
+    expect(rowNames()).toEqual(["Friday", "Bee", "Atlas"]);
+    expect(screen.getByRole("button", { name: /show fewer/i })).toBeInTheDocument();
+  });
+
+  it("keeps a pinned agent visible while collapsed", () => {
+    localStorage.clear();
+    seedPrefs({ pinned: ["a"] });
+    renderRoster(entries);
+    expect(rowNames()).toEqual(["Friday", "Atlas"]);
+    expect(screen.getByRole("button", { name: /show 1 more agent$/i })).toBeInTheDocument();
+  });
+
+  it("pinning from a row persists and survives a remount", () => {
+    localStorage.clear();
+    seedPrefs({ expanded: true });
+    const { unmount } = renderRoster(entries);
+    fireEvent.click(screen.getByRole("button", { name: /pin Atlas to the collapsed roster/i }));
+    unmount();
+
+    // Re-render collapsed: the pin the owner just set is what keeps Atlas up.
+    localStorage.setItem(
+      PREFS_KEY,
+      JSON.stringify({ ...JSON.parse(localStorage.getItem(PREFS_KEY) as string), expanded: false }),
+    );
+    renderRoster(entries);
+    expect(rowNames()).toEqual(["Friday", "Atlas"]);
+  });
+
+  it("offers no pin control on the CEO, which is always visible anyway", () => {
+    localStorage.clear();
+    seedPrefs({ expanded: true });
+    renderRoster(entries);
+    expect(screen.queryByRole("button", { name: /pin Friday/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /pin Atlas/i })).toBeInTheDocument();
+  });
+
+  it("renders no expander when there is nothing behind it", () => {
+    localStorage.clear();
+    renderRoster([entry("f", "Friday", "idle", true)]);
+    expect(screen.queryByRole("button", { name: /show .* more/i })).not.toBeInTheDocument();
   });
 });

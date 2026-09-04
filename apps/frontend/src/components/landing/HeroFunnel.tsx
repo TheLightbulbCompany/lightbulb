@@ -89,9 +89,9 @@ export function HeroFunnel() {
         </p>
         <LaunchHeroPill />
         <h1 className="ld-funnel-h1">
-          Type an idea.{" "}
+          If you have an idea,{" "}
           <br />
-          Watch it become a company.
+          you deserve a team.
         </h1>
 
         <form className="ld-ask" onSubmit={submit}>
@@ -100,7 +100,7 @@ export function HeroFunnel() {
             value={input}
             onChange={(e) => {
               const next = e.target.value;
-              // "Type an idea. Watch it become a company." — the first
+              // "If you have an idea, you deserve a team." — the first
               // character IS the lightbulb moment. Only ever lights, never
               // darkens; the lamp itself is the toggle.
               if (next.length > 0) lightOn();

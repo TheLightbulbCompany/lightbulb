@@ -14,6 +14,8 @@ import { MessageList, MessageListHandle } from "./MessageList";
 import { SessionBranchBar } from "./SessionBranchBar";
 import { StreamingStatusBar } from "./StreamingStatusBar";
 import { useAgentChat, buildChatSessionKey, BOOTSTRAP_MESSAGE } from "@/hooks/useAgentChat";
+import type { RenderGroup } from "@/hooks/internal/types";
+import { resolveMessageBlocks } from "@/hooks/internal/toolBlockExtract";
 import { useAgentSessions } from "@/hooks/useAgentSessions";
 import { resolveSessionModelRef } from "@/lib/models";
 import { useAgents, agentDisplayName } from "@/hooks/useAgents";
@@ -37,6 +39,27 @@ interface AgentChatWindowProps {
 // ONBOARDING_READY_STORAGE_KEY. (A TRIAL_STARTED_STORAGE_KEY lived there too;
 // `trial_started` is server-side only now, so it is gone.)
 const TRIAL_FIRST_RESPONSE_STORAGE_KEY = "isol8_trial_first_response_v1";
+
+/** True once any assistant-side group carries readable text — a streamed
+ *  segment or a persisted message with a non-empty text block. Tool-only and
+ *  thinking-only activity does not count: the owner has not been answered yet. */
+function hasVisibleAssistantText(groups: RenderGroup[]): boolean {
+  return groups.some(
+    (g) =>
+      g.side === "assistant" &&
+      g.items.some((item) => {
+        if (item.kind === "stream" || item.kind === "stream-segment") {
+          return item.text.trim().length > 0;
+        }
+        if (item.kind === "message") {
+          return resolveMessageBlocks(item.message).some(
+            (b) => b.type === "text" && typeof b.text === "string" && b.text.trim().length > 0,
+          );
+        }
+        return false;
+      }),
+  );
+}
 
 // =============================================================================
 // Update Banner
@@ -250,28 +273,10 @@ export function AgentChatWindow({
   const { account } = useBilling();
   // Free-tier discriminator — same field ProvisioningStepper uses to derive
   // isTrialLocal. useAgentChat has no billing context, so this component
-  // (which already reads useBilling) decides whether a completed turn
-  // counts as the `trial_first_agent_response` milestone.
+  // (which already reads useBilling) owns the `trial_first_agent_response`
+  // milestone.
   const isTrialLocal = account?.subscription_status === "trial_local";
   const trialFirstResponseFiredRef = useRef(false);
-  const handleChatCompleted = useCallback(() => {
-    if (!isTrialLocal || trialFirstResponseFiredRef.current) return;
-    trialFirstResponseFiredRef.current = true;
-    const storageKey = `${TRIAL_FIRST_RESPONSE_STORAGE_KEY}:${organization?.id ?? userId ?? "anon"}`;
-    let alreadyFired = false;
-    try {
-      alreadyFired = window.localStorage.getItem(storageKey) === "1";
-    } catch {
-      // storage-disabled browser: best-effort only, may re-fire on reload
-    }
-    if (alreadyFired) return;
-    try {
-      window.localStorage.setItem(storageKey, "1");
-    } catch {
-      /* best-effort */
-    }
-    capture("trial_first_agent_response");
-  }, [isTrialLocal, organization?.id, userId]);
   const {
     renderGroups,
     isStreaming,
@@ -297,7 +302,36 @@ export function AgentChatWindow({
     rewindToMessage,
     switchBranch,
     branchRefreshToken,
-  } = useAgentChat(agentId, sessionName, handleChatCompleted);
+  } = useAgentChat(agentId, sessionName);
+
+  // `trial_first_agent_response` = the first time this trial owner can SEE
+  // agent text — which includes Friday's autonomous first-run report, the
+  // thing most trial owners read first and which arrives with nobody having
+  // typed. This used to hang off useAgentChat's chat-completed callback, i.e.
+  // the completion of the USER's first turn. Measured on a live prod signup:
+  // Friday's report landed at +5m29s; the event fired at +6m24s, bound to the
+  // tester's own message. A trial owner who reads the report and never types
+  // never fired it at all — activation under-counted, time-to-value over-stated.
+  // Driven off the rendered groups so it means what it says.
+  const sawAgentText = useMemo(() => hasVisibleAssistantText(renderGroups), [renderGroups]);
+  useEffect(() => {
+    if (!isTrialLocal || !sawAgentText || trialFirstResponseFiredRef.current) return;
+    trialFirstResponseFiredRef.current = true;
+    const storageKey = `${TRIAL_FIRST_RESPONSE_STORAGE_KEY}:${organization?.id ?? userId ?? "anon"}`;
+    let alreadyFired = false;
+    try {
+      alreadyFired = window.localStorage.getItem(storageKey) === "1";
+    } catch {
+      // storage-disabled browser: best-effort only, may re-fire on reload
+    }
+    if (alreadyFired) return;
+    try {
+      window.localStorage.setItem(storageKey, "1");
+    } catch {
+      /* best-effort */
+    }
+    capture("trial_first_agent_response");
+  }, [isTrialLocal, sawAgentText, organization?.id, userId]);
 
   // Mirrors the sessionKey useAgentChat's own history reads use (chat.history,
   // buildChatItems) — the durable progress card is keyed the same way.

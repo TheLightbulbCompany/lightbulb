@@ -437,12 +437,13 @@ function renderPartial(partial: unknown): string {
 export function useAgentChat(
   agentId: string | null,
   sessionName: string,
-  // Fired once per successfully-completed turn (mirrors the internal
-  // `chat_completed` capture below). Deliberately generic/billing-agnostic —
-  // this hook has no billing context — so callers that DO have it (e.g.
-  // AgentChatWindow, which already reads useBilling) can layer trial-specific
-  // milestones (trial_first_agent_response) on top without this hook knowing
-  // what a "trial" is.
+  // Fired once per successfully-completed USER turn (mirrors the internal
+  // `chat_completed` capture below). Deliberately generic/billing-agnostic.
+  // NOTE: no longer the trigger for `trial_first_agent_response` — that
+  // milestone is driven off the rendered groups in AgentChatWindow, because
+  // the first thing a trial owner reads is Friday's autonomous first-run
+  // report, which completes with no user turn at all. Currently unused by
+  // the app; kept for any caller that wants a turn-completed hook.
   onChatCompleted?: () => void,
 ): UseAgentChatReturn {
   const { isConnected, sendChat, send, onChatMessage, sendReq } = useGateway();

@@ -209,14 +209,25 @@ function PostHogPageview() {
   const searchParams = useSearchParams();
   const { isSignedIn } = useAuth();
   const lastCheckoutEventRef = useRef<string | null>(null);
+  // The URL the last pageview was sent for. This effect also depends on
+  // `isSignedIn` (the sign-up-intent stash below needs it), and Clerk
+  // resolves that from `undefined` to a boolean AFTER first mount — so on
+  // every cold landing the effect ran twice for one URL and sent two
+  // `$pageview`s and two `landing_viewed`s ~200ms apart. Measured on a live
+  // prod signup: 3 landing loads → 6 of each. `uniq()`-based dashboards
+  // survived it; every raw event count of landing traffic was 2×.
+  const lastPageviewUrlRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!POSTHOG_KEY) return;
     const queryString = searchParams?.toString() ?? "";
     const url = pathname + (queryString ? `?${queryString}` : "");
-    pageview(url);
-    if (pathname === "/") {
-      capture("landing_viewed", { path: url });
+    if (lastPageviewUrlRef.current !== url) {
+      lastPageviewUrlRef.current = url;
+      pageview(url);
+      if (pathname === "/") {
+        capture("landing_viewed", { path: url });
+      }
     }
 
     // Which step `signup_exit` reports. /chat is owned by ProvisioningStepper

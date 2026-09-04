@@ -213,6 +213,38 @@ describe("PostHogProvider", () => {
     expect(mockCapture.mock.calls.map((c) => c[0])).not.toContain("signup_started");
   });
 
+  it("sends $pageview and landing_viewed ONCE per landing load even when Clerk resolves after mount", async () => {
+    // Clerk's useAuth() reports isSignedIn=undefined on first render and a
+    // boolean a tick later. The pageview effect depends on it (for the
+    // sign-up-intent stash), so without a URL guard the same landing load
+    // produced two of everything — the 2× a live prod signup measured.
+    process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
+    mockRouterState.pathname = "/";
+    mockRouterState.search = "";
+    mockClerkState.isSignedIn = undefined as unknown as boolean;
+    mockClerkState.userId = null;
+
+    const mod = await import("../PostHogProvider");
+    const { rerender } = render(
+      <mod.PostHogProvider>
+        <div>child</div>
+      </mod.PostHogProvider>,
+    );
+    mockClerkState.isSignedIn = false; // Clerk resolves: signed out
+    // A NEW element, deliberately: re-rendering the same element reference
+    // lets React bail out before PostHogPageview ever re-renders, and the
+    // effect under test would never get its second run.
+    rerender(
+      <mod.PostHogProvider>
+        <div>child</div>
+      </mod.PostHogProvider>,
+    );
+
+    const names = mockCapture.mock.calls.map((c) => c[0]);
+    expect(names.filter((n) => n === "$pageview")).toHaveLength(1);
+    expect(names.filter((n) => n === "landing_viewed")).toHaveLength(1);
+  });
+
   it("forwards uncaught window errors to posthog.captureException", async () => {
     process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
 

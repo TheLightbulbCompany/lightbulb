@@ -1,6 +1,16 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
+
+// CompanyNav reads /company/stripe/status (shared SWR key with the Stripe
+// card) to learn whether the provisioning tabs are offered. Default it ON so
+// the IA tests below see the full set; the off-state test flips it.
+const stripeStatus = vi.hoisted(() => ({ data: { provisioning_enabled: true } as { provisioning_enabled: boolean } | undefined }));
+vi.mock("@/components/settings/CompanyStripeSection", () => ({
+  useCompanyStripeStatus: () => stripeStatus,
+}));
+
 import { CompanyNav, COMPANY_SECTIONS } from "../CompanyNav";
+import { visibleCompanySections } from "../companySections";
 import { resolvePanelAlias, describePanel } from "../../workspace/panelRegistry";
 
 // The live nav set, in the spec §5.1 IA. "Issues" was renamed to "Tasks" and
@@ -36,6 +46,36 @@ const ALL_LABELS = [
 ];
 
 describe("CompanyNav", () => {
+  beforeEach(() => {
+    stripeStatus.data = { provisioning_enabled: true };
+  });
+
+  it("hides the two provisioning-only tabs while the rail is off, and while status is still loading", () => {
+    stripeStatus.data = { provisioning_enabled: false };
+    const { unmount } = render(<CompanyNav />);
+    expect(screen.queryByText("Accounts")).toBeNull();
+    expect(screen.queryByText("Domain & Site")).toBeNull();
+    // Their neighbours in the Company section are untouched.
+    expect(screen.getByText("Identity")).toBeInTheDocument();
+    expect(screen.getByText("Compliance")).toBeInTheDocument();
+    unmount();
+
+    stripeStatus.data = undefined;
+    render(<CompanyNav />);
+    expect(screen.queryByText("Accounts")).toBeNull();
+  });
+
+  it("visibleCompanySections drops exactly the provisioning-marked items and nothing else", () => {
+    const on = visibleCompanySections({ provisioningEnabled: true });
+    const off = visibleCompanySections({ provisioningEnabled: false });
+    expect(on).toBe(COMPANY_SECTIONS);
+    const flat = (s: typeof on) => s.flatMap((sec) => sec.items.map((i) => i.panel));
+    const dropped = flat(on).filter((p) => !flat(off).includes(p));
+    expect(dropped).toEqual(["teams-accounts", "teams-domain-site"]);
+    // No section is emptied by the filter, so the section order is intact.
+    expect(off.map((s) => s.label)).toEqual(on.map((s) => s.label));
+  });
+
   it("renders every company panel", () => {
     render(<CompanyNav />);
     for (const label of ALL_LABELS) {

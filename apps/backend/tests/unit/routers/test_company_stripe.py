@@ -83,6 +83,7 @@ def test_status_unbound(client):
         "payouts_enabled": False,
         "dashboard_url": None,
         "connect_configured": True,
+        "provisioning_enabled": False,
     }
 
 
@@ -530,3 +531,197 @@ def test_request_from_container_maps_paperclip_5xx_to_503(client):
         )
     assert resp.status_code == 503
     assert resp.json()["detail"]["code"] == "paperclip_unavailable"
+
+
+# --- the api_key door -------------------------------------------------------
+
+
+_KEY_INFO = {
+    "account_id": "acct_theirs",
+    "livemode": True,
+    "details_submitted": True,
+    "charges_enabled": True,
+    "payouts_enabled": False,
+}
+
+
+def test_api_key_binds_stores_key_first_and_syncs_status(client, facts, metric):
+    """Store the key BEFORE binding: a bound row whose key is missing reads as
+    unbound, so a crash between the two writes fails safe."""
+    calls: list[str] = []
+    with (
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})),
+        patch.object(mod.company_stripe, "validate_api_key", AsyncMock(return_value=_KEY_INFO)),
+        patch.object(mod.billing_repo, "get_by_company_stripe_account_id", AsyncMock(return_value=None)),
+        patch.object(
+            mod.company_stripe, "store_api_key", AsyncMock(side_effect=lambda *a, **k: calls.append("store"))
+        ) as store,
+        patch.object(
+            mod.billing_repo,
+            "set_company_stripe_account",
+            AsyncMock(
+                side_effect=lambda *a, **k: (calls.append("bind"), {"company_stripe_account_id": "acct_theirs"})[1]
+            ),
+        ) as bind,
+        patch.object(mod.billing_repo, "set_company_stripe_status", AsyncMock()) as status,
+    ):
+        resp = client.post("/api/v1/company/stripe/api-key", json={"api_key": "rk_live_abc"})
+    assert resp.status_code == 200
+    assert resp.json() == {"account_id": "acct_theirs", "livemode": True}
+    assert calls == ["store", "bind"]
+    store.assert_awaited_once_with("org_a", "rk_live_abc")
+    bind.assert_awaited_once_with("org_a", account_id="acct_theirs", source="api_key")
+    status.assert_awaited_once_with(
+        "org_a", account_id="acct_theirs", details_submitted=True, charges_enabled=True, payouts_enabled=False
+    )
+    metric.assert_called_once_with("company_stripe.account.api_key_bound")
+    facts.assert_awaited_once_with("org_a")
+
+
+def test_api_key_422_on_a_malformed_key_without_storing(client):
+    with (
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})),
+        patch.object(
+            mod.company_stripe, "validate_api_key", AsyncMock(side_effect=mod.company_stripe.InvalidApiKey("nope"))
+        ),
+        patch.object(mod.company_stripe, "store_api_key", AsyncMock()) as store,
+    ):
+        resp = client.post("/api/v1/company/stripe/api-key", json={"api_key": "pk_live_abc"})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "invalid_api_key"
+    store.assert_not_awaited()
+
+
+def test_api_key_422_when_stripe_rejects_the_key(client):
+    import stripe as stripe_mod
+
+    with (
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})),
+        patch.object(
+            mod.company_stripe,
+            "validate_api_key",
+            AsyncMock(side_effect=stripe_mod.error.AuthenticationError("Invalid API Key provided")),
+        ),
+        patch.object(mod.company_stripe, "store_api_key", AsyncMock()) as store,
+    ):
+        resp = client.post("/api/v1/company/stripe/api-key", json={"api_key": "rk_live_wrong"})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "invalid_api_key"
+    store.assert_not_awaited()
+
+
+def test_api_key_409_when_the_account_belongs_to_another_owner(client):
+    """Same cross-owner fence as the OAuth callback. Neither row is touched
+    and the key is never stored."""
+    with (
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})),
+        patch.object(mod.company_stripe, "validate_api_key", AsyncMock(return_value=_KEY_INFO)),
+        patch.object(
+            mod.billing_repo,
+            "get_by_company_stripe_account_id",
+            AsyncMock(return_value={"owner_id": "org_OTHER", "company_stripe_account_id": "acct_theirs"}),
+        ),
+        patch.object(mod.company_stripe, "store_api_key", AsyncMock()) as store,
+        patch.object(mod.billing_repo, "set_company_stripe_account", AsyncMock()) as bind,
+    ):
+        resp = client.post("/api/v1/company/stripe/api-key", json={"api_key": "rk_live_abc"})
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "account_in_use"
+    store.assert_not_awaited()
+    bind.assert_not_awaited()
+
+
+def test_api_key_409_when_already_bound_and_never_validates(client):
+    row = {"owner_id": "org_a", "company_stripe_account_id": "acct_x", "company_stripe_source": "connected"}
+    with (
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value=row)),
+        patch.object(mod.company_stripe, "validate_api_key", AsyncMock()) as validate,
+    ):
+        resp = client.post("/api/v1/company/stripe/api-key", json={"api_key": "rk_live_abc"})
+    assert resp.status_code == 409
+    validate.assert_not_awaited()
+
+
+def test_api_key_lost_bind_race_deletes_our_key(client):
+    """set_company_stripe_account -> None: our key must not outlive a binding
+    that never happened."""
+    with (
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})),
+        patch.object(mod.company_stripe, "validate_api_key", AsyncMock(return_value=_KEY_INFO)),
+        patch.object(mod.billing_repo, "get_by_company_stripe_account_id", AsyncMock(return_value=None)),
+        patch.object(mod.company_stripe, "store_api_key", AsyncMock()),
+        patch.object(mod.billing_repo, "set_company_stripe_account", AsyncMock(return_value=None)),
+        patch.object(mod.company_stripe, "delete_api_key", AsyncMock()) as delete,
+    ):
+        resp = client.post("/api/v1/company/stripe/api-key", json={"api_key": "rk_live_abc"})
+    assert resp.status_code == 409
+    delete.assert_awaited_once_with("org_a")
+
+
+def test_api_key_door_is_admin_only(member_client):
+    with patch.object(mod.company_stripe, "validate_api_key", AsyncMock()) as validate:
+        resp = member_client.post("/api/v1/company/stripe/api-key", json={"api_key": "rk_live_abc"})
+    assert resp.status_code == 403
+    validate.assert_not_awaited()
+
+
+def test_status_refreshes_an_api_key_row_on_read(client):
+    """No Connect relationship ⇒ no account.updated ⇒ the stored flags are
+    bind-time only. Re-read with THEIR key on every status GET."""
+    row = {
+        "owner_id": "org_a",
+        "company_stripe_account_id": "acct_x",
+        "company_stripe_source": "api_key",
+        "company_stripe_charges_enabled": False,
+    }
+    fresh = {**row, "company_stripe_charges_enabled": True}
+    with (
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value=row)),
+        patch.object(mod.company_stripe, "load_api_key", AsyncMock(return_value="rk_live_abc")),
+        patch.object(
+            mod.company_stripe,
+            "retrieve_status",
+            AsyncMock(return_value={"details_submitted": True, "charges_enabled": True, "payouts_enabled": False}),
+        ) as retrieve,
+        patch.object(mod.billing_repo, "set_company_stripe_status", AsyncMock(return_value=fresh)),
+    ):
+        resp = client.get("/api/v1/company/stripe/status")
+    assert resp.status_code == 200
+    assert resp.json()["charges_enabled"] is True
+    retrieve.assert_awaited_once_with(account_id="acct_x", api_key="rk_live_abc")
+
+
+def test_status_serves_the_stored_copy_when_the_refresh_fails(client):
+    row = {"owner_id": "org_a", "company_stripe_account_id": "acct_x", "company_stripe_source": "api_key"}
+    with (
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value=row)),
+        patch.object(mod.company_stripe, "load_api_key", AsyncMock(side_effect=RuntimeError("sm down"))),
+    ):
+        resp = client.get("/api/v1/company/stripe/status")
+    assert resp.status_code == 200
+    assert resp.json()["account_id"] == "acct_x"
+
+
+def test_status_does_not_refresh_connect_rows(client):
+    row = {"owner_id": "org_a", "company_stripe_account_id": "acct_x", "company_stripe_source": "connected"}
+    with (
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value=row)),
+        patch.object(mod.company_stripe, "retrieve_status", AsyncMock()) as retrieve,
+    ):
+        client.get("/api/v1/company/stripe/status")
+    retrieve.assert_not_awaited()
+
+
+def test_disconnect_api_key_row_needs_no_client_id(client, facts, monkeypatch):
+    """The unconfigured-Connect 409 only guards Connect rows — an api_key row
+    has nothing at Stripe to revoke."""
+    monkeypatch.setattr(mod.settings, "STRIPE_CONNECT_CLIENT_ID", "")
+    row = {"owner_id": "org_a", "company_stripe_account_id": "acct_x", "company_stripe_source": "api_key"}
+    with (
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value=row)),
+        patch.object(mod.company_stripe, "release_and_unbind", AsyncMock(return_value=True)) as release,
+    ):
+        resp = client.post("/api/v1/company/stripe/disconnect")
+    assert resp.status_code == 200
+    release.assert_awaited_once_with(owner_id="org_a", account_id="acct_x", source="api_key")
+    facts.assert_awaited_once_with("org_a")

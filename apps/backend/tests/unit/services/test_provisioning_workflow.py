@@ -126,7 +126,34 @@ def no_network(monkeypatch):
     monkeypatch.setattr(mod.work_products, "register", AsyncMock(return_value="wp_1"))
 
 
+@pytest.fixture(autouse=True)
+def provisioning_enabled(monkeypatch):
+    """The rail is OFF by default in every environment until Stripe's write
+    endpoints work; these tests exercise the rail itself, so they run with it
+    on. The one test of the off state flips it back."""
+    monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", True)
+
+
 # --- start ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_start_refuses_at_the_door_while_the_rail_is_off(monkeypatch):
+    """Every POST to /v2/provisioning 500s today, so an approved workflow
+    would park permanently. Refuse before eligibility is even read — Stripe
+    must not be called."""
+    monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", False)
+    with patch.object(mod.api, "eligibility", AsyncMock()) as elig:
+        with pytest.raises(mod.WorkflowRefused) as exc:
+            await mod.start(
+                owner_id="org_a",
+                provider_name="posthog",
+                service_id="svc_analytics",
+                configuration=CONFIG,
+                issue_id=None,
+            )
+    assert exc.value.code == "provisioning_unavailable"
+    elig.assert_not_awaited()
 
 
 @pytest.mark.asyncio

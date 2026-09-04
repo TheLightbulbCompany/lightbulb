@@ -89,6 +89,10 @@ def _status_payload(row: dict | None) -> dict:
         # The frontend hides "Connect existing" and disables "Disconnect" when
         # this is false — both routes 503 without the platform client id.
         "connect_configured": bool(settings.STRIPE_CONNECT_CLIENT_ID),
+        # The Connect door only earns its place when provisioning is live —
+        # it is the one thing an OAuth grant does that a pasted key cannot.
+        # While off, the card offers the api_key path alone.
+        "provisioning_enabled": bool(settings.STRIPE_PROVISIONING_ENABLED),
     }
 
 
@@ -96,7 +100,25 @@ def _status_payload(row: dict | None) -> dict:
 async def status(auth: Annotated[AuthContext, Depends(get_current_user)]):
     owner_id = resolve_owner_id(auth)
     row = await billing_repo.get_by_owner_id(owner_id)
+    if (row or {}).get("company_stripe_source") == "api_key":
+        # No Connect relationship ⇒ no account.updated webhook ⇒ the stored
+        # flags only ever reflect bind time. Refresh them on read; best-effort,
+        # a Stripe hiccup serves the stored copy rather than a 502.
+        row = await _refresh_api_key_status(row) or row
     return _status_payload(row)
+
+
+async def _refresh_api_key_status(row: dict) -> dict | None:
+    owner_id, account_id = row["owner_id"], row["company_stripe_account_id"]
+    try:
+        key = await company_stripe.load_api_key(owner_id)
+        if not key:
+            return None
+        status = await company_stripe.retrieve_status(account_id=account_id, api_key=key)
+    except Exception:  # noqa: BLE001 — a read-time refresh must never break the card
+        logger.warning("company_stripe: api_key status refresh failed owner_id=%s", owner_id)
+        return None
+    return await billing_repo.set_company_stripe_status(owner_id, account_id=account_id, **status)
 
 
 @router.post("/create")
@@ -152,6 +174,71 @@ async def create(auth: Annotated[AuthContext, Depends(get_current_user)]):
     except stripe.error.StripeError as e:
         raise _stripe_failure(e) from e
     return {"account_id": account_id, "onboarding_url": url}
+
+
+class ApiKeyBody(BaseModel):
+    api_key: str
+
+
+@router.post("/api-key")
+async def bind_api_key(body: ApiKeyBody, auth: Annotated[AuthContext, Depends(get_current_user)]):
+    """Bind the owner's OWN Stripe account by a restricted key they pasted.
+
+    One Stripe call proves the key works and tells us whose it is; the key
+    goes to Secrets Manager (backend-only — it never reaches a container)
+    and the account id lands on the billing row exactly like a Connect bind,
+    so every downstream reader sees an ordinary bound account. No platform
+    relationship is created, which is the whole point: this is the door for
+    an owner who will not (or, like us, cannot) grant Connect.
+    """
+    _gate_admin(auth)
+    owner_id = resolve_owner_id(auth)
+    await require_always_on_entitlement(owner_id)
+    row = await billing_repo.get_by_owner_id(owner_id) or {}
+    if row.get("company_stripe_account_id"):
+        raise HTTPException(status_code=409, detail="A Stripe account is already bound")
+    try:
+        info = await company_stripe.validate_api_key(body.api_key)
+    except company_stripe.InvalidApiKey as e:
+        raise HTTPException(status_code=422, detail={"code": "invalid_api_key", "message": str(e)}) from e
+    except stripe.error.AuthenticationError as e:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_api_key", "message": "Stripe rejected that key — check it was copied in full"},
+        ) from e
+    except stripe.error.StripeError as e:
+        raise _stripe_failure(e) from e
+    account_id = info["account_id"]
+    # Same cross-owner fence as the OAuth callback: one Stripe account, one
+    # Lightbulb owner. A key for an account another owner already bound is
+    # refused without touching either row.
+    existing = await billing_repo.get_by_company_stripe_account_id(account_id)
+    if existing and existing.get("owner_id") != owner_id:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "account_in_use", "message": "That Stripe account is connected to another workspace"},
+        )
+    # Store the key BEFORE binding: a bound row whose key is missing reads as
+    # unbound (company_stripe_reads._addressing), so the failure mode of a
+    # crash between the two writes is "not connected", never "connected but
+    # every read 401s".
+    await company_stripe.store_api_key(owner_id, body.api_key)
+    bound = await billing_repo.set_company_stripe_account(owner_id, account_id=account_id, source="api_key")
+    if bound is None:
+        # Lost a concurrent bind, or no billing row. Either way our key must
+        # not outlive a binding that never happened.
+        await company_stripe.delete_api_key(owner_id)
+        raise HTTPException(status_code=409, detail="A Stripe account is already bound")
+    await billing_repo.set_company_stripe_status(
+        owner_id,
+        account_id=account_id,
+        details_submitted=info["details_submitted"],
+        charges_enabled=info["charges_enabled"],
+        payouts_enabled=info["payouts_enabled"],
+    )
+    put_metric("company_stripe.account.api_key_bound")
+    await write_owner_facts(owner_id)
+    return {"account_id": account_id, "livemode": info["livemode"]}
 
 
 @router.post("/onboarding-link")
@@ -256,14 +343,19 @@ async def disconnect(auth: Annotated[AuthContext, Depends(get_current_user)]):
     and the owner could never let go. `stripe_released` reports whether the
     revoke was confirmed instead of hiding it.
     """
-    _require_connect_configured()
     _gate_admin(auth)
     owner_id = resolve_owner_id(auth)
     row = await billing_repo.get_by_owner_id(owner_id) or {}
     account_id = row.get("company_stripe_account_id")
     if not account_id:
         raise HTTPException(status_code=409, detail="No Stripe account bound")
-    released = await company_stripe.release_and_unbind(owner_id=owner_id, account_id=account_id)
+    # An api_key row has no platform grant to revoke, so the client id is
+    # irrelevant to it; Connect rows still fail closed without one.
+    if row.get("company_stripe_source") != "api_key":
+        _require_connect_configured()
+    released = await company_stripe.release_and_unbind(
+        owner_id=owner_id, account_id=account_id, source=row.get("company_stripe_source")
+    )
     await write_owner_facts(owner_id)
     return {"disconnected": True, "stripe_released": released}
 

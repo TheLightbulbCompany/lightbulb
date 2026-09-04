@@ -348,6 +348,11 @@ async def start(
 ) -> dict:
     """Step 1 of spec §3.2. Refuses loudly rather than opening a workflow that
     cannot finish."""
+    if not settings.STRIPE_PROVISIONING_ENABLED:
+        # Every state-changing /v2/provisioning call 500s until Stripe ships
+        # delegated account creation + KYC; an approved workflow today lands
+        # in a permanent requires_review. Refuse at the door instead.
+        raise WorkflowRefused("provisioning_unavailable", "Setting up services isn't available yet")
     account_id = await account_id_for(owner_id)
 
     elig = await api.eligibility(account_id)

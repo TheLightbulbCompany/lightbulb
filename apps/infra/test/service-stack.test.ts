@@ -205,6 +205,21 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     }));
   });
 
+  test("the Stripe provisioning rail defaults OFF when no prop threads a value", () => {
+    // Every state-changing /v2/provisioning call 500s until Stripe ships
+    // delegated account creation + KYC; a stack that forgets the prop must
+    // refuse at the door rather than park owners in requires_review.
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", Match.objectLike({
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Environment: Match.arrayWith([
+            Match.objectLike({ Name: "STRIPE_PROVISIONING_ENABLED", Value: "false" }),
+          ]),
+        }),
+      ]),
+    }));
+  });
+
   test("backend task env carries neither LAUNCH_SCHEDULE_JSON nor STRIPE_FREE_MONTH_COUPON_ID nor any retired per-field LAUNCH_* name — settings now live in the launch-settings DynamoDB row, not synth-time env", () => {
     const backendTaskDefs = Object.values(
       template.findResources("AWS::ECS::TaskDefinition", {

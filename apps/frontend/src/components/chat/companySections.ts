@@ -43,6 +43,13 @@ export type CompanySectionItem = {
   panel: string;
   label: string;
   Icon: CompanyNavIcon;
+  /**
+   * The tab exists only to show what the Stripe Projects rail provisioned.
+   * Hidden while that rail is off (`provisioning_enabled` on
+   * /company/stripe/status) — a tab whose only possible content is
+   * "Nothing provisioned yet" is not a tab.
+   */
+  provisioning?: true;
 };
 
 // Spec §5.1 IA. An item appears here ONLY when its tab is live;
@@ -118,12 +125,29 @@ export const COMPANY_SECTIONS: { label: string | null; items: CompanySectionItem
       // What the company has accounts with, what agents set up on its behalf,
       // and the kill switch. Sits in Company, not Settings, because it is the
       // page an owner opens the first time an agent does something surprising.
-      { panel: "teams-accounts", label: "Accounts", Icon: Plug },
+      { panel: "teams-accounts", label: "Accounts", Icon: Plug, provisioning: true },
       { panel: "teams-identity", label: "Identity", Icon: Landmark },
-      { panel: "teams-domain-site", label: "Domain & Site", Icon: Globe },
+      { panel: "teams-domain-site", label: "Domain & Site", Icon: Globe, provisioning: true },
       { panel: "teams-compliance", label: "Compliance", Icon: ShieldCheck },
       { panel: "teams-contracts", label: "Contracts", Icon: FileSignature },
       { panel: "teams-activity", label: "Activity", Icon: History },
     ],
   },
 ];
+
+/**
+ * The sections a given deployment actually offers. The one filter today is the
+ * provisioning rail: while it is off, the two tabs that only render its output
+ * are dropped from BOTH the sidebar and the command palette (each calls this,
+ * so they cannot disagree). Direct URLs still resolve — the panel registry is
+ * untouched — they are simply not offered.
+ */
+export function visibleCompanySections(
+  opts: { provisioningEnabled: boolean },
+): { label: string | null; items: CompanySectionItem[] }[] {
+  if (opts.provisioningEnabled) return COMPANY_SECTIONS;
+  return COMPANY_SECTIONS.map((section) => ({
+    ...section,
+    items: section.items.filter((item) => !item.provisioning),
+  })).filter((section) => section.items.length > 0);
+}

@@ -1331,8 +1331,11 @@ async def _write_company_stripe(owner_id: str, mutate, *, condition: str, values
 
 async def set_company_stripe_account(owner_id: str, *, account_id: str, source: str) -> dict | None:
     """Bind the company account exactly once. None = no row, or already bound."""
-    if source not in ("created", "connected"):
-        raise ValueError("source must be 'created' or 'connected'")
+    # "api_key" is the owner's OWN restricted key, held backend-side — no
+    # Connect relationship exists for that row, so the account.updated
+    # webhook never fires for it and status is re-read on demand instead.
+    if source not in ("created", "connected", "api_key"):
+        raise ValueError("source must be 'created', 'connected' or 'api_key'")
     if not account_id:
         raise ValueError("account_id must be non-empty (it keys a GSI)")
 

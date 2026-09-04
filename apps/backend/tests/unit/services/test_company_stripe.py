@@ -260,3 +260,87 @@ async def test_release_and_unbind_never_closes_or_deletes_a_created_account():
         await company_stripe.release_and_unbind(owner_id="org_a", account_id="acct_created")
     assert [c[0] for c in stripe_spy.mock_calls] == ["OAuth.deauthorize"]
     clear.assert_awaited_once_with("org_a", account_id="acct_created")
+
+
+# --- the api_key path ------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_validate_api_key_proves_the_key_and_learns_the_account_in_one_call():
+    with patch("core.services.company_stripe.stripe.Account.retrieve") as retrieve:
+        retrieve.return_value = {
+            "id": "acct_theirs",
+            "details_submitted": True,
+            "charges_enabled": True,
+            "payouts_enabled": True,
+        }
+        info = await company_stripe.validate_api_key("  rk_live_abc  ")
+    retrieve.assert_called_once_with(api_key="rk_live_abc")
+    assert info == {
+        "account_id": "acct_theirs",
+        "livemode": True,
+        "details_submitted": True,
+        "charges_enabled": True,
+        "payouts_enabled": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_validate_api_key_refuses_publishable_and_garbage_before_calling_stripe():
+    with patch("core.services.company_stripe.stripe.Account.retrieve") as retrieve:
+        for bad in ("pk_live_abc", "", "whsec_x", "acct_x"):
+            with pytest.raises(company_stripe.InvalidApiKey):
+                await company_stripe.validate_api_key(bad)
+    retrieve.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_api_key_lives_in_secrets_manager_under_the_company_stripe_provider():
+    store = company_stripe.integration_secret_store
+    with (
+        patch.object(store, "put", AsyncMock()) as put,
+        patch.object(store, "get", AsyncMock(return_value={"api_key": "rk_live_abc"})) as get,
+        patch.object(store, "delete", AsyncMock()) as delete,
+    ):
+        await company_stripe.store_api_key("org_a", " rk_live_abc ")
+        assert await company_stripe.load_api_key("org_a") == "rk_live_abc"
+        await company_stripe.delete_api_key("org_a")
+    put.assert_awaited_once_with("org_a", "company_stripe", {"api_key": "rk_live_abc"})
+    get.assert_awaited_once_with("org_a", "company_stripe")
+    delete.assert_awaited_once_with("org_a", "company_stripe")
+
+
+@pytest.mark.asyncio
+async def test_retrieve_status_uses_the_owners_key_when_given():
+    with patch("core.services.company_stripe.stripe.Account.retrieve") as retrieve:
+        retrieve.return_value = {"details_submitted": True, "charges_enabled": False, "payouts_enabled": False}
+        status = await company_stripe.retrieve_status(account_id="acct_x", api_key="rk_live_abc")
+    retrieve.assert_called_once_with(api_key="rk_live_abc")
+    assert status == {"details_submitted": True, "charges_enabled": False, "payouts_enabled": False}
+
+
+@pytest.mark.asyncio
+async def test_release_and_unbind_for_an_api_key_row_deletes_the_secret_and_never_calls_stripe():
+    """No platform grant exists to revoke. Delete our copy of the key FIRST,
+    then unbind — the failure mode of a crash between them is "unbound row,
+    no key", never "bound row, readable key"."""
+    with (
+        patch.object(company_stripe, "delete_api_key", AsyncMock()) as delete,
+        patch.object(company_stripe, "deauthorize", AsyncMock()) as deauth,
+        patch.object(company_stripe.billing_repo, "clear_company_stripe_account", AsyncMock()) as clear,
+    ):
+        released = await company_stripe.release_and_unbind(owner_id="org_a", account_id="acct_x", source="api_key")
+    assert released is True
+    delete.assert_awaited_once_with("org_a")
+    deauth.assert_not_awaited()
+    clear.assert_awaited_once_with("org_a", account_id="acct_x")
+
+
+@pytest.mark.asyncio
+async def test_release_and_unbind_for_an_api_key_row_still_unbinds_when_the_secret_delete_fails():
+    with (
+        patch.object(company_stripe, "delete_api_key", AsyncMock(side_effect=RuntimeError("sm down"))),
+        patch.object(company_stripe.billing_repo, "clear_company_stripe_account", AsyncMock()) as clear,
+    ):
+        await company_stripe.release_and_unbind(owner_id="org_a", account_id="acct_x", source="api_key")
+    clear.assert_awaited_once()

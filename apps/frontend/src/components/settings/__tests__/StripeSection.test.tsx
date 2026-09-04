@@ -58,6 +58,7 @@ const COMPANY_BOUND = {
   payouts_enabled: false,
   dashboard_url: "https://dashboard.stripe.com/",
   connect_configured: true,
+  provisioning_enabled: true,
 };
 
 const COMPANY_UNBOUND = {
@@ -68,6 +69,7 @@ const COMPANY_UNBOUND = {
   payouts_enabled: false,
   dashboard_url: null,
   connect_configured: true,
+  provisioning_enabled: true,
 };
 
 // SWR has a global cache that persists across renders/tests — wrap each

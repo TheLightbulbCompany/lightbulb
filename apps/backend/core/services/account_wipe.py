@@ -392,7 +392,9 @@ async def _wipe_company_stripe(steps: list[WipeStep], *, owner_id: str) -> None:
         # single failure this step exists to prevent. Raising AFTER that
         # unbind is how the report records "Stripe never confirmed": _step
         # marks the step failed and the wipe carries on.
-        if not await company_stripe.release_and_unbind(owner_id=owner_id, account_id=account_id):
+        if not await company_stripe.release_and_unbind(
+            owner_id=owner_id, account_id=account_id, source=row.get("company_stripe_source")
+        ):
             raise RuntimeError(f"unbound {account_id} locally, but Stripe did not confirm the revoke")
         return f"company_stripe_account_id={account_id} deauthorized (account retained by owner)"
 

@@ -11,6 +11,7 @@ import { Dialog as DialogPrimitive } from "radix-ui";
 import { Dialog, DialogPortal, DialogTitle } from "@/components/ui/dialog";
 import { Search } from "lucide-react";
 import { filterNavActions, type CommandPaletteAction } from "./commandPaletteActions";
+import { useCompanyStripeStatus } from "@/components/settings/CompanyStripeSection";
 import { teamsDetailUrl } from "@/lib/shellNav";
 import { agentInspectorUrl } from "@/components/teams/shared/lib/agentInspectorUrl";
 import { useFilteredCommandResults } from "./useFilteredCommandResults";
@@ -68,7 +69,12 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
   const [query, setQuery] = useState("");
   const [rawSelectedIndex, setSelectedIndex] = useState(0);
 
-  const navResults = useMemo(() => filterNavActions(query), [query]);
+  const { data: stripeStatus } = useCompanyStripeStatus();
+  const provisioningEnabled = Boolean(stripeStatus?.provisioning_enabled);
+  const navResults = useMemo(
+    () => filterNavActions(query, { provisioningEnabled }),
+    [query, provisioningEnabled],
+  );
   const { agents, issues, projects } = useFilteredCommandResults(query, open);
 
   const flatItems = useMemo<FlatItem[]>(() => {

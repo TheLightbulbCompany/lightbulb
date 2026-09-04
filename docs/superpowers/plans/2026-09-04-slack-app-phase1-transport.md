@@ -98,7 +98,7 @@ describe("DatabaseStack — slack-installs table", () => {
 
 - [ ] **Step 2: Run it to verify it fails**
 
-Run: `cd apps/infra && npx jest test/database-stack.test.ts -t "slack-installs"`
+Run: `cd apps/infra && npx vitest run test/database-stack.test.ts -t "slack-installs"`
 Expected: FAIL — no resource matches `slack-installs$`.
 
 - [ ] **Step 3: Add the table** — in `database-stack.ts`, declare `public readonly slackInstallsTable: dynamodb.Table;` next to `agentEmailAddressesTable` (line ~36), then after the agent-email GSI block (line ~209):
@@ -122,7 +122,7 @@ Expected: FAIL — no resource matches `slack-installs$`.
 
 - [ ] **Step 5: Run the test to verify it passes**
 
-Run: `cd apps/infra && npx jest test/database-stack.test.ts -t "slack-installs"`
+Run: `cd apps/infra && npx vitest run test/database-stack.test.ts -t "slack-installs"`
 Expected: PASS
 
 - [ ] **Step 6: Synth and check deploy.yml drift**
@@ -2296,7 +2296,7 @@ describe("ApiStack — Slack events route has its own throttle bucket", () => {
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `cd apps/infra && npx jest test/api-stack.test.ts -t "Slack events route"`
+Run: `cd apps/infra && npx vitest run test/api-stack.test.ts -t "Slack events route"`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement** — next to `THROTTLE_CONFIG` add
@@ -2339,7 +2339,7 @@ and in `HttpStage` props, after `defaultRouteSettings`:
 
 - [ ] **Step 4: Test, synth, drift check**
 
-Run: `cd apps/infra && npx jest test/api-stack.test.ts && npx cdk synth > /dev/null && git -C ../.. status --short .github/workflows/deploy.yml`
+Run: `cd apps/infra && npx vitest run test/api-stack.test.ts && npx cdk synth > /dev/null && git -C ../.. status --short .github/workflows/deploy.yml`
 Expected: PASS; stage `deploy.yml` if it changed.
 
 - [ ] **Step 5: Commit**

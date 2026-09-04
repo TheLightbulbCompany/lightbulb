@@ -40,12 +40,43 @@ export interface KanbanBoardProps {
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
 }
 
+/**
+ * The columns to render: the seven canonical workflow stages, always, plus a
+ * column for any other status actually present on the issues.
+ *
+ * The board used to render `BOARD_STATUSES` alone and drop everything else on
+ * the floor (`if (grouped[issue.status])`), which made a task with a status
+ * outside those seven **invisible**. That is not hypothetical: `ISSUE_STATUSES`
+ * — which `searchQueryParser` calls the board-column set — carries `pending`,
+ * `review`, `won_t_do` and `duplicate`, none of which are in `BOARD_STATUSES`,
+ * and `IssueStatus` additionally allows `open` and `closed`. The two sets
+ * diverge in both directions.
+ *
+ * Deriving the extras from the data rather than widening the constant means the
+ * next enum drift surfaces as a visible column on day one instead of silently
+ * hiding rows — the same call `AgentRoster` makes for an unrecognised agent
+ * status. The canonical seven still render when empty, because an empty
+ * workflow stage is information and a valid drop target.
+ */
+export function boardColumns(issues: Issue[]): string[] {
+  const known = new Set<string>(BOARD_STATUSES);
+  const extra = new Set<string>();
+  for (const issue of issues) {
+    if (!known.has(issue.status)) extra.add(issue.status);
+  }
+  return [...BOARD_STATUSES, ...[...extra].sort()];
+}
+
 // Exported for unit tests — pure logic that doesn't require a rendered
 // DndContext to verify drag-end semantics.
 export function __test_handleDragEnd(
   issues: Issue[],
   onUpdateIssue: KanbanBoardProps["onUpdateIssue"],
   event: DragEndEvent,
+  // Every rendered column is a drop target, not just the canonical seven —
+  // otherwise a card could be dragged OUT of a derived column but never back
+  // INTO it, which reads as a broken column rather than a deliberate one.
+  columns: readonly string[] = BOARD_STATUSES,
 ): void {
   const { active, over } = event;
   if (!over) return;
@@ -54,7 +85,7 @@ export function __test_handleDragEnd(
   if (!issue) return;
 
   let targetStatus: string | null = null;
-  if ((BOARD_STATUSES as readonly string[]).includes(over.id as string)) {
+  if (columns.includes(over.id as string)) {
     targetStatus = over.id as string;
   } else {
     const targetIssue = issues.find((i) => i.id === over.id);
@@ -77,14 +108,14 @@ export function KanbanBoard({
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   );
 
+  const columns = useMemo(() => boardColumns(issues), [issues]);
+
   const columnIssues = useMemo(() => {
     const grouped: Record<string, Issue[]> = {};
-    for (const status of BOARD_STATUSES) grouped[status] = [];
-    for (const issue of issues) {
-      if (grouped[issue.status]) grouped[issue.status].push(issue);
-    }
+    for (const status of columns) grouped[status] = [];
+    for (const issue of issues) grouped[issue.status]?.push(issue);
     return grouped;
-  }, [issues]);
+  }, [issues, columns]);
 
   const activeIssue = useMemo(
     () => (activeId ? issues.find((i) => i.id === activeId) ?? null : null),
@@ -97,7 +128,7 @@ export function KanbanBoard({
 
   function handleDragEnd(event: DragEndEvent) {
     setActiveId(null);
-    __test_handleDragEnd(issues, onUpdateIssue, event);
+    __test_handleDragEnd(issues, onUpdateIssue, event, columns);
   }
 
   return (
@@ -107,7 +138,7 @@ export function KanbanBoard({
       onDragEnd={handleDragEnd}
     >
       <div className="flex h-full min-h-0 gap-3 overflow-x-auto pb-1 -mx-2 px-2">
-        {BOARD_STATUSES.map((status) => (
+        {columns.map((status) => (
           <KanbanColumn
             key={status}
             status={status}

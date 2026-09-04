@@ -23,7 +23,16 @@ const onNewTask = vi.fn();
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // The view mode now persists to localStorage, so a choice made by one test
+  // would otherwise decide the starting view of the next one.
+  localStorage.clear();
 });
+
+// Board is the default view. These tests exercise the LIST surface (nesting,
+// row menus, grouping, assignee chips), so they switch to it first.
+function toList(): void {
+  fireEvent.click(screen.getByRole("button", { name: /list view/i }));
+}
 
 describe("TasksList", () => {
   it("renders the empty state with a New task action when there are no issues", () => {
@@ -43,6 +52,7 @@ describe("TasksList", () => {
     render(
       <TasksList issues={issues} onUpdateIssue={onUpdateIssue} onNewTask={onNewTask} />,
     );
+    toList();
     // Both rows render expanded by default.
     expect(screen.getByText("Parent task")).toBeInTheDocument();
     expect(screen.getByText("Child task")).toBeInTheDocument();
@@ -59,6 +69,7 @@ describe("TasksList", () => {
     render(
       <TasksList issues={issues} onUpdateIssue={onUpdateIssue} onNewTask={onNewTask} />,
     );
+    toList();
     // Open the status menu via the circle (accessible name = status label).
     // userEvent fires the pointer sequence Radix's Popover trigger needs.
     await user.click(screen.getByLabelText(/^todo$/i));
@@ -84,6 +95,7 @@ describe("TasksList", () => {
         />
       </InlineTeamsNavProvider>,
     );
+    toList();
 
     // Open the row's overflow menu and pick Hide.
     await user.click(screen.getByRole("button", { name: /task actions/i }));
@@ -96,18 +108,55 @@ describe("TasksList", () => {
     expect(openDetail).not.toHaveBeenCalled();
   });
 
-  it("switches to the board view when the board toggle is pressed", () => {
+  it("opens on the board, with each task in its status column", () => {
     const issues = [issue({ id: "iso-3", title: "Board task", status: "in_progress" })];
     const { container } = render(
       <TasksList issues={issues} onUpdateIssue={onUpdateIssue} onNewTask={onNewTask} />,
     );
-    // No kanban columns in list mode.
-    expect(container.querySelector("[data-kanban-column]")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: /board view/i }));
-    // Board renders the 7 status columns, with the task in its column.
+    // Board is the default — no click needed to get here.
     const inProg = container.querySelector('[data-kanban-column="in_progress"]');
     expect(inProg).not.toBeNull();
     expect(within(inProg as HTMLElement).getByText("Board task")).toBeInTheDocument();
+  });
+
+  it("switches to the list view when the list toggle is pressed", () => {
+    const issues = [issue({ id: "iso-3", title: "Board task", status: "in_progress" })];
+    const { container } = render(
+      <TasksList issues={issues} onUpdateIssue={onUpdateIssue} onNewTask={onNewTask} />,
+    );
+    toList();
+    expect(container.querySelector("[data-kanban-column]")).toBeNull();
+    expect(screen.getByText("Board task")).toBeInTheDocument();
+  });
+
+  it("remembers the chosen view across a remount", () => {
+    const issues = [issue({ id: "iso-3", title: "Board task", status: "in_progress" })];
+    const first = render(
+      <TasksList issues={issues} onUpdateIssue={onUpdateIssue} onNewTask={onNewTask} />,
+    );
+    toList();
+    first.unmount();
+
+    const second = render(
+      <TasksList issues={issues} onUpdateIssue={onUpdateIssue} onNewTask={onNewTask} />,
+    );
+    // Without persistence this would come back as the board default — which is
+    // exactly what made list-preferring users re-pick on every reload.
+    expect(second.container.querySelector("[data-kanban-column]")).toBeNull();
+  });
+
+  it("falls back to the board default when storage is unavailable", () => {
+    const getItem = vi
+      .spyOn(Storage.prototype, "getItem")
+      .mockImplementation(() => {
+        throw new Error("storage disabled");
+      });
+    const issues = [issue({ id: "iso-3", title: "Board task", status: "in_progress" })];
+    const { container } = render(
+      <TasksList issues={issues} onUpdateIssue={onUpdateIssue} onNewTask={onNewTask} />,
+    );
+    expect(container.querySelector("[data-kanban-column]")).not.toBeNull();
+    getItem.mockRestore();
   });
 
   it("renders an assignee chip, priority icon, and label chips on a row", () => {
@@ -133,6 +182,7 @@ describe("TasksList", () => {
         onNewTask={onNewTask}
       />,
     );
+    toList();
     // Assignee resolves to the roster name (not the raw id).
     expect(screen.getByText("Friday")).toBeInTheDocument();
     // Priority icon renders (PriorityIcon's read-only span has no text; assert
@@ -155,6 +205,7 @@ describe("TasksList", () => {
         onNewTask={onNewTask}
       />,
     );
+    toList();
     expect(screen.getByText("Unassigned")).toBeInTheDocument();
   });
 
@@ -173,6 +224,7 @@ describe("TasksList", () => {
         onNewTask={onNewTask}
       />,
     );
+    toList();
     // Open the Group popover and pick "Priority".
     await user.click(screen.getByRole("button", { name: /^group$/i }));
     await user.click(await screen.findByText("Priority"));
@@ -258,13 +310,13 @@ describe("TasksList", () => {
         onNewTask={onNewTask}
       />,
     );
-    // List row lights its live dot.
-    expect(screen.getByTestId("task-row-live-dot")).toBeInTheDocument();
-    // And the board card lights its live dot once switched to board view.
-    fireEvent.click(screen.getByRole("button", { name: /board view/i }));
+    // Board card lights its live dot on the default view.
     expect(
       container.querySelector('[data-testid="kanban-card-live-dot"]'),
     ).not.toBeNull();
+    // And the list row lights its own once switched.
+    toList();
+    expect(screen.getByTestId("task-row-live-dot")).toBeInTheDocument();
   });
 
   it("does not light the live indicator for tasks absent from liveIssueIds", () => {
@@ -278,6 +330,7 @@ describe("TasksList", () => {
         onNewTask={onNewTask}
       />,
     );
+    toList();
     expect(screen.queryByTestId("task-row-live-dot")).not.toBeInTheDocument();
   });
 });

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { render } from "@testing-library/react";
-import { KanbanBoard, BOARD_STATUSES, __test_handleDragEnd } from "@/components/teams/inbox/KanbanBoard";
+import { KanbanBoard, BOARD_STATUSES, boardColumns, __test_handleDragEnd } from "@/components/teams/inbox/KanbanBoard";
 import type { Issue } from "@/components/teams/shared/types";
 
 const i = (id: string, status: Issue["status"]): Issue => ({
@@ -40,11 +40,49 @@ describe("KanbanBoard", () => {
     ]);
   });
 
-  it("issues with non-board statuses do not render", () => {
+  // This test previously asserted the opposite — that an issue whose status is
+  // outside BOARD_STATUSES does NOT render — which codified silent data loss as
+  // intended behaviour. It was survivable while the board was opt-in; it is not
+  // survivable now the board is the default view for Tasks. `pending`, `review`,
+  // `won_t_do` and `duplicate` are all in ISSUE_STATUSES (what
+  // `searchQueryParser` calls the board-column set) and none of them are in
+  // BOARD_STATUSES, so real, user-settable tasks were vanishing.
+  it("renders an issue whose status is outside BOARD_STATUSES, in its own column", () => {
     const issues = [i("a", "todo"), i("b", "pending" as Issue["status"])];
     const { container } = render(<KanbanBoard issues={issues} agents={[]} onUpdateIssue={vi.fn()} />);
     expect(container.querySelector('[data-kanban-card-id="a"]')).toBeInTheDocument();
-    expect(container.querySelector('[data-kanban-card-id="b"]')).not.toBeInTheDocument();
+    expect(container.querySelector('[data-kanban-card-id="b"]')).toBeInTheDocument();
+    expect(container.querySelector('[data-kanban-column="pending"]')).toBeInTheDocument();
+  });
+
+  it("no issue is ever dropped, whatever its status", () => {
+    const odd = ["pending", "review", "won_t_do", "duplicate", "open", "closed", "totally_new"];
+    const issues = odd.map((s, n) => i(`x${n}`, s as Issue["status"]));
+    const { container } = render(<KanbanBoard issues={issues} agents={[]} onUpdateIssue={vi.fn()} />);
+    expect(container.querySelectorAll("[data-kanban-card-id]")).toHaveLength(odd.length);
+  });
+
+  it("derived columns come after the canonical seven, in a stable order", () => {
+    const issues = [i("a", "review" as Issue["status"]), i("b", "pending" as Issue["status"])];
+    const { container } = render(<KanbanBoard issues={issues} agents={[]} onUpdateIssue={vi.fn()} />);
+    const rendered = [...container.querySelectorAll("[data-kanban-column]")].map((el) =>
+      el.getAttribute("data-kanban-column"),
+    );
+    expect(rendered).toEqual([...BOARD_STATUSES, "pending", "review"]);
+  });
+
+  it("boardColumns renders the canonical seven even with no issues at all", () => {
+    expect(boardColumns([])).toEqual([...BOARD_STATUSES]);
+  });
+
+  it("a derived column is a real drop target, not a one-way door", () => {
+    const issues = [i("a", "todo")];
+    const onUpdate = vi.fn();
+    __test_handleDragEnd(issues, onUpdate, { active: { id: "a" }, over: { id: "pending" } } as never, [
+      ...BOARD_STATUSES,
+      "pending",
+    ]);
+    expect(onUpdate).toHaveBeenCalledWith("a", { status: "pending" });
   });
 
   it("__test_handleDragEnd patches status when dropping on a column id", () => {

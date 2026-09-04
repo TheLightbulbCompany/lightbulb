@@ -11,8 +11,9 @@
 //     status circle (4+ states, opens the status menu), the ISO-N identifier,
 //     title, and a relative "Updated …" timestamp. Row click opens the detail.
 //   - Board view: reuses the existing inbox KanbanBoard verbatim.
-//   - List/board view-mode toggle (persisted in component state), plus list-only
-//     Sort, Group, and tree-nesting toggles.
+//   - List/board view-mode toggle (board is the default; the choice persists
+//     per browser — see `tasksViewMode.ts`), plus list-only Sort, Group, and
+//     tree-nesting toggles.
 //   - Search + New Task live in the panel masthead/toolbar (passed down).
 //
 // Deferred vs upstream: workspace/label/assignee column picker, board density
@@ -36,6 +37,11 @@ import {
   MoreHorizontal,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  setTasksViewMode,
+  useTasksViewMode,
+  type TasksViewMode,
+} from "@/components/teams/issues/tasksViewMode";
 import { teamsDetailUrl } from "@/lib/shellNav";
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import {
@@ -81,7 +87,7 @@ const LABEL_CHIP_STYLE = {
   border: "1px solid var(--edge)",
 } as const;
 
-export type TasksViewMode = "list" | "board";
+export type { TasksViewMode } from "@/components/teams/issues/tasksViewMode";
 export type TasksSortField =
   | "status"
   | "title"
@@ -740,7 +746,7 @@ export function TasksList({
   onUpdateIssue,
   onNewTask,
 }: TasksListProps) {
-  const [viewMode, setViewMode] = useState<TasksViewMode>("list");
+  const viewMode = useTasksViewMode();
   const [sortField, setSortField] = useState<TasksSortField>("updated");
   const [sortDir, setSortDir] = useState<TasksSortDir>("desc");
   const [groupBy, setGroupBy] = useState<TasksGroupBy>("none");
@@ -902,7 +908,7 @@ export function TasksList({
           iconOnly
         />
 
-        <ViewModeToggle viewMode={viewMode} onChange={setViewMode} />
+        <ViewModeToggle viewMode={viewMode} onChange={setTasksViewMode} />
 
         {viewMode === "list" && (
           <>

@@ -1310,3 +1310,17 @@ async def test_mark_trial_first_agent_response_refuses_without_a_trial_row(dynam
 
     assert await billing_repo.mark_trial_first_agent_response("user_nobody") is False
     assert await billing_repo.get_by_owner_id("user_nobody") is None
+
+
+@pytest.mark.asyncio
+async def test_mark_trial_first_agent_response_refuses_a_paid_row(dynamodb_table):
+    """The branch the feature exists to enforce: a converted (or org) owner is
+    not on a trial, so the milestone must never be stamped — even if the row
+    began life as trial_local."""
+    from core.repositories import billing_repo
+
+    await billing_repo.create_trial_local_if_absent("user_paid", "personal")
+    await billing_repo.set_subscription(owner_id="user_paid", subscription_id="sub_x", status="active")
+
+    assert await billing_repo.mark_trial_first_agent_response("user_paid") is False
+    assert "first_agent_response_at" not in (await billing_repo.get_by_owner_id("user_paid"))

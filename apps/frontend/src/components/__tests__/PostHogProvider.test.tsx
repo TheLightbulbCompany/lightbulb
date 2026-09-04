@@ -49,9 +49,20 @@ vi.mock("@clerk/nextjs", () => ({
 
 // Stubs for usePathname/useSearchParams: PostHogPageview reads them and
 // they'd otherwise throw outside a Next router context.
+const mockParamsCache = vi.hoisted(() => new Map<string, URLSearchParams>());
 vi.mock("next/navigation", () => ({
   usePathname: () => mockRouterState.pathname,
-  useSearchParams: () => new URLSearchParams(mockRouterState.search),
+  // Stable per search string, like the real hook between navigations —
+  // otherwise every render hands the effect a new object and the double-
+  // fire regression test would pass for the wrong reason.
+  useSearchParams: () => {
+    let p = mockParamsCache.get(mockRouterState.search);
+    if (!p) {
+      p = new URLSearchParams(mockRouterState.search);
+      mockParamsCache.set(mockRouterState.search, p);
+    }
+    return p;
+  },
 }));
 
 describe("PostHogProvider", () => {
@@ -243,6 +254,34 @@ describe("PostHogProvider", () => {
     const names = mockCapture.mock.calls.map((c) => c[0]);
     expect(names.filter((n) => n === "$pageview")).toHaveLength(1);
     expect(names.filter((n) => n === "landing_viewed")).toHaveLength(1);
+  });
+
+  it("does NOT stash a sign-up intent while Clerk is unresolved or for a signed-in user", async () => {
+    // `isSignedIn` is `undefined` on first render. The old `!isSignedIn`
+    // treated that as signed-out and stashed an intent for anyone opening
+    // /sign-up — including existing accounts, which PostHogIdentify then
+    // replayed as a spurious signup_started{clerk_signup_completed}.
+    process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
+    mockRouterState.pathname = "/sign-up";
+    mockRouterState.search = "";
+    window.localStorage.removeItem("isol8:signup_intent:v1");
+
+    mockClerkState.isSignedIn = undefined as unknown as boolean;
+    mockClerkState.userId = null;
+    const mod = await import("../PostHogProvider");
+    const { rerender, unmount } = render(<mod.PostHogProvider><div /></mod.PostHogProvider>);
+    expect(window.localStorage.getItem("isol8:signup_intent:v1")).toBeNull();
+
+    mockClerkState.isSignedIn = true; // resolves: an existing account on /sign-up
+    mockClerkState.userId = "user_existing";
+    rerender(<mod.PostHogProvider><div /></mod.PostHogProvider>);
+    expect(window.localStorage.getItem("isol8:signup_intent:v1")).toBeNull();
+    unmount();
+
+    mockClerkState.isSignedIn = false; // resolves: genuinely signed out
+    mockClerkState.userId = null;
+    render(<mod.PostHogProvider><div /></mod.PostHogProvider>);
+    expect(window.localStorage.getItem("isol8:signup_intent:v1")).not.toBeNull();
   });
 
   it("forwards uncaught window errors to posthog.captureException", async () => {

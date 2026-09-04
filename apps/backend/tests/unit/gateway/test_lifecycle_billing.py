@@ -198,6 +198,50 @@ async def test_chat_final_no_longer_calls_billing(conn):
     assert any_done
 
 
+# --- trial_first_agent_response rides the true-terminal chat.final ---
+
+
+@pytest.mark.asyncio
+async def test_chat_final_schedules_trial_first_response_for_the_owner(conn):
+    """The reader loop is the one place that sees a user-prompted first reply
+    complete, so the milestone is scheduled here (fire-and-forget on
+    _analytics_tasks; the helper itself gates on trial_local and dedups per
+    owner)."""
+    payload = {
+        "sessionKey": "agent:main:main",
+        "state": "final",
+        "runId": "run-1",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
+    }
+    emit = AsyncMock()
+    with (
+        patch.object(conn, "_fetch_and_record_usage", AsyncMock()),
+        patch.object(conn, "_forward_to_frontends", AsyncMock()),
+        patch("core.gateway.connection_pool.capture_trial_first_agent_response", emit),
+    ):
+        await conn._handle_message({"type": "event", "event": "chat", "payload": payload})
+        for _ in range(3):  # let the spawned task run
+            await asyncio.sleep(0)
+    emit.assert_awaited_once_with("org_1", source="chat")
+
+
+@pytest.mark.asyncio
+async def test_chat_error_does_not_schedule_trial_first_response(conn):
+    """An errored turn is not a reply. This is exactly the case the old
+    client-side trigger got wrong (it fired on the rendered error bubble)."""
+    payload = {"sessionKey": "agent:main:main", "state": "error", "runId": "run-1", "errorMessage": "boom"}
+    emit = AsyncMock()
+    with (
+        patch.object(conn, "_fetch_and_record_usage", AsyncMock()),
+        patch.object(conn, "_forward_to_frontends", AsyncMock()),
+        patch("core.gateway.connection_pool.capture_trial_first_agent_response", emit),
+    ):
+        await conn._handle_message({"type": "event", "event": "chat", "payload": payload})
+        for _ in range(3):
+            await asyncio.sleep(0)
+    emit.assert_not_awaited()
+
+
 # --- the usage-settle trigger schedules per lifecycle/end delivery ---
 #
 # There is NO runId dedup here any more: the free-tier daily-spend counter is

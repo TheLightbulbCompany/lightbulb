@@ -142,7 +142,6 @@ export type AnalyticsEvent =
   | "onboarding_step_completed"
   | "onboarding_step_entered"
   | "org_invitation_accepted"
-  | "trial_first_agent_response"
   | "trial_started"
   | "workspace_type_selected"
   // Signup
@@ -422,9 +421,10 @@ export function reset(): void {
  * us the URL without relying on PostHog's broken default
  * pushState-detection in App Router.
  */
-export function pageview(url: string): void {
-  if (typeof window === "undefined") return;
+export function pageview(url: string): boolean {
+  if (typeof window === "undefined") return false;
   refreshAttribution();
-  if (!isLoaded()) return;
+  if (!isLoaded()) return false;
   posthog.capture("$pageview", { ...attributionProperties(), $current_url: url });
+  return true;
 }

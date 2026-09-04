@@ -20,6 +20,7 @@ from websockets import connect as ws_connect
 from core.gateway.frame_sender import FrameSender
 from core.gateway.operator_rpc import GATEWAY_PORT, GatewayConnectAuthError, perform_signed_connect
 from core.observability.logging import bind_log_context
+from core.observability.product_analytics import capture_trial_first_agent_response
 from core.observability.metrics import put_metric, gauge
 from core.repositories import channel_link_repo
 from core.services.connection_service import ConnectionService
@@ -2027,6 +2028,15 @@ class GatewayConnection:
                         # the push is ever created — losing the closed-app push.
                 if state == "final":
                     put_metric("chat.message.count")
+                    if is_true_terminal:
+                        # Trial activation milestone — fire-and-forget so the
+                        # billing read never blocks the reader loop. Once per
+                        # owner (see the helper); the first-run kickoff is also
+                        # observed by bootstrap_dispatcher, and the two dedup on
+                        # a per-owner capture uuid.
+                        task = asyncio.create_task(capture_trial_first_agent_response(self.owner_id, source="chat"))
+                        self._analytics_tasks.add(task)
+                        task.add_done_callback(self._analytics_tasks.discard)
                     # Deliver thinking from content blocks for models that
                     # batch reasoning into the final message (reasoningLevel
                     # not set to "stream"). Once reasoningLevel:"stream" is

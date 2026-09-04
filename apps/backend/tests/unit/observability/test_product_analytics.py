@@ -11,7 +11,9 @@ telemetry helpers added on top of it (Task 16):
   even if the underlying capture blows up.
 """
 
-from unittest.mock import MagicMock, patch
+import uuid
+import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from core.observability import product_analytics
 
@@ -146,3 +148,69 @@ def test_dedup_delegates_to_real_capture_product_event_never_raising():
         product_analytics.capture_once_per_owner_per_day(owner_id="user_1", event="trial_cap_reached")
     mock_client.capture.assert_called_once()
     _reset_dedup()
+
+
+# ---------------------------------------------------------------------------
+# trial_first_agent_response — server-side, once ever per owner
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _fresh_first_response_memo():
+    product_analytics._first_response_resolved.clear()
+    yield
+    product_analytics._first_response_resolved.clear()
+
+
+@pytest.mark.asyncio
+async def test_first_response_fires_once_for_trial_owner_with_lifetime_uuid(_fresh_first_response_memo):
+    mock_client = MagicMock()
+    billing = AsyncMock(return_value={"subscription_status": "trial_local"})
+    with (
+        patch.object(product_analytics, "_client_or_none", return_value=mock_client),
+        patch("core.repositories.billing_repo.get_by_owner_id", billing),
+    ):
+        await product_analytics.capture_trial_first_agent_response("user_t", source="first_run")
+        await product_analytics.capture_trial_first_agent_response("user_t", source="chat")
+        await product_analytics.capture_trial_first_agent_response("user_t", source="chat")
+
+    # ONE billing read and ONE capture for three observations of the same owner.
+    assert billing.await_count == 1
+    mock_client.capture.assert_called_once()
+    args, kwargs = mock_client.capture.call_args
+    assert args[0] == "user_t" and args[1] == "trial_first_agent_response"
+    assert args[2] == {"source": "first_run"}
+    # Lifetime key: owner only, no day — the same owner tomorrow must collide.
+    assert kwargs["uuid"] == str(uuid.uuid5(product_analytics._TRIAL_FIRST_RESPONSE_NS, "user_t"))
+
+
+@pytest.mark.asyncio
+async def test_first_response_never_fires_for_a_paid_owner(_fresh_first_response_memo):
+    mock_client = MagicMock()
+    billing = AsyncMock(return_value={"subscription_status": "active"})
+    with (
+        patch.object(product_analytics, "_client_or_none", return_value=mock_client),
+        patch("core.repositories.billing_repo.get_by_owner_id", billing),
+    ):
+        await product_analytics.capture_trial_first_agent_response("user_p", source="chat")
+        await product_analytics.capture_trial_first_agent_response("user_p", source="chat")
+    assert billing.await_count == 1  # resolved as not-trial; not re-read every turn
+    mock_client.capture.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_first_response_billing_read_failure_is_swallowed_and_retried_later(_fresh_first_response_memo):
+    """A telemetry read must not take a chat turn down with it — and a
+    FAILED read must not memoise the owner as resolved, or one DynamoDB blip
+    would silence the milestone for that owner for the process lifetime."""
+    mock_client = MagicMock()
+    billing = AsyncMock(side_effect=[RuntimeError("ddb blip"), {"subscription_status": "trial_local"}])
+    with (
+        patch.object(product_analytics, "_client_or_none", return_value=mock_client),
+        patch("core.repositories.billing_repo.get_by_owner_id", billing),
+    ):
+        await product_analytics.capture_trial_first_agent_response("user_r", source="chat")  # blip
+        mock_client.capture.assert_not_called()
+        await product_analytics.capture_trial_first_agent_response("user_r", source="chat")  # retry
+    assert billing.await_count == 2
+    mock_client.capture.assert_called_once()

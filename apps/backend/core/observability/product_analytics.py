@@ -24,6 +24,7 @@ path, so every failure is swallowed (logged) rather than raised.
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any
 
 from core.config import settings
@@ -135,3 +136,64 @@ def capture_once_per_owner_per_day(
         oldest = next(iter(_daily_dedup_seen))
         del _daily_dedup_seen[oldest]
     capture_product_event(distinct_id=owner_id, event=event, properties=properties)
+
+
+# ---------------------------------------------------------------------------
+# trial_first_agent_response — the trial owner's first agent reply, once ever
+# ---------------------------------------------------------------------------
+
+# Deterministic capture uuid: uuid5(namespace, owner_id). ONE per owner for
+# life, not per day — "first agent response" is a lifetime milestone, and
+# keying it per day would re-fire it every day the owner chats. Two emit
+# sites can both observe the same first reply (the first-run kickoff is
+# seen by the bootstrap observer AND by the gateway reader loop); PostHog
+# keeps whichever lands first and drops the other on this uuid.
+_TRIAL_FIRST_RESPONSE_NS = uuid.uuid5(uuid.NAMESPACE_URL, "lightbulb:trial_first_agent_response")
+
+# Owners this process has already resolved (fired, or found not to be on a
+# trial). The gateway site runs on EVERY successful chat turn for EVERY
+# owner, so without this it would cost a billing-row read per turn. Bounded
+# FIFO like ``_daily_dedup_seen``; a restart simply re-reads once per owner
+# and the uuid above makes the re-capture a no-op at ingestion.
+_first_response_resolved: dict[str, None] = {}
+
+
+async def capture_trial_first_agent_response(owner_id: str, *, source: str) -> None:
+    """Emit ``trial_first_agent_response`` for a ``trial_local`` owner, once.
+
+    Server-side on purpose. This used to be a client event bound to the
+    completion of the USER's first chat turn, which missed the reply most
+    trial owners read first — Friday's autonomous first-run report, which
+    lands with nobody having typed — and a later client rewrite that scanned
+    the rendered transcript fired on error bubbles and "waking" notices too.
+    The backend already knows the moment: the first-run delivered CAS
+    (``mark_bootstrap_delivered``) and the reader loop's true-terminal
+    ``chat.final``. Emitting here is device-independent, covers the Teams
+    inbox and mobile, and cannot be fooled by what the browser renders.
+
+    ``source`` is best-effort ("first_run" | "chat"): when both sites see the
+    same first reply, whichever capture wins at ingestion carries its own.
+    Never raises — a telemetry read must not take a chat turn down with it.
+    """
+    if owner_id in _first_response_resolved:
+        return
+    _first_response_resolved[owner_id] = None
+    while len(_first_response_resolved) > _DAILY_DEDUP_CAP:
+        del _first_response_resolved[next(iter(_first_response_resolved))]
+    try:
+        from core.repositories import billing_repo
+
+        row = await billing_repo.get_by_owner_id(owner_id)
+    except Exception:
+        logger.warning("trial_first_agent_response: billing read failed for %s", owner_id, exc_info=True)
+        # Let a later turn try again — the read, not the owner, failed.
+        _first_response_resolved.pop(owner_id, None)
+        return
+    if not row or row.get("subscription_status") != "trial_local":
+        return
+    capture_product_event(
+        distinct_id=owner_id,
+        event="trial_first_agent_response",
+        properties={"source": source},
+        event_uuid=str(uuid.uuid5(_TRIAL_FIRST_RESPONSE_NS, owner_id)),
+    )

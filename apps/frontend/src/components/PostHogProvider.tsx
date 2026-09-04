@@ -208,25 +208,29 @@ function PostHogPageview() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const { isSignedIn } = useAuth();
-  const lastCheckoutEventRef = useRef<string | null>(null);
-  // The URL the last pageview was sent for. This effect also depends on
-  // `isSignedIn` (the sign-up-intent stash below needs it), and Clerk
-  // resolves that from `undefined` to a boolean AFTER first mount — so on
-  // every cold landing the effect ran twice for one URL and sent two
-  // `$pageview`s and two `landing_viewed`s ~200ms apart. Measured on a live
-  // prod signup: 3 landing loads → 6 of each. `uniq()`-based dashboards
-  // survived it; every raw event count of landing traffic was 2×.
+  const queryString = searchParams?.toString() ?? "";
+  const url = pathname + (queryString ? `?${queryString}` : "");
+  // The URL the last pageview was actually SENT for. Set only after a real
+  // send: pageview() no-ops until posthog has loaded, and a ref written
+  // before the send would turn "not loaded yet" into "never sent".
   const lastPageviewUrlRef = useRef<string | null>(null);
 
+  // Per-URL work. Keyed on the URL STRING, deliberately: this used to share
+  // one effect with the sign-up-intent stash below, which depends on
+  // `isSignedIn`, and Clerk resolves that from `undefined` to a boolean after
+  // first mount — so every cold landing ran the effect twice and sent two
+  // `$pageview`s and two `landing_viewed`s ~200ms apart (3 loads → 6 each on
+  // a live prod signup). A value-compared string dep cannot re-run on an
+  // object-identity churn either.
   useEffect(() => {
     if (!POSTHOG_KEY) return;
-    const queryString = searchParams?.toString() ?? "";
-    const url = pathname + (queryString ? `?${queryString}` : "");
     if (lastPageviewUrlRef.current !== url) {
-      lastPageviewUrlRef.current = url;
-      pageview(url);
-      if (pathname === "/") {
-        capture("landing_viewed", { path: url });
+      const sent = pageview(url);
+      if (sent) {
+        lastPageviewUrlRef.current = url;
+        if (pathname === "/") {
+          capture("landing_viewed", { path: url });
+        }
       }
     }
 
@@ -243,17 +247,8 @@ function PostHogPageview() {
       setSignupStep(null);
     }
 
-    if (!isSignedIn && pathname?.startsWith("/sign-up")) {
-      safeStorageSet(SIGNUP_INTENT_KEY, JSON.stringify({
-        path: url,
-        provider_choice: searchParams.get("provider"),
-        timestamp: new Date().toISOString(),
-      }));
-    }
-
     const checkoutStatus = searchParams.get("checkout") ?? searchParams.get("subscription");
-    if ((checkoutStatus === "success" || checkoutStatus === "cancel") && lastCheckoutEventRef.current !== url) {
-      lastCheckoutEventRef.current = url;
+    if (checkoutStatus === "success" || checkoutStatus === "cancel") {
       capture(
         checkoutStatus === "success"
           ? "subscription_checkout_returned_success"
@@ -264,7 +259,26 @@ function PostHogPageview() {
         },
       );
     }
-  }, [pathname, searchParams, isSignedIn]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `url` is derived from pathname + searchParams; keying on the string is the point.
+  }, [url]);
+
+  // Sign-up intent stash — the one thing that needs Clerk's answer. Strictly
+  // `=== false`: `undefined` means "Clerk has not resolved yet", and treating
+  // it as signed-out stashed an intent for SIGNED-IN users who opened
+  // /sign-up (nothing redirects them off it), which PostHogIdentify then
+  // replayed as a spurious `signup_started{clerk_signup_completed}` on any
+  // browser that had not seen that account before.
+  useEffect(() => {
+    if (!POSTHOG_KEY) return;
+    if (isSignedIn === false && pathname?.startsWith("/sign-up")) {
+      safeStorageSet(SIGNUP_INTENT_KEY, JSON.stringify({
+        path: url,
+        provider_choice: searchParams.get("provider"),
+        timestamp: new Date().toISOString(),
+      }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- see above.
+  }, [url, isSignedIn]);
 
   return null;
 }

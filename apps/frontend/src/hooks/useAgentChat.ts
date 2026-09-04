@@ -437,14 +437,6 @@ function renderPartial(partial: unknown): string {
 export function useAgentChat(
   agentId: string | null,
   sessionName: string,
-  // Fired once per successfully-completed USER turn (mirrors the internal
-  // `chat_completed` capture below). Deliberately generic/billing-agnostic.
-  // NOTE: no longer the trigger for `trial_first_agent_response` — that
-  // milestone is driven off the rendered groups in AgentChatWindow, because
-  // the first thing a trial owner reads is Friday's autonomous first-run
-  // report, which completes with no user turn at all. Currently unused by
-  // the app; kept for any caller that wants a turn-completed hook.
-  onChatCompleted?: () => void,
 ): UseAgentChatReturn {
   const { isConnected, sendChat, send, onChatMessage, sendReq } = useGateway();
 
@@ -665,15 +657,6 @@ export function useAgentChat(
   // agentId mirror for callback access without stale closures.
   const agentIdRef = useRef(agentId);
 
-  // onChatCompleted mirror — the onChatMessage subscription effect below
-  // depends only on `[onChatMessage]` (a stable identity), so it captures
-  // its closure once at mount; a ref keeps the callback current across
-  // re-renders without forcing a resubscribe on every identity change of an
-  // inline caller-supplied function.
-  const onChatCompletedRef = useRef(onChatCompleted);
-  useEffect(() => {
-    onChatCompletedRef.current = onChatCompleted;
-  }, [onChatCompleted]);
 
   // Busy gate. The approval-pause guard is implemented below via the
   // approvalQueueRef + queue-drain effect — OpenClaw emits chat.final
@@ -2066,7 +2049,6 @@ export function useAgentChat(
                 duration_ms: Date.now() - startedAt,
                 assistant_message_length: turnAssistantLenRef.current,
               });
-              onChatCompletedRef.current?.();
               turnStartedAtRef.current = null;
               turnAssistantLenRef.current = 0;
             }

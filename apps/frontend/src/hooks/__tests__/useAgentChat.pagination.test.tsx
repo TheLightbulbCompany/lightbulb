@@ -69,7 +69,7 @@ describe("useAgentChat history pagination", () => {
     });
 
     const { useAgentChat } = await import("@/hooks/useAgentChat");
-    const { result } = renderHook(() => useAgentChat("agent-1", "user_x", vi.fn()));
+    const { result } = renderHook(() => useAgentChat("agent-1", "user_x"));
 
     await waitFor(() => expect(sendReq).toHaveBeenCalled());
     const [method, params] = sendReq.mock.calls[0];
@@ -101,7 +101,7 @@ describe("useAgentChat history pagination", () => {
     });
 
     const { useAgentChat } = await import("@/hooks/useAgentChat");
-    const { result } = renderHook(() => useAgentChat("agent-1", "user_x", vi.fn()));
+    const { result } = renderHook(() => useAgentChat("agent-1", "user_x"));
     await waitFor(() => expect(result.current.chatMessages).toHaveLength(3));
 
     sendReq.mockResolvedValueOnce({
@@ -153,7 +153,7 @@ describe("useAgentChat history pagination", () => {
     });
 
     const { useAgentChat } = await import("@/hooks/useAgentChat");
-    const { result } = renderHook(() => useAgentChat("agent-1", "user_x", vi.fn()));
+    const { result } = renderHook(() => useAgentChat("agent-1", "user_x"));
 
     await waitFor(() => expect(result.current.chatMessages).toHaveLength(1));
     await waitFor(() => expect(result.current.hasOlderMessages).toBe(true));
@@ -229,7 +229,7 @@ describe("useAgentChat history pagination", () => {
     });
 
     const { useAgentChat } = await import("@/hooks/useAgentChat");
-    const { result } = renderHook(() => useAgentChat("agent-1", "user_x", vi.fn()));
+    const { result } = renderHook(() => useAgentChat("agent-1", "user_x"));
     await waitFor(() => expect(result.current.chatMessages).toHaveLength(1));
 
     const callsBefore = sendReq.mock.calls.length;
@@ -269,7 +269,7 @@ describe("useAgentChat history pagination", () => {
     });
 
     const { useAgentChat } = await import("@/hooks/useAgentChat");
-    const { result } = renderHook(() => useAgentChat("agent-1", "user_x", vi.fn()));
+    const { result } = renderHook(() => useAgentChat("agent-1", "user_x"));
     await waitFor(() => expect(result.current.hasOlderMessages).toBe(true));
 
     const callsBeforeClear = sendReq.mock.calls.length;
@@ -307,7 +307,7 @@ describe("useAgentChat history pagination", () => {
     });
 
     const { useAgentChat } = await import("@/hooks/useAgentChat");
-    const { result } = renderHook(() => useAgentChat("agent-1", "user_x", vi.fn()));
+    const { result } = renderHook(() => useAgentChat("agent-1", "user_x"));
 
     // Initial chat.history is issued but held pending.
     await waitFor(() => expect(sendReq).toHaveBeenCalled());
@@ -373,7 +373,7 @@ describe("useAgentChat history pagination", () => {
     });
 
     const { useAgentChat } = await import("@/hooks/useAgentChat");
-    const { result } = renderHook(() => useAgentChat("agent-1", "user_x", vi.fn()));
+    const { result } = renderHook(() => useAgentChat("agent-1", "user_x"));
 
     await waitFor(() => expect(result.current.chatMessages).toHaveLength(1));
     await waitFor(() => expect(result.current.hasOlderMessages).toBe(true));

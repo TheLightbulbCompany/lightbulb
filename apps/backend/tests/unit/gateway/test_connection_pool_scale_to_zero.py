@@ -355,6 +355,7 @@ async def test_grace_close_arms_trial_stop_after_mixed_case_session_key_run_comp
     conn.user_id = mixed_case_owner_id
     conn.owner_id = mixed_case_owner_id
     conn._active_runs = {}
+    conn._analytics_tasks = set()
     conn._run_state = {}
     conn._side_run_ids = {}
     conn._push_tasks = set()

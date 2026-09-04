@@ -30,6 +30,7 @@ async def test_sessions_changed_forwards_run_active_for_webchat(monkeypatch):
     conn.user_id = "user_1"
     conn.owner_id = "user_1"
     conn._active_runs = {}
+    conn._analytics_tasks = set()
     conn._run_state = {}
     conn._side_run_ids = {}
     conn._push_tasks = set()
@@ -57,6 +58,7 @@ async def test_sessions_changed_dedupes_and_scopes(monkeypatch):
     conn.user_id = "user_1"
     conn.owner_id = "user_1"
     conn._active_runs = {}
+    conn._analytics_tasks = set()
     conn._run_state = {}
     conn._side_run_ids = {}
     conn._push_tasks = set()
@@ -95,6 +97,7 @@ async def test_sessions_changed_ignores_unclassified_key(monkeypatch):
     conn.user_id = "user_1"
     conn.owner_id = "user_1"
     conn._active_runs = {}
+    conn._analytics_tasks = set()
     conn._run_state = {}
     conn._side_run_ids = {}
     conn._push_tasks = set()
@@ -131,6 +134,7 @@ async def test_mixed_case_session_key_clears_on_lowercased_terminal_event(monkey
     conn.user_id = mixed_case_user_id
     conn.owner_id = mixed_case_user_id
     conn._active_runs = {}
+    conn._analytics_tasks = set()
     conn._run_state = {}
     conn._side_run_ids = {}
     conn._push_tasks = set()
@@ -179,6 +183,7 @@ async def test_reset_run_state_dedup_relights_on_reconnect(monkeypatch):
     conn.user_id = "user_1"
     conn.owner_id = "user_1"
     conn._active_runs = {}
+    conn._analytics_tasks = set()
     conn._run_state = {}
     conn._side_run_ids = {}
     conn._push_tasks = set()
@@ -254,6 +259,7 @@ async def test_sessions_changed_clears_pill_on_terminal_status_despite_stale_fla
     conn.user_id = "user_1"
     conn.owner_id = "user_1"
     conn._active_runs = {}
+    conn._analytics_tasks = set()
     conn._run_state = {}
     conn._side_run_ids = {}
     conn._push_tasks = set()

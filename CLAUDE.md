@@ -243,9 +243,11 @@ password** (Claude-in-Chrome / automation): mint a Clerk **sign-in token**
 with the admin API and redeem it via the ticket strategy in the page — no
 password/OTP typed, the same ticket mechanism `routers/desktop_auth.py`
 uses. Get the dev Clerk secret from Secrets Manager
-(`isol8/dev/clerk_secret_key`), find the user id via
+(`lightbulb/dev/clerk_secret_key`), find the user id via
 `GET https://api.clerk.com/v1/users` (dev accounts are `+clerk_test`
-addresses; the users table has no email, Clerk is the only email truth),
+addresses; `/users/sync` writes the JWT's email onto the users row and
+heals rows that lack one, but rows untouched since 2026-09-03 may still
+have no `email`, so Clerk stays the fallback truth),
 then:
 ```bash
 curl -sX POST https://api.clerk.com/v1/sign_in_tokens \
@@ -323,7 +325,12 @@ gh run view <run-id> --repo TheLightbulbCompany/lightbulb --json status,jobs
 ```
 
 **Deployment methods:**
-- **Frontend:** Vercel auto-deploy on push to main (configured via Vercel dashboard)
+- **Frontend:** dev auto-deploys from main. **PROD DOES NOT** — `prod-DeployVercelProd`
+  carries the same `if: github.event_name == 'workflow_dispatch'` as every other prod job
+  (its `if:` sits at the BOTTOM of the ~107-line block, so a `grep -A` from the job header
+  misses it). Prod frontend and backend ship together on the dispatch; merging to main
+  changes nothing a customer sees. Verify by curling the live site for a string from the
+  merged diff, not by reading this table.
 - **Backend:** `deploy.yml` (the CDK pipeline) builds the Docker image and deploys the ECS Fargate service. `backend.yml` is **PR lint + test only** — its header says so; it deploys nothing.
 - **Infrastructure (CDK):** GitHub Actions (`deploy.yml`) → `cdk synth` → `cdk deploy` per environment
 

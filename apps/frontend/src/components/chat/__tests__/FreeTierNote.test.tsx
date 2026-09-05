@@ -26,6 +26,23 @@ describe("FreeTierNote", () => {
     expect(screen.getByRole("link", { name: /see plans/i })).toHaveAttribute("href", "/settings?panel=billing");
   });
 
+  it("clamps a fresh 3-day signup to 3 days, not 4, under a slow client clock", () => {
+    // trial_end is signup + 3 days exactly, but the client clock reads 5 min
+    // slow, so the raw ceil is 4. The clamp must bring it back to the promise.
+    vi.useFakeTimers();
+    try {
+      const base = Date.UTC(2026, 0, 1, 12, 0, 0);
+      vi.setSystemTime(base);
+      const trialEnd = Math.floor(base / 1000) + 3 * DAY + 5 * 60;
+      billing.mockReturnValue(account({ trial_end: trialEnd }));
+      render(<FreeTierNote />);
+      expect(screen.getByText(/3 days left on your free trial/)).toBeInTheDocument();
+      expect(screen.queryByText(/4 days/)).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("rounds a part-day UP, so the last hours read as a day rather than zero", () => {
     // freeTierDaysLeft ceils and anything past trial_end already returned null,
     // so a "0 days"/"last day" branch is unreachable by construction — "1 day

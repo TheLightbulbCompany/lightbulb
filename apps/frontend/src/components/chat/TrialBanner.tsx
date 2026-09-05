@@ -70,7 +70,11 @@ export function TrialBanner() {
   if (daysLeft > TRIAL_REMINDER_DAYS) {
     return null;
   }
-  const chargeDate = new Date(data.trial_end * 1000).toLocaleDateString();
+  // Pin UTC: trial_end is a UTC instant, so a host-local render shows the date
+  // a day early west of UTC. Matches HomeRollupStrip/SpendPanel.
+  const chargeDate = new Date(data.trial_end * 1000).toLocaleDateString(undefined, {
+    timeZone: "UTC",
+  });
 
   return (
     <div className="bg-cream border-b border-info px-4 py-2 text-ui text-info flex items-center justify-between">

@@ -495,9 +495,41 @@ async def transact_publish_flip(
     new currently 'review') and fails the WHOLE transaction if violated.
     ClientError (incl. TransactionCanceledException) propagates -- the
     service maps it to its InvalidStateError.
+
+    install_count is a per-listing LIFETIME counter that lives on whichever
+    version row is currently 'published' (the only row the seller dashboard
+    reads). Deploys bump the published row, so a naive flip would strand the
+    prior version's count on the now-retired row and reset the visible count
+    to 0. We carry it forward: the new published row inherits the retiring
+    row's count and keeps accumulating.
+    # ponytail: a deploy that bumps prev between this read and the flip loses
+    # that one increment; install counts are already best-effort, so this is
+    # acceptable. TransactWriteItems can't copy an attribute across items, so
+    # a pre-read is the only way to carry it inside the atomic flip.
     """
     client = _ddb_client()
     listings_tbl = settings.MARKETPLACE_LISTINGS_TABLE
+    # Pre-read the retiring row's install_count on the SAME low-level client as
+    # the flip below, so the whole operation is one client (and one mock
+    # surface). Low-level get_item returns DynamoDB-JSON, hence the {"N": ...}.
+    prev_resp = await run_in_thread(
+        client.get_item,
+        TableName=listings_tbl,
+        Key={"listing_id": {"S": listing_id}, "version": {"N": str(prev_version)}},
+        ProjectionExpression="install_count",
+    )
+    carried_installs = int((prev_resp.get("Item") or {}).get("install_count", {}).get("N", "0") or 0)
+    new_update_expr = "SET #s = :pub, published_at = :now, published_by = :by, updated_at = :now"
+    new_values = {
+        ":review": {"S": "review"},
+        ":pub": {"S": "published"},
+        ":now": {"S": now_iso},
+        ":by": {"S": approved_by},
+    }
+    if carried_installs:
+        new_update_expr += ", install_count = if_not_exists(install_count, :zero) + :carried"
+        new_values[":zero"] = {"N": "0"}
+        new_values[":carried"] = {"N": str(carried_installs)}
     await run_in_thread(
         client.transact_write_items,
         TransactItems=[
@@ -526,14 +558,9 @@ async def transact_publish_flip(
                         "version": {"N": str(new_version)},
                     },
                     "ConditionExpression": "#s = :review",
-                    "UpdateExpression": ("SET #s = :pub, published_at = :now, published_by = :by, updated_at = :now"),
+                    "UpdateExpression": new_update_expr,
                     "ExpressionAttributeNames": {"#s": "status"},
-                    "ExpressionAttributeValues": {
-                        ":review": {"S": "review"},
-                        ":pub": {"S": "published"},
-                        ":now": {"S": now_iso},
-                        ":by": {"S": approved_by},
-                    },
+                    "ExpressionAttributeValues": new_values,
                 },
             },
         ],

@@ -264,6 +264,7 @@ from core.gateway.operator_rpc import GATEWAY_PORT, GatewayConnectUnavailableErr
 from core.services.agent_roster import roster_entries
 from core.observability.metrics import put_metric
 from core.repositories.paperclip_repo import BootstrapClaimResult
+from core.services import run_analytics
 from core.services.onboarding_brief import build_first_run_message
 
 logger = logging.getLogger(__name__)
@@ -910,6 +911,8 @@ async def _maybe_nudge_first_contact(
 
         if not pool.register_run_completion_callback(owner_id, nudge_run_id, _on_nudge_terminal):
             return
+        # Backend-dispatched nudge -> system actor on its agent_run_completed.
+        run_analytics.record_run_actor(owner_id, nudge_run_id, "system")
         pool.mark_run_active(owner_id, session_key, friday_agent_id, member_id=submitted_by)
         try:
             await pool.send_rpc(
@@ -1036,6 +1039,12 @@ async def _reattach_kickoff_observer(repo, onboarding: dict, *, owner_id: str) -
     pool = get_gateway_pool()
     if pool.has_run_completion_callback(owner_id, dispatch_id):
         return
+    # Re-stamp the system actor: _run_actor is process-local, so a kickoff
+    # handed off to THIS process across a rolling deploy has no entry here.
+    # Without this the reattached observer's terminal reads actor=None and,
+    # because the kickoff runs on a webchat session_key, gets miscounted as a
+    # human activation — the exact inflation this signal exists to prevent.
+    run_analytics.record_run_actor(owner_id, dispatch_id, "system")
     now = time.monotonic()
     if _reattach_not_before.get(owner_id, 0.0) > now:
         return
@@ -1254,6 +1263,8 @@ async def maybe_dispatch_bootstrap(owner_id: str, *, onboarding: dict | None = N
             # not happen -- ensure_connection just created/returned it) --
             # degrade rather than dispatch a kickoff with no completion path.
             raise RuntimeError("gateway connection unavailable for run-completion registration")
+        # Backend-dispatched kickoff -> system actor on its agent_run_completed.
+        run_analytics.record_run_actor(owner_id, run_id, "system")
         pool.mark_run_active(owner_id, session_key, friday_agent_id, member_id=submitted_by)
         # The ONLY thing that changes per-owner: the message CONTENT is the
         # user's own brief (build_first_run_message), not a constant. The

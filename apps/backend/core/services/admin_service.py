@@ -686,7 +686,8 @@ async def get_actions_audit(
         return await admin_actions_repo.query_by_target(target_user_id, limit=limit, cursor=cursor)
     if admin_user_id:
         return await admin_actions_repo.query_by_admin(admin_user_id, limit=limit, cursor=cursor)
-    raise ValueError("get_actions_audit requires target_user_id or admin_user_id")
+    # No filter: the platform-wide audit view lists recent rows newest-first.
+    return await admin_actions_repo.scan_recent(limit=limit, cursor=cursor)
 
 
 # ---------------------------------------------------------------------------

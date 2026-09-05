@@ -245,6 +245,21 @@ async def test_sent_row_reattaches_the_completion_observer_in_this_process():
 
 
 @pytest.mark.asyncio
+async def test_reattach_restamps_system_actor_so_handoff_is_not_counted_human(monkeypatch):
+    """A kickoff handed off across a rolling deploy must still emit
+    actor="system": _run_actor is process-local, so the reattaching process
+    has no entry and, without a re-stamp, the run would read actor=None and
+    (webchat session_key) be miscounted as a human activation."""
+    from core.config import settings
+    from core.services import run_analytics
+
+    monkeypatch.setattr(settings, "POSTHOG_PROJECT_WRITE_KEY", "phc_test")
+    run_analytics._run_actor.clear()
+    repo, ecs, pool, _ = await _run(_sent_onboarding())
+    assert run_analytics._run_actor.get("user_owner:dispatch-1") == "system"
+
+
+@pytest.mark.asyncio
 async def test_reattached_observer_marks_delivered_on_final():
     repo, ecs, pool, _ = await _run(_sent_onboarding())
 

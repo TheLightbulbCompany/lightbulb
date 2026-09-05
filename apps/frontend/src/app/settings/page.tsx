@@ -353,6 +353,10 @@ function BillingPanel() {
           month: "short",
           day: "numeric",
           year: "numeric",
+          // trial_end is a UTC instant; without pinning the zone an owner west
+          // of UTC sees it a day early (host-local render). Pinned like the
+          // other date sites (HomeRollupStrip/SpendPanel).
+          timeZone: "UTC",
         })
       : null;
   // trial_local's `trial_end` is the OVERALL free-tier window expiry — stamped

@@ -176,3 +176,48 @@ async def test_query_by_admin_isolates_admins(dynamodb_table):
     assert len(page_a["items"]) == 1
     assert len(page_b["items"]) == 1
     assert page_a["items"][0]["admin_user_id"] == "admin_a"
+
+
+@pytest.mark.asyncio
+async def test_scan_recent_returns_rows_newest_first_across_admins(dynamodb_table):
+    """Unfiltered audit view: rows from every admin/target, newest-first.
+
+    This is the case that used to raise ValueError -> 400 -> empty list."""
+    from core.repositories import admin_actions_repo
+
+    # Rows from two different admins, interleaved in time.
+    await admin_actions_repo.create(**_row(admin_user_id="admin_a", action="action_0"))
+    await admin_actions_repo.create(**_row(admin_user_id="admin_b", action="action_1"))
+    await admin_actions_repo.create(**_row(admin_user_id="admin_a", action="action_2"))
+
+    page = await admin_actions_repo.scan_recent(limit=10)
+    assert [r["action"] for r in page["items"]] == ["action_2", "action_1", "action_0"]
+    assert page["cursor"] is None
+
+
+@pytest.mark.asyncio
+async def test_scan_recent_paginates_by_offset_cursor(dynamodb_table):
+    from core.repositories import admin_actions_repo
+
+    for i in range(5):
+        await admin_actions_repo.create(**_row(admin_user_id=f"admin_{i}", action=f"action_{i}"))
+
+    first = await admin_actions_repo.scan_recent(limit=2)
+    assert [r["action"] for r in first["items"]] == ["action_4", "action_3"]
+    assert first["cursor"] == "2"
+
+    second = await admin_actions_repo.scan_recent(limit=2, cursor=first["cursor"])
+    assert [r["action"] for r in second["items"]] == ["action_2", "action_1"]
+    assert second["cursor"] == "4"
+
+    third = await admin_actions_repo.scan_recent(limit=2, cursor=second["cursor"])
+    assert [r["action"] for r in third["items"]] == ["action_0"]
+    assert third["cursor"] is None
+
+
+@pytest.mark.asyncio
+async def test_scan_recent_empty_table(dynamodb_table):
+    from core.repositories import admin_actions_repo
+
+    page = await admin_actions_repo.scan_recent()
+    assert page == {"items": [], "cursor": None}

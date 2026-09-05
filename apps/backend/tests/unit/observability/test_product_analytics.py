@@ -53,8 +53,48 @@ def test_capture_calls_client_with_merged_set_person():
     mock_client.capture.assert_called_once_with(
         "user_1",
         "trial_started",
-        {"provider_choice": "bedrock_claude", "$set": {"subscription_status": "trial_local"}},
+        {
+            "provider_choice": "bedrock_claude",
+            "environment": "local",
+            "$set": {"subscription_status": "trial_local"},
+        },
     )
+
+
+def test_capture_stamps_environment(monkeypatch):
+    """Every server-side event carries an ``environment`` super-property so dev
+    and prod are separable in the shared PostHog project."""
+    from core.config import settings
+
+    monkeypatch.setattr(settings, "ENVIRONMENT", "prod")
+    mock_client = MagicMock()
+    with patch.object(product_analytics, "_client_or_none", return_value=mock_client):
+        product_analytics.capture_product_event(distinct_id="user_1", event="trial_started")
+    assert mock_client.capture.call_args.args[2]["environment"] == "prod"
+
+
+def test_capture_environment_defaults_to_local_when_unset(monkeypatch):
+    """Empty ENVIRONMENT (local dev / CI) reads as ``local``."""
+    from core.config import settings
+
+    monkeypatch.setattr(settings, "ENVIRONMENT", "")
+    mock_client = MagicMock()
+    with patch.object(product_analytics, "_client_or_none", return_value=mock_client):
+        product_analytics.capture_product_event(distinct_id="user_1", event="trial_started")
+    assert mock_client.capture.call_args.args[2]["environment"] == "local"
+
+
+def test_capture_does_not_clobber_caller_environment(monkeypatch):
+    """A caller that supplies ``environment`` keeps its value (setdefault)."""
+    from core.config import settings
+
+    monkeypatch.setattr(settings, "ENVIRONMENT", "prod")
+    mock_client = MagicMock()
+    with patch.object(product_analytics, "_client_or_none", return_value=mock_client):
+        product_analytics.capture_product_event(
+            distinct_id="user_1", event="trial_started", properties={"environment": "custom"}
+        )
+    assert mock_client.capture.call_args.args[2]["environment"] == "custom"
 
 
 def test_capture_swallows_client_exception():

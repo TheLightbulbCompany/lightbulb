@@ -1,0 +1,46 @@
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { describe, expect, it, vi, beforeEach } from "vitest";
+
+const api = { get: vi.fn(), del: vi.fn() };
+vi.mock("@/lib/api", () => ({ useApi: () => api }));
+
+import { SlackInstallCard } from "../SlackInstallCard";
+
+describe("SlackInstallCard", () => {
+  beforeEach(() => {
+    api.get.mockReset();
+    api.del.mockReset();
+  });
+
+  it("shows Add to Slack when this agent has no install and navigates to the authorize url", async () => {
+    api.get.mockImplementation(async (path: string) =>
+      path.startsWith("/slack/install") ? { installs: [] } : { url: "https://slack.com/oauth/v2/authorize?x=1" },
+    );
+    const assign = vi.fn();
+    Object.defineProperty(window, "location", { value: { assign, search: "" }, writable: true });
+    render(<SlackInstallCard agentId="agent_f" />);
+    const btn = await screen.findByRole("button", { name: /add to slack/i });
+    fireEvent.click(btn);
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("https://slack.com/oauth/v2/authorize?x=1"));
+    expect(api.get).toHaveBeenCalledWith("/slack/oauth/start?agent_id=agent_f");
+  });
+
+  it("shows the connected workspace and can disconnect", async () => {
+    api.get.mockResolvedValue({
+      installs: [{ team_id: "T1", team_name: "Acme", agent_id: "agent_f", status: "active", installed_at: "" }],
+    });
+    api.del.mockResolvedValue({ status: "revoked" });
+    render(<SlackInstallCard agentId="agent_f" />);
+    expect(await screen.findByText(/connected to acme/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /disconnect/i }));
+    await waitFor(() => expect(api.del).toHaveBeenCalledWith("/slack/install/T1"));
+  });
+
+  it("ignores installs bound to other agents", async () => {
+    api.get.mockResolvedValue({
+      installs: [{ team_id: "T1", team_name: "Acme", agent_id: "agent_other", status: "active", installed_at: "" }],
+    });
+    render(<SlackInstallCard agentId="agent_f" />);
+    expect(await screen.findByRole("button", { name: /add to slack/i })).toBeInTheDocument();
+  });
+});

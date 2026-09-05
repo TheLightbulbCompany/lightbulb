@@ -509,8 +509,16 @@ async def transact_publish_flip(
     """
     client = _ddb_client()
     listings_tbl = settings.MARKETPLACE_LISTINGS_TABLE
-    prev_row = await get_listing(listing_id, prev_version)
-    carried_installs = int((prev_row or {}).get("install_count", 0) or 0)
+    # Pre-read the retiring row's install_count on the SAME low-level client as
+    # the flip below, so the whole operation is one client (and one mock
+    # surface). Low-level get_item returns DynamoDB-JSON, hence the {"N": ...}.
+    prev_resp = await run_in_thread(
+        client.get_item,
+        TableName=listings_tbl,
+        Key={"listing_id": {"S": listing_id}, "version": {"N": str(prev_version)}},
+        ProjectionExpression="install_count",
+    )
+    carried_installs = int((prev_resp.get("Item") or {}).get("install_count", {}).get("N", "0") or 0)
     new_update_expr = "SET #s = :pub, published_at = :now, published_by = :by, updated_at = :now"
     new_values = {
         ":review": {"S": "review"},

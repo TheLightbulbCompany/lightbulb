@@ -355,6 +355,7 @@ async def test_publish_new_version_atomically_retires_prev_and_publishes_new(moc
     """Publishing v_new atomically flips prev_version -> retired AND
     new_version -> published in a single TransactWriteItems on the
     listings table."""
+    mock_client.return_value.get_item = MagicMock(return_value={})  # no prior install_count to carry
     mock_client.return_value.transact_write_items = MagicMock(return_value={})
     await marketplace_service.publish_new_version(
         listing_id="l1",

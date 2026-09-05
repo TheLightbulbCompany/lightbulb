@@ -804,11 +804,19 @@ async def test_get_actions_audit_routes_to_admin_query():
 
 
 @pytest.mark.asyncio
-async def test_get_actions_audit_requires_either_target_or_admin():
+async def test_get_actions_audit_no_filter_scans_recent(monkeypatch):
+    """No filter is the platform-wide audit view: it now scans recent rows
+    newest-first instead of raising (the old ValueError was swallowed to a
+    400 and rendered as "No admin actions recorded" while ~348 rows existed)."""
+    from core.repositories import admin_actions_repo
     from core.services import admin_service
 
-    with pytest.raises(ValueError):
-        await admin_service.get_actions_audit()
+    async def fake_scan_recent(limit=50, cursor=None):
+        return {"items": [{"action_id": "a1"}], "cursor": None}
+
+    monkeypatch.setattr(admin_actions_repo, "scan_recent", fake_scan_recent)
+    result = await admin_service.get_actions_audit()
+    assert result["items"] == [{"action_id": "a1"}]
 
 
 def test_current_image_tags_resolve_from_single_source():

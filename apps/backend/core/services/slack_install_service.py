@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 
 from core.containers import get_ecs_manager
-from core.containers.ecs_manager import slack_env_var_name
+from core.containers.ecs_manager import slack_env_var_name, slack_token_value_from
 from core.repositories import channel_link_repo, integrations_repo, slack_installs_repo
 from core.services.config_patcher import (
     delete_openclaw_config_path,
@@ -136,7 +136,8 @@ async def apply_install(
 
     try:
         await get_ecs_manager().refresh_task_definition(
-            owner_id, extra_secrets=[{"name": slack_env_var_name(team_id), "valueFrom": arn}]
+            owner_id,
+            extra_secrets=[{"name": slack_env_var_name(team_id), "valueFrom": slack_token_value_from(arn)}],
         )
         await patch_openclaw_config(
             owner_id,

@@ -213,6 +213,16 @@ def slack_env_var_name(team_id: str) -> str:
     return f"SLACK_BOT_TOKEN_{team_id.upper()}"
 
 
+def slack_token_value_from(secret_arn: str) -> str:
+    """Task-definition ``valueFrom`` for a Slack bot token. The secret is the
+    integration store's JSON blob (``{"bot_token": ..., "bot_user_id": ...}``),
+    so the entry must select the key — a bare ARN injects the whole JSON
+    document and Slack answers every call with ``invalid_auth``. ECS's
+    selector syntax is ``<full arn>:<json-key>:<version-stage>:<version-id>``
+    with the last two left empty."""
+    return f"{secret_arn}:bot_token::"
+
+
 async def _secret_arn_for_name(secret_name: str) -> str | None:
     """ARN for a Secrets Manager name (task-def ``secrets:`` needs the ARN)."""
     from core.config import settings as _settings
@@ -2677,7 +2687,7 @@ class EcsManager:
                     continue
                 arn = await _secret_arn_for_name(row["token_secret_name"])
                 if arn:
-                    out.append({"name": slack_env_var_name(row["team_id"]), "valueFrom": arn})
+                    out.append({"name": slack_env_var_name(row["team_id"]), "valueFrom": slack_token_value_from(arn)})
             return out
         except Exception:  # noqa: BLE001 — best-effort; never fail provision over this.
             logger.exception("building slack secrets failed for %s; continuing", owner_id)

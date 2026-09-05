@@ -1237,7 +1237,8 @@ async def apply_install(
     installer_member_id: str,
 ) -> dict:
     provider = secret_provider(team_id)
-    await integration_secret_store.put(owner_id, provider, {"bot_token": bot_token, "bot_user_id": bot_user_id})
+    # put() returns the secret ARN — that is what the task-def needs.
+    arn = await integration_secret_store.put(owner_id, provider, {"bot_token": bot_token, "bot_user_id": bot_user_id})
     secret_name = integration_secret_store._secret_name(owner_id, provider)
     row = await slack_installs_repo.put(
         team_id=team_id,
@@ -1257,7 +1258,10 @@ async def apply_install(
         raise SlackInstallConflict(team_id)
     await _mark_connected(owner_id)
 
-    arn = await get_ecs_manager()._secret_arn(secret_name)
+    # ONE locked write carries the account block AND its binding: the patcher
+    # takes the account→agent mapping, so there is never a window where the
+    # account exists without a route, or with the legacy agentId==accountId
+    # auto-binding pointing at an agent that does not exist.
     await get_ecs_manager().refresh_task_definition(
         owner_id, extra_secrets=[{"name": slack_env_var_name(team_id), "valueFrom": arn}]
     )
@@ -1272,21 +1276,8 @@ async def apply_install(
                 }
             }
         },
+        agent_for_account={team_id: agent_id},
     )
-    # patch_openclaw_config auto-adds a binding with agentId == accountId (the
-    # legacy per-agent shape). Ours targets the chosen agent, so add it
-    # explicitly; it sorts ahead because it is appended after and the
-    # dedupe-safe list helper keeps both — the resolver takes the first
-    # match, so remove the auto one first.
-    await remove_from_openclaw_config_list(
-        owner_id,
-        ["bindings"],
-        predicate=lambda b: isinstance(b, dict)
-        and b.get("match", {}).get("channel") == PROVIDER
-        and b.get("match", {}).get("accountId") == team_id
-        and b.get("agentId") == team_id,
-    )
-    await append_to_openclaw_config_list(owner_id, ["bindings"], [route_binding(team_id, agent_id)])
     logger.info("slack install applied owner=%s team=%s agent=%s", owner_id, team_id, agent_id)
     return row
 
@@ -1319,9 +1310,7 @@ async def revoke_install(team_id: str) -> bool:
 Two things to resolve while implementing, both by reading the neighbour once:
 
 1. `integrations_repo` — the test patches `_mark_connected`/`_mark_disconnected`, so the exact repo function names only need to be right at runtime. Run `grep -n "^async def " core/repositories/integrations_repo.py` and use the status-index writer/deleter it exposes (the brief names the row shape `{owner_id, provider, status, connected_at, updated_at}`).
-2. `get_ecs_manager()._secret_arn(secret_name)` — add this one-line method to `EcsManager` delegating to Task 6's module-level `_secret_arn_for_name` (`return await _secret_arn_for_name(secret_name)`), so the service never imports a private module function. If the ARN comes back `None`, raise `RuntimeError(f"secret {secret_name} not found after put")` — the put just succeeded, so this is a real fault.
-
-`append_to_openclaw_config_list(owner_id, path, entries)` — confirm the parameter order with `sed -n '551,587p' core/services/config_patcher.py` and match it.
+2. `patch_openclaw_config` gains a keyword-only `agent_for_account: dict[str, str] | None = None` that flows into `_ensure_channel_bindings_for_patch(cfg, patch, agent_for_account)`, which uses `agent_for_account.get(account_id, account_id)` as the binding's `agentId` (absent → the legacy `agentId == accountId` the BYO wizard relies on). Add a config_patcher unit test for both shapes. This is what lets the install be a single locked write.
 
 - [ ] **Step 4: Run tests + ruff**
 

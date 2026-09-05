@@ -57,3 +57,15 @@ def test_legacy_account_without_carried_binding_still_synthesizes():
     assert {"type": "route", "agentId": "agent_a", "match": {"channel": "telegram", "accountId": "agent_a"}} in out[
         "bindings"
     ]
+
+
+def test_stale_binding_for_missing_account_is_dropped():
+    out = _build(
+        channel_accounts={"slack": {"T1": {"mode": "http"}}},
+        channel_bindings=[
+            {"type": "route", "agentId": "agent_f", "match": {"channel": "slack", "accountId": "T1"}},
+            {"type": "route", "agentId": "agent_old", "match": {"channel": "slack", "accountId": "T_GONE"}},
+        ],
+    )
+    slack_bindings = [b for b in out["bindings"] if b["match"]["channel"] == "slack"]
+    assert slack_bindings == [{"type": "route", "agentId": "agent_f", "match": {"channel": "slack", "accountId": "T1"}}]

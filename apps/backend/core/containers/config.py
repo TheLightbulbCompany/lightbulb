@@ -2646,7 +2646,15 @@ def build_openclaw_config_dict(
             # do not add it before the next image bump.)
             if provider in ("telegram", "slack"):
                 channel.setdefault("streaming", {"mode": "progress"})
-            carried = [b for b in (channel_bindings or []) if (b.get("match") or {}).get("channel") == provider]
+            # Stale bindings whose account no longer exists (e.g. deleted
+            # after a crash) are dropped here — not carried, not re-written —
+            # so an orphaned binding can't leak forward on every reprovision.
+            carried = [
+                b
+                for b in (channel_bindings or [])
+                if (b.get("match") or {}).get("channel") == provider
+                and (b.get("match") or {}).get("accountId") in accounts
+            ]
             for b in carried:
                 if b not in bindings:
                     bindings.append(b)

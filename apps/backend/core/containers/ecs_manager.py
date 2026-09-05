@@ -2645,6 +2645,11 @@ class EcsManager:
             logger.exception("building slack secrets failed for %s; continuing", owner_id)
             return []
 
+    async def _secret_arn(self, secret_name: str) -> str | None:
+        """ARN lookup for a single Secrets Manager name, so callers outside this
+        module never import the private module-level helper directly."""
+        return await _secret_arn_for_name(secret_name)
+
     async def _pre_stage_oauth_for_user(
         self,
         user_id: str,

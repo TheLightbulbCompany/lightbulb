@@ -1,0 +1,188 @@
+"""Install/uninstall of the platform Slack app for one owner (spec §3.2–3.5).
+
+Order on install matters: secret → routing row → task-def roll → config. The
+container's SecretRef resolves ``process.env.SLACK_BOT_TOKEN_{TEAM}``; writing
+the account block before the task-def carries the env var just leaves the
+account ``configured_unavailable`` on the OLD task until the roll lands, which
+is harmless — but rolling first means the NEW task boots with everything.
+"""
+
+from __future__ import annotations
+
+import logging
+
+from core.containers import get_ecs_manager
+from core.containers.ecs_manager import slack_env_var_name
+from core.repositories import channel_link_repo, integrations_repo, slack_installs_repo
+from core.services.config_patcher import (
+    append_to_openclaw_config_list,
+    delete_openclaw_config_path,
+    patch_openclaw_config,
+    remove_from_openclaw_config_list,
+)
+from core.services.credentials import integration_secret_store
+
+logger = logging.getLogger(__name__)
+
+PROVIDER = "slack"
+
+# The platform app's bot scopes. scripts/slack-app-manifest.yaml MUST list the
+# same set — Slack refuses an OAuth request for a scope the app doesn't declare.
+BOT_SCOPES: list[str] = [
+    "app_mentions:read",
+    "assistant:write",
+    "channels:history",
+    "channels:read",
+    "chat:write",
+    "commands",
+    "files:read",
+    "files:write",
+    "groups:history",
+    "groups:read",
+    "im:history",
+    "im:read",
+    "im:write",
+    "mpim:history",
+    "mpim:read",
+    "mpim:write",
+    "reactions:read",
+    "reactions:write",
+    "users:read",
+]
+
+
+class SlackInstallConflict(Exception):
+    """Another owner holds an active install for this workspace."""
+
+
+def secret_provider(team_id: str) -> str:
+    """``integration_secret_store`` provider segment — nested under ``slack/`` so
+    the bare ``slack`` key is never claimed (the integrations rail's rule)."""
+    return f"{PROVIDER}/{team_id}"
+
+
+def account_block(team_id: str) -> dict:
+    """``channels.slack.accounts.<team_id>`` for the platform app: http mode, one
+    webhook path per account (the plugin's route registry is first-writer-
+    wins), and SecretRefs — the bot token from its task-def env var, the
+    signing secret from ``OPENCLAW_HOOK_TOKEN`` because the backend re-signs
+    every forwarded request with the owner's hook_token (spec §3.2)."""
+    return {
+        "mode": "http",
+        "webhookPath": f"/slack/events/{team_id}",
+        "botToken": {"source": "env", "provider": "default", "id": slack_env_var_name(team_id)},
+        "signingSecret": {"source": "env", "provider": "default", "id": "OPENCLAW_HOOK_TOKEN"},
+        # Decision 3: Slack peers, not members — anyone in the workspace may DM.
+        "dmPolicy": "open",
+        "allowFrom": ["*"],
+        # Upstream default is disabled; the manifest declares /lightbulb.
+        "slashCommand": {"enabled": True, "name": "lightbulb"},
+    }
+
+
+def route_binding(team_id: str, agent_id: str) -> dict:
+    return {"type": "route", "agentId": agent_id, "match": {"channel": PROVIDER, "accountId": team_id}}
+
+
+async def _mark_connected(owner_id: str) -> None:
+    await integrations_repo.put_status(owner_id, PROVIDER, "connected")
+
+
+async def _mark_disconnected(owner_id: str) -> None:
+    await integrations_repo.delete(owner_id, PROVIDER)
+
+
+async def apply_install(
+    *,
+    owner_id: str,
+    agent_id: str,
+    team_id: str,
+    team_name: str,
+    bot_token: str,
+    bot_user_id: str,
+    app_id: str,
+    scopes: list[str],
+    installer_slack_user_id: str,
+    installer_member_id: str,
+) -> dict:
+    provider = secret_provider(team_id)
+    await integration_secret_store.put(owner_id, provider, {"bot_token": bot_token, "bot_user_id": bot_user_id})
+    secret_name = integration_secret_store._secret_name(owner_id, provider)
+    row = await slack_installs_repo.put(
+        team_id=team_id,
+        owner_id=owner_id,
+        agent_id=agent_id,
+        team_name=team_name,
+        bot_user_id=bot_user_id,
+        app_id=app_id,
+        scopes=scopes,
+        installer_slack_user_id=installer_slack_user_id,
+        installer_member_id=installer_member_id,
+        token_secret_name=secret_name,
+    )
+    if row is None:
+        # Somebody else's workspace. Don't leave our copy of their token behind.
+        await integration_secret_store.delete(owner_id, provider)
+        raise SlackInstallConflict(team_id)
+    await _mark_connected(owner_id)
+
+    mgr = get_ecs_manager()
+    arn = await mgr._secret_arn(secret_name)
+    if arn is None:
+        raise RuntimeError(f"secret {secret_name} not found after put")
+    await mgr.refresh_task_definition(owner_id, extra_secrets=[{"name": slack_env_var_name(team_id), "valueFrom": arn}])
+    await patch_openclaw_config(
+        owner_id,
+        {
+            "channels": {
+                PROVIDER: {
+                    "enabled": True,
+                    "streaming": {"mode": "progress"},
+                    "accounts": {team_id: account_block(team_id)},
+                }
+            }
+        },
+    )
+    # patch_openclaw_config auto-adds a binding with agentId == accountId (the
+    # legacy per-agent shape). Ours targets the chosen agent, so strip the
+    # auto one first, then append ours explicitly.
+    await remove_from_openclaw_config_list(
+        owner_id,
+        ["bindings"],
+        predicate=lambda b: (
+            isinstance(b, dict)
+            and b.get("match", {}).get("channel") == PROVIDER
+            and b.get("match", {}).get("accountId") == team_id
+            and b.get("agentId") == team_id
+        ),
+    )
+    await append_to_openclaw_config_list(owner_id, ["bindings"], route_binding(team_id, agent_id))
+    logger.info("slack install applied owner=%s team=%s agent=%s", owner_id, team_id, agent_id)
+    return row
+
+
+async def revoke_install(team_id: str) -> bool:
+    """``app_uninstalled`` / ``tokens_revoked`` / owner Disconnect: mark the row,
+    drop the secret, remove the account + binding, sweep pairing rows. The
+    container keeps running; Clerk and billing are untouched."""
+    row = await slack_installs_repo.get(team_id)
+    if not row:
+        return False
+    owner_id, agent_id = row["owner_id"], row.get("agent_id") or ""
+    await slack_installs_repo.set_status(team_id, slack_installs_repo.STATUS_REVOKED)
+    await integration_secret_store.delete(owner_id, secret_provider(team_id))
+    await delete_openclaw_config_path(owner_id, ["channels", PROVIDER, "accounts", team_id])
+    await remove_from_openclaw_config_list(
+        owner_id,
+        ["bindings"],
+        predicate=lambda b: (
+            isinstance(b, dict)
+            and b.get("match", {}).get("channel") == PROVIDER
+            and b.get("match", {}).get("accountId") == team_id
+        ),
+    )
+    if agent_id:
+        await channel_link_repo.sweep_by_owner_provider_agent(owner_id=owner_id, provider=PROVIDER, agent_id=agent_id)
+    await _mark_disconnected(owner_id)
+    logger.info("slack install revoked owner=%s team=%s", owner_id, team_id)
+    return True

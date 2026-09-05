@@ -85,6 +85,9 @@ def _status_payload(row: dict | None) -> dict:
         "details_submitted": bool(row.get("company_stripe_details_submitted")),
         "charges_enabled": bool(row.get("company_stripe_charges_enabled")),
         "payouts_enabled": bool(row.get("company_stripe_payouts_enabled")),
+        # False only for an api_key row bound with an rk_test_/sk_test_ key;
+        # the card labels that "Test mode". Connect rows follow the platform.
+        "livemode": bool(row.get("company_stripe_livemode", True)) if account_id else None,
         "dashboard_url": DASHBOARD_URL if account_id else None,
         # The frontend hides "Connect existing" and disables "Disconnect" when
         # this is false — both routes 503 without the platform client id.
@@ -241,6 +244,7 @@ async def bind_api_key(body: ApiKeyBody, auth: Annotated[AuthContext, Depends(ge
         details_submitted=info["details_submitted"],
         charges_enabled=info["charges_enabled"],
         payouts_enabled=info["payouts_enabled"],
+        livemode=info["livemode"],
     )
     put_metric("company_stripe.account.api_key_bound")
     await write_owner_facts(owner_id)

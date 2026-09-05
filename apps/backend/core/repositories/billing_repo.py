@@ -1415,13 +1415,18 @@ async def set_company_stripe_status(
     details_submitted: bool,
     charges_enabled: bool,
     payouts_enabled: bool,
+    livemode: bool | None = None,
 ) -> dict | None:
-    """Mirror Connect's account.updated. None = the row is bound to a different account."""
+    """Mirror Connect's account.updated. None = the row is bound to a different account.
+    ``livemode`` is only known for api_key rows (from the key prefix); Connect
+    rows follow the platform key and leave it unset."""
 
     def mutate(row: dict) -> None:
         row["company_stripe_details_submitted"] = bool(details_submitted)
         row["company_stripe_charges_enabled"] = bool(charges_enabled)
         row["company_stripe_payouts_enabled"] = bool(payouts_enabled)
+        if livemode is not None:
+            row["company_stripe_livemode"] = bool(livemode)
 
     return await _write_company_stripe(
         owner_id,

@@ -548,7 +548,8 @@ us). Everything else a company-Stripe binding powers — the Money tabs, the
 revenue rollup, card status, Friday's "Stripe connected" awareness — is plain
 v1 and runs on the **API-key path**: the owner pastes a restricted key
 (`POST /company/stripe/api-key`, Read on Charges/Customers/Products/Prices/
-Balance/Account), it lives ONLY in Secrets Manager (`company_stripe` provider;
+Balance/Account; test-mode keys bind too and the card says "Test mode" —
+Stripe's app reviewers may only use test accounts), it lives ONLY in Secrets Manager (`company_stripe` provider;
 never `openclaw.json`, `env.vars`, or EFS), and the billing row carries
 `source: "api_key"`. `company_stripe_reads._addressing` is the one resolver:
 `connected/created` rows → platform key + `stripe_account` header; `api_key`

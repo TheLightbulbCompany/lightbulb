@@ -82,6 +82,12 @@ describe("CompanyStripeSection", () => {
     expect(screen.queryByText("Connect existing Stripe")).toBeNull();
   });
 
+  it("labels a binding made with a test-mode key so sandbox figures never read as revenue", async () => {
+    get.mockResolvedValue({ ...BOUND_BY_KEY, livemode: false });
+    renderSection(true);
+    expect(await screen.findByText("Your API key · Test mode")).toBeInTheDocument();
+  });
+
   it("pastes a key: posts it, clears the field, and refreshes status", async () => {
     get.mockResolvedValueOnce({ ...UNBOUND, provisioning_enabled: false }).mockResolvedValue(BOUND_BY_KEY);
     post.mockResolvedValue({ account_id: "acct_x", livemode: true });

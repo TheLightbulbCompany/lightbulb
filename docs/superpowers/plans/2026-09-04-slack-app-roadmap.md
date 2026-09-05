@@ -64,7 +64,8 @@ Exact steps, in the order they become necessary. Everything else in this program
 - **Per-owner consecutive-503 degrade** — the no-IP 503 is the one deliberate per-owner 5xx (Slack's retry is the recovery); if one dominant workspace stays down for ~an hour it could approach the app-wide 95 %/60 min kill switch. Count consecutive no-IP per owner and degrade to 200 + metric after N.
 - **Enterprise Grid** — org-wide install; needs `org_deploy_enabled`, `enterprise_id` routing, and a plugin mode that forbids bindings (so per-agent routing changes shape).
 - **Modals** — a small companion plugin; the seam exists (`trigger_id` is handed to plugin interactive handlers).
-- **Agent faces** — `chat:write.customize`; Atlas replies as Atlas. One scope + scope justification.
+- **Agent faces** — `chat:write.customize`; Atlas replies as Atlas. One scope + scope justification. (A prod-debugging session reports the owner wants this now — needs the owner's direct say-so, then it is a one-line change in `BOT_SCOPES` + the manifest.)
+- **Channel picker at onboarding** (`channels:join`) — Viktor's pattern; the ONLY justified home for that scope, since the plugin never calls `conversations.join` on its own. `not_in_channel` on a post is the bot not being a member — `/invite` fixes it, `channels:join` would not.
 - **Peer-DM privacy** — hide peer sessions from the admin session list.
 - **"Which team?" picker** — for installers who admin >1 org without a Slack install; Phase 2 rules "most recent org without an install, else create" and names the ceiling.
 - **Spot skip on first provision** — only if cold-install latency is observed to suffer from placement fallback.

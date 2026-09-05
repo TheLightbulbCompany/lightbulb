@@ -180,6 +180,28 @@ async def _provision_channel_accounts(owner_id: str) -> dict[str, dict[str, dict
         return {}
 
 
+def slack_env_var_name(team_id: str) -> str:
+    """ECS/SecretRef env var carrying one workspace's bot token. The OpenClaw
+    SecretRef ``id`` must match ``^[A-Z][A-Z0-9_]{0,127}$`` — Slack team ids
+    (``T0123ABC``) do; agent ids would not, which is one reason the Slack
+    account is keyed by team, not agent."""
+    return f"SLACK_BOT_TOKEN_{team_id.upper()}"
+
+
+async def _secret_arn_for_name(secret_name: str) -> str | None:
+    """ARN for a Secrets Manager name (task-def ``secrets:`` needs the ARN)."""
+    from core.config import settings as _settings
+
+    def _describe() -> str | None:
+        sm = boto3.client("secretsmanager", region_name=_settings.AWS_REGION)
+        try:
+            return sm.describe_secret(SecretId=secret_name)["ARN"]
+        except sm.exceptions.ResourceNotFoundException:
+            return None
+
+    return await asyncio.to_thread(_describe)
+
+
 _CONFIG_LOCK_PROTOCOL_ENV = "ISOL8_CONFIG_LOCK_PROTOCOL"
 _CONFIG_LOCK_PROTOCOL_VERSION = "guard-v1"
 
@@ -799,7 +821,7 @@ class EcsManager:
         except Exception as e:
             logger.error("Failed to deregister task definition %s: %s", task_definition_arn, e)
 
-    async def refresh_task_definition(self, owner_id: str) -> str | None:
+    async def refresh_task_definition(self, owner_id: str, *, extra_secrets: list[dict] | None = None) -> str | None:
         """Re-register a user's ECS task definition with the current env list,
         then roll the running task onto the new revision.
 
@@ -817,6 +839,11 @@ class EcsManager:
         (BYOK provider secrets, chatgpt_oauth ``CODEX_HOME``, etc.). So we
         describe the user's CURRENT task-def, swap its env list, and
         re-register that — the base-cloning seam doesn't fit here.
+
+        ``extra_secrets`` (``{name, valueFrom}``) are merged onto the
+        openclaw container's ``secrets`` list, replacing same-named entries —
+        the Slack install uses this to add ``SLACK_BOT_TOKEN_{TEAM}`` without
+        touching BYOK entries.
 
         The EFS access point and DDB row are untouched — losing agent
         state would be a backfill regression.
@@ -856,6 +883,10 @@ class EcsManager:
         for cd in td["containerDefinitions"]:
             if cd["name"] == "openclaw":
                 cd["environment"] = new_env
+                if extra_secrets:
+                    incoming = {s["name"]: s for s in extra_secrets}
+                    kept = [s for s in (cd.get("secrets") or []) if s.get("name") not in incoming]
+                    cd["secrets"] = kept + list(incoming.values())
 
         register_kwargs = {
             "family": td["family"],
@@ -2592,6 +2623,28 @@ class EcsManager:
         env_var_name = "OPENAI_API_KEY" if byo_provider == "openai" else "ANTHROPIC_API_KEY"
         return [{"name": env_var_name, "valueFrom": secret_arn}]
 
+    async def _build_slack_secrets_for_user(self, owner_id: str) -> list[dict]:
+        """ECS ``secrets:`` entries for every ACTIVE Slack install of ``owner_id``
+        — one ``SLACK_BOT_TOKEN_{TEAM}`` per workspace, so a reprovision or
+        image roll re-registers them and the SecretRef in openclaw.json keeps
+        resolving. Best-effort: ``[]`` on any failure; provisioning must never
+        break because the Slack table hiccupped (the owner re-installs)."""
+        try:
+            from core.repositories import slack_installs_repo
+
+            rows = await slack_installs_repo.list_for_owner(owner_id)
+            out: list[dict] = []
+            for row in rows:
+                if row.get("status") != "active" or not row.get("token_secret_name"):
+                    continue
+                arn = await _secret_arn_for_name(row["token_secret_name"])
+                if arn:
+                    out.append({"name": slack_env_var_name(row["team_id"]), "valueFrom": arn})
+            return out
+        except Exception:  # noqa: BLE001 — best-effort; never fail provision over this.
+            logger.exception("building slack secrets failed for %s; continuing", owner_id)
+            return []
+
     async def _pre_stage_oauth_for_user(
         self,
         user_id: str,
@@ -2891,6 +2944,10 @@ class EcsManager:
                     user_id,
                 )
             secrets_for_task = await self._build_byo_secrets_for_user(user_id, byo_provider)
+
+        # Slack bot tokens ride the task-def like BYOK keys do, so a fresh
+        # provision / reprovision of an owner with installs keeps them.
+        secrets_for_task = list(secrets_for_task) + await self._build_slack_secrets_for_user(user_id)
 
         if provider_choice not in ("chatgpt_oauth", "byo_key", *BEDROCK_PROVIDER_CHOICES):
             raise EcsManagerError(

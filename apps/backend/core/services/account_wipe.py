@@ -100,6 +100,7 @@ from core.repositories import (
     container_repo,
     integrations_repo,
     provisioning_workflow_repo,
+    slack_installs_repo,
     usage_repo,
     user_repo,
 )
@@ -640,6 +641,16 @@ async def preview_wipe(owner_id: str) -> WipeReport:
         detail_if_absent="no agent email addresses",
     )
 
+    install_rows = await slack_installs_repo.list_for_owner(owner_id)
+    steps.append(
+        WipeStep(
+            system="slack_installs",
+            action="delete_all_for_owner",
+            status="would_delete",
+            detail=", ".join(r["team_id"] for r in install_rows) or "none",
+        )
+    )
+
     slug_row = await company_slug_repo.get_by_owner(owner_id)
     _preview_step(
         steps,
@@ -1004,6 +1015,12 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
         return f"deleted {len(addresses)} agent email address(es): {', '.join(addresses) or 'none'}"
 
     await _step(steps, system="agent_email_addresses", action="delete_all_for_owner", fn=_s9i)
+
+    async def _s9i2() -> str:
+        teams = await slack_installs_repo.delete_all_for_owner(owner_id)
+        return f"deleted {len(teams)} slack install(s): {', '.join(teams) or 'none'}"
+
+    await _step(steps, system="slack_installs", action="delete_all_for_owner", fn=_s9i2)
 
     async def _s9j() -> str:
         slug = await company_slug_repo.delete_for_owner(owner_id)

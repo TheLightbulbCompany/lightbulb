@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { CheckCircle2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { useBilling } from "@/hooks/useBilling";
 import { useApi } from "@/lib/api";
 
 type Install = { team_id: string; team_name: string; agent_id: string; status: string; installed_at: string };
@@ -13,6 +14,10 @@ type Install = { team_id: string; team_name: string; agent_id: string; status: s
  * wizard stays available below it as the advanced path. */
 export function SlackInstallCard({ agentId }: { agentId: string }) {
   const api = useApi();
+  // Phase 1 forwards Slack traffic for paid owners only, and the backend
+  // refuses the start for anyone else — don't offer a button that ends in silence.
+  const { account: billing, isLoading: billingLoading } = useBilling();
+  const paid = billing?.is_subscribed === true;
   const [installs, setInstalls] = useState<Install[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -78,9 +83,13 @@ export function SlackInstallCard({ agentId }: { agentId: string }) {
     <div className="space-y-2">
       {note && <p className="text-xs text-[var(--midnight-muted)]">{note}</p>}
       {mine.length === 0 ? (
-        <Button variant="outline" size="sm" onClick={start} disabled={busy}>
-          Add to Slack
-        </Button>
+        billingLoading ? null : paid ? (
+          <Button variant="outline" size="sm" onClick={start} disabled={busy}>
+            Add to Slack
+          </Button>
+        ) : (
+          <p className="text-xs text-[var(--midnight-muted)]">Slack needs a paid plan. Upgrade to connect a workspace.</p>
+        )
       ) : (
         mine.map((i) => (
           <div key={i.team_id} className="flex items-center gap-2 text-sm">

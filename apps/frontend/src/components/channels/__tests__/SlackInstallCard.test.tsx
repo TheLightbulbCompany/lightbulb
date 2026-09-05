@@ -3,6 +3,8 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 
 const api = { get: vi.fn(), del: vi.fn() };
 vi.mock("@/lib/api", () => ({ useApi: () => api }));
+const billing = { account: { is_subscribed: true } as { is_subscribed: boolean } | null, isLoading: false };
+vi.mock("@/hooks/useBilling", () => ({ useBilling: () => billing }));
 
 import { SlackInstallCard } from "../SlackInstallCard";
 
@@ -10,6 +12,16 @@ describe("SlackInstallCard", () => {
   beforeEach(() => {
     api.get.mockReset();
     api.del.mockReset();
+    billing.account = { is_subscribed: true };
+    billing.isLoading = false;
+  });
+
+  it("offers no button to a trial owner, only the paid-plan note", async () => {
+    billing.account = { is_subscribed: false };
+    api.get.mockResolvedValue({ installs: [] });
+    render(<SlackInstallCard agentId="agent_f" />);
+    expect(await screen.findByText(/needs a paid plan/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /add to slack/i })).toBeNull();
   });
 
   it("shows Add to Slack when this agent has no install and navigates to the authorize url", async () => {

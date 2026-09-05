@@ -30,8 +30,15 @@ def _app_store():
     )
 
 
+def _billing(status="active"):
+    return patch(
+        "routers.slack_app.billing_repo.get_by_owner_id",
+        AsyncMock(return_value=None if status is None else {"subscription_status": status}),
+    )
+
+
 def test_start_returns_authorize_url_and_stores_state(client):
-    with _app_store(), patch("routers.slack_app.oauth_state_repo.put", AsyncMock()) as put:
+    with _app_store(), _billing(), patch("routers.slack_app.oauth_state_repo.put", AsyncMock()) as put:
         r = client.get("/api/v1/slack/oauth/start?agent_id=agent_f")
     assert r.status_code == 200
     url = urlparse(r.json()["url"])
@@ -45,6 +52,14 @@ def test_start_returns_authorize_url_and_stores_state(client):
     assert put.call_args.args[0] == state
     assert put.call_args.kwargs["owner_id"] == "org_1"
     assert put.call_args.kwargs["extra"] == {"agent_id": "agent_f", "member_id": "user_1"}
+
+
+def test_start_refuses_a_trial_owner_with_402(client):
+    with _app_store(), _billing("trial_local"), patch("routers.slack_app.oauth_state_repo.put", AsyncMock()) as put:
+        r = client.get("/api/v1/slack/oauth/start?agent_id=agent_f")
+    assert r.status_code == 402
+    assert r.json()["detail"] == "slack_requires_paid_plan"
+    put.assert_not_called()
 
 
 def test_start_requires_org_admin(client):

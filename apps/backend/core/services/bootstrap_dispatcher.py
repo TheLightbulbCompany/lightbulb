@@ -1039,6 +1039,12 @@ async def _reattach_kickoff_observer(repo, onboarding: dict, *, owner_id: str) -
     pool = get_gateway_pool()
     if pool.has_run_completion_callback(owner_id, dispatch_id):
         return
+    # Re-stamp the system actor: _run_actor is process-local, so a kickoff
+    # handed off to THIS process across a rolling deploy has no entry here.
+    # Without this the reattached observer's terminal reads actor=None and,
+    # because the kickoff runs on a webchat session_key, gets miscounted as a
+    # human activation — the exact inflation this signal exists to prevent.
+    run_analytics.record_run_actor(owner_id, dispatch_id, "system")
     now = time.monotonic()
     if _reattach_not_before.get(owner_id, 0.0) > now:
         return

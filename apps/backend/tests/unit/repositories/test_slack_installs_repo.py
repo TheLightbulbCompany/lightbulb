@@ -109,3 +109,9 @@ async def test_list_for_owner_and_delete_all(installs_table):
 @pytest.mark.asyncio
 async def test_get_missing_is_none(installs_table):
     assert await repo.get("T_NOPE") is None
+
+
+@pytest.mark.asyncio
+async def test_set_status_on_unknown_team_creates_nothing(installs_table):
+    await repo.set_status("T_NOPE", "revoked")
+    assert await repo.get("T_NOPE") is None

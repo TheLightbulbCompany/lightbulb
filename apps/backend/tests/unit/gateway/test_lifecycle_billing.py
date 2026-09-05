@@ -198,6 +198,55 @@ async def test_chat_final_no_longer_calls_billing(conn):
     assert any_done
 
 
+# --- trial_first_agent_response rides a readable true-terminal chat.final ---
+
+
+def _final(text: str | None):
+    msg = {"role": "assistant", "content": [{"type": "text", "text": text}] if text else []}
+    return {"sessionKey": "agent:main:main", "state": "final", "runId": "run-1", "message": msg}
+
+
+@pytest.mark.asyncio
+async def test_chat_final_with_text_schedules_trial_first_response(conn):
+    sched = MagicMock(return_value=None)
+    with (
+        patch.object(conn, "_fetch_and_record_usage", AsyncMock()),
+        patch.object(conn, "_forward_to_frontends", AsyncMock()),
+        patch("core.gateway.connection_pool.schedule_trial_first_agent_response", sched),
+    ):
+        await conn._handle_message({"type": "event", "event": "chat", "payload": _final("hi")})
+    sched.assert_called_once_with("org_1")
+
+
+@pytest.mark.asyncio
+async def test_chat_final_without_assistant_text_does_not_schedule(conn):
+    """A /status or /help final, or an empty-content final, is not a reply
+    the owner can read — the false positive a render-side trigger had, and
+    the one this must not repeat."""
+    sched = MagicMock(return_value=None)
+    with (
+        patch.object(conn, "_fetch_and_record_usage", AsyncMock()),
+        patch.object(conn, "_forward_to_frontends", AsyncMock()),
+        patch("core.gateway.connection_pool.schedule_trial_first_agent_response", sched),
+    ):
+        await conn._handle_message({"type": "event", "event": "chat", "payload": _final(None)})
+        await conn._handle_message({"type": "event", "event": "chat", "payload": _final("   ")})
+    sched.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_chat_error_does_not_schedule_trial_first_response(conn):
+    sched = MagicMock(return_value=None)
+    payload = {"sessionKey": "agent:main:main", "state": "error", "runId": "run-1", "errorMessage": "boom"}
+    with (
+        patch.object(conn, "_fetch_and_record_usage", AsyncMock()),
+        patch.object(conn, "_forward_to_frontends", AsyncMock()),
+        patch("core.gateway.connection_pool.schedule_trial_first_agent_response", sched),
+    ):
+        await conn._handle_message({"type": "event", "event": "chat", "payload": payload})
+    sched.assert_not_called()
+
+
 # --- the usage-settle trigger schedules per lifecycle/end delivery ---
 #
 # There is NO runId dedup here any more: the free-tier daily-spend counter is

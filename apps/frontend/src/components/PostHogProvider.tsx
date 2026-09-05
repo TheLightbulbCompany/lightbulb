@@ -208,15 +208,33 @@ function PostHogPageview() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const { isSignedIn } = useAuth();
-  const lastCheckoutEventRef = useRef<string | null>(null);
+  const queryString = searchParams?.toString() ?? "";
+  const url = pathname + (queryString ? `?${queryString}` : "");
+  // The URL whose per-URL events were last SENT. Set only after a real send
+  // (pageview() reports whether posthog was loaded). One ref guards every
+  // capture in the block — pageview, landing_viewed, the checkout return —
+  // so a StrictMode dev double-invoke cannot double any of them.
+  const lastSentUrlRef = useRef<string | null>(null);
 
+  // Per-URL effect, keyed on the URL STRING. Invariants: one send per
+  // navigation; independent of when Clerk resolves `isSignedIn` (that lives
+  // in the second effect); immune to searchParams object-identity churn.
   useEffect(() => {
     if (!POSTHOG_KEY) return;
-    const queryString = searchParams?.toString() ?? "";
-    const url = pathname + (queryString ? `?${queryString}` : "");
-    pageview(url);
-    if (pathname === "/") {
-      capture("landing_viewed", { path: url });
+    if (lastSentUrlRef.current !== url && pageview(url)) {
+      lastSentUrlRef.current = url;
+      if (pathname === "/") {
+        capture("landing_viewed", { path: url });
+      }
+      const checkoutStatus = searchParams.get("checkout") ?? searchParams.get("subscription");
+      if (checkoutStatus === "success" || checkoutStatus === "cancel") {
+        capture(
+          checkoutStatus === "success"
+            ? "subscription_checkout_returned_success"
+            : "subscription_checkout_canceled",
+          { path: pathname, provider_choice: searchParams.get("provider") },
+        );
+      }
     }
 
     // Which step `signup_exit` reports. /chat is owned by ProvisioningStepper
@@ -231,29 +249,25 @@ function PostHogPageview() {
     } else if (!pathname?.startsWith("/chat")) {
       setSignupStep(null);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `url` is derived from pathname + searchParams; keying on the string is the point.
+  }, [url]);
 
-    if (!isSignedIn && pathname?.startsWith("/sign-up")) {
+  // Sign-up intent stash — the one thing that needs Clerk's answer.
+  // Invariant: stash ONLY when Clerk has resolved to signed-out
+  // (`=== false`); `undefined` is "not resolved yet", and a signed-in user
+  // opening /sign-up must never leave an intent for PostHogIdentify to replay
+  // as a signup.
+  useEffect(() => {
+    if (!POSTHOG_KEY) return;
+    if (isSignedIn === false && pathname?.startsWith("/sign-up")) {
       safeStorageSet(SIGNUP_INTENT_KEY, JSON.stringify({
         path: url,
         provider_choice: searchParams.get("provider"),
         timestamp: new Date().toISOString(),
       }));
     }
-
-    const checkoutStatus = searchParams.get("checkout") ?? searchParams.get("subscription");
-    if ((checkoutStatus === "success" || checkoutStatus === "cancel") && lastCheckoutEventRef.current !== url) {
-      lastCheckoutEventRef.current = url;
-      capture(
-        checkoutStatus === "success"
-          ? "subscription_checkout_returned_success"
-          : "subscription_checkout_canceled",
-        {
-          path: pathname,
-          provider_choice: searchParams.get("provider"),
-        },
-      );
-    }
-  }, [pathname, searchParams, isSignedIn]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- see above.
+  }, [url, isSignedIn]);
 
   return null;
 }

@@ -31,6 +31,7 @@ def _make_terminal_conn(owner_id="org_1"):
     conn._recipients_cache = None
     conn._recipients_cache_ts = 0.0
     conn._active_runs = {}
+    conn._analytics_tasks = set()
     conn._run_state = {}
     conn._side_run_ids = {}
     conn._parked = False

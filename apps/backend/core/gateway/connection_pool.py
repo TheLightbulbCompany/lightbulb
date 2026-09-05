@@ -20,6 +20,7 @@ from websockets import connect as ws_connect
 from core.gateway.frame_sender import FrameSender
 from core.gateway.operator_rpc import GATEWAY_PORT, GatewayConnectAuthError, perform_signed_connect
 from core.observability.logging import bind_log_context
+from core.observability.product_analytics import schedule_trial_first_agent_response
 from core.observability.metrics import put_metric, gauge
 from core.repositories import channel_link_repo
 from core.services.connection_service import ConnectionService
@@ -1421,6 +1422,19 @@ class GatewayConnection:
         self._billing_tasks.add(task)
         task.add_done_callback(self._billing_tasks.discard)
 
+    def _emit_trial_first_response(self) -> None:
+        """Fire-and-forget ``trial_first_agent_response`` (see
+        ``schedule_trial_first_agent_response``). Same shape as
+        ``_emit_run_completed``: gate synchronously, spawn, never raise."""
+        try:
+            task = schedule_trial_first_agent_response(self.owner_id)
+        except Exception:
+            logger.exception("trial_first_agent_response scheduling failed for user %s", self.user_id)
+            return
+        if task is not None:
+            self._analytics_tasks.add(task)
+            task.add_done_callback(self._analytics_tasks.discard)
+
     def _emit_run_completed(self, payload: dict, parsed_key: dict, phase: str) -> None:
         """Fire-and-forget ``agent_run_completed`` product event (mirrors
         ``_record_usage_from_session``: classify synchronously, spawn the
@@ -2027,6 +2041,12 @@ class GatewayConnection:
                         # the push is ever created — losing the closed-app push.
                 if state == "final":
                     put_metric("chat.message.count")
+                    # A reply the owner can read: a true terminal (not an interim
+                    # tool-approval final), not a /btw side run, and carrying
+                    # assistant text — a /status or /help final and an empty-content
+                    # final are not agent replies.
+                    if is_true_terminal and not run_is_side and (self._extract_assistant_text(payload) or "").strip():
+                        self._emit_trial_first_response()
                     # Deliver thinking from content blocks for models that
                     # batch reasoning into the final message (reasoningLevel
                     # not set to "stream"). Once reasoningLevel:"stream" is

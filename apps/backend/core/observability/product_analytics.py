@@ -23,7 +23,9 @@ path, so every failure is swallowed (logged) rather than raised.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import uuid
 from typing import Any
 
 from core.config import settings
@@ -135,3 +137,63 @@ def capture_once_per_owner_per_day(
         oldest = next(iter(_daily_dedup_seen))
         del _daily_dedup_seen[oldest]
     capture_product_event(distinct_id=owner_id, event=event, properties=properties)
+
+
+# ---------------------------------------------------------------------------
+# trial_first_agent_response — a trial owner's first agent reply, once ever
+# ---------------------------------------------------------------------------
+
+# Owners this process has already RESOLVED (fired, already stamped, or not
+# on a trial). Added only after the durable check answered, never before an
+# await, so a cancelled task cannot leave an owner marked resolved with
+# nothing emitted. Unbounded on purpose: one string per owner per process.
+_first_response_done: set[str] = set()
+
+# Same-day belt for the durable gate below — PostHog dedups a repeated uuid
+# only within one UTC day (ClickHouse sorts on toDate(timestamp)), so this is
+# NOT a lifetime key; the billing-row CAS is what makes the event once-ever.
+_TRIAL_FIRST_RESPONSE_NS = uuid.uuid5(uuid.NAMESPACE_URL, "lightbulb:trial_first_agent_response")
+
+
+def schedule_trial_first_agent_response(owner_id: str) -> "asyncio.Task[None] | None":
+    """Spawn the once-ever ``trial_first_agent_response`` capture for an owner.
+
+    Synchronous and I/O-free — safe on the gateway reader loop. Returns the
+    task for the caller's drain set, or None when the PostHog bridge is off
+    (unit tests, local dev) or this process already resolved the owner.
+
+    Invariants:
+    - Once ever per owner: gated by a conditional write of
+      ``first_agent_response_at`` on the billing row, which also records the
+      time-to-first-value. Survives restarts, deploys and races; the uuid is
+      only a same-day belt.
+    - Trial owners only (``subscription_status == trial_local`` at the moment
+      of the reply); paid and org owners never fire it.
+    - Never raises; a failed write is logged and the owner is NOT memoised, so
+      a later reply retries.
+    """
+    if not settings.POSTHOG_PROJECT_WRITE_KEY:
+        return None
+    if owner_id in _first_response_done:
+        return None
+    return asyncio.create_task(_capture_trial_first_agent_response(owner_id))
+
+
+async def _capture_trial_first_agent_response(owner_id: str) -> None:
+    try:
+        from core.repositories import billing_repo
+
+        won = await billing_repo.mark_trial_first_agent_response(owner_id)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning("trial_first_agent_response: billing CAS failed for %s", owner_id, exc_info=True)
+        return
+    _first_response_done.add(owner_id)
+    if not won:
+        return
+    capture_product_event(
+        distinct_id=owner_id,
+        event="trial_first_agent_response",
+        event_uuid=str(uuid.uuid5(_TRIAL_FIRST_RESPONSE_NS, f"{owner_id}:{utc_today()}")),
+    )

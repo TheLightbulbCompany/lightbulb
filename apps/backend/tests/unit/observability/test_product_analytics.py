@@ -11,7 +11,10 @@ telemetry helpers added on top of it (Task 16):
   even if the underlying capture blows up.
 """
 
-from unittest.mock import MagicMock, patch
+import asyncio
+import uuid
+import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from core.observability import product_analytics
 
@@ -146,3 +149,98 @@ def test_dedup_delegates_to_real_capture_product_event_never_raising():
         product_analytics.capture_once_per_owner_per_day(owner_id="user_1", event="trial_cap_reached")
     mock_client.capture.assert_called_once()
     _reset_dedup()
+
+
+# ---------------------------------------------------------------------------
+# trial_first_agent_response — once ever per owner, gated by a billing-row CAS
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _first_response_state(monkeypatch):
+    product_analytics._first_response_done.clear()
+    monkeypatch.setattr(product_analytics.settings, "POSTHOG_PROJECT_WRITE_KEY", "phc_test")
+    yield
+    product_analytics._first_response_done.clear()
+
+
+def test_first_response_not_scheduled_when_bridge_is_off(monkeypatch):
+    """No key → no task, no DynamoDB — this is what keeps every unit test
+    that drives a chat.final off the live billing table."""
+    monkeypatch.setattr(product_analytics.settings, "POSTHOG_PROJECT_WRITE_KEY", "")
+    assert product_analytics.schedule_trial_first_agent_response("user_x") is None
+
+
+@pytest.mark.asyncio
+async def test_first_response_fires_once_when_the_cas_is_won(_first_response_state):
+    mock_client = MagicMock()
+    cas = AsyncMock(return_value=True)
+    with (
+        patch.object(product_analytics, "_client_or_none", return_value=mock_client),
+        patch("core.repositories.billing_repo.mark_trial_first_agent_response", cas),
+    ):
+        task = product_analytics.schedule_trial_first_agent_response("user_t")
+        assert task is not None
+        await task
+        assert product_analytics.schedule_trial_first_agent_response("user_t") is None
+    cas.assert_awaited_once_with("user_t")
+    mock_client.capture.assert_called_once()
+    args, kwargs = mock_client.capture.call_args
+    assert args[0] == "user_t" and args[1] == "trial_first_agent_response"
+    assert kwargs["uuid"] == str(
+        uuid.uuid5(product_analytics._TRIAL_FIRST_RESPONSE_NS, f"user_t:{product_analytics.utc_today()}")
+    )
+
+
+@pytest.mark.asyncio
+async def test_first_response_silent_when_the_cas_is_lost(_first_response_state):
+    """Already stamped, or not a trial owner: the row refuses the write and
+    nothing is captured — but the owner is memoised so we stop asking."""
+    mock_client = MagicMock()
+    cas = AsyncMock(return_value=False)
+    with (
+        patch.object(product_analytics, "_client_or_none", return_value=mock_client),
+        patch("core.repositories.billing_repo.mark_trial_first_agent_response", cas),
+    ):
+        await product_analytics.schedule_trial_first_agent_response("user_p")
+        assert product_analytics.schedule_trial_first_agent_response("user_p") is None
+    cas.assert_awaited_once()
+    mock_client.capture.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_first_response_write_failure_is_swallowed_and_not_memoised(_first_response_state):
+    mock_client = MagicMock()
+    cas = AsyncMock(side_effect=[RuntimeError("ddb blip"), True])
+    with (
+        patch.object(product_analytics, "_client_or_none", return_value=mock_client),
+        patch("core.repositories.billing_repo.mark_trial_first_agent_response", cas),
+    ):
+        await product_analytics.schedule_trial_first_agent_response("user_r")
+        mock_client.capture.assert_not_called()
+        t = product_analytics.schedule_trial_first_agent_response("user_r")
+        assert t is not None
+        await t
+    assert cas.await_count == 2
+    mock_client.capture.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_first_response_cancellation_does_not_memoise(_first_response_state):
+    """close() cancels analytics tasks. A cancel mid-CAS must leave the owner
+    unresolved so the next reply tries again — not silently done forever."""
+    started = asyncio.Event()
+
+    async def slow_cas(owner_id):
+        started.set()
+        await asyncio.sleep(10)
+        return True
+
+    with patch("core.repositories.billing_repo.mark_trial_first_agent_response", slow_cas):
+        task = product_analytics.schedule_trial_first_agent_response("user_c")
+        assert task is not None
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert "user_c" not in product_analytics._first_response_done

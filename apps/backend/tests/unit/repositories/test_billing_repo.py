@@ -1282,3 +1282,45 @@ async def test_a_free_tier_row_does_not_gain_a_phantom_stripe_trial(dynamodb_tab
     row = await billing_repo.get_by_owner_id("user_conv")
     assert row["subscription_status"] == "canceled"
     assert still_entitled(row) is False
+
+
+# ---------------------------------------------------------------------------
+# mark_trial_first_agent_response — the once-ever gate behind the product event
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mark_trial_first_agent_response_wins_once_on_a_trial_row(dynamodb_table):
+    from core.repositories import billing_repo
+
+    await billing_repo.create_trial_local_if_absent("user_tfr", "personal")
+
+    assert await billing_repo.mark_trial_first_agent_response("user_tfr") is True
+    row = await billing_repo.get_by_owner_id("user_tfr")
+    assert row["first_agent_response_at"]  # the time-to-first-value stamp
+    # Every later call — same process, another process, a later day — loses.
+    assert await billing_repo.mark_trial_first_agent_response("user_tfr") is False
+    assert (await billing_repo.get_by_owner_id("user_tfr"))["first_agent_response_at"] == row["first_agent_response_at"]
+
+
+@pytest.mark.asyncio
+async def test_mark_trial_first_agent_response_refuses_without_a_trial_row(dynamodb_table):
+    """No row (an org owner, a wiped owner) is a clean False, not an upsert."""
+    from core.repositories import billing_repo
+
+    assert await billing_repo.mark_trial_first_agent_response("user_nobody") is False
+    assert await billing_repo.get_by_owner_id("user_nobody") is None
+
+
+@pytest.mark.asyncio
+async def test_mark_trial_first_agent_response_refuses_a_paid_row(dynamodb_table):
+    """The branch the feature exists to enforce: a converted (or org) owner is
+    not on a trial, so the milestone must never be stamped — even if the row
+    began life as trial_local."""
+    from core.repositories import billing_repo
+
+    await billing_repo.create_trial_local_if_absent("user_paid", "personal")
+    await billing_repo.set_subscription(owner_id="user_paid", subscription_id="sub_x", status="active")
+
+    assert await billing_repo.mark_trial_first_agent_response("user_paid") is False
+    assert "first_agent_response_at" not in (await billing_repo.get_by_owner_id("user_paid"))

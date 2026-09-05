@@ -36,6 +36,7 @@ def conn():
     c._recipients_cache = None
     c._recipients_cache_ts = 0.0
     c._active_runs = {}
+    c._analytics_tasks = set()
     c._run_state = {}
     c._side_run_ids = {}
     c._parked = False

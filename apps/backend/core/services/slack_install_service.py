@@ -25,8 +25,13 @@ logger = logging.getLogger(__name__)
 
 PROVIDER = "slack"
 
-# The platform app's bot scopes. scripts/slack-app-manifest.yaml MUST list the
-# same set — Slack refuses an OAuth request for a scope the app doesn't declare.
+# The platform app's bot scopes = the OpenClaw plugin's canonical manifest
+# (extensions/slack/src/setup-shared.ts buildSlackManifest), all 23.
+# scripts/slack-app-manifest.yaml MUST list the same set (a test enforces it).
+# DO NOT trim scopes without ALSO disabling the matching agent action in
+# account_block()'s `actions` — the plugin's action gates check config, not
+# granted scopes (createActionGate defaults every action to true), so a
+# dropped scope fails `missing_scope` at first use instead of degrading.
 BOT_SCOPES: list[str] = [
     "app_mentions:read",
     "assistant:write",
@@ -34,6 +39,7 @@ BOT_SCOPES: list[str] = [
     "channels:read",
     "chat:write",
     "commands",
+    "emoji:read",
     "files:read",
     "files:write",
     "groups:history",
@@ -44,8 +50,11 @@ BOT_SCOPES: list[str] = [
     "mpim:history",
     "mpim:read",
     "mpim:write",
+    "pins:read",
+    "pins:write",
     "reactions:read",
     "reactions:write",
+    "usergroups:read",
     "users:read",
 ]
 

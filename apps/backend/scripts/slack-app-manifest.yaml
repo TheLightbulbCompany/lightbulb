@@ -50,6 +50,7 @@ oauth_config:
       - channels:read
       - chat:write
       - commands
+      - emoji:read
       - files:read
       - files:write
       - groups:history
@@ -60,8 +61,11 @@ oauth_config:
       - mpim:history
       - mpim:read
       - mpim:write
+      - pins:read
+      - pins:write
       - reactions:read
       - reactions:write
+      - usergroups:read
       - users:read
 settings:
   event_subscriptions:

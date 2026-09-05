@@ -28,6 +28,9 @@ the plugin route is auth:"plugin". Never resolve_running_container here — its
 The no-IP 503 is the single deliberate exception to "per-owner failures never
 5xx": Slack's retry IS the recovery for a container mid-roll, and one owner's
 503s cannot approach the app-wide 95 %/60 min threshold.
+
+Dedup is recorded only once we are about to forward; a 503 leaves no row so
+Slack's retry is delivered.
 """
 
 from __future__ import annotations
@@ -128,12 +131,6 @@ async def receive_slack_event(request: Request) -> Response:
     # Only event_callbacks carry event_id and get retried; interactive/slash
     # payloads are one-shot, so they skip the dedup table.
     event_id = data.get("event_id") if data.get("type") == "event_callback" else None
-    if event_id:
-        seen = await webhook_dedup.record_event_or_skip(
-            f"slack:{team_id}:{event_id}", source="slack", ttl_seconds=DEDUP_TTL_S
-        )
-        if seen == webhook_dedup.WebhookDedupResult.ALREADY_SEEN:
-            return Response(status_code=200)
 
     install = await slack_installs_repo.get(team_id)
     if not install or install.get("status") != slack_installs_repo.STATUS_ACTIVE:
@@ -179,6 +176,16 @@ async def receive_slack_event(request: Request) -> Response:
         "X-Slack-Signature": slack_signing.sign(container["hook_token"], ts, body),
     }
     target = f"http://{ip}:{GATEWAY_PORT}/slack/events/{quote(team_id, safe='')}"
+
+    # Dedup is recorded only once we are about to forward; a 503 leaves no
+    # row so Slack's retry is delivered. Everything above that can return 503
+    # (no IP) or handle revoke/echo/unentitled runs before dedup.
+    if event_id:
+        seen = await webhook_dedup.record_event_or_skip(
+            f"slack:{team_id}:{event_id}", source="slack", ttl_seconds=DEDUP_TTL_S
+        )
+        if seen == webhook_dedup.WebhookDedupResult.ALREADY_SEEN:
+            return Response(status_code=200)
     try:
         async with _client_factory() as client:
             upstream = await client.post(target, headers=headers, content=body)

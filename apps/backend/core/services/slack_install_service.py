@@ -125,22 +125,32 @@ async def apply_install(
         raise SlackInstallConflict(team_id)
     await _mark_connected(owner_id)
 
-    await get_ecs_manager().refresh_task_definition(
-        owner_id, extra_secrets=[{"name": slack_env_var_name(team_id), "valueFrom": arn}]
-    )
-    await patch_openclaw_config(
-        owner_id,
-        {
-            "channels": {
-                PROVIDER: {
-                    "enabled": True,
-                    "streaming": {"mode": "progress"},
-                    "accounts": {team_id: account_block(team_id)},
+    try:
+        await get_ecs_manager().refresh_task_definition(
+            owner_id, extra_secrets=[{"name": slack_env_var_name(team_id), "valueFrom": arn}]
+        )
+        await patch_openclaw_config(
+            owner_id,
+            {
+                "channels": {
+                    PROVIDER: {
+                        "enabled": True,
+                        "streaming": {"mode": "progress"},
+                        "accounts": {team_id: account_block(team_id)},
+                    }
                 }
-            }
-        },
-        agent_for_account={team_id: agent_id},
-    )
+            },
+            agent_for_account={team_id: agent_id},
+        )
+    except Exception:
+        # Partial failure (task-def roll or config patch) must not leave an
+        # active install row + a "Connected" card with no working config
+        # behind — unwind to the same state as if the install never happened.
+        logger.exception("slack install: roll/patch failed owner=%s team=%s, rolling back", owner_id, team_id)
+        await slack_installs_repo.set_status(team_id, slack_installs_repo.STATUS_REVOKED)
+        await integration_secret_store.delete(owner_id, provider)
+        await _mark_disconnected(owner_id)
+        raise
     logger.info("slack install applied owner=%s team=%s agent=%s", owner_id, team_id, agent_id)
     return row
 
@@ -154,6 +164,10 @@ async def revoke_install(team_id: str) -> bool:
         return False
     owner_id, agent_id = row["owner_id"], row.get("agent_id") or ""
     await slack_installs_repo.set_status(team_id, slack_installs_repo.STATUS_REVOKED)
+    # Drop the task-def secrets: entry BEFORE the secret is force-deleted —
+    # otherwise every later relaunch of this owner's task (Spot interruption,
+    # OOM, resize) fails on a dead ARN.
+    await get_ecs_manager().refresh_task_definition(owner_id, drop_secrets=[slack_env_var_name(team_id)])
     await integration_secret_store.delete(owner_id, secret_provider(team_id))
     await delete_openclaw_config_path(owner_id, ["channels", PROVIDER, "accounts", team_id])
     await remove_from_openclaw_config_list(

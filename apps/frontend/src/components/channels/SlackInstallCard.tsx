@@ -31,7 +31,7 @@ export function SlackInstallCard({ agentId }: { agentId: string }) {
   useEffect(() => {
     void load();
     const flag = new URLSearchParams(window.location.search).get("slack");
-    if (flag === "connected") setNote("Slack connected.");
+    if (flag === "connected") setNote("Slack connected — your agents are restarting (about a minute).");
     else if (flag?.startsWith("error:")) setNote(`Slack connection failed (${flag.slice(6)}).`);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- read the URL once on mount, not on every load() identity change
   }, []);

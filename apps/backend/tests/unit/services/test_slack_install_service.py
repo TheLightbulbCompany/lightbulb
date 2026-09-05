@@ -108,17 +108,58 @@ async def test_apply_install_conflict_raises_and_deletes_secret():
 
 
 @pytest.mark.asyncio
+async def test_apply_install_rolls_back_row_and_secret_when_patch_fails():
+    mgr = MagicMock()
+    mgr.refresh_task_definition = AsyncMock(return_value="arn:td")
+
+    with (
+        patch("core.services.slack_install_service.integration_secret_store.put", AsyncMock(return_value="arn:secret")),
+        patch(
+            "core.services.slack_install_service.slack_installs_repo.put", AsyncMock(return_value={"status": "active"})
+        ),
+        patch("core.services.slack_install_service._mark_connected", AsyncMock()),
+        patch("core.services.slack_install_service.get_ecs_manager", lambda: mgr),
+        patch(
+            "core.services.slack_install_service.patch_openclaw_config",
+            AsyncMock(side_effect=RuntimeError("efs down")),
+        ),
+        patch("core.services.slack_install_service.slack_installs_repo.set_status", AsyncMock()) as set_status,
+        patch("core.services.slack_install_service.integration_secret_store.delete", AsyncMock()) as del_secret,
+        patch("core.services.slack_install_service._mark_disconnected", AsyncMock()) as mark_disconnected,
+    ):
+        with pytest.raises(RuntimeError, match="efs down"):
+            await svc.apply_install(**_install_kwargs())
+    set_status.assert_awaited_once_with("T1", "revoked")
+    del_secret.assert_awaited_once_with("org_1", "slack/T1")
+    mark_disconnected.assert_awaited_once_with("org_1")
+
+
+@pytest.mark.asyncio
 async def test_revoke_install_tears_down_everything():
     row = {"team_id": "T1", "owner_id": "org_1", "agent_id": "agent_f", "status": "active"}
     removed = {}
+    order: list[str] = []
 
     async def _remove(owner, path, predicate):
         removed["pred"] = predicate
 
+    async def _refresh(owner, *, drop_secrets=None):
+        order.append("refresh")
+        return "arn:td"
+
+    async def _delete_secret(owner, provider):
+        order.append("delete_secret")
+
+    mgr = MagicMock()
+    mgr.refresh_task_definition = AsyncMock(side_effect=_refresh)
+
     with (
         patch("core.services.slack_install_service.slack_installs_repo.get", AsyncMock(return_value=row)),
         patch("core.services.slack_install_service.slack_installs_repo.set_status", AsyncMock()) as set_status,
-        patch("core.services.slack_install_service.integration_secret_store.delete", AsyncMock()) as del_secret,
+        patch("core.services.slack_install_service.get_ecs_manager", lambda: mgr),
+        patch(
+            "core.services.slack_install_service.integration_secret_store.delete", AsyncMock(side_effect=_delete_secret)
+        ) as del_secret,
         patch("core.services.slack_install_service.delete_openclaw_config_path", AsyncMock()) as del_path,
         patch("core.services.slack_install_service.remove_from_openclaw_config_list", _remove),
         patch(
@@ -129,8 +170,10 @@ async def test_revoke_install_tears_down_everything():
     ):
         assert await svc.revoke_install("T1") is True
     set_status.assert_awaited_once_with("T1", "revoked")
+    mgr.refresh_task_definition.assert_awaited_once_with("org_1", drop_secrets=["SLACK_BOT_TOKEN_T1"])
     del_secret.assert_awaited_once_with("org_1", "slack/T1")
     del_path.assert_awaited_once_with("org_1", ["channels", "slack", "accounts", "T1"])
+    assert order == ["refresh", "delete_secret"]
     assert removed["pred"]({"type": "route", "agentId": "x", "match": {"channel": "slack", "accountId": "T1"}}) is True
     assert removed["pred"]({"type": "route", "agentId": "x", "match": {"channel": "slack", "accountId": "T9"}}) is False
 
@@ -151,3 +194,8 @@ def test_manifest_scopes_match_service_scopes():
     assert manifest["settings"]["socket_mode_enabled"] is False
     assert manifest["settings"]["interactivity"]["is_enabled"] is True
     assert manifest["features"]["shortcuts"]
+    # The plugin handles both Agent View events; the manifest must declare
+    # them or Slack never delivers them (no new scope needed).
+    bot_events = manifest["settings"]["event_subscriptions"]["bot_events"]
+    assert "assistant_thread_started" in bot_events
+    assert "assistant_thread_context_changed" in bot_events

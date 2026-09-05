@@ -79,6 +79,26 @@ async def test_refresh_without_extra_secrets_keeps_existing():
 
 
 @pytest.mark.asyncio
+async def test_refresh_drop_secrets_removes_named_entry():
+    m = _manager()
+    task_def = _task_def()
+    task_def["taskDefinition"]["containerDefinitions"][0]["secrets"].append(
+        {"name": "SLACK_BOT_TOKEN_T1", "valueFrom": "arn:slack1"}
+    )
+    m._ecs.describe_task_definition.return_value = task_def
+    m._ecs.register_task_definition.return_value = {"taskDefinition": {"taskDefinitionArn": "arn:new"}}
+    container = {"task_definition_arn": "arn:old", "hook_token": "hk", "service_name": "svc"}
+    with (
+        patch.object(em.container_repo, "get_by_owner_id", AsyncMock(return_value=container)),
+        patch.object(em.container_repo, "update_fields", AsyncMock()),
+        patch.object(em.settings, "ECS_CLUSTER_ARN", "arn:cluster"),
+    ):
+        await m.refresh_task_definition("org_1", drop_secrets=["SLACK_BOT_TOKEN_T1"])
+    registered = m._ecs.register_task_definition.call_args.kwargs["containerDefinitions"][0]["secrets"]
+    assert registered == [{"name": "OPENAI_API_KEY", "valueFrom": "arn:byok"}]
+
+
+@pytest.mark.asyncio
 async def test_build_slack_secrets_lists_active_installs_only():
     m = _manager()
     rows = [

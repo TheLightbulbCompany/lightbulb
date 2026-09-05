@@ -233,6 +233,10 @@ export class ContainerStack extends cdk.Stack {
         actions: ["secretsmanager:GetSecretValue"],
         resources: [
           `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${props.environment}/user-keys/*`,
+          // Platform Slack app: per-workspace bot tokens ride the task-def as
+          // secrets:, under the owner's integrations prefix. Same AWS-managed
+          // key as user-keys, so no KMS grant is needed.
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${props.environment}/integrations/*`,
           `arn:aws:secretsmanager:${this.region}:${this.account}:secret:${props.gogKeyringPasswordSecretName}*`,
           `arn:aws:secretsmanager:${this.region}:${this.account}:secret:${props.cloudflareWarpEnrollmentSecretName}*`,
         ],

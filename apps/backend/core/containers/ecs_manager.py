@@ -184,6 +184,21 @@ async def _provision_channel_accounts(owner_id: str) -> tuple[dict[str, dict[str
             for b in (existing_cfg.get("bindings") or [])
             if isinstance(b, dict) and (b.get("match") or {}).get("channel") in CHANNEL_PROVIDER_IDS
         ]
+
+        # The installs table is the source of truth for the platform Slack
+        # app: a reprovision after an EFS wipe has nothing on disk. Table
+        # wins over file for the same team.
+        from core.repositories import slack_installs_repo
+        from core.services.slack_install_service import account_block, route_binding
+
+        for row in await slack_installs_repo.list_for_owner(owner_id):
+            if row.get("status") != "active" or not row.get("agent_id"):
+                continue
+            team_id = row["team_id"]
+            out.setdefault("slack", {})[team_id] = account_block(team_id)
+            bindings = [b for b in bindings if (b.get("match") or {}).get("accountId") != team_id]
+            bindings.append(route_binding(team_id, row["agent_id"]))
+
         return out, bindings
     except Exception:  # noqa: BLE001 — best-effort; never fail provision over this.
         logger.exception("preserving channel accounts failed for %s; continuing", owner_id)
@@ -831,7 +846,13 @@ class EcsManager:
         except Exception as e:
             logger.error("Failed to deregister task definition %s: %s", task_definition_arn, e)
 
-    async def refresh_task_definition(self, owner_id: str, *, extra_secrets: list[dict] | None = None) -> str | None:
+    async def refresh_task_definition(
+        self,
+        owner_id: str,
+        *,
+        extra_secrets: list[dict] | None = None,
+        drop_secrets: list[str] | None = None,
+    ) -> str | None:
         """Re-register a user's ECS task definition with the current env list,
         then roll the running task onto the new revision.
 
@@ -853,7 +874,9 @@ class EcsManager:
         ``extra_secrets`` (``{name, valueFrom}``) are merged onto the
         openclaw container's ``secrets`` list, replacing same-named entries —
         the Slack install uses this to add ``SLACK_BOT_TOKEN_{TEAM}`` without
-        touching BYOK entries.
+        touching BYOK entries. ``drop_secrets`` removes same-named entries —
+        an uninstalled Slack workspace's token must leave the task-def before
+        its secret is force-deleted, or ECS can never relaunch the task.
 
         The EFS access point and DDB row are untouched — losing agent
         state would be a backfill regression.
@@ -893,10 +916,12 @@ class EcsManager:
         for cd in td["containerDefinitions"]:
             if cd["name"] == "openclaw":
                 cd["environment"] = new_env
-                if extra_secrets:
-                    incoming = {s["name"]: s for s in extra_secrets}
-                    kept = [s for s in (cd.get("secrets") or []) if s.get("name") not in incoming]
-                    cd["secrets"] = kept + list(incoming.values())
+                drop = set(drop_secrets or [])
+                incoming = {s["name"]: s for s in (extra_secrets or [])}
+                kept = [
+                    s for s in (cd.get("secrets") or []) if s.get("name") not in incoming and s.get("name") not in drop
+                ]
+                cd["secrets"] = kept + list(incoming.values())
 
         register_kwargs = {
             "family": td["family"],

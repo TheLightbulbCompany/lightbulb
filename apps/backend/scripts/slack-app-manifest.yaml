@@ -71,6 +71,8 @@ settings:
       - app_mention
       - app_context_changed
       - app_uninstalled
+      - assistant_thread_context_changed
+      - assistant_thread_started
       - channel_rename
       - member_joined_channel
       - member_left_channel

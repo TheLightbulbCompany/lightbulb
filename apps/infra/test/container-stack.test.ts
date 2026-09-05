@@ -185,12 +185,13 @@ describe("ContainerStack — dev", () => {
     template = buildStack("dev");
   });
 
-  test("execution role GetSecretValue is scoped to the three injected secrets, never '*'", () => {
-    // The per-user task defs inject exactly three secret families (BYOK
-    // user-keys, the gog keyring password, the Cloudflare WARP enrollment);
-    // a wildcard here would let a leaked execution-role credential read every
-    // secret in the account. Searched across both policy types so CDK
-    // repacking can't silently invalidate the assertion.
+  test("execution role GetSecretValue is scoped to the four injected secrets, never '*'", () => {
+    // The per-user task defs inject exactly four secret families (BYOK
+    // user-keys, the platform Slack app's per-workspace bot tokens under
+    // integrations/*, the gog keyring password, the Cloudflare WARP
+    // enrollment); a wildcard here would let a leaked execution-role
+    // credential read every secret in the account. Searched across both
+    // policy types so CDK repacking can't silently invalidate the assertion.
     const found = ["AWS::IAM::Policy", "AWS::IAM::ManagedPolicy"].some((type) =>
       Object.values(template.findResources(type)).some((r) =>
         ((r.Properties?.PolicyDocument?.Statement ?? []) as Array<Record<string, unknown>>).some(
@@ -200,7 +201,7 @@ describe("ContainerStack — dev", () => {
             return (
               s.Action === "secretsmanager:GetSecretValue" &&
               Array.isArray(resources) &&
-              resources.length === 3 &&
+              resources.length === 4 &&
               resources.some(
                 (res) => typeof res === "string" && res.includes(":secret:lightbulb/dev/user-keys/*"),
               ) &&
@@ -213,6 +214,28 @@ describe("ContainerStack — dev", () => {
                   typeof res === "string" &&
                   res.includes(":secret:lightbulb/dev/cloudflare-warp-enrollment"),
               )
+            );
+          },
+        ),
+      ),
+    );
+    expect(found).toBe(true);
+  });
+
+  test("execution role GetSecretValue also covers the Slack integrations secret prefix", () => {
+    // Item 1 of the final-review fix wave: SLACK_BOT_TOKEN_{TEAM} rides the
+    // task-def as secrets: under lightbulb/{env}/integrations/{owner}/slack/{team}.
+    // Without this grant the ECS agent gets ResourceInitializationError and the
+    // owner's container never starts once a Slack workspace is installed.
+    const found = ["AWS::IAM::Policy", "AWS::IAM::ManagedPolicy"].some((type) =>
+      Object.values(template.findResources(type)).some((r) =>
+        ((r.Properties?.PolicyDocument?.Statement ?? []) as Array<Record<string, unknown>>).some(
+          (s) => {
+            if (s.Sid !== "PerUserTaskSecrets") return false;
+            const resources = s.Resource as unknown[];
+            return (
+              Array.isArray(resources) &&
+              resources.some((res) => typeof res === "string" && /integrations\/\*$/.test(res))
             );
           },
         ),

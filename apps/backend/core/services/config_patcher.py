@@ -209,7 +209,21 @@ def _ensure_channel_bindings_for_patch(cfg: dict, patch: dict, agent_for_account
         for account_id, account_cfg in accounts.items():
             if not isinstance(account_cfg, dict):
                 continue
-            agent_id = (agent_for_account or {}).get(account_id, account_id)
+            mapped_agent_id = (agent_for_account or {}).get(account_id)
+            if mapped_agent_id is not None:
+                # Rebinding this account to a different agent must not leave
+                # the OLD account-wide binding behind, or the dispatcher can
+                # match either one. Only the exact account-wide shape (no
+                # peer, no teamId) is removed — the legacy path below never
+                # takes this branch.
+                bindings[:] = [
+                    b
+                    for b in bindings
+                    if not (isinstance(b, dict) and b.get("match") == {"channel": provider, "accountId": account_id})
+                ]
+                agent_id = mapped_agent_id
+            else:
+                agent_id = account_id
             new_binding = {
                 "type": "route",
                 "agentId": agent_id,

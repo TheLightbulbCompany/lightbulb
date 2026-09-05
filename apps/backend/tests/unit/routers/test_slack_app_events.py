@@ -127,7 +127,17 @@ def test_unseeded_app_is_503(client):
 def test_duplicate_event_is_200_and_not_forwarded(client):
     body = _event()
     t = _Upstream()
-    with _app_store(), _dedup("already_seen"), _install(), _upstream(t):
+    # Dedup now runs right before the forward, after install/container/billing/ip
+    # all passed — those must be patched too or the duplicate never reaches it.
+    with (
+        _app_store(),
+        _dedup("already_seen"),
+        _install(),
+        _container(),
+        _billing(),
+        _ip(),
+        _upstream(t),
+    ):
         r = client.post("/api/v1/slack/events", content=body, headers=_headers(body))
     assert r.status_code == 200 and t.seen == []
 
@@ -157,9 +167,12 @@ def test_unentitled_owner_is_200_no_retry_not_forwarded(client):
 
 def test_no_ip_is_503_with_retry_after(client):
     body = _event()
-    with _app_store(), _dedup(), _install(), _container(), _billing(), _ip(None):
+    with _app_store(), _dedup() as dedup, _install(), _container(), _billing(), _ip(None):
         r = client.post("/api/v1/slack/events", content=body, headers=_headers(body))
     assert r.status_code == 503 and "Retry-After" in r.headers
+    # Critical 3: dedup must not be recorded until we're about to forward — a
+    # 503 here leaves no dedup row, so Slack's retry is actually delivered.
+    dedup.assert_not_awaited()
 
 
 def test_forward_is_byte_identical_and_re_signed_with_hook_token(client):
@@ -179,6 +192,15 @@ def test_forward_is_byte_identical_and_re_signed_with_hook_token(client):
     assert req.headers["content-type"] == "application/json"
     assert "authorization" not in {k.lower() for k in req.headers}
     assert "x-forwarded-for" not in {k.lower() for k in req.headers}
+
+
+def test_dedup_recorded_only_before_forward(client):
+    body = _event()
+    t = _Upstream()
+    with _app_store(), _dedup() as dedup, _install(), _container(), _billing(), _ip(), _upstream(t):
+        r = client.post("/api/v1/slack/events", content=body, headers=_headers(body))
+    assert r.status_code == 200
+    dedup.assert_awaited_once_with(f"slack:{TEAM}:Ev1", source="slack", ttl_seconds=3600)
 
 
 def test_form_encoded_slash_payload_routes_by_team_id_field(client):

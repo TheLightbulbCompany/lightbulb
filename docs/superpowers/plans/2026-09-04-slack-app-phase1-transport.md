@@ -1972,7 +1972,7 @@ def _redirect_uri() -> str:
 def _frontend_return(agent_id: str, outcome: str) -> str:
     """Back to the agent's Channels tab (the same deep link ChatLayout uses)."""
     base = settings.FRONTEND_URL.rstrip("/")
-    return f"{base}/chat?panel=agent-inspector&agent={agent_id}&inspectorTab=channels&slack={outcome}"
+    return f"{base}/chat?panel=agent-inspector&agent={quote(agent_id, safe='')}&inspectorTab=channels&slack={outcome}"
 
 
 @router.get("/oauth/start")
@@ -2012,7 +2012,7 @@ async def slack_oauth_callback(code: str = "", state: str = "", error: str = "")
         return RedirectResponse(_frontend_return("", "error:invalid_state"), status_code=302)
     agent_id = rec.get("agent_id") or ""
     if error or not code:
-        return RedirectResponse(_frontend_return(agent_id, f"error:{error or 'missing_code'}"), status_code=302)
+        return RedirectResponse(_frontend_return(agent_id, f"error:{quote(error or 'missing_code', safe='')}"), status_code=302)
 
     app = await platform_oauth_app_store.get(PLATFORM_APP)
     if not app:
@@ -2033,7 +2033,7 @@ async def slack_oauth_callback(code: str = "", state: str = "", error: str = "")
         logger.warning("slack oauth: token exchange failed: %s", exc)
         return RedirectResponse(_frontend_return(agent_id, "error:exchange_failed"), status_code=302)
     if not token.get("ok"):
-        return RedirectResponse(_frontend_return(agent_id, f"error:{token.get('error', 'exchange_failed')}"), status_code=302)
+        return RedirectResponse(_frontend_return(agent_id, f"error:{quote(token.get('error', 'exchange_failed'), safe='')}"), status_code=302)
 
     try:
         await slack_install_service.apply_install(
@@ -2071,6 +2071,8 @@ async def delete_slack_install(team_id: str, auth: AuthContext = Depends(get_cur
 ```
 
 Note the `_client_factory` from Task 8 now serves both the container forward (2 s timeout) and the Slack token exchange; Slack's token endpoint answers well under that, so keep one factory.
+
+Wrap everything after the state check in one outer `try/except Exception` that logs (`logger.exception("slack oauth: callback failed unexpectedly")`, no `%s`) and redirects with `error:internal` — Slack redirects a HUMAN browser here, and a malformed `{"ok": true}` without a `team` object must never render a 500. Test it with a transport that returns exactly that body and assert `slack=error:internal` in the Location.
 
 - [ ] **Step 4: Run both router suites + ruff**
 

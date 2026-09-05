@@ -210,24 +210,23 @@ async def test_exchange_posts_secret_by_default():
 
 
 @pytest.mark.asyncio
-async def test_exchange_omits_body_client_id_for_intuit():
-    # Intuit treats HTTP Basic + a body client_id as two client-authentication
-    # methods and answers 401 invalid_client — an error that names the credential
-    # rather than the duplication, so it reads as "wrong client id/secret".
-    # Verified against its live token endpoint: identical request, dropping only
-    # this key, 401 -> 200.
-    post = await _exchange_for("quickbooks")
+@pytest.mark.parametrize("provider", ["quickbooks", "x"])
+async def test_exchange_omits_body_client_id_under_basic(provider):
+    # The Basic header already identifies the client. Intuit counts a body
+    # client_id as a second client-authentication method and answers 401
+    # invalid_client (verified against its live token endpoint: identical
+    # request, dropping only this key, 401 -> 200). X documents the same
+    # expectation, so this holds for every Basic provider rather than one.
+    post = await _exchange_for(provider)
     assert isinstance(post["auth"], oauth_dance.httpx.BasicAuth)
     assert "client_id" not in post["data"]
     assert "client_secret" not in post["data"]
 
 
 @pytest.mark.asyncio
-async def test_exchange_keeps_body_client_id_for_x():
-    # Guards the fix above from being generalised into "drop it whenever Basic".
-    # X's own documented token request carries client_id in the body ALONGSIDE
-    # Basic, so a blanket change would break a working integration that is not
-    # exercised by any of these tests.
-    post = await _exchange_for("x")
-    assert isinstance(post["auth"], oauth_dance.httpx.BasicAuth)
+async def test_exchange_keeps_body_client_id_without_basic():
+    # A client_secret_post provider has no Basic header, so the body client_id is
+    # the only thing identifying the client — dropping it there would break them.
+    post = await _exchange_for("stripe")
+    assert post["auth"] is None
     assert post["data"]["client_id"] == "cid"

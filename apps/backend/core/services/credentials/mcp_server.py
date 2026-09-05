@@ -68,6 +68,16 @@ async def build_connected_integration_servers(owner_id: str) -> dict[str, dict]:
         if remote is not None:
             servers[remote.key] = remote.server_block()
             continue
+        # Stdio MCP server whose credential is a FILE on EFS (qbo_dotenv rail).
+        # Same reasoning as the remote branch: actor-refresh, no retained secret,
+        # and the block carries only the store PATH — so it is rebuildable from
+        # the registry, and the token store survives the config overwrite.
+        stdio = prov.mcp_stdio
+        if stdio is not None:
+            from core.services.credentials.materializers.qbo_dotenv import container_store_path
+
+            servers[stdio.key] = stdio.server_block(container_store_path())
+            continue
         spec = prov.wiring.mcp_server
         if spec is None:
             continue

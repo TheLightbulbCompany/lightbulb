@@ -76,3 +76,6 @@ apps/desktop/src-tauri/.sidecar-tmp/
 
 # graphify knowledge-graph outputs (graph.json is ~57MB)
 graphify-out/
+
+# QuickBooks sandbox token store (scripts/qbo_sandbox_connect.py) — real refresh token
+.qbo-sandbox.env

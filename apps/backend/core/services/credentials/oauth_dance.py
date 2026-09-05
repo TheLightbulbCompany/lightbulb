@@ -219,7 +219,9 @@ async def start(owner_id: str, provider_key: str, *, redirect_uri: str, origin: 
     return f"{p.oauth.authorization_url}?{urlencode(params)}"
 
 
-async def exchange(state: str, code: str, *, redirect_uri: str) -> tuple[str, str, dict, str | None]:
+async def exchange(
+    state: str, code: str, *, redirect_uri: str, realm_id: str | None = None
+) -> tuple[str, str, dict, str | None]:
     """Returns (owner_id, provider, credential, origin) — `origin` is whatever
     start() recorded on the state row ("container" for agent-started flows,
     None for owner-started ones); the callback decides rebinding on it."""
@@ -299,6 +301,12 @@ async def exchange(state: str, code: str, *, redirect_uri: str) -> tuple[str, st
     # need it for Graph calls, so carry it through when present.
     if tok.get("user_id"):
         credential["provider_user_id"] = str(tok["user_id"])
+    # QuickBooks identifies the connected COMPANY with a realmId that rides the
+    # authorize REDIRECT, not the token response — it is the only provider here
+    # whose credential is incomplete without a callback query param, and every QBO
+    # API path is /v3/company/{realmId}/..., so a connect without it cannot work.
+    if realm_id:
+        credential["realm_id"] = realm_id
     # The platform app's secret is Isol8's, not the owner's. It must exist only in
     # its own Secrets Manager entry — never inside a per-owner credential payload,
     # where downstream rails (materializers, client_information) would carry it

@@ -11,9 +11,13 @@ and no type checker, so an annotation here cannot fail a build.
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import os
 import tempfile
+from collections.abc import Coroutine
 from pathlib import Path
+from typing import Any
 
 from core.config import settings
 
@@ -40,3 +44,20 @@ def atomic_write(path: Path, data: bytes, *, mode: int = 0o600) -> None:
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
+
+
+def run_sync(coro: Coroutine[Any, Any, Any]) -> Any:
+    """Drive an async coroutine to completion from a synchronous materializer.
+
+    The apply/disconnect paths offload materializers via run_in_thread, so the
+    common case is a worker thread with no running loop and a bare asyncio.run
+    suffices. But asyncio.run raises if a loop is already running, so guard
+    against a caller that forgot the offload: when a loop IS running, run the
+    coroutine on a fresh loop in a throwaway worker thread instead. This keeps
+    materializers correct whether or not the offload is present."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()

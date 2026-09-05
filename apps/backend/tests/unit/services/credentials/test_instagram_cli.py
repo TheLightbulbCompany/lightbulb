@@ -90,7 +90,7 @@ def test_registry_platform_app_mutual_exclusion():
         "display_name": "X",
         "acquisition": "direct_oauth",
         "actor": "cli",
-        "refresh_owner": "isol8_rematerialize",
+        "refresh_owner": "none",
         "wiring": {"materializer": "instagram_cli"},
     }
     oauth = {
@@ -111,7 +111,7 @@ def test_registry_platform_app_mutual_exclusion():
 def test_registry_loads_instagram_provider():
     p = registry.get_provider("instagram")
     assert p.acquisition == "direct_oauth"
-    # actor, not isol8_rematerialize: token.sh renews in-container on use, and
+    # actor, not backend-custody: token.sh renews in-container on use, and
     # this is what makes routers.connections._retains_secret skip Secrets Manager.
     assert p.refresh_owner == "actor"
     assert p.oauth.platform_app == "meta-instagram"

@@ -371,13 +371,22 @@ async def list_for_owner(owner_id: str) -> list[dict]:
 
 
 async def set_status(team_id: str, status: str) -> None:
-    await run_in_thread(
-        _get_table().update_item,
-        Key={"team_id": team_id},
-        UpdateExpression="SET #st = :s, updated_at = :t",
-        ExpressionAttributeNames={"#st": "status"},
-        ExpressionAttributeValues={":s": status, ":t": utc_now_iso()},
-    )
+    """No-op for an unknown team — never upserts a partial row (update_item
+    creates the item otherwise, and every reader would then KeyError on
+    ``install["owner_id"]``)."""
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"team_id": team_id},
+            UpdateExpression="SET #st = :s, updated_at = :t",
+            ConditionExpression="attribute_exists(team_id)",
+            ExpressionAttributeNames={"#st": "status"},
+            ExpressionAttributeValues={":s": status, ":t": utc_now_iso()},
+        )
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return
+        raise
 
 
 async def delete_all_for_owner(owner_id: str) -> list[str]:

@@ -207,3 +207,27 @@ async def test_exchange_posts_secret_by_default():
     post = await _exchange_for("google")
     assert post["auth"] is None
     assert post["data"]["client_secret"] == "sec"
+
+
+@pytest.mark.asyncio
+async def test_exchange_omits_body_client_id_for_intuit():
+    # Intuit treats HTTP Basic + a body client_id as two client-authentication
+    # methods and answers 401 invalid_client — an error that names the credential
+    # rather than the duplication, so it reads as "wrong client id/secret".
+    # Verified against its live token endpoint: identical request, dropping only
+    # this key, 401 -> 200.
+    post = await _exchange_for("quickbooks")
+    assert isinstance(post["auth"], oauth_dance.httpx.BasicAuth)
+    assert "client_id" not in post["data"]
+    assert "client_secret" not in post["data"]
+
+
+@pytest.mark.asyncio
+async def test_exchange_keeps_body_client_id_for_x():
+    # Guards the fix above from being generalised into "drop it whenever Basic".
+    # X's own documented token request carries client_id in the body ALONGSIDE
+    # Basic, so a blanket change would break a working integration that is not
+    # exercised by any of these tests.
+    post = await _exchange_for("x")
+    assert isinstance(post["auth"], oauth_dance.httpx.BasicAuth)
+    assert post["data"]["client_id"] == "cid"

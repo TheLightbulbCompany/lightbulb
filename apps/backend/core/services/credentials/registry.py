@@ -196,6 +196,15 @@ class OAuthSpec(BaseModel):
     # HTTP Basic (RFC 6749 §2.3.1). A public/PKCE-only client has no secret, so this
     # is inert for the DCR providers.
     token_endpoint_auth_method: Literal["client_secret_post", "client_secret_basic"] = "client_secret_post"
+    # Whether client_id ALSO rides the token-request body when authenticating via
+    # HTTP Basic. Defaults True because that is what every provider here has always
+    # received, and X's own documented token request includes it alongside Basic —
+    # so this must not become a blanket change. Intuit is the exception: it treats
+    # Basic + a body client_id as two client-authentication methods and answers 401
+    # invalid_client, an error that names the credential rather than the
+    # duplication. Verified against its live token endpoint — identical request,
+    # dropping only this key, 401 -> 200. Inert unless the method is Basic.
+    client_id_in_token_body: bool = True
     # Dynamic Client Registration endpoint. When set and the owner has no BYO app
     # stored, the dance registers a fresh public OAuth client at this URL (RFC 7591)
     # and caches it, so a headless owner never needs to pre-create an OAuth app.

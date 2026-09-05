@@ -15,7 +15,7 @@
 - Backend Python: `cd apps/backend && uv run pytest tests/unit/... -v`; lint with `uv run ruff check .` before every commit. Let CI run the full suite.
 - Infra: any change under `apps/infra/lib/` MUST be followed by `cd apps/infra && npx cdk synth` and the regenerated `.github/workflows/deploy.yml` committed in the same commit (CLAUDE.md, `infra-ci.yml` enforces it).
 - DynamoDB tables use the prefix convention: `core.dynamodb.get_table("slack-installs")` → `lightbulb-{env}-slack-installs`. The backend task role already has a wildcard grant over the env-prefixed namespace (`service-stack.ts` "DynamoDbOwnedTables") — verify with `grep -n "allTableArns" apps/infra/lib/stacks/*.ts apps/infra/lib/*.ts` in Task 1; if it enumerates tables instead, add `slack-installs` there.
-- Secrets Manager prefix is `lightbulb/{env}/...` (NOT `isol8/` — CLAUDE.md drift). Bot tokens go under `lightbulb/{env}/integrations/{owner}/slack/{team_id}` (the integrations grant already covers it).
+- Secrets Manager prefix is `lightbulb/{env}/...` (NOT `isol8/` — CLAUDE.md drift). Bot tokens go under `lightbulb/{env}/integrations/{owner}/slack/{team_id}`. The BACKEND task role's integrations grant covers writing them; the PER-USER EXECUTION role (`container-stack.ts` `PerUserTaskSecrets`) must ALSO be granted `integrations/*` or the task cannot start (final-review Critical 1).
 - Never call `ecs_manager.resolve_running_container` on the Slack path — it runs a 5 s TCP probe. Use `discover_ip(service_name)` directly.
 - Never re-serialize a Slack body. Forward `await request.body()` bytes verbatim; slash and interactive payloads are `application/x-www-form-urlencoded`.
 - Slack HMAC: `v0=` + hex(HMAC-SHA256(secret, `v0:{timestamp}:{raw body}`)); constant-time compare; reject `|now − timestamp| > 300 s`.
@@ -2089,6 +2089,8 @@ git commit -m "feat(backend): Slack OAuth install rail — start, callback, list
 ---
 
 ### Task 10: Reprovision durability — carry bindings verbatim
+
+> Final-review wave (after all 14 tasks): `_provision_channel_accounts` ALSO unions the `slack-installs` table (active rows with an agent) into the carried accounts/bindings, so an EFS-wiped reprovision regenerates Slack from the table. That was Phase 2's Task 3; it landed here.
 
 **Files:**
 - Modify: `apps/backend/core/containers/ecs_manager.py:152-181` (`_provision_channel_accounts`) and the call at `~4122` / pass-through at `~4149`

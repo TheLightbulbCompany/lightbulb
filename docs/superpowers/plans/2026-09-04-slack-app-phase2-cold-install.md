@@ -246,6 +246,8 @@ and add `and not is_slack_trial(account)` to the condition guarding `_team_billi
 
 ### Task 3: Installs table feeds config generation
 
+> **LANDED in Phase 1's final-review fix wave** (`_provision_channel_accounts` unions the table; test `test_provision_channel_accounts_unions_installs_table`). Verify the test exists on the branch and skip this task.
+
 Why: on a cold install the container is provisioned AFTER the install row exists, so the first `write_user_configs` finds no `channels.slack` on disk. The table must be a source, not just the file.
 
 **Files:**

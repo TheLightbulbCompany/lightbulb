@@ -144,11 +144,13 @@ Slack ──HTTPS──► api[-env].flickmeon.ai/api/v1/slack/events   (own rou
                     1. url_verification → echo challenge
                     2. verify v0 HMAC with app signing secret; |now-ts| ≤ 300 s
                     3. drop own-bot echoes (event.user == install.bot_user_id, or event.bot_id set)
-                    4. dedup: webhook_dedup.record_event_or_skip("slack:{team}:{event_id}", ttl=1h)
-                    5. install = slack_installs.get(team_id)   miss → 200 + log
-                    6. blocked (trial expired/capped) → templated reply, 200 + x-slack-no-retry
-                    7. ip = discover_ip(owner)   (NEVER resolve_running_container — its 5 s TCP probe)
+                    4. install = slack_installs.get(team_id)   miss → 200 + log
+                    5. blocked (trial expired/capped) → templated reply, 200 + x-slack-no-retry
+                    6. ip = discover_ip(owner)   (NEVER resolve_running_container — its 5 s TCP probe)
                        none & parkable → start_user_service; return 503 ("waking")  → Slack retries at +1 min
+                    7. dedup: webhook_dedup.record_event_or_skip("slack:{team}:{event_id}", ttl=1h)
+                       — recorded ONLY here, just before the forward: a 503 leaves no row, so Slack's
+                       retry (same event_id) is delivered instead of read as a duplicate
                     8. re-sign: X-Slack-Signature = v0=hmac_sha256(hook_token, f"v0:{ts}:{body}")
                     9. POST http://{ip}:18789/slack/events/{team_id}  raw body, X-Slack-Request-Timestamp,
                        Content-Type, httpx timeout 2 s
@@ -187,12 +189,14 @@ a shell reads their own `hook_token` and can forge events only for their own
 container — already true of `/hooks` today; cross-tenant forgery needs another
 owner's `hook_token`, which is nowhere in their container.
 
+**The per-user task's EXECUTION role fetches `secrets:` at task start** — `container-stack.ts`'s `PerUserTaskSecrets` statement must grant `GetSecretValue` on `lightbulb/{env}/integrations/*` (it covered only `user-keys/*`; the backend task role's integrations grant is a different role). Without it the install roll stops the old task and cannot start the new one.
+
 Install ordering (a `${VAR}` that is missing at boot throws
 `MissingEnvVarError`): write the task-def with the new secret →
 `refresh_task_definition` (existing primitive; add a `secrets=` parameter) →
 wait PRIMARY → *then* patch the account block. One roll per install; installs
 are rare. Token rotation is skipped: optional for Marketplace and incompatible
-with tokens riding the task-def. Uninstall may leave a stale env var — harmless.
+with tokens riding the task-def. Uninstall MUST drop the task-def `secrets:` entry (`refresh_task_definition(drop_secrets=[...])`) BEFORE the secret is force-deleted — a dead secret ARN in `secrets:` makes every later relaunch of the owner's task (Spot interruption, OOM, resize) fail. A stale `environment` var would be harmless; a stale `secrets:` entry is not.
 
 ### 3.3 Routing table
 
@@ -365,7 +369,8 @@ Built from what ships, each scope with a feature-linked justification:
   Slack `openid email`.
 - **Events:** `message.{channels,groups,im,mpim} app_mention reaction_added
   reaction_removed member_joined_channel member_left_channel channel_rename
-  app_home_opened app_context_changed app_uninstalled tokens_revoked`.
+  app_home_opened app_context_changed assistant_thread_started
+  assistant_thread_context_changed app_uninstalled tokens_revoked`.
 - **Features:** `bot_user`, `app_home {home_tab, messages_tab, read_only:false}`,
   `agent_view {description, suggested_prompts}`, `slash_commands: [/lightbulb]`
   with `url`, `shortcuts` (message: "Ask Friday about this"; global: "Ask Friday").

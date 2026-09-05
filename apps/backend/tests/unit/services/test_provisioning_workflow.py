@@ -1838,3 +1838,29 @@ async def test_read_catalog_none_provider_refuses_cleanly():
     ):
         with pytest.raises(mod.WorkflowRefused):
             await mod._read_catalog("acct_1", None, "analytics")
+
+
+@pytest.mark.asyncio
+async def test_advance_freezes_every_row_while_the_rail_is_off(monkeypatch):
+    """Guarding only `start` is not enough: a card filed before the flag went
+    off still has an owner who can approve it, and reads still step rows. With
+    the rail off, `advance` must be a no-op that touches nothing at Stripe."""
+    monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", False)
+    row = _row(state="provisioning", resource_id="res_1")
+    with patch.object(mod.api, "get_resource", AsyncMock()) as get_resource:
+        out = await mod.advance(row)
+    assert out is row
+    get_resource.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_on_approved_refuses_while_the_rail_is_off(monkeypatch):
+    monkeypatch.setattr(mod.settings, "STRIPE_PROVISIONING_ENABLED", False)
+    with (
+        patch.object(mod.repo, "get", AsyncMock(return_value=_row(state="awaiting_approval"))),
+        patch.object(mod.api, "catalog_services", AsyncMock()) as catalog,
+    ):
+        with pytest.raises(mod.WorkflowRefused) as exc:
+            await mod.on_approved("pwf_1", usage_limit=None, approved_by="user_a")
+    assert exc.value.code == "provisioning_unavailable"
+    catalog.assert_not_awaited()

@@ -45,6 +45,8 @@ export type CompanySectionItem = {
   Icon: CompanyNavIcon;
   /**
    * The tab exists only to show what the Stripe Projects rail provisioned.
+   * (Accounts is NOT marked: it also hosts the company Stripe card, the
+   * connections list, the capability guardrails and the revoke-all switch.)
    * Hidden while that rail is off (`provisioning_enabled` on
    * /company/stripe/status) — a tab whose only possible content is
    * "Nothing provisioned yet" is not a tab.
@@ -125,7 +127,7 @@ export const COMPANY_SECTIONS: { label: string | null; items: CompanySectionItem
       // What the company has accounts with, what agents set up on its behalf,
       // and the kill switch. Sits in Company, not Settings, because it is the
       // page an owner opens the first time an agent does something surprising.
-      { panel: "teams-accounts", label: "Accounts", Icon: Plug, provisioning: true },
+      { panel: "teams-accounts", label: "Accounts", Icon: Plug },
       { panel: "teams-identity", label: "Identity", Icon: Landmark },
       { panel: "teams-domain-site", label: "Domain & Site", Icon: Globe, provisioning: true },
       { panel: "teams-compliance", label: "Compliance", Icon: ShieldCheck },

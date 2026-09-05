@@ -50,10 +50,10 @@ describe("CompanyNav", () => {
     stripeStatus.data = { provisioning_enabled: true };
   });
 
-  it("hides the two provisioning-only tabs while the rail is off, and while status is still loading", () => {
+  it("hides Domain & Site while the rail is off (and while status is still loading) but keeps Accounts, which also holds the guardrails and revoke-all", () => {
     stripeStatus.data = { provisioning_enabled: false };
     const { unmount } = render(<CompanyNav />);
-    expect(screen.queryByText("Accounts")).toBeNull();
+    expect(screen.getByText("Accounts")).toBeInTheDocument();
     expect(screen.queryByText("Domain & Site")).toBeNull();
     // Their neighbours in the Company section are untouched.
     expect(screen.getByText("Identity")).toBeInTheDocument();
@@ -62,7 +62,8 @@ describe("CompanyNav", () => {
 
     stripeStatus.data = undefined;
     render(<CompanyNav />);
-    expect(screen.queryByText("Accounts")).toBeNull();
+    expect(screen.getByText("Accounts")).toBeInTheDocument();
+    expect(screen.queryByText("Domain & Site")).toBeNull();
   });
 
   it("visibleCompanySections drops exactly the provisioning-marked items and nothing else", () => {
@@ -71,7 +72,7 @@ describe("CompanyNav", () => {
     expect(on).toBe(COMPANY_SECTIONS);
     const flat = (s: typeof on) => s.flatMap((sec) => sec.items.map((i) => i.panel));
     const dropped = flat(on).filter((p) => !flat(off).includes(p));
-    expect(dropped).toEqual(["teams-accounts", "teams-domain-site"]);
+    expect(dropped).toEqual(["teams-domain-site"]);
     // No section is emptied by the filter, so the section order is intact.
     expect(off.map((s) => s.label)).toEqual(on.map((s) => s.label));
   });

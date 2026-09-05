@@ -266,8 +266,12 @@ async def test_release_and_unbind_never_closes_or_deletes_a_created_account():
 
 
 @pytest.mark.asyncio
-async def test_validate_api_key_proves_the_key_and_learns_the_account_in_one_call():
-    with patch("core.services.company_stripe.stripe.Account.retrieve") as retrieve:
+async def test_validate_api_key_proves_the_key_learns_the_account_and_probes_every_read(monkeypatch):
+    monkeypatch.setattr(company_stripe.settings, "STRIPE_SECRET_KEY", "sk_live_platform")
+    with (
+        patch("core.services.company_stripe.stripe.Account.retrieve") as retrieve,
+        patch.object(company_stripe, "_probe_read_permissions") as probe,
+    ):
         retrieve.return_value = {
             "id": "acct_theirs",
             "details_submitted": True,
@@ -276,6 +280,7 @@ async def test_validate_api_key_proves_the_key_and_learns_the_account_in_one_cal
         }
         info = await company_stripe.validate_api_key("  rk_live_abc  ")
     retrieve.assert_called_once_with(api_key="rk_live_abc")
+    probe.assert_called_once_with("rk_live_abc")
     assert info == {
         "account_id": "acct_theirs",
         "livemode": True,
@@ -292,6 +297,42 @@ async def test_validate_api_key_refuses_publishable_and_garbage_before_calling_s
             with pytest.raises(company_stripe.InvalidApiKey):
                 await company_stripe.validate_api_key(bad)
     retrieve.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_validate_api_key_refuses_a_key_whose_mode_does_not_match_the_platform(monkeypatch):
+    """A test key in prod would render sandbox data as revenue; a live key in
+    a sandbox env is the mirror error. Refused before Stripe is called."""
+    with patch("core.services.company_stripe.stripe.Account.retrieve") as retrieve:
+        monkeypatch.setattr(company_stripe.settings, "STRIPE_SECRET_KEY", "sk_live_platform")
+        with pytest.raises(company_stripe.InvalidApiKey, match="test-mode"):
+            await company_stripe.validate_api_key("rk_test_abc")
+        monkeypatch.setattr(company_stripe.settings, "STRIPE_SECRET_KEY", "sk_test_platform")
+        with pytest.raises(company_stripe.InvalidApiKey, match="live key"):
+            await company_stripe.validate_api_key("rk_live_abc")
+    retrieve.assert_not_called()
+
+
+def test_probe_read_permissions_names_the_missing_permission():
+    """A key with only Account:Read passes Account.retrieve; the probe is what
+    catches it, and it must say WHICH read is missing."""
+    import stripe as stripe_mod
+
+    class _Client:
+        class v1:  # noqa: N801 — mirrors the SDK's attribute shape
+            class charges:  # noqa: N801
+                @staticmethod
+                def list(params):
+                    return {"data": []}
+
+            class customers:  # noqa: N801
+                @staticmethod
+                def list(params):
+                    raise stripe_mod.error.PermissionError("nope")
+
+    with patch.object(company_stripe, "StripeClient", return_value=_Client()):
+        with pytest.raises(company_stripe.InvalidApiKey, match="Customers"):
+            company_stripe._probe_read_permissions("rk_live_abc")
 
 
 @pytest.mark.asyncio
@@ -337,10 +378,15 @@ async def test_release_and_unbind_for_an_api_key_row_deletes_the_secret_and_neve
 
 
 @pytest.mark.asyncio
-async def test_release_and_unbind_for_an_api_key_row_still_unbinds_when_the_secret_delete_fails():
+async def test_release_and_unbind_for_an_api_key_row_keeps_the_binding_when_the_secret_delete_fails():
+    """A stranded ROW is recoverable — the owner clicks Disconnect again and
+    the delete is retried. A stranded CREDENTIAL behind no row is not. So on a
+    failed delete the binding is kept and the caller is told it did not
+    release."""
     with (
         patch.object(company_stripe, "delete_api_key", AsyncMock(side_effect=RuntimeError("sm down"))),
         patch.object(company_stripe.billing_repo, "clear_company_stripe_account", AsyncMock()) as clear,
     ):
-        await company_stripe.release_and_unbind(owner_id="org_a", account_id="acct_x", source="api_key")
-    clear.assert_awaited_once()
+        released = await company_stripe.release_and_unbind(owner_id="org_a", account_id="acct_x", source="api_key")
+    assert released is False
+    clear.assert_not_awaited()

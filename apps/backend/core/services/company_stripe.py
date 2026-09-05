@@ -218,12 +218,15 @@ async def release_and_unbind(*, owner_id: str, account_id: str, source: str | No
     """
     if source == "api_key":
         # No platform grant exists to revoke — the only thing to let go of is
-        # our copy of their key. Delete it FIRST so a failed unbind can never
-        # leave a readable key behind a row we think is gone.
+        # our copy of their key. The key goes FIRST and the binding is cleared
+        # only once it is confirmed gone: a stranded row is recoverable (the
+        # owner clicks Disconnect again and this runs again), a stranded
+        # credential behind no row is not.
         try:
             await delete_api_key(owner_id)
-        except Exception:  # noqa: BLE001 — still unbind; a stranded secret is logged, not hidden
-            logger.exception("company_stripe: api key delete failed owner_id=%s", owner_id)
+        except Exception:  # noqa: BLE001 — keep the row so the next Disconnect retries the delete
+            logger.exception("company_stripe: api key delete failed owner_id=%s; binding kept", owner_id)
+            return False
         await billing_repo.clear_company_stripe_account(owner_id, account_id=account_id)
         return True
     try:
@@ -284,12 +287,45 @@ async def validate_api_key(api_key: str) -> dict:
     key = (api_key or "").strip()
     if not key.startswith(_ACCEPTED_KEY_PREFIXES):
         raise InvalidApiKey("Paste a restricted key (rk_…) or secret key (sk_…) from your Stripe Dashboard")
+    livemode = key.startswith(("rk_live_", "sk_live_"))
+    if livemode != _platform_livemode():
+        # A test-mode key in prod would render sandbox data as revenue behind a
+        # live Dashboard link; a live key in a sandbox env is the mirror error.
+        raise InvalidApiKey(
+            "That's a test-mode key — this environment needs a live key (rk_live_…)"
+            if _platform_livemode()
+            else "That's a live key — this environment needs a test-mode key (rk_test_…)"
+        )
     account = await asyncio.to_thread(stripe.Account.retrieve, api_key=key)
-    return {
-        "account_id": account["id"],
-        "livemode": key.startswith(("rk_live_", "sk_live_")),
-        **_status_of(account),
-    }
+    await asyncio.to_thread(_probe_read_permissions, key)
+    return {"account_id": account["id"], "livemode": livemode, **_status_of(account)}
+
+
+def _platform_livemode() -> bool:
+    return settings.STRIPE_SECRET_KEY.startswith(("sk_live_", "rk_live_"))
+
+
+# Every list the Money surface performs, probed at bind time with limit=1, so a
+# key missing one of the six read permissions is refused WITH THE PERMISSION
+# NAMED instead of binding and 403ing on the first page load. `Account` is
+# covered by the retrieve above.
+_READ_PROBES = (
+    ("Charges", lambda c: c.v1.charges.list(params={"limit": 1})),
+    ("Customers", lambda c: c.v1.customers.list(params={"limit": 1})),
+    ("Products", lambda c: c.v1.products.list(params={"limit": 1})),
+    ("Prices", lambda c: c.v1.prices.list(params={"limit": 1})),
+    ("Balance", lambda c: c.v1.balance_transactions.list(params={"limit": 1})),
+)
+
+
+def _probe_read_permissions(key: str) -> None:
+    """Blocking — call via ``asyncio.to_thread``."""
+    client = StripeClient(key)
+    for label, call in _READ_PROBES:
+        try:
+            call(client)
+        except stripe.error.PermissionError as e:
+            raise InvalidApiKey(f"That key can't read {label} — add {label}: Read to it and paste it again") from e
 
 
 async def store_api_key(owner_id: str, api_key: str) -> None:

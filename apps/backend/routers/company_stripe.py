@@ -218,17 +218,23 @@ async def bind_api_key(body: ApiKeyBody, auth: Annotated[AuthContext, Depends(ge
             status_code=409,
             detail={"code": "account_in_use", "message": "That Stripe account is connected to another workspace"},
         )
-    # Store the key BEFORE binding: a bound row whose key is missing reads as
-    # unbound (company_stripe_reads._addressing), so the failure mode of a
-    # crash between the two writes is "not connected", never "connected but
-    # every read 401s".
-    await company_stripe.store_api_key(owner_id, body.api_key)
+    # Bind FIRST: the conditional DynamoDB write is the lock. A concurrent
+    # second admin loses here and never touches the secret, so the winner's
+    # key cannot be deleted from under it. Only the winner stores the key;
+    # until it lands, a bound row with no key reads as unbound
+    # (company_stripe_reads._addressing) — "not connected", never
+    # "connected but every read 401s".
     bound = await billing_repo.set_company_stripe_account(owner_id, account_id=account_id, source="api_key")
     if bound is None:
-        # Lost a concurrent bind, or no billing row. Either way our key must
-        # not outlive a binding that never happened.
-        await company_stripe.delete_api_key(owner_id)
         raise HTTPException(status_code=409, detail="A Stripe account is already bound")
+    try:
+        await company_stripe.store_api_key(owner_id, body.api_key)
+    except Exception as e:  # noqa: BLE001 — the vault write failed; the binding must not outlive it
+        logger.exception("company_stripe: api key store failed owner_id=%s; unbinding", owner_id)
+        await billing_repo.clear_company_stripe_account(owner_id, account_id=account_id)
+        raise HTTPException(
+            status_code=502, detail={"code": "vault_error", "message": "Couldn't store the key. Try again."}
+        ) from e
     await billing_repo.set_company_stripe_status(
         owner_id,
         account_id=account_id,
@@ -356,6 +362,16 @@ async def disconnect(auth: Annotated[AuthContext, Depends(get_current_user)]):
     released = await company_stripe.release_and_unbind(
         owner_id=owner_id, account_id=account_id, source=row.get("company_stripe_source")
     )
+    if row.get("company_stripe_source") == "api_key" and not released:
+        # The vault delete failed and the binding was deliberately KEPT so this
+        # can be retried. Saying "disconnected" here would be a lie.
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "code": "key_delete_failed",
+                "message": "Couldn't remove your key from our vault — nothing was disconnected. Try again.",
+            },
+        )
     await write_owner_facts(owner_id)
     return {"disconnected": True, "stripe_released": released}
 

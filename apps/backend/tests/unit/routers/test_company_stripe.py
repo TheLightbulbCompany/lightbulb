@@ -545,9 +545,10 @@ _KEY_INFO = {
 }
 
 
-def test_api_key_binds_stores_key_first_and_syncs_status(client, facts, metric):
-    """Store the key BEFORE binding: a bound row whose key is missing reads as
-    unbound, so a crash between the two writes fails safe."""
+def test_api_key_binds_first_then_stores_the_key_and_syncs_status(client, facts, metric):
+    """Bind FIRST — the conditional write is the lock, so a losing concurrent
+    bind never touches the secret. A bound row whose key has not landed yet
+    reads as unbound, so a crash between the two writes fails safe."""
     calls: list[str] = []
     with (
         patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})),
@@ -568,7 +569,7 @@ def test_api_key_binds_stores_key_first_and_syncs_status(client, facts, metric):
         resp = client.post("/api/v1/company/stripe/api-key", json={"api_key": "rk_live_abc"})
     assert resp.status_code == 200
     assert resp.json() == {"account_id": "acct_theirs", "livemode": True}
-    assert calls == ["store", "bind"]
+    assert calls == ["bind", "store"]
     store.assert_awaited_once_with("org_a", "rk_live_abc")
     bind.assert_awaited_once_with("org_a", account_id="acct_theirs", source="api_key")
     status.assert_awaited_once_with(
@@ -642,20 +643,55 @@ def test_api_key_409_when_already_bound_and_never_validates(client):
     validate.assert_not_awaited()
 
 
-def test_api_key_lost_bind_race_deletes_our_key(client):
-    """set_company_stripe_account -> None: our key must not outlive a binding
-    that never happened."""
+def test_api_key_lost_bind_race_never_touches_the_secret(client):
+    """set_company_stripe_account -> None: the loser of a concurrent bind must
+    not store OR delete — either would clobber the winner's key."""
     with (
         patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})),
         patch.object(mod.company_stripe, "validate_api_key", AsyncMock(return_value=_KEY_INFO)),
         patch.object(mod.billing_repo, "get_by_company_stripe_account_id", AsyncMock(return_value=None)),
-        patch.object(mod.company_stripe, "store_api_key", AsyncMock()),
+        patch.object(mod.company_stripe, "store_api_key", AsyncMock()) as store,
         patch.object(mod.billing_repo, "set_company_stripe_account", AsyncMock(return_value=None)),
         patch.object(mod.company_stripe, "delete_api_key", AsyncMock()) as delete,
     ):
         resp = client.post("/api/v1/company/stripe/api-key", json={"api_key": "rk_live_abc"})
     assert resp.status_code == 409
-    delete.assert_awaited_once_with("org_a")
+    store.assert_not_awaited()
+    delete.assert_not_awaited()
+
+
+def test_api_key_vault_failure_unbinds_and_502s(client, facts):
+    """The vault write failed after we won the bind: the binding must not
+    outlive the key it points at."""
+    with (
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})),
+        patch.object(mod.company_stripe, "validate_api_key", AsyncMock(return_value=_KEY_INFO)),
+        patch.object(mod.billing_repo, "get_by_company_stripe_account_id", AsyncMock(return_value=None)),
+        patch.object(mod.billing_repo, "set_company_stripe_account", AsyncMock(return_value={"x": 1})),
+        patch.object(mod.company_stripe, "store_api_key", AsyncMock(side_effect=RuntimeError("sm down"))),
+        patch.object(mod.billing_repo, "clear_company_stripe_account", AsyncMock()) as clear,
+    ):
+        resp = client.post("/api/v1/company/stripe/api-key", json={"api_key": "rk_live_abc"})
+    assert resp.status_code == 502
+    assert resp.json()["detail"]["code"] == "vault_error"
+    clear.assert_awaited_once_with("org_a", account_id="acct_theirs")
+    facts.assert_not_awaited()
+
+
+def test_disconnect_502s_and_keeps_the_binding_when_the_key_delete_fails(client, facts):
+    """release_and_unbind returned False for an api_key row: the vault delete
+    failed and the row was KEPT so Disconnect can be retried. The response must
+    not claim a disconnect happened."""
+    row = {"owner_id": "org_a", "company_stripe_account_id": "acct_x", "company_stripe_source": "api_key"}
+    with (
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value=row)),
+        patch.object(mod.company_stripe, "release_and_unbind", AsyncMock(return_value=False)) as release,
+    ):
+        resp = client.post("/api/v1/company/stripe/disconnect")
+    assert resp.status_code == 502
+    assert resp.json()["detail"]["code"] == "key_delete_failed"
+    release.assert_awaited_once_with(owner_id="org_a", account_id="acct_x", source="api_key")
+    facts.assert_not_awaited()
 
 
 def test_api_key_door_is_admin_only(member_client):

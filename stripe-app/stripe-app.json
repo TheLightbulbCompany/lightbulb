@@ -2,7 +2,7 @@
   "$schema": "https://stripe.com/stripe-app.schema.json",
   "id": "company.thelightbulb.lightbulb",
   "name": "Lightbulb",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "icon": "./icon.png",
   "ui_extension": {
     "views": [
@@ -42,6 +42,7 @@
       "purpose": "Show your balance and balance transactions on the Lightbulb Money tabs."
     }
   ],
+  "distribution_type": "public",
   "stripe_api_access_type": "restricted_api_key",
   "sandbox_install_compatible": true
 }

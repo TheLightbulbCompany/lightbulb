@@ -14,6 +14,7 @@ import { isTauri, openExternalUrl, pollUntil } from "@/lib/externalAuth";
 // incident. EditorialButton is token-based and route-independent, so it is
 // correct on both surfaces.
 import { EditorialButton } from "@/components/teams/shell";
+import { Input } from "@/components/ui/input";
 
 const POPUP_BLOCKED_MSG =
   "Your browser blocked the Stripe window — allow popups for this site and try again.";
@@ -203,15 +204,16 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
                     Paste a restricted key from your Stripe Dashboard → Developers → API keys →
                     Create restricted key. Permissions: {REQUIRED_PERMISSIONS}.
                   </label>
-                  <input
+                  <Input
                     id="company-stripe-key"
                     type="password"
                     autoComplete="off"
                     spellCheck={false}
                     placeholder="rk_live_…"
                     value={keyDraft}
+                    disabled={busy}
                     onChange={(e) => setKeyDraft(e.target.value)}
-                    className="w-full rounded-md border border-[var(--edge)] bg-white px-3 py-2 font-mono text-sm text-midnight"
+                    className="h-9 bg-cream font-mono"
                   />
                   <div className="flex flex-wrap gap-2">
                     <EditorialButton type="submit" size="sm" disabled={busy || !keyDraft.trim()}>

@@ -137,6 +137,24 @@ def test_callback_conflict_redirects_with_error(client):
     assert r.status_code == 302 and "slack=error:workspace_already_connected" in r.headers["location"]
 
 
+def test_callback_unexpected_error_redirects_with_internal(client):
+    """Slack answered ok:true but without a team object — a bare KeyError must
+    never become a 500 for the human browser Slack just redirected."""
+
+    class _Broken(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            return httpx.Response(200, json={"ok": True, "access_token": "xoxb-token"})  # no "team"
+
+    state_row = {"state": "st", "owner_id": "org_1", "provider": "slack", "agent_id": "agent_f", "member_id": "user_1"}
+    with (
+        _app_store(),
+        patch("routers.slack_app.oauth_state_repo.consume", AsyncMock(return_value=state_row)),
+        patch("routers.slack_app._client_factory", lambda: httpx.AsyncClient(transport=_Broken())),
+    ):
+        r = client.get("/api/v1/slack/oauth/callback?code=c&state=st", follow_redirects=False)
+    assert r.status_code == 302 and "slack=error:internal" in r.headers["location"]
+
+
 def test_list_installs_for_owner(client):
     rows = [
         {

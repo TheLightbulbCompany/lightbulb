@@ -208,7 +208,7 @@ def _redirect_uri() -> str:
 def _frontend_return(agent_id: str, outcome: str) -> str:
     """Back to the agent's Channels tab (the same deep link ChatLayout uses)."""
     base = settings.FRONTEND_URL.rstrip("/")
-    return f"{base}/chat?panel=agent-inspector&agent={agent_id}&inspectorTab=channels&slack={outcome}"
+    return f"{base}/chat?panel=agent-inspector&agent={quote(agent_id, safe='')}&inspectorTab=channels&slack={outcome}"
 
 
 @router.get("/oauth/start")
@@ -252,7 +252,9 @@ async def slack_oauth_callback(code: str = "", state: str = "", error: str = "")
             return RedirectResponse(_frontend_return("", "error:invalid_state"), status_code=302)
         agent_id = rec.get("agent_id") or ""
         if error or not code:
-            return RedirectResponse(_frontend_return(agent_id, f"error:{error or 'missing_code'}"), status_code=302)
+            return RedirectResponse(
+                _frontend_return(agent_id, f"error:{quote(error or 'missing_code', safe='')}"), status_code=302
+            )
 
         app = await platform_oauth_app_store.get(PLATFORM_APP)
         if not app:
@@ -274,7 +276,8 @@ async def slack_oauth_callback(code: str = "", state: str = "", error: str = "")
             return RedirectResponse(_frontend_return(agent_id, "error:exchange_failed"), status_code=302)
         if not token.get("ok"):
             return RedirectResponse(
-                _frontend_return(agent_id, f"error:{token.get('error', 'exchange_failed')}"), status_code=302
+                _frontend_return(agent_id, f"error:{quote(token.get('error', 'exchange_failed'), safe='')}"),
+                status_code=302,
             )
 
         try:
@@ -293,8 +296,8 @@ async def slack_oauth_callback(code: str = "", state: str = "", error: str = "")
         except slack_install_service.SlackInstallConflict:
             return RedirectResponse(_frontend_return(agent_id, "error:workspace_already_connected"), status_code=302)
         return RedirectResponse(_frontend_return(agent_id, "connected"), status_code=302)
-    except Exception as exc:  # noqa: BLE001 — a human browser lands here; never let it 5xx
-        logger.exception("slack oauth: callback failed unexpectedly: %s", exc)
+    except Exception:  # noqa: BLE001 — a human browser lands here; never let it 5xx
+        logger.exception("slack oauth: callback failed unexpectedly")
         return RedirectResponse(_frontend_return(agent_id, "error:internal"), status_code=302)
 
 

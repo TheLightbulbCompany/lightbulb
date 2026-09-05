@@ -35,15 +35,19 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from urllib.parse import parse_qs, quote
+import secrets
+from urllib.parse import parse_qs, quote, urlencode
 
 import httpx
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import RedirectResponse
 
+from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
+from core.config import settings
 from core.containers import get_ecs_manager
 from core.containers.ecs_manager import GATEWAY_PORT
 from core.observability.metrics import put_metric
-from core.repositories import billing_repo, container_repo, slack_installs_repo
+from core.repositories import billing_repo, container_repo, oauth_state_repo, slack_installs_repo
 from core.services import slack_install_service, slack_signing, webhook_dedup
 from core.services.credentials import platform_oauth_app_store
 from core.services.provision_gate import has_always_on_entitlement
@@ -191,3 +195,121 @@ async def receive_slack_event(request: Request) -> Response:
         content=upstream.content,
         media_type=upstream.headers.get("content-type", "application/json"),
     )
+
+
+SLACK_AUTHORIZE_URL = "https://slack.com/oauth/v2/authorize"
+SLACK_TOKEN_URL = "https://slack.com/api/oauth.v2.access"
+
+
+def _redirect_uri() -> str:
+    return f"{settings.PUBLIC_API_BASE}/api/v1/slack/oauth/callback"
+
+
+def _frontend_return(agent_id: str, outcome: str) -> str:
+    """Back to the agent's Channels tab (the same deep link ChatLayout uses)."""
+    base = settings.FRONTEND_URL.rstrip("/")
+    return f"{base}/chat?panel=agent-inspector&agent={agent_id}&inspectorTab=channels&slack={outcome}"
+
+
+@router.get("/oauth/start")
+async def slack_oauth_start(agent_id: str, auth: AuthContext = Depends(get_current_user)) -> dict:
+    """Mint the Slack authorize URL for the signed-in org admin. The browser
+    navigates to it (a bearer can't ride a navigation, so this is JSON)."""
+    require_org_admin(auth)
+    app = await platform_oauth_app_store.get(PLATFORM_APP)
+    if not app:
+        raise HTTPException(status_code=503, detail="slack_app_not_configured")
+    owner_id = resolve_owner_id(auth)
+    state = secrets.token_urlsafe(32)
+    await oauth_state_repo.put(
+        state,
+        owner_id=owner_id,
+        provider=PLATFORM_APP,
+        verifier="",
+        extra={"agent_id": agent_id, "member_id": auth.user_id},
+    )
+    query = urlencode(
+        {
+            "client_id": app["client_id"],
+            "scope": ",".join(slack_install_service.BOT_SCOPES),
+            "redirect_uri": _redirect_uri(),
+            "state": state,
+        }
+    )
+    return {"url": f"{SLACK_AUTHORIZE_URL}?{query}"}
+
+
+@router.get("/oauth/callback")
+async def slack_oauth_callback(code: str = "", state: str = "", error: str = "") -> RedirectResponse:
+    """Slack redirects here after the admin authorizes. Unauthenticated by
+    nature — the single-use ``state`` row is the identity. Every path out is a
+    302 — a human browser lands here with no way to retry a 5xx, so an outer
+    catch-all backstops the specific branches below."""
+    agent_id = ""
+    try:
+        rec = await oauth_state_repo.consume(state) if state else None
+        if not rec or rec.get("provider") != PLATFORM_APP:
+            return RedirectResponse(_frontend_return("", "error:invalid_state"), status_code=302)
+        agent_id = rec.get("agent_id") or ""
+        if error or not code:
+            return RedirectResponse(_frontend_return(agent_id, f"error:{error or 'missing_code'}"), status_code=302)
+
+        app = await platform_oauth_app_store.get(PLATFORM_APP)
+        if not app:
+            return RedirectResponse(_frontend_return(agent_id, "error:slack_app_not_configured"), status_code=302)
+        try:
+            async with _client_factory() as client:
+                resp = await client.post(
+                    SLACK_TOKEN_URL,
+                    data={
+                        "client_id": app["client_id"],
+                        "client_secret": app["client_secret"],
+                        "code": code,
+                        "redirect_uri": _redirect_uri(),
+                    },
+                )
+            token = resp.json()
+        except (httpx.RequestError, ValueError) as exc:
+            logger.warning("slack oauth: token exchange failed: %s", exc)
+            return RedirectResponse(_frontend_return(agent_id, "error:exchange_failed"), status_code=302)
+        if not token.get("ok"):
+            return RedirectResponse(
+                _frontend_return(agent_id, f"error:{token.get('error', 'exchange_failed')}"), status_code=302
+            )
+
+        try:
+            await slack_install_service.apply_install(
+                owner_id=rec["owner_id"],
+                agent_id=agent_id,
+                team_id=token["team"]["id"],
+                team_name=token["team"].get("name") or "",
+                bot_token=token["access_token"],
+                bot_user_id=token.get("bot_user_id") or "",
+                app_id=token.get("app_id") or "",
+                scopes=[s for s in (token.get("scope") or "").split(",") if s],
+                installer_slack_user_id=(token.get("authed_user") or {}).get("id") or "",
+                installer_member_id=rec.get("member_id") or "",
+            )
+        except slack_install_service.SlackInstallConflict:
+            return RedirectResponse(_frontend_return(agent_id, "error:workspace_already_connected"), status_code=302)
+        return RedirectResponse(_frontend_return(agent_id, "connected"), status_code=302)
+    except Exception as exc:  # noqa: BLE001 — a human browser lands here; never let it 5xx
+        logger.exception("slack oauth: callback failed unexpectedly: %s", exc)
+        return RedirectResponse(_frontend_return(agent_id, "error:internal"), status_code=302)
+
+
+@router.get("/install")
+async def list_slack_installs(auth: AuthContext = Depends(get_current_user)) -> dict:
+    rows = await slack_installs_repo.list_for_owner(resolve_owner_id(auth))
+    keys = ("team_id", "team_name", "agent_id", "status", "installed_at")
+    return {"installs": [{k: r.get(k) for k in keys} for r in rows]}
+
+
+@router.delete("/install/{team_id}")
+async def delete_slack_install(team_id: str, auth: AuthContext = Depends(get_current_user)) -> dict:
+    require_org_admin(auth)
+    row = await slack_installs_repo.get(team_id)
+    if not row or row.get("owner_id") != resolve_owner_id(auth):
+        raise HTTPException(status_code=404, detail="install_not_found")
+    await slack_install_service.revoke_install(team_id)
+    return {"status": "revoked"}

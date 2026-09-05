@@ -299,20 +299,6 @@ async def test_validate_api_key_refuses_publishable_and_garbage_before_calling_s
     retrieve.assert_not_called()
 
 
-@pytest.mark.asyncio
-async def test_validate_api_key_refuses_a_key_whose_mode_does_not_match_the_platform(monkeypatch):
-    """A test key in prod would render sandbox data as revenue; a live key in
-    a sandbox env is the mirror error. Refused before Stripe is called."""
-    with patch("core.services.company_stripe.stripe.Account.retrieve") as retrieve:
-        monkeypatch.setattr(company_stripe.settings, "STRIPE_SECRET_KEY", "sk_live_platform")
-        with pytest.raises(company_stripe.InvalidApiKey, match="test-mode"):
-            await company_stripe.validate_api_key("rk_test_abc")
-        monkeypatch.setattr(company_stripe.settings, "STRIPE_SECRET_KEY", "sk_test_platform")
-        with pytest.raises(company_stripe.InvalidApiKey, match="live key"):
-            await company_stripe.validate_api_key("rk_live_abc")
-    retrieve.assert_not_called()
-
-
 def test_probe_read_permissions_names_the_missing_permission():
     """A key with only Account:Read passes Account.retrieve; the probe is what
     catches it, and it must say WHICH read is missing."""
@@ -357,7 +343,8 @@ async def test_retrieve_status_uses_the_owners_key_when_given():
         retrieve.return_value = {"details_submitted": True, "charges_enabled": False, "payouts_enabled": False}
         status = await company_stripe.retrieve_status(account_id="acct_x", api_key="rk_live_abc")
     retrieve.assert_called_once_with(api_key="rk_live_abc")
-    assert status == {"details_submitted": True, "charges_enabled": False, "payouts_enabled": False}
+    # The mode rides along so the card can say "Test mode" for an rk_test_ key.
+    assert status == {"details_submitted": True, "charges_enabled": False, "payouts_enabled": False, "livemode": True}
 
 
 @pytest.mark.asyncio

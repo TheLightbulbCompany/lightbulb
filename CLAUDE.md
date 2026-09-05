@@ -447,7 +447,7 @@ There is **no NLB and no VPC Link V1** — that architecture was replaced; see "
 
 ### Production Infrastructure
 
-Turborepo monorepo (`TheLightbulbCompany/lightbulb`): `apps/{frontend,backend,desktop,infra,mobile}`,
+Turborepo monorepo (`TheLightbulbCompany/lightbulb`): `apps/{frontend,backend,desktop,infra,mobile,company}`,
 `packages/shared` (see the Frontend section — it is load-bearing). The non-obvious
 entries at the root:
 
@@ -457,6 +457,12 @@ entries at the root:
 - `openclaw-version.json` / `paperclip-version.json` — the image pins. Both
   carry a `notes` field explaining what each field means and what may not be
   changed without breaking the fleet. Read it before bumping.
+- `stripe-app/` — the Lightbulb **Stripe App** (restricted-API-key auth), the
+  guided way for an owner to mint the read-only key they paste into Settings →
+  Connections. Deliberately OUTSIDE the pnpm workspace (own lockfile, own
+  `pnpm install --ignore-workspace`): it is uploaded with the Stripe CLI, not
+  built by our pipeline, and pulling it into `apps/*` re-resolved ~1.3k
+  lockfile lines. See its README; `stripe apps upload` is owner-gated.
 
 ### AWS Configuration
 
@@ -531,6 +537,26 @@ Friday only ever sees `/api/v1/company/provisioning/u/{owner}/…`; `remove` —
 one call that deprovisions — is reachable from the owner's typed-confirmation
 route and nowhere else, and teardown never reaches it (spec §3.6, proved by
 `tests/unit/services/test_wipe_never_deprovisions.py`).
+
+**The rail is OFF by default** — `STRIPE_PROVISIONING_ENABLED` (CDK env, default
+`false` in both envs) refuses `start()`/`on_approved()`, freezes `advance()`,
+empties Friday's catalog with `reason: provisioning_unavailable`, and hides the
+Connect doors + the Domain & Site panel. It stays off until Stripe ships
+delegated connected-account creation + KYC (isol8, Inc. is the Connect
+platform and cannot connect to itself, and `POST /v2/provisioning/*` 500s for
+us). Everything else a company-Stripe binding powers — the Money tabs, the
+revenue rollup, card status, Friday's "Stripe connected" awareness — is plain
+v1 and runs on the **API-key path**: the owner pastes a restricted key
+(`POST /company/stripe/api-key`, Read on Charges/Customers/Products/Prices/
+Balance/Account; test-mode keys bind too and the card says "Test mode" —
+Stripe's app reviewers may only use test accounts), it lives ONLY in Secrets Manager (`company_stripe` provider;
+never `openclaw.json`, `env.vars`, or EFS), and the billing row carries
+`source: "api_key"`. `company_stripe_reads._addressing` is the one resolver:
+`connected/created` rows → platform key + `stripe_account` header; `api_key`
+rows → their key, no header. The agent's own Stripe tools are a THIRD grant
+(the OAuth MCP in the container) and must never be consolidated with the key.
+`stripe-app/` (repo root) is the Stripe App (restricted-API-key auth) that mints
+a key with exactly those six permissions for an owner to paste — see its README.
 
 ### Container Orchestration (`core/containers/`)
 

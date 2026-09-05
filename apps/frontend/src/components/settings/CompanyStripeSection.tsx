@@ -25,6 +25,8 @@ export type CompanyStripeStatus = {
   details_submitted: boolean;
   charges_enabled: boolean;
   payouts_enabled: boolean;
+  /** false = bound with a test-mode key (sandbox install / Stripe review). */
+  livemode?: boolean | null;
   dashboard_url: string | null;
   connect_configured: boolean;
   /** Connect is only offered while the provisioning rail is live — it is the
@@ -275,7 +277,9 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
                 <dt>Source</dt>
                 <dd>
                   {data.source === "api_key"
-                    ? "Your API key"
+                    ? data.livemode === false
+                      ? "Your API key · Test mode"
+                      : "Your API key"
                     : data.source === "connected"
                       ? "Connected via Stripe"
                       : "Created by Lightbulb AI"}

@@ -256,9 +256,9 @@ async def retrieve_status(*, account_id: str, api_key: str | None = None) -> dic
     caller to condition the write)."""
     if api_key:
         account = await asyncio.to_thread(stripe.Account.retrieve, api_key=api_key)
-    else:
-        _set_key()
-        account = await asyncio.to_thread(stripe.Account.retrieve, account_id)
+        return {**_status_of(account), "livemode": key_livemode(api_key)}
+    _set_key()
+    account = await asyncio.to_thread(stripe.Account.retrieve, account_id)
     return _status_of(account)
 
 
@@ -287,22 +287,18 @@ async def validate_api_key(api_key: str) -> dict:
     key = (api_key or "").strip()
     if not key.startswith(_ACCEPTED_KEY_PREFIXES):
         raise InvalidApiKey("Paste a restricted key (rk_…) or secret key (sk_…) from your Stripe Dashboard")
-    livemode = key.startswith(("rk_live_", "sk_live_"))
-    if livemode != _platform_livemode():
-        # A test-mode key in prod would render sandbox data as revenue behind a
-        # live Dashboard link; a live key in a sandbox env is the mirror error.
-        raise InvalidApiKey(
-            "That's a test-mode key — this environment needs a live key (rk_live_…)"
-            if _platform_livemode()
-            else "That's a live key — this environment needs a test-mode key (rk_test_…)"
-        )
+    # Either mode binds. A test-mode key is a real use case — a sandbox
+    # install of the Stripe App, or Stripe's own reviewers, who may only use
+    # test accounts — so it is accepted and LABELLED ("Test mode" on the
+    # card) rather than refused; the label is what keeps sandbox figures from
+    # reading as revenue.
     account = await asyncio.to_thread(stripe.Account.retrieve, api_key=key)
     await asyncio.to_thread(_probe_read_permissions, key)
-    return {"account_id": account["id"], "livemode": livemode, **_status_of(account)}
+    return {"account_id": account["id"], "livemode": key_livemode(key), **_status_of(account)}
 
 
-def _platform_livemode() -> bool:
-    return settings.STRIPE_SECRET_KEY.startswith(("sk_live_", "rk_live_"))
+def key_livemode(api_key: str) -> bool:
+    return api_key.startswith(("rk_live_", "sk_live_"))
 
 
 # Every list the Money surface performs, probed at bind time with limit=1, so a

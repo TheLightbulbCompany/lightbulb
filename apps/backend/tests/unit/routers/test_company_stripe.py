@@ -81,6 +81,7 @@ def test_status_unbound(client):
         "details_submitted": False,
         "charges_enabled": False,
         "payouts_enabled": False,
+        "livemode": None,
         "dashboard_url": None,
         "connect_configured": True,
         "provisioning_enabled": False,
@@ -573,7 +574,12 @@ def test_api_key_binds_first_then_stores_the_key_and_syncs_status(client, facts,
     store.assert_awaited_once_with("org_a", "rk_live_abc")
     bind.assert_awaited_once_with("org_a", account_id="acct_theirs", source="api_key")
     status.assert_awaited_once_with(
-        "org_a", account_id="acct_theirs", details_submitted=True, charges_enabled=True, payouts_enabled=False
+        "org_a",
+        account_id="acct_theirs",
+        details_submitted=True,
+        charges_enabled=True,
+        payouts_enabled=False,
+        livemode=True,
     )
     metric.assert_called_once_with("company_stripe.account.api_key_bound")
     facts.assert_awaited_once_with("org_a")
@@ -761,3 +767,16 @@ def test_disconnect_api_key_row_needs_no_client_id(client, facts, monkeypatch):
     assert resp.status_code == 200
     release.assert_awaited_once_with(owner_id="org_a", account_id="acct_x", source="api_key")
     facts.assert_awaited_once_with("org_a")
+
+
+def test_status_reports_the_key_mode_so_the_card_can_label_test_data():
+    """An api_key row bound with an rk_test_ key says livemode=False; a
+    Connect row (mode follows the platform) and an unbound row do not
+    pretend to know."""
+    row = {"company_stripe_account_id": "acct_t", "company_stripe_source": "api_key", "company_stripe_livemode": False}
+    assert mod._status_payload(row)["livemode"] is False
+    assert (
+        mod._status_payload({"company_stripe_account_id": "acct_c", "company_stripe_source": "connected"})["livemode"]
+        is True
+    )
+    assert mod._status_payload({})["livemode"] is None

@@ -146,10 +146,12 @@ async def apply_install(
         # Partial failure (task-def roll or config patch) must not leave an
         # active install row + a "Connected" card with no working config
         # behind — unwind to the same state as if the install never happened.
+        # revoke_install already gets the ordering right (drop the task-def
+        # secret entry before force-deleting the secret) — a hand-rolled
+        # rollback here would risk deleting a secret the roll's own new task-
+        # def revision still references.
         logger.exception("slack install: roll/patch failed owner=%s team=%s, rolling back", owner_id, team_id)
-        await slack_installs_repo.set_status(team_id, slack_installs_repo.STATUS_REVOKED)
-        await integration_secret_store.delete(owner_id, provider)
-        await _mark_disconnected(owner_id)
+        await revoke_install(team_id)
         raise
     logger.info("slack install applied owner=%s team=%s agent=%s", owner_id, team_id, agent_id)
     return row
@@ -166,9 +168,17 @@ async def revoke_install(team_id: str) -> bool:
     await slack_installs_repo.set_status(team_id, slack_installs_repo.STATUS_REVOKED)
     # Drop the task-def secrets: entry BEFORE the secret is force-deleted —
     # otherwise every later relaunch of this owner's task (Spot interruption,
-    # OOM, resize) fails on a dead ARN.
-    await get_ecs_manager().refresh_task_definition(owner_id, drop_secrets=[slack_env_var_name(team_id)])
-    await integration_secret_store.delete(owner_id, secret_provider(team_id))
+    # OOM, resize) fails on a dead ARN. If the ECS roll itself fails, skip
+    # ONLY the secret delete (an orphaned secret is harmless; a dead ARN in a
+    # still-referencing task-def is not) — the rest of teardown must still run.
+    try:
+        await get_ecs_manager().refresh_task_definition(owner_id, drop_secrets=[slack_env_var_name(team_id)])
+    except Exception:
+        logger.exception(
+            "slack revoke: task-def refresh failed owner=%s team=%s; skipping secret delete", owner_id, team_id
+        )
+    else:
+        await integration_secret_store.delete(owner_id, secret_provider(team_id))
     await delete_openclaw_config_path(owner_id, ["channels", PROVIDER, "accounts", team_id])
     await remove_from_openclaw_config_list(
         owner_id,

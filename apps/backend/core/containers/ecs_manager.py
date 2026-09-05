@@ -916,12 +916,15 @@ class EcsManager:
         for cd in td["containerDefinitions"]:
             if cd["name"] == "openclaw":
                 cd["environment"] = new_env
-                drop = set(drop_secrets or [])
-                incoming = {s["name"]: s for s in (extra_secrets or [])}
-                kept = [
-                    s for s in (cd.get("secrets") or []) if s.get("name") not in incoming and s.get("name") not in drop
-                ]
-                cd["secrets"] = kept + list(incoming.values())
+                if extra_secrets or drop_secrets:
+                    drop = set(drop_secrets or [])
+                    incoming = {s["name"]: s for s in (extra_secrets or [])}
+                    kept = [
+                        s
+                        for s in (cd.get("secrets") or [])
+                        if s.get("name") not in incoming and s.get("name") not in drop
+                    ]
+                    cd["secrets"] = kept + list(incoming.values())
 
         register_kwargs = {
             "family": td["family"],

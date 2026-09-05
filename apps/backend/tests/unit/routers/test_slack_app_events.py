@@ -257,13 +257,31 @@ def test_app_uninstalled_revokes_and_is_200(client):
     ).encode()
     with (
         _app_store(),
-        _dedup(),
+        _dedup() as dedup,
         _install(),
         patch("routers.slack_app.slack_install_service.revoke_install", AsyncMock(return_value=True)) as rev,
     ):
         r = client.post("/api/v1/slack/events", content=body, headers=_headers(body))
     assert r.status_code == 200
+    # Dedup is recorded FIRST for revoke events (they never 503, so there's no
+    # reason to skip dedup and risk re-rolling the container on every retry).
+    dedup.assert_awaited_once_with(f"slack:{TEAM}:Ev9", source="slack", ttl_seconds=3600)
     rev.assert_awaited_once_with(TEAM)
+
+
+def test_duplicate_app_uninstalled_is_200_without_revoke(client):
+    body = json.dumps(
+        {"type": "event_callback", "team_id": TEAM, "event_id": "Ev9", "event": {"type": "app_uninstalled"}}
+    ).encode()
+    with (
+        _app_store(),
+        _dedup("already_seen"),
+        _install(),
+        patch("routers.slack_app.slack_install_service.revoke_install", AsyncMock(return_value=True)) as rev,
+    ):
+        r = client.post("/api/v1/slack/events", content=body, headers=_headers(body))
+    assert r.status_code == 200
+    rev.assert_not_awaited()
 
 
 def test_revoke_failure_is_still_200(client):

@@ -92,6 +92,10 @@ def _parse(content_type: str, body: bytes) -> dict:
         return {}
 
 
+def _dedup_key(team_id: str, event_id: str) -> str:
+    return f"slack:{team_id}:{event_id}"
+
+
 def _team_id(data: dict) -> str | None:
     if isinstance(data.get("team_id"), str):
         return data["team_id"]
@@ -139,6 +143,15 @@ async def receive_slack_event(request: Request) -> Response:
 
     event = data.get("event") if isinstance(data.get("event"), dict) else {}
     if event.get("type") in _REVOKE_EVENTS:
+        # These never 503, so there's no reason to defer dedup like the
+        # forward path does — recording it up front stops a Slack retry from
+        # re-running the (idempotent but not free) container roll every time.
+        if event_id:
+            seen = await webhook_dedup.record_event_or_skip(
+                _dedup_key(team_id, event_id), source="slack", ttl_seconds=DEDUP_TTL_S
+            )
+            if seen == webhook_dedup.WebhookDedupResult.ALREADY_SEEN:
+                return Response(status_code=200)
         try:
             await slack_install_service.revoke_install(team_id)
         except Exception as exc:  # noqa: BLE001 — per-owner cleanup must never 5xx the shared app
@@ -182,7 +195,7 @@ async def receive_slack_event(request: Request) -> Response:
     # (no IP) or handle revoke/echo/unentitled runs before dedup.
     if event_id:
         seen = await webhook_dedup.record_event_or_skip(
-            f"slack:{team_id}:{event_id}", source="slack", ttl_seconds=DEDUP_TTL_S
+            _dedup_key(team_id, event_id), source="slack", ttl_seconds=DEDUP_TTL_S
         )
         if seen == webhook_dedup.WebhookDedupResult.ALREADY_SEEN:
             return Response(status_code=200)

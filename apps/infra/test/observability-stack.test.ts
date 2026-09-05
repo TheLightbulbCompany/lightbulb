@@ -524,30 +524,6 @@ describe("ObservabilityStack", () => {
     }
   });
 
-  // W1's math used to count status="error", a value the backend never emits, so
-  // the alarm was permanently blind. Pin it to the real failure status so a
-  // future edit cannot silently re-point it at a phantom stream again.
-  test("W1 counts the real inline_failed status, not the never-emitted 'error'", () => {
-    const w1 = Object.values(
-      template.findResources("AWS::CloudWatch::Alarm"),
-    ).find(
-      (a: any) =>
-        a.Properties?.AlarmName ===
-        "lightbulb-dev-W1-container-provision-error-rate",
-    ) as any;
-    expect(w1).toBeDefined();
-    const statuses = (w1.Properties.Metrics ?? [])
-      .map((m: any) => m.MetricStat?.Metric)
-      .filter((mm: any) => mm?.MetricName === "container.provision")
-      .flatMap((mm: any) =>
-        (mm.Dimensions ?? [])
-          .filter((d: any) => d.Name === "status")
-          .map((d: any) => d.Value),
-      );
-    expect(statuses).toContain("inline_failed");
-    expect(statuses).not.toContain("error");
-  });
-
   test("EventBridge rule captures ECS task stopped events", () => {
     template.hasResourceProperties("AWS::Events::Rule", {
       EventPattern: {

@@ -630,49 +630,30 @@ export class ObservabilityStack extends cdk.Stack {
     // datapointsToAlarm 2-of-3: a rate on a low-traffic launch fleet spikes when
     // one error lands in a near-empty window; requiring the elevated rate to
     // persist across 2 of 3 five-minute periods keeps a single blip from paging.
-    const apiGwServerErrors = new cloudwatch.MathExpression({
-      expression: "execErr + intErr",
-      usingMetrics: {
-        execErr: new cloudwatch.Metric({
-          namespace: "AWS/ApiGateway",
-          metricName: "ExecutionError",
-          statistic: "Sum",
-          period: cdk.Duration.minutes(5),
-          dimensionsMap: { ApiId: props.wsApiId },
-        }),
-        intErr: new cloudwatch.Metric({
-          namespace: "AWS/ApiGateway",
-          metricName: "IntegrationError",
-          statistic: "Sum",
-          period: cdk.Duration.minutes(5),
-          dimensionsMap: { ApiId: props.wsApiId },
-        }),
-      },
-      period: cdk.Duration.minutes(5),
-    });
-    const apiGwWsRequests = new cloudwatch.MathExpression({
-      expression: "messages + connects",
-      usingMetrics: {
-        messages: new cloudwatch.Metric({
-          namespace: "AWS/ApiGateway",
-          metricName: "MessageCount",
-          statistic: "Sum",
-          period: cdk.Duration.minutes(5),
-          dimensionsMap: { ApiId: props.wsApiId },
-        }),
-        connects: new cloudwatch.Metric({
-          namespace: "AWS/ApiGateway",
-          metricName: "ConnectCount",
-          statistic: "Sum",
-          period: cdk.Duration.minutes(5),
-          dimensionsMap: { ApiId: props.wsApiId },
-        }),
-      },
-      period: cdk.Duration.minutes(5),
-    });
+    //
+    // FILL(m,0) on EVERY operand is load-bearing: CloudWatch arithmetic yields
+    // NO datapoint for a period unless every operand has data in it, and these
+    // error/traffic metrics are sparse (an error metric with no errors reports
+    // nothing). Without FILL the rate goes null on almost every window, and
+    // NOT_BREACHING then keeps the alarm from EVER firing — the same dead-page
+    // failure mode we just fixed. FILL treats a missing operand as 0.
+    const wsMetric = (metricName: string) =>
+      new cloudwatch.Metric({
+        namespace: "AWS/ApiGateway",
+        metricName,
+        statistic: "Sum",
+        period: cdk.Duration.minutes(5),
+        dimensionsMap: { ApiId: props.wsApiId },
+      });
     const apiGwServerErrorRate = new cloudwatch.MathExpression({
-      expression: "100 * errors / IF(total > 0, total, 1)",
-      usingMetrics: { errors: apiGwServerErrors, total: apiGwWsRequests },
+      expression:
+        "100 * (FILL(execErr,0) + FILL(intErr,0)) / IF((FILL(messages,0) + FILL(connects,0)) > 0, FILL(messages,0) + FILL(connects,0), 1)",
+      usingMetrics: {
+        execErr: wsMetric("ExecutionError"),
+        intErr: wsMetric("IntegrationError"),
+        messages: wsMetric("MessageCount"),
+        connects: wsMetric("ConnectCount"),
+      },
       period: cdk.Duration.minutes(5),
     });
 
@@ -801,56 +782,42 @@ export class ObservabilityStack extends cdk.Stack {
     // -- Container & gateway (W1-W8) --
 
     // W1: container-provision-error-rate (metric math)
-    //
-    // NOISE MODE FIXED: blind alarm. The old math counted status="error" — a
-    // value the backend NEVER emits — so the numerator was always 0 and W1
-    // could never fire. The real statuses container.provision publishes
-    // (emit_provision_metric in core/services/provision_dispatch.py, verified
-    // live 2026-09-05) are: ok, inline_ok, inline_failed, claim_lost,
-    // inline_queue_saturated. CloudWatch treats each dimension set as its own
-    // stream, so every status must be named explicitly.
-    //
-    // Numerator = inline_failed ONLY — the genuine "the owner did not get a
-    // container" failure. Two statuses are deliberately NOT counted as failures:
-    //   - claim_lost: a benign concurrency stand-down. try_claim_provision lost
-    //     the atomic claim because ANOTHER dispatch already owns this owner and
-    //     is provisioning them (provision_dispatch.py:228-231). Nobody is down;
-    //     it fires routinely in the maxHealthyPercent=200 two-instance deploy
-    //     window. Counting it would re-introduce exactly the deploy-window noise
-    //     this PR removes (and on a quiet window a lone claim_lost would read as
-    //     100% "error"). The audit floated including it — the code says it isn't
-    //     a user-facing failure, so it stays out of the numerator.
-    //   - inline_queue_saturated: capacity backpressure. The inline attempt was
-    //     rejected because the executor queue was full; the SFN watchdog leg
-    //     still provisions the owner. A capacity signal, not a hard failure.
-    // Both remain in the denominator (they are real dispatch outcomes), so the
-    // rate is inline_failed over all provision attempts.
-    const provisionStatus = (status: string) =>
-      new cloudwatch.Metric({
-        namespace: "LightbulbAI",
-        metricName: "container.provision",
-        statistic: "Sum",
-        period: cdk.Duration.minutes(10),
-        dimensionsMap: { ...dims, status },
-      });
-    const provisionTotal =
-      "ok + inlineOk + inlineFailed + claimLost + queueSat";
+    // Backend emits container.provision with status="ok" or status="error"
+    // dimension. These are the provision RUNNER outcomes (put_metric in
+    // core/containers/ecs_manager.py — status="error" at ~3251/3255/3280/3319/
+    // 3442/3473, status="ok" at ~3284/3323/3477), emitted on every leg the
+    // runner executes on: the inline attempt AND the SFN-watchdog / admin /
+    // recover legs. So error/(error+ok) is the real failure rate across all
+    // provisions. (The dispatcher-layer statuses — inline_ok/inline_failed/
+    // claim_lost/inline_queue_saturated — cover only the inline leg and are NOT
+    // the provision-failure signal; do not repoint W1 at them. `list-metrics`
+    // hides status="error" when nothing has failed recently, which is not the
+    // same as it never being emitted. See also the P15 note below.)
+    // CloudWatch EMF creates separate streams per dimension set, so we query
+    // each status value explicitly and sum for the total.
+    const provisionErrors = new cloudwatch.Metric({
+      namespace: "LightbulbAI",
+      metricName: "container.provision",
+      statistic: "Sum",
+      period: cdk.Duration.minutes(10),
+      dimensionsMap: { ...dims, status: "error" },
+    });
+    const provisionOk = new cloudwatch.Metric({
+      namespace: "LightbulbAI",
+      metricName: "container.provision",
+      statistic: "Sum",
+      period: cdk.Duration.minutes(10),
+      dimensionsMap: { ...dims, status: "ok" },
+    });
     const provisionRate = new cloudwatch.MathExpression({
-      expression: `100 * inlineFailed / IF((${provisionTotal}) > 0, ${provisionTotal}, 1)`,
-      usingMetrics: {
-        ok: provisionStatus("ok"),
-        inlineOk: provisionStatus("inline_ok"),
-        inlineFailed: provisionStatus("inline_failed"),
-        claimLost: provisionStatus("claim_lost"),
-        queueSat: provisionStatus("inline_queue_saturated"),
-      },
+      expression: "100 * errors / IF((errors + ok) > 0, errors + ok, 1)",
+      usingMetrics: { errors: provisionErrors, ok: provisionOk },
       period: cdk.Duration.minutes(10),
     });
     this.createAlarm({
       id: "W1",
       name: "container-provision-error-rate",
-      description:
-        "Container provision hard-failure rate (inline_failed) exceeds 5% of all provision attempts",
+      description: "Container provision error rate exceeds 5%",
       metric: provisionRate,
       threshold: 5,
       severity: "warn",
@@ -1430,30 +1397,26 @@ export class ObservabilityStack extends cdk.Stack {
     // client frames) as a rate over the traffic metrics that exist
     // (MessageCount + ConnectCount). 3-of-5 over 5-min periods so a single
     // client-error blip on a quiet window does not warn-then-clear.
+    //
+    // FILL(m,0) on every operand: CloudWatch arithmetic drops a period unless
+    // every operand has data, and ClientError/traffic are sparse — without FILL
+    // the rate (and the whole denominator) goes null the moment one operand is
+    // missing, so a real ClientError spike could produce no datapoint at all.
+    const wsMetric30 = (metricName: string) =>
+      new cloudwatch.Metric({
+        namespace: "AWS/ApiGateway",
+        metricName,
+        statistic: "Sum",
+        period: cdk.Duration.minutes(5),
+        dimensionsMap: { ApiId: props.wsApiId },
+      });
     const apiGwClientErrorRate = new cloudwatch.MathExpression({
-      expression: "100 * errors / IF((messages + connects) > 0, messages + connects, 1)",
+      expression:
+        "100 * FILL(errors,0) / IF((FILL(messages,0) + FILL(connects,0)) > 0, FILL(messages,0) + FILL(connects,0), 1)",
       usingMetrics: {
-        errors: new cloudwatch.Metric({
-          namespace: "AWS/ApiGateway",
-          metricName: "ClientError",
-          statistic: "Sum",
-          period: cdk.Duration.minutes(5),
-          dimensionsMap: { ApiId: props.wsApiId },
-        }),
-        messages: new cloudwatch.Metric({
-          namespace: "AWS/ApiGateway",
-          metricName: "MessageCount",
-          statistic: "Sum",
-          period: cdk.Duration.minutes(5),
-          dimensionsMap: { ApiId: props.wsApiId },
-        }),
-        connects: new cloudwatch.Metric({
-          namespace: "AWS/ApiGateway",
-          metricName: "ConnectCount",
-          statistic: "Sum",
-          period: cdk.Duration.minutes(5),
-          dimensionsMap: { ApiId: props.wsApiId },
-        }),
+        errors: wsMetric30("ClientError"),
+        messages: wsMetric30("MessageCount"),
+        connects: wsMetric30("ConnectCount"),
       },
       period: cdk.Duration.minutes(5),
     });
@@ -2581,9 +2544,6 @@ def handler(event, _ctx):
     // ----- Row 2: Containers & Gateway (4 widgets) -----
     dashboard.addWidgets(
       new cloudwatch.GraphWidget({
-        // Plots the REAL container.provision statuses. The old "error" series
-        // read a status the backend never emits (same phantom the W1 alarm math
-        // was fixed off), so it was a permanently-flat line.
         title: "Container provisions",
         left: [
           new cloudwatch.Metric({
@@ -2591,28 +2551,12 @@ def handler(event, _ctx):
             metricName: "container.provision",
             statistic: "Sum",
             dimensionsMap: { ...dims, status: "ok" },
-            label: "ok",
           }),
           new cloudwatch.Metric({
             namespace: "LightbulbAI",
             metricName: "container.provision",
             statistic: "Sum",
-            dimensionsMap: { ...dims, status: "inline_ok" },
-            label: "inline_ok",
-          }),
-          new cloudwatch.Metric({
-            namespace: "LightbulbAI",
-            metricName: "container.provision",
-            statistic: "Sum",
-            dimensionsMap: { ...dims, status: "inline_failed" },
-            label: "inline_failed",
-          }),
-          new cloudwatch.Metric({
-            namespace: "LightbulbAI",
-            metricName: "container.provision",
-            statistic: "Sum",
-            dimensionsMap: { ...dims, status: "inline_queue_saturated" },
-            label: "inline_queue_saturated",
+            dimensionsMap: { ...dims, status: "error" },
           }),
         ],
         width: 6,
@@ -2898,17 +2842,26 @@ def handler(event, _ctx):
         height: 6,
       }),
       new cloudwatch.GraphWidget({
+        // WS APIs publish ClientError/ExecutionError/IntegrationError — NOT the
+        // REST-API 5XXError/4XXError this widget used to plot (a permanently
+        // empty graph, same nonexistent metrics removed from P10/W30).
         title: "API GW WebSocket errors",
         left: [
           new cloudwatch.Metric({
             namespace: "AWS/ApiGateway",
-            metricName: "5XXError",
+            metricName: "ClientError",
             statistic: "Sum",
             dimensionsMap: { ApiId: props.wsApiId },
           }),
           new cloudwatch.Metric({
             namespace: "AWS/ApiGateway",
-            metricName: "4XXError",
+            metricName: "ExecutionError",
+            statistic: "Sum",
+            dimensionsMap: { ApiId: props.wsApiId },
+          }),
+          new cloudwatch.Metric({
+            namespace: "AWS/ApiGateway",
+            metricName: "IntegrationError",
             statistic: "Sum",
             dimensionsMap: { ApiId: props.wsApiId },
           }),

@@ -3,7 +3,7 @@
   "description": "Lightbulb — Stripe App (restricted-API-key auth) that mints the read-only key an owner pastes into Settings → Connections",
   "version": "0.0.1",
   "private": true,
-  "license": "~~proprietary~~",
+  "license": "UNLICENSED",
   "dependencies": {
     "@stripe/ui-extension-sdk": "^9.2.0"
   },

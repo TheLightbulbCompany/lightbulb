@@ -855,8 +855,13 @@ RUN chmod 0755 /usr/local/bin/isol8-local-sqlite-boot.sh /usr/local/bin/isol8-lo
 # stdio servers via the MCP SDK's getDefaultEnvironment(), which inherits only
 # [HOME, LOGNAME, PATH, SHELL, TERM, USER].
 #
-# devDependencies are needed to build (tsc + shx) and pruned after, so the runtime
-# layer carries only what the server actually imports.
+# --include=dev is LOAD-BEARING, not belt-and-braces: the base image ships
+# NODE_ENV=production and we inherit it, under which `npm ci` silently omits
+# devDependencies. Their build script is `tsc && shx chmod +x dist/*.js`, so
+# without it the compiler is never installed and the layer dies with exit 127
+# (command not found) rather than anything that names the real cause. Verified
+# by reproducing both halves locally. The prune afterwards takes them back out,
+# so the runtime layer still carries only what the server imports.
 ENV QUICKBOOKS_MCP_COMMIT=c351dc011d9cb14b211857457085f7994d8b1e15
 RUN set -eux; \
     mkdir -p /opt/quickbooks-mcp; \
@@ -866,7 +871,7 @@ RUN set -eux; \
     git fetch -q --depth 1 origin "$QUICKBOOKS_MCP_COMMIT"; \
     git checkout -q FETCH_HEAD; \
     rm -rf .git; \
-    npm ci --ignore-scripts; \
+    npm ci --include=dev --ignore-scripts; \
     npm run build; \
     npm prune --omit=dev; \
     test -f /opt/quickbooks-mcp/dist/index.js; \

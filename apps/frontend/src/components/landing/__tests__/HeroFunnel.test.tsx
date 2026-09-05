@@ -38,13 +38,13 @@ describe("HeroFunnel", () => {
     pushMock.mockClear();
   });
 
-  it("renders the idea-to-company fold: eyebrow, headline, one microcopy line", () => {
+  it("renders the you-deserve-a-team fold: eyebrow, headline, one microcopy line", () => {
     render(<HeroFunnel />);
     expect(
       screen.getByText("The Integrated Management Environment"),
     ).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
-      "Type an idea. Watch it become a company.",
+      "If you have an idea, you deserve a team.",
     );
     expect(
       screen.getByText(

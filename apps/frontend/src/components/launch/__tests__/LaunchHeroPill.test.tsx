@@ -35,7 +35,7 @@ describe("LaunchHeroPill", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("open: month-free copy with comp_slots, linking /launch — and never a pot", async () => {
+  it("open: business-outcome copy linking /launch — no discount, and never a pot", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => info() }),
@@ -43,8 +43,11 @@ describe("LaunchHeroPill", () => {
     render(<LaunchHeroPill />);
     const link = await screen.findByRole("link", { name: /launch competition/i });
     expect(link).toHaveAttribute("href", "/launch");
-    expect(link).toHaveTextContent("first 200 get a month free");
+    expect(link).toHaveTextContent("grow your business, top the board");
     expect(link).toHaveTextContent("see the rules");
+    // The discount framing is the thing being removed: a visitor who has just
+    // landed does not value a free month yet.
+    expect(link.textContent).not.toMatch(/month free/i);
     expect(link.textContent).not.toMatch(/pot|\$/);
   });
 

@@ -11,6 +11,13 @@ import { useLaunchInfo } from "./useLaunchInfo";
  * error) to `null`: render nothing, never a broken pill on the hero. The
  * closed/ended phases render nothing too — a dead competition earns no hero
  * real estate.
+ *
+ * The open-phase copy leads with the reader's business, not with a discount:
+ * a visitor who has just landed does not yet care enough about us to value a
+ * free month, and "get a month free" is the most worn phrase in the category.
+ * It names no pot and no dollar figure — the pot is admin-only on every
+ * public surface (`lib/launch.ts`, `schemas/launch.py`), which is asserted by
+ * this component's own test.
  */
 export function LaunchHeroPill() {
   const info = useLaunchInfo();
@@ -19,7 +26,7 @@ export function LaunchHeroPill() {
 
   const copy =
     info.phase === "open"
-      ? `Launch competition · first ${info.comp_slots.toLocaleString("en-US")} get a month free → see the rules`
+      ? "Launch competition · grow your business, top the board → see the rules"
       : info.phase === "competition"
         ? "Launch competition · live now → leaderboard"
         : null;

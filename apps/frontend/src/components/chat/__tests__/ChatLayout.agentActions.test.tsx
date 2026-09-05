@@ -235,6 +235,12 @@ describe("ChatLayout — mobile roster", () => {
     teamsStatus = "active";
     teamsRows = null;
     mockAgents = [{ id: "agent_1", name: "Friday" }];
+    // The roster collapses to Friday + pins by default; these assertions are
+    // about the full roster, so run it expanded.
+    localStorage.setItem(
+      "lightbulb:roster:prefs",
+      JSON.stringify({ pinned: [], expanded: true }),
+    );
   });
 
   const stateOf = (name: string) =>

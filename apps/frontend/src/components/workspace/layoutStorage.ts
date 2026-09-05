@@ -12,11 +12,22 @@ import {
   describePanel,
 } from "./panelRegistry";
 
-// v2: Mission Control put Browser (not Dashboard) in the right-top slot. The
-// bump orphans every v1 blob so all owners land on the new default once;
-// readLayout drops the dead v1 key so it does not sit in localStorage forever.
-const KEY_PREFIX = "isol8.workspace.layout.v2";
-const LEGACY_KEY_PREFIX = "isol8.workspace.layout.v1";
+// v3: the shell is tabs-only — splitting is gone, so a persisted v2 blob is a
+// saved three-pane SPLIT that would restore verbatim and hide the change from
+// every existing owner. The bump orphans them so everyone lands on the new
+// tabbed default once; readLayout drops the dead key so it does not sit in
+// localStorage forever.
+//
+// (v2 was itself the bump that put Browser, not Dashboard, in the right-top
+// slot.)
+const KEY_PREFIX = "isol8.workspace.layout.v3";
+// Every superseded key, not just the immediately previous one: v1 blobs would
+// otherwise be stranded forever in the storage of anyone who last loaded
+// before v2 shipped.
+const LEGACY_KEY_PREFIXES = [
+  "isol8.workspace.layout.v2",
+  "isol8.workspace.layout.v1",
+] as const;
 
 // Params that may live on a panel while it's open but must NOT survive into
 // the persisted blob. initialTab is a navigation intent (the Get Started
@@ -27,7 +38,7 @@ const LEGACY_KEY_PREFIX = "isol8.workspace.layout.v1";
 const PERSIST_ONLY_STRIP = ["initialTab", "tab"] as const;
 
 interface StoredLayout {
-  version: 2;
+  version: 3;
   savedAt: string;
   layout: SerializedDockview;
 }
@@ -334,11 +345,13 @@ export function readLayout(
 ): SerializedDockview | null {
   if (typeof window === "undefined") return null;
   try {
-    window.localStorage.removeItem(`${LEGACY_KEY_PREFIX}:${scopeId}`);
+    for (const legacy of LEGACY_KEY_PREFIXES) {
+      window.localStorage.removeItem(`${legacy}:${scopeId}`);
+    }
     const raw = window.localStorage.getItem(layoutStorageKey(scopeId));
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<StoredLayout>;
-    if (parsed.version !== 2 || !parsed.layout || typeof parsed.layout !== "object") return null;
+    if (parsed.version !== 3 || !parsed.layout || typeof parsed.layout !== "object") return null;
     const clean = sanitizeLayout(parsed.layout, knownAgentIds);
     // Nothing survived sanitizing — treat as "no saved layout" so the caller
     // builds the default rather than restoring a grid with no panels in it.
@@ -352,7 +365,7 @@ export function writeLayout(scopeId: string, layout: SerializedDockview): void {
   if (typeof window === "undefined") return;
   try {
     const stored: StoredLayout = {
-      version: 2,
+      version: 3,
       savedAt: new Date().toISOString(),
       layout: sanitizeLayout(layout),
     };

@@ -27,7 +27,7 @@ function minimalLayout(panels: SerializedDockview["panels"]): SerializedDockview
 
 describe("layoutStorage", () => {
   it("scopes the key per owner", () => {
-    expect(layoutStorageKey("org_1")).toBe("isol8.workspace.layout.v2:org_1");
+    expect(layoutStorageKey("org_1")).toBe("isol8.workspace.layout.v3:org_1");
   });
 
   it("round-trips a valid layout", () => {
@@ -38,12 +38,27 @@ describe("layoutStorage", () => {
     expect(readLayout("u1")).toEqual(layout);
   });
 
-  it("drops the orphaned v1 blob on read, leaving the v2 blob intact", () => {
+  it("drops every superseded blob on read, leaving the current one intact", () => {
     const layout = minimalLayout({ browser: { id: "browser", contentComponent: "browser", params: {} } });
     writeLayout("u1", layout);
     window.localStorage.setItem("isol8.workspace.layout.v1:u1", "{}");
+    window.localStorage.setItem("isol8.workspace.layout.v2:u1", "{}");
     expect(readLayout("u1")).toEqual(layout);
+    // v1 is cleared too, not just the immediately-previous version — otherwise
+    // it is stranded forever in the storage of anyone who last loaded pre-v2.
     expect(window.localStorage.getItem("isol8.workspace.layout.v1:u1")).toBeNull();
+    expect(window.localStorage.getItem("isol8.workspace.layout.v2:u1")).toBeNull();
+  });
+
+  it("refuses a v2 blob, so a saved SPLIT layout cannot survive into tabs-only", () => {
+    // The whole point of the v3 bump: a v2 payload is a persisted three-pane
+    // split. Restoring it would put an existing owner back in the tiled shell
+    // and hide the change from exactly the people who already use the product.
+    window.localStorage.setItem(
+      layoutStorageKey("u1"),
+      JSON.stringify({ version: 2, layout: minimalLayout({}) }),
+    );
+    expect(readLayout("u1")).toBeNull();
   });
 
   it("returns null on version mismatch or garbage", () => {

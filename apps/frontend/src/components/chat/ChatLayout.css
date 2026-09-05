@@ -185,6 +185,46 @@
   flex: none;
   overflow: visible;
 }
+/* Roster expander — the chevron that reveals the agents behind Friday and the
+   pins. Deliberately quiet: it is a way back to the team, not a call to
+   action, so it reads as the section's footer rather than a button. */
+.agent-list__expander {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 10px;
+  margin-top: 2px;
+  border-radius: 8px;
+  color: var(--midnight-soft);
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: var(--text-2xs);
+  line-height: 1.4;
+  font-weight: 600;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) ease,
+    color var(--dur-fast) ease;
+}
+
+.agent-list__expander:hover {
+  background: var(--cream-deep);
+  color: var(--midnight);
+}
+
+.agent-list__expander-chevron--open {
+  transform: rotate(180deg);
+}
+
+/* The chevron rotates; honour a reduced-motion preference by snapping. */
+@media (prefers-reduced-motion: no-preference) {
+  .agent-list__expander svg {
+    transition: transform var(--dur-fast) ease;
+  }
+}
+
 .agent-section-label {
   display: flex;
   align-items: center;

@@ -160,6 +160,12 @@ vi.mock("@/components/chat/CompanyNav", () => ({
 import { WorkspaceSidebar } from "../WorkspaceSidebar";
 
 beforeEach(() => {
+  // The roster collapses to Friday + pins by default; these assertions are
+  // about the full roster, so run it expanded.
+  localStorage.setItem(
+    "lightbulb:roster:prefs",
+    JSON.stringify({ pinned: [], expanded: true }),
+  );
   agents = [];
   defaultId = undefined;
   teamsAgents = [];

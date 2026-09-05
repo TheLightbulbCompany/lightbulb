@@ -495,6 +495,35 @@ describe("ObservabilityStack", () => {
     }
   });
 
+  // The LightbulbAI dimension-contract test above cannot catch this: it only
+  // covers our own namespace. P10 (PAGE) and W30 read 5XXError/4XXError/Count on
+  // the WS ApiId — REST-API metrics a WebSocket API never publishes (it emits
+  // only ClientError/ExecutionError/IntegrationError/IntegrationLatency/
+  // ConnectCount/MessageCount), so both alarms could never fire. Guard every
+  // alarm, both envs, so a nonexistent AWS-native metric can't slip back in.
+  test("no alarm reads a WS-API metric that does not exist (P10/W30 blind guard)", () => {
+    const FORBIDDEN = new Set(["5XXError", "4XXError", "Count"]);
+    for (const env of ["dev", "prod"] as const) {
+      const alarms = buildTemplate(env).findResources("AWS::CloudWatch::Alarm");
+      const offenders: string[] = [];
+      for (const [logicalId, res] of Object.entries(alarms) as [string, any][]) {
+        const props = res.Properties ?? {};
+        const check = (ns: any, mn: any) => {
+          if (ns === "AWS/ApiGateway" && FORBIDDEN.has(mn)) {
+            offenders.push(`${env}:${logicalId}:${mn}`);
+          }
+        };
+        check(props.Namespace, props.MetricName);
+        for (const m of props.Metrics ?? []) {
+          if (m.MetricStat?.Metric) {
+            check(m.MetricStat.Metric.Namespace, m.MetricStat.Metric.MetricName);
+          }
+        }
+      }
+      expect(offenders).toEqual([]);
+    }
+  });
+
   test("EventBridge rule captures ECS task stopped events", () => {
     template.hasResourceProperties("AWS::Events::Rule", {
       EventPattern: {

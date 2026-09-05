@@ -1,0 +1,21 @@
+{
+  "name": "@lightbulb/stripe-app",
+  "description": "Lightbulb — Stripe App (restricted-API-key auth) that mints the read-only key an owner pastes into Settings → Connections",
+  "version": "0.0.1",
+  "private": true,
+  "license": "~~proprietary~~",
+  "dependencies": {
+    "@stripe/ui-extension-sdk": "^9.2.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@stripe/ui-extension-tools": "^0.1.0",
+    "@types/react": "^18.3.1",
+    "typescript": "^5.9.2"
+  }
+}

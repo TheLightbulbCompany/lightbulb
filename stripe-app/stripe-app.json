@@ -1,0 +1,47 @@
+{
+  "id": "lightbulb",
+  "version": "0.0.1",
+  "name": "Lightbulb",
+  "icon": "./icon.png",
+  "sandbox_install_compatible": true,
+  "stripe_api_access_type": "restricted_api_key",
+  "permissions": [
+    {
+      "permission": "connected_account_read",
+      "purpose": "Read your account name and whether charges and payouts are enabled, shown on the Lightbulb Connections card."
+    },
+    {
+      "permission": "charge_read",
+      "purpose": "Show your charges and revenue on the Lightbulb Money tabs."
+    },
+    {
+      "permission": "customer_read",
+      "purpose": "Show your customers on the Lightbulb Money tabs."
+    },
+    {
+      "permission": "product_read",
+      "purpose": "Show your product catalog on the Lightbulb Money tabs."
+    },
+    {
+      "permission": "plan_read",
+      "purpose": "Show your prices on the Lightbulb Money tabs."
+    },
+    {
+      "permission": "balance_read",
+      "purpose": "Show your balance and balance transactions on the Lightbulb Money tabs."
+    }
+  ],
+  "ui_extension": {
+    "views": [
+      {
+        "viewport": "settings",
+        "component": "AppSettings"
+      }
+    ],
+    "content_security_policy": {
+      "connect-src": null,
+      "image-src": null,
+      "purpose": ""
+    }
+  }
+}

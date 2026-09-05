@@ -2189,8 +2189,14 @@ Update its docstring: *"Returns ``(accounts_by_provider, channel_bindings)``; th
 (b) `config.py` — add `channel_bindings: list[dict] | None = None,` after `channel_accounts` in BOTH `build_openclaw_config_dict` and `write_openclaw_config`, pass it through, and change the re-injection loop's binding step:
 
 ```python
+            # Carried VERBATIM — but only for accounts that still exist, so a
+            # binding orphaned by a deleted account is dropped here instead of
+            # being re-carried on every reprovision forever.
             carried = [
-                b for b in (channel_bindings or []) if (b.get("match") or {}).get("channel") == provider
+                b
+                for b in (channel_bindings or [])
+                if (b.get("match") or {}).get("channel") == provider
+                and (b.get("match") or {}).get("accountId") in accounts
             ]
             for b in carried:
                 if b not in bindings:

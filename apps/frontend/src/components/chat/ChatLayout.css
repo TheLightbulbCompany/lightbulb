@@ -205,8 +205,8 @@
   text-transform: uppercase;
   text-align: left;
   cursor: pointer;
-  transition: background-color var(--dur-quick, 120ms) ease,
-    color var(--dur-quick, 120ms) ease;
+  transition: background-color var(--dur-fast) ease,
+    color var(--dur-fast) ease;
 }
 
 .agent-list__expander:hover {
@@ -221,7 +221,7 @@
 /* The chevron rotates; honour a reduced-motion preference by snapping. */
 @media (prefers-reduced-motion: no-preference) {
   .agent-list__expander svg {
-    transition: transform var(--dur-quick, 120ms) ease;
+    transition: transform var(--dur-fast) ease;
   }
 }
 

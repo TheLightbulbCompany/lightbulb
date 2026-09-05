@@ -110,7 +110,11 @@ async def test_build_slack_secrets_lists_active_installs_only():
         patch("core.containers.ecs_manager._secret_arn_for_name", AsyncMock(side_effect=lambda n: f"arn:{n}")),
     ):
         out = await m._build_slack_secrets_for_user("org_1")
-    assert out == [{"name": "SLACK_BOT_TOKEN_T1", "valueFrom": "arn:lightbulb/dev/integrations/org_1/slack/T1"}]
+    # The JSON-key selector is load-bearing: the store writes {"bot_token", "bot_user_id"},
+    # and a bare ARN would hand the container the whole document as its token.
+    assert out == [
+        {"name": "SLACK_BOT_TOKEN_T1", "valueFrom": "arn:lightbulb/dev/integrations/org_1/slack/T1:bot_token::"}
+    ]
 
 
 @pytest.mark.asyncio

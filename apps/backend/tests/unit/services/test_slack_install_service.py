@@ -85,7 +85,7 @@ async def test_apply_install_writes_secret_row_taskdef_and_config_in_order():
         "secret:org_1:slack/T1:xoxb-1",
         "row",
         "status",
-        "refresh:SLACK_BOT_TOKEN_T1:arn:secret",
+        "refresh:SLACK_BOT_TOKEN_T1:arn:secret:bot_token::",
         "patch",
     ]
 

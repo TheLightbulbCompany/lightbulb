@@ -433,6 +433,15 @@ class Settings(BaseSettings):
     # doesn't mean 'no real charges.'"
     STRIPE_PROJECTS_CATALOG: str = "prod"
 
+    # Whether the Stripe Projects provisioning rail is offered at all. OFF
+    # until Stripe ships delegated connected-account creation + hosted KYC
+    # (their words, 2026-09-03): until then every state-changing
+    # /v2/provisioning call returns 500 and an owner who approves a workflow
+    # lands in a permanent requires_review. While off, `start()` refuses and
+    # the Connect door + the Accounts / Domain & Site panels are hidden. The
+    # v1 Money surface (company_stripe_reads) does not depend on this.
+    STRIPE_PROVISIONING_ENABLED: bool = False
+
     # Marketplace webhook signing secrets. TWO Stripe endpoint registrations
     # deliver to POST /webhooks/stripe-marketplace, each with its own secret:
     # a platform-scoped one for checkout/refund events (they originate on the

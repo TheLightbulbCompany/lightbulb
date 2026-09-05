@@ -29,6 +29,7 @@ from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo
 from core.repositories.paperclip_repo import PaperclipRepo
+from core.services.credentials import integration_secret_store
 from core.services.paperclip_admin_client import shared_admin_client
 from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.paperclip_openclaw_pairing import resolve_company_id_for_owner
@@ -194,7 +195,7 @@ async def deauthorize(*, account_id: str) -> bool:
     return True
 
 
-async def release_and_unbind(*, owner_id: str, account_id: str) -> bool:
+async def release_and_unbind(*, owner_id: str, account_id: str, source: str | None = None) -> bool:
     """The owner's exit, in the one order that is safe: **always unbind**.
 
     Every caller (the account wipe, the owner's revoke-all, the disconnect
@@ -215,6 +216,19 @@ async def release_and_unbind(*, owner_id: str, account_id: str) -> bool:
     Returns True only when Stripe confirmed the revoke. False means our side
     is clean but the platform link may still stand — record it, never hide it.
     """
+    if source == "api_key":
+        # No platform grant exists to revoke — the only thing to let go of is
+        # our copy of their key. The key goes FIRST and the binding is cleared
+        # only once it is confirmed gone: a stranded row is recoverable (the
+        # owner clicks Disconnect again and this runs again), a stranded
+        # credential behind no row is not.
+        try:
+            await delete_api_key(owner_id)
+        except Exception:  # noqa: BLE001 — keep the row so the next Disconnect retries the delete
+            logger.exception("company_stripe: api key delete failed owner_id=%s; binding kept", owner_id)
+            return False
+        await billing_repo.clear_company_stripe_account(owner_id, account_id=account_id)
+        return True
     try:
         released = await deauthorize(account_id=account_id)
     except Exception:  # noqa: BLE001 — a vendor failure must not strand the binding
@@ -227,11 +241,101 @@ async def release_and_unbind(*, owner_id: str, account_id: str) -> bool:
     return released
 
 
-async def retrieve_status(*, account_id: str) -> dict:
-    _set_key()
-    account = await asyncio.to_thread(stripe.Account.retrieve, account_id)
+def _status_of(account: dict) -> dict:
     return {
         "details_submitted": bool(account.get("details_submitted")),
         "charges_enabled": bool(account.get("charges_enabled")),
         "payouts_enabled": bool(account.get("payouts_enabled")),
     }
+
+
+async def retrieve_status(*, account_id: str, api_key: str | None = None) -> dict:
+    """Connect rows: the platform key retrieves the connected account by id.
+    ``api_key`` rows: the owner's own key retrieves ITS account (the id is
+    implied by the key, so it is ignored for addressing and only used by the
+    caller to condition the write)."""
+    if api_key:
+        account = await asyncio.to_thread(stripe.Account.retrieve, api_key=api_key)
+    else:
+        _set_key()
+        account = await asyncio.to_thread(stripe.Account.retrieve, account_id)
+    return _status_of(account)
+
+
+# --- The api_key path ------------------------------------------------------
+# The owner's own restricted key, held backend-only. It never reaches a
+# container, openclaw.json, env.vars or EFS — the agent-tools MCP grant is a
+# separate OAuth token with the opposite posture, and nothing here shares or
+# derives one from the other.
+
+API_KEY_SECRET_PROVIDER = "company_stripe"
+# Restricted keys are what we ask for; a secret key is accepted because Stripe
+# itself treats them as interchangeable server-side and the owner may only
+# have one. Publishable keys cannot read anything — refuse those up front.
+_ACCEPTED_KEY_PREFIXES = ("rk_live_", "rk_test_", "sk_live_", "sk_test_")
+
+
+class InvalidApiKey(ValueError):
+    """The pasted string is not a usable Stripe server key."""
+
+
+async def validate_api_key(api_key: str) -> dict:
+    """Prove the key works and learn whose it is, in ONE call. Returns
+    ``{"account_id", "livemode", **status}``. Raises ``InvalidApiKey`` for a
+    malformed prefix; lets ``stripe.error.StripeError`` propagate for a key
+    Stripe rejects so the router can map it."""
+    key = (api_key or "").strip()
+    if not key.startswith(_ACCEPTED_KEY_PREFIXES):
+        raise InvalidApiKey("Paste a restricted key (rk_…) or secret key (sk_…) from your Stripe Dashboard")
+    livemode = key.startswith(("rk_live_", "sk_live_"))
+    if livemode != _platform_livemode():
+        # A test-mode key in prod would render sandbox data as revenue behind a
+        # live Dashboard link; a live key in a sandbox env is the mirror error.
+        raise InvalidApiKey(
+            "That's a test-mode key — this environment needs a live key (rk_live_…)"
+            if _platform_livemode()
+            else "That's a live key — this environment needs a test-mode key (rk_test_…)"
+        )
+    account = await asyncio.to_thread(stripe.Account.retrieve, api_key=key)
+    await asyncio.to_thread(_probe_read_permissions, key)
+    return {"account_id": account["id"], "livemode": livemode, **_status_of(account)}
+
+
+def _platform_livemode() -> bool:
+    return settings.STRIPE_SECRET_KEY.startswith(("sk_live_", "rk_live_"))
+
+
+# Every list the Money surface performs, probed at bind time with limit=1, so a
+# key missing one of the six read permissions is refused WITH THE PERMISSION
+# NAMED instead of binding and 403ing on the first page load. `Account` is
+# covered by the retrieve above.
+_READ_PROBES = (
+    ("Charges", lambda c: c.v1.charges.list(params={"limit": 1})),
+    ("Customers", lambda c: c.v1.customers.list(params={"limit": 1})),
+    ("Products", lambda c: c.v1.products.list(params={"limit": 1})),
+    ("Prices", lambda c: c.v1.prices.list(params={"limit": 1})),
+    ("Balance", lambda c: c.v1.balance_transactions.list(params={"limit": 1})),
+)
+
+
+def _probe_read_permissions(key: str) -> None:
+    """Blocking — call via ``asyncio.to_thread``."""
+    client = StripeClient(key)
+    for label, call in _READ_PROBES:
+        try:
+            call(client)
+        except stripe.error.PermissionError as e:
+            raise InvalidApiKey(f"That key can't read {label} — add {label}: Read to it and paste it again") from e
+
+
+async def store_api_key(owner_id: str, api_key: str) -> None:
+    await integration_secret_store.put(owner_id, API_KEY_SECRET_PROVIDER, {"api_key": api_key.strip()})
+
+
+async def load_api_key(owner_id: str) -> str | None:
+    cred = await integration_secret_store.get(owner_id, API_KEY_SECRET_PROVIDER)
+    return (cred or {}).get("api_key") or None
+
+
+async def delete_api_key(owner_id: str) -> None:
+    await integration_secret_store.delete(owner_id, API_KEY_SECRET_PROVIDER)

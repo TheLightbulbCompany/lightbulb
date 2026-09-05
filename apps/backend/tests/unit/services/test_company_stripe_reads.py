@@ -40,7 +40,13 @@ async def test_happy_path_sums_nets_and_counts_customers():
         patch.object(
             company_stripe_reads.billing_repo,
             "get_by_owner_id",
-            AsyncMock(return_value={"company_stripe_account_id": ACCT}),
+            AsyncMock(
+                return_value={
+                    "owner_id": OWNER,
+                    "company_stripe_account_id": ACCT,
+                    "company_stripe_source": "connected",
+                }
+            ),
         ),
         patch.object(company_stripe_reads, "_client", return_value=client),
     ):
@@ -115,11 +121,11 @@ async def test_signup_count_caps_at_1000():
 # --- stripe_page: the list reads behind the Money tabs ---------------------
 
 
-def _bound_row():
+def _bound_row(source: str = "connected"):
     return patch.object(
         company_stripe_reads.billing_repo,
         "get_by_owner_id",
-        AsyncMock(return_value={"company_stripe_account_id": ACCT}),
+        AsyncMock(return_value={"owner_id": OWNER, "company_stripe_account_id": ACCT, "company_stripe_source": source}),
     )
 
 
@@ -142,3 +148,49 @@ async def test_stripe_page_caps_the_limit_and_never_walks_pages():
     # One call, cursor handed back — no server-side walk to build a total.
     assert client.v1.charges.list.call_count == 1
     assert (page["has_more"], page["next_cursor"]) == (True, "ch_1")
+
+
+# --- the api_key path ------------------------------------------------------
+
+
+async def test_api_key_row_reads_with_the_owners_key_and_no_header():
+    """The ONE place the two paths diverge: their key, no `stripe_account`.
+    Same calls otherwise — this is what lets an account that IS the platform
+    (ours) use the Money surface at all."""
+    client = _fake_client(txns=[{"net": 100}], customers=[])
+    with (
+        _bound_row("api_key"),
+        patch.object(company_stripe_reads.company_stripe, "load_api_key", AsyncMock(return_value="rk_live_abc")),
+        patch.object(company_stripe_reads, "_client", return_value=client) as make_client,
+    ):
+        result = await company_stripe_reads.day_money(OWNER, DAY)
+    assert result == {"revenue_microcents": 100 * 10_000, "signups": 0}
+    make_client.assert_called_once_with("rk_live_abc")
+    assert client.v1.balance_transactions.list.call_args.kwargs["options"] == {}
+
+
+async def test_api_key_row_with_missing_secret_reads_as_unbound():
+    """A bound row whose key is gone must not 401 every read — it reads as
+    "not connected" so the card can re-stage a paste."""
+    client = _fake_client(txns=[], customers=[])
+    with (
+        _bound_row("api_key"),
+        patch.object(company_stripe_reads.company_stripe, "load_api_key", AsyncMock(return_value=None)),
+        patch.object(company_stripe_reads, "_client", return_value=client),
+    ):
+        assert await company_stripe_reads.day_money(OWNER, DAY) is None
+        page = await company_stripe_reads.stripe_page(OWNER, "payments")
+    assert page["stripe_bound"] is False
+    client.v1.charges.list.assert_not_called()
+
+
+async def test_connected_row_never_touches_the_secret_store():
+    client = _fake_client(txns=[], customers=[])
+    with (
+        _bound_row("connected"),
+        patch.object(company_stripe_reads.company_stripe, "load_api_key", AsyncMock()) as load,
+        patch.object(company_stripe_reads, "_client", return_value=client),
+    ):
+        await company_stripe_reads.day_money(OWNER, DAY)
+    load.assert_not_awaited()
+    assert client.v1.balance_transactions.list.call_args.kwargs["options"] == {"stripe_account": ACCT}

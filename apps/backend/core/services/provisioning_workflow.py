@@ -348,6 +348,11 @@ async def start(
 ) -> dict:
     """Step 1 of spec §3.2. Refuses loudly rather than opening a workflow that
     cannot finish."""
+    if not settings.STRIPE_PROVISIONING_ENABLED:
+        # Every state-changing /v2/provisioning call 500s until Stripe ships
+        # delegated account creation + KYC; an approved workflow today lands
+        # in a permanent requires_review. Refuse at the door instead.
+        raise WorkflowRefused("provisioning_unavailable", "Setting up services isn't available yet")
     account_id = await account_id_for(owner_id)
 
     elig = await api.eligibility(account_id)
@@ -429,6 +434,10 @@ async def start(
 
 async def on_approved(workflow_id: str, *, usage_limit: dict | None, approved_by: str) -> dict | None:
     """The owner approved the consent card. Re-read the catalog before moving."""
+    if not settings.STRIPE_PROVISIONING_ENABLED:
+        # Same door as `start`: an approval must not become a Stripe write
+        # while the rail is off, even for a card filed before it was.
+        raise WorkflowRefused("provisioning_unavailable", "Provisioning is not available yet")
     row = await repo.get(workflow_id)
     if not row or row.get("state") != "awaiting_approval":
         return row
@@ -1112,6 +1121,10 @@ def _too_soon(row: dict) -> bool:
 async def advance(workflow: dict) -> dict:
     """One step. Terminal states and `ask` are no-ops; everything else moves or
     reports that it could not."""
+    if not settings.STRIPE_PROVISIONING_ENABLED:
+        # Rail off: freeze in place. No Stripe write, no state change — a row
+        # resumes from exactly here the day the flag flips.
+        return workflow
     state = workflow.get("state")
     if state in repo.TERMINAL_STATES or state == "ask":
         return workflow

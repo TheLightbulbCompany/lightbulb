@@ -3,7 +3,8 @@
 // The section declaration lives in companySections.ts (data-only) so the ⌘K
 // palette can derive from it without an import cycle; re-exported here as the
 // canonical home consumers import.
-import { COMPANY_SECTIONS } from "./companySections";
+import { COMPANY_SECTIONS, visibleCompanySections } from "./companySections";
+import { useCompanyStripeStatus } from "@/components/settings/CompanyStripeSection";
 
 export { COMPANY_SECTIONS };
 
@@ -29,6 +30,13 @@ export function CompanyNav({
   disabled?: boolean;
   disabledTitle?: string;
 }): React.ReactElement {
+  // One SWR key shared with the Stripe card, so this costs no extra request.
+  // Until the status has loaded the provisioning tabs are HIDDEN, not shown:
+  // flashing a tab in and then out is worse than a late appearance.
+  const { data: stripeStatus } = useCompanyStripeStatus();
+  const sections = visibleCompanySections({
+    provisioningEnabled: Boolean(stripeStatus?.provisioning_enabled),
+  });
   return (
     // No own scroll region: this nav lives inside the shared `.sidebar-scroll`
     // wrapper, which owns the single scroll for roster + CompanyNav + Gallery.
@@ -38,7 +46,7 @@ export function CompanyNav({
       className="company-nav px-2 py-1"
       aria-label="Company"
     >
-      {COMPANY_SECTIONS.map((section, i) => (
+      {sections.map((section, i) => (
         <div key={section.label ?? `top-${i}`}>
           {section.label ? (
             <div className="agent-section-label">

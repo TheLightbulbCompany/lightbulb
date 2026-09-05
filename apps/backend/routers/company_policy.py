@@ -99,7 +99,9 @@ async def revoke_all(body: RevokeAllBody, auth: Annotated[AuthContext, Depends(g
     row = await billing_repo.get_by_owner_id(owner_id) or {}
     account_id = row.get("company_stripe_account_id")
     if account_id:
-        released = await company_stripe.release_and_unbind(owner_id=owner_id, account_id=account_id)
+        released = await company_stripe.release_and_unbind(
+            owner_id=owner_id, account_id=account_id, source=row.get("company_stripe_source")
+        )
         revoked.append(f"stripe_connect:{account_id}" + ("" if released else "(stripe_unconfirmed)"))
         await write_owner_facts(owner_id)
 

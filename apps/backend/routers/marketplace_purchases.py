@@ -503,6 +503,12 @@ async def _handle_account_deauthorized(account_id: str | None) -> None:
     row = await billing_repo.get_by_company_stripe_account_id(account_id)
     if row is None:
         return
+    if row.get("company_stripe_source") == "api_key":
+        # A Connect deauthorization says nothing about a key-bound row: the
+        # owner may have disconnected the grant and re-bound the SAME account
+        # by key while this event was in flight. Clearing it would strand the
+        # key behind no row.
+        return
     await billing_repo.clear_company_stripe_account(row["owner_id"], account_id=account_id)
     await write_owner_facts(row["owner_id"])
 

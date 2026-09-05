@@ -207,6 +207,16 @@ export interface ServiceStackProps extends cdk.StackProps {
    * onboarding for stripeProjectsDeveloperConfig.
    */
   stripeAccountsV2Version?: string;
+  /**
+   * Whether the Stripe Projects provisioning rail is offered. DEFAULT FALSE:
+   * every state-changing /v2/provisioning call returns 500 until Stripe
+   * ships delegated account creation + hosted KYC (their word, 2026-09-03),
+   * so an approved workflow parks permanently. Off ⇒ the backend refuses
+   * `start()` and the frontend hides the Connect door and the two panels
+   * (Accounts, Domain & Site) that only render the rail's output. The v1
+   * Money surface is unaffected. Flip per env once a write succeeds.
+   */
+  stripeProvisioningEnabled?: boolean;
 }
 
 /**
@@ -1628,6 +1638,9 @@ export class ServiceStack extends cdk.Stack {
       // Accounts v2 API version pin for the company account/account-link
       // calls. Empty ⇒ the SDK's own default.
       STRIPE_ACCOUNTS_V2_VERSION: props.stripeAccountsV2Version ?? "",
+      // Provisioning rail master switch — see the stripeProvisioningEnabled
+      // prop doc. Off in both envs until Stripe's write endpoints work.
+      STRIPE_PROVISIONING_ENABLED: String(props.stripeProvisioningEnabled ?? false),
       // PostHog server-side reads for the admin Activity tab.
       // us.posthog.com is the API host for US Cloud (our project lives
       // there). Project ID is public — visible in the PostHog dashboard

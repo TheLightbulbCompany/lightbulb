@@ -18,6 +18,8 @@ function fakeTab() {
   return { opener: undefined, location: { href: "" }, close: vi.fn() };
 }
 
+// provisioning_enabled defaults ON in these fixtures so the existing Connect-
+// door tests keep exercising those doors; the off-state tests flip it.
 const UNBOUND = {
   account_id: null,
   source: null,
@@ -26,6 +28,7 @@ const UNBOUND = {
   payouts_enabled: false,
   dashboard_url: null,
   connect_configured: true,
+  provisioning_enabled: true,
 };
 
 const BOUND = {
@@ -36,7 +39,10 @@ const BOUND = {
   payouts_enabled: false,
   dashboard_url: "https://dashboard.stripe.com/",
   connect_configured: true,
+  provisioning_enabled: true,
 };
+
+const BOUND_BY_KEY = { ...BOUND, source: "api_key" };
 
 // SWR has a global cache that persists across renders/tests — wrap each
 // render in a fresh SWRConfig with `provider: () => new Map()` to isolate
@@ -57,11 +63,69 @@ describe("CompanyStripeSection", () => {
     notifyError.mockReset();
   });
 
-  it("offers both doors when nothing is bound", async () => {
+  it("offers the API-key door plus both Connect doors when nothing is bound and provisioning is on", async () => {
     get.mockResolvedValue(UNBOUND);
     renderSection(true);
-    expect(await screen.findByText("Set up Stripe")).toBeInTheDocument();
+    expect(await screen.findByText("Add API key")).toBeInTheDocument();
+    expect(screen.getByText("Set up Stripe")).toBeInTheDocument();
     expect(screen.getByText("Connect existing Stripe")).toBeInTheDocument();
+  });
+
+  it("offers ONLY the API-key door while provisioning is off", async () => {
+    // Connect exists for provisioning. With that rail off, the OAuth doors
+    // would ask for a read_write grant to power a read-only tab a pasted key
+    // already powers — so they are not shown.
+    get.mockResolvedValue({ ...UNBOUND, provisioning_enabled: false });
+    renderSection(true);
+    expect(await screen.findByText("Add API key")).toBeInTheDocument();
+    expect(screen.queryByText("Set up Stripe")).toBeNull();
+    expect(screen.queryByText("Connect existing Stripe")).toBeNull();
+  });
+
+  it("pastes a key: posts it, clears the field, and refreshes status", async () => {
+    get.mockResolvedValueOnce({ ...UNBOUND, provisioning_enabled: false }).mockResolvedValue(BOUND_BY_KEY);
+    post.mockResolvedValue({ account_id: "acct_x", livemode: true });
+    renderSection(true);
+    fireEvent.click(await screen.findByText("Add API key"));
+    const input = screen.getByPlaceholderText("rk_live_…") as HTMLInputElement;
+    // The permission list is right there so nobody guesses at ~80 boxes.
+    expect(screen.getByText(/Charges, Customers, Products, Prices, Balance, Account/)).toBeInTheDocument();
+    // The paste field is a password input: the key never renders in the DOM.
+    expect(input.type).toBe("password");
+    fireEvent.change(input, { target: { value: "  rk_live_abc  " } });
+    fireEvent.click(screen.getByText("Connect"));
+    await waitFor(() => expect(post).toHaveBeenCalledWith("/company/stripe/api-key", { api_key: "rk_live_abc" }));
+    expect(await screen.findByText("Your API key")).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("rk_live_…")).toBeNull();
+  });
+
+  it("Connect is disabled until something is typed, and Cancel puts the door back", async () => {
+    get.mockResolvedValue({ ...UNBOUND, provisioning_enabled: false });
+    renderSection(true);
+    fireEvent.click(await screen.findByText("Add API key"));
+    expect(screen.getByText("Connect")).toBeDisabled();
+    fireEvent.click(screen.getByText("Cancel"));
+    expect(screen.getByText("Add API key")).toBeInTheDocument();
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("a rejected key surfaces the API error and keeps the field open", async () => {
+    get.mockResolvedValue({ ...UNBOUND, provisioning_enabled: false });
+    post.mockRejectedValue(new Error("invalid_api_key"));
+    renderSection(true);
+    fireEvent.click(await screen.findByText("Add API key"));
+    fireEvent.change(screen.getByPlaceholderText("rk_live_…"), { target: { value: "rk_live_bad" } });
+    fireEvent.click(screen.getByText("Connect"));
+    await waitFor(() => expect(notifyApiError).toHaveBeenCalled());
+    expect(screen.getByPlaceholderText("rk_live_…")).toBeInTheDocument();
+  });
+
+  it("an api_key row can Disconnect even when Connect is unconfigured", async () => {
+    // Nothing at Stripe to revoke, so the client id is irrelevant to it.
+    get.mockResolvedValue({ ...BOUND_BY_KEY, connect_configured: false });
+    renderSection(true);
+    expect(await screen.findByText("Your API key")).toBeInTheDocument();
+    expect(screen.getByText("Disconnect")).not.toBeDisabled();
   });
 
   it("opens the tab synchronously on click, then points it at the onboarding link", async () => {
@@ -116,10 +180,15 @@ describe("CompanyStripeSection", () => {
     expect(screen.getByText("Disconnect")).toBeInTheDocument();
   });
 
-  it("hides Connect existing and disables Disconnect when Connect is unconfigured", async () => {
+  it("hides BOTH Connect doors when Connect is unconfigured, and disables Disconnect for a Connect row", async () => {
+    // "Set up Stripe" used to survive an unconfigured client id. It no longer
+    // does: it mints a Connect account too, and without the client id that
+    // account can never be disconnected — the trap `disconnect` documents.
+    // The API-key door needs no client id and is unaffected.
     get.mockResolvedValue({ ...UNBOUND, connect_configured: false });
     const { unmount } = renderSection(true);
-    expect(await screen.findByText("Set up Stripe")).toBeInTheDocument();
+    expect(await screen.findByText("Add API key")).toBeInTheDocument();
+    expect(screen.queryByText("Set up Stripe")).toBeNull();
     expect(screen.queryByText("Connect existing Stripe")).toBeNull();
     unmount();
 

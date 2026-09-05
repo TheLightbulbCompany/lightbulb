@@ -14,19 +14,27 @@ import { isTauri, openExternalUrl, pollUntil } from "@/lib/externalAuth";
 // incident. EditorialButton is token-based and route-independent, so it is
 // correct on both surfaces.
 import { EditorialButton } from "@/components/teams/shell";
+import { Input } from "@/components/ui/input";
 
 const POPUP_BLOCKED_MSG =
   "Your browser blocked the Stripe window — allow popups for this site and try again.";
 
-type CompanyStripeStatus = {
+export type CompanyStripeStatus = {
   account_id: string | null;
-  source: "created" | "connected" | null;
+  source: "created" | "connected" | "api_key" | null;
   details_submitted: boolean;
   charges_enabled: boolean;
   payouts_enabled: boolean;
   dashboard_url: string | null;
   connect_configured: boolean;
+  /** Connect is only offered while the provisioning rail is live — it is the
+   *  one thing an OAuth grant does that a pasted key cannot. */
+  provisioning_enabled: boolean;
 };
+
+/** The six read permissions the Money surface needs — shown so nobody has to
+ *  guess at ~80 checkboxes. Confirmed against the permissions reference. */
+const REQUIRED_PERMISSIONS = "Charges, Customers, Products, Prices, Balance, Account — all Read";
 
 const STATUS_PATH = "/company/stripe/status";
 
@@ -54,6 +62,8 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
   const api = useApi();
   const { data, error, mutate, isLoading } = useCompanyStripeStatus();
   const [busy, setBusy] = useState(false);
+  const [pasting, setPasting] = useState(false);
+  const [keyDraft, setKeyDraft] = useState("");
 
   // Stops the desktop grant-poll when this section unmounts — an abandoned
   // wait must not keep issuing status GETs for up to the poll timeout.
@@ -118,6 +128,24 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
   // Both OAuth doors 409 without the platform client id, so don't offer the
   // one that only exists there, and say why the exit is unavailable.
   const connectConfigured = Boolean(data?.connect_configured);
+  // The Connect doors exist for provisioning. While that rail is off they
+  // would ask an owner for a read_write grant to power a read-only tab a
+  // pasted key already powers — so they are not offered.
+  const connectOffered = Boolean(data?.provisioning_enabled) && connectConfigured;
+  const isApiKey = data?.source === "api_key";
+  // Disconnect needs the client id only for Connect rows; an api_key row has
+  // nothing at Stripe to revoke.
+  const canDisconnect = isApiKey || connectConfigured;
+
+  async function submitKey() {
+    const key = keyDraft.trim();
+    if (!key) return;
+    await run(async () => {
+      await api.post("/company/stripe/api-key", { api_key: key });
+      setKeyDraft("");
+      setPasting(false);
+    });
+  }
 
   // The shared client returns `unknown`; narrow at the call site.
   const createLink = async () => (await api.post("/company/stripe/create", {})) as { onboarding_url: string };
@@ -162,29 +190,78 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
         )}
 
         {!error && !isLoading && !bound && (
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-col gap-2">
             {canManage ? (
-              <>
-                <EditorialButton
-                  type="button"
-                  size="sm"
-                  disabled={busy}
-                  onClick={() => openWith(async () => (await createLink()).onboarding_url)}
+              pasting ? (
+                <form
+                  className="flex flex-col gap-2"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void submitKey();
+                  }}
                 >
-                  Set up Stripe
-                </EditorialButton>
-                {connectConfigured && (
-                  <EditorialButton
-                    type="button"
-                    size="sm"
-                    variant="secondary"
+                  <label className="text-xs text-[var(--midnight-muted)]" htmlFor="company-stripe-key">
+                    Paste a restricted key from your Stripe Dashboard → Developers → API keys →
+                    Create restricted key. Permissions: {REQUIRED_PERMISSIONS}.
+                  </label>
+                  <Input
+                    id="company-stripe-key"
+                    type="password"
+                    autoComplete="off"
+                    spellCheck={false}
+                    placeholder="rk_live_…"
+                    value={keyDraft}
                     disabled={busy}
-                    onClick={() => openWith(async () => (await connectStart()).authorize_url)}
-                  >
-                    Connect existing Stripe
+                    onChange={(e) => setKeyDraft(e.target.value)}
+                    className="h-9 bg-cream font-mono"
+                  />
+                  <div className="flex flex-wrap gap-2">
+                    <EditorialButton type="submit" size="sm" disabled={busy || !keyDraft.trim()}>
+                      Connect
+                    </EditorialButton>
+                    <EditorialButton
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      disabled={busy}
+                      onClick={() => {
+                        setPasting(false);
+                        setKeyDraft("");
+                      }}
+                    >
+                      Cancel
+                    </EditorialButton>
+                  </div>
+                </form>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  <EditorialButton type="button" size="sm" disabled={busy} onClick={() => setPasting(true)}>
+                    Add API key
                   </EditorialButton>
-                )}
-              </>
+                  {connectOffered && (
+                    <>
+                      <EditorialButton
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        disabled={busy}
+                        onClick={() => openWith(async () => (await createLink()).onboarding_url)}
+                      >
+                        Set up Stripe
+                      </EditorialButton>
+                      <EditorialButton
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        disabled={busy}
+                        onClick={() => openWith(async () => (await connectStart()).authorize_url)}
+                      >
+                        Connect existing Stripe
+                      </EditorialButton>
+                    </>
+                  )}
+                </div>
+              )
             ) : (
               <p className="text-sm text-[var(--midnight-muted)]">A workspace admin sets up Stripe.</p>
             )}
@@ -194,7 +271,16 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
         {!isLoading && bound && data && (
           <div className="flex flex-col gap-2">
             <dl className="text-sm text-[var(--midnight-muted)]">
-              <div className="flex gap-2"><dt>Source</dt><dd>{data.source === "connected" ? "Connected existing account" : "Created by Lightbulb AI"}</dd></div>
+              <div className="flex gap-2">
+                <dt>Source</dt>
+                <dd>
+                  {data.source === "api_key"
+                    ? "Your API key"
+                    : data.source === "connected"
+                      ? "Connected via Stripe"
+                      : "Created by Lightbulb AI"}
+                </dd>
+              </div>
               <div className="flex gap-2">
                 <dt>Status</dt>
                 <dd>
@@ -242,8 +328,8 @@ export function CompanyStripeSection({ canManage }: { canManage: boolean }) {
                   type="button"
                   size="sm"
                   variant="secondary"
-                  disabled={busy || !connectConfigured}
-                  title={connectConfigured ? undefined : "Not available until Stripe Connect is configured"}
+                  disabled={busy || !canDisconnect}
+                  title={canDisconnect ? undefined : "Not available until Stripe Connect is configured"}
                   onClick={() => run(async () => { await api.post("/company/stripe/disconnect", {}); })}
                 >
                   Disconnect

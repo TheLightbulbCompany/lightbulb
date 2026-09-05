@@ -2338,10 +2338,13 @@ after `HttpDefaultRoute`:
 and in `HttpStage` props, after `defaultRouteSettings`:
 
 ```ts
+      // CfnStage.routeSettings is typed `any`, so CDK's camelCase→PascalCase
+      // property mapping does NOT run on it — write the CloudFormation-native
+      // keys directly or the throttle silently never lands.
       routeSettings: {
         [SLACK_ROUTE_KEY]: {
-          throttlingBurstLimit: (SLACK_THROTTLE[env] ?? SLACK_THROTTLE.dev).burstLimit,
-          throttlingRateLimit: (SLACK_THROTTLE[env] ?? SLACK_THROTTLE.dev).rateLimit,
+          ThrottlingBurstLimit: (SLACK_THROTTLE[env] ?? SLACK_THROTTLE.dev).burstLimit,
+          ThrottlingRateLimit: (SLACK_THROTTLE[env] ?? SLACK_THROTTLE.dev).rateLimit,
         },
       },
 ```

@@ -106,6 +106,14 @@ interface AlarmDef {
   periodMinutes?: number; // required with metricName
   comparisonOperator?: cloudwatch.ComparisonOperator; // default GREATER_THAN_THRESHOLD
   treatMissingData?: cloudwatch.TreatMissingData; // default NOT_BREACHING
+  /**
+   * M-of-N flap resistance: require the metric to breach on this many of the
+   * last `evaluationPeriods` datapoints before firing. Omit for 1-of-1 (fire on
+   * a single breaching datapoint). Set this on spiky signals (latency p99, error
+   * rates) so one anomalous datapoint does not page/warn and then immediately
+   * clear, multiplying notifications.
+   */
+  datapointsToAlarm?: number;
   dimensions?: Record<string, string>;
   severity: "page" | "warn";
   description: string;
@@ -349,6 +357,7 @@ export class ObservabilityStack extends cdk.Stack {
       metric,
       threshold: def.threshold,
       evaluationPeriods: def.evaluationPeriods ?? 1,
+      datapointsToAlarm: def.datapointsToAlarm,
       comparisonOperator:
         def.comparisonOperator ??
         cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
@@ -605,33 +614,76 @@ export class ObservabilityStack extends cdk.Stack {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
     p9.addAlarmAction(new cloudwatch_actions.SnsAction(this.pageTopic));
-    // P10: apigw-ws-5xx-rate (AWS-native metric math)
-    const apiGwErrors = new cloudwatch.Metric({
-      namespace: "AWS/ApiGateway",
-      metricName: "5XXError",
-      statistic: "Sum",
+    // P10: apigw-ws-server-error-rate (AWS-native metric math)
+    //
+    // BLIND-PAGE FIXED: this PAGE-tier alarm read `5XXError` and `Count` — WS
+    // APIs publish NEITHER (verified live: a WebSocket ApiId publishes only
+    // ClientError, ExecutionError, IntegrationError, IntegrationLatency,
+    // ConnectCount, MessageCount). Numerator and denominator were both always
+    // missing, so it could never fire: a page-tier alarm worse than none.
+    // Repointed to the real server-side failure signal — ExecutionError (API GW
+    // could not execute the route) + IntegrationError (the ws-* Lambda
+    // integration returned an error) — as a rate over the two traffic metrics
+    // that exist (MessageCount + ConnectCount). Distinct from P9 (ALB 5xx),
+    // which is blind to the WS Lambda integration layer.
+    //
+    // datapointsToAlarm 2-of-3: a rate on a low-traffic launch fleet spikes when
+    // one error lands in a near-empty window; requiring the elevated rate to
+    // persist across 2 of 3 five-minute periods keeps a single blip from paging.
+    const apiGwServerErrors = new cloudwatch.MathExpression({
+      expression: "execErr + intErr",
+      usingMetrics: {
+        execErr: new cloudwatch.Metric({
+          namespace: "AWS/ApiGateway",
+          metricName: "ExecutionError",
+          statistic: "Sum",
+          period: cdk.Duration.minutes(5),
+          dimensionsMap: { ApiId: props.wsApiId },
+        }),
+        intErr: new cloudwatch.Metric({
+          namespace: "AWS/ApiGateway",
+          metricName: "IntegrationError",
+          statistic: "Sum",
+          period: cdk.Duration.minutes(5),
+          dimensionsMap: { ApiId: props.wsApiId },
+        }),
+      },
       period: cdk.Duration.minutes(5),
-      dimensionsMap: { ApiId: props.wsApiId },
     });
-    const apiGwCount = new cloudwatch.Metric({
-      namespace: "AWS/ApiGateway",
-      metricName: "Count",
-      statistic: "Sum",
+    const apiGwWsRequests = new cloudwatch.MathExpression({
+      expression: "messages + connects",
+      usingMetrics: {
+        messages: new cloudwatch.Metric({
+          namespace: "AWS/ApiGateway",
+          metricName: "MessageCount",
+          statistic: "Sum",
+          period: cdk.Duration.minutes(5),
+          dimensionsMap: { ApiId: props.wsApiId },
+        }),
+        connects: new cloudwatch.Metric({
+          namespace: "AWS/ApiGateway",
+          metricName: "ConnectCount",
+          statistic: "Sum",
+          period: cdk.Duration.minutes(5),
+          dimensionsMap: { ApiId: props.wsApiId },
+        }),
+      },
       period: cdk.Duration.minutes(5),
-      dimensionsMap: { ApiId: props.wsApiId },
     });
-    const apiGwErrorRate = new cloudwatch.MathExpression({
+    const apiGwServerErrorRate = new cloudwatch.MathExpression({
       expression: "100 * errors / IF(total > 0, total, 1)",
-      usingMetrics: { errors: apiGwErrors, total: apiGwCount },
+      usingMetrics: { errors: apiGwServerErrors, total: apiGwWsRequests },
       period: cdk.Duration.minutes(5),
     });
 
     const p10 = new cloudwatch.Alarm(this, "P10", {
-      alarmName: `${resourcePrefix(this.envName)}P10-apigw-ws-5xx-rate`,
-      alarmDescription: "API Gateway WebSocket 5xx error rate exceeds 5%",
-      metric: apiGwErrorRate,
+      alarmName: `${resourcePrefix(this.envName)}P10-apigw-ws-server-error-rate`,
+      alarmDescription:
+        "API Gateway WebSocket server-error rate (ExecutionError + IntegrationError) exceeds 5%",
+      metric: apiGwServerErrorRate,
       threshold: 5,
-      evaluationPeriods: 1,
+      evaluationPeriods: 3,
+      datapointsToAlarm: 2,
       comparisonOperator:
         cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
@@ -749,45 +801,73 @@ export class ObservabilityStack extends cdk.Stack {
     // -- Container & gateway (W1-W8) --
 
     // W1: container-provision-error-rate (metric math)
-    // Backend emits container.provision with status="ok" or status="error" dimension.
-    // CloudWatch EMF creates separate streams per dimension set, so we must
-    // query each status value explicitly and sum for the total.
-    const provisionErrors = new cloudwatch.Metric({
-      namespace: "LightbulbAI",
-      metricName: "container.provision",
-      statistic: "Sum",
-      period: cdk.Duration.minutes(10),
-      dimensionsMap: { ...dims, status: "error" },
-    });
-    const provisionOk = new cloudwatch.Metric({
-      namespace: "LightbulbAI",
-      metricName: "container.provision",
-      statistic: "Sum",
-      period: cdk.Duration.minutes(10),
-      dimensionsMap: { ...dims, status: "ok" },
-    });
+    //
+    // NOISE MODE FIXED: blind alarm. The old math counted status="error" — a
+    // value the backend NEVER emits — so the numerator was always 0 and W1
+    // could never fire. The real statuses container.provision publishes
+    // (emit_provision_metric in core/services/provision_dispatch.py, verified
+    // live 2026-09-05) are: ok, inline_ok, inline_failed, claim_lost,
+    // inline_queue_saturated. CloudWatch treats each dimension set as its own
+    // stream, so every status must be named explicitly.
+    //
+    // Numerator = inline_failed ONLY — the genuine "the owner did not get a
+    // container" failure. Two statuses are deliberately NOT counted as failures:
+    //   - claim_lost: a benign concurrency stand-down. try_claim_provision lost
+    //     the atomic claim because ANOTHER dispatch already owns this owner and
+    //     is provisioning them (provision_dispatch.py:228-231). Nobody is down;
+    //     it fires routinely in the maxHealthyPercent=200 two-instance deploy
+    //     window. Counting it would re-introduce exactly the deploy-window noise
+    //     this PR removes (and on a quiet window a lone claim_lost would read as
+    //     100% "error"). The audit floated including it — the code says it isn't
+    //     a user-facing failure, so it stays out of the numerator.
+    //   - inline_queue_saturated: capacity backpressure. The inline attempt was
+    //     rejected because the executor queue was full; the SFN watchdog leg
+    //     still provisions the owner. A capacity signal, not a hard failure.
+    // Both remain in the denominator (they are real dispatch outcomes), so the
+    // rate is inline_failed over all provision attempts.
+    const provisionStatus = (status: string) =>
+      new cloudwatch.Metric({
+        namespace: "LightbulbAI",
+        metricName: "container.provision",
+        statistic: "Sum",
+        period: cdk.Duration.minutes(10),
+        dimensionsMap: { ...dims, status },
+      });
+    const provisionTotal =
+      "ok + inlineOk + inlineFailed + claimLost + queueSat";
     const provisionRate = new cloudwatch.MathExpression({
-      expression: "100 * errors / IF((errors + ok) > 0, errors + ok, 1)",
-      usingMetrics: { errors: provisionErrors, ok: provisionOk },
+      expression: `100 * inlineFailed / IF((${provisionTotal}) > 0, ${provisionTotal}, 1)`,
+      usingMetrics: {
+        ok: provisionStatus("ok"),
+        inlineOk: provisionStatus("inline_ok"),
+        inlineFailed: provisionStatus("inline_failed"),
+        claimLost: provisionStatus("claim_lost"),
+        queueSat: provisionStatus("inline_queue_saturated"),
+      },
       period: cdk.Duration.minutes(10),
     });
     this.createAlarm({
       id: "W1",
       name: "container-provision-error-rate",
-      description: "Container provision error rate exceeds 5%",
+      description:
+        "Container provision hard-failure rate (inline_failed) exceeds 5% of all provision attempts",
       metric: provisionRate,
       threshold: 5,
       severity: "warn",
     });
 
     // W2: container-lifecycle-latency-p99
+    // Flap resistance (2-of-3 over 10-min periods = a 30-min window): a single
+    // slow ECS cold start pushing one p99 bucket over 60s is not an incident.
+    // Missing data = no provisions = NOT_BREACHING (helper default).
     this.createAlarm({
       id: "W2",
       name: "container-lifecycle-latency-p99",
       metricName: "container.lifecycle.latency",
       statistic: "p99",
       threshold: 60000,
-      evaluationPeriods: 1,
+      evaluationPeriods: 3,
+      datapointsToAlarm: 2,
       periodMinutes: 10,
       comparisonOperator:
         cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
@@ -830,28 +910,22 @@ export class ObservabilityStack extends cdk.Stack {
       description: "ECS task definition registration failed",
     });
 
-    // W5: gateway-connection-drop (gauge → zero)
-    // NOT anomaly detection: with NOT_BREACHING this only catches a non-zero →
-    // zero transition (open connections present, then gone). It deliberately
-    // does NOT fire when the metric is simply absent — that was the old
-    // BREACHING config, which paged constantly on idle dev (no connections at
-    // all = no samples).
-    const gwOpenMetric = new cloudwatch.Metric({
-      namespace: "LightbulbAI",
-      metricName: "gateway.connection.open",
-      statistic: "Average",
-      period: cdk.Duration.minutes(5),
-      dimensionsMap: dims,
-    });
-    this.createAlarm({
-      id: "W5",
-      name: "gateway-connection-drop",
-      description: "Gateway open connections dropped sharply",
-      metric: gwOpenMetric,
-      threshold: 0,
-      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_OR_EQUAL_TO_THRESHOLD,
-      severity: "warn",
-    });
+    // W5 (gateway-connection-drop) DELETED: absence-of-signal noise.
+    // The `gateway.connection.open <= 0` design fired whenever no owner had a
+    // chat tab open — which, on a launch-stage fleet, is most of the time. The
+    // metric is an emitted gauge, so an idle backend publishes a real 0 (not
+    // missing data), and NOT_BREACHING could not save it: it only suppresses
+    // MISSING datapoints, not a genuine 0. So W5 sat in ALARM in dev AND prod
+    // and emailed the warn topic on every quiet window — the owner's #1 source
+    // of alarm noise.
+    //
+    // Not redefined: a real "connections dropped while traffic continues" signal
+    // needs anomaly detection plus a co-metric for live traffic, and connection
+    // health is ALREADY covered without it — W6 (health-check timeouts), W8
+    // (RPC errors), W54 (reconnect-throttle storm) and P12 (backend-liveness via
+    // gateway.running.count) all fire on a real gateway problem. A gauge falling
+    // to zero because nobody is connected is not one. Deleting is the correct,
+    // minimal fix.
 
     // W6: gateway-health-check-timeout
     this.createAlarm({
@@ -907,13 +981,19 @@ export class ObservabilityStack extends cdk.Stack {
     // -- Chat (W9-W12) --
 
     // W9: chat-e2e-latency-p99
+    // FLAPPING FIXED: was 1-of-1, so a single slow datapoint tripped it and it
+    // cleared on the next period, multiplying notifications for a REAL but spiky
+    // prod signal. 3-of-5 over 5-min periods (a 25-min window) requires the p99
+    // to actually sit above the 20s SLO before warning. Missing data = no chats
+    // = NOT_BREACHING (helper default): quiet windows never fire.
     this.createAlarm({
       id: "W9",
       name: "chat-e2e-latency-p99",
       metricName: "chat.e2e.latency",
       statistic: "p99",
       threshold: 20000,
-      evaluationPeriods: 1,
+      evaluationPeriods: 5,
+      datapointsToAlarm: 3,
       periodMinutes: 5,
       comparisonOperator:
         cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
@@ -1320,6 +1400,8 @@ export class ObservabilityStack extends cdk.Stack {
     });
 
     // W29: ALB TargetResponseTime p99
+    // Flap resistance: 3-of-5 over 5-min periods so one slow request bucket does
+    // not warn-then-clear. Missing data = no traffic = NOT_BREACHING (default).
     this.createAlarm({
       id: "W29",
       name: "alb-response-time-p99",
@@ -1332,41 +1414,65 @@ export class ObservabilityStack extends cdk.Stack {
         dimensionsMap: { LoadBalancer: albFullName },
       }),
       threshold: 5,
+      evaluationPeriods: 5,
+      datapointsToAlarm: 3,
       severity: "warn",
     });
 
     // -- API Gateway WebSocket (W30-W32) --
 
-    // W30: API GW WS 4XXError rate
-    const apiGw4xx = new cloudwatch.Metric({
-      namespace: "AWS/ApiGateway",
-      metricName: "4XXError",
-      statistic: "Sum",
-      period: cdk.Duration.minutes(5),
-      dimensionsMap: { ApiId: props.wsApiId },
-    });
-    const apiGwTotal = new cloudwatch.Metric({
-      namespace: "AWS/ApiGateway",
-      metricName: "Count",
-      statistic: "Sum",
-      period: cdk.Duration.minutes(5),
-      dimensionsMap: { ApiId: props.wsApiId },
-    });
-    const apiGw4xxRate = new cloudwatch.MathExpression({
-      expression: "100 * errors / IF(total > 0, total, 1)",
-      usingMetrics: { errors: apiGw4xx, total: apiGwTotal },
+    // W30: API GW WS client-error rate
+    //
+    // BLIND-ALARM FIXED: read `4XXError` and `Count`, which WS APIs do not
+    // publish (only ClientError, ExecutionError, IntegrationError,
+    // IntegrationLatency, ConnectCount, MessageCount exist), so it could never
+    // fire. Repointed to ClientError (the WS 4xx-equivalent: rejected/malformed
+    // client frames) as a rate over the traffic metrics that exist
+    // (MessageCount + ConnectCount). 3-of-5 over 5-min periods so a single
+    // client-error blip on a quiet window does not warn-then-clear.
+    const apiGwClientErrorRate = new cloudwatch.MathExpression({
+      expression: "100 * errors / IF((messages + connects) > 0, messages + connects, 1)",
+      usingMetrics: {
+        errors: new cloudwatch.Metric({
+          namespace: "AWS/ApiGateway",
+          metricName: "ClientError",
+          statistic: "Sum",
+          period: cdk.Duration.minutes(5),
+          dimensionsMap: { ApiId: props.wsApiId },
+        }),
+        messages: new cloudwatch.Metric({
+          namespace: "AWS/ApiGateway",
+          metricName: "MessageCount",
+          statistic: "Sum",
+          period: cdk.Duration.minutes(5),
+          dimensionsMap: { ApiId: props.wsApiId },
+        }),
+        connects: new cloudwatch.Metric({
+          namespace: "AWS/ApiGateway",
+          metricName: "ConnectCount",
+          statistic: "Sum",
+          period: cdk.Duration.minutes(5),
+          dimensionsMap: { ApiId: props.wsApiId },
+        }),
+      },
       period: cdk.Duration.minutes(5),
     });
     this.createAlarm({
       id: "W30",
-      name: "apigw-ws-4xx-rate",
-      description: "API Gateway WebSocket 4xx error rate exceeds 5%",
-      metric: apiGw4xxRate,
+      name: "apigw-ws-client-error-rate",
+      description: "API Gateway WebSocket client-error rate exceeds 5%",
+      metric: apiGwClientErrorRate,
       threshold: 5,
+      evaluationPeriods: 5,
+      datapointsToAlarm: 3,
       severity: "warn",
     });
 
     // W31: API GW WS IntegrationLatency p99
+    // FLAPPING FIXED: was 1-of-1, so a single slow integration datapoint tripped
+    // it then cleared — a real prod signal that multiplied notifications. 3-of-5
+    // over 5-min periods (25-min window). Missing data = no messages =
+    // NOT_BREACHING (helper default).
     this.createAlarm({
       id: "W31",
       name: "apigw-ws-integration-latency",
@@ -1379,6 +1485,8 @@ export class ObservabilityStack extends cdk.Stack {
         dimensionsMap: { ApiId: props.wsApiId },
       }),
       threshold: 2000,
+      evaluationPeriods: 5,
+      datapointsToAlarm: 3,
       severity: "warn",
     });
 
@@ -1440,6 +1548,9 @@ export class ObservabilityStack extends cdk.Stack {
     });
 
     // W35: Lambda Duration p99
+    // Flap resistance: 3-of-5 over 5-min periods so one cold-start-skewed p99
+    // bucket does not warn-then-clear. Missing data = no invocations =
+    // NOT_BREACHING (helper default).
     this.createAlarm({
       id: "W35",
       name: "lambda-auth-duration-p99",
@@ -1452,6 +1563,8 @@ export class ObservabilityStack extends cdk.Stack {
         dimensionsMap: lambdaDims,
       }),
       threshold: 1000,
+      evaluationPeriods: 5,
+      datapointsToAlarm: 3,
       severity: "warn",
     });
 
@@ -1899,36 +2012,48 @@ def handler(event, _ctx):
     });
 
     // -- Bedrock (W46-W47) --
+    //
+    // ENV-BLIND, so PROD-GATED. These read AWS/Bedrock dimensionless — the
+    // metric is account-global and AWS/Bedrock exposes no env-bearing dimension
+    // (dev and prod share one account/region), so the alarm cannot be scoped to
+    // a single environment. It CAN, however, be created only once: dev and prod
+    // both deploy this stack, so an ungated alarm renders twice (lightbulb-dev-*
+    // and lightbulb-prod-*), both watching the SAME account-global number and
+    // both emailing admin@ — a duplicate for every Bedrock blip. The prod copy
+    // already covers account-global throttles/errors (dev-origin included), so
+    // the dev copy is pure duplicate noise. Same reasoning applies to the
+    // account-global Bedrock cost alarms W50/W52 (createCostAlarms).
+    if (this.envName === "prod") {
+      // W46: Bedrock ModelInvocationThrottles
+      this.createAlarm({
+        id: "W46",
+        name: "bedrock-throttles",
+        description: "Bedrock model invocation throttles > 0",
+        metric: new cloudwatch.Metric({
+          namespace: "AWS/Bedrock",
+          metricName: "InvocationThrottles",
+          statistic: "Sum",
+          period: cdk.Duration.minutes(1),
+        }),
+        threshold: 0,
+        severity: "warn",
+      });
 
-    // W46: Bedrock ModelInvocationThrottles
-    this.createAlarm({
-      id: "W46",
-      name: "bedrock-throttles",
-      description: "Bedrock model invocation throttles > 0",
-      metric: new cloudwatch.Metric({
-        namespace: "AWS/Bedrock",
-        metricName: "InvocationThrottles",
-        statistic: "Sum",
-        period: cdk.Duration.minutes(1),
-      }),
-      threshold: 0,
-      severity: "warn",
-    });
-
-    // W47: Bedrock InvocationClientErrors
-    this.createAlarm({
-      id: "W47",
-      name: "bedrock-client-errors",
-      description: "Bedrock invocation client errors exceed 5 per min",
-      metric: new cloudwatch.Metric({
-        namespace: "AWS/Bedrock",
-        metricName: "InvocationClientErrors",
-        statistic: "Sum",
-        period: cdk.Duration.minutes(1),
-      }),
-      threshold: 5,
-      severity: "warn",
-    });
+      // W47: Bedrock InvocationClientErrors
+      this.createAlarm({
+        id: "W47",
+        name: "bedrock-client-errors",
+        description: "Bedrock invocation client errors exceed 5 per min",
+        metric: new cloudwatch.Metric({
+          namespace: "AWS/Bedrock",
+          metricName: "InvocationClientErrors",
+          statistic: "Sum",
+          period: cdk.Duration.minutes(1),
+        }),
+        threshold: 5,
+        severity: "warn",
+      });
+    }
 
     // -- Network (W48) --
 
@@ -2195,26 +2320,31 @@ def handler(event, _ctx):
       ],
     });
 
-    // W50: Bedrock spend anomaly
-    // Use CloudWatch alarm on AWS/Bedrock InvocationCount as a proxy for cost
-    const w50 = new cloudwatch.Alarm(this, "W50", {
-      alarmName: `${resourcePrefix(this.envName)}W50-bedrock-spend-anomaly`,
-      alarmDescription:
-        "Bedrock invocation count spike - potential cost anomaly",
-      metric: new cloudwatch.Metric({
-        namespace: "AWS/Bedrock",
-        metricName: "Invocations",
-        statistic: "Sum",
-        period: cdk.Duration.hours(1),
-      }),
-      // Alert on >500 invocations/hour as a baseline — adjust after observation
-      threshold: 500,
-      evaluationPeriods: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
-    w50.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
+    // W50: Bedrock spend anomaly — ENV-BLIND, so PROD-GATED (see W46/W47).
+    // AWS/Bedrock Invocations is account-global with no env dimension; dev and
+    // prod both deploy this stack, so an ungated alarm double-fires on the same
+    // number. The prod copy covers account-global invocations (dev included).
+    // Use CloudWatch alarm on AWS/Bedrock InvocationCount as a proxy for cost.
+    if (this.envName === "prod") {
+      const w50 = new cloudwatch.Alarm(this, "W50", {
+        alarmName: `${resourcePrefix(this.envName)}W50-bedrock-spend-anomaly`,
+        alarmDescription:
+          "Bedrock invocation count spike - potential cost anomaly",
+        metric: new cloudwatch.Metric({
+          namespace: "AWS/Bedrock",
+          metricName: "Invocations",
+          statistic: "Sum",
+          period: cdk.Duration.hours(1),
+        }),
+        // Alert on >500 invocations/hour as a baseline — adjust after observation
+        threshold: 500,
+        evaluationPeriods: 1,
+        comparisonOperator:
+          cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+      w50.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
+    }
 
     // W51: NAT Gateway data transfer anomaly
     const w51 = new cloudwatch.Alarm(this, "W51", {
@@ -2236,31 +2366,37 @@ def handler(event, _ctx):
     });
     w51.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
-    // W52: Bedrock cache-write token volume — runaway-inference guard
-    // Sums AWS/Bedrock CacheWriteInputTokenCount across the whole account over a
-    // 1-day window. This is the metric a runaway agent loop blows through (the
+    // W52: Bedrock cache-write token volume — runaway-inference guard.
+    // ENV-BLIND, so PROD-GATED (see W46/W47). AWS/Bedrock CacheWriteInputTokenCount
+    // is account-global with no env dimension. Sums across the whole account over
+    // a 1-day window. This is the metric a runaway agent loop blows through (the
     // 2026 incident hit ~17-21M cache-write tokens/day, ~$130+/day, silent for
     // weeks). Pages so it can't go unnoticed again. Threshold lives in
     // BEDROCK_DAILY_CACHE_WRITE_TOKEN_THRESHOLD — tune as the fleet grows.
-    const w52 = new cloudwatch.Alarm(this, "W52", {
-      alarmName: `${resourcePrefix(this.envName)}W52-bedrock-cache-write-token-volume`,
-      alarmDescription:
-        "Bedrock cache-write input tokens exceeded the daily ceiling - " +
-        "possible runaway inference loop driving cost",
-      metric: new cloudwatch.Metric({
-        namespace: "AWS/Bedrock",
-        metricName: "CacheWriteInputTokenCount",
-        statistic: "Sum",
-        period: cdk.Duration.days(1),
-      }),
-      threshold: BEDROCK_DAILY_CACHE_WRITE_TOKEN_THRESHOLD,
-      evaluationPeriods: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
-    w52.addAlarmAction(new cloudwatch_actions.SnsAction(this.pageTopic));
-    w52.addOkAction(new cloudwatch_actions.SnsAction(this.pageTopic));
+    // Only the prod copy is created (with PagerDuty on the prod page topic); it
+    // still catches an account-global runaway regardless of which env caused it,
+    // so gating loses no coverage while removing the dev duplicate.
+    if (this.envName === "prod") {
+      const w52 = new cloudwatch.Alarm(this, "W52", {
+        alarmName: `${resourcePrefix(this.envName)}W52-bedrock-cache-write-token-volume`,
+        alarmDescription:
+          "Bedrock cache-write input tokens exceeded the daily ceiling - " +
+          "possible runaway inference loop driving cost",
+        metric: new cloudwatch.Metric({
+          namespace: "AWS/Bedrock",
+          metricName: "CacheWriteInputTokenCount",
+          statistic: "Sum",
+          period: cdk.Duration.days(1),
+        }),
+        threshold: BEDROCK_DAILY_CACHE_WRITE_TOKEN_THRESHOLD,
+        evaluationPeriods: 1,
+        comparisonOperator:
+          cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+      w52.addAlarmAction(new cloudwatch_actions.SnsAction(this.pageTopic));
+      w52.addOkAction(new cloudwatch_actions.SnsAction(this.pageTopic));
+    }
 
     // NOTE: AWS Cost Anomaly Detection is intentionally NOT managed here.
     // A Cost Anomaly Detection monitor is an ACCOUNT-GLOBAL resource; a
@@ -2445,6 +2581,9 @@ def handler(event, _ctx):
     // ----- Row 2: Containers & Gateway (4 widgets) -----
     dashboard.addWidgets(
       new cloudwatch.GraphWidget({
+        // Plots the REAL container.provision statuses. The old "error" series
+        // read a status the backend never emits (same phantom the W1 alarm math
+        // was fixed off), so it was a permanently-flat line.
         title: "Container provisions",
         left: [
           new cloudwatch.Metric({
@@ -2452,12 +2591,28 @@ def handler(event, _ctx):
             metricName: "container.provision",
             statistic: "Sum",
             dimensionsMap: { ...dims, status: "ok" },
+            label: "ok",
           }),
           new cloudwatch.Metric({
             namespace: "LightbulbAI",
             metricName: "container.provision",
             statistic: "Sum",
-            dimensionsMap: { ...dims, status: "error" },
+            dimensionsMap: { ...dims, status: "inline_ok" },
+            label: "inline_ok",
+          }),
+          new cloudwatch.Metric({
+            namespace: "LightbulbAI",
+            metricName: "container.provision",
+            statistic: "Sum",
+            dimensionsMap: { ...dims, status: "inline_failed" },
+            label: "inline_failed",
+          }),
+          new cloudwatch.Metric({
+            namespace: "LightbulbAI",
+            metricName: "container.provision",
+            statistic: "Sum",
+            dimensionsMap: { ...dims, status: "inline_queue_saturated" },
+            label: "inline_queue_saturated",
           }),
         ],
         width: 6,

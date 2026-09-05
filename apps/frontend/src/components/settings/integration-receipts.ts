@@ -25,6 +25,9 @@ export const INTEGRATION_RECEIPTS: Record<string, IntegrationReceipt> = {
   },
   posthog: { delivers: "product analytics — query events, funnels & session recordings" },
   intercom: { delivers: "conversation search & reply tools for your Intercom inbox" },
+  quickbooks: {
+    delivers: "your books — invoices, bills, customers, P&L & balance sheet for one QuickBooks company",
+  },
   attio: { delivers: "CRM record search & editing across your Attio workspace" },
   apollo: { delivers: "read-only Apollo access — people, company & contact search plus contact enrichment" },
   // The paired API-key rows. Without a receipt line these were the only two

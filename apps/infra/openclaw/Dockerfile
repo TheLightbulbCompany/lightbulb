@@ -839,6 +839,44 @@ COPY local-sqlite/isol8-local-sqlite-app.sh /usr/local/bin/isol8-local-sqlite-ap
 COPY local-sqlite/isol8-litestream.yml /etc/isol8-litestream.yml
 RUN chmod 0755 /usr/local/bin/isol8-local-sqlite-boot.sh /usr/local/bin/isol8-local-sqlite-app.sh
 
+# ---- Layer 12h: Intuit's official QuickBooks MCP server (stdio, vendor build) ----
+# Built from source at a PINNED COMMIT because Intuit publishes no npm package —
+# package.json calls itself @qboapi/qbo-mcp-server 0.0.1 and the registry 404s it.
+# The pin is not a formality: the tip we pin IS PR #111 (2026-08-10), which added
+# QUICKBOOKS_TOKEN_STORE_PATH — the host-env override the whole integration rests
+# on. Without it their client resolves .env next to the compiled module, which on
+# this image is ephemeral container disk, so every task restart would lose the
+# rotated refresh token and force the owner to reconnect. Moving this pin means
+# re-reading src/clients/quickbooks-client.ts to confirm the override survives.
+#
+# NOT patched — this is their build, unmodified. The credential reaches it as a
+# file on the owner's EFS (core/services/credentials/materializers/qbo_dotenv.py);
+# openclaw.json carries only the path. An env var cannot be used: OpenClaw spawns
+# stdio servers via the MCP SDK's getDefaultEnvironment(), which inherits only
+# [HOME, LOGNAME, PATH, SHELL, TERM, USER].
+#
+# --include=dev is LOAD-BEARING, not belt-and-braces: the base image ships
+# NODE_ENV=production and we inherit it, under which `npm ci` silently omits
+# devDependencies. Their build script is `tsc && shx chmod +x dist/*.js`, so
+# without it the compiler is never installed and the layer dies with exit 127
+# (command not found) rather than anything that names the real cause. Verified
+# by reproducing both halves locally. The prune afterwards takes them back out,
+# so the runtime layer still carries only what the server imports.
+ENV QUICKBOOKS_MCP_COMMIT=c351dc011d9cb14b211857457085f7994d8b1e15
+RUN set -eux; \
+    mkdir -p /opt/quickbooks-mcp; \
+    cd /opt/quickbooks-mcp; \
+    git init -q .; \
+    git remote add origin https://github.com/intuit/quickbooks-online-mcp-server.git; \
+    git fetch -q --depth 1 origin "$QUICKBOOKS_MCP_COMMIT"; \
+    git checkout -q FETCH_HEAD; \
+    rm -rf .git; \
+    npm ci --include=dev --ignore-scripts; \
+    npm run build; \
+    npm prune --omit=dev; \
+    test -f /opt/quickbooks-mcp/dist/index.js; \
+    chown -R root:root /opt/quickbooks-mcp
+
 # ---- /home/node ownership ----
 # The gateway runs as uid 1000: container-stack.ts boots as root (it has to —
 # the ECS ephemeral volumes materialise root:root) and then hands the gateway

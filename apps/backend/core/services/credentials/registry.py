@@ -17,7 +17,7 @@ _YAML = Path(__file__).parent / "providers.yaml"
 
 Acquisition = Literal["paste_token", "direct_oauth", "nango", "agentcore", "aws_sts", "secrets_manager"]
 Actor = Literal["cli", "mcp", "skill", "nango_proxy"]
-RefreshOwner = Literal["none", "actor", "isol8_rematerialize", "nango_proxy"]
+RefreshOwner = Literal["none", "actor", "nango_proxy"]
 
 
 class OpenclawPath(BaseModel):
@@ -97,6 +97,46 @@ class McpRemote(BaseModel):
             "url": self.url,
             "auth": "oauth",
             "requestTimeoutMs": self.request_timeout_ms,
+        }
+
+
+class McpStdio(BaseModel):
+    """Stdio MCP server metadata for a provider whose credential is delivered as a
+    FILE by a materializer rather than as env values on the ``mcp_server`` rail.
+
+    ``mcp_server`` (the wiring rail) resolves each env var from the retained
+    Secrets Manager secret, so it cannot carry a provider whose ``refresh_owner``
+    is ``actor`` — those retain no secret, and ``build_connected_integration_servers``
+    skips them, silently dropping the server block on the next reprovision. This
+    block is the stdio twin of ``McpRemote``: the materializer writes the token
+    store onto EFS, and the published server config carries only the PATH to it.
+
+    Because the block holds no secret, it is re-derivable from the registry alone —
+    which is what makes it survive a wholesale openclaw.json rewrite.
+    """
+
+    key: str  # the mcp.servers.<key> this integration owns
+    command: str
+    args: list[str] = Field(default_factory=list)
+    # Env var naming the on-EFS token store. The server must read this from its
+    # HOST PROCESS env (i.e. this block) rather than from the store file itself.
+    token_store_env: str = Field(alias="tokenStoreEnv")
+    # Same rationale as McpServer.connection_timeout_ms: a stdio server on a
+    # 0.5-vCPU container needs well past OpenClaw's 30s default to spawn.
+    connection_timeout_ms: int = Field(120_000, alias="connectionTimeoutMs")
+
+    model_config = {"populate_by_name": True}
+
+    def server_block(self, token_store_path: str) -> dict[str, object]:
+        """The mcp.servers.<key> block published into the live openclaw.json.
+
+        Built identically by the materializer write and by the reprovision
+        rehydration, so the two can never drift."""
+        return {
+            "command": self.command,
+            "args": list(self.args),
+            "env": {self.token_store_env: token_store_path},
+            "connectionTimeoutMs": self.connection_timeout_ms,
         }
 
 
@@ -402,6 +442,7 @@ class Provider(BaseModel):
     # materializer. Only set for OAuth-protected remote MCP servers (e.g. Attio);
     # see McpRemote for why it lives at the provider level rather than in Wiring.
     mcp_remote: McpRemote | None = None
+    mcp_stdio: McpStdio | None = None
     # Restrict this provider to specific environments (e.g. ["local", "dev"]).
     # None = available in every environment. Used to ship a provider to dev for
     # testing before it's cleared for prod — e.g. Instagram, pending Meta App

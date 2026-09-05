@@ -987,7 +987,12 @@ oauth_router = APIRouter(prefix="/oauth", tags=["connections"])
 
 
 @oauth_router.get("/{provider}/callback")
-async def oauth_callback(provider: str, state: str, code: str | None = None):
+async def oauth_callback(
+    provider: str,
+    state: str,
+    code: str | None = None,
+    realmId: str | None = None,  # noqa: N803 - Intuit's query param name
+):
     # RFC 6749 error redirect: the provider bounced the authorize (?error=
     # access_denied|invalid_scope|…&state=…) so no code was issued. Land back on
     # the connections page instead of 422ing raw JSON in the user's browser; the
@@ -996,7 +1001,7 @@ async def oauth_callback(provider: str, state: str, code: str | None = None):
         return _done("error=oauth_provider")
     try:
         owner_id, prov, credential, origin = await oauth_dance.exchange(
-            state, code, redirect_uri=_redirect_uri(provider)
+            state, code, redirect_uri=_redirect_uri(provider), realm_id=realmId
         )
     except ValueError:
         return _done("error=oauth_state")

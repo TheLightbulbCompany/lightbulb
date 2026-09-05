@@ -467,7 +467,7 @@ class TestEnvGatedProvider:
             display_name="X",
             acquisition="direct_oauth",
             actor="cli",
-            refresh_owner="isol8_rematerialize",
+            refresh_owner="none",
             wiring={"materializer": "instagram_cli"},
             oauth={
                 "authorization_url": "https://x/a",

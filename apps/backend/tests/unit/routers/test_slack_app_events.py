@@ -89,7 +89,7 @@ class _Upstream(httpx.AsyncBaseTransport):
         self.seen.append(request)
         if self.raise_exc:
             raise self.raise_exc
-        return httpx.Response(self.status, content=b"")
+        return httpx.Response(self.status, content=b'{"ok":true}')
 
 
 def _upstream(t: _Upstream):
@@ -165,13 +165,16 @@ def test_no_ip_is_503_with_retry_after(client):
 def test_forward_is_byte_identical_and_re_signed_with_hook_token(client):
     body = _event()
     t = _Upstream()
+    sent = _headers(body)
     with _app_store(), _dedup(), _install(), _container(), _billing(), _ip(), _upstream(t):
-        r = client.post("/api/v1/slack/events", content=body, headers=_headers(body))
+        r = client.post("/api/v1/slack/events", content=body, headers=sent)
     assert r.status_code == 200
+    assert r.content == b'{"ok":true}'
     (req,) = t.seen
     assert str(req.url) == f"http://10.0.42.17:18789/slack/events/{TEAM}"
     assert req.content == body
     ts = req.headers["x-slack-request-timestamp"]
+    assert ts == sent["X-Slack-Request-Timestamp"]
     assert req.headers["x-slack-signature"] == _sig(HOOK_TOKEN, ts, body)
     assert req.headers["content-type"] == "application/json"
     assert "authorization" not in {k.lower() for k in req.headers}
@@ -215,6 +218,7 @@ def test_upstream_timeout_is_200_with_metric(client):
         r = client.post("/api/v1/slack/events", content=body, headers=_headers(body))
     assert r.status_code == 200
     assert any(c.args and c.args[0] == "slack.forward_failed" for c in metric.call_args_list)
+    assert metric.call_args_list[0].kwargs["dimensions"] == {"reason": "request_error"}
 
 
 def test_upstream_5xx_is_200(client):
@@ -238,3 +242,22 @@ def test_app_uninstalled_revokes_and_is_200(client):
         r = client.post("/api/v1/slack/events", content=body, headers=_headers(body))
     assert r.status_code == 200
     rev.assert_awaited_once_with(TEAM)
+
+
+def test_revoke_failure_is_still_200(client):
+    body = json.dumps(
+        {"type": "event_callback", "team_id": TEAM, "event_id": "Ev10", "event": {"type": "app_uninstalled"}}
+    ).encode()
+    with (
+        _app_store(),
+        _dedup(),
+        _install(),
+        patch(
+            "routers.slack_app.slack_install_service.revoke_install",
+            AsyncMock(side_effect=RuntimeError("efs")),
+        ),
+        patch("routers.slack_app.put_metric") as metric,
+    ):
+        r = client.post("/api/v1/slack/events", content=body, headers=_headers(body))
+    assert r.status_code == 200
+    assert any(c.args and c.args[0] == "slack.revoke_failed" for c in metric.call_args_list)

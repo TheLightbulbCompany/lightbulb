@@ -24,13 +24,18 @@ Timestamp preserved, X-Slack-Signature RE-SIGNED with the owner's hook_token
 app-wide signing secret never leaves this process). No Authorization header:
 the plugin route is auth:"plugin". Never resolve_running_container here — its
 5 s TCP probe eats Slack's whole 3 s budget.
+
+The no-IP 503 is the single deliberate exception to "per-owner failures never
+5xx": Slack's retry IS the recovery for a container mid-roll, and one owner's
+503s cannot approach the app-wide 95 %/60 min threshold.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote
 
 import httpx
 from fastapi import APIRouter, Request, Response
@@ -59,10 +64,8 @@ def _client_factory() -> httpx.AsyncClient:
     return httpx.AsyncClient(timeout=httpx.Timeout(FORWARD_TIMEOUT_S))
 
 
-def _json_200(payload: dict, **headers: str) -> Response:
-    return Response(
-        status_code=200, content=json.dumps(payload).encode(), media_type="application/json", headers=headers
-    )
+def _json_200(payload: dict) -> Response:
+    return Response(status_code=200, content=json.dumps(payload).encode(), media_type="application/json")
 
 
 def _parse(content_type: str, body: bytes) -> dict:
@@ -135,7 +138,11 @@ async def receive_slack_event(request: Request) -> Response:
 
     event = data.get("event") if isinstance(data.get("event"), dict) else {}
     if event.get("type") in _REVOKE_EVENTS:
-        await slack_install_service.revoke_install(team_id)
+        try:
+            await slack_install_service.revoke_install(team_id)
+        except Exception as exc:  # noqa: BLE001 — per-owner cleanup must never 5xx the shared app
+            logger.exception("slack events: revoke failed team=%s err=%s", team_id, exc)
+            put_metric("slack.revoke_failed", 1, dimensions={"reason": type(exc).__name__})
         return Response(status_code=200)
     if event.get("bot_id") or (event.get("user") and event.get("user") == install.get("bot_user_id")):
         return Response(status_code=200)  # our own post echoing back
@@ -150,7 +157,9 @@ async def receive_slack_event(request: Request) -> Response:
         # Phase 1 is paid-only. Phase 2 replaces this with wake + templated reply.
         return Response(status_code=200, headers={"x-slack-no-retry": "1"})
 
-    ip = ecs_manager.discover_ip(container["service_name"])
+    # Offload so a slow Cloud Map response can't block the event loop (same
+    # reasoning as the other async caller in ecs_manager.py:~2504).
+    ip = await asyncio.to_thread(ecs_manager.discover_ip, container["service_name"])
     if not ip:
         return Response(
             status_code=503,
@@ -165,7 +174,7 @@ async def receive_slack_event(request: Request) -> Response:
         "X-Slack-Request-Timestamp": ts,
         "X-Slack-Signature": slack_signing.sign(container["hook_token"], ts, body),
     }
-    target = f"http://{ip}:{GATEWAY_PORT}/slack/events/{team_id}"
+    target = f"http://{ip}:{GATEWAY_PORT}/slack/events/{quote(team_id, safe='')}"
     try:
         async with _client_factory() as client:
             upstream = await client.post(target, headers=headers, content=body)

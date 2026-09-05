@@ -3,7 +3,11 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 
 const api = { get: vi.fn(), del: vi.fn() };
 vi.mock("@/lib/api", () => ({ useApi: () => api }));
-const billing = { account: { is_subscribed: true } as { is_subscribed: boolean } | null, isLoading: false };
+const billing = {
+  account: { is_subscribed: true } as { is_subscribed: boolean } | null,
+  isLoading: false,
+  error: undefined as Error | undefined,
+};
 vi.mock("@/hooks/useBilling", () => ({ useBilling: () => billing }));
 
 import { SlackInstallCard } from "../SlackInstallCard";
@@ -14,6 +18,19 @@ describe("SlackInstallCard", () => {
     api.del.mockReset();
     billing.account = { is_subscribed: true };
     billing.isLoading = false;
+    billing.error = undefined;
+  });
+
+  it("still offers the button when the billing read itself fails, and relays the backend's 402", async () => {
+    billing.account = null;
+    billing.error = new Error("boom");
+    api.get.mockImplementation(async (path: string) => {
+      if (path.startsWith("/slack/install")) return { installs: [] };
+      throw Object.assign(new Error("payment required"), { status: 402 });
+    });
+    render(<SlackInstallCard agentId="agent_f" />);
+    fireEvent.click(await screen.findByRole("button", { name: /add to slack/i }));
+    expect(await screen.findByText(/needs a paid plan/i)).toBeInTheDocument();
   });
 
   it("offers no button to a trial owner, only the paid-plan note", async () => {

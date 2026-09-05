@@ -61,6 +61,7 @@ Exact steps, in the order they become necessary. Everything else in this program
 ## Phase 4 backlog (each becomes a plan when picked)
 
 - **Lambda + SQS ack** — designed in the scale brief; trigger: sustained >50 events/s or Slack's failure email.
+- **Per-owner consecutive-503 degrade** — the no-IP 503 is the one deliberate per-owner 5xx (Slack's retry is the recovery); if one dominant workspace stays down for ~an hour it could approach the app-wide 95 %/60 min kill switch. Count consecutive no-IP per owner and degrade to 200 + metric after N.
 - **Enterprise Grid** — org-wide install; needs `org_deploy_enabled`, `enterprise_id` routing, and a plugin mode that forbids bindings (so per-agent routing changes shape).
 - **Modals** — a small companion plugin; the seam exists (`trigger_id` is handed to plugin interactive handlers).
 - **Agent faces** — `chat:write.customize`; Atlas replies as Atlas. One scope + scope justification.

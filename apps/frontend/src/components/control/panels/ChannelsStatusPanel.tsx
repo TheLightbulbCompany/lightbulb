@@ -93,15 +93,23 @@ function PairingRequestCard({
         account_id: pairingRequest.accountId,
         request_id: pairingRequest.requestId,
       });
-      await onResolved();
     } catch (caught) {
       setError(
         caught instanceof Error
           ? caught.message
           : `Could not ${decision} this request.`,
       );
+      return;
     } finally {
       setBusy(null);
+    }
+
+    // The decision already succeeded. A transient revalidation failure must not
+    // invite an unsafe duplicate approve/reject; SWR will poll again shortly.
+    try {
+      await onResolved();
+    } catch {
+      // Keep the successful action result distinct from list refresh state.
     }
   };
 
@@ -267,7 +275,8 @@ export function ChannelsStatusPanel() {
         <div className="rounded-lg border border-[var(--edge)] bg-cream p-6 text-center">
           <Radio size={20} className="mx-auto mb-2 text-midnight-muted" />
           <p className="text-sm text-[var(--midnight-muted)]">
-            No channels configured. Connect Slack from an agent&apos;s Channels tab, or add a Telegram/Discord bot there.
+            No channels configured. Connect Slack from an agent&apos;s Channels
+            tab, or add a Telegram/Discord bot there.
           </p>
         </div>
       ) : (

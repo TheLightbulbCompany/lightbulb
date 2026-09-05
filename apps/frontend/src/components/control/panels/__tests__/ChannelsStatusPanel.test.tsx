@@ -157,4 +157,41 @@ describe("ChannelsStatusPanel", () => {
     expect(JSON.stringify(mockApiPost.mock.calls)).not.toMatch(/code/i);
     expect(mockPairingRefresh).toHaveBeenCalledTimes(1);
   });
+
+  it("does not report a successful decision as failed when refresh fails", async () => {
+    mockData.mockReturnValue({
+      ts: 1,
+      channelOrder: ["slack"],
+      channelLabels: { slack: "Slack" },
+      channels: {},
+      channelAccounts: { slack: [{ accountId: "friday" }] },
+      channelDefaultAccountId: {},
+    });
+    mockPairingData.mockReturnValue({
+      requests: [
+        {
+          requestId: "request-opaque-1",
+          channel: "slack",
+          channelLabel: "Slack",
+          accountId: "friday",
+          accountLabel: "Friday",
+          senderId: "U_IMMUTABLE",
+          senderLabel: "Aden Kim",
+          createdAt: "2026-09-04T23:00:00Z",
+          lastSeenAt: "2026-09-04T23:00:00Z",
+          expiresAt: "2026-09-05T00:00:00Z",
+          notifySupported: true,
+        },
+      ],
+    });
+    mockApiPost.mockResolvedValue({});
+    mockPairingRefresh.mockRejectedValue(new Error("refresh failed"));
+
+    render(<ChannelsStatusPanel />);
+    fireEvent.click(screen.getByRole("button", { name: /reject/i }));
+
+    await waitFor(() => expect(mockPairingRefresh).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText(/refresh failed/i)).toBeNull();
+    expect(screen.queryByText(/could not reject/i)).toBeNull();
+  });
 });

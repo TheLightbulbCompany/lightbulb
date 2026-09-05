@@ -51,6 +51,13 @@ export function isFreeTierExpired(
 }
 
 /**
+ * Length of the free-tier window, in whole days. The backend stamps `trial_end`
+ * as EXACTLY signup + this many days (`trial_cap._is_expired`), so the count
+ * below can never legitimately exceed it — see the clamp in `freeTierDaysLeft`.
+ */
+export const FREE_TIER_DAYS = 3;
+
+/**
  * Whole days left in the free-tier window. Consumed by `FreeTierNote`, which is
  * the one surface that renders this count — `planLabel` deliberately does NOT
  * take it (the badge shares a cramped footer row; see above).
@@ -60,6 +67,11 @@ export function isFreeTierExpired(
  * have none is the one direction worth avoiding. Returns null when there is no
  * window to describe (not on the free tier, or no `trial_end` — legacy dev
  * rows have none, and the backend treats a missing stamp as NOT expired).
+ *
+ * Clamped to `FREE_TIER_DAYS`: `trial_end` is signup + exactly that many days,
+ * but `nowMs` is the CLIENT clock — a machine a few minutes slow makes
+ * `trial_end - now` exceed the true window and the ceil round to 4, so a fresh
+ * signup read "4 days left" on a 3-day trial. The clamp caps it at the promise.
  *
  * Because it rounds up, a 0 is only reachable at exact millisecond equality,
  * and callers check `isFreeTierExpired` first anyway — so there is no "last
@@ -71,5 +83,8 @@ export function freeTierDaysLeft(
   nowMs: number,
 ): number | null {
   if (status !== "trial_local" || trialEndSec == null) return null;
-  return Math.max(0, Math.ceil((trialEndSec * 1000 - nowMs) / 86_400_000));
+  return Math.min(
+    FREE_TIER_DAYS,
+    Math.max(0, Math.ceil((trialEndSec * 1000 - nowMs) / 86_400_000)),
+  );
 }

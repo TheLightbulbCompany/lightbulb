@@ -168,6 +168,50 @@ async def test_transact_publish_flip_failure_cancels_both_and_raises(marketplace
     assert v2["status"] == "draft"
 
 
+@pytest.mark.asyncio
+async def test_transact_publish_flip_carries_install_count_forward(marketplace_tables):
+    """A version republish must not reset the visible install_count: the new
+    published row inherits the retiring row's lifetime count and keeps
+    accumulating."""
+    listings = marketplace_tables["listings"]
+    # v1 published, then 3 real installs recorded against it.
+    _put_listing(listings, "l1", 1, "published")
+    for _ in range(3):
+        await marketplace_repo.increment_listing_install_count(listing_id="l1", version=1)
+    assert (await marketplace_repo.get_listing("l1", 1))["install_count"] == 3
+
+    # Seller republishes: v2 goes to review, then admin flips.
+    _put_listing(listings, "l1", 2, "review")
+    await marketplace_repo.transact_publish_flip(
+        listing_id="l1", prev_version=1, new_version=2, approved_by="admin_1", now_iso=NOW
+    )
+
+    v2 = await marketplace_repo.get_listing("l1", 2)
+    assert v2["status"] == "published"
+    assert v2["install_count"] == 3, "republish reset the displayed install count"
+
+    # New installs land on the now-published row and keep the running total.
+    await marketplace_repo.increment_listing_install_count(listing_id="l1", version=2)
+    assert (await marketplace_repo.get_listing("l1", 2))["install_count"] == 4
+
+
+@pytest.mark.asyncio
+async def test_transact_publish_flip_no_prior_installs_flips_cleanly(marketplace_tables):
+    """First-ever publish (no prior install_count) flips without writing a
+    spurious counter and does not error."""
+    listings = marketplace_tables["listings"]
+    _put_listing(listings, "l1", 1, "published")
+    _put_listing(listings, "l1", 2, "review")
+
+    await marketplace_repo.transact_publish_flip(
+        listing_id="l1", prev_version=1, new_version=2, approved_by="admin_1", now_iso=NOW
+    )
+
+    v2 = await marketplace_repo.get_listing("l1", 2)
+    assert v2["status"] == "published"
+    assert "install_count" not in v2
+
+
 # ---------------------------------------------------------------------------
 # 2. transact_record_purchase_and_credit_seller
 # ---------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { planLabel, isFreeTierExpired, freeTierDaysLeft } from "../planLabel";
+import { planLabel, isFreeTierExpired, freeTierDaysLeft, FREE_TIER_DAYS } from "../planLabel";
 
 describe("planLabel", () => {
   it("never leaks the raw trial_local enum", () => {
@@ -73,6 +73,17 @@ describe("freeTierDaysLeft", () => {
   it("floors at 0 once the window has elapsed", () => {
     const now = Date.UTC(2026, 0, 5);
     expect(freeTierDaysLeft("trial_local", (now - 3 * DAY) / 1000, now)).toBe(0);
+  });
+
+  it("clamps to the trial length, so a fresh signup never reads 4 on a 3-day trial", () => {
+    // trial_end is stamped signup + FREE_TIER_DAYS exactly, but nowMs is the
+    // CLIENT clock. A machine 5 min slow makes trial_end - now exceed the window
+    // and the ceil round to 4 — the clamp must cap it at the promised length.
+    const now = Date.UTC(2026, 0, 1);
+    const trialEnd = (now + FREE_TIER_DAYS * DAY) / 1000;
+    expect(freeTierDaysLeft("trial_local", trialEnd, now)).toBe(FREE_TIER_DAYS);
+    const skewedNow = now - 5 * 60_000; // client clock 5 minutes behind
+    expect(freeTierDaysLeft("trial_local", trialEnd, skewedNow)).toBe(FREE_TIER_DAYS);
   });
 
   it("is null when there is no window to describe", () => {

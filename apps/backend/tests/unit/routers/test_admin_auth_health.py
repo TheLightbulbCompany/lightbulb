@@ -230,13 +230,26 @@ class TestAdminActionsAuditViewer:
 
     @pytest.mark.asyncio
     @patch("routers.admin.admin_service")
-    async def test_actions_returns_400_when_neither_filter_provided(self, mock_admin_service, async_client, app):
-        """When the service raises ValueError (its way of signalling 'pick a
-        filter'), the router translates to 400."""
+    async def test_actions_no_filter_returns_recent_rows(self, mock_admin_service, async_client, app):
+        """No filter => platform-wide audit view. The router must NOT 400; it
+        calls the service with both filters None and returns the recent rows."""
         _admit_test_user(app)
-        mock_admin_service.get_actions_audit = AsyncMock(
-            side_effect=ValueError("must filter by target_user_id or admin_user_id")
-        )
+        mock_admin_service.get_actions_audit = AsyncMock(return_value={"items": [{"id": "evt1"}], "cursor": None})
+
+        response = await async_client.get("/api/v1/admin/actions")
+
+        assert response.status_code == 200
+        assert response.json()["items"] == [{"id": "evt1"}]
+        kwargs = mock_admin_service.get_actions_audit.await_args.kwargs
+        assert kwargs["target_user_id"] is None
+        assert kwargs["admin_user_id"] is None
+
+    @pytest.mark.asyncio
+    @patch("routers.admin.admin_service")
+    async def test_actions_translates_service_valueerror_to_400(self, mock_admin_service, async_client, app):
+        """The router still translates an unexpected service ValueError to 400."""
+        _admit_test_user(app)
+        mock_admin_service.get_actions_audit = AsyncMock(side_effect=ValueError("bad cursor"))
 
         response = await async_client.get("/api/v1/admin/actions")
 

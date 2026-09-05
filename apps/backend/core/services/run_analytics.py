@@ -69,6 +69,35 @@ _ENRICH_TIMEOUT_S = 5.0
 _SEEN_RUN_IDS_CAP = 4096
 _seen_run_ids: dict[str, None] = {}
 
+# owner:runId -> actor stamped at DISPATCH ("human" for a client WS chat.send,
+# "system" for a backend kickoff / first-contact nudge). Threaded through this
+# module-owned map rather than the gateway's ``_active_runs`` because the
+# dispatch sites (routers/websocket_chat, core/services/bootstrap_dispatcher)
+# and the terminal reader both key on the runId (== chat.send idempotencyKey ==
+# the runId OpenClaw echoes on every event), so the carry needs no change in
+# connection_pool. Runs NOT dispatched by those two sites (cron/channel/
+# paperclip) are never stamped -> actor stays None (never inferred from
+# run_source). Bounded FIFO, same idiom as _seen_run_ids: a stamped run whose
+# terminal never fires (backend down mid-run, send that never acked) is evicted
+# by the cap.
+_RUN_ACTOR_CAP = 4096
+_run_actor: dict[str, str] = {}
+
+
+def record_run_actor(owner_id: str, run_id: str | None, actor: str) -> None:
+    """Stamp the dispatch actor for a run; read back by ``schedule_run_completed``.
+
+    No-op when analytics is off (keeps the map empty so nothing accumulates)
+    or the runId is missing. Synchronous and I/O-free — safe on any dispatch
+    path.
+    """
+    if not settings.POSTHOG_PROJECT_WRITE_KEY or not run_id:
+        return
+    _run_actor[f"{owner_id}:{run_id}"] = actor
+    while len(_run_actor) > _RUN_ACTOR_CAP:
+        del _run_actor[next(iter(_run_actor))]
+
+
 # owner_id -> (is_internal, monotonic stamp). Bounded, 1h TTL — one Clerk
 # email resolution per owner per hour instead of one per run.
 _INTERNAL_TTL_S = 3600.0
@@ -87,6 +116,7 @@ def schedule_run_completed(*, owner_id: str, parsed: dict, payload: dict, phase:
     if not settings.POSTHOG_PROJECT_WRITE_KEY:
         return None
     run_id = payload.get("runId")
+    actor: str | None = None
     if run_id:
         dedup_key = f"{owner_id}:{run_id}"
         if dedup_key in _seen_run_ids:
@@ -94,6 +124,10 @@ def schedule_run_completed(*, owner_id: str, parsed: dict, payload: dict, phase:
         _seen_run_ids[dedup_key] = None
         while len(_seen_run_ids) > _SEEN_RUN_IDS_CAP:
             del _seen_run_ids[next(iter(_seen_run_ids))]
+        # Actor stamped at dispatch (record_run_actor). Popped so a re-emit of
+        # the same runId (bounded FIFO belt already returned above) can't leave
+        # it dangling. None when neither dispatch site stamped this run.
+        actor = _run_actor.pop(dedup_key, None)
 
     data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
     if phase == "error":
@@ -107,6 +141,7 @@ def schedule_run_completed(*, owner_id: str, parsed: dict, payload: dict, phase:
         "run_id": run_id,
         "agent_id": parsed.get("agent_id"),
         "outcome": outcome,
+        "actor": actor,
         "trigger_provider": None,
         "channel": None,
         "is_nightly_ceo": False,

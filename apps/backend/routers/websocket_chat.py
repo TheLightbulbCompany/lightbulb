@@ -25,6 +25,7 @@ from core.config import settings
 from core.containers import get_ecs_manager, get_gateway_pool
 from core.observability.logging import bind_log_context
 from core.observability.metrics import put_metric
+from core.services import run_analytics
 from core.services.connection_service import ConnectionService, ConnectionServiceError
 from core.services.management_api_client import ManagementApiClient
 from core.services.node_proxy import (
@@ -2502,6 +2503,10 @@ async def _process_agent_chat_background(
         # Computed up-front so a side run can be registered under the SAME id its
         # terminal will carry.
         run_id_for_send = client_run_id or str(uuid4())
+        # Stamp the run's actor at dispatch: a chat.send off a client WS frame
+        # (normal or /btw side send) is human-initiated. Read back by the
+        # gateway terminal's agent_run_completed emit. See run_analytics.
+        run_analytics.record_run_actor(owner_id, run_id_for_send, "human")
 
         if not side:
             await pool.ensure_connection(owner_id, ip, container["gateway_token"])

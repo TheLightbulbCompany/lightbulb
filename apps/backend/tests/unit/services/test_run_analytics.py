@@ -30,6 +30,7 @@ def _analytics_enabled(monkeypatch):
     """Enable the bridge + reset module state between tests."""
     run_analytics._seen_run_ids.clear()
     run_analytics._internal_cache.clear()
+    run_analytics._run_actor.clear()
     monkeypatch.setattr(settings, "POSTHOG_PROJECT_WRITE_KEY", "phc_test")
     monkeypatch.setattr(settings, "PAPERCLIP_INTERNAL_URL", "http://paperclip.test")
 
@@ -111,6 +112,52 @@ async def test_channel_and_cron_props_attached():
     kwargs = await _emit({"agent_id": "a", "source": "cron", "cron_id": "cron-1"}, payload=_payload(run_id="run-2"))
     assert kwargs["properties"]["cron_id"] == "cron-1"
     assert kwargs["properties"]["channel"] is None
+
+
+# ---------------------------------------------------------------------------
+# actor — stamped at dispatch (record_run_actor), never inferred from run_source
+# ---------------------------------------------------------------------------
+
+
+async def test_actor_none_when_not_stamped():
+    """A run neither dispatch site stamped (cron/channel/paperclip, or a race)
+    carries actor=None — never inferred from run_source."""
+    kwargs = await _emit({"agent_id": "a", "source": "cron", "cron_id": "c"})
+    assert kwargs["properties"]["actor"] is None
+
+
+async def test_actor_human_when_stamped_at_dispatch():
+    """A client WS chat.send stamps human; the gateway terminal reads it back."""
+    run_analytics.record_run_actor(OWNER, "run-h", "human")
+    kwargs = await _emit({"agent_id": "a", "source": "webchat"}, payload=_payload(run_id="run-h"))
+    assert kwargs["properties"]["actor"] == "human"
+
+
+async def test_actor_system_when_stamped_at_dispatch():
+    """A backend kickoff / first-contact nudge stamps system."""
+    run_analytics.record_run_actor(OWNER, "run-s", "system")
+    kwargs = await _emit({"agent_id": "a", "source": "webchat"}, payload=_payload(run_id="run-s"))
+    assert kwargs["properties"]["actor"] == "system"
+
+
+async def test_actor_stamp_is_owner_scoped_and_consumed_once():
+    """Keyed on owner:runId — a colliding runId under another owner doesn't
+    borrow it — and popped, so a re-emit of the same run reads None."""
+    run_analytics.record_run_actor(OWNER, "run-c", "human")
+    other = await _emit({"agent_id": "a", "source": "webchat"}, payload=_payload(run_id="run-c"), owner_id="user_other")
+    assert other["properties"]["actor"] is None
+    first = await _emit({"agent_id": "a", "source": "webchat"}, payload=_payload(run_id="run-c"))
+    assert first["properties"]["actor"] == "human"
+    run_analytics._seen_run_ids.clear()
+    again = await _emit({"agent_id": "a", "source": "webchat"}, payload=_payload(run_id="run-c"))
+    assert again["properties"]["actor"] is None
+
+
+def test_record_run_actor_noop_when_disabled(monkeypatch):
+    """No write key -> nothing stamped, so the map never accumulates."""
+    monkeypatch.setattr(settings, "POSTHOG_PROJECT_WRITE_KEY", "")
+    run_analytics.record_run_actor(OWNER, "run-x", "human")
+    assert f"{OWNER}:run-x" not in run_analytics._run_actor
 
 
 # ---------------------------------------------------------------------------

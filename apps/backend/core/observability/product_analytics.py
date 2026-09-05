@@ -89,6 +89,12 @@ def capture_product_event(
     if client is None or not distinct_id:
         return
     props = dict(properties or {})
+    # Super-property so dev and prod are separable in the shared PostHog project.
+    # setdefault: a caller may override it, but every server-side event that
+    # doesn't gets stamped exactly once, here (capture_once_per_owner_per_day
+    # and the trial helpers all route through this function). Empty ENVIRONMENT
+    # (local dev / CI) reads as "local".
+    props.setdefault("environment", settings.ENVIRONMENT or "local")
     if set_person:
         props["$set"] = {**props.get("$set", {}), **set_person}
     try:

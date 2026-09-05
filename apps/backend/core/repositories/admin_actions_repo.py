@@ -108,6 +108,42 @@ async def query_by_target(
     }
 
 
+async def scan_recent(
+    limit: int = 50,
+    cursor: str | None = None,
+) -> dict:
+    """Newest-first across ALL admins/targets — the unfiltered audit view.
+
+    The table has no global time-ordered index (PK is per-admin, the GSI is
+    per-target), so a global newest-first listing scans every row and sorts in
+    memory. The cursor is a decimal offset into that sorted list.
+
+    # ponytail: full scan + in-memory sort. Fine for the low-volume audit table
+    # (hundreds of rows). If it ever grows past a few thousand, add a
+    # fixed-partition GSI (constant PK, timestamp SK) and query that instead.
+    """
+    table = _get_table()
+    items: list[dict[str, Any]] = []
+    scan_kwargs: dict[str, Any] = {}
+    while True:
+        response = await run_in_thread(table.scan, **scan_kwargs)
+        items.extend(response.get("Items", []))
+        last = response.get("LastEvaluatedKey")
+        if not last:
+            break
+        scan_kwargs["ExclusiveStartKey"] = last
+
+    items.sort(key=lambda i: i.get("timestamp_action_id", ""), reverse=True)
+
+    offset = int(cursor) if cursor and cursor.isdigit() else 0
+    page = items[offset : offset + limit]
+    next_offset = offset + limit
+    return {
+        "items": page,
+        "cursor": str(next_offset) if next_offset < len(items) else None,
+    }
+
+
 async def query_by_admin(
     admin_user_id: str,
     limit: int = 50,

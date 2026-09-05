@@ -202,10 +202,19 @@ export function orderRoster(
 }
 
 /**
- * Who stays visible while the roster is collapsed: Friday plus every pinned
- * agent.
+ * Who stays visible while the roster is collapsed: Friday, every pinned agent,
+ * and whoever is currently OPEN.
  *
- * The CEO fallback matters. `defaultId` and CEO-ness are deliberately
+ * The active agent is not optional. `activeAgentId` is driven from outside the
+ * roster — a `RunNotifications` toast dispatching `selectAgent`, an assignee
+ * picker, `HomeQuickActions`, anything calling `openChatPanel` — so an agent
+ * that is neither CEO nor pinned can become the open conversation without the
+ * owner ever touching this list. Filtering it out would show the right agent in
+ * the chat pane while the sidebar showed only Friday and a chevron: no
+ * `aria-current` row, no session list, no indication of what you are looking
+ * at. That is precisely the "needs you" case collapsing is supposed to survive.
+ *
+ * The CEO fallback matters too. `defaultId` and CEO-ness are deliberately
  * decoupled (see `useRosterEntries`) — on a company with no `role: "ceo"` agent
  * the backend falls back to index 0, so `isCeo` can be false for EVERY entry.
  * Without a fallback the collapsed roster would then be empty and the owner
@@ -214,8 +223,11 @@ export function orderRoster(
 export function collapsedRoster(
   ordered: RosterEntry[],
   pinnedIds: ReadonlySet<string>,
+  activeAgentId?: string | null,
 ): RosterEntry[] {
-  const kept = ordered.filter((e) => e.isCeo || pinnedIds.has(e.agent.id));
+  const kept = ordered.filter(
+    (e) => e.isCeo || pinnedIds.has(e.agent.id) || e.agent.id === activeAgentId,
+  );
   return kept.length > 0 ? kept : ordered.slice(0, 1);
 }
 
@@ -292,7 +304,10 @@ export function AgentRoster({
 
   // Collapsed shows Friday + pins; expanded shows everyone. Computed from the
   // FULL ordered list so the counts in the header stay honest either way.
-  const collapsed = useMemo(() => collapsedRoster(ordered, pinned), [ordered, pinned]);
+  const collapsed = useMemo(
+    () => collapsedRoster(ordered, pinned, activeAgentId),
+    [ordered, pinned, activeAgentId],
+  );
   const visible = expanded ? ordered : collapsed;
   // Measured against the COLLAPSED slice, not the visible one, so the answer is
   // the same in both states: with one agent — or with everyone pinned — there

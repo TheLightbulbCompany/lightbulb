@@ -409,6 +409,14 @@ describe("collapsedRoster", () => {
     expect(kept.map((e) => e.agent.id)).toEqual(["f", "b"]);
   });
 
+  it("keeps the ACTIVE agent, even when it is neither CEO nor pinned", () => {
+    // activeAgentId is driven from outside the roster — a run notification, an
+    // assignee picker, openChatPanel. Filtering it out would leave the chat
+    // pane showing one agent while the sidebar showed only Friday.
+    const kept = collapsedRoster([ceo, a, b], new Set(), "b");
+    expect(kept.map((e) => e.agent.id)).toEqual(["f", "b"]);
+  });
+
   it("falls back to the first row when NO entry is the CEO", () => {
     // `defaultId` and CEO-ness are decoupled: on a company with no role:"ceo"
     // agent the backend falls back to index 0, so isCeo can be false for every
@@ -497,6 +505,19 @@ describe("AgentRoster collapse", () => {
     renderRoster(entries);
     expect(screen.queryByRole("button", { name: /pin Friday/i })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /pin Atlas/i })).toBeInTheDocument();
+  });
+
+  it("shows the open agent in the collapsed roster, with its aria-current row", () => {
+    localStorage.clear();
+    // Bee needs the owner and is neither CEO nor pinned — exactly the agent a
+    // notification toast would open.
+    renderRoster(entries, { activeAgentId: "b" });
+    expect(rowNames()).toEqual(["Friday", "Bee"]);
+    expect(
+      screen.getByRole("button", { name: /Bee.*Needs you/i }),
+    ).toHaveAttribute("aria-current", "true");
+    // Only Atlas is left behind the chevron.
+    expect(screen.getByRole("button", { name: /show 1 more agent$/i })).toBeInTheDocument();
   });
 
   it("renders no expander when there is nothing behind it", () => {

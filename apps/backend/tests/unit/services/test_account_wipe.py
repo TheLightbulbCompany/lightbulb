@@ -77,6 +77,7 @@ EXPECTED_ORDER = [
     "integrations",
     "oauth_tokens",
     "agent_email_addresses",
+    "slack_installs",
     "company_slug",
     "clerk_user",
 ]
@@ -201,6 +202,8 @@ def wipe_mocks():
     oauth_revoke = AsyncMock(return_value=None)
     agent_email_query = AsyncMock(return_value=[{"owner_id": "user_abc123", "address": "friday@acme.isol8.co"}])
     agent_email_delete = AsyncMock(return_value=["friday@acme.isol8.co"])
+    slack_installs_list = AsyncMock(return_value=[{"team_id": "T1", "owner_id": "user_abc123"}])
+    slack_installs_delete = AsyncMock(return_value=["T1"])
     # One OPEN provisioning workflow by default, so the preview's
     # would_delete sweep over EXPECTED_ORDER has something to report.
     workflows_list = AsyncMock(return_value=[{"workflow_id": "pwf_1", "owner_id": OWNER_ID, "state": "provisioning"}])
@@ -252,6 +255,8 @@ def wipe_mocks():
         ("core.services.account_wipe.revoke_user_oauth", oauth_revoke),
         ("core.services.account_wipe.agent_email_repo.query_by_owner", agent_email_query),
         ("core.services.account_wipe.agent_email_repo.delete_all_for_owner", agent_email_delete),
+        ("core.services.account_wipe.slack_installs_repo.list_for_owner", slack_installs_list),
+        ("core.services.account_wipe.slack_installs_repo.delete_all_for_owner", slack_installs_delete),
         ("core.services.account_wipe.company_slug_repo.get_by_owner", slug_get),
         ("core.services.account_wipe.company_slug_repo.delete_for_owner", slug_delete),
     ]
@@ -291,6 +296,8 @@ def wipe_mocks():
             workflows_transition=workflows_transition,
             oauth_revoke=oauth_revoke,
             agent_email_delete=agent_email_delete,
+            slack_installs_list=slack_installs_list,
+            slack_installs_delete=slack_installs_delete,
             slug_delete=slug_delete,
             gate_tokens_delete=gate_tokens_delete,
         )
@@ -634,6 +641,7 @@ async def test_clerk_delete_still_runs_when_every_other_step_fails(wipe_mocks):
     wipe_mocks.integrations_delete.side_effect = RuntimeError("ddb down")
     wipe_mocks.oauth_revoke.side_effect = RuntimeError("openai down")
     wipe_mocks.agent_email_delete.side_effect = RuntimeError("ddb down")
+    wipe_mocks.slack_installs_delete.side_effect = RuntimeError("ddb down")
     wipe_mocks.slug_delete.side_effect = RuntimeError("ddb down")
 
     with (

@@ -143,6 +143,58 @@ async def test_patch_autowires_binding_per_account_across_providers(efs_dir):
 
 
 @pytest.mark.asyncio
+async def test_patch_autowires_binding_to_mapped_agent_for_account(efs_dir):
+    """``agent_for_account`` routes an account to a specific agent (e.g. the
+    platform Slack app keys accounts by team id but routes to a chosen
+    agent) instead of the legacy ``agentId == accountId`` binding."""
+    await patch_openclaw_config(
+        "user_1",
+        {"channels": {"slack": {"accounts": {"T1": {"mode": "http"}}}}},
+        agent_for_account={"T1": "agent_f"},
+    )
+    with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
+        result = json.load(f)
+    assert result["bindings"] == [
+        {"type": "route", "agentId": "agent_f", "match": {"channel": "slack", "accountId": "T1"}}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_patch_rebinds_account_to_new_agent(efs_dir):
+    """Rebinding a workspace to a different agent (e.g. Slack Disconnect +
+    reconnect to a different agent) must not leave the OLD account-wide
+    binding behind — the dispatcher would then match on whichever binding
+    happens to sort first and deliver to the wrong agent."""
+    await patch_openclaw_config(
+        "user_1",
+        {"channels": {"slack": {"accounts": {"T1": {"mode": "http"}}}}},
+        agent_for_account={"T1": "agent_a"},
+    )
+    await patch_openclaw_config(
+        "user_1",
+        {"channels": {"slack": {"accounts": {"T1": {"mode": "http"}}}}},
+        agent_for_account={"T1": "agent_b"},
+    )
+    with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
+        result = json.load(f)
+    slack_t1_bindings = [b for b in result["bindings"] if b.get("match") == {"channel": "slack", "accountId": "T1"}]
+    assert slack_t1_bindings == [
+        {"type": "route", "agentId": "agent_b", "match": {"channel": "slack", "accountId": "T1"}}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_patch_autowires_legacy_binding_without_agent_for_account(efs_dir):
+    await patch_openclaw_config(
+        "user_1",
+        {"channels": {"slack": {"accounts": {"T1": {"mode": "http"}}}}},
+    )
+    with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
+        result = json.load(f)
+    assert result["bindings"] == [{"type": "route", "agentId": "T1", "match": {"channel": "slack", "accountId": "T1"}}]
+
+
+@pytest.mark.asyncio
 async def test_patch_dedupes_binding_on_repeat(efs_dir):
     for _ in range(2):
         await patch_openclaw_config(

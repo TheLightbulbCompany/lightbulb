@@ -149,19 +149,24 @@ async def _provision_mcp_servers(owner_id: str, connected_servers: dict) -> dict
         return connected_servers
 
 
-async def _provision_channel_accounts(owner_id: str) -> dict[str, dict[str, dict]]:
-    """Channel bot accounts to re-inject into a regenerated openclaw.json.
+async def _provision_channel_accounts(owner_id: str) -> tuple[dict[str, dict[str, dict]], list[dict]]:
+    """Channel bot accounts + their route bindings, to re-inject into a
+    regenerated openclaw.json.
 
     The reprovision path fully overwrites openclaw.json, so without this every
     configured Telegram/Slack/Discord account — bot token, allowFrom pairings
     and all — is lost, exactly like the MCP-server case that
     ``_provision_mcp_servers`` handles. Read the live on-disk accounts and
-    return them keyed ``{provider: {accountId: account}}``;
-    ``build_openclaw_config_dict`` merges them back and recreates the sibling
-    route bindings.
+    return them keyed ``{provider: {accountId: account}}``, plus the on-disk
+    route bindings that point at a channel account.
 
-    Fail-safe: any read/parse hiccup returns ``{}`` so provisioning never breaks
-    (worst case the user re-runs the channel wizard).
+    Returns ``(accounts_by_provider, channel_bindings)``; the bindings are
+    carried VERBATIM because the platform Slack app keys accounts by team id
+    and routes them to an agent — re-synthesizing ``agentId == accountId``
+    would rewire the workspace to a non-existent agent.
+
+    Fail-safe: any read/parse hiccup returns ``({}, [])`` so provisioning never
+    breaks (worst case the user re-runs the channel wizard).
     """
     try:
         existing_cfg = await read_openclaw_config_from_efs(owner_id) or {}
@@ -174,10 +179,52 @@ async def _provision_channel_accounts(owner_id: str) -> dict[str, dict[str, dict
             accounts = entry.get("accounts")
             if isinstance(accounts, dict) and accounts:
                 out[provider] = accounts
-        return out
+        bindings = [
+            b
+            for b in (existing_cfg.get("bindings") or [])
+            if isinstance(b, dict) and (b.get("match") or {}).get("channel") in CHANNEL_PROVIDER_IDS
+        ]
+
+        # The installs table is the source of truth for the platform Slack
+        # app: a reprovision after an EFS wipe has nothing on disk. Table
+        # wins over file for the same team.
+        from core.repositories import slack_installs_repo
+        from core.services.slack_install_service import account_block, route_binding
+
+        for row in await slack_installs_repo.list_for_owner(owner_id):
+            if row.get("status") != "active" or not row.get("agent_id"):
+                continue
+            team_id = row["team_id"]
+            out.setdefault("slack", {})[team_id] = account_block(team_id)
+            bindings = [b for b in bindings if (b.get("match") or {}).get("accountId") != team_id]
+            bindings.append(route_binding(team_id, row["agent_id"]))
+
+        return out, bindings
     except Exception:  # noqa: BLE001 — best-effort; never fail provision over this.
         logger.exception("preserving channel accounts failed for %s; continuing", owner_id)
-        return {}
+        return {}, []
+
+
+def slack_env_var_name(team_id: str) -> str:
+    """ECS/SecretRef env var carrying one workspace's bot token. The OpenClaw
+    SecretRef ``id`` must match ``^[A-Z][A-Z0-9_]{0,127}$`` — Slack team ids
+    (``T0123ABC``) do; agent ids would not, which is one reason the Slack
+    account is keyed by team, not agent."""
+    return f"SLACK_BOT_TOKEN_{team_id.upper()}"
+
+
+async def _secret_arn_for_name(secret_name: str) -> str | None:
+    """ARN for a Secrets Manager name (task-def ``secrets:`` needs the ARN)."""
+    from core.config import settings as _settings
+
+    def _describe() -> str | None:
+        sm = boto3.client("secretsmanager", region_name=_settings.AWS_REGION)
+        try:
+            return sm.describe_secret(SecretId=secret_name)["ARN"]
+        except sm.exceptions.ResourceNotFoundException:
+            return None
+
+    return await asyncio.to_thread(_describe)
 
 
 _CONFIG_LOCK_PROTOCOL_ENV = "ISOL8_CONFIG_LOCK_PROTOCOL"
@@ -799,7 +846,13 @@ class EcsManager:
         except Exception as e:
             logger.error("Failed to deregister task definition %s: %s", task_definition_arn, e)
 
-    async def refresh_task_definition(self, owner_id: str) -> str | None:
+    async def refresh_task_definition(
+        self,
+        owner_id: str,
+        *,
+        extra_secrets: list[dict] | None = None,
+        drop_secrets: list[str] | None = None,
+    ) -> str | None:
         """Re-register a user's ECS task definition with the current env list,
         then roll the running task onto the new revision.
 
@@ -817,6 +870,13 @@ class EcsManager:
         (BYOK provider secrets, chatgpt_oauth ``CODEX_HOME``, etc.). So we
         describe the user's CURRENT task-def, swap its env list, and
         re-register that — the base-cloning seam doesn't fit here.
+
+        ``extra_secrets`` (``{name, valueFrom}``) are merged onto the
+        openclaw container's ``secrets`` list, replacing same-named entries —
+        the Slack install uses this to add ``SLACK_BOT_TOKEN_{TEAM}`` without
+        touching BYOK entries. ``drop_secrets`` removes same-named entries —
+        an uninstalled Slack workspace's token must leave the task-def before
+        its secret is force-deleted, or ECS can never relaunch the task.
 
         The EFS access point and DDB row are untouched — losing agent
         state would be a backfill regression.
@@ -856,6 +916,15 @@ class EcsManager:
         for cd in td["containerDefinitions"]:
             if cd["name"] == "openclaw":
                 cd["environment"] = new_env
+                if extra_secrets or drop_secrets:
+                    drop = set(drop_secrets or [])
+                    incoming = {s["name"]: s for s in (extra_secrets or [])}
+                    kept = [
+                        s
+                        for s in (cd.get("secrets") or [])
+                        if s.get("name") not in incoming and s.get("name") not in drop
+                    ]
+                    cd["secrets"] = kept + list(incoming.values())
 
         register_kwargs = {
             "family": td["family"],
@@ -2592,6 +2661,28 @@ class EcsManager:
         env_var_name = "OPENAI_API_KEY" if byo_provider == "openai" else "ANTHROPIC_API_KEY"
         return [{"name": env_var_name, "valueFrom": secret_arn}]
 
+    async def _build_slack_secrets_for_user(self, owner_id: str) -> list[dict]:
+        """ECS ``secrets:`` entries for every ACTIVE Slack install of ``owner_id``
+        — one ``SLACK_BOT_TOKEN_{TEAM}`` per workspace, so a reprovision or
+        image roll re-registers them and the SecretRef in openclaw.json keeps
+        resolving. Best-effort: ``[]`` on any failure; provisioning must never
+        break because the Slack table hiccupped (the owner re-installs)."""
+        try:
+            from core.repositories import slack_installs_repo
+
+            rows = await slack_installs_repo.list_for_owner(owner_id)
+            out: list[dict] = []
+            for row in rows:
+                if row.get("status") != "active" or not row.get("token_secret_name"):
+                    continue
+                arn = await _secret_arn_for_name(row["token_secret_name"])
+                if arn:
+                    out.append({"name": slack_env_var_name(row["team_id"]), "valueFrom": arn})
+            return out
+        except Exception:  # noqa: BLE001 — best-effort; never fail provision over this.
+            logger.exception("building slack secrets failed for %s; continuing", owner_id)
+            return []
+
     async def _pre_stage_oauth_for_user(
         self,
         user_id: str,
@@ -2891,6 +2982,10 @@ class EcsManager:
                     user_id,
                 )
             secrets_for_task = await self._build_byo_secrets_for_user(user_id, byo_provider)
+
+        # Slack bot tokens ride the task-def like BYOK keys do, so a fresh
+        # provision / reprovision of an owner with installs keeps them.
+        secrets_for_task = list(secrets_for_task) + await self._build_slack_secrets_for_user(user_id)
 
         if provider_choice not in ("chatgpt_oauth", "byo_key", *BEDROCK_PROVIDER_CHOICES):
             raise EcsManagerError(
@@ -4119,7 +4214,7 @@ class EcsManager:
         # Carry the user's configured channel bot accounts across this full
         # overwrite. A reprovision rewrites openclaw.json wholesale, so without
         # this every Telegram/Slack/Discord bot token + pairing is dropped.
-        channel_accounts = await _provision_channel_accounts(owner_id)
+        channel_accounts, channel_bindings = await _provision_channel_accounts(owner_id)
 
         # The container's XDG dirs must be writable by the access-point user
         # (uid 1000) before anything in the container tries to use them. Done
@@ -4147,6 +4242,7 @@ class EcsManager:
             provisioned_env=provisioned_env,
             aip_arns=aip_arns,
             channel_accounts=channel_accounts,
+            channel_bindings=channel_bindings,
             deployed_tag=deployed_tag,
         )
 

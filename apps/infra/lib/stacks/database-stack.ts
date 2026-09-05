@@ -34,6 +34,7 @@ export class DatabaseStack extends cdk.Stack {
   public readonly channelLinksTable: dynamodb.Table;
   public readonly companySlugsTable: dynamodb.Table;
   public readonly agentEmailAddressesTable: dynamodb.Table;
+  public readonly slackInstallsTable: dynamodb.Table;
   public readonly agentMailInboxTable: dynamodb.Table;
   public readonly webhookDedupTable: dynamodb.Table;
   public readonly adminActionsTable: dynamodb.Table;
@@ -204,6 +205,19 @@ export class DatabaseStack extends cdk.Stack {
       },
     );
     this.agentEmailAddressesTable.addGlobalSecondaryIndex({
+      indexName: "by-owner",
+      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
+    });
+
+    // One Lightbulb Slack app serves every workspace; Slack posts to ONE URL
+    // with team_id in the body, so this is the team_id → owner routing table.
+    // Same shape as agent-email-addresses (address → owner). The bot token is
+    // NOT here — it lives in Secrets Manager under the owner's integrations
+    // prefix; this row carries only its secret name.
+    this.slackInstallsTable = createTable("SlackInstallsTable", "slack-installs", {
+      partitionKey: { name: "team_id", type: dynamodb.AttributeType.STRING },
+    });
+    this.slackInstallsTable.addGlobalSecondaryIndex({
       indexName: "by-owner",
       partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
     });

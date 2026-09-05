@@ -63,6 +63,7 @@ from routers import (
     platform_info,
     ses_inbound,
     settings_keys,
+    slack_app,
     support_tickets,
     updates,
     users,
@@ -886,6 +887,9 @@ app.include_router(paperclip_trigger_proxy.router, prefix="/api/v1/hooks", tags=
 # a Meta app has ONE callback URL for every user. Routed by the asset id in the
 # payload, authenticated by the app-secret signature. See routers/meta_webhook.py.
 app.include_router(meta_webhook.router, prefix="/api/v1/hooks", tags=["hooks"])
+# The platform Slack app: one Request URL for every workspace (events,
+# interactivity, slash) + the OAuth install rail. See routers/slack_app.py.
+app.include_router(slack_app.router, prefix="/api/v1/slack", tags=["slack"])
 # Human operator diagnostics; every route requires a Clerk platform admin.
 app.include_router(ops.router, prefix="/api/v1/ops", tags=["ops"])
 app.include_router(launch.router, prefix="/api/v1/launch", tags=["launch"])

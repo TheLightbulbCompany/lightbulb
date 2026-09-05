@@ -183,3 +183,24 @@ describe("ApiStack — browser-view CloudFront door", () => {
     API_TEMPLATE.resourceCountIs("AWS::CloudFront::Distribution", 0);
   });
 });
+
+describe("ApiStack — Slack events route has its own throttle bucket", () => {
+  const template: Template = API_TEMPLATE;
+
+  test("explicit POST /api/v1/slack/events route exists", () => {
+    template.hasResourceProperties("AWS::ApiGatewayV2::Route", {
+      RouteKey: "POST /api/v1/slack/events",
+    });
+  });
+
+  test("stage carries route-level throttling for the Slack route", () => {
+    template.hasResourceProperties("AWS::ApiGatewayV2::Stage", {
+      RouteSettings: Match.objectLike({
+        "POST /api/v1/slack/events": Match.objectLike({
+          ThrottlingBurstLimit: Match.anyValue(),
+          ThrottlingRateLimit: Match.anyValue(),
+        }),
+      }),
+    });
+  });
+});

@@ -874,7 +874,10 @@ The provision gate (`core/services/provision_gate.py`) blocks chat when subscrip
 - `env.vars` is re-asserted at every provision from Secrets Manager by
   `provisioning_landing.build_provisioned_env` — same class as the
   `integration_mcp_servers` merge. A reprovision overwrites openclaw.json
-  wholesale, so anything not re-injected there is simply dropped.
+  wholesale, so anything not re-injected there is simply dropped. Channel bot
+  accounts (`channels.*.accounts`) and their route bindings are the third
+  carried-forward block (`ecs_manager._provision_channel_accounts`) — the
+  platform Slack app relies on it.
 
 ---
 

@@ -264,6 +264,9 @@ async def test_passes_channel_accounts_to_write_openclaw_config(monkeypatch, tmp
     monkeypatch.setattr(settings, "EFS_MOUNT_PATH", str(tmp_path))
 
     carried = {"telegram": {"agent_a": {"botToken": "123:ABC"}}}
+    carried_bindings = [
+        {"type": "route", "agentId": "agent_a", "match": {"channel": "telegram", "accountId": "agent_a"}}
+    ]
     write_oc_mock = AsyncMock()
 
     with (
@@ -274,7 +277,7 @@ async def test_passes_channel_accounts_to_write_openclaw_config(monkeypatch, tmp
         patch("core.containers.ecs_manager.write_openclaw_config", write_oc_mock),
         patch(
             "core.containers.ecs_manager._provision_channel_accounts",
-            AsyncMock(return_value=carried),
+            AsyncMock(return_value=(carried, carried_bindings)),
         ),
         patch("core.services.friday_identity.pre_stage_friday_identity", AsyncMock()),
         patch("core.services.atlas_seed.pre_stage_atlas", AsyncMock()),
@@ -299,6 +302,7 @@ async def test_passes_channel_accounts_to_write_openclaw_config(monkeypatch, tmp
 
     write_oc_mock.assert_awaited_once()
     assert write_oc_mock.call_args.kwargs["channel_accounts"] == carried
+    assert write_oc_mock.call_args.kwargs["channel_bindings"] == carried_bindings
 
 
 @pytest.mark.asyncio

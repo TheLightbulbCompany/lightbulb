@@ -1,4 +1,4 @@
-"""Platform-owned OAuth app clients (client_id/client_secret) in Secrets Manager.
+"""Platform-owned OAuth app clients (client_id/client_secret/signing_secret?) in Secrets Manager.
 
 Unlike ``oauth_app_store`` (per-owner BYO/DCR clients), these are ISOL8-owned
 clients shared by every owner — e.g. the reviewed Meta app that Instagram
@@ -54,11 +54,17 @@ def _get_sync(name: str) -> dict | None:
         return None
     if not data.get("client_id"):
         return None
-    return {"client_id": data["client_id"], "client_secret": data.get("client_secret") or ""}
+    return {
+        "client_id": data["client_id"],
+        "client_secret": data.get("client_secret") or "",
+        # Slack signs webhooks with a separate "signing secret" (Meta reuses
+        # the client secret). Empty when the seeded app has none.
+        "signing_secret": data.get("signing_secret") or "",
+    }
 
 
 async def get(name: str) -> dict | None:
-    """The platform client ``{client_id, client_secret}``, or None if unseeded."""
+    """The platform client ``{client_id, client_secret, signing_secret}``, or None if unseeded."""
     now = time.monotonic()
     hit = _cache.get(name)
     if hit and now - hit[0] < _CACHE_TTL_SECONDS:

@@ -12,7 +12,11 @@ Usage (operator, with AWS SSO creds):
         --client-id 1049347507456011
     # → prompts for the client secret (never passed on argv / shell history)
 
-The secret payload is ``{"client_id": ..., "client_secret": ...}``. The backend
+    uv run python scripts/set_platform_oauth_app.py --env dev --name slack \
+        --client-id abc123 --with-signing-secret
+    # → prompts for both client secret and signing secret
+
+The secret payload is ``{"client_id": ..., "client_secret": ..., "signing_secret": ...}``. The backend
 caches reads for ~5 minutes (platform_oauth_app_store), so a rotation takes
 effect within that window without a deploy.
 """
@@ -39,6 +43,11 @@ def main() -> int:
     # and silently target the wrong account (or fail with no creds), so pin the
     # profile explicitly. Pass --profile "" to use ambient credentials (CI role).
     ap.add_argument("--profile", default="isol8-admin")
+    ap.add_argument(
+        "--with-signing-secret",
+        action="store_true",
+        help="also prompt for a signing secret (Slack signs webhooks with one; Meta does not)",
+    )
     args = ap.parse_args()
 
     client_secret = getpass.getpass("Client secret: ").strip()
@@ -47,7 +56,14 @@ def main() -> int:
         return 1
 
     secret_name = f"lightbulb/{args.env}/integrations/platform-oauth/{args.name}"
-    payload = json.dumps({"client_id": args.client_id, "client_secret": client_secret})
+    payload_dict = {"client_id": args.client_id, "client_secret": client_secret}
+    if args.with_signing_secret:
+        signing_secret = getpass.getpass("Signing secret: ").strip()
+        if not signing_secret:
+            print("empty signing secret — aborting", file=sys.stderr)
+            return 1
+        payload_dict["signing_secret"] = signing_secret
+    payload = json.dumps(payload_dict)
 
     session = boto3.Session(profile_name=args.profile or None, region_name=args.region)
     # Surface the resolved account up front: writing a platform secret to the

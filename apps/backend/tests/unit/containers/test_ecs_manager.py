@@ -3980,8 +3980,10 @@ async def test_provision_channel_accounts_extracts_accounts(monkeypatch):
         }
 
     monkeypatch.setattr(em, "read_openclaw_config_from_efs", _read)
-    out = await em._provision_channel_accounts("org_x")
+    monkeypatch.setattr("core.repositories.slack_installs_repo.list_for_owner", AsyncMock(return_value=[]))
+    out, bindings = await em._provision_channel_accounts("org_x")
     assert out == {"telegram": {"a": {"botToken": "123:ABC", "allowFrom": ["u1"]}}}
+    assert bindings == []
 
 
 @pytest.mark.asyncio
@@ -3993,7 +3995,8 @@ async def test_provision_channel_accounts_handles_missing_config(monkeypatch):
         return None
 
     monkeypatch.setattr(em, "read_openclaw_config_from_efs", _none)
-    assert await em._provision_channel_accounts("org_x") == {}
+    monkeypatch.setattr("core.repositories.slack_installs_repo.list_for_owner", AsyncMock(return_value=[]))
+    assert await em._provision_channel_accounts("org_x") == ({}, [])
 
 
 @pytest.mark.asyncio
@@ -4006,7 +4009,7 @@ async def test_provision_channel_accounts_failsafe_returns_empty_on_error(monkey
         raise OSError("efs down")
 
     monkeypatch.setattr(em, "read_openclaw_config_from_efs", _boom)
-    assert await em._provision_channel_accounts("org_x") == {}
+    assert await em._provision_channel_accounts("org_x") == ({}, [])
 
 
 # ---------------------------------------------------------------------------

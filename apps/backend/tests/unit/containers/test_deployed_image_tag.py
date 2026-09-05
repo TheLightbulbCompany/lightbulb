@@ -103,7 +103,7 @@ def _write_user_configs_patches(manager, write_oc_mock):
         patch("core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value=None)),
         patch("core.services.paperclip_openclaw_pairing.resolve_company_id_for_owner", AsyncMock(return_value=None)),
         patch("core.containers.ecs_manager._provision_mcp_servers", AsyncMock(return_value={})),
-        patch("core.containers.ecs_manager._provision_channel_accounts", AsyncMock(return_value={})),
+        patch("core.containers.ecs_manager._provision_channel_accounts", AsyncMock(return_value=({}, []))),
         patch("core.services.credentials.mcp_server.build_connected_integration_servers", AsyncMock(return_value={})),
         patch("core.containers.ecs_manager.get_workspace", MagicMock()),
         patch.object(manager, "ensure_device_identities", AsyncMock()),

@@ -17,6 +17,7 @@ import {
 import { useApi } from "@/lib/api";
 import { type Provider, PROVIDERS, PROVIDER_LABELS, formatBotHandle } from "@/lib/channels";
 import { BotSetupWizard } from "@/components/channels/BotSetupWizard";
+import { SlackInstallCard } from "@/components/channels/SlackInstallCard";
 import { useBilling } from "@/hooks/useBilling";
 import { useChannelLinks } from "@/hooks/useChannelLinks";
 
@@ -87,6 +88,9 @@ export function AgentChannelsSection({ agentId }: AgentChannelsSectionProps) {
                 {PROVIDER_LABELS[provider]}
               </span>
             </div>
+            {provider === "slack" && isSubscribed && data.can_create_bots && (
+              <SlackInstallCard agentId={agentId} />
+            )}
             {!isSubscribed ? (
               <p className="text-xs text-[var(--midnight-muted)]">
                 Channels require an active subscription. Sign up to connect {PROVIDER_LABELS[provider]}.
@@ -134,7 +138,7 @@ export function AgentChannelsSection({ agentId }: AgentChannelsSectionProps) {
                 onClick={() => setWizardFor({ provider, mode: "create" })}
               >
                 <Plus size={12} strokeWidth={1.75} className="mr-1" />
-                Add {PROVIDER_LABELS[provider]} bot
+                {provider === "slack" ? "Use your own Slack app (advanced)" : `Add ${PROVIDER_LABELS[provider]} bot`}
               </Button>
             )}
           </div>

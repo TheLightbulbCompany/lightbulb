@@ -149,19 +149,24 @@ async def _provision_mcp_servers(owner_id: str, connected_servers: dict) -> dict
         return connected_servers
 
 
-async def _provision_channel_accounts(owner_id: str) -> dict[str, dict[str, dict]]:
-    """Channel bot accounts to re-inject into a regenerated openclaw.json.
+async def _provision_channel_accounts(owner_id: str) -> tuple[dict[str, dict[str, dict]], list[dict]]:
+    """Channel bot accounts + their route bindings, to re-inject into a
+    regenerated openclaw.json.
 
     The reprovision path fully overwrites openclaw.json, so without this every
     configured Telegram/Slack/Discord account — bot token, allowFrom pairings
     and all — is lost, exactly like the MCP-server case that
     ``_provision_mcp_servers`` handles. Read the live on-disk accounts and
-    return them keyed ``{provider: {accountId: account}}``;
-    ``build_openclaw_config_dict`` merges them back and recreates the sibling
-    route bindings.
+    return them keyed ``{provider: {accountId: account}}``, plus the on-disk
+    route bindings that point at a channel account.
 
-    Fail-safe: any read/parse hiccup returns ``{}`` so provisioning never breaks
-    (worst case the user re-runs the channel wizard).
+    Returns ``(accounts_by_provider, channel_bindings)``; the bindings are
+    carried VERBATIM because the platform Slack app keys accounts by team id
+    and routes them to an agent — re-synthesizing ``agentId == accountId``
+    would rewire the workspace to a non-existent agent.
+
+    Fail-safe: any read/parse hiccup returns ``({}, [])`` so provisioning never
+    breaks (worst case the user re-runs the channel wizard).
     """
     try:
         existing_cfg = await read_openclaw_config_from_efs(owner_id) or {}
@@ -174,10 +179,15 @@ async def _provision_channel_accounts(owner_id: str) -> dict[str, dict[str, dict
             accounts = entry.get("accounts")
             if isinstance(accounts, dict) and accounts:
                 out[provider] = accounts
-        return out
+        bindings = [
+            b
+            for b in (existing_cfg.get("bindings") or [])
+            if isinstance(b, dict) and (b.get("match") or {}).get("channel") in CHANNEL_PROVIDER_IDS
+        ]
+        return out, bindings
     except Exception:  # noqa: BLE001 — best-effort; never fail provision over this.
         logger.exception("preserving channel accounts failed for %s; continuing", owner_id)
-        return {}
+        return {}, []
 
 
 def slack_env_var_name(team_id: str) -> str:
@@ -4176,7 +4186,7 @@ class EcsManager:
         # Carry the user's configured channel bot accounts across this full
         # overwrite. A reprovision rewrites openclaw.json wholesale, so without
         # this every Telegram/Slack/Discord bot token + pairing is dropped.
-        channel_accounts = await _provision_channel_accounts(owner_id)
+        channel_accounts, channel_bindings = await _provision_channel_accounts(owner_id)
 
         # The container's XDG dirs must be writable by the access-point user
         # (uid 1000) before anything in the container tries to use them. Done
@@ -4204,6 +4214,7 @@ class EcsManager:
             provisioned_env=provisioned_env,
             aip_arns=aip_arns,
             channel_accounts=channel_accounts,
+            channel_bindings=channel_bindings,
             deployed_tag=deployed_tag,
         )
 

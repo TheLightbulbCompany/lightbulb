@@ -1491,6 +1491,7 @@ def build_openclaw_config_dict(
     provisioned_env: dict | None = None,
     aip_arns: dict[str, str] | None = None,
     channel_accounts: dict[str, dict[str, dict]] | None = None,
+    channel_bindings: list[dict] | None = None,
     acp_enabled: bool = False,
     deployed_tag: str | None = None,
 ) -> dict:
@@ -2613,6 +2614,10 @@ def build_openclaw_config_dict(
     # bindings too, since config_patcher adds those per-PATCH and the overwrite
     # would otherwise lose them (without a binding the bot misroutes to main).
     #
+    # Bindings are carried verbatim (platform Slack app: account = team id →
+    # agent); the ``agentId == accountId`` synthesis is the legacy fallback for
+    # accounts whose binding was not carried.
+    #
     # Skipped on the BEDROCK TRIAL: a channel bot is an inbound self-run surface
     # (any Telegram peer can wake the agent, with no human of ours in the loop),
     # so a trial reprovision must not resurrect saved accounts. This closes the
@@ -2641,7 +2646,14 @@ def build_openclaw_config_dict(
             # do not add it before the next image bump.)
             if provider in ("telegram", "slack"):
                 channel.setdefault("streaming", {"mode": "progress"})
+            carried = [b for b in (channel_bindings or []) if (b.get("match") or {}).get("channel") == provider]
+            for b in carried:
+                if b not in bindings:
+                    bindings.append(b)
+            carried_accounts = {(b.get("match") or {}).get("accountId") for b in carried}
             for account_id in accounts:
+                if account_id in carried_accounts:
+                    continue  # the carried binding already routes this account
                 binding = {
                     "type": "route",
                     "agentId": account_id,
@@ -2682,6 +2694,7 @@ async def write_openclaw_config(
     provisioned_env: dict | None = None,
     aip_arns: dict[str, str] | None = None,
     channel_accounts: dict[str, dict[str, dict]] | None = None,
+    channel_bindings: list[dict] | None = None,
     acp_enabled: bool = True,
     deployed_tag: str | None = None,
 ) -> None:
@@ -2735,6 +2748,7 @@ async def write_openclaw_config(
         provisioned_env=provisioned_env,
         aip_arns=aip_arns,
         channel_accounts=channel_accounts,
+        channel_bindings=channel_bindings,
         acp_enabled=acp_enabled,
         deployed_tag=deployed_tag,
     )

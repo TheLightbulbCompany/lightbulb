@@ -97,6 +97,15 @@ const THROTTLE_CONFIG: Record<
   prod: { burstLimit: 500, rateLimit: 200 },
 };
 
+// Slack posts every workspace's events to ONE URL. Give that route its own
+// bucket so a chatty tenant (or Slack's 3× retries) never eats the stage-wide
+// budget every browser/desktop/mobile REST call shares — and vice versa.
+const SLACK_ROUTE_KEY = "POST /api/v1/slack/events";
+const SLACK_THROTTLE: Record<string, { burstLimit: number; rateLimit: number }> = {
+  dev: { burstLimit: 50, rateLimit: 25 },
+  prod: { burstLimit: 200, rateLimit: 100 },
+};
+
 export class ApiStack extends cdk.Stack {
   public readonly httpApiUrl: string;
   public readonly webSocketUrl: string;
@@ -207,6 +216,14 @@ export class ApiStack extends cdk.Stack {
       target: `integrations/${httpIntegration.ref}`,
     });
 
+    // Explicit route so the stage can attach route-level throttling to it;
+    // it forwards to the same ALB integration as $default.
+    new apigatewayv2.CfnRoute(this, "HttpSlackEventsRoute", {
+      apiId: httpApi.ref,
+      routeKey: SLACK_ROUTE_KEY,
+      target: `integrations/${httpIntegration.ref}`,
+    });
+
     // --- HTTP API Log Group ---
     const httpApiLogGroup = new logs.LogGroup(this, "HttpApiLogs", {
       logGroupName: `/aws/api-gateway/lightbulb-${env}-http`,
@@ -222,6 +239,16 @@ export class ApiStack extends cdk.Stack {
       defaultRouteSettings: {
         throttlingBurstLimit: throttle.burstLimit,
         throttlingRateLimit: throttle.rateLimit,
+      },
+      // NOTE: CfnStage.routeSettings is typed `any` in the L1 construct (it's
+      // a free-form route-key -> settings map), so CDK's usual camelCase ->
+      // PascalCase property translation does NOT run on it — the nested
+      // keys must already be CloudFormation-cased.
+      routeSettings: {
+        [SLACK_ROUTE_KEY]: {
+          ThrottlingBurstLimit: (SLACK_THROTTLE[env] ?? SLACK_THROTTLE.dev).burstLimit,
+          ThrottlingRateLimit: (SLACK_THROTTLE[env] ?? SLACK_THROTTLE.dev).rateLimit,
+        },
       },
       accessLogSettings: {
         destinationArn: httpApiLogGroup.logGroupArn,

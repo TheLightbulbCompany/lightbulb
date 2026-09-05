@@ -10,8 +10,8 @@ Exposes:
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, ConfigDict, Field
 
 from core.auth import (
     AuthContext,
@@ -23,6 +23,7 @@ from core.observability.metrics import put_metric
 from core.containers.config import read_openclaw_config_from_efs
 from core.repositories import channel_link_repo
 from core.services import channel_link_service
+from core.services.admin_audit import audit_admin_action
 from core.services.config_patcher import (
     delete_openclaw_config_path,
     delete_provider_level_channel_secrets,
@@ -33,6 +34,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 SUPPORTED_PROVIDERS = {"telegram", "discord", "slack"}
+PAIRING_PROVIDER = "slack"
 
 
 def _validate_provider(provider: str) -> str:
@@ -45,6 +47,177 @@ class LinkCompleteBody(BaseModel):
     agent_id: str
     code: str
     linked_via: str = "settings"
+
+
+class PairingDecisionBody(BaseModel):
+    channel: str
+    account_id: str
+    request_id: str
+
+
+class PairingAccountSnapshot(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    channel: str
+    channel_label: str = Field(alias="channelLabel")
+    account_id: str = Field(alias="accountId")
+    account_label: str | None = Field(default=None, alias="accountLabel")
+    notify_supported: bool = Field(alias="notifySupported")
+
+
+class PairingRequestSnapshot(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    request_id: str = Field(alias="requestId")
+    channel: str
+    channel_label: str = Field(alias="channelLabel")
+    account_id: str = Field(alias="accountId")
+    account_label: str | None = Field(default=None, alias="accountLabel")
+    sender_id: str = Field(alias="senderId")
+    sender_label: str = Field(alias="senderLabel")
+    metadata: dict[str, str] | None = None
+    created_at: str = Field(alias="createdAt")
+    last_seen_at: str = Field(alias="lastSeenAt")
+    expires_at: str = Field(alias="expiresAt")
+    notify_supported: bool = Field(alias="notifySupported")
+
+
+class PairingLimits(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    pending_per_account: int = Field(alias="pendingPerAccount")
+    ttl_ms: int = Field(alias="ttlMs")
+
+
+class PairingRequestsResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    accounts: list[PairingAccountSnapshot]
+    requests: list[PairingRequestSnapshot]
+    command_owner_configured: bool = Field(alias="commandOwnerConfigured")
+    limits: PairingLimits
+
+
+class PairingApproveResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    request_id: str = Field(alias="requestId")
+    sender_id: str = Field(alias="senderId")
+    notification: str
+    command_owner_bootstrap: str = Field(alias="commandOwnerBootstrap")
+    audit_status: str | None = None
+
+
+class PairingDismissResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    request_id: str = Field(alias="requestId")
+    sender_id: str = Field(alias="senderId")
+    audit_status: str | None = None
+
+
+def _authorized_channel_owner(auth: AuthContext = Depends(get_current_user)) -> str:
+    require_org_admin(auth)
+    return resolve_owner_id(auth)
+
+
+async def _pairing_rpc(owner_id: str, method: str, params: dict) -> dict:
+    """Call a channel-pairing RPC without exposing its transient code.
+
+    The gateway's public pairing queue is intentionally keyed by an opaque
+    request id plus immutable channel/account context.  The pairing code is
+    never returned by these RPCs or accepted by this API.
+    """
+    from core.containers import get_ecs_manager, get_gateway_pool
+
+    container, ip = await get_ecs_manager().resolve_running_container(owner_id)
+    if not container or not ip:
+        raise HTTPException(status_code=503, detail="Agent container is not running")
+
+    try:
+        result = await get_gateway_pool().send_rpc(
+            user_id=owner_id,
+            req_id=f"channel-pairing-{uuid.uuid4().hex}",
+            method=method,
+            params=params,
+            ip=ip,
+            token=container["gateway_token"],
+        )
+    except Exception as exc:
+        logger.warning("Channel pairing RPC %s failed for owner %s: %s", method, owner_id, exc)
+        raise HTTPException(status_code=503, detail="Could not reach the agent pairing queue") from exc
+    return result or {}
+
+
+@router.get(
+    "/pairing/requests",
+    response_model=PairingRequestsResponse,
+    summary="List pending channel pairing requests",
+)
+async def list_pairing_requests(owner_id: str = Depends(_authorized_channel_owner)):
+    """Admin-only, code-free view of pending channel identity requests."""
+    return await _pairing_rpc(owner_id, "channels.pairing.list", {"channel": PAIRING_PROVIDER})
+
+
+@router.post(
+    "/pairing/approve",
+    response_model=PairingApproveResponse,
+    summary="Approve a pending channel pairing request",
+)
+@audit_admin_action(
+    "channel_pairing.approve",
+    target_param="owner_id",
+    capture_params=["owner_id", "body"],
+)
+async def approve_pairing_request(
+    body: PairingDecisionBody,
+    request: Request,
+    auth: AuthContext = Depends(get_current_user),
+    owner_id: str = Depends(_authorized_channel_owner),
+):
+    """Approve by opaque request id; no pairing code crosses this boundary."""
+    if body.channel != PAIRING_PROVIDER:
+        raise HTTPException(status_code=400, detail="Only Slack pairing requests are supported")
+    return await _pairing_rpc(
+        owner_id,
+        "channels.pairing.approve",
+        {
+            "channel": PAIRING_PROVIDER,
+            "accountId": body.account_id,
+            "requestId": body.request_id,
+            "notify": True,
+        },
+    )
+
+
+@router.post(
+    "/pairing/reject",
+    response_model=PairingDismissResponse,
+    summary="Reject a pending channel pairing request",
+)
+@audit_admin_action(
+    "channel_pairing.reject",
+    target_param="owner_id",
+    capture_params=["owner_id", "body"],
+)
+async def reject_pairing_request(
+    body: PairingDecisionBody,
+    request: Request,
+    auth: AuthContext = Depends(get_current_user),
+    owner_id: str = Depends(_authorized_channel_owner),
+):
+    """Dismiss by opaque request id; the sender may request access again."""
+    if body.channel != PAIRING_PROVIDER:
+        raise HTTPException(status_code=400, detail="Only Slack pairing requests are supported")
+    return await _pairing_rpc(
+        owner_id,
+        "channels.pairing.dismiss",
+        {
+            "channel": PAIRING_PROVIDER,
+            "accountId": body.account_id,
+            "requestId": body.request_id,
+        },
+    )
 
 
 @router.get("/links/me", summary="List the caller's channel link status across all bots")

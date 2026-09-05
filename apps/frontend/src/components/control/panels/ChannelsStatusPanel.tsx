@@ -1,8 +1,21 @@
 "use client";
 
-import { Loader2, RefreshCw, Radio, AlertTriangle } from "lucide-react";
+import { useState } from "react";
+import {
+  Loader2,
+  RefreshCw,
+  Radio,
+  AlertTriangle,
+  ShieldCheck,
+  UserRound,
+} from "lucide-react";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
+import {
+  type ChannelPairingRequest,
+  useChannelPairingRequests,
+} from "@/hooks/useChannelPairingRequests";
 import { Button } from "@/components/ui/button";
+import { useApi } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
   type ChannelsStatusSnapshot,
@@ -14,7 +27,9 @@ import {
 
 // Color the value text by formatValue's variant so a "No"/error reads as a
 // warning at a glance — the snapshot has no severity of its own.
-function valueClass(variant: ReturnType<typeof formatValue>["variant"]): string {
+function valueClass(
+  variant: ReturnType<typeof formatValue>["variant"],
+): string {
   if (variant === "yes") return "text-ok font-medium";
   if (variant === "no") return "text-[var(--midnight-muted)]";
   if (variant === "error") return "text-err";
@@ -29,17 +44,25 @@ function AccountCard({ account }: { account: ChannelAccountSnapshot }) {
         <span className="text-sm font-medium text-[var(--midnight)]">
           {account.name || account.accountId}
         </span>
-        <span className="label-caps">
-          {account.accountId}
-        </span>
+        <span className="label-caps">{account.accountId}</span>
       </div>
       <div className="grid grid-cols-2 gap-x-4 gap-y-1">
         {EXTENDED_STATUS_FIELDS.map((field) => {
           const { text, variant } = formatValue(field, account[field]);
           return (
-            <div key={field} className="flex items-center justify-between text-xs">
-              <span className="text-[var(--midnight-muted)]">{STATUS_LABELS[field] ?? field}</span>
-              <span className={cn("truncate max-w-[60%] text-right", valueClass(variant))}>
+            <div
+              key={field}
+              className="flex items-center justify-between text-xs"
+            >
+              <span className="text-[var(--midnight-muted)]">
+                {STATUS_LABELS[field] ?? field}
+              </span>
+              <span
+                className={cn(
+                  "truncate max-w-[60%] text-right",
+                  valueClass(variant),
+                )}
+              >
                 {text}
               </span>
             </div>
@@ -50,15 +73,104 @@ function AccountCard({ account }: { account: ChannelAccountSnapshot }) {
   );
 }
 
+function PairingRequestCard({
+  pairingRequest,
+  onResolved,
+}: {
+  pairingRequest: ChannelPairingRequest;
+  onResolved: () => Promise<unknown>;
+}) {
+  const api = useApi();
+  const [busy, setBusy] = useState<"approve" | "reject" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const decide = async (decision: "approve" | "reject") => {
+    setBusy(decision);
+    setError(null);
+    try {
+      await api.post(`/channels/pairing/${decision}`, {
+        channel: pairingRequest.channel,
+        account_id: pairingRequest.accountId,
+        request_id: pairingRequest.requestId,
+      });
+      await onResolved();
+    } catch (caught) {
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : `Could not ${decision} this request.`,
+      );
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="rounded-lg border border-[var(--edge)] bg-cream p-3 space-y-3">
+      <div className="flex items-start gap-3">
+        <UserRound
+          size={18}
+          className="mt-0.5 shrink-0 text-[var(--midnight-muted)]"
+        />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium text-[var(--midnight)] truncate">
+            {pairingRequest.senderLabel}
+          </p>
+          <p className="text-xs text-[var(--midnight-muted)] font-mono break-all">
+            {pairingRequest.senderId}
+          </p>
+          <p className="mt-1 text-xs text-[var(--midnight-muted)]">
+            {pairingRequest.channelLabel} ·{" "}
+            {pairingRequest.accountLabel || pairingRequest.accountId}
+          </p>
+        </div>
+      </div>
+      {error ? (
+        <p role="alert" className="text-xs text-err">
+          {error}
+        </p>
+      ) : null}
+      <div className="flex justify-end gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={busy !== null}
+          onClick={() => void decide("reject")}
+          className="text-xs"
+        >
+          {busy === "reject" ? (
+            <Loader2 size={14} className="animate-spin" />
+          ) : null}
+          Reject
+        </Button>
+        <Button
+          size="sm"
+          disabled={busy !== null}
+          onClick={() => void decide("approve")}
+          className="text-xs gap-1.5"
+        >
+          {busy === "approve" ? (
+            <Loader2 size={14} className="animate-spin" />
+          ) : (
+            <ShieldCheck size={14} />
+          )}
+          Approve
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function ChannelsStatusPanel() {
   // probe:true forces a live connectivity probe on the container rather than
   // returning the cached snapshot — the panel exists to show fresh health.
-  const { data, error, isLoading, mutate } = useGatewayRpc<ChannelsStatusSnapshot>(
-    "channels.status",
-    { probe: true },
-  );
+  const { data, error, isLoading, mutate } =
+    useGatewayRpc<ChannelsStatusSnapshot>("channels.status", { probe: true });
+  const pairing = useChannelPairingRequests();
 
   const channelOrder = data?.channelOrder ?? [];
+  // The backend requests only Slack pairing records from the gateway.
+  const pendingSlackRequests = pairing.data?.requests ?? [];
 
   return (
     <div className="p-6 space-y-6">
@@ -79,6 +191,50 @@ export function ChannelsStatusPanel() {
           Probe now
         </Button>
       </div>
+
+      {pendingSlackRequests.length > 0 ? (
+        <section aria-labelledby="pending-slack-pairings" className="space-y-2">
+          <div>
+            <h3
+              id="pending-slack-pairings"
+              className="text-sm font-semibold text-[var(--midnight)]"
+            >
+              Pending Slack access
+            </h3>
+            <p className="text-xs text-[var(--midnight-muted)]">
+              Approvals use Slack user and account identity. Pairing codes never
+              appear here.
+            </p>
+          </div>
+          {pendingSlackRequests.map((request) => (
+            <PairingRequestCard
+              key={request.requestId}
+              pairingRequest={request}
+              onResolved={() => pairing.refresh()}
+            />
+          ))}
+        </section>
+      ) : pairing.isLoading ? (
+        <p className="flex items-center gap-1.5 text-xs text-[var(--midnight-muted)]">
+          <Loader2 size={12} className="animate-spin" />
+          Checking for pending Slack access requests…
+        </p>
+      ) : pairing.error ? (
+        <div className="flex items-center gap-2">
+          <p className="text-xs text-[var(--midnight-muted)]">
+            Pending Slack access requests are temporarily unavailable.
+          </p>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => pairing.refresh()}
+            className="text-xs gap-1.5"
+          >
+            <RefreshCw size={12} />
+            Try again
+          </Button>
+        </div>
+      ) : null}
 
       {isLoading && !data ? (
         <div className="flex items-center gap-2 text-sm text-[var(--midnight-muted)]">
@@ -124,7 +280,9 @@ export function ChannelsStatusPanel() {
                   {data?.channelLabels?.[channelId] ?? channelId}
                 </h3>
                 {accounts.length === 0 ? (
-                  <p className="text-xs text-midnight-muted pl-1">No accounts linked.</p>
+                  <p className="text-xs text-midnight-muted pl-1">
+                    No accounts linked.
+                  </p>
                 ) : (
                   <div className="space-y-2">
                     {accounts.map((account) => (

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import React from "react";
 import { ChannelsStatusPanel } from "../ChannelsStatusPanel";
 
@@ -7,6 +7,9 @@ import { ChannelsStatusPanel } from "../ChannelsStatusPanel";
 // snapshot and we can assert mutate() is called by the Probe button.
 const mockData = vi.fn();
 const mockMutate = vi.fn();
+const mockPairingData = vi.fn();
+const mockPairingRefresh = vi.fn();
+const mockApiPost = vi.fn();
 vi.mock("@/hooks/useGatewayRpc", () => ({
   useGatewayRpc: () => ({
     data: mockData(),
@@ -15,11 +18,26 @@ vi.mock("@/hooks/useGatewayRpc", () => ({
     mutate: mockMutate,
   }),
 }));
+vi.mock("@/hooks/useChannelPairingRequests", () => ({
+  useChannelPairingRequests: () => ({
+    data: mockPairingData(),
+    error: undefined,
+    isLoading: false,
+    refresh: mockPairingRefresh,
+  }),
+}));
+vi.mock("@/lib/api", () => ({
+  useApi: () => ({ post: mockApiPost }),
+}));
 
 describe("ChannelsStatusPanel", () => {
   beforeEach(() => {
     mockData.mockReset();
     mockMutate.mockReset();
+    mockPairingData.mockReset();
+    mockPairingData.mockReturnValue({ requests: [] });
+    mockPairingRefresh.mockReset();
+    mockApiPost.mockReset();
   });
 
   it("shows an unavailable state (not 'no channels') when the container is offline", () => {
@@ -91,5 +109,52 @@ describe("ChannelsStatusPanel", () => {
     render(<ChannelsStatusPanel />);
     fireEvent.click(screen.getByRole("button", { name: /probe now/i }));
     expect(mockMutate).toHaveBeenCalledTimes(1);
+  });
+
+  it("surfaces immutable Slack identity and approves without a pairing code", async () => {
+    mockData.mockReturnValue({
+      ts: 1,
+      channelOrder: ["slack"],
+      channelLabels: { slack: "Slack" },
+      channels: {},
+      channelAccounts: { slack: [{ accountId: "friday" }] },
+      channelDefaultAccountId: {},
+    });
+    mockPairingData.mockReturnValue({
+      requests: [
+        {
+          requestId: "request-opaque-1",
+          channel: "slack",
+          channelLabel: "Slack",
+          accountId: "friday",
+          accountLabel: "Friday",
+          senderId: "U_IMMUTABLE",
+          senderLabel: "Aden Kim",
+          createdAt: "2026-09-04T23:00:00Z",
+          lastSeenAt: "2026-09-04T23:00:00Z",
+          expiresAt: "2026-09-05T00:00:00Z",
+          notifySupported: true,
+        },
+      ],
+    });
+    mockApiPost.mockResolvedValue({ notification: "sent" });
+    mockPairingRefresh.mockResolvedValue(undefined);
+
+    render(<ChannelsStatusPanel />);
+    expect(screen.getByText("Pending Slack access")).toBeInTheDocument();
+    expect(screen.getByText("Aden Kim")).toBeInTheDocument();
+    expect(screen.getByText("U_IMMUTABLE")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /approve/i }));
+
+    await waitFor(() => {
+      expect(mockApiPost).toHaveBeenCalledWith("/channels/pairing/approve", {
+        channel: "slack",
+        account_id: "friday",
+        request_id: "request-opaque-1",
+      });
+    });
+    expect(JSON.stringify(mockApiPost.mock.calls)).not.toMatch(/code/i);
+    expect(mockPairingRefresh).toHaveBeenCalledTimes(1);
   });
 });

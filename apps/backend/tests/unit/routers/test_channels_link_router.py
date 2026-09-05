@@ -43,6 +43,166 @@ def test_delete_bot_unsupported_provider_returns_400(client):
         cleanup()
 
 
+def test_list_pairing_requests_uses_code_free_slack_rpc(client):
+    cleanup = _patch_auth(_personal_auth("user_owner"))
+    snapshot = {
+        "accounts": [
+            {
+                "channel": "slack",
+                "channelLabel": "Slack",
+                "accountId": "friday",
+                "accountLabel": "Friday",
+                "notifySupported": True,
+            }
+        ],
+        "requests": [
+            {
+                "requestId": "opaque-request-id",
+                "channel": "slack",
+                "channelLabel": "Slack",
+                "accountId": "friday",
+                "accountLabel": "Friday",
+                "senderId": "U_IMMUTABLE",
+                "senderLabel": "Aden Kim",
+                "createdAt": "2026-09-04T23:00:00Z",
+                "lastSeenAt": "2026-09-04T23:00:00Z",
+                "expiresAt": "2026-09-05T00:00:00Z",
+                "notifySupported": True,
+                "unexpectedSecret": "must-not-cross-api-boundary",
+            }
+        ],
+        "commandOwnerConfigured": True,
+        "limits": {"pendingPerAccount": 3, "ttlMs": 3_600_000},
+    }
+    try:
+        with patch(
+            "routers.channels._pairing_rpc",
+            AsyncMock(return_value=snapshot),
+        ) as rpc:
+            resp = client.get("/api/v1/channels/pairing/requests")
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "accounts": [
+                {
+                    "channel": "slack",
+                    "channelLabel": "Slack",
+                    "accountId": "friday",
+                    "accountLabel": "Friday",
+                    "notifySupported": True,
+                }
+            ],
+            "requests": [
+                {
+                    "requestId": "opaque-request-id",
+                    "channel": "slack",
+                    "channelLabel": "Slack",
+                    "accountId": "friday",
+                    "accountLabel": "Friday",
+                    "senderId": "U_IMMUTABLE",
+                    "senderLabel": "Aden Kim",
+                    "metadata": None,
+                    "createdAt": "2026-09-04T23:00:00Z",
+                    "lastSeenAt": "2026-09-04T23:00:00Z",
+                    "expiresAt": "2026-09-05T00:00:00Z",
+                    "notifySupported": True,
+                }
+            ],
+            "commandOwnerConfigured": True,
+            "limits": {"pendingPerAccount": 3, "ttlMs": 3_600_000},
+        }
+        rpc.assert_awaited_once_with(
+            "user_owner",
+            "channels.pairing.list",
+            {"channel": "slack"},
+        )
+        assert "code" not in str(rpc.await_args)
+    finally:
+        cleanup()
+
+
+def test_approve_pairing_request_is_audited_without_code(client):
+    cleanup = _patch_auth(_personal_auth("user_owner"))
+    try:
+        with (
+            patch(
+                "routers.channels._pairing_rpc",
+                AsyncMock(
+                    return_value={
+                        "requestId": "opaque-request-id",
+                        "senderId": "U_IMMUTABLE",
+                        "notification": "sent",
+                        "commandOwnerBootstrap": "not-requested",
+                    }
+                ),
+            ) as rpc,
+            patch(
+                "core.services.admin_audit.admin_actions_repo.create",
+                AsyncMock(),
+            ) as audit,
+        ):
+            resp = client.post(
+                "/api/v1/channels/pairing/approve",
+                json={
+                    "channel": "slack",
+                    "account_id": "friday",
+                    "request_id": "opaque-request-id",
+                },
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["audit_status"] == "written"
+        rpc.assert_awaited_once_with(
+            "user_owner",
+            "channels.pairing.approve",
+            {
+                "channel": "slack",
+                "accountId": "friday",
+                "requestId": "opaque-request-id",
+                "notify": True,
+            },
+        )
+        assert audit.await_args.kwargs["action"] == "channel_pairing.approve"
+        assert audit.await_args.kwargs["target_user_id"] == "user_owner"
+        assert audit.await_args.kwargs["payload"]["body"] == {
+            "channel": "slack",
+            "account_id": "friday",
+            "request_id": "opaque-request-id",
+        }
+        assert "code" not in str(rpc.await_args)
+        assert "code" not in str(audit.await_args)
+    finally:
+        cleanup()
+
+
+def test_pairing_decision_rejects_non_slack_channel(client):
+    cleanup = _patch_auth(_personal_auth("user_owner"))
+    try:
+        with patch("routers.channels._pairing_rpc", AsyncMock()) as rpc:
+            resp = client.post(
+                "/api/v1/channels/pairing/approve",
+                json={
+                    "channel": "discord",
+                    "account_id": "main",
+                    "request_id": "opaque-request-id",
+                },
+            )
+        assert resp.status_code == 400
+        rpc.assert_not_awaited()
+    finally:
+        cleanup()
+
+
+def test_pairing_requests_require_org_admin(client):
+    cleanup = _patch_auth(AuthContext(user_id="user_member", org_id="org_1", org_role="org:member"))
+    try:
+        with patch("routers.channels._pairing_rpc", AsyncMock()) as rpc:
+            resp = client.get("/api/v1/channels/pairing/requests")
+        assert resp.status_code == 403
+        rpc.assert_not_awaited()
+    finally:
+        cleanup()
+
+
 def test_link_complete_happy_path(client):
     cleanup = _patch_auth(_personal_auth("user_bob"))
     try:

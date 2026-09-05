@@ -240,6 +240,11 @@ async def slack_oauth_start(agent_id: str, auth: AuthContext = Depends(get_curre
     if not app:
         raise HTTPException(status_code=503, detail="slack_app_not_configured")
     owner_id = resolve_owner_id(auth)
+    # Phase 1 forwards Slack traffic for paid owners only (the events route
+    # drops everything else). Refusing here keeps a trial owner from
+    # connecting a workspace the bot would never answer.
+    if not has_always_on_entitlement(await billing_repo.get_by_owner_id(owner_id)):
+        raise HTTPException(status_code=402, detail="slack_requires_paid_plan")
     state = secrets.token_urlsafe(32)
     await oauth_state_repo.put(
         state,

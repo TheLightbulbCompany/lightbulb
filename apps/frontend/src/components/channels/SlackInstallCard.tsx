@@ -4,15 +4,24 @@ import { useCallback, useEffect, useState } from "react";
 import { CheckCircle2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { useBilling } from "@/hooks/useBilling";
 import { useApi } from "@/lib/api";
 
 type Install = { team_id: string; team_name: string; agent_id: string; status: string; installed_at: string };
+
+const PAID_NOTE = "Slack needs a paid plan. Upgrade to connect a workspace.";
 
 /** The platform Slack app's card: one click installs Lightbulb into a
  * workspace and binds it to this agent. The BYO "create your own app"
  * wizard stays available below it as the advanced path. */
 export function SlackInstallCard({ agentId }: { agentId: string }) {
   const api = useApi();
+  // Phase 1 forwards Slack traffic for paid owners only, and the backend
+  // refuses the start for anyone else — don't offer a button that ends in silence.
+  // If the billing read itself fails, fall through to the button and let the
+  // backend's 402 decide — never mislabel a paid owner as unpaid on a blip.
+  const { account: billing, isLoading: billingLoading, error: billingError } = useBilling();
+  const paid = billing?.is_subscribed === true || Boolean(billingError);
   const [installs, setInstalls] = useState<Install[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -41,8 +50,9 @@ export function SlackInstallCard({ agentId }: { agentId: string }) {
     try {
       const res = (await api.get(`/slack/oauth/start?agent_id=${encodeURIComponent(agentId)}`)) as { url: string };
       window.location.assign(res.url);
-    } catch {
-      setNote("Slack request failed. Try again.");
+    } catch (e) {
+      const status = (e as { status?: number } | null)?.status;
+      setNote(status === 402 ? PAID_NOTE : "Slack request failed. Try again.");
     } finally {
       setBusy(false);
     }
@@ -78,9 +88,13 @@ export function SlackInstallCard({ agentId }: { agentId: string }) {
     <div className="space-y-2">
       {note && <p className="text-xs text-[var(--midnight-muted)]">{note}</p>}
       {mine.length === 0 ? (
-        <Button variant="outline" size="sm" onClick={start} disabled={busy}>
-          Add to Slack
-        </Button>
+        billingLoading ? null : paid ? (
+          <Button variant="outline" size="sm" onClick={start} disabled={busy}>
+            Add to Slack
+          </Button>
+        ) : (
+          <p className="text-xs text-[var(--midnight-muted)]">{PAID_NOTE}</p>
+        )
       ) : (
         mine.map((i) => (
           <div key={i.team_id} className="flex items-center gap-2 text-sm">

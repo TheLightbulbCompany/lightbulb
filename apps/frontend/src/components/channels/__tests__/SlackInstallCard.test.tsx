@@ -43,4 +43,12 @@ describe("SlackInstallCard", () => {
     render(<SlackInstallCard agentId="agent_f" />);
     expect(await screen.findByRole("button", { name: /add to slack/i })).toBeInTheDocument();
   });
+
+  it("shows an error with retry when the install list fails to load, and retries", async () => {
+    api.get.mockRejectedValueOnce(new Error("boom")).mockResolvedValueOnce({ installs: [] });
+    render(<SlackInstallCard agentId="agent_f" />);
+    fireEvent.click(await screen.findByRole("button", { name: /retry/i }));
+    expect(await screen.findByRole("button", { name: /add to slack/i })).toBeInTheDocument();
+    expect(api.get).toHaveBeenCalledTimes(2);
+  });
 });

@@ -16,10 +16,16 @@ export function SlackInstallCard({ agentId }: { agentId: string }) {
   const [installs, setInstalls] = useState<Install[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    const res = (await api.get("/slack/install")) as { installs: Install[] };
-    setInstalls(res.installs.filter((i) => i.status === "active"));
+    try {
+      const res = (await api.get("/slack/install")) as { installs: Install[] };
+      setInstalls(res.installs.filter((i) => i.status === "active"));
+      setError(null);
+    } catch {
+      setError("Couldn't load Slack status.");
+    }
   }, [api]);
 
   useEffect(() => {
@@ -35,6 +41,8 @@ export function SlackInstallCard({ agentId }: { agentId: string }) {
     try {
       const res = (await api.get(`/slack/oauth/start?agent_id=${encodeURIComponent(agentId)}`)) as { url: string };
       window.location.assign(res.url);
+    } catch {
+      setNote("Slack request failed. Try again.");
     } finally {
       setBusy(false);
     }
@@ -45,10 +53,23 @@ export function SlackInstallCard({ agentId }: { agentId: string }) {
     try {
       await api.del(`/slack/install/${encodeURIComponent(teamId)}`);
       await load();
+    } catch {
+      setNote("Slack request failed. Try again.");
     } finally {
       setBusy(false);
     }
   };
+
+  if (error && installs === null) {
+    return (
+      <div className="flex items-center gap-2 text-xs">
+        <span className="text-err">{error}</span>
+        <Button variant="outline" size="sm" onClick={() => load()}>
+          Retry
+        </Button>
+      </div>
+    );
+  }
 
   if (installs === null) return null;
   const mine = installs.filter((i) => i.agent_id === agentId);

@@ -2453,10 +2453,18 @@ export function SlackInstallCard({ agentId }: { agentId: string }) {
   const [installs, setInstalls] = useState<Install[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    const res = (await api.get("/slack/install")) as { installs: Install[] };
-    setInstalls(res.installs.filter((i) => i.status === "active"));
+    try {
+      const res = (await api.get("/slack/install")) as { installs: Install[] };
+      setInstalls(res.installs.filter((i) => i.status === "active"));
+      setError(null);
+    } catch {
+      // Never strand the owner on an empty card: show the failure + a Retry
+      // (the section around this card degrades the same way).
+      setError("Couldn't load Slack status.");
+    }
   }, [api]);
 
   useEffect(() => {
@@ -2486,6 +2494,16 @@ export function SlackInstallCard({ agentId }: { agentId: string }) {
     }
   };
 
+  if (error && installs === null) {
+    return (
+      <div className="space-y-2">
+        <p className="text-xs text-err">{error}</p>
+        <Button variant="outline" size="sm" onClick={() => void load()}>
+          Retry
+        </Button>
+      </div>
+    );
+  }
   if (installs === null) return null;
   const mine = installs.filter((i) => i.agent_id === agentId);
 

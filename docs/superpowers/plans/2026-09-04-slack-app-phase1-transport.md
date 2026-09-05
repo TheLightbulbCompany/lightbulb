@@ -1531,9 +1531,6 @@ def test_form_encoded_slash_payload_routes_by_team_id_field(client):
 
 def test_form_encoded_interactive_payload_routes_by_team_id_in_payload(client):
     payload = json.dumps({"type": "block_actions", "team": {"id": TEAM}, "actions": []})
-    body = b"payload=" + httpx.QueryParams({"p": payload})["p"].encode()
-    from urllib.parse import quote
-
     body = b"payload=" + quote(payload).encode()
     t = _Upstream()
     with _app_store(), _dedup(), _install(), _container(), _billing(), _ip(), _upstream(t):
@@ -1570,8 +1567,6 @@ def test_app_uninstalled_revokes_and_is_200(client):
     assert r.status_code == 200
     rev.assert_awaited_once_with(TEAM)
 ```
-
-(Delete the stray `httpx.QueryParams` line in the interactive test — keep only the `quote` version. It's there to show what NOT to do: never build the body with a helper that might re-encode differently from the assertion.)
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -1611,9 +1606,10 @@ the plugin route is auth:"plugin". Never resolve_running_container here — its
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote
 
 import httpx
 from fastapi import APIRouter, Request, Response
@@ -1642,8 +1638,8 @@ def _client_factory() -> httpx.AsyncClient:
     return httpx.AsyncClient(timeout=httpx.Timeout(FORWARD_TIMEOUT_S))
 
 
-def _json_200(payload: dict, **headers: str) -> Response:
-    return Response(status_code=200, content=json.dumps(payload).encode(), media_type="application/json", headers=headers)
+def _json_200(payload: dict) -> Response:
+    return Response(status_code=200, content=json.dumps(payload).encode(), media_type="application/json")
 
 
 def _parse(content_type: str, body: bytes) -> dict:
@@ -1712,7 +1708,11 @@ async def receive_slack_event(request: Request) -> Response:
 
     event = data.get("event") if isinstance(data.get("event"), dict) else {}
     if event.get("type") in _REVOKE_EVENTS:
-        await slack_install_service.revoke_install(team_id)
+        try:
+            await slack_install_service.revoke_install(team_id)
+        except Exception as exc:  # noqa: BLE001 — per-owner cleanup must never 5xx the shared app
+            logger.exception("slack events: revoke failed team=%s err=%s", team_id, exc)
+            put_metric("slack.revoke_failed", 1, dimensions={"reason": type(exc).__name__})
         return Response(status_code=200)
     if event.get("bot_id") or (event.get("user") and event.get("user") == install.get("bot_user_id")):
         return Response(status_code=200)  # our own post echoing back
@@ -1727,8 +1727,13 @@ async def receive_slack_event(request: Request) -> Response:
         # Phase 1 is paid-only. Phase 2 replaces this with wake + templated reply.
         return Response(status_code=200, headers={"x-slack-no-retry": "1"})
 
-    ip = ecs_manager.discover_ip(container["service_name"])
+    # Sync boto3 Cloud Map call — offloaded so a slow response cannot stall the
+    # single-instance event loop (the pool wraps it the same way).
+    ip = await asyncio.to_thread(ecs_manager.discover_ip, container["service_name"])
     if not ip:
+        # The ONE deliberate per-owner 5xx: Slack's +1 min retry IS the recovery
+        # for a container mid-roll, and one owner's 503s cannot approach the
+        # app-wide 95 %/60 min kill switch.
         return Response(status_code=503, headers={"Retry-After": "30"}, content=b'{"detail":"container_not_running"}', media_type="application/json")
 
     ts = request.headers.get("X-Slack-Request-Timestamp", "")
@@ -1737,17 +1742,17 @@ async def receive_slack_event(request: Request) -> Response:
         "X-Slack-Request-Timestamp": ts,
         "X-Slack-Signature": slack_signing.sign(container["hook_token"], ts, body),
     }
-    target = f"http://{ip}:{GATEWAY_PORT}/slack/events/{team_id}"
+    target = f"http://{ip}:{GATEWAY_PORT}/slack/events/{quote(team_id, safe='')}"
     try:
         async with _client_factory() as client:
             upstream = await client.post(target, headers=headers, content=body)
     except httpx.RequestError as exc:
         logger.warning("slack events: forward failed owner=%s err=%s", owner_id, exc)
-        put_metric("slack.forward_failed", 1, {"reason": "request_error"})
+        put_metric("slack.forward_failed", 1, dimensions={"reason": "request_error"})
         return Response(status_code=200)
     if upstream.status_code >= 300:
         logger.warning("slack events: container answered %s owner=%s", upstream.status_code, owner_id)
-        put_metric("slack.forward_failed", 1, {"reason": f"upstream_{upstream.status_code // 100}xx"})
+        put_metric("slack.forward_failed", 1, dimensions={"reason": f"upstream_{upstream.status_code // 100}xx"})
         return Response(status_code=200)
     return Response(status_code=upstream.status_code, content=upstream.content, media_type=upstream.headers.get("content-type", "application/json"))
 ```

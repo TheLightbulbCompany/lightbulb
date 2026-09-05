@@ -1,13 +1,11 @@
-import type { ExtensionContextValue } from "@stripe/ui-extension-sdk/context";
 import { Box, Button, Icon, Inline, List, ListItem, SettingsView } from "@stripe/ui-extension-sdk/ui";
 
 // ponytail: static instructions only — the key itself is minted and shown by
 // Stripe ("View API keys" on this page); the app never sees or stores it.
-// Test-mode and sandbox installs mint rk_test_ keys, which only the dev stack
-// (a Sandbox platform key) accepts; production refuses them by design.
-const siteFor = (mode: string) => (mode === "live" ? "https://flickmeon.ai" : "https://dev.flickmeon.ai");
-
-const AppSettings = ({ environment }: ExtensionContextValue) => (
+// One destination in every mode: production accepts test-mode keys and
+// labels the connection "Test mode", so sandbox installs and Stripe's
+// reviewers use the same site as everyone else.
+const AppSettings = () => (
   <SettingsView>
     <Box css={{ padding: "large", borderRadius: "medium", width: "fit" }}>
       <Box css={{ font: "heading", stack: "x", alignY: "center", gap: "small", marginBottom: "small" }}>
@@ -34,7 +32,7 @@ const AppSettings = ({ environment }: ExtensionContextValue) => (
         />
       </List>
       <Box css={{ stack: "x", gap: "small", marginTop: "medium" }}>
-        <Button type="primary" target="_blank" href={`${siteFor(environment.mode)}/settings/connections`}>
+        <Button type="primary" target="_blank" href="https://flickmeon.ai/settings/connections">
           Open Lightbulb Connections
           <Icon name="external" />
         </Button>

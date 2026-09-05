@@ -254,8 +254,13 @@ async def exchange(
     if client_secret:
         if p.oauth.token_endpoint_auth_method == "client_secret_basic":
             auth = httpx.BasicAuth(client_id, client_secret)
-            if not p.oauth.client_id_in_token_body:
-                data.pop("client_id", None)
+            # The Basic header already identifies the client, so client_id must not
+            # ALSO ride the body: Intuit counts that as two client-authentication
+            # methods and answers 401 invalid_client — an error naming the
+            # credential rather than the duplication. X, the only other Basic
+            # provider, documents the same expectation ("You don't need client id
+            # for confidential clients with a valid Authorization Header").
+            data.pop("client_id", None)
         else:
             data["client_secret"] = client_secret
     # RFC 8707 resource indicator: mirror the authorize request so the issued token

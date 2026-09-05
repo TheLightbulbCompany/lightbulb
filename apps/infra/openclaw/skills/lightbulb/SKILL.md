@@ -172,8 +172,8 @@ founders publish it.
 ## Integrations and channels (connecting external services)
 
 The **Integrations tab** (Control Panel, flickmeon.ai/chat) is where the owner
-connects external services. **Channels** (chat surfaces like
-Telegram/Discord/Slack) connect separately, in the Channels tab.
+connects external services. **Channels** (chat surfaces): Slack: one click from
+the agent's Channels tab (Add to Slack); Telegram/Discord: the bot wizard.
 
 **Integrations arrive on one of three rails — check the `actor` field, never
 assume.** Each catalog entry (and each row in the Integrations tab) declares

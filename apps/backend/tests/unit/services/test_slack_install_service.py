@@ -139,3 +139,15 @@ async def test_revoke_install_tears_down_everything():
 async def test_revoke_unknown_team_is_false():
     with patch("core.services.slack_install_service.slack_installs_repo.get", AsyncMock(return_value=None)):
         assert await svc.revoke_install("T_NOPE") is False
+
+
+def test_manifest_scopes_match_service_scopes():
+    import pathlib
+
+    import yaml
+
+    manifest = yaml.safe_load(pathlib.Path("scripts/slack-app-manifest.yaml").read_text())
+    assert sorted(manifest["oauth_config"]["scopes"]["bot"]) == sorted(svc.BOT_SCOPES)
+    assert manifest["settings"]["socket_mode_enabled"] is False
+    assert manifest["settings"]["interactivity"]["is_enabled"] is True
+    assert manifest["features"]["shortcuts"]

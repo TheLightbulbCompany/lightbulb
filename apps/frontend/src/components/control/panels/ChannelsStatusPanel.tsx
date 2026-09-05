@@ -111,7 +111,7 @@ export function ChannelsStatusPanel() {
         <div className="rounded-lg border border-[var(--edge)] bg-cream p-6 text-center">
           <Radio size={20} className="mx-auto mb-2 text-midnight-muted" />
           <p className="text-sm text-[var(--midnight-muted)]">
-            No channels configured. Link a channel from Settings to see status here.
+            No channels configured. Connect Slack from an agent's Channels tab, or add a Telegram/Discord bot there.
           </p>
         </div>
       ) : (

@@ -23,6 +23,7 @@ async def put(
     verifier: str,
     client_id: str | None = None,
     origin: str | None = None,
+    extra: dict | None = None,
 ) -> None:
     item: dict = {
         "state": state,
@@ -42,6 +43,12 @@ async def put(
     # started flows (no origin) keep today's behaviour. Omitted when unset.
     if origin is not None:
         item["origin"] = origin
+    # Caller-defined attributes that must survive the redirect (the Slack
+    # install carries agent_id + member_id). Reserved keys stay ours.
+    if extra:
+        for k, v in extra.items():
+            if k not in item and v is not None:
+                item[k] = v
     await run_in_thread(_table().put_item, Item=item)
 
 

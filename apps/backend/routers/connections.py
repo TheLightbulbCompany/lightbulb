@@ -1005,12 +1005,25 @@ async def oauth_callback(
         )
     except ValueError:
         return _done("error=oauth_state")
-    except httpx.HTTPError:
+    except httpx.HTTPError as exc:
         # With a BYO app the owner's own client_id/secret is user input: a wrong
         # secret or a misconfigured app makes the provider's token endpoint
         # return 4xx, which exchange()'s raise_for_status turns into an
         # HTTPError. The single-use state is already consumed, so land back on
         # the connections page with a retryable error instead of a 500.
+        #
+        # LOG THE PROVIDER'S OWN ERROR. Without this the only evidence a failed
+        # connect leaves is `?error=oauth_exchange` plus a generic "check your
+        # client id and secret" banner, which is wrong often enough to send you
+        # hunting the credential when the real cause is the request shape. The
+        # body is the provider's OAuth error object ({"error": "invalid_client"}
+        # etc.) — no token is present on a failure, and it is truncated in case a
+        # provider echoes the request back.
+        body = ""
+        resp = getattr(exc, "response", None)
+        if resp is not None:
+            body = f" status={resp.status_code} tid={resp.headers.get('intuit_tid', '-')} body={resp.text[:300]!r}"
+        logger.warning("oauth exchange failed for provider=%s:%s", provider, body)
         return _done("error=oauth_exchange")
     p = registry.get_provider(prov)
     # Serialize the connect writes against a concurrent disconnect (both take the

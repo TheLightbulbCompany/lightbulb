@@ -176,14 +176,18 @@ async def _locked_rmw(
     await asyncio.to_thread(_do_rmw_locked)
 
 
-def _ensure_channel_bindings_for_patch(cfg: dict, patch: dict) -> None:
+def _ensure_channel_bindings_for_patch(cfg: dict, patch: dict, agent_for_account: dict[str, str] | None = None) -> None:
     """Mutate ``cfg`` in place to add a route binding for every
-    ``channels.<provider>.accounts.<agent_id>`` introduced by ``patch``.
+    ``channels.<provider>.accounts.<account_id>`` introduced by ``patch``.
 
     OpenClaw's dispatcher (desktop/openclaw src/routing/bindings.ts) routes
     ``(channel, accountId)`` via the top-level ``bindings`` array; without a
     matching entry, messages fall through to the default agent. Every
     channel account needs a sibling binding or the bot misroutes to ``main``.
+
+    ``agent_for_account`` maps an account id to the agent that should answer
+    it (the platform Slack app keys accounts by team id and routes them to an
+    agent); absent → legacy ``agentId == accountId``.
 
     Dedupe-safe: binding equality is structural (Python ``dict ==``), so
     repeated patches are no-ops. Shape matches the zod schema at
@@ -202,13 +206,14 @@ def _ensure_channel_bindings_for_patch(cfg: dict, patch: dict) -> None:
         accounts = provider_cfg.get("accounts")
         if not isinstance(accounts, dict):
             continue
-        for agent_id, account_cfg in accounts.items():
+        for account_id, account_cfg in accounts.items():
             if not isinstance(account_cfg, dict):
                 continue
+            agent_id = (agent_for_account or {}).get(account_id, account_id)
             new_binding = {
                 "type": "route",
                 "agentId": agent_id,
-                "match": {"channel": provider, "accountId": agent_id},
+                "match": {"channel": provider, "accountId": account_id},
             }
             if new_binding not in bindings:
                 bindings.append(new_binding)
@@ -522,18 +527,20 @@ async def replace_provider_block(
     await _locked_rmw(owner_id, _mutate, "replace provider block")
 
 
-async def patch_openclaw_config(owner_id: str, patch: dict) -> None:
+async def patch_openclaw_config(owner_id: str, patch: dict, *, agent_for_account: dict[str, str] | None = None) -> None:
     """Patch openclaw.json on EFS with file locking and atomic write.
 
     Deep-merges the patch into the existing config and writes the result
     atomically. Raises ConfigPatchError if the config file doesn't exist.
     Always writes (even for empty patches) to preserve historical behavior.
 
-    Channel invariant: every ``channels.<provider>.accounts.<agent_id>``
+    Channel invariant: every ``channels.<provider>.accounts.<account_id>``
     introduced by the patch also gets a matching top-level ``bindings``
     entry in the same atomic write. Required by OpenClaw's inbound-message
     dispatcher (desktop/openclaw src/routing/bindings.ts) or the bot
-    misroutes to the default agent (``main``).
+    misroutes to the default agent (``main``). ``agent_for_account`` — see
+    ``_ensure_channel_bindings_for_patch`` — routes an account to a specific
+    agent instead of the legacy ``agentId == accountId`` default.
     """
 
     def _mutate(current: dict) -> bool:
@@ -542,7 +549,7 @@ async def patch_openclaw_config(owner_id: str, patch: dict) -> None:
         current.update(merged)
         # Apply within the same locked RMW so account block + route binding
         # land atomically — no window where one exists without the other.
-        _ensure_channel_bindings_for_patch(current, patch)
+        _ensure_channel_bindings_for_patch(current, patch, agent_for_account)
         return True  # always write, even for empty patches
 
     await _locked_rmw(owner_id, _mutate, f"patch keys={list(patch.keys())}")

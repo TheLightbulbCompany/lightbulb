@@ -63,29 +63,21 @@ async def test_apply_install_writes_secret_row_taskdef_and_config_in_order():
         calls.append(f"refresh:{extra_secrets[0]['name']}:{extra_secrets[0]['valueFrom']}")
         return "arn:td"
 
-    async def _patch(owner, patch):
+    async def _patch(owner, patch, *, agent_for_account=None):
         calls.append("patch")
         assert patch["channels"]["slack"]["accounts"]["T1"]["mode"] == "http"
         assert patch["channels"]["slack"]["enabled"] is True
         assert patch["channels"]["slack"]["streaming"] == {"mode": "progress"}
-
-    async def _remove(owner, path, predicate):
-        calls.append("unbind-auto")
-
-    async def _append(owner, path, entries):
-        calls.append(f"bindings:{entries['agentId']}")
+        assert agent_for_account == {"T1": "agent_f"}
 
     mgr = MagicMock()
     mgr.refresh_task_definition = _refresh
-    mgr._secret_arn = AsyncMock(return_value="arn:secret")
     with (
         patch("core.services.slack_install_service.integration_secret_store.put", _put_secret),
         patch("core.services.slack_install_service.slack_installs_repo.put", _put_row),
         patch("core.services.slack_install_service._mark_connected", _status),
         patch("core.services.slack_install_service.get_ecs_manager", lambda: mgr),
         patch("core.services.slack_install_service.patch_openclaw_config", _patch),
-        patch("core.services.slack_install_service.remove_from_openclaw_config_list", _remove),
-        patch("core.services.slack_install_service.append_to_openclaw_config_list", _append),
     ):
         row = await svc.apply_install(**_install_kwargs())
     assert row["status"] == "active"
@@ -95,8 +87,6 @@ async def test_apply_install_writes_secret_row_taskdef_and_config_in_order():
         "status",
         "refresh:SLACK_BOT_TOKEN_T1:arn:secret",
         "patch",
-        "unbind-auto",
-        "bindings:agent_f",
     ]
 
 

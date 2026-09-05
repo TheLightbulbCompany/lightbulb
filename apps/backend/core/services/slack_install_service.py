@@ -15,7 +15,6 @@ from core.containers import get_ecs_manager
 from core.containers.ecs_manager import slack_env_var_name
 from core.repositories import channel_link_repo, integrations_repo, slack_installs_repo
 from core.services.config_patcher import (
-    append_to_openclaw_config_list,
     delete_openclaw_config_path,
     patch_openclaw_config,
     remove_from_openclaw_config_list,
@@ -106,7 +105,7 @@ async def apply_install(
     installer_member_id: str,
 ) -> dict:
     provider = secret_provider(team_id)
-    await integration_secret_store.put(owner_id, provider, {"bot_token": bot_token, "bot_user_id": bot_user_id})
+    arn = await integration_secret_store.put(owner_id, provider, {"bot_token": bot_token, "bot_user_id": bot_user_id})
     secret_name = integration_secret_store._secret_name(owner_id, provider)
     row = await slack_installs_repo.put(
         team_id=team_id,
@@ -126,11 +125,9 @@ async def apply_install(
         raise SlackInstallConflict(team_id)
     await _mark_connected(owner_id)
 
-    mgr = get_ecs_manager()
-    arn = await mgr._secret_arn(secret_name)
-    if arn is None:
-        raise RuntimeError(f"secret {secret_name} not found after put")
-    await mgr.refresh_task_definition(owner_id, extra_secrets=[{"name": slack_env_var_name(team_id), "valueFrom": arn}])
+    await get_ecs_manager().refresh_task_definition(
+        owner_id, extra_secrets=[{"name": slack_env_var_name(team_id), "valueFrom": arn}]
+    )
     await patch_openclaw_config(
         owner_id,
         {
@@ -142,21 +139,8 @@ async def apply_install(
                 }
             }
         },
+        agent_for_account={team_id: agent_id},
     )
-    # patch_openclaw_config auto-adds a binding with agentId == accountId (the
-    # legacy per-agent shape). Ours targets the chosen agent, so strip the
-    # auto one first, then append ours explicitly.
-    await remove_from_openclaw_config_list(
-        owner_id,
-        ["bindings"],
-        predicate=lambda b: (
-            isinstance(b, dict)
-            and b.get("match", {}).get("channel") == PROVIDER
-            and b.get("match", {}).get("accountId") == team_id
-            and b.get("agentId") == team_id
-        ),
-    )
-    await append_to_openclaw_config_list(owner_id, ["bindings"], route_binding(team_id, agent_id))
     logger.info("slack install applied owner=%s team=%s agent=%s", owner_id, team_id, agent_id)
     return row
 

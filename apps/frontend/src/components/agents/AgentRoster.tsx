@@ -292,11 +292,13 @@ export function AgentRoster({
 
   // Collapsed shows Friday + pins; expanded shows everyone. Computed from the
   // FULL ordered list so the counts in the header stay honest either way.
-  const visible = useMemo(
-    () => (expanded ? ordered : collapsedRoster(ordered, pinned)),
-    [expanded, ordered, pinned],
-  );
-  const hiddenCount = ordered.length - visible.length;
+  const collapsed = useMemo(() => collapsedRoster(ordered, pinned), [ordered, pinned]);
+  const visible = expanded ? ordered : collapsed;
+  // Measured against the COLLAPSED slice, not the visible one, so the answer is
+  // the same in both states: with one agent — or with everyone pinned — there
+  // is nothing behind the chevron, and "Show fewer" would collapse to exactly
+  // what is already on screen.
+  const hiddenCount = ordered.length - collapsed.length;
 
   const displayed = useMemo(() => {
     if (!frozenIds) return visible;
@@ -508,7 +510,7 @@ export function AgentRoster({
       {/* Only rendered when it would do something. With one agent, or with
           everyone pinned, there is nothing behind the chevron and a control
           that reveals nothing is worse than no control. */}
-      {(hiddenCount > 0 || expanded) && (
+      {hiddenCount > 0 && (
         <button
           type="button"
           className="agent-list__expander"

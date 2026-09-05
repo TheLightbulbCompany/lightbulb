@@ -504,4 +504,19 @@ describe("AgentRoster collapse", () => {
     renderRoster([entry("f", "Friday", "idle", true)]);
     expect(screen.queryByRole("button", { name: /show .* more/i })).not.toBeInTheDocument();
   });
+
+  it("renders no expander when every agent is pinned, in either state", () => {
+    // Nothing is hidden, so the control would collapse to what is already on
+    // screen. True whether or not the owner previously expanded.
+    for (const expanded of [false, true]) {
+      localStorage.clear();
+      seedPrefs({ pinned: ["a", "b"], expanded });
+      const { unmount } = renderRoster(entries);
+      // Both are pinned, so the pin tiebreak is even and attention rank
+      // decides: Bee needs the owner, Atlas is idle.
+      expect(rowNames()).toEqual(["Friday", "Bee", "Atlas"]);
+      expect(screen.queryByRole("button", { name: /show fewer|show .* more/i })).not.toBeInTheDocument();
+      unmount();
+    }
+  });
 });

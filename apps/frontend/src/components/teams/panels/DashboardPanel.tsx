@@ -57,7 +57,10 @@ export function DashboardPanel() {
 
       {/* Three states, not two: `undefined` while /dashboard is in flight keeps
           the strip from rendering an all-zero verdict; `null` is the settled
-          "the backend omitted `costs`". */}
+          "the backend omitted `costs`". On a `/dashboard` 5xx `costs` is also
+          absent, so this tile reads "Not shown" — attributing the gap to the
+          owner's plan rather than the failed read. Accepted: no number is
+          printed, and a distinct settled-failure tile state is out of scope. */}
       <HomeRollupStrip
         spendCents={dashboardLoading ? undefined : (dashboard?.costs?.monthSpendCents ?? null)}
       />
@@ -69,7 +72,7 @@ export function DashboardPanel() {
         <div className="flex flex-col gap-6">
           <HomeHappeningNow
             issuesById={issuesById}
-            openTasks={dashboardLoading ? undefined : (dashboard?.tasks.open ?? 0)}
+            openTasks={dashboard ? (dashboard.tasks.open ?? 0) : undefined}
           />
           <HomeRecentWork />
         </div>

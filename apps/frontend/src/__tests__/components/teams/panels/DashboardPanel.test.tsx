@@ -79,4 +79,17 @@ describe("DashboardPanel — Home is the dashboard", () => {
     expect(screen.getByRole("link", { name: "Open Tasks" })).toBeInTheDocument();
     expect(screen.queryByText(/open$/)).not.toBeInTheDocument();
   });
+
+  it("does not print an open-task count when /dashboard fails outright — a failed read is not a zero", () => {
+    mockRead({
+      "/settings": { data: { name: "Phomo" } },
+      "/dashboard": { error: new Error("boom") },
+    });
+    render(<DashboardPanel />);
+    expect(screen.getByRole("link", { name: "Open Tasks" })).toBeInTheDocument();
+    expect(screen.queryByText(/0 open/)).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Needs you" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Happening now" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Recent work" })).toBeInTheDocument();
+  });
 });

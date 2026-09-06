@@ -62,7 +62,7 @@ export function HomeRow({
       className="grid grid-cols-[28px_1fr_auto] items-center gap-3 border-b border-[var(--edge-soft)] px-2 py-2.5 no-underline transition-colors last:border-b-0 hover:bg-[var(--cream-deep)]"
       style={{ color: "var(--midnight)" }}
     >
-      <Identity name={who} size="xs" />
+      <Identity name={who} size="sm" avatarOnly />
       <span className="min-w-0">
         <span className="block truncate text-sm">{title}</span>
         {sub && (

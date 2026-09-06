@@ -32,10 +32,10 @@ describe("HomeSection chrome", () => {
     expect(row).toHaveAttribute("href", "/chat?panel=teams-inbox");
     expect(within(row).getByText("Atlas · adds a seat")).toBeInTheDocument();
     expect(within(row).getByText("2h ago")).toBeInTheDocument();
-    // Identity initials: "Friday" is a single word, so Identity's fallback
-    // slices the first two letters rather than first+last-word initials.
-    // The assertion is that the avatar renders, not which letter.
-    expect(within(row).getByText("FR")).toBeInTheDocument();
+    // avatarOnly: the name is accessible via role="img", not rendered as text
+    // (a full name span would overflow the row's 28px avatar column).
+    expect(within(row).getByRole("img", { name: "Friday" })).toBeInTheDocument();
+    expect(within(row).queryByText("Friday")).toBeNull();
   });
 
   it("renders the empty line as a status by default and as an alert on request", () => {

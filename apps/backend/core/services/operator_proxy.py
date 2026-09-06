@@ -93,14 +93,24 @@ async def handle_operator_connect(
         # raises, and internally fire-and-forgets the actual provision — so
         # awaiting it here only spans its cheap gate reads, and this whole handler
         # already runs in a background task, so it never blocks the WS response.
-        # The try/except is belt: awaiting keeps any failure contained here rather
-        # than surfacing as an unretrieved task exception. Nothing to relay to
-        # right now, so return — the adapter retries.
+        # Awaiting also keeps any (contractually-impossible) failure contained in
+        # the except below — which still records the metric — instead of an
+        # unretrieved task exception. Nothing to relay to right now, so return —
+        # the adapter retries.
         try:
+            # Local import is deliberate (not hoisted to module top): it lets
+            # tests patch core.services.container_wake.request_wake_silent, and
+            # there is no circular-import reason it must be local.
             from core.services.container_wake import request_wake_silent
 
-            await request_wake_silent(owner_id, door="routine_operator")
+            outcome = await request_wake_silent(owner_id, door="routine_operator")
+            # Watch how often a Paperclip run hits a sleeping container and what
+            # the gate decided (dispatched / blocked-by-cap-or-expiry /
+            # already_running / no_row) — the counter to read once trial-arming
+            # lands. Mirrors the put_metric on every other branch in this file.
+            put_metric("operator.connect.stopped_container_wake", dimensions={"outcome": outcome})
         except Exception:
+            put_metric("operator.connect.stopped_container_wake", dimensions={"outcome": "error"})
             logger.warning(
                 "operator connect: wake dispatch failed for owner=%s conn=%s",
                 owner_id,
@@ -109,6 +119,13 @@ async def handle_operator_connect(
             )
         return None
 
+    # A (container, None) shape — a provisioning row mid-flight, or a "running"
+    # row whose Cloud Map lookup found no instance (a transient zombie during a
+    # deploy/restart) — deliberately falls through to the existing upstream path,
+    # not the wake above. request_wake_silent could not help either: it returns
+    # in_flight for a provisioning row and already_running for a "running" zombie
+    # (it trusts the DDB status), so it would no-op. A persistently-dead "running"
+    # row needs a force-reprovision, which is a separate follow-up.
     upstream = NodeUpstreamConnection(
         user_id=user_id,
         owner_id=owner_id,

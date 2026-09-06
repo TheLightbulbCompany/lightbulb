@@ -381,10 +381,10 @@ async def test_stopped_container_fires_wake(mock_ecs, mock_upstream):
     mock_ecs.resolve_running_container = AsyncMock(return_value=(None, None))
     mgmt = MagicMock()
 
-    with patch(
-        "core.services.container_wake.request_wake_silent",
-        new_callable=AsyncMock,
-    ) as wake:
+    with (
+        patch("core.services.container_wake.request_wake_silent", new_callable=AsyncMock) as wake,
+        patch("core.services.operator_proxy.put_metric") as metric,
+    ):
         wake.return_value = "dispatched"
         result = await handle_operator_connect(
             owner_id="org_sleepy",
@@ -396,9 +396,34 @@ async def test_stopped_container_fires_wake(mock_ecs, mock_upstream):
 
     assert result is None
     wake.assert_awaited_once_with("org_sleepy", door="routine_operator")
+    metric.assert_called_once_with("operator.connect.stopped_container_wake", dimensions={"outcome": "dispatched"})
     # No upstream was built or registered for a stopped container.
     mock_upstream.connect.assert_not_awaited()
     assert is_operator_connection("conn_sleepy") is False
+
+
+@pytest.mark.asyncio
+async def test_provisioning_or_zombie_row_falls_through_without_wake(mock_ecs, mock_upstream):
+    """A (container, None) shape — provisioning mid-flight, or a "running" row whose
+    Cloud Map lookup found nothing (transient zombie) — deliberately does NOT wake
+    (request_wake_silent would no-op it: in_flight / already_running) and falls
+    through to the existing upstream path. Documents the scope boundary; the dead
+    "running"-row case is a separate force-reprovision follow-up."""
+    mock_ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "tok"}, None))
+    mgmt = MagicMock()
+
+    with patch("core.services.container_wake.request_wake_silent", new_callable=AsyncMock) as wake:
+        await handle_operator_connect(
+            owner_id="org_zombie",
+            user_id="org_zombie",
+            connection_id="conn_zombie",
+            connect_params={},
+            management_api=mgmt,
+        )
+
+    wake.assert_not_awaited()
+    # Falls through to the existing path, which builds the upstream with ip=None.
+    mock_upstream.connect.assert_awaited_once()
 
 
 @pytest.mark.asyncio

@@ -48,6 +48,9 @@ vi.mock("@/components/settings/CompanyStripeSection", () => ({
 vi.mock("@/components/teams/dashboard/HomeQuickActions", () => ({
   HomeQuickActions: () => <section aria-label="Quick actions" />,
 }));
+// Every Business tile now calls useAskFriday() (via Tile), which in turn
+// calls useAgents() — a real hook this file has no gateway context for.
+vi.mock("@/hooks/useAskFriday", () => ({ useAskFriday: () => vi.fn() }));
 
 import { DashboardPanel } from "../DashboardPanel";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
@@ -104,7 +107,6 @@ describe("DashboardPanel agent spend tile", () => {
           },
         },
         "/issues": { data: [] },
-        "/agents": { data: { agents: [] } },
       }),
     );
     render(<DashboardPanel />);
@@ -129,14 +131,13 @@ describe("DashboardPanel agent spend tile", () => {
           },
         },
         "/issues": { data: [] },
-        "/agents": { data: { agents: [] } },
       }),
     );
     render(<DashboardPanel />);
     // "Pending Approvals" no longer renders anywhere on Home (Task 5 retires
-    // the agent-telemetry metric tiles it used to name); "Not shown" is the
-    // settle signal now.
-    expect(await screen.findByText("Not shown")).toBeInTheDocument();
+    // the agent-telemetry metric tiles it used to name); the strip mounting
+    // is the settle signal now.
+    await screen.findByRole("region", { name: "Business summary" });
     expect(screen.getByText("Not shown")).toBeInTheDocument();
   });
 });

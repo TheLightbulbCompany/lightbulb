@@ -1,15 +1,15 @@
 "use client";
 
-// The business strip above Home's agent activity.
+// Home's business hero.
 //
-// Home answers "is my company moving". Today's DashboardPanel is a port of
-// Paperclip's dashboard and answers "are my agents busy" — runs, priority,
-// issue status, success rate. Both are worth knowing; only one of them is the
-// question an owner opens the product with.
-//
-// ADDITIVE ON PURPOSE. This renders ABOVE the existing dashboard rather than
-// replacing it, so an owner with no Stripe binding sees today's Home unchanged
-// plus one honest notice, and nobody loses a screen they were using.
+// Home answers "is my company moving" before it answers "are my agents busy"
+// — that second question is the rest of DashboardPanel (runs, priority, issue
+// status). This strip is the first one: revenue, new customers, visitors and
+// agent spend, each an anchored figure (spec §2) rather than a dead number —
+// every tile carries an "Ask Friday" link that hands the owner's question,
+// with the period already worded into it, straight to the CEO agent's
+// composer. The hero's bars are hover-labelled (a native <title> per bar) so
+// a specific day reads exactly, which a bare sparkline cannot answer.
 //
 // ── WHY THE SPARKLINES ARE MONOCHROME ─────────────────────────────────────
 // Result colour-codes its Home tiles (green revenue, blue visitors, pink
@@ -27,6 +27,7 @@ import { useState, type ReactNode } from "react";
 import { PanelNotice, PanelTabs } from "@/components/teams/shell";
 import { useCompanyStripeStatus } from "@/components/settings/CompanyStripeSection";
 import { useCompanyRollup, type RollupDay, type RollupSpan } from "@/hooks/useCompanyRollup";
+import { useAskFriday } from "@/hooks/useAskFriday";
 import { formatUsdCents } from "@/lib/creditAmounts";
 import { handleShellLinkClick, teamsPanelUrl } from "@/lib/shellNav";
 
@@ -114,29 +115,75 @@ function Sparkline({
   );
 }
 
+/**
+ * The hero's chart: one bar per day with the exact day and amount in a
+ * native <title>, so hovering answers "what was that day" without a chart
+ * library (spec §2, linked views). Negative days (refund-heavy) hang below a
+ * hairline baseline; the last bar is midnight, the rest the neutral chart
+ * token — one accent, and it means "today".
+ */
+function HeroBars({ days, format }: { days: RollupDay[]; format: (cents: number) => string }) {
+  const values = days.map((d) => (Number.isFinite(d.revenue_microcents) ? d.revenue_microcents : 0));
+  if (values.length === 0) return null;
+  const lo = Math.min(...values, 0);
+  const hi = Math.max(...values, 0);
+  const range = hi - lo || 1;
+  const zeroY = 20 - ((0 - lo) / range) * 20;
+  const slot = 100 / values.length;
+  const gap = slot * 0.25;
+  return (
+    <svg viewBox="0 0 100 20" preserveAspectRatio="none" role="img" aria-label="Revenue over the period" className="mt-3 h-12 w-full">
+      {values.map((v, i) => {
+        const h = (Math.abs(v) / range) * 20;
+        const y = v >= 0 ? zeroY - h : zeroY;
+        return (
+          <rect
+            key={days[i].day}
+            x={(i * slot + gap / 2).toFixed(2)}
+            y={y.toFixed(2)}
+            width={(slot - gap).toFixed(2)}
+            height={Math.max(h, 0.2).toFixed(2)}
+            fill={i === values.length - 1 ? "var(--midnight)" : "var(--chart-5)"}
+          >
+            <title>{`${formatDay(days[i].day)} · ${format(microcentsToCents(v))}`}</title>
+          </rect>
+        );
+      })}
+      <line x1="0" x2="100" y1={zeroY.toFixed(2)} y2={zeroY.toFixed(2)} stroke="var(--edge)" strokeWidth="0.5" vectorEffect="non-scaling-stroke" />
+    </svg>
+  );
+}
+
 function Tile({
   icon: Icon,
   label,
   value,
   caption,
   series,
+  chart,
   unavailable,
   hero,
   href,
   linkLabel,
+  askDraft,
 }: {
   icon: typeof DollarSign;
   label: string;
   value: string;
   caption: ReactNode;
   series?: number[];
+  /** A pre-built chart (the hero's HeroBars) rendered instead of a Sparkline. */
+  chart?: ReactNode;
   unavailable?: boolean;
   /** Full-width, larger figure, taller sparkline. Revenue only. */
   hero?: boolean;
   /** In-shell destination; href stays real for new-tab / middle-click. */
   href?: string;
   linkLabel?: string;
+  /** The question this tile's "Ask Friday" link hands to the CEO agent. */
+  askDraft?: string;
 }) {
+  const ask = useAskFriday();
   return (
     <div
       // `role="group"`, not a bare div: aria-label only names an element with
@@ -147,7 +194,7 @@ function Tile({
       data-hero={hero ? "true" : undefined}
       className={
         hero
-          ? "rounded-md border border-[var(--edge)] bg-card px-5 py-4 @3xl:col-span-3"
+          ? "rounded-md border border-[var(--edge)] bg-card px-5 py-4 @3xl:row-span-3"
           : "rounded-md border border-[var(--edge)] bg-card px-4 py-3"
       }
     >
@@ -173,9 +220,9 @@ function Tile({
       <p className="mt-1.5 text-xs text-[var(--midnight-muted)]">
         {unavailable ? "Not wired up yet" : caption}
       </p>
-      {series && !unavailable && (
-        <Sparkline values={series} label={`${label} over the period`} tall={hero} />
-      )}
+      {!unavailable &&
+        (chart ??
+          (series && <Sparkline values={series} label={`${label} over the period`} tall={hero} />))}
       {href && linkLabel && (
         <a
           href={href}
@@ -186,6 +233,15 @@ function Tile({
         >
           {linkLabel} →
         </a>
+      )}
+      {askDraft && (
+        <button
+          type="button"
+          onClick={() => ask(askDraft)}
+          className="mt-2.5 ml-4 inline-block label-caps text-[var(--midnight-muted)] underline-offset-4 hover:text-[var(--midnight)] hover:underline"
+        >
+          Ask Friday
+        </button>
       )}
     </div>
   );
@@ -404,7 +460,7 @@ export function HomeRollupStrip({
       // columns and "Unavailable" truncated to "Unavailab". The container
       // is InlineTeamsPanel's wrapper, the same one DashboardPanel's own
       // `@md:`/`@4xl:` tiles resolve against.
-      <div className="grid grid-cols-1 gap-2 @3xl:grid-cols-3">
+      <div className="grid grid-cols-1 gap-2 @3xl:grid-cols-[2fr_1fr]">
         <Tile
           hero
           icon={DollarSign}
@@ -416,20 +472,22 @@ export function HomeRollupStrip({
             rollup.first_day,
             formatSignedUsdCents,
           )}
-          series={days.map((d) => d.revenue_microcents)}
+          chart={<HeroBars days={days} format={formatSignedUsdCents} />}
           unavailable={isUnavailable("revenue_microcents")}
           href={teamsPanelUrl("payments")}
           linkLabel="Open Payments"
+          askDraft={`Walk me through revenue for the last ${span} days: what landed, what was refunded, and what changed versus the previous ${span} days.`}
         />
         <Tile
           icon={UserPlus}
-          label="Signups"
+          label="New customers"
           value={formatCount(sum(days, "signups"))}
-          caption={comparison(prev("signups"), span, rollup.first_day, formatCount)}
+          caption={`Stripe customers created · ${comparison(prev("signups"), span, rollup.first_day, formatCount)}`}
           series={days.map((d) => d.signups)}
           unavailable={isUnavailable("signups")}
           href={teamsPanelUrl("customers")}
           linkLabel="Open Customers"
+          askDraft={`Who are our new customers from the last ${span} days, and what did they buy?`}
         />
         {/* The backend's `unavailable` is owner-derived: an owner
             with no PostHog connection has `visitors` omitted from days[]
@@ -453,6 +511,11 @@ export function HomeRollupStrip({
           unavailable={isUnavailable("visitors")}
           href={isUnavailable("visitors") ? teamsPanelUrl("accounts") : undefined}
           linkLabel={isUnavailable("visitors") ? "Connect PostHog" : undefined}
+          askDraft={
+            isUnavailable("visitors")
+              ? undefined
+              : `How is traffic to our site trending over the last ${span} days, and where is it coming from?`
+          }
         />
         {/* Billed spend from Metronome via /teams/dashboard.costs — the figure
             Spend prints. `null` = the backend omitted the block (OAuth, BYOK,
@@ -478,6 +541,7 @@ export function HomeRollupStrip({
           }
           href={teamsPanelUrl("spend")}
           linkLabel="Open Spend"
+          askDraft="Break down what my agents cost this month by agent and by task, and tell me what is driving it."
         />
       </div>
     );

@@ -1,8 +1,9 @@
-// Smoke test for DashboardPanel — renders the four metric cards from the
-// rich /dashboard payload. The full set of loading/error/populated/empty/
-// normalization scenarios lives in the dedicated suite at
-// __tests__/components/teams/panels/DashboardPanel.test.tsx; this file is
-// kept as a thin smoke test.
+// Smoke test for DashboardPanel — the company name in the H1, quick actions,
+// and the three Home sections (Needs you / Happening now / Recent work),
+// with the retired agent-telemetry tiles confirmed gone. The full set of
+// loading/error/populated/empty/normalization scenarios lives in the
+// dedicated suite at __tests__/components/teams/panels/DashboardPanel.test.tsx;
+// this file is kept as a thin smoke test.
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 
@@ -79,6 +80,9 @@ vi.mock("@/components/teams/dashboard/hooks/useLiveRuns", async (importOriginal)
   const mod = await importOriginal<typeof import("@/components/teams/dashboard/hooks/useLiveRuns")>();
   return { ...mod, useLiveRuns: () => ({ runs: [], isLoading: false, isError: false }) };
 });
+// Every Business tile now calls useAskFriday() (via Tile), which in turn
+// calls useAgents() — a real hook this file has no gateway context for.
+vi.mock("@/hooks/useAskFriday", () => ({ useAskFriday: () => vi.fn() }));
 
 
 describe("DashboardPanel", () => {

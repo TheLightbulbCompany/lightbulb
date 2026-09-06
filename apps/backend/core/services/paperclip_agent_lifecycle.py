@@ -67,14 +67,16 @@ async def disarm_owner_nightly_automation(owner_id: str) -> dict[str, int]:
     dead container. Pauses the routine (the owner's chosen disarm) and cancels
     the looping issues.
 
-    RE-SUBSCRIBE CAVEAT: this does NOT self-heal on re-subscribe. The provision
-    arm path (``create_enabled_schedule_routine``) is title-idempotent and
-    deliberately never re-enables an existing paused routine — it cannot tell a
-    teardown pause from an owner opt-out — so a churn→resubscribe owner keeps a
-    paused routine until either an arm-path reconcile ships (planned with the
-    trial-arming change) or they Resume it in Teams. Archiving instead of
-    pausing would NOT help: the title-skip blocks re-create for any existing
-    routine regardless of status.
+    RE-SUBSCRIBE CAVEAT: pausing does NOT self-heal on re-subscribe. The
+    provision arm path (``create_enabled_schedule_routine``) is title-idempotent
+    and skips when a non-archived routine of this title exists, so it never
+    re-enables this paused routine — and it cannot tell a teardown pause from an
+    owner opt-out anyway. A churn→resubscribe owner keeps a paused routine until
+    either an arm-path reconcile ships (planned with the trial-arming change) or
+    they Resume it in Teams. (Archiving instead WOULD self-heal — the title-skip
+    excludes ``archived`` routines, so the arm path would create a fresh enabled
+    one — but it discards this routine's run history and config; pausing keeps
+    them, which is why it is the chosen disarm.)
 
     Idempotent: an already-paused/archived routine and terminal issues are
     skipped. Scoped to the nightly CEO routine by title; issue cancellation

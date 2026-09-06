@@ -12,6 +12,11 @@ vi.mock("@/hooks/useCompanyRollup", () => ({
   useCompanyRollup: (span: number) => mockRollup(span),
 }));
 
+// Every tile's "Ask Friday" hands off to the same hook — a plain spy is
+// enough to assert the exact draft each tile sends.
+const askFriday = vi.fn();
+vi.mock("@/hooks/useAskFriday", () => ({ useAskFriday: () => askFriday }));
+
 // Only `details_submitted` is read, and only when there are no rows at all —
 // a bound-but-unonboarded account returns legitimately empty, and "finish
 // setup" is a different instruction from "nothing happened yet".
@@ -135,12 +140,12 @@ describe("HomeRollupStrip honesty — regressions found in review", () => {
 
     expect(screen.getByText("Unavailable")).toBeInTheDocument();
     // ...and it must not be plotted as a flat line at zero either.
-    expect(screen.queryByLabelText("Signups over the period")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("New customers over the period")).not.toBeInTheDocument();
   });
 
 
 
-  it("keeps a negative revenue day inside the sparkline's viewBox", () => {
+  it("keeps a negative revenue day inside the hero bars' viewBox", () => {
     // `_read_day` sums balance-transaction `net` over all types, so refunds and
     // disputes can push a day below zero. A max-only scale mapped those points
     // outside viewBox="0 0 100 20", where the SVG clipped them silently and a
@@ -157,11 +162,72 @@ describe("HomeRollupStrip honesty — regressions found in review", () => {
       }),
     );
     const { container } = render(<HomeRollupStrip spendCents={1400} />);
-    const points = container.querySelector("polyline")!.getAttribute("points")!;
-    for (const pair of points.split(" ")) {
-      const y = Number(pair.split(",")[1]);
+    const rects = Array.from(container.querySelectorAll('[aria-label="Revenue over the period"] rect'));
+    expect(rects.length).toBe(2);
+    for (const r of rects) {
+      const y = Number(r.getAttribute("y"));
+      const h = Number(r.getAttribute("height"));
       expect(y).toBeGreaterThanOrEqual(0);
-      expect(y).toBeLessThanOrEqual(20);
+      expect(y + h).toBeLessThanOrEqual(20.01);
+    }
+  });
+
+  it("rests a zero-revenue day's bar on the baseline, not below it", () => {
+    // The clamp bug: `y` was computed from the UNCLAMPED height while the
+    // rendered `height` was clamped to a 0.2 floor, so a $0 day (or any tiny
+    // day beside a much larger one) drew its sliver starting BELOW the
+    // baseline — for [0, big] the zero day landed at y=20, height=0.2,
+    // entirely outside the 0–20 viewBox and invisible.
+    mockRollup.mockReturnValue(
+      view({
+        rollup: {
+          ...LIVE,
+          days: [
+            { day: "2026-08-30", revenue_microcents: 0, signups: 0, visitors: 0 },
+            { day: "2026-08-31", revenue_microcents: 5_000_000, signups: 1, visitors: 1 },
+          ],
+        },
+      }),
+    );
+    const { container } = render(<HomeRollupStrip spendCents={1400} />);
+    const rects = Array.from(container.querySelectorAll('[aria-label="Revenue over the period"] rect'));
+    expect(rects.length).toBe(2);
+    const zeroY = 20; // the window is all non-negative, so the baseline sits at the bottom.
+    for (const r of rects) {
+      const y = Number(r.getAttribute("y"));
+      const h = Number(r.getAttribute("height"));
+      expect(y).toBeGreaterThanOrEqual(0);
+      expect(y + h).toBeLessThanOrEqual(20.01);
+    }
+    const [zeroDayRect] = rects;
+    const y = Number(zeroDayRect.getAttribute("y"));
+    const h = Number(zeroDayRect.getAttribute("height"));
+    expect(y + h).toBeLessThanOrEqual(zeroY + 0.01);
+  });
+
+  it("keeps a zero day inside the viewBox when every day in the window is non-positive", () => {
+    // In an all-non-positive window `zeroY` sits at the very top (0). A zero
+    // day is treated as non-negative and drew UPWARD from the baseline
+    // (zeroY - h), landing at y=-0.2 — outside the viewBox — before the clamp.
+    mockRollup.mockReturnValue(
+      view({
+        rollup: {
+          ...LIVE,
+          days: [
+            { day: "2026-08-30", revenue_microcents: -5_000_000, signups: 0, visitors: 0 },
+            { day: "2026-08-31", revenue_microcents: 0, signups: 0, visitors: 0 },
+          ],
+        },
+      }),
+    );
+    const { container } = render(<HomeRollupStrip spendCents={1400} />);
+    const rects = Array.from(container.querySelectorAll('[aria-label="Revenue over the period"] rect'));
+    expect(rects.length).toBe(2);
+    for (const r of rects) {
+      const y = Number(r.getAttribute("y"));
+      const h = Number(r.getAttribute("height"));
+      expect(y).toBeGreaterThanOrEqual(0);
+      expect(y + h).toBeLessThanOrEqual(20.01);
     }
   });
 });
@@ -254,7 +320,10 @@ describe("HomeRollupStrip — days present but nothing happened", () => {
     // Scoped to the hero — the Agent spend tile prints "$0" here too.
     expect(within(screen.getByLabelText("Revenue")).getByText("$0")).toBeInTheDocument();
     expect(screen.getByText("$400 in the previous 30 days")).toBeInTheDocument();
-    expect(screen.getByText("3 in the previous 30 days")).toBeInTheDocument();
+    // New customers' caption now leads with the source ("Stripe customers
+    // created · …"), so the comparison clause is a substring, not the
+    // whole text node.
+    expect(screen.getByText(/3 in the previous 30 days/)).toBeInTheDocument();
   });
 
   it("still renders the tiles when ANY served metric is non-zero", () => {
@@ -349,6 +418,8 @@ describe("HomeRollupStrip — business-first hero", () => {
       "href",
       "/chat?panel=teams-spend",
     );
+    // New customers' caption names its source before the comparison clause.
+    expect(screen.getByText(/^Stripe customers created · /)).toBeInTheDocument();
   });
 
   it("says there is nothing to compare against, without claiming an origin", () => {
@@ -379,7 +450,10 @@ describe("HomeRollupStrip — business-first hero", () => {
     );
     render(<HomeRollupStrip spendCents={1400} />);
     expect(screen.getByText("$400 in the previous 30 days")).toBeInTheDocument();
-    expect(screen.getByText("3 in the previous 30 days")).toBeInTheDocument();
+    // New customers' caption now leads with the source ("Stripe customers
+    // created · …"), so the comparison clause is a substring, not the
+    // whole text node.
+    expect(screen.getByText(/3 in the previous 30 days/)).toBeInTheDocument();
     // Only the current window is summed into the figure.
     expect(screen.getByText("$100")).toBeInTheDocument();
     expect(screen.getByText("Last 30 days")).toBeInTheDocument();
@@ -500,5 +574,34 @@ describe("HomeRollupStrip — business-first hero", () => {
     // ...and the one unread cell says so, rather than printing a figure.
     expect(screen.getByText("…")).toBeInTheDocument();
     expect(screen.queryByText("Not shown")).not.toBeInTheDocument();
+  });
+
+  it("draws the hero as bars with the exact day and amount on hover, and keeps sparklines on the tiles", () => {
+    mockRollup.mockReturnValue(view({ rollup: LIVE }));
+    const { container } = render(<HomeRollupStrip spendCents={1400} />);
+    const hero = container.querySelector('[aria-label="Revenue over the period"]')!;
+    const titles = Array.from(hero.querySelectorAll("rect > title")).map((t) => t.textContent);
+    expect(titles).toEqual(["Aug 30 · $1", "Aug 31 · $2"]);
+    expect(container.querySelector('[aria-label="New customers over the period"] polyline')).not.toBeNull();
+  });
+
+  it("calls the customer tile New customers and lets the hero span two columns beside the tiles", () => {
+    mockRollup.mockReturnValue(view({ rollup: LIVE }));
+    render(<HomeRollupStrip spendCents={1400} />);
+    expect(screen.getByRole("group", { name: "New customers" })).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Signups" })).not.toBeInTheDocument();
+    const hero = screen.getByRole("group", { name: "Revenue" });
+    expect(hero.className).toContain("@3xl:row-span-3");
+    expect(hero.className).not.toContain("col-span-3");
+  });
+
+  it("hands each tile's question to Friday with the period in it", () => {
+    mockRollup.mockReturnValue(view({ rollup: LIVE }));
+    render(<HomeRollupStrip spendCents={1400} />);
+    const revenue = screen.getByRole("group", { name: "Revenue" });
+    fireEvent.click(within(revenue).getByRole("button", { name: "Ask Friday" }));
+    expect(askFriday).toHaveBeenCalledWith(expect.stringMatching(/revenue.*30 days/));
+    fireEvent.click(within(screen.getByRole("group", { name: "Agent spend" })).getByRole("button", { name: "Ask Friday" }));
+    expect(askFriday).toHaveBeenLastCalledWith(expect.stringMatching(/agents cost/));
   });
 });

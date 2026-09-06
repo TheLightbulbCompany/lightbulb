@@ -17,6 +17,11 @@ export interface IdentityProps {
   initials?: string;
   size?: IdentitySize;
   className?: string;
+  /** Render only the circle, no adjoining name text — the name stays
+   * accessible via role="img" + aria-label (and a hover title) on the
+   * outer span. For tight columns (e.g. HomeRow's 28px avatar cell) where
+   * the full name would overflow. Default false: unchanged behavior. */
+  avatarOnly?: boolean;
 }
 
 function deriveInitials(name: string): string {
@@ -45,6 +50,7 @@ export function Identity({
   initials,
   size = "default",
   className,
+  avatarOnly = false,
 }: IdentityProps) {
   const displayInitials = initials ?? deriveInitials(name);
 
@@ -56,6 +62,7 @@ export function Identity({
         size === "lg" && "gap-2",
         className,
       )}
+      {...(avatarOnly ? { role: "img", "aria-label": name, title: name } : {})}
     >
       <span
         className={cn(
@@ -80,12 +87,14 @@ export function Identity({
           <span>{displayInitials}</span>
         )}
       </span>
-      <span
-        className={cn("truncate", textSize[size])}
-        style={{ color: "var(--midnight)" }}
-      >
-        {name}
-      </span>
+      {!avatarOnly && (
+        <span
+          className={cn("truncate", textSize[size])}
+          style={{ color: "var(--midnight)" }}
+        >
+          {name}
+        </span>
+      )}
     </span>
   );
 }

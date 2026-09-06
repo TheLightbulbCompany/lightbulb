@@ -29,13 +29,10 @@ import {
   EditorialButton, PanelEmptyState, PanelMasthead, PanelNotice, PanelTabs, PanelToolbar,
 } from "@/components/teams/shell";
 import { DreamsPanel } from "@/components/control/panels/DreamsPanel";
-import { useAgents } from "@/hooks/useAgents";
+import { useAskFriday } from "@/hooks/useAskFriday";
 import { useBrainTree, useBrainFile, useBrainMutations } from "@/hooks/useBrainFiles";
 import type { FileInfo } from "@/hooks/useWorkspaceFiles";
-import { openChatPanelWithDraft } from "@/components/workspace/workspaceController";
-import { requestFocusComposer } from "@/lib/focusComposerRequest";
-import { notifyApiError, notifyError } from "@/lib/notify";
-import { navigateShell } from "@/lib/shellNav";
+import { notifyApiError } from "@/lib/notify";
 import { formatBytes } from "@/lib/utils";
 import { BrainFileList } from "./BrainFileList";
 import { BrainLanding } from "./BrainLanding";
@@ -105,7 +102,6 @@ export function BrainPanel({ initialPath, initialTab, onPathUnavailable }: Brain
   }
 
   const { files, isLoading: treeLoading, error: treeError, refresh } = useBrainTree();
-  const { defaultId } = useAgents();
   const counts = React.useMemo(() => vaultCounts(files), [files]);
   const hasLanding = files.some((f) => f.type === "file" && f.path === LANDING_PATH);
   // Land on the vault's own index.md: the plugin creates it on init and
@@ -254,30 +250,9 @@ export function BrainPanel({ initialPath, initialTab, onPathUnavailable }: Brain
     void refresh();
   }, [pagePath, deleteBrainFile, refresh]);
 
-  // Every ASK exit. The dock belongs to the DESKTOP shell — mobile renders
-  // MobileChatShell instead, so attachDockviewApi is never called and
-  // openChatPanelWithDraft returns false (as it does on desktop before the
-  // roster resolves). Same fallback as HomeQuickActions' mobile branch:
-  // record the draft, name the agent the mobile shell should select, swap the
-  // URL to /chat, then fire the event for the already-mounted composer.
-  const ask = React.useCallback(
-    (draft: string) => {
-      if (openChatPanelWithDraft(draft)) return;
-      if (!defaultId) {
-        notifyError("Friday isn't ready yet — try again in a moment.");
-        return;
-      }
-      requestFocusComposer(defaultId, draft);
-      window.dispatchEvent(
-        new CustomEvent("selectAgent", { detail: { agentId: defaultId, source: "notification" } }),
-      );
-      navigateShell("/chat");
-      window.dispatchEvent(
-        new CustomEvent("getstarted:focus-composer", { detail: { agentId: defaultId } }),
-      );
-    },
-    [defaultId],
-  );
+  // Every ASK exit hands the draft to the CEO agent's composer — desktop dock
+  // or mobile shell, whichever is mounted (see useAskFriday).
+  const ask = useAskFriday();
 
   const dropHandlers = {
     onDragOver: (e: React.DragEvent) => {

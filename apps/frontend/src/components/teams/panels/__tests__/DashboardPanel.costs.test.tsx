@@ -8,12 +8,13 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 
 vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: vi.fn() }));
-vi.mock("@/components/teams/dashboard/hooks/useActivityFeed", () => ({
-  useActivityFeed: vi.fn(),
+vi.mock("@/components/teams/inbox/hooks/useAttentionFeed", () => ({
+  useAttentionFeed: () => ({ items: [], count: 0, isLoading: false, isError: false, refresh: vi.fn() }),
 }));
-vi.mock("@/components/teams/dashboard/hooks/useLiveRuns", () => ({
-  useLiveRuns: vi.fn(),
-}));
+vi.mock("@/components/teams/dashboard/hooks/useLiveRuns", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("@/components/teams/dashboard/hooks/useLiveRuns")>();
+  return { ...mod, useLiveRuns: () => ({ runs: [], isLoading: false, isError: false }) };
+});
 // The Business section is the surface under test here, so its rollup is a
 // bound fixture rather than the loading stub the other DashboardPanel files
 // use. Two days inside the 30-day window that starts at `windowStart`.
@@ -47,11 +48,12 @@ vi.mock("@/components/settings/CompanyStripeSection", () => ({
 vi.mock("@/components/teams/dashboard/HomeQuickActions", () => ({
   HomeQuickActions: () => <section aria-label="Quick actions" />,
 }));
+// Every Business tile now calls useAskFriday() (via Tile), which in turn
+// calls useAgents() — a real hook this file has no gateway context for.
+vi.mock("@/hooks/useAskFriday", () => ({ useAskFriday: () => vi.fn() }));
 
 import { DashboardPanel } from "../DashboardPanel";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
-import { useActivityFeed } from "@/components/teams/dashboard/hooks/useActivityFeed";
-import { useLiveRuns } from "@/components/teams/dashboard/hooks/useLiveRuns";
 
 function makeRead(
   perPath: Record<
@@ -60,9 +62,8 @@ function makeRead(
   >,
 ) {
   return vi.fn((path: string) => {
-    // /activity and /inbox/live-runs are called with query strings — match on
-    // prefix so a single fixture entry covers both the bare key and the
-    // param-decorated call.
+    // /artifacts is called with a query string — match on prefix so a single
+    // fixture entry covers both the bare key and the param-decorated call.
     const key = Object.keys(perPath).find((k) => path === k || path.startsWith(`${k}?`));
     const r = key ? perPath[key] : { data: undefined, isLoading: false, error: null };
     return {
@@ -86,16 +87,6 @@ function mockApi(read: ReturnType<typeof makeRead>) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(useActivityFeed).mockReturnValue({
-    events: [],
-    isLoading: false,
-    isError: false,
-  });
-  vi.mocked(useLiveRuns).mockReturnValue({
-    runs: [],
-    isLoading: false,
-    isError: false,
-  });
 });
 
 describe("DashboardPanel agent spend tile", () => {
@@ -115,7 +106,6 @@ describe("DashboardPanel agent spend tile", () => {
           },
         },
         "/issues": { data: [] },
-        "/agents": { data: { agents: [] } },
       }),
     );
     render(<DashboardPanel />);
@@ -140,11 +130,13 @@ describe("DashboardPanel agent spend tile", () => {
           },
         },
         "/issues": { data: [] },
-        "/agents": { data: { agents: [] } },
       }),
     );
     render(<DashboardPanel />);
-    expect(await screen.findByText(/Pending Approvals/)).toBeInTheDocument();
+    // "Pending Approvals" no longer renders anywhere on Home (Task 5 retires
+    // the agent-telemetry metric tiles it used to name); the strip mounting
+    // is the settle signal now.
+    await screen.findByRole("region", { name: "Business summary" });
     expect(screen.getByText("Not shown")).toBeInTheDocument();
   });
 });

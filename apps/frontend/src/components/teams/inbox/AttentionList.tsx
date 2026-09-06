@@ -38,7 +38,9 @@ const SOURCE_LABEL: Record<string, string> = {
   recovery_action: "Recovery",
 };
 
-function sourceLabel(item: AttentionItem): string {
+// Exported so Home's "Needs you" (HomeNeedsYou.tsx) calls the same words the
+// Inbox uses, instead of keeping a second copy of SOURCE_LABEL to drift.
+export function sourceLabel(item: AttentionItem): string {
   return SOURCE_LABEL[item.sourceKind] ?? "Needs you";
 }
 

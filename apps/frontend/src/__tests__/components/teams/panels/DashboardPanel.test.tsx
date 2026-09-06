@@ -1,405 +1,95 @@
-// Tests for DashboardPanel: loading / error / metric tiles / chart cards /
-// empty + populated activity-feed states. Mocks the BFF reader and
-// useActivityFeed so the panel exercises only its own composition logic.
+import { describe, expect, it, vi, beforeEach } from "vitest";
+import { render, screen } from "@testing-library/react";
 
-import { describe, test, expect, vi, beforeEach } from "vitest";
-import { render, screen, within } from "@testing-library/react";
-
-// HomeRollupStrip mounts `useCompanyRollup`, a real SWR hook. Left unmocked it
-// keeps a revalidation promise alive past this file's teardown and throws
-// `document is not defined` from swr's isVisible() — which surfaces as an
-// unhandled error and a non-zero exit even with every test passing. These
-// files assert the agent-metrics dashboard, not the business strip; that has
-// its own test file.
 vi.mock("@/hooks/useCompanyRollup", () => ({
   useCompanyRollup: () => ({
-    rollup: undefined,
-    error: undefined,
-    isLoading: true,
-    refresh: vi.fn(),
-    isUnavailable: () => false,
+    rollup: undefined, windowStart: "2026-08-03", span: 30, error: undefined, isLoading: true,
+    refresh: vi.fn(), isUnavailable: () => false,
   }),
 }));
 vi.mock("@/components/settings/CompanyStripeSection", () => ({
   useCompanyStripeStatus: () => ({ data: undefined }),
 }));
-// Quick actions pull the marketplace drawer context + agent roster; this file
-// asserts Home's composition, not the chips (HomeQuickActions.test.tsx does).
 vi.mock("@/components/teams/dashboard/HomeQuickActions", () => ({
   HomeQuickActions: () => <section aria-label="Quick actions" />,
 }));
 vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: vi.fn() }));
-vi.mock("@/components/teams/dashboard/hooks/useActivityFeed", () => ({
-  useActivityFeed: vi.fn(),
+vi.mock("@/components/teams/inbox/hooks/useAttentionFeed", () => ({
+  useAttentionFeed: () => ({ items: [], count: 0, isLoading: false, isError: false, refresh: vi.fn() }),
 }));
+vi.mock("@/components/teams/dashboard/hooks/useLiveRuns", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("@/components/teams/dashboard/hooks/useLiveRuns")>();
+  return { ...mod, useLiveRuns: () => ({ runs: [], isLoading: false, isError: false }) };
+});
+// Every Business tile now calls useAskFriday() (via Tile), which in turn
+// calls useAgents() — a real hook this file has no gateway context for.
+vi.mock("@/hooks/useAskFriday", () => ({ useAskFriday: () => vi.fn() }));
 
 import { DashboardPanel } from "@/components/teams/panels/DashboardPanel";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
-import { useActivityFeed } from "@/components/teams/dashboard/hooks/useActivityFeed";
 
-function makeRead(
-  perPath: Record<
-    string,
-    { data?: unknown; isLoading?: boolean; error?: Error | null }
-  >,
-) {
-  return vi.fn((path: string) => {
-    const r = perPath[path] ?? { data: undefined, isLoading: false, error: null };
-    return {
-      data: r.data,
-      isLoading: r.isLoading ?? false,
-      error: r.error ?? null,
-      mutate: vi.fn(),
-      isValidating: false,
-    };
+function mockRead(perPath: Record<string, { data?: unknown; isLoading?: boolean; error?: Error | null }>) {
+  const read = vi.fn((path: string) => {
+    const key = Object.keys(perPath).find((k) => path === k || path.startsWith(`${k}?`));
+    const r = key ? perPath[key] : {};
+    return { data: r.data, isLoading: r.isLoading ?? false, error: r.error ?? null, mutate: vi.fn(), isValidating: false };
   });
+  vi.mocked(useTeamsApi).mockReturnValue({ read } as unknown as ReturnType<typeof useTeamsApi>);
+  return read;
 }
 
-function mockApi(read: ReturnType<typeof makeRead>) {
-  vi.mocked(useTeamsApi).mockReturnValue({
-    read,
-    post: vi.fn(),
-    patch: vi.fn(),
-    del: vi.fn(),
-  } as unknown as ReturnType<typeof useTeamsApi>);
-}
+describe("DashboardPanel — Home is the dashboard", () => {
+  beforeEach(() => vi.clearAllMocks());
 
-beforeEach(() => {
-  vi.clearAllMocks();
-  vi.mocked(useActivityFeed).mockReturnValue({
-    events: [],
-    isLoading: false,
-    isError: false,
-  });
-});
-
-describe("DashboardPanel", () => {
-  test("renders Loading state when dashboard not yet loaded", () => {
-    mockApi(makeRead({ "/dashboard": { isLoading: true } }));
-    render(<DashboardPanel />);
-    expect(screen.getByText(/loading/i)).toBeInTheDocument();
-  });
-
-  test("renders error state on dashboard fetch failure", () => {
-    mockApi(makeRead({ "/dashboard": { error: new Error("boom") } }));
-    render(<DashboardPanel />);
-    expect(screen.getByRole("alert")).toBeInTheDocument();
-  });
-
-  test("renders the three agent metric tiles when dashboard loaded", () => {
-    mockApi(
-      makeRead({
-        "/dashboard": {
-          data: {
-            dashboard: {
-              agents: { active: 1, running: 2, paused: 0, error: 0 },
-              tasks: { open: 5, inProgress: 0, blocked: 1, done: 3 },
-              runActivity: [],
-              costs: { monthSpendCents: 1234 },
-              pendingApprovals: 2,
-              budgets: { pendingApprovals: 1 },
-            },
-          },
-        },
-        "/issues": { data: [] },
-      }),
-    );
-    render(<DashboardPanel />);
-    // Scoped to the metrics strip — "Agents" also names the ActiveAgentsPanel
-    // section heading.
-    const metrics = within(screen.getByLabelText("Key metrics"));
-    expect(metrics.getByText("Agents")).toBeInTheDocument();
-    expect(metrics.getByText("Open Tasks")).toBeInTheDocument();
-    expect(metrics.getByText("Pending Approvals")).toBeInTheDocument();
-  });
-
-  test("renders the two run charts inside Your team", () => {
-    mockApi(
-      makeRead({
-        "/dashboard": {
-          data: {
-            dashboard: {
-              agents: {},
-              tasks: {},
-              runActivity: [],
-              costs: { monthSpendCents: 0 },
-              pendingApprovals: 0,
-              budgets: { pendingApprovals: 0 },
-            },
-          },
-        },
-        "/issues": { data: [] },
-      }),
-    );
-    render(<DashboardPanel />);
-    expect(screen.getByText("Run Activity")).toBeInTheDocument();
-    expect(screen.getByText("Success Rate")).toBeInTheDocument();
-    // The Issues charts are Tasks analytics; Home no longer carries them.
-    expect(screen.queryByText("Issues by Priority")).not.toBeInTheDocument();
-    expect(screen.queryByText("Issues by Status")).not.toBeInTheDocument();
-  });
-
-  test("renders empty activity message when no events", () => {
-    mockApi(
-      makeRead({
-        "/dashboard": {
-          data: {
-            dashboard: {
-              agents: {},
-              tasks: {},
-              runActivity: [],
-              costs: { monthSpendCents: 0 },
-              pendingApprovals: 0,
-              budgets: { pendingApprovals: 0 },
-            },
-          },
-        },
-        "/issues": { data: [] },
-      }),
-    );
-    render(<DashboardPanel />);
-    expect(screen.getByText(/no recent activity/i)).toBeInTheDocument();
-  });
-
-  test("renders activity events when feed populated", () => {
-    mockApi(
-      makeRead({
-        "/dashboard": {
-          data: {
-            dashboard: {
-              agents: {},
-              tasks: {},
-              runActivity: [],
-              costs: { monthSpendCents: 0 },
-              pendingApprovals: 0,
-              budgets: { pendingApprovals: 0 },
-            },
-          },
-        },
-        "/issues": { data: [] },
-      }),
-    );
-    vi.mocked(useActivityFeed).mockReturnValue({
-      events: [
-        {
-          id: "evt_1",
-          action: "issue.created",
-          createdAt: new Date().toISOString(),
-        },
-      ],
-      isLoading: false,
-      isError: false,
+  it("puts the company name in the H1 and the three detail sections under the business strip", () => {
+    mockRead({
+      "/settings": { data: { name: "Northwind Candle Co." } },
+      "/dashboard": { data: { dashboard: { agents: {}, tasks: { open: 12 }, runActivity: [], pendingApprovals: 0, budgets: { pendingApprovals: 0 } } } },
+      "/issues": { data: [] },
+      "/artifacts": { data: { artifacts: [], nextCursor: null } },
     });
     render(<DashboardPanel />);
-    expect(screen.queryByText(/no recent activity/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Northwind Candle Co." })).toBeInTheDocument();
+    const strip = screen.getByRole("region", { name: "Business summary" });
+    const needs = screen.getByRole("region", { name: "Needs you" });
+    const now = screen.getByRole("region", { name: "Happening now" });
+    const work = screen.getByRole("region", { name: "Recent work" });
+    // Order: strip → quick actions → sections.
+    const before = (a: Element, b: Element) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(before(strip, screen.getByLabelText("Quick actions"))).toBe(true);
+    expect(before(screen.getByLabelText("Quick actions"), needs)).toBe(true);
+    expect(before(needs, now)).toBe(true);
+    expect(before(now, work)).toBe(true);
+    expect(screen.getByRole("link", { name: "Open Tasks · 12 open" })).toBeInTheDocument();
   });
 
-  test("renders Recent Tasks sorted by updatedAt desc, newest first", () => {
-    mockApi(
-      makeRead({
-        "/dashboard": {
-          data: {
-            dashboard: {
-              agents: {},
-              tasks: {},
-              runActivity: [],
-              costs: { monthSpendCents: 0 },
-              pendingApprovals: 0,
-              budgets: { pendingApprovals: 0 },
-            },
-          },
-        },
-        // Intentionally out of order — the panel must sort by updatedAt desc.
-        "/issues": {
-          data: [
-            {
-              id: "i_old",
-              identifier: "ISO-1",
-              title: "Oldest task",
-              status: "todo",
-              updatedAt: "2026-01-01T00:00:00Z",
-            },
-            {
-              id: "i_new",
-              identifier: "ISO-3",
-              title: "Newest task",
-              status: "in_progress",
-              updatedAt: "2026-03-01T00:00:00Z",
-            },
-            {
-              id: "i_mid",
-              identifier: "ISO-2",
-              title: "Middle task",
-              status: "done",
-              updatedAt: "2026-02-01T00:00:00Z",
-            },
-          ],
-        },
-      }),
-    );
+  it("no longer renders the agent telemetry", () => {
+    mockRead({ "/settings": { data: { name: "Phomo" } }, "/dashboard": { data: { dashboard: { agents: { running: 2 }, tasks: { open: 3 }, runActivity: [], pendingApprovals: 1, budgets: { pendingApprovals: 0 } } } } });
     render(<DashboardPanel />);
-
-    const section = screen.getByRole("region", { name: /recent tasks/i });
-    expect(section).toBeInTheDocument();
-    expect(screen.getByText("Recent Tasks")).toBeInTheDocument();
-
-    // All three titles present, and ordered newest → oldest in the DOM.
-    const titles = ["Newest task", "Middle task", "Oldest task"].map(
-      (t) => screen.getByText(t),
-    );
-    titles.forEach((el) => expect(el).toBeInTheDocument());
-    const positions = titles.map((el) =>
-      // compareDocumentPosition: bit 4 = el2 follows el1.
-      titles[0].compareDocumentPosition(el),
-    );
-    // Middle + Oldest follow Newest in document order.
-    expect(positions[1] & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(positions[2] & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-
-    // Identifier chip is rendered for each row.
-    expect(screen.getByText("ISO-3")).toBeInTheDocument();
+    for (const gone of ["Your team", "Key metrics", "Run Activity", "Success Rate", "Recent Tasks", "Recent activity", "Pending Approvals"]) {
+      expect(screen.queryByText(gone)).not.toBeInTheDocument();
+      expect(screen.queryByLabelText(gone)).not.toBeInTheDocument();
+    }
   });
 
-  test("renders the Recent Tasks empty state when no issues", () => {
-    mockApi(
-      makeRead({
-        "/dashboard": {
-          data: {
-            dashboard: {
-              agents: {},
-              tasks: {},
-              runActivity: [],
-              costs: { monthSpendCents: 0 },
-              pendingApprovals: 0,
-              budgets: { pendingApprovals: 0 },
-            },
-          },
-        },
-        "/issues": { data: [] },
-      }),
-    );
+  it("does not print an open-task count while /dashboard is still loading", () => {
+    mockRead({ "/settings": { data: {} }, "/dashboard": { isLoading: true } });
     render(<DashboardPanel />);
-    expect(screen.getByText(/no recent tasks/i)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Home" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open Tasks" })).toBeInTheDocument();
+    expect(screen.queryByText(/open$/)).not.toBeInTheDocument();
   });
 
-  test("says Loading tasks — never 'No recent tasks' — while /issues is in flight", () => {
-    mockApi(
-      makeRead({
-        "/dashboard": {
-          data: {
-            dashboard: {
-              agents: {},
-              tasks: {},
-              runActivity: [],
-              costs: { monthSpendCents: 0 },
-              pendingApprovals: 0,
-              budgets: { pendingApprovals: 0 },
-            },
-          },
-        },
-        "/issues": { isLoading: true },
-      }),
-    );
+  it("does not print an open-task count when /dashboard fails outright — a failed read is not a zero", () => {
+    mockRead({
+      "/settings": { data: { name: "Phomo" } },
+      "/dashboard": { error: new Error("boom") },
+    });
     render(<DashboardPanel />);
-    expect(screen.getByText("Loading tasks…")).toBeInTheDocument();
-    expect(screen.queryByText(/no recent tasks/i)).not.toBeInTheDocument();
-  });
-
-  test("says the tasks read failed — never 'No recent tasks' — when /issues errors", () => {
-    mockApi(
-      makeRead({
-        "/dashboard": {
-          data: {
-            dashboard: {
-              agents: {},
-              tasks: {},
-              runActivity: [],
-              costs: { monthSpendCents: 0 },
-              pendingApprovals: 0,
-              budgets: { pendingApprovals: 0 },
-            },
-          },
-        },
-        "/issues": { error: new Error("boom") },
-      }),
-    );
-    render(<DashboardPanel />);
-    expect(screen.getByText(/couldn.t load recent tasks/i)).toBeInTheDocument();
-    expect(screen.queryByText(/no recent tasks/i)).not.toBeInTheDocument();
-  });
-
-  test("normalizes /issues envelope { items: [...] }", () => {
-    mockApi(
-      makeRead({
-        "/dashboard": {
-          data: {
-            dashboard: {
-              agents: {},
-              tasks: {},
-              runActivity: [],
-              costs: { monthSpendCents: 0 },
-              pendingApprovals: 0,
-              budgets: { pendingApprovals: 0 },
-            },
-          },
-        },
-        "/issues": {
-          data: {
-            items: [
-              {
-                id: "i1",
-                title: "x",
-                status: "todo",
-                priority: "high",
-                createdAt: "2026-05-05T00:00:00Z",
-              },
-            ],
-          },
-        },
-      }),
-    );
-    // No throw + chart cards still present is sufficient signal that the
-    // envelope-normalization branch is exercised.
-    render(<DashboardPanel />);
-    expect(screen.getByText("Run Activity")).toBeInTheDocument();
-  });
-
-  test("falls back to Home as the H1 while the company name has not loaded", () => {
-    mockApi(
-      makeRead({
-        "/dashboard": {
-          data: {
-            dashboard: {
-              agents: {},
-              tasks: {},
-              runActivity: [],
-              costs: { monthSpendCents: 0 },
-              pendingApprovals: 0,
-              budgets: { pendingApprovals: 0 },
-            },
-          },
-        },
-        "/issues": { data: [] },
-      }),
-    );
-    render(<DashboardPanel />);
-    expect(
-      screen.getByRole("heading", { level: 1, name: "Home" }),
-    ).toBeInTheDocument();
-    // PanelMasthead suppresses the overline when it equals the title, so the
-    // fallback reads as one "Home" — never "Home Home".
-    expect(screen.getAllByText("Home")).toHaveLength(1);
-  });
-
-  test("renders the Business section before the team section", () => {
-    // /dashboard still loading: the business strip and quick actions must
-    // render anyway, above "Your team" and its loading state.
-    mockApi(makeRead({ "/dashboard": { isLoading: true } }));
-    render(<DashboardPanel />);
-    const quickActions = screen.getByLabelText("Quick actions");
-    expect(
-      quickActions.compareDocumentPosition(screen.getByText("Your team")) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Open Tasks" })).toBeInTheDocument();
+    expect(screen.queryByText(/0 open/)).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Needs you" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Happening now" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Recent work" })).toBeInTheDocument();
   });
 });

@@ -1,25 +1,18 @@
-// Smoke test for DashboardPanel — renders the four metric cards from the
-// rich /dashboard payload. The full set of loading/error/populated/empty/
-// normalization scenarios lives in the dedicated suite at
-// __tests__/components/teams/panels/DashboardPanel.test.tsx; this file is
-// kept as a thin smoke test.
+// Smoke test for DashboardPanel — the company name in the H1, quick actions,
+// and the three Home sections (Needs you / Happening now / Recent work),
+// with the retired agent-telemetry tiles confirmed gone. The full set of
+// loading/error/populated/empty/normalization scenarios lives in the
+// dedicated suite at __tests__/components/teams/panels/DashboardPanel.test.tsx;
+// this file is kept as a thin smoke test.
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 
 const mockRead = vi.fn((path: string) => {
   if (path === "/dashboard") {
+    // Only `tasks.open` and `costs` are read by DashboardPanel/HomeRollupStrip;
+    // everything else on DashboardSummary is dead weight in this fixture.
     return {
-      data: {
-        dashboard: {
-          agents: { active: 5, running: 5, paused: 0, error: 0 },
-          tasks: { open: 12, inProgress: 0, blocked: 0, done: 0 },
-          runActivity: [],
-          costs: { monthSpendCents: 4250 },
-          pendingApprovals: 0,
-          budgets: { pendingApprovals: 0 },
-        },
-        sidebar_badges: { inbox: 2 },
-      },
+      data: { dashboard: { tasks: { open: 12 }, costs: { monthSpendCents: 4250 } } },
       isLoading: false,
       error: null,
       mutate: vi.fn(),
@@ -29,7 +22,7 @@ const mockRead = vi.fn((path: string) => {
     // The Paperclip company record — `name` is the H1.
     return { data: { name: "Phomo" }, isLoading: false, error: null, mutate: vi.fn() };
   }
-  // /issues + /activity etc.
+  // /issues, etc.
   return {
     data: [],
     isLoading: false,
@@ -72,26 +65,28 @@ vi.mock("@/components/settings/CompanyStripeSection", () => ({
 vi.mock("@/components/teams/dashboard/HomeQuickActions", () => ({
   HomeQuickActions: () => <section aria-label="Quick actions" />,
 }));
+vi.mock("@/components/teams/inbox/hooks/useAttentionFeed", () => ({
+  useAttentionFeed: () => ({ items: [], count: 0, isLoading: false, isError: false, refresh: vi.fn() }),
+}));
+vi.mock("@/components/teams/dashboard/hooks/useLiveRuns", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("@/components/teams/dashboard/hooks/useLiveRuns")>();
+  return { ...mod, useLiveRuns: () => ({ runs: [], isLoading: false, isError: false }) };
+});
+// Every Business tile now calls useAskFriday() (via Tile), which in turn
+// calls useAgents() — a real hook this file has no gateway context for.
+vi.mock("@/hooks/useAskFriday", () => ({ useAskFriday: () => vi.fn() }));
 
 
 describe("DashboardPanel", () => {
-  it("renders metric cards with values from the un-flattened dashboard shape", () => {
+  it("renders the company name, the quick actions and the three sections", () => {
     render(<DashboardPanel />);
-    // Header — the company's own name is the h1; "Home" demotes to the overline.
-    expect(
-      screen.getByRole("heading", { level: 1, name: "Phomo" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Phomo" })).toBeInTheDocument();
     expect(screen.getByText("Home")).toBeInTheDocument();
     expect(screen.getByLabelText("Quick actions")).toBeInTheDocument();
-    // Agent telemetry is second, behind a collapsible section.
-    expect(screen.getByText("Your team")).toBeInTheDocument();
-    // 3 tile labels — scoped to the metrics strip ("Agents" also names the
-    // ActiveAgentsPanel section heading). Spend is no longer one of them: it
-    // moved to the Business section, which is mocked as loading here and
-    // asserted in HomeRollupStrip.test.tsx.
-    const metrics = within(screen.getByLabelText("Key metrics"));
-    expect(metrics.getByText("Agents")).toBeInTheDocument();
-    expect(metrics.getByText("Open Tasks")).toBeInTheDocument();
-    expect(metrics.getByText("Pending Approvals")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Needs you" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Happening now" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Recent work" })).toBeInTheDocument();
+    expect(screen.queryByText("Your team")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Key metrics")).not.toBeInTheDocument();
   });
 });

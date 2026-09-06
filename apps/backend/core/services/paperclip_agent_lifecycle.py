@@ -55,6 +55,110 @@ def _rows(payload: Any, key: str) -> list[dict]:
     return [row for row in rows if isinstance(row, dict)]
 
 
+async def disarm_owner_nightly_automation(owner_id: str) -> dict[str, int]:
+    """Pause a de-entitled owner's nightly CEO routine and cancel the
+    in-progress issues that would retry-loop against their deleted container.
+
+    Called from entitlement teardown after the container is gone. The Paperclip
+    scheduler fires a routine while ``routines.status='active'`` (no
+    company-disabled gate — fork ``tickScheduledTriggers``) and its heartbeat
+    runner retry-loops ``in_progress`` issues, so a cancelled owner whose
+    routine stays active reproduces the storm where every fire times out on the
+    dead container. Pauses the routine (the owner's chosen disarm) and cancels
+    the looping issues.
+
+    RE-SUBSCRIBE CAVEAT: pausing does NOT self-heal on re-subscribe. The
+    provision arm path (``create_enabled_schedule_routine``) is title-idempotent
+    and skips when a non-archived routine of this title exists, so it never
+    re-enables this paused routine — and it cannot tell a teardown pause from an
+    owner opt-out anyway. A churn→resubscribe owner keeps a paused routine until
+    either an arm-path reconcile ships (planned with the trial-arming change) or
+    they Resume it in Teams. (Archiving instead WOULD self-heal — the title-skip
+    excludes ``archived`` routines, so the arm path would create a fresh enabled
+    one — but it discards this routine's run history and config; pausing keeps
+    them, which is why it is the chosen disarm.)
+
+    Idempotent: an already-paused/archived routine and terminal issues are
+    skipped. Scoped to the nightly CEO routine by title; issue cancellation
+    covers every in-progress issue for the company (nothing can progress once
+    the container is gone), which also stops the productivity-review watchdog
+    that amplifies the storm. May raise; its one caller (entitlement teardown)
+    runs it as a guarded best-effort step.
+    """
+    from core.services.agent_routine_provisioning import NIGHTLY_CEO_ROUTINE_TITLE
+
+    repo = PaperclipRepo(table_name="paperclip-companies")
+    company_id = await resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
+    if company_id is None:
+        return {"routines_paused": 0, "issues_cancelled": 0}
+
+    http = httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0)
+    try:
+        admin = PaperclipAdminClient(http_client=http)
+        cookie = await get_admin_session_cookie(http)
+
+        routines = _rows(
+            await admin.list_routines(company_id=company_id, session_cookie=cookie),
+            "routines",
+        )
+        routines_paused = 0
+        for routine in routines:
+            if routine.get("title") != NIGHTLY_CEO_ROUTINE_TITLE or routine.get("status") != "active":
+                continue
+            await admin.patch_routine(
+                routine_id=routine["id"],
+                body={"status": "paused"},
+                session_cookie=cookie,
+            )
+            routines_paused += 1
+
+        # Snapshot every page before mutating: cancelling shrinks the
+        # status=in_progress result set, so offset paging interleaved with the
+        # cancels would skip rows (same reason prepare_paperclip_agent_delete
+        # snapshots first).
+        in_progress: list[dict] = []
+        offset = 0
+        while True:
+            page = _rows(
+                await admin.list_issues(
+                    company_id=company_id,
+                    session_cookie=cookie,
+                    params={
+                        "status": "in_progress",
+                        "limit": str(_ISSUE_PAGE_SIZE),
+                        "offset": str(offset),
+                    },
+                ),
+                "issues",
+            )
+            in_progress.extend(page)
+            if len(page) < _ISSUE_PAGE_SIZE:
+                break
+            offset += len(page)
+
+        issues_cancelled = 0
+        for issue in in_progress:
+            if issue.get("status") != "in_progress":
+                continue
+            await admin.patch_issue(
+                issue_id=issue["id"],
+                body={"status": "cancelled"},
+                session_cookie=cookie,
+            )
+            issues_cancelled += 1
+
+        logger.info(
+            "paperclip nightly disarm owner=%s company=%s routines_paused=%d issues_cancelled=%d",
+            owner_id,
+            company_id,
+            routines_paused,
+            issues_cancelled,
+        )
+        return {"routines_paused": routines_paused, "issues_cancelled": issues_cancelled}
+    finally:
+        await http.aclose()
+
+
 def _is_openclaw_file_lock_timeout(exc: RuntimeError) -> bool:
     """Return whether OpenClaw rejected a config mutation on its file lock."""
 

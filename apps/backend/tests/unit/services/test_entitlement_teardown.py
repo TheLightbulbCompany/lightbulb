@@ -201,6 +201,46 @@ async def test_a_failing_disarm_does_not_abort_teardown(_runtime):
 
 
 @pytest.mark.asyncio
+async def test_disarm_runs_before_paperclip_disable():
+    """Order is load-bearing for orgs. ``disable`` flips the owner's Paperclip
+    row to status='disabled', and org company-resolution
+    (``resolve_company_id_for_owner``) only returns an ACTIVE row — so disarm
+    MUST resolve the company before disable, or it silently no-ops for every
+    Team/org cancellation."""
+    order: list[str] = []
+
+    provisioning = MagicMock()
+    provisioning.disable = AsyncMock(side_effect=lambda **_: order.append("disable"))
+
+    async def _disarm(owner_id):
+        order.append("disarm")
+        return {"routines_paused": 1, "issues_cancelled": 0}
+
+    with (
+        patch("core.services.owner_facts.write_owner_facts", AsyncMock()),
+        patch("core.containers.get_ecs_manager") as ecs,
+        patch(
+            "core.services.paperclip_provisioning.build_paperclip_provisioning",
+            AsyncMock(return_value=provisioning),
+        ),
+        patch("core.services.paperclip_provisioning.close_paperclip_provisioning", AsyncMock()),
+        patch(
+            "core.services.paperclip_agent_lifecycle.disarm_owner_nightly_automation",
+            side_effect=_disarm,
+        ),
+        patch.object(
+            entitlement_teardown.billing_repo,
+            "get_by_owner_id",
+            AsyncMock(return_value={"owner_id": "org_1", "subscription_status": "canceled"}),
+        ),
+    ):
+        ecs.return_value.delete_user_service = AsyncMock(return_value={"owner_id": "org_1"})
+        assert await entitlement_teardown.teardown_if_unentitled("org_1", trigger="subscription_deleted") is True
+
+    assert order == ["disarm", "disable"]
+
+
+@pytest.mark.asyncio
 async def test_a_resubscribe_mid_teardown_aborts_before_anything_is_destroyed():
     """THE customer-impacting race. The entitlement read at the top of teardown
     is several awaits stale by the time the destructive call happens, and two

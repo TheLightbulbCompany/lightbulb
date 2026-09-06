@@ -175,20 +175,16 @@ Keep the existing comments that explain `earlier`/`keepPreviousData`/the rows-wi
 - Test: `src/components/workspace/__tests__/panelRegistry.test.ts`, `src/components/workspace/__tests__/TeamsDockPanel.test.tsx`
 
 **Interfaces:**
-- Produces: `TEAMS_LIST_KEYS.money = "Money"`; `payments`/`products`/`customers`/`spend` titles become `"Money"` (keys unchanged). `describePanel("teams-money", { day })` → params `{ teamsKey: "money", day }`. `durableParamsFor("teams-money")` → `["panel", "day"]`; `clearablePanelParamKeys("teams-money")` → `["day"]`. `panelParams.day` reaches `TeamsPanelRouter` on desktop and mobile. `onUpdateDurableParam` key union is `"agent" | "path" | "day"` in all three files.
+- Produces: `TEAMS_LIST_KEYS.money = "Money"` (the four absorbed keys keep their titles until Task 6, which retitles them in the same commit as the sidebar change — the registry's label-parity test compares the two). `describePanel("teams-money", { day })` → params `{ teamsKey: "money", day }`. `durableParamsFor("teams-money")` → `["panel", "day"]`; `clearablePanelParamKeys("teams-money")` → `["day"]`. `panelParams.day` reaches `TeamsPanelRouter` on desktop and mobile. `onUpdateDurableParam` key union is `"agent" | "path" | "day"` in all three files.
 
 - [ ] **Step 1: Registry tests first.** In `panelRegistry.test.ts` add:
 
 ```ts
-  it("describes the money panel with a durable ?day deep link, and retitles the four absorbed keys", () => {
+  it("describes the money panel with a durable ?day deep link", () => {
     expect(describePanel("teams-money", { day: "2026-09-05" })).toEqual({
       panelId: "teams-money", component: "teams", title: "Money", params: { teamsKey: "money", day: "2026-09-05" },
     });
     expect(describePanel("teams-money", {})!.params).toEqual({ teamsKey: "money" });
-    for (const k of ["payments", "products", "customers", "spend"]) {
-      expect(describePanel(`teams-${k}`, {})!.title).toBe("Money");
-      expect(describePanel(`teams-${k}`, {})!.params).toEqual({ teamsKey: k });
-    }
     expect(durableParamsFor("teams-money")).toEqual(["panel", "day"]);
     expect(clearablePanelParamKeys("teams-money")).toEqual(["day"]);
   });
@@ -208,12 +204,7 @@ In `TeamsDockPanel.test.tsx`, beside the Brain `path` tests, add:
 - [ ] **Step 3: Implement.**
 
 `panelRegistry.ts`:
-- In `TEAMS_LIST_KEYS`: add `money: "Money",` before `spend`, and change `spend: "Spend"`, `payments: "Payments"`, `products: "Products"`, `customers: "Customers"` to `"Money"` each, with this comment above them:
-  ```ts
-  // Money is ONE page. These four keys are the tabs it absorbed; they stay
-  // registered (mobile builds `?panel=teams-<key>` as strings) and open Money
-  // scrolled to their section — TeamsPanelRouter maps the key to the section.
-  ```
+- In `TEAMS_LIST_KEYS`: add `money: "Money",` before `spend`. Leave the four absorbed keys' titles alone here (Task 6 retitles them).
 - In the teams branch of `describePanel`, after the brain `path` line: `if (teamsKey === "money" && params.day) p.day = params.day;` with the comment `// ?day scopes the Payments section to one UTC day — the hero bar on Home links here.`
 - `durableParamsFor`: add `if (panelId === "teams-money") return ["panel", "day"];` after the brain line. `clearablePanelParamKeys`: add `if (panelId === "teams-money") return ["day"];`.
 
@@ -794,8 +785,15 @@ Delete the five old files and the SpendPanel test. Search the tree for any other
 **Files:**
 - Modify: `src/components/chat/companySections.ts:76-85` and its icon imports
 - Modify: `src/components/chat/__tests__/CompanyNav.test.tsx:20-45` (`ALL_LABELS`)
+- Modify: `src/components/workspace/panelRegistry.ts` (`TEAMS_LIST_KEYS` titles of `payments`/`products`/`customers`/`spend`) and `src/components/workspace/__tests__/panelRegistry.test.ts`
 
-- [ ] **Step 1: Update the test.** In `ALL_LABELS` replace the four entries `"Payments", "Products", "Customers", "Spend"` with the single entry `"Money"`. Search the rest of the file for `Payments`/`Spend` assertions and update them the same way.
+- [ ] **Step 1: Update the tests.** In `ALL_LABELS` replace the four entries `"Payments", "Products", "Customers", "Spend"` with the single entry `"Money"`. Search the rest of the file for `Payments`/`Spend` assertions and update them the same way. In `panelRegistry.test.ts` add to the money test from Task 2:
+```ts
+    for (const k of ["payments", "products", "customers", "spend"]) {
+      expect(describePanel(`teams-${k}`, {})!.title).toBe("Money");
+      expect(describePanel(`teams-${k}`, {})!.params).toEqual({ teamsKey: k });
+    }
+```
 
 - [ ] **Step 2: Run — expect FAIL.**
 
@@ -810,6 +808,13 @@ Delete the five old files and the SpendPanel test. Search the tree for any other
   },
 ```
 Remove `Package`, `Users`, `Wallet` from the lucide import if nothing else in the file uses them (search first).
+In `panelRegistry.ts` `TEAMS_LIST_KEYS`, change `spend: "Spend"`, `payments: "Payments"`, `products: "Products"`, `customers: "Customers"` to `"Money"` each, with this comment above them:
+```ts
+  // Money is ONE page. These four keys are the tabs it absorbed; they stay
+  // registered (mobile builds `?panel=teams-<key>` as strings) and open Money
+  // scrolled to their section — TeamsPanelRouter maps the key to the section.
+```
+The registry's label-parity test (dock titles match the sidebar's IA labels) is why this lands in the same commit as the sidebar change.
 
 - [ ] **Step 4: Run** `CompanyNav.test.tsx`, `ChatLayout.companyNav.test.ts`, and the command-palette tests (`git grep -l companySections src | grep __tests__`). Expect PASS; tsc clean.
 

@@ -239,6 +239,33 @@ async def test_revoke_keeps_slack_connected_while_another_workspace_remains():
 
 
 @pytest.mark.asyncio
+async def test_revoke_ignores_a_stale_gsi_echo_of_the_revoked_row():
+    """The by-owner GSI is eventually consistent; the row just flipped to
+    revoked can still read as active. It must not count as "remaining"."""
+    row = {"team_id": "T1", "owner_id": "org_1", "agent_id": "agent_f", "status": "active"}
+    stale = [{"team_id": "T1", "owner_id": "org_1", "agent_id": "agent_f", "status": "active"}]
+    mgr = MagicMock()
+    mgr.refresh_task_definition = AsyncMock(return_value="arn:td")
+
+    with (
+        patch("core.services.slack_install_service.slack_installs_repo.get", AsyncMock(return_value=row)),
+        patch("core.services.slack_install_service.slack_installs_repo.set_status", AsyncMock()),
+        patch("core.services.slack_install_service.get_ecs_manager", lambda: mgr),
+        patch("core.services.slack_install_service.integration_secret_store.delete", AsyncMock()),
+        patch("core.services.slack_install_service.delete_openclaw_config_path", AsyncMock()),
+        patch("core.services.slack_install_service.remove_from_openclaw_config_list", AsyncMock()),
+        patch(
+            "core.services.slack_install_service.channel_link_repo.sweep_by_owner_provider_agent",
+            AsyncMock(return_value=0),
+        ),
+        patch("core.services.slack_install_service.slack_installs_repo.list_for_owner", AsyncMock(return_value=stale)),
+        patch("core.services.slack_install_service._mark_disconnected", AsyncMock()) as mark_disconnected,
+    ):
+        assert await svc.revoke_install("T1") is True
+    mark_disconnected.assert_awaited_once_with("org_1")
+
+
+@pytest.mark.asyncio
 async def test_revoke_unknown_team_is_false():
     with patch("core.services.slack_install_service.slack_installs_repo.get", AsyncMock(return_value=None)):
         assert await svc.revoke_install("T_NOPE") is False

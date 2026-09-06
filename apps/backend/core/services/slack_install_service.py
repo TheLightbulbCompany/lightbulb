@@ -205,10 +205,13 @@ async def revoke_install(team_id: str) -> bool:
     # workspace. Only flip it to disconnected once no active install is left,
     # or a second workspace keeps transporting while catalog requirement
     # checks report Slack as missing.
+    # list_for_owner reads the by-owner GSI, which is eventually consistent:
+    # the row just flipped to revoked can still come back as active, so it is
+    # excluded by team id rather than trusted.
     remaining = [
         r
         for r in await slack_installs_repo.list_for_owner(owner_id)
-        if r.get("status") == slack_installs_repo.STATUS_ACTIVE
+        if r.get("team_id") != team_id and r.get("status") == slack_installs_repo.STATUS_ACTIVE
     ]
     if not remaining:
         await _mark_disconnected(owner_id)

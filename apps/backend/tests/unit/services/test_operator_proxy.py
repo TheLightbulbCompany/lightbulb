@@ -362,6 +362,120 @@ async def test_successful_push_does_not_reap(mock_ecs, mock_upstream):
     assert is_operator_connection("conn_ok") is True
 
 
+# ---------------------------------------------------------------------------
+# Wake-a-sleeping-container on operator connect.
+#
+# resolve_running_container returns (None, None) for any row NOT in
+# provisioning/running — i.e. a scaled-to-zero / stopped box. A Paperclip
+# adapter connecting against such a container (a scheduled/triggered run, e.g.
+# the nightly CEO routine) should fire a best-effort wake so the box boots and
+# the adapter's own reconnect loop completes the run.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stopped_container_fires_wake(mock_ecs, mock_upstream):
+    """A connect against a stopped container (resolve -> (None, None)) fires
+    request_wake_silent with the routine_operator door and returns None without
+    ever opening an upstream."""
+    mock_ecs.resolve_running_container = AsyncMock(return_value=(None, None))
+    mgmt = MagicMock()
+
+    with (
+        patch("core.services.container_wake.request_wake_silent", new_callable=AsyncMock) as wake,
+        patch("core.services.operator_proxy.put_metric") as metric,
+    ):
+        wake.return_value = "dispatched"
+        result = await handle_operator_connect(
+            owner_id="org_sleepy",
+            user_id="org_sleepy",
+            connection_id="conn_sleepy",
+            connect_params={},
+            management_api=mgmt,
+        )
+
+    assert result is None
+    wake.assert_awaited_once_with("org_sleepy", door="routine_operator")
+    metric.assert_called_once_with("operator.connect.stopped_container_wake", dimensions={"outcome": "dispatched"})
+    # No upstream was built or registered for a stopped container.
+    mock_upstream.connect.assert_not_awaited()
+    assert is_operator_connection("conn_sleepy") is False
+
+
+@pytest.mark.asyncio
+async def test_provisioning_or_zombie_row_falls_through_without_wake(mock_ecs, mock_upstream):
+    """A (container, None) shape — provisioning mid-flight, or a "running" row whose
+    Cloud Map lookup found nothing (transient zombie) — deliberately does NOT wake
+    (request_wake_silent would no-op it: in_flight / already_running) and falls
+    through to the existing upstream path. Documents the scope boundary; the dead
+    "running"-row case is a separate force-reprovision follow-up."""
+    mock_ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "tok"}, None))
+    mgmt = MagicMock()
+
+    with patch("core.services.container_wake.request_wake_silent", new_callable=AsyncMock) as wake:
+        await handle_operator_connect(
+            owner_id="org_zombie",
+            user_id="org_zombie",
+            connection_id="conn_zombie",
+            connect_params={},
+            management_api=mgmt,
+        )
+
+    wake.assert_not_awaited()
+    # Falls through to the existing path, which builds the upstream with ip=None.
+    mock_upstream.connect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_running_container_does_not_fire_wake(mock_ecs, mock_upstream):
+    """A connect against a reachable running container proceeds normally and
+    does NOT fire a wake."""
+    mgmt = MagicMock()
+
+    with patch(
+        "core.services.container_wake.request_wake_silent",
+        new_callable=AsyncMock,
+    ) as wake:
+        hello = await handle_operator_connect(
+            owner_id="org_awake",
+            user_id="org_awake",
+            connection_id="conn_awake",
+            connect_params={},
+            management_api=mgmt,
+        )
+        await asyncio.sleep(0)
+
+    wake.assert_not_awaited()
+    mock_upstream.connect.assert_awaited_once()
+    assert hello["payload"]["protocol"] == 4
+
+
+@pytest.mark.asyncio
+async def test_wake_failure_is_swallowed(mock_ecs, mock_upstream):
+    """A raising wake must never break the connect — it is a fire-and-forget
+    side effect. handle_operator_connect still returns None cleanly."""
+    mock_ecs.resolve_running_container = AsyncMock(return_value=(None, None))
+    mgmt = MagicMock()
+
+    with patch(
+        "core.services.container_wake.request_wake_silent",
+        new_callable=AsyncMock,
+    ) as wake:
+        wake.side_effect = RuntimeError("wake blew up")
+        # Must NOT raise despite the wake exploding — handle_operator_connect
+        # awaits the wake inside a try/except, so the failure is contained here.
+        result = await handle_operator_connect(
+            owner_id="org_boom",
+            user_id="org_boom",
+            connection_id="conn_boom",
+            connect_params={},
+            management_api=mgmt,
+        )
+
+    assert result is None
+    wake.assert_awaited_once_with("org_boom", door="routine_operator")
+
+
 @pytest.mark.asyncio
 async def test_upstream_closed_callback_deregisters(mock_ecs, mock_upstream):
     """The on_upstream_closed callback installed at connect tears down the

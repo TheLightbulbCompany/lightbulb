@@ -73,10 +73,59 @@ async def handle_operator_connect(
     pre-registered upstream is rolled back and the error re-raised to the
     caller (``_kick_off_operator_connect``, which logs + swallows — the
     adapter reconnects via its own retry loop).
+
+    When the owner's container is stopped/scaled-to-zero (no reachable
+    container), fires a best-effort ``request_wake_silent`` so the box boots
+    for the incoming Paperclip run and returns ``None`` — there is nothing to
+    relay to yet; the adapter's reconnect loop completes the run once it's up.
     """
     ecs = get_ecs_manager()
     container, ip = await ecs.resolve_running_container(owner_id)
 
+    if container is None:
+        # No reachable container: resolve_running_container returns (None, None)
+        # for any row not in provisioning/running — i.e. a scaled-to-zero / stopped
+        # box. A Paperclip adapter connecting here means a scheduled or triggered
+        # run (e.g. the nightly CEO routine) is trying to reach a sleeping
+        # container. Fire a best-effort wake so it boots and the adapter's own
+        # reconnect loop completes the run once it's up. request_wake_silent does
+        # ALL the gating (trial cap/expiry, entitlement, operator-stop), never
+        # raises, and internally fire-and-forgets the actual provision — so
+        # awaiting it here only spans its cheap gate reads, and this whole handler
+        # already runs in a background task, so it never blocks the WS response.
+        # Awaiting also keeps any (contractually-impossible) failure contained in
+        # the except below — which still records the metric — instead of an
+        # unretrieved task exception. Nothing to relay to right now, so return —
+        # the adapter retries.
+        try:
+            # Local import is deliberate (not hoisted to module top): it lets
+            # tests patch core.services.container_wake.request_wake_silent, and
+            # there is no circular-import reason it must be local.
+            from core.services.container_wake import request_wake_silent
+
+            outcome = await request_wake_silent(owner_id, door="routine_operator")
+            # Watch how often a Paperclip run hits a sleeping container and what
+            # the gate decided (dispatched / blocked-by-cap-or-expiry /
+            # already_running / no_row) — the counter to read once trial-arming
+            # lands. Mirrors the put_metric on every other branch in this file.
+            put_metric("operator.connect.stopped_container_wake", dimensions={"outcome": outcome})
+        except Exception:
+            put_metric("operator.connect.stopped_container_wake", dimensions={"outcome": "error"})
+            logger.warning(
+                "operator connect: wake dispatch failed for owner=%s conn=%s",
+                owner_id,
+                connection_id,
+                exc_info=True,
+            )
+        return None
+
+    # A (container, None) shape — a provisioning row mid-flight, or a "running"
+    # row whose Cloud Map lookup found no instance (a transient zombie during a
+    # deploy/restart) — deliberately falls through to the existing upstream path,
+    # not the wake above. request_wake_silent could not help either: it returns
+    # in_flight for a provisioning row and already_running for a "running" zombie
+    # (it trusts the DDB status), so it would no-op. A persistently-dead "running"
+    # row needs a force-reprovision, which is a separate follow-up.
     upstream = NodeUpstreamConnection(
         user_id=user_id,
         owner_id=owner_id,

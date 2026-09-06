@@ -4,7 +4,7 @@
 // __tests__/components/teams/panels/DashboardPanel.test.tsx; this file is
 // kept as a thin smoke test.
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 
 const mockRead = vi.fn((path: string) => {
   if (path === "/dashboard") {
@@ -72,26 +72,25 @@ vi.mock("@/components/settings/CompanyStripeSection", () => ({
 vi.mock("@/components/teams/dashboard/HomeQuickActions", () => ({
   HomeQuickActions: () => <section aria-label="Quick actions" />,
 }));
+vi.mock("@/components/teams/inbox/hooks/useAttentionFeed", () => ({
+  useAttentionFeed: () => ({ items: [], count: 0, isLoading: false, isError: false, refresh: vi.fn() }),
+}));
+vi.mock("@/components/teams/dashboard/hooks/useLiveRuns", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("@/components/teams/dashboard/hooks/useLiveRuns")>();
+  return { ...mod, useLiveRuns: () => ({ runs: [], isLoading: false, isError: false }) };
+});
 
 
 describe("DashboardPanel", () => {
-  it("renders metric cards with values from the un-flattened dashboard shape", () => {
+  it("renders the company name, the quick actions and the three sections", () => {
     render(<DashboardPanel />);
-    // Header — the company's own name is the h1; "Home" demotes to the overline.
-    expect(
-      screen.getByRole("heading", { level: 1, name: "Phomo" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Phomo" })).toBeInTheDocument();
     expect(screen.getByText("Home")).toBeInTheDocument();
     expect(screen.getByLabelText("Quick actions")).toBeInTheDocument();
-    // Agent telemetry is second, behind a collapsible section.
-    expect(screen.getByText("Your team")).toBeInTheDocument();
-    // 3 tile labels — scoped to the metrics strip ("Agents" also names the
-    // ActiveAgentsPanel section heading). Spend is no longer one of them: it
-    // moved to the Business section, which is mocked as loading here and
-    // asserted in HomeRollupStrip.test.tsx.
-    const metrics = within(screen.getByLabelText("Key metrics"));
-    expect(metrics.getByText("Agents")).toBeInTheDocument();
-    expect(metrics.getByText("Open Tasks")).toBeInTheDocument();
-    expect(metrics.getByText("Pending Approvals")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Needs you" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Happening now" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Recent work" })).toBeInTheDocument();
+    expect(screen.queryByText("Your team")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Key metrics")).not.toBeInTheDocument();
   });
 });

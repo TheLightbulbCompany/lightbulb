@@ -134,7 +134,11 @@ function HeroBars({ days, format }: { days: RollupDay[]; format: (cents: number)
   return (
     <svg viewBox="0 0 100 20" preserveAspectRatio="none" role="img" aria-label="Revenue over the period" className="mt-3 h-12 w-full">
       {values.map((v, i) => {
-        const h = (Math.abs(v) / range) * 20;
+        // Clamp ONCE, use the clamped value for both y and height — a zero
+        // (or tiny) day drew from the unclamped y with a clamped height,
+        // which stranded its 0.2-tall sliver below the baseline (or off the
+        // viewBox entirely) instead of resting on it.
+        const h = Math.max((Math.abs(v) / range) * 20, 0.2);
         const y = v >= 0 ? zeroY - h : zeroY;
         return (
           <rect
@@ -142,7 +146,7 @@ function HeroBars({ days, format }: { days: RollupDay[]; format: (cents: number)
             x={(i * slot + gap / 2).toFixed(2)}
             y={y.toFixed(2)}
             width={(slot - gap).toFixed(2)}
-            height={Math.max(h, 0.2).toFixed(2)}
+            height={h.toFixed(2)}
             fill={i === values.length - 1 ? "var(--midnight)" : "var(--chart-5)"}
           >
             <title>{`${formatDay(days[i].day)} · ${format(microcentsToCents(v))}`}</title>
@@ -238,7 +242,7 @@ function Tile({
         <button
           type="button"
           onClick={() => ask(askDraft)}
-          className="mt-2.5 ml-4 inline-block label-caps text-[var(--midnight-muted)] underline-offset-4 hover:text-[var(--midnight)] hover:underline"
+          className={`mt-2.5 inline-block label-caps text-[var(--midnight-muted)] underline-offset-4 hover:text-[var(--midnight)] hover:underline ${href && linkLabel ? "ml-4" : ""}`}
         >
           Ask Friday
         </button>

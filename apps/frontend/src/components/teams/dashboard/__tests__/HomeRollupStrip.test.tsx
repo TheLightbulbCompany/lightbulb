@@ -145,7 +145,7 @@ describe("HomeRollupStrip honesty — regressions found in review", () => {
 
 
 
-  it("keeps a negative revenue day inside the sparkline's viewBox", () => {
+  it("keeps a negative revenue day inside the hero bars' viewBox", () => {
     // `_read_day` sums balance-transaction `net` over all types, so refunds and
     // disputes can push a day below zero. A max-only scale mapped those points
     // outside viewBox="0 0 100 20", where the SVG clipped them silently and a
@@ -170,6 +170,39 @@ describe("HomeRollupStrip honesty — regressions found in review", () => {
       expect(y).toBeGreaterThanOrEqual(0);
       expect(y + h).toBeLessThanOrEqual(20.01);
     }
+  });
+
+  it("rests a zero-revenue day's bar on the baseline, not below it", () => {
+    // The clamp bug: `y` was computed from the UNCLAMPED height while the
+    // rendered `height` was clamped to a 0.2 floor, so a $0 day (or any tiny
+    // day beside a much larger one) drew its sliver starting BELOW the
+    // baseline — for [0, big] the zero day landed at y=20, height=0.2,
+    // entirely outside the 0–20 viewBox and invisible.
+    mockRollup.mockReturnValue(
+      view({
+        rollup: {
+          ...LIVE,
+          days: [
+            { day: "2026-08-30", revenue_microcents: 0, signups: 0, visitors: 0 },
+            { day: "2026-08-31", revenue_microcents: 5_000_000, signups: 1, visitors: 1 },
+          ],
+        },
+      }),
+    );
+    const { container } = render(<HomeRollupStrip spendCents={1400} />);
+    const rects = Array.from(container.querySelectorAll('[aria-label="Revenue over the period"] rect'));
+    expect(rects.length).toBe(2);
+    const zeroY = 20; // the window is all non-negative, so the baseline sits at the bottom.
+    for (const r of rects) {
+      const y = Number(r.getAttribute("y"));
+      const h = Number(r.getAttribute("height"));
+      expect(y).toBeGreaterThanOrEqual(0);
+      expect(y + h).toBeLessThanOrEqual(20.01);
+    }
+    const [zeroDayRect] = rects;
+    const y = Number(zeroDayRect.getAttribute("y"));
+    const h = Number(zeroDayRect.getAttribute("height"));
+    expect(y + h).toBeLessThanOrEqual(zeroY + 0.01);
   });
 });
 

@@ -169,13 +169,22 @@ async def test_the_bedrock_reap_is_delegated_to_the_seam(_runtime):
     _runtime.role.assert_not_awaited()
 
 
+def _emitted(metric, name, outcome):
+    return any(
+        c.args and c.args[0] == name and c.kwargs.get("dimensions", {}).get("outcome") == outcome
+        for c in metric.call_args_list
+    )
+
+
 @pytest.mark.asyncio
 async def test_teardown_disarms_the_nightly_routine(_runtime):
     """A de-entitled owner's nightly routine is paused and its looping issues
     cancelled — otherwise the Paperclip scheduler keeps firing it against the
     container teardown just deleted (the runaway-storm class)."""
-    assert await _cancel() is True
+    with patch.object(entitlement_teardown, "put_metric") as metric:
+        assert await _cancel() is True
     _runtime.disarm.assert_awaited_once_with("user_1")
+    assert _emitted(metric, "nightly_ceo.disarm", "ran")
 
 
 @pytest.mark.asyncio
@@ -196,8 +205,10 @@ async def test_a_failing_disarm_does_not_abort_teardown(_runtime):
     """Best-effort like every teardown step: a Paperclip hiccup in the disarm
     must not 5xx the webhook back to the provider."""
     _runtime.disarm.side_effect = RuntimeError("paperclip down")
-    assert await _cancel() is True
+    with patch.object(entitlement_teardown, "put_metric") as metric:
+        assert await _cancel() is True
     _runtime.facts.assert_awaited_once()
+    assert _emitted(metric, "nightly_ceo.disarm", "error")
 
 
 @pytest.mark.asyncio

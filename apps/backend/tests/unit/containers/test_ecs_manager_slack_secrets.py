@@ -122,3 +122,32 @@ async def test_build_slack_secrets_is_best_effort():
     m = _manager()
     with patch("core.repositories.slack_installs_repo.list_for_owner", AsyncMock(side_effect=RuntimeError("ddb down"))):
         assert await m._build_slack_secrets_for_user("org_1") == []
+
+
+@pytest.mark.asyncio
+async def test_refresh_task_definition_serializes_per_owner():
+    """Two concurrent refreshes for one owner must take turns (describe →
+    mutate → register is a read-modify-write); a different owner is not held up."""
+    import asyncio
+
+    m = _manager()
+    active: dict[str, int] = {"org_1": 0}
+    overlap = {"seen": False}
+
+    async def _slow(owner, *, extra_secrets=None, drop_secrets=None):
+        if owner == "org_1":
+            active["org_1"] += 1
+            if active["org_1"] > 1:
+                overlap["seen"] = True
+            await asyncio.sleep(0.01)
+            active["org_1"] -= 1
+        return f"arn:{owner}"
+
+    with patch.object(em.EcsManager, "_refresh_task_definition_locked", AsyncMock(side_effect=_slow)):
+        results = await asyncio.gather(
+            m.refresh_task_definition("org_1", extra_secrets=[{"name": "A", "valueFrom": "a"}]),
+            m.refresh_task_definition("org_1", drop_secrets=["B"]),
+            m.refresh_task_definition("org_2"),
+        )
+    assert results == ["arn:org_1", "arn:org_1", "arn:org_2"]
+    assert overlap["seen"] is False

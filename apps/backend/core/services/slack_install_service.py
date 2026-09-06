@@ -201,6 +201,16 @@ async def revoke_install(team_id: str) -> bool:
     )
     if agent_id:
         await channel_link_repo.sweep_by_owner_provider_agent(owner_id=owner_id, provider=PROVIDER, agent_id=agent_id)
-    await _mark_disconnected(owner_id)
-    logger.info("slack install revoked owner=%s team=%s", owner_id, team_id)
+    # The owner has ONE integrations status row for Slack, shared by every
+    # workspace. Only flip it to disconnected once no active install is left,
+    # or a second workspace keeps transporting while catalog requirement
+    # checks report Slack as missing.
+    remaining = [
+        r
+        for r in await slack_installs_repo.list_for_owner(owner_id)
+        if r.get("status") == slack_installs_repo.STATUS_ACTIVE
+    ]
+    if not remaining:
+        await _mark_disconnected(owner_id)
+    logger.info("slack install revoked owner=%s team=%s remaining=%d", owner_id, team_id, len(remaining))
     return True

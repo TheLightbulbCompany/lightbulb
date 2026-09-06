@@ -205,6 +205,17 @@ async def _provision_channel_accounts(owner_id: str) -> tuple[dict[str, dict[str
         return {}, []
 
 
+_TASK_DEF_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _owner_task_def_lock(owner_id: str) -> asyncio.Lock:
+    """One lock per owner for the task-definition read-modify-register sequence."""
+    lock = _TASK_DEF_LOCKS.get(owner_id)
+    if lock is None:
+        lock = _TASK_DEF_LOCKS[owner_id] = asyncio.Lock()
+    return lock
+
+
 def slack_env_var_name(team_id: str) -> str:
     """ECS/SecretRef env var carrying one workspace's bot token. The OpenClaw
     SecretRef ``id`` must match ``^[A-Z][A-Z0-9_]{0,127}$`` — Slack team ids
@@ -857,6 +868,31 @@ class EcsManager:
             logger.error("Failed to deregister task definition %s: %s", task_definition_arn, e)
 
     async def refresh_task_definition(
+        self,
+        owner_id: str,
+        *,
+        extra_secrets: list[dict] | None = None,
+        drop_secrets: list[str] | None = None,
+    ) -> str | None:
+        """Per-owner serialized wrapper — see ``_refresh_task_definition_locked``.
+
+        The body is describe → mutate secrets → register → update-service. Two
+        concurrent callers for one owner (a second Slack workspace installed
+        while the first is still rolling, or an install racing a revoke) would
+        both read the same old revision and the last register would silently
+        drop the other's secret. One lock per owner makes them take turns.
+        """
+        # ponytail: in-process lock. The backend runs one instance
+        # (desiredCount 1); the only overlap is the second task during a
+        # rolling deploy, and two Slack installs for one owner landing in that
+        # window is the case this deliberately leaves open. A DDB fence is the
+        # upgrade if that ever bites.
+        async with _owner_task_def_lock(owner_id):
+            return await self._refresh_task_definition_locked(
+                owner_id, extra_secrets=extra_secrets, drop_secrets=drop_secrets
+            )
+
+    async def _refresh_task_definition_locked(
         self,
         owner_id: str,
         *,

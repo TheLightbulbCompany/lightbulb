@@ -89,14 +89,17 @@ async def handle_operator_connect(
         # run (e.g. the nightly CEO routine) is trying to reach a sleeping
         # container. Fire a best-effort wake so it boots and the adapter's own
         # reconnect loop completes the run once it's up. request_wake_silent does
-        # ALL the gating (trial cap/expiry, entitlement, operator-stop) and never
-        # raises; schedule it fire-and-forget so it can never block or fail this
-        # connect. There is nothing to relay to right now, so return — the adapter
-        # retries.
+        # ALL the gating (trial cap/expiry, entitlement, operator-stop), never
+        # raises, and internally fire-and-forgets the actual provision — so
+        # awaiting it here only spans its cheap gate reads, and this whole handler
+        # already runs in a background task, so it never blocks the WS response.
+        # The try/except is belt: awaiting keeps any failure contained here rather
+        # than surfacing as an unretrieved task exception. Nothing to relay to
+        # right now, so return — the adapter retries.
         try:
             from core.services.container_wake import request_wake_silent
 
-            asyncio.create_task(request_wake_silent(owner_id, door="routine_operator"))
+            await request_wake_silent(owner_id, door="routine_operator")
         except Exception:
             logger.warning(
                 "operator connect: wake dispatch failed for owner=%s conn=%s",

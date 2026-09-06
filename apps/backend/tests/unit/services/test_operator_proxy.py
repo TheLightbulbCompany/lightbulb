@@ -7,7 +7,6 @@ broadcasts, ref-counted config patching).
 """
 
 import asyncio
-import contextlib
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -394,7 +393,6 @@ async def test_stopped_container_fires_wake(mock_ecs, mock_upstream):
             connect_params={},
             management_api=mgmt,
         )
-        await asyncio.sleep(0)  # let the fire-and-forget wake task run
 
     assert result is None
     wake.assert_awaited_once_with("org_sleepy", door="routine_operator")
@@ -439,7 +437,8 @@ async def test_wake_failure_is_swallowed(mock_ecs, mock_upstream):
         new_callable=AsyncMock,
     ) as wake:
         wake.side_effect = RuntimeError("wake blew up")
-        # Must NOT raise despite the wake exploding.
+        # Must NOT raise despite the wake exploding — handle_operator_connect
+        # awaits the wake inside a try/except, so the failure is contained here.
         result = await handle_operator_connect(
             owner_id="org_boom",
             user_id="org_boom",
@@ -447,12 +446,9 @@ async def test_wake_failure_is_swallowed(mock_ecs, mock_upstream):
             connect_params={},
             management_api=mgmt,
         )
-        # Drain the scheduled task (its exception stays inside the task).
-        with contextlib.suppress(Exception):
-            await asyncio.sleep(0)
 
     assert result is None
-    wake.assert_called_once_with("org_boom", door="routine_operator")
+    wake.assert_awaited_once_with("org_boom", door="routine_operator")
 
 
 @pytest.mark.asyncio

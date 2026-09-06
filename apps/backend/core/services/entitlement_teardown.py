@@ -139,4 +139,32 @@ async def teardown_if_unentitled(owner_id: str, *, trigger: str) -> bool:
         if provisioning is not None:
             await close_paperclip_provisioning(provisioning)
 
+    # Pause the nightly CEO routine and cancel its looping in-progress issues.
+    # ``disable`` above only marks the DynamoDB row disabled; it does NOT touch
+    # the Paperclip scheduler, which fires on ``routines.status='active'`` with
+    # no company-disabled gate. Left armed, the routine keeps firing (and its
+    # heartbeat runner keeps retry-looping in-progress issues) against the
+    # container we just deleted — the runaway-storm class. Independently guarded
+    # like every other teardown step; MUST stay here and never move into
+    # ``disable``, which also runs per-member on organizationMembership.deleted
+    # and would then wrongly disarm a still-paying org's routine.
+    try:
+        from core.services.paperclip_agent_lifecycle import disarm_owner_nightly_automation
+
+        summary = await disarm_owner_nightly_automation(owner_id)
+        put_metric(
+            "nightly_ceo.disarm",
+            dimensions={"trigger": trigger, "outcome": "ran"},
+        )
+        logger.info(
+            "entitlement.teardown nightly disarm owner=%s trigger=%s routines_paused=%d issues_cancelled=%d",
+            owner_id,
+            trigger,
+            summary["routines_paused"],
+            summary["issues_cancelled"],
+        )
+    except Exception:
+        logger.exception("entitlement.teardown nightly disarm failed for owner %s", owner_id)
+        put_metric("nightly_ceo.disarm", dimensions={"trigger": trigger, "outcome": "error"})
+
     return True

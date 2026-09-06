@@ -26,6 +26,10 @@ def _runtime():
         ),
         patch("core.billing.bedrock_aip.delete_owner_aips", AsyncMock()) as aips,
         patch("core.billing.bedrock_aip.delete_owner_bedrock_role", AsyncMock()) as role,
+        patch(
+            "core.services.paperclip_agent_lifecycle.disarm_owner_nightly_automation",
+            AsyncMock(return_value={"routines_paused": 1, "issues_cancelled": 2}),
+        ) as disarm,
     ):
         # Returns the containers row's ALL_OLD image — the only handle on the
         # AIP arns once the row is gone.
@@ -36,7 +40,7 @@ def _runtime():
                 "bedrock_role_arn": "arn:aws:iam::1:role/isol8-prod-owner-bedrock-user_1",
             }
         )
-        yield MagicMock(facts=facts, ecs=ecs, aips=aips, role=role)
+        yield MagicMock(facts=facts, ecs=ecs, aips=aips, role=role, disarm=disarm)
 
 
 @pytest.mark.parametrize("status", ["active", "trialing", "trial_local", "past_due"])
@@ -163,6 +167,37 @@ async def test_the_bedrock_reap_is_delegated_to_the_seam(_runtime):
     _runtime.ecs.return_value.delete_user_service.assert_awaited_once_with("user_1")
     _runtime.aips.assert_not_awaited()
     _runtime.role.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_teardown_disarms_the_nightly_routine(_runtime):
+    """A de-entitled owner's nightly routine is paused and its looping issues
+    cancelled — otherwise the Paperclip scheduler keeps firing it against the
+    container teardown just deleted (the runaway-storm class)."""
+    assert await _cancel() is True
+    _runtime.disarm.assert_awaited_once_with("user_1")
+
+
+@pytest.mark.asyncio
+async def test_an_entitled_owner_is_never_disarmed(_runtime):
+    """Disarm hangs off teardown, which only runs when nothing still pays — so a
+    still-entitled owner's automation is left running."""
+    with patch.object(
+        entitlement_teardown.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "user_1", "subscription_status": "active"}),
+    ):
+        assert await entitlement_teardown.teardown_if_unentitled("user_1", trigger="test") is False
+    _runtime.disarm.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_failing_disarm_does_not_abort_teardown(_runtime):
+    """Best-effort like every teardown step: a Paperclip hiccup in the disarm
+    must not 5xx the webhook back to the provider."""
+    _runtime.disarm.side_effect = RuntimeError("paperclip down")
+    assert await _cancel() is True
+    _runtime.facts.assert_awaited_once()
 
 
 @pytest.mark.asyncio

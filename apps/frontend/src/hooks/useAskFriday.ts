@@ -5,7 +5,7 @@
 // chat with the draft. Mobile (no dock; `openChatPanelWithDraft` returns
 // false): record the draft, name the agent the mobile shell should select,
 // swap the URL to /chat, then fire the event for the already-mounted composer.
-// Lifted verbatim from BrainPanel's `ask` so the two cannot drift.
+// BrainPanel and the Home strip both call this.
 
 import { useCallback } from "react";
 import { useAgents } from "@/hooks/useAgents";

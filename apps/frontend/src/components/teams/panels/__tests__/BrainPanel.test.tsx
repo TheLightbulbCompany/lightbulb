@@ -25,26 +25,12 @@ vi.mock("@/hooks/useBrainFiles", () => ({
   useBrainMutations: () => ({ saveBrainFile, deleteBrainFile, uploadBrainFiles }),
 }));
 
-// Every ASK exit is a draft handed to the default agent's composer (T1).
-const openChatPanelWithDraft = vi.fn((draft: string) => {
-  void draft; // recorded by the spy; tests assert on the call args
-  return true;
-});
-vi.mock("@/components/workspace/workspaceController", () => ({
-  openChatPanelWithDraft: (d: string) => openChatPanelWithDraft(d),
-}));
-
-// The ASK fallback needs the default agent by name when there is no dock.
-let agentsState: { defaultId: string | undefined };
-vi.mock("@/hooks/useAgents", () => ({ useAgents: () => agentsState }));
-
-// Only notifyError is spied — notifyApiError stays real, since the upload
-// tests below exercise it end to end.
-const notifyErrorSpy = vi.fn();
-vi.mock("@/lib/notify", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/notify")>();
-  return { ...actual, notifyError: (m: string) => notifyErrorSpy(m) };
-});
+// Every ASK exit hands its draft to the shared hook — BrainPanel no longer
+// implements the handoff itself, so a plain spy is enough to assert which
+// draft each exit sends. useAskFriday's own test covers the dock/mobile
+// fallback and the no-agent notice.
+const askFriday = vi.fn();
+vi.mock("@/hooks/useAskFriday", () => ({ useAskFriday: () => askFriday }));
 
 // The panel merges the PUT's fresh stat into the file's own SWR cache entry
 // via useSWRConfig().mutate — spy on it the same way ArtifactsPanel.test.tsx does.
@@ -67,10 +53,6 @@ vi.mock("@/components/control/panels/DreamsPanel", () => ({
   DreamsPanel: () => <div data-testid="dreams-panel-body">DreamsPanel</div>,
 }));
 
-import {
-  consumeFocusComposerRequest,
-  _resetFocusComposerRequestForTests,
-} from "@/lib/focusComposerRequest";
 import { BrainPanel } from "../BrainPanel";
 
 const f = (path: string, type: "file" | "dir" = "file", size = 42): FileEntry => ({
@@ -126,13 +108,8 @@ beforeEach(() => {
   deleteBrainFile.mockClear();
   uploadBrainFiles.mockClear();
   uploadBrainFiles.mockResolvedValue({ uploaded: [] });
-  openChatPanelWithDraft.mockClear();
-  openChatPanelWithDraft.mockReturnValue(true);
-  notifyErrorSpy.mockClear();
-  agentsState = { defaultId: "agent_1" };
+  askFriday.mockClear();
   globalMutate.mockClear();
-  _resetFocusComposerRequestForTests();
-  window.history.replaceState(null, "", "/chat?panel=teams-brain");
 });
 
 afterEach(() => {
@@ -227,9 +204,7 @@ describe("BrainPanel", () => {
     treeState.files = POPULATED;
     render(<BrainPanel />);
     fireEvent.click(screen.getByRole("button", { name: "Ask Friday to file it" }));
-    expect(openChatPanelWithDraft).toHaveBeenCalledWith(
-      expect.stringMatching(/1 file in the brain inbox/),
-    );
+    expect(askFriday).toHaveBeenCalledWith(expect.stringMatching(/1 file in the brain inbox/));
   });
 
   it("clicking the inbox count lists inbox files; picking one opens it", () => {
@@ -365,7 +340,7 @@ describe("BrainPanel", () => {
     fireEvent.change(box, { target: { value: "pricing" } });
     expect(screen.getByText("No page named that.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /ask friday to search/i }));
-    expect(openChatPanelWithDraft).toHaveBeenCalledWith(expect.stringContaining('"pricing"'));
+    expect(askFriday).toHaveBeenCalledWith(expect.stringContaining('"pricing"'));
   });
 
   it("a reports-only vault names the reports instead of claiming nothing is filed", () => {
@@ -437,7 +412,7 @@ describe("BrainPanel", () => {
     treeState.files = POPULATED;
     render(<BrainPanel />);
     fireEvent.click(screen.getByRole("button", { name: "Ask Friday" }));
-    expect(openChatPanelWithDraft).toHaveBeenCalledWith(
+    expect(askFriday).toHaveBeenCalledWith(
       "Look in our brain and tell me what we know about: ",
     );
   });
@@ -458,7 +433,7 @@ describe("BrainPanel", () => {
       screen.getByText("Your company's brain fills as your agents learn."),
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /ask friday/i }));
-    expect(openChatPanelWithDraft).toHaveBeenCalledWith(
+    expect(askFriday).toHaveBeenCalledWith(
       "Look in our brain and tell me what we know about: ",
     );
   });
@@ -582,46 +557,6 @@ describe("BrainPanel", () => {
     // remounting — simulate that by rerendering with a new initialPath prop.
     rerender(<BrainPanel initialPath="concepts/icp.md" />);
     expect(useBrainFileSpy).toHaveBeenLastCalledWith("concepts/icp.md");
-  });
-
-  describe("ASK with no dock attached (mobile, or pre-roster desktop)", () => {
-    it("hands the draft to the mobile chat shell instead of dropping it", () => {
-      // attachDockviewApi is the desktop shell's; chat/page.tsx renders
-      // MobileChatShell instead, so openChatPanelWithDraft returns false.
-      treeState.files = POPULATED;
-      openChatPanelWithDraft.mockReturnValue(false);
-      const selected: unknown[] = [];
-      const focused: unknown[] = [];
-      window.addEventListener("selectAgent", (e) => selected.push((e as CustomEvent).detail));
-      window.addEventListener("getstarted:focus-composer", (e) =>
-        focused.push((e as CustomEvent).detail),
-      );
-
-      render(<BrainPanel />);
-      fireEvent.click(screen.getByRole("button", { name: "Ask Friday" }));
-
-      expect(consumeFocusComposerRequest("agent_1")).toEqual({
-        draft: "Look in our brain and tell me what we know about: ",
-      });
-      expect(selected).toEqual([{ agentId: "agent_1", source: "notification" }]);
-      expect(focused).toEqual([{ agentId: "agent_1" }]);
-      expect(window.location.pathname).toBe("/chat");
-      expect(notifyErrorSpy).not.toHaveBeenCalled();
-    });
-
-    it("says so, and navigates nowhere, when no agent has resolved yet", () => {
-      treeState.files = POPULATED;
-      openChatPanelWithDraft.mockReturnValue(false);
-      agentsState = { defaultId: undefined };
-      render(<BrainPanel />);
-      fireEvent.click(screen.getByRole("button", { name: "Ask Friday" }));
-      expect(notifyErrorSpy).toHaveBeenCalledWith(
-        "Friday isn't ready yet — try again in a moment.",
-      );
-      expect(consumeFocusComposerRequest("agent_1")).toBeNull();
-      expect(window.location.pathname).toBe("/chat");
-      expect(window.location.search).toBe("?panel=teams-brain");
-    });
   });
 
   describe("the inbox is not a one-way door (I2)", () => {

@@ -5,6 +5,7 @@
 // and Inbox can never disagree about the count. Rows link to the task when
 // there is one; the section link opens the Inbox, where the actions live.
 
+import { sourceLabel } from "@/components/teams/inbox/AttentionList";
 import { useAttentionFeed } from "@/components/teams/inbox/hooks/useAttentionFeed";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import type { AttentionItem } from "@/components/teams/shared/types";
@@ -13,21 +14,10 @@ import { HomeRow, HomeRowsEmpty, HomeSection } from "./HomeSection";
 
 const LIMIT = 3;
 
-// Same words AttentionList uses, so a decision is called the same thing on
-// Home and in the Inbox.
-const SOURCE_LABEL: Record<string, string> = {
-  approval: "Approval",
-  issue_thread_interaction: "Question",
-  decision: "Decision",
-  join_request: "Join request",
-  review: "Review",
-  blocker_attention: "Blocked",
-  recovery_action: "Recovery",
-};
-
 export function needsYouTitle(item: AttentionItem): string {
   const title = item.subject.title?.trim();
-  return title || SOURCE_LABEL[item.sourceKind] || "Needs you";
+  // sourceLabel's own fallback ("Needs you") already covers an unknown kind.
+  return title || sourceLabel(item);
 }
 
 export function needsYouSub(item: AttentionItem): string {

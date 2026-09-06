@@ -9,18 +9,10 @@ import { render, screen } from "@testing-library/react";
 
 const mockRead = vi.fn((path: string) => {
   if (path === "/dashboard") {
+    // Only `tasks.open` and `costs` are read by DashboardPanel/HomeRollupStrip;
+    // everything else on DashboardSummary is dead weight in this fixture.
     return {
-      data: {
-        dashboard: {
-          agents: { active: 5, running: 5, paused: 0, error: 0 },
-          tasks: { open: 12, inProgress: 0, blocked: 0, done: 0 },
-          runActivity: [],
-          costs: { monthSpendCents: 4250 },
-          pendingApprovals: 0,
-          budgets: { pendingApprovals: 0 },
-        },
-        sidebar_badges: { inbox: 2 },
-      },
+      data: { dashboard: { tasks: { open: 12 }, costs: { monthSpendCents: 4250 } } },
       isLoading: false,
       error: null,
       mutate: vi.fn(),
@@ -30,7 +22,7 @@ const mockRead = vi.fn((path: string) => {
     // The Paperclip company record — `name` is the H1.
     return { data: { name: "Phomo" }, isLoading: false, error: null, mutate: vi.fn() };
   }
-  // /issues + /activity etc.
+  // /issues, etc.
   return {
     data: [],
     isLoading: false,

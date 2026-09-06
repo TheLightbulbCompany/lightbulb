@@ -62,9 +62,8 @@ function makeRead(
   >,
 ) {
   return vi.fn((path: string) => {
-    // /activity and /inbox/live-runs are called with query strings — match on
-    // prefix so a single fixture entry covers both the bare key and the
-    // param-decorated call.
+    // /artifacts is called with a query string — match on prefix so a single
+    // fixture entry covers both the bare key and the param-decorated call.
     const key = Object.keys(perPath).find((k) => path === k || path.startsWith(`${k}?`));
     const r = key ? perPath[key] : { data: undefined, isLoading: false, error: null };
     return {

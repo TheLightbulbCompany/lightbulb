@@ -204,6 +204,32 @@ describe("HomeRollupStrip honesty — regressions found in review", () => {
     const h = Number(zeroDayRect.getAttribute("height"));
     expect(y + h).toBeLessThanOrEqual(zeroY + 0.01);
   });
+
+  it("keeps a zero day inside the viewBox when every day in the window is non-positive", () => {
+    // In an all-non-positive window `zeroY` sits at the very top (0). A zero
+    // day is treated as non-negative and drew UPWARD from the baseline
+    // (zeroY - h), landing at y=-0.2 — outside the viewBox — before the clamp.
+    mockRollup.mockReturnValue(
+      view({
+        rollup: {
+          ...LIVE,
+          days: [
+            { day: "2026-08-30", revenue_microcents: -5_000_000, signups: 0, visitors: 0 },
+            { day: "2026-08-31", revenue_microcents: 0, signups: 0, visitors: 0 },
+          ],
+        },
+      }),
+    );
+    const { container } = render(<HomeRollupStrip spendCents={1400} />);
+    const rects = Array.from(container.querySelectorAll('[aria-label="Revenue over the period"] rect'));
+    expect(rects.length).toBe(2);
+    for (const r of rects) {
+      const y = Number(r.getAttribute("y"));
+      const h = Number(r.getAttribute("height"));
+      expect(y).toBeGreaterThanOrEqual(0);
+      expect(y + h).toBeLessThanOrEqual(20.01);
+    }
+  });
 });
 
 describe("HomeRollupStrip — visitors, once the backend can tell the two apart", () => {
@@ -392,6 +418,8 @@ describe("HomeRollupStrip — business-first hero", () => {
       "href",
       "/chat?panel=teams-spend",
     );
+    // New customers' caption names its source before the comparison clause.
+    expect(screen.getByText(/^Stripe customers created · /)).toBeInTheDocument();
   });
 
   it("says there is nothing to compare against, without claiming an origin", () => {

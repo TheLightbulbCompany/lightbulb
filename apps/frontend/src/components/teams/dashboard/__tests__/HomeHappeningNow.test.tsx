@@ -44,6 +44,13 @@ describe("HomeHappeningNow", () => {
     expect(screen.getByText("stalled")).toBeInTheDocument();
   });
 
+  it("says queued, not running, for a run that hasn't started", () => {
+    runs({ runs: [run({ status: "queued" })] });
+    render(<HomeHappeningNow issuesById={issues} openTasks={1} />);
+    expect(screen.getByText("queued")).toBeInTheDocument();
+    expect(screen.queryByText("running")).not.toBeInTheDocument();
+  });
+
   it("falls back to the agent's own words when the task is unknown", () => {
     runs({ runs: [run({ issueId: "missing" })] });
     render(<HomeHappeningNow issuesById={issues} openTasks={0} />);

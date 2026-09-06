@@ -58,7 +58,15 @@ export function HomeHappeningNow({
               who={run.agentName ?? "Agent"}
               title={rowTitle(run, issuesById)}
               sub={`${liveRunTitle(run)}${started ? ` · ${timeAgo(started)}` : ""}`}
-              right={stalled ? <span className="text-warn">stalled</span> : "running"}
+              right={
+                stalled ? (
+                  <span className="text-warn">stalled</span>
+                ) : run.status === "queued" ? (
+                  "queued"
+                ) : (
+                  "running"
+                )
+              }
               href={run.issueId ? teamsDetailUrl("issue", run.issueId) : tasks}
             />
           );

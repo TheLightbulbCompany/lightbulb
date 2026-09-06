@@ -3,8 +3,8 @@
 // Home's business hero.
 //
 // Home answers "is my company moving" before it answers "are my agents busy"
-// — that second question is the rest of DashboardPanel (runs, priority, issue
-// status). This strip is the first one: revenue, new customers, visitors and
+// — Inbox and Tasks own that second question now. This strip is the
+// first one: revenue, new customers, visitors and
 // agent spend, each an anchored figure (spec §2) rather than a dead number —
 // every tile carries an "Ask Friday" link that hands the owner's question,
 // with the period already worded into it, straight to the CEO agent's
@@ -72,12 +72,9 @@ function formatCount(n: number): string {
 function Sparkline({
   values: raw,
   label,
-  tall,
 }: {
   values: number[];
   label: string;
-  /** The hero's line gets more room; every other tile keeps the hairline. */
-  tall?: boolean;
 }) {
   // `sum()` guards with `?? 0`; without the same coercion here one missing key
   // makes min/max NaN and every coordinate serialises as "NaN,NaN" — the SVG
@@ -102,7 +99,7 @@ function Sparkline({
       preserveAspectRatio="none"
       role="img"
       aria-label={label}
-      className={tall ? "mt-3 h-8 w-full" : "mt-2 h-5 w-full"}
+      className="mt-2 h-5 w-full"
     >
       <polyline
         points={points}
@@ -121,6 +118,12 @@ function Sparkline({
  * library (spec §2, linked views). Negative days (refund-heavy) hang below a
  * hairline baseline; the last bar is midnight, the rest the neutral chart
  * token — one accent, and it means "today".
+ *
+ * The per-day <title> is a pointer-hover affordance only — it reaches nobody
+ * on keyboard or touch. The SVG itself is `role="img"` labelled as a whole
+ * ("Revenue over the period"), and the aggregate those users actually get is
+ * the tile's exact figure plus the comparison caption beside it, not any one
+ * bar's value.
  */
 function HeroBars({ days, format }: { days: RollupDay[]; format: (cents: number) => string }) {
   const values = days.map((d) => (Number.isFinite(d.revenue_microcents) ? d.revenue_microcents : 0));
@@ -139,7 +142,10 @@ function HeroBars({ days, format }: { days: RollupDay[]; format: (cents: number)
         // which stranded its 0.2-tall sliver below the baseline (or off the
         // viewBox entirely) instead of resting on it.
         const h = Math.max((Math.abs(v) / range) * 20, 0.2);
-        const y = v >= 0 ? zeroY - h : zeroY;
+        // Clamped at 0: in an all-non-positive window `zeroY` sits at the very
+        // top (0), and an unclamped zero-day sliver drew upward from there to
+        // y=-0.2, outside the viewBox.
+        const y = v >= 0 ? Math.max(zeroY - h, 0) : zeroY;
         return (
           <rect
             key={days[i].day}
@@ -170,6 +176,7 @@ function Tile({
   href,
   linkLabel,
   askDraft,
+  onAsk,
 }: {
   icon: typeof DollarSign;
   label: string;
@@ -179,15 +186,18 @@ function Tile({
   /** A pre-built chart (the hero's HeroBars) rendered instead of a Sparkline. */
   chart?: ReactNode;
   unavailable?: boolean;
-  /** Full-width, larger figure, taller sparkline. Revenue only. */
+  /** Spans two columns beside the tiles; renders `chart` (the hero bars). Revenue only. */
   hero?: boolean;
   /** In-shell destination; href stays real for new-tab / middle-click. */
   href?: string;
   linkLabel?: string;
   /** The question this tile's "Ask Friday" link hands to the CEO agent. */
   askDraft?: string;
+  /** Hands `askDraft` to Friday. One `useAskFriday()` call lives in the
+   *  strip and is threaded down here — a tile calling the hook itself would
+   *  mean one hook instance per tile for no reason. */
+  onAsk?: (draft: string) => void;
 }) {
-  const ask = useAskFriday();
   return (
     <div
       // `role="group"`, not a bare div: aria-label only names an element with
@@ -225,8 +235,7 @@ function Tile({
         {unavailable ? "Not wired up yet" : caption}
       </p>
       {!unavailable &&
-        (chart ??
-          (series && <Sparkline values={series} label={`${label} over the period`} tall={hero} />))}
+        (chart ?? (series && <Sparkline values={series} label={`${label} over the period`} />))}
       {href && linkLabel && (
         <a
           href={href}
@@ -238,10 +247,10 @@ function Tile({
           {linkLabel} →
         </a>
       )}
-      {askDraft && (
+      {askDraft && !unavailable && (
         <button
           type="button"
-          onClick={() => ask(askDraft)}
+          onClick={() => onAsk?.(askDraft)}
           className={`mt-2.5 inline-block label-caps text-[var(--midnight-muted)] underline-offset-4 hover:text-[var(--midnight)] hover:underline ${href && linkLabel ? "ml-4" : ""}`}
         >
           Ask Friday
@@ -284,6 +293,9 @@ export function HomeRollupStrip({
   spendCents: number | null | undefined;
 }) {
   const [span, setSpan] = useState<RollupSpan>(30);
+  // One hook instance for the whole strip; every tile's Ask Friday button
+  // hands its draft to this same `ask` rather than each calling the hook.
+  const ask = useAskFriday();
   const { rollup, windowStart, isLoading, error, isUnavailable } = useCompanyRollup(span);
   // Deduped with Accounts' read of the same key. Only `details_submitted` is
   // consulted, and only when there are no rows — rows win (moneyView's rule).
@@ -481,6 +493,7 @@ export function HomeRollupStrip({
           href={teamsPanelUrl("payments")}
           linkLabel="Open Payments"
           askDraft={`Walk me through revenue for the last ${span} days: what landed, what was refunded, and what changed versus the previous ${span} days.`}
+          onAsk={ask}
         />
         <Tile
           icon={UserPlus}
@@ -492,6 +505,7 @@ export function HomeRollupStrip({
           href={teamsPanelUrl("customers")}
           linkLabel="Open Customers"
           askDraft={`Who are our new customers from the last ${span} days, and what did they buy?`}
+          onAsk={ask}
         />
         {/* The backend's `unavailable` is owner-derived: an owner
             with no PostHog connection has `visitors` omitted from days[]
@@ -515,11 +529,8 @@ export function HomeRollupStrip({
           unavailable={isUnavailable("visitors")}
           href={isUnavailable("visitors") ? teamsPanelUrl("accounts") : undefined}
           linkLabel={isUnavailable("visitors") ? "Connect PostHog" : undefined}
-          askDraft={
-            isUnavailable("visitors")
-              ? undefined
-              : `How is traffic to our site trending over the last ${span} days, and where is it coming from?`
-          }
+          askDraft={`How is traffic to our site trending over the last ${span} days, and where is it coming from?`}
+          onAsk={ask}
         />
         {/* Billed spend from Metronome via /teams/dashboard.costs — the figure
             Spend prints. `null` = the backend omitted the block (OAuth, BYOK,
@@ -546,6 +557,7 @@ export function HomeRollupStrip({
           href={teamsPanelUrl("spend")}
           linkLabel="Open Spend"
           askDraft="Break down what my agents cost this month by agent and by task, and tell me what is driving it."
+          onAsk={ask}
         />
       </div>
     );

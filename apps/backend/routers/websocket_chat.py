@@ -1438,6 +1438,30 @@ _SESSION_KEYS_LIST_PARAM_BY_METHOD = {
 }
 
 
+# Params a client may NEVER set, whatever session they aim at. This is a
+# separate axis from the key tables above: those ask "is this key yours?", and
+# for these the answer is YES — the caller patches their OWN session, so every
+# ownership check passes. The danger is the field, not the target.
+#
+# ``permissionMode`` maps straight onto core-tool policy in OpenClaw
+# (src/agents/session-permission-exec-mode.ts): "full" yields execMode "full",
+# workspaceOnly false, applyPatchWorkspaceOnly false and
+# bypassHostApprovalFloors true. Writing it requires ``operator.admin``, which
+# our proxy supplies on every member's behalf — so on a shared per-owner
+# container one hand-crafted frame buys exec outside the caller's workspace,
+# which on a shared EFS mount means every other member's ``workspace-*`` and
+# the container environment (where a BYO LLM key lives).
+#
+# Reject the FIELD, not a blocklist of values: the enum belongs to upstream and
+# a value-based guard would go quietly stale on the next base bump.
+#
+# Nothing of ours sends it — a repo-wide grep finds only an unrelated ACP block
+# in core/containers/config.py — so this costs no functionality.
+_FORBIDDEN_PARAMS_BY_METHOD: dict[str, frozenset[str]] = {
+    "sessions.patch": frozenset({"permissionMode"}),
+}
+
+
 async def _guard_session_key_ownership(
     *,
     user_id: str,
@@ -1457,12 +1481,43 @@ async def _guard_session_key_ownership(
     key-carrying mutators + the history read on the way IN, using the same
     ownership predicate.
 
+    It guards TWO axes, which fail differently:
+
+    1. **Ownership** — is this ``key`` yours? Catches member A aiming at member
+       B's session, or at a ``paperclip:``/``cron:`` one.
+    2. **Privileged params** (``_FORBIDDEN_PARAMS_BY_METHOD``) — fields a client
+       may never set even on a session they DO own. Ownership cannot catch these
+       precisely because the check passes: the caller escalates their own
+       session. See that table for why ``permissionMode`` is on it.
+
     Returns True if it consumed the request (sent an error res; caller must
     return without forwarding). False otherwise (caller forwards normally):
-    - method not in the key-bearing set, OR
+    - method carries no forbidden param AND is not in the key-bearing set, OR
     - the call carries NO client key param (a key-less variant — nothing to
       forge; leave it to the container / the sessions.list post-filter).
     """
+    forbidden = _FORBIDDEN_PARAMS_BY_METHOD.get(method)
+    if forbidden:
+        present = sorted(forbidden & set(params or {}))
+        if present:
+            logger.warning(
+                "[%s] rejected %s carrying privileged param(s) %s",
+                user_id,
+                method,
+                ",".join(present),
+            )
+            mgmt = management_api or await get_management_api_client()
+            mgmt.send_message(
+                connection_id,
+                {
+                    "type": "res",
+                    "id": req_id,
+                    "ok": False,
+                    "error": {"message": "That session setting cannot be changed here."},
+                },
+            )
+            return True
+
     param_name = _SESSION_KEY_PARAM_BY_METHOD.get(method)
     list_param_name = _SESSION_KEYS_LIST_PARAM_BY_METHOD.get(method)
     if param_name is None and list_param_name is None:

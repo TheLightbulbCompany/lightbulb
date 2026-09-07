@@ -169,7 +169,7 @@ export function AgentSpendSection() {
 
   const right = (
     <>
-      {usage?.period && <span>{usage.period}</span>}
+      {usage?.period && <span>{periodMonthName(usage.period) ?? usage.period}</span>}
       <Link href="/chat?panel=llm" className="underline-offset-4 hover:text-[var(--midnight)] hover:underline">Manage credits</Link>
     </>
   );

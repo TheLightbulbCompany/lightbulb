@@ -4,7 +4,7 @@
 // labelled "Agent spend", the by-model / plan-window rows) and the
 // never-run-an-agent empty state.
 //
-// Mocking convention copied from SpendPanel.test.tsx / UsagePanel.spend.test.tsx:
+// Mocking convention copied from UsagePanel.spend.test.tsx:
 // mock useBilling/useSpend/clerk, and mock swr by key so this section reads
 // the same fixture shape /billing/usage returns.
 import { render, screen, within } from "@testing-library/react";
@@ -80,7 +80,7 @@ describe("AgentSpendSection chrome", () => {
     expect(within(section).getByText("$14")).toBeInTheDocument();
     expect(within(section).getByText("Claude Opus 5")).toBeInTheDocument();
     expect(within(section).getByText("$10")).toBeInTheDocument();
-    expect(within(section).getByText(/2026-08|August/)).toBeInTheDocument();
+    expect(within(section).getByText("August")).toBeInTheDocument(); // the month, not the raw "2026-08"
     expect(within(section).getByRole("link", { name: "Manage credits" })).toHaveAttribute("href", "/chat?panel=llm");
     expect(within(section).queryByText(/Cache/)).toBeNull(); // the token grid does not come along
   });
@@ -93,7 +93,7 @@ describe("AgentSpendSection chrome", () => {
   });
 });
 
-describe("SpendPanel headline — live figures", () => {
+describe("AgentSpendSection headline — live figures", () => {
   it("bedrock: shows the billed month-to-date figure and names the invoice", () => {
     setup({
       spend: { mode: "bedrock", billed_month_to_date_cents: 1234, by_model: [], period_start: null },
@@ -135,7 +135,7 @@ describe("SpendPanel headline — live figures", () => {
   });
 });
 
-describe("SpendPanel headline — partial / unverifiable figures", () => {
+describe("AgentSpendSection headline — partial / unverifiable figures", () => {
   it("labels a degraded bedrock read Partial instead of showing $0", () => {
     // spend_service falls back to tokens_only when the Metronome read fails,
     // so a bedrock owner landing on tokens_only means "could not read", not
@@ -185,7 +185,7 @@ describe("SpendPanel headline — partial / unverifiable figures", () => {
   });
 });
 
-describe("SpendPanel empty state", () => {
+describe("AgentSpendSection empty state", () => {
   it("an owner who has never run an agent gets a true statement, not an error", () => {
     // lifetime_spend 0 as well as request_count 0 — the genuine first-run
     // owner, not a company sitting on a freshly rolled-over calendar month.
@@ -224,7 +224,7 @@ describe("SpendPanel empty state", () => {
 // this period. Nothing has been billed because nothing has run yet." — word for
 // word the copy a genuinely idle fleet gets. Seen live on 2026-09-01 by an owner
 // who had spent ~$1.40 across 50+ agent runs the day before.
-describe("SpendPanel empty state — month boundary vs a genuinely idle fleet", () => {
+describe("AgentSpendSection empty state — month boundary vs a genuinely idle fleet", () => {
   const boundary = {
     usage: { ...usageFixture, period: "2026-09", request_count: 0, lifetime_spend: 1.4 },
   };

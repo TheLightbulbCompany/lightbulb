@@ -21,7 +21,7 @@ export function MoneySection({ id, label, right, children }: { id: string; label
 /** The one calm line for an empty list. */
 export function MoneyEmptyLine({ children }: { children: ReactNode }) {
   return (
-    <p role="status" className="px-2 py-3 font-editorial-serif text-base italic" style={{ color: "var(--midnight-muted)" }}>
+    <p role="status" className="px-2 py-3 font-editorial-serif text-base italic text-[var(--midnight-muted)]">
       {children}
     </p>
   );

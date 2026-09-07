@@ -30,11 +30,15 @@ function formatCents(cents: number): string {
 // =============================================================================
 
 export interface UsagePanelProps {
-  /** Rendered inside another panel's page (Money → Spend, `SpendPanel.tsx`),
-   *  which already supplies the page padding and a `PanelMasthead`. Drops this
-   *  component's own page padding and its "Usage" heading so the two don't
-   *  stack — everything below the heading is identical in both hosts. Two
-   *  registrations (`?panel=usage` and `?panel=teams-spend`), one component. */
+  /** Rendered inside another panel's page, which already supplies the page
+   *  padding and a `PanelMasthead`. Drops this component's own page padding and
+   *  its "Usage" heading so the two don't stack — everything below the heading
+   *  is identical in both hosts.
+   *
+   *  Money no longer embeds it: its Agent spend section
+   *  (`teams/panels/money/AgentSpendSection.tsx`) renders the billed figure and
+   *  the run count only, and this panel stays the full breakdown at
+   *  `?panel=usage`. The prop remains for any other host that embeds it. */
   embedded?: boolean;
 }
 

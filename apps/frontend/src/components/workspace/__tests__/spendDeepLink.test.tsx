@@ -68,14 +68,14 @@ beforeEach(() => {
 });
 
 describe("?panel=teams-spend resolves and mounts through the reconciler seam", () => {
-  it("the reconciler derives a teams command for the Spend panel", () => {
+  it("the reconciler derives a teams command for Money, at its Spend section", () => {
     const decision = deriveReconcilerAction("?panel=teams-spend", null);
     expect(decision).not.toBeNull();
     expect(decision!.panelKey).toBe("teams-spend");
     expect(decision!.command?.descriptor).toEqual({
       panelId: "teams-spend",
       component: "teams",
-      title: "Spend",
+      title: "Money",
       params: { teamsKey: "spend" },
     });
   });

@@ -11,8 +11,20 @@ import { notifyApiError } from "@/lib/notify";
 const SESSION_ID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
+/**
+ * Name for the legacy 3-part `agent:{agentId}:{userId}` row.
+ *
+ * It used to read "General", which said nothing about what it is: the channel
+ * the PLATFORM writes to. The onboarding kickoff, the first-contact nudge and
+ * every deployed marketplace agent's cron jobs all land on that key, and for an
+ * owner who predates sessions it also holds their whole prior conversation. It
+ * is not special to the container — 8.1 classifies 3- and 4-part keys alike —
+ * so it is listed and sorted like any other session, just under a truthful name.
+ */
+export const LEGACY_ROW_LABEL = "Agent updates";
+
 export interface AgentSession {
-  /** Trailing UUID for a real session; null == the legacy "General" session. */
+  /** Trailing UUID for a real session; null == the legacy 3-part session. */
   sessionId: string | null;
   /** The full OpenClaw session key. */
   key: string;
@@ -96,9 +108,8 @@ function labelsFor(
 /**
  * Per-agent session list for the sidebar. The backend sessions.list proxy has
  * already dropped paperclip/cron/channel/other-member rows; here we keep only
- * 4-part `agent:{agentId}:{userId}:{uuid}` rows for THIS agent + user, newest
- * first. The legacy General (3-part) row is added by useAgentSessions' Task-12
- * extension.
+ * 4-part `agent:{agentId}:{userId}:{uuid}` rows for THIS agent + user, plus the
+ * legacy 3-part row when one exists. All of them sorted newest first.
  */
 export function useAgentSessions(
   agentId: string | null,
@@ -179,24 +190,30 @@ export function useAgentSessions(
         ...modelControlsOf(row),
       });
     }
-    // Surface the legacy 3-part conversation as a normal "General" session so
-    // no pre-sessions history is orphaned. Match case-insensitively for the same
+    // Surface the legacy 3-part conversation as an ordinary row so no
+    // pre-sessions history is orphaned. Match case-insensitively for the same
     // reason as above; the backend proxy has already scoped rows to this user.
     const legacyKey = `agent:${agentIdL}:${userIdL}`;
-    const generalRow = rows.find(
+    const legacyRow = rows.find(
       (row) => typeof row?.key === "string" && row.key.toLowerCase() === legacyKey,
     );
-
-    out.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
-    if (generalRow) {
-      out.unshift({
+    if (legacyRow) {
+      out.push({
         sessionId: null,
-        key: generalRow.key,
-        label: "General",
-        rawLabel: "General",
-        ...modelControlsOf(generalRow),
+        key: legacyRow.key,
+        label: LEGACY_ROW_LABEL,
+        rawLabel: LEGACY_ROW_LABEL,
+        preview: previewOf(legacyRow),
+        // Carried over deliberately: the projection used to drop it, which is
+        // survivable only while the row is pinned. Sorted by recency it would
+        // otherwise sit last forever.
+        updatedAt: legacyRow.updatedAt,
+        ...modelControlsOf(legacyRow),
       });
     }
+    // Sort AFTER the legacy row is in, so it takes its place by recency like
+    // any other session instead of being pinned to either end.
+    out.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
     return out;
   }, [data, agentId, userId]);
 

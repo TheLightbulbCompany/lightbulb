@@ -88,10 +88,24 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
   // Per-agent session state. `useActiveSession` is a shared module store, so
   // selecting a row here drives the focused ChatPanel's transcript (same
   // store) — no prop drilling across the dock.
-  const { activeSessionId, newSession, selectSession } = useActiveSession(currentAgentId);
-  const { sessions: agentSessions, renameSession, deleteSession } = useAgentSessions(
+  //
+  // The list comes first because it decides the seed: an agent with no
+  // sessions AT ALL starts in a fresh one rather than in the legacy 3-part key
+  // (the channel the platform writes onboarding, nudges and cron output to).
+  // An agent that already has rows — including a legacy one still holding a
+  // live conversation — is left exactly where it is.
+  // ponytail: a failed list read also looks empty here, which would seed a new
+  // session; the owner's own rows are one click away, so this stays a plain
+  // isLoading check rather than plumbing SWR's error through the hook.
+  const {
+    sessions: agentSessions,
+    isLoading: sessionsLoading,
+    renameSession,
+    deleteSession,
+  } = useAgentSessions(currentAgentId, clerkUserId ?? null);
+  const { activeSessionId, newSession, selectSession } = useActiveSession(
     currentAgentId,
-    clerkUserId ?? null,
+    !sessionsLoading && agentSessions.length === 0,
   );
 
   const subscriptionStatus = account?.subscription_status ?? null;

@@ -126,10 +126,19 @@ export function ChatLayout({
   // Per-agent session state. `useActiveSession` is a shared module store, so
   // selecting a row here drives the transcript in AgentChatWindow's
   // useAgentChat (same store) — no prop drilling across subtrees.
-  const { activeSessionId, newSession, selectSession } = useActiveSession(currentAgentId);
-  const { sessions: agentSessions, renameSession, deleteSession } = useAgentSessions(
+  //
+  // The list comes first because it decides the seed — see the same block in
+  // WorkspaceSidebar for why it is gated on an EMPTY list rather than on a
+  // null active session.
+  const {
+    sessions: agentSessions,
+    isLoading: sessionsLoading,
+    renameSession,
+    deleteSession,
+  } = useAgentSessions(currentAgentId, clerkUserId ?? null);
+  const { activeSessionId, newSession, selectSession } = useActiveSession(
     currentAgentId,
-    clerkUserId ?? null,
+    !sessionsLoading && agentSessions.length === 0,
   );
 
   // Header agent-action cluster (next to the file-tree button): pause/resume +

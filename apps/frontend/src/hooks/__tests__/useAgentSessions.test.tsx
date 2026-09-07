@@ -62,7 +62,7 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
     stubSessionsList([
       { key: "agent:agent-X:user-1:11111111-1111-4111-8111-111111111111", derivedTitle: "Taxes", updatedAt: 200, totalTokens: 5 },
       { key: "agent:agent-X:user-1:22222222-2222-4222-8222-222222222222", updatedAt: 300 },
-      // legacy General (3-part) — surfaced as the pinned null row
+      // legacy 3-part row — surfaced as the null row, sorted by recency
       { key: "agent:agent-X:user-1", updatedAt: 100 },
       // other agent — excluded
       { key: "agent:agent-Y:user-1:33333333-3333-4333-8333-333333333333" },
@@ -74,14 +74,15 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
     const { result } = renderAgentSessions("agent-X", "user-1");
 
     await waitFor(() => expect(result.current.sessions).toHaveLength(3));
+    // Newest first, legacy row included in the ordering rather than pinned.
     expect(result.current.sessions.map((s) => s.sessionId)).toEqual([
-      null, // legacy General pinned first
-      "22222222-2222-4222-8222-222222222222", // newer first
+      "22222222-2222-4222-8222-222222222222",
       "11111111-1111-4111-8111-111111111111",
+      null,
     ]);
-    expect(result.current.sessions[2].label).toBe("Taxes");
+    expect(result.current.sessions[1].label).toBe("Taxes");
     // Untitled falls back to a short id label, never blank.
-    expect(result.current.sessions[1].label).not.toBe("");
+    expect(result.current.sessions[0].label).not.toBe("");
   });
 
   it("carries per-session model/effort overrides through on 4-part and General rows", async () => {
@@ -171,14 +172,14 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
     // rendering an empty sidebar and never hydrating the pill.
     stubSessionsList([
       { key: "agent:agent-x:user_2abcdef:11111111-1111-4111-8111-111111111111", updatedAt: 200 },
-      { key: "agent:agent-x:user_2abcdef", updatedAt: 100 }, // legacy General, lowercased
+      { key: "agent:agent-x:user_2abcdef", updatedAt: 100 }, // legacy 3-part, lowercased
     ]);
     const { result } = renderAgentSessions("Agent-X", "user_2AbcDEF");
 
     await waitFor(() => expect(result.current.sessions).toHaveLength(2));
     expect(result.current.sessions.map((s) => s.sessionId)).toEqual([
-      null, // General still surfaces
       "11111111-1111-4111-8111-111111111111",
+      null, // the legacy row still surfaces
     ]);
   });
 

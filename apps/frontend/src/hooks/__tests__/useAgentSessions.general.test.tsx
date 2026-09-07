@@ -29,25 +29,50 @@ function renderAgentSessions(agentId: string | null, userId: string | null) {
   });
 }
 
-import { useAgentSessions } from "../useAgentSessions";
+import { useAgentSessions, LEGACY_ROW_LABEL } from "../useAgentSessions";
 
-describe("useAgentSessions — legacy General row", () => {
+describe("useAgentSessions — legacy 3-part row", () => {
   beforeEach(() => {
     callRpc.mockReset().mockResolvedValue({});
   });
 
-  it("pins a General (null) row first when the 3-part key exists", async () => {
+  it("labels the legacy row for what it actually is, not 'General'", async () => {
     stubSessionsList([
       { key: "agent:agent-X:user-1", updatedAt: 50 },
       { key: "agent:agent-X:user-1:11111111-1111-4111-8111-111111111111", updatedAt: 500 },
     ]);
     const { result } = renderAgentSessions("agent-X", "user-1");
     await waitFor(() => expect(result.current.sessions).toHaveLength(2));
-    expect(result.current.sessions[0].sessionId).toBeNull();
-    expect(result.current.sessions[0].label).toBe("General");
+    const legacy = result.current.sessions.find((s) => s.sessionId === null)!;
+    expect(legacy.label).toBe(LEGACY_ROW_LABEL);
+    expect(legacy.label).not.toBe("General");
   });
 
-  it("omits the General row when no legacy key exists", async () => {
+  it("does not pin the legacy row above newer sessions", async () => {
+    stubSessionsList([
+      { key: "agent:agent-X:user-1", updatedAt: 1 },
+      { key: "agent:agent-X:user-1:11111111-1111-4111-8111-111111111111", updatedAt: 999 },
+    ]);
+    const { result } = renderAgentSessions("agent-X", "user-1");
+    await waitFor(() => expect(result.current.sessions).toHaveLength(2));
+    expect(result.current.sessions[0].sessionId).not.toBeNull();
+  });
+
+  it("does not pin the legacy row to the BOTTOM either — it sorts by recency", async () => {
+    // Guards the opposite bug: the projected legacy row carried no updatedAt
+    // and the sort ran before it was added, so flipping unshift->push alone
+    // would pin it last forever.
+    stubSessionsList([
+      { key: "agent:agent-X:user-1", updatedAt: 999 },
+      { key: "agent:agent-X:user-1:11111111-1111-4111-8111-111111111111", updatedAt: 1 },
+    ]);
+    const { result } = renderAgentSessions("agent-X", "user-1");
+    await waitFor(() => expect(result.current.sessions).toHaveLength(2));
+    expect(result.current.sessions[0].sessionId).toBeNull();
+    expect(result.current.sessions[0].updatedAt).toBe(999);
+  });
+
+  it("omits the legacy row when no legacy key exists", async () => {
     stubSessionsList([
       { key: "agent:agent-X:user-1:22222222-2222-4222-8222-222222222222" },
     ]);

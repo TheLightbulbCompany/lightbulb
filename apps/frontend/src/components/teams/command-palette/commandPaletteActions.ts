@@ -28,9 +28,10 @@ const KEYWORDS: Record<string, string[]> = {
   artifacts: ["artifacts"],
   "org-chart": ["network", "hierarchy"],
   activity: ["events", "log"],
-  // "usage" is the label the same numbers carry under /settings (?panel=usage),
-  // so muscle memory finds Spend.
-  spend: ["usage", "cost", "costs", "billing", "credits"],
+  // Money absorbed Payments/Products/Customers/Spend as sections of one
+  // page — their old search words, plus "usage" (the label the same numbers
+  // carry under /settings, ?panel=usage), still need to find it.
+  money: ["spend", "usage", "cost", "costs", "billing", "credits", "payments", "customers", "products", "revenue"],
 };
 
 /**

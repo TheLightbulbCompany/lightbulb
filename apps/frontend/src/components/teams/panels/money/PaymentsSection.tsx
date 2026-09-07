@@ -1,25 +1,9 @@
 "use client";
 
-// Money → Payments (`?panel=teams-payments`).
-//
-// The owner's question: did the money we think we made actually land. The
-// decision it informs: chase a failed charge, or stop worrying. That is a
-// scanning task over many rows, which is why it is a tab and not a question
-// for Friday.
-//
-// TRUST COMES FROM RECONCILABILITY. Every row carries its Stripe receipt, so
-// the owner can match this table against their Stripe Dashboard line for line.
-// A money figure the owner cannot trace to the provider is worse than no
-// figure — they cannot act on it, and finding out it was wrong costs us the
-// whole surface.
-//
-// These are **charges**, not PaymentIntents: `receipt_url`, `refunded` and
-// `amount_refunded` live on the charge, and reconciliation needs all three.
-
-import type { PanelDataColumn } from "@/components/teams/shell";
-import { MoneyPanel } from "@/components/teams/panels/money/MoneyPanel";
-import type { PaymentRow } from "@/hooks/useCompanyMoney";
-import { formatStripeAmount, formatUnixDay } from "@/components/teams/panels/money/money";
+import { PanelDataTable, EditorialButton, type PanelDataColumn } from "@/components/teams/shell";
+import { MoneySection, MoneyEmptyLine } from "./MoneySection";
+import { useCompanyMoney, type PaymentRow } from "@/hooks/useCompanyMoney";
+import { formatStripeAmount, formatUnixDay, formatIsoDay } from "@/components/teams/panels/money/money";
 
 /** Never colour alone (system.md) — the word carries the status, the colour
  *  only reinforces it, and an unknown status renders neutral rather than ok. */
@@ -83,6 +67,37 @@ const COLUMNS: PanelDataColumn<PaymentRow>[] = [
   },
 ];
 
-export function PaymentsPanel() {
-  return <MoneyPanel<PaymentRow> kind="payments" title="Payments" noun="payments" columns={COLUMNS} maxWidth="max-w-5xl" />;
+export function PaymentsSection({ day, onDayCleared }: { day: string | null; onDayCleared: () => void }) {
+  const window = day ? { start: day, end: day } : undefined;
+  const { rows, view, hasMore, next } = useCompanyMoney<PaymentRow>("payments", window);
+  const rowKey = (r: PaymentRow) => r.id;
+  const label = day ? `Payments on ${formatIsoDay(day)}` : "Payments";
+  return (
+    <MoneySection
+      id="payments"
+      label={label}
+      right={
+        day ? (
+          <button type="button" onClick={onDayCleared} className="underline-offset-4 hover:text-[var(--midnight)] hover:underline">Show all payments</button>
+        ) : (
+          <span>newest first</span>
+        )
+      }
+    >
+      {view.kind === "loading" ? (
+        <PanelDataTable rows={[]} columns={COLUMNS} rowKey={rowKey} loading />
+      ) : rows.length === 0 ? (
+        <MoneyEmptyLine>{day ? `No payments on ${formatIsoDay(day)}.` : "No payments yet — the first one shows up here as soon as it lands."}</MoneyEmptyLine>
+      ) : (
+        <>
+          <PanelDataTable rows={rows} columns={COLUMNS} rowKey={rowKey} />
+          {hasMore && (
+            <div className="flex justify-center">
+              <EditorialButton size="sm" variant="secondary" onClick={next}>Show more</EditorialButton>
+            </div>
+          )}
+        </>
+      )}
+    </MoneySection>
+  );
 }

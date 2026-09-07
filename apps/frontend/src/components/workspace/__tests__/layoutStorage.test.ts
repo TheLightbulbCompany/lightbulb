@@ -207,6 +207,25 @@ describe("layoutStorage", () => {
     expect(leafData.activeView).toBe("teams-brain");
   });
 
+  it("sanitizer migrates a persisted teams-spend panel to teams-money", () => {
+    // Money absorbed Payments/Products/Customers/Spend, so a layout saved
+    // before that carries a panel id the registry no longer knows.
+    const dirty = leafLayout(["teams-spend"], "teams-spend", {
+      "teams-spend": {
+        id: "teams-spend",
+        contentComponent: "teams",
+        params: { teamsKey: "spend" },
+      },
+    });
+    const clean = sanitizeLayout(dirty);
+    expect(clean.panels["teams-spend"]).toBeUndefined();
+    expect(clean.panels["teams-money"]).toMatchObject({
+      id: "teams-money",
+      contentComponent: "teams",
+      params: { teamsKey: "money" },
+    });
+  });
+
   it("sanitizer drops a retired control:dreams entry instead of duplicating an already-open Brain panel", () => {
     const dirty = leafLayout(["control:dreams", "teams-brain"], "control:dreams", {
       "control:dreams": {

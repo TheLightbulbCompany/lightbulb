@@ -20,6 +20,12 @@ describe("panelRegistry", () => {
     // Dreams folded into Brain as a tab — the standalone control panel key
     // retires by alias, same as credits→llm.
     expect(resolvePanelAlias("dreams")).toBe("teams-brain");
+    // Money is ONE page: its four absorbed keys alias to its panel id, or the
+    // dock (which dedupes by panel id) opens four sibling tabs all called
+    // "Money" — Home links three of them.
+    for (const k of ["payments", "products", "customers", "spend"]) {
+      expect(resolvePanelAlias(`teams-${k}`)).toBe("teams-money");
+    }
   });
 
   it("describes a retired ?panel=dreams as the Brain panel, landing ON the Dreams tab (review finding 3)", () => {
@@ -158,6 +164,36 @@ describe("panelRegistry", () => {
     });
     expect(durableParamsFor("teams-brain")).toEqual(["panel", "path"]);
     expect(clearablePanelParamKeys("teams-brain")).toEqual(["path"]);
+  });
+
+  it("describes the money panel with a durable ?day deep link", () => {
+    expect(describePanel("teams-money", { day: "2026-09-05" })).toEqual({
+      panelId: "teams-money", component: "teams", title: "Money", params: { teamsKey: "money", day: "2026-09-05" },
+    });
+    expect(describePanel("teams-money", {})!.params).toEqual({ teamsKey: "money" });
+    expect(durableParamsFor("teams-money")).toEqual(["panel", "day", "section"]);
+    expect(clearablePanelParamKeys("teams-money")).toEqual(["day", "section"]);
+  });
+
+  it("describes an absorbed Money key as ONE Money panel carrying its section", () => {
+    // The whole point of the alias: same panelId for all five keys, so the
+    // dock opens one tab — with the section synthesized off the RAW key, the
+    // way ?panel=dreams carries Brain's tab.
+    expect(describePanel("teams-spend", {})).toEqual({
+      panelId: "teams-money", component: "teams", title: "Money",
+      params: { teamsKey: "money", section: "spend" },
+    });
+    for (const k of ["payments", "products", "customers"]) {
+      expect(describePanel(`teams-${k}`, {})!.params).toEqual({ teamsKey: "money", section: k });
+    }
+    // A ?section= URL param is honoured on the canonical key, and only for a
+    // real section — MoneyPanel feeds it into a `#money-${section}` selector.
+    expect(describePanel("teams-money", { section: "customers" })!.params).toEqual({
+      teamsKey: "money", section: "customers",
+    });
+    expect(describePanel("teams-money", { section: "constructor" })!.params).toEqual({ teamsKey: "money" });
+    // The raw key wins: it is what the owner actually clicked.
+    expect(describePanel("teams-spend", { section: "products" })!.params.section).toBe("spend");
   });
 
   it("teams-inbox accepts a ?tab deep link as a durable param", () => {

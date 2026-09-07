@@ -21,10 +21,7 @@ const ALL_LABELS = [
   "Home",
   "Search",
   "Inbox",
-  "Payments",
-  "Products",
-  "Customers",
-  "Spend",
+  "Money",
   "Tasks",
   "Automations",
   "Goals",
@@ -86,28 +83,24 @@ describe("CompanyNav", () => {
   it("declares the spec §5.1 section order: top block, Money, Work, Growth, Knowledge, Company", () => {
     expect(COMPANY_SECTIONS.map((s) => s.label)).toEqual([
       null,
-      "Money",
+      null, // Money — a one-item group carries no caption
       "Work",
       "Growth",
       "Knowledge",
       "Company",
     ]);
   });
-  it("files the four Money tabs in spec order and opens teams-spend on click", () => {
-    // The three Stripe reads first, then what the agents cost. Products is a
-    // peer tab, not a section of Payments — all three read one connected
-    // account and none is subordinate to another.
-    const money = COMPANY_SECTIONS.find((s) => s.label === "Money");
-    expect(money?.items.map((i) => i.label)).toEqual([
-      "Payments",
-      "Products",
-      "Customers",
-      "Spend",
-    ]);
+  it("files a single, uncaptioned Money item and opens teams-money on click", () => {
+    // Payments/Products/Customers/Spend are absorbed into the one ledger page
+    // (spec §3) — the sidebar carries one item, not four peer tabs, and a
+    // one-item group carries no caption (the item IS the caption).
+    const money = COMPANY_SECTIONS.find((s) => s.items.some((i) => i.panel === "teams-money"));
+    expect(money?.label).toBeNull();
+    expect(money?.items.map((i) => i.label)).toEqual(["Money"]);
     const onPanelChange = vi.fn();
     render(<CompanyNav onPanelChange={onPanelChange} />);
-    fireEvent.click(screen.getByText("Spend"));
-    expect(onPanelChange).toHaveBeenCalledWith("teams-spend");
+    fireEvent.click(screen.getByText("Money"));
+    expect(onPanelChange).toHaveBeenCalledWith("teams-money");
   });
   it('puts "Home" first', () => {
     expect(COMPANY_SECTIONS[0].items[0].label).toBe("Home");

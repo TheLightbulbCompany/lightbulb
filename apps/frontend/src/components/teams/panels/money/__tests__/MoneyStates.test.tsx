@@ -60,17 +60,25 @@ describe("MoneyStates copy", () => {
     expect(screen.queryByText(/No payments yet/i)).not.toBeInTheDocument();
   });
 
-  it("names the noun, so one component serves three tabs without drifting", () => {
-    const { rerender } = render(<MoneyStates view={{ kind: "zero" }} noun="payments" />);
-    expect(screen.getByText("No payments yet.")).toBeInTheDocument();
-    rerender(<MoneyStates view={{ kind: "zero" }} noun="customers" />);
-    expect(screen.getByText("No customers yet.")).toBeInTheDocument();
+  it("names the noun, so the sentence is right whichever list is blocked", () => {
+    const { rerender } = render(<MoneyStates view={{ kind: "unavailable" }} noun="payments" />);
+    expect(screen.getByText(/load your payments/i)).toBeInTheDocument();
+    rerender(<MoneyStates view={{ kind: "unavailable" }} noun="customers" />);
+    expect(screen.getByText(/load your customers/i)).toBeInTheDocument();
+  });
+
+  it("renders nothing for a healthy account — the sections own their empty lines", () => {
+    // `zero` (and `rows`/`loading`) never reach this component: MoneyPanel
+    // shows the sections for those, each with its own empty line. A notice
+    // here would be a second, blunter answer stacked on top of them.
+    const { container } = render(<MoneyStates view={{ kind: "zero" }} noun="payments" />);
+    expect(container).toBeEmptyDOMElement();
   });
 
   it("stays calm on every healthy state — only a real failure may be loud", () => {
-    // system.md: calm when healthy, loud only on incidents. Unbound, partial
-    // and zero are the normal first hour of every account.
-    for (const kind of ["unbound", "partial", "zero"] as const) {
+    // system.md: calm when healthy, loud only on incidents. Unbound and
+    // partial are the normal first hour of every account.
+    for (const kind of ["unbound", "partial"] as const) {
       const { container, unmount } = render(<MoneyStates view={{ kind }} noun="payments" />);
       expect(container.querySelector("[data-panel-notice]")!.className).not.toMatch(
         /border-l-err/,

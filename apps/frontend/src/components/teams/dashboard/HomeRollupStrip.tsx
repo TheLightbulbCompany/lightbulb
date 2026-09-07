@@ -119,11 +119,14 @@ function Sparkline({
  * hairline baseline; the last bar is midnight, the rest the neutral chart
  * token — one accent, and it means "today".
  *
- * The per-day <title> is a pointer-hover affordance only — it reaches nobody
- * on keyboard or touch. The SVG itself is `role="img"` labelled as a whole
- * ("Revenue over the period"), and the aggregate those users actually get is
- * the tile's exact figure plus the comparison caption beside it, not any one
- * bar's value.
+ * The bars are the chart-as-filter (spec §2): each is wrapped in an SVG `<a>`
+ * to Money scoped to that day, navigated in-shell via `handleShellLinkClick`.
+ * The SVG is `role="group"`, not `role="img"` — `img` makes its subtree
+ * presentational and hides the anchors from assistive tech entirely. As a
+ * group it exposes each day's link, with the anchor's `aria-label` carrying
+ * the same day-and-amount text as the hover `<title>`, so keyboard and
+ * screen-reader users reach the per-day value too — this supersedes the
+ * "reaches nobody on keyboard or touch" note above.
  */
 function HeroBars({ days, format }: { days: RollupDay[]; format: (cents: number) => string }) {
   const values = days.map((d) => (Number.isFinite(d.revenue_microcents) ? d.revenue_microcents : 0));
@@ -135,7 +138,7 @@ function HeroBars({ days, format }: { days: RollupDay[]; format: (cents: number)
   const slot = 100 / values.length;
   const gap = slot * 0.25;
   return (
-    <svg viewBox="0 0 100 20" preserveAspectRatio="none" role="img" aria-label="Revenue over the period" className="mt-3 h-12 w-full">
+    <svg viewBox="0 0 100 20" preserveAspectRatio="none" role="group" aria-label="Revenue over the period" className="mt-3 h-12 w-full">
       {values.map((v, i) => {
         // Clamp ONCE, use the clamped value for both y and height — a zero
         // (or tiny) day drew from the unclamped y with a clamped height,
@@ -146,17 +149,20 @@ function HeroBars({ days, format }: { days: RollupDay[]; format: (cents: number)
         // top (0), and an unclamped zero-day sliver drew upward from there to
         // y=-0.2, outside the viewBox.
         const y = v >= 0 ? Math.max(zeroY - h, 0) : zeroY;
+        const label = `${formatDay(days[i].day)} · ${format(microcentsToCents(v))}`;
+        const href = `${teamsPanelUrl("money")}&day=${days[i].day}`;
         return (
-          <rect
-            key={days[i].day}
-            x={(i * slot + gap / 2).toFixed(2)}
-            y={y.toFixed(2)}
-            width={(slot - gap).toFixed(2)}
-            height={h.toFixed(2)}
-            fill={i === values.length - 1 ? "var(--midnight)" : "var(--chart-5)"}
-          >
-            <title>{`${formatDay(days[i].day)} · ${format(microcentsToCents(v))}`}</title>
-          </rect>
+          <a key={days[i].day} href={href} onClick={(e) => handleShellLinkClick(e, href)} aria-label={label}>
+            <rect
+              x={(i * slot + gap / 2).toFixed(2)}
+              y={y.toFixed(2)}
+              width={(slot - gap).toFixed(2)}
+              height={h.toFixed(2)}
+              fill={i === values.length - 1 ? "var(--midnight)" : "var(--chart-5)"}
+            >
+              <title>{label}</title>
+            </rect>
+          </a>
         );
       })}
       <line x1="0" x2="100" y1={zeroY.toFixed(2)} y2={zeroY.toFixed(2)} stroke="var(--edge)" strokeWidth="0.5" vectorEffect="non-scaling-stroke" />

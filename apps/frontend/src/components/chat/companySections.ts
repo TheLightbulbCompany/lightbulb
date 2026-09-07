@@ -19,10 +19,7 @@ import {
   Search,
   BookOpen,
   Plug,
-  Wallet,
   CreditCard,
-  Package,
-  Users,
   Send,
   SearchCheck,
   Megaphone,
@@ -55,9 +52,9 @@ export type CompanySectionItem = {
 };
 
 // Spec §5.1 IA. An item appears here ONLY when its tab is live;
-// the Growth/Operations groups arrive with their tabs (P1+), and Money holds
-// only Spend until Payments/Products/Customers have a Connect binding and a
-// list route to read.
+// the Growth/Operations groups arrive with their tabs (P1+). Money is one
+// item (spec §3 ledger page) — Payments/Products/Customers/Spend are sections
+// of it, not sidebar peers.
 // Every panel renders inline via InlineTeamsPanel (TeamsPanelRouter maps each
 // key). `agents` and `settings` are intentionally excluded — agents are the
 // roster, settings is the Settings home.
@@ -71,17 +68,12 @@ export const COMPANY_SECTIONS: { label: string | null; items: CompanySectionItem
     ],
   },
   {
-    // Spec §5.1 order: the three Stripe reads, then what the agents cost.
-    // Products is its own tab, not a section of Payments — they are three peer
-    // reads of one connected account, and a section would have made one a
-    // second-class citizen of another's tab.
-    label: "Money",
-    items: [
-      { panel: "teams-payments", label: "Payments", Icon: CreditCard },
-      { panel: "teams-products", label: "Products", Icon: Package },
-      { panel: "teams-customers", label: "Customers", Icon: Users },
-      { panel: "teams-spend", label: "Spend", Icon: Wallet },
-    ],
+    // One ledger page (spec §3): what landed this month, then Payments,
+    // Customers, What you sell and Agent spend as sections. The four old keys
+    // still resolve — they open this page at their section.
+    // No caption: a one-item group's item IS the caption.
+    label: null,
+    items: [{ panel: "teams-money", label: "Money", Icon: CreditCard }],
   },
   {
     label: "Work",

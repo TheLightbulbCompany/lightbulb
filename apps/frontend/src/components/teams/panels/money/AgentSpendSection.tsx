@@ -1,17 +1,15 @@
 "use client";
 
-// apps/frontend/src/components/teams/panels/SpendPanel.tsx
+// apps/frontend/src/components/teams/panels/money/AgentSpendSection.tsx
 //
-// Money → Spend (`?panel=teams-spend`). The owner's five-second question:
-// what are my agents costing me this period, and is anything running away.
-// Structural pattern is ArtifactsPanel.tsx — editorial page wrapper, one
-// PanelMasthead, PanelEmptyState for the nothing-yet case.
+// Money ledger → Agent spend section. The owner's five-second question: what
+// are my agents costing me this period, and is anything running away.
 //
-// COMPOSED, NOT FORKED. The whole breakdown below the headline (provider
-// card, per-model split, token grid, per-member table) IS
-// `control/panels/UsagePanel`, rendered here with `embedded` so its own
-// "Usage" heading gives way to this masthead. `?panel=usage` keeps opening
-// the same component through CONTROL_KEYS: two registrations, one component.
+// This is the Spend tab's headline, lifted into a `MoneySection` — no
+// masthead, no sub-tab. The token/cache grid and the per-member table are
+// deliberately left on the control Usage panel (`?panel=usage`, Settings) —
+// see spec §4 rule 4. This section renders only the billed figure, the run
+// count, and the by-model / plan-window rows.
 //
 // ── WHICH FIGURES ARE REAL ────────────────────────────────────────────────
 // This panel shows no number it cannot source. An owner makes a spending
@@ -44,13 +42,12 @@
 // it would be empty for essentially every owner. /billing/usage carries one
 // period, so one period is what this renders.
 
+import Link from "next/link";
 import useSWR from "swr";
-import { Wallet } from "lucide-react";
-import { PanelEmptyState, PanelMasthead } from "@/components/teams/shell";
-import { UsagePanel } from "@/components/control/panels/UsagePanel";
 import { useBilling, type UsageSummary } from "@/hooks/useBilling";
 import { useSpend, type SpendResponse } from "@/hooks/useSpend";
 import { formatUsdCents } from "@/lib/creditAmounts";
+import { MoneySection, MoneyEmptyLine } from "./MoneySection";
 
 interface Headline {
   figure: string;
@@ -151,16 +148,12 @@ function periodMonthName(period: string | undefined): string | null {
   });
 }
 
-export function SpendPanel() {
+export function AgentSpendSection() {
   const { account, fetchUsage } = useBilling();
   const { spend } = useSpend();
   // Same SWR key UsagePanel uses, so this reads the shared cache entry rather
   // than issuing a second /billing/usage request.
-  const { data: usage, isLoading } = useSWR<UsageSummary | null>(
-    "/billing/usage",
-    () => fetchUsage(),
-    { dedupingInterval: 30000 },
-  );
+  const { data: usage, isLoading } = useSWR<UsageSummary | null>("/billing/usage", () => fetchUsage(), { dedupingInterval: 30000 });
 
   const headline = spendHeadline(spend, account?.provider_choice, account?.subscription_status);
   const billedCents = spend?.mode === "bedrock" ? (spend.billed_month_to_date_cents ?? 0) : 0;
@@ -168,92 +161,68 @@ export function SpendPanel() {
   // halves to be true: no runs counted AND nothing billed. A non-zero invoice
   // with a lagging counter must never render as "no agent runs".
   const nothingThisPeriod = !isLoading && (!usage || usage.request_count === 0) && billedCents === 0;
-
   // "Period" is the calendar month, so on the 1st every active company's
-  // counters read zero and the first-run copy — "nothing has run yet" — becomes
-  // the most misleading sentence on the page: literally true, practically a
-  // report that the fleet is dead. Name the rollover instead.
-  //
-  // There is no prior-period figure to quote. /billing/spend reads Metronome's
-  // DRAFT invoice (current period only) and /billing/usage carries one period
-  // and a lifetime total; nothing exposes "last month" without a new backend
-  // route, so this says the boundary happened and quotes no amount.
-  //
-  // ponytail: `lifetime_spend > 0` is the only cross-period signal the frontend
-  // has, and record_usage stores spend 0 for non-Bedrock models — so a
-  // ChatGPT-OAuth or BYOK owner with a year of history still lands on the
-  // first-run copy. One-way and never false-positive: a non-zero lifetime
-  // counter with a zero current period PROVES an earlier period ran. If that
-  // ceiling starts to bite, the fix is a lifetime request_count on
-  // /billing/usage (backend change), not a guess here.
+  // counters read zero. Name the rollover instead of implying the fleet is
+  // dead — see SpendPanel's original comment (git history) for the full case.
   const ranInAnEarlierPeriod = (usage?.lifetime_spend ?? 0) > 0;
   const monthName = periodMonthName(usage?.period);
 
-  return (
-    <div className="editorial-page p-4 sm:p-5 lg:p-6 flex flex-col gap-5 max-w-4xl mx-auto w-full">
-      <PanelMasthead
-        overline="Money"
-        title="Spend"
-        meta={usage?.period ? `Period ${usage.period}` : undefined}
-      />
+  const right = (
+    <>
+      {usage?.period && <span>{periodMonthName(usage.period) ?? usage.period}</span>}
+      <Link href="/chat?panel=llm" className="underline-offset-4 hover:text-[var(--midnight)] hover:underline">Manage credits</Link>
+    </>
+  );
 
+  return (
+    <MoneySection id="spend" label="Agent spend" right={right}>
       {nothingThisPeriod ? (
-        ranInAnEarlierPeriod && monthName ? (
-          <PanelEmptyState
-            icon={Wallet}
-            headline={`No agent runs yet in ${monthName}.`}
-            supporting={`Your agents ran in an earlier period; ${monthName} counts from zero. What they do this month shows up here.`}
-          />
-        ) : (
-          <PanelEmptyState
-            icon={Wallet}
-            headline="No agent runs this period."
-            supporting="Nothing has been billed because nothing has run yet. The moment an agent does, what it cost shows up here."
-          />
-        )
+        <MoneyEmptyLine>
+          {ranInAnEarlierPeriod && monthName
+            ? `No agent runs yet in ${monthName}. Your agents ran in an earlier period; ${monthName} counts from zero.`
+            : "No agent runs this period. Nothing has been billed because nothing has run yet."}
+        </MoneyEmptyLine>
       ) : (
-        <>
+        <div className="flex flex-col gap-3 px-2 py-2">
           {headline && (
-            <section
-              data-testid="spend-headline"
-              className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3"
-            >
+            <div data-testid="spend-headline" className="flex flex-wrap items-end justify-between gap-x-6 gap-y-2">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <p className="label-caps">This period</p>
-                  {headline.partial && (
-                    <span className="label-caps rounded-sm border border-[var(--edge)] px-1.5 py-0.5 text-[var(--midnight-muted)]">
-                      Partial
-                    </span>
-                  )}
+                  {headline.partial && <span className="label-caps rounded-sm border border-[var(--edge)] px-1.5 py-0.5 text-[var(--midnight-muted)]">Partial</span>}
                 </div>
-                <p
-                  className={
-                    headline.money
-                      ? "font-editorial-serif text-4xl leading-none tabular-nums text-[var(--midnight)]"
-                      : "font-editorial-serif text-2xl italic leading-tight text-[var(--midnight)]"
-                  }
-                >
-                  {headline.figure}
-                </p>
+                <p className={headline.money ? "font-editorial-serif text-3xl leading-none tabular-nums text-[var(--midnight)]" : "font-editorial-serif text-xl italic leading-tight text-[var(--midnight)]"}>{headline.figure}</p>
+                <p className="mt-1 max-w-[52ch] text-xs text-[var(--midnight-muted)]">{headline.caption}</p>
               </div>
               {usage && (
                 <div className="text-right">
                   <p className="label-caps">Agent runs</p>
-                  <p className="font-mono text-title tabular-nums text-[var(--midnight)]">
-                    {usage.request_count.toLocaleString()}
-                  </p>
+                  <p className="font-mono text-title tabular-nums text-[var(--midnight)]">{usage.request_count.toLocaleString()}</p>
                 </div>
               )}
-            </section>
+            </div>
           )}
-          {headline && (
-            <p className="max-w-[52ch] text-xs text-[var(--midnight-muted)]">{headline.caption}</p>
+          {spend?.mode === "bedrock" && (spend.by_model ?? []).length > 0 && (
+            <dl className="flex flex-col divide-y divide-[var(--edge-soft)] border-t border-[var(--edge-soft)]">
+              {(spend.by_model ?? []).map((row) => (
+                <div key={row.tier} className="flex items-center justify-between py-1.5 text-sm">
+                  <dt>{row.model}</dt>
+                  <dd className="font-mono text-xs tabular-nums text-[var(--midnight-muted)]">{formatUsdCents(row.cents)}</dd>
+                </div>
+              ))}
+            </dl>
           )}
-
-          <UsagePanel embedded />
-        </>
+          {spend?.mode === "oauth_quota" && (spend.windows ?? []).map((w) => (
+            <div key={w.label} className="space-y-1">
+              <div className="flex items-center justify-between text-xs">
+                <span>{w.label} limit</span>
+                <span className="text-[var(--midnight-muted)]">{w.used_percent > 0 && w.used_percent < 1 ? "<1" : Math.round(w.used_percent)}% used{w.resets_at_ms ? ` · resets ${new Date(w.resets_at_ms).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}` : ""}</span>
+              </div>
+              <div className="h-1.5 rounded-sm bg-[var(--edge)]"><div className="h-1.5 rounded-sm bg-[var(--midnight)]" style={{ width: `${Math.min(100, Math.max(0, w.used_percent))}%` }} /></div>
+            </div>
+          ))}
+        </div>
       )}
-    </div>
+    </MoneySection>
   );
 }

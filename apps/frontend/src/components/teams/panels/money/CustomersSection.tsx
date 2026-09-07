@@ -1,18 +1,8 @@
 "use client";
 
-// Money → Customers (`?panel=teams-customers`).
-//
-// The owner's question: who bought. The decision it informs: who to follow up
-// with, and what Growth should do next.
-//
-// ATTRIBUTION IS DELIBERATELY ABSENT. Spec §4.4 puts "which campaign did this
-// customer come from" in the OWNER's PostHog, joined on the Stripe customer's
-// `metadata.user_id` — not in a join we build and hold. So this table shows
-// who and when, and does not invent a source column it cannot source.
-
-import type { PanelDataColumn } from "@/components/teams/shell";
-import { MoneyPanel } from "@/components/teams/panels/money/MoneyPanel";
-import type { CustomerRow } from "@/hooks/useCompanyMoney";
+import { PanelDataTable, EditorialButton, type PanelDataColumn } from "@/components/teams/shell";
+import { MoneySection, MoneyEmptyLine } from "./MoneySection";
+import { useCompanyMoney, type CustomerRow } from "@/hooks/useCompanyMoney";
 import { formatStripeAmount, formatUnixDay } from "@/components/teams/panels/money/money";
 
 const COLUMNS: PanelDataColumn<CustomerRow>[] = [
@@ -66,6 +56,29 @@ const COLUMNS: PanelDataColumn<CustomerRow>[] = [
   },
 ];
 
-export function CustomersPanel() {
-  return <MoneyPanel<CustomerRow> kind="customers" title="Customers" noun="customers" columns={COLUMNS} maxWidth="max-w-5xl" />;
+export function CustomersSection({ newIn30Days }: { newIn30Days: number | null }) {
+  const { rows, view, hasMore, next } = useCompanyMoney<CustomerRow>("customers");
+  const rowKey = (r: CustomerRow) => r.id;
+  return (
+    <MoneySection
+      id="customers"
+      label="Customers"
+      right={newIn30Days === null ? undefined : <span>{newIn30Days} new in 30 days</span>}
+    >
+      {view.kind === "loading" ? (
+        <PanelDataTable rows={[]} columns={COLUMNS} rowKey={rowKey} loading />
+      ) : rows.length === 0 ? (
+        <MoneyEmptyLine>No customers yet.</MoneyEmptyLine>
+      ) : (
+        <>
+          <PanelDataTable rows={rows} columns={COLUMNS} rowKey={rowKey} />
+          {hasMore && (
+            <div className="flex justify-center">
+              <EditorialButton size="sm" variant="secondary" onClick={next}>Show more</EditorialButton>
+            </div>
+          )}
+        </>
+      )}
+    </MoneySection>
+  );
 }

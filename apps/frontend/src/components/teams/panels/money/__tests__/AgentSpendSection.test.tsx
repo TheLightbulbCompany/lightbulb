@@ -1,12 +1,13 @@
-// SpendPanel's contract is HONESTY: every figure it prints must be one it can
-// source, and anything missing or unverified must say so rather than render a
-// confident zero. These pin that, plus the composition (UsagePanel's body is
-// reused, not reimplemented) and the never-run-an-agent empty state.
+// AgentSpendSection's contract is HONESTY: every figure it prints must be one
+// it can source, and anything missing or unverified must say so rather than
+// render a confident zero. These pin that, plus the section chrome (a region
+// labelled "Agent spend", the by-model / plan-window rows) and the
+// never-run-an-agent empty state.
 //
-// Mocking convention copied from UsagePanel.spend.test.tsx (the sibling that
-// tests the composed body): mock useBilling/useSpend/clerk, and mock swr by
-// key so both this panel and the embedded UsagePanel read the same fixture.
-import { render, screen } from "@testing-library/react";
+// Mocking convention copied from UsagePanel.spend.test.tsx:
+// mock useBilling/useSpend/clerk, and mock swr by key so this section reads
+// the same fixture shape /billing/usage returns.
+import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 const usageFixture = {
@@ -59,7 +60,7 @@ vi.mock("swr", () => ({
   },
 }));
 
-import { SpendPanel } from "../SpendPanel";
+import { AgentSpendSection, spendHeadline } from "../AgentSpendSection";
 
 function setup(over: Partial<typeof state> = {}) {
   Object.assign(state, {
@@ -69,29 +70,30 @@ function setup(over: Partial<typeof state> = {}) {
     usageLoading: false,
     ...over,
   });
-  return render(<SpendPanel />);
+  return render(<AgentSpendSection />);
 }
 
-describe("SpendPanel masthead", () => {
-  it("renders the Money / Spend masthead with the live period", () => {
-    setup();
-    expect(screen.getByRole("heading", { name: "Spend" })).toBeInTheDocument();
-    expect(screen.getByText("Money")).toBeInTheDocument();
-    expect(screen.getByTestId("panel-masthead-meta")).toHaveTextContent("Period 2026-08");
+describe("AgentSpendSection chrome", () => {
+  it("is a section labelled Agent spend that names the period and links to Model & Credits", () => {
+    setup({ spend: { mode: "bedrock", billed_month_to_date_cents: 1400, by_model: [{ model: "Claude Opus 5", tier: "opus", cents: 1000 }, { model: "Claude Sonnet 5", tier: "sonnet", cents: 400 }], period_start: null, plan: null, windows: null } });
+    const section = screen.getByRole("region", { name: "Agent spend" });
+    expect(within(section).getByText("$14")).toBeInTheDocument();
+    expect(within(section).getByText("Claude Opus 5")).toBeInTheDocument();
+    expect(within(section).getByText("$10")).toBeInTheDocument();
+    expect(within(section).getByText("August")).toBeInTheDocument(); // the month, not the raw "2026-08"
+    expect(within(section).getByRole("link", { name: "Manage credits" })).toHaveAttribute("href", "/chat?panel=llm");
+    expect(within(section).queryByText(/Cache/)).toBeNull(); // the token grid does not come along
   });
 
-  it("composes UsagePanel's body rather than reimplementing it", () => {
-    setup();
-    // UsagePanel's token grid, rendered through the embedded instance. Its own
-    // "Usage" heading is suppressed so it does not stack under the masthead.
-    expect(screen.getByText("Input")).toBeInTheDocument();
-    expect(screen.getByText("Cache Write")).toBeInTheDocument();
-    expect(screen.getByText(/42 requests this period/)).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Usage" })).toBeNull();
+  it("shows the ChatGPT plan windows for an OAuth owner", () => {
+    setup({ spend: { mode: "oauth_quota", billed_month_to_date_cents: null, by_model: null, period_start: null, plan: "Plus", windows: [{ label: "5h", used_percent: 42, resets_at_ms: null }] } });
+    expect(screen.getByText("Included")).toBeInTheDocument();
+    expect(screen.getByText(/5h limit/)).toBeInTheDocument();
+    expect(screen.getByText(/42% used/)).toBeInTheDocument();
   });
 });
 
-describe("SpendPanel headline — live figures", () => {
+describe("AgentSpendSection headline — live figures", () => {
   it("bedrock: shows the billed month-to-date figure and names the invoice", () => {
     setup({
       spend: { mode: "bedrock", billed_month_to_date_cents: 1234, by_model: [], period_start: null },
@@ -133,7 +135,7 @@ describe("SpendPanel headline — live figures", () => {
   });
 });
 
-describe("SpendPanel headline — partial / unverifiable figures", () => {
+describe("AgentSpendSection headline — partial / unverifiable figures", () => {
   it("labels a degraded bedrock read Partial instead of showing $0", () => {
     // spend_service falls back to tokens_only when the Metronome read fails,
     // so a bedrock owner landing on tokens_only means "could not read", not
@@ -183,7 +185,7 @@ describe("SpendPanel headline — partial / unverifiable figures", () => {
   });
 });
 
-describe("SpendPanel empty state", () => {
+describe("AgentSpendSection empty state", () => {
   it("an owner who has never run an agent gets a true statement, not an error", () => {
     // lifetime_spend 0 as well as request_count 0 — the genuine first-run
     // owner, not a company sitting on a freshly rolled-over calendar month.
@@ -191,7 +193,7 @@ describe("SpendPanel empty state", () => {
       usage: { ...usageFixture, request_count: 0, lifetime_spend: 0 },
       spend: { mode: "tokens_only" },
     });
-    expect(screen.getByText("No agent runs this period.")).toBeInTheDocument();
+    expect(screen.getByText(/No agent runs this period\./)).toBeInTheDocument();
     expect(screen.getByText(/nothing has run yet/i)).toBeInTheDocument();
     // The all-zero token grid would be noise, so the body stands down too.
     expect(screen.queryByText("Cache Write")).toBeNull();
@@ -199,7 +201,7 @@ describe("SpendPanel empty state", () => {
 
   it("a 404 (no usage row at all) lands on the same empty state", () => {
     setup({ usage: null, spend: { mode: "tokens_only" } });
-    expect(screen.getByText("No agent runs this period.")).toBeInTheDocument();
+    expect(screen.getByText(/No agent runs this period\./)).toBeInTheDocument();
   });
 
   it("never claims 'no runs' while a billed figure exists — a lagging counter is not an empty month", () => {
@@ -207,13 +209,13 @@ describe("SpendPanel empty state", () => {
       usage: { ...usageFixture, request_count: 0 },
       spend: { mode: "bedrock", billed_month_to_date_cents: 500, by_model: [], period_start: null },
     });
-    expect(screen.queryByText("No agent runs this period.")).toBeNull();
+    expect(screen.queryByText(/No agent runs this period\./)).toBeNull();
     expect(screen.getByTestId("spend-headline")).toHaveTextContent("$5");
   });
 
   it("does not flash the empty state while usage is still loading", () => {
     setup({ usage: null, usageLoading: true });
-    expect(screen.queryByText("No agent runs this period.")).toBeNull();
+    expect(screen.queryByText(/No agent runs this period\./)).toBeNull();
   });
 });
 
@@ -222,7 +224,7 @@ describe("SpendPanel empty state", () => {
 // this period. Nothing has been billed because nothing has run yet." — word for
 // word the copy a genuinely idle fleet gets. Seen live on 2026-09-01 by an owner
 // who had spent ~$1.40 across 50+ agent runs the day before.
-describe("SpendPanel empty state — month boundary vs a genuinely idle fleet", () => {
+describe("AgentSpendSection empty state — month boundary vs a genuinely idle fleet", () => {
   const boundary = {
     usage: { ...usageFixture, period: "2026-09", request_count: 0, lifetime_spend: 1.4 },
   };
@@ -235,8 +237,8 @@ describe("SpendPanel empty state — month boundary vs a genuinely idle fleet", 
 
   it("names the period reset instead of claiming nothing has ever run", () => {
     setup({ ...boundary, spend: zeroBedrock });
-    expect(screen.getByText("No agent runs yet in September.")).toBeInTheDocument();
-    expect(screen.queryByText("No agent runs this period.")).toBeNull();
+    expect(screen.getByText(/No agent runs yet in September\./)).toBeInTheDocument();
+    expect(screen.queryByText(/No agent runs this period\./)).toBeNull();
     expect(screen.queryByText(/nothing has run yet/i)).toBeNull();
     expect(screen.getByText(/ran in an earlier period/i)).toBeInTheDocument();
   });
@@ -259,7 +261,7 @@ describe("SpendPanel empty state — month boundary vs a genuinely idle fleet", 
       account: { subscription_status: "active", provider_choice: "chatgpt_oauth" },
       spend: { mode: "oauth_quota", plan: "Pro", windows: [] },
     });
-    expect(screen.getByText("No agent runs yet in September.")).toBeInTheDocument();
+    expect(screen.getByText(/No agent runs yet in September\./)).toBeInTheDocument();
     expect(screen.queryByText(/\$/)).toBeNull();
   });
 
@@ -268,7 +270,7 @@ describe("SpendPanel empty state — month boundary vs a genuinely idle fleet", 
       usage: { ...usageFixture, period: "2026-09", request_count: 0, lifetime_spend: 0 },
       spend: { mode: "tokens_only" },
     });
-    expect(screen.getByText("No agent runs this period.")).toBeInTheDocument();
+    expect(screen.getByText(/No agent runs this period\./)).toBeInTheDocument();
     expect(screen.queryByText(/ran in an earlier period/i)).toBeNull();
   });
 
@@ -277,6 +279,14 @@ describe("SpendPanel empty state — month boundary vs a genuinely idle fleet", 
       usage: { ...usageFixture, period: "", request_count: 0, lifetime_spend: 1.4 },
       spend: { mode: "tokens_only" },
     });
-    expect(screen.getByText("No agent runs this period.")).toBeInTheDocument();
+    expect(screen.getByText(/No agent runs this period\./)).toBeInTheDocument();
+  });
+});
+
+// spendHeadline is exported so the honesty rules can be pinned directly, not
+// just observed through the rendered component.
+describe("spendHeadline", () => {
+  it("returns null while spend has not loaded", () => {
+    expect(spendHeadline(undefined, "bedrock_claude", "active")).toBeNull();
   });
 });

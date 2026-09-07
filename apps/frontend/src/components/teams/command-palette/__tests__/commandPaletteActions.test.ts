@@ -43,6 +43,10 @@ describe("NAV_ACTIONS derives from the sidebar IA", () => {
     expect(filterNavActions("issues").map((a) => a.id)).toContain("go-issues");
     expect(filterNavActions("approvals").map((a) => a.id)).toContain("go-inbox");
   });
+
+  test("the absorbed Spend/Payments/etc. search words still find Money", () => {
+    expect(filterNavActions("billing").map((a) => a.id)).toContain("go-money");
+  });
 });
 
 describe("filterNavActions", () => {

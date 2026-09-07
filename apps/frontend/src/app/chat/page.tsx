@@ -20,7 +20,7 @@ import {
   TEAMS_PANEL_PREFIX,
 } from "@/components/chat/InlineTeamsPanel";
 import { preloadTeamsPanels } from "@/components/teams/TeamsPanelRouter";
-import { resolvePanelAlias } from "@/components/workspace/panelRegistry";
+import { MONEY_SECTIONS, resolvePanelAlias } from "@/components/workspace/panelRegistry";
 import { pushSearchParams, replaceSearchParams } from "@/lib/shellNav";
 import { useIsDesktop } from "@/hooks/useIsDesktop";
 
@@ -129,6 +129,17 @@ function MobileChatShell() {
   // onto an unrelated panel.
   const tabParam = searchParams.get("tab") ?? (panelParam === "dreams" ? "dreams" : null);
   const pathParam = searchParams.get("path");
+  const dayParam = searchParams.get("day");
+  // Same synthesis as `tab` above, for Money: ?panel=teams-spend carries no
+  // &section=, because the section IS the key. The four absorbed keys all
+  // alias to teams-money, so reading the section off the RAW key here can
+  // never leak onto another panel. A hand-written ?section= wins nothing extra
+  // — TeamsPanelRouter validates it before MoneyPanel sees it.
+  const rawTeamsKey = panelParam?.startsWith(TEAMS_PANEL_PREFIX)
+    ? panelParam.slice(TEAMS_PANEL_PREFIX.length)
+    : null;
+  const sectionParam =
+    searchParams.get("section") ?? (rawTeamsKey && MONEY_SECTIONS.has(rawTeamsKey) ? rawTeamsKey : null);
   const oneShots = {
     new: searchParams.get("new") ?? undefined,
     newIssue: searchParams.get("newIssue") ?? undefined,
@@ -335,6 +346,8 @@ function MobileChatShell() {
                   ...(agentParam ? { agent: agentParam } : {}),
                   ...(tabParam ? { tab: tabParam } : {}),
                   ...(pathParam ? { path: pathParam } : {}),
+                  ...(dayParam ? { day: dayParam } : {}),
+                  ...(sectionParam ? { section: sectionParam } : {}),
                   ...(oneShots.new ? { new: oneShots.new } : {}),
                   ...(oneShots.newIssue ? { newIssue: oneShots.newIssue } : {}),
                 }}

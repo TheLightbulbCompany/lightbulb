@@ -43,10 +43,6 @@ interface StoredLayout {
   layout: SerializedDockview;
 }
 
-function hasOwnKey(obj: object, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(obj, key);
-}
-
 // RETIRED_PANEL_ALIASES is otherwise applied replace-only to URL commands
 // (see panelRegistry.ts) — a saved dockview layout restores panel ids/params
 // straight from localStorage, bypassing that resolver entirely. A layout
@@ -64,7 +60,7 @@ function hasOwnKey(obj: object, key: string): boolean {
 function migrateRetiredPanelId(
   id: string,
 ): { id: string; teamsKey?: string; controlKey?: string; component?: "teams"; tab?: string } | null {
-  if (hasOwnKey(RETIRED_PANEL_ALIASES, id)) {
+  if (Object.hasOwn(RETIRED_PANEL_ALIASES, id)) {
     const target = RETIRED_PANEL_ALIASES[id];
     if (target.startsWith("teams-")) {
       // Hardening: every existing bare teams-* alias is already
@@ -78,7 +74,7 @@ function migrateRetiredPanelId(
   }
   if (id.startsWith("control:")) {
     const key = id.slice("control:".length);
-    if (hasOwnKey(RETIRED_PANEL_ALIASES, key)) {
+    if (Object.hasOwn(RETIRED_PANEL_ALIASES, key)) {
       const target = RETIRED_PANEL_ALIASES[key];
       if (target.startsWith("teams-")) {
         // dreams -> teams-brain must reopen ON the Dreams tab, not silently
@@ -266,7 +262,7 @@ export function sanitizeLayout(
     let finalId = id;
     const migration = migrateRetiredPanelId(id);
     if (migration) {
-      if (hasOwnKey(rawPanels, migration.id) || claimedTargets.has(migration.id)) {
+      if (Object.hasOwn(rawPanels, migration.id) || claimedTargets.has(migration.id)) {
         // Target panel is already open in this same layout, or an earlier
         // retired panel in this same pass already renamed to it — dropping
         // the retired duplicate is simpler and safer than merging two panel

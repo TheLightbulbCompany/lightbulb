@@ -343,32 +343,37 @@ printf '%s' "<body>" | /app/skills/lightbulb/scripts/lightbulb-mail.sh send --to
 
 ### Where the owner sees the money
 
-Once the company Stripe account is connected, the owner has four tabs under
-**Money** in the workspace sidebar. Point them at these rather than describing
-numbers you would have to fetch yourself:
+Once the company Stripe account is connected, the owner has one **Money** tab
+in the workspace sidebar — a ledger page. Point them at it rather than
+describing numbers you would have to fetch yourself. Top to bottom:
 
-- **Payments** — every charge, with its Stripe receipt, so it reconciles
-  against their Stripe Dashboard line for line.
-- **Products** — what they sell and at what price.
-- **Customers** — who bought, when, and their balance.
-- **Spend** — what the agents cost (inference, and anything bought through the
-  provisioning rail).
+- the masthead says what landed this month, and the biggest day links to that
+  day's payments (a bar on Home's revenue chart does the same);
+- **Payments** — every charge, newest first, with its Stripe receipt, so it
+  reconciles against their Stripe Dashboard line for line;
+- **Customers** — who bought, when, and their balance, with how many are new
+  in the last 30 days;
+- **What you sell** — their products and prices, and a link to add one in
+  Stripe;
+- **Agent spend** — what the agents cost this period: the billed figure, runs,
+  and the split by model (or the ChatGPT plan windows). The token detail and
+  the per-member table live in Settings → Usage.
 
 Home shows the same Stripe numbers as a summary — revenue, new customers, visitors
 (with PostHog) and billed agent spend for the selected period, with a comparison
 to the period before. For "how are we doing" point them at Home; for "show me
-the charge" point them at Payments.
+the charge" point them at Money.
 
 Two things worth saying accurately if asked:
 
-- These tabs read the owner's connected Stripe account **through**; nothing is
+- Money reads the owner's connected Stripe account **through**; nothing is
   copied or cached, so what they show is what Stripe says.
-- Before onboarding is finished the tabs say so explicitly ("Your Stripe
+- Before onboarding is finished the page says so explicitly ("Your Stripe
   onboarding isn't finished" / "Stripe is still reviewing your account") rather
   than showing an empty table. If the owner reports one of those, the answer is
   to finish setup in Accounts, not to wait.
 
-**Only workspace admins can open the Money tabs.** An ordinary org member gets
+**Only workspace admins can open Money.** An ordinary org member gets
 a permission message, not an error — do not tell them to retry.
 
 ## Your company's Stripe account

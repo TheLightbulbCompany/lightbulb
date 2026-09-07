@@ -29,7 +29,26 @@ export const RETIRED_PANEL_ALIASES: Readonly<Record<string, string>> = {
   // the standalone control-panel surface is gone, so old deep links and
   // persisted layouts land on Brain instead.
   dreams: "teams-brain",
+  // Money is ONE page, and Payments/Products/Customers/Spend are its sections.
+  // They alias to its key so the dock (which dedupes by panel id) opens ONE
+  // "Money" tab no matter which of the five keys a link carries — Home's tiles
+  // link three of them. describePanel synthesizes `section` from the RAW key
+  // below, exactly as `dreams` carries Brain's tab.
+  "teams-payments": "teams-money",
+  "teams-products": "teams-money",
+  "teams-customers": "teams-money",
+  "teams-spend": "teams-money",
 };
+
+// The sections of the Money page — the set an absorbed key or a `?section=`
+// deep link may name. Exported so TeamsPanelRouter narrows against the same
+// list instead of keeping a second copy.
+export const MONEY_SECTIONS: ReadonlySet<string> = new Set([
+  "payments",
+  "customers",
+  "products",
+  "spend",
+]);
 
 // One-shot intents: copied to the target panel's open params, immediately
 // stripped from the URL, cleared after consumption, excluded from the
@@ -55,13 +74,12 @@ const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
   accounts: "Accounts",
   search: "Search",
   settings: "Team Settings",
-  // Money → Spend. CONTROL_KEYS.usage stays exactly as it is: the two open the
-  // same component (SpendPanel wraps UsagePanel), and `?panel=usage` links are
-  // already in the wild.
-  spend: "Spend",
-  payments: "Payments",
-  products: "Products",
-  customers: "Customers",
+  // The one ledger page. The four keys it absorbed live in
+  // RETIRED_PANEL_ALIASES, not here — one page, one panel id.
+  // CONTROL_KEYS.usage stays exactly as it is: `?panel=usage` links are
+  // already in the wild, and Money's Agent spend section is a different,
+  // smaller surface than that panel.
+  money: "Money",
   // Shells with named exits (owner ruling 2026-09-01): the map is complete
   // before every rail is. Keys are permanent the moment they ship — mobile
   // builds `?panel=teams-<key>` as a string.
@@ -108,16 +126,14 @@ export const PANEL_COMPONENT_KEYS: ReadonlySet<string> = new Set([
   "missing",
 ]);
 
-// Key-map membership must be OWN-property only: the `in` operator walks the
-// prototype chain, so Object.prototype keys ("constructor", "valueOf", …) in
-// a crafted ?panel URL would pass validation and render inherited functions
-// as titles/components instead of rejecting to null.
-function hasOwnKey(map: Readonly<Record<string, string>>, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(map, key);
-}
+// Key-map membership must be OWN-property only (Object.hasOwn): the `in`
+// operator walks the prototype chain, so Object.prototype keys
+// ("constructor", "valueOf", …) in a crafted ?panel URL would pass validation
+// and render inherited functions as titles/components instead of rejecting to
+// null.
 
 export function resolvePanelAlias(panelKey: string): string {
-  return hasOwnKey(RETIRED_PANEL_ALIASES, panelKey) ? RETIRED_PANEL_ALIASES[panelKey] : panelKey;
+  return Object.hasOwn(RETIRED_PANEL_ALIASES, panelKey) ? RETIRED_PANEL_ALIASES[panelKey] : panelKey;
 }
 
 export function chatPanelId(agentId: string): string {
@@ -167,7 +183,7 @@ export function describePanel(
 
   if (key.startsWith("teams-")) {
     const teamsKey = key.slice("teams-".length);
-    if (hasOwnKey(TEAMS_DETAIL_KEYS, teamsKey)) {
+    if (Object.hasOwn(TEAMS_DETAIL_KEYS, teamsKey)) {
       const detailId = params.detailId;
       if (!detailId) return null;
       return {
@@ -177,7 +193,7 @@ export function describePanel(
         params: { teamsKey, detailId },
       };
     }
-    if (hasOwnKey(TEAMS_LIST_KEYS, teamsKey)) {
+    if (Object.hasOwn(TEAMS_LIST_KEYS, teamsKey)) {
       const p: Record<string, string> = { teamsKey };
       // Durable filters ride along; one-shots are handled by the reconciler
       // at open time and never enter these params.
@@ -195,12 +211,22 @@ export function describePanel(
       // must hand describePanel the RAW ?panel value and let it resolve —
       // a caller that pre-resolves makes this branch permanently dead.
       if (teamsKey === "brain" && panelKey === "dreams") p.tab = "dreams";
+      // ?day scopes the Payments section to one UTC day — the hero bar on Home links here.
+      if (teamsKey === "money" && params.day) p.day = params.day;
+      // The four absorbed keys (teams-payments/products/customers/spend) alias
+      // to teams-money, so the section they meant survives only if it is read
+      // off the RAW key — same synthesis, same reason, as `dreams` above.
+      if (teamsKey === "money") {
+        const raw = panelKey.startsWith("teams-") ? panelKey.slice("teams-".length) : panelKey;
+        if (MONEY_SECTIONS.has(raw)) p.section = raw;
+        else if (params.section && MONEY_SECTIONS.has(params.section)) p.section = params.section;
+      }
       return { panelId: key, component: "teams", title: TEAMS_LIST_KEYS[teamsKey], params: p };
     }
     return null;
   }
 
-  if (hasOwnKey(CONTROL_KEYS, key)) {
+  if (Object.hasOwn(CONTROL_KEYS, key)) {
     const p: Record<string, string> = { controlKey: key };
     if (key === "agents" && params.agent) p.agentId = params.agent;
     return { panelId: `control:${key}`, component: "control", title: CONTROL_KEYS[key], params: p };
@@ -225,6 +251,7 @@ export function durableParamsFor(panelId: string): string[] {
   if (panelId === "teams-issues") return ["panel", "agent"];
   if (panelId === "teams-inbox") return ["panel", "tab"];
   if (panelId === "teams-brain") return ["panel", "path"];
+  if (panelId === "teams-money") return ["panel", "day", "section"];
   if (/^teams-(issue|routine|project|goal|run)-detail:/.test(panelId)) return ["panel", "detailId"];
   return ["panel"];
 }
@@ -239,6 +266,7 @@ export function clearablePanelParamKeys(panelId: string): string[] {
   if (panelId === "teams-issues") return ["agent"];
   if (panelId === "teams-inbox") return ["tab"];
   if (panelId === "teams-brain") return ["path"];
+  if (panelId === "teams-money") return ["day", "section"];
   if (panelId === "file-viewer") return ["path", "agent"];
   if (panelId === "agent-inspector" || panelId === "control:agents") {
     return ["agentId", "initialTab"];

@@ -11,6 +11,9 @@
 // stdlib answers this — no table of our own to drift. It also gives grouping
 // separators, which the hand-rolled path did not ($1,234.50, not $1234.50).
 
+import { formatUsdCents } from "@/lib/creditAmounts";
+import type { RollupDay } from "@/hooks/useCompanyRollup";
+
 // Constructing an Intl.NumberFormat is the expensive half (CLDR resolution);
 // formatting is cheap. A 25-row Payments page has two money columns, so an
 // uncached pair-per-cell built ~100 formatters per render and doubled on every
@@ -58,4 +61,37 @@ export function formatUnixDay(unix: number): string {
     year: "numeric",
     timeZone: "UTC",
   });
+}
+
+/** "2026-09-05" → "Sep 5, 2026", pinned to UTC like formatUnixDay. */
+export function formatIsoDay(day: string): string {
+  return new Date(`${day}T00:00:00Z`).toLocaleDateString("en-US", {
+    month: "short", day: "numeric", year: "numeric", timeZone: "UTC",
+  });
+}
+
+/** Microcents → dollars with a typographic minus, the strip's convention. */
+export function formatMicrocents(v: number): string {
+  const cents = Math.round(v / 10_000);
+  return cents < 0 ? `−${formatUsdCents(-cents)}` : formatUsdCents(cents);
+}
+
+/** Revenue landed in today's UTC month, from the stored day rows. Null when
+ *  the month has no rows at all — that is "no reading", not "$0". */
+export function monthToDate(days: RollupDay[], today: string): { month: string; microcents: number } | null {
+  const month = today.slice(0, 7);
+  const rows = days.filter((d) => d.day.startsWith(month));
+  if (rows.length === 0) return null;
+  return { month, microcents: rows.reduce((s, d) => s + (d.revenue_microcents ?? 0), 0) };
+}
+
+/** The day with the most revenue in the month; refund-heavy (negative) and
+ *  zero days never win. Null when nothing positive landed. */
+export function biggestDay(days: RollupDay[], month: string): RollupDay | null {
+  let best: RollupDay | null = null;
+  for (const d of days) {
+    if (!d.day.startsWith(month) || (d.revenue_microcents ?? 0) <= 0) continue;
+    if (!best || d.revenue_microcents > best.revenue_microcents) best = d;
+  }
+  return best;
 }

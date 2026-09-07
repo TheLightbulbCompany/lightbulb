@@ -2,6 +2,8 @@
 
 import dynamic from "next/dynamic";
 import { PageSkeleton } from "@/components/teams/shared/components/PageSkeleton";
+import { MONEY_SECTIONS } from "@/components/workspace/panelRegistry";
+import type { MoneySectionId } from "./panels/MoneyPanel";
 
 // Shown while a panel's code-split chunk loads. Without a loading fallback,
 // next/dynamic renders nothing and a first visit flashes a blank pane before
@@ -32,10 +34,7 @@ const PANEL_LOADERS: Record<string, () => Promise<React.ComponentType>> = {
   accounts: () => import("./panels/AccountsPanel").then((m) => m.AccountsPanel),
   search: () => import("./panels/SearchPanel").then((m) => m.SearchPanel),
   settings: () => import("./panels/SettingsPanel").then((m) => m.SettingsPanel),
-  spend: () => import("./panels/SpendPanel").then((m) => m.SpendPanel),
-  payments: () => import("./panels/PaymentsPanel").then((m) => m.PaymentsPanel),
-  products: () => import("./panels/ProductsPanel").then((m) => m.ProductsPanel),
-  customers: () => import("./panels/CustomersPanel").then((m) => m.CustomersPanel),
+  money: () => import("./panels/MoneyPanel").then((m) => m.MoneyPanel),
   publish: () => import("./panels/PublishPanel").then((m) => m.PublishPanel),
   seo: () => import("./panels/SeoPanel").then((m) => m.SeoPanel),
   ads: () => import("./panels/AdsPanel").then((m) => m.AdsPanel),
@@ -86,6 +85,18 @@ const BrainPanel = dynamic(
   { loading: PanelSkeleton },
 );
 
+// Money absorbed the four old Payments/Products/Customers/Spend tabs as
+// sections of one ledger page. Those keys alias to `money` in the registry
+// (one panel id, one dock tab) and arrive here as `section` — an owner's saved
+// link still lands on the part of the page they bookmarked.
+const MoneyPanel = dynamic(() => import("./panels/MoneyPanel").then((m) => m.MoneyPanel), { loading: PanelSkeleton });
+
+// The fence for a hand-typed ?section=: MoneyPanel feeds this into a
+// `#money-${section}` selector, and an arbitrary string there throws.
+function asMoneySection(value: string | undefined): MoneySectionId | null {
+  return value && MONEY_SECTIONS.has(value) ? (value as MoneySectionId) : null;
+}
+
 // Warm every panel chunk (called from the shell during browser idle time) so
 // the first open of a panel mounts from the module cache instead of fetching
 // its chunk on click. Failures are ignored — the dynamic() wrappers refetch
@@ -114,7 +125,7 @@ export interface TeamsPanelRouterProps {
   // reaching here — this router no longer rewrites the URL for aliases.
   panelParams?: Record<string, string>;
   onConsumeOneShot?: (key: "new" | "newIssue") => void;
-  onUpdateDurableParam?: (key: "agent" | "path", value: string | null) => void;
+  onUpdateDurableParam?: (key: "agent" | "path" | "day", value: string | null) => void;
 }
 
 export function TeamsPanelRouter({
@@ -171,7 +182,21 @@ export function TeamsPanelRouter({
     );
   }
 
-  const Cmp = PANELS[panel];
+  if (panel === "money") {
+    return (
+      <MoneyPanel
+        section={asMoneySection(panelParams?.section)}
+        day={panelParams?.day ?? null}
+        onDayCleared={() => onUpdateDurableParam?.("day", null)}
+      />
+    );
+  }
+
+  // Own-property only (Object.hasOwn) — `in` and bracket access both walk the
+  // prototype chain, so a `panel` of "constructor"/"valueOf" would resolve to
+  // an inherited Object.prototype value instead of rejecting to "Unknown
+  // panel". Same hazard panelRegistry.ts guards against for its own key-maps.
+  const Cmp = Object.hasOwn(PANELS, panel) ? PANELS[panel] : undefined;
   if (!Cmp) return <div className="p-8">Unknown panel: {panel}</div>;
   return <Cmp />;
 }

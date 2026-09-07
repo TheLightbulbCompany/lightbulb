@@ -7,7 +7,10 @@ vi.mock("@/hooks/useCompanyMoney", async (importOriginal) => {
   return { ...mod, useCompanyMoney: () => ({ rows: [], view: money.view, hasMore: false, next: vi.fn() }) };
 });
 const rollup = vi.hoisted(() => ({ value: undefined as unknown, loading: false }));
-vi.mock("@/hooks/useCompanyRollup", () => ({ useCompanyRollup: () => ({ rollup: rollup.value, isLoading: rollup.loading, windowStart: "2026-06-09", span: 90, error: undefined, refresh: vi.fn(), isUnavailable: () => false }) }));
+vi.mock("@/hooks/useCompanyRollup", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("@/hooks/useCompanyRollup")>();
+  return { ...mod, useCompanyRollup: () => ({ rollup: rollup.value, isLoading: rollup.loading, windowStart: "2026-06-09", span: 90, error: undefined, refresh: vi.fn(), isUnavailable: () => false }) };
+});
 vi.mock("@/components/teams/panels/money/AgentSpendSection", () => ({ AgentSpendSection: () => <section aria-label="Agent spend" /> }));
 vi.mock("@/components/teams/panels/money/PaymentsSection", () => ({ PaymentsSection: ({ day }: { day: string | null }) => <section aria-label="Payments" data-day={day ?? ""} /> }));
 vi.mock("@/components/teams/panels/money/CustomersSection", () => ({ CustomersSection: ({ newIn30Days }: { newIn30Days: number | null }) => <section aria-label="Customers" data-new={String(newIn30Days)} /> }));
@@ -34,7 +37,7 @@ describe("MoneyPanel — one ledger page", () => {
     expect(screen.getByText(/Biggest day: Sep 5, 2026 · \$640/)).toBeInTheDocument();
     const names = screen.getAllByRole("region").map((r) => r.getAttribute("aria-label"));
     expect(names).toEqual(["Payments", "Customers", "What you sell", "Agent spend"]);
-    expect(screen.getByRole("region", { name: "Customers" })).toHaveAttribute("data-new", "6");
+    expect(screen.getByRole("region", { name: "Customers" })).toHaveAttribute("data-new", "7");
   });
 
   it("hands the day scope to Payments and links the biggest day to it", () => {

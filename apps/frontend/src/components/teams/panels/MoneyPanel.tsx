@@ -12,7 +12,7 @@
 import { useEffect } from "react";
 import { PanelMasthead } from "@/components/teams/shell";
 import { useCompanyMoney, type PaymentRow } from "@/hooks/useCompanyMoney";
-import { useCompanyRollup } from "@/hooks/useCompanyRollup";
+import { useCompanyRollup, dayOffset } from "@/hooks/useCompanyRollup";
 import { handleShellLinkClick, teamsPanelUrl } from "@/lib/shellNav";
 import { MoneyStates } from "./money/MoneyStates";
 import { PaymentsSection } from "./money/PaymentsSection";
@@ -35,11 +35,8 @@ export function MoneyPanel({ section, day, onDayCleared }: { section?: MoneySect
   const mtd = rollup?.stripe_bound && !rollupLoading ? monthToDate(rollup.days, today) : null;
   const best = mtd ? biggestDay(rollup!.days, mtd.month) : null;
   const monthName = mtd ? MONTH_NAMES[Number(mtd.month.slice(5, 7)) - 1] : null;
-  // "New in 30 days" is copy, not the filter: it reuses the same month bucket
-  // as the landed-revenue figure above rather than a separate rolling-30-day
-  // scan, so the two numbers on this page are always drawn from one window.
-  const newIn30Days = mtd
-    ? rollup!.days.filter((d) => d.day.startsWith(mtd.month)).reduce((s, d) => s + (d.signups ?? 0), 0)
+  const newIn30Days = rollup?.stripe_bound && !rollupLoading
+    ? rollup.days.filter((d) => d.day >= dayOffset(today, -29)).reduce((s, d) => s + (d.signups ?? 0), 0)
     : null;
 
   // The absorbed keys open this page at their section.

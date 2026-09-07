@@ -2359,10 +2359,19 @@ export function useAgentChat(
         const errorMessage = friendlyError(
           err instanceof Error ? err.message : "Failed to send message",
         );
-        // Roll back the optimistic turn state regardless of origin.
+        // Roll back the optimistic turn state regardless of origin — including
+        // the turn clock stamped just above. Leaving it set is not inert: the
+        // strip gates on `busy`, which containerRunActive can flip true on its
+        // own (an adopted run, another view), and it would then count from a
+        // send that never happened. The same stale ref would also date
+        // chat_completed's duration_ms from the failed attempt.
         setChatMessages((prev) => prev.filter((m) => m !== userMsg));
         setIsStreaming(false);
         clientRunIdRef.current = null;
+        turnStartedAtRef.current = null;
+        turnAssistantLenRef.current = 0;
+        setRunStartedAt(null);
+        setRunPhase(null);
 
         if (opts?.queueItem) {
           // Drain failure: re-queue the item as failed so the user can

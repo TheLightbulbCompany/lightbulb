@@ -222,6 +222,27 @@ describe("useAgentChat — run telemetry", () => {
     expect(result.current.runPhase).toBeNull();
   });
 
+  it("leaves no clock behind when the send itself throws", async () => {
+    // dispatchNow stamps the clock BEFORE the wire send, and its catch rolls
+    // back the optimistic turn. A stale timestamp is inert only while `busy`
+    // stays false — but containerRunActive is independent server truth, so an
+    // adopted run flipping it later would render a clock counting from a send
+    // that never happened. That is the exact "no honest start time, no clock"
+    // invariant every other terminal path preserves.
+    send.mockReturnValue(true);
+    sendChat.mockImplementation(() => {
+      throw new Error("socket closed");
+    });
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result } = renderHook(() => useAgentChat("agentA", "user-1"));
+
+    await act(async () => {
+      await result.current.sendMessage("go");
+    });
+    expect(result.current.runStartedAt).toBeNull();
+    expect(result.current.runPhase).toBeNull();
+  });
+
   it("clears the previous recap when the next run starts", async () => {
     const uuid = pinRunId("r1");
     const { useAgentChat } = await import("@/hooks/useAgentChat");

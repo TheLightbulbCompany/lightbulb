@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import logging
 
+import httpx
+
 from core.containers import get_ecs_manager
 from core.containers.ecs_manager import slack_env_var_name, slack_token_value_from
 from core.repositories import channel_link_repo, integrations_repo, slack_installs_repo
@@ -100,6 +102,40 @@ async def _mark_disconnected(owner_id: str) -> None:
     await integrations_repo.delete(owner_id, PROVIDER)
 
 
+SLACK_POST_MESSAGE_URL = "https://slack.com/api/chat.postMessage"
+
+# Slack surfaces an app in a member's sidebar only once a conversation with it
+# exists, so an install that posts nothing is invisible to the human who just
+# performed it: they land back on the web app, see "Connected", switch to
+# Slack, and find nothing. This DM IS the install's visible half — it opens the
+# conversation, puts the app in the installer's sidebar, and proves the token
+# works. Posting to a user id opens the IM (we hold chat:write + im:write).
+INSTALL_GREETING = (
+    "Lightbulb is connected to this workspace. :zap:\n\n"
+    "Your agent is listening right here — send it a message in this DM. "
+    "To use it in a channel, run `/invite @Lightbulb` there and @-mention it."
+)
+
+
+async def _greet_installer(bot_token: str, slack_user_id: str) -> None:
+    """Best-effort welcome DM to whoever clicked Add to Slack. A greeting that
+    fails must never fail the install — the workspace is already connected."""
+    if not slack_user_id:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+            resp = await client.post(
+                SLACK_POST_MESSAGE_URL,
+                headers={"Authorization": f"Bearer {bot_token}"},
+                json={"channel": slack_user_id, "text": INSTALL_GREETING},
+            )
+        body = resp.json()
+        if not body.get("ok"):
+            logger.warning("slack install: greeting rejected: %s", body.get("error"))
+    except Exception:  # noqa: BLE001 — cosmetic step, never worth failing an install
+        logger.exception("slack install: greeting failed")
+
+
 async def apply_install(
     *,
     owner_id: str,
@@ -163,6 +199,7 @@ async def apply_install(
         logger.exception("slack install: roll/patch failed owner=%s team=%s, rolling back", owner_id, team_id)
         await revoke_install(team_id)
         raise
+    await _greet_installer(bot_token, installer_slack_user_id)
     logger.info("slack install applied owner=%s team=%s agent=%s", owner_id, team_id, agent_id)
     return row
 

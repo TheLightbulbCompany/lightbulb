@@ -117,6 +117,8 @@ class NoExternalIdCredentials extends AwsCredentialsProvider {
 
 const CDKOUT_BUCKET = "cdk-hnb659fds-assets-877352799272-us-east-1";
 const CDKOUT_S3_URI = `s3://${CDKOUT_BUCKET}/gha-cdk-out/\${{ github.run_id }}-\${{ github.run_attempt }}`;
+// One tarball, not 6,376 loose objects. See the "cdk.out transport" block below.
+const CDKOUT_TARBALL = `${CDKOUT_S3_URI}/cdk.out.tgz`;
 const CDKOUT_OIDC_STEP = {
   name: "Authenticate Via OIDC Role",
   uses: "aws-actions/configure-aws-credentials@v4",
@@ -417,25 +419,6 @@ pipeline.workflowFile.patch(
     contents: "write",
   }),
 
-  // Expire the `cdk.out` handoff artifact after one day. It is consumed by the
-  // asset/deploy jobs inside the same run, so nothing reads it after the run
-  // ends — at the repo default of 90 days each ~33 MB upload just accrues
-  // against the org's 2 GB shared Actions/Packages storage until uploads start
-  // failing with "Artifact storage quota has been hit", blocking every deploy.
-  //
-  // cdk-pipelines-github has no retention option (`stepsToUploadAssembly` in
-  // pipeline.js hardcodes the `with:` block), and this file is regenerated on
-  // every synth, so a hand-edit to deploy.yml would be silently reverted. A
-  // synth-time patch is the only form of this setting that survives.
-  //
-  // The step index is positional because RFC 6902 has no find-by-predicate. If
-  // a construct upgrade reorders the steps this throws at synth ("Cannot set
-  // properties of undefined") for any step lacking a `with:` block — but it
-  // would land silently on the wrong step if that step happens to have one, so
-  // `deploy-workflow-retention.test.ts` asserts the setting is on the cdk.out
-  // upload specifically.
-  JsonPatch.add("/jobs/Build-Synth/steps/2/with/retention-days", 1),
-
   // Gate the prod frontend release on the same `workflow_dispatch` condition
   // the prod stack Deploy jobs get from `jobSettings` above.
   //
@@ -475,6 +458,16 @@ pipeline.workflowFile.patch(
 // already assume can write. Deliberately NOT a new bucket: creating one needs
 // a CDK deploy, and CDK deploys are what this unblocks.
 //
+// ONE TARBALL, NOT A RECURSIVE COPY. The first version of this shipped cdk.out
+// as ~6,376 loose objects and every one of the 39 Assets-* jobs pulled the whole
+// tree back down. The assets bucket is the account's only `aws:kms` bucket and
+// bootstrap leaves `BucketKeyEnabled=false`, so each object GET is also one KMS
+// Decrypt: measured 2026-08-08..09-07, 11,709 downloads x 6,373 objects = 74.6M
+// Decrypt calls = $223.81/mo, plus $29.85 GET + $21.86 PUT + $60.33 egress --
+// more than all customer Bedrock inference combined. A tar.gz makes it 1 object
+// (89 MB -> 33 MB), which is 1 Decrypt and 1 GET per job and a third of the
+// egress: ~$336/mo -> ~$27/mo, without touching the bootstrap stack.
+//
 // Job names are read from the committed workflow rather than hardcoded: the
 // Assets-FileAssetN set changes whenever assets are added or removed, and a
 // stale hardcoded list would silently skip a job's download. CI's workflow
@@ -503,18 +496,21 @@ const cdkoutPatches: JsonPatch[] = [
   // (pipeline.js:502,511 hardcode actions/upload-artifact).
   JsonPatch.replace("/jobs/Build-Synth/steps/3", {
     name: "Upload cdk.out to S3",
-    run: `aws s3 cp apps/infra/cdk.out ${CDKOUT_S3_URI}/ --recursive --only-show-errors`,
+    run: `tar -czf cdk.out.tgz -C apps/infra cdk.out && aws s3 cp cdk.out.tgz ${CDKOUT_TARBALL} --only-show-errors`,
   }),
 ];
 for (const job of assetJobNames()) {
   // Asset jobs are [Download cdk.out, Install, Authenticate, Publish]. The
   // download runs BEFORE credentials exist, so it is removed from the front
   // and re-inserted after the auth step rather than swapped in place.
+  // `rm -rf cdk.out` before the extract: asset jobs never check out, so on the
+  // self-hosted runner the workspace still holds whatever the last job left
+  // there, and tar merges into an existing tree rather than replacing it.
   cdkoutPatches.push(JsonPatch.remove(`/jobs/${job}/steps/0`));
   cdkoutPatches.push(
     JsonPatch.add(`/jobs/${job}/steps/2`, {
       name: "Download cdk.out from S3",
-      run: `aws s3 cp ${CDKOUT_S3_URI}/ cdk.out/ --recursive --only-show-errors`,
+      run: `aws s3 cp ${CDKOUT_TARBALL} cdk.out.tgz --only-show-errors && rm -rf cdk.out && tar -xzf cdk.out.tgz`,
     }),
   );
 }

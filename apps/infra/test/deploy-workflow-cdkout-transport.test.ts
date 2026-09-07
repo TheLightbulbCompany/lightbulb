@@ -18,6 +18,10 @@ import { describe, expect, it } from "vitest";
  * workflow. These assertions pin the OUTCOME rather than any step index: a
  * construct upgrade that reorders steps must not silently reintroduce an
  * artifact upload.
+ *
+ * The transport also ships cdk.out as a single tar.gz rather than a recursive
+ * copy of its ~6,376 files -- see the tarball guard below for why that is a
+ * cost invariant and not a style choice.
  */
 
 const DEPLOY_YML = join(__dirname, "../../../.github/workflows/deploy.yml");
@@ -30,8 +34,20 @@ describe("deploy.yml cdk.out transport", () => {
   });
 
   it("uploads cdk.out exactly once", () => {
-    const uploads = yaml.match(/aws s3 cp apps\/infra\/cdk\.out/g) ?? [];
+    const uploads = yaml.match(/tar -czf cdk\.out\.tgz -C apps\/infra cdk\.out/g) ?? [];
     expect(uploads).toHaveLength(1);
+  });
+
+  it("GUARD: moves cdk.out as one tarball, never as loose objects", () => {
+    // The cost guard, not a style preference. cdk.out is ~6,376 files and the
+    // bootstrap assets bucket is the account's only `aws:kms` bucket with
+    // `BucketKeyEnabled=false`, so a recursive copy bills one KMS Decrypt per
+    // file per download, times 39 asset jobs, times every run: measured at
+    // $223.81/mo of KMS plus $52 of S3 requests over 2026-08-08..09-07. A
+    // single object makes that one Decrypt per job. Anyone reverting to
+    // `--recursive` reintroduces ~$300/mo silently, so it fails here instead.
+    expect(yaml).not.toMatch(/aws s3 cp \S*gha-cdk-out\S*[\s\S]{0,200}?--recursive/);
+    expect(yaml).toContain("tar -xzf cdk.out.tgz");
   });
 
   it("gives every consumer a download", () => {

@@ -102,8 +102,8 @@ const WORD_MAX_WIDTH = 0.9;
 const WORD_Z_SCALE = (CAMERA_Z - WORD_Z) / CAMERA_Z;
 // A neon sign is for a dark room. Lit, the room's own light all but erases it
 // — which is the point: the strike has to be worth something here too.
-const NEON_DARK = 0.6;
-const NEON_LIT = 0.1;
+const NEON_DARK = 0.18;
+const NEON_LIT = 0.04;
 
 const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);
 

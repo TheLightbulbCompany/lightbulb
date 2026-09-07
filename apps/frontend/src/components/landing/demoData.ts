@@ -70,7 +70,7 @@ export const DEMO_AGENTS: CompanyAgent[] = [
     id: STITCH_ID,
     name: "Stitch",
     role: "growth",
-    title: "Growth · outreach & sales",
+    title: "Growth · hired from the marketplace",
     status: "idle",
     reportsTo: FRIDAY_ID,
   },
@@ -78,7 +78,7 @@ export const DEMO_AGENTS: CompanyAgent[] = [
     id: TALLY_ID,
     name: "Tally",
     role: "finance",
-    title: "Finance · pricing & books",
+    title: "Finance · hired from the marketplace",
     status: "idle",
     reportsTo: FRIDAY_ID,
   },
@@ -284,8 +284,8 @@ export const DEMO_RENDER_GROUPS: RenderGroup[] = [
               text:
                 "Here's where I'd start:\n\n" +
                 "1. **Name it and take the address** — I have a shortlist, and the name becomes your company's email domain. I'm on it now.\n" +
-                "2. **Find the first fifty buyers** — designers and small hotels, warm outreach. Stitch takes this.\n" +
-                "3. **Price it against the market** — retail ladder plus a wholesale tier. Tally takes this.\n\n" +
+                "2. **Find the first fifty buyers** — designers and small hotels, warm outreach. Stitch, hired from the marketplace, takes this.\n" +
+                "3. **Price it against the market** — retail ladder plus a wholesale tier. Tally, also from the marketplace, takes this.\n\n" +
                 "Market research is done and on the board — the full write-up is in your inbox. You'll see each task move as we work; anything you'd steer differently, say so.",
             },
           ],

@@ -35,6 +35,7 @@ import httpx
 
 from core.auth import is_org_owner_id, is_platform_admin_email
 from core.config import settings
+from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event
 from core.services import clerk_admin
 from core.services.agent_routine_provisioning import NIGHTLY_CEO_ROUTINE_TITLE, NIGHTLY_CEO_SENTINEL
@@ -105,18 +106,35 @@ _INTERNAL_CACHE_CAP = 4096
 _internal_cache: dict[str, tuple[bool, float]] = {}
 
 
+def _coarse_source(source: str) -> str:
+    """Coarse run origin for the CloudWatch ``run.completed`` metric.
+
+    The fine-grained routine-schedule / issue-assignment split needs the async
+    Paperclip join and lives in PostHog; the metric keeps the synchronously-known
+    bucket (all Paperclip-driven runs collapse to ``paperclip``, which is exactly
+    the autonomous-work bucket to alarm on)."""
+    if source in ("dm", "group", "channel"):
+        return "channel"
+    if source in ("webchat", "cron", "paperclip"):
+        return source
+    return "unknown"
+
+
 def schedule_run_completed(*, owner_id: str, parsed: dict, payload: dict, phase: str) -> asyncio.Task | None:
-    """Classify a lifecycle terminal and spawn the enrichment+capture task.
+    """Emit a run-completion terminal to CloudWatch (always) and PostHog (gated).
 
     ``parsed`` is the ``_parse_session_key`` dict for the event's sessionKey;
-    ``phase`` is ``"end"`` or ``"error"``. Returns the task (for the caller's
-    drain set), or None when analytics is disabled or the runId was already
-    emitted. Synchronous and I/O-free — safe on the reader loop.
+    ``phase`` is ``"end"`` or ``"error"``. Deduped on ``owner:run_id`` so a run
+    seen by both the chat reader loop and the operator relay tap emits once.
+    Fires the ``run.completed`` CloudWatch metric unconditionally; returns the
+    PostHog enrichment+capture task (for the caller's drain set), or None when
+    the run was already emitted or the PostHog write key is unset. Synchronous
+    and I/O-free — safe on the reader loop.
     """
-    if not settings.POSTHOG_PROJECT_WRITE_KEY:
-        return None
     run_id = payload.get("runId")
-    actor: str | None = None
+    # Dedup ONCE — this gates BOTH the CloudWatch metric and the PostHog event,
+    # so a run observed by both the chat reader loop and the operator relay tap
+    # emits each exactly once.
     if run_id:
         dedup_key = f"{owner_id}:{run_id}"
         if dedup_key in _seen_run_ids:
@@ -124,10 +142,6 @@ def schedule_run_completed(*, owner_id: str, parsed: dict, payload: dict, phase:
         _seen_run_ids[dedup_key] = None
         while len(_seen_run_ids) > _SEEN_RUN_IDS_CAP:
             del _seen_run_ids[next(iter(_seen_run_ids))]
-        # Actor stamped at dispatch (record_run_actor). Popped so a re-emit of
-        # the same runId (bounded FIFO belt already returned above) can't leave
-        # it dangling. None when neither dispatch site stamped this run.
-        actor = _run_actor.pop(dedup_key, None)
 
     data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
     if phase == "error":
@@ -136,6 +150,23 @@ def schedule_run_completed(*, owner_id: str, parsed: dict, payload: dict, phase:
         outcome = "aborted"
     else:
         outcome = "success"
+
+    # CloudWatch run-outcome metric — the alarmable reliability signal. Emitted
+    # for EVERY run terminal, INDEPENDENT of the PostHog write key (a
+    # product-analytics switch must never blind ops), and deduped above.
+    # ``source`` is intentionally coarse — webchat / channel / cron / paperclip;
+    # the fine-grained routine-vs-issue split needs the async Paperclip join and
+    # stays in PostHog. For storm detection, paperclip+failure is the signal.
+    put_metric("run.completed", dimensions={"outcome": outcome, "source": _coarse_source(parsed.get("source", ""))})
+
+    # PostHog product event — fine-grained, gated on the analytics write key.
+    if not settings.POSTHOG_PROJECT_WRITE_KEY:
+        return None
+
+    # Actor stamped at dispatch (record_run_actor). Popped so a re-emit of the
+    # same runId can't leave it dangling. None when neither dispatch site
+    # stamped this run.
+    actor = _run_actor.pop(f"{owner_id}:{run_id}", None) if run_id else None
 
     props: dict = {
         "run_id": run_id,

@@ -502,3 +502,69 @@ async def test_resolve_internal_owner_raises_while_is_internal_owner_swallows():
         with pytest.raises(RuntimeError):
             await run_analytics.resolve_internal_owner("user_a")
         assert await run_analytics._is_internal_owner("user_a") is False
+
+
+# ---------------------------------------------------------------------------
+# CloudWatch run-outcome metric (run.completed) — the alarmable signal, emitted
+# synchronously and deduped, covering both the chat path and the operator tap.
+# ---------------------------------------------------------------------------
+
+
+async def _emit_with_metric(parsed, *, run_id="rc-1", phase="end"):
+    # Patch the async capture body away — we're testing the synchronous
+    # CloudWatch metric, not the PostHog enrichment.
+    with (
+        patch.object(run_analytics, "put_metric") as metric,
+        patch.object(run_analytics, "_enrich_and_capture", AsyncMock()),
+    ):
+        task = run_analytics.schedule_run_completed(
+            owner_id=OWNER, parsed=parsed, payload=_payload(run_id=run_id, phase=phase), phase=phase
+        )
+        if task is not None:
+            await task
+    return metric
+
+
+async def test_run_completed_metric_success_webchat():
+    metric = await _emit_with_metric({"agent_id": "a", "source": "webchat"})
+    metric.assert_any_call("run.completed", dimensions={"outcome": "success", "source": "webchat"})
+
+
+async def test_run_completed_metric_failure_for_paperclip_issue_run():
+    # Headline case: a Paperclip issue/routine run (needs_enrichment path). run_source
+    # is resolved async, so the metric uses the coarse 'paperclip' bucket
+    # synchronously — still the right autonomous-work bucket to alarm on.
+    metric = await _emit_with_metric(
+        {"agent_id": "a", "source": "paperclip", "issue_id": "i1"}, run_id="rc-2", phase="error"
+    )
+    metric.assert_any_call("run.completed", dimensions={"outcome": "failure", "source": "paperclip"})
+
+
+async def test_run_completed_metric_fires_even_when_posthog_disabled(monkeypatch):
+    # The reliability metric must NOT be gated by the product-analytics write key.
+    monkeypatch.setattr(settings, "POSTHOG_PROJECT_WRITE_KEY", "")
+    with patch.object(run_analytics, "put_metric") as metric:
+        task = run_analytics.schedule_run_completed(
+            owner_id=OWNER,
+            parsed={"agent_id": "a", "source": "paperclip", "issue_id": "i1"},
+            payload=_payload(run_id="rc-off", phase="end"),
+            phase="end",
+        )
+    assert task is None  # no PostHog capture when disabled
+    metric.assert_any_call("run.completed", dimensions={"outcome": "success", "source": "paperclip"})
+
+
+async def test_run_completed_metric_deduped_on_owner_run_id():
+    payload = _payload(run_id="rc-dup", phase="end")
+    with (
+        patch.object(run_analytics, "put_metric") as metric,
+        patch.object(run_analytics, "_enrich_and_capture", AsyncMock()),
+    ):
+        for _ in range(2):
+            task = run_analytics.schedule_run_completed(
+                owner_id=OWNER, parsed={"agent_id": "a", "source": "webchat"}, payload=payload, phase="end"
+            )
+            if task is not None:
+                await task
+    run_completed = [c for c in metric.call_args_list if c.args and c.args[0] == "run.completed"]
+    assert len(run_completed) == 1

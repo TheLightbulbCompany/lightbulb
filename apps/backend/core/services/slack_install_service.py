@@ -85,6 +85,13 @@ def account_block(team_id: str) -> dict:
         # Decision 3: Slack peers, not members — anyone in the workspace may DM.
         "dmPolicy": "open",
         "allowFrom": ["*"],
+        # Channels. The plugin's schema materializes groupPolicy="allowlist"
+        # when unset (extensions/slack/src/doctor.ts), and we list no channels,
+        # so every channel message was dropped with an ephemeral "not in its
+        # allowlist" notice only the mentioner ever saw. "open" with the default
+        # requireMention=true is a normal Slack bot: it answers when @-mentioned
+        # in a channel a human invited it to, and stays silent otherwise.
+        "groupPolicy": "open",
         # Upstream default is disabled; the manifest declares /lightbulb.
         "slashCommand": {"enabled": True, "name": "lightbulb"},
     }

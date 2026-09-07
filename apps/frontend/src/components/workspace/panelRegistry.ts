@@ -58,6 +58,7 @@ const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
   // Money → Spend. CONTROL_KEYS.usage stays exactly as it is: the two open the
   // same component (SpendPanel wraps UsagePanel), and `?panel=usage` links are
   // already in the wild.
+  money: "Money",
   spend: "Spend",
   payments: "Payments",
   products: "Products",
@@ -195,6 +196,8 @@ export function describePanel(
       // must hand describePanel the RAW ?panel value and let it resolve —
       // a caller that pre-resolves makes this branch permanently dead.
       if (teamsKey === "brain" && panelKey === "dreams") p.tab = "dreams";
+      // ?day scopes the Payments section to one UTC day — the hero bar on Home links here.
+      if (teamsKey === "money" && params.day) p.day = params.day;
       return { panelId: key, component: "teams", title: TEAMS_LIST_KEYS[teamsKey], params: p };
     }
     return null;
@@ -225,6 +228,7 @@ export function durableParamsFor(panelId: string): string[] {
   if (panelId === "teams-issues") return ["panel", "agent"];
   if (panelId === "teams-inbox") return ["panel", "tab"];
   if (panelId === "teams-brain") return ["panel", "path"];
+  if (panelId === "teams-money") return ["panel", "day"];
   if (/^teams-(issue|routine|project|goal|run)-detail:/.test(panelId)) return ["panel", "detailId"];
   return ["panel"];
 }
@@ -239,6 +243,7 @@ export function clearablePanelParamKeys(panelId: string): string[] {
   if (panelId === "teams-issues") return ["agent"];
   if (panelId === "teams-inbox") return ["tab"];
   if (panelId === "teams-brain") return ["path"];
+  if (panelId === "teams-money") return ["day"];
   if (panelId === "file-viewer") return ["path", "agent"];
   if (panelId === "agent-inspector" || panelId === "control:agents") {
     return ["agentId", "initialTab"];

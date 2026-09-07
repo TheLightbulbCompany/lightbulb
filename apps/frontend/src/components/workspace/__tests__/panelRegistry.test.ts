@@ -160,6 +160,15 @@ describe("panelRegistry", () => {
     expect(clearablePanelParamKeys("teams-brain")).toEqual(["path"]);
   });
 
+  it("describes the money panel with a durable ?day deep link", () => {
+    expect(describePanel("teams-money", { day: "2026-09-05" })).toEqual({
+      panelId: "teams-money", component: "teams", title: "Money", params: { teamsKey: "money", day: "2026-09-05" },
+    });
+    expect(describePanel("teams-money", {})!.params).toEqual({ teamsKey: "money" });
+    expect(durableParamsFor("teams-money")).toEqual(["panel", "day"]);
+    expect(clearablePanelParamKeys("teams-money")).toEqual(["day"]);
+  });
+
   it("teams-inbox accepts a ?tab deep link as a durable param", () => {
     expect(describePanel("teams-inbox", { tab: "approvals" })?.params).toEqual({
       teamsKey: "inbox",

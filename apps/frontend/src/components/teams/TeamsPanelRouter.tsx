@@ -114,7 +114,7 @@ export interface TeamsPanelRouterProps {
   // reaching here — this router no longer rewrites the URL for aliases.
   panelParams?: Record<string, string>;
   onConsumeOneShot?: (key: "new" | "newIssue") => void;
-  onUpdateDurableParam?: (key: "agent" | "path", value: string | null) => void;
+  onUpdateDurableParam?: (key: "agent" | "path" | "day", value: string | null) => void;
 }
 
 export function TeamsPanelRouter({

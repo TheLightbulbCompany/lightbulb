@@ -115,6 +115,12 @@ describe("TeamsDockPanel — Brain `path` deep link (F1 seam)", () => {
     act(() => fire({ path: "main/facts.md" }));
     expect((lastRouterProps().panelParams as Params).path).toBe("main/facts.md");
   });
+
+  it("forwards the money `day` param through to TeamsPanelRouter", () => {
+    const { props } = makePanelProps("teams-money", { teamsKey: "money", day: "2026-09-05" });
+    render(<TeamsDockPanel {...props} />);
+    expect((lastRouterProps().panelParams as Params).day).toBe("2026-09-05");
+  });
 });
 
 describe("TeamsDockPanel — scroll-container wrapper", () => {

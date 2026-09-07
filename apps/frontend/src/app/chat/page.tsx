@@ -129,6 +129,7 @@ function MobileChatShell() {
   // onto an unrelated panel.
   const tabParam = searchParams.get("tab") ?? (panelParam === "dreams" ? "dreams" : null);
   const pathParam = searchParams.get("path");
+  const dayParam = searchParams.get("day");
   const oneShots = {
     new: searchParams.get("new") ?? undefined,
     newIssue: searchParams.get("newIssue") ?? undefined,
@@ -335,6 +336,7 @@ function MobileChatShell() {
                   ...(agentParam ? { agent: agentParam } : {}),
                   ...(tabParam ? { tab: tabParam } : {}),
                   ...(pathParam ? { path: pathParam } : {}),
+                  ...(dayParam ? { day: dayParam } : {}),
                   ...(oneShots.new ? { new: oneShots.new } : {}),
                   ...(oneShots.newIssue ? { newIssue: oneShots.newIssue } : {}),
                 }}

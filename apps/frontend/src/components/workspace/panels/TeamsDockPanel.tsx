@@ -18,6 +18,7 @@ interface TeamsDockPanelParams {
   agent?: string; // durable issues filter
   tab?: string; // durable inbox band deep link
   path?: string; // durable brain page deep link
+  day?: string; // durable money day scope
   new?: string; // one-shot, re-delivered via updateParameters
   newIssue?: string; // one-shot
 }
@@ -54,6 +55,7 @@ export function TeamsDockPanel(props: IDockviewPanelProps<TeamsDockPanelParams>)
           ...(params.agent ? { agent: params.agent } : {}),
           ...(params.tab ? { tab: params.tab } : {}),
           ...(params.path ? { path: params.path } : {}),
+          ...(params.day ? { day: params.day } : {}),
           ...(params.new ? { new: params.new } : {}),
           ...(params.newIssue ? { newIssue: params.newIssue } : {}),
         }}

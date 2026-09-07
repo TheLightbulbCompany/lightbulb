@@ -157,6 +157,20 @@ def test_own_bot_echo_is_dropped(client):
     assert r.status_code == 200 and t.seen == []
 
 
+def test_bot_own_member_joined_channel_is_forwarded(client):
+    """A membership event legitimately has the bot as its subject. The plugin's
+    room-admission path (members.ts reportChannelRoomJoin) fires ONLY on the
+    bot's own member_joined_channel — an identity-keyed echo filter eats it, and
+    the container never learns it was added to the channel."""
+    body = _event(type="member_joined_channel", user="U_BOT", inviter="U_HUMAN", channel_type="C", text=None)
+    t = _Upstream()
+    with _app_store(), _dedup(), _install(), _container(), _billing(), _ip(), _upstream(t):
+        r = client.post("/api/v1/slack/events", content=body, headers=_headers(body))
+    assert r.status_code == 200
+    (req,) = t.seen
+    assert req.content == body
+
+
 def test_unentitled_owner_is_200_no_retry_not_forwarded(client):
     body = _event()
     t = _Upstream()

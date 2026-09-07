@@ -12,7 +12,7 @@ Ingress contract (Slack disables an app only at >95 % failed deliveries over
 | duplicate event_id                     | 200                              |
 | unknown team_id                        | 200 (log)                        |
 | app_uninstalled / tokens_revoked       | revoke install, 200              |
-| own-bot echo                           | 200 (never enqueue our own posts)|
+| own-bot echo (`message` events only)   | 200 (never enqueue our own posts)|
 | owner not always-on entitled           | 200 + x-slack-no-retry: 1        |
 | no container IP                        | 503 + Retry-After (Slack retries)|
 | forward ok (2xx)                       | upstream status                  |
@@ -158,7 +158,15 @@ async def receive_slack_event(request: Request) -> Response:
             logger.exception("slack events: revoke failed team=%s err=%s", team_id, exc)
             put_metric("slack.revoke_failed", 1, dimensions={"reason": type(exc).__name__})
         return Response(status_code=200)
-    if event.get("bot_id") or (event.get("user") and event.get("user") == install.get("bot_user_id")):
+    # Own-post echoes only ever arrive as `message` events. Other event kinds
+    # legitimately name the bot as their subject — the bot's own
+    # member_joined_channel is what starts the plugin's room admission
+    # (members.ts reportChannelRoomJoin) — so the filter keys on event type,
+    # never on identity alone, or the container never learns it was added to a
+    # channel.
+    if event.get("type") == "message" and (
+        event.get("bot_id") or (event.get("user") and event.get("user") == install.get("bot_user_id"))
+    ):
         return Response(status_code=200)  # our own post echoing back
 
     owner_id = install["owner_id"]

@@ -12,7 +12,7 @@ Ingress contract (Slack disables an app only at >95 % failed deliveries over
 | duplicate event_id                     | 200                              |
 | unknown team_id                        | 200 (log)                        |
 | app_uninstalled / tokens_revoked       | revoke install, 200              |
-| own-bot echo (`message` events only)   | 200 (never enqueue our own posts)|
+| own-bot echo (except lifecycle events) | 200 (never enqueue our own posts)|
 | owner not always-on entitled           | 200 + x-slack-no-retry: 1        |
 | no container IP                        | 503 + Retry-After (Slack retries)|
 | forward ok (2xx)                       | upstream status                  |
@@ -62,6 +62,9 @@ PLATFORM_APP = "slack"
 FORWARD_TIMEOUT_S = 2.0
 DEDUP_TTL_S = 3600
 _REVOKE_EVENTS = {"app_uninstalled", "tokens_revoked"}
+# Events whose `user` is the bot as SUBJECT, not as actor — exempt from the
+# own-post echo filter below.
+_BOT_SUBJECT_EVENTS = frozenset({"member_joined_channel", "member_left_channel"})
 
 # Module-level so tests can patch (same idiom as hooks_proxy).
 ecs_manager = get_ecs_manager()
@@ -158,13 +161,16 @@ async def receive_slack_event(request: Request) -> Response:
             logger.exception("slack events: revoke failed team=%s err=%s", team_id, exc)
             put_metric("slack.revoke_failed", 1, dimensions={"reason": type(exc).__name__})
         return Response(status_code=200)
-    # Own-post echoes only ever arrive as `message` events. Other event kinds
-    # legitimately name the bot as their subject — the bot's own
-    # member_joined_channel is what starts the plugin's room admission
-    # (members.ts reportChannelRoomJoin) — so the filter keys on event type,
-    # never on identity alone, or the container never learns it was added to a
-    # channel.
-    if event.get("type") == "message" and (
+    # On these, `user` is the bot as the SUBJECT of a lifecycle fact, not the
+    # actor of something we did — and the bot's own member_joined_channel is
+    # what starts the plugin's room admission (members.ts
+    # reportChannelRoomJoin), so dropping it leaves the container never knowing
+    # it was added to a channel. Everything else keeps the identity filter:
+    # for a message or a reaction, `user == our bot` genuinely IS our own
+    # action echoing back, and forwarding those invites a self-trigger loop
+    # (the plugin's reaction handler defaults to reactionNotifications="own",
+    # which admits exactly a reaction on the bot's own message).
+    if event.get("type") not in _BOT_SUBJECT_EVENTS and (
         event.get("bot_id") or (event.get("user") and event.get("user") == install.get("bot_user_id"))
     ):
         return Response(status_code=200)  # our own post echoing back

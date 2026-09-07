@@ -157,6 +157,18 @@ def test_own_bot_echo_is_dropped(client):
     assert r.status_code == 200 and t.seen == []
 
 
+def test_bot_own_reaction_is_still_dropped_as_an_echo(client):
+    """The exemption is for lifecycle events only. On a reaction, `user == our
+    bot` really is our own action echoing back, and the plugin's reaction
+    handler defaults to reactionNotifications="own" — which admits exactly a
+    reaction on the bot's own message — so forwarding it invites a self-trigger."""
+    body = _event(type="reaction_added", user="U_BOT", reaction="eyes", text=None)
+    t = _Upstream()
+    with _app_store(), _dedup(), _install(), _container(), _billing(), _ip(), _upstream(t):
+        r = client.post("/api/v1/slack/events", content=body, headers=_headers(body))
+    assert r.status_code == 200 and t.seen == []
+
+
 def test_bot_own_member_joined_channel_is_forwarded(client):
     """A membership event legitimately has the bot as its subject. The plugin's
     room-admission path (members.ts reportChannelRoomJoin) fires ONLY on the

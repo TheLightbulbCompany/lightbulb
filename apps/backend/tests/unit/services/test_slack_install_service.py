@@ -25,7 +25,11 @@ def test_account_block_opens_channels_so_mentions_are_answered():
     ephemeral "not in its allowlist" notice that only the mentioner saw.
     "open" + the default requireMention=true is a normal Slack bot: it answers
     when @-mentioned in a channel a human invited it to."""
-    assert svc.account_block("T0123ABC")["groupPolicy"] == "open"
+    block = svc.account_block("T0123ABC")
+    assert block["groupPolicy"] == "open"
+    # Both halves pinned: "open" without requireMention answers EVERY channel
+    # message, and requireMention's true is only a runtime `?? true` upstream.
+    assert block["requireMention"] is True
 
 
 def test_route_binding_targets_agent_by_account():

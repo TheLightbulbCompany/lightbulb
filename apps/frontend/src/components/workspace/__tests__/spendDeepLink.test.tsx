@@ -9,10 +9,10 @@
 // shipped green because every unit test stopped at describePanel. So this
 // walks the whole seam:
 //
-//   1. the reconciler turns the URL into a teams command,
-//   2. openPanel adds a real dock panel carrying teamsKey: "spend",
-//   3. TeamsPanelRouter MOUNTS a panel for that teamsKey — the absorbed key
-//      lands on Money's `section` prop, not the "Unknown panel" fallback.
+//   1. the reconciler turns the URL into a teams command for Money,
+//   2. openPanel adds ONE dock panel (id teams-money) carrying section: "spend",
+//   3. TeamsPanelRouter MOUNTS Money for it — the absorbed key lands on the
+//      `section` prop, not the "Unknown panel" fallback.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import type { DockviewApi } from "dockview-react";
@@ -73,14 +73,14 @@ describe("?panel=teams-spend resolves and mounts through the reconciler seam", (
     expect(decision).not.toBeNull();
     expect(decision!.panelKey).toBe("teams-spend");
     expect(decision!.command?.descriptor).toEqual({
-      panelId: "teams-spend",
+      panelId: "teams-money",
       component: "teams",
       title: "Money",
-      params: { teamsKey: "spend" },
+      params: { teamsKey: "money", section: "spend" },
     });
   });
 
-  it("executing that decision adds a dock panel carrying teamsKey: spend", () => {
+  it("executing that decision adds ONE Money dock panel carrying section: spend", () => {
     const { api, addPanel } = makeFakeApi();
     attachDockviewApi(api, () => undefined);
 
@@ -89,12 +89,16 @@ describe("?panel=teams-spend resolves and mounts through the reconciler seam", (
 
     expect(addPanel).toHaveBeenCalledTimes(1);
     expect(addPanel.mock.calls[0][0]).toMatchObject({
-      id: "teams-spend",
+      id: "teams-money",
       component: "teams",
-      params: { teamsKey: "spend" },
+      params: { teamsKey: "money", section: "spend" },
     });
     // Re-opening focuses rather than duplicating (the panel id is stable).
     openPanel(decision.panelKey!, decision.durableParams);
+    expect(addPanel).toHaveBeenCalledTimes(1);
+    // And so does a DIFFERENT absorbed key — one page, one tab. Home links
+    // three of these, so without the shared id it opened three "Money" tabs.
+    openPanel("teams-payments", {});
     expect(addPanel).toHaveBeenCalledTimes(1);
   });
 
@@ -103,21 +107,20 @@ describe("?panel=teams-spend resolves and mounts through the reconciler seam", (
     expect(deriveReconcilerAction("?panel=teams-spend", first.nextSignature)).toBeNull();
   });
 
-  it("TeamsPanelRouter mounts a panel for that teamsKey — not the Unknown fallback", async () => {
-    const decision = deriveReconcilerAction("?panel=teams-spend", null)!;
-    const teamsKey = decision.command!.descriptor.params.teamsKey;
-    render(<TeamsPanelRouter panel={teamsKey} />);
+  it("TeamsPanelRouter mounts Money at the section the descriptor carries — not the Unknown fallback", async () => {
+    const { params } = deriveReconcilerAction("?panel=teams-spend", null)!.command!.descriptor;
+    render(<TeamsPanelRouter panel={params.teamsKey} panelParams={{ section: params.section }} />);
     expect(await screen.findByTestId("money-panel")).toHaveAttribute("data-section", "spend");
     expect(screen.queryByText(/Unknown panel/)).toBeNull();
   });
 
-  it("the absorbed `payments` key lands on Money's section too", async () => {
-    render(<TeamsPanelRouter panel="payments" />);
-    expect(await screen.findByTestId("money-panel")).toHaveAttribute("data-section", "payments");
-  });
-
   it("the bare `money` key renders Money with no section", async () => {
     render(<TeamsPanelRouter panel="money" />);
+    expect(await screen.findByTestId("money-panel")).toHaveAttribute("data-section", "");
+  });
+
+  it("a junk ?section= never reaches MoneyPanel — it feeds a CSS selector", async () => {
+    render(<TeamsPanelRouter panel="money" panelParams={{ section: "constructor" }} />);
     expect(await screen.findByTestId("money-panel")).toHaveAttribute("data-section", "");
   });
 

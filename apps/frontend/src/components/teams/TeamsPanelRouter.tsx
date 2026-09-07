@@ -2,6 +2,8 @@
 
 import dynamic from "next/dynamic";
 import { PageSkeleton } from "@/components/teams/shared/components/PageSkeleton";
+import { MONEY_SECTIONS } from "@/components/workspace/panelRegistry";
+import type { MoneySectionId } from "./panels/MoneyPanel";
 
 // Shown while a panel's code-split chunk loads. Without a loading fallback,
 // next/dynamic renders nothing and a first visit flashes a blank pane before
@@ -84,10 +86,16 @@ const BrainPanel = dynamic(
 );
 
 // Money absorbed the four old Payments/Products/Customers/Spend tabs as
-// sections of one ledger page — their keys still open, scrolled to their
-// section, rather than 404ing an owner's saved link.
+// sections of one ledger page. Those keys alias to `money` in the registry
+// (one panel id, one dock tab) and arrive here as `section` — an owner's saved
+// link still lands on the part of the page they bookmarked.
 const MoneyPanel = dynamic(() => import("./panels/MoneyPanel").then((m) => m.MoneyPanel), { loading: PanelSkeleton });
-const MONEY_SECTIONS: Record<string, "payments" | "customers" | "products" | "spend" | null> = { money: null, payments: "payments", customers: "customers", products: "products", spend: "spend" };
+
+// The fence for a hand-typed ?section=: MoneyPanel feeds this into a
+// `#money-${section}` selector, and an arbitrary string there throws.
+function asMoneySection(value: string | undefined): MoneySectionId | null {
+  return value && MONEY_SECTIONS.has(value) ? (value as MoneySectionId) : null;
+}
 
 // Warm every panel chunk (called from the shell during browser idle time) so
 // the first open of a panel mounts from the module cache instead of fetching
@@ -106,14 +114,6 @@ function normalizeNewIssue(
   value: string | undefined,
 ): "1" | "onboarding" | null {
   return value === "1" || value === "onboarding" ? value : null;
-}
-
-// Own-property only — `in` and bracket access both walk the prototype chain,
-// so a `panel` of "constructor"/"valueOf" would resolve to an inherited
-// Object.prototype value instead of rejecting to "Unknown panel". Same hazard
-// panelRegistry.ts guards against for its own key-maps.
-function hasOwnKey(map: Readonly<Record<string, unknown>>, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(map, key);
 }
 
 export interface TeamsPanelRouterProps {
@@ -182,17 +182,21 @@ export function TeamsPanelRouter({
     );
   }
 
-  if (hasOwnKey(MONEY_SECTIONS, panel)) {
+  if (panel === "money") {
     return (
       <MoneyPanel
-        section={MONEY_SECTIONS[panel]}
+        section={asMoneySection(panelParams?.section)}
         day={panelParams?.day ?? null}
         onDayCleared={() => onUpdateDurableParam?.("day", null)}
       />
     );
   }
 
-  const Cmp = hasOwnKey(PANELS, panel) ? PANELS[panel] : undefined;
+  // Own-property only (Object.hasOwn) — `in` and bracket access both walk the
+  // prototype chain, so a `panel` of "constructor"/"valueOf" would resolve to
+  // an inherited Object.prototype value instead of rejecting to "Unknown
+  // panel". Same hazard panelRegistry.ts guards against for its own key-maps.
+  const Cmp = Object.hasOwn(PANELS, panel) ? PANELS[panel] : undefined;
   if (!Cmp) return <div className="p-8">Unknown panel: {panel}</div>;
   return <Cmp />;
 }

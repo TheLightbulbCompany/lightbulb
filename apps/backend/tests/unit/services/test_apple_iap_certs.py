@@ -22,7 +22,7 @@ CERTS_DIR = Path(__file__).resolve().parents[3] / "certs" / "apple"
 
 # Mirrors apps/infra/lib/stacks/service-stack.ts. Wrong values here are not a
 # test problem — they are the deployed configuration being wrong.
-BUNDLE_ID = "company.thelightbulb.mobile"
+BUNDLE_ID = "co.isol8.mobile"
 PRODUCT_ID = "company.thelightbulb.mobile.plan.monthly"
 APP_APPLE_ID = "6788944100"
 
@@ -71,3 +71,39 @@ def test_an_empty_certs_dir_disables_the_feature_rather_than_weakening_it(monkey
             apple_iap._verifier("sandbox")
     finally:
         apple_iap._verifier.cache_clear()
+
+
+def test_the_bundle_id_agrees_across_every_file_that_declares_it():
+    """One bundle id lives in four places and Apple only honours one of them.
+
+    `APPLE_IAP_BUNDLE_ID` (what the backend demands of a StoreKit JWS),
+    `app.json`'s `bundleIdentifier` (what the binary is signed as) and the
+    `apple-app-site-association` appID (what universal links resolve to) must
+    be the same string. A rename that misses one is silent in every test and
+    every build: the app signs, the site file serves, and only a real purchase
+    or a real universal link fails. #2098 renamed all of them to
+    `company.thelightbulb.mobile` while App Store Connect held exactly one
+    record, on `co.isol8.mobile`, with no App ID registered for the new id —
+    which stranded the app entirely. This pins them together so the next
+    rename is all-or-nothing.
+    """
+    import json
+    import re
+
+    repo = Path(__file__).resolve().parents[5]
+    stack = repo / "apps/infra/lib/stacks/service-stack.ts"
+    app_json = repo / "apps/mobile/app.json"
+    aasa = repo / "apps/frontend/public/.well-known/apple-app-site-association"
+    if not (stack.exists() and app_json.exists() and aasa.exists()):
+        pytest.skip("running outside a full repo checkout")
+
+    match = re.search(r'APPLE_IAP_BUNDLE_ID:\s*"([^"]+)"', stack.read_text())
+    assert match, "APPLE_IAP_BUNDLE_ID not found in service-stack.ts"
+    assert match.group(1) == BUNDLE_ID
+
+    ios = json.loads(app_json.read_text())["expo"]["ios"]
+    assert ios["bundleIdentifier"] == BUNDLE_ID
+
+    app_ids = json.loads(aasa.read_text())["applinks"]["details"][0]["appIDs"]
+    team = ios["appleTeamId"]
+    assert app_ids == [f"{team}.{BUNDLE_ID}"]

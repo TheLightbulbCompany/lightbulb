@@ -58,6 +58,54 @@ logger = logging.getLogger(__name__)
 # connection_id -> NodeUpstreamConnection (reused as a role-agnostic relay).
 _operator_upstreams: dict[str, NodeUpstreamConnection] = {}
 
+# Strong refs for the fire-and-forget run-completion telemetry tasks below, so
+# a bare create_task inside run_analytics can't be GC'd before it runs.
+_run_telemetry_tasks: set[asyncio.Task] = set()
+
+
+def _tap_run_completion_telemetry(owner_id: str, frame: dict) -> None:
+    """Emit ``agent_run_completed`` for an autonomous run whose lifecycle
+    terminal is relayed through this operator adapter.
+
+    The chat reader loop (``connection_pool``) emits run telemetry only while a
+    human is connected, so routine / issue-assignment runs — which drive through
+    THIS relay, not a chat session — finish unseen. The container's
+    ``event:"agent"`` lifecycle end/error frame flows through here on its way to
+    the adapter; tap it and reuse ``run_analytics.schedule_run_completed``,
+    whose ``owner:run_id`` dedup means a run also observed by the chat path is
+    never double-counted.
+
+    Best-effort and I/O-free (schedule_run_completed is synchronous; the capture
+    it spawns is the async part). MUST NEVER raise into the relay push callback.
+    """
+    try:
+        if not isinstance(frame, dict) or frame.get("type") != "event":
+            return
+        ev = frame.get("payload")
+        if not isinstance(ev, dict) or ev.get("stream") != "lifecycle":
+            return
+        data = ev.get("data")
+        phase = data.get("phase") if isinstance(data, dict) else None
+        if phase not in ("end", "error"):
+            return
+        # Local imports: connection_pool is heavy and this keeps the import
+        # graph acyclic (it, in turn, imports services); run_analytics is
+        # deferred the same way the chat path defers it.
+        from core.gateway.connection_pool import _parse_session_key
+        from core.services import run_analytics
+
+        parsed = _parse_session_key(ev.get("sessionKey", "") or "")
+        task = run_analytics.schedule_run_completed(owner_id=owner_id, parsed=parsed, payload=ev, phase=phase)
+        if task is not None:
+            _run_telemetry_tasks.add(task)
+            task.add_done_callback(_run_telemetry_tasks.discard)
+    except Exception:
+        logger.warning(
+            "operator relay: run-completion telemetry tap failed for owner=%s",
+            owner_id,
+            exc_info=True,
+        )
+
 
 async def handle_operator_connect(
     *,
@@ -135,6 +183,9 @@ async def handle_operator_connect(
     )
 
     async def on_upstream_message(data: dict):
+        # Tap autonomous-run completion telemetry off the relayed frames before
+        # forwarding — routine/assignment runs finish here, not in a chat session.
+        _tap_run_completion_telemetry(owner_id, data)
         # send_message returns False when the Management API raises GoneException
         # — the downstream adapter WS is gone. This is the load-bearing reaper
         # for the cross-task disconnect case: API Gateway can route $disconnect

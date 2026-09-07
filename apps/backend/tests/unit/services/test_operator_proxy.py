@@ -18,7 +18,52 @@ from core.services.operator_proxy import (
     is_operator_connection,
     submit_operator_signed_connect,
     _operator_upstreams,
+    _tap_run_completion_telemetry,
 )
+
+
+def _lifecycle_frame(*, phase="end", stream="lifecycle", session_key="agent:friday:cron:c1:run:r1", run_id="r1"):
+    return {
+        "type": "event",
+        "event": "agent",
+        "payload": {"stream": stream, "sessionKey": session_key, "runId": run_id, "data": {"phase": phase}},
+    }
+
+
+def test_tap_emits_run_completed_on_lifecycle_terminal():
+    """An autonomous run's lifecycle end frame relayed through the operator
+    adapter is tapped into run_analytics with the event's own payload + phase."""
+    frame = _lifecycle_frame(phase="end")
+    with patch("core.services.run_analytics.schedule_run_completed", return_value=None) as sched:
+        _tap_run_completion_telemetry("owner_1", frame)
+    sched.assert_called_once()
+    kw = sched.call_args.kwargs
+    assert kw["owner_id"] == "owner_1"
+    assert kw["phase"] == "end"
+    assert kw["payload"] is frame["payload"]
+
+
+def test_tap_emits_on_error_phase():
+    with patch("core.services.run_analytics.schedule_run_completed", return_value=None) as sched:
+        _tap_run_completion_telemetry("o", _lifecycle_frame(phase="error"))
+    assert sched.call_args.kwargs["phase"] == "error"
+
+
+def test_tap_ignores_non_lifecycle_non_terminal_and_non_event():
+    with patch("core.services.run_analytics.schedule_run_completed", return_value=None) as sched:
+        _tap_run_completion_telemetry("o", _lifecycle_frame(stream="assistant"))  # not lifecycle
+        _tap_run_completion_telemetry("o", _lifecycle_frame(phase="start"))  # not a terminal
+        _tap_run_completion_telemetry("o", {"type": "res", "payload": {}})  # not an event frame
+    sched.assert_not_called()
+
+
+def test_tap_never_raises():
+    # schedule_run_completed blowing up must not propagate into the relay
+    with patch("core.services.run_analytics.schedule_run_completed", side_effect=RuntimeError("boom")):
+        _tap_run_completion_telemetry("o", _lifecycle_frame())
+    # malformed frames also must not raise
+    _tap_run_completion_telemetry("o", {"type": "event", "payload": "not-a-dict"})
+    _tap_run_completion_telemetry("o", None)
 
 
 @pytest.fixture(autouse=True)

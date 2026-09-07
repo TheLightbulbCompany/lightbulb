@@ -35,6 +35,7 @@ import httpx
 
 from core.auth import is_org_owner_id, is_platform_admin_email
 from core.config import settings
+from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event
 from core.services import clerk_admin
 from core.services.agent_routine_provisioning import NIGHTLY_CEO_ROUTINE_TITLE, NIGHTLY_CEO_SENTINEL
@@ -172,6 +173,16 @@ def schedule_run_completed(*, owner_id: str, parsed: dict, payload: dict, phase:
         props["run_source"] = "paperclip_other"
     else:
         props["run_source"] = "unknown"
+
+    # CloudWatch run-outcome metric — the alarmable signal. Emitted here (not in
+    # _enrich_and_capture) so it's synchronous and deduped like the capture, and
+    # covers BOTH emit paths (the chat reader loop and the operator relay tap).
+    # ``source`` is the coarse, synchronously-known origin; the fine-grained
+    # routine_schedule/cron classification is resolved async for PostHog only.
+    put_metric(
+        "run.completed",
+        dimensions={"outcome": outcome, "source": props.get("run_source") or source or "unknown"},
+    )
 
     return asyncio.create_task(_enrich_and_capture(owner_id=owner_id, props=props, needs_enrichment=needs_enrichment))
 

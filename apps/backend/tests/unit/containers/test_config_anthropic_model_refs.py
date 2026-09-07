@@ -14,7 +14,6 @@ This is the same correction already applied on the OpenAI side (gpt-5.5 ->
 gpt-5.6-sol) and never carried across.
 """
 
-
 from core.containers.config import build_openclaw_config_dict
 
 # Present in extensions/anthropic/openclaw.plugin.json at v2026.8.1-isol8.3.

@@ -21,6 +21,7 @@ from typing import Any
 import httpx
 
 from core.config import settings
+from core.repositories import billing_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import service_token
 from core.services.paperclip_admin_client import PaperclipAdminClient
@@ -67,16 +68,19 @@ async def disarm_owner_nightly_automation(owner_id: str) -> dict[str, int]:
     dead container. Pauses the routine (the owner's chosen disarm) and cancels
     the looping issues.
 
-    RE-SUBSCRIBE CAVEAT: pausing does NOT self-heal on re-subscribe. The
-    provision arm path (``create_enabled_schedule_routine``) is title-idempotent
-    and skips when a non-archived routine of this title exists, so it never
-    re-enables this paused routine — and it cannot tell a teardown pause from an
-    owner opt-out anyway. A churn→resubscribe owner keeps a paused routine until
-    either an arm-path reconcile ships (planned with the trial-arming change) or
-    they Resume it in Teams. (Archiving instead WOULD self-heal — the title-skip
-    excludes ``archived`` routines, so the arm path would create a fresh enabled
-    one — but it discards this routine's run history and config; pausing keeps
-    them, which is why it is the chosen disarm.)
+    RE-SUBSCRIBE: pausing self-heals on re-subscribe now that the arm path
+    reconciles a paused routine (``create_enabled_schedule_routine`` with
+    ``reconcile_paused=True``, re-enabling instead of title-skipping — safe
+    because an owner opt-out is filtered before the arm ever reaches the create).
+    Two arm paths reach it: the executor (container torn down, ``trust_cache=
+    False``) always does, and the poll-path self-heal (container survived a
+    best-effort ``delete_user_service``, ``trust_cache=True``) does BECAUSE this
+    function releases the arm cache below — otherwise its
+    ``nightly_ceo_armed_company`` short-circuit would return ``already_armed``
+    and never reach the reconcile. (Archiving instead of pausing would also
+    self-heal via the title-skip's ``archived`` exclusion, but it discards this
+    routine's run history and config; pausing keeps them, which is why it is the
+    chosen disarm.)
 
     Idempotent: an already-paused/archived routine and terminal issues are
     skipped. Scoped to the nightly CEO routine by title; issue cancellation
@@ -146,6 +150,27 @@ async def disarm_owner_nightly_automation(owner_id: str) -> dict[str, int]:
                 session_cookie=cookie,
             )
             issues_cancelled += 1
+
+        # Release the arm cache so a resubscribe's poll-path re-arm reaches the
+        # reconcile. arm_nightly_ceo short-circuits on
+        # nightly_ceo_armed_company == company_id (trust_cache=True, the poll
+        # path), so leaving it set after a pause means a churn→resubscribe owner
+        # whose container SURVIVED teardown (delete_user_service is best-effort
+        # and swallowed) never re-runs the arm — reconcile_paused never fires and
+        # the routine stays paused. The executor path (container torn down,
+        # trust_cache=False) ignores the cache and is unaffected either way.
+        # release_nightly_arm is a conditional REMOVE (no-op unless it still
+        # equals company_id), and this is guarded on its own: the routine pause
+        # and issue cancel above are the storm-stoppers and must never be undone
+        # by a billing-write hiccup.
+        try:
+            await billing_repo.release_nightly_arm(owner_id, company_id)
+        except Exception:
+            logger.exception(
+                "paperclip nightly disarm: arm-cache release failed owner=%s company=%s",
+                owner_id,
+                company_id,
+            )
 
         logger.info(
             "paperclip nightly disarm owner=%s company=%s routines_paused=%d issues_cancelled=%d",

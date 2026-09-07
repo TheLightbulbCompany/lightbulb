@@ -52,9 +52,10 @@ _DEFAULT_TIMEZONE = "UTC"
 # Nightly CEO routine — the single paid, ENABLED exception.
 # ---------------------------------------------------------------------------
 #
-# Identity of the one enabled routine we seed for PAID owners so Friday wakes
-# nightly and makes unattended progress. Armed by ``user_provision`` gated on
-# ``has_always_on_entitlement`` (paid-only); a trial owner is NEVER armed.
+# Identity of the one enabled routine we seed so Friday wakes nightly and makes
+# unattended progress. Armed by ``user_provision`` gated on
+# ``should_arm_nightly_ceo`` — paid owners AND live (unexpired) ``trial_local``
+# owners, the latter as a retention lever; an EXPIRED trial is never armed.
 
 # Title is the idempotency key — STABLE FOREVER. Changing it breaks the
 # title-skip guard (``create_enabled_schedule_routine``) and duplicates the

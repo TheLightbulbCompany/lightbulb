@@ -510,9 +510,13 @@ async def arm_nightly_ceo(owner_id: str, *, trust_cache: bool = True) -> str:
         reprovision because billing is preserved) blocks arming entirely (bailed
         above). Any paused routine reaching the create step is therefore an
         ENTITLEMENT pause (teardown / cancel), which ``reconcile_paused=True``
-        re-enables on re-entitlement. A canceled owner's container is torn down,
-        so re-subscribe re-provisions through the executor (``trust_cache=False``),
-        which skips the ``already_armed`` short-circuit and reaches the reconcile.
+        re-enables on re-entitlement. Both re-subscribe paths reach the reconcile:
+        a torn-down container re-provisions through the executor
+        (``trust_cache=False``, which ignores the cache), and a container that
+        SURVIVED teardown (``delete_user_service`` is best-effort) is caught by
+        the poll-path self-heal — teardown's ``disarm_owner_nightly_automation``
+        releases the ``nightly_ceo_armed_company`` cache when it pauses, so the
+        ``trust_cache=True`` poll no longer short-circuits on it.
     """
     try:
         account = await billing_repo.get_by_owner_id(owner_id)

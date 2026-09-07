@@ -1649,8 +1649,9 @@ async def test_an_existing_billing_row_short_circuits_before_the_clerk_call(
 # Nightly CEO loop arming (issue #1273)
 # ---------------------------------------------------------------------------
 #
-# The arm step is paid-only (has_always_on_entitlement), idempotent (cache +
-# conditional claim + title-skip), and opt-out-durable. These call the REAL
+# The arm step is gated on should_arm_nightly_ceo (paid OR an unexpired trial),
+# idempotent (cache + conditional claim + title-skip), and opt-out-durable.
+# These call the REAL
 # _maybe_arm_nightly_ceo (imported reference, unaffected by the autouse stub)
 # and patch its collaborators on the user_provision module.
 

@@ -38,75 +38,77 @@ describe("HeroFunnel", () => {
     pushMock.mockClear();
   });
 
-  it("renders the you-deserve-a-team fold: eyebrow, headline, one microcopy line", () => {
+  it("renders the outcome fold: headline, two doors, deliverables, price", () => {
     render(<HeroFunnel />);
-    expect(
-      screen.getByText("The Integrated Management Environment"),
-    ).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
-      "If you have an idea, you deserve a team.",
+      "An AI team that runs the business, a CEO that manages it.",
     );
+    // The eyebrow pun and the feeling-not-promise headline are gone.
+    expect(screen.queryByText(/Integrated Management/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/deserve a team/)).not.toBeInTheDocument();
+    // Both doors, grow pre-selected.
+    expect(screen.getByRole("button", { name: "Grow my business" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "Start something new" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(screen.getByLabelText("Your company's website")).toBeInTheDocument();
+    // Deliverables and the three ways to pay sit above the fold.
     expect(
-      screen.getByText(
-        /Your company gets a name, a working email address, and its first/,
-      ),
+      screen.getByText(/Five minutes in, your CEO has researched the market/),
     ).toBeInTheDocument();
-    // The old subheadline and trial line are gone from the fold.
-    expect(screen.queryByText(/Tell your AI CEO/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/3-day free trial/)).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/ChatGPT login, your own API key, or Claude credits/),
+    ).toBeInTheDocument();
   });
 
   it("stashes {path, input, detail} to sessionStorage on every change", () => {
     render(<HeroFunnel />);
-    fireEvent.change(screen.getByLabelText("Your idea"), {
-      target: { value: "A ceramics studio" },
+    fireEvent.change(screen.getByLabelText("Your company's website"), {
+      target: { value: "acme.com" },
     });
     expect(readStash()).toEqual({
-      path: "new",
-      input: "A ceramics studio",
+      path: "grow",
+      input: "acme.com",
       detail: "",
     });
   });
 
-  it("swaps to the grow path via the quiet line and stashes the new path", () => {
+  it("switches to the new path through its door and stashes the new path", () => {
     render(<HeroFunnel />);
-    fireEvent.change(screen.getByLabelText("Your idea"), {
-      target: { value: "acme.com" },
+    fireEvent.change(screen.getByLabelText("Your company's website"), {
+      target: { value: "A ceramics studio" },
     });
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "Already have a business? Grow it instead",
-      }),
+    fireEvent.click(screen.getByRole("button", { name: "Start something new" }));
+    expect(readStash()).toEqual({ path: "new", input: "A ceramics studio", detail: "" });
+    // The door reads pressed and the input relabels.
+    expect(screen.getByRole("button", { name: "Start something new" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
     );
-    expect(readStash()).toEqual({ path: "grow", input: "acme.com", detail: "" });
-    // The swap line now offers the way back, and the input relabels.
-    expect(
-      screen.getByRole("button", {
-        name: "Starting from scratch? Describe your idea instead",
-      }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByLabelText("Your company's website"),
-    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Your idea")).toBeInTheDocument();
   });
 
   it("routes to /sign-up on submit without writing the team-intent cookie", () => {
     render(<HeroFunnel />);
-    fireEvent.change(screen.getByLabelText("Your idea"), {
-      target: { value: "A ceramics studio that ships nationwide" },
+    fireEvent.change(screen.getByLabelText("Your company's website"), {
+      target: { value: "acme.com" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /start/i }));
+    fireEvent.click(screen.getByRole("button", { name: /start$/i }));
     expect(pushMock).toHaveBeenCalledWith("/sign-up");
     expect(document.cookie).not.toContain(SIGNUP_INTENT_COOKIE);
-    expect(readStash()?.path).toBe("new");
+    expect(readStash()?.path).toBe("grow");
   });
 
   it("does not submit under the 3-character minimum", () => {
     render(<HeroFunnel />);
-    fireEvent.change(screen.getByLabelText("Your idea"), {
+    fireEvent.change(screen.getByLabelText("Your company's website"), {
       target: { value: "ab" },
     });
-    const start = screen.getByRole("button", { name: /start/i });
+    const start = screen.getByRole("button", { name: /start$/i });
     expect(start).toBeDisabled();
     fireEvent.click(start);
     expect(pushMock).not.toHaveBeenCalled();
@@ -151,7 +153,7 @@ describe("HeroFunnel launch framing", () => {
     );
     render(<HeroFunnel />);
     // The fetch resolves in an effect; the framing never flips for a dead phase.
-    expect(await screen.findByRole("button", { name: /start/i })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /start$/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Join the launch" })).not.toBeInTheDocument();
   });
 });
@@ -165,7 +167,7 @@ describe("HeroFunnel lights the room", () => {
 
   it("the first character typed turns the light on", () => {
     render(<HeroFunnel />);
-    const input = screen.getByRole("textbox", { name: /your idea/i });
+    const input = screen.getByRole("textbox", { name: /your company's website/i });
     expect(getTheme()).toBe("dark");
     fireEvent.change(input, { target: { value: "A" } });
     expect(getTheme()).toBe("light");
@@ -173,7 +175,7 @@ describe("HeroFunnel lights the room", () => {
 
   it("typing never turns the light back off", () => {
     render(<HeroFunnel />);
-    const input = screen.getByRole("textbox", { name: /your idea/i });
+    const input = screen.getByRole("textbox", { name: /your company's website/i });
     fireEvent.change(input, { target: { value: "A" } });
     fireEvent.change(input, { target: { value: "" } });
     fireEvent.change(input, { target: { value: "B" } });

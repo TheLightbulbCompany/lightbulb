@@ -2,10 +2,9 @@
 
 /**
  * The landing hero IS the first-run funnel: the okara-style variant of the
- * in-chat FirstRunSteps flow (defaultPath="new") — one pill input with the
- * CTA embedded, new-business as the default, the grow swap as a quiet line
- * beneath. Same {path, input, detail} model; the two-path picker and the
- * textarea layout stay in-chat.
+ * in-chat FirstRunSteps flow — one pill input with the CTA embedded, and the
+ * two paths as a pair of doors above it, equal weight. Same {path, input,
+ * detail} model; the textarea layout stays in-chat.
  *
  * Answers persist to sessionStorage under LANDING_BRIEF_STORAGE_KEY on every
  * change; Start stashes and routes into Clerk signup (same tab), where
@@ -24,15 +23,17 @@ import { captureSignupCta } from "@/lib/signupFlow";
 import { HeroLamp } from "./HeroLamp";
 import { lightOn } from "./HeroLamp/lampStore";
 
-const COPY: Record<Path, { placeholder: string; swap: string }> = {
-  new: {
-    placeholder: "A ceramics studio that ships nationwide…",
-    swap: "Already have a business? Grow it instead",
-  },
-  grow: {
-    placeholder: "yourcompany.com",
-    swap: "Starting from scratch? Describe your idea instead",
-  },
+// Same two paths and the same words as the in-chat picker. Grow is listed
+// first and pre-selected: every paying owner so far arrived already running
+// something. Reorder to flip the default.
+const DOORS: { path: Path; label: string }[] = [
+  { path: "grow", label: "Grow my business" },
+  { path: "new", label: "Start something new" },
+];
+
+const COPY: Record<Path, { placeholder: string; aria: string }> = {
+  grow: { placeholder: "yourcompany.com", aria: "Your company's website" },
+  new: { placeholder: "A ceramics studio that ships nationwide…", aria: "Your idea" },
 };
 
 function stash(path: Path, input: string) {
@@ -49,7 +50,7 @@ function stash(path: Path, input: string) {
 export function HeroFunnel() {
   const router = useRouter();
   const launch = useLaunchInfo();
-  const [path, setPath] = React.useState<Path>("new");
+  const [path, setPath] = React.useState<Path>(DOORS[0].path);
   const [input, setInput] = React.useState("");
 
   // 3..2000 mirrors the backend BriefBody rules — an oversized stash would be
@@ -84,15 +85,29 @@ export function HeroFunnel() {
     <section className="ld-funnel" id="start">
       <HeroLamp />
       <div className="ld-funnel-in">
-        <p className="ld-mono ld-funnel-eyebrow">
-          The Integrated Management Environment
-        </p>
         <LaunchHeroPill />
         <h1 className="ld-funnel-h1">
-          If you have an idea,{" "}
+          An AI team that runs the business,{" "}
           <br />
-          you deserve a team.
+          a CEO that manages it.
         </h1>
+
+        <div className="ld-doors" role="group" aria-label="What are you bringing?">
+          {DOORS.map((door) => (
+            <button
+              key={door.path}
+              type="button"
+              className="ld-door"
+              aria-pressed={path === door.path}
+              onClick={() => {
+                setPath(door.path);
+                stash(door.path, input);
+              }}
+            >
+              {door.label}
+            </button>
+          ))}
+        </div>
 
         <form className="ld-ask" onSubmit={submit}>
           <input
@@ -100,17 +115,14 @@ export function HeroFunnel() {
             value={input}
             onChange={(e) => {
               const next = e.target.value;
-              // "If you have an idea, you deserve a team." — the first
-              // character IS the lightbulb moment. Only ever lights, never
-              // darkens; the lamp itself is the toggle.
+              // The first character IS the lightbulb moment. Only ever
+              // lights, never darkens; the lamp itself is the toggle.
               if (next.length > 0) lightOn();
               setInput(next);
               stash(path, next);
             }}
             placeholder={COPY[path].placeholder}
-            aria-label={
-              path === "new" ? "Your idea" : "Your company's website"
-            }
+            aria-label={COPY[path].aria}
           />
           <button type="submit" className="ld-btn" disabled={!canSubmit}>
             {launchFraming ? "Join the launch" : "Start"}{" "}
@@ -118,29 +130,23 @@ export function HeroFunnel() {
           </button>
         </form>
 
+        {/* What the reader gets, not what the product is: the deliverables of
+            a real first run, in the order they land. */}
         <p className="ld-funnel-fine">
-          Your company gets a name, a working email address, and its first
-          three moves — in its own persistent, isolated container.
+          Five minutes in, your CEO has researched the market, filed the first
+          three moves, and set up a working email address. You start with a CEO
+          and a recruiter, and hire the rest from the marketplace.
         </p>
         {/* The price is the first question every visitor has, and until this
             line the only answer above the fold was a 64px "$50" further down
             the page. Free-to-try is the strongest thing we offer and it was
             invisible: owners were arriving in the product believing they had
-            already been charged. */}
+            already been charged. The three ways to pay for inference are the
+            one line no competitor can write; they were buried in pricing. */}
         <p className="ld-funnel-fine">
-          <strong>Free for 3 days. No credit card.</strong>
+          <strong>Free for 3 days. No credit card.</strong> Runs on your ChatGPT
+          login, your own API key, or Claude credits. $50 a month, flat.
         </p>
-        <button
-          type="button"
-          className="ld-funnel-swap"
-          onClick={() => {
-            const next: Path = path === "new" ? "grow" : "new";
-            setPath(next);
-            stash(next, input);
-          }}
-        >
-          {COPY[path].swap}
-        </button>
       </div>
     </section>
   );

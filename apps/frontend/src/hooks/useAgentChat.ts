@@ -1944,10 +1944,13 @@ export function useAgentChat(
         // the status strip renders as copy and drops when the run settles.
         if (msg.activity === "run_status" || msg.activity === "compaction") {
           setRunPhase(resolveRunPhase(msg.activity, msg.detail));
-          // Same reasoning as the pill path below: an accepted frame means the
-          // run is live, so arm the stop affordance even if this tab has seen
-          // no other stream event yet.
-          if (!isStreamingRef.current) setIsStreaming(true);
+          // A startup phase is unambiguously a run beginning, so arm the stop
+          // affordance from it the way the pill path below does — this is
+          // often the first frame of the run. Compaction deliberately does
+          // NOT arm it: it is a mid-run notice, so the gate is already open
+          // when it is genuine, and arming from it would risk stranding the
+          // composer if one ever arrived outside a live turn.
+          if (msg.activity === "run_status" && !isStreamingRef.current) setIsStreaming(true);
           return;
         }
         // Surface plan/patch/item/acp as a single low-noise pill. Keyed by a

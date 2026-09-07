@@ -2821,6 +2821,12 @@ export function useAgentChat(
     setChatToolMessages([]);
     // Ephemeral /btw side cards are part of the local view — wipe them too.
     setBtwResults([]);
+    // So is the run telemetry: "Done in 4m 12s" under an emptied transcript
+    // describes a turn the user just erased.
+    setRunPhase(null);
+    setRunStartedAt(null);
+    setLastTurnRecap(null);
+    turnStartedAtRef.current = null;
     toolStreamByIdRef.current.clear();
     toolStreamOrderRef.current = [];
     const key = agentIdRef.current

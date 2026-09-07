@@ -61,17 +61,17 @@ describe("SessionList", () => {
     expect(active?.getAttribute("aria-current")).toBe("true");
   });
 
-  it("renders the General row and selects null when clicked", () => {
+  it("renders the legacy row and selects null when clicked", () => {
     const onSelect = vi.fn();
     render(
       <SessionList
-        sessions={[{ sessionId: null, key: "agent:a:u", label: "General", rawLabel: "General" }]}
+        sessions={[{ sessionId: null, key: "agent:a:u", label: "Agent updates", rawLabel: "Agent updates" }]}
         activeSessionId={null}
         onSelect={onSelect}
         onNew={vi.fn()}
       />,
     );
-    fireEvent.click(screen.getByText("General"));
+    fireEvent.click(screen.getByText("Agent updates"));
     expect(onSelect).toHaveBeenCalledWith(null);
   });
 
@@ -124,17 +124,17 @@ describe("SessionList", () => {
     );
   });
 
-  it("offers no rename affordance on the General row", () => {
+  it("offers no rename affordance on the legacy row", () => {
     render(
       <SessionList
-        sessions={[{ sessionId: null, key: "agent:a:u", label: "General", rawLabel: "General" }]}
+        sessions={[{ sessionId: null, key: "agent:a:u", label: "Agent updates", rawLabel: "Agent updates" }]}
         activeSessionId={null}
         onSelect={vi.fn()}
         onNew={vi.fn()}
         onRename={vi.fn()}
       />,
     );
-    expect(screen.queryByRole("button", { name: "Rename General" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Rename Agent updates" })).toBeNull();
   });
 
   it("asks to delete a named session via the trash affordance", () => {
@@ -169,17 +169,17 @@ describe("SessionList", () => {
     expect(onSelect).not.toHaveBeenCalled();
   });
 
-  it("offers no delete affordance on the General row", () => {
+  it("offers no delete affordance on the legacy row", () => {
     render(
       <SessionList
-        sessions={[{ sessionId: null, key: "agent:a:u", label: "General", rawLabel: "General" }]}
+        sessions={[{ sessionId: null, key: "agent:a:u", label: "Agent updates", rawLabel: "Agent updates" }]}
         activeSessionId={null}
         onSelect={vi.fn()}
         onNew={vi.fn()}
         onDelete={vi.fn()}
       />,
     );
-    expect(screen.queryByRole("button", { name: "Delete General" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete Agent updates" })).toBeNull();
   });
 
   it("Enter followed by the unmount blur commits exactly once", () => {

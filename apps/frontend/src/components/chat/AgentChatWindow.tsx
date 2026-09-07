@@ -278,7 +278,7 @@ export function AgentChatWindow({
   // Hydrate the composer pill from the ACTIVE session's persisted row so it
   // reflects what sessions.patch wrote, not a stub. useAgentSessions shares its
   // SWR cache with the sidebar (same key), so this is not a second fetch; the
-  // active row is matched on sessionId (null == the legacy "General" row).
+  // active row is matched on sessionId (null == the legacy 3-part row).
   const { sessions: agentSessions, mutate: mutateSessions } = useAgentSessions(
     agentId,
     userId ?? null,

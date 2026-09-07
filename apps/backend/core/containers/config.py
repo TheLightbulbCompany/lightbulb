@@ -639,7 +639,15 @@ def build_provider_block(
             return (
                 {},
                 {
-                    "primary": "anthropic/claude-sonnet-4-6",
+                    # Same swap as the OpenAI path below (gpt-5.5 -> gpt-5.6-sol),
+                    # finally carried across: 8.1 dropped claude-sonnet-4-6 from
+                    # extensions/anthropic's catalog. A ref the static catalog no
+                    # longer resolves depends entirely on the plugin's live
+                    # discovery refresh against the owner's key — and before that
+                    # lands (cold container, first run, key or network failure)
+                    # model-setup throws model_not_found and the primary silently
+                    # degrades to the haiku fallback.
+                    "primary": "anthropic/claude-sonnet-5",
                     "fallbacks": ["anthropic/claude-haiku-4-5"],
                 },
                 {},
@@ -883,7 +891,11 @@ def premium_model_ref(
     if provider_choice == "byo_key":
         if byo_provider == "anthropic":
             # Anthropic-DIRECT id — no Bedrock "-v1" suffix / date-stamp.
-            return "anthropic/claude-opus-4-6"
+            # claude-opus-4-6 was dropped from the 8.1 catalog. This one matters
+            # more than the primary above: the CEO pin has NO per-agent fallback,
+            # so a ref the catalog cannot resolve does not degrade — it fails
+            # every Friday run until discovery refreshes.
+            return "anthropic/claude-opus-5"
         if byo_provider == "openai":
             # Same swap as the OAuth primary: gpt-5.5 is deprecated at 8.1 and
             # the BYO path now runs key-scoped discovery too (model_policy_block),

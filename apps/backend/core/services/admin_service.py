@@ -574,10 +574,13 @@ async def get_agent_detail(user_id: str, agent_id: str) -> dict:
     #      AgentOverviewTab.tsx and SkillsTab.tsx.
     #   2. Wire format: OpenClaw's schemas use camelCase (`agentId`), not
     #      snake_case. Main app always sends camelCase — we must too.
-    #   3. `sessions.list` isn't filterable by agent server-side; main app
-    #      fetches the full list and narrows client-side (SessionsPanel.tsx).
-    #      We replicate that below. `config.get` takes no params
-    #      (AgentOverviewTab.tsx).
+    #   3. `sessions.list` IS filterable by agent: `agentId` is a first-class
+    #      param and narrows the container's store load, not just the rows it
+    #      returns. (The "agentId requires sessionKeys" rule belongs to
+    #      `sessions.search`.) An earlier comment here claimed the opposite and
+    #      had this call pull every agent's store, forcing a transcript
+    #      projection per foreign row on a 1-vCPU box. `config.get` takes no
+    #      params (AgentOverviewTab.tsx).
     try:
         identity, sessions_raw, skills, config = await asyncio.wait_for(
             asyncio.gather(
@@ -585,6 +588,7 @@ async def get_agent_detail(user_id: str, agent_id: str) -> dict:
                 _rpc(
                     "sessions.list",
                     {
+                        "agentId": agent_id,
                         "includeGlobal": True,
                         "includeUnknown": True,
                         "includeDerivedTitles": True,
@@ -603,7 +607,11 @@ async def get_agent_detail(user_id: str, agent_id: str) -> dict:
         logger.warning("admin_service.get_agent_detail gateway error: %s", e)
         return {"error": str(e), "org": org_context}
 
-    # sessions.list is not agent-filterable; narrow client-side.
+    # The `agentId` param above already narrowed rows to this agent (plus the
+    # `global` row, which `includeGlobal` asks for and which carries no
+    # agentId). The client-side pass below is kept as the belt-and-braces
+    # filter that drops `global`/`unknown`, not as a substitute for a
+    # server-side filter that does not exist.
     #
     # Two shape normalizations, both mirroring main-app SessionsPanel:
     # - envelope: response is either {sessions: [...]} or a raw array

@@ -116,7 +116,7 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
     expect(general?.fastMode).toBeUndefined();
   });
 
-  it("shares ONE sessions.list walk across agents (sidebar + every chat panel)", async () => {
+  it("gives each agent its own scoped fetch (the server does the narrowing)", async () => {
     stubSessionsList([
       { key: "agent:friday:user_1:0b477873-1111-4111-8111-111111111111", label: "F" },
       { key: "agent:atlas:user_1:0b477873-2222-4222-8222-222222222222", label: "A" },
@@ -133,12 +133,13 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
     await waitFor(() => expect(result.current[1].sessions).toHaveLength(1));
     expect(result.current[0].sessions[0].label).toBe("F");
     expect(result.current[1].sessions[0].label).toBe("A");
-    // One walk, not one per agent — the RPC has no agent filter, so a
-    // per-agent key was N full store scans on the container for nothing.
-    expect(callRpc.mock.calls.filter(([m]) => m === "sessions.list")).toHaveLength(1);
+    const scoped = callRpc.mock.calls
+      .filter(([m]) => m === "sessions.list")
+      .map(([, p]) => (p as { agentId?: string }).agentId);
+    expect(new Set(scoped)).toEqual(new Set(["friday", "atlas"]));
   });
 
-  it("re-fetches for a different user — the shared key is per user, not global", async () => {
+  it("re-fetches for a different user — the key is per user, not per agent alone", async () => {
     stubSessionsList([{ key: "agent:friday:user_1:0b477873-1111-4111-8111-111111111111", label: "F" }]);
     const { result, rerender } = renderHook(
       ({ userId }: { userId: string }) => useAgentSessions("friday", userId),

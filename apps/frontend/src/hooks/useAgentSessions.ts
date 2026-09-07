@@ -99,51 +99,35 @@ export function useAgentSessions(
 } {
   const callRpc = useGatewayRpcMutation();
 
-  // sessions.list applies `limit` on the container BEFORE the backend proxy
-  // filters rows down to this caller's own 4-part keys — a shared container
-  // busy with paperclip/cron/channel/other-member sessions can push the
-  // user's own rows past a single page's cutoff, making them silently
-  // disappear from the sidebar. Walk the offset/nextOffset/hasMore cursor
-  // (mirrors chat.history's paging) until the container reports no more
-  // rows, accumulating every page before the useMemo filter below runs.
+  // ONE scoped call, keyed by user AND agent. `agentId` is a first-class
+  // sessions.list param and narrows the container's STORE LOAD, not just the
+  // returned rows — the expensive half. The comment that used to sit here
+  // claimed the RPC had no agent filter (that "agentId requires sessionKeys"
+  // rule belongs to sessions.search, not sessions.list) and that belief is why
+  // this fetcher used to walk up to 10 pages × 100 rows of EVERY agent's store
+  // and filter client-side, forcing a transcript projection per foreign row on
+  // a 1-vCPU container. With the server-side filter a per-agent key is cheaper
+  // than the shared one, not dearer, so the walk and the shared key are gone.
   //
-  // ONE key for every caller, not one per agent: the RPC has no agent filter
-  // (the container's `agentId` param requires `sessionKeys`), so a per-agent
-  // key made the sidebar plus each open chat panel each run its own full
-  // scan of every agent's store — N concurrent transcript-reading scans on a
-  // single vCPU, 13–26s apiece under load. The per-agent split happens in the
-  // useMemo below, client-side, on the shared result. Keyed by user, not
-  // constant: the app-wide SWR cache outlives a sign-out, and the proxy scopes
-  // rows to the caller, so one user's cached rows would filter to an empty
-  // sidebar for the next until revalidation.
+  // Keyed by user as well as agent because the app-wide SWR cache outlives a
+  // sign-out, and the proxy scopes rows to the caller — one user's cached rows
+  // would filter to an empty sidebar for the next until revalidation.
   const { data, isLoading, mutate } = useSWR<{ sessions: RawSessionRow[] }>(
-    agentId && userId ? ["sessions.list.all", userId] : null,
+    agentId && userId ? ["sessions.list", userId, agentId] : null,
     async () => {
-      const base = {
+      // includeLastMessage rides along free: includeDerivedTitles already
+      // forces the bounded transcript projection, and the SAME batched read
+      // produces lastMessagePreview (session-utils-list.ts gates the read on
+      // either flag, then fills both fields from one result).
+      const res = (await callRpc("sessions.list", {
+        agentId,
         includeGlobal: false,
         includeUnknown: false,
         includeDerivedTitles: true,
         includeLastMessage: true,
         limit: 100,
-      };
-      const rows: RawSessionRow[] = [];
-      let offset = 0;
-      // Bounded walk: cap the page count so a pathological container store
-      // (or a server that never flips hasMore) can't spin the sidebar
-      // forever. Hitting the cap before hasMore goes false is a silent
-      // coverage limit — an accepted bound, not a bug to raise.
-      for (let page = 0; page < 10; page++) {
-        const res = (await callRpc("sessions.list", { ...base, offset })) as {
-          sessions?: RawSessionRow[];
-          nextOffset?: number;
-          hasMore?: boolean;
-        };
-        const batch = res?.sessions ?? [];
-        rows.push(...batch);
-        if (res?.hasMore !== true || batch.length === 0) break;
-        offset = typeof res.nextOffset === "number" ? res.nextOffset : offset + batch.length;
-      }
-      return { sessions: rows };
+      })) as { sessions?: RawSessionRow[] };
+      return { sessions: res?.sessions ?? [] };
     },
     {
       dedupingInterval: 30_000,

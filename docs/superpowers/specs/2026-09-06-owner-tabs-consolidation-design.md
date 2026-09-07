@@ -113,9 +113,13 @@ Brain graph follow as their own specs after the consolidation lands.
 
 ## 7. Constraints
 
-Panel keys permanent; `RETIRED_PANEL_ALIASES` is key→key with no params, so
-absorbed keys are mapped in the panel router with a preselected section, not
-aliased. `CompanyNav.test.tsx` asserts the exact label list and section order
+Panel keys permanent. An absorbed key ALIASES to the page that absorbed it
+(`RETIRED_PANEL_ALIASES`: `teams-spend` → `teams-money`) and `describePanel`
+synthesizes the section from the RAW key — the `dreams` → `teams-brain`
+precedent, which carries Brain's Dreams tab the same way. Mapping absorbed keys
+in the router instead would leave them as separate panel ids, and the dock
+dedupes by panel id: Home's Payments/Customers/Spend tiles would open three
+sibling tabs all titled "Money". `CompanyNav.test.tsx` asserts the exact label list and section order
 and must change in the same commit as the nav. Brand tokens only
 (`node scripts/brand-tokens-scan.mjs src` prints 0). Issue #2285 (the
 provisioning stepper hides every read-only panel) is out of scope here.

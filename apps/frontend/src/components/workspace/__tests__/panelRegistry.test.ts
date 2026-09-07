@@ -167,6 +167,10 @@ describe("panelRegistry", () => {
     expect(describePanel("teams-money", {})!.params).toEqual({ teamsKey: "money" });
     expect(durableParamsFor("teams-money")).toEqual(["panel", "day"]);
     expect(clearablePanelParamKeys("teams-money")).toEqual(["day"]);
+    for (const k of ["payments", "products", "customers", "spend"]) {
+      expect(describePanel(`teams-${k}`, {})!.title).toBe("Money");
+      expect(describePanel(`teams-${k}`, {})!.params).toEqual({ teamsKey: k });
+    }
   });
 
   it("teams-inbox accepts a ?tab deep link as a durable param", () => {

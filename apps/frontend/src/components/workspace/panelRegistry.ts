@@ -59,10 +59,13 @@ const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
   // same component (SpendPanel wraps UsagePanel), and `?panel=usage` links are
   // already in the wild.
   money: "Money",
-  spend: "Spend",
-  payments: "Payments",
-  products: "Products",
-  customers: "Customers",
+  // Money is ONE page. These four keys are the tabs it absorbed; they stay
+  // registered (mobile builds `?panel=teams-<key>` as strings) and open Money
+  // scrolled to their section — TeamsPanelRouter maps the key to the section.
+  spend: "Money",
+  payments: "Money",
+  products: "Money",
+  customers: "Money",
   // Shells with named exits (owner ruling 2026-09-01): the map is complete
   // before every rail is. Keys are permanent the moment they ship — mobile
   // builds `?panel=teams-<key>` as a string.

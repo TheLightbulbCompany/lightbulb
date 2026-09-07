@@ -50,10 +50,13 @@ def test_tap_emits_on_error_phase():
 
 
 def test_tap_ignores_non_lifecycle_non_terminal_and_non_event():
+    non_agent = _lifecycle_frame()
+    non_agent["event"] = "chat"  # lifecycle-shaped payload but not an agent event
     with patch("core.services.run_analytics.schedule_run_completed", return_value=None) as sched:
         _tap_run_completion_telemetry("o", _lifecycle_frame(stream="assistant"))  # not lifecycle
         _tap_run_completion_telemetry("o", _lifecycle_frame(phase="start"))  # not a terminal
         _tap_run_completion_telemetry("o", {"type": "res", "payload": {}})  # not an event frame
+        _tap_run_completion_telemetry("o", non_agent)  # event, but not "agent"
     sched.assert_not_called()
 
 

@@ -79,7 +79,12 @@ def _tap_run_completion_telemetry(owner_id: str, frame: dict) -> None:
     it spawns is the async part). MUST NEVER raise into the relay push callback.
     """
     try:
-        if not isinstance(frame, dict) or frame.get("type") != "event":
+        # Match the chat path's exact gate (connection_pool._handle_message):
+        # an agent run terminal is an event:"agent" frame whose payload is a
+        # lifecycle end/error. Checking event=="agent" (not just stream) keeps
+        # the two emit paths in lockstep if some future frame reuses a
+        # lifecycle-shaped payload for something else.
+        if not isinstance(frame, dict) or frame.get("type") != "event" or frame.get("event") != "agent":
             return
         ev = frame.get("payload")
         if not isinstance(ev, dict) or ev.get("stream") != "lifecycle":

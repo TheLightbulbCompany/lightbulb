@@ -108,6 +108,14 @@ function normalizeNewIssue(
   return value === "1" || value === "onboarding" ? value : null;
 }
 
+// Own-property only — `in` and bracket access both walk the prototype chain,
+// so a `panel` of "constructor"/"valueOf" would resolve to an inherited
+// Object.prototype value instead of rejecting to "Unknown panel". Same hazard
+// panelRegistry.ts guards against for its own key-maps.
+function hasOwnKey(map: Readonly<Record<string, unknown>>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(map, key);
+}
+
 export interface TeamsPanelRouterProps {
   panel: string;
   detailId?: string | null;
@@ -174,7 +182,7 @@ export function TeamsPanelRouter({
     );
   }
 
-  if (panel in MONEY_SECTIONS) {
+  if (hasOwnKey(MONEY_SECTIONS, panel)) {
     return (
       <MoneyPanel
         section={MONEY_SECTIONS[panel]}
@@ -184,7 +192,7 @@ export function TeamsPanelRouter({
     );
   }
 
-  const Cmp = PANELS[panel];
+  const Cmp = hasOwnKey(PANELS, panel) ? PANELS[panel] : undefined;
   if (!Cmp) return <div className="p-8">Unknown panel: {panel}</div>;
   return <Cmp />;
 }

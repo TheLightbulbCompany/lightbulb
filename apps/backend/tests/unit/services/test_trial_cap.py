@@ -11,10 +11,26 @@ There is deliberately no cap-ONLY primitive: one used to exist and four doors
 reached for it, checking only half the predicate.
 """
 
+import time
+
 import pytest
 
 from core.services import trial_cap
 from core.services.trial_cap import CAP_MICROCENTS
+
+
+@pytest.mark.parametrize(
+    "account,expected",
+    [
+        ({"subscription_status": "trial_local", "trial_end": int(time.time()) - 86400}, True),
+        ({"subscription_status": "trial_local", "trial_end": int(time.time()) + 86400}, False),
+        ({"subscription_status": "trial_local"}, False),  # missing trial_end -> not expired
+        ({"subscription_status": "active", "trial_end": int(time.time()) - 86400}, False),  # not a trial
+        (None, False),
+    ],
+)
+def test_is_trial_expired(account, expected):
+    assert trial_cap.is_trial_expired(account) is expected
 
 
 @pytest.mark.asyncio

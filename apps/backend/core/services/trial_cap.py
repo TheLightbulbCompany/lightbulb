@@ -82,6 +82,16 @@ def _is_expired(account: dict) -> bool:
     return trial_end is not None and int(time.time()) > int(trial_end)
 
 
+def is_trial_expired(account: dict | None) -> bool:
+    """Public: True only for a ``trial_local`` owner whose 3-day window elapsed.
+
+    Expiry ONLY — the daily $3 cap is a separate, transient gate that resets at
+    the UTC rollover, so it is deliberately not folded in here. Nightly-CEO
+    arming keys off expiry (a capped-today trial is still armed; the cap gates
+    the run, not the arm)."""
+    return bool(account) and account.get("subscription_status") == "trial_local" and _is_expired(account)
+
+
 async def trial_block_reason(owner_id: str) -> str | None:
     """Why this owner may not have a container running right now, or None.
 

@@ -1,6 +1,7 @@
 """Unit tests for the unified ensure_user_ready helper."""
 
 import asyncio
+import time
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -9,7 +10,7 @@ import pytest
 from core.auth import AuthContext
 from core.services import user_provision
 from core.services.trial_cap import utc_today
-from core.services.provision_gate import has_always_on_entitlement
+from core.services.provision_gate import should_arm_nightly_ceo
 from core.services.user_provision import (
     _ensure_paperclip_for_member,
     _ensure_paperclip_for_org,
@@ -1648,8 +1649,9 @@ async def test_an_existing_billing_row_short_circuits_before_the_clerk_call(
 # Nightly CEO loop arming (issue #1273)
 # ---------------------------------------------------------------------------
 #
-# The arm step is paid-only (has_always_on_entitlement), idempotent (cache +
-# conditional claim + title-skip), and opt-out-durable. These call the REAL
+# The arm step is gated on should_arm_nightly_ceo (paid OR an unexpired trial),
+# idempotent (cache + conditional claim + title-skip), and opt-out-durable.
+# These call the REAL
 # _maybe_arm_nightly_ceo (imported reference, unaffected by the autouse stub)
 # and patch its collaborators on the user_provision module.
 
@@ -1702,20 +1704,38 @@ async def test_arm_paid_seeds_nightly_routine_for_friday():
 
 
 @pytest.mark.asyncio
-async def test_arm_trial_never_armed():
-    """A trial_local owner returns before ANY Paperclip call."""
-    build = AsyncMock()
+async def test_arm_active_trial_now_seeds():
+    """An UNEXPIRED trial_local is now armed (the retention change) — trials get
+    the nightly CEO through the same Paperclip path as paid, with reconcile on."""
+    provisioning = _arm_provisioning(_company_row())
+    seed = AsyncMock(return_value="rid-nightly")
+    trial = {"owner_id": "user_p", "subscription_status": "trial_local", "trial_end": int(time.time()) + 86400}
     with (
-        patch(
-            "core.services.user_provision.billing_repo.get_by_owner_id",
-            AsyncMock(return_value={"owner_id": "user_p", "subscription_status": "trial_local"}),
-        ),
+        patch("core.services.user_provision.billing_repo.get_by_owner_id", AsyncMock(return_value=trial)),
+        patch("core.services.user_provision.build_paperclip_provisioning", AsyncMock(return_value=provisioning)),
+        patch("core.services.user_provision.close_paperclip_provisioning", AsyncMock()),
+        patch("core.services.user_provision.get_admin_session_cookie", AsyncMock(return_value="admin-cookie")),
+        patch("core.services.user_provision.billing_repo.try_claim_nightly_arm", AsyncMock(return_value=True)),
+        patch("core.services.user_provision.create_enabled_schedule_routine", seed),
+    ):
+        await _maybe_arm_nightly_ceo(_personal_auth("user_p"), "user_p")
+    seed.assert_awaited_once()
+    assert seed.await_args.kwargs["reconcile_paused"] is True
+
+
+@pytest.mark.asyncio
+async def test_arm_expired_trial_not_armed():
+    """An EXPIRED trial_local (trial_end in the past) is NOT armed — returns
+    before any Paperclip call."""
+    build = AsyncMock()
+    expired = {"owner_id": "user_p", "subscription_status": "trial_local", "trial_end": int(time.time()) - 86400}
+    with (
+        patch("core.services.user_provision.billing_repo.get_by_owner_id", AsyncMock(return_value=expired)),
         patch("core.services.user_provision.build_paperclip_provisioning", build),
     ):
         await _maybe_arm_nightly_ceo(_personal_auth("user_p"), "user_p")
     build.assert_not_awaited()
-    # Sanity: the entitlement predicate itself excludes trial_local.
-    assert has_always_on_entitlement({"subscription_status": "trial_local"}) is False
+    assert should_arm_nightly_ceo(expired) is False
 
 
 @pytest.mark.asyncio
@@ -1912,13 +1932,20 @@ async def test_arm_nightly_ceo_returns_armed_and_seeds_for_personal_owner():
 
 
 @pytest.mark.asyncio
-async def test_arm_nightly_ceo_trial_local_is_not_entitled():
-    """trial_local is never entitled → no Paperclip client is even built."""
+async def test_arm_nightly_ceo_expired_trial_is_not_entitled():
+    """An EXPIRED trial_local is not armed → no Paperclip client is even built.
+    (An unexpired trial IS armed — see test_arm_active_trial_now_seeds.)"""
     build = AsyncMock()
     with (
         patch(
             "core.services.user_provision.billing_repo.get_by_owner_id",
-            AsyncMock(return_value={"owner_id": "user_p", "subscription_status": "trial_local"}),
+            AsyncMock(
+                return_value={
+                    "owner_id": "user_p",
+                    "subscription_status": "trial_local",
+                    "trial_end": int(time.time()) - 86400,
+                }
+            ),
         ),
         patch("core.services.user_provision.build_paperclip_provisioning", build),
         patch("core.services.user_provision.put_metric") as metric,

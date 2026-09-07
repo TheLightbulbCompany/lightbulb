@@ -47,7 +47,7 @@ from core.services.paperclip_provisioning import (
     build_paperclip_provisioning,
     close_paperclip_provisioning,
 )
-from core.services.provision_gate import evaluate_provision_gate, has_always_on_entitlement
+from core.services.provision_gate import evaluate_provision_gate, should_arm_nightly_ceo
 from core.services.trial_cap import utc_today
 
 logger = logging.getLogger(__name__)
@@ -482,11 +482,12 @@ async def arm_nightly_ceo(owner_id: str, *, trust_cache: bool = True) -> str:
     ``owner_id`` prefix (``is_org_owner_id``), the executor's own rule; a
     personal owner_id IS the user_id.
 
-    Paid-only: ``has_always_on_entitlement`` returns True only for Stripe
-    ``active``/``trialing`` (or the legacy None+stripe_sub row) and fail-closes
-    on no account — a ``trial_local`` owner is NEVER armed. Returns the outcome
-    (``armed`` covers created OR title-skipped: the routine is present either
-    way) and emits it as the ``nightly_ceo.arm`` metric's ``status``. Does NOT
+    Armed for paid OR an unexpired trial (``should_arm_nightly_ceo``): paid buys
+    always-on, and the nightly CEO is ALSO extended to live ``trial_local``
+    owners as a retention lever (an EXPIRED trial is not armed, and self-disarms
+    at the wake path). Returns the outcome (``armed`` covers created, reactivated
+    OR title-skipped: the routine is present either way) and emits it as the
+    ``nightly_ceo.arm`` metric's ``status``. Does NOT
     swallow: a failure emits ``status=error`` and re-raises, and the caller
     decides — the executor classifies it into its retry ABI exactly like a
     seed failure; ``_maybe_arm_nightly_ceo`` logs and moves on.
@@ -506,12 +507,20 @@ async def arm_nightly_ceo(owner_id: str, *, trust_cache: bool = True) -> str:
         elects exactly one winner to seed (plus ``create_enabled_schedule_routine``'s
         title-skip as a backstop).
       - Owner opt-out: ``nightly_ceo_opted_out`` (durable — survives a full
-        reprovision because billing is preserved) blocks re-seeding, and the
-        title-skip never reconciles an existing paused trigger.
+        reprovision because billing is preserved) blocks arming entirely (bailed
+        above). Any paused routine reaching the create step is therefore an
+        ENTITLEMENT pause (teardown / cancel), which ``reconcile_paused=True``
+        re-enables on re-entitlement. Both re-subscribe paths reach the reconcile:
+        a torn-down container re-provisions through the executor
+        (``trust_cache=False``, which ignores the cache), and a container that
+        SURVIVED teardown (``delete_user_service`` is best-effort) is caught by
+        the poll-path self-heal — teardown's ``disarm_owner_nightly_automation``
+        releases the ``nightly_ceo_armed_company`` cache when it pauses, so the
+        ``trust_cache=True`` poll no longer short-circuits on it.
     """
     try:
         account = await billing_repo.get_by_owner_id(owner_id)
-        if not has_always_on_entitlement(account):
+        if not should_arm_nightly_ceo(account):
             return _arm_status("not_entitled")
         if account.get("nightly_ceo_opted_out"):
             return _arm_status("opted_out")
@@ -551,6 +560,12 @@ async def arm_nightly_ceo(owner_id: str, *, trust_cache: bool = True) -> str:
                     description=NIGHTLY_CEO_ROUTINE_DESCRIPTION,
                     cron=NIGHTLY_CEO_ROUTINE_CRON,
                     timezone="UTC",
+                    # Re-enable a teardown/expiry/past_due-paused routine on
+                    # re-entitlement. Owner opt-outs are already filtered above
+                    # (nightly_ceo_opted_out), so a paused routine here is safe
+                    # to reactivate — without this a churn→resubscribe owner
+                    # keeps a paused routine (the title-skip won't reconcile it).
+                    reconcile_paused=True,
                 )
             except Exception:
                 # Seed failed — release the claim (or the stale cache) so the

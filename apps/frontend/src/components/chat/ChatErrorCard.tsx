@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { AlertTriangle, RefreshCw } from "lucide-react";
+import { AlertTriangle } from "lucide-react";
 import { useOrganization } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { handleShellLinkClick } from "@/lib/shellNav";
@@ -9,6 +9,18 @@ import { ProviderPicker } from "@/components/chat/ProvisioningStepper";
 
 /**
  * Typed error card rendered when an agent run terminates with an error.
+ *
+ * There is deliberately NO Retry button. One lived here for a long time,
+ * gated on a `Boolean(onRetry)` prop that the only production caller
+ * (MessageList) never passed — so it had never rendered once. It was deleted
+ * rather than wired, because Retry is truthful for exactly one of the nine
+ * states: `timeout`. It repeats the failure for `refusal` and
+ * `context_length`, contradicts this card's own advice for `rate_limit`
+ * (wait / upgrade / switch — none of which are "press it again"), and for
+ * the four budget codes below it makes an exhausted allowance look like a
+ * flaky product. Wiring the one honest case needs a resend threaded four
+ * layers down through MessageList, which carries no send on its props at
+ * all; that is its own change, not a side effect of removing dead code.
  *
  * The backend forwards OpenClaw's `errorKind` as `code` on the chat error
  * payload (one of: refusal | timeout | rate_limit | context_length |
@@ -34,10 +46,9 @@ import { ProviderPicker } from "@/components/chat/ProvisioningStepper";
  * `default`, so a paying customer saw the same "Failed to generate" a crash
  * would produce, with no top-up or reactivate path.
  *
- * All four of the codes above are "money codes" (see `MONEY_CODES`): the
- * run died because of the owner's budget/subscription state, not a
- * malfunction, so Retry is suppressed and the card renders from `code`
- * alone — the server `message` is ignored so a pre-send gate_chat refusal
+ * All four of the codes above are "money codes": the run died because of the
+ * owner's budget/subscription state, not a malfunction, so the card renders
+ * from `code` alone — the server `message` is ignored so a pre-send gate_chat refusal
  * and a mid-run reclassification render a pixel-identical card.
  *
  * For unknown / unmapped codes we still show the upstream message
@@ -50,8 +61,6 @@ export interface ChatErrorCardProps {
   message: string;
   /** Optional typed code from OpenClaw's errorKind. */
   code?: string;
-  /** Retry handler for the originating assistant bubble. */
-  onRetry?: () => void;
   /**
    * Whether this card may render the live conversion paywall. MessageList
    * passes true only for the NEWEST trial-coded card in the transcript —
@@ -74,19 +83,6 @@ interface ErrorPresentation {
    *  params on the route the shell is already on. See Task 6. */
   action?: { label: string; href: string; crossRoute?: boolean };
 }
-
-/**
- * Codes where the run died because the owner is out of Isol8 budget, not
- * because anything malfunctioned. Retry is suppressed for all of them: it
- * cannot succeed until the cap resets or the owner pays, and offering it
- * makes an exhausted allowance look like a flaky product.
- */
-const MONEY_CODES: ReadonlySet<string> = new Set([
-  "trial_daily_cap",
-  "trial_expired",
-  "out_of_credits",
-  "subscription_inactive",
-]);
 
 function describeError(code: string | undefined, message: string): ErrorPresentation {
   switch (code) {
@@ -231,7 +227,7 @@ export function isTrialPaywallCode(code: string | undefined | null): boolean {
   return Boolean(code) && Object.hasOwn(TRIAL_PAYWALL_HEADINGS, code as string);
 }
 
-export function ChatErrorCard({ message, code, onRetry, interactive = true }: ChatErrorCardProps) {
+export function ChatErrorCard({ message, code, interactive = true }: ChatErrorCardProps) {
   // ProviderPicker posts /billing/trial-checkout, which an org admin must NOT
   // use — orgs pay per-seat via startTeamCheckout. An org should never carry a
   // trial_local row today, but ProvisioningStepper's own picker branch guards
@@ -290,7 +286,6 @@ export function ChatErrorCard({ message, code, onRetry, interactive = true }: Ch
   }
 
   const { title, description, action } = describeError(code, message);
-  const showRetry = Boolean(onRetry) && !MONEY_CODES.has(code ?? "");
 
   return (
     <div
@@ -321,17 +316,6 @@ export function ChatErrorCard({ message, code, onRetry, interactive = true }: Ch
                     {action.label}
                   </a>
                 )}
-              </Button>
-            )}
-            {showRetry && onRetry && (
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-7 px-2 text-xs text-err hover:bg-[var(--cream-deep)]"
-                onClick={onRetry}
-              >
-                <RefreshCw className="h-3 w-3 mr-1.5" />
-                Retry
               </Button>
             )}
           </div>

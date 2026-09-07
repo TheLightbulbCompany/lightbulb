@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 import { Pencil, Plus, Trash2 } from "lucide-react";
 import type { AgentSession } from "@/hooks/useAgentSessions";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 
 interface SessionListProps {
   sessions: AgentSession[];
@@ -68,7 +69,9 @@ export function SessionList({
       {activeIsUnmaterialized && (
         /* Static indicator; disabled so keyboard users don't land on a no-op. */
         <button type="button" className="session-item active" aria-current="true" disabled>
-          <span className="session-label">New session</span>
+          <span className="session-line">
+            <span className="session-label">New session</span>
+          </span>
         </button>
       )}
       {sessions.map((s) => {
@@ -101,7 +104,17 @@ export function SessionList({
                     onSelect(s.sessionId);
                   }}
                 >
-                  <span className="session-label">{s.label}</span>
+                  <span className="session-line">
+                    <span className="session-label">{s.label}</span>
+                    {s.updatedAt ? (
+                      <time className="session-when" dateTime={new Date(s.updatedAt).toISOString()}>
+                        {timeAgo(new Date(s.updatedAt))}
+                      </time>
+                    ) : null}
+                  </span>
+                  {/* One line of what was last said. Absent on a session whose
+                      transcript has no visible user/assistant message yet. */}
+                  {s.preview ? <span className="session-preview">{s.preview}</span> : null}
                 </button>
                 {/* General (sessionId null) keeps its fixed identity — only
                     named sessions are renameable and deletable. */}

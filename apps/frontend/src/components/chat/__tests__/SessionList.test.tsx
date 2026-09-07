@@ -258,6 +258,89 @@ describe("SessionList", () => {
     expect(onRename).not.toHaveBeenCalled();
   });
 
+  it("shows a relative timestamp", () => {
+    render(
+      <SessionList
+        sessions={[
+          {
+            sessionId: "44444444-4444-4444-8444-444444444444",
+            key: "k4",
+            label: "Q3 pricing",
+            rawLabel: "Q3 pricing",
+            updatedAt: Date.now() - 7_200_000,
+          },
+        ]}
+        activeSessionId={null}
+        onSelect={vi.fn()}
+        onNew={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("2h ago")).toBeTruthy();
+  });
+
+  it("shows a one-line preview when present", () => {
+    render(
+      <SessionList
+        sessions={[
+          {
+            sessionId: "44444444-4444-4444-8444-444444444444",
+            key: "k4",
+            label: "Q3 pricing",
+            rawLabel: "Q3 pricing",
+            preview: "I checked the numbers",
+          },
+        ]}
+        activeSessionId={null}
+        onSelect={vi.fn()}
+        onNew={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/I checked the numbers/)).toBeTruthy();
+  });
+
+  it("renders cleanly with neither a preview nor a timestamp", () => {
+    render(
+      <SessionList
+        sessions={[
+          {
+            sessionId: "44444444-4444-4444-8444-444444444444",
+            key: "k4",
+            label: "Q3 pricing",
+            rawLabel: "Q3 pricing",
+          },
+        ]}
+        activeSessionId={null}
+        onSelect={vi.fn()}
+        onNew={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Q3 pricing")).toBeTruthy();
+    // No empty <time> element left behind when there is nothing to say.
+    expect(document.querySelector("time")).toBeNull();
+  });
+
+  it("the whole row stays one click target — the preview selects too", () => {
+    const onSelect = vi.fn();
+    render(
+      <SessionList
+        sessions={[
+          {
+            sessionId: "44444444-4444-4444-8444-444444444444",
+            key: "k4",
+            label: "Q3 pricing",
+            rawLabel: "Q3 pricing",
+            preview: "I checked the numbers",
+          },
+        ]}
+        activeSessionId={null}
+        onSelect={onSelect}
+        onNew={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByText(/I checked the numbers/));
+    expect(onSelect).toHaveBeenCalledWith("44444444-4444-4444-8444-444444444444");
+  });
+
   it("escape cancels a rename without committing", () => {
     const onRename = vi.fn();
     render(

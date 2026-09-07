@@ -169,6 +169,26 @@ def _existing_titles_for_agent(existing_routines: Any, agent_id: str) -> set[str
     return titles
 
 
+def _find_routine_for_agent(existing_routines: Any, agent_id: str, title: str) -> dict | None:
+    """The non-archived routine of ``title`` assigned to ``agent_id``, or None.
+
+    Same shape-handling and archived-exclusion as ``_existing_titles_for_agent``
+    (they must agree on what "already exists" means), but returns the routine row
+    so a caller can inspect and reconcile its status."""
+    if isinstance(existing_routines, dict):
+        items = existing_routines.get("routines") or existing_routines.get("items") or []
+    elif isinstance(existing_routines, list):
+        items = existing_routines
+    else:
+        items = []
+    for r in items:
+        if not isinstance(r, dict) or r.get("assigneeAgentId") != agent_id or r.get("status") == "archived":
+            continue
+        if r.get("title") == title:
+            return r
+    return None
+
+
 async def create_agent_routines(
     *,
     admin: Any,
@@ -296,8 +316,17 @@ async def create_enabled_schedule_routine(
     description: str,
     cron: str,
     timezone: str = _DEFAULT_TIMEZONE,
+    reconcile_paused: bool = False,
 ) -> str | None:
     """Create ONE enabled schedule routine for ``agent_id``, idempotently.
+
+    ``reconcile_paused`` OPTS IN to re-enabling an existing PAUSED routine
+    (``patch_routine`` status='active') instead of skipping it. Callers that set
+    it MUST have filtered deliberate owner opt-outs first (``arm_nightly_ceo``
+    bails on ``nightly_ceo_opted_out``), so a paused routine here is an
+    entitlement pause (teardown / past_due / trial expiry), safe to reactivate.
+    The disarm sets only status=paused (the schedule trigger stays enabled), so
+    status='active' is all it takes to re-arm.
 
     Title-idempotent exactly like ``create_agent_routines``: list existing
     routines; if one with ``title`` is already assigned to ``agent_id``, return
@@ -315,7 +344,21 @@ async def create_enabled_schedule_routine(
     routine is present either way).
     """
     existing = await admin.list_routines(session_cookie=session_cookie, company_id=company_id)
-    if title in _existing_titles_for_agent(existing, agent_id):
+    existing_routine = _find_routine_for_agent(existing, agent_id, title)
+    if existing_routine is not None:
+        if reconcile_paused and existing_routine.get("status") == "paused":
+            await admin.patch_routine(
+                routine_id=existing_routine["id"],
+                session_cookie=session_cookie,
+                body={"status": "active"},
+            )
+            logger.info(
+                "agent_routine_provisioning: reactivated paused routine title=%r agent=%s company=%s",
+                title,
+                agent_id,
+                company_id,
+            )
+            return existing_routine["id"]
         logger.info(
             "agent_routine_provisioning: skip existing ENABLED routine title=%r agent=%s company=%s",
             title,

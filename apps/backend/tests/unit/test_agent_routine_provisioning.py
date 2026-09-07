@@ -280,6 +280,76 @@ async def test_create_enabled_schedule_routine_title_skip_no_dup_no_reenable():
 
 
 @pytest.mark.asyncio
+async def test_reconcile_paused_reactivates_the_routine():
+    """reconcile_paused=True + an existing PAUSED routine → patch it to active
+    (re-arm on re-entitlement) instead of skipping, and create nothing new."""
+    existing = [
+        {"id": "rid-old", "assigneeAgentId": "friday-uuid", "title": NIGHTLY_CEO_ROUTINE_TITLE, "status": "paused"}
+    ]
+    admin = _admin_with_existing(existing)
+    routine_id = await create_enabled_schedule_routine(
+        admin=admin,
+        session_cookie="cookie",
+        company_id="co1",
+        agent_id="friday-uuid",
+        title=NIGHTLY_CEO_ROUTINE_TITLE,
+        description=NIGHTLY_CEO_ROUTINE_DESCRIPTION,
+        cron=NIGHTLY_CEO_ROUTINE_CRON,
+        reconcile_paused=True,
+    )
+    assert routine_id == "rid-old"
+    admin.patch_routine.assert_awaited_once_with(
+        routine_id="rid-old", session_cookie="cookie", body={"status": "active"}
+    )
+    admin.create_routine.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_paused_default_leaves_paused_alone():
+    """Default (reconcile_paused=False): a paused routine STAYS paused — the
+    intentional opt-out behavior is preserved for callers that don't opt in."""
+    existing = [
+        {"id": "rid-old", "assigneeAgentId": "friday-uuid", "title": NIGHTLY_CEO_ROUTINE_TITLE, "status": "paused"}
+    ]
+    admin = _admin_with_existing(existing)
+    routine_id = await create_enabled_schedule_routine(
+        admin=admin,
+        session_cookie="cookie",
+        company_id="co1",
+        agent_id="friday-uuid",
+        title=NIGHTLY_CEO_ROUTINE_TITLE,
+        description=NIGHTLY_CEO_ROUTINE_DESCRIPTION,
+        cron=NIGHTLY_CEO_ROUTINE_CRON,
+    )
+    assert routine_id is None
+    admin.patch_routine.assert_not_awaited()
+    admin.create_routine.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_paused_leaves_active_routine_untouched():
+    """reconcile_paused=True + an already-ACTIVE routine → skip (already armed):
+    no patch, no create."""
+    existing = [
+        {"id": "rid-old", "assigneeAgentId": "friday-uuid", "title": NIGHTLY_CEO_ROUTINE_TITLE, "status": "active"}
+    ]
+    admin = _admin_with_existing(existing)
+    routine_id = await create_enabled_schedule_routine(
+        admin=admin,
+        session_cookie="cookie",
+        company_id="co1",
+        agent_id="friday-uuid",
+        title=NIGHTLY_CEO_ROUTINE_TITLE,
+        description=NIGHTLY_CEO_ROUTINE_DESCRIPTION,
+        cron=NIGHTLY_CEO_ROUTINE_CRON,
+        reconcile_paused=True,
+    )
+    assert routine_id is None
+    admin.patch_routine.assert_not_awaited()
+    admin.create_routine.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_create_agent_routines_never_emits_enabled_trigger():
     """The general dormant path must never produce an enabled trigger, even
     with the enabled sibling now present in the module."""

@@ -11,10 +11,10 @@ vi.mock("@/hooks/useCompanyRollup", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/hooks/useCompanyRollup")>();
   return { ...mod, useCompanyRollup: () => ({ rollup: rollup.value, isLoading: rollup.loading, windowStart: "2026-06-09", span: 90, error: undefined, refresh: vi.fn(), isUnavailable: () => false }) };
 });
-vi.mock("@/components/teams/panels/money/AgentSpendSection", () => ({ AgentSpendSection: () => <section aria-label="Agent spend" /> }));
-vi.mock("@/components/teams/panels/money/PaymentsSection", () => ({ PaymentsSection: ({ day }: { day: string | null }) => <section aria-label="Payments" data-day={day ?? ""} /> }));
-vi.mock("@/components/teams/panels/money/CustomersSection", () => ({ CustomersSection: ({ newIn30Days }: { newIn30Days: number | null }) => <section aria-label="Customers" data-new={String(newIn30Days)} /> }));
-vi.mock("@/components/teams/panels/money/ProductsSection", () => ({ ProductsSection: () => <section aria-label="What you sell" /> }));
+vi.mock("@/components/teams/panels/money/AgentSpendSection", () => ({ AgentSpendSection: () => <section id="money-spend" aria-label="Agent spend" /> }));
+vi.mock("@/components/teams/panels/money/PaymentsSection", () => ({ PaymentsSection: ({ day }: { day: string | null }) => <section id="money-payments" aria-label="Payments" data-day={day ?? ""} /> }));
+vi.mock("@/components/teams/panels/money/CustomersSection", () => ({ CustomersSection: ({ newIn30Days }: { newIn30Days: number | null }) => <section id="money-customers" aria-label="Customers" data-new={String(newIn30Days)} /> }));
+vi.mock("@/components/teams/panels/money/ProductsSection", () => ({ ProductsSection: () => <section id="money-products" aria-label="What you sell" /> }));
 
 import { MoneyPanel } from "../MoneyPanel";
 import { biggestDay, formatMicrocents, monthToDate } from "../money/money";
@@ -40,6 +40,14 @@ describe("MoneyPanel — one ledger page", () => {
     expect(screen.getByRole("region", { name: "Customers" })).toHaveAttribute("data-new", "7");
   });
 
+  it("counts no new customers when the rollup has never read a day", () => {
+    // first_day null = nothing stored, so 0 signups means "we don't know",
+    // not "nobody signed up".
+    rollup.value = { ...bound, first_day: null };
+    render(<MoneyPanel />);
+    expect(screen.getByRole("region", { name: "Customers" })).toHaveAttribute("data-new", "null");
+  });
+
   it("hands the day scope to Payments and links the biggest day to it", () => {
     render(<MoneyPanel day="2026-09-05" />);
     expect(screen.getByRole("region", { name: "Payments" })).toHaveAttribute("data-day", "2026-09-05");
@@ -53,6 +61,25 @@ describe("MoneyPanel — one ledger page", () => {
     expect(screen.queryByRole("region", { name: "Payments" })).toBeNull();
     expect(screen.getByRole("region", { name: "Agent spend" })).toBeInTheDocument();
     expect(screen.queryByTestId("panel-masthead-meta")).toBeNull();
+  });
+
+  it("keeps a non-admin off Agent spend too — both routes require org admin", () => {
+    // /company/* and /billing both require org admin, so a member who 403s on
+    // payments would 403 inside Agent spend as well: one honest notice beats a
+    // notice plus a section that errors under it.
+    money.view = { kind: "forbidden" };
+    render(<MoneyPanel />);
+    expect(screen.getByText(/Only workspace admins can see payments/i)).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Agent spend" })).toBeNull();
+  });
+
+  it("scrolls to the section an absorbed key named, inside its own page root", () => {
+    const seen: Element[] = [];
+    const spy = vi.fn(function (this: Element) { seen.push(this); });
+    Element.prototype.scrollIntoView = spy as unknown as Element["scrollIntoView"];
+    const { container } = render(<MoneyPanel section="spend" />);
+    expect(spy).toHaveBeenCalled();
+    expect(seen[0]).toBe(container.querySelector("#money-spend"));
   });
 
   it("prints no landed figure while the rollup is in flight, and none when the month has no rows", () => {

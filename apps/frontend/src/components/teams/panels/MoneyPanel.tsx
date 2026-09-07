@@ -9,7 +9,7 @@
 // under review / forbidden / unavailable — MoneyStates), read off the Payments
 // envelope. Agent spend is not Stripe's and always renders.
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { PanelMasthead } from "@/components/teams/shell";
 import { useCompanyMoney, type PaymentRow } from "@/hooks/useCompanyMoney";
 import { useCompanyRollup, dayOffset } from "@/hooks/useCompanyRollup";
@@ -35,22 +35,28 @@ export function MoneyPanel({ section, day, onDayCleared }: { section?: MoneySect
   const mtd = rollup?.stripe_bound && !rollupLoading ? monthToDate(rollup.days, today) : null;
   const best = mtd ? biggestDay(rollup!.days, mtd.month) : null;
   const monthName = mtd ? MONTH_NAMES[Number(mtd.month.slice(5, 7)) - 1] : null;
-  const newIn30Days = rollup?.stripe_bound && !rollupLoading
+  // `first_day === null` means the rollup has never read anything for this
+  // owner, so 0 signups is "we don't know", not "nobody signed up".
+  const newIn30Days = rollup?.stripe_bound && !rollupLoading && rollup.first_day !== null
     ? rollup.days.filter((d) => d.day >= dayOffset(today, -29)).reduce((s, d) => s + (d.signups ?? 0), 0)
     : null;
 
-  // The absorbed keys open this page at their section.
+  // The absorbed keys open this page at their section. Scoped to this page's
+  // root (a dock layout can hold two panels with the same ids) and re-run once
+  // the gate resolves — on the first pass the sections below are still a
+  // skeleton, so the anchor does not exist yet.
+  const rootRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!section) return;
-    document.getElementById(`money-${section}`)?.scrollIntoView({ block: "start" });
-  }, [section]);
+    rootRef.current?.querySelector(`#money-${section}`)?.scrollIntoView?.({ block: "start" });
+  }, [section, gate.view.kind]);
 
   const showStripe = gate.view.kind === "rows" || gate.view.kind === "zero" || gate.view.kind === "loading";
   const dayHref = best ? `${teamsPanelUrl("money")}&day=${best.day}` : null;
 
   return (
-    <div className="editorial-page p-4 sm:p-5 lg:p-6 flex flex-col gap-6 max-w-5xl mx-auto w-full">
-      <PanelMasthead overline="Money" title="Money" meta={mtd && monthName ? `${formatMicrocents(mtd.microcents)} landed in ${monthName}` : undefined} />
+    <div ref={rootRef} className="editorial-page p-4 sm:p-5 lg:p-6 flex flex-col gap-6 max-w-5xl mx-auto w-full">
+      <PanelMasthead overline="Money" title="Money" meta={mtd && monthName ? `${formatMicrocents(mtd.microcents)} ${mtd.microcents < 0 ? "net" : "landed"} in ${monthName}` : undefined} />
       {best && dayHref && (
         <p className="-mt-3 text-xs text-[var(--midnight-muted)]">
           Biggest day: {formatIsoDay(best.day)} · {formatMicrocents(best.revenue_microcents)} ·{" "}
@@ -68,7 +74,9 @@ export function MoneyPanel({ section, day, onDayCleared }: { section?: MoneySect
         <MoneyStates view={gate.view} noun="payments" />
       )}
 
-      <AgentSpendSection />
+      {/* Both Money routes and /billing require org admin, so a member who
+          403s on payments would 403 here too — one notice, not two. */}
+      {gate.view.kind !== "forbidden" && <AgentSpendSection />}
     </div>
   );
 }

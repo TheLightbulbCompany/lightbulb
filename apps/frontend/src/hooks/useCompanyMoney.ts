@@ -162,10 +162,13 @@ export function useCompanyMoney<Row>(kind: MoneyKind, window?: MoneyWindow) {
   const { data, error, isLoading } = useSWR<MoneyEnvelope<Row>>(
     key,
     (path: string) => api.get(path) as Promise<MoneyEnvelope<Row>>,
-    // keepPreviousData: without it, changing the cursor on "Load more" blanks
-    // `data`, so the view flips to `loading` and every accumulated row is
-    // replaced by a skeleton until the next page lands.
-    { dedupingInterval: 30_000, keepPreviousData: true },
+    // keepPreviousData only WHILE PAGING: without it, changing the cursor on
+    // "Load more" blanks `data`, so the view flips to `loading` and every
+    // accumulated row is replaced by a skeleton until the next page lands.
+    // With it on a WINDOW change it is a lie — Sept 5's rows would sit under a
+    // "Payments on Sept 6" heading until the new day lands. A window change
+    // resets the cursor to null, so this is exactly the paging case.
+    { dedupingInterval: 30_000, keepPreviousData: cursor !== null },
   );
 
   const next = useCallback(() => {

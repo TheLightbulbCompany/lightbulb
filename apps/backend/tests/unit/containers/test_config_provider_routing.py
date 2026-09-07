@@ -122,7 +122,7 @@ async def test_byo_key_anthropic_branch(tmp_path):
     # Default tier is the cheaper Sonnet 4.6, with Haiku 4.5 as the cheap
     # error-failover. Opus 4.6 is reserved for the CEO agent (Friday) via
     # per-agent agents.list[*].model — see test_ceo_agent_gets_premium_model.
-    assert primary == "anthropic/claude-sonnet-4-6"
+    assert primary == "anthropic/claude-sonnet-5"
     assert fallbacks == ["anthropic/claude-haiku-4-5"]
     # byo anthropic uses Anthropic-DIRECT ids — no Bedrock date-stamp.
     # The premium ref strips the erroneous "-v1" suffix (Bedrock-only).
@@ -183,7 +183,7 @@ async def test_bedrock_claude_branch(tmp_path):
     "provider_choice,byo_provider,expected",
     [
         # Anthropic-DIRECT id — no Bedrock "-v1" suffix.
-        ("byo_key", "anthropic", "anthropic/claude-opus-4-6"),
+        ("byo_key", "anthropic", "anthropic/claude-opus-5"),
         ("byo_key", "openai", "openai/gpt-5.6-sol"),
         # chatgpt_oauth is a flat-rate plan — no premium tier to reserve, so
         # the CEO inherits the default (no per-agent model override).
@@ -205,7 +205,7 @@ def test_premium_model_ref_matrix(provider_choice, byo_provider, expected):
     "provider_choice,byo_provider,expected_ceo_model",
     [
         ("bedrock_claude", None, f"amazon-bedrock/{_AIPS['opus']}"),
-        ("byo_key", "anthropic", "anthropic/claude-opus-4-6"),
+        ("byo_key", "anthropic", "anthropic/claude-opus-5"),
         ("byo_key", "openai", "openai/gpt-5.6-sol"),
     ],
 )

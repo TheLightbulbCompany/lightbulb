@@ -888,15 +888,29 @@ class GatewayConnection:
         tokens or different connects.
 
         The signed handshake itself lives in `operator_rpc.perform_signed_connect`
-        (shared with the one-shot operator calls). The pool opts into
-        `tool-events` so OpenClaw streams `stream:"tool"` events to us — without
-        that capability the gateway silently drops them.
+        (shared with the one-shot operator calls).
+
+        Capabilities we opt into, both load-bearing:
+
+        - ``tool-events`` — OpenClaw streams ``stream:"tool"`` events only to
+          clients declaring it; without it the gateway silently drops them.
+        - ``approvals`` — ``canDeliverApprovals`` needs an approval scope AND
+          proof the client renders that approval kind: an internal approval
+          runtime, a client id in one of its hardcoded sets (control-ui, the
+          native apps, tui), or this capability. We connect as ``gateway-client``
+          and match none of those sets, so without it we are not an approval
+          route at all. That is worse than a dropped event: with no route the
+          gateway calls ``manager.expire(id, "no-approval-route")`` and hands the
+          agent ``decision: null`` immediately. It covers plugin and system-agent
+          approvals — which the frontend already subscribes to — while exec
+          approvals stay moot because ``tools.exec.mode`` is ``"full"`` and none
+          is ever created.
         """
         await perform_signed_connect(
             self._ws,
             owner_id=self.user_id,
             token=self.token,
-            caps=["tool-events"],
+            caps=["tool-events", "approvals"],
             recv_timeout=_HANDSHAKE_TIMEOUT,
         )
 

@@ -585,6 +585,17 @@ describe("HomeRollupStrip — business-first hero", () => {
     expect(container.querySelector('[aria-label="New customers over the period"] polyline')).not.toBeNull();
   });
 
+  it("links every hero bar to Money scoped to that day, in-shell with a real href", () => {
+    mockRollup.mockReturnValue(view({ rollup: LIVE }));
+    const { container } = render(<HomeRollupStrip spendCents={1400} />);
+    const links = Array.from(container.querySelectorAll('[aria-label="Revenue over the period"] a'));
+    expect(links.map((a) => a.getAttribute("href"))).toEqual([
+      "/chat?panel=teams-money&day=2026-08-30",
+      "/chat?panel=teams-money&day=2026-08-31",
+    ]);
+    expect(links[0].querySelector("rect")).not.toBeNull();
+  });
+
   it("calls the customer tile New customers and lets the hero span two columns beside the tiles", () => {
     mockRollup.mockReturnValue(view({ rollup: LIVE }));
     render(<HomeRollupStrip spendCents={1400} />);

@@ -85,9 +85,12 @@ export function StreamingStatusBar({
 
   if (!running && !lastTurnRecap) return null;
 
-  // A live run always outranks a previous run's recap.
+  // A live run always outranks a previous run's recap. `||`, not `??`: an
+  // empty-string phase is falsy but not nullish, so `??` would render a blank
+  // strip. The backend drops phase-less events, but the label must not depend
+  // on a guard living in another service.
   const label = running
-    ? ((runPhase && PHASE_LABEL[runPhase]) ?? "Working…")
+    ? (runPhase && PHASE_LABEL[runPhase]) || "Working…"
     : `Done in ${formatElapsed(lastTurnRecap?.runtimeMs ?? 0)}`;
 
   return (

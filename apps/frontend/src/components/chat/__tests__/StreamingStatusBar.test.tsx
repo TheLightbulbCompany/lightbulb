@@ -53,6 +53,15 @@ describe("StreamingStatusBar", () => {
     expect(screen.queryByText("some_future_phase")).toBeNull();
   });
 
+  it("falls back to Working… for an EMPTY phase, not an empty label", () => {
+    // `??` would not catch this — it only triggers on null/undefined, so an
+    // empty-string phase rendered a blank strip. The backend drops phase-less
+    // events today, but this component must not depend on a guard living in
+    // another service.
+    render(<StreamingStatusBar {...base} runPhase="" runStartedAt={Date.now()} />);
+    expect(screen.getByText(/Working/)).toBeInTheDocument();
+  });
+
   it("falls back to Working… when there is no phase", () => {
     render(<StreamingStatusBar {...base} runStartedAt={Date.now()} />);
     expect(screen.getByText(/Working/)).toBeInTheDocument();

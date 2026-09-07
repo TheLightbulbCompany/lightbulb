@@ -2339,8 +2339,11 @@ export function useAgentChat(
       turnStartedAtRef.current = Date.now();
       turnAssistantLenRef.current = 0;
       // Same instant, rendered: the strip's clock runs from the send, and a
-      // new run supersedes the previous run's recap.
+      // new run supersedes the previous run's recap. The phase is reset here
+      // too so the send path is self-contained rather than depending on every
+      // terminal path upstream having cleaned up first.
       setRunStartedAt(turnStartedAtRef.current);
+      setRunPhase(null);
       setLastTurnRecap(null);
       capture("chat_message_sent", {
         agent_id: agentId,

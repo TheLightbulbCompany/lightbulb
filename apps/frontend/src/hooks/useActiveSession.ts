@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useSyncExternalStore } from "react";
 
 // Module-level per-agent active-session store. Survives component unmounts and
 // is shared across React subtrees (the sidebar SessionList in ChatLayout and
@@ -78,8 +78,16 @@ function read(agentId: string | null): string | null {
 // Non-hook read of the module store for callers that need the active session of
 // an arbitrary agent outside a component's own useActiveSession subscription —
 // notably RunNotifications' desktop path, which must resolve a session per
-// visible chat agent and so cannot call the hook in a loop. Returns null
-// (General) when the agent has never selected a session.
+// visible chat agent and so cannot call the hook in a loop.
+//
+// PURE, deliberately. This is also the function useSyncExternalStore takes as
+// BOTH getSnapshot and getServerSnapshot, so it must never mint or persist:
+// that would be a render-phase side effect, it would diverge the server and
+// client snapshots, and — because RunNotifications calls it once per visible
+// agent — it would create and store a session for every agent in the list just
+// by rendering it. Seeding lives in an effect (see `seedWhenEmpty` below).
+// Returns null (the legacy 3-part session) when the agent has never selected
+// one.
 export function getActiveSessionId(agentId: string): string | null {
   return read(agentId);
 }
@@ -99,14 +107,33 @@ export interface UseActiveSessionReturn {
   selectSession: (sessionId: string | null) => void;
 }
 
+/**
+ * @param seedWhenEmpty Mint a first real session for this agent instead of
+ *   leaving it on the legacy 3-part key. Pass true ONLY when the agent's
+ *   session list has loaded and is EMPTY — that is the one case with nothing to
+ *   lose. An owner still holding a conversation on the legacy key carries no
+ *   stored choice that distinguishes them from a first-time visitor, so seeding
+ *   on a bare `activeSessionId === null` would re-key their chat one tick after
+ *   mount and swap their loaded transcript for an empty one. Only the two
+ *   shells (which hold the session list) pass this; useAgentChat and
+ *   RunNotifications deliberately do not.
+ */
 export function useActiveSession(
   agentId: string | null,
+  seedWhenEmpty = false,
 ): UseActiveSessionReturn {
   const activeSessionId = useSyncExternalStore(
     subscribe,
     () => read(agentId),
     () => read(agentId),
   );
+
+  // In an effect, never in read() — see getActiveSessionId's note above.
+  useEffect(() => {
+    if (!seedWhenEmpty || !agentId) return;
+    if (activeSessionId !== null) return;
+    write(agentId, crypto.randomUUID());
+  }, [seedWhenEmpty, agentId, activeSessionId]);
 
   const newSession = useCallback((): string => {
     // crypto.randomUUID() is RFC-4122 v4 and already lowercase — matches the

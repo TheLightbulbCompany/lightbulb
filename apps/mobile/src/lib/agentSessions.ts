@@ -19,8 +19,12 @@ interface RawSessionRow {
   key?: string;
   label?: string;
   derivedTitle?: string;
-  title?: string;
-  lastMessage?: { text?: string };
+  /**
+   * The row's ONLY preview field: a top-level string, capped at 240 chars by
+   * the container. There is no `lastMessage` object and no `title` — this file
+   * used to declare both and read them, so the preview line was always empty.
+   */
+  lastMessagePreview?: string;
   updatedAt?: number;
 }
 
@@ -35,7 +39,7 @@ export const SESSIONS_LIST_PARAMS = {
 
 function labelFor(row: RawSessionRow, sessionId: string): string {
   // A user-set label (sessions.patch {label}) always wins over derived titles.
-  const raw = (row.label || row.derivedTitle || row.title || row.lastMessage?.text || "").trim();
+  const raw = (row.label || row.derivedTitle || "").trim();
   // Never blank — fall back to a short id so the row is always tappable.
   const rawLabel = raw || `Session ${sessionId.slice(0, 8)}`;
   return rawLabel.length > 48 ? `${rawLabel.slice(0, 48)}…` : rawLabel;
@@ -77,7 +81,7 @@ export function projectSessionRows(
       key: row.key,
       label: labelFor(row, sessionId),
       updatedAt: row.updatedAt,
-      preview: row.lastMessage?.text?.trim() || undefined,
+      preview: row.lastMessagePreview?.trim() || undefined,
     });
   }
   out.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
@@ -94,7 +98,7 @@ export function projectSessionRows(
     key: generalRow?.key ?? legacyKey,
     label: "General",
     updatedAt: generalRow?.updatedAt,
-    preview: generalRow?.lastMessage?.text?.trim() || undefined,
+    preview: generalRow?.lastMessagePreview?.trim() || undefined,
   });
   return out;
 }

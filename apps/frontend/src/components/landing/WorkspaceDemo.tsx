@@ -725,7 +725,7 @@ export function WorkspaceDemo() {
                                     openView("chat");
                                   }}
                                 >
-                                  <span className="session-label">General</span>
+                                  <span className="session-label">Agent updates</span>
                                 </button>
                               </div>
                               <button

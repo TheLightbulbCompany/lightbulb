@@ -21,7 +21,7 @@ interface SessionRow {
   key: string;
   label?: string;
   derivedTitle?: string;
-  title?: string;
+  lastMessagePreview?: string;
   updatedAt?: number;
   totalTokens?: number;
   model?: string;
@@ -62,7 +62,7 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
     stubSessionsList([
       { key: "agent:agent-X:user-1:11111111-1111-4111-8111-111111111111", derivedTitle: "Taxes", updatedAt: 200, totalTokens: 5 },
       { key: "agent:agent-X:user-1:22222222-2222-4222-8222-222222222222", updatedAt: 300 },
-      // legacy General (3-part) — surfaced as the pinned null row
+      // legacy 3-part row — surfaced as the null row, sorted by recency
       { key: "agent:agent-X:user-1", updatedAt: 100 },
       // other agent — excluded
       { key: "agent:agent-Y:user-1:33333333-3333-4333-8333-333333333333" },
@@ -74,14 +74,15 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
     const { result } = renderAgentSessions("agent-X", "user-1");
 
     await waitFor(() => expect(result.current.sessions).toHaveLength(3));
+    // Newest first, legacy row included in the ordering rather than pinned.
     expect(result.current.sessions.map((s) => s.sessionId)).toEqual([
-      null, // legacy General pinned first
-      "22222222-2222-4222-8222-222222222222", // newer first
+      "22222222-2222-4222-8222-222222222222",
       "11111111-1111-4111-8111-111111111111",
+      null,
     ]);
-    expect(result.current.sessions[2].label).toBe("Taxes");
+    expect(result.current.sessions[1].label).toBe("Taxes");
     // Untitled falls back to a short id label, never blank.
-    expect(result.current.sessions[1].label).not.toBe("");
+    expect(result.current.sessions[0].label).not.toBe("");
   });
 
   it("carries per-session model/effort overrides through on 4-part and General rows", async () => {
@@ -116,7 +117,7 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
     expect(general?.fastMode).toBeUndefined();
   });
 
-  it("shares ONE sessions.list walk across agents (sidebar + every chat panel)", async () => {
+  it("gives each agent its own scoped fetch (the server does the narrowing)", async () => {
     stubSessionsList([
       { key: "agent:friday:user_1:0b477873-1111-4111-8111-111111111111", label: "F" },
       { key: "agent:atlas:user_1:0b477873-2222-4222-8222-222222222222", label: "A" },
@@ -133,12 +134,13 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
     await waitFor(() => expect(result.current[1].sessions).toHaveLength(1));
     expect(result.current[0].sessions[0].label).toBe("F");
     expect(result.current[1].sessions[0].label).toBe("A");
-    // One walk, not one per agent — the RPC has no agent filter, so a
-    // per-agent key was N full store scans on the container for nothing.
-    expect(callRpc.mock.calls.filter(([m]) => m === "sessions.list")).toHaveLength(1);
+    const scoped = callRpc.mock.calls
+      .filter(([m]) => m === "sessions.list")
+      .map(([, p]) => (p as { agentId?: string }).agentId);
+    expect(new Set(scoped)).toEqual(new Set(["friday", "atlas"]));
   });
 
-  it("re-fetches for a different user — the shared key is per user, not global", async () => {
+  it("re-fetches for a different user — the key is per user, not per agent alone", async () => {
     stubSessionsList([{ key: "agent:friday:user_1:0b477873-1111-4111-8111-111111111111", label: "F" }]);
     const { result, rerender } = renderHook(
       ({ userId }: { userId: string }) => useAgentSessions("friday", userId),
@@ -170,23 +172,25 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
     // rendering an empty sidebar and never hydrating the pill.
     stubSessionsList([
       { key: "agent:agent-x:user_2abcdef:11111111-1111-4111-8111-111111111111", updatedAt: 200 },
-      { key: "agent:agent-x:user_2abcdef", updatedAt: 100 }, // legacy General, lowercased
+      { key: "agent:agent-x:user_2abcdef", updatedAt: 100 }, // legacy 3-part, lowercased
     ]);
     const { result } = renderAgentSessions("Agent-X", "user_2AbcDEF");
 
     await waitFor(() => expect(result.current.sessions).toHaveLength(2));
     expect(result.current.sessions.map((s) => s.sessionId)).toEqual([
-      null, // General still surfaces
       "11111111-1111-4111-8111-111111111111",
+      null, // the legacy row still surfaces
     ]);
   });
 
   it("carries the untruncated title as rawLabel alongside the truncated display label", async () => {
+    // A user-set label is the case that still reaches the 48-char display cap:
+    // it is used verbatim, where a derived title is shortened to a name first.
     const longTitle = "b".repeat(60);
     stubSessionsList([
       {
         key: "agent:agent-x:user-1:11111111-1111-4111-8111-111111111111",
-        derivedTitle: longTitle,
+        label: longTitle,
         updatedAt: 200,
       },
     ]);
@@ -194,6 +198,115 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
     await waitFor(() => expect(result.current.sessions).toHaveLength(1));
     expect(result.current.sessions[0].label).toBe(`${longTitle.slice(0, 48)}…`);
     expect(result.current.sessions[0].rawLabel).toBe(longTitle);
+  });
+
+  it("carries lastMessagePreview onto the row as `preview`", async () => {
+    stubSessionsList([
+      {
+        key: "agent:agent-x:user-1:11111111-1111-4111-8111-111111111111",
+        derivedTitle: "Taxes",
+        lastMessagePreview: "  I checked the numbers  ",
+        updatedAt: 200,
+      },
+    ]);
+    const { result } = renderAgentSessions("agent-x", "user-1");
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+    expect(result.current.sessions[0].preview).toBe("I checked the numbers");
+  });
+
+  it("does not fall back to `title` or `lastMessage` — fields the RPC never sent", async () => {
+    // Both were in the label chain and both branches were unreachable: the row
+    // carries `lastMessagePreview` (top-level) and no `title` at all. A row
+    // with only those keys must land on the id fallback, not on their values.
+    stubSessionsList([
+      {
+        key: "agent:agent-x:user-1:11111111-1111-4111-8111-111111111111",
+        title: "from a field that does not exist",
+        lastMessage: { text: "nor does this one" },
+        updatedAt: 200,
+      } as never,
+    ]);
+    const { result } = renderAgentSessions("agent-x", "user-1");
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+    expect(result.current.sessions[0].label).toBe("Session 11111111");
+    expect(result.current.sessions[0].preview).toBeUndefined();
+  });
+
+  it("names a session from its first message without echoing it verbatim", async () => {
+    stubSessionsList([
+      {
+        key: "agent:agent-x:user-1:11111111-1111-4111-8111-111111111111",
+        derivedTitle: "hey can you check the Q3 numbers",
+        updatedAt: 200,
+      },
+    ]);
+    const { result } = renderAgentSessions("agent-x", "user-1");
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+    expect(result.current.sessions[0].label).toBe("Check the Q3 numbers");
+    // The rename editor seeds from the same cleaned title, not the raw message.
+    expect(result.current.sessions[0].rawLabel).toBe("Check the Q3 numbers");
+  });
+
+  it("never rewrites a name the owner set themselves", async () => {
+    stubSessionsList([
+      {
+        key: "agent:agent-x:user-1:11111111-1111-4111-8111-111111111111",
+        label: "can you believe it",
+        derivedTitle: "hey can you check the Q3 numbers",
+        updatedAt: 200,
+      },
+    ]);
+    const { result } = renderAgentSessions("agent-x", "user-1");
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+    expect(result.current.sessions[0].label).toBe("can you believe it");
+  });
+
+  it("titles without writing anything back to the container", async () => {
+    // The cleanup is deterministic and recomputed on every read, so there is
+    // nothing to persist. Writing it as a sessions.patch {label} would occupy
+    // the user-set-name slot permanently with a regex's output.
+    stubSessionsList([
+      {
+        key: "agent:agent-x:user-1:11111111-1111-4111-8111-111111111111",
+        derivedTitle: "hey can you check the Q3 numbers",
+        updatedAt: 200,
+      },
+    ]);
+    const { result } = renderAgentSessions("agent-x", "user-1");
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+    expect(callRpc.mock.calls.filter(([m]) => m === "sessions.patch")).toHaveLength(0);
+  });
+
+  it("carries run outcome onto the session", async () => {
+    stubSessionsList([
+      {
+        key: "agent:agent-x:user-1:11111111-1111-4111-8111-111111111111",
+        status: "failed",
+        lastRunError: "boom",
+        updatedAt: 200,
+      } as never,
+    ]);
+    const { result } = renderAgentSessions("agent-x", "user-1");
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+    expect(result.current.sessions[0].status).toBe("failed");
+    expect(result.current.sessions[0].lastRunError).toBe("boom");
+  });
+
+  it("ignores a run status of the wrong shape rather than trusting the wire", async () => {
+    stubSessionsList([
+      {
+        key: "agent:agent-x:user-1:11111111-1111-4111-8111-111111111111",
+        status: 7,
+        lastRunError: { nested: true },
+        abortedLastRun: "yes",
+        updatedAt: 200,
+      } as never,
+    ]);
+    const { result } = renderAgentSessions("agent-x", "user-1");
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+    expect(result.current.sessions[0].status).toBeUndefined();
+    expect(result.current.sessions[0].lastRunError).toBeUndefined();
+    expect(result.current.sessions[0].abortedLastRun).toBeUndefined();
   });
 
   it("prefers a user-set label over derived titles", async () => {

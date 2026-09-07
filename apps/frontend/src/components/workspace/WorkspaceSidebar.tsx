@@ -43,7 +43,6 @@ import { NodeStatusPill } from "@/components/desktop/NodeStatusPill";
 import { emitStep } from "@/components/getstarted/getStartedEvents";
 import { TEAMS_PANEL_PREFIX } from "@/components/chat/InlineTeamsPanel";
 import { SessionList } from "@/components/chat/SessionList";
-import { SessionSearch } from "@/components/chat/SessionSearch";
 import { useActiveSession } from "@/hooks/useActiveSession";
 import { useAgentSessions, type AgentSession } from "@/hooks/useAgentSessions";
 import { useSellerPublishedAgents } from "@/components/chat/shell/useSellerPublishedAgents";
@@ -89,10 +88,24 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
   // Per-agent session state. `useActiveSession` is a shared module store, so
   // selecting a row here drives the focused ChatPanel's transcript (same
   // store) — no prop drilling across the dock.
-  const { activeSessionId, newSession, selectSession } = useActiveSession(currentAgentId);
-  const { sessions: agentSessions, renameSession, deleteSession } = useAgentSessions(
+  //
+  // The list comes first because it decides the seed: an agent with no
+  // sessions AT ALL starts in a fresh one rather than in the legacy 3-part key
+  // (the channel the platform writes onboarding, nudges and cron output to).
+  // An agent that already has rows — including a legacy one still holding a
+  // live conversation — is left exactly where it is.
+  // ponytail: a failed list read also looks empty here, which would seed a new
+  // session; the owner's own rows are one click away, so this stays a plain
+  // isLoading check rather than plumbing SWR's error through the hook.
+  const {
+    sessions: agentSessions,
+    isLoading: sessionsLoading,
+    renameSession,
+    deleteSession,
+  } = useAgentSessions(currentAgentId, clerkUserId ?? null);
+  const { activeSessionId, newSession, selectSession } = useActiveSession(
     currentAgentId,
-    clerkUserId ?? null,
+    !sessionsLoading && agentSessions.length === 0,
   );
 
   const subscriptionStatus = account?.subscription_status ?? null;
@@ -203,27 +216,16 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
           onRename={setRenameTarget}
           onDelete={setDeleteTarget}
           renderSessions={() => (
-            <>
-              {/* Note: the messageId a hit carries isn't consumed yet — the
-                  transcript has no per-bubble id to scroll to. Jumping to the
-                  right session is the shipped behavior; landing on the exact
-                  message is a follow-up once HistoryMessage carries an id. */}
-              <SessionSearch
-                agentId={currentAgentId}
-                sessions={agentSessions}
-                onSelect={(sid) => selectSession(sid)}
-              />
-              <SessionList
-                sessions={agentSessions}
-                activeSessionId={activeSessionId}
-                onSelect={(sid) => selectSession(sid)}
-                onNew={() => newSession()}
-                onRename={(s, label) => {
-                  void renameSession(s.key, label);
-                }}
-                onDelete={(s) => setDeleteSessionTarget(s)}
-              />
-            </>
+            <SessionList
+              sessions={agentSessions}
+              activeSessionId={activeSessionId}
+              onSelect={(sid) => selectSession(sid)}
+              onNew={() => newSession()}
+              onRename={(s, label) => {
+                void renameSession(s.key, label);
+              }}
+              onDelete={(s) => setDeleteSessionTarget(s)}
+            />
           )}
         />
         {/* CompanyNav (Home / Inbox / Work / Knowledge / Company) plus the marketplace

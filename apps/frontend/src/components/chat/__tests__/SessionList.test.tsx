@@ -61,17 +61,17 @@ describe("SessionList", () => {
     expect(active?.getAttribute("aria-current")).toBe("true");
   });
 
-  it("renders the General row and selects null when clicked", () => {
+  it("renders the legacy row and selects null when clicked", () => {
     const onSelect = vi.fn();
     render(
       <SessionList
-        sessions={[{ sessionId: null, key: "agent:a:u", label: "General", rawLabel: "General" }]}
+        sessions={[{ sessionId: null, key: "agent:a:u", label: "Agent updates", rawLabel: "Agent updates" }]}
         activeSessionId={null}
         onSelect={onSelect}
         onNew={vi.fn()}
       />,
     );
-    fireEvent.click(screen.getByText("General"));
+    fireEvent.click(screen.getByText("Agent updates"));
     expect(onSelect).toHaveBeenCalledWith(null);
   });
 
@@ -124,17 +124,17 @@ describe("SessionList", () => {
     );
   });
 
-  it("offers no rename affordance on the General row", () => {
+  it("offers no rename affordance on the legacy row", () => {
     render(
       <SessionList
-        sessions={[{ sessionId: null, key: "agent:a:u", label: "General", rawLabel: "General" }]}
+        sessions={[{ sessionId: null, key: "agent:a:u", label: "Agent updates", rawLabel: "Agent updates" }]}
         activeSessionId={null}
         onSelect={vi.fn()}
         onNew={vi.fn()}
         onRename={vi.fn()}
       />,
     );
-    expect(screen.queryByRole("button", { name: "Rename General" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Rename Agent updates" })).toBeNull();
   });
 
   it("asks to delete a named session via the trash affordance", () => {
@@ -169,17 +169,17 @@ describe("SessionList", () => {
     expect(onSelect).not.toHaveBeenCalled();
   });
 
-  it("offers no delete affordance on the General row", () => {
+  it("offers no delete affordance on the legacy row", () => {
     render(
       <SessionList
-        sessions={[{ sessionId: null, key: "agent:a:u", label: "General", rawLabel: "General" }]}
+        sessions={[{ sessionId: null, key: "agent:a:u", label: "Agent updates", rawLabel: "Agent updates" }]}
         activeSessionId={null}
         onSelect={vi.fn()}
         onNew={vi.fn()}
         onDelete={vi.fn()}
       />,
     );
-    expect(screen.queryByRole("button", { name: "Delete General" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete Agent updates" })).toBeNull();
   });
 
   it("Enter followed by the unmount blur commits exactly once", () => {
@@ -256,6 +256,158 @@ describe("SessionList", () => {
     // And saving the unchanged full title is a no-op, not a rename.
     fireEvent.keyDown(input, { key: "Enter" });
     expect(onRename).not.toHaveBeenCalled();
+  });
+
+  it("shows a relative timestamp", () => {
+    render(
+      <SessionList
+        sessions={[
+          {
+            sessionId: "44444444-4444-4444-8444-444444444444",
+            key: "k4",
+            label: "Q3 pricing",
+            rawLabel: "Q3 pricing",
+            updatedAt: Date.now() - 7_200_000,
+          },
+        ]}
+        activeSessionId={null}
+        onSelect={vi.fn()}
+        onNew={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("2h ago")).toBeTruthy();
+  });
+
+  it("shows a one-line preview when present", () => {
+    render(
+      <SessionList
+        sessions={[
+          {
+            sessionId: "44444444-4444-4444-8444-444444444444",
+            key: "k4",
+            label: "Q3 pricing",
+            rawLabel: "Q3 pricing",
+            preview: "I checked the numbers",
+          },
+        ]}
+        activeSessionId={null}
+        onSelect={vi.fn()}
+        onNew={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/I checked the numbers/)).toBeTruthy();
+  });
+
+  it("renders cleanly with neither a preview nor a timestamp", () => {
+    render(
+      <SessionList
+        sessions={[
+          {
+            sessionId: "44444444-4444-4444-8444-444444444444",
+            key: "k4",
+            label: "Q3 pricing",
+            rawLabel: "Q3 pricing",
+          },
+        ]}
+        activeSessionId={null}
+        onSelect={vi.fn()}
+        onNew={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Q3 pricing")).toBeTruthy();
+    // No empty <time> element left behind when there is nothing to say.
+    expect(document.querySelector("time")).toBeNull();
+  });
+
+  it("the whole row stays one click target — the preview selects too", () => {
+    const onSelect = vi.fn();
+    render(
+      <SessionList
+        sessions={[
+          {
+            sessionId: "44444444-4444-4444-8444-444444444444",
+            key: "k4",
+            label: "Q3 pricing",
+            rawLabel: "Q3 pricing",
+            preview: "I checked the numbers",
+          },
+        ]}
+        activeSessionId={null}
+        onSelect={onSelect}
+        onNew={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByText(/I checked the numbers/));
+    expect(onSelect).toHaveBeenCalledWith("44444444-4444-4444-8444-444444444444");
+  });
+
+  it("marks a failed run visibly, and says so in text not just colour", () => {
+    render(
+      <SessionList
+        sessions={[
+          {
+            sessionId: "44444444-4444-4444-8444-444444444444",
+            key: "k4",
+            label: "Nightly CEO",
+            rawLabel: "Nightly CEO",
+            status: "failed",
+            lastRunError: "bedrock 429",
+          },
+        ]}
+        activeSessionId={null}
+        onSelect={vi.fn()}
+        onNew={vi.fn()}
+      />,
+    );
+    const marker = screen.getByLabelText(/failed/i);
+    expect(marker).toBeTruthy();
+    expect(marker.getAttribute("title")).toContain("bedrock 429");
+  });
+
+  it("marks killed and timed-out runs too", () => {
+    for (const status of ["killed", "timeout"] as const) {
+      const { unmount } = render(
+        <SessionList
+          sessions={[
+            {
+              sessionId: "44444444-4444-4444-8444-444444444444",
+              key: "k4",
+              label: "Nightly CEO",
+              rawLabel: "Nightly CEO",
+              status,
+            },
+          ]}
+          activeSessionId={null}
+          onSelect={vi.fn()}
+          onNew={vi.fn()}
+        />,
+      );
+      expect(screen.getByLabelText(/failed|stopped|timed out/i)).toBeTruthy();
+      unmount();
+    }
+  });
+
+  it("shows nothing extra for a successful or still-running row", () => {
+    for (const status of ["done", "running", "queued", undefined] as const) {
+      const { unmount } = render(
+        <SessionList
+          sessions={[
+            {
+              sessionId: "44444444-4444-4444-8444-444444444444",
+              key: "k4",
+              label: "Nightly CEO",
+              rawLabel: "Nightly CEO",
+              status,
+            },
+          ]}
+          activeSessionId={null}
+          onSelect={vi.fn()}
+          onNew={vi.fn()}
+        />,
+      );
+      expect(screen.queryByLabelText(/failed|stopped|timed out/i)).toBeNull();
+      unmount();
+    }
   });
 
   it("escape cancels a rename without committing", () => {

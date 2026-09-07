@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
-import { renderHook, act } from "@testing-library/react";
+import { renderHook, act, waitFor } from "@testing-library/react";
 import { installStoragePolyfill } from "@/test-utils/storagePolyfill";
 
 // Node's built-in localStorage needs a flag vitest doesn't pass, so install the
@@ -18,7 +18,7 @@ describe("useActiveSession — shared per-agent session store", () => {
     window.localStorage.clear();
   });
 
-  it("defaults to the General session (null) for an agent", async () => {
+  it("defaults to the legacy 3-part session (null) for an agent", async () => {
     const { useActiveSession } = await import("@/hooks/useActiveSession");
     const { result } = renderHook(() => useActiveSession("agent-X"));
     expect(result.current.activeSessionId).toBeNull();
@@ -162,5 +162,83 @@ describe("useActiveSession — persistence across a full page refresh", () => {
     } finally {
       if (desc) Object.defineProperty(window, "localStorage", desc);
     }
+  });
+});
+
+// Only the two shells opt in, and only for an agent whose session list has
+// loaded EMPTY. That is the one case with nothing to lose: an owner still
+// holding a conversation on the legacy 3-part key carries no stored choice
+// that tells them apart from a first-time visitor, so seeding on a bare
+// `activeSessionId === null` would re-key their chat one tick after mount and
+// swap their already-loaded transcript for an empty one.
+describe("useActiveSession — seeding a first real session", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    window.localStorage.clear();
+  });
+
+  it("settles a brand-new agent into a real session, not the legacy 3-part key", async () => {
+    const { useActiveSession } = await import("@/hooks/useActiveSession");
+    const { result } = renderHook(() => useActiveSession("agent_never_used", true));
+    await waitFor(() => expect(result.current.activeSessionId).toMatch(UUID_RE));
+    expect(window.localStorage.getItem("isol8:activeSession:agent_never_used")).toMatch(UUID_RE);
+  });
+
+  it("does NOT seed an agent that already has sessions", async () => {
+    const { useActiveSession } = await import("@/hooks/useActiveSession");
+    const { result } = renderHook(() => useActiveSession("agent_with_history", false));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(result.current.activeSessionId).toBeNull();
+    expect(window.localStorage.getItem("isol8:activeSession:agent_with_history")).toBeNull();
+  });
+
+  it("holds off while the session list is still loading, then seeds once it reads empty", async () => {
+    const { useActiveSession } = await import("@/hooks/useActiveSession");
+    const { result, rerender } = renderHook(
+      ({ seed }: { seed: boolean }) => useActiveSession("agent_loading", seed),
+      { initialProps: { seed: false } },
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(result.current.activeSessionId).toBeNull();
+
+    rerender({ seed: true });
+    await waitFor(() => expect(result.current.activeSessionId).toMatch(UUID_RE));
+  });
+
+  it("seeds once, not once per mounted consumer", async () => {
+    const { useActiveSession } = await import("@/hooks/useActiveSession");
+    const { result } = renderHook(
+      () =>
+        [useActiveSession("agent_shared", true), useActiveSession("agent_shared", true)] as const,
+    );
+    await waitFor(() => expect(result.current[0].activeSessionId).toMatch(UUID_RE));
+    expect(result.current[1].activeSessionId).toBe(result.current[0].activeSessionId);
+  });
+
+  it("an agent WITH a stored session restores it instead of seeding a new one", async () => {
+    const NAMED = "22222222-2222-4222-8222-222222222222";
+    window.localStorage.setItem("isol8:activeSession:agent_b", NAMED);
+    const { useActiveSession } = await import("@/hooks/useActiveSession");
+    const { result } = renderHook(() => useActiveSession("agent_b", true));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(result.current.activeSessionId).toBe(NAMED);
+  });
+
+  it("getActiveSessionId stays pure — it never mints and never persists", async () => {
+    // RunNotifications calls this for EVERY visible chat agent, and it is also
+    // the function useSyncExternalStore takes as getSnapshot AND
+    // getServerSnapshot. Minting inside it would be a render-phase side effect
+    // that creates and stores a session per agent just by rendering a list,
+    // and would diverge the server and client snapshots.
+    const { getActiveSessionId } = await import("@/hooks/useActiveSession");
+    expect(getActiveSessionId("agent_never_touched")).toBeNull();
+    expect(getActiveSessionId("agent_never_touched")).toBeNull();
+    expect(window.localStorage.getItem("isol8:activeSession:agent_never_touched")).toBeNull();
   });
 });

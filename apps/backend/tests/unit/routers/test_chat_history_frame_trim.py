@@ -12,7 +12,6 @@ import os
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 from routers.websocket_chat import (  # noqa: E402
-    _SESSION_PREVIEW_MAX_CHARS,
     _WS_FRAME_BUDGET_BYTES,
     _fit_rpc_result_for_frame,
     _trim_chat_history_for_frame,
@@ -112,22 +111,33 @@ def test_fit_delegates_chat_history_to_the_trim():
     assert _payload_size(out) <= _WS_FRAME_BUDGET_BYTES
 
 
-def test_fit_caps_sessions_list_previews_so_many_sessions_stay_frame_sized():
-    # 50 rows x 10KB previews = ~500KB unslimmed; the UI renders <=48 chars of
-    # each preview, so capping keeps the sidebar read deliverable.
+def test_the_sessions_list_preview_trim_is_gone():
+    """It read row["lastMessage"]["text"] — a field sessions.list has never
+    returned, at 8.1 or 7.2 — so it was a no-op on every row it ever saw. The
+    real field is the top-level `lastMessagePreview`, which the container
+    already caps at 240 chars, below the 280 this trim enforced. Nothing is
+    left for it to do.
+    """
+    from routers import websocket_chat
+
+    assert not hasattr(websocket_chat, "_slim_sessions_list_previews")
+    assert not hasattr(websocket_chat, "_SESSION_PREVIEW_MAX_CHARS")
+
+
+def test_fit_passes_a_full_sessions_list_page_through_untouched():
+    # A real page: 100 rows, each with the container's own 240-char preview cap
+    # applied upstream. No backend trim, and the frame still fits.
     rows = [
-        {"key": f"agent:a1:user_1:0000000{i}", "lastMessage": {"text": "y" * 10_000}, "updatedAt": i} for i in range(50)
+        {
+            "key": f"agent:a1:user_1:0000000{i}",
+            "lastMessagePreview": "y" * 240,
+            "updatedAt": i,
+        }
+        for i in range(100)
     ]
-    out = _fit_rpc_result_for_frame("sessions.list", {"sessions": rows})
-    assert _payload_size(out) <= _WS_FRAME_BUDGET_BYTES
-    assert all(len(r["lastMessage"]["text"]) == _SESSION_PREVIEW_MAX_CHARS for r in out["sessions"])
-    # Non-preview fields are untouched.
-    assert out["sessions"][7]["updatedAt"] == 7
-
-
-def test_fit_leaves_short_preview_rows_alone():
-    result = {"sessions": [{"key": "agent:a1:user_1", "lastMessage": {"text": "short"}}]}
+    result = {"sessions": rows}
     assert _fit_rpc_result_for_frame("sessions.list", result) is result
+    assert _payload_size(result) <= _WS_FRAME_BUDGET_BYTES
 
 
 def test_trim_rewrites_next_offset_for_a_paged_response():

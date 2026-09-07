@@ -20,6 +20,8 @@ export interface AgentSession {
   label: string;
   /** Untruncated source of `label`; what a rename editor must start from. */
   rawLabel: string;
+  /** One-line preview of the last visible message; upstream caps it at 240. */
+  preview?: string;
   updatedAt?: number;
   totalTokens?: number;
   // Per-session model/effort overrides sessions.list reports (all optional —
@@ -39,8 +41,13 @@ interface RawSessionRow {
   key: string;
   label?: string;
   derivedTitle?: string;
-  title?: string;
-  lastMessage?: { text?: string };
+  /**
+   * The row's ONLY preview field: a top-level string, capped at 240 chars by
+   * the container. There is no `lastMessage` object and no `title` — this hook
+   * used to declare both and read them in the label chain, and neither branch
+   * could ever be reached.
+   */
+  lastMessagePreview?: string;
   updatedAt?: number;
   totalTokens?: number;
   model?: string;
@@ -66,12 +73,18 @@ function modelControlsOf(row: RawSessionRow): Pick<
   };
 }
 
+/** The row's preview line, or undefined when blank/absent (never an empty string). */
+function previewOf(row: RawSessionRow): string | undefined {
+  const text = typeof row.lastMessagePreview === "string" ? row.lastMessagePreview.trim() : "";
+  return text || undefined;
+}
+
 function labelsFor(
   row: RawSessionRow,
   sessionId: string,
 ): { label: string; rawLabel: string } {
   // A user-set label (sessions.patch {label}) always wins over derived titles.
-  const raw = (row.label || row.derivedTitle || row.title || row.lastMessage?.text || "").trim();
+  const raw = (row.label || row.derivedTitle || "").trim();
   // Never blank — fall back to a short id so the row is always clickable.
   const rawLabel = raw || `Session ${sessionId.slice(0, 8)}`;
   // Display copy is truncated; rawLabel stays intact so a rename editor never
@@ -160,6 +173,7 @@ export function useAgentSessions(
         sessionId,
         key: row.key,
         ...labelsFor(row, sessionId),
+        preview: previewOf(row),
         updatedAt: row.updatedAt,
         totalTokens: row.totalTokens,
         ...modelControlsOf(row),

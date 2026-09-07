@@ -21,7 +21,7 @@ interface SessionRow {
   key: string;
   label?: string;
   derivedTitle?: string;
-  title?: string;
+  lastMessagePreview?: string;
   updatedAt?: number;
   totalTokens?: number;
   model?: string;
@@ -195,6 +195,38 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
     await waitFor(() => expect(result.current.sessions).toHaveLength(1));
     expect(result.current.sessions[0].label).toBe(`${longTitle.slice(0, 48)}…`);
     expect(result.current.sessions[0].rawLabel).toBe(longTitle);
+  });
+
+  it("carries lastMessagePreview onto the row as `preview`", async () => {
+    stubSessionsList([
+      {
+        key: "agent:agent-x:user-1:11111111-1111-4111-8111-111111111111",
+        derivedTitle: "Taxes",
+        lastMessagePreview: "  I checked the numbers  ",
+        updatedAt: 200,
+      },
+    ]);
+    const { result } = renderAgentSessions("agent-x", "user-1");
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+    expect(result.current.sessions[0].preview).toBe("I checked the numbers");
+  });
+
+  it("does not fall back to `title` or `lastMessage` — fields the RPC never sent", async () => {
+    // Both were in the label chain and both branches were unreachable: the row
+    // carries `lastMessagePreview` (top-level) and no `title` at all. A row
+    // with only those keys must land on the id fallback, not on their values.
+    stubSessionsList([
+      {
+        key: "agent:agent-x:user-1:11111111-1111-4111-8111-111111111111",
+        title: "from a field that does not exist",
+        lastMessage: { text: "nor does this one" },
+        updatedAt: 200,
+      } as never,
+    ]);
+    const { result } = renderAgentSessions("agent-x", "user-1");
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+    expect(result.current.sessions[0].label).toBe("Session 11111111");
+    expect(result.current.sessions[0].preview).toBeUndefined();
   });
 
   it("prefers a user-set label over derived titles", async () => {

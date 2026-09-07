@@ -277,6 +277,38 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
     expect(callRpc.mock.calls.filter(([m]) => m === "sessions.patch")).toHaveLength(0);
   });
 
+  it("carries run outcome onto the session", async () => {
+    stubSessionsList([
+      {
+        key: "agent:agent-x:user-1:11111111-1111-4111-8111-111111111111",
+        status: "failed",
+        lastRunError: "boom",
+        updatedAt: 200,
+      } as never,
+    ]);
+    const { result } = renderAgentSessions("agent-x", "user-1");
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+    expect(result.current.sessions[0].status).toBe("failed");
+    expect(result.current.sessions[0].lastRunError).toBe("boom");
+  });
+
+  it("ignores a run status of the wrong shape rather than trusting the wire", async () => {
+    stubSessionsList([
+      {
+        key: "agent:agent-x:user-1:11111111-1111-4111-8111-111111111111",
+        status: 7,
+        lastRunError: { nested: true },
+        abortedLastRun: "yes",
+        updatedAt: 200,
+      } as never,
+    ]);
+    const { result } = renderAgentSessions("agent-x", "user-1");
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+    expect(result.current.sessions[0].status).toBeUndefined();
+    expect(result.current.sessions[0].lastRunError).toBeUndefined();
+    expect(result.current.sessions[0].abortedLastRun).toBeUndefined();
+  });
+
   it("prefers a user-set label over derived titles", async () => {
     stubSessionsList([
       {

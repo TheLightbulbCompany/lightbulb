@@ -341,6 +341,75 @@ describe("SessionList", () => {
     expect(onSelect).toHaveBeenCalledWith("44444444-4444-4444-8444-444444444444");
   });
 
+  it("marks a failed run visibly, and says so in text not just colour", () => {
+    render(
+      <SessionList
+        sessions={[
+          {
+            sessionId: "44444444-4444-4444-8444-444444444444",
+            key: "k4",
+            label: "Nightly CEO",
+            rawLabel: "Nightly CEO",
+            status: "failed",
+            lastRunError: "bedrock 429",
+          },
+        ]}
+        activeSessionId={null}
+        onSelect={vi.fn()}
+        onNew={vi.fn()}
+      />,
+    );
+    const marker = screen.getByLabelText(/failed/i);
+    expect(marker).toBeTruthy();
+    expect(marker.getAttribute("title")).toContain("bedrock 429");
+  });
+
+  it("marks killed and timed-out runs too", () => {
+    for (const status of ["killed", "timeout"] as const) {
+      const { unmount } = render(
+        <SessionList
+          sessions={[
+            {
+              sessionId: "44444444-4444-4444-8444-444444444444",
+              key: "k4",
+              label: "Nightly CEO",
+              rawLabel: "Nightly CEO",
+              status,
+            },
+          ]}
+          activeSessionId={null}
+          onSelect={vi.fn()}
+          onNew={vi.fn()}
+        />,
+      );
+      expect(screen.getByLabelText(/failed|stopped|timed out/i)).toBeTruthy();
+      unmount();
+    }
+  });
+
+  it("shows nothing extra for a successful or still-running row", () => {
+    for (const status of ["done", "running", "queued", undefined] as const) {
+      const { unmount } = render(
+        <SessionList
+          sessions={[
+            {
+              sessionId: "44444444-4444-4444-8444-444444444444",
+              key: "k4",
+              label: "Nightly CEO",
+              rawLabel: "Nightly CEO",
+              status,
+            },
+          ]}
+          activeSessionId={null}
+          onSelect={vi.fn()}
+          onNew={vi.fn()}
+        />,
+      );
+      expect(screen.queryByLabelText(/failed|stopped|timed out/i)).toBeNull();
+      unmount();
+    }
+  });
+
   it("escape cancels a rename without committing", () => {
     const onRename = vi.fn();
     render(

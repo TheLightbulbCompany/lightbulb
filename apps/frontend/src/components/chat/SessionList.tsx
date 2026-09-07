@@ -1,10 +1,17 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { Pencil, Plus, Trash2 } from "lucide-react";
-import type { AgentSession } from "@/hooks/useAgentSessions";
+import { AlertTriangle, Pencil, Plus, Trash2 } from "lucide-react";
+import { isUnhappyRun, type AgentSession } from "@/hooks/useAgentSessions";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
+
+/** Plain words for the three bad terminal outcomes; keyed to the row's status. */
+const RUN_OUTCOME_LABEL = {
+  failed: "Last run failed",
+  killed: "Last run was stopped",
+  timeout: "Last run timed out",
+} as const;
 
 interface SessionListProps {
   sessions: AgentSession[];
@@ -77,6 +84,7 @@ export function SessionList({
       {sessions.map((s) => {
         const isActive = s.sessionId === activeSessionId;
         const isEditing = editing?.key === s.key;
+        const outcome = isUnhappyRun(s.status) ? RUN_OUTCOME_LABEL[s.status] : null;
         return (
           <div key={s.key} className={`session-row${isActive ? " active" : ""}`}>
             {isEditing ? (
@@ -105,6 +113,19 @@ export function SessionList({
                   }}
                 >
                   <span className="session-line">
+                    {outcome && (
+                      /* A failed routine used to look identical to one that
+                         worked. The marker carries its own label and hover
+                         text, so the signal is never colour alone. */
+                      <span
+                        className="session-outcome"
+                        role="img"
+                        aria-label={outcome}
+                        title={s.lastRunError || outcome}
+                      >
+                        <AlertTriangle size={11} aria-hidden />
+                      </span>
+                    )}
                     <span className="session-label">{s.label}</span>
                     {s.updatedAt ? (
                       <time className="session-when" dateTime={new Date(s.updatedAt).toISOString()}>

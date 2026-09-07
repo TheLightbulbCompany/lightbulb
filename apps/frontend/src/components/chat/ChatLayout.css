@@ -605,6 +605,13 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Bad terminal outcome. Colour is the secondary cue — the icon carries an
+   aria-label and a title, so the signal survives without it. */
+.session-outcome {
+  flex-shrink: 0;
+  align-self: center;
+  color: var(--err);
+}
 /* Metadata, so it never wins width from the name: it keeps its intrinsic size
    and the label truncates around it. */
 .session-when {

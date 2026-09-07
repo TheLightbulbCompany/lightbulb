@@ -23,6 +23,20 @@ const SESSION_ID_RE =
  */
 export const LEGACY_ROW_LABEL = "Agent updates";
 
+/** The container's own run-status vocabulary, on every sessions.list row. */
+const RUN_STATUSES = ["queued", "running", "done", "failed", "killed", "timeout"] as const;
+export type SessionRunStatus = (typeof RUN_STATUSES)[number];
+
+/** Terminal outcomes worth surfacing — a run that ended badly. */
+export type UnhappyRunStatus = "failed" | "killed" | "timeout";
+const UNHAPPY_STATUSES: readonly string[] = ["failed", "killed", "timeout"];
+
+export function isUnhappyRun(
+  status: SessionRunStatus | undefined,
+): status is UnhappyRunStatus {
+  return status !== undefined && UNHAPPY_STATUSES.includes(status);
+}
+
 export interface AgentSession {
   /** Trailing UUID for a real session; null == the legacy 3-part session. */
   sessionId: string | null;
@@ -34,6 +48,12 @@ export interface AgentSession {
   rawLabel: string;
   /** One-line preview of the last visible message; upstream caps it at 240. */
   preview?: string;
+  /** Outcome of the session's most recent run. */
+  status?: SessionRunStatus;
+  /** Error text from that run, when it failed. */
+  lastRunError?: string;
+  /** The last run was aborted rather than ending on its own. */
+  abortedLastRun?: boolean;
   updatedAt?: number;
   totalTokens?: number;
   // Per-session model/effort overrides sessions.list reports (all optional —
@@ -60,6 +80,9 @@ interface RawSessionRow {
    * could ever be reached.
    */
   lastMessagePreview?: string;
+  status?: string;
+  lastRunError?: string;
+  abortedLastRun?: boolean;
   updatedAt?: number;
   totalTokens?: number;
   model?: string;
@@ -161,6 +184,22 @@ export function titleFromDerived(derived: string): string {
   // Only the first character is touched: lowercasing the rest would flatten
   // acronyms and names ("SOC2", "Sarah").
   return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/**
+ * Run outcome off the row, type-guarded the way modelControlsOf guards its
+ * fields: rows are untyped over the wire, and an unrecognised status must read
+ * as "no outcome" rather than render a marker we cannot explain.
+ */
+function runOutcomeOf(
+  row: RawSessionRow,
+): Pick<AgentSession, "status" | "lastRunError" | "abortedLastRun"> {
+  const status = RUN_STATUSES.find((s) => s === row.status);
+  return {
+    status,
+    lastRunError: typeof row.lastRunError === "string" ? row.lastRunError : undefined,
+    abortedLastRun: typeof row.abortedLastRun === "boolean" ? row.abortedLastRun : undefined,
+  };
 }
 
 /** The row's preview line, or undefined when blank/absent (never an empty string). */
@@ -265,6 +304,7 @@ export function useAgentSessions(
         key: row.key,
         ...labelsFor(row, sessionId),
         preview: previewOf(row),
+        ...runOutcomeOf(row),
         updatedAt: row.updatedAt,
         totalTokens: row.totalTokens,
         ...modelControlsOf(row),
@@ -284,6 +324,7 @@ export function useAgentSessions(
         label: LEGACY_ROW_LABEL,
         rawLabel: LEGACY_ROW_LABEL,
         preview: previewOf(legacyRow),
+        ...runOutcomeOf(legacyRow),
         // Carried over deliberately: the projection used to drop it, which is
         // survivable only while the row is pinned. Sorted by recency it would
         // otherwise sit last forever.

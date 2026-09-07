@@ -1106,6 +1106,9 @@ class GatewayConnection:
           (live stdout/stderr addressed to the matching tool pill).
         - ``stream: "plan" | "patch" | "item" | "acp"`` are folded into one
           uniform ``agent_activity`` envelope for a single low-noise pill.
+        - ``stream: "run_status" | "compaction"`` ride the same envelope but
+          describe the run's CURRENT STATE (startup phase, history compaction)
+          rather than an event; the frontend routes them to the status strip.
 
         ``approval`` and ``lifecycle`` are intentionally NOT handled here — they
         are consumed upstream in ``_handle_message`` (approval run-active window
@@ -1181,6 +1184,40 @@ class GatewayConnection:
                 transformed = {"type": "command_output", "toolCallId": tool_call_id}
                 if "output" in data:
                     transformed["output"] = data["output"]
+
+        elif stream in ("run_status", "compaction"):
+            # Two "what is it doing right now" streams that used to fall out of
+            # this transform as None.
+            #
+            # run_status: the typed startup phases OpenClaw emits between the
+            # send and the first token (agent-run-status-events.ts). A closed
+            # enum — preparing_workspace | naming_worktree | creating_worktree |
+            # running_setup | provisioning_environment | preparing_context |
+            # starting_model — so the frontend maps it to copy rather than
+            # printing a raw enum at someone who does not know what a worktree
+            # is. Only the workspace/context/model three reach our fleet; the
+            # worktree and environment phases come from project sessions and
+            # worker environments, neither of which we run.
+            #
+            # compaction: history compaction start/end. A long session stalls
+            # for tens of seconds here with no explanation, and a compaction
+            # that FAILS (completed: false) otherwise reads as an unexplained
+            # pause followed by a possibly context-lost reply.
+            #
+            # Both ride the existing agent_activity envelope — no new frame
+            # type, no protocol change — and `detail` carries the whole payload
+            # so the frontend can tell a completed compaction from a failed one.
+            # The frontend routes these two activities to the run-status strip
+            # instead of a transcript pill: a phase is the run's current state,
+            # not an event worth logging.
+            phase = data.get("phase", "")
+            if phase:
+                transformed = {
+                    "type": "agent_activity",
+                    "activity": stream,
+                    "title": phase,
+                    "detail": data,
+                }
 
         elif stream in ("plan", "patch", "item", "acp"):
             # Low-noise "agent activity" surfaces upstream renders as rich

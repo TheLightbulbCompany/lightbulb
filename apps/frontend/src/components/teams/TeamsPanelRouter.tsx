@@ -32,10 +32,7 @@ const PANEL_LOADERS: Record<string, () => Promise<React.ComponentType>> = {
   accounts: () => import("./panels/AccountsPanel").then((m) => m.AccountsPanel),
   search: () => import("./panels/SearchPanel").then((m) => m.SearchPanel),
   settings: () => import("./panels/SettingsPanel").then((m) => m.SettingsPanel),
-  spend: () => import("./panels/SpendPanel").then((m) => m.SpendPanel),
-  payments: () => import("./panels/PaymentsPanel").then((m) => m.PaymentsPanel),
-  products: () => import("./panels/ProductsPanel").then((m) => m.ProductsPanel),
-  customers: () => import("./panels/CustomersPanel").then((m) => m.CustomersPanel),
+  money: () => import("./panels/MoneyPanel").then((m) => m.MoneyPanel),
   publish: () => import("./panels/PublishPanel").then((m) => m.PublishPanel),
   seo: () => import("./panels/SeoPanel").then((m) => m.SeoPanel),
   ads: () => import("./panels/AdsPanel").then((m) => m.AdsPanel),
@@ -85,6 +82,12 @@ const BrainPanel = dynamic(
   () => import("./panels/BrainPanel").then((m) => m.BrainPanel),
   { loading: PanelSkeleton },
 );
+
+// Money absorbed the four old Payments/Products/Customers/Spend tabs as
+// sections of one ledger page — their keys still open, scrolled to their
+// section, rather than 404ing an owner's saved link.
+const MoneyPanel = dynamic(() => import("./panels/MoneyPanel").then((m) => m.MoneyPanel), { loading: PanelSkeleton });
+const MONEY_SECTIONS: Record<string, "payments" | "customers" | "products" | "spend" | null> = { money: null, payments: "payments", customers: "customers", products: "products", spend: "spend" };
 
 // Warm every panel chunk (called from the shell during browser idle time) so
 // the first open of a panel mounts from the module cache instead of fetching
@@ -167,6 +170,16 @@ export function TeamsPanelRouter({
         initialPath={panelParams?.path ?? null}
         initialTab={panelParams?.tab === "dreams" ? "dreams" : null}
         onPathUnavailable={() => onUpdateDurableParam?.("path", null)}
+      />
+    );
+  }
+
+  if (panel in MONEY_SECTIONS) {
+    return (
+      <MoneyPanel
+        section={MONEY_SECTIONS[panel]}
+        day={panelParams?.day ?? null}
+        onDayCleared={() => onUpdateDurableParam?.("day", null)}
       />
     );
   }

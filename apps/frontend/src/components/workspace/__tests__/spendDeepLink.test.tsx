@@ -11,17 +11,17 @@
 //
 //   1. the reconciler turns the URL into a teams command,
 //   2. openPanel adds a real dock panel carrying teamsKey: "spend",
-//   3. TeamsPanelRouter MOUNTS a panel for that teamsKey — the loader entry
-//      exists, so it is not the "Unknown panel" fallback.
+//   3. TeamsPanelRouter MOUNTS a panel for that teamsKey — the absorbed key
+//      lands on Money's `section` prop, not the "Unknown panel" fallback.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import type { DockviewApi } from "dockview-react";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace: vi.fn() }) }));
 
-// Stubbed so the mount assertion is about ROUTING, not SpendPanel's data hooks.
-vi.mock("@/components/teams/panels/SpendPanel", () => ({
-  SpendPanel: () => <div data-testid="spend-panel" />,
+// Stubbed so the mount assertion is about ROUTING, not MoneyPanel's data hooks.
+vi.mock("@/components/teams/panels/MoneyPanel", () => ({
+  MoneyPanel: (p: { section?: string }) => <div data-testid="money-panel" data-section={p.section ?? ""} />,
 }));
 
 import { deriveReconcilerAction } from "../workspaceShellReconciler";
@@ -107,8 +107,18 @@ describe("?panel=teams-spend resolves and mounts through the reconciler seam", (
     const decision = deriveReconcilerAction("?panel=teams-spend", null)!;
     const teamsKey = decision.command!.descriptor.params.teamsKey;
     render(<TeamsPanelRouter panel={teamsKey} />);
-    expect(await screen.findByTestId("spend-panel")).toBeInTheDocument();
+    expect(await screen.findByTestId("money-panel")).toHaveAttribute("data-section", "spend");
     expect(screen.queryByText(/Unknown panel/)).toBeNull();
+  });
+
+  it("the absorbed `payments` key lands on Money's section too", async () => {
+    render(<TeamsPanelRouter panel="payments" />);
+    expect(await screen.findByTestId("money-panel")).toHaveAttribute("data-section", "payments");
+  });
+
+  it("the bare `money` key renders Money with no section", async () => {
+    render(<TeamsPanelRouter panel="money" />);
+    expect(await screen.findByTestId("money-panel")).toHaveAttribute("data-section", "");
   });
 
   it("?panel=usage still resolves to the control panel — the old key was not stolen", () => {

@@ -1,0 +1,73 @@
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { render, screen } from "@testing-library/react";
+
+const money = vi.hoisted(() => ({ view: { kind: "rows" } as { kind: string } }));
+vi.mock("@/hooks/useCompanyMoney", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("@/hooks/useCompanyMoney")>();
+  return { ...mod, useCompanyMoney: () => ({ rows: [], view: money.view, hasMore: false, next: vi.fn() }) };
+});
+const rollup = vi.hoisted(() => ({ value: undefined as unknown, loading: false }));
+vi.mock("@/hooks/useCompanyRollup", () => ({ useCompanyRollup: () => ({ rollup: rollup.value, isLoading: rollup.loading, windowStart: "2026-06-09", span: 90, error: undefined, refresh: vi.fn(), isUnavailable: () => false }) }));
+vi.mock("@/components/teams/panels/money/AgentSpendSection", () => ({ AgentSpendSection: () => <section aria-label="Agent spend" /> }));
+vi.mock("@/components/teams/panels/money/PaymentsSection", () => ({ PaymentsSection: ({ day }: { day: string | null }) => <section aria-label="Payments" data-day={day ?? ""} /> }));
+vi.mock("@/components/teams/panels/money/CustomersSection", () => ({ CustomersSection: ({ newIn30Days }: { newIn30Days: number | null }) => <section aria-label="Customers" data-new={String(newIn30Days)} /> }));
+vi.mock("@/components/teams/panels/money/ProductsSection", () => ({ ProductsSection: () => <section aria-label="What you sell" /> }));
+
+import { MoneyPanel } from "../MoneyPanel";
+import { biggestDay, formatMicrocents, monthToDate } from "../money/money";
+
+const bound = { start: "2026-06-09", end: "2026-09-06", stripe_bound: true, first_day: "2026-08-30", unavailable: [], agent_spend_month_to_date_microcents: 0,
+  days: [
+    { day: "2026-08-31", revenue_microcents: 90_000_000, signups: 1, visitors: 0 },
+    { day: "2026-09-02", revenue_microcents: 34_000_000, signups: 2, visitors: 0 },
+    { day: "2026-09-05", revenue_microcents: 640_000_000, signups: 4, visitors: 0 },
+  ] };
+
+describe("MoneyPanel — one ledger page", () => {
+  beforeEach(() => { rollup.value = bound; rollup.loading = false; money.view = { kind: "rows" }; vi.useFakeTimers({ now: new Date("2026-09-06T12:00:00Z"), toFake: ["Date"] }); });
+  afterEach(() => vi.useRealTimers());
+
+  it("carries the month's landed revenue in the masthead, the biggest day under it, and the four sections in order", () => {
+    render(<MoneyPanel />);
+    expect(screen.getByRole("heading", { level: 1, name: "Money" })).toBeInTheDocument();
+    expect(screen.getByTestId("panel-masthead-meta")).toHaveTextContent("$674 landed in September");
+    expect(screen.getByText(/Biggest day: Sep 5, 2026 · \$640/)).toBeInTheDocument();
+    const names = screen.getAllByRole("region").map((r) => r.getAttribute("aria-label"));
+    expect(names).toEqual(["Payments", "Customers", "What you sell", "Agent spend"]);
+    expect(screen.getByRole("region", { name: "Customers" })).toHaveAttribute("data-new", "6");
+  });
+
+  it("hands the day scope to Payments and links the biggest day to it", () => {
+    render(<MoneyPanel day="2026-09-05" />);
+    expect(screen.getByRole("region", { name: "Payments" })).toHaveAttribute("data-day", "2026-09-05");
+  });
+
+  it("gates the Stripe sections behind the account state, and keeps Agent spend", () => {
+    money.view = { kind: "unbound" };
+    rollup.value = { ...bound, stripe_bound: false, days: [] };
+    render(<MoneyPanel />);
+    expect(screen.getByText("Payments are not set up for this business yet.")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Payments" })).toBeNull();
+    expect(screen.getByRole("region", { name: "Agent spend" })).toBeInTheDocument();
+    expect(screen.queryByTestId("panel-masthead-meta")).toBeNull();
+  });
+
+  it("prints no landed figure while the rollup is in flight, and none when the month has no rows", () => {
+    rollup.value = undefined; rollup.loading = true;
+    const { rerender } = render(<MoneyPanel />);
+    expect(screen.queryByTestId("panel-masthead-meta")).toBeNull();
+    rollup.value = { ...bound, days: [bound.days[0]] }; rollup.loading = false;
+    rerender(<MoneyPanel />);
+    expect(screen.queryByTestId("panel-masthead-meta")).toBeNull();
+    expect(screen.queryByText(/Biggest day/)).toBeNull();
+  });
+
+  it("helpers: month-to-date is UTC-month scoped and signed; biggest day ignores refund days", () => {
+    expect(formatMicrocents(674_000_000)).toBe("$674"); // whole dollars render without cents (formatUsdCents)
+    expect(formatMicrocents(674_500_000)).toBe("$674.50");
+    expect(formatMicrocents(-5_000_000)).toBe("−$5");
+    expect(monthToDate(bound.days, "2026-09-06")).toEqual({ month: "2026-09", microcents: 674_000_000 });
+    expect(monthToDate([bound.days[0]], "2026-09-06")).toBeNull();
+    expect(biggestDay([...bound.days, { day: "2026-09-04", revenue_microcents: -90_000_000, signups: 0, visitors: 0 }], "2026-09")!.day).toBe("2026-09-05");
+  });
+});

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
+import * as React from "react";
 import { render, screen } from "@testing-library/react";
 
 import { ChatErrorCard } from "../ChatErrorCard";
@@ -158,18 +159,34 @@ describe("ChatErrorCard", () => {
     );
   });
 
-  it("suppresses Retry on money codes but keeps it elsewhere", () => {
-    const onRetry = vi.fn();
-    for (const code of ["trial_daily_cap", "trial_expired", "out_of_credits", "subscription_inactive"]) {
-      const { unmount } = render(<ChatErrorCard code={code} message="" onRetry={onRetry} />);
-      // Retry against a budget wall is guaranteed to fail until reset or
-      // top-up; offering it reads as product flakiness, not an exhausted
-      // allowance.
+  /**
+   * The card carried a Retry button behind `Boolean(onRetry)` and a
+   * MONEY_CODES suppression list, and the only production caller
+   * (MessageList) never passed a handler — so it had never rendered, not
+   * once. It was deleted rather than wired: Retry is only truthful for
+   * `timeout`, and reaching it needs a resend threaded four layers down
+   * through MessageList, which has no send on its props at all.
+   *
+   * Cast past the prop type on purpose. A future caller can only resurrect
+   * this button by passing a handler, so that is exactly what the guard has
+   * to attempt.
+   */
+  it("has no Retry affordance, for any code, even when handed a handler", () => {
+    const Card = ChatErrorCard as unknown as React.FC<Record<string, unknown>>;
+    for (const code of [
+      "timeout",
+      "rate_limit",
+      "refusal",
+      "context_length",
+      "trial_daily_cap",
+      "trial_expired",
+      "out_of_credits",
+      "subscription_inactive",
+    ]) {
+      const { unmount } = render(<Card code={code} message="" onRetry={vi.fn()} />);
       expect(screen.queryByRole("button", { name: /retry/i })).not.toBeInTheDocument();
       unmount();
     }
-    render(<ChatErrorCard code="timeout" message="" onRetry={onRetry} />);
-    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
   });
 
   it("falls back to a generic title for unknown codes and shows the upstream message verbatim", () => {
@@ -184,14 +201,6 @@ describe("ChatErrorCard", () => {
     expect(
       screen.getByText("Your agent encountered an error. Please try again."),
     ).toBeInTheDocument();
-  });
-
-  it("renders a retry button when onRetry is provided", () => {
-    const onRetry = vi.fn();
-    render(<ChatErrorCard code="rate_limit" message="rate limited" onRetry={onRetry} />);
-    const retryBtn = screen.getByRole("button", { name: /retry/i });
-    retryBtn.click();
-    expect(onRetry).toHaveBeenCalledTimes(1);
   });
 
   it("attaches the code as a data attribute for analytics / e2e", () => {

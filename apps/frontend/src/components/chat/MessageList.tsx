@@ -1228,6 +1228,20 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
     // pulling — they'll scroll back down themselves. Threshold matches
     // Tailwind's `space-y-10` (~40px) plus a comfortable margin.
     const isNearBottomRef = React.useRef(true);
+    // "Jump to latest" visibility. Deliberately ONE boolean rather than two
+    // derived conditions, because the two halves are set from different
+    // places and neither is sufficient alone: it goes true only when content
+    // arrives WHILE the reader is scrolled away (the streaming effect below),
+    // and false the moment they are back near the bottom (handleScroll).
+    //
+    // Gating on "newer content exists" alone is the known failure mode —
+    // upstream shipped that and the button flashed on every reply, because
+    // from the first streaming tick of a turn there is always content at the
+    // tail. Their fix was to AND it with live-edge geometry; this is the same
+    // predicate, collapsed into the flag's own transitions.
+    //
+    // State, not a ref, because unlike isNearBottomRef this one has to paint.
+    const [showJumpToLatest, setShowJumpToLatest] = React.useState(false);
     const hasMountedRef = React.useRef(false);
     const prevTotalItemsRef = React.useRef(0);
     const prevLastTailLengthRef = React.useRef(0);
@@ -1236,6 +1250,16 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
     React.useImperativeHandle(ref, () => ({
       scrollToBottom,
     }));
+
+    // Re-pin autoscroll by hand rather than waiting for the scroll event the
+    // write below queues: that event is asynchronous, so the next streaming
+    // commit could land first, read a stale isNearBottomRef and re-arm the
+    // button on the very chunk the user jumped to see.
+    const handleJumpToLatest = React.useCallback(() => {
+      isNearBottomRef.current = true;
+      setShowJumpToLatest(false);
+      scrollToBottom();
+    }, [scrollToBottom]);
 
     // Scroll events can burst several times per frame (touch / momentum
     // scrolling), and every run measures the container. Coalesce them to one
@@ -1256,6 +1280,9 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
       if (!c) return;
       const distance = c.scrollHeight - c.scrollTop - c.clientHeight;
       isNearBottomRef.current = distance < 120;
+      // Back at the live edge — whatever arrived while they were away is now
+      // on screen, so the affordance has nothing left to offer.
+      if (isNearBottomRef.current) setShowJumpToLatest(false);
       scrollFrameRef.current = requestAnimationFrame(() => {
         scrollFrameRef.current = null;
       });
@@ -1323,9 +1350,17 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
       if (isFirstPaintWithItems || newUserMessage) {
         snapToBottom();
         isNearBottomRef.current = true;
+        setShowJumpToLatest(false);
         hasMountedRef.current = true;
-      } else if ((itemsIncreased || tailGrew) && isNearBottomRef.current) {
-        snapToBottom();
+      } else if (itemsIncreased || tailGrew) {
+        if (isNearBottomRef.current) {
+          snapToBottom();
+        } else {
+          // Content arrived below a reader who has scrolled away. This is the
+          // ONLY place the affordance is armed, which is what keeps it off
+          // screen for someone sitting at the live edge.
+          setShowJumpToLatest(true);
+        }
       }
 
       if (totalItems > 0) hasMountedRef.current = true;
@@ -1417,6 +1452,24 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
           ))}
           {showTypingPlaceholder && <TypingPlaceholder agentName={agentName} />}
         </div>
+        {/* Sticky, not absolute: `absolute` inside a scroll container anchors
+            to the scrolled content, which would park this at the end of the
+            transcript instead of over the viewport. Sticky pins it to the
+            scrollport. It sits OUTSIDE .chat-transcript because that class
+            gives every direct child `content-visibility: auto` and a 200px
+            intrinsic-size placeholder. `h-0` keeps it out of layout so
+            appearing and disappearing never reflows the transcript. */}
+        {showJumpToLatest && (
+          <div className="sticky bottom-4 z-10 flex h-0 justify-center">
+            <button
+              type="button"
+              onClick={handleJumpToLatest}
+              className="-translate-y-full text-caption text-[var(--midnight-soft)] hover:text-[var(--midnight)] px-3 py-1 rounded-full border border-[var(--edge)] bg-[var(--cream-deep)] shadow-sm"
+            >
+              Jump to latest
+            </button>
+          </div>
+        )}
       </div>
     );
   }

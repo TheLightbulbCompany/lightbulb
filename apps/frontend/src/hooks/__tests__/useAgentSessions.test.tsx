@@ -184,11 +184,13 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
   });
 
   it("carries the untruncated title as rawLabel alongside the truncated display label", async () => {
+    // A user-set label is the case that still reaches the 48-char display cap:
+    // it is used verbatim, where a derived title is shortened to a name first.
     const longTitle = "b".repeat(60);
     stubSessionsList([
       {
         key: "agent:agent-x:user-1:11111111-1111-4111-8111-111111111111",
-        derivedTitle: longTitle,
+        label: longTitle,
         updatedAt: 200,
       },
     ]);
@@ -228,6 +230,51 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
     await waitFor(() => expect(result.current.sessions).toHaveLength(1));
     expect(result.current.sessions[0].label).toBe("Session 11111111");
     expect(result.current.sessions[0].preview).toBeUndefined();
+  });
+
+  it("names a session from its first message without echoing it verbatim", async () => {
+    stubSessionsList([
+      {
+        key: "agent:agent-x:user-1:11111111-1111-4111-8111-111111111111",
+        derivedTitle: "hey can you check the Q3 numbers",
+        updatedAt: 200,
+      },
+    ]);
+    const { result } = renderAgentSessions("agent-x", "user-1");
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+    expect(result.current.sessions[0].label).toBe("Check the Q3 numbers");
+    // The rename editor seeds from the same cleaned title, not the raw message.
+    expect(result.current.sessions[0].rawLabel).toBe("Check the Q3 numbers");
+  });
+
+  it("never rewrites a name the owner set themselves", async () => {
+    stubSessionsList([
+      {
+        key: "agent:agent-x:user-1:11111111-1111-4111-8111-111111111111",
+        label: "can you believe it",
+        derivedTitle: "hey can you check the Q3 numbers",
+        updatedAt: 200,
+      },
+    ]);
+    const { result } = renderAgentSessions("agent-x", "user-1");
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+    expect(result.current.sessions[0].label).toBe("can you believe it");
+  });
+
+  it("titles without writing anything back to the container", async () => {
+    // The cleanup is deterministic and recomputed on every read, so there is
+    // nothing to persist. Writing it as a sessions.patch {label} would occupy
+    // the user-set-name slot permanently with a regex's output.
+    stubSessionsList([
+      {
+        key: "agent:agent-x:user-1:11111111-1111-4111-8111-111111111111",
+        derivedTitle: "hey can you check the Q3 numbers",
+        updatedAt: 200,
+      },
+    ]);
+    const { result } = renderAgentSessions("agent-x", "user-1");
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+    expect(callRpc.mock.calls.filter(([m]) => m === "sessions.patch")).toHaveLength(0);
   });
 
   it("prefers a user-set label over derived titles", async () => {

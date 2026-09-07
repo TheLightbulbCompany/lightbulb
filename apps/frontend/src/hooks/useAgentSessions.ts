@@ -85,6 +85,84 @@ function modelControlsOf(row: RawSessionRow): Pick<
   };
 }
 
+// Conversational openers that carry no information about what the session is
+// about. Stripped from the FRONT only, repeatedly, so "hey, please help me
+// draft X" reduces to "draft X". Longest-first so "i want you to" wins over
+// "i want".
+const TITLE_OPENERS = [
+  "i would like you to",
+  "i'd like you to",
+  "i want you to",
+  "i need you to",
+  "can you please",
+  "could you please",
+  "would you please",
+  "can you",
+  "could you",
+  "would you",
+  "will you",
+  "please",
+  "help me",
+  "let's",
+  "lets",
+  "hey there",
+  "hello",
+  "hey",
+  "hi",
+  "pls",
+  "ok",
+  "okay",
+  "so",
+];
+
+/** Word-boundary trim; titles read better short and a rail has no room anyway. */
+const TITLE_MAX_LEN = 40;
+
+/**
+ * Turn a session's derived title — which is just the owner's first message,
+ * whitespace-collapsed and truncated by the container — into something that
+ * reads like a name.
+ *
+ * Deliberately NOT persisted with `sessions.patch {label}`. This is a pure,
+ * deterministic function of a field every read already returns, so recomputing
+ * it costs nothing, while writing it back would permanently occupy the
+ * user-set-name slot with a regex's output: no later (or better) title could
+ * ever replace it, and "did the owner name this?" would stop being answerable.
+ * A model-written title is the case that WOULD justify persisting, because the
+ * client cannot recompute one.
+ *
+ * ponytail: a hand-rolled opener list, not NLP. It catches the openers that
+ * actually show up; anything it misses just falls through unchanged, which is
+ * the behaviour we had before.
+ */
+export function titleFromDerived(derived: string): string {
+  let text = derived.trim();
+  if (!text) return "";
+
+  // Strip openers until none match, keeping the original if we strip it away
+  // entirely (a message that is nothing but "hey" is still its own best name).
+  for (let pass = 0; pass < TITLE_OPENERS.length; pass++) {
+    const lower = text.toLowerCase();
+    const opener = TITLE_OPENERS.find(
+      (o) => lower.startsWith(`${o} `) || lower.startsWith(`${o},`),
+    );
+    if (!opener) break;
+    const stripped = text.slice(opener.length).replace(/^[\s,:;-]+/, "");
+    if (!stripped) break;
+    text = stripped;
+  }
+
+  if (text.length > TITLE_MAX_LEN) {
+    const cut = text.slice(0, TITLE_MAX_LEN);
+    const lastSpace = cut.lastIndexOf(" ");
+    text = `${(lastSpace > TITLE_MAX_LEN / 2 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+  }
+
+  // Only the first character is touched: lowercasing the rest would flatten
+  // acronyms and names ("SOC2", "Sarah").
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 /** The row's preview line, or undefined when blank/absent (never an empty string). */
 function previewOf(row: RawSessionRow): string | undefined {
   const text = typeof row.lastMessagePreview === "string" ? row.lastMessagePreview.trim() : "";
@@ -95,8 +173,10 @@ function labelsFor(
   row: RawSessionRow,
   sessionId: string,
 ): { label: string; rawLabel: string } {
-  // A user-set label (sessions.patch {label}) always wins over derived titles.
-  const raw = (row.label || row.derivedTitle || "").trim();
+  // A user-set label (sessions.patch {label}) always wins over derived titles,
+  // and is used VERBATIM — it is the owner's own words, not ours to tidy. Only
+  // the derived title (== the owner's first message) gets cleaned into a name.
+  const raw = row.label?.trim() || titleFromDerived(row.derivedTitle ?? "");
   // Never blank — fall back to a short id so the row is always clickable.
   const rawLabel = raw || `Session ${sessionId.slice(0, 8)}`;
   // Display copy is truncated; rawLabel stays intact so a rename editor never

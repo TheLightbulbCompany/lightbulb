@@ -197,21 +197,37 @@ class TestTransformAgentEvent:
             is None
         )
 
-    def test_compaction_stream_dropped(self):
-        """Compaction is not surfaced to the chat client yet. Rendering it
-        correctly needs a mid-run live-turn boundary plus a willRetry
-        stream-offset reset, so the transform drops both phases for now and
-        compaction lands in its own change."""
-        assert (
-            GatewayConnection._transform_agent_event(
-                {"stream": "compaction", "data": {"phase": "end", "completed": True}, "runId": "run-1"}
-            )
-            is None
+    def test_compaction_stream_forwarded_as_a_run_state(self):
+        """Compaction now reaches the client — as a run STATE, not a transcript entry.
+
+        This used to assert the opposite, deferring compaction because
+        rendering it *in the transcript* needs a mid-run live-turn boundary
+        plus a willRetry stream-offset reset. That reasoning still holds and
+        that work is still not done: the frontend routes these frames to the
+        run-status strip's phase label and returns before any pill, live-turn
+        or offset logic, so none of it is involved. What the owner gets is a
+        named reason for a stall of tens of seconds — and, when
+        ``completed`` is false, a warning that the reply which follows may
+        have lost context.
+        """
+        end = GatewayConnection._transform_agent_event(
+            {"stream": "compaction", "data": {"phase": "end", "completed": True}, "runId": "run-1"}
         )
-        assert (
-            GatewayConnection._transform_agent_event({"stream": "compaction", "data": {"phase": "start"}, "runId": "r"})
-            is None
+        assert end == {
+            "type": "agent_activity",
+            "activity": "compaction",
+            "title": "end",
+            "detail": {"phase": "end", "completed": True},
+            "runId": "run-1",
+        }
+        start = GatewayConnection._transform_agent_event(
+            {"stream": "compaction", "data": {"phase": "start"}, "runId": "r"}
         )
+        assert start is not None
+        assert start["activity"] == "compaction"
+        assert start["title"] == "start"
+        # A phase-less compaction event has nothing to say — still dropped.
+        assert GatewayConnection._transform_agent_event({"stream": "compaction", "data": {}, "runId": "r"}) is None
 
     def test_plan_stream_forwarded_as_activity(self):
         result = GatewayConnection._transform_agent_event(

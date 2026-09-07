@@ -165,6 +165,15 @@ export interface UseAgentChatReturn {
   isStreaming: boolean;
   /** isStreaming (local anchor) OR containerRunActive (server truth via `run_active`). */
   busy: boolean;
+  /** The run's current startup/compaction phase, or null. A raw enum value —
+   *  the status strip owns the copy. */
+  runPhase: string | null;
+  /** Epoch ms of the SEND that started this run, or null when this client did
+   *  not start it (adopted mid-run / reconnect) and so cannot honestly date it. */
+  runStartedAt: number | null;
+  /** Set when a run settles SUCCESSFULLY; sticky until the next send. Never
+   *  set for a failed or abandoned run — the error surfaces own those. */
+  lastTurnRecap: { runtimeMs: number } | null;
   sendMessage: (message: string) => Promise<void>;
   cancelMessage: () => Promise<void>;
   clearMessages: () => void;
@@ -405,6 +414,30 @@ function addCappedRunId(set: Set<string>, runId: string): void {
 }
 
 // =============================================================================
+// resolveRunPhase
+//
+// The two "current state" activity streams collapse onto one phase string the
+// status strip maps to copy.
+//
+//   run_status  -> the gateway's own closed startup enum, passed through.
+//   compaction  -> "compacting" while it runs. On a clean end there is nothing
+//                  left to say, so the phase clears and the strip falls back to
+//                  its plain label. A compaction that FAILED is the one worth
+//                  keeping up: the reply that follows may have lost context,
+//                  and the alternative is an unexplained pause.
+// =============================================================================
+
+function resolveRunPhase(
+  activity: "run_status" | "compaction",
+  detail: Record<string, unknown> | undefined,
+): string | null {
+  const phase = typeof detail?.phase === "string" ? detail.phase : null;
+  if (activity === "run_status") return phase;
+  if (phase === "start") return "compacting";
+  return detail?.completed === false ? "compaction_failed" : null;
+}
+
+// =============================================================================
 // renderPartial
 //
 // Coerce an OpenClaw partialResult (string OR an array of {type,text} blocks)
@@ -633,6 +666,22 @@ export function useAgentChat(
   // Analytics counters.
   const turnStartedAtRef = useRef<number | null>(null);
   const turnAssistantLenRef = useRef<number>(0);
+
+  // Run telemetry for the status strip under the transcript. Deliberately NOT
+  // tool-stream pills: a phase is the run's CURRENT STATE, not an event worth
+  // logging in the transcript, and the recap is a post-run summary.
+  //
+  // runStartedAt mirrors turnStartedAtRef — the same instant, kept as state
+  // because the strip has to render it. Send time, not first-frame time: the
+  // gateway's run_status event carries `{phase}` and nothing else, so there is
+  // no true run start on the wire, and the moment the user pressed send is both
+  // earlier and more honest than "when this tab first noticed". A run this
+  // client did NOT start (adopted mid-run, or picked up after a reconnect) has
+  // no send of its own and therefore no clock — the strip falls back to the
+  // plain label rather than inventing an elapsed time.
+  const [runPhase, setRunPhase] = useState<string | null>(null);
+  const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
+  const [lastTurnRecap, setLastTurnRecap] = useState<{ runtimeMs: number } | null>(null);
 
   // RunIds the user has explicitly aborted/cleared. Late chunk/thinking/
   // tool_start/tool_end events for these runs are dropped to prevent
@@ -1246,6 +1295,13 @@ export function useAgentChat(
     toolStreamOrderRef.current = [];
     setBtwResults([]);
     setIsStreaming(false);
+    // Run telemetry is per-turn, and the turn belongs to the session it was
+    // sent in — a recap left over from the previous session would read as a
+    // claim about this one.
+    setRunPhase(null);
+    setRunStartedAt(null);
+    setLastTurnRecap(null);
+    turnStartedAtRef.current = null;
     // Scope the server-truth busy bit to the chat it came from: the old
     // session's later run_active:false/terminal is tagged with the old
     // session_id and gets dropped by the demux, so without this the spinner
@@ -1881,6 +1937,22 @@ export function useAgentChat(
       }
 
       if (msg.type === "agent_activity") {
+        // run_status and compaction ride this envelope but are not pills —
+        // they are the run's current state. A pill would log "starting_model"
+        // or "start" into the transcript: raw enum, wrong surface, and noise
+        // that outlives the moment it describes. Route them to runPhase, which
+        // the status strip renders as copy and drops when the run settles.
+        if (msg.activity === "run_status" || msg.activity === "compaction") {
+          setRunPhase(resolveRunPhase(msg.activity, msg.detail));
+          // A startup phase is unambiguously a run beginning, so arm the stop
+          // affordance from it the way the pill path below does — this is
+          // often the first frame of the run. Compaction deliberately does
+          // NOT arm it: it is a mid-run notice, so the gate is already open
+          // when it is genuine, and arming from it would risk stranding the
+          // composer if one ever arrived outside a live turn.
+          if (msg.activity === "run_status" && !isStreamingRef.current) setIsStreaming(true);
+          return;
+        }
         // Surface plan/patch/item/acp as a single low-noise pill. Keyed by a
         // synthetic id (activity+runId) so repeated activities of the same kind
         // within a run collapse into one updating pill rather than stacking.
@@ -2043,14 +2115,21 @@ export function useAgentChat(
             setIsStreaming(false);
             const startedAt = turnStartedAtRef.current;
             if (startedAt !== null) {
+              const runtimeMs = Date.now() - startedAt;
               capture("chat_completed", {
                 agent_id: agentIdRef.current ?? undefined,
-                duration_ms: Date.now() - startedAt,
+                duration_ms: runtimeMs,
                 assistant_message_length: turnAssistantLenRef.current,
               });
               turnStartedAtRef.current = null;
               turnAssistantLenRef.current = 0;
+              // The one success terminal, so the one place a recap is honest.
+              // Same duration the analytics event reports.
+              setLastTurnRecap({ runtimeMs });
             }
+            // The run is over either way: stop the clock and the phase.
+            setRunStartedAt(null);
+            setRunPhase(null);
           }
         }
 
@@ -2169,6 +2248,14 @@ export function useAgentChat(
         // this handler; by here, msg.runId is never in the set.
         if (clientRunIdRef.current === null) {
           setIsStreaming(false);
+          // No recap on a failed run — the error card owns that outcome, and a
+          // cheerful "Done in 12s" underneath a red card is a contradiction.
+          // The clock and phase stop regardless.
+          turnStartedAtRef.current = null;
+          turnAssistantLenRef.current = 0;
+          setRunStartedAt(null);
+          setRunPhase(null);
+          setLastTurnRecap(null);
         }
 
         // Drain the queue if this error RELEASED the busy gate, so a follow-up
@@ -2251,6 +2338,13 @@ export function useAgentChat(
 
       turnStartedAtRef.current = Date.now();
       turnAssistantLenRef.current = 0;
+      // Same instant, rendered: the strip's clock runs from the send, and a
+      // new run supersedes the previous run's recap. The phase is reset here
+      // too so the send path is self-contained rather than depending on every
+      // terminal path upstream having cleaned up first.
+      setRunStartedAt(turnStartedAtRef.current);
+      setRunPhase(null);
+      setLastTurnRecap(null);
       capture("chat_message_sent", {
         agent_id: agentId,
         message_length: message.length,
@@ -2268,10 +2362,19 @@ export function useAgentChat(
         const errorMessage = friendlyError(
           err instanceof Error ? err.message : "Failed to send message",
         );
-        // Roll back the optimistic turn state regardless of origin.
+        // Roll back the optimistic turn state regardless of origin — including
+        // the turn clock stamped just above. Leaving it set is not inert: the
+        // strip gates on `busy`, which containerRunActive can flip true on its
+        // own (an adopted run, another view), and it would then count from a
+        // send that never happened. The same stale ref would also date
+        // chat_completed's duration_ms from the failed attempt.
         setChatMessages((prev) => prev.filter((m) => m !== userMsg));
         setIsStreaming(false);
         clientRunIdRef.current = null;
+        turnStartedAtRef.current = null;
+        turnAssistantLenRef.current = 0;
+        setRunStartedAt(null);
+        setRunPhase(null);
 
         if (opts?.queueItem) {
           // Drain failure: re-queue the item as failed so the user can
@@ -2351,9 +2454,12 @@ export function useAgentChat(
         }
         // Drop any half-set turn analytics state — the turn ended
         // abruptly (no chat_completed emission), so we just clear the
-        // refs so the NEXT user turn measures from its own start.
+        // refs so the NEXT user turn measures from its own start. Same for
+        // the strip's telemetry: no chat_completed means no recap either.
         turnStartedAtRef.current = null;
         turnAssistantLenRef.current = 0;
+        setRunStartedAt(null);
+        setRunPhase(null);
         // The gate just released with no server run-ended frame coming
         // (the user dismissed / the card expired / it errored — there's no
         // post-approval continuation). Drain the queue here explicitly since
@@ -2727,6 +2833,12 @@ export function useAgentChat(
     setChatToolMessages([]);
     // Ephemeral /btw side cards are part of the local view — wipe them too.
     setBtwResults([]);
+    // So is the run telemetry: "Done in 4m 12s" under an emptied transcript
+    // describes a turn the user just erased.
+    setRunPhase(null);
+    setRunStartedAt(null);
+    setLastTurnRecap(null);
+    turnStartedAtRef.current = null;
     toolStreamByIdRef.current.clear();
     toolStreamOrderRef.current = [];
     const key = agentIdRef.current
@@ -2811,6 +2923,10 @@ export function useAgentChat(
     chatMessages,
     isStreaming,
     busy: isStreaming || containerRunActive,
+    // Run telemetry for the status strip — see the state declarations.
+    runPhase,
+    runStartedAt,
+    lastTurnRecap,
     sendMessage,
     cancelMessage,
     clearMessages,

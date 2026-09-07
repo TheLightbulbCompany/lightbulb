@@ -93,9 +93,15 @@ export type ChatIncomingMessage =
   // Low-noise agent-activity surfaces (proposed plan, patch summary, item
   // lifecycle, ACP step) folded into one pill. `detail` carries the full
   // upstream payload for the pill's expansion.
+  //
+  // `run_status` and `compaction` ride the same envelope but are NOT pills:
+  // they describe the run's current state (startup phase, history compaction)
+  // rather than an event, so the chat hook routes them to the run-status strip
+  // and returns before the pill logic. `detail.phase` is the payload that
+  // matters on both; compaction also carries `completed`/`willRetry`.
   | {
       type: "agent_activity";
-      activity: "plan" | "patch" | "item" | "acp";
+      activity: "plan" | "patch" | "item" | "acp" | "run_status" | "compaction";
       title: string;
       detail?: Record<string, unknown>;
       agent_id?: string;

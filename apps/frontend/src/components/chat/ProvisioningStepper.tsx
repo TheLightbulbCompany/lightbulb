@@ -1777,7 +1777,14 @@ export function ProvisioningStepper({
               phase === "channels-sidecars" ||
               phase === "agent") &&
             elapsedMs > 0 && (
-              <div className="provision-elapsed" aria-live="polite">
+              /* aria-live="off" is deliberate: this value ticks once per
+                 second and provisioning routinely runs minutes, so a live
+                 region here reads the elapsed time to a screen reader once per
+                 second for the whole of onboarding and buries the step
+                 transitions announced from the same region by the
+                 `provision-title` heading above. This is the number, not the
+                 news. */
+              <div className="provision-elapsed" aria-live="off">
                 {formatElapsed(elapsedMs)}
                 {!stuck && " · cold starts can take a few minutes"}
               </div>

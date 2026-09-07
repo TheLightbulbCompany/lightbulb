@@ -305,9 +305,7 @@ lives on EFS at this workspace. Specifically, you have:
   your memory.
 - **Shell** — run commands. Unfamiliar commands ask for approval first; you
   shouldn't fight that, just explain what you're doing.
-- **Browser** — drive the user's signed-in Chrome via CDP (when their desktop
-  app is paired). You can read pages, click, fill forms — be careful with
-  destructive actions.
+{browser_line}
 - **Web fetch** — pull pages and JSON from the open web.
 - **Images** — multimodal. You can see what users send.
 - **Channels** — if {owner_display} pairs Telegram, Discord, or Slack, you can
@@ -376,7 +374,39 @@ serving, update it._
 # The section is owner-agnostic, so substitute it before .format() ever sees
 # the template — .replace(), not .format(), because the template's real
 # placeholders ({owner_display}) must survive until render time.
+# The browser bullet in SOUL.md.
+#
+# The prior copy named ONLY the paired-desktop profile — which is the OPTIONAL
+# one. config.py sets browser.defaultProfile="openclaw" fleet-wide, so an
+# in-container headful Chromium is always present and the owner's own Chrome is
+# the upgrade. Describing only the gated profile made "go to the browser" read
+# as a capability Friday might not have, which is what sent a browsing request
+# down the orchestration loop and out through marketplace_search.
+#
+# Deliberately contains NO {owner_display}: str.format does not format
+# substituted values recursively, so a placeholder here would be written to disk
+# literally. It also has to stay byte-identical between the seed path and the
+# heal migration below, which has no display name to substitute.
+_SOUL_BROWSER_LINE = (
+    "- **Browser** — you have a real Chrome running inside your own container, "
+    "always available, no setup required. Use it to read pages, click, and fill "
+    "forms. If your owner has paired their desktop app you can also drive their "
+    "own signed-in Chrome — that is the upgrade for sites they are already "
+    "logged into, and worth being careful with destructive actions."
+)
+
+# Byte-exact prior copy, for the heal migration. An edited line is owner- or
+# Friday-evolved content and is never touched.
+_LEGACY_SOUL_BROWSER_LINE = """\
+- **Browser** — drive the user's signed-in Chrome via CDP (when their desktop
+  app is paired). You can read pages, click, fill forms — be careful with
+  destructive actions."""
+
 _SOUL_TEMPLATE = _SOUL_TEMPLATE.replace("{self_grounding_section}", _SELF_GROUNDING_SECTION)
+# Owner-agnostic, so substitute before .format() ever sees the template —
+# .replace(), not .format(), because the template's real placeholders
+# ({owner_display}) must survive until render time.
+_SOUL_TEMPLATE = _SOUL_TEMPLATE.replace("{browser_line}", _SOUL_BROWSER_LINE)
 
 
 _USER_TEMPLATE_PERSONAL = """\
@@ -455,6 +485,25 @@ _PAPERCLIP_SCRIPT_FENCE = (
 )
 _LEGACY_PAPERCLIP_AUTH_SENTENCE = "Every API call sends\n`Authorization: Bearer $PAPERCLIP_API_KEY`."
 _PAPERCLIP_AUTH_SENTENCE = "The script sends your `Authorization` header on\nevery call."
+
+# Step 0 of the orchestration loop.
+#
+# The loop had NO terminal that was not delegation: step 1's only escape
+# ("single piece -> skip to step 4") lands on "confirm the delegation plan", and
+# step 3 then fired marketplace_search whenever nobody on the roster was
+# qualified. A one-shot request — open a page, read a file, run a command —
+# therefore ran the whole loop and came out as a hiring recommendation.
+#
+# Kept as a constant so the heal migration can insert it into an
+# already-seeded AGENTS.md.
+_AGENTS_DIY_GATE = """\
+0. **Can you just do it?** If your own tools finish this request, do it now and
+   report back — do not decompose it, do not check the roster, do not search the
+   marketplace. That is the answer whenever the task is to look at a page in your
+   browser, fetch a URL, read a file or write one, run a command, or answer a
+   question from what you know. Delegation is for work needing a specialist's
+   sustained attention, not for work needing a tool call.
+"""
 
 _AGENTS_TEMPLATE = """\
 # AGENTS.md — Friday's Playbook
@@ -554,6 +603,7 @@ arrives in the wake text:
 
 When {owner_display} hands you a task, follow this loop:
 
+{diy_gate}
 1. **Decompose.** Break the task into discrete pieces. If it's a single
    piece, skip to step 4.
 2. **Roster lookup.** List the company's agents
@@ -561,8 +611,10 @@ When {owner_display} hands you a task, follow this loop:
    on the team. This is the **only source of truth** for who exists. Never
    assume an agent exists without checking. New agents — from the marketplace
    or scaffolded by Atlas — show up in the roster automatically.
-3. **Identify or hire.** For each piece, pick the right agent. If no agent
-   is qualified, **check the marketplace first**:
+3. **Identify or hire.** For each piece, pick the right agent. If a piece
+   needs a role nobody on the roster fills — an ongoing specialism such as
+   bookkeeping or content marketing, not a tool you have not reached for yet
+   — **check the marketplace first**:
    - Run `marketplace_search` with what the work actually needs
      ("content marketing", "bookkeeping"). Deploying a published agent
      costs NOTHING in inference and it is ready immediately.
@@ -628,10 +680,12 @@ Then decide:
 
 ## Boundaries — what you do NOT do
 
-- **Delegate specialist execution.** Your direct work is company control:
-  choose priorities, synthesize evidence, resolve or reroute blockers, and
-  verify outcomes. If the primary deliverable belongs to a specialist,
-  delegate it — do not perform it yourself.
+- **Delegate sustained specialist execution.** Your direct work is company
+  control: choose priorities, synthesize evidence, resolve or reroute
+  blockers, and verify outcomes. When a deliverable needs a specialist's
+  sustained attention over days, delegate it. This does NOT apply to a
+  one-shot action you can complete in this turn — those you simply do, per
+  step 0.
 - **Do not skip the confirmation step.** Even on small tasks, mirror
   the plan back before creating issues. {owner_display} should never
   be surprised by an issue you created.
@@ -681,28 +735,9 @@ comment.
 
 ## Paperclip reference
 
-The bundled `paperclip` skill documents the full REST surface — run
-`skill paperclip` for the exact endpoints, bodies, and headers. The
-endpoints you'll reach for most:
-
-**Identity / discovery:**
-
-- `GET /api/agents/me` — your own identity, role, chainOfCommand, budget
-- `GET /api/companies/$PAPERCLIP_COMPANY_ID/agents` — current team roster
-
-**Issue work:**
-
-- `POST /api/companies/$PAPERCLIP_COMPANY_ID/issues` — create + assign (primary delegation)
-- `PATCH /api/issues/{{issueId}}` — change status, assignee, description, priority
-- `POST /api/issues/{{issueId}}/checkout` — claim before work; **don't retry 409**
-- `GET /api/issues/{{issueId}}` — full issue (ancestors, project, goal)
-- `GET /api/issues/{{issueId}}/comments` — issue thread
-
-**Comments / interactions:**
-
-- `POST /api/issues/{{issueId}}/comments` — add a comment
-- `POST /api/issues/{{issueId}}/interactions` — `suggest_tasks`,
-  `ask_user_questions`, `request_confirmation`
+Every endpoint, payload and header rule lives in the `paperclip` skill. Run
+`skill paperclip`, and read its `references/api-reference.md` for the full API.
+Never work from memory for a payload shape.
 
 Beyond the skill, you have the runtime tools from SOUL (files, shell,
 browser, web fetch, images, channels) — use these for your own work
@@ -853,6 +888,9 @@ this playbook applies to heartbeat runs only. In webchat:
 # interpolated) so their literal `$...` / `[...]` / `<...>` tokens survive
 # _render_templates' ``.format`` untouched.
 _AGENTS_TEMPLATE = _AGENTS_TEMPLATE + _NIGHTLY_WAKE_SECTION + _WEBCHAT_SECTION
+# Owner-agnostic; substitute before .format() sees the template, same idiom as
+# _SOUL_BROWSER_LINE above.
+_AGENTS_TEMPLATE = _AGENTS_TEMPLATE.replace("{diy_gate}", _AGENTS_DIY_GATE.rstrip("\n"))
 
 
 _MEMORY_TEMPLATE = """\
@@ -1326,6 +1364,52 @@ def _migrate_paperclip_curl_to_script(workspace: Workspace, owner_id: str, agent
     return True
 
 
+def _migrate_self_service(workspace: Workspace, owner_id: str, agent_uuid: str) -> bool:
+    """Heal an EXISTING Friday's browser line and orchestration-loop gate.
+
+    SOUL.md and AGENTS.md are seeded write-if-missing, so already-provisioned
+    Fridays keep the copy that describes the browser as desktop-gated and gives
+    the loop no terminal but delegation — which is what routed a plain browsing
+    request to ``marketplace_search``.
+
+    Surgical and idempotent, matching ``_migrate_add_nightly_section``: replace
+    only the byte-exact legacy line, insert the gate only when its heading
+    exists and the gate does not, and otherwise leave the file untouched. An
+    owner- or Friday-edited line is theirs; a heading match is never permission
+    to overwrite evolved content. Returns True when anything was rewritten.
+    """
+    changed = False
+
+    soul_path = f"workspace-{agent_uuid}/SOUL.md"
+    try:
+        soul = workspace.read_file(owner_id, soul_path)
+    except Exception:  # noqa: BLE001 — no SOUL.md yet; the seed loop writes it
+        soul = None
+    if soul is not None and _SOUL_BROWSER_LINE not in soul and _LEGACY_SOUL_BROWSER_LINE in soul:
+        workspace.write_file(owner_id, soul_path, soul.replace(_LEGACY_SOUL_BROWSER_LINE, _SOUL_BROWSER_LINE, 1))
+        changed = True
+
+    agents_path = f"workspace-{agent_uuid}/AGENTS.md"
+    try:
+        agents = workspace.read_file(owner_id, agents_path)
+    except Exception:  # noqa: BLE001 — no AGENTS.md yet; the seed loop writes it
+        agents = None
+    gate = _AGENTS_DIY_GATE.rstrip("\n")
+    heading = "## The orchestration loop"
+    if agents is not None and gate not in agents and heading in agents:
+        # Directly under the heading, above step 1 — a gate after Decompose is
+        # a gate the loop has already run past.
+        marker = heading + "\n"
+        workspace.write_file(
+            owner_id,
+            agents_path,
+            agents.replace(marker, marker + "\n" + gate + "\n", 1),
+        )
+        changed = True
+
+    return changed
+
+
 def _run_heal_migrations(workspace: Workspace, owner_id: str, friday_uuid: str) -> None:
     """The append-heal pass for an EXISTING Friday's seeded files.
 
@@ -1346,6 +1430,12 @@ def _run_heal_migrations(workspace: Workspace, owner_id: str, friday_uuid: str) 
             "friday_identity.agents_md_nightly_migrated",
             "friday_identity.agents_md_nightly_migrate_error",
             "reconciled nightly company-control section in AGENTS.md",
+        ),
+        (
+            _migrate_self_service,
+            "friday_identity.self_service_migrated",
+            "friday_identity.self_service_migrate_error",
+            "healed browser line in SOUL.md and orchestration gate in AGENTS.md",
         ),
         (
             _migrate_add_soul_grounding,

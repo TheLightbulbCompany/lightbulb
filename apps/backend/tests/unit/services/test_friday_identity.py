@@ -973,7 +973,10 @@ def test_agents_md_contains_company_control_wake_and_dual_condition():
     # reintroduce the arbitrary-specialist checkout that contradicted the
     # delegation boundary.
     assert "Choose ONE company constraint" in agents_md
-    assert "Delegate specialist execution" in agents_md
+    # Renamed to "Delegate SUSTAINED specialist execution": the blanket form
+    # banned doing any work at all, which routed one-shot requests to the
+    # marketplace. See test_delegation_boundary_is_scoped_to_sustained_work.
+    assert "Delegate sustained specialist execution" in agents_md
     assert "delegation is the action" in agents_md
     assert "never checkout" in agents_md
     assert "keep THIS parent non-terminal" in agents_md
@@ -1809,3 +1812,186 @@ async def test_stage_agent_paperclip_identity_refreshes_stale_api_url():
         "companyId": "comp-1",
         "apiUrl": "http://paperclip.lightbulb-dev.local:3100",
     }
+
+
+# --- Self-service: Friday must use the tools she has -------------------------
+#
+# Reported: asked to open a page in the browser, she ran marketplace_search and
+# offered to hire someone. Three stacked causes, all in the seeded markdown:
+# SOUL described the browser as desktop-gated (it is not), the orchestration
+# loop had no terminal that was not delegation, and step 3 fired the marketplace
+# check on a missing TOOL rather than a missing ROLE.
+#
+# Not a tool-configuration problem: marketplace_search is a plugin tool and is
+# compacted by tool search exactly as `browser` is, so she reached one and not
+# the other in the same turn. The prompt is the whole cause.
+
+
+def test_soul_browser_line_states_the_container_browser_is_always_available():
+    """config.py sets browser.defaultProfile="openclaw" -- the in-container
+    Chromium -- on every container. The paired desktop is the OPTIONAL upgrade.
+    Naming only the gated profile made a browsing request read as a capability
+    Friday might not have."""
+    line = friday_identity._SOUL_BROWSER_LINE
+    assert "always" in line.lower()
+    assert "when their desktop app is paired" not in line
+    assert "signed-in" in line  # the paired-desktop upgrade is still described
+
+
+def test_soul_browser_line_carries_no_format_placeholder():
+    """str.format does not recurse into substituted values, so a placeholder
+    inside this constant would reach disk literally. It must also stay
+    byte-identical between the seed path and the heal migration, which has no
+    owner display name to substitute."""
+    assert "{" not in friday_identity._SOUL_BROWSER_LINE
+
+
+def test_orchestration_loop_has_a_do_it_yourself_terminal():
+    """Without a step-0 exit, a one-shot request runs decompose -> roster ->
+    "no agent qualified" -> marketplace_search. The loop had no other terminal."""
+    gate = friday_identity._AGENTS_DIY_GATE
+    assert gate.lstrip().startswith("0.")
+    for trigger in ("browser", "fetch", "read a file", "run a command", "answer"):
+        assert trigger in gate.lower(), f"missing trigger case: {trigger}"
+    # It must forbid the loop, not merely permit doing the work.
+    assert "do not decompose" in gate.lower()
+    assert "marketplace" in gate.lower()
+
+
+def test_marketplace_check_is_scoped_to_a_missing_role():
+    """Assert inside step 3's slice so line-wrapping cannot make this vacuous."""
+    t = friday_identity._AGENTS_TEMPLATE
+    step3 = t[t.index("3. **Identify or hire.") : t.index("4. **Confirm.")]
+    assert "role nobody on the roster fills" in step3
+    assert "is qualified" not in step3
+
+
+def test_delegation_boundary_is_scoped_to_sustained_work():
+    """A blanket "delegate it -- do not perform it yourself" bans doing the work
+    at all, which is what sent a one-shot browsing request to the marketplace."""
+    t = friday_identity._AGENTS_TEMPLATE
+    assert "sustained" in t
+    assert "delegate it — do not perform it yourself" not in t
+
+
+def test_rendered_agents_md_has_real_margin_below_the_truncation_ceiling():
+    """AGENTS.md is seeded whole into every turn's context.
+
+    Measure the RENDERED file, not the template: {owner_display} appears 17
+    times, so an org with a long display name produces a materially larger file
+    than len(_AGENTS_TEMPLATE) suggests. A template-length assertion passes
+    while a real container is over.
+
+    Thresholds, from the fork at v2026.8.1-isol8.3:
+      - DEFAULT_BOOTSTRAP_MAX_CHARS = 20_000 is the real cliff. Above it the
+        file is TRUNCATED and a notice tells the agent her own playbook was cut.
+      - nearLimit (85% = 17_000) is a DIAGNOSTIC FLAG in bootstrap-budget.ts,
+        not a cliff -- `nearLimit` only annotates the budget analysis.
+
+    We assert margin below the cliff rather than below the flag. Getting under
+    17_000 for a long org name would mean deleting the key-leak, Authorization
+    and run-id guards, and those are worth more than a diagnostic flag: a live
+    Paperclip key reached an owner's transcript once already.
+    """
+    template = friday_identity._AGENTS_TEMPLATE
+    occurrences = template.count("{owner_display}")
+    assert occurrences > 0, "owner substitution disappeared; this test is now vacuous"
+
+    # A long but realistic org display name.
+    long_owner = "Acme Manufacturing Group"
+    rendered = len(template) + occurrences * (len(long_owner) - len("{owner_display}"))
+
+    assert rendered < 18_500, (
+        f"rendered AGENTS.md is {rendered} chars for a {len(long_owner)}-char owner name; "
+        "the truncation ceiling is 20,000 and truncation tells the agent her playbook was "
+        "cut. Move reference material into the paperclip skill rather than raising this."
+    )
+
+
+# --- Self-service heal migration ---------------------------------------------
+#
+# SOUL.md and AGENTS.md are seeded write-if-missing, so the template fixes above
+# reach NEW provisions only. Already-provisioned Fridays keep the copy that
+# routes a browsing request to marketplace_search until this runs.
+
+
+def _self_service_ws(store: dict):
+    ws = MagicMock()
+    ws.read_file = lambda owner_id, rel_path: store[rel_path]
+    ws.write_file = lambda owner_id, rel_path, content: store.__setitem__(rel_path, content)
+    return ws
+
+
+def test_self_service_heal_replaces_the_legacy_browser_line():
+    store = {
+        "workspace-friday-uuid/SOUL.md": (
+            "# SOUL.md\n\nintro\n" + friday_identity._LEGACY_SOUL_BROWSER_LINE + "\noutro\n"
+        ),
+        "workspace-friday-uuid/AGENTS.md": friday_identity._AGENTS_DIY_GATE,
+    }
+    ws = _self_service_ws(store)
+    assert friday_identity._migrate_self_service(ws, "user_abc", "friday-uuid") is True
+    soul = store["workspace-friday-uuid/SOUL.md"]
+    assert friday_identity._LEGACY_SOUL_BROWSER_LINE not in soul
+    assert "always available" in soul
+    assert "outro" in soul  # surrounding content preserved
+
+
+def test_self_service_heal_is_idempotent():
+    store = {
+        "workspace-friday-uuid/SOUL.md": friday_identity._SOUL_BROWSER_LINE,
+        "workspace-friday-uuid/AGENTS.md": friday_identity._AGENTS_DIY_GATE,
+    }
+    ws = _self_service_ws(store)
+    assert friday_identity._migrate_self_service(ws, "user_abc", "friday-uuid") is False
+
+
+def test_self_service_heal_never_clobbers_an_edited_browser_line():
+    """An owner- or Friday-edited line is theirs. Only the byte-exact legacy
+    text moves; a heading match is never permission to overwrite."""
+    edited = "- **Browser** — my own notes about the browser. Do not touch.\n"
+    store = {
+        "workspace-friday-uuid/SOUL.md": "# SOUL.md\n\n" + edited,
+        "workspace-friday-uuid/AGENTS.md": friday_identity._AGENTS_DIY_GATE,
+    }
+    ws = _self_service_ws(store)
+    assert friday_identity._migrate_self_service(ws, "user_abc", "friday-uuid") is False
+    assert store["workspace-friday-uuid/SOUL.md"] == "# SOUL.md\n\n" + edited
+
+
+def test_self_service_heal_inserts_the_gate_into_an_existing_agents_md():
+    store = {
+        "workspace-friday-uuid/SOUL.md": friday_identity._SOUL_BROWSER_LINE,
+        "workspace-friday-uuid/AGENTS.md": ("# AGENTS.md\n\n## The orchestration loop\n\n1. **Decompose.** ...\n"),
+    }
+    ws = _self_service_ws(store)
+    assert friday_identity._migrate_self_service(ws, "user_abc", "friday-uuid") is True
+    agents = store["workspace-friday-uuid/AGENTS.md"]
+    assert friday_identity._AGENTS_DIY_GATE.rstrip("\n") in agents
+    # The gate goes directly under the heading, above step 1.
+    assert agents.index("0. **Can you just do it?") < agents.index("1. **Decompose.")
+
+
+def test_self_service_heal_skips_an_agents_md_with_no_loop_heading():
+    """Evolved content without the anchor is left alone rather than guessed at."""
+    store = {
+        "workspace-friday-uuid/SOUL.md": friday_identity._SOUL_BROWSER_LINE,
+        "workspace-friday-uuid/AGENTS.md": "# AGENTS.md\n\nOwner rewrote this entirely.\n",
+    }
+    ws = _self_service_ws(store)
+    assert friday_identity._migrate_self_service(ws, "user_abc", "friday-uuid") is False
+
+
+def test_self_service_heal_survives_a_missing_file():
+    """A Friday with no SOUL.md yet must not raise — the seed loop writes it."""
+    ws = MagicMock()
+    ws.read_file.side_effect = FileNotFoundError
+    assert friday_identity._migrate_self_service(ws, "user_abc", "friday-uuid") is False
+
+
+def test_self_service_heal_is_registered_in_the_rail():
+    """A migration nobody calls heals nothing."""
+    import inspect
+
+    src = inspect.getsource(friday_identity._run_heal_migrations)
+    assert "_migrate_self_service" in src

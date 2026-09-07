@@ -245,6 +245,9 @@ export function AgentChatWindow({
     renderGroups,
     isStreaming,
     busy,
+    runPhase,
+    runStartedAt,
+    lastTurnRecap,
     sendMessage,
     cancelMessage,
     clearMessages,
@@ -559,7 +562,12 @@ export function AgentChatWindow({
         rewindDisabled={busy}
       />
       <UpdateBanner />
-      <StreamingStatusBar isStreaming={isStreaming} active={busy} />
+      <StreamingStatusBar
+        active={busy}
+        runPhase={runPhase}
+        runStartedAt={runStartedAt}
+        lastTurnRecap={lastTurnRecap}
+      />
       <AgentProgressCard sessionKey={progressSessionKey} />
       <ExecApprovalCards />
       <QuestionCards />

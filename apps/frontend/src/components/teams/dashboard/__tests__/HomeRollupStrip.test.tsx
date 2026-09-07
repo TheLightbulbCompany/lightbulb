@@ -583,6 +583,10 @@ describe("HomeRollupStrip — business-first hero", () => {
     const titles = Array.from(hero.querySelectorAll("rect > title")).map((t) => t.textContent);
     expect(titles).toEqual(["Aug 30 · $1", "Aug 31 · $2"]);
     expect(container.querySelector('[aria-label="New customers over the period"] polyline')).not.toBeNull();
+    // `role="group"`, not `role="img"` — the group exposes each day's link to
+    // assistive tech rather than hiding the anchors behind an image role.
+    const group = screen.getByRole("group", { name: "Revenue over the period" });
+    expect(within(group).getAllByRole("link")).toHaveLength(LIVE.days.length);
   });
 
   it("links every hero bar to Money scoped to that day, in-shell with a real href", () => {

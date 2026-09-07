@@ -121,9 +121,12 @@ function Sparkline({
  *
  * The bars are the chart-as-filter (spec §2): each is wrapped in an SVG `<a>`
  * to Money scoped to that day, navigated in-shell via `handleShellLinkClick`.
- * The anchor's `aria-label` carries the same day-and-amount text as the hover
- * `<title>`, so keyboard and screen-reader users get the per-day value too —
- * this supersedes the "reaches nobody on keyboard or touch" note above.
+ * The SVG is `role="group"`, not `role="img"` — `img` makes its subtree
+ * presentational and hides the anchors from assistive tech entirely. As a
+ * group it exposes each day's link, with the anchor's `aria-label` carrying
+ * the same day-and-amount text as the hover `<title>`, so keyboard and
+ * screen-reader users reach the per-day value too — this supersedes the
+ * "reaches nobody on keyboard or touch" note above.
  */
 function HeroBars({ days, format }: { days: RollupDay[]; format: (cents: number) => string }) {
   const values = days.map((d) => (Number.isFinite(d.revenue_microcents) ? d.revenue_microcents : 0));
@@ -135,7 +138,7 @@ function HeroBars({ days, format }: { days: RollupDay[]; format: (cents: number)
   const slot = 100 / values.length;
   const gap = slot * 0.25;
   return (
-    <svg viewBox="0 0 100 20" preserveAspectRatio="none" role="img" aria-label="Revenue over the period" className="mt-3 h-12 w-full">
+    <svg viewBox="0 0 100 20" preserveAspectRatio="none" role="group" aria-label="Revenue over the period" className="mt-3 h-12 w-full">
       {values.map((v, i) => {
         // Clamp ONCE, use the clamped value for both y and height — a zero
         // (or tiny) day drew from the unclamped y with a clamped height,

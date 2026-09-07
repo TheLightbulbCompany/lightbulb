@@ -71,7 +71,8 @@ export const COMPANY_SECTIONS: { label: string | null; items: CompanySectionItem
     // One ledger page (spec §3): what landed this month, then Payments,
     // Customers, What you sell and Agent spend as sections. The four old keys
     // still resolve — they open this page at their section.
-    label: "Money",
+    // No caption: a one-item group's item IS the caption.
+    label: null,
     items: [{ panel: "teams-money", label: "Money", Icon: CreditCard }],
   },
   {

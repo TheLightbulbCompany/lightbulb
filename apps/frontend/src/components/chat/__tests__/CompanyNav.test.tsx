@@ -77,30 +77,29 @@ describe("CompanyNav", () => {
   it("renders every company panel", () => {
     render(<CompanyNav />);
     for (const label of ALL_LABELS) {
-      // Role-scoped: the Money item shares its text with the Money section
-      // header, so a plain getByText would match both.
-      expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
+      expect(screen.getByText(label)).toBeInTheDocument();
     }
   });
   it("declares the spec §5.1 section order: top block, Money, Work, Growth, Knowledge, Company", () => {
     expect(COMPANY_SECTIONS.map((s) => s.label)).toEqual([
       null,
-      "Money",
+      null, // Money — a one-item group carries no caption
       "Work",
       "Growth",
       "Knowledge",
       "Company",
     ]);
   });
-  it("files a single Money item and opens teams-money on click", () => {
+  it("files a single, uncaptioned Money item and opens teams-money on click", () => {
     // Payments/Products/Customers/Spend are absorbed into the one ledger page
-    // (spec §3) — the sidebar carries one item, not four peer tabs.
-    const money = COMPANY_SECTIONS.find((s) => s.label === "Money");
+    // (spec §3) — the sidebar carries one item, not four peer tabs, and a
+    // one-item group carries no caption (the item IS the caption).
+    const money = COMPANY_SECTIONS.find((s) => s.items.some((i) => i.panel === "teams-money"));
+    expect(money?.label).toBeNull();
     expect(money?.items.map((i) => i.label)).toEqual(["Money"]);
     const onPanelChange = vi.fn();
     render(<CompanyNav onPanelChange={onPanelChange} />);
-    // Role-scoped: "Money" also names the section header, not just the button.
-    fireEvent.click(screen.getByRole("button", { name: "Money" }));
+    fireEvent.click(screen.getByText("Money"));
     expect(onPanelChange).toHaveBeenCalledWith("teams-money");
   });
   it('puts "Home" first', () => {
@@ -153,9 +152,7 @@ describe("CompanyNav", () => {
       />,
     );
     for (const label of ALL_LABELS) {
-      // Role-scoped: the Money item shares its text with the Money section
-      // header, so a plain getByText would match both.
-      const btn = screen.getByRole("button", { name: label });
+      const btn = screen.getByText(label).closest("button");
       expect(btn, `"${label}" should be disabled`).toBeDisabled();
       expect(btn).toHaveAttribute("title", "Available once your workspace is ready");
     }

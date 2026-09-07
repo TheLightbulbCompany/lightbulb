@@ -59,3 +59,10 @@ export function formatUnixDay(unix: number): string {
     timeZone: "UTC",
   });
 }
+
+/** "2026-09-05" → "Sep 5, 2026", pinned to UTC like formatUnixDay. */
+export function formatIsoDay(day: string): string {
+  return new Date(`${day}T00:00:00Z`).toLocaleDateString("en-US", {
+    month: "short", day: "numeric", year: "numeric", timeZone: "UTC",
+  });
+}

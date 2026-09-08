@@ -59,6 +59,22 @@ describe("deploy.yml prod promotion gate", () => {
     expect(triggers).toContain("workflow_dispatch:");
   });
 
+  it("queues pending runs instead of evicting them", () => {
+    // `cancel-in-progress: false` only protects a run that is already
+    // in_progress. A PENDING run is evicted by the next arrival unless the
+    // group opts into a deeper queue, and prod ships only by dispatch — so a
+    // merge landing while a promotion waits for a runner silently cancels the
+    // promotion (three times on 2026-09-07, each with zero jobs run).
+    const block = yaml.slice(yaml.indexOf("\nconcurrency:\n"), yaml.indexOf("\njobs:\n"));
+    expect(block).toContain("group: lightbulb-deploy");
+    // One group for every event, so two runs can never deploy the same stacks
+    // at once. queue:max only changes what happens to the ones waiting.
+    expect(block).toContain("queue: max");
+    // GitHub rejects the workflow outright if these two are combined.
+    expect(block).toContain("cancel-in-progress: false");
+    expect(block).not.toContain("cancel-in-progress: true");
+  });
+
   it("gates every prod job on workflow_dispatch", () => {
     const prodJobs = named("prod-");
     // Stack Deploys + the Vercel release. If this ever reads 0 the selector

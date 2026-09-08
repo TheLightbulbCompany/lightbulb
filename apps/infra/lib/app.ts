@@ -432,6 +432,44 @@ pipeline.workflowFile.patch(
   // resolve the path and synth throws, rather than gating something else.
   JsonPatch.add("/jobs/prod-DeployVercelProd/if", PROD_PROMOTE_IF),
   JsonPatch.add("/jobs/prod-DeployCompanyProd/if", PROD_PROMOTE_IF),
+
+  // Queue pending runs instead of evicting them.
+  //
+  // `cancel-in-progress: false` above protects a run that is already
+  // `in_progress`. It does NOT protect a run that is still PENDING: by default
+  // a concurrency group holds at most ONE pending run, and "any existing
+  // pending job or workflow in the same concurrency group will be canceled and
+  // the new queued job or workflow will take its place".
+  //
+  // Prod ships only on `workflow_dispatch`, and this pipeline is runner-bound
+  // (~2 concurrent job slots for 67 jobs, 10-30 min per run), so a promotion
+  // routinely sits PENDING for minutes waiting on the group. Every merge to
+  // main inside that window fires a push run that silently evicts it. On the
+  // night of 2026-09-07 that killed three consecutive promotions of a live
+  // prod defect fix -- runs 34177495429, 34177614173 and 34173158922, each
+  // cancelled having run ZERO jobs, which is the signature of a pending
+  // eviction. The person merging never feels the cost; it lands on whoever is
+  // promoting, which is why it recurs.
+  //
+  // `queue: max` raises the pending limit to 100 and drains FIFO, so nothing is
+  // evicted and a dispatched promotion always eventually runs. The GROUP IS
+  // UNCHANGED -- one run at a time still touches CloudFormation -- and that is
+  // exactly why this is preferred over giving `workflow_dispatch` a group of
+  // its own: separate groups would let a push run and a promotion (which
+  // deploys the dev stage first, by design) deploy the same dev stacks at once.
+  //
+  // Tradeoff, deliberately accepted: eviction was also acting as coalescing, so
+  // a burst of merges used to collapse into one or two dev deploys and now runs
+  // one per merge. Nothing is lost -- dev still converges on HEAD -- it costs
+  // self-hosted runner time and queue depth. `cancel-in-progress: true` would
+  // restore the coalescing but is a validation ERROR alongside `queue: max`,
+  // and would kill in-flight CloudFormation updates besides.
+  //
+  // Not expressible through the construct: `ConcurrencyOptions` carries exactly
+  // `group` and `cancelInProgress` and renders exactly those two keys
+  // (cdk-pipelines-github pipeline.js:205-208). Same patch mechanism, and the
+  // same stable non-positional path, as the two `if` patches above.
+  JsonPatch.add("/concurrency/queue", "max"),
 );
 
 

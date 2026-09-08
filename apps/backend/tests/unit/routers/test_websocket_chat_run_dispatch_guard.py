@@ -26,61 +26,15 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 from routers import websocket_chat as wc  # noqa: E402
 
 # --------------------------------------------------------------------------
-# Frontend RPC method inventory.
-#
-# Grepped 2026-07-12 from every `useGatewayRpc` / `useGatewayRpcMutation` /
-# `callRpc` call site under apps/frontend/src (and cross-checked against
-# apps/mobile/src, which is a strict subset). This list exists to PROVE the
-# refusal did not break a live surface -- the implementation is built around
-# "does this method start a run", not around this list.
+# The frontend RPC inventory that used to live here MOVED. The proxy is now
+# default-deny, so the live inventory is `websocket_chat._PROXY_ALLOWED_METHODS`
+# itself, and tests/unit/routers/test_websocket_chat_method_allowlist.py drives
+# the "every listed method still forwards" assertion straight off that frozenset.
+# Keeping a second hand-maintained copy here is exactly how this one went two
+# months stale (it was missing browser.request, progressCard.get, question.list,
+# question.resolve, sessions.branches.list, sessions.branches.switch and
+# sessions.rewind). This file is about the run-dispatch refusal; that is all.
 # --------------------------------------------------------------------------
-FRONTEND_RPC_METHODS = [
-    "health",
-    "agent.identity.get",
-    "agents.create",
-    "agents.delete",
-    "agents.list",
-    "agents.update",
-    "channels.status",
-    "chat.history",
-    "commands.list",
-    "config.get",
-    "config.patch",
-    "config.set",
-    "doctor.memory.backfillDreamDiary",
-    "doctor.memory.dedupeDreamDiary",
-    "doctor.memory.dreamDiary",
-    "doctor.memory.repairDreamingArtifacts",
-    "doctor.memory.resetDreamDiary",
-    "doctor.memory.resetGroundedShortTerm",
-    "doctor.memory.status",
-    "exec.approval.resolve",
-    "models.authStatus",
-    "models.list",
-    "plugin.approval.resolve",
-    "sessions.delete",
-    "sessions.list",
-    "sessions.patch",
-    "skills.install",
-    "skills.proposals.apply",  # `skills.proposals.${action}` template literal
-    "skills.proposals.inspect",
-    "skills.proposals.list",
-    "skills.proposals.reject",
-    "skills.search",
-    "skills.status",
-    "skills.update",
-    "tools.catalog",
-]
-
-# Session-key-bearing methods need a key the caller owns, or the IDOR guard
-# (_guard_session_key_ownership) consumes the request before it forwards.
-_OWNED_KEY = "agent:luna:user_1"
-_PARAMS_BY_METHOD: dict[str, dict] = {
-    "agents.delete": {"agentId": "agent_bob"},
-    "sessions.delete": {"key": _OWNED_KEY},
-    "sessions.patch": {"key": _OWNED_KEY},
-    "chat.history": {"sessionKey": _OWNED_KEY},
-}
 
 
 def _harness(monkeypatch, *, rpc_result=None, seeded=False, create_consumed=False):
@@ -168,33 +122,25 @@ async def test_run_dispatch_refusal_set_is_small_and_principled():
 
 
 # --------------------------------------------------------------------------
-# 2. Non-run-dispatching siblings still forward (incl. the near-misses).
+# 2. The run-adjacent near-misses.
 # --------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("method", ["chat.abort", "agent.wait", "tools.invoke", "cron.list"])
 @pytest.mark.asyncio
-async def test_run_adjacent_but_non_dispatching_methods_still_forward(monkeypatch, method):
+async def test_run_adjacent_methods_are_now_denied_by_the_allowlist(monkeypatch, method):
+    """These used to forward, as proof the run-dispatch refusal was narrow. They are
+    not run-dispatching and they are also not on the proxy allowlist — no client sends
+    any of them (aborts ride the typed `agent_abort` frame). So the correct assertion
+    is now refusal, and the run-dispatch set is still exactly four."""
     sent, pool, _ = _harness(monkeypatch)
 
     await _run(method, {"runId": "r1"})
 
-    pool.send_rpc.assert_awaited_once()
-    assert pool.send_rpc.await_args.kwargs["method"] == method
-    assert sent[-1]["ok"] is True
-
-
-@pytest.mark.parametrize("method", FRONTEND_RPC_METHODS)
-@pytest.mark.asyncio
-async def test_every_method_the_frontend_calls_still_forwards(monkeypatch, method):
-    sent, pool, _ = _harness(monkeypatch)
-
-    await _run(method, dict(_PARAMS_BY_METHOD.get(method, {})))
-
-    pool.send_rpc.assert_awaited_once()
-    assert pool.send_rpc.await_args.kwargs["method"] == method
-    assert sent[-1]["type"] == "res"
-    assert sent[-1]["ok"] is True
+    pool.send_rpc.assert_not_awaited()
+    assert sent[-1]["ok"] is False
+    assert sent[-1]["error"]["details"]["method"] == method
+    assert "use" not in sent[-1]["error"]["details"]  # not the run-dispatch refusal
 
 
 # --------------------------------------------------------------------------

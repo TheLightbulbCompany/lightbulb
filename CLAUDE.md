@@ -342,6 +342,20 @@ A dispatch run deploys dev from that ref first — prod jobs still `needs:` the 
 stage, so a promotion cannot skip dev. The `lightbulb-deploy` concurrency group is unchanged,
 so a promotion queues behind an in-flight dev deploy.
 
+That group now carries **`queue: max`** (one line, patched in from `app.ts`). It exists
+because `cancel-in-progress: false` protects only a run that is already `in_progress` — a
+run still PENDING used to be evicted by the next arrival, since a group holds one pending
+run by default. The pipeline is runner-bound, so a promotion sits pending for minutes and
+any merge in that window silently cancelled it (three consecutive promotions on 2026-09-07,
+each cancelled having run zero jobs — a cancelled run with **0 jobs** is the eviction
+signature; one with jobs was cancelled by a human). `queue: max` queues up to 100 runs FIFO
+instead. **A promotion no longer needs a merge freeze, and re-dispatching does not jump the
+queue — it just adds another run behind the first.** The single group is deliberate: prod
+jobs `needs:` the dev stage, so a per-event group would let a promotion and a push deploy the
+same dev stacks concurrently. Note `queue: max` is a validation ERROR alongside
+`cancel-in-progress: true`, and eviction was also coalescing merge bursts — a burst now
+costs one dev deploy per merge.
+
 **⚠️ THE CONSEQUENCE: `main` IS AHEAD OF PROD BY DEFAULT.** Merging no longer ships. Prod
 sits at whatever was last promoted and drifts further behind with every merge, silently and
 by design. So: never infer prod's contents from `main`, and never tell an owner something is

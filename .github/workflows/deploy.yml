@@ -10,6 +10,7 @@ on:
 concurrency:
   group: lightbulb-deploy
   cancel-in-progress: false
+  queue: max
 jobs:
   Build-Synth:
     name: Synthesize

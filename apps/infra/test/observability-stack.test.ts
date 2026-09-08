@@ -200,6 +200,9 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "operator.upstream.closed": [[]],
   "paperclip.upstream.error": [["kind"]],
   "provision.gate.blocked": [["code"]],
+  // run_analytics.schedule_run_completed — full set {outcome, source}; W67
+  // binds {outcome=failure, source=paperclip} (autonomous-run reliability).
+  "run.completed": [["outcome", "source"]],
   "stripe.api.latency": [["op"]],
   "stripe.webhook.received": [["event_type"]],
   "stripe.webhook.sig_fail": [[]],

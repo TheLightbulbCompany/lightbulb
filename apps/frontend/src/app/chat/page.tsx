@@ -113,8 +113,8 @@ function MobileChatShell() {
   // (useIsDesktop's server snapshot is false), so a rewrite here lands before
   // the dynamically-imported WorkspaceShell ever reads window.location.search
   // — and the dock's reconciler deliberately needs the RAW key to carry a
-  // retired panel's meaning onto its successor (?panel=dreams → Brain's
-  // Dreams tab; see workspaceShellReconciler.ts and panelRegistry.ts).
+  // retired panel's meaning onto its successor (?panel=teams-org-chart → the
+  // Agents chart view; see workspaceShellReconciler.ts and panelRegistry.ts).
   const activePanel: string = panelParam ? resolvePanelAlias(panelParam) : "overview";
 
   // Per-panel params derived once from the URL (mobile's channel) and threaded
@@ -122,12 +122,6 @@ function MobileChatShell() {
   // report one-shot consumption / durable clears back through the callbacks
   // below, which strip the matching URL param (replace-only).
   const agentParam = searchParams.get("agent");
-  // A raw ?panel=dreams link never carries &tab=dreams — that's a synthesis
-  // describePanel does for the desktop URL channel (panelRegistry.ts:175),
-  // which this mobile channel doesn't run through. Mirror it here: since the
-  // alias always resolves to teams-brain, forcing tab here can never leak
-  // onto an unrelated panel.
-  const tabParam = searchParams.get("tab") ?? (panelParam === "dreams" ? "dreams" : null);
   const pathParam = searchParams.get("path");
   const dayParam = searchParams.get("day");
   // Same synthesis as `tab` above, for Money and Inbox: ?panel=teams-spend and
@@ -156,6 +150,10 @@ function MobileChatShell() {
   const groupByParam =
     searchParams.get("groupBy") ??
     (rawTeamsKey === "goals" ? "goal" : rawTeamsKey === "projects" ? "project" : null);
+  // And for Agents: ?panel=teams-org-chart carries no &view=, because the view
+  // IS the key. It aliases to teams-agents, so reading it off the RAW key here
+  // can never leak onto another panel.
+  const viewParam = searchParams.get("view") ?? (rawTeamsKey === "org-chart" ? "chart" : null);
   const oneShots = {
     new: searchParams.get("new") ?? undefined,
     newIssue: searchParams.get("newIssue") ?? undefined,
@@ -219,6 +217,7 @@ function MobileChatShell() {
       // scrolls to a band nobody asked for.
       params.delete("section");
       params.delete("groupBy");
+      params.delete("view");
       pushSearchParams(params);
     },
     [searchParams],
@@ -368,7 +367,7 @@ function MobileChatShell() {
                 panelParams={{
                   ...(agentParam ? { agent: agentParam } : {}),
                   ...(groupByParam ? { groupBy: groupByParam } : {}),
-                  ...(tabParam ? { tab: tabParam } : {}),
+                  ...(viewParam ? { view: viewParam } : {}),
                   ...(pathParam ? { path: pathParam } : {}),
                   ...(dayParam ? { day: dayParam } : {}),
                   ...(sectionParam ? { section: sectionParam } : {}),

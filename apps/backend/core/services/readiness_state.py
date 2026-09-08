@@ -46,6 +46,7 @@ from typing import Any, Literal, Optional
 
 from core.billing.metronome_provisioning import is_ledger_eligible
 from core.repositories import billing_repo, container_repo
+from core.repositories.paperclip_repo import ONBOARDING_STATE_DEFAULTS
 from core.services import connection_service
 from core.services.provision_gate import is_subscription_active
 
@@ -139,29 +140,7 @@ async def resolve_onboarding_state(owner_id: str) -> dict:
         return await _paperclip_repo().get_onboarding_state(owner_id)
     except Exception:  # noqa: BLE001 — a degraded read must never break /status
         logger.info("readiness_state: paperclip-companies read failed for owner %s", owner_id, exc_info=True)
-        return {
-            "onboarding_generation": None,
-            "funnel_state": "not_started",
-            "pending_brief": False,
-            "funnel_submitted_at": None,
-            "funnel_completed_at": None,
-            "onboarding_goal_id": None,
-            "onboarding_project_id": None,
-            "onboarding_brief_text": None,
-            "onboarding_submitted_by": None,
-            "bootstrap_state": "not_started",
-            "bootstrap_dispatch_id": None,
-            "bootstrap_dispatched_at": None,
-            "bootstrap_send_attempted_at": None,
-            "bootstrap_sent_at": None,
-            "bootstrap_delivered_at": None,
-            "bootstrap_attempts": 0,
-            "bootstrap_last_error": None,
-            "teams_state": None,
-            "company_id": None,
-            "paperclip_user_id": None,
-            "user_id": None,
-        }
+        return dict(ONBOARDING_STATE_DEFAULTS)
 
 
 async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboarding: Any = _NOT_GIVEN) -> dict[str, Any]:

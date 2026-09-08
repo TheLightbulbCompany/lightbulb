@@ -3,7 +3,6 @@
 import logging
 import time
 import uuid
-from decimal import Decimal
 
 from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
@@ -1237,79 +1236,23 @@ async def delete(owner_id: str) -> None:
     await run_in_thread(table.delete_item, Key={"owner_id": owner_id})
 
 
-async def add_trial_daily_spend(owner_id: str, date: str, delta_microcents: int) -> int:
-    """Atomically add ``delta_microcents`` to the free-tier daily-spend
-    counter for ``date`` (a ``YYYY-MM-DD`` UTC date key) and return the NEW
-    total for that date.
-
-    Backs the free-tier $3/day cost cap read by
-    ``core/services/trial_cap.trial_block_reason``. The **Bedrock
-    invocation-log meter Lambda is the sole writer** of this counter — it
-    prices every model invocation at the AWS layer and ADDs it here. No
-    in-band backend path writes it; two writers would double-count.
-
-    The attribute is ``trial_daily_spend_microcents`` — a per-date map on the
-    billing row (``{"YYYY-MM-DD": microcents}``), keyed by UTC date so it resets
-    for free each midnight.
-
-    The increment is a nested-path ``SET`` with ``if_not_exists`` rather than
-    an ``ADD``. Both forms are accepted by a real DynamoDB engine on a nested
-    leaf (verified against DynamoDB Local, which is AWS's own engine — the
-    "ADD is top-level-only" folklore is not in the API reference, whose sole
-    stated ADD restriction is the Number/set data type), but AWS explicitly
-    recommends ``SET`` over ``ADD``, and this counter is the trial spend
-    fence: if it silently fails to apply, nothing stops the burn. Prefer the
-    construct that needs no argument to defend.
-
-    A nested ``SET`` still requires the parent map to already exist, and a
-    single combined expression (``SET trial_daily_spend_microcents =
-    if_not_exists(...), trial_daily_spend_microcents.#d = ...``) is REJECTED —
-    ``ValidationException: Two document paths overlap with each other`` — so
-    this stays a guarded two-step: (1) initialize the map to ``{}`` only if
-    the row exists and the map is absent (a no-op, swallowed
-    ConditionalCheckFailedException, if another caller won the init race),
-    then (2) the atomic increment on the nested date leaf, still guarded by
-    ``attribute_exists(owner_id)`` so a missing row raises on step 2 either
-    way. No phantom rows — same invariant as the other billing-row setters.
-    """
-    table = _get_table()
-    try:
-        await run_in_thread(
-            table.update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression="SET trial_daily_spend_microcents = :empty",
-            ExpressionAttributeValues={":empty": {}},
-            ConditionExpression=("attribute_exists(owner_id) AND attribute_not_exists(trial_daily_spend_microcents)"),
-        )
-    except ClientError as e:
-        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
-        # Map already exists, or the owner row doesn't exist -- the ADD
-        # below re-checks attribute_exists(owner_id) and raises the same
-        # error in the no-row case.
-
-    response = await run_in_thread(
-        table.update_item,
-        Key={"owner_id": owner_id},
-        UpdateExpression=(
-            "SET trial_daily_spend_microcents.#d = if_not_exists(trial_daily_spend_microcents.#d, :zero) + :delta"
-        ),
-        ExpressionAttributeNames={"#d": date},
-        ExpressionAttributeValues={
-            ":delta": Decimal(str(int(delta_microcents))),
-            ":zero": Decimal(0),
-        },
-        ConditionExpression="attribute_exists(owner_id)",
-        ReturnValues="ALL_NEW",
-    )
-    attrs = response.get("Attributes", {})
-    return int(attrs.get("trial_daily_spend_microcents", {}).get(date, 0))
-
-
 async def get_trial_daily_spend(owner_id: str, date: str) -> int:
     """Read-only lookup of the free-tier daily-spend counter for ``date``.
     Returns 0 when the owner has no billing row, or the row exists but has no
-    spend recorded for that date."""
+    spend recorded for that date.
+
+    Backs the free-tier $3/day cost cap read by
+    ``core/services/trial_cap.trial_block_reason``. This module has no writer
+    for ``trial_daily_spend_microcents`` — the counter has TWO writers, both
+    outside this codebase's Python: the bedrock-gate settles it first (in
+    JavaScript, on the hot inference path, before forwarding to Bedrock), and
+    the Bedrock invocation-log meter Lambda backstops by counting only the
+    invocations the gate missed (aborted streams, break-glass direct
+    traffic), via its own raw boto3 ``update_item``. Exactly-once is
+    guaranteed by the shared ``requestId`` dedup table
+    (``lightbulb-{env}-bedrock-invocation-dedup``), not by single-writer
+    discipline — do not add a third writer here believing you'd be the first.
+    """
     item = await get_by_owner_id(owner_id)
     if not item:
         return 0

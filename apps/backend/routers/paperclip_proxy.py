@@ -70,9 +70,6 @@ independently rather than relying on any shared state.
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
-import html
 import json
 import logging
 import re
@@ -258,85 +255,6 @@ def _circuit_breaker_response() -> Response:
   <h1>Teams temporarily unavailable</h1>
   <p>The workspace backend is having trouble. Try again in a minute.</p>
 </div>
-</body></html>
-"""
-    return Response(content=body.encode("utf-8"), status_code=503, media_type="text/html; charset=utf-8")
-
-
-def _provisioning_response() -> Response:
-    """Returned when the user has no Paperclip company yet (or it's not active).
-
-    The page POSTs to ``/__provision__`` to trigger personal-company
-    provisioning (mirrors what the Clerk org.created webhook would do
-    for org users), then auto-polls until the row goes ``status=active``
-    and reloads. Manual refresh also works — backend will return either
-    the same stub or the actual Paperclip UI depending on row state.
-    """
-    body = f"""<!doctype html>
-<html lang="en"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Setting up Teams…</title>
-<style>{_STUB_BASE_CSS}</style>
-</head><body>
-<div class="card">
-  <h1 id="title">Set up your team workspace</h1>
-  <p id="msg">This takes a few seconds. Click below to provision your workspace.</p>
-  <button id="go" class="btn">Set up workspace</button>
-  <div id="err" class="err" hidden></div>
-</div>
-<script>
-(() => {{
-  const $ = (id) => document.getElementById(id);
-  const setBusy = (msg) => {{
-    $('title').innerHTML = '<span class="spinner"></span>Provisioning…';
-    $('msg').textContent = msg || 'This usually takes 5–10 seconds.';
-    $('go').hidden = true;
-    $('err').hidden = true;
-  }};
-  const setError = (msg) => {{
-    $('err').textContent = msg;
-    $('err').hidden = false;
-    $('go').disabled = false;
-    $('go').textContent = 'Try again';
-    $('title').textContent = 'Set up your team workspace';
-    $('msg').textContent = '';
-  }};
-
-  async function poll(deadlineMs) {{
-    // After provisioning succeeds, the next request to / should proxy
-    // straight through. We poll by issuing a HEAD with no follow so we
-    // can read the status code without re-rendering this page.
-    const start = Date.now();
-    while (Date.now() - start < deadlineMs) {{
-      try {{
-        const r = await fetch('/', {{ method: 'HEAD', credentials: 'include' }});
-        if (r.status !== 503) {{
-          location.replace('/');
-          return;
-        }}
-      }} catch (e) {{ /* keep polling */ }}
-      await new Promise(r => setTimeout(r, 2000));
-    }}
-    setError('Provisioning taking longer than expected. Refresh to retry.');
-  }}
-
-  $('go').addEventListener('click', async () => {{
-    $('go').disabled = true;
-    setBusy('');
-    try {{
-      const r = await fetch('/__provision__', {{ method: 'POST', credentials: 'include' }});
-      if (r.ok) {{
-        await poll(60000);
-      }} else {{
-        const text = await r.text().catch(() => '');
-        setError('Provisioning failed (' + r.status + ')' + (text ? ': ' + text.slice(0, 200) : ''));
-      }}
-    }} catch (e) {{
-      setError('Network error: ' + (e && e.message || e));
-    }}
-  }});
-}})();
-</script>
 </body></html>
 """
     return Response(content=body.encode("utf-8"), status_code=503, media_type="text/html; charset=utf-8")
@@ -729,29 +647,6 @@ _PAPERCLIP_SESSION_KIND = "paperclip_session"
 _PAPERCLIP_SESSION_TTL_HOURS = 8
 
 
-def _decode_clerk_publishable_key(pk: str) -> str | None:
-    """Extract the Clerk Frontend API hostname from a publishable key.
-
-    Clerk publishable keys encode the frontend API URL: the format is
-    ``pk_{test|live}_<base64(<frontend_api_host>$)>``. Returns the bare
-    hostname (no scheme) on success, ``None`` on parse failure. Used by
-    the bootstrap HTML to load the right Clerk SDK build per environment.
-    """
-    if not pk:
-        return None
-    parts = pk.split("_", 2)
-    if len(parts) != 3 or parts[0] != "pk":
-        return None
-    encoded = parts[2]
-    # base64.b64decode requires correct padding; pad up to a multiple of 4.
-    padding = "=" * (-len(encoded) % 4)
-    try:
-        decoded = base64.b64decode(encoded + padding).decode("ascii")
-    except (binascii.Error, UnicodeDecodeError):
-        return None
-    return decoded.rstrip("$").rstrip("/") or None
-
-
 def _mint_paperclip_session(user_id: str, email: str | None, org_id: str | None = None) -> str:
     """HS256 JWT for the proxy session cookie. Same secret as service tokens
     but with a distinct ``kind`` claim so the verifier can refuse cross-use.
@@ -795,125 +690,6 @@ def _verify_paperclip_session(token: str) -> dict:
     if not claims.get("sub"):
         raise pyjwt.InvalidTokenError("Missing sub claim")
     return claims
-
-
-def _bootstrap_html() -> bytes:
-    """Render the Clerk sign-in bootstrap page.
-
-    Served when a browser navigates to a Paperclip URL with no auth.
-    Mirrors Goosetown's pattern: a tiny Clerk-aware page that mounts
-    Clerk's ``<SignIn>`` component inline. After the user signs in (or
-    one-clicks "Continue as ..." if Clerk recognizes the browser),
-    Clerk establishes a session on company-dev.isol8.co, the page POSTs
-    the JWT to ``/__handshake__`` to mint a host-scoped proxy cookie,
-    then reloads — the next request carries the cookie and proxies
-    through to Paperclip normally.
-
-    Why we mount the sign-in inline instead of redirecting to a Clerk-
-    hosted sign-in page: ``Clerk.redirectToSignIn`` defaults to a
-    relative ``/sign-in`` URL on the *current* host, which is this same
-    bootstrap page — that creates an infinite redirect loop. Mounting
-    inline avoids the loop entirely and matches the Goosetown UX (no
-    domain-bouncing during sign-in).
-
-    Why we don't use ``__client``-cookie session sharing: Clerk's dev
-    tier scopes session cookies per-application-host. The user has to
-    establish a session on this host directly. Clerk dev does still
-    recognize the email and offers "Continue as ..." with one click on
-    re-visit, so the UX is close to "shared auth" without paying for
-    Clerk Pro's cross-domain SSO.
-
-    The publishable key is *public* (Clerk literally serves it in HTML)
-    so rendering it inline is fine. The Clerk SDK script URL is derived
-    from the key (Clerk encodes the frontend API host inside it).
-    """
-    pk = (settings.CLERK_PUBLISHABLE_KEY or "").strip()
-    clerk_host = _decode_clerk_publishable_key(pk)
-    if not pk or not clerk_host:
-        # Misconfiguration — render a static error rather than broken JS.
-        return (
-            b"<!doctype html><html><body>"
-            b"<h1>Teams unavailable</h1>"
-            b"<p>Auth bootstrap is not configured. Contact support.</p>"
-            b"</body></html>"
-        )
-    pk_attr = html.escape(pk, quote=True)
-    sdk_src = f"https://{html.escape(clerk_host, quote=True)}/npm/@clerk/clerk-js@5/dist/clerk.browser.js"
-    body = f"""<!doctype html>
-<html lang="en"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Sign in to Teams</title>
-<style>{_STUB_BASE_CSS}
-  body{{flex-direction:column;gap:16px}}
-  #status{{font-size:13px;color:#6b7280}}
-  #signin-root{{display:flex;justify-content:center;width:100%;max-width:480px}}
-</style>
-</head><body>
-<div id="status">Loading…</div>
-<div id="signin-root"></div>
-<script async crossorigin="anonymous" data-clerk-publishable-key="{pk_attr}" src="{sdk_src}" type="text/javascript"></script>
-<script>
-(async () => {{
-  const status = document.getElementById('status');
-  const root = document.getElementById('signin-root');
-  const setStatus = (msg) => {{ status.textContent = msg; }};
-
-  // Wait for Clerk SDK to attach
-  const start = Date.now();
-  while (!window.Clerk && Date.now() - start < 10000) {{
-    await new Promise(r => setTimeout(r, 50));
-  }}
-  if (!window.Clerk) {{
-    setStatus('Failed to load Clerk SDK. Refresh to try again.');
-    return;
-  }}
-
-  try {{
-    await window.Clerk.load();
-  }} catch (e) {{
-    setStatus('Auth failed to initialize: ' + (e && e.message || e));
-    return;
-  }}
-
-  async function finishHandshake() {{
-    setStatus('Setting up your session…');
-    try {{
-      const token = await window.Clerk.session.getToken();
-      const r = await fetch('/__handshake__', {{
-        method: 'POST',
-        headers: {{ 'Authorization': 'Bearer ' + token }},
-        credentials: 'include',
-      }});
-      if (r.ok) {{
-        location.replace(location.pathname + location.search + location.hash);
-      }} else {{
-        setStatus('Auth handshake failed (' + r.status + '). Refresh to retry.');
-      }}
-    }} catch (e) {{
-      setStatus('Handshake error: ' + (e && e.message || e));
-    }}
-  }}
-
-  if (window.Clerk.session) {{
-    // Already signed in on this host — go straight to handshake.
-    return finishHandshake();
-  }}
-
-  // Mount Clerk's sign-in component inline. Clerk fires its session-change
-  // listener once sign-in completes; we then run the handshake + reload.
-  setStatus('');
-  window.Clerk.mountSignIn(root, {{
-    routing: 'virtual',
-    appearance: {{ elements: {{ rootBox: {{ width: '100%' }} }} }},
-  }});
-  window.Clerk.addListener(({{ session }}) => {{
-    if (session) finishHandshake();
-  }});
-}})();
-</script>
-</body></html>
-"""
-    return body.encode("utf-8")
 
 
 def _wants_html(request: Request) -> bool:
@@ -1121,76 +897,6 @@ async def handshake(request: Request) -> Response:
         path="/",
     )
     return response
-
-
-@router.post("/__provision__")
-async def provision_self(request: Request) -> Response:
-    """Synchronously provision a personal Paperclip company for the caller.
-
-    The Clerk webhooks (``organization.created`` / ``organizationMembership.created``)
-    only provision Paperclip rows for users who go through Clerk's org-creation
-    flow. Users who reach the Teams button on a personal account would otherwise
-    see the "workspace being set up" stub forever. This endpoint is the
-    self-service equivalent: it runs the same provisioning chain (sign up via
-    Better Auth, create company, mint service token, seed Main Agent, persist
-    row) but uses ``user_id`` as the org_id sentinel since the row is keyed
-    per-user anyway.
-
-    Idempotent: returns 204 immediately if the row already exists with
-    ``status="active"``. Otherwise blocks until provisioning completes
-    (typically 5–10s — Better Auth signup + Paperclip company create + agent
-    seed). On failure, returns 502 with the underlying error so the
-    provisioning stub can surface it to the user.
-
-    Auth: same as the proxy itself (cookie or Bearer). The bootstrap sets the
-    cookie before the user ever sees the provisioning stub, so by the time
-    the stub's "Set up workspace" button POSTs here, auth is already in place.
-    """
-    auth = await _get_paperclip_user(request)
-    if not auth.email:
-        raise HTTPException(
-            status_code=400,
-            detail="Email claim missing from auth token; cannot create Paperclip account",
-        )
-
-    repo = PaperclipRepo(table_name="paperclip-companies")
-    existing = await repo.get(auth.user_id)
-    if existing is not None and existing.status == "active":
-        return Response(status_code=204)
-
-    # Build provisioning chain inline (same shape as the
-    # core.services.paperclip_provisioning.build_paperclip_provisioning
-    # helper). Per-request httpx.AsyncClient mirrors the proxy's pattern.
-    from core.services.paperclip_admin_client import PaperclipAdminClient
-    from core.services.paperclip_provisioning import PaperclipProvisioning
-
-    async with httpx.AsyncClient(
-        base_url=settings.PAPERCLIP_INTERNAL_URL,
-        timeout=30.0,
-    ) as http:
-        admin = PaperclipAdminClient(http_client=http)
-        provisioning = PaperclipProvisioning(admin, repo, env_name=settings.ENVIRONMENT)
-        try:
-            # Personal context: pass user_id as the owner_id — for
-            # personal owners ``owner_id == clerk_user_id`` and the
-            # by-org-id GSI partitions cleanly because each personal
-            # user is its own one-member "org" on the storage side.
-            await provisioning.provision_org(
-                owner_id=auth.user_id,
-                owner_user_id=auth.user_id,
-                owner_email=auth.email,
-            )
-        except Exception as e:  # noqa: BLE001 — surface to caller for stub UI.
-            logger.exception(
-                "paperclip_proxy: self-provision failed for user=%s: %s",
-                auth.user_id,
-                e,
-            )
-            raise HTTPException(
-                status_code=502,
-                detail=f"Provisioning failed: {type(e).__name__}",
-            )
-    return Response(status_code=204)
 
 
 def _strip_handoff_param(request: Request) -> str:

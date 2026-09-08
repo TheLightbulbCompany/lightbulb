@@ -396,7 +396,10 @@ async def test_force_never_rewrites_workspace_state(force_ws, fake_files_dir):
     ):
         assert state_rel not in force_ws.overwrote
         assert state_rel not in force_ws.if_missing_calls
-    force_ws.delete_file.assert_not_called()
+    # Scoped to the state marker: the legacy-TOOLS.md sweep is the one thing
+    # allowed to delete from the workspace, and it never touches .openclaw/.
+    deleted = [c.args[1] for c in force_ws.delete_file.call_args_list]
+    assert not [rel for rel in deleted if ".openclaw/" in rel], deleted
 
 
 @pytest.mark.asyncio
@@ -548,3 +551,38 @@ async def test_fresh_workspace_stays_missing_only_and_stamps_marker(workspace_st
     assert result["auto_refreshed"] is False
     stamped = [c.args[1] for c in workspace_stub.write_file.call_args_list]
     assert _MARKER_PATH in stamped
+
+
+# --- Legacy TOOLS.md sweep ----------------------------------------------------
+#
+# OpenClaw's boot doctor merges a workspace TOOLS.md into that workspace's
+# AGENTS.md and unlinks it (src/commands/doctor-tools-md-migration.ts). Atlas's
+# reference file did that on every boot, producing a 32,933-byte AGENTS.md —
+# 12,900 chars past the 20,000-char bootstrap cap. The reference now ships as
+# ATLAS-TOOLS.md; the sweep clears the copy earlier bundles left on EFS so the
+# next boot has nothing left to merge back in.
+
+
+def _tools_sweep_ws(tmp_path, *, tools_exists: bool):
+    ws = MagicMock()
+    ws_dir = tmp_path / "workspace-uuid-atlas"
+    ws_dir.mkdir()
+    if tools_exists:
+        (ws_dir / "TOOLS.md").write_text("# TOOLS.md\n", encoding="utf-8")
+    ws.agent_workspace_path.return_value = ws_dir
+    ws.write_file_if_missing.return_value = True
+    return ws
+
+
+@pytest.mark.asyncio
+async def test_legacy_tools_md_is_removed_from_the_workspace(tmp_path, fake_files_dir):
+    ws = _tools_sweep_ws(tmp_path, tools_exists=True)
+    await pre_stage_atlas(owner_id="user_x", paperclip_agents=_AGENTS, workspace=ws)
+    ws.delete_file.assert_called_once_with("user_x", "workspace-uuid-atlas/TOOLS.md")
+
+
+@pytest.mark.asyncio
+async def test_no_delete_when_the_workspace_has_no_tools_md(tmp_path, fake_files_dir):
+    ws = _tools_sweep_ws(tmp_path, tools_exists=False)
+    await pre_stage_atlas(owner_id="user_x", paperclip_agents=_AGENTS, workspace=ws)
+    ws.delete_file.assert_not_called()

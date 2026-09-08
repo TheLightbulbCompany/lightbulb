@@ -1,4 +1,4 @@
-# TOOLS.md
+# ATLAS-TOOLS.md
 
 Reference for the skills, pipelines, scripts, and contracts Atlas relies on — the mechanism behind AGENTS.md's philosophy.
 

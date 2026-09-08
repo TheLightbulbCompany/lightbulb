@@ -18,7 +18,8 @@ test("renders 'Navigate' group with the IA nav actions on open with empty query"
   expect(screen.getByText("Navigate")).toBeInTheDocument();
   expect(screen.getByText("Inbox")).toBeInTheDocument();
   expect(screen.getByText("Home")).toBeInTheDocument();
-  expect(screen.getByText("Org chart")).toBeInTheDocument();
+  // The org chart is a view of the Agents panel now, so "Agents" is the row.
+  expect(screen.getByText("Agents")).toBeInTheDocument();
   expect(screen.getByText("Settings")).toBeInTheDocument();
 });
 

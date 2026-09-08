@@ -1,4 +1,4 @@
-import { legacyTablePrefix, tablePrefix } from "../lib/table-names";
+import { tablePrefix } from "../lib/table-names";
 import * as cdk from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import * as kms from "aws-cdk-lib/aws-kms";
@@ -163,18 +163,23 @@ describe.each(["dev", "prod"] as const)(
     });
 
     test("service task role grants oauth-state by name", () => {
+      // The by-name DynamoDbIntegrations statement (oauth-state among its
+      // five named tables) was deleted 2026-09: exactly subsumed by
+      // DynamoDbOwnedTables, which grants a superset of actions on every
+      // table under the env-prefixed wildcard below — oauth-state included.
       service.hasResourceProperties("AWS::IAM::Policy", {
         PolicyDocument: {
           Statement: Match.arrayWith([
-            Match.objectLike({ Sid: "DynamoDbIntegrations" }),
+            Match.objectLike({ Sid: "DynamoDbOwnedTables" }),
           ]),
         },
       });
       const json = JSON.stringify(service.toJSON());
-      // Wildcard prefix during the rename: one entry grants both
-      // isol8-{env}-oauth-state and lightbulb-{env}-oauth-state, so the
-      // role keeps working across the reader flip. Narrows at step D.
-      expect(json).toContain(`:table/*-${environment}-oauth-state`);
+      // Wildcard prefix during the rename: one entry grants every table
+      // under this env's namespace, including both isol8-{env}-oauth-state
+      // and lightbulb-{env}-oauth-state, so the role keeps working across
+      // the reader flip. Narrows at step D.
+      expect(json).toContain(`:table/*-${environment}-*`);
     });
 
     test("service stack no longer imports either credential-table ARN", () => {

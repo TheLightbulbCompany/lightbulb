@@ -667,7 +667,7 @@ app.add_middleware(ShutdownAwareMiddleware)
 # in LIFO source order — last added runs first). The dispatcher reads
 # X-Isol8-Public-Host directly off the scope, so it doesn't actually depend
 # on ProxyHeadersMiddleware running first; the placement here is about
-# letting CORS/E2E/admin-metrics still see all traffic uniformly.
+# letting CORS/E2E still see all traffic uniformly.
 app.add_middleware(HostDispatcherMiddleware)
 
 # Proxy-headers middleware — ALB terminates TLS and forwards X-Forwarded-Proto.
@@ -735,12 +735,6 @@ app.add_middleware(
 # every log line emitted while handling an e2e harness request carries the
 # same e2e_run_id field. No-op for traffic that doesn't send the header.
 app.add_middleware(E2ECorrelationMiddleware)
-
-# Admin metrics middleware (CEO O1) — emits admin_api.* CloudWatch metrics
-# for every /api/v1/admin/* request. No-op for non-admin paths.
-from core.middleware.admin_metrics import AdminMetricsMiddleware  # noqa: E402
-
-app.add_middleware(AdminMetricsMiddleware)
 
 # Security response headers (nosniff / frame-options / referrer-policy). Added
 # last so it wraps outermost and stamps every response, including ones a

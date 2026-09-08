@@ -83,7 +83,13 @@ async def test_apply_install_writes_secret_row_taskdef_and_config_in_order():
         calls.append("patch")
         assert patch["channels"]["slack"]["accounts"]["T1"]["mode"] == "http"
         assert patch["channels"]["slack"]["enabled"] is True
-        assert patch["channels"]["slack"]["streaming"] == {"mode": "progress"}
+        # toolProgress off: progress posts each tool's OUTPUT into the channel,
+        # and a Read of a bundled SKILL.md dumped the whole file into the
+        # owner's shared company channel.
+        assert patch["channels"]["slack"]["streaming"] == {
+            "mode": "progress",
+            "progress": {"toolProgress": False},
+        }
         assert agent_for_account == {"T1": "agent_f"}
 
     mgr = MagicMock()

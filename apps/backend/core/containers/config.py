@@ -2875,15 +2875,24 @@ def build_openclaw_config_dict(
             channel = channels.setdefault(provider, {"enabled": True, "dmPolicy": "pairing"})
             channel["enabled"] = True
             channel["accounts"] = accounts
-            # Progress drafts: one channel message edited live with tool/status
-            # lines during long autonomous turns, replaced by the final answer —
+            # Progress drafts: one channel message edited live with status
+            # during long autonomous turns, replaced by the final answer —
             # instead of minutes of silence. Telegram and Slack default to
             # plain block streaming upstream; Discord already defaults to
             # progress, so it needs no key. Zero extra LLM calls (edits only).
-            # (streaming.progress.commandText is NOT in the deployed schema —
-            # do not add it before the next image bump.)
+            #
+            # toolProgress is forced OFF, not setdefault-ed: it posts each
+            # tool's OUTPUT into the conversation, and a Read of a bundled
+            # SKILL.md put the whole file — maintenance notes addressed to our
+            # own engineers included — into an owner's shared company channel.
+            # Existing owners carry a streaming block already, so a setdefault
+            # on the parent would never reach them.
             if provider in ("telegram", "slack"):
-                channel.setdefault("streaming", {"mode": "progress"})
+                streaming = channel.setdefault("streaming", {"mode": "progress"})
+                if isinstance(streaming, dict):
+                    progress = streaming.setdefault("progress", {})
+                    if isinstance(progress, dict):
+                        progress["toolProgress"] = False
             # Stale bindings whose account no longer exists (e.g. deleted
             # after a crash) are dropped here — not carried, not re-written —
             # so an orphaned binding can't leak forward on every reprovision.

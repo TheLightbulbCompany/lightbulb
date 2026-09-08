@@ -104,7 +104,9 @@ describe("deriveReconcilerAction — lastApplied latch", () => {
     // Pre-resolving here would hide the pre-alias key from describePanel, which
     // branches on it to carry a retired panel's meaning onto its successor.
     expect(deriveReconcilerAction("?panel=credits", null)!.panelKey).toBe("credits");
-    expect(deriveReconcilerAction("?panel=dreams", null)!.panelKey).toBe("dreams");
+    expect(deriveReconcilerAction("?panel=teams-org-chart", null)!.panelKey).toBe(
+      "teams-org-chart",
+    );
   });
 
   it("separates raw durable params (URL grammar) from one-shots", () => {
@@ -222,27 +224,27 @@ describe("isCommandTargetOpen (analytics newness check)", () => {
 // The regression this exists for: every test above (and panelRegistry's,
 // urlChannel's) checked ONE LINK of the deep-link chain, and the chain was
 // broken at a seam none of them crossed — the reconciler pre-resolved the
-// alias, so describePanel never saw "dreams" and Brain opened on Notes. These
-// walk the WHOLE chain the shell actually executes.
+// alias, so describePanel never saw the raw key and the successor opened on
+// its default view. These walk the WHOLE chain the shell actually executes.
 describe("retired-alias deep links keep their meaning end to end", () => {
-  it("?panel=dreams opens Brain with the Dreams tab selected", () => {
+  it("?panel=teams-org-chart opens ONE Agents panel with the chart view selected", () => {
     const api = makeFakeApi();
     attachDockviewApi(api, () => undefined);
 
     // 1. reconciler → 2. openPanel → 3. the params dockview mounts the panel with
-    const d = deriveReconcilerAction("?panel=dreams", null)!;
+    const d = deriveReconcilerAction("?panel=teams-org-chart", null)!;
     openPanel(d.panelKey!, d.durableParams, { oneShots: d.command!.oneShots });
-    const mounted = api.getPanel("teams-brain")!.params as Record<string, string>;
-    expect(mounted).toEqual({ teamsKey: "brain", tab: "dreams" });
+    const mounted = api.getPanel("teams-agents")!.params as Record<string, string>;
+    expect(mounted).toEqual({ teamsKey: "agents", view: "chart" });
 
-    // 4. the router turns those params into BrainPanel's seed tab. Invoked
+    // 4. the router turns those params into the panel's seed view. Invoked
     // directly (this branch is hookless) so the assertion is on the real
     // router, not a re-statement of its contract.
     const element = TeamsPanelRouter({
       panel: mounted.teamsKey,
       panelParams: mounted,
-    }) as React.ReactElement<{ initialTab: string | null }>;
-    expect(element.props.initialTab).toBe("dreams");
+    }) as React.ReactElement<{ initialView: string | null }>;
+    expect(element.props.initialView).toBe("chart");
   });
 
   it("every retired alias still lands on its successor's panel id", () => {

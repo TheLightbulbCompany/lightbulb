@@ -1,4 +1,4 @@
-import { legacyTablePrefix, tablePrefix } from "../lib/table-names";
+import { tablePrefix } from "../lib/table-names";
 import * as cdk from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import * as kms from "aws-cdk-lib/aws-kms";

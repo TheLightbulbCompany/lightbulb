@@ -1,24 +1,24 @@
 """Local fast-gate flag — a disposable DDB projection of Metronome balance.
 
 Metronome's balance read is async (no low-latency SLA, research §3), so the
-synchronous chat gate reads THIS instead. The backend never depletes — usage
-flows from the meter Lambda straight to Metronome — so the flag has exactly
-two feeders: (1) authoritative set from the low-balance webhook, (2) the
-gate's lazy ``getNetBalance`` refresh on a stale row (``is_stale``), which is
-also what re-arms after a top-up (payment-gated commits confirm nothing
-synchronously, and Metronome has no recovery webhook). Carries NO
-money-correctness burden: Metronome is the SoR, and the IAM revoke is the
-backstop if the flag goes stale.
+synchronous chat gate reads THIS projection instead of calling Metronome
+directly. The backend never depletes — usage flows from the meter Lambda
+straight to Metronome — so the flag has exactly two feeders: (1) authoritative
+set from the low-balance webhook, (2) the gate's lazy ``getNetBalance``
+refresh on a stale row (``is_stale``), which is also what re-arms after a
+top-up (payment-gated commits confirm nothing synchronously, and Metronome
+has no recovery webhook). Carries NO money-correctness burden: Metronome is
+the SoR, and the IAM revoke is the backstop if the flag goes stale.
 
 Item shape (PK owner_id):
   {owner_id, remaining_microcents:int, updated_at:str, [blocked:bool]}
 
-``remaining_microcents`` is the authoritative cached number; ``blocked`` is a
-convenience flag set only by ``set_balance`` (the synchronous gate derives
-blocked-ness from ``remaining_microcents <= 0`` so an authoritative set
-re-arm needs no second write). An owner with no row is treated as NOT blocked
-on the gate read (a brand-new owner shouldn't be gated by a missing
-projection).
+This module is storage only — it has no blocked-ness opinion. The one
+blocked-ness predicate lives in ``core.services.metronome_gate._row_blocked``,
+which blocks at ``remaining_microcents <= RESERVE_ESTIMATE_MICROCENTS`` (NOT
+``<= 0``) to mirror the bedrock-gate's own admission rule. Do not derive
+blocked-ness here or anywhere else — a ``<= 0`` check admits an owner the
+bedrock-gate will then 429.
 """
 
 from __future__ import annotations
@@ -84,42 +84,14 @@ def is_stale(row: dict | None, max_age_s: int) -> bool:
 
 
 class MetronomeFastGate:
-    """The synchronous chat gate's view of Metronome balance."""
+    """Storage layer for the DDB fast-gate projection — no blocked-ness opinion.
 
-    async def is_blocked(self, owner_id: str) -> bool:
-        """True when the owner is out of spendable balance.
-
-        Derived from ``remaining_microcents`` (the authoritative cached number),
-        NOT from a separately-persisted ``blocked`` attribute — so any write
-        that crosses zero flips blocked-ness without a second write. A missing
-        row is NOT blocked (a brand-new owner shouldn't be gated by a missing
-        projection).
-        """
-        resp = await run_in_thread(_table().get_item, Key={"owner_id": owner_id}, ConsistentRead=True)
-        item = resp.get("Item")
-        if not item:
-            return False
-        remaining = item.get("remaining_microcents")
-        if remaining is not None:
-            return int(remaining) <= 0
-        # No remaining number on the row (shouldn't happen post-Phase-2, but be
-        # defensive): fall back to a legacy persisted flag if present.
-        return bool(item.get("blocked", False))
-
-    async def get_remaining(self, owner_id: str) -> int:
-        """The cached remaining balance (microcents) the synchronous chat /
-        provision gate reads instead of Metronome's async, no-SLA getNetBalance.
-
-        Returns 0 for a missing row. The gate's hard-block is keyed off
-        ``is_blocked`` (which treats a missing row as not-blocked), so this 0
-        is only an informational balance for an as-yet-unmetered owner.
-        """
-        resp = await run_in_thread(_table().get_item, Key={"owner_id": owner_id}, ConsistentRead=True)
-        item = resp.get("Item")
-        if not item:
-            return 0
-        remaining = item.get("remaining_microcents")
-        return int(remaining) if remaining is not None else 0
+    The blocked-ness predicate lives in
+    ``core.services.metronome_gate._row_blocked``, which blocks at
+    ``remaining_microcents <= RESERVE_ESTIMATE_MICROCENTS``, NOT ``<= 0``.
+    Callers that need blocked-ness must go through that predicate (or
+    ``is_owner_blocked``), never derive it from a raw balance read here.
+    """
 
     async def get_row(self, owner_id: str) -> dict | None:
         """The raw projection row (or None), for callers that need more than

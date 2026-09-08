@@ -66,7 +66,7 @@ function recommendSkills(archetype, requirements, userRequestedSkills) {
     if (FULL_DENYLIST.includes(skill)) {
       refused.push({
         skill: skill,
-        reason: "This skill is on Lightbulb's ClawHavoc avoidance list — community comments on ClawHub are not a verified source. To proceed, supply a publisher-signed manifest URL from the official source (see TOOLS.md § Verified Source Definition) and Atlas will run skill-vetter against it.",
+        reason: "This skill is on Lightbulb's ClawHavoc avoidance list — community comments on ClawHub are not a verified source. To proceed, supply a publisher-signed manifest URL from the official source (see ATLAS-TOOLS.md § Verified Source Definition) and Atlas will run skill-vetter against it.",
         verified_source_required: true
       });
       continue;

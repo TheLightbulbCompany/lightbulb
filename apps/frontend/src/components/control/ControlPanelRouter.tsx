@@ -36,6 +36,7 @@ const PANEL_LOADERS: Record<string, () => Promise<React.ComponentType>> = {
   sessions: () => import("./panels/SessionsPanel").then((m) => m.SessionsPanel),
   channels: () => import("./panels/ChannelsStatusPanel").then((m) => m.ChannelsStatusPanel),
   usage: () => import("./panels/UsagePanel").then((m) => m.UsagePanel),
+  dreams: () => import("./panels/DreamsPanel").then((m) => m.DreamsPanel),
   skills: () => import("./panels/SkillsTab").then((m) => m.SkillsTab),
   integrations: () => import("./panels/IntegrationsPanel").then((m) => m.IntegrationsPanel),
   "skill-proposals": () => import("./panels/SkillProposalsPanel").then((m) => m.SkillProposalsPanel),

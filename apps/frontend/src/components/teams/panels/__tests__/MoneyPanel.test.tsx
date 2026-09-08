@@ -31,11 +31,14 @@ describe("MoneyPanel — one ledger page", () => {
   beforeEach(() => { rollup.value = bound; rollup.loading = false; money.view = { kind: "rows" }; vi.useFakeTimers({ now: new Date("2026-09-06T12:00:00Z"), toFake: ["Date"] }); });
   afterEach(() => vi.useRealTimers());
 
-  it("carries the month's landed revenue in the masthead, the biggest day under it, and the four sections in order", () => {
+  it("carries the month's landed revenue in the masthead and the five sections in order, revenue first", () => {
     render(<MoneyPanel />);
     expect(screen.getByRole("heading", { level: 1, name: "Money" })).toBeInTheDocument();
     expect(screen.getByTestId("panel-masthead-meta")).toHaveTextContent("$674 landed in September");
-    expect(screen.getByText(/Biggest day: Sep 5, 2026 · \$640/)).toBeInTheDocument();
+    // The old "Biggest day: … Open that day" line is gone on purpose: the
+    // tallest bar in the chart below IS the biggest day, and it is already a
+    // link, so the sentence said the same fact twice.
+    expect(screen.queryByText(/Biggest day/)).toBeNull();
     const names = screen.getAllByRole("region").map((r) => r.getAttribute("aria-label"));
     // Revenue leads: the chart is the subject of the page, the ledger is not.
     expect(names).toEqual(["Revenue", "Payments", "Customers", "What you sell", "Agent spend"]);

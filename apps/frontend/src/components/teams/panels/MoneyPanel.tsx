@@ -15,14 +15,13 @@ import { useEffect, useRef } from "react";
 import { PanelMasthead } from "@/components/teams/shell";
 import { useCompanyMoney, type PaymentRow } from "@/hooks/useCompanyMoney";
 import { useCompanyRollup, dayOffset } from "@/hooks/useCompanyRollup";
-import { handleShellLinkClick, teamsPanelUrl } from "@/lib/shellNav";
 import { MoneyStates } from "./money/MoneyStates";
 import { RevenueSection } from "./money/RevenueSection";
 import { PaymentsSection } from "./money/PaymentsSection";
 import { CustomersSection } from "./money/CustomersSection";
 import { ProductsSection } from "./money/ProductsSection";
 import { AgentSpendSection } from "./money/AgentSpendSection";
-import { biggestDay, formatIsoDay, formatMicrocents, monthToDate } from "./money/money";
+import { formatMicrocents, monthToDate } from "./money/money";
 
 export type MoneySectionId = "payments" | "customers" | "products" | "spend";
 
@@ -36,7 +35,6 @@ export function MoneyPanel({ section, day, onDayCleared }: { section?: MoneySect
 
   const today = new Date().toISOString().slice(0, 10);
   const mtd = rollup?.stripe_bound && !rollupLoading ? monthToDate(rollup.days, today) : null;
-  const best = mtd ? biggestDay(rollup!.days, mtd.month) : null;
   const monthName = mtd ? MONTH_NAMES[Number(mtd.month.slice(5, 7)) - 1] : null;
   // `first_day === null` means the rollup has never read anything for this
   // owner, so 0 signups is "we don't know", not "nobody signed up".
@@ -55,17 +53,10 @@ export function MoneyPanel({ section, day, onDayCleared }: { section?: MoneySect
   }, [section, gate.view.kind]);
 
   const showStripe = gate.view.kind === "rows" || gate.view.kind === "zero" || gate.view.kind === "loading";
-  const dayHref = best ? `${teamsPanelUrl("money")}&day=${best.day}` : null;
 
   return (
     <div ref={rootRef} className="editorial-page p-4 sm:p-5 lg:p-6 flex flex-col gap-6 max-w-5xl mx-auto w-full">
       <PanelMasthead overline="Money" title="Money" meta={mtd && monthName ? `${formatMicrocents(mtd.microcents)} ${mtd.microcents < 0 ? "net" : "landed"} in ${monthName}` : undefined} />
-      {best && dayHref && (
-        <p className="-mt-3 text-xs text-[var(--midnight-muted)]">
-          Biggest day: {formatIsoDay(best.day)} · {formatMicrocents(best.revenue_microcents)} ·{" "}
-          <a href={dayHref} onClick={(e) => handleShellLinkClick(e, dayHref)} className="underline-offset-4 hover:text-[var(--midnight)] hover:underline">Open that day</a>
-        </p>
-      )}
 
       {showStripe ? (
         <>

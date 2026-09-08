@@ -667,7 +667,7 @@ app.add_middleware(ShutdownAwareMiddleware)
 # in LIFO source order — last added runs first). The dispatcher reads
 # X-Isol8-Public-Host directly off the scope, so it doesn't actually depend
 # on ProxyHeadersMiddleware running first; the placement here is about
-# letting CORS/E2E/admin-metrics still see all traffic uniformly.
+# letting CORS/E2E still see all traffic uniformly.
 app.add_middleware(HostDispatcherMiddleware)
 
 # Proxy-headers middleware — ALB terminates TLS and forwards X-Forwarded-Proto.

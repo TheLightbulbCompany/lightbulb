@@ -795,13 +795,6 @@ export class ServiceStack extends cdk.Stack {
         resources: allTableArns(this.region, this.account, env),
       }),
     );
-    // The credential-layer integration tables are granted by NAME, not via
-    // grantReadWriteData. grantReadWriteData would export each table's ARN from
-    // the database stack and import it here, creating a cross-stack export. An
-    // export that another stack imports cannot be deleted, which permanently
-    // blocks renaming or replacing the table. Granting by the table name avoids
-    // the export entirely. The action set matches what integrations_repo and
-    // oauth_state_repo actually call.
     // Webhook dedup helper does conditional PutItem with attribute_not_exists;
     // never reads. Write-only grant is sufficient.
     // Paperclip integration: the proxy router (paperclip_proxy.py:388,

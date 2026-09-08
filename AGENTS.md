@@ -177,6 +177,11 @@ git history is the operational record (it carries the run date and PR context
 an archive directory does not). Re-runnable ops tools stay in
 `apps/backend/scripts/`.
 
+One plan that stays under this rule: `docs/superpowers/plans/2026-09-07-audit-report.md`
+— its §6 ("Deliberately NOT recommended") names load-bearing scar tissue that
+must not be "fixed", and is referenced from
+`apps/infra/lambda/bedrock-usage-meter/test_index.py`.
+
 ### Monorepo Setup
 
 This is a **Turborepo monorepo** using **pnpm** for JS and **uv** for Python.

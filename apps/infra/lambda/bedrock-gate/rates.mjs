@@ -2,9 +2,9 @@
 // is the third; backend bedrock_pricing._RATES and the config.py catalog are
 // the other two). This Lambda has no backend import path, so it cannot share
 // the module; the lockstep guard is
-// apps/infra/lambda/bedrock-usage-meter/test_index.py::test_gate_rates_mjs_matches_backend_bedrock_pricing,
-// which shells out to node to evaluate THIS file and compares it to the
-// backend's tables. It runs on every backend PR (not vitest — infra-ci.yml
+// apps/backend/tests/unit/billing/test_bedrock_gate_rates_lockstep.py, which
+// parses THIS file and compares it to the backend's tables (plus pricing-
+// arithmetic parity). It runs on every backend PR (not vitest — infra-ci.yml
 // does not run on backend PRs, so a vitest assertion would fire only after
 // drift had already merged and deployed). Without it these WILL drift and the
 // gate will reserve/settle the wrong dollar amount.

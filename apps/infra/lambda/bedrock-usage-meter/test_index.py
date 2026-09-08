@@ -29,6 +29,12 @@ is a nested-map ADD that DynamoDB rejects if written naively, so a mock would
 happily pass code that fails in production. IAM and ECS are stubbed — the
 assertions are on the exact calls, which is the whole contract.
 
+The rate-card/CAP_MICROCENTS lockstep tests below exist because the gate/
+meter/backend copies are forced by process boundaries (the gate has no
+Python import path, the meter has no VPC) and must NOT be consolidated —
+see `docs/superpowers/plans/2026-09-07-audit-report.md` §6, "Deliberately
+NOT recommended".
+
 Running: these tests need `boto3`, `moto` and the backend importable (the
 lockstep rate-table test imports core.billing.bedrock_pricing) — run them with
 the backend's env, e.g.
@@ -40,7 +46,6 @@ import gzip
 import json
 import os
 import re
-import subprocess
 import sys
 import time
 from contextlib import contextmanager
@@ -57,7 +62,6 @@ FIXTURES = os.path.join(HERE, "fixtures")
 BACKEND = os.path.abspath(os.path.join(HERE, "..", "..", "..", "backend"))
 INFRA_ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 GATE_STACK_TS = os.path.join(INFRA_ROOT, "lib", "stacks", "bedrock-gate-stack.ts")
-RATES_MJS = os.path.join(INFRA_ROOT, "lambda", "bedrock-gate", "rates.mjs")
 
 BILLING_TABLE = "isol8-dev-billing-accounts"
 CONTAINERS_TABLE = "isol8-dev-containers"
@@ -873,40 +877,6 @@ def test_gate_stack_cap_and_reserve_env_literals_match_backend():
 
     assert _gate_stack_env_int("CAP_MICROCENTS") == trial_cap.CAP_MICROCENTS
     assert _gate_stack_env_int("RESERVE_ESTIMATE_MICROCENTS") == trial_cap.RESERVE_ESTIMATE_MICROCENTS
-
-
-def _rates_mjs_exports():
-    """Evaluate rates.mjs with node and dump RATES + TIER_TO_FM as JSON.
-
-    Shells out to node rather than regexing the source: the gate Lambda
-    actually executes this file as an ES module, so asking node to evaluate
-    it is the only way this test can't itself drift from how the Lambda
-    parses it.
-    """
-    script = (
-        f"const m = await import({json.dumps('file://' + RATES_MJS)});"
-        "console.log(JSON.stringify({RATES: m.RATES, TIER_TO_FM: m.TIER_TO_FM}));"
-    )
-    result = subprocess.run(
-        ["node", "--input-type=module", "-e", script],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert result.returncode == 0, f"node failed to evaluate rates.mjs: {result.stderr}"
-    return json.loads(result.stdout)
-
-
-def test_gate_rates_mjs_matches_backend_bedrock_pricing():
-    """The FOURTH copy of the rate table (bedrock-gate/rates.mjs) is the one
-    on the settle path and, per the audit, the only one that was previously
-    unguarded — rates.mjs's own comment claimed a `rates.test.mjs` that has
-    never existed. This is the real guard."""
-    bedrock_pricing, bedrock_aip = _backend_pricing()
-    exports = _rates_mjs_exports()
-
-    assert exports["RATES"] == bedrock_pricing._RATES
-    assert exports["TIER_TO_FM"] == bedrock_aip.TIER_TO_FM
 
 
 def test_price_includes_cache_read_and_cache_write():

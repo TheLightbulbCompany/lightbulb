@@ -41,11 +41,14 @@ describe("HeroFunnel", () => {
   it("renders the outcome fold: headline, two doors, deliverables, price", () => {
     render(<HeroFunnel />);
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
-      "An AI team that runs the business, a CEO that manages it.",
+      "AI employees for small teams & solo founders.",
     );
-    // The eyebrow pun and the feeling-not-promise headline are gone.
+    // The eyebrow pun and the feeling-not-promise headline are gone. The
+    // product-shaped headline ("an AI team that…") is gone too: the H1 now
+    // names the reader, which is the one thing it was never doing.
     expect(screen.queryByText(/Integrated Management/)).not.toBeInTheDocument();
     expect(screen.queryByText(/deserve a team/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/runs the business/)).not.toBeInTheDocument();
     // Both doors, grow pre-selected.
     expect(screen.getByRole("button", { name: "Grow my business" })).toHaveAttribute(
       "aria-pressed",
@@ -58,8 +61,10 @@ describe("HeroFunnel", () => {
     expect(screen.getByLabelText("Your company's website")).toBeInTheDocument();
     // Deliverables and the three ways to pay sit above the fold.
     expect(
-      screen.getByText(/Five minutes in, your CEO has researched the market/),
+      screen.getByText(/Five minutes in, your CEO has read your market/),
     ).toBeInTheDocument();
+    // The second sentence is the value prop, not a roster introduction.
+    expect(screen.getByText(/It answers the inbox, chases the follow-ups/)).toBeInTheDocument();
     expect(
       screen.getByText(/ChatGPT login, your own API key, or Claude credits/),
     ).toBeInTheDocument();

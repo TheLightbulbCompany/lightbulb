@@ -26,7 +26,7 @@ export function LaunchHeroPill() {
 
   const copy =
     info.phase === "open"
-      ? "Launch competition · grow your business, top the board → see the rules"
+      ? "Launch competition · whoever grows their business most, wins → see the rules"
       : info.phase === "competition"
         ? "Launch competition · live now → leaderboard"
         : null;

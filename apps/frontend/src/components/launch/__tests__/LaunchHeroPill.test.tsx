@@ -43,7 +43,7 @@ describe("LaunchHeroPill", () => {
     render(<LaunchHeroPill />);
     const link = await screen.findByRole("link", { name: /launch competition/i });
     expect(link).toHaveAttribute("href", "/launch");
-    expect(link).toHaveTextContent("grow your business, top the board");
+    expect(link).toHaveTextContent("whoever grows their business most, wins");
     expect(link).toHaveTextContent("see the rules");
     // The discount framing is the thing being removed: a visitor who has just
     // landed does not value a free month yet.

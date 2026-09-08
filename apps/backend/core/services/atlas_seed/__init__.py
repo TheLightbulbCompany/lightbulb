@@ -308,6 +308,30 @@ async def pre_stage_atlas(
             return True
         return workspace.write_file_if_missing(owner_id, dest, content)
 
+    # ── Retire the workspace's TOOLS.md ────────────────────────────────────
+    # OpenClaw's boot doctor (`doctor --fix`, run on EVERY container boot by
+    # local-sqlite/isol8-local-sqlite-app.sh) owns a migration that CONCATENATES
+    # a workspace TOOLS.md into that workspace's AGENTS.md under a
+    # "## Tools / ### Local notes (migrated from TOOLS.md)" section and then
+    # unlinks the source (src/commands/doctor-tools-md-migration.ts). Our
+    # 14.5 KB reference file merged into Atlas's 18.2 KB AGENTS.md produced a
+    # 32.9 KB AGENTS.md — past the 20,000-char per-file bootstrap cap, so ~38%
+    # of Atlas's own playbook was cut out of every turn's context (doctor emits
+    # a `tools-md-merged-bootstrap-limit` finding and migrates anyway). The
+    # reference now ships as ATLAS-TOOLS.md, a name the migration does not
+    # match; this removes any TOOLS.md an earlier bundle left behind so the
+    # next boot has nothing to merge back in. Idempotent (delete_file no-ops
+    # when absent) and best-effort like the rest of the seeder.
+    try:
+        if (workspace.agent_workspace_path(owner_id, atlas_uuid) / "TOOLS.md").is_file():
+            tools_rel = f"workspace-{atlas_uuid}/TOOLS.md"
+            workspace.delete_file(owner_id, tools_rel)
+            put_metric("atlas_seed.legacy_tools_md_removed")
+            logger.info("atlas_seed: removed legacy TOOLS.md for owner=%s", owner_id)
+    except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
+        put_metric("atlas_seed.legacy_tools_md_error")
+        logger.warning("atlas_seed: legacy TOOLS.md removal failed owner=%s: %s", owner_id, exc)
+
     # Pre-mark setup complete first so OpenClaw's boot reconcile doesn't rm
     # BOOTSTRAP.md when it sees Atlas's customized IDENTITY/SOUL/USER files.
     # ONE-SHOT and deliberately OUTSIDE the force path: the state file is

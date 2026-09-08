@@ -451,6 +451,39 @@ async def test_stopped_container_fires_wake(mock_ecs, mock_upstream):
 
 
 @pytest.mark.asyncio
+async def test_missing_container_disarms_orphaned_automation(mock_ecs, mock_upstream):
+    """A deleted container can never satisfy the adapter reconnect loop.
+
+    Disarm the owner's routine and cancel its retrying issues instead of
+    manufacturing another openclaw_gateway_timeout on every heartbeat.
+    """
+    mock_ecs.resolve_running_container = AsyncMock(return_value=(None, None))
+    mgmt = MagicMock()
+
+    with (
+        patch("core.services.container_wake.request_wake_silent", new_callable=AsyncMock) as wake,
+        patch(
+            "core.services.paperclip_agent_lifecycle.disarm_owner_nightly_automation",
+            new_callable=AsyncMock,
+        ) as disarm,
+        patch("core.services.operator_proxy.put_metric") as metric,
+    ):
+        wake.return_value = "no_row"
+        disarm.return_value = {"routines_paused": 1, "issues_cancelled": 2}
+        result = await handle_operator_connect(
+            owner_id="user_deleted",
+            user_id="user_deleted",
+            connection_id="conn_deleted",
+            connect_params={},
+            management_api=mgmt,
+        )
+
+    assert result is None
+    disarm.assert_awaited_once_with("user_deleted")
+    metric.assert_any_call("nightly_ceo.disarm", dimensions={"trigger": "container_missing", "outcome": "ran"})
+
+
+@pytest.mark.asyncio
 async def test_blocked_wake_disarms_an_expired_trial(mock_ecs, mock_upstream):
     """A routine's wake blocked for TRIAL_EXPIRED pauses the nightly routine —
     the one entitlement change no webhook catches (trial_end is a local stamp)."""

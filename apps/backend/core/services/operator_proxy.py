@@ -149,6 +149,32 @@ async def _maybe_disarm_expired_trial(owner_id: str) -> None:
         logger.exception("operator connect: expired-trial disarm failed owner=%s", owner_id)
 
 
+async def _disarm_missing_container(owner_id: str) -> None:
+    """Stop Paperclip work that can never reconnect to a deleted container.
+
+    ``request_wake_silent`` returns ``no_row`` only when the owner has no
+    container record at all. Retrying the adapter cannot heal that state: no
+    provider request is ever sent, and every heartbeat eventually becomes an
+    ``openclaw_gateway_timeout``. Teardown normally disarms this work before
+    deleting the row; this is the repair path for legacy/orphaned owners that
+    escaped teardown. Never raises into the relay connect path.
+    """
+    try:
+        from core.services.paperclip_agent_lifecycle import disarm_owner_nightly_automation
+
+        summary = await disarm_owner_nightly_automation(owner_id)
+        put_metric("nightly_ceo.disarm", dimensions={"trigger": "container_missing", "outcome": "ran"})
+        logger.info(
+            "operator connect: disarmed missing-container automation owner=%s routines_paused=%d issues_cancelled=%d",
+            owner_id,
+            summary["routines_paused"],
+            summary["issues_cancelled"],
+        )
+    except Exception:
+        put_metric("nightly_ceo.disarm", dimensions={"trigger": "container_missing", "outcome": "error"})
+        logger.exception("operator connect: missing-container disarm failed owner=%s", owner_id)
+
+
 async def handle_operator_connect(
     *,
     owner_id: str,
@@ -205,6 +231,11 @@ async def handle_operator_connect(
                 # nothing else disarms it — pause it here or it fires nightly
                 # no-ops against a box it can never wake, forever.
                 await _maybe_disarm_expired_trial(owner_id)
+            elif outcome == "no_row":
+                # There is nothing for the adapter's reconnect loop to wait
+                # for. Repair legacy teardown misses so this owner does not
+                # manufacture the same gateway timeout on every heartbeat.
+                await _disarm_missing_container(owner_id)
         except Exception:
             put_metric("operator.connect.stopped_container_wake", dimensions={"outcome": "error"})
             logger.warning(

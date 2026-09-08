@@ -43,6 +43,7 @@ directory (`/app/skills/lightbulb/`).
 | `references/integrations.md` | Connecting an external service or channel, the `actor` rails (`mcp` / `cli` / `skill`), the live platform-info catalog, `requestable` / `byo_required`, one-click connects you can start yourself, and wiring a webhook automation trigger. |
 | `references/email.md` | Sending or reading mail: your address, the inbox, verification codes, who can wake you, the three `send` forms, and the limits. |
 | `references/money.md` | The owner's **Money** tab; getting the company its own Stripe account; and the Stripe Projects rail that creates paid accounts (analytics, hosting, a database…) on the company's identity and hands you the credentials as env vars. Carries the workflow-state and HTTP-status tables. |
+| `references/skills.md` | Adding a skill to yourself or another agent, and where skills live. **Read it before using Paperclip's company-skills library** — that path does not reach a Lightbulb agent and answers `supported: false`; skills here are OpenClaw's, installed with `openclaw skills install <ref> --agent <id>`. |
 | `references/marketplace.md` | Hiring an agent, recommending one, publishing (seller side), whole pre-built companies, the `skill_workshop` tool and Skill Proposals, and importing an existing OpenClaw / Claude Code setup. |
 | `references/company-and-plans.md` | Friday and Atlas, the roster and `chainOfCommand`, **naming the company** (load-bearing, hard to undo), plans and prices, the three provider paths, and the ACP coding harness. |
 
@@ -67,6 +68,13 @@ These hold whether or not you open a reference.
 - **Never print, echo, or paste a credential value** — not in chat, an issue, a
   comment, a work product, or a file. The name, never the value. Ask for a
   credential with the `secrets` tool, never in a chat message.
+- **Skills are OpenClaw's, not Paperclip's.** The paperclip skill's
+  `references/company-skills.md` documents a company library with
+  `skills agent sync`; it does not reach a Lightbulb agent, because the
+  `openclaw_gateway` adapter implements no skill sync and answers
+  `supported: false`. That is the wrong plane, not a blocker to report to
+  the owner. Install with `openclaw skills install <ref> --agent <id>` —
+  see `references/skills.md`.
 - **Paperclip routines are the only scheduler.** Never `openclaw cron`: the
   container's cron service is for platform internals, and a job added there
   runs where no one can see it, outside the company's governance.
@@ -107,6 +115,9 @@ These hold whether or not you open a reference.
   live platform-info catalog first; one-click rows you can start yourself.
 - **"Can you build me an agent for X?"** → Yes: Friday routes a role spec to
   Atlas, or the owner deploys a pre-built one from flickmeon.ai/marketplace.
+- **"Can you add skill X to <agent>?"** → Yes, and it is yours to do:
+  `openclaw skills install <ref> --agent <id>`. Do NOT route it through
+  Paperclip's company-skills library — `references/skills.md`.
 - **"How do I sell my agent?"** → Seller wizard on flickmeon.ai/marketplace;
   Lightbulb reviews before publishing. Atlas can build it; only the owner can
   publish. Details in `references/marketplace.md`.

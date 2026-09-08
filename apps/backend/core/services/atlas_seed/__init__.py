@@ -223,6 +223,54 @@ async def pre_stage_atlas(
       so ``atlas_seed.success`` does NOT fire — ``atlas_seed.overwritten`` does.
     Never raises.
     """
+    # ── Retire the workspace's TOOLS.md ────────────────────────────────────
+    # OpenClaw's boot doctor (`doctor --fix`, run on EVERY container boot by
+    # local-sqlite/isol8-local-sqlite-app.sh) owns a migration that CONCATENATES
+    # a workspace TOOLS.md into that workspace's AGENTS.md under a
+    # "## Tools / ### Local notes (migrated from TOOLS.md)" section and then
+    # unlinks the source (src/commands/doctor-tools-md-migration.ts). Our
+    # 14.5 KB reference file merged into Atlas's 18.2 KB AGENTS.md produced a
+    # 32.9 KB AGENTS.md — past the 20,000-char per-file bootstrap cap, so ~38%
+    # of Atlas's own playbook was cut out of every turn's context (doctor emits
+    # a `tools-md-merged-bootstrap-limit` finding and migrates anyway). The
+    # reference now ships as ATLAS-TOOLS.md, a name the migration does not
+    # match; this removes any TOOLS.md an earlier bundle left behind so the
+    # next boot has nothing to merge back in. Best-effort like the rest of the
+    # seeder.
+    # Runs BEFORE Atlas resolution, because it does not depend on Atlas.
+    # It previously sat after the `ambiguous`/`no_agents`/`no_atlas` early
+    # returns, so owners without a resolvable Atlas never reached it — and
+    # those were exactly the ones still holding a dangerous file. Measured on
+    # prod: the sweep cleared 5 of 8 stray TOOLS.md and left the 3 that would
+    # actually breach (12,053 beside a 13,773-byte AGENTS.md = 25,826).
+    #
+    # EVERY workspace, not just Atlas's. `atlas-skeleton-generator.js` writes a
+    # `workspace/TOOLS.md` into every agent Atlas BUILDS, so the same doctor
+    # migration is armed in those workspaces too. Measured on prod after the
+    # Atlas repair: 3 built-agent workspaces held a 12,053-byte TOOLS.md beside
+    # a 13,773-byte AGENTS.md — a 25,826-byte merge, 5,826 over the cap, on
+    # their next boot. The generator now emits AGENT-TOOLS.md; this repairs the
+    # ones already on disk.
+    #
+    # DELETE, not rename. Doctor's own behaviour is merge-then-unlink, so the
+    # file does not survive a boot either way — deleting simply skips the
+    # harmful merge. Keeping a renamed copy would preserve bytes no agent is
+    # told to read, in a workspace where the same trap can be re-armed.
+    try:
+        removed = 0
+        for agent_id in workspace.list_workspace_agent_dirs(owner_id):
+            # Returns agent IDS, not directory names.
+            if not (workspace.agent_workspace_path(owner_id, agent_id) / "TOOLS.md").is_file():
+                continue
+            workspace.delete_file(owner_id, f"workspace-{agent_id}/TOOLS.md")
+            removed += 1
+        if removed:
+            put_metric("atlas_seed.legacy_tools_md_removed", value=removed)
+            logger.info("atlas_seed: deleted %d legacy TOOLS.md file(s) for owner=%s", removed, owner_id)
+    except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
+        put_metric("atlas_seed.legacy_tools_md_error")
+        logger.warning("atlas_seed: legacy TOOLS.md removal failed owner=%s: %s", owner_id, exc)
+
     matches = [a for a in paperclip_agents if a.get("name") == _ATLAS_AGENT_NAME and a.get("id")]
     if len(matches) > 1:
         # Ambiguous: the seeded Atlas was renamed and a user created another
@@ -307,47 +355,6 @@ async def pre_stage_atlas(
             overwritten += 1
             return True
         return workspace.write_file_if_missing(owner_id, dest, content)
-
-    # ── Retire the workspace's TOOLS.md ────────────────────────────────────
-    # OpenClaw's boot doctor (`doctor --fix`, run on EVERY container boot by
-    # local-sqlite/isol8-local-sqlite-app.sh) owns a migration that CONCATENATES
-    # a workspace TOOLS.md into that workspace's AGENTS.md under a
-    # "## Tools / ### Local notes (migrated from TOOLS.md)" section and then
-    # unlinks the source (src/commands/doctor-tools-md-migration.ts). Our
-    # 14.5 KB reference file merged into Atlas's 18.2 KB AGENTS.md produced a
-    # 32.9 KB AGENTS.md — past the 20,000-char per-file bootstrap cap, so ~38%
-    # of Atlas's own playbook was cut out of every turn's context (doctor emits
-    # a `tools-md-merged-bootstrap-limit` finding and migrates anyway). The
-    # reference now ships as ATLAS-TOOLS.md, a name the migration does not
-    # match; this removes any TOOLS.md an earlier bundle left behind so the
-    # next boot has nothing to merge back in. Best-effort like the rest of the
-    # seeder.
-    # EVERY workspace, not just Atlas's. `atlas-skeleton-generator.js` writes a
-    # `workspace/TOOLS.md` into every agent Atlas BUILDS, so the same doctor
-    # migration is armed in those workspaces too. Measured on prod after the
-    # Atlas repair: 3 built-agent workspaces held a 12,053-byte TOOLS.md beside
-    # a 13,773-byte AGENTS.md — a 25,826-byte merge, 5,826 over the cap, on
-    # their next boot. The generator now emits AGENT-TOOLS.md; this repairs the
-    # ones already on disk.
-    #
-    # DELETE, not rename. Doctor's own behaviour is merge-then-unlink, so the
-    # file does not survive a boot either way — deleting simply skips the
-    # harmful merge. Keeping a renamed copy would preserve bytes no agent is
-    # told to read, in a workspace where the same trap can be re-armed.
-    try:
-        removed = 0
-        for agent_id in workspace.list_workspace_agent_dirs(owner_id):
-            # Returns agent IDS, not directory names.
-            if not (workspace.agent_workspace_path(owner_id, agent_id) / "TOOLS.md").is_file():
-                continue
-            workspace.delete_file(owner_id, f"workspace-{agent_id}/TOOLS.md")
-            removed += 1
-        if removed:
-            put_metric("atlas_seed.legacy_tools_md_removed", value=removed)
-            logger.info("atlas_seed: deleted %d legacy TOOLS.md file(s) for owner=%s", removed, owner_id)
-    except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
-        put_metric("atlas_seed.legacy_tools_md_error")
-        logger.warning("atlas_seed: legacy TOOLS.md removal failed owner=%s: %s", owner_id, exc)
 
     # Pre-mark setup complete first so OpenClaw's boot reconcile doesn't rm
     # BOOTSTRAP.md when it sees Atlas's customized IDENTITY/SOUL/USER files.

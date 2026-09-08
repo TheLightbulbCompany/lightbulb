@@ -36,7 +36,7 @@ Scope: active-file visibility and pre-replacement failure safety only. Existing 
 - Successful writes replace the destination inode only after complete serialization, flush/fsync and ownership handling. Use private mode0600 tempfile with existing `chown_uid_1000_best_effort`.
 - Serialization, fsync or replace failure propagates, cleans its own temporary file, and leaves active config and existing `.bak` bytes unchanged.
 
-- [ ] **Step 1: Add behavioral and injected-failure tests.** Extend existing `TestWriteOpenclawConfigAsync`, retaining `_AIPS` and current positive/ephemeral-lock tests. The held-reader case demonstrates the root defect without mocking the implementation:
+- [x] **Step 1: Add behavioral and injected-failure tests.** Extend existing `TestWriteOpenclawConfigAsync`, retaining `_AIPS` and current positive/ephemeral-lock tests. The held-reader case demonstrates the root defect without mocking the implementation:
 
 ```python
 async def test_atomic_full_write_preserves_open_reader(self, tmp_path):
@@ -64,7 +64,7 @@ def fail_serialization(_config, stream, **_kwargs):
 
 Patch `core.containers.config.json.dump` for that case; patch `core.containers.config.os.fsync` or `.os.replace` to raise the same OSError for the other cases. These are external serialization/I/O fault boundaries, not mocks of the production write function. Require the exception, unchanged active and `.bak` bytes, and no remaining `.openclaw.json.*.tmp`. Include a successful first-write/no-prior-config case through the existing tests. Keep lock timeout proof that no active bytes change; do not remove or bypass its sidecar.
 
-- [ ] **Step 2: Prove RED before changing production code.** From `apps/backend`:
+- [x] **Step 2: Prove RED before changing production code.** From `apps/backend`:
 
 ```sh
 AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing AWS_EC2_METADATA_DISABLED=true PYTHONPATH=. /Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend/.venv/bin/python -m pytest tests/unit/containers/test_config.py::TestWriteOpenclawConfigAsync -k atomic -q -o addopts=''
@@ -72,7 +72,7 @@ AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing AWS_EC2_METADATA_DISABLE
 
 The held-reader case must fail because it reads rewritten bytes on the old inode. Record that behavioral failure independently of the expected absent-import/new-I/O-boundary failures in the fault cases; setup-only failures are insufficient RED evidence.
 
-- [ ] **Step 3: Implement the minimum atomic write.** Add `os`, `tempfile`, and the existing ownership helper imports. Inside the current two locks, replace only the direct `write_text` call with this pattern:
+- [x] **Step 3: Implement the minimum atomic write.** Add `os`, `tempfile`, and the existing ownership helper imports. Inside the current two locks, replace only the direct `write_text` call with this pattern:
 
 ```python
 fd, temporary_path = tempfile.mkstemp(
@@ -91,7 +91,7 @@ finally:
 
 Keep temp creation and replacement within the locks and on the destination filesystem. Do not delete or overwrite `.bak`, change config contents/defaults, catch-and-continue an I/O error, add a new helper, or move validation policy in this task. Update the write docstring/comment to say atomic replacement; no broader refactor.
 
-- [ ] **Step 4: Verify GREEN and provider/lock regressions.** Run:
+- [x] **Step 4: Verify GREEN and provider/lock regressions.** Run:
 
 ```sh
 AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing AWS_EC2_METADATA_DISABLED=true PYTHONPATH=. /Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend/.venv/bin/python -m pytest tests/unit/containers/test_config.py tests/unit/containers/test_config_provider_routing.py tests/unit/containers/test_config_paperclip_agents.py tests/unit/services/test_config_schema.py -q -o addopts=''
@@ -102,7 +102,7 @@ git diff --check
 
 Report pre-existing formatting debt against the task base; do not bulk-format unrelated generator code. No Docker/AWS/browser/dependency work is needed.
 
-- [ ] **Step 5: Self-review and commit only the two files.** Record RED/GREEN commands, counts and failure-safety checks. Independent spec/quality approval is required before downstream release work relies on this primitive.
+- [x] **Step 5: Self-review and commit only the two files.** Record RED/GREEN commands, counts and failure-safety checks. Independent spec/quality approval is required before downstream release work relies on this primitive.
 
 ```sh
 git add apps/backend/core/containers/config.py apps/backend/tests/unit/containers/test_config.py

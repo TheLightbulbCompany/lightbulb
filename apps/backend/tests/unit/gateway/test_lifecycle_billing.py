@@ -35,6 +35,7 @@ def conn():
     c._active_runs = {}
     c._run_state = {}
     c._side_run_ids = {}
+    c._run_text = {}
     c._parked = False
     c._parked_watchdog_task = None
     # Run-completion observer registry (INV-5 bootstrap dispatcher). Not

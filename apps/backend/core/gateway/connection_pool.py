@@ -190,6 +190,47 @@ _AGENT_NAME_TTL_S = 60.0
 # one. Far above any realistic count of concurrent `/btw` runs on one session.
 _SIDE_RUN_IDS_CAP = 256
 
+# Frame types whose full-text resync payload is accumulated per run.
+_RUN_TEXT_TYPES = frozenset({"chunk", "thinking"})
+
+# Bound on the per-connection run-text accumulator. Entries self-clean on the
+# run's chat terminal; this cap is only a safety net for a run whose terminal
+# never arrives (container killed mid-stream, reader loop torn down). Well
+# above any realistic count of concurrent runs on one owner's container.
+_RUN_TEXT_CAP = 64
+
+
+class _RunText:
+    """Per-run accumulation behind the ``_full_content`` resync payload.
+
+    OpenClaw resets its assistant text buffer at every ``message_start``
+    (``resetAssistantMessageState`` → ``state.deltaBuffer = ""``), and every
+    tool call ends one assistant message and starts another. So the ``text``
+    on a ``stream: "assistant"`` agent event is cumulative within the CURRENT
+    assistant message only, while our chunk stream — and the frontend bubble
+    it paints — is keyed by ``runId`` and spans the whole run.
+
+    ``blocks`` maps frame type → ``(prefix, last_snapshot)``: the text of the
+    run's earlier assistant messages, plus the last per-message snapshot seen.
+    A snapshot that no longer extends the previous one is a message boundary,
+    so the previous snapshot retires into the prefix.
+
+    Deliberately NOT delta accumulation: keeping upstream's own per-message
+    snapshot as the tail means a delta we never received (a gateway seq gap)
+    still heals on the next event, because ``text`` carries the whole current
+    message rather than only what changed.
+    """
+
+    __slots__ = ("blocks", "resync")
+
+    def __init__(self) -> None:
+        self.blocks: dict[str, tuple[str, str]] = {}
+        # Set when the gateway reports a seq gap: frames were dropped between
+        # the container and us, so the next text frame must ship as a full
+        # replace rather than an append.
+        self.resync = False
+
+
 # A chat run whose terminal arrives later than this is a hung/stale outlier
 # (e.g. a terminal re-delivered after a reconnect), NOT a real latency
 # datapoint — emitting its elapsed would inflate the chat.e2e.latency p99 and
@@ -355,6 +396,13 @@ class GatewayConnection:
         # handler skips all ``_active_runs`` mutation for them. Insertion-ordered
         # dict used as a bounded FIFO set; entries self-clean on their terminal.
         self._side_run_ids: Dict[str, None] = {}
+        # runId -> per-run text accumulation for the full-text resync payload
+        # (see `_RunText` and `_rewrite_run_full_text`). Keyed by runId, so two
+        # concurrent runs on a shared org container — or a `/btw` side run
+        # alongside its primary — never read each other's text. Insertion-
+        # ordered, used as a bounded FIFO; entries self-clean on the run's
+        # chat terminal.
+        self._run_text: Dict[str, _RunText] = {}
         # True after the reader_loop has died with active runs in flight.
         # Means: the OpenClaw process is presumed alive (we just saw it
         # streaming) but our WS to it tore down (e.g. websockets ping
@@ -1276,6 +1324,69 @@ class GatewayConnection:
             return {"type": frame_type, "content": text}
         return None
 
+    def _run_text_state(self, run_id: str) -> "_RunText":
+        """Get-or-create the run's text accumulator, evicting oldest past the cap."""
+        state = self._run_text.get(run_id)
+        if state is None:
+            state = _RunText()
+            self._run_text[run_id] = state
+            while len(self._run_text) > _RUN_TEXT_CAP:
+                self._run_text.pop(next(iter(self._run_text)), None)
+        return state
+
+    def _rewrite_run_full_text(self, frame: dict) -> None:
+        """Widen a text frame's authoritative text from per-MESSAGE to per-RUN.
+
+        ``_build_text_frame`` copies OpenClaw's ``text`` verbatim, but that
+        field is cumulative only within the current assistant message —
+        upstream clears its buffer at every ``message_start``, and every tool
+        call starts a new assistant message. Our chunk stream is keyed by
+        ``runId`` and the frontend paints one bubble per run, so on the normal
+        agentic shape (text → tool_use → text) the authoritative text a
+        resyncing client receives would be the LAST block only: everything the
+        agent said before the last tool call disappears from the bubble.
+
+        Two frame shapes carry authoritative text and both are widened here:
+
+        - append form — ``content`` is the delta, ``_full_content`` is the
+          snapshot ``FrameSender`` ships to a client with no continuity for
+          this run (mid-run reconnect, a second tab, a dropped frame);
+        - cumulative-replacement form — ``content`` IS the snapshot, and the
+          client replaces its whole buffer with it.
+
+        The delta-append path itself was never wrong, so this changes nothing
+        for a client that saw every frame. It also does not touch the
+        ``chat``-terminal replace, which already carries run-scoped text from
+        the gateway's own accumulator and stays the end-of-run authority.
+        """
+        frame_type = frame.get("type")
+        run_id = frame.get("runId")
+        if frame_type not in _RUN_TEXT_TYPES or not run_id:
+            return
+        key = "_full_content" if "_full_content" in frame else "content"
+        snapshot = frame.get(key)
+        if not isinstance(snapshot, str):
+            return
+
+        state = self._run_text_state(run_id)
+        prefix, last = state.blocks.get(frame_type, ("", ""))
+        # A snapshot that no longer extends the previous one is a new assistant
+        # message (or an upstream `replace`): retire the old text into the
+        # prefix so the run's bubble keeps it.
+        if last and not snapshot.startswith(last):
+            prefix += last
+        state.blocks[frame_type] = (prefix, snapshot)
+        frame[key] = prefix + snapshot
+
+        # Seq gap: the gateway told us it dropped frames, so this client's
+        # append stream has a hole. Ship the widened text as a replace instead
+        # of a delta — `prefix + snapshot` is whole-run authoritative, so the
+        # hole closes on the first frame after the gap.
+        if state.resync:
+            state.resync = False
+            if frame.pop("append", None):
+                frame["content"] = frame.pop("_full_content")
+
     @staticmethod
     def _extract_thinking_text(payload: dict) -> str | None:
         """Extract thinking/reasoning text from a chat event's message.content field."""
@@ -2032,8 +2143,36 @@ class GatewayConnection:
                 # session, and a member-less key would broadcast to the whole org).
                 if is_channel_session or is_cron_session or is_isolated_session:
                     return
+                # `stream: "error"` with `reason: "seq gap"` is the gateway
+                # telling us its own broadcast skipped sequence numbers
+                # (server-chat.ts: `evt.seq !== last + 1`) — frames between
+                # the container and us were dropped, so the transcript the
+                # user is looking at is missing content. There is nothing to
+                # render for the gap itself, and upstream's own clients show
+                # the user nothing either (they silently refetch history), so
+                # this stays a resync + a metric rather than an error card:
+                # a scary banner for a hole we can close ourselves is worse
+                # UX than closing it. Flagging the run makes the next text
+                # frame ship as a whole-run replace instead of a delta.
+                if stream == "error" and isinstance(payload.get("data"), dict):
+                    if payload["data"].get("reason") == "seq gap":
+                        gap_run_id = payload.get("runId")
+                        if gap_run_id:
+                            self._run_text_state(gap_run_id).resync = True
+                        put_metric("gateway.seq_gap")
+                        logger.warning(
+                            "Gateway seq gap for user %s run %s: expected %s received %s",
+                            self.user_id,
+                            gap_run_id,
+                            payload["data"].get("expected"),
+                            payload["data"].get("received"),
+                        )
                 transformed = self._transform_agent_event(payload)
                 if transformed:
+                    # Widen the frame's authoritative text from per-assistant-
+                    # message to per-run before it reaches FrameSender, which
+                    # ships it verbatim to any client lacking continuity.
+                    self._rewrite_run_full_text(transformed)
                     # Tag with agent_id so the frontend can route messages
                     # to the correct agent conversation and prevent cross-
                     # agent leakage when switching agents mid-stream.
@@ -2063,6 +2202,14 @@ class GatewayConnection:
                 if state not in ("final", "error", "aborted"):
                     return
                 run_id = payload["runId"]
+                # Drop the run's text accumulator. Keyed by runId and released
+                # on ANY of the three terminal states — deliberately NOT gated
+                # on `is_true_terminal`, because the `final` an approval pause
+                # suppresses really is the end of THIS runId (the work resumes
+                # under a new one), and its text will never be extended again.
+                # `_RUN_TEXT_CAP` is the backstop for a run whose terminal
+                # never arrives at all.
+                self._run_text.pop(run_id, None)
                 # Side-channel (`/btw`) terminal: a side run shares this
                 # session_key with the primary run but owns NO active-run window
                 # (the dispatcher skips mark_run_active for it). It must NOT

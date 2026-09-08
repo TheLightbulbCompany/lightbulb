@@ -65,6 +65,7 @@ def _make_terminal_conn(owner_id="org_1"):
     conn._analytics_tasks = set()
     conn._run_state = {}
     conn._side_run_ids = {}
+    conn._run_text = {}
     conn._parked = False
     conn._parked_watchdog_task = None
     # Run-completion observer registry (INV-5 bootstrap dispatcher). Not

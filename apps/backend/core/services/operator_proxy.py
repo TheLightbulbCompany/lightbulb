@@ -220,9 +220,9 @@ async def handle_operator_connect(
             put_metric("operator.connect.stopped_container_wake", dimensions={"outcome": outcome})
             if outcome == "blocked":
                 # A routine reached a sleeping container and the gate refused it.
-                # A lapsed trial has NO webhook (trial_end is a local stamp), so
-                # nothing else disarms it — pause it here or it fires nightly
-                # no-ops against a box it can never wake, forever.
+                # Repair terminal entitlement misses (including lapsed trials,
+                # whose local trial_end has no webhook) so stale work cannot fire
+                # nightly no-ops against a box policy will never let it wake.
                 await _maybe_disarm_unentitled_owner(owner_id)
         except Exception:
             put_metric("operator.connect.stopped_container_wake", dimensions={"outcome": "error"})

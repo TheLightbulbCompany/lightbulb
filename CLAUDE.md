@@ -403,6 +403,28 @@ gh run view <id> --repo TheLightbulbCompany/lightbulb --json status,jobs \
 Anything other than `in_progress` / non-zero means the promotion is still evictable and a
 merge will kill it.
 
+**⚠️ A staleness diagnosis is itself perishable — re-check in the same breath as the cancel.**
+On 2026-09-08 a session correctly diagnosed run 34178115252 as a stalled slot at ~01:55Z
+(queued, 0 of 1 jobs started, `updatedAt` 14 min old), then acted on that reading at 02:09Z.
+By then the run had **67 jobs running**. It was cancelled mid-flight, destroying the fourth
+consecutive attempt at a prod promotion carrying a live-defect fix.
+
+The re-check is the load-bearing step, not a formality. Never cancel on an observation you
+took minutes ago — take it again and cancel immediately, or not at all:
+
+```bash
+gh run view <id> --repo TheLightbulbCompany/lightbulb --json status,jobs \
+  --jq '"\(.status) started=\([.jobs[]|select(.status!="queued")]|length)"'
+# ONLY if that prints queued AND started=0, in the same breath:
+gh run cancel <id>
+```
+
+**And it is not yours to cancel unless it is yours.** The owner knows what is riding on the
+run; a bystander cannot consent for them. Broadcasting "objections in 2 minutes" to other
+sessions at 2am is not consent either — the objection to that cancel arrived ~30 seconds late.
+Ask the owner, wait for an answer, and when several sessions are contending, let ONE own the
+dispatch while the others stay off the queue entirely.
+
 Practical rules: check that job breakdown AND `updatedAt` BEFORE cancelling anything or firing
 a recovery dispatch; watch a dispatch until it reaches `in_progress` rather than assuming it
 started; and if other sessions are active, ask for a short merge hold and tell them the moment

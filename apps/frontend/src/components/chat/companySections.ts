@@ -13,7 +13,6 @@ import {
   Repeat,
   Images,
   Search,
-  BookOpen,
   Plug,
   CreditCard,
   Send,
@@ -119,8 +118,9 @@ export const COMPANY_SECTIONS: { label: string | null; items: CompanySectionItem
   {
     label: "Knowledge",
     items: [
-      // Brain first: what the company knows is read before what it produced.
-      { panel: "teams-brain", label: "Brain", Icon: BookOpen },
+      // Brain is off the rail (owner ruling 2026-09-08 — it is not useful in
+      // its current state; the company-graph Brain is its own spec). The key
+      // stays registered, so ?panel=teams-brain still opens it.
       // Library is the spec's noun for the work-products gallery; the panel
       // key stays `teams-artifacts` (mobile builds these URLs as strings).
       { panel: "teams-artifacts", label: "Library", Icon: Images },

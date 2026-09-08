@@ -210,7 +210,6 @@ export function TeamsPanelRouter({
     return (
       <BrainPanel
         initialPath={panelParams?.path ?? null}
-        initialTab={panelParams?.tab === "dreams" ? "dreams" : null}
         onPathUnavailable={() => onUpdateDurableParam?.("path", null)}
       />
     );

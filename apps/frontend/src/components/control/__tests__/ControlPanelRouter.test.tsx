@@ -16,6 +16,7 @@ vi.mock("../panels/SkillsTab", () => ({ SkillsTab: () => <div data-testid="skill
 vi.mock("../panels/IntegrationsPanel", () => ({ IntegrationsPanel: () => <div /> }));
 vi.mock("../panels/ChannelsStatusPanel", () => ({ ChannelsStatusPanel: () => <div /> }));
 vi.mock("../panels/SkillProposalsPanel", () => ({ SkillProposalsPanel: () => <div>SkillProposalsPanel</div> }));
+vi.mock("../panels/DreamsPanel", () => ({ DreamsPanel: () => <div data-testid="dreams-panel" /> }));
 vi.mock("../panels/AgentInspectorPanel", () => ({
   AgentInspectorPanel: () => <div data-testid="agent-inspector-panel" />,
 }));
@@ -38,9 +39,11 @@ describe("ControlPanelRouter routing", () => {
     expect(await screen.findByTestId("overview-panel")).toBeInTheDocument();
   });
 
-  it("no longer routes 'dreams' — it retired by alias into the Brain panel, not this router", async () => {
+  it("routes 'dreams' to the standalone Dreams panel again", async () => {
+    // It spent a while folded into Brain as a tab; ?panel=dreams must open the
+    // control panel, not fall through to Overview.
     render(<ControlPanelRouter panel="dreams" onPanelChange={vi.fn()} />);
-    expect(await screen.findByTestId("overview-panel")).toBeInTheDocument();
+    expect(await screen.findByTestId("dreams-panel")).toBeInTheDocument();
   });
 
   it("does NOT call onPanelChange for a plain key", async () => {

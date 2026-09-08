@@ -2,21 +2,22 @@
 // mobile shell is not it.
 //
 // The bug this pins: MobileChatShell used to canonicalize a retired ?panel key
-// in the address bar (?panel=dreams → ?panel=teams-brain, replace-only). On a
-// DESKTOP viewport that rewrite still ran — useIsDesktop's server snapshot is
-// false, so ChatPageInner mounts the mobile branch for the hydration render
-// (chatPageBranch.test.tsx pins that branch contract), React flushes that
-// child's passive effects, and only later does the dynamically-imported
-// WorkspaceShell load and read window.location.search. By then the raw key was
-// gone, so describePanel's `panelKey === "dreams"` branch — the thing that
-// carries a retired panel's meaning onto its successor — could never fire and
-// Brain opened on Notes.
+// in the address bar (replace-only). On a DESKTOP viewport that rewrite still
+// ran — useIsDesktop's server snapshot is false, so ChatPageInner mounts the
+// mobile branch for the hydration render (chatPageBranch.test.tsx pins that
+// branch contract), React flushes that child's passive effects, and only later
+// does the dynamically-imported WorkspaceShell load and read
+// window.location.search. By then the raw key was gone, so describePanel's
+// pre-alias branch — the thing that carries a retired panel's meaning onto its
+// successor — could never fire, and the successor opened on its default view.
+// (It was ?panel=dreams → Brain's Dreams tab then; today the live case is
+// ?panel=teams-org-chart → the Agents panel's chart view.)
 //
 // workspaceShellUrl.test.ts already covers the dock's chain, but it feeds
-// deriveReconcilerAction a hardcoded "?panel=dreams" string and never mounts
-// ChatPage, so it stayed green throughout. These tests mount the real page and
-// assert against the LIVE window.location.search, which is where the rewrite
-// was observable.
+// deriveReconcilerAction a hardcoded search string and never mounts ChatPage,
+// so it stayed green throughout. These tests mount the real page and assert
+// against the LIVE window.location.search, which is where the rewrite was
+// observable.
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { act, render, screen } from "@testing-library/react";
 import React from "react";
@@ -91,43 +92,6 @@ import ChatPage from "@/app/chat/page";
 import { describePanel } from "@/components/workspace/panelRegistry";
 import { deriveReconcilerAction } from "@/components/workspace/workspaceShellReconciler";
 import { TeamsPanelRouter } from "@/components/teams/TeamsPanelRouter";
-
-describe("/chat — the shell never rewrites the URL command", () => {
-  beforeEach(() => {
-    window.history.replaceState(null, "", "/chat?panel=dreams");
-  });
-
-  it("leaves a retired ?panel key in the address bar, and lands mobile on Dreams", () => {
-    render(<ChatPage />);
-
-    // The rewrite was a replaceState in a passive effect — already flushed.
-    expect(window.location.search).toBe("?panel=dreams");
-
-    const inline = screen.getByTestId("inline-teams");
-    expect(inline).toHaveAttribute("data-panel", "teams-brain"); // resolved at READ time
-    expect(inline).toHaveAttribute("data-tab", "dreams");
-  });
-
-  it("desktop dock still resolves ?panel=dreams to Brain's Dreams tab after the mobile branch has mounted", () => {
-    render(<ChatPage />);
-
-    // Everything below is the real desktop chain, fed the LIVE search string
-    // the way WorkspaceShell.onReady feeds it (window.location.search, not a
-    // literal) — that substitution is the whole point of this test.
-    const decision = deriveReconcilerAction(window.location.search, null)!;
-    const descriptor = describePanel(decision.panelKey!, decision.durableParams)!;
-    expect(descriptor.panelId).toBe("teams-brain");
-
-    // addOrFocus's create branch passes descriptor.params to addPanel verbatim,
-    // and TeamsDockPanel forwards them as panelParams (both pinned by
-    // workspaceShellUrl.test.ts / TeamsDockPanel.test.tsx).
-    const element = TeamsPanelRouter({
-      panel: descriptor.params.teamsKey,
-      panelParams: descriptor.params,
-    }) as React.ReactElement<{ initialTab: string | null }>;
-    expect(element.props.initialTab).toBe("dreams");
-  });
-});
 
 describe("/chat — a retired ?panel=teams-org-chart lands on the Agents chart view", () => {
   beforeEach(() => {

@@ -16,7 +16,10 @@ import { resolvePanelAlias, describePanel } from "../../workspace/panelRegistry"
 // The live nav set, in the spec §5.1 IA. "Issues" was renamed to "Tasks" and
 // Members removed (#1022), Costs cut (#1003), Skills retired for in-app
 // ClawHub search (#1175); Artifacts (#1307, now "Library") and Search (#1312)
-// were added; "Dashboard" became "Home" with the IA shell.
+// were added; "Dashboard" became "Home" with the IA shell. The consolidation
+// (spec 2026-09-06) took it to NINE: Org chart became a view of the Agents
+// panel and Brain came off the rail — Search stays, overriding the spec
+// (owner ruling 2026-09-08).
 const ALL_LABELS = [
   "Home",
   "Search",
@@ -25,7 +28,6 @@ const ALL_LABELS = [
   "Tasks",
   "Automations",
   "Leads",
-  "Brain",
   "Library",
   "Accounts",
 ];
@@ -137,14 +139,39 @@ describe("CompanyNav", () => {
   it('puts "Home" first', () => {
     expect(COMPANY_SECTIONS[0].items[0].label).toBe("Home");
   });
-  it('files "Brain" and "Library" under Knowledge and opens teams-artifacts on click', () => {
+  it('files "Library" under Knowledge and opens teams-artifacts on click', () => {
     const knowledge = COMPANY_SECTIONS.find((s) => s.label === "Knowledge");
-    expect(knowledge?.items.map((i) => i.label)).toEqual(["Brain", "Library"]);
+    expect(knowledge?.items.map((i) => i.label)).toEqual(["Library"]);
     const onPanelChange = vi.fn();
     render(<CompanyNav onPanelChange={onPanelChange} />);
     fireEvent.click(screen.getByText("Library"));
     expect(onPanelChange).toHaveBeenCalledWith("teams-artifacts");
   });
+  it("offers exactly nine items, in the consolidated order", () => {
+    // The rail cut's whole point (spec §3), so it is asserted as an ordered
+    // list, not a count: 22 items became 9. Provisioning off, since Domain &
+    // Site is a capability question rather than an IA one.
+    const labels = visibleCompanySections({ provisioningEnabled: false }).flatMap((s) =>
+      s.items.map((i) => i.label),
+    );
+    expect(labels).toEqual(ALL_LABELS);
+    expect(labels).toHaveLength(9);
+  });
+
+  it("stops offering Brain, whose key stays registered", () => {
+    // Owner ruling 2026-09-08: Brain is not useful in its current state, and a
+    // graph-based Brain is its own spec. Not absorbed and not aliased — just
+    // not offered, so ?panel=teams-brain still opens it.
+    render(<CompanyNav />);
+    expect(screen.queryByText("Brain")).toBeNull();
+    const all = COMPANY_SECTIONS.flatMap((sec) => sec.items.map((i) => i.panel));
+    expect(all).not.toContain("teams-brain");
+    expect(resolvePanelAlias("teams-brain")).toBe("teams-brain");
+    expect(describePanel("teams-brain", {})).toMatchObject({ panelId: "teams-brain" });
+    // And Dreams, which used to be its second tab, resolves on its own again.
+    expect(describePanel("dreams", {})).toMatchObject({ panelId: "control:dreams" });
+  });
+
   it("stops offering Org chart, which still resolves onto the Agents panel", () => {
     // Absorbed as the Agents panel's chart view (owner ruling 2026-09-08). The
     // rail drops it; the key must keep resolving, or a saved link, a bookmark
@@ -176,8 +203,8 @@ describe("CompanyNav", () => {
     // Label is "Tasks"; the panel key stayed `teams-issues`.
     fireEvent.click(screen.getByText("Tasks"));
     expect(onPanelChange).toHaveBeenCalledWith("teams-issues");
-    fireEvent.click(screen.getByText("Brain"));
-    expect(onPanelChange).toHaveBeenCalledWith("teams-brain");
+    fireEvent.click(screen.getByText("Automations"));
+    expect(onPanelChange).toHaveBeenCalledWith("teams-routines");
   });
   it("marks the active item with the midnight accent", () => {
     render(<CompanyNav activePanel="teams-routines" />);

@@ -26,12 +26,15 @@ describe("parseCommand", () => {
   it("resolves retired aliases", () => {
     expect(parseCommand("?panel=teams-approvals")?.descriptor.panelId).toBe("teams-inbox");
     expect(parseCommand("?panel=credits")?.descriptor.panelId).toBe("control:llm");
-    // Dreams folded into Brain as a tab — an old ?panel=dreams deep link
-    // must open the Brain panel, not 404 into "missing", and land ON the
-    // Dreams tab rather than silently defaulting to Notes (review finding 3).
+    // Dreams is its own control panel again — ?panel=dreams opens it, not the
+    // Brain panel it spent a while folded into.
     const dreamsCmd = parseCommand("?panel=dreams");
-    expect(dreamsCmd?.descriptor.panelId).toBe("teams-brain");
-    expect(dreamsCmd?.descriptor.params).toEqual({ teamsKey: "brain", tab: "dreams" });
+    expect(dreamsCmd?.descriptor.panelId).toBe("control:dreams");
+    expect(dreamsCmd?.descriptor.params).toEqual({ controlKey: "dreams" });
+    // The org chart is a view of the roster now.
+    const chartCmd = parseCommand("?panel=teams-org-chart");
+    expect(chartCmd?.descriptor.panelId).toBe("teams-agents");
+    expect(chartCmd?.descriptor.params).toEqual({ teamsKey: "agents", view: "chart" });
   });
 
   it("defines /chat?agent= as open-or-focus that agent's chat (deploy-success link)", () => {

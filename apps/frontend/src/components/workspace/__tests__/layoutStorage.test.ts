@@ -179,15 +179,10 @@ describe("layoutStorage", () => {
     expect(leafData.activeView).toBe("teams-dashboard");
   });
 
-  it("sanitizer migrates a retired control:dreams entry to teams-brain, crossing components", () => {
-    // dreams was a CONTROL_KEYS entry (contentComponent "control", panelId
-    // control:dreams) — now retired by alias to teams-brain, a TEAMS panel.
-    // The migration must flip contentComponent, not just the id/params, or
-    // the restored panel mounts ControlDockPanel with a controlKey no router
-    // recognizes anymore. It must also carry tab: "dreams" (F5) so the
-    // restored panel reopens on the Dreams tab, not silently defaulting to
-    // Notes — mirroring describePanel's ?panel=dreams synthesis for the URL
-    // channel.
+  it("leaves a persisted control:dreams entry alone — it is a live panel again", () => {
+    // dreams spent a while retired by alias into teams-brain, and layouts
+    // saved then were migrated across. The alias is gone: the panel is its own
+    // control surface once more, so the sanitizer must keep it as it found it.
     const dirty = leafLayout(["control:dreams"], "control:dreams", {
       "control:dreams": {
         id: "control:dreams",
@@ -196,15 +191,13 @@ describe("layoutStorage", () => {
       },
     });
     const clean = sanitizeLayout(dirty);
-    expect(clean.panels["control:dreams"]).toBeUndefined();
-    expect(clean.panels["teams-brain"]).toEqual({
-      id: "teams-brain",
-      contentComponent: "teams",
-      params: { teamsKey: "brain", tab: "dreams" },
+    expect(clean.panels["control:dreams"]).toEqual({
+      id: "control:dreams",
+      contentComponent: "control",
+      params: { controlKey: "dreams" },
     });
     const leafData = (clean.grid.root as unknown as { data: { views: string[]; activeView: string } }).data;
-    expect(leafData.views).toEqual(["teams-brain"]);
-    expect(leafData.activeView).toBe("teams-brain");
+    expect(leafData.views).toEqual(["control:dreams"]);
   });
 
   it("sanitizer migrates a persisted teams-spend panel to teams-money", () => {
@@ -224,20 +217,6 @@ describe("layoutStorage", () => {
       contentComponent: "teams",
       params: { teamsKey: "money" },
     });
-  });
-
-  it("sanitizer drops a retired control:dreams entry instead of duplicating an already-open Brain panel", () => {
-    const dirty = leafLayout(["control:dreams", "teams-brain"], "control:dreams", {
-      "control:dreams": {
-        id: "control:dreams",
-        contentComponent: "control",
-        params: { controlKey: "dreams" },
-      },
-      "teams-brain": { id: "teams-brain", contentComponent: "teams", params: { teamsKey: "brain" } },
-    });
-    const clean = sanitizeLayout(dirty);
-    expect(clean.panels["control:dreams"]).toBeUndefined();
-    expect(Object.keys(clean.panels)).toEqual(["teams-brain"]);
   });
 
   it("sanitizer drops a retired panel instead of duplicating an already-open target", () => {

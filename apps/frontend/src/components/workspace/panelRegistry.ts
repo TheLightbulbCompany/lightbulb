@@ -25,15 +25,11 @@ export const RETIRED_PANEL_ALIASES: Readonly<Record<string, string>> = {
   "teams-members": "teams-settings",
   "teams-skills": "teams-dashboard",
   "teams-costs": "teams-dashboard",
-  // Dreams folded into the Brain panel as its second tab (Notes | Dreams) —
-  // the standalone control-panel surface is gone, so old deep links and
-  // persisted layouts land on Brain instead.
-  dreams: "teams-brain",
   // Money is ONE page, and Payments/Products/Customers/Spend are its sections.
   // They alias to its key so the dock (which dedupes by panel id) opens ONE
   // "Money" tab no matter which of the five keys a link carries — Home's tiles
   // link three of them. describePanel synthesizes `section` from the RAW key
-  // below, exactly as `dreams` carries Brain's tab.
+  // below.
   "teams-payments": "teams-money",
   "teams-products": "teams-money",
   "teams-customers": "teams-money",
@@ -150,6 +146,9 @@ const TEAMS_DETAIL_KEYS: Readonly<Record<string, string>> = {
 // dock panels but are NOT in the sidebar — /settings remains their home.
 const CONTROL_KEYS: Readonly<Record<string, string>> = {
   overview: "Overview",
+  // Its own panel again (owner ruling 2026-09-08): Brain is the vault, and a
+  // memory-core control surface does not belong behind a business tab.
+  dreams: "Dreams",
   sessions: "Sessions",
   channels: "Channels",
   usage: "Usage",
@@ -271,18 +270,11 @@ export function describePanel(
       // ?path mirrors the file-viewer grammar: a deep link selects a wiki
       // page; in-panel selection clicks never write it back.
       if (teamsKey === "brain" && params.path) p.path = params.path;
-      // The retired `dreams` control panel aliases here (RETIRED_PANEL_ALIASES) —
-      // an old ?panel=dreams link should land ON the Dreams tab, not silently
-      // default to Notes. Checked on the ORIGINAL panelKey (pre-alias), so a
-      // fresh ?panel=teams-brain link is untouched — which means every caller
-      // must hand describePanel the RAW ?panel value and let it resolve —
-      // a caller that pre-resolves makes this branch permanently dead.
-      if (teamsKey === "brain" && panelKey === "dreams") p.tab = "dreams";
       // ?day scopes the Payments section to one UTC day — the hero bar on Home links here.
       if (teamsKey === "money" && params.day) p.day = params.day;
       // The four absorbed keys (teams-payments/products/customers/spend) alias
       // to teams-money, so the section they meant survives only if it is read
-      // off the RAW key — same synthesis, same reason, as `dreams` above.
+      // off the RAW key — same synthesis, same reason, as `agents` above.
       if (teamsKey === "money") {
         const raw = panelKey.startsWith("teams-") ? panelKey.slice("teams-".length) : panelKey;
         if (MONEY_SECTIONS.has(raw)) p.section = raw;

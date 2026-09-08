@@ -17,9 +17,8 @@ describe("panelRegistry", () => {
     expect(resolvePanelAlias("teams-skills")).toBe("teams-dashboard");
     expect(resolvePanelAlias("teams-costs")).toBe("teams-dashboard");
     expect(resolvePanelAlias("teams-inbox")).toBe("teams-inbox");
-    // Dreams folded into Brain as a tab — the standalone control panel key
-    // retires by alias, same as credits→llm.
-    expect(resolvePanelAlias("dreams")).toBe("teams-brain");
+    // Dreams is NOT an alias any more — it is its own control panel again.
+    expect(resolvePanelAlias("dreams")).toBe("dreams");
     // Money is ONE page: its four absorbed keys alias to its panel id, or the
     // dock (which dedupes by panel id) opens four sibling tabs all called
     // "Money" — Home links three of them.
@@ -30,13 +29,25 @@ describe("panelRegistry", () => {
     expect(resolvePanelAlias("teams-org-chart")).toBe("teams-agents");
   });
 
-  it("describes a retired ?panel=dreams as the Brain panel, landing ON the Dreams tab (review finding 3)", () => {
-    const d = describePanel("dreams", {});
-    expect(d).toEqual({
+  it("describes ?panel=dreams as the standalone Dreams control panel", () => {
+    // It folded into Brain as a tab for a while; the fold is reversed, and the
+    // key must keep resolving either way — old links, persisted layouts.
+    expect(describePanel("dreams", {})).toEqual({
+      panelId: "control:dreams",
+      component: "control",
+      title: "Dreams",
+      params: { controlKey: "dreams" },
+    });
+  });
+
+  it("keeps describing teams-brain, which is off the rail but not retired", () => {
+    // Brain stopped being offered (owner ruling 2026-09-08) without being
+    // absorbed or aliased: ?panel=teams-brain must still open it.
+    expect(describePanel("teams-brain", {})).toEqual({
       panelId: "teams-brain",
       component: "teams",
       title: "Brain",
-      params: { teamsKey: "brain", tab: "dreams" },
+      params: { teamsKey: "brain" },
     });
   });
 
@@ -180,7 +191,7 @@ describe("panelRegistry", () => {
   it("describes an absorbed Money key as ONE Money panel carrying its section", () => {
     // The whole point of the alias: same panelId for all five keys, so the
     // dock opens one tab — with the section synthesized off the RAW key, the
-    // way ?panel=dreams carries Brain's tab.
+    // way ?panel=teams-org-chart carries the Agents chart view.
     expect(describePanel("teams-spend", {})).toEqual({
       panelId: "teams-money", component: "teams", title: "Money",
       params: { teamsKey: "money", section: "spend" },

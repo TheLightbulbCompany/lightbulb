@@ -916,7 +916,51 @@ the CDK edit *and* all four boto3 register paths.
 Related: the 2026-08-14 prod incident where an 11-agent owner crash-looped on boot — the
 same "over the cap, no ceiling" shape, on CPU instead of disk.
 
-### C2-c · A self-editing agent can silently exceed the bootstrap cap — Atlas already has
+### C2-c — MEASURED FLEET-WIDE 2026-09-08. 16 of 35 owners affected; Friday is 50 bytes away.
+**Status:** CONFIRMED, unfixed. **Class:** LIVE DEFECT. **Priority:** this is the largest
+unaddressed defect in this document.
+
+The measurement C2-c asked for, run against **prod** immediately after the fleet config
+reapply (35/35 owners, 0 failed):
+
+```
+AGENTS.md files across all owners : 89
+files OVER the 20,000 per-file cap: 16
+owners affected                   : 16   (of 35)
+largest observed                  : 32,933 bytes  (64% over)
+```
+
+So **~18% of all agent playbooks on prod are silently truncated**, and **46% of owners have
+at least one**. Each over-cap agent loses ~12,500-12,900 characters — roughly **38-39% of its
+own instructions** — before it ever sees them. `DEFAULT_BOOTSTRAP_MAX_CHARS = 20_000` is
+per-file (`src/agents/embedded-agent-helpers/bootstrap.ts:89`); over it the file is cut before
+the agent reads it, and nothing surfaces that to us or to the owner.
+
+**Friday is now 50 bytes from joining them.** On our own container Friday's AGENTS.md went
+**19,552 → 19,950** across the heal — see the correction below.
+
+**⚠️ CORRECTION TO #2360.** That PR was titled *"the heal must deliver the whole playbook fix,
+and shrink not grow"*, and the fleet-wide apply proves the second half wrong: the heal is
+net **+398 bytes**. It delivered the playbook fix correctly (`role nobody on the roster fills`
+present, browser line present, verified on prod) — but it moved Friday **toward** the cliff,
+not away. Any further heal migration, or any owner-specific content, tips it over.
+
+**Why the number is 16 and not 2:** the two clusters are 32,933 and 32,478 bytes — the same
+file at two vintages, i.e. seeded content that is over the cap *at provision time*, not
+agents that grew organically. The earlier reading of this finding ("Atlas grew its own file
+past the cliff in place") was wrong for the fleet: the seed itself ships over the cap on some
+vintages. Our repo's Atlas seed is only 14,723 bytes, so the over-cap content is being
+assembled at seed time from more than that file.
+
+**Do next, in order:**
+1. Find what assembles the 32.9 KB file at provision time — it is not the 14.7 KB repo seed.
+2. A test asserting every seeded bootstrap file renders under the per-file cap, for **every**
+   seeded agent, not just Friday. #2360 added that guard for Friday alone, which is why this
+   was invisible.
+3. Only then decide about truncation *detection* at runtime (the `nearLimit` flag exists and
+   we surface it nowhere).
+
+### C2-c (original finding, retained for the reasoning)
 **Status:** TODO — found 2026-09-08 by inspecting the live prod container, not by reading code.
 **Class:** LIVE DEFECT. **Effort:** small to detect, medium to fix properly.
 

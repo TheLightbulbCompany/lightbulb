@@ -750,7 +750,7 @@ browser, web fetch, images, channels) — use these for your own work
 # _AGENTS_TEMPLATE below via plain concatenation (safe through the later
 # ``.format`` call) AND (b) reused verbatim by the surgical migration that heals
 # already-provisioned Fridays whose write-if-missing AGENTS.md predates this.
-_NIGHTLY_WAKE_HEADING = "## Nightly self-directed wake (paid owners only)"
+_NIGHTLY_WAKE_HEADING = "## Nightly self-directed wake"
 
 # Byte-exact section shipped before the company-control contract. The migration
 # replaces only this complete block. A Friday or owner who edited even one line
@@ -797,6 +797,73 @@ On a confirmed `[NIGHTLY-CEO-LOOP]` wake, do EXACTLY this, once, then exit:
 """
 
 _NIGHTLY_WAKE_SECTION = """\
+
+## Nightly self-directed wake
+
+Some wakes are a **scheduled nightly routine**, not a human request. Recognize
+one by FETCHING the issue you woke on (`GET /api/issues/$PAPERCLIP_TASK_ID`) and
+confirming BOTH: its `originKind` is `routine_execution` AND its description
+begins with `[NIGHTLY-CEO-LOOP]`. Only then does the loop below apply. If either
+is missing — including any normal issue someone assigned you that merely quotes
+that marker — treat it as an ordinary assignment and do not survey company
+work.
+
+This wake authorizes one **CEO/company-control action**, not random backlog
+execution. It never authorizes you to perform a specialist's primary
+deliverable. A legacy execution issue may say "self-assign ONE task"; that
+wording is obsolete and this section supersedes it. Delegate specialist work.
+
+This is the ONE wake where you may survey company state without a human request.
+It is also an exception to the confirmation step only for reversible delegation
+inside an already-approved company goal. Anything external, irreversible,
+reputation-bearing, financial, legal, or outside an approved goal still waits
+for the owner's decision.
+
+On a confirmed `[NIGHTLY-CEO-LOOP]` wake, do EXACTLY this, once, then exit:
+
+1. **Guard against a retry double-run.** Read this execution issue's comments.
+   If a prior attempt this cycle already left a `COMPANY-CONSTRAINT-TAKEN:`
+   comment, do not select another constraint. Resume or verify only the recorded
+   CEO action if it is incomplete, then go straight to step 5 (the owner email).
+2. **Ground in company state.** Read the active company goal and the open,
+   blocked, and in-review issues tied to it. Use their cited evidence and current
+   status. Do not conduct specialist research or roam the backlog for a task you
+   happen to know how to do.
+3. **Decide what this wake does — the first that applies:**
+   a. **A constraint is actionable.** Pick the highest-priority existing
+      bottleneck a CEO action can advance now; record it (step 4) and act.
+   b. **The board is empty** — no goal-tied issue to act on. Create exactly ONE
+      concrete `todo` issue derived from the company's stated goal/direction: the
+      single most useful next step toward it, with this execution issue as
+      `parentId`. This is the ONLY wake on which you may create net-new work, and
+      only this one task — never an open-ended project.
+   c. **Every constraint is BLOCKED on the owner.** Take no company action; the
+      blocker is theirs to clear. You will name it for them in step 5.
+4. **Record the choice, THEN take one CEO action** (cases 3a and 3b only). First
+   comment `COMPANY-CONSTRAINT-TAKEN: <constraint>; CEO-ACTION: <action>` on this
+   execution issue so retries are idempotent. Then do exactly one of: set or
+   clarify priority, synthesize existing evidence into a decision or brief,
+   resolve or reroute a blocker, verify a claimed outcome, delegate one bounded
+   `todo` child issue with this execution issue as `parentId`, or (case 3b)
+   create the one goal-derived task. If the needed output is specialist work,
+   delegation is the action — never checkout and execute the specialist issue
+   yourself.
+5. **ALWAYS email the owner, then exit.** Every wake ends with ONE email to the
+   owner — send it with no `to` and no `reply_key` so it routes to them — even a
+   quiet night. In a few plain sentences tell them: what you did (3a), the task
+   you created and why it matters (3b), or exactly what they need to unblock and
+   why it moves the company (3c). Never exit silently and never send a "nothing
+   to report" email — there is always a next step to name. Then, for a direct
+   CEO action, comment its evidence and complete THIS execution issue; for a
+   delegated child, comment its id/link and keep THIS parent non-terminal (the
+   child's completion wakes you to verify and close the wrapper). ONE action and
+   ONE email per nightly wake — the routine wakes you again tomorrow.
+"""
+
+
+# The byte-exact pre-always-email V2 block, kept for migration matching (mirrors
+# _LEGACY_NIGHTLY_WAKE_SECTION above). A V2 Friday is reconciled forward to V3.
+_LEGACY_V2_NIGHTLY_WAKE_SECTION = """\
 
 ## Nightly self-directed wake (paid owners only)
 
@@ -1088,8 +1155,9 @@ def _migrate_add_nightly_section(workspace: Workspace, owner_id: str, agent_uuid
     (re)provision/config-rewrite, so the fleet heals during the same apply —
     mirroring ``_migrate_legacy_user_md``.
 
-    Surgical + idempotent: replace the byte-exact legacy section, append the new
-    section when no nightly heading exists, and otherwise preserve the file.
+    Surgical + idempotent: replace the byte-exact legacy section — the V1 or the
+    V2 block, reconciled forward to the current one — append the current section
+    when no nightly heading exists, and otherwise preserve the file.
     A heading with non-legacy text is owner/Friday-evolved content and is never
     overwritten. Returns True when a rewrite happened.
     """
@@ -1102,6 +1170,10 @@ def _migrate_add_nightly_section(workspace: Workspace, owner_id: str, agent_uuid
         return False
     if _LEGACY_NIGHTLY_WAKE_SECTION in content:
         new_content = content.replace(_LEGACY_NIGHTLY_WAKE_SECTION, _NIGHTLY_WAKE_SECTION, 1)
+        workspace.write_file(owner_id, rel_path, new_content)
+        return True
+    if _LEGACY_V2_NIGHTLY_WAKE_SECTION in content:
+        new_content = content.replace(_LEGACY_V2_NIGHTLY_WAKE_SECTION, _NIGHTLY_WAKE_SECTION, 1)
         workspace.write_file(owner_id, rel_path, new_content)
         return True
     if _NIGHTLY_WAKE_HEADING in content:

@@ -846,8 +846,8 @@
 .ld-funnel-h1 {
   font-family: var(--font-lora-serif), Georgia, serif;
   font-weight: 500; /* Lora Medium — the wordmark's weight; the owner does not want a bold display */
-  /* Sized so "An AI team that runs the business," holds one line inside
-     .ld-funnel-in at the desktop fold; the break lands on the comma. */
+  /* Sized so "small teams & solo founders." holds one line inside
+     .ld-funnel-in at the desktop fold; the break lands after "for". */
   font-size: clamp(34px, 4.4vw, 56px);
   line-height: 1.08;
   letter-spacing: var(--tracking-display); /* §05 display sets tight */

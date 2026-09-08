@@ -87,9 +87,9 @@ export function HeroFunnel() {
       <div className="ld-funnel-in">
         <LaunchHeroPill />
         <h1 className="ld-funnel-h1">
-          An AI team that runs the business,{" "}
+          AI employees for{" "}
           <br />
-          a CEO that manages it.
+          small teams &amp; solo founders.
         </h1>
 
         <div className="ld-doors" role="group" aria-label="What are you bringing?">
@@ -131,11 +131,15 @@ export function HeroFunnel() {
         </form>
 
         {/* What the reader gets, not what the product is: the deliverables of
-            a real first run, in the order they land. */}
+            a real first run, then the work that stops being theirs. The second
+            sentence is the one that finishes "this saves me ___" — the H1 now
+            says who it's for and what they are, so this line has to say what
+            comes off the reader's plate, not re-introduce the roster. */}
         <p className="ld-funnel-fine">
-          Five minutes in, your CEO has researched the market, filed the first
-          three moves, and set up a working email address. You start with a CEO
-          and a recruiter, and hire the rest from the marketplace.
+          Five minutes in, your CEO has read your market, filed the first three
+          moves, and set up a working email address. It answers the inbox,
+          chases the follow-ups, and hires specialists as the work grows — you
+          approve, they do it.
         </p>
         {/* The price is the first question every visitor has, and until this
             line the only answer above the fold was a 64px "$50" further down

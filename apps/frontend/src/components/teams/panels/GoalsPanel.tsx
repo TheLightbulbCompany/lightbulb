@@ -30,12 +30,8 @@ import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { notifyApiError } from "@/lib/notify";
 import { useGoalMutations } from "@/components/teams/goals/hooks/useGoalMutations";
 import { CreateGoalDialog } from "@/components/teams/goals/CreateGoalDialog";
-import { GoalPicker } from "@/components/teams/goals/GoalPicker";
 import {
-  GOAL_LEVELS,
   GOAL_STATUSES,
-  type GoalLevel,
-  type GoalStatus,
 } from "@/components/teams/shared/types";
 
 interface Goal {

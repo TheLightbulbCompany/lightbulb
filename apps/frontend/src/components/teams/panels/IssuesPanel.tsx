@@ -15,6 +15,7 @@ import {
   resolveCeoAgentId,
 } from "@/components/getstarted/getStartedFirstTask";
 import { TasksList, type TasksGroupBy } from "@/components/teams/issues/TasksList";
+import { CreateGoalDialog } from "@/components/teams/goals/CreateGoalDialog";
 import { useIssueMutations } from "@/components/teams/issues/hooks/useIssueMutations";
 import { useLiveRuns } from "@/components/teams/dashboard/hooks/useLiveRuns";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
@@ -102,7 +103,7 @@ export function IssuesPanel({
   const { data: projectsData } = read<{ projects: IssueProject[] }>(
     "/projects",
   );
-  const { data: goalsData } = read<{ goals: Goal[] }>("/goals");
+  const { data: goalsData, mutate: mutateGoals } = read<{ goals: Goal[] }>("/goals");
   // Live-agent-runs feed → the set of task ids with an active run, which lights
   // the board "Live" badge + the list-row live dot. Derived the same way the
   // dashboard does (useLiveRuns → isRunActive); SWR self-refreshes the feed.
@@ -111,6 +112,7 @@ export function IssuesPanel({
   // Seed from the one-shot so a mount that already carries the intent opens the
   // dialog on first render (no effect); the prev-compare below covers re-delivery.
   const [creating, setCreating] = useState(newTask);
+  const [creatingGoal, setCreatingGoal] = useState(false);
   const [search, setSearch] = useState("");
 
   // The sidebar create pill's "New task" delivers a one-shot `newTask` prop.
@@ -195,9 +197,21 @@ export function IssuesPanel({
         overline="Work"
         title="Tasks"
         actions={
-          <EditorialButton variant="primary" onClick={() => setCreating(true)}>
-            New task
-          </EditorialButton>
+          <div className="flex items-center gap-2">
+            {/* Goals lost their own tab to this page, and the goal tab was the
+                only place a goal could be CREATED — detail, edit and delete
+                survive behind a group heading's link. Offered only while the
+                page is grouped by goal, so it appears where it means
+                something rather than sitting on every view. */}
+            {initialGroupBy === "goal" && (
+              <EditorialButton variant="secondary" onClick={() => setCreatingGoal(true)}>
+                New goal
+              </EditorialButton>
+            )}
+            <EditorialButton variant="primary" onClick={() => setCreating(true)}>
+              New task
+            </EditorialButton>
+          </div>
         }
       />
       <PanelToolbar
@@ -290,6 +304,16 @@ export function IssuesPanel({
           mutate();
         }}
       />
+      {creatingGoal && (
+        <CreateGoalDialog
+          goals={goalsData?.goals ?? []}
+          onClose={() => setCreatingGoal(false)}
+          onCreated={() => {
+            setCreatingGoal(false);
+            mutateGoals();
+          }}
+        />
+      )}
     </div>
   );
 }

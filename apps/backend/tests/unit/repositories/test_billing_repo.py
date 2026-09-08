@@ -322,40 +322,6 @@ async def test_set_metronome_ids_requires_existing_row(dynamodb_table):
 
 
 @pytest.mark.asyncio
-async def test_add_trial_daily_spend_accumulates_per_date(dynamodb_table):
-    """First add creates the nested map + leaf; second add accumulates the
-    same day; a different date is an independent leaf."""
-    from core.repositories import billing_repo
-
-    await billing_repo.create_if_not_exists("user_x", "cus_meta")
-
-    t1 = await billing_repo.add_trial_daily_spend("user_x", "2026-07-10", 1000)
-    t2 = await billing_repo.add_trial_daily_spend("user_x", "2026-07-10", 500)
-    assert t1 == 1000
-    assert t2 == 1500
-
-    t3 = await billing_repo.add_trial_daily_spend("user_x", "2026-07-11", 200)
-    assert t3 == 200
-
-    assert await billing_repo.get_trial_daily_spend("user_x", "2026-07-10") == 1500
-    assert await billing_repo.get_trial_daily_spend("user_x", "2026-07-11") == 200
-
-
-@pytest.mark.asyncio
-async def test_add_trial_daily_spend_supports_negative_delta_rollback(dynamodb_table):
-    """The ADD verb is signed: a negative delta subtracts. No caller writes
-    negatives today (the meter Lambda only ever adds priced invocations), but
-    the primitive's arithmetic must stay correct — a correction/backfill is the
-    obvious future caller, and a silently-clamped ADD would be a money bug."""
-    from core.repositories import billing_repo
-
-    await billing_repo.create_if_not_exists("user_y", "cus_meta2")
-    await billing_repo.add_trial_daily_spend("user_y", "2026-07-10", 1000)
-    total = await billing_repo.add_trial_daily_spend("user_y", "2026-07-10", -400)
-    assert total == 600
-
-
-@pytest.mark.asyncio
 async def test_get_trial_daily_spend_defaults_to_zero(dynamodb_table):
     from core.repositories import billing_repo
 
@@ -364,19 +330,6 @@ async def test_get_trial_daily_spend_defaults_to_zero(dynamodb_table):
     assert await billing_repo.get_trial_daily_spend("user_z", "2026-07-10") == 0
     # no billing row at all for this owner
     assert await billing_repo.get_trial_daily_spend("ghost_owner", "2026-07-10") == 0
-
-
-@pytest.mark.asyncio
-async def test_add_trial_daily_spend_requires_existing_row(dynamodb_table):
-    """No phantom billing rows — same invariant as set_metronome_ids /
-    clear_provider_choice."""
-    from botocore.exceptions import ClientError
-
-    from core.repositories import billing_repo
-
-    with pytest.raises(ClientError):
-        await billing_repo.add_trial_daily_spend("ghost_owner", "2026-07-10", 1000)
-    assert await billing_repo.get_by_owner_id("ghost_owner") is None
 
 
 @pytest.mark.asyncio
@@ -405,8 +358,8 @@ async def test_set_stripe_customer_id_backfills_existing_trial_local_row(dynamod
 @pytest.mark.asyncio
 async def test_set_stripe_customer_id_requires_existing_row(dynamodb_table):
     """No phantom billing rows — same invariant as set_metronome_ids /
-    add_trial_daily_spend / clear_provider_choice. A conditional update
-    against a missing owner_id must raise, never silently upsert."""
+    clear_provider_choice. A conditional update against a missing owner_id
+    must raise, never silently upsert."""
     from botocore.exceptions import ClientError
 
     from core.repositories import billing_repo

@@ -1,6 +1,6 @@
 """Thin httpx client for the handful of Metronome HTTP shapes we use.
 
-No business logic, no UsageEvent knowledge, no DDB — just request marshalling
+No business logic, no DDB — just request marshalling
 and auth. Grounded in docs/superpowers/research/2026-06-07-metronome-ingest-
 contract.md. The environment (sandbox vs prod) is decided entirely by the
 api_key (Metronome is token-scoped, same base URL).

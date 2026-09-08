@@ -289,8 +289,8 @@ export class DatabaseStack extends cdk.Stack {
     });
 
     // Per-owner Bedrock AIP -> owner reverse index (Plan 2). PK aip_arn.
-    // Written by ensure_owner_aips; read by resolve_owner_from_aip_arn on the
-    // Plan-3 meter hot path (a single bounded GetItem per invocation record).
+    // Written by ensure_owner_aips; read by the bedrock-usage-meter Lambda's
+    // own boto3 GetItem on its hot path (no backend code reads this table).
     this.bedrockAipOwnersTable = createTable("BedrockAipOwnersTable", "bedrock-aip-owners", {
       partitionKey: { name: "aip_arn", type: dynamodb.AttributeType.STRING },
     });

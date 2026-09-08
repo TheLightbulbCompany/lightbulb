@@ -1,10 +1,14 @@
 """Tests for the free-tier $3/day cap wired into the live chat path.
 
 ``GatewayConnectionPool.gate_chat`` Layer 2 is a **read-only** check of the
-daily-spend counter (via ``trial_cap.reason_for_account``). It places NO reserve
-and writes nothing — the Bedrock invocation-log meter Lambda is the sole
-writer of the counter and the authoritative enforcement (revoke the owner's
-inference profile + ``desiredCount=0``). Blocking here is UX.
+daily-spend counter (via ``trial_cap.reason_for_account``). It places NO
+reserve and writes nothing — the counter itself has two writers, both
+outside this backend: the bedrock-gate settles it first (JS, hot inference
+path) and the meter Lambda backstops on invocations the gate missed, with
+exactly-once guaranteed by the shared ``requestId`` dedup table rather than
+single-writer discipline. The meter is also the authoritative enforcement
+(revoke the owner's inference profile + ``desiredCount=0``). Blocking here
+is UX.
 
 The predicate is ``subscription_status == "trial_local"``. The container row's
 ``provider_choice`` is NOT consulted: the moment billing flips to paid, the
@@ -54,9 +58,9 @@ async def test_gate_blocks_trial_owner_at_cap():
 
 @pytest.mark.asyncio
 async def test_gate_allows_trial_owner_under_cap_and_writes_nothing():
-    """An under-cap trial owner passes, and NOTHING is written to the counter
-    by any backend path — the meter Lambda is the sole writer, and a second
-    in-band writer would double-count."""
+    """An under-cap trial owner passes. gate_chat itself writes nothing to
+    the counter — add_trial_daily_spend (zero production callers) is deleted,
+    so that guard is now structural rather than a runtime mock assertion."""
     pool = GatewayConnectionPool(management_api=None)
     with (
         patch(
@@ -68,17 +72,12 @@ async def test_gate_allows_trial_owner_under_cap_and_writes_nothing():
             new=AsyncMock(return_value=0),
         ),
         patch(
-            "core.repositories.billing_repo.add_trial_daily_spend",
-            new=AsyncMock(),
-        ) as add_mock,
-        patch(
             "core.observability.product_analytics.capture_once_per_owner_per_day",
         ) as capture_mock,
     ):
         gate = await pool.gate_chat(user_id="u", owner_id="u", session_key="sk1")
 
     assert gate == {"blocked": False}
-    add_mock.assert_not_awaited()  # no reserve, no counter write
     capture_mock.assert_not_called()  # telemetry fires only on the blocked branch
 
 
@@ -246,20 +245,16 @@ def _bedrock_session(key: str | None = None) -> dict:
 )
 async def test_usage_path_never_writes_the_cap_counter(session_key):
     """``_fetch_and_record_usage`` fires for EVERY run source. It records
-    analytics usage — but must never ADD to the daily-spend counter. The meter
-    Lambda counts every invocation at the AWS layer; a second in-band writer
-    would double-count and false-lock-out users."""
+    analytics usage — but must never write to the daily-spend counter itself
+    (add_trial_daily_spend, the only backend writer, had zero production
+    callers and is deleted, so that half of the guard is now structural)."""
     session = _bedrock_session(key=session_key)
     conn = _make_connection_with_rpc(session, user_id="owner_1")
 
-    with (
-        patch("core.services.usage_service.record_usage", new=AsyncMock()) as record_mock,
-        patch("core.repositories.billing_repo.add_trial_daily_spend", new=AsyncMock()) as add_mock,
-    ):
+    with patch("core.services.usage_service.record_usage", new=AsyncMock()) as record_mock:
         await conn._fetch_and_record_usage(session_key, member_user_id="member_1")
 
     record_mock.assert_awaited_once()  # analytics still recorded
-    add_mock.assert_not_awaited()  # but nothing lands on the cap counter
 
 
 @pytest.mark.asyncio

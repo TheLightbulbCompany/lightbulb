@@ -9,15 +9,18 @@ underlying foundation-model ARNs in every fan-out region. An explicit
 ``Deny bedrock:CreateInferenceProfile`` stops a tenant from minting a wider
 profile to escape the scope.
 
-Everything is a FREE FUNCTION (not a method on EcsManager) so the reverse
-lookup (Plan 3) and the kill-switch (Plan 4) can import these without
-constructing EcsManager, which eagerly builds boto3 clients in __init__.
+Everything is a FREE FUNCTION (not a method on EcsManager) so the
+kill-switch (Plan 4) can import these without constructing EcsManager,
+which eagerly builds boto3 clients in __init__.
+
+The bedrock-aip-owners reverse table (``persist_owner_aips`` /
+``_put_reverse_row`` below) is read by the bedrock-usage-meter Lambda via its
+own boto3 GetItem — not through this module. There is no in-backend reverse
+lookup: the Plan-3 ARN -> owner/tier resolvers that used to live here
+(``resolve_owner_and_tier_from_aip_arn``, ``resolve_owner_from_aip_arn``,
+``resolve_tier_from_aip_arn``) had zero production callers and were deleted.
 
 Shared contracts other plans import:
-  * resolve_owner_and_tier_from_aip_arn(aip_arn) -> tuple[str | None, str | None]
-        (Plan 3, meter — single reverse-table read for owner + tier together)
-  * resolve_owner_from_aip_arn(aip_arn) -> str | None   (Plan 3, meter)
-  * resolve_tier_from_aip_arn(aip_arn) -> str | None     (Plan 3, pricing)
   * revoke_owner_bedrock(owner_id) / restore_owner_bedrock(owner_id)  (Plan 4)
 """
 
@@ -247,15 +250,15 @@ async def persist_owner_aips(
     """Persist the per-owner AIP map (and optional role ARN) to BOTH the
     containers row and the bedrock-aip-owners reverse table.
 
-    The reverse table is the read path for resolve_owner_from_aip_arn (Plan 3);
-    the containers row is the read path for the config builder + resize/restart.
+    The reverse table is the read path for the bedrock-usage-meter Lambda
+    (its own boto3 GetItem, not any function in this module); the containers
+    row is the read path for the config builder + resize/restart.
 
     `plan` ("paid" or "trial") is stamped onto every reverse row. The meter
-    Lambda already does exactly one GetItem on this table per invocation
-    (resolve_owner_and_tier_from_aip_arn) to attribute owner + tier — `plan`
-    rides along for free in that same read, letting the Lambda skip Metronome
-    ingest for trial owners (who have no Stripe customer / Metronome contract)
-    without a second lookup.
+    Lambda already does exactly one GetItem on this table per invocation to
+    attribute owner + tier — `plan` rides along for free in that same read,
+    letting the Lambda skip Metronome ingest for trial owners (who have no
+    Stripe customer / Metronome contract) without a second lookup.
     """
     fields: dict = {"bedrock_aip_arns": aip_arns}
     if role_arn is not None:
@@ -285,55 +288,6 @@ async def read_owner_aips(owner_id: str) -> dict[str, str] | None:
     if not arns:
         return None
     return {str(tier): str(arn) for tier, arn in arns.items()}
-
-
-async def resolve_owner_and_tier_from_aip_arn(aip_arn: str) -> tuple[str | None, str | None]:
-    """SHARED CONTRACT (Plan 3 meter): given an AIP ARN from an invocation-log
-    record, return (owner_id, tier) in ONE reverse-table read.
-
-    Both attributes live on the same bedrock-aip-owners row (_put_reverse_row
-    writes them together), so the meter resolves owner + tier with a single
-    bounded GetItem instead of two — exactly one reverse-table read per metered
-    record on the hot path. resolve_owner_from_aip_arn / resolve_tier_from_aip_arn
-    delegate here so any other caller keeps its single-value contract.
-
-    Either element is None when the row (or that attribute) is missing.
-    """
-    from core.dynamodb import run_in_thread
-
-    table = _aip_owners_table()
-    resp = await run_in_thread(table.get_item, Key={"aip_arn": aip_arn})
-    item = resp.get("Item")
-    if not item:
-        return None, None
-    owner = item.get("owner_id")
-    tier = item.get("tier")
-    return (str(owner) if owner else None, str(tier) if tier else None)
-
-
-async def resolve_owner_from_aip_arn(aip_arn: str) -> str | None:
-    """SHARED CONTRACT (Plan 3 meter): given an AIP ARN from an invocation-log
-    record, return the owning owner_id, or None if unknown.
-
-    Reads the bedrock-aip-owners reverse table by PK — a single strongly
-    bounded GetItem, safe on the hot meter path. No name-parsing.
-    """
-    owner, _ = await resolve_owner_and_tier_from_aip_arn(aip_arn)
-    return owner
-
-
-async def resolve_tier_from_aip_arn(aip_arn: str) -> str | None:
-    """SHARED CONTRACT (Plan 3 pricing): given an AIP ARN from an invocation-log
-    record, return its model tier ("opus"/"sonnet"/"haiku"), or None if unknown.
-
-    Mirrors resolve_owner_from_aip_arn — same bedrock-aip-owners reverse-table
-    PK GetItem (a single bounded read, safe on the hot pricing path) — but
-    returns the `tier` attribute that _put_reverse_row stores on every row.
-    Plan 3's price_from_aip_arn maps the tier to the per-token rate; the AIP ARN
-    alone carries no model name, so the persisted tier is the only reliable key.
-    """
-    _, tier = await resolve_owner_and_tier_from_aip_arn(aip_arn)
-    return tier
 
 
 def _bedrock_client():
@@ -407,10 +361,10 @@ async def ensure_owner_aips(owner_id: str, *, tiers: list[str] | None = None) ->
     without any Bedrock control-plane call — but STILL re-puts the
     reverse-index rows (review C1). The row update and the reverse PutItems in
     persist_owner_aips are NOT atomic; a prior partial failure (row written,
-    one reverse PutItem failed) leaves resolve_owner_from_aip_arn unable to
-    attribute that AIP. The reverse PutItems are idempotent (same key, same
-    value), so re-running them on the short-circuit path is cheap and
-    self-heals the index.
+    one reverse PutItem failed) leaves the meter Lambda's reverse-table read
+    unable to attribute that AIP. The reverse PutItems are idempotent (same
+    key, same value), so re-running them on the short-circuit path is cheap
+    and self-heals the index.
     """
     from core.dynamodb import run_in_thread
 

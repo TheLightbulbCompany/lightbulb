@@ -1714,10 +1714,13 @@ class GatewayConnection:
         """Fetch session token counts via RPC and record usage.
 
         Analytics only. The free-tier daily-spend counter is NOT written
-        here — the Bedrock invocation-log meter Lambda is its sole writer
-        (it sees every invocation at the AWS layer, cache-inclusive and
-        deduped on Bedrock's ``requestId``). A second in-band writer would
-        double-count.
+        here. That counter has TWO writers, both outside this function: the
+        bedrock-gate settles it first (in JavaScript, on the hot inference
+        path), and the Bedrock invocation-log meter Lambda backstops by
+        counting only the invocations the gate missed. Exactly-once is
+        guaranteed by the shared ``requestId`` dedup table
+        (``lightbulb-{env}-bedrock-invocation-dedup``), not by single-writer
+        discipline — a third in-band writer here would still double-count.
         """
         raw_cost_microcents: int | None = None
         model: str = "unknown"

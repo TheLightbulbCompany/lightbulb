@@ -24,6 +24,7 @@ interface SessionRow {
   lastMessagePreview?: string;
   updatedAt?: number;
   totalTokens?: number;
+  pinned?: boolean;
   model?: string;
   modelProvider?: string;
   thinkingLevel?: string;
@@ -42,8 +43,8 @@ function stubSessionsList(rows: SessionRow[]): void {
 // SWR's cache is module-global; every test renders with a fresh Map provider
 // so an earlier test's cached page (same agentId cache key, or a dedupe
 // window that suppresses a "new" fetch) never bleeds into a later one.
-function renderAgentSessions(agentId: string | null, userId: string | null) {
-  return renderHook(() => useAgentSessions(agentId, userId), {
+function renderAgentSessions(agentId: string | null, userId: string | null, archived = false) {
+  return renderHook(() => useAgentSessions(agentId, userId, archived), {
     wrapper: ({ children }: { children: React.ReactNode }) => (
       <SWRConfig value={{ provider: () => new Map() }}>{children}</SWRConfig>
     ),
@@ -423,5 +424,83 @@ describe("useAgentSessions — filtered per-agent 4-part rows", () => {
       result.current.deleteSession("agent:agent-x:user-1:11111111-1111-4111-8111-111111111111"),
     ).resolves.toBeUndefined();
     expect(listCalls).toBeGreaterThan(1);
+  });
+});
+
+describe("useAgentSessions — pin and archive", () => {
+  beforeEach(() => {
+    callRpc.mockReset().mockResolvedValue({});
+    notifyApiError.mockClear();
+  });
+
+  it("puts pinned rows above newer unpinned ones, and keeps recency inside each group", async () => {
+    stubSessionsList([
+      { key: "agent:a:u:11111111-1111-4111-8111-111111111111", derivedTitle: "newest", updatedAt: 900 },
+      { key: "agent:a:u:22222222-2222-4222-8222-222222222222", derivedTitle: "pinned old", updatedAt: 100, pinned: true },
+      { key: "agent:a:u:33333333-3333-4333-8333-333333333333", derivedTitle: "pinned new", updatedAt: 500, pinned: true },
+    ]);
+    const { result } = renderAgentSessions("a", "u");
+    await waitFor(() => expect(result.current.sessions).toHaveLength(3));
+    expect(result.current.sessions.map((s) => s.label)).toEqual([
+      "Pinned new",
+      "Pinned old",
+      "Newest",
+    ]);
+  });
+
+  it("does not ask the container for archived rows on the active rail", async () => {
+    stubSessionsList([]);
+    const { result } = renderAgentSessions("a", "u");
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    const [, params] = callRpc.mock.calls.find(([m]) => m === "sessions.list") as [string, Record<string, unknown>];
+    // Omitted, not false: the container already reads an absent flag as
+    // "active only", and sending false would be a second way to say it.
+    expect(params).not.toHaveProperty("archived");
+  });
+
+  it("asks for archived rows only in archived mode", async () => {
+    stubSessionsList([]);
+    const { result } = renderAgentSessions("a", "u", true);
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    const [, params] = callRpc.mock.calls.find(([m]) => m === "sessions.list") as [string, Record<string, unknown>];
+    expect(params.archived).toBe(true);
+  });
+
+  it("archives with sessions.patch and reports that it landed", async () => {
+    stubSessionsList([]);
+    const { result } = renderAgentSessions("a", "u");
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    await expect(result.current.setArchived("agent:a:u:k", true)).resolves.toBe(true);
+    expect(callRpc).toHaveBeenCalledWith("sessions.patch", { key: "agent:a:u:k", archived: true });
+  });
+
+  it("reports a refused archive as false instead of throwing", async () => {
+    // The container refuses to archive a session with a run still in flight.
+    // The caller uses the return value to decide whether to move the owner off
+    // the session — a refusal must leave them exactly where they are.
+    callRpc.mockImplementation(async (method: string) => {
+      if (method === "sessions.list") return { sessions: [], hasMore: false };
+      throw new Error("Session is still active; retry the archive.");
+    });
+    const { result } = renderAgentSessions("a", "u");
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    await expect(result.current.setArchived("agent:a:u:k", true)).resolves.toBe(false);
+    expect(notifyApiError).toHaveBeenCalled();
+  });
+
+  it("restores with archived:false", async () => {
+    stubSessionsList([]);
+    const { result } = renderAgentSessions("a", "u", true);
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    await result.current.setArchived("agent:a:u:k", false);
+    expect(callRpc).toHaveBeenCalledWith("sessions.patch", { key: "agent:a:u:k", archived: false });
+  });
+
+  it("pins with sessions.patch", async () => {
+    stubSessionsList([]);
+    const { result } = renderAgentSessions("a", "u");
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    await result.current.setPinned("agent:a:u:k", true);
+    expect(callRpc).toHaveBeenCalledWith("sessions.patch", { key: "agent:a:u:k", pinned: true });
   });
 });

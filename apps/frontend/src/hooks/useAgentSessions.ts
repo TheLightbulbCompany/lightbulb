@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import useSWR from "swr";
+import useSWR, { useSWRConfig } from "swr";
 import { useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { notifyApiError } from "@/lib/notify";
 
@@ -54,6 +54,8 @@ export interface AgentSession {
   lastRunError?: string;
   /** The last run was aborted rather than ending on its own. */
   abortedLastRun?: boolean;
+  /** Owner-set sort pin (sessions.patch {pinned}); pinned rows lead the rail. */
+  pinned?: boolean;
   updatedAt?: number;
   totalTokens?: number;
   // Per-session model/effort overrides sessions.list reports (all optional —
@@ -83,6 +85,7 @@ interface RawSessionRow {
   status?: string;
   lastRunError?: string;
   abortedLastRun?: boolean;
+  pinned?: boolean;
   updatedAt?: number;
   totalTokens?: number;
   model?: string;
@@ -233,14 +236,25 @@ function labelsFor(
 export function useAgentSessions(
   agentId: string | null,
   userId: string | null,
+  /**
+   * List the owner's ARCHIVED sessions instead of their active ones. The
+   * container reads `archived` as a three-way filter (`true` archived only,
+   * `"all"` both, omitted active only), so the archived drawer is a second
+   * scoped read rather than a client-side split of one oversized page.
+   */
+  archived = false,
 ): {
   sessions: AgentSession[];
   isLoading: boolean;
   mutate: () => Promise<unknown>;
   renameSession: (key: string, label: string) => Promise<void>;
   deleteSession: (key: string) => Promise<void>;
+  /** Resolves true when the patch landed; false when it failed (already toasted). */
+  setArchived: (key: string, next: boolean) => Promise<boolean>;
+  setPinned: (key: string, next: boolean) => Promise<void>;
 } {
   const callRpc = useGatewayRpcMutation();
+  const { mutate: globalMutate } = useSWRConfig();
 
   // ONE scoped call, keyed by user AND agent. `agentId` is a first-class
   // sessions.list param and narrows the container's STORE LOAD, not just the
@@ -256,7 +270,7 @@ export function useAgentSessions(
   // sign-out, and the proxy scopes rows to the caller — one user's cached rows
   // would filter to an empty sidebar for the next until revalidation.
   const { data, isLoading, mutate } = useSWR<{ sessions: RawSessionRow[] }>(
-    agentId && userId ? ["sessions.list", userId, agentId] : null,
+    agentId && userId ? ["sessions.list", userId, agentId, archived] : null,
     async () => {
       // includeLastMessage rides along free: includeDerivedTitles already
       // forces the bounded transcript projection, and the SAME batched read
@@ -269,6 +283,10 @@ export function useAgentSessions(
         includeDerivedTitles: true,
         includeLastMessage: true,
         limit: 100,
+        // Omitted (not `false`) for the active rail: the container treats an
+        // absent flag as "active only" already, and the archived read is the
+        // only caller that needs to say anything.
+        ...(archived ? { archived: true } : {}),
       })) as { sessions?: RawSessionRow[] };
       return { sessions: res?.sessions ?? [] };
     },
@@ -305,6 +323,7 @@ export function useAgentSessions(
         ...labelsFor(row, sessionId),
         preview: previewOf(row),
         ...runOutcomeOf(row),
+        pinned: row.pinned === true,
         updatedAt: row.updatedAt,
         totalTokens: row.totalTokens,
         ...modelControlsOf(row),
@@ -325,18 +344,40 @@ export function useAgentSessions(
         rawLabel: LEGACY_ROW_LABEL,
         preview: previewOf(legacyRow),
         ...runOutcomeOf(legacyRow),
-        // Carried over deliberately: the projection used to drop it, which is
-        // survivable only while the row is pinned. Sorted by recency it would
-        // otherwise sit last forever.
+        pinned: legacyRow.pinned === true,
+        // Carried over deliberately: the projection used to drop it, which was
+        // survivable only while this row was fixed to the top of the list.
+        // Sorted by recency it would otherwise sit last forever.
         updatedAt: legacyRow.updatedAt,
         ...modelControlsOf(legacyRow),
       });
     }
     // Sort AFTER the legacy row is in, so it takes its place by recency like
-    // any other session instead of being pinned to either end.
-    out.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+    // any other session instead of being fixed to either end. An owner-set pin
+    // is the ONLY thing that overrides recency — that is what a pin is for.
+    out.sort(
+      (a, b) =>
+        (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || (b.updatedAt ?? 0) - (a.updatedAt ?? 0),
+    );
     return out;
   }, [data, agentId, userId]);
+
+  // Archive and the active rail are two SWR keys over the same store, so every
+  // move between them has to refresh BOTH: archiving from the rail must empty a
+  // row out of it AND land it in the drawer, and restoring does the reverse.
+  // Revalidating only the caller's own key leaves the other half stale until
+  // focus. Keyed off the tuple this hook builds, so the shape stays in one file.
+  const revalidateBothLists = async (): Promise<void> => {
+    if (!agentId || !userId) return;
+    try {
+      await Promise.all([
+        globalMutate(["sessions.list", userId, agentId, false]),
+        globalMutate(["sessions.list", userId, agentId, true]),
+      ]);
+    } catch {
+      // revalidates on next focus
+    }
+  };
 
   const renameSession = async (key: string, label: string): Promise<void> => {
     // sessions.patch {label} is OpenClaw's user-set session name; it wins over
@@ -366,12 +407,46 @@ export function useAgentSessions(
     await callRpc("sessions.delete", { key, deleteTranscript: true });
     // The delete persisted; a failed revalidation only delays the sidebar
     // refresh (SWR retries on focus) and must not read as a failed delete.
-    try {
-      await mutate();
-    } catch {
-      // revalidates on next focus
-    }
+    await revalidateBothLists();
   };
 
-  return { sessions, isLoading, mutate, renameSession, deleteSession };
+  /**
+   * Archive (or restore) a session — `sessions.patch {archived}`, which stamps
+   * `archivedAt` and moves the row between the two lists. Reversible, which is
+   * why the rail offers it with no confirm at all while delete keeps one.
+   *
+   * The container REFUSES to archive a session with a run still in flight
+   * ("Session ... is still active; retry the archive") and refuses an agent's
+   * main session outright, so the failure is surfaced rather than swallowed.
+   */
+  const setArchived = async (key: string, next: boolean): Promise<boolean> => {
+    try {
+      await callRpc("sessions.patch", { key, archived: next });
+    } catch (err) {
+      notifyApiError(err, next ? "Failed to archive session" : "Failed to restore session", {
+        dedupeKey: "session-archive",
+      });
+      // Reported, not thrown: the caller uses this to decide whether to move
+      // the owner OFF the session it just archived, and a refused archive
+      // (a run still in flight) must leave them exactly where they are.
+      return false;
+    }
+    await revalidateBothLists();
+    return true;
+  };
+
+  /** Pin (or unpin) a session — `sessions.patch {pinned}`; pinned rows lead the rail. */
+  const setPinned = async (key: string, next: boolean): Promise<void> => {
+    try {
+      await callRpc("sessions.patch", { key, pinned: next });
+    } catch (err) {
+      notifyApiError(err, next ? "Failed to pin session" : "Failed to unpin session", {
+        dedupeKey: "session-pin",
+      });
+      return;
+    }
+    await revalidateBothLists();
+  };
+
+  return { sessions, isLoading, mutate, renameSession, deleteSession, setArchived, setPinned };
 }

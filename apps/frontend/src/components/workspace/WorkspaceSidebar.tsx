@@ -42,6 +42,7 @@ import { DesktopUpdater } from "@/components/desktop/DesktopUpdater";
 import { NodeStatusPill } from "@/components/desktop/NodeStatusPill";
 import { emitStep } from "@/components/getstarted/getStartedEvents";
 import { TEAMS_PANEL_PREFIX } from "@/components/chat/InlineTeamsPanel";
+import { ArchivedSessions } from "@/components/chat/ArchivedSessions";
 import { SessionList } from "@/components/chat/SessionList";
 import { useActiveSession } from "@/hooks/useActiveSession";
 import { useAgentSessions, type AgentSession } from "@/hooks/useAgentSessions";
@@ -102,11 +103,25 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
     isLoading: sessionsLoading,
     renameSession,
     deleteSession,
+    setArchived,
+    setPinned,
   } = useAgentSessions(currentAgentId, clerkUserId ?? null);
   const { activeSessionId, newSession, selectSession } = useActiveSession(
     currentAgentId,
     !sessionsLoading && agentSessions.length === 0,
   );
+
+  // Archive is the rail's removal action, so the owner can archive the session
+  // they are sitting in. The chat would then keep rendering a transcript the
+  // rail no longer lists — fall back to the legacy row, exactly as delete does.
+  // Gated on a patch that actually LANDED: the container refuses to archive a
+  // session with a run still in flight, and a refused archive must leave the
+  // owner where they were rather than silently moving them.
+  const handleArchiveSession = async (s: AgentSession): Promise<void> => {
+    const wasActive = s.sessionId === activeSessionId;
+    const ok = await setArchived(s.key, true);
+    if (ok && wasActive) selectSession(null);
+  };
 
   const subscriptionStatus = account?.subscription_status ?? null;
   // Keeps the footer chip in sync with TrialBanner/OutOfCreditsBanner
@@ -224,7 +239,19 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
               onRename={(s, label) => {
                 void renameSession(s.key, label);
               }}
-              onDelete={(s) => setDeleteSessionTarget(s)}
+              onArchive={(s) => {
+                void handleArchiveSession(s);
+              }}
+              onPin={(s, next) => {
+                void setPinned(s.key, next);
+              }}
+              archivedSlot={
+                <ArchivedSessions
+                  agentId={currentAgentId}
+                  userId={clerkUserId ?? null}
+                  onDelete={(s) => setDeleteSessionTarget(s)}
+                />
+              }
             />
           )}
         />

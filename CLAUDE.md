@@ -351,44 +351,47 @@ each cancelled having run zero jobs — a cancelled run with **0 jobs** is the e
 signature; one with jobs was cancelled by a human). `queue: max` was added on the
 understanding that it queues up to 100 runs FIFO instead.
 
-> **⚠️ THAT UNDERSTANDING IS NOT ESTABLISHED — do NOT drop your merge freeze on it.**
-> Corrected 2026-09-08 03:52Z, hours after the line above was written, because the observed
-> behaviour contradicts it.
+> **⚠️ IT DOES NOT QUEUE THEM — IT INVERTS WHICH ONE SURVIVES. Keep your merge freeze.**
+> Established 2026-09-08 03:52Z, hours after the line above was written.
 >
-> **What `queue: max` demonstrably DID change:** six runs sat pending in `lightbulb-deploy`
-> simultaneously between 03:45 and 03:50 (two of them `workflow_dispatch`). Before the
-> change exactly one run could be pending, and each arrival evicted the last. So the key is
-> doing *something*.
+> **What `queue: max` really changed:** many runs can now sit pending at once — six did,
+> between 03:45 and 03:50, two of them `workflow_dispatch`. Under `queue: single` exactly one
+> pending run is retained. So the key is honoured and it measurably altered behaviour.
 >
-> **What then happened, unexplained:** at **03:50:58**, the instant the slot freed, the
-> OLDEST pending run (34180429332, queued since 02:32) started — and four newer pending runs
-> were cancelled in the same second, including a fresh promotion (34184589391):
+> **What it does NOT do is drain them.** When the slot frees, GitHub starts the **OLDEST**
+> pending run and **cancels every newer one**, in the same second. Timing makes this
+> conclusive rather than inferred — the slot holder finished at 03:50:57, four newer pending
+> runs (including a fresh promotion) were cancelled at 03:50:58, and the oldest pending run —
+> queued since 02:32 — started at 03:50:59:
 >
 > ```
-> 34184589391 dispatch 03:45:08 1a133628  CANCELLED 03:50:58
-> 34184562412 push     03:44:41 1a133628  CANCELLED 03:50:58
-> 34184511185 push     03:43:48 9648db53  CANCELLED 03:50:58
-> 34182787337 push     03:13:50 7dbc6afb  CANCELLED 03:50:58
-> 34180429332 push     02:32:55 ccaf1fc3  -> STARTED 03:50:59
+> 34178914406 (slot holder)          COMPLETED 03:50:57
+> 34184589391 dispatch 03:45:08      CANCELLED 03:50:58
+> 34184562412 push     03:44:41      CANCELLED 03:50:58
+> 34184511185 push     03:43:48      CANCELLED 03:50:58
+> 34182787337 push     03:13:50      CANCELLED 03:50:58
+> 34180429332 push     02:32:55      STARTED   03:50:59
 > ```
 >
-> **We could not determine whether that was GitHub or a human.** The API's `actor` /
-> `triggering_actor` name whoever *started* a run, not whoever cancelled it, and all runs here
-> share one identity. Four cancellations in the same second look systemic, but a scripted
-> bulk-cancel by another session would look identical — and one session had already
-> bulk-cancelled this queue earlier the same night.
+> **So eviction is not gone — it is REVERSED, and that inverts the correct tactic:**
 >
-> **So two readings remain open**, and the difference matters: either `queue` is honoured and
-> its semantics are "start the oldest, drop the rest" (still eviction, just favouring the
-> oldest), or `queue` is being ignored entirely and something else cancelled these. The
-> negative-control probe proves the `concurrency` block **validates** unknown keys — which
-> proves `queue` is *recognised*, not that it is *honoured*. Those are different claims and
-> only the first was tested.
+> | | old (`queue: single`) | now (`queue: max`) |
+> |---|---|---|
+> | which pending run survives | the **newest** | the **oldest** |
+> | re-dispatching a stuck promotion | jumped the queue — correct | **wastes a run** — your new dispatch is the one that gets cancelled |
+> | what kills your promotion | a later merge | an **earlier** pending run you never looked at |
 >
-> **Until someone establishes the real semantics, operate as if eviction is still live:**
-> dispatch only when NO other deploy run is pending, treat any pending run as something that
-> may outlive or kill your dispatch, and keep asking peers for a merge freeze around a
-> promotion. The single group is deliberate: prod
+> **The operating rule, which is counter-intuitive twice over: dispatch only when NOTHING
+> else is pending in `lightbulb-deploy`, and never re-dispatch to jump a queue.** Check with
+> `gh run list --workflow deploy.yml` and look for *any* queued/pending run, however old — a
+> 70-minute-old push run you would have dismissed as stale is now precisely the thing that
+> will outlive and cancel your promotion.
+>
+> **A correction worth carrying about the evidence, not just the conclusion:** the
+> negative-control probe behind #2378 proved the `concurrency` block **validates** unknown
+> keys, so `queue` is **recognised**. It did not prove `queue` is **honoured**, still less
+> what its semantics are. Those are three separate claims and only the first was tested. A
+> control that rules out one failure mode does not rule out the next one along. The single group is deliberate: prod
 jobs `needs:` the dev stage, so a per-event group would let a promotion and a push deploy the
 same dev stacks concurrently. Note `queue: max` is a validation ERROR alongside
 `cancel-in-progress: true`, and eviction was also coalescing merge bursts — a burst now

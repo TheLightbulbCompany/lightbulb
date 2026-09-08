@@ -19,6 +19,20 @@ after any partial failure re-enters via create_customer/create_contract,
 whose conflict responses are adopted (lookup by ingest alias / contract
 list) instead of failing — so a half-provisioned customer converges instead
 of stranding.
+
+Who retries a failure: every caller (``ensure_user_ready``, the Stripe
+``entering_live`` webhook, the on-demand credit-top-up path) treats this
+function as best-effort and swallows its exceptions — retrying is entirely
+the CALLER's job, not this module's. That is NOT the same as "the next
+/container/status poll retries": ``ensure_user_ready`` is only re-dispatched
+on an already-running container for org context, a failed Teams seed, or
+(see ``core.services.readiness_state.compute_status``'s
+``metronome_ledger_missing``) a ledger-eligible owner still missing
+``metronome_customer_id``. A personal owner whose only failure was HERE, with
+no other reason to re-enter, relied on that third condition existing — before
+it did, a transient failure (a Metronome outage, a mid-migration Secrets
+Manager blip) left the owner permanently un-ledgered despite an active paid
+subscription.
 """
 
 from __future__ import annotations

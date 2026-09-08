@@ -2044,6 +2044,108 @@ class TestContainerStatusTeamsStatus:
         assert captured == [], f"a healthy personal seed must not re-dispatch, got {captured}"
 
     @pytest.mark.asyncio
+    async def test_personal_running_container_with_missing_ledger_redispatches_ensure_user_ready(self):
+        """A PERSONAL owner with a healthy running container and an ACTIVE
+        subscription but no Metronome ledger yet (ensure_metronome_customer
+        failed at signup, e.g. mid-migration Secrets Manager blip) must
+        re-dispatch ensure_user_ready so the ledger self-heals. Before this
+        fix, this owner's healthy poll never re-entered ensure_user_ready at
+        all -- the running-container re-dispatch was gated on org-context or
+        teams_state=="failed" only -- so a transient Metronome failure at
+        signup stranded a paying owner with no ledger forever (prod evidence:
+        two active-subscription owners with metronome_customer_id absent)."""
+        from routers.container import container_status
+
+        captured: list[str] = []
+
+        def capture_task(coro):
+            captured.append(coro.__qualname__)
+            coro.close()
+
+        fake_ecs = AsyncMock()
+        fake_ecs.resolve_running_container = AsyncMock(
+            return_value=({"service_name": "svc", "status": "running", "substatus": None}, "10.0.1.5")
+        )
+        active_repo = _paperclip_repo_stub("active")
+        with (
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
+            patch(
+                "core.services.connection_service.is_gateway_connected",
+                new=AsyncMock(return_value=True),
+            ),
+            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=active_repo),
+            patch(
+                "core.services.readiness_state.billing_repo.get_by_owner_id",
+                new=AsyncMock(
+                    return_value={
+                        "owner_id": "user_x",
+                        "subscription_status": "active",
+                        "stripe_customer_id": "cus_1",
+                        "stripe_subscription_id": "sub_1",
+                        # No metronome_customer_id -- the ledger never got provisioned.
+                    }
+                ),
+            ),
+            patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
+            patch("routers.container.asyncio.create_task", side_effect=capture_task),
+        ):
+            result = await container_status(_personal_auth())
+
+        assert result["teams_state"] == "active", "isolate the ledger condition -- Teams is healthy here"
+        assert captured == ["_noop_ensure_user_ready"], (
+            f"a ledger-eligible personal owner with no Metronome ledger must re-dispatch, got {captured}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_personal_running_container_with_ledger_does_not_redispatch(self):
+        """The happy path stays free of a per-poll re-seed: a PERSONAL owner
+        who already has a Metronome ledger (both ids persisted) must NOT
+        re-dispatch ensure_user_ready on the running-container poll, even
+        though the subscription is active and ledger-eligible."""
+        from routers.container import container_status
+
+        captured: list[str] = []
+
+        def capture_task(coro):
+            captured.append(coro.__qualname__)
+            coro.close()
+
+        fake_ecs = AsyncMock()
+        fake_ecs.resolve_running_container = AsyncMock(
+            return_value=({"service_name": "svc", "status": "running", "substatus": None}, "10.0.1.5")
+        )
+        active_repo = _paperclip_repo_stub("active")
+        with (
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
+            patch(
+                "core.services.connection_service.is_gateway_connected",
+                new=AsyncMock(return_value=True),
+            ),
+            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=active_repo),
+            patch(
+                "core.services.readiness_state.billing_repo.get_by_owner_id",
+                new=AsyncMock(
+                    return_value={
+                        "owner_id": "user_x",
+                        "subscription_status": "active",
+                        "stripe_customer_id": "cus_1",
+                        "stripe_subscription_id": "sub_1",
+                        "metronome_customer_id": "mtr_1",
+                        "metronome_contract_id": "ctr_1",
+                    }
+                ),
+            ),
+            patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
+            patch("routers.container.asyncio.create_task", side_effect=capture_task),
+        ):
+            result = await container_status(_personal_auth())
+
+        assert result["teams_state"] == "active"
+        assert captured == [], f"an owner who already has a Metronome ledger must not re-dispatch, got {captured}"
+
+    @pytest.mark.asyncio
     async def test_ready_poll_reads_paperclip_companies_exactly_once(self):
         """P2 fix: compute_status and maybe_dispatch_bootstrap must share ONE
         paperclip-companies read on the hot ready-poll path, not two --

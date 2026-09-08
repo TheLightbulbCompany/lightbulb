@@ -262,16 +262,27 @@ async def ensure_user_ready(auth: AuthContext) -> None:
     # gated-for-any-other-reason owner (no subscription, pending invitation)
     # costs one DDB read and no Metronome traffic. Org members never run it:
     # the org's customer belongs to the org owner_id and an admin poll creates
-    # it. Best-effort — a Metronome outage must never block provisioning; the
-    # next poll retries, and the short-circuit on the persisted id makes the
-    # steady state a single read.
+    # it. Best-effort — a Metronome outage must never block provisioning.
+    #
+    # "The next poll retries" is NOT a blanket guarantee — this function is
+    # only re-entered from a running container for org context, a failed
+    # Teams seed, or (since the ledger-missing dispatch in
+    # routers/container.py) a ledger-eligible owner with no
+    # metronome_customer_id yet. That third case is what makes a failure
+    # HERE actually retry for a personal owner: without it, this except
+    # swallowed the error and nothing ever called this function again for a
+    # healthy running personal container (see readiness_state.compute_status's
+    # `metronome_ledger_missing` and the incident it was added to fix). The
+    # short-circuit on the persisted id makes a retried steady state a single
+    # read either way.
     if not auth.is_org_context or auth.is_org_admin:
         try:
             await ensure_metronome_customer(owner_id=owner_id)
         except Exception:
             put_metric("metronome.provision.error")
             logger.exception(
-                "Metronome customer provisioning failed for owner %s — will retry on next status poll",
+                "Metronome customer provisioning failed for owner %s — retried by the next "
+                "status poll via routers/container.py's metronome_ledger_missing re-dispatch",
                 owner_id,
             )
 

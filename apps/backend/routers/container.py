@@ -531,14 +531,23 @@ async def container_status(
     # Re-dispatch ensure_user_ready on the running-container poll for: (a) EVERY
     # org-context user — idempotent paperclip-membership-add (a co-admin/member
     # joining an already-provisioned org resolves to a container row here and would
-    # otherwise skip the add); and (b) a PERSONAL owner whose Teams seed is currently
+    # otherwise skip the add); (b) a PERSONAL owner whose Teams seed is currently
     # failed — T1 made a seed failure non-fatal to the container, so without this a
     # transient personal seed blip stays teams_status="failed" forever with no
-    # self-heal. Gating personal on teams_status=="failed" keeps the happy path free
-    # of a per-poll re-seed. Safe on a running box with no flag: ensure_user_ready
-    # reads the container row itself and reconciles the seed in-thread instead of
+    # self-heal; and (c) ANY owner (personal or org) who is ledger-eligible but has
+    # no Metronome customer yet — `ensure_metronome_customer` is best-effort at
+    # every call site and a transient failure (a Metronome outage, a mid-migration
+    # Secrets Manager blip) otherwise strands a healthy running personal owner with
+    # no ledger forever: this poll only re-entered `ensure_user_ready` for org/
+    # teams-failed, so nothing ever re-called it. `metronome_ledger_missing` is
+    # computed in readiness_state.compute_status off the SAME billing-account read
+    # that composer already does — zero extra DDB reads — and is False once the
+    # ledger exists, so the happy path adds no dispatch. Gating personal on
+    # teams_status=="failed"/ledger-missing keeps the happy path free of a per-poll
+    # re-seed. Safe on a running box with no flag: ensure_user_ready reads the
+    # container row itself and reconciles the seed in-thread instead of
     # dispatching a provision (see _provision_or_reconcile).
-    if auth.is_org_context or contract["teams_state"] == "failed":
+    if auth.is_org_context or contract["teams_state"] == "failed" or contract.get("metronome_ledger_missing"):
         _dispatch_watched(ensure_user_ready(auth))
 
     # Server-owned bootstrap dispatch (INV-5, spec PR-6). Gate on the container

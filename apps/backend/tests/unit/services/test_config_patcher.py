@@ -2416,3 +2416,25 @@ async def test_patch_still_binds_an_account_named_after_a_real_agent(efs_dir):
     assert result["bindings"] == [
         {"type": "route", "agentId": "ray", "match": {"channel": "telegram", "accountId": "ray"}}
     ]
+
+
+@pytest.mark.asyncio
+async def test_patch_skips_a_mapped_binding_whose_agent_was_deleted(efs_dir):
+    """apply_install maps the account to the agent recorded when the OAuth flow
+    STARTED. If that agent is deleted before the callback lands, the mapping
+    names a dead agent — and writing it would freeze the whole config."""
+    path = os.path.join(efs_dir, "user_1", "openclaw.json")
+    with open(path) as f:
+        base = json.load(f)
+    base["agents"]["entries"] = {"agent_alive": {}}
+    with open(path, "w") as f:
+        json.dump(base, f)
+
+    await patch_openclaw_config(
+        "user_1",
+        {"channels": {"slack": {"accounts": {"T1": {"mode": "http"}}}}},
+        agent_for_account={"T1": "agent_deleted"},
+    )
+    with open(path) as f:
+        result = json.load(f)
+    assert result.get("bindings", []) == []

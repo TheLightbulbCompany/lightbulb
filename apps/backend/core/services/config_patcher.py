@@ -214,6 +214,15 @@ def _ensure_channel_bindings_for_patch(cfg: dict, patch: dict, agent_for_account
             if not isinstance(account_cfg, dict):
                 continue
             mapped_agent_id = (agent_for_account or {}).get(account_id)
+            if mapped_agent_id is not None and known_agent_ids and mapped_agent_id not in known_agent_ids:
+                # Third door onto the same invariant. `apply_install` maps the
+                # account to the agent recorded when the OAuth flow STARTED; if
+                # that agent is deleted before the callback lands, the mapping
+                # names an agent that no longer exists. Leaving the account
+                # unbound misroutes it to the default agent — recoverable, and
+                # far better than a binding that makes the whole config
+                # unloadable and freezes every later change.
+                continue
             if mapped_agent_id is not None:
                 # Rebinding this account to a different agent must not leave
                 # the OLD account-wide binding behind, or the dispatcher can

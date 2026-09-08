@@ -62,7 +62,7 @@ import {
 // stylesheet still supplies every `--dv-*` default and workspace.css's
 // `.dv-shell.dockview-theme-lightbulb` block only repoints the ~18 that
 // carry colour, tone or rhythm.
-const ISOL8_THEME: DockviewTheme = {
+const LIGHTBULB_THEME: DockviewTheme = {
   ...themeLight,
   name: "lightbulb",
   className: `${themeLight.className} dockview-theme-lightbulb`,
@@ -404,7 +404,7 @@ export function WorkspaceShell(): React.ReactElement {
       <DockUnmountSentinel onUnmount={teardownDock} />
       <DockviewReact
         components={PANEL_COMPONENTS}
-        theme={ISOL8_THEME}
+        theme={LIGHTBULB_THEME}
         onReady={onReady}
         disableFloatingGroups
         // Tabs only. This kills BOTH drag backends at the source

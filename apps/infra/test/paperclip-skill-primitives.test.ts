@@ -409,3 +409,41 @@ describe("liveness primitives are documented", () => {
     expect(skillMd).toContain("**Disabled on this instance** (`enableCases` is false in both envs)");
   });
 });
+
+describe("fix round 4 — agent unblock ownership and secret-access accuracy", () => {
+  // Coordinator-verified against the fork: issues.ts throws 403 "Agents may
+  // only name themselves as an unblock owner" whenever an agent actor sends
+  // owner: "board" or an owner containing userId. An owner: "board" example
+  // in agent-facing docs would be illegal for every reader.
+  it("shows no agent-facing owner: \"board\" unblockDescriptor example", () => {
+    expect(heartbeatRefMd).not.toContain('owner: "board"');
+  });
+
+  it("teaches self-ownership as the only legal unblockDescriptor shape", () => {
+    expect(heartbeatRefMd).toContain("Self-ownership is the only shape an agent can legally send");
+    expect(heartbeatRefMd).toContain("Agents may only name themselves as an unblock owner");
+    expect(heartbeatRefMd).toContain("owner: {agentId: $agentId}");
+    expect(skillMd).toContain("naming another agent, a user, or the board 403s for agents");
+  });
+
+  // secrets.ts's agentSecretContext guard (the one granted-secret reads use)
+  // checks only actor.type/agentId/companyId/runId — never actor.source — so
+  // a long-lived agent key works. Only proposalAgentContext (secret-proposals)
+  // requires source === "agent_jwt", which openclaw_gateway agents never hold.
+  it("does not claim long-lived agent keys are denied for granted-secret reads", () => {
+    expect(skillMd).not.toContain("long-lived agent keys");
+    expect(skillMd).not.toContain("are denied");
+    expect(skillMd).toContain("do **not** check token type");
+  });
+
+  it("tells agents secret-proposals 403s here instead of documenting it as callable", () => {
+    expect(skillMd).toContain("403s on this instance for every agent");
+    expect(skillMd).not.toContain(
+      "propose it as a Paperclip secret immediately",
+    );
+  });
+
+  it("drops the false \"legacy\" label from the ?q= issue-search routing row", () => {
+    expect(skillMd.toLowerCase()).not.toContain("legacy");
+  });
+});

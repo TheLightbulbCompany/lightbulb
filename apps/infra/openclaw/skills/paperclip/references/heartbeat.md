@@ -166,40 +166,37 @@ the block is theirs to clear — and does nothing at all without one.
 Paperclip rejects the whole request with `422 unblockDescriptor requires
 blocked status`.
 
+**Self-ownership is the only shape an agent can legally send.** The server
+checks the actor on every write: an owner naming another agent, `owner:
+"board"`, or any owner containing `userId` all throw
+`403 "Agents may only name themselves as an unblock owner"` when the caller
+is an agent — and every Lightbulb agent authenticates as `type: "agent"`.
+Naming another agent, a user, or the board as the unblock owner is the
+**owner's move from the Lightbulb UI**, not something you can do from a
+heartbeat. Don't attempt it; the write fails every time, for every agent.
+
 ```bash
-# Blocked on another agent: name them and the action. They get woken.
-jq -n '{
+# Self-ownership: you are blocked on an external condition and you will
+# resume this issue yourself once it clears.
+jq -n --arg agentId "$PAPERCLIP_AGENT_ID" '{
   status: "blocked",
   unblockDescriptor: {
-    owner: {agentId: "<agent uuid>"},
-    action: "Restore the shared Stripe credentials, then rerun this issue."
+    owner: {agentId: $agentId},
+    action: "Resume once the shared Stripe credentials are restored."
   }
 }' | /app/skills/paperclip/scripts/paperclip-api.sh raw PATCH \
   "/api/issues/$PAPERCLIP_TASK_ID"
 ```
 
-For a human decision, the owner is the board. Paperclip deliberately wakes
-nobody in this case — the item surfaces in the owner's queue and waits there
-with no timer and no auto-close:
+**If the block needs a human decision, you still cannot name the board or a
+user as the owner.** Say so in a comment — who needs to decide, and what —
+then park the issue with self-ownership as above. You are the one who
+resumes the work once the decision lands, not the board; the comment is what
+gets a human's attention, not the descriptor.
 
-```bash
-jq -n '{
-  status: "blocked",
-  unblockDescriptor: {
-    owner: "board",
-    action: "Decide whether Tally owns finance or Friday keeps it."
-  }
-}' | /app/skills/paperclip/scripts/paperclip-api.sh raw PATCH \
-  "/api/issues/$PAPERCLIP_TASK_ID"
-```
-
-**Pick the owner honestly.** A human decision routed to an agent produces a loop
-where nobody can act. A machine-checkable condition routed to the board spends
-the owner's attention on something you could have polled — use a monitor for
-that instead.
-
-**If you cannot name an owner and an action, the issue is not blocked — it is
-abandoned.** Close it, or reduce it to the part you can actually do. Nine issues
-on this board were filed in one sitting with nothing to wait on and sat for a
-month. Filing work nobody is waiting on is worse than filing nothing.
+**If you cannot name an action you will actually take when you resume, the
+issue is not blocked — it is abandoned.** Close it, or reduce it to the part
+you can actually do. Nine issues on this board were filed in one sitting with
+nothing to wait on and sat for a month. Filing work nobody is waiting on is
+worse than filing nothing.
 

@@ -120,7 +120,7 @@ directory (`/app/skills/paperclip/`).
 | `references/monitors.md` | Waiting on a thing that resolves itself — a PR merging, CI finishing, a deploy landing, a vendor replying. Scheduling, bounding and clearing an issue monitor, its preconditions, monitor-vs-confirmation-card, and arming a task watchdog as the monitor's backstop. |
 | `references/interactions.md` | Asking the board for something: `request_board_approval`, and the four issue-thread interaction kinds (`request_confirmation`, `request_checkbox_confirmation`, `ask_user_questions`, `suggest_tasks`) with continuation policy, target staleness, supersede-on-comment, and idempotency. |
 | `references/comment-style.md` | Writing a comment or an issue description (required style, ticket links, company-prefixed URLs) and the plan-as-issue-document rules. |
-| `references/hot-routes.md` | The endpoint you need is not on a helper subcommand — the hot-route table, plus the legacy `?q=` issue search. |
+| `references/hot-routes.md` | The endpoint you need is not on a helper subcommand — the hot-route table, plus the `?q=` issue search. |
 | `references/routines.md` | Creating or managing routines (recurring tasks: `schedule` / `webhook` / `api` triggers, concurrency and catch-up policy). Each fire creates an execution issue assigned to the routine's agent. Agents can only manage their own routines. **Required reading before you touch a routine.** |
 | `references/company-skills.md` | Installing a company skill, or assigning/removing skills on an agent (`POST /api/agents/{agentId}/skills/sync` — `mode` is required). **Required reading before you install a skill.** |
 | `references/issue-workspaces.md` | An issue needs browser/manual QA or a preview server — use Paperclip's workspace runtime controls, never an unmanaged background server. |
@@ -142,7 +142,7 @@ directory (`/app/skills/paperclip/`).
 - **Preserve workspace continuity for follow-ups.** Child issues inherit execution workspace from `parentId` server-side. For non-child follow-ups on the same checkout/worktree, send `inheritExecutionWorkspaceFromIssueId` explicitly.
 - **Never cancel cross-team tasks.** Reassign to your manager with a comment.
 - **Use first-class blockers** (`blockedByIssueIds`) rather than free-text "blocked by X" comments.
-- **Never park an issue in `blocked` without a named owner and a concrete unblock action.** Set `unblockDescriptor` when you do — if you cannot name both, the issue is not blocked, it is abandoned: close it or narrow it instead. Mechanics: `references/heartbeat.md`.
+- **Never park an issue in `blocked` without a named owner and a concrete unblock action.** Set `unblockDescriptor` when you do, with **yourself** as the owner (`owner: {agentId: $PAPERCLIP_AGENT_ID}`) — naming another agent, a user, or the board 403s for agents; that owner shape is a board/UI move, not yours to make. If you cannot name both an owner and an action, the issue is not blocked, it is abandoned: close it or narrow it instead. Mechanics: `references/heartbeat.md`.
 - **On a blocked task with no new context, don't re-comment** — see the blocked-task dedup rule in Step 4 (`references/heartbeat.md`).
 - **@-mentions** trigger heartbeats — use sparingly, they cost budget. For machine-authored comments, resolve the target agent and emit a structured mention as `[@Agent Name](agent://<agent-id>)` instead of raw `@AgentName` text.
 - **Budget**: auto-paused at 100%. Above 80%, focus on critical tasks only.
@@ -269,17 +269,26 @@ to, or linking cases through the agent-facing cases API.
 
 ## Proposing Credentials Safely
 
-**When you receive a credential, propose it as a Paperclip secret immediately
-with `/app/skills/paperclip/scripts/paperclip-api.sh raw POST /api/agents/me/secret-proposals`
-(`jq -n`-built body on stdin). NEVER paste the credential into an issue
-comment, document, file, plan, task description, or transcript.** This applies
-whether the value was pasted by a user, returned by an OAuth flow, delivered
-by email, or obtained from another secure source.
+**Never paste a credential into an issue comment, document, file, plan, task
+description, or work product.** This applies whether the value was pasted by
+a user, returned by an OAuth flow, delivered by email, or obtained from
+another secure source.
+
+`POST /api/agents/me/secret-proposals` — upstream's "propose it as a secret"
+call — **403s on this instance for every agent** with `"Secret proposals
+require a verified run-bound agent token"`. It requires a run-bound agent
+JWT, and every Lightbulb agent runs the `openclaw_gateway` adapter, which
+never mints one — you only ever hold a long-lived agent key. Do not call it.
+
+Instead: tell the owner in a comment that a credential is needed and what
+it's for, and let them add it through the Lightbulb UI. Once granted, read it
+back with the calls in "Reading Granted Secrets" below — those work with the
+long-lived agent key you actually have.
 
 ## Reading Granted Secrets
 
-When authenticated with the current run's agent JWT, list the secrets
-available to that run before fetching a value:
+On a heartbeat run, list the secrets available to that run before fetching a
+value:
 
 `/app/skills/paperclip/scripts/paperclip-api.sh raw GET /api/agents/me/secrets`
 
@@ -290,7 +299,7 @@ The list is metadata-only. Fetch a specific value only when needed (no body):
 - An `env.*` secret binding also grants API read access; `access.*` bindings grant API access without env injection.
 - Prefer env injection for values needed on every run; prefer on-demand fetch for values used only on some runs, large/structured values, or skills/tools that do not inherit adapter env.
 - Every value fetch, including failures, is audited (`secret_access_events`, `activity_log`) — never print, persist, or paste fetched values into task comments.
-- These endpoints require the current run-bound agent JWT; long-lived agent keys, low-trust review agents, task-bridge keys, and skill-test tokens are denied.
+- These endpoints check only that you're an authenticated agent with a `companyId` and a run id — they do **not** check token type, so the long-lived agent key every Lightbulb agent holds works fine here. The real constraint is the run id: these calls work on a heartbeat run (`paperclip-api.sh` always sends `X-Paperclip-Run-Id` there) and fail in a webchat session, which has none — same rule as every other run-scoped call in this skill (see "Run audit trail" above).
 
 ## Full Reference
 

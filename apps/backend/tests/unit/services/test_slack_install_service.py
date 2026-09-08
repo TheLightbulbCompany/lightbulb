@@ -19,6 +19,19 @@ def test_account_block_is_http_with_secret_refs_and_no_plaintext():
     assert block["slashCommand"] == {"enabled": True, "name": "lightbulb"}
 
 
+def test_account_block_opens_channels_so_mentions_are_answered():
+    """The plugin's schema materializes groupPolicy="allowlist" when unset, and
+    we never list channels — so every channel message was dropped with an
+    ephemeral "not in its allowlist" notice that only the mentioner saw.
+    "open" + the default requireMention=true is a normal Slack bot: it answers
+    when @-mentioned in a channel a human invited it to."""
+    block = svc.account_block("T0123ABC")
+    assert block["groupPolicy"] == "open"
+    # Both halves pinned: "open" without requireMention answers EVERY channel
+    # message, and requireMention's true is only a runtime `?? true` upstream.
+    assert block["requireMention"] is True
+
+
 def test_route_binding_targets_agent_by_account():
     assert svc.route_binding("T1", "agent_f") == {
         "type": "route",

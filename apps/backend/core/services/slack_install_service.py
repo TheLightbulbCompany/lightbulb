@@ -85,6 +85,20 @@ def account_block(team_id: str) -> dict:
         # Decision 3: Slack peers, not members — anyone in the workspace may DM.
         "dmPolicy": "open",
         "allowFrom": ["*"],
+        # Channels. `ChannelAccountPolicyDefaults` materializes
+        # groupPolicy="allowlist" onto every ACCOUNT that leaves it unset
+        # (upstream src/config/zod-schema.channel-messaging-common.ts), and we
+        # list no channels — so every channel message was dropped with an
+        # ephemeral "not in its allowlist" notice only the mentioner ever saw.
+        # That is the same materialize-on-account rule `dmPolicy` above already
+        # has to override.
+        "groupPolicy": "open",
+        # Pinned, not inherited. "open" alone would make the bot answer EVERY
+        # message in every channel it is in; what keeps it to @-mentions is
+        # requireMention, whose true is a runtime `?? true` in the plugin
+        # (monitor/context.ts), not a schema default. Leaving the safety half of
+        # this pair implicit is the exact shape of the bug above.
+        "requireMention": True,
         # Upstream default is disabled; the manifest declares /lightbulb.
         "slashCommand": {"enabled": True, "name": "lightbulb"},
     }

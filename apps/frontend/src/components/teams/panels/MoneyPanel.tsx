@@ -1,9 +1,11 @@
 "use client";
 
-// Money — one ledger page (spec §3). No hero: Home has it. The masthead says
-// what landed this month; the biggest day sits under it and links to that
-// day's payments; then Payments, Customers, What you sell, Agent spend as
-// sections. The four old tabs' keys open this page scrolled to their section.
+// Money — the revenue page. The masthead says what landed this month and the
+// biggest day sits under it; then the revenue chart, which is the subject of
+// the page (a trend the Stripe Dashboard does not show the owner), and under
+// it Payments — a five-row preview, not a ledger — Customers, What you sell
+// and Agent spend. The four old tabs' keys open this page scrolled to their
+// section.
 //
 // The Stripe sections are gated ONCE by the account state (unbound / partial /
 // under review / forbidden / unavailable — MoneyStates), read off the Payments
@@ -15,6 +17,7 @@ import { useCompanyMoney, type PaymentRow } from "@/hooks/useCompanyMoney";
 import { useCompanyRollup, dayOffset } from "@/hooks/useCompanyRollup";
 import { handleShellLinkClick, teamsPanelUrl } from "@/lib/shellNav";
 import { MoneyStates } from "./money/MoneyStates";
+import { RevenueSection } from "./money/RevenueSection";
 import { PaymentsSection } from "./money/PaymentsSection";
 import { CustomersSection } from "./money/CustomersSection";
 import { ProductsSection } from "./money/ProductsSection";
@@ -66,6 +69,7 @@ export function MoneyPanel({ section, day, onDayCleared }: { section?: MoneySect
 
       {showStripe ? (
         <>
+          <RevenueSection day={day ?? null} onDayCleared={() => onDayCleared?.()} />
           <PaymentsSection day={day ?? null} onDayCleared={() => onDayCleared?.()} />
           <CustomersSection newIn30Days={newIn30Days} />
           <ProductsSection stripeBound={!!rollup?.stripe_bound} />

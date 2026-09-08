@@ -18,10 +18,11 @@ export function MoneySection({ id, label, right, children }: { id: string; label
   );
 }
 
-/** The one calm line for an empty list. */
-export function MoneyEmptyLine({ children }: { children: ReactNode }) {
+/** The one calm line for an empty list — or, with `role="alert"`, for a read
+ *  that failed. One vocabulary either way: a single italic serif sentence. */
+export function MoneyEmptyLine({ children, role = "status" }: { children: ReactNode; role?: "status" | "alert" }) {
   return (
-    <p role="status" className="px-2 py-3 font-editorial-serif text-base italic text-[var(--midnight-muted)]">
+    <p role={role} className="px-2 py-3 font-editorial-serif text-base italic text-[var(--midnight-muted)]">
       {children}
     </p>
   );

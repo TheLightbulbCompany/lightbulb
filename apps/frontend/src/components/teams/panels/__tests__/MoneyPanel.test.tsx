@@ -12,6 +12,7 @@ vi.mock("@/hooks/useCompanyRollup", async (importOriginal) => {
   return { ...mod, useCompanyRollup: () => ({ rollup: rollup.value, isLoading: rollup.loading, windowStart: "2026-06-09", span: 90, error: undefined, refresh: vi.fn(), isUnavailable: () => false }) };
 });
 vi.mock("@/components/teams/panels/money/AgentSpendSection", () => ({ AgentSpendSection: () => <section id="money-spend" aria-label="Agent spend" /> }));
+vi.mock("@/components/teams/panels/money/RevenueSection", () => ({ RevenueSection: ({ day }: { day: string | null }) => <section id="money-revenue" aria-label="Revenue" data-day={day ?? ""} /> }));
 vi.mock("@/components/teams/panels/money/PaymentsSection", () => ({ PaymentsSection: ({ day }: { day: string | null }) => <section id="money-payments" aria-label="Payments" data-day={day ?? ""} /> }));
 vi.mock("@/components/teams/panels/money/CustomersSection", () => ({ CustomersSection: ({ newIn30Days }: { newIn30Days: number | null }) => <section id="money-customers" aria-label="Customers" data-new={String(newIn30Days)} /> }));
 vi.mock("@/components/teams/panels/money/ProductsSection", () => ({ ProductsSection: () => <section id="money-products" aria-label="What you sell" /> }));
@@ -36,7 +37,8 @@ describe("MoneyPanel — one ledger page", () => {
     expect(screen.getByTestId("panel-masthead-meta")).toHaveTextContent("$674 landed in September");
     expect(screen.getByText(/Biggest day: Sep 5, 2026 · \$640/)).toBeInTheDocument();
     const names = screen.getAllByRole("region").map((r) => r.getAttribute("aria-label"));
-    expect(names).toEqual(["Payments", "Customers", "What you sell", "Agent spend"]);
+    // Revenue leads: the chart is the subject of the page, the ledger is not.
+    expect(names).toEqual(["Revenue", "Payments", "Customers", "What you sell", "Agent spend"]);
     expect(screen.getByRole("region", { name: "Customers" })).toHaveAttribute("data-new", "7");
   });
 
@@ -48,9 +50,10 @@ describe("MoneyPanel — one ledger page", () => {
     expect(screen.getByRole("region", { name: "Customers" })).toHaveAttribute("data-new", "null");
   });
 
-  it("hands the day scope to Payments and links the biggest day to it", () => {
+  it("hands the day scope to the chart and to Payments, and links the biggest day to it", () => {
     render(<MoneyPanel day="2026-09-05" />);
     expect(screen.getByRole("region", { name: "Payments" })).toHaveAttribute("data-day", "2026-09-05");
+    expect(screen.getByRole("region", { name: "Revenue" })).toHaveAttribute("data-day", "2026-09-05");
   });
 
   it("gates the Stripe sections behind the account state, and keeps Agent spend", () => {
@@ -59,6 +62,9 @@ describe("MoneyPanel — one ledger page", () => {
     render(<MoneyPanel />);
     expect(screen.getByText("Payments are not set up for this business yet.")).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Payments" })).toBeNull();
+    // The chart is Stripe material too — it must not render a false empty
+    // state behind the page-level notice.
+    expect(screen.queryByRole("region", { name: "Revenue" })).toBeNull();
     expect(screen.getByRole("region", { name: "Agent spend" })).toBeInTheDocument();
     expect(screen.queryByTestId("panel-masthead-meta")).toBeNull();
   });

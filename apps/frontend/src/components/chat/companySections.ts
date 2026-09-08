@@ -49,6 +49,15 @@ export type CompanySectionItem = {
    * "Nothing provisioned yet" is not a tab.
    */
   provisioning?: true;
+  /**
+   * A shell: the tab renders, but the capability behind it cannot do anything
+   * for an owner yet, so offering it is a promise we do not keep. Hidden from
+   * the sidebar AND the palette until its rail is live; the panel key stays
+   * registered, so a saved link, a bookmark or an agent's URL still resolves.
+   * Each one carries a comment naming exactly what unblocks it — when that
+   * lands, delete the flag, not the tab.
+   */
+  comingSoon?: true;
 };
 
 // Spec §5.1 IA. An item appears here ONLY when its tab is live;
@@ -84,7 +93,9 @@ export const COMPANY_SECTIONS: { label: string | null; items: CompanySectionItem
       { panel: "teams-projects", label: "Projects", Icon: FolderKanban },
       // Support sits with Work (spec's "Operations"), not Company: it is a
       // thing the company DOES, not a thing the company IS.
-      { panel: "teams-support", label: "Support", Icon: LifeBuoy },
+      // Unblocked by: an owner-indexed thread store, so the tab can list real
+      // customer conversations instead of an empty frame.
+      { panel: "teams-support", label: "Support", Icon: LifeBuoy, comingSoon: true },
     ],
   },
   {
@@ -94,9 +105,14 @@ export const COMPANY_SECTIONS: { label: string | null; items: CompanySectionItem
     // with no exit.
     label: "Growth",
     items: [
-      { panel: "teams-publish", label: "Publish", Icon: Send },
-      { panel: "teams-seo", label: "SEO & AEO", Icon: SearchCheck },
-      { panel: "teams-ads", label: "Ads", Icon: Megaphone },
+      // Unblocked by: a post record to schedule against — which waits on Meta
+      // App Review and a BYO X app. Scheduling itself already exists twice.
+      { panel: "teams-publish", label: "Publish", Icon: Send, comingSoon: true },
+      // Unblocked by: an Automations preset plus a Library report; there is no
+      // crawl behind this tab today.
+      { panel: "teams-seo", label: "SEO & AEO", Icon: SearchCheck, comingSoon: true },
+      // Unblocked by: an ad account connection. Nothing to read without one.
+      { panel: "teams-ads", label: "Ads", Icon: Megaphone, comingSoon: true },
       // The first Growth tab with a real read behind it — the owner's pasted
       // Apollo key, held backend-side.
       { panel: "teams-leads", label: "Leads", Icon: Users2 },
@@ -120,28 +136,42 @@ export const COMPANY_SECTIONS: { label: string | null; items: CompanySectionItem
       // and the kill switch. Sits in Company, not Settings, because it is the
       // page an owner opens the first time an agent does something surprising.
       { panel: "teams-accounts", label: "Accounts", Icon: Plug },
-      { panel: "teams-identity", label: "Identity", Icon: Landmark },
+      // Unblocked by: an incorporation/registered-agent partner. Today the tab
+      // can only describe paperwork the platform does not hold.
+      { panel: "teams-identity", label: "Identity", Icon: Landmark, comingSoon: true },
       { panel: "teams-domain-site", label: "Domain & Site", Icon: Globe, provisioning: true },
-      { panel: "teams-compliance", label: "Compliance", Icon: ShieldCheck },
-      { panel: "teams-contracts", label: "Contracts", Icon: FileSignature },
+      // Unblocked by: a compliance partner rail.
+      { panel: "teams-compliance", label: "Compliance", Icon: ShieldCheck, comingSoon: true },
+      // Unblocked by: nothing external — it becomes a Library filter once the
+      // Library grows document types.
+      { panel: "teams-contracts", label: "Contracts", Icon: FileSignature, comingSoon: true },
       { panel: "teams-activity", label: "Activity", Icon: History },
     ],
   },
 ];
 
 /**
- * The sections a given deployment actually offers. The one filter today is the
- * provisioning rail: while it is off, the two tabs that only render its output
- * are dropped from BOTH the sidebar and the command palette (each calls this,
- * so they cannot disagree). Direct URLs still resolve — the panel registry is
+ * The sections a given deployment actually offers. Two filters, both about
+ * capability rather than taste:
+ *
+ * - the provisioning rail: while it is off, the tabs that only render its
+ *   output are dropped;
+ * - `comingSoon`: a shell whose capability is not live. A rail of tabs that
+ *   each say "nothing here yet" teaches an owner the product is empty, so the
+ *   shells wait outside until they can answer something.
+ *
+ * Both drop from the sidebar AND the command palette (each calls this, so they
+ * cannot disagree). Direct URLs still resolve — the panel registry is
  * untouched — they are simply not offered.
  */
 export function visibleCompanySections(
   opts: { provisioningEnabled: boolean },
 ): { label: string | null; items: CompanySectionItem[] }[] {
-  if (opts.provisioningEnabled) return COMPANY_SECTIONS;
   return COMPANY_SECTIONS.map((section) => ({
     ...section,
-    items: section.items.filter((item) => !item.provisioning),
+    items: section.items.filter(
+      (item) =>
+        !item.comingSoon && (opts.provisioningEnabled || !item.provisioning),
+    ),
   })).filter((section) => section.items.length > 0);
 }

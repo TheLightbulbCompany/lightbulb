@@ -188,6 +188,10 @@ export function useCompanyMoney<Row>(kind: MoneyKind, window?: MoneyWindow) {
     // otherwise strand them with no way back to page 1.
     view: rows.length && view.kind !== "forbidden" ? ({ kind: "rows" } as MoneyView) : view,
     hasMore: !!data?.has_more,
+    /** Straight off the envelope — the only thing that can say an account is
+     *  actually bound. A section may only offer a Stripe Dashboard link when
+     *  there is a Stripe account behind it. */
+    stripeBound: !!data?.stripe_bound,
     next,
   };
 }

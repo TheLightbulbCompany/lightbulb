@@ -85,13 +85,3 @@ export function monthToDate(days: RollupDay[], today: string): { month: string; 
   return { month, microcents: rows.reduce((s, d) => s + (d.revenue_microcents ?? 0), 0) };
 }
 
-/** The day with the most revenue in the month; refund-heavy (negative) and
- *  zero days never win. Null when nothing positive landed. */
-export function biggestDay(days: RollupDay[], month: string): RollupDay | null {
-  let best: RollupDay | null = null;
-  for (const d of days) {
-    if (!d.day.startsWith(month) || (d.revenue_microcents ?? 0) <= 0) continue;
-    if (!best || d.revenue_microcents > best.revenue_microcents) best = d;
-  }
-  return best;
-}

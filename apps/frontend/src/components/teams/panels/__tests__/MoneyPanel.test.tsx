@@ -12,12 +12,13 @@ vi.mock("@/hooks/useCompanyRollup", async (importOriginal) => {
   return { ...mod, useCompanyRollup: () => ({ rollup: rollup.value, isLoading: rollup.loading, windowStart: "2026-06-09", span: 90, error: undefined, refresh: vi.fn(), isUnavailable: () => false }) };
 });
 vi.mock("@/components/teams/panels/money/AgentSpendSection", () => ({ AgentSpendSection: () => <section id="money-spend" aria-label="Agent spend" /> }));
+vi.mock("@/components/teams/panels/money/RevenueSection", () => ({ RevenueSection: ({ day }: { day: string | null }) => <section id="money-revenue" aria-label="Revenue" data-day={day ?? ""} /> }));
 vi.mock("@/components/teams/panels/money/PaymentsSection", () => ({ PaymentsSection: ({ day }: { day: string | null }) => <section id="money-payments" aria-label="Payments" data-day={day ?? ""} /> }));
 vi.mock("@/components/teams/panels/money/CustomersSection", () => ({ CustomersSection: ({ newIn30Days }: { newIn30Days: number | null }) => <section id="money-customers" aria-label="Customers" data-new={String(newIn30Days)} /> }));
 vi.mock("@/components/teams/panels/money/ProductsSection", () => ({ ProductsSection: () => <section id="money-products" aria-label="What you sell" /> }));
 
 import { MoneyPanel } from "../MoneyPanel";
-import { biggestDay, formatMicrocents, monthToDate } from "../money/money";
+import { formatMicrocents, monthToDate } from "../money/money";
 
 const bound = { start: "2026-06-09", end: "2026-09-06", stripe_bound: true, first_day: "2026-08-30", unavailable: [], agent_spend_month_to_date_microcents: 0,
   days: [
@@ -30,13 +31,17 @@ describe("MoneyPanel — one ledger page", () => {
   beforeEach(() => { rollup.value = bound; rollup.loading = false; money.view = { kind: "rows" }; vi.useFakeTimers({ now: new Date("2026-09-06T12:00:00Z"), toFake: ["Date"] }); });
   afterEach(() => vi.useRealTimers());
 
-  it("carries the month's landed revenue in the masthead, the biggest day under it, and the four sections in order", () => {
+  it("carries the month's landed revenue in the masthead and the five sections in order, revenue first", () => {
     render(<MoneyPanel />);
     expect(screen.getByRole("heading", { level: 1, name: "Money" })).toBeInTheDocument();
     expect(screen.getByTestId("panel-masthead-meta")).toHaveTextContent("$674 landed in September");
-    expect(screen.getByText(/Biggest day: Sep 5, 2026 · \$640/)).toBeInTheDocument();
+    // The old "Biggest day: … Open that day" line is gone on purpose: the
+    // tallest bar in the chart below IS the biggest day, and it is already a
+    // link, so the sentence said the same fact twice.
+    expect(screen.queryByText(/Biggest day/)).toBeNull();
     const names = screen.getAllByRole("region").map((r) => r.getAttribute("aria-label"));
-    expect(names).toEqual(["Payments", "Customers", "What you sell", "Agent spend"]);
+    // Revenue leads: the chart is the subject of the page, the ledger is not.
+    expect(names).toEqual(["Revenue", "Payments", "Customers", "What you sell", "Agent spend"]);
     expect(screen.getByRole("region", { name: "Customers" })).toHaveAttribute("data-new", "7");
   });
 
@@ -48,9 +53,10 @@ describe("MoneyPanel — one ledger page", () => {
     expect(screen.getByRole("region", { name: "Customers" })).toHaveAttribute("data-new", "null");
   });
 
-  it("hands the day scope to Payments and links the biggest day to it", () => {
+  it("hands the day scope to the chart and to Payments, and links the biggest day to it", () => {
     render(<MoneyPanel day="2026-09-05" />);
     expect(screen.getByRole("region", { name: "Payments" })).toHaveAttribute("data-day", "2026-09-05");
+    expect(screen.getByRole("region", { name: "Revenue" })).toHaveAttribute("data-day", "2026-09-05");
   });
 
   it("gates the Stripe sections behind the account state, and keeps Agent spend", () => {
@@ -59,6 +65,9 @@ describe("MoneyPanel — one ledger page", () => {
     render(<MoneyPanel />);
     expect(screen.getByText("Payments are not set up for this business yet.")).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Payments" })).toBeNull();
+    // The chart is Stripe material too — it must not render a false empty
+    // state behind the page-level notice.
+    expect(screen.queryByRole("region", { name: "Revenue" })).toBeNull();
     expect(screen.getByRole("region", { name: "Agent spend" })).toBeInTheDocument();
     expect(screen.queryByTestId("panel-masthead-meta")).toBeNull();
   });
@@ -92,12 +101,11 @@ describe("MoneyPanel — one ledger page", () => {
     expect(screen.queryByText(/Biggest day/)).toBeNull();
   });
 
-  it("helpers: month-to-date is UTC-month scoped and signed; biggest day ignores refund days", () => {
+  it("helpers: month-to-date is UTC-month scoped and signed", () => {
     expect(formatMicrocents(674_000_000)).toBe("$674"); // whole dollars render without cents (formatUsdCents)
     expect(formatMicrocents(674_500_000)).toBe("$674.50");
     expect(formatMicrocents(-5_000_000)).toBe("−$5");
     expect(monthToDate(bound.days, "2026-09-06")).toEqual({ month: "2026-09", microcents: 674_000_000 });
     expect(monthToDate([bound.days[0]], "2026-09-06")).toBeNull();
-    expect(biggestDay([...bound.days, { day: "2026-09-04", revenue_microcents: -90_000_000, signups: 0, visitors: 0 }], "2026-09")!.day).toBe("2026-09-05");
   });
 });

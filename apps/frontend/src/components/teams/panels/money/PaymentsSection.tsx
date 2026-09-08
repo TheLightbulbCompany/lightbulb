@@ -67,11 +67,19 @@ const COLUMNS: PanelDataColumn<PaymentRow>[] = [
   },
 ];
 
+/** Unscoped, this section is a PREVIEW, not a pager: the owner asked for a
+ *  chart, and "a list of all of the payments doesn't help". Five rows answer
+ *  "did anything land"; reconciling a ledger line by line is what the Stripe
+ *  Dashboard is for, and the link goes there. A day scope is the exception —
+ *  the owner asked for that day specifically, so it keeps the full list. */
+const PREVIEW_ROWS = 5;
+
 export function PaymentsSection({ day, onDayCleared }: { day: string | null; onDayCleared: () => void }) {
   const window = day ? { start: day, end: day } : undefined;
-  const { rows, view, hasMore, next } = useCompanyMoney<PaymentRow>("payments", window);
+  const { rows, view, hasMore, next, stripeBound } = useCompanyMoney<PaymentRow>("payments", window);
   const rowKey = (r: PaymentRow) => r.id;
   const label = day ? `Payments on ${formatIsoDay(day)}` : "Payments";
+  const visible = day ? rows : rows.slice(0, PREVIEW_ROWS);
   return (
     <MoneySection
       id="payments"
@@ -80,18 +88,30 @@ export function PaymentsSection({ day, onDayCleared }: { day: string | null; onD
         day ? (
           <button type="button" onClick={onDayCleared} className="underline-offset-4 hover:text-[var(--midnight)] hover:underline">Show all payments</button>
         ) : (
-          <span>newest first</span>
+          <>
+            <span>{visible.length ? `${visible.length} most recent` : "newest first"}</span>
+            {stripeBound && (
+              <a
+                href="https://dashboard.stripe.com/payments"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline-offset-4 hover:text-[var(--midnight)] hover:underline"
+              >
+                Full ledger in Stripe ↗
+              </a>
+            )}
+          </>
         )
       }
     >
       {view.kind === "loading" ? (
         <PanelDataTable rows={[]} columns={COLUMNS} rowKey={rowKey} loading />
-      ) : rows.length === 0 ? (
+      ) : visible.length === 0 ? (
         <MoneyEmptyLine>{day ? `No payments on ${formatIsoDay(day)}.` : "No payments yet — the first one shows up here as soon as it lands."}</MoneyEmptyLine>
       ) : (
         <>
-          <PanelDataTable rows={rows} columns={COLUMNS} rowKey={rowKey} />
-          {hasMore && (
+          <PanelDataTable rows={visible} columns={COLUMNS} rowKey={rowKey} />
+          {day && hasMore && (
             <div className="flex justify-center">
               <EditorialButton size="sm" variant="secondary" onClick={next}>Show more</EditorialButton>
             </div>

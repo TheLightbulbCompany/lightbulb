@@ -12,23 +12,44 @@ import { CustomersSection } from "../CustomersSection";
 import { ProductsSection } from "../ProductsSection";
 import { formatIsoDay } from "../money";
 
-const rowsView = (rows: unknown[], hasMore = false) => ({ rows, view: { kind: rows.length ? "rows" : "zero" }, hasMore, next: vi.fn() });
+const rowsView = (rows: unknown[], hasMore = false, stripeBound = true) => ({ rows, view: { kind: rows.length ? "rows" : "zero" }, hasMore, stripeBound, next: vi.fn() });
+
+const payment = (id: string, description: string) => ({ id, amount: 8900, amount_refunded: 0, currency: "usd", created: 1788600000, status: "succeeded", paid: true, refunded: false, disputed: false, description, receipt_url: `https://r/${id}`, customer: null });
 
 describe("Money sections", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("Payments: newest first, receipt links, Show more only when Stripe says there is more", () => {
-    const next = vi.fn();
-    hook.impl.mockReturnValue({ ...rowsView([
-      { id: "ch_1", amount: 8900, amount_refunded: 0, currency: "usd", created: 1788600000, status: "succeeded", paid: true, refunded: false, disputed: false, description: "Fall Candle Trio", receipt_url: "https://r/1", customer: null },
-    ], true), next });
+  it("Payments: a five-row preview with receipt links, and the full ledger in Stripe — never a pager", () => {
+    // "A list of all of the payments doesn't help": unscoped, this is a
+    // preview. Reconciling line by line is what the Stripe Dashboard is for.
+    hook.impl.mockReturnValue(rowsView(Array.from({ length: 8 }, (_, i) => payment(`ch_${i}`, `Order ${i}`)), true));
     render(<PaymentsSection day={null} onDayCleared={vi.fn()} />);
     const section = screen.getByRole("region", { name: "Payments" });
-    expect(within(section).getByText("Fall Candle Trio")).toBeInTheDocument();
-    expect(within(section).getByRole("link", { name: "Receipt" })).toHaveAttribute("href", "https://r/1");
+    expect(within(section).getAllByRole("link", { name: "Receipt" })).toHaveLength(5);
+    expect(within(section).getByText("Order 4")).toBeInTheDocument();
+    expect(within(section).queryByText("Order 5")).toBeNull();
+    expect(within(section).getByText("5 most recent")).toBeInTheDocument();
+    // Stripe says there IS more, and the preview still refuses to page.
+    expect(within(section).queryByRole("button", { name: "Show more" })).toBeNull();
+    expect(within(section).getByRole("link", { name: /Full ledger in Stripe/ })).toHaveAttribute("href", "https://dashboard.stripe.com/payments");
+    expect(hook.impl).toHaveBeenCalledWith("payments", undefined);
+  });
+
+  it("Payments: offers no Stripe ledger link when there is no account behind it", () => {
+    hook.impl.mockReturnValue(rowsView([], false, false));
+    render(<PaymentsSection day={null} onDayCleared={vi.fn()} />);
+    expect(screen.queryByRole("link", { name: /Full ledger in Stripe/ })).toBeNull();
+  });
+
+  it("Payments scoped to a day: keeps the full list and its pager", () => {
+    // The owner asked for that day specifically, so this one is not a preview.
+    const next = vi.fn();
+    hook.impl.mockReturnValue({ ...rowsView(Array.from({ length: 8 }, (_, i) => payment(`ch_${i}`, `Order ${i}`)), true), next });
+    render(<PaymentsSection day="2026-09-05" onDayCleared={vi.fn()} />);
+    const section = screen.getByRole("region", { name: "Payments on Sep 5, 2026" });
+    expect(within(section).getAllByRole("link", { name: "Receipt" })).toHaveLength(8);
     fireEvent.click(within(section).getByRole("button", { name: "Show more" }));
     expect(next).toHaveBeenCalled();
-    expect(hook.impl).toHaveBeenCalledWith("payments", undefined);
   });
 
   it("Payments scoped to a day: names the day, reads that window, and offers the way back", () => {

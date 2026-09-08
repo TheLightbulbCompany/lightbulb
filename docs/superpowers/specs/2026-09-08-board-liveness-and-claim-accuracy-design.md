@@ -71,6 +71,49 @@ built, deployed, and reachable by API today.
 
 ---
 
+## 1b. Corrections — verified during implementation (2026-09-08)
+
+Three claims in §1 were wrong. All were checked against the deployed fork commit
+`987520f9` and the live prod database; the corrections, not the originals, are
+what shipped.
+
+**External objects are NOT reachable, and their 0 rows prove nothing.**
+`POST /issues/{id}/external-objects` does not exist — only `GET .../external-objects`,
+`GET .../external-object-summary` and `POST .../external-objects/refresh` are
+registered. Objects are created server-side by `syncIssue`/`syncComment` scanning
+URLs out of issue text. The whole service is gated on
+`experimental.enableExternalObjects`, and `instance_settings.experimental` is `{}`
+in **both prod and dev** — so the feature is off and 0 rows is the flag, not agent
+ignorance. The primitive was dropped from the design entirely. The accuracy rule it
+was meant to carry survives, tool-agnostic: an agent re-checks with `gh`, the GitHub
+MCP, or the CI API. Cases (`enableCases`) is off for the same reason.
+
+**`unblockDescriptor` is not a staleness fix, and agents cannot use it as designed.**
+Two independent problems. First, actor: `issues.ts:8884` throws
+`403 "Agents may only name themselves as an unblock owner"` for `owner: "board"`
+or any `userId`, and `:8894` for another agent's id. The design's
+"human decision → `owner: board` → owner queue" row is a **user-actor** action,
+available from the Lightbulb UI, not something an agent can do. Second, mechanism:
+`routable-blocked.ts:36-53` fires **once**, at the blocked transition, guarded by
+`blockedOwnerNotifiedAt`, with no watch for the block clearing. It is a one-shot
+notification, not a re-check. For a self-owned block it notifies the agent that
+just blocked the issue — a no-op.
+
+**Therefore the monitor + watchdog pair is the ONLY real re-check mechanism**, and
+it is the whole of what §3 Part 2 delivers. Watchdogs are ungated
+(`task-watchdogs.ts` has no `isEnabled`, the route has no experimental guard), so
+their 0 rows fleet-wide IS genuine agent ignorance — the one place the original
+reasoning held.
+
+**Systemic lesson.** The fork's skill is written for adapters that mint a run-bound
+agent JWT. We run `openclaw_gateway`, registered `supportsLocalAgentJwt: false`, so
+every agent holds a long-lived `agent_key`. Any vendored section whose route requires
+`source === "agent_jwt"` is dead for the whole fleet — that is how upstream's
+credential-proposal guidance shipped broken. **Re-vendoring needs an actor-and-flag
+capability filter, not a heading diff.**
+
+---
+
 ## 2. Five whys
 
 **1. Why is the board 26 days stale?** The waiting-on condition of each parked

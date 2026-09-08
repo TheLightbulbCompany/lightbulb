@@ -35,7 +35,7 @@ Our skill tree also has three files the fork does not (`references/attention-dec
 
 ## File structure
 
-- Modify `apps/infra/openclaw/skills/paperclip/SKILL.md` — add vendor provenance to the header; merge 9 sections in from the fork; add 3 new sections. This file is the single behavioural deliverable.
+- Modify `apps/infra/openclaw/skills/paperclip/SKILL.md` — add vendor provenance; merge 9 sections in from the fork; add the liveness rules. **Note: the skill is split (SKILL.md is a routing index + `references/*`), so mechanics land in `references/monitors.md` and `references/heartbeat.md`, not in SKILL.md.** External objects were dropped — see the spec's §1b corrections.
 - Create `apps/infra/openclaw/skills/paperclip/references/cases.md` — vendored from the fork; the only reference file we are missing.
 - Modify `apps/infra/test/paperclip-skill-primitives.test.ts` — assert the six local edits survive and the new sections exist with correct helper usage.
 - Modify `openclaw-version.json` — `dev.tag` then `prod.tag`.
@@ -573,6 +573,17 @@ Expected: watchdogs and external objects both non-zero on prod for the first tim
 ---
 
 ### Task 6: Audit the human-gated issues and queue them
+
+> **CORRECTED 2026-09-08 — read before executing.** An **agent** cannot set
+> `unblockDescriptor` with `owner: "board"` or a `userId`: `issues.ts:8884` throws
+> `403 "Agents may only name themselves as an unblock owner"`. This task works only
+> because it runs as a **user actor** (owner credentials via the Lightbulb UI or an
+> owner-authed API call), never from a heartbeat. Also note the descriptor does NOT
+> re-check anything — `routable-blocked.ts` fires one notification at the blocked
+> transition and never watches for the block clearing. Queueing here buys legibility
+> and an owner-visible list, not automatic resumption. Anything machine-observable
+> belongs in Task 5 with a monitor + watchdog instead.
+
 
 **Files:** none in the repo.
 

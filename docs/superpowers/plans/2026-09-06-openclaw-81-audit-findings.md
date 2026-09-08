@@ -864,6 +864,23 @@ SQLite sessions oldest-first.
 the new subsystem for. Older conversations vanish from `chat.history` replay. Per-agent
 after 8.1's schema restructure, so 400 MB per agent, not per container.
 
+### C2-b · An `ultra_pro` owner has NO agent cap, so no per-agent disk constant can be safe
+**Status:** TODO — surfaced 2026-09-08 while fixing C2 (PR #2366). **Class:** LATENT RISK. **Effort:** medium.
+`agent_budget.py` returns early on the `ultra_pro` plan, so that owner's agent count is
+unbounded. The session-history disk budget is **per-agent**, and the size ladder tops out at
+2 vCPU / 8 GB with **no disk dimension at all** — `ephemeralStorage` is declared nowhere in
+the repo, so every per-user task runs the Fargate default 20 GiB.
+C2's fix sizes the per-agent budget by dividing that disk across
+`COMPANY_STANDARD_PLAN_MAX_AGENTS` (10). That arithmetic is correct up to the cap and
+**cannot be made correct above it** — at N > 10 there is no constant that fits.
+**Two real fixes, neither done:** a per-owner agent cap that applies to `ultra_pro` too, or a
+declared `ephemeralStorage` scaled with the plan. The second is not a one-line CDK change:
+`ecs_manager._build_register_kwargs_from_base` rebuilds the per-user task def from a
+**whitelist that omits the field**, so setting it in CDK alone is silently dropped. It needs
+the CDK edit *and* all four boto3 register paths.
+Related: the 2026-08-14 prod incident where an 11-agent owner crash-looped on boot — the
+same "over the cap, no ceiling" shape, on CPU instead of disk.
+
 ### C3 · Four browser knobs we tuned for Fargate silently reverted
 **Status:** TODO — accept-and-document, or fork patch. **Class:** LEGACY. **Effort:** zero or medium.
 We correctly drop `tabCleanup.idleMinutes:30`, `maxTabsPerSession:4`,

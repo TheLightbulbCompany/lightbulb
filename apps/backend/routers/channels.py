@@ -5,6 +5,9 @@ Exposes:
 - POST /link/{provider}/complete — member self-link flow
 - DELETE /link/{provider}/{agent_id} — member self-unlink
 - DELETE /{provider}/{agent_id} — admin bot delete
+- GET /pairing/requests — list pending admin-visible pairing identities
+- POST /pairing/approve — approve a pending request by opaque request ID
+- POST /pairing/reject — reject a pending request by opaque request ID
 """
 
 import logging

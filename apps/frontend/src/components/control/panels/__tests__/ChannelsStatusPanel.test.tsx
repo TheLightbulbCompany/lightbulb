@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import {
+  act,
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+} from "@testing-library/react";
 import React from "react";
 import { ChannelsStatusPanel } from "../ChannelsStatusPanel";
 
@@ -193,5 +199,53 @@ describe("ChannelsStatusPanel", () => {
     await waitFor(() => expect(mockPairingRefresh).toHaveBeenCalledTimes(1));
     expect(screen.queryByText(/refresh failed/i)).toBeNull();
     expect(screen.queryByText(/could not reject/i)).toBeNull();
+  });
+
+  it("keeps pairing actions disabled until the post-decision refresh settles", async () => {
+    mockData.mockReturnValue({
+      ts: 1,
+      channelOrder: ["slack"],
+      channelLabels: { slack: "Slack" },
+      channels: {},
+      channelAccounts: { slack: [{ accountId: "friday" }] },
+      channelDefaultAccountId: {},
+    });
+    mockPairingData.mockReturnValue({
+      requests: [
+        {
+          requestId: "request-opaque-1",
+          channel: "slack",
+          channelLabel: "Slack",
+          accountId: "friday",
+          accountLabel: "Friday",
+          senderId: "U_IMMUTABLE",
+          senderLabel: "Aden Kim",
+          createdAt: "2026-09-04T23:00:00Z",
+          lastSeenAt: "2026-09-04T23:00:00Z",
+          expiresAt: "2026-09-05T00:00:00Z",
+          notifySupported: true,
+        },
+      ],
+    });
+    let settleRefresh!: () => void;
+    mockApiPost.mockResolvedValue({});
+    mockPairingRefresh.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          settleRefresh = resolve;
+        }),
+    );
+
+    render(<ChannelsStatusPanel />);
+    fireEvent.click(screen.getByRole("button", { name: /approve/i }));
+
+    await waitFor(() => expect(mockPairingRefresh).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("button", { name: /approving/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /reject/i })).toBeDisabled();
+
+    await act(async () => settleRefresh());
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /approve/i })).toBeEnabled(),
+    );
   });
 });

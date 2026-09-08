@@ -99,17 +99,20 @@ function PairingRequestCard({
           ? caught.message
           : `Could not ${decision} this request.`,
       );
-      return;
-    } finally {
       setBusy(null);
+      return;
     }
 
     // The decision already succeeded. A transient revalidation failure must not
     // invite an unsafe duplicate approve/reject; SWR will poll again shortly.
+    // Keep the controls disabled until this refresh settles so a fast second
+    // click cannot submit the same immutable request ID twice.
     try {
       await onResolved();
     } catch {
       // Keep the successful action result distinct from list refresh state.
+    } finally {
+      setBusy(null);
     }
   };
 

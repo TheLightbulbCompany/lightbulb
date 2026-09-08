@@ -451,39 +451,6 @@ async def test_stopped_container_fires_wake(mock_ecs, mock_upstream):
 
 
 @pytest.mark.asyncio
-async def test_missing_container_disarms_orphaned_automation(mock_ecs, mock_upstream):
-    """A deleted container can never satisfy the adapter reconnect loop.
-
-    Disarm the owner's routine and cancel its retrying issues instead of
-    manufacturing another openclaw_gateway_timeout on every heartbeat.
-    """
-    mock_ecs.resolve_running_container = AsyncMock(return_value=(None, None))
-    mgmt = MagicMock()
-
-    with (
-        patch("core.services.container_wake.request_wake_silent", new_callable=AsyncMock) as wake,
-        patch(
-            "core.services.paperclip_agent_lifecycle.disarm_owner_nightly_automation",
-            new_callable=AsyncMock,
-        ) as disarm,
-        patch("core.services.operator_proxy.put_metric") as metric,
-    ):
-        wake.return_value = "no_row"
-        disarm.return_value = {"routines_paused": 1, "issues_cancelled": 2}
-        result = await handle_operator_connect(
-            owner_id="user_deleted",
-            user_id="user_deleted",
-            connection_id="conn_deleted",
-            connect_params={},
-            management_api=mgmt,
-        )
-
-    assert result is None
-    disarm.assert_awaited_once_with("user_deleted")
-    metric.assert_any_call("nightly_ceo.disarm", dimensions={"trigger": "container_missing", "outcome": "ran"})
-
-
-@pytest.mark.asyncio
 async def test_blocked_wake_disarms_an_expired_trial(mock_ecs, mock_upstream):
     """A routine's wake blocked for TRIAL_EXPIRED pauses the nightly routine —
     the one entitlement change no webhook catches (trial_end is a local stamp)."""
@@ -548,15 +515,47 @@ async def test_blocked_wake_does_not_disarm_a_capped_trial(mock_ecs, mock_upstre
 
 
 @pytest.mark.asyncio
-async def test_blocked_wake_for_a_non_trial_gate_does_not_disarm(mock_ecs, mock_upstream):
-    """A block from a non-trial gate (canceled / credits / OAuth) -> reason is
-    None -> no disarm here. Those cancellations are teardown's job."""
+async def test_blocked_wake_disarms_a_canceled_subscription(mock_ecs, mock_upstream):
+    """Repair stale autonomous work that survived subscription teardown."""
     mock_ecs.resolve_running_container = AsyncMock(return_value=(None, None))
     mgmt = MagicMock()
 
     with (
         patch("core.services.container_wake.request_wake_silent", new_callable=AsyncMock) as wake,
         patch("core.services.trial_cap.trial_block_reason", new_callable=AsyncMock) as reason,
+        patch("core.services.provision_gate.evaluate_provision_gate", new_callable=AsyncMock) as gate,
+        patch(
+            "core.services.paperclip_agent_lifecycle.disarm_owner_nightly_automation",
+            new_callable=AsyncMock,
+        ) as disarm,
+        patch("core.services.operator_proxy.put_metric") as metric,
+    ):
+        wake.return_value = "blocked"
+        reason.return_value = None
+        gate.return_value = MagicMock(code="subscription_required")
+        disarm.return_value = {"routines_paused": 1, "issues_cancelled": 2}
+        await handle_operator_connect(
+            owner_id="user_canceled",
+            user_id="user_canceled",
+            connection_id="conn_canceled",
+            connect_params={},
+            management_api=mgmt,
+        )
+
+    disarm.assert_awaited_once_with("user_canceled")
+    metric.assert_any_call("nightly_ceo.disarm", dimensions={"trigger": "subscription_required", "outcome": "ran"})
+
+
+@pytest.mark.asyncio
+async def test_blocked_wake_for_a_transient_non_trial_gate_does_not_disarm(mock_ecs, mock_upstream):
+    """Credits/OAuth/provider setup can recover, so keep the routine armed."""
+    mock_ecs.resolve_running_container = AsyncMock(return_value=(None, None))
+    mgmt = MagicMock()
+
+    with (
+        patch("core.services.container_wake.request_wake_silent", new_callable=AsyncMock) as wake,
+        patch("core.services.trial_cap.trial_block_reason", new_callable=AsyncMock) as reason,
+        patch("core.services.provision_gate.evaluate_provision_gate", new_callable=AsyncMock) as gate,
         patch(
             "core.services.paperclip_agent_lifecycle.disarm_owner_nightly_automation",
             new_callable=AsyncMock,
@@ -564,10 +563,11 @@ async def test_blocked_wake_for_a_non_trial_gate_does_not_disarm(mock_ecs, mock_
     ):
         wake.return_value = "blocked"
         reason.return_value = None
+        gate.return_value = MagicMock(code="credits_required")
         await handle_operator_connect(
-            owner_id="user_canceled",
-            user_id="user_canceled",
-            connection_id="conn_canceled",
+            owner_id="user_no_credits",
+            user_id="user_no_credits",
+            connection_id="conn_no_credits",
             connect_params={},
             management_api=mgmt,
         )

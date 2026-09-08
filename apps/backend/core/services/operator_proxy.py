@@ -112,9 +112,11 @@ def _tap_run_completion_telemetry(owner_id: str, frame: dict) -> None:
         )
 
 
-async def _maybe_disarm_expired_trial(owner_id: str) -> None:
-    """A routine's wake was BLOCKED — self-disarm iff the reason is a lapsed
-    trial window.
+_TERMINAL_AUTOMATION_GATE_CODES = frozenset({"signup_required", "subscription_required", "team_billing_required"})
+
+
+async def _maybe_disarm_unentitled_owner(owner_id: str) -> None:
+    """A routine's wake was BLOCKED — self-disarm on terminal entitlement.
 
     ``trial_local``'s clock is a local ``trial_end`` stamp with NO webhook, so
     an expired trial's armed nightly routine is the one entitlement change
@@ -125,54 +127,42 @@ async def _maybe_disarm_expired_trial(owner_id: str) -> None:
     re-subscribe converts through ``run_conversion_reprovision`` → the executor
     arm → ``reconcile_paused`` re-enables it, so the pause self-heals.
 
-    A DAILY_CAP block is deliberately NOT disarmed: the cap resets at UTC
-    midnight and the routine should fire again tomorrow. So this re-reads the
-    reason (one cheap read on the rare blocked path) rather than disarming on
-    any block. Never raises — a best-effort side effect of a wake attempt."""
-    try:
-        from core.services import trial_cap
+    Canceled/missing subscriptions can also outlive older teardown paths and
+    then loop forever against a stopped or deleted container. Their provision
+    gates are terminal for autonomous work, so repair those stale routines too.
 
-        if await trial_cap.trial_block_reason(owner_id) != trial_cap.TRIAL_EXPIRED:
+    DAILY_CAP, payment_past_due, credits, OAuth, and provider-setup blocks are
+    deliberately NOT disarmed: they can recover without a new subscription.
+    Never raises — a best-effort side effect of a wake attempt."""
+    trigger = "entitlement_gate"
+    try:
+        from core.services import provision_gate, trial_cap
+
+        trial_reason = await trial_cap.trial_block_reason(owner_id)
+        if trial_reason == trial_cap.TRIAL_EXPIRED:
+            trigger = "trial_expired"
+        elif trial_reason is not None:
             return
+        else:
+            gate = await provision_gate.evaluate_provision_gate(owner_id=owner_id, is_admin=True)
+            if gate is None or gate.code not in _TERMINAL_AUTOMATION_GATE_CODES:
+                return
+            trigger = gate.code
         from core.services.paperclip_agent_lifecycle import disarm_owner_nightly_automation
 
         summary = await disarm_owner_nightly_automation(owner_id)
-        put_metric("nightly_ceo.disarm", dimensions={"trigger": "trial_expired", "outcome": "ran"})
+        put_metric("nightly_ceo.disarm", dimensions={"trigger": trigger, "outcome": "ran"})
         logger.info(
-            "operator connect: disarmed expired-trial nightly routine owner=%s routines_paused=%d issues_cancelled=%d",
+            "operator connect: disarmed unentitled-owner automation owner=%s trigger=%s routines_paused=%d "
+            "issues_cancelled=%d",
             owner_id,
+            trigger,
             summary["routines_paused"],
             summary["issues_cancelled"],
         )
     except Exception:
-        put_metric("nightly_ceo.disarm", dimensions={"trigger": "trial_expired", "outcome": "error"})
-        logger.exception("operator connect: expired-trial disarm failed owner=%s", owner_id)
-
-
-async def _disarm_missing_container(owner_id: str) -> None:
-    """Stop Paperclip work that can never reconnect to a deleted container.
-
-    ``request_wake_silent`` returns ``no_row`` only when the owner has no
-    container record at all. Retrying the adapter cannot heal that state: no
-    provider request is ever sent, and every heartbeat eventually becomes an
-    ``openclaw_gateway_timeout``. Teardown normally disarms this work before
-    deleting the row; this is the repair path for legacy/orphaned owners that
-    escaped teardown. Never raises into the relay connect path.
-    """
-    try:
-        from core.services.paperclip_agent_lifecycle import disarm_owner_nightly_automation
-
-        summary = await disarm_owner_nightly_automation(owner_id)
-        put_metric("nightly_ceo.disarm", dimensions={"trigger": "container_missing", "outcome": "ran"})
-        logger.info(
-            "operator connect: disarmed missing-container automation owner=%s routines_paused=%d issues_cancelled=%d",
-            owner_id,
-            summary["routines_paused"],
-            summary["issues_cancelled"],
-        )
-    except Exception:
-        put_metric("nightly_ceo.disarm", dimensions={"trigger": "container_missing", "outcome": "error"})
-        logger.exception("operator connect: missing-container disarm failed owner=%s", owner_id)
+        put_metric("nightly_ceo.disarm", dimensions={"trigger": trigger, "outcome": "error"})
+        logger.exception("operator connect: unentitled-owner disarm failed owner=%s", owner_id)
 
 
 async def handle_operator_connect(
@@ -230,12 +220,7 @@ async def handle_operator_connect(
                 # A lapsed trial has NO webhook (trial_end is a local stamp), so
                 # nothing else disarms it — pause it here or it fires nightly
                 # no-ops against a box it can never wake, forever.
-                await _maybe_disarm_expired_trial(owner_id)
-            elif outcome == "no_row":
-                # There is nothing for the adapter's reconnect loop to wait
-                # for. Repair legacy teardown misses so this owner does not
-                # manufacture the same gateway timeout on every heartbeat.
-                await _disarm_missing_container(owner_id)
+                await _maybe_disarm_unentitled_owner(owner_id)
         except Exception:
             put_metric("operator.connect.stopped_container_wake", dimensions={"outcome": "error"})
             logger.warning(

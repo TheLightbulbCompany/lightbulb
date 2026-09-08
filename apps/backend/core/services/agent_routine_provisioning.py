@@ -77,14 +77,15 @@ NIGHTLY_CEO_ROUTINE_CRON = "0 8 * * *"
 NIGHTLY_CEO_SENTINEL = "[NIGHTLY-CEO-LOOP]"
 
 NIGHTLY_CEO_ROUTINE_DESCRIPTION = (
-    f"{NIGHTLY_CEO_SENTINEL} Scheduled company-control wake. Advance ONE existing "
-    "company constraint using CEO work only: set or clarify priority, synthesize "
-    "existing evidence, resolve or reroute a blocker, verify a claimed outcome, "
-    "or delegate one bounded specialist issue. Never self-assign or execute "
-    "specialist work. Use only current goals, issues, and already-approved "
-    "direction; do not invent work or take external, irreversible, financial, "
-    "legal, or reputation-bearing action. If no constraint is actionable, record "
-    "NO-EXECUTABLE-COMPANY-CONSTRAINT and exit."
+    f"{NIGHTLY_CEO_SENTINEL} Scheduled company-control wake. Do CEO work only — "
+    "set or clarify priority, synthesize existing evidence, resolve or reroute a "
+    "blocker, verify a claimed outcome, or delegate one bounded specialist issue. "
+    "Never self-assign or execute specialist work, and never take external, "
+    "irreversible, financial, legal, or reputation-bearing action. Advance ONE "
+    "actionable constraint; if the board is empty, create ONE task derived from "
+    "the company goal; if everything is blocked on the owner, identify what to "
+    "unblock. ALWAYS end by emailing the owner what you did and the single best "
+    "next step — never exit silently."
 )
 
 

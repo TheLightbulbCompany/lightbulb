@@ -972,7 +972,7 @@ def test_agents_md_contains_company_control_wake_and_dual_condition():
     # The wake advances one company constraint through CEO work. It must not
     # reintroduce the arbitrary-specialist checkout that contradicted the
     # delegation boundary.
-    assert "Choose ONE company constraint" in agents_md
+    assert "A constraint is actionable" in agents_md
     # Renamed to "Delegate SUSTAINED specialist execution": the blanket form
     # banned doing any work at all, which routed one-shot requests to the
     # marketplace. See test_delegation_boundary_is_scoped_to_sustained_work.
@@ -983,7 +983,23 @@ def test_agents_md_contains_company_control_wake_and_dual_condition():
     assert "child's completion wakes you" in agents_md
     assert "Pick ONE task you can complete right now" not in agents_md
     assert "NIGHTLY-TASK-TAKEN:" not in agents_md
-    assert "Never invent work" in agents_md
+    assert "never an open-ended project" in agents_md
+
+
+def test_agents_md_nightly_always_emails_and_handles_empty_board():
+    """V3 contract: the wake ALWAYS ends with one owner email, and an empty board
+    yields exactly one goal-derived task rather than a silent exit."""
+    agents_md = friday_identity._render_templates(_personal_profile())["AGENTS.md"]
+    compact = " ".join(agents_md.split())
+    # Always email the owner, even a quiet night — no silent exit.
+    assert "ALWAYS email the owner" in agents_md
+    assert "Never exit silently" in agents_md
+    assert 'never send a "nothing to report" email' in compact
+    # Empty board → create exactly one goal-derived task.
+    assert "The board is empty" in agents_md
+    assert "Create exactly ONE" in agents_md
+    # V2's silent no-op marker is gone.
+    assert "NO-EXECUTABLE-COMPANY-CONSTRAINT" not in agents_md
 
 
 # ---------------------------------------------------------------------------
@@ -1193,6 +1209,37 @@ def test_migrate_nightly_section_replaces_only_exact_legacy_block():
     assert "Owner-authored footer." in healed
     assert friday_identity._LEGACY_NIGHTLY_WAKE_SECTION not in healed
 
+    ws.written = None
+    assert friday_identity._migrate_add_nightly_section(ws, "user_abc", "friday-uuid") is False
+    assert ws.written is None
+
+
+def test_migrate_nightly_section_reconciles_v2_forward_to_v3():
+    """A container still carrying the pre-always-email V2 block is reconciled
+    forward to the current section (V2 -> V3), and is idempotent on a re-apply."""
+    before = (
+        "# AGENTS.md — Friday's Playbook\n"
+        "\nOwner-authored preface.\n" + friday_identity._LEGACY_V2_NIGHTLY_WAKE_SECTION + "\nOwner-authored footer.\n"
+    )
+    ws = _MigrationWs(before)
+
+    assert friday_identity._migrate_add_nightly_section(ws, "user_abc", "friday-uuid") is True
+    _, healed = ws.written
+    assert healed == before.replace(
+        friday_identity._LEGACY_V2_NIGHTLY_WAKE_SECTION,
+        friday_identity._NIGHTLY_WAKE_SECTION,
+        1,
+    )
+    assert friday_identity._LEGACY_V2_NIGHTLY_WAKE_SECTION not in healed
+    assert friday_identity._NIGHTLY_WAKE_SECTION in healed
+    # What V3 adds over V2: the always-email guarantee and the empty-board task.
+    assert "ALWAYS email the owner" in healed
+    assert "The board is empty" in healed
+    assert "NO-EXECUTABLE-COMPANY-CONSTRAINT" not in healed
+    assert "Owner-authored preface." in healed
+    assert "Owner-authored footer." in healed
+
+    # V3 now present → a later fleet apply is a no-op.
     ws.written = None
     assert friday_identity._migrate_add_nightly_section(ws, "user_abc", "friday-uuid") is False
     assert ws.written is None

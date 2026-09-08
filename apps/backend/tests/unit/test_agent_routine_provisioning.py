@@ -195,12 +195,13 @@ def test_fresh_friday_identity_and_routine_share_company_control_contract():
         }
     )["AGENTS.md"]
 
-    assert "ONE existing company constraint" in NIGHTLY_CEO_ROUTINE_DESCRIPTION
+    assert "Advance ONE actionable constraint" in NIGHTLY_CEO_ROUTINE_DESCRIPTION
     assert "Never self-assign or execute specialist work" in NIGHTLY_CEO_ROUTINE_DESCRIPTION
-    assert "NO-EXECUTABLE-COMPANY-CONSTRAINT" in NIGHTLY_CEO_ROUTINE_DESCRIPTION
-    assert "Choose ONE company constraint" in agents_md
+    # V3: the wake ALWAYS emails the owner instead of the old silent no-op marker.
+    assert "ALWAYS end by emailing the owner" in NIGHTLY_CEO_ROUTINE_DESCRIPTION
+    assert "A constraint is actionable" in agents_md
     assert "delegation is the action" in agents_md
-    assert "NO-EXECUTABLE-COMPANY-CONSTRAINT" in agents_md
+    assert "ALWAYS email the owner" in agents_md
 
     contradictory_phrases = (
         "review the company backlog and self-assign ONE task",

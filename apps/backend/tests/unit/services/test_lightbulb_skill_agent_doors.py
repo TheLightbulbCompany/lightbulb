@@ -28,8 +28,22 @@ SKILL = SKILL_DIR / "SKILL.md"
 HELPER = SKILL_DIR / "scripts" / "lightbulb-api.sh"
 
 
+def _skill_text() -> str:
+    """The whole skill: SKILL.md plus every references/*.md.
+
+    The skill was SPLIT into a thin SKILL.md + references/ read on demand
+    (#2367). These tests pin what the skill TELLS THE AGENT, which is the union
+    of both — an agent that follows the routing table reads the reference too.
+    Asserting against SKILL.md alone made a pure file-layout change look like a
+    deleted rule, and would do so again on the next split.
+    """
+    parts = [SKILL.read_text()]
+    parts += [f.read_text() for f in sorted((SKILL_DIR / "references").glob("*.md"))]
+    return "\n".join(parts)
+
+
 def _flat() -> str:
-    return " ".join(SKILL.read_text().split())
+    return " ".join(_skill_text().split())
 
 
 # ---------------------------------------------------------------------------

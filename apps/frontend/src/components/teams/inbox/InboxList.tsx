@@ -1,3 +1,8 @@
+// NOT ON THE INBOX PAGE ANY MORE. Inbox holds no task rows; its ONE remaining
+// caller is the landing page's WorkspaceDemo, which still shows an inbox-style
+// issue list as marketing. It stays here (with SwipeToArchive and IssueRow)
+// until that demo is reshot; nothing in the product renders it.
+//
 // Ported from upstream Paperclip's pages/Inbox.tsx row-renderer block
 // (paperclip/ui/src/pages/Inbox.tsx) (MIT, (c) 2025 Paperclip AI).
 // Flat list with today/earlier/search section dividers. Drops parent-child

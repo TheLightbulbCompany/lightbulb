@@ -15,6 +15,11 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  routers/ses_inbound.py (email wake — allowlisted senders only);
                                  extended-image gog binary (gmail settings watch = Pub/Sub)
   - Control Panel tabs ...... references/surfaces.md
+  - Inbox page .............. apps/frontend/src/components/teams/inbox/InboxPage.tsx (the three bands);
+                              InboxNeedsYou/InboxHappeningNow/InboxRecently.tsx;
+                              apps/frontend/src/components/workspace/panelRegistry.ts (INBOX_SECTIONS + the teams-activity alias)
+  - Tasks groupings ......... apps/frontend/src/components/teams/issues/TasksList.tsx (TASKS_GROUP_BY / GROUP_OPTIONS);
+                              panelRegistry.ts (the teams-goals / teams-projects aliases + the groupBy param)
                               <- apps/frontend/src/components/control/ControlSidebar.tsx (NAV_ITEMS)
   - Questions / secrets ..... references/surfaces.md
                               <- apps/frontend/src/hooks/useQuestions.tsx + components/chat/QuestionCards.tsx (question.requested/resolved,

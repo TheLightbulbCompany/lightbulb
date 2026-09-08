@@ -54,7 +54,7 @@ SERVICE=$(aws ecs list-services --cluster "$CLUSTER" --profile isol8-admin \
 
 **1b. Delete Litestream S3 replicas (O6 local-sqlite layout only):** once dev
 runs `storage: "local-sqlite"` (openclaw-version.json), each owner's hot
-SQLite replicates to `s3://isol8-dev-openclaw-replicas/{owner_id}/…` and the
+SQLite replicates to `s3://lightbulb-dev-openclaw-replicas/{owner_id}/…` and the
 container boot script RESTORES whatever survives there — skipping this step
 resurrects the pre-wipe sessions/auth rows on the next provision. (The
 backend's own wipe paths — `DELETE /debug/provision`, account_wipe — already
@@ -62,7 +62,7 @@ do this via `core/services/litestream_replicas.py`; this manual step is for
 console-driven wipes.)
 
 ```bash
-aws s3 rm "s3://isol8-dev-openclaw-replicas/<owner_id>/" --recursive --profile isol8-admin
+aws s3 rm "s3://lightbulb-dev-openclaw-replicas/<owner_id>/" --recursive --profile isol8-admin
 ```
 
 **1. Delete ECS containers:** User deletes their OpenClaw ECS services + EFS access points manually from the AWS console (or via `DELETE /debug/provision` per user above). Programmatically:

@@ -58,6 +58,10 @@ _PURGE_PASS_INTERVAL_SECONDS = 24 * 60 * 60
 # Hourly owner-day rollup pass cadence, in seconds (P0c).
 _ROLLUP_PASS_INTERVAL_SECONDS = 60 * 60
 
+# Hourly cron-run telemetry sweep cadence, in seconds. Must stay under
+# cron_run_telemetry._LOOKBACK_S so a skipped tick leaves no hole.
+_CRON_RUNS_PASS_INTERVAL_SECONDS = 60 * 60
+
 # Inter-iteration wait for run_scheduled_worker, in seconds.
 _WORKER_INTERVAL_S = 60
 
@@ -1000,14 +1004,17 @@ async def run_scheduled_worker() -> None:
 
     Runs every 60 seconds indefinitely. Each iteration also runs the
     Paperclip retry pass (every loop), the Paperclip purge pass
-    (once per ``_PURGE_PASS_INTERVAL_SECONDS`` -- 24h), and the owner-day
-    rollup pass (once per ``_ROLLUP_PASS_INTERVAL_SECONDS`` -- 1h).
+    (once per ``_PURGE_PASS_INTERVAL_SECONDS`` -- 24h), the owner-day
+    rollup pass (once per ``_ROLLUP_PASS_INTERVAL_SECONDS`` -- 1h), and the
+    cron-run telemetry sweep (once per
+    ``_CRON_RUNS_PASS_INTERVAL_SECONDS`` -- 1h).
     """
     logger.info("Scheduled update worker started")
     global _worker_stop
     _worker_stop = asyncio.Event()  # bind to the loop running this worker
     last_purge_pass_at: float = 0.0  # epoch seconds; 0 forces a run on first iteration
     last_rollup_pass_at: float = 0.0  # same sentinel idiom as the purge pass
+    last_cron_runs_pass_at: float = 0.0  # same sentinel idiom as the purge pass
     while not _worker_stop.is_set():
         try:
             put_metric("update.scheduled_worker.heartbeat")
@@ -1057,6 +1064,18 @@ async def run_scheduled_worker() -> None:
                 except Exception:
                     logger.exception("rollup_pass crashed")
                 last_rollup_pass_at = now
+
+            # Cron-run telemetry sweep -- once per hour, same monotonic-interval
+            # idiom. Recovers agent_run_completed for container-native cron runs,
+            # which finish with no live socket for either emit path to see.
+            if last_cron_runs_pass_at == 0.0 or now - last_cron_runs_pass_at >= _CRON_RUNS_PASS_INTERVAL_SECONDS:
+                try:
+                    from core.services.cron_run_telemetry import sweep_cron_runs
+
+                    await sweep_cron_runs()
+                except Exception:
+                    logger.exception("cron_run_telemetry sweep crashed")
+                last_cron_runs_pass_at = now
         except Exception:
             put_metric("update.scheduled_worker.error")
             logger.exception("Error in scheduled update worker loop")

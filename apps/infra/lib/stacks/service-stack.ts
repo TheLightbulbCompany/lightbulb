@@ -21,7 +21,6 @@ import * as tasks from "aws-cdk-lib/aws-stepfunctions-tasks";
 import {
   allTableArns,
   bothTableArns,
-  legacyTablePrefix,
   alertTopicArn,
   resourcePrefix,
   tableName,
@@ -452,13 +451,13 @@ export class ServiceStack extends cdk.Stack {
     // three statements live in a dedicated ManagedPolicy attached to the task
     // role, NOT in the inline default policy: the backend role's inline policy
     // is already near CloudFormation's 10 KB inline-policy limit, and adding
-    // these inline would tip CDK into spilling statements (e.g. the by-name
-    // DynamoDbIntegrations grant) into an overflow ManagedPolicy — silently
-    // relocating them out of the AWS::IAM::Policy resource other features rely
-    // on. A standalone, explicitly named ManagedPolicy keeps the inline policy
-    // stable and is more auditable. CreateRole is boundary-conditioned so a
-    // backend that can CreateRole+PutRolePolicy cannot escalate beyond the
-    // OwnerBedrockBoundary (Bedrock+EFS+logs+ssm).
+    // these inline would tip CDK into spilling statements (e.g. the
+    // DynamoDbOwnedTables wildcard grant) into an overflow ManagedPolicy —
+    // silently relocating them out of the AWS::IAM::Policy resource other
+    // features rely on. A standalone, explicitly named ManagedPolicy keeps
+    // the inline policy stable and is more auditable. CreateRole is
+    // boundary-conditioned so a backend that can CreateRole+PutRolePolicy
+    // cannot escalate beyond the OwnerBedrockBoundary (Bedrock+EFS+logs+ssm).
     new iam.ManagedPolicy(this, "BackendOwnerBedrockManage", {
       managedPolicyName: `lightbulb-${env}-backend-owner-bedrock-manage`,
       roles: [this.taskRole],
@@ -796,56 +795,6 @@ export class ServiceStack extends cdk.Stack {
         resources: allTableArns(this.region, this.account, env),
       }),
     );
-    // The credential-layer integration tables are granted by NAME, not via
-    // grantReadWriteData. grantReadWriteData would export each table's ARN from
-    // the database stack and import it here, creating a cross-stack export. An
-    // export that another stack imports cannot be deleted, which permanently
-    // blocks renaming or replacing the table. Granting by the table name avoids
-    // the export entirely. The action set matches what integrations_repo and
-    // oauth_state_repo actually call.
-    this.taskRole.addToPolicy(
-      new iam.PolicyStatement({
-        sid: "DynamoDbIntegrations",
-        actions: [
-          "dynamodb:GetItem",
-          "dynamodb:PutItem",
-          "dynamodb:UpdateItem",
-          "dynamodb:DeleteItem",
-          "dynamodb:Query",
-          "dynamodb:Scan",
-        ],
-        resources: [
-          ...bothTableArns(this.region, this.account, env, "integrations"),
-          ...bothTableArns(this.region, this.account, env, "oauth-state"),
-          // Per-owner AIP reverse index (Plan 2). Folded into this by-name DDB
-          // statement (identical action set + condition-less shape) rather than
-          // added as a separate fourth statement: the backend role's inline
-          // policy is near CloudFormation's 10 KB limit, so a separate statement
-          // risks tipping CDK into an overflow ManagedPolicy that would relocate
-          // this very statement out of the AWS::IAM::Policy resource other
-          // features assert on. Same cross-stack-export-avoidance posture; the
-          // grant (GetItem/PutItem/UpdateItem/DeleteItem/Query) is identical.
-          ...bothTableArns(this.region, this.account, env, "bedrock-aip-owners"),
-          // Metronome local fast-gate flag (Phase 2). Folded into this by-name
-          // statement for the SAME reason as bedrock-aip-owners above: a separate
-          // grantReadWriteData would both bloat the near-10 KB inline policy
-          // (tipping CDK into an overflow ManagedPolicy that relocates this very
-          // statement) AND export the table ARN cross-stack. The action set
-          // (GetItem/PutItem/UpdateItem/Query) matches MetronomeFastGate +
-          // metronome_provisioning + metronome_funding.
-          ...bothTableArns(this.region, this.account, env, "metronome-fast-gate"),
-          // bedrock-gate bearer-token table. mint_gate_token / deny_gate_token
-          // (core/billing/bedrock_gate_tokens.py) PutItem/UpdateItem/DeleteItem
-          // here for EVERY Bedrock owner at provision time, so without this grant
-          // Bedrock provisioning AccessDenies fleet-wide. Folded into this
-          // by-name statement for the SAME 10 KB-inline-policy reason as the two
-          // tables above (a separate grantReadWriteData would tip CDK into an
-          // overflow ManagedPolicy). The table itself is defined in the
-          // bedrock-gate stack (gate-private), so only the ARN is referenced.
-          ...bothTableArns(this.region, this.account, env, "bedrock-gate-tokens"),
-        ],
-      }),
-    );
     // Webhook dedup helper does conditional PutItem with attribute_not_exists;
     // never reads. Write-only grant is sufficient.
     // Paperclip integration: the proxy router (paperclip_proxy.py:388,
@@ -891,7 +840,9 @@ export class ServiceStack extends cdk.Stack {
     // (no cross-stack prop threading). The parameter doubles as the fleet
     // break-glass lever — value "direct" routes new provisions straight to
     // bedrock-runtime. Single-parameter read-only grant; kept as its own tiny
-    // statement (NOT folded into DynamoDbIntegrations).
+    // statement — an SSM action doesn't fit the DynamoDbOwnedTables wildcard
+    // grant's DynamoDB-only action set, so it couldn't be folded into that
+    // one either.
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "BedrockGateUrlParamRead",
@@ -1147,28 +1098,6 @@ export class ServiceStack extends cdk.Stack {
         actions: ["execute-api:ManageConnections"],
         resources: [
           `arn:aws:execute-api:${this.region}:${this.account}:${props.wsApiId}/${props.wsStage}/*`,
-        ],
-      }),
-    );
-
-    // DynamoDB CRUD on connections table
-    this.taskRole.addToPolicy(
-      new iam.PolicyStatement({
-        sid: "DynamoDbConnections",
-        actions: [
-          "dynamodb:GetItem",
-          "dynamodb:PutItem",
-          "dynamodb:UpdateItem",
-          "dynamodb:DeleteItem",
-          "dynamodb:Query",
-          "dynamodb:Scan",
-        ],
-        resources: [
-          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.connectionsTableName}`,
-          // GSI ARN — required to Query the by-user-id index added in
-          // api-stack.ts. Without this, broker fanout queries 400 with
-          // AccessDeniedException at runtime.
-          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.connectionsTableName}/index/*`,
         ],
       }),
     );
@@ -1527,8 +1456,9 @@ export class ServiceStack extends cdk.Stack {
       // synchronous chat gate's balance projection.
       METRONOME_BASE_URL: "https://api.metronome.com/v1",
       // Literal name (not a cross-stack tableName Ref) — same posture as
-      // BEDROCK_AIP_OWNERS_TABLE above: the table is granted BY NAME in the
-      // DynamoDbIntegrations statement, so no cross-stack export is created.
+      // BEDROCK_AIP_OWNERS_TABLE above: the table is covered by the
+      // DynamoDbOwnedTables wildcard statement, so no cross-stack export is
+      // created.
       METRONOME_FAST_GATE_TABLE: tableName(env, "metronome-fast-gate"),
       // Per-env rate card the per-customer contract references at
       // provision. Dev = sandbox rate card (2026-06-10); prod =

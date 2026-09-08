@@ -285,7 +285,9 @@ class Settings(BaseSettings):
     # Per-owner Bedrock AIP + scoped-role enforcement (Plan 2). Empty defaults
     # keep the backend booting in non-AWS unit-test contexts.
     BEDROCK_AIP_OWNERS_TABLE: str = ""
-    """Reverse index PK aip_arn -> owner_id. Read by resolve_owner_from_aip_arn."""
+    """Reverse index PK aip_arn -> owner_id/tier/plan. Read by the
+    bedrock-usage-meter Lambda via its own boto3 GetItem — no backend code
+    reads this table directly."""
     BEDROCK_OWNER_BOUNDARY_ARN: str = ""
     """Permissions-boundary policy ARN every backend-minted role must carry."""
     BEDROCK_OWNER_BASE_POLICY_ARN: str = ""

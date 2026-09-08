@@ -19,7 +19,7 @@ import * as logs from "aws-cdk-lib/aws-logs";
 import * as route53 from "aws-cdk-lib/aws-route53";
 import * as route53Targets from "aws-cdk-lib/aws-route53-targets";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
-import { legacyTablePrefix, logGroupPath, resourcePrefix, tablePrefix } from "../table-names";
+import { logGroupPath, resourcePrefix, tablePrefix } from "../table-names";
 import { Construct } from "constructs";
 import { CLERK_DOMAIN, ROOT_DOMAIN } from "../domains";
 

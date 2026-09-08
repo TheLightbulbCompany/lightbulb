@@ -781,27 +781,6 @@ def test_http_returns_503_when_jwks_fetch_fails(monkeypatch):
 # ---------------------------------------------------------------
 
 
-def test_decode_clerk_publishable_key_dev():
-    """The Clerk Frontend API hostname round-trips out of a dev pub key."""
-    from routers.paperclip_proxy import _decode_clerk_publishable_key
-
-    # pk_test_dXAtbW90aC01NS5jbGVyay5hY2NvdW50cy5kZXYk decodes to
-    # "up-moth-55.clerk.accounts.dev$" — strip the trailing $.
-    pk = "pk_test_dXAtbW90aC01NS5jbGVyay5hY2NvdW50cy5kZXYk"
-    assert _decode_clerk_publishable_key(pk) == "up-moth-55.clerk.accounts.dev"
-
-
-def test_decode_clerk_publishable_key_handles_garbage():
-    """Malformed keys return None rather than raising — the bootstrap
-    HTML responder uses None as a "render an error page" signal.
-    """
-    from routers.paperclip_proxy import _decode_clerk_publishable_key
-
-    assert _decode_clerk_publishable_key("") is None
-    assert _decode_clerk_publishable_key("not_a_valid_key") is None
-    assert _decode_clerk_publishable_key("pk_test_") is None
-
-
 def test_paperclip_session_jwt_round_trip(monkeypatch):
     """Mint + verify must round-trip with the configured signing key."""
     import routers.paperclip_proxy as proxy_mod

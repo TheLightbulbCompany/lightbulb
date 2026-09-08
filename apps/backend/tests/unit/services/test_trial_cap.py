@@ -174,30 +174,9 @@ async def test_trial_block_reason_false_for_no_account(monkeypatch):
     assert spend_calls == []  # short-circuits before the spend read
 
 
-@pytest.mark.asyncio
-async def test_no_backend_path_writes_the_counter(monkeypatch):
-    """The meter Lambda is the SOLE writer. ``trial_block_reason`` — the only
-    surviving cap primitive — must never ADD to the counter, or the Lambda's
-    tally would double-count."""
-    writes = []
-
-    async def fake_get_by_owner_id(owner_id):
-        return {"owner_id": owner_id, "subscription_status": "trial_local"}
-
-    async def fake_get_trial_daily_spend(owner_id, date):
-        return 0
-
-    async def fake_add(owner_id, date, delta):
-        writes.append((owner_id, date, delta))
-        return delta
-
-    monkeypatch.setattr("core.services.trial_cap.billing_repo.get_by_owner_id", fake_get_by_owner_id)
-    monkeypatch.setattr("core.services.trial_cap.billing_repo.get_trial_daily_spend", fake_get_trial_daily_spend)
-    monkeypatch.setattr("core.services.trial_cap.billing_repo.add_trial_daily_spend", fake_add)
-
-    await trial_cap.trial_block_reason("owner1")
-
-    assert writes == []
+# test_no_backend_path_writes_the_counter removed: it asserted
+# add_trial_daily_spend was never called, and that function (zero production
+# callers) is deleted — the guard is now structural, not a runtime check.
 
 
 @pytest.mark.asyncio

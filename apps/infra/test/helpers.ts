@@ -1,4 +1,3 @@
-import { legacyTablePrefix } from "../lib/table-names";
 import * as cdk from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";

@@ -1,4 +1,4 @@
-import { legacyTablePrefix, tablePrefix } from "../lib/table-names";
+import { tablePrefix } from "../lib/table-names";
 import * as cdk from "aws-cdk-lib";
 import { Template, Match } from "aws-cdk-lib/assertions";
 import {
@@ -70,8 +70,8 @@ describe("BedrockGateStack", () => {
             BILLING_TABLE: `${tablePrefix(gateEnv)}billing-accounts`,
             FAST_GATE_TABLE: `${tablePrefix(gateEnv)}metronome-fast-gate`,
             INVOCATION_DEDUP_TABLE: `${tablePrefix(gateEnv)}bedrock-invocation-dedup`,
-            // The gateway enforces the TRUE $3.00 cap (reservation bounds
-            // overshoot); trial_cap.py stays 2_600_000 until Phase 5.
+            // The TRUE $3.00 cap — lockstep with trial_cap.py and the meter's
+            // index.py (all 3_000_000).
             CAP_MICROCENTS: "3000000",
             RESERVE_ESTIMATE_MICROCENTS: "300000",
             DEDUP_TTL_SECONDS: "1296000",

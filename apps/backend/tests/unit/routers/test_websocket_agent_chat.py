@@ -938,17 +938,17 @@ class TestProcessAgentSteerBackground:
         """Under the cap, the steer dispatches — via the READ-ONLY
         trial_block_reason check, which writes nothing. The meter Lambda counts
         the steer's actual cost at the AWS layer like any other invocation."""
-        with patch("core.repositories.billing_repo.add_trial_daily_spend", new=AsyncMock()) as add_mock:
-            await _process_agent_steer_background(
-                connection_id="conn-1",
-                user_id="user-1",
-                owner_id="user-1",
-                agent_id="luna",
-                text="focus on the API",
-            )
+        # add_trial_daily_spend had zero production callers and was deleted —
+        # the "no counter write on the send path" guard is now structural.
+        await _process_agent_steer_background(
+            connection_id="conn-1",
+            user_id="user-1",
+            owner_id="user-1",
+            agent_id="luna",
+            text="focus on the API",
+        )
         mock_pool.send_rpc.assert_called_once()
         mock_trial_block_reason.assert_awaited_once_with("user-1")
-        add_mock.assert_not_awaited()  # read-only: no counter write on the send path
 
 
 # ---------------------------------------------------------------------------

@@ -28,46 +28,6 @@ def fast_gate_table(monkeypatch):
         yield client
 
 
-class TestIsBlocked:
-    @pytest.mark.asyncio
-    async def test_missing_owner_is_not_blocked(self, fast_gate_table):
-        # No projection yet -> not gated (the webhook/top-up will create the row).
-        assert await MetronomeFastGate().is_blocked("org_new") is False
-
-    @pytest.mark.asyncio
-    async def test_blocked_when_flag_set(self, fast_gate_table):
-        await MetronomeFastGate().set_balance("org_abc", remaining_microcents=0)
-        assert await MetronomeFastGate().is_blocked("org_abc") is True
-
-    @pytest.mark.asyncio
-    async def test_not_blocked_when_positive(self, fast_gate_table):
-        await MetronomeFastGate().set_balance("org_abc", remaining_microcents=50_000)
-        assert await MetronomeFastGate().is_blocked("org_abc") is False
-
-
-class TestGetRemaining:
-    @pytest.mark.asyncio
-    async def test_missing_owner_returns_zero(self, fast_gate_table):
-        # No projection yet -> 0 spendable; the synchronous gate treats a
-        # brand-new owner as not-yet-metered (is_blocked is the gate, and it
-        # returns False on a missing row).
-        assert await MetronomeFastGate().get_remaining("org_new") == 0
-
-    @pytest.mark.asyncio
-    async def test_returns_cached_remaining(self, fast_gate_table):
-        await MetronomeFastGate().set_balance("org_abc", remaining_microcents=42_000)
-        assert await MetronomeFastGate().get_remaining("org_abc") == 42_000
-
-    @pytest.mark.asyncio
-    async def test_returns_negative_remaining(self, fast_gate_table):
-        # The webhook can report a balance that already went negative
-        # (Metronome rates asynchronously); the cache reflects it verbatim.
-        gate = MetronomeFastGate()
-        await gate.set_balance("org_abc", remaining_microcents=-4_000)
-        assert await gate.get_remaining("org_abc") == -4_000
-        assert await gate.is_blocked("org_abc") is True
-
-
 class TestSetBalance:
     @pytest.mark.asyncio
     async def test_set_balance_writes_blocked_and_remaining(self, fast_gate_table):

@@ -10,6 +10,8 @@ on:
     paths:
       - 'apps/backend/**'
       - 'apps/infra/lambda/bedrock-usage-meter/**'
+      - 'apps/infra/lambda/bedrock-gate/**'
+      - 'apps/infra/lib/stacks/bedrock-gate-stack.ts'
       - 'apps/infra/lambda/ses-inbound/**'
       - 'apps/infra/lambda/ws-connect/**'
       - '.github/workflows/backend.yml'

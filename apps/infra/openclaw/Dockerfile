@@ -202,8 +202,9 @@ RUN curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.17.0.zip" 
 # ---- Layer 3: GitHub CLI (apt repo) ----
 # Was previously a `curl … | tar xz` pipe of the GitHub release tarball,
 # which broke on the bookworm-slim base when the gh tarball download went
-# through GitHub's release-assets redirect. The apt-repo path matches the
-# 1Password setup just above and is what GitHub officially recommends.
+# through GitHub's release-assets redirect. The apt-repo path is what GitHub
+# officially recommends (it also used to match the 1Password layer above, which
+# this file no longer has).
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       -o /usr/share/keyrings/githubcli-archive-keyring.gpg && \
     chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && \
@@ -468,8 +469,8 @@ RUN curl -fsSL -o /tmp/google-chrome.deb \
 # placeholder, so this layer ships and rolls ahead of any Zero Trust org
 # existing — same image-first decoupling as layers 9b and 10 above.
 #
-# Codename is read from the base rather than hardcoded (unlike the 1Password /
-# GitHub repos above, which serve one distro-agnostic "stable" suite):
+# Codename is read from the base rather than hardcoded (unlike the GitHub repo
+# above, which serves one distro-agnostic "stable" suite):
 # Cloudflare publishes per-suite, and this base's Debian release is whatever
 # the upstream OpenClaw fork's node image is on. Cloudflare currently publishes
 # both bookworm and trixie; a base that moves to a suite they do not publish

@@ -42,6 +42,13 @@ export const RETIRED_PANEL_ALIASES: Readonly<Record<string, string>> = {
   // dock dedupes by panel id, so a router-level mapping would leave an
   // Activity link opening a SECOND tab titled "Inbox".
   "teams-activity": "teams-inbox",
+  // Goals and Projects are groupings of the Tasks page, not tabs of their own
+  // — the same rows, cut a different way. Aliased for the same reason as
+  // Money's four keys: the dock dedupes by panel id, so a router-level
+  // mapping would open two tabs both titled "Tasks". describePanel
+  // synthesizes `groupBy` from the RAW key below.
+  "teams-goals": "teams-issues",
+  "teams-projects": "teams-issues",
 };
 
 // The sections of the Money page — the set an absorbed key or a `?section=`
@@ -66,6 +73,20 @@ export const INBOX_SECTIONS: ReadonlySet<string> = new Set([
  *  same list the registry validates against. */
 export type InboxSectionId = "needs-you" | "happening-now" | "recently";
 
+/** The Tasks page's grouping dimensions — the set an absorbed key or a
+ *  `?groupBy=` deep link may name. `TasksList.GROUP_OPTIONS` is the live list
+ *  the menu renders; `TasksList.groupBy.test.tsx` pins the two together, so a
+ *  new grouping cannot ship deep-linkable-but-unrendered (or the reverse). */
+export const TASKS_GROUP_BY: ReadonlySet<string> = new Set([
+  "none",
+  "status",
+  "assignee",
+  "priority",
+  "project",
+  "goal",
+  "parent",
+]);
+
 // One-shot intents: copied to the target panel's open params, immediately
 // stripped from the URL, cleared after consumption, excluded from the
 // persisted layout (dockview serializes panel params — an unstripped intent
@@ -82,8 +103,6 @@ const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
   inbox: "Inbox",
   issues: "Tasks",
   routines: "Automations",
-  goals: "Goals",
-  projects: "Projects",
   artifacts: "Library",
   brain: "Brain",
   accounts: "Accounts",
@@ -212,7 +231,17 @@ export function describePanel(
       const p: Record<string, string> = { teamsKey };
       // Durable filters ride along; one-shots are handled by the reconciler
       // at open time and never enter these params.
-      if (teamsKey === "issues" && params.agent) p.agent = params.agent;
+      if (teamsKey === "issues") {
+        if (params.agent) p.agent = params.agent;
+        // Goals and Projects absorbed into Tasks as groupings, so the cut a
+        // link meant survives only if it is read off the RAW key — same
+        // synthesis, same reason, as `money` and `inbox`.
+        if (panelKey === "teams-goals") p.groupBy = "goal";
+        else if (panelKey === "teams-projects") p.groupBy = "project";
+        else if (params.groupBy && TASKS_GROUP_BY.has(params.groupBy)) {
+          p.groupBy = params.groupBy;
+        }
+      }
       // Inbox absorbed Activity, so the band a link meant survives only if it
       // is read off the RAW key — same synthesis, same reason, as `money`.
       if (teamsKey === "inbox") {
@@ -270,7 +299,7 @@ export function durableParamsFor(panelId: string): string[] {
   if (panelId === "file-viewer") return ["panel", "path", "agent"];
   if (panelId === "agent-inspector") return ["panel", "agent", "inspectorTab"];
   if (panelId === "control:agents") return ["panel", "agent"];
-  if (panelId === "teams-issues") return ["panel", "agent"];
+  if (panelId === "teams-issues") return ["panel", "agent", "groupBy"];
   if (panelId === "teams-inbox") return ["panel", "section"];
   if (panelId === "teams-brain") return ["panel", "path"];
   if (panelId === "teams-money") return ["panel", "day", "section"];
@@ -285,7 +314,7 @@ export function durableParamsFor(panelId: string): string[] {
 // param (an agent filter, an inspector tab) survives an unfiltered navigation
 // — breaking the mobile invariant that plain panel nav drops stale state.
 export function clearablePanelParamKeys(panelId: string): string[] {
-  if (panelId === "teams-issues") return ["agent"];
+  if (panelId === "teams-issues") return ["agent", "groupBy"];
   if (panelId === "teams-inbox") return ["section"];
   if (panelId === "teams-brain") return ["path"];
   if (panelId === "teams-money") return ["day", "section"];

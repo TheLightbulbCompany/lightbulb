@@ -5,9 +5,11 @@ import { PageSkeleton } from "@/components/teams/shared/components/PageSkeleton"
 import {
   INBOX_SECTIONS,
   MONEY_SECTIONS,
+  TASKS_GROUP_BY,
   type InboxSectionId,
 } from "@/components/workspace/panelRegistry";
 import type { MoneySectionId } from "./panels/MoneyPanel";
+import type { TasksGroupBy } from "./issues/TasksList";
 
 // Shown while a panel's code-split chunk loads. Without a loading fallback,
 // next/dynamic renders nothing and a first visit flashes a blank pane before
@@ -30,6 +32,11 @@ const PANEL_LOADERS: Record<string, () => Promise<React.ComponentType>> = {
   inbox: () => import("./panels/InboxPanel").then((m) => m.InboxPanel),
   issues: () => import("./panels/IssuesPanel").then((m) => m.IssuesPanel),
   routines: () => import("./panels/RoutinesPanel").then((m) => m.RoutinesPanel),
+  // UNREACHABLE while `teams-goals` / `teams-projects` alias to `teams-issues`
+  // (panelRegistry.RETIRED_PANEL_ALIASES) — the alias resolves before this map
+  // is consulted, so nothing routes here. Kept because these panels are still
+  // the only place a goal or project is CREATED, edited or deleted; lifting
+  // the alias is what makes them reachable again. Do not treat as live.
   goals: () => import("./panels/GoalsPanel").then((m) => m.GoalsPanel),
   projects: () => import("./panels/ProjectsListPanel").then((m) => m.ProjectsListPanel),
   artifacts: () => import("./panels/ArtifactsPanel").then((m) => m.ArtifactsPanel),
@@ -106,6 +113,12 @@ function asInboxSection(value: string | undefined): InboxSectionId | undefined {
   return value && INBOX_SECTIONS.has(value) ? (value as InboxSectionId) : undefined;
 }
 
+// And for Tasks: an unknown ?groupBy falls back to the page's own default
+// (no grouping) rather than reaching TasksList as a bogus dimension.
+function asTasksGroupBy(value: string | undefined): TasksGroupBy | undefined {
+  return value && TASKS_GROUP_BY.has(value) ? (value as TasksGroupBy) : undefined;
+}
+
 // Warm every panel chunk (called from the shell during browser idle time) so
 // the first open of a panel mounts from the module cache instead of fetching
 // its chunk on click. Failures are ignored — the dynamic() wrappers refetch
@@ -159,6 +172,7 @@ export function TeamsPanelRouter({
     return (
       <IssuesPanel
         agentFilter={panelParams?.agent ?? null}
+        initialGroupBy={asTasksGroupBy(panelParams?.groupBy)}
         // Two channels, one dialog: `?new=task` from the sidebar pill, and
         // `?newIssue=` from Get Started, which Inbox used to own.
         newTask={panelParams?.new === "task" || Boolean(panelParams?.newIssue)}

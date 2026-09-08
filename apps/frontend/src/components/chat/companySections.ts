@@ -11,10 +11,7 @@ import {
   Inbox,
   ListTodo,
   Repeat,
-  Target,
-  FolderKanban,
   Network,
-  History,
   Images,
   Search,
   BookOpen,
@@ -85,12 +82,14 @@ export const COMPANY_SECTIONS: { label: string | null; items: CompanySectionItem
     items: [{ panel: "teams-money", label: "Money", Icon: CreditCard }],
   },
   {
+    // Goals and Projects are not peers of Tasks — they are the same rows cut a
+    // different way, so they are groupings ON Tasks. Their keys still resolve
+    // (RETIRED_PANEL_ALIASES) and open Tasks pre-grouped. Activity likewise
+    // folded into Inbox's "Recently" band.
     label: "Work",
     items: [
       { panel: "teams-issues", label: "Tasks", Icon: ListTodo },
       { panel: "teams-routines", label: "Automations", Icon: Repeat },
-      { panel: "teams-goals", label: "Goals", Icon: Target },
-      { panel: "teams-projects", label: "Projects", Icon: FolderKanban },
       // Support sits with Work (spec's "Operations"), not Company: it is a
       // thing the company DOES, not a thing the company IS.
       // Unblocked by: an owner-indexed thread store, so the tab can list real
@@ -145,7 +144,6 @@ export const COMPANY_SECTIONS: { label: string | null; items: CompanySectionItem
       // Unblocked by: nothing external — it becomes a Library filter once the
       // Library grows document types.
       { panel: "teams-contracts", label: "Contracts", Icon: FileSignature, comingSoon: true },
-      { panel: "teams-activity", label: "Activity", Icon: History },
     ],
   },
 ];

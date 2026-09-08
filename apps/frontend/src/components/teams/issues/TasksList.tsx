@@ -44,6 +44,7 @@ import {
 } from "@/components/teams/issues/tasksViewMode";
 import { teamsDetailUrl } from "@/lib/shellNav";
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
+import { buildSubIssueProgressSummary } from "@/components/teams/shared/lib/subIssues";
 import {
   Popover,
   PopoverContent,
@@ -74,6 +75,7 @@ import {
   type IssueFilterState,
 } from "@/components/teams/shared/lib/issueFilters";
 import type {
+  Goal,
   IssueBlockerAttention,
   Issue,
 } from "@/components/teams/shared/types";
@@ -101,13 +103,22 @@ export type TasksGroupBy =
   | "assignee"
   | "priority"
   | "project"
-  | "parent";
+  | "parent"
+  | "goal";
 
 type Agent = NonNullable<KanbanBoardProps["agents"]>[number];
 
 export interface TasksListProps {
   issues: Issue[];
   agents?: Agent[];
+  /** Company goals, so a goal group heading reads as a TITLE, not an id. */
+  goals?: Goal[];
+  /**
+   * Grouping this mount opens on — a `?groupBy=` deep link, or the Goals /
+   * Projects keys that now alias here. Already validated by the router.
+   * Absent means the plain Tasks page: no grouping.
+   */
+  initialGroupBy?: TasksGroupBy;
   liveIssueIds?: Set<string>;
   /** Signed-in user id; passed to the filters popover for the "Me" assignee. */
   currentUserId?: string | null;
@@ -238,12 +249,16 @@ const SORT_OPTIONS: ReadonlyArray<readonly [TasksSortField, string]> = [
   ["title", "Title"],
 ];
 
-const GROUP_OPTIONS: ReadonlyArray<readonly [TasksGroupBy, string]> = [
+// Goals and Projects were their own tabs until they became groupings of this
+// one. `panelRegistry.TASKS_GROUP_BY` is the deep-link fence over these same
+// values; TasksList.groupBy.test.tsx pins the two lists together.
+export const GROUP_OPTIONS: ReadonlyArray<readonly [TasksGroupBy, string]> = [
   ["none", "None"],
   ["status", "Status"],
   ["assignee", "Assignee"],
   ["priority", "Priority"],
   ["project", "Project"],
+  ["goal", "Goal"],
   ["parent", "Parent"],
 ];
 
@@ -255,12 +270,20 @@ interface TasksGroup {
   key: string;
   label: string | null;
   items: Issue[];
+  /** Set on a goal group: the heading links to that goal's detail, so its
+   *  description, status and owner stay reachable now that Goals is not a
+   *  tab. Absent on the "No goal" bucket, which has nothing to open. */
+  goalId?: string;
+  /** One extra fact about the group — "2 of 5 done" for a goal. */
+  meta?: string;
 }
 
 interface GroupContext {
   agentName: (id: string | null | undefined) => string | null;
   /** Resolves a parent issue's identifier/title for the "Parent" grouping. */
   issueLabel: (id: string) => string | null;
+  /** Resolves a goal's TITLE for the "Goal" grouping — never its raw id. */
+  goalTitle: (id: string) => string | null;
 }
 
 // Sentinel keys for the "no value" bucket of each grouping. Kept distinct so
@@ -269,6 +292,7 @@ const UNASSIGNED_KEY = "__unassigned";
 const NO_PRIORITY_KEY = "__no_priority";
 const NO_PROJECT_KEY = "__no_project";
 const NO_PARENT_KEY = "__no_parent";
+const NO_GOAL_KEY = "__no_goal";
 
 function groupKeyFor(issue: Issue, groupBy: TasksGroupBy): string {
   switch (groupBy) {
@@ -282,6 +306,8 @@ function groupKeyFor(issue: Issue, groupBy: TasksGroupBy): string {
       return issue.project?.id ?? NO_PROJECT_KEY;
     case "parent":
       return issue.parentId ?? NO_PARENT_KEY;
+    case "goal":
+      return issue.goalId ?? NO_GOAL_KEY;
     default:
       return "__all";
   }
@@ -323,6 +349,11 @@ function groupIssues(
       if (key === NO_PARENT_KEY) return "No parent";
       return ctx.issueLabel(key) ?? key.slice(0, 8);
     }
+    if (groupBy === "goal") {
+      if (key === NO_GOAL_KEY) return "No goal";
+      // Never the raw `goal_…` id: an unresolvable goal says so instead.
+      return ctx.goalTitle(key) ?? "Unknown goal";
+    }
     // assignee
     if (key === UNASSIGNED_KEY) return "Unassigned";
     return ctx.agentName(key) ?? key.slice(0, 8);
@@ -334,7 +365,9 @@ function groupIssues(
         ? NO_PROJECT_KEY
         : groupBy === "parent"
           ? NO_PARENT_KEY
-          : UNASSIGNED_KEY;
+          : groupBy === "goal"
+            ? NO_GOAL_KEY
+            : UNASSIGNED_KEY;
   const keys = [...buckets.keys()];
   if (groupBy === "status") {
     keys.sort((a, b) => statusRank(a) - statusRank(b));
@@ -347,11 +380,21 @@ function groupIssues(
       return labelFor(a).localeCompare(labelFor(b));
     });
   }
-  return keys.map((key) => ({
-    key,
-    label: labelFor(key),
-    items: buckets.get(key)!,
-  }));
+  return keys.map((key) => {
+    const items = buckets.get(key)!;
+    if (groupBy !== "goal") return { key, label: labelFor(key), items };
+    // "N of M done" off the SAME progress helper the sub-issue strip uses, so
+    // there is one definition of done on this surface (it drops cancelled work
+    // from the denominator rather than counting it as outstanding).
+    const { doneCount, totalCount } = buildSubIssueProgressSummary(items);
+    return {
+      key,
+      label: labelFor(key),
+      items,
+      goalId: key === NO_GOAL_KEY ? undefined : key,
+      meta: `${doneCount} of ${totalCount} done`,
+    };
+  });
 }
 
 /* ── view-mode toggle ──────────────────────────────────────────────────── */
@@ -501,15 +544,56 @@ function MenuPopover<T extends string>({
 
 /* ── group header ──────────────────────────────────────────────────────── */
 
-function GroupHeader({ label, count }: { label: string; count: number }) {
+function GroupHeader({
+  label,
+  count,
+  goalId,
+  meta,
+}: {
+  label: string;
+  count: number;
+  /** Set on a goal group: the heading becomes a link to that goal's detail. */
+  goalId?: string;
+  /** One extra fact about the group — "2 of 5 done" for a goal. */
+  meta?: string;
+}) {
+  // Same plain-left-click handoff TaskRow uses: the href is the canonical
+  // in-shell URL so new-tab still works, and the nav provider takes a plain
+  // click so the swap stays client-side.
+  const nav = useInlineTeamsNav();
+  const heading = <span className="label-caps text-[var(--midnight-muted)]">{label}</span>;
   return (
     <div className="flex items-center gap-2 px-1 pb-1.5 pt-3">
-      <span className="label-caps text-[var(--midnight-muted)]">
-        {label}
-      </span>
-      <span className="text-caption tabular-nums text-[var(--midnight-muted)]">
-        {count}
-      </span>
+      {goalId ? (
+        <Link
+          href={teamsDetailUrl("goal", goalId)}
+          prefetch={false}
+          onClick={(e) => {
+            if (!nav) return;
+            if (
+              e.defaultPrevented ||
+              e.button !== 0 ||
+              e.metaKey ||
+              e.ctrlKey ||
+              e.shiftKey ||
+              e.altKey
+            ) {
+              return;
+            }
+            e.preventDefault();
+            nav.openDetail("goal-detail", goalId);
+          }}
+          className="no-underline hover:underline"
+        >
+          {heading}
+        </Link>
+      ) : (
+        heading
+      )}
+      <span className="text-caption tabular-nums text-[var(--midnight-muted)]">{count}</span>
+      {meta && (
+        <span className="text-caption tabular-nums text-[var(--midnight-muted)]">{meta}</span>
+      )}
     </div>
   );
 }
@@ -739,6 +823,8 @@ function TaskRow({
 export function TasksList({
   issues,
   agents,
+  goals,
+  initialGroupBy,
   liveIssueIds,
   currentUserId,
   searchActive = false,
@@ -746,16 +832,37 @@ export function TasksList({
   onUpdateIssue,
   onNewTask,
 }: TasksListProps) {
-  const viewMode = useTasksViewMode();
+  const storedViewMode = useTasksViewMode();
   const [sortField, setSortField] = useState<TasksSortField>("updated");
   const [sortDir, setSortDir] = useState<TasksSortDir>("desc");
-  const [groupBy, setGroupBy] = useState<TasksGroupBy>("none");
+  const [groupBy, setGroupBy] = useState<TasksGroupBy>(initialGroupBy ?? "none");
+  // A ?groupBy deep link — the old Goals / Projects links — asks for a GROUPED
+  // view, and grouping is a list-view affordance. Honour it on this mount
+  // without touching the stored board-vs-list preference: the view toggle
+  // takes the view back, and the preference is what it always was.
+  const [groupingDeepLink, setGroupingDeepLink] = useState(Boolean(initialGroupBy));
+  const viewMode = groupingDeepLink ? "list" : storedViewMode;
+  // Re-delivery of the panel param on an already-open panel (dockview merges
+  // parameters rather than remounting), and the clear a plain Tasks nav sends.
+  // Adjust-state-during-render, not an effect — the same pattern IssuesPanel
+  // uses for its one-shot.
+  const [prevInitialGroupBy, setPrevInitialGroupBy] = useState(initialGroupBy);
+  if (initialGroupBy !== prevInitialGroupBy) {
+    setPrevInitialGroupBy(initialGroupBy);
+    setGroupBy(initialGroupBy ?? "none");
+    setGroupingDeepLink(Boolean(initialGroupBy));
+  }
   const [nestingEnabled, setNestingEnabled] = useState(true);
   const [filterState, setFilterState] = useState<IssueFilterState>(
     defaultIssueFilterState,
   );
   const [collapsedParents, setCollapsedParents] = useState<Set<string>>(
     () => new Set(),
+  );
+
+  const goalTitle = useCallback(
+    (id: string): string | null => goals?.find((g) => g.id === id)?.title ?? null,
+    [goals],
   );
 
   const agentName = useCallback(
@@ -826,8 +933,8 @@ export function TasksList({
   );
 
   const groups = useMemo(
-    () => groupIssues(sorted, groupBy, { agentName, issueLabel }),
-    [sorted, groupBy, agentName, issueLabel],
+    () => groupIssues(sorted, groupBy, { agentName, issueLabel, goalTitle }),
+    [sorted, groupBy, agentName, issueLabel, goalTitle],
   );
 
   const toggleParent = useCallback((id: string) => {
@@ -908,7 +1015,14 @@ export function TasksList({
           iconOnly
         />
 
-        <ViewModeToggle viewMode={viewMode} onChange={setTasksViewMode} />
+        <ViewModeToggle
+          viewMode={viewMode}
+          onChange={(mode) => {
+            // An explicit pick beats the deep link and becomes the preference.
+            setGroupingDeepLink(false);
+            setTasksViewMode(mode);
+          }}
+        />
 
         {viewMode === "list" && (
           <>
@@ -1006,7 +1120,12 @@ export function TasksList({
           {groups.map((group) => (
             <div key={group.key}>
               {group.label && (
-                <GroupHeader label={group.label} count={group.items.length} />
+                <GroupHeader
+                  label={group.label}
+                  count={group.items.length}
+                  goalId={group.goalId}
+                  meta={group.meta}
+                />
               )}
               {renderRows(group.items)}
             </div>

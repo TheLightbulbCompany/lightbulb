@@ -150,6 +150,12 @@ function MobileChatShell() {
           ? rawTeamsKey
           : null;
   const sectionParam = searchParams.get("section") ?? absorbedSection;
+  // And for Tasks: ?panel=teams-goals / teams-projects carry no &groupBy=,
+  // because the grouping IS the key. Both alias to teams-issues, so reading it
+  // off the RAW key here can never leak onto another panel.
+  const groupByParam =
+    searchParams.get("groupBy") ??
+    (rawTeamsKey === "goals" ? "goal" : rawTeamsKey === "projects" ? "project" : null);
   const oneShots = {
     new: searchParams.get("new") ?? undefined,
     newIssue: searchParams.get("newIssue") ?? undefined,
@@ -354,6 +360,7 @@ function MobileChatShell() {
                 leaveToList={leaveToList}
                 panelParams={{
                   ...(agentParam ? { agent: agentParam } : {}),
+                  ...(groupByParam ? { groupBy: groupByParam } : {}),
                   ...(tabParam ? { tab: tabParam } : {}),
                   ...(pathParam ? { path: pathParam } : {}),
                   ...(dayParam ? { day: dayParam } : {}),

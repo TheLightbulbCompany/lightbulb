@@ -14,7 +14,7 @@ import {
   ONBOARDING_FIRST_TASK_TITLE,
   resolveCeoAgentId,
 } from "@/components/getstarted/getStartedFirstTask";
-import { TasksList } from "@/components/teams/issues/TasksList";
+import { TasksList, type TasksGroupBy } from "@/components/teams/issues/TasksList";
 import { useIssueMutations } from "@/components/teams/issues/hooks/useIssueMutations";
 import { useLiveRuns } from "@/components/teams/dashboard/hooks/useLiveRuns";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
@@ -30,6 +30,11 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 export interface IssuesPanelProps {
   /** Agent-scope filter (from the roster's "See her work →"). null = no filter. */
   agentFilter?: string | null;
+  /**
+   * Grouping to open on — from `?groupBy=`, or from the Goals / Projects keys
+   * that now alias to this page. Validated by the router before it gets here.
+   */
+  initialGroupBy?: TasksGroupBy;
   /** One-shot intent to auto-open the create dialog (from the "New task" pill). */
   newTask?: boolean;
   /**
@@ -55,6 +60,7 @@ export interface IssuesPanelProps {
 // absent the panel renders its unfiltered, no-dialog default (standalone/test).
 export function IssuesPanel({
   agentFilter: agentFilterProp = null,
+  initialGroupBy,
   newTask = false,
   newTaskPrefill = null,
   onNewTaskConsumed,
@@ -256,6 +262,8 @@ export function IssuesPanel({
       <TasksList
         issues={filtered}
         agents={agentsData?.agents ?? []}
+        goals={goalsData?.goals ?? []}
+        initialGroupBy={initialGroupBy}
         liveIssueIds={liveIssueIds}
         currentUserId={user?.id ?? null}
         searchActive={search.trim().length > 0 || agentFilter !== null}

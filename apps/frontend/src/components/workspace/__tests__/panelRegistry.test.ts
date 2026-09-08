@@ -111,7 +111,7 @@ describe("panelRegistry", () => {
   it("names durable params per panel id for clear-on-close", () => {
     expect(durableParamsFor("teams-issue-detail:ADM-1")).toEqual(["panel", "detailId"]);
     expect(durableParamsFor("agent-inspector")).toEqual(["panel", "agent", "inspectorTab"]);
-    expect(durableParamsFor("teams-issues")).toEqual(["panel", "agent"]);
+    expect(durableParamsFor("teams-issues")).toEqual(["panel", "agent", "groupBy"]);
     expect(durableParamsFor("teams-inbox")).toEqual(["panel", "section"]);
     // ?panel=file-viewer&path=… is registered grammar — close must clear the
     // path (and any agent binding), not just ?panel.
@@ -122,7 +122,7 @@ describe("panelRegistry", () => {
   });
 
   it("names the clearable PANEL params a plain re-open must reset", () => {
-    expect(clearablePanelParamKeys("teams-issues")).toEqual(["agent"]);
+    expect(clearablePanelParamKeys("teams-issues")).toEqual(["agent", "groupBy"]);
     expect(clearablePanelParamKeys("teams-inbox")).toEqual(["section"]);
     expect(clearablePanelParamKeys("file-viewer")).toEqual(["path", "agent"]);
     expect(clearablePanelParamKeys("agent-inspector")).toEqual(["agentId", "initialTab"]);
@@ -224,6 +224,34 @@ describe("panelRegistry", () => {
       teamsKey: "inbox",
       section: "needs-you",
     });
+  });
+
+  it("aliases Goals and Projects onto Tasks, pre-grouped", () => {
+    const goals = describePanel("teams-goals", {});
+    expect(goals?.panelId).toBe("teams-issues");
+    expect(goals?.title).toBe("Tasks");
+    expect(goals?.params.groupBy).toBe("goal");
+
+    const projects = describePanel("teams-projects", {});
+    expect(projects?.panelId).toBe("teams-issues");
+    expect(projects?.title).toBe("Tasks");
+    expect(projects?.params.groupBy).toBe("project");
+  });
+
+  it("keeps one panel id when Goals, Projects and Tasks are all opened", () => {
+    const tasks = describePanel("teams-issues", {})?.panelId;
+    expect(describePanel("teams-goals", {})?.panelId).toBe(tasks);
+    expect(describePanel("teams-projects", {})?.panelId).toBe(tasks);
+  });
+
+  it("carries an explicit ?groupBy, and ignores one that is not a grouping", () => {
+    expect(describePanel("teams-issues", { groupBy: "assignee" })?.params.groupBy).toBe(
+      "assignee",
+    );
+    expect(describePanel("teams-issues", { groupBy: "constructor" })?.params.groupBy)
+      .toBeUndefined();
+    expect(describePanel("teams-issues", { groupBy: "nonsense" })?.params.groupBy)
+      .toBeUndefined();
   });
 
   it("registers exactly the component keys the shell's components map will have", () => {

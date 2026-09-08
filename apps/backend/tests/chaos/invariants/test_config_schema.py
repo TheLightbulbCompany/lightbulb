@@ -58,7 +58,12 @@ _AIPS_BY_CHOICE = {
 }
 
 
-def _build(provider_choice: str, byo_provider: str, owner_type: str) -> dict:
+def _build(
+    provider_choice: str,
+    byo_provider: str,
+    owner_type: str,
+    paperclip_agents: list[dict] | None = None,
+) -> dict:
     return build_openclaw_config_dict(
         user_id="user_chaos_0",
         gateway_token="tok_chaos",
@@ -66,7 +71,11 @@ def _build(provider_choice: str, byo_provider: str, owner_type: str) -> dict:
         byo_provider=byo_provider if provider_choice == "byo_key" else None,
         owner_type=owner_type,
         aip_arns=_AIPS_BY_CHOICE.get(provider_choice),
+        paperclip_agents=paperclip_agents,
         deployed_tag=_vendored_tag(),
+        # An mcp block is what makes mcp.runtimeScope reachable; without one the
+        # key is never written and the schema never sees it.
+        integration_mcp_servers={"stripe": {"command": "npx", "args": ["-y", "@stripe/mcp"]}},
     )
 
 
@@ -76,9 +85,10 @@ def _build(provider_choice: str, byo_provider: str, owner_type: str) -> dict:
     provider_choice=ss.provider_choices,
     byo_provider=ss.byo_providers,
     owner_type=ss.owner_types,
+    paperclip_agents=ss.paperclip_rosters,
 )
-def test_builder_never_raises(provider_choice, byo_provider, owner_type):
-    config = _build(provider_choice, byo_provider, owner_type)
+def test_builder_never_raises(provider_choice, byo_provider, owner_type, paperclip_agents):
+    config = _build(provider_choice, byo_provider, owner_type, paperclip_agents)
     assert isinstance(config, dict) and config, "builder returned empty/non-dict config"
 
 
@@ -92,9 +102,10 @@ def test_builder_never_raises(provider_choice, byo_provider, owner_type):
     provider_choice=ss.provider_choices,
     byo_provider=ss.byo_providers,
     owner_type=ss.owner_types,
+    paperclip_agents=ss.paperclip_rosters,
 )
-def test_emitted_config_passes_upstream_schema(provider_choice, byo_provider, owner_type):
-    config = _build(provider_choice, byo_provider, owner_type)
+def test_emitted_config_passes_upstream_schema(provider_choice, byo_provider, owner_type, paperclip_agents):
+    config = _build(provider_choice, byo_provider, owner_type, paperclip_agents)
     # OpenClaw NEVER safeParses a raw on-disk config: validateConfigObject
     # (validation-core.ts:423) runs migratePersistedImplicitMainRoster FIRST,
     # converting the legacy agents.list[] roster into 8.1's agents.entries map,

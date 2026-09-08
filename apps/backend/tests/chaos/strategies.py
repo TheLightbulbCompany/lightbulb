@@ -34,3 +34,30 @@ token_events = st.fixed_dictionaries(
 provider_choices = st.sampled_from(["bedrock_claude", "bedrock_trial", "chatgpt_oauth", "byo_key"])
 byo_providers = st.sampled_from(["anthropic", "openai"])
 owner_types = st.sampled_from(["personal", "org"])
+
+# Paperclip roster shapes the config builder can be handed. `[]` is the
+# unprovisioned container (one legacy "main" entry); the two- and three-agent
+# rosters are what a real owner runs, and only those exercise the schema's
+# multi-agent superRefine — every agent-id cross-reference (systemAgent,
+# talk.agentId, heartbeat.agentId, bindings, hooks.allowedAgentIds) is checked
+# against the roster, and a single-"main" config can never fail those checks.
+paperclip_rosters = st.sampled_from(
+    [
+        [],
+        [
+            {"id": "agent_friday", "name": "Friday", "role": "ceo"},
+            {"id": "agent_atlas", "name": "Atlas", "role": "general"},
+        ],
+        # CEO not first, to keep the default-first ordering honest.
+        [
+            {"id": "agent_tally", "name": "Tally", "role": "general"},
+            {"id": "agent_pulse", "name": "Pulse", "role": "general"},
+            {"id": "agent_friday", "name": "Friday", "role": "ceo"},
+        ],
+        # No CEO at all -- the first entry owns ambient work.
+        [
+            {"id": "agent_vera", "name": "Vera", "role": "general"},
+            {"id": "agent_gauge", "name": "Gauge", "role": "general"},
+        ],
+    ]
+)

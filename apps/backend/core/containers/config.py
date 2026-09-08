@@ -17,6 +17,7 @@ from pathlib import Path
 
 from core import openclaw_version
 from core.config import settings
+from core.services.company_package import COMPANY_STANDARD_PLAN_MAX_AGENTS
 from core.services.config_schema import gate_config
 from core.services.efs_file_lock import get_file_lock, openclaw_config_sidecar_lock
 from core.services.paperclip_meta import (
@@ -262,6 +263,69 @@ AGENT_SUBAGENT_MAX_CONCURRENT_TRIAL = 2
 # advertised window). Deliberately not set on the other paths: the ChatGPT/Codex
 # path serves ~272k and must keep inheriting its own budget.
 BEDROCK_CONTEXT_TOKENS = 200_000
+
+# session.maintenance.maxDiskBytes / highWaterBytes — the one number in this
+# file that is arithmetic against a physical disk rather than a taste call.
+#
+# WHAT CHANGED UNDER US AT 8.1. `src/config/sessions/session-history-eviction.ts`
+# is new at 2026.8.1 (absent at v2026.7.2-isol8.4). Through 7.2 this budget was
+# measured against LOGICAL bytes — projected store entries + transcript +
+# trajectory (session-accessor.sqlite-maintenance.ts:150). At 8.1 it is measured
+# against PHYSICAL usage: the SQLite main file + its WAL + everything in the
+# agent's sessions/ dir (disk-budget.ts `measureSessionPhysicalDiskUsage`). SQLite
+# main files do not shrink on delete, so the same string now buys far less real
+# history. Crossing maxDiskBytes prunes retained zstd archives with fs.promises.rm
+# and then evicts historical sessions oldest-first until usage falls to
+# highWaterBytes. We do not set `preserveRecent`, so on THIS path there is no
+# recency floor and no synthetic-only protection: a human's old /chat thread is a
+# candidate like any other. That is the opposite of what the block below used to
+# claim, and it is silent — the owner just finds their history gone.
+#
+# THE BUDGET IS PER AGENT, not per container. paths.ts resolves the store to
+# <state>/agents/<agentId>/sessions and the DB to
+# <state>/agents/<agentId>/agent/openclaw-agent.sqlite, and the sweep measures one
+# agent's directory. So the container-wide cost is N_agents x this number.
+#
+# WHY NOT UPSTREAM'S 10 GiB (store-maintenance.ts DEFAULT_SESSION_MAX_DISK_BYTES).
+# Upstream sizes for a host with a real disk. Ours is a Fargate task, and these
+# databases are NOT on EFS: container-stack.ts nests two config-less ECS volumes
+# (`openclaw-state`, `openclaw-agents`) inside the EFS mount, so state/ and
+# agents/ are task-local ext4 drawing from the task's ephemeral storage. That
+# storage is the Fargate DEFAULT — `ephemeralStorage` is declared nowhere, and
+# ecs_manager's register_task_definition kwargs whitelist would drop it if it
+# were — so the whole fleet has 20 GiB, shared. Ten agents x 10 GiB is 5x the
+# disk.
+#
+# THE ARITHMETIC. Reserve half the disk for everything that is not session
+# history, then split the rest across the governed agent cap:
+#
+#     20480 MiB  task ephemeral storage (Fargate default, undeclared)
+#   - 10240 MiB  reserved: extended image layers (~3 GiB; the Dockerfile targets
+#                2-3 GB), /tmp incl. the chromium user-data profile, the shared
+#                state/openclaw.sqlite + WAL, litestream's restore working set,
+#                and free-space headroom — a full disk is one of the ways SQLite
+#                reports "database is locked", which is exactly how the 11-agent
+#                owner crash-looped on 2026-08-14
+#   = 10240 MiB  for session stores
+#   /       10   COMPANY_STANDARD_PLAN_MAX_AGENTS
+#   =  1024 MiB  per agent, evicting down to 819 MiB
+#
+# Steady state is the high-water mark, so a full 10-agent owner settles at
+# 10 x 819 MiB = 8 GiB against a 10 GiB allowance. highWaterBytes is emitted
+# explicitly rather than left to upstream's 0.8 ratio for the same reason
+# AGENT_MAX_CONCURRENT is pinned: the ratio is an upstream default, the steady
+# state above depends on it, and 8.1 already moved one default under us.
+#
+# KNOWN CEILING: an `ultra_pro` owner has no agent cap at all (agent_budget.py
+# returns early on the plan), so N > 10 breaks this arithmetic. Bounding that
+# needs either a per-owner agent cap or a declared ephemeralStorage — and the
+# latter is a two-place change, because ecs_manager's per-user clone rebuilds
+# register_task_definition kwargs from a whitelist that omits the field.
+TASK_EPHEMERAL_STORAGE_MIB = 20 * 1024
+SESSION_STORE_RESERVED_MIB = 10 * 1024
+SESSION_MAX_DISK_MIB = (TASK_EPHEMERAL_STORAGE_MIB - SESSION_STORE_RESERVED_MIB) // COMPANY_STANDARD_PLAN_MAX_AGENTS
+# Upstream's DEFAULT_SESSION_DISK_BUDGET_HIGH_WATER_RATIO, pinned.
+SESSION_HIGH_WATER_MIB = SESSION_MAX_DISK_MIB * 8 // 10
 
 # ---------------------------------------------------------------------------
 # Tool deny lists — SINGLE SOURCE. node_proxy.py REPLACES tools.deny wholesale
@@ -2302,20 +2366,28 @@ def build_openclaw_config_dict(
         "session": {
             "dmScope": "per-account-channel-peer",
             # "warn" (the old value) never deletes ANYTHING — unbounded
-            # session-store + archive growth on EFS, and giant session files
-            # are upstream's documented pre-OOM signature on small tasks. The
-            # eviction fear that motivated warn is obsolete: enforce preserves
-            # durable human conversations (main/group/thread), reaps only
-            # SYNTHETIC rows (cron/hook/heartbeat/ACP/subagent — exactly what
-            # our autonomous fleet mass-produces), and zstd-archives before
-            # any deletion. Bounds are generous multiples of upstream's
-            # defaults (500 rows / 30d) to protect heavy owners.
+            # session-store + archive growth, and giant session files are
+            # upstream's documented pre-OOM signature on small tasks. The
+            # eviction fear that motivated warn is obsolete for the ENTRY-COUNT
+            # and AGE paths: those preserve durable human conversations
+            # (main/group/thread) and reap only SYNTHETIC rows (cron / hook /
+            # heartbeat / ACP / subagent — exactly what our autonomous fleet
+            # mass-produces), zstd-archiving before any deletion. maxEntries and
+            # pruneAfter are therefore generous multiples of upstream's defaults
+            # (500 rows / 30d) to protect heavy owners.
+            #
+            # maxDiskBytes is NOT in that family and must not be reasoned about
+            # as if it were — at 8.1 it is a physical-bytes budget whose sweep
+            # has no synthetic-only filter and (with preserveRecent unset) no
+            # recency floor. It is derived arithmetic against the task's
+            # ephemeral disk; see SESSION_MAX_DISK_MIB above before touching it.
             # resetArchiveRetention defaults to keep-forever — set explicitly.
             "maintenance": {
                 "mode": "enforce",
                 "maxEntries": 2000,
                 "pruneAfter": "90d",
-                "maxDiskBytes": "500mb",
+                "maxDiskBytes": f"{SESSION_MAX_DISK_MIB}mb",
+                "highWaterBytes": f"{SESSION_HIGH_WATER_MIB}mb",
                 "resetArchiveRetention": "90d",
             },
             # Unconfigured, sessions reset daily at 04:00 gateway-local =

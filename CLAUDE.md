@@ -366,9 +366,35 @@ gh run view <id> --repo TheLightbulbCompany/lightbulb --json jobs \
   everything behind it.
 - **Non-zero** → real work (43-of-44 and 49-of-49 were both live). Leave it alone and wait.
 
-Practical rules: check that job count BEFORE cancelling anything or firing a recovery dispatch;
-watch a dispatch until it reaches `in_progress` rather than assuming it started; and if other
-sessions are active, ask for a short merge hold and tell them the moment yours is protected.
+**⚠️ That two-way split is too coarse — corrected 2026-09-08.** A run can start some jobs,
+then stall with the rest unassigned, and it holds the group exactly as hard as a slot that
+never started. Observed live: run 34176328884 sat `queued` for ~32 minutes reporting
+**3 completed / 37 queued**, with nothing having moved for 18 of them, while a peer session's
+prod promotion was superseded twice waiting behind it. Under the old rule its non-zero count
+read as "real work, leave it alone", and it was in fact starved.
+
+So the signal is **recent job STARTS, not any job start ever**. Check the split and the clock
+together:
+
+```bash
+gh run view <id> --repo TheLightbulbCompany/lightbulb --json jobs \
+  --jq '[.jobs[]|.status]|group_by(.)|map({(.[0]):length})|add'
+gh run view <id> --repo TheLightbulbCompany/lightbulb --json createdAt,updatedAt
+```
+
+A run with jobs still `queued` and an `updatedAt` several minutes stale is stalled whatever
+its completed count says. A run whose `updatedAt` is moving is alive — wait for it.
+
+Practical rules: check that job breakdown AND `updatedAt` BEFORE cancelling anything or firing
+a recovery dispatch; watch a dispatch until it reaches `in_progress` rather than assuming it
+started; and if other sessions are active, ask for a short merge hold and tell them the moment
+yours is protected. **The reciprocal duty matters more than the diagnosis:** check the deploy
+queue before you merge, not only before you promote. A merge to `main` fires `deploy.yml` and
+supersedes any pending run in the group, so a routine merge silently kills a colleague's
+promotion — that happened twice on 2026-09-08, and the second one was a merge made while its
+author knew the trap and simply had not looked. Feature-branch pushes are safe: `deploy.yml`
+triggers only on `push: branches: [main]` and `workflow_dispatch`, so agents can keep pushing
+to branches during a freeze.
 A dispatch also ships **the ref it was fired on**, so a promotion never carries anything merged
 after it — check with `git merge-base --is-ancestor <commit> <dispatch sha>` rather than
 assuming a colleague's in-flight run will take your work along.

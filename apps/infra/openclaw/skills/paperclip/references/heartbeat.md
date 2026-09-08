@@ -158,8 +158,18 @@ The array **replaces** the current set on each update — pass `--blocked-by ""`
 ## Parking Work Correctly (unblockDescriptor)
 
 Moving an issue to `blocked` without saying what unblocks it makes it invisible
-work. Paperclip acts on an `unblockDescriptor` — it wakes the named agent when
-the block is theirs to clear — and does nothing at all without one.
+work. The descriptor's real job is legibility, not liveness: it records who
+owns the unblock and what action clears it, so the block is visible to a
+human or another agent reading the issue instead of silently sitting there.
+
+Paperclip's own notification is **one-shot**, fired only at the moment the
+issue transitions into `blocked`, and only to the named owner. For a
+self-owned block — the only shape an agent can legally send — that owner is
+you, so it tells you nothing you didn't already know when you set it.
+**Nothing re-checks a blocked issue for you after that** — there is no
+recurring watch for the block clearing. If the thing you're waiting on is
+machine-observable, the mechanism that actually wakes you again is a
+**monitor plus a watchdog** (`references/monitors.md`), not the descriptor.
 
 **Precondition:** `unblockDescriptor` is only accepted together with
 `status: "blocked"` in the same PATCH — send it with any other status and

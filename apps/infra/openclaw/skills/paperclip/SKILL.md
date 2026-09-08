@@ -270,9 +270,9 @@ to, or linking cases through the agent-facing cases API.
 ## Proposing Credentials Safely
 
 **Never paste a credential into an issue comment, document, file, plan, task
-description, or work product.** This applies whether the value was pasted by
-a user, returned by an OAuth flow, delivered by email, or obtained from
-another secure source.
+description, transcript, or work product.** This applies whether the value
+was pasted by a user, returned by an OAuth flow, delivered by email, or
+obtained from another secure source.
 
 `POST /api/agents/me/secret-proposals` — upstream's "propose it as a secret"
 call — **403s on this instance for every agent** with `"Secret proposals

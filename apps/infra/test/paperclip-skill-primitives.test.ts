@@ -446,4 +446,23 @@ describe("fix round 4 — agent unblock ownership and secret-access accuracy", (
   it("drops the false \"legacy\" label from the ?q= issue-search routing row", () => {
     expect(skillMd.toLowerCase()).not.toContain("legacy");
   });
+
+  // The 403 guard forbids two illegal owner shapes, not one: `owner: "board"`
+  // (asserted above) AND any owner containing a userId. A doc example naming
+  // a user's id as the unblock owner would be just as illegal and just as
+  // plausible-looking as the board example already guarded against.
+  it("shows no agent-facing unblockDescriptor example naming a userId owner", () => {
+    expect(heartbeatRefMd).not.toMatch(/owner:\s*\{\s*userId/);
+  });
+
+  // The self-ownership worked example must bind the owner to the run's own
+  // agent id via the shell var, never to a literal uuid a future edit could
+  // paste in and have look self-owned without actually being so.
+  it("binds the self-ownership unblockDescriptor example to $PAPERCLIP_AGENT_ID, not a literal uuid", () => {
+    expect(heartbeatRefMd).toContain('jq -n --arg agentId "$PAPERCLIP_AGENT_ID"');
+    expect(heartbeatRefMd).toContain("owner: {agentId: $agentId}");
+    expect(heartbeatRefMd).not.toMatch(
+      /owner:\s*\{\s*agentId:\s*"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"/i,
+    );
+  });
 });

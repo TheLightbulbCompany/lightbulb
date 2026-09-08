@@ -144,7 +144,10 @@ async def _maybe_disarm_unentitled_owner(owner_id: str) -> None:
         elif trial_reason is not None:
             return
         else:
-            gate = await provision_gate.evaluate_provision_gate(owner_id=owner_id, is_admin=True)
+            # The wake attempt already emitted provision.gate.blocked. This is
+            # a diagnostic re-read for cleanup, so keep it out of the W64 gate
+            # spike metric rather than double-counting the same decision.
+            gate = await provision_gate.probe_provision_gate(owner_id=owner_id, is_admin=True)
             if gate is None or gate.code not in _TERMINAL_AUTOMATION_GATE_CODES:
                 return
             trigger = gate.code

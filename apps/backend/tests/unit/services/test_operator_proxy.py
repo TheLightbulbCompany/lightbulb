@@ -523,7 +523,7 @@ async def test_blocked_wake_disarms_a_canceled_subscription(mock_ecs, mock_upstr
     with (
         patch("core.services.container_wake.request_wake_silent", new_callable=AsyncMock) as wake,
         patch("core.services.trial_cap.trial_block_reason", new_callable=AsyncMock) as reason,
-        patch("core.services.provision_gate.evaluate_provision_gate", new_callable=AsyncMock) as gate,
+        patch("core.services.provision_gate.probe_provision_gate", new_callable=AsyncMock) as gate,
         patch(
             "core.services.paperclip_agent_lifecycle.disarm_owner_nightly_automation",
             new_callable=AsyncMock,
@@ -555,7 +555,7 @@ async def test_blocked_wake_for_a_transient_non_trial_gate_does_not_disarm(mock_
     with (
         patch("core.services.container_wake.request_wake_silent", new_callable=AsyncMock) as wake,
         patch("core.services.trial_cap.trial_block_reason", new_callable=AsyncMock) as reason,
-        patch("core.services.provision_gate.evaluate_provision_gate", new_callable=AsyncMock) as gate,
+        patch("core.services.provision_gate.probe_provision_gate", new_callable=AsyncMock) as gate,
         patch(
             "core.services.paperclip_agent_lifecycle.disarm_owner_nightly_automation",
             new_callable=AsyncMock,

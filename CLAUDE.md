@@ -377,6 +377,57 @@ A dispatch run deploys dev from that ref first — prod jobs still `needs:` the 
 stage, so a promotion cannot skip dev. The `lightbulb-deploy` concurrency group is unchanged,
 so a promotion queues behind an in-flight dev deploy.
 
+### `queue: max` — what it fixed, measured
+
+**It works.** Natural experiment over 60 deploy runs (34 cancelled), classifying each
+cancellation by what was happening at that instant, split on the `queue: max` merge
+(7dbc6afb7, ~03:13Z on 2026-09-08):
+
+```
+BEFORE : 22 cancellations, 19 match supersede-on-arrival   (86%)
+AFTER  : 12 cancellations,  0 match supersede-on-arrival   (0%)
+```
+
+*supersede-on-arrival* = cancelled within 5s of another run being **created**. That is the
+failure that killed four consecutive prod promotions on 2026-09-07/08: you are pending,
+somebody merges, you die silently. **It went to zero.**
+
+So the practical question — *"can my merge to `main` kill a colleague's pending promotion?"* —
+now has a measured answer: **no.** A merge freeze around a promotion is no longer buying that
+protection.
+
+**What is NOT established.** Of the 12 post-fix cancellations, 4 are a single cluster at
+03:50:57-59 (a run completed, four newer pending runs cancelled in the same second, the oldest
+pending started) and 8 are ambiguous or manual. So "oldest pending wins when the slot frees" is
+**n=1** — possibly real, unproven. It is also *orthogonal to merging*: if it exists, it fires
+when the slot frees regardless of what anyone merges.
+
+> **⚠️ A cancelled run with 0 jobs is NOT self-evidently an eviction.** Three sessions
+> independently misread the same run that way in one night, and one of those readings went into
+> this file as established before being retracted. The cheap disambiguator: check whether any
+> run actually **completed** in that second. Eviction cannot fire before the slot frees — if
+> nothing completed, something else cancelled it (usually a human).
+
+> **⚠️ A run's `status` field LAGS its jobs badly — do not use it for "has this started".**
+> Measured live 2026-09-08 14:27Z: run 34236826570 reported `status: queued` while **16 of its
+> jobs had completed** and 2 were in progress. An earlier run read `queued` with 18 jobs
+> executing. So `queued` at the run level does not mean "waiting" and does not mean "past the
+> concurrency gate" — it mostly means the field has not caught up.
+>
+> **For liveness, count jobs, not status:**
+> ```bash
+> gh run view <id> --repo TheLightbulbCompany/lightbulb --json jobs \
+>   --jq '[.jobs[]|select(.status!="queued")]|length'
+> ```
+> This lag is the likeliest root of the whole "queued means X" confusion.
+
+**Before dispatching**, the one precondition that is safe under every hypothesis above:
+```bash
+gh run list --repo TheLightbulbCompany/lightbulb --workflow deploy.yml --limit 10 \
+  --json status --jq '[.[]|select(.status!="completed")]|length'
+```
+Dispatch when that reads **0**.
+
 That group now carries **`queue: max`** (one line, patched in from `app.ts`). It exists
 because `cancel-in-progress: false` protects only a run that is already `in_progress` — a
 run still PENDING used to be evicted by the next arrival, since a group holds one pending

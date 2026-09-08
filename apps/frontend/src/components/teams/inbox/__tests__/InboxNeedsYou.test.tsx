@@ -80,9 +80,26 @@ describe("InboxNeedsYou", () => {
   });
 
   it("counts both feeds in the right-hand line", () => {
+    // The failed-run half is counted as ROWS RENDERED, so this seeds a real
+    // run rather than a bare count — the old version passed a `count` with no
+    // runs behind it, which is a state the hook cannot produce and which hid
+    // the badge/rows disagreement this file now pins below.
     attention.value = { ...attention.value, count: 2 };
-    triage.value = { ...triage.value, count: 1 };
-    render(<InboxNeedsYou companyId="c1" agents={[]} />);
+    triage.value = {
+      failedRuns: [
+        {
+          id: "r1",
+          status: "failed",
+          agentId: "a1",
+          failureReason: "timeout",
+          startedAt: "2026-09-08T10:00:00Z",
+        },
+      ],
+      count: 1,
+      isLoading: false,
+      isError: false,
+    } as never;
+    render(<InboxNeedsYou companyId="c1" agents={[{ id: "a1", name: "Atlas" } as never]} />);
     expect(screen.getByText("3 waiting")).toBeInTheDocument();
   });
 
@@ -99,5 +116,30 @@ describe("InboxNeedsYou", () => {
     render(<InboxNeedsYou companyId="c1" agents={[]} />);
     expect(screen.getByRole("alert")).toHaveTextContent(/couldn.t check for failed runs/i);
     expect(screen.queryByText(/nothing needs you/i)).toBeNull();
+  });
+
+  it("counts collapsed failures once, not once per occurrence", () => {
+    // A flapping heartbeat emits the same failure repeatedly. The band shows
+    // ONE row with a ×N badge, so the header must agree with the rows it is
+    // sitting above — "492 waiting" beside a single row is the inflation the
+    // grouping exists to remove.
+    const flap = (id: string) => ({
+      id,
+      status: "failed",
+      agentId: "a1",
+      failureReason: "timeout",
+      startedAt: "2026-09-08T10:00:00Z",
+    });
+    triage.value = {
+      failedRuns: [flap("r1"), flap("r2"), flap("r3")],
+      count: 3,
+      isLoading: false,
+      isError: false,
+    } as never;
+    attention.value = { ...attention.value, count: 2 };
+    render(<InboxNeedsYou companyId="c1" agents={[{ id: "a1", name: "Atlas" } as never]} />);
+    // 2 decisions + ONE collapsed failure group, not 2 + 3.
+    expect(screen.getByText("3 waiting")).toBeInTheDocument();
+    expect(screen.queryByText("5 waiting")).toBeNull();
   });
 });

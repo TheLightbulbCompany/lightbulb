@@ -30,14 +30,20 @@ export function InboxNeedsYou({
   onOpenIssue?: (issueId: string) => void;
 }) {
   const { acknowledgedRunIds, ack } = useAcknowledgedRuns(companyId);
-  const { failedRuns, count: failedCount, isError: runsError } =
+  const { failedRuns, isError: runsError } =
     useInboxTriage(acknowledgedRunIds);
   const { count: decisionCount } = useAttentionFeed();
 
   const groups = groupFailedRuns(failedRuns);
   const agentName = (id: string | null | undefined) =>
     agents.find((a) => a.id === id)?.name ?? "An agent";
-  const waiting = decisionCount + failedCount;
+  // `groups.length`, NOT the raw occurrence count: a flapping heartbeat emits
+  // the same failure once per occurrence (492 identical rows on prod once),
+  // and the band collapses those into ONE row reading "×492". Counting the raw
+  // total here would put "492 waiting" beside that single row — the exact
+  // inflation the grouping exists to prevent, moved from the list into the
+  // header.
+  const waiting = decisionCount + groups.length;
 
   return (
     <PanelBand

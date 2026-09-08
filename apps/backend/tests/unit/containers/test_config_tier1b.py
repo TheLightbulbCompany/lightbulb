@@ -17,6 +17,7 @@ from unittest.mock import patch
 
 from core.containers import config as config_module
 from core.containers.config import (
+    COMPANY_STANDARD_PLAN_MAX_AGENTS,
     TOOL_DENY_BASE,
     TOOL_DENY_WITH_NODES,
     build_openclaw_config_dict,
@@ -451,19 +452,51 @@ class TestHooksAgentAllowlist:
 
 class TestSessionBounds:
     def test_maintenance_enforce_with_raised_bounds(self):
-        """warn mode is unbounded growth on EFS; enforce spares durable human
-        conversations (synthetic rows only) and zstd-archives before deleting.
-        Bounds are generous multiples of upstream defaults (500 rows / 30d) to
-        protect heavy owners; resetArchiveRetention defaults to keep-forever
-        upstream, so it must be set explicitly."""
+        """warn mode is unbounded growth; enforce spares durable human
+        conversations and zstd-archives before deleting. maxEntries/pruneAfter
+        are generous multiples of upstream defaults (500 rows / 30d) to protect
+        heavy owners; resetArchiveRetention defaults to keep-forever upstream,
+        so it must be set explicitly.
+
+        maxDiskBytes/highWaterBytes are NOT taste calls — they are derived from
+        the task's ephemeral disk, and the invariant is pinned separately below.
+        """
         maintenance = _cfg()["session"]["maintenance"]
         assert maintenance == {
             "mode": "enforce",
             "maxEntries": 2000,
             "pruneAfter": "90d",
-            "maxDiskBytes": "500mb",
+            "maxDiskBytes": "1024mb",
+            "highWaterBytes": "819mb",
             "resetArchiveRetention": "90d",
         }
+
+    def test_session_disk_budget_fits_the_task_ephemeral_disk(self):
+        """The session budget is PER AGENT (OpenClaw resolves the store under
+        agents/<agentId>/, and the 8.1 sweep measures one agent's directory), and
+        those databases sit on the task's Fargate-default ephemeral storage — the
+        nested `openclaw-state`/`openclaw-agents` volumes, not EFS. So the
+        container-wide worst case is N_agents x maxDiskBytes and it has to fit
+        the disk alongside the image, /tmp, the shared state DB and headroom.
+
+        This is the test that fails if someone raises maxDiskBytes toward
+        upstream's 10 GiB default without also buying the disk to back it.
+        """
+        worst_case_mib = config_module.SESSION_MAX_DISK_MIB * COMPANY_STANDARD_PLAN_MAX_AGENTS
+        assert worst_case_mib + config_module.SESSION_STORE_RESERVED_MIB <= config_module.TASK_EPHEMERAL_STORAGE_MIB
+        # Eviction settles at the high-water mark, which must leave slack on top
+        # of the reserve rather than merely equal the allowance.
+        steady_state_mib = config_module.SESSION_HIGH_WATER_MIB * COMPANY_STANDARD_PLAN_MAX_AGENTS
+        assert steady_state_mib + config_module.SESSION_STORE_RESERVED_MIB < config_module.TASK_EPHEMERAL_STORAGE_MIB
+        # The emitted strings are derived, never hand-typed: a literal that
+        # drifts from the arithmetic is the regression this whole block exists
+        # to prevent.
+        maintenance = _cfg()["session"]["maintenance"]
+        assert maintenance["maxDiskBytes"] == f"{config_module.SESSION_MAX_DISK_MIB}mb"
+        assert maintenance["highWaterBytes"] == f"{config_module.SESSION_HIGH_WATER_MIB}mb"
+        # Non-null high water is one of the three conditions gating the 8.1
+        # eviction sweep (mode == "enforce" && maxDiskBytes && highWaterBytes).
+        assert maintenance["mode"] == "enforce"
 
     def test_reset_is_idle_based(self):
         """The unconfigured default is daily 04:00 gateway-local = 04:00 UTC =

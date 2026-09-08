@@ -357,6 +357,26 @@ is safe — a *skipped job* reports success to branch protection.
 >
 > **Until that lands, a green `claude-review` is not by itself evidence a review happened.**
 > Open the sticky comment and check for a verdict before merging anything substantive.
+>
+> **⚠️ And a review run on a MERGED branch is not necessarily waste.** The obvious cleanup —
+> cancel review runs whose PR has merged and whose branch is deleted — is wrong in one case,
+> and it is exactly the case where the review still matters:
+>
+> > If the PR merged **before** its re-run completed, that queued run is the **only** gate the
+> > final commits will ever get. Cancelling it destroys the evidence rather than reclaiming a
+> > wasted slot.
+>
+> This happened on 2026-09-08 to #2368. A completed review (8m47s) found two issues; they were
+> fixed, pushed, and the PR merged while the re-run was still queued. Later that run was
+> cancelled as a "zombie review on a merged-and-deleted branch" — verified as owned, merged,
+> and branch-gone, **all three true, and all three the reason it looked like waste**. The
+> result is a PR on `main` whose sticky comment still reads "Review in progress" with six
+> unchecked boxes, whose last three commits were never gated. (Blast radius there was 14
+> files, all `apps/frontend`, so the residual risk was low — but that was luck, not process.)
+>
+> **The check to add before cancelling: does a COMPLETED review exist for the merged SHA?**
+> Owner + merged + branch-deleted is not sufficient; those three facts are what make a
+> still-needed run look disposable.
 
 > **So: read the log before you read the diff.** A red gate has at least three distinct
 > causes on this repo — a real review finding, an expired OAuth token / usage cap (the

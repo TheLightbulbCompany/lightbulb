@@ -14,7 +14,7 @@ Implementation, isolated worktrees, tests, feature branches/PRs and verified non
 
 ## Current execution state
 
-- Goal active; this is its first execution turn (no prior goal turn to classify).
+- Goal active. Last completed turn classified as progress: accepted atomic full-config write, fresh211-test verification, independent review and evidence commit `396598d8dd7ce8a6dc42b8a0fefb6ea5049fd516`. Continued safe repository work while the pinned-pnpm approval remains unanswered; not at a no-progress impasse.
 - Lightbulb base: `ba58f69b47514aca8ca9a47d400d3a40a8f91256`, fetched and checked against `origin/main` on 2026-09-08.
 - Isolated branch/worktree: `codex/founder-openclaw-9x`, `/Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/.worktrees/founder-openclaw-9x`.
 - Main checkout has user-owned untracked files; untouched. `.worktrees` is ignored.
@@ -41,6 +41,7 @@ Implementation, isolated worktrees, tests, feature branches/PRs and verified non
 - Cross-update/provision/config fencing design retained in `2026-09-08-release-fencing-contract.md`. Reuse existing claims/rows/guard and native DDB transactions; do not expose assignment before all effect boundaries participate. Unknown remote ECS mutation outcome must retain recovery-needed reservation; the existing waiter can return normally on failure and needs strict target/health evidence.
 - Workshop contract retained: one canonical per-agent durable root for active collection and backups, unchanged local state/agent SQLite plus existing durable proposal bundles. No storage change or migration executed.
 - Redactor port contract corrects the old global dollar-prefix heuristic: it can preserve literal credentials. Default is verified executable input references only, retaining registered-secret/custom-pattern priority; generic diagnostic/output literals stay masked. Native Bash parsing exists but asynchronous preparation/private source ownership needs proof. The two gateway chunk-boundary pattern additions remain the separate simple port. Neither patch is implemented or tested on9.3 yet.
+- Next R2 implementation plan: `2026-09-08-release-row-ownership-fences.md`. Five-file task extends native DDB CAS and in-write guards; no candidate assignment or runtime effect enabled. A separate architecture check is defining the paired-row transaction API, including a persisted original container-id binding and resource-client serialization rules.
 
 ### Founder read-only runtime snapshot
 
@@ -89,4 +90,4 @@ Implementation, isolated worktrees, tests, feature branches/PRs and verified non
 
 ## Next action
 
-Resolve the narrow pinned-pnpm release-age exception before dependent fork installation/build/tests; no override has been made. Production browser authentication also needs the user's interactive login before dependent UI work. Port and qualify carried fork behavior, then wire persistent owner release selection with dual-schema/staged activation before exposing founder assignment. No production changes or candidate build have occurred. Do not mark the program complete until every required gate has direct evidence.
+Implement/review the release row ownership fences, then the paired-row release reservation/journal and effect-boundary integration. Resolve the narrow pinned-pnpm release-age exception before dependent fork installation/build/tests; no override has been made. Production browser authentication also needs the user's interactive login before dependent UI work. Port and qualify carried fork behavior and wire persistent owner release selection with dual-schema/staged activation before exposing founder assignment. No production changes or candidate build have occurred. Do not mark the program complete until every required gate has direct evidence.

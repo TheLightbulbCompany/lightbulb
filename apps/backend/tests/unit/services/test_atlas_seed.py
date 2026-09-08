@@ -608,6 +608,26 @@ async def test_the_sweep_covers_agents_atlas_BUILT_not_just_atlas(tmp_path, fake
 
 
 @pytest.mark.asyncio
+async def test_the_sweep_runs_even_when_atlas_cannot_be_resolved(tmp_path, fake_files_dir):
+    """The regression this exists for: the sweep sat AFTER the
+    ambiguous/no_agents/no_atlas early returns, so owners without a resolvable
+    Atlas never reached it. Measured on prod, that left the 3 workspaces whose
+    merge would actually breach the cap while clearing 5 harmless ones."""
+    ws = _tools_sweep_ws(tmp_path, tools_exists=True, extra_agents=("uuid-built-1",))
+    # A roster with agents but no Atlas -> the no_atlas early exit. (An EMPTY
+    # roster exits earlier still, as no_agents; both are before the old sweep
+    # position, so either would have reproduced the bug.)
+    result = await pre_stage_atlas(
+        owner_id="user_x",
+        paperclip_agents=[{"name": "Friday", "id": "uuid-friday"}],
+        workspace=ws,
+    )
+    assert result["reason"] == "no_atlas"
+    deleted = {c.args[1] for c in ws.delete_file.call_args_list}
+    assert "workspace-uuid-built-1/TOOLS.md" in deleted, "sweep must run before the early return"
+
+
+@pytest.mark.asyncio
 async def test_no_delete_when_the_workspace_has_no_tools_md(tmp_path, fake_files_dir):
     ws = _tools_sweep_ws(tmp_path, tools_exists=False)
     await pre_stage_atlas(owner_id="user_x", paperclip_agents=_AGENTS, workspace=ws)

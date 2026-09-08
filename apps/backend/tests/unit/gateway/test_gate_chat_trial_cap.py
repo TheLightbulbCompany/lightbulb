@@ -215,11 +215,11 @@ async def test_gate_chat_cap_read_raise_propagates():
 
 
 def _make_connection_with_rpc(session: dict, user_id: str = "u_1") -> GatewayConnection:
-    """A GatewayConnection whose sessions.list RPC returns one *session* row."""
+    """A GatewayConnection whose sessions.describe RPC returns *session*."""
     conn = object.__new__(GatewayConnection)
     conn.user_id = user_id
     conn.send_rpc = AsyncMock()
-    conn.wait_for_response = AsyncMock(return_value={"sessions": [session]})
+    conn.wait_for_response = AsyncMock(return_value={"session": session})
     return conn
 
 

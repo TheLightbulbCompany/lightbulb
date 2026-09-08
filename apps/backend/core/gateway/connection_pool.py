@@ -1710,6 +1710,74 @@ class GatewayConnection:
 
         return self.user_id
 
+    async def _fetch_session_row(self, session_key: str) -> dict | None:
+        """The one gateway session row for *session_key*, or ``None``.
+
+        Fast path is ``sessions.describe {key}``: one keyed lookup for the
+        row we actually want, instead of ``sessions.list {}``, whose cost
+        grows with the owner's entire session store and which ran on the
+        owner's own container after EVERY chat turn.
+
+        Verified against the pinned fork tag ``v2026.8.1-isol8.3``:
+        ``sessions.describe`` is scope ``operator.read`` and has existed
+        since ``<=2026.7`` (``src/gateway/methods/core-descriptors.ts``), so
+        it is safe on every image tag in the fleet; it responds
+        ``{"session": null}`` on a miss; and it builds its row with the same
+        ``buildGatewaySessionRow`` ``sessions.list`` uses, so every field
+        read below is present. ``estimatedCostUsd`` is in fact better
+        resolved there — list rows are built ``lightweightListRow: true``
+        (``session-utils-list.ts``), which reads only the stored value,
+        while describe also runs the transcript-usage fallback.
+
+        The scan survives as the COLD path, for a describe MISS only.
+        OpenClaw's session-key folding is one-directional — a mixed-case key
+        also matches its lowercased legacy alias, never the reverse
+        (``foldedSessionKeyAliasCandidates``) — so the case-insensitive
+        compare the scan does is not reproducible with a keyed lookup, and
+        dropping it would silently lose usage analytics for those rows. A
+        describe that RAISES is deliberately NOT retried against the scan:
+        it propagates to the caller's handler, exactly as a failing
+        ``sessions.list`` did.
+        """
+        req_id = str(uuid.uuid4())
+        await self.send_rpc(req_id, "sessions.describe", {"key": session_key})
+        result = await self.wait_for_response(req_id, timeout=10)
+        session = result.get("session") if isinstance(result, dict) else None
+        if isinstance(session, dict):
+            return session
+
+        req_id = str(uuid.uuid4())
+        await self.send_rpc(req_id, "sessions.list", {})
+        result = await self.wait_for_response(req_id, timeout=10)
+        if not isinstance(result, dict):
+            logger.warning(
+                "sessions.list returned non-dict for user %s: type=%s",
+                self.user_id,
+                type(result).__name__,
+            )
+            return None
+
+        sessions = [s for s in result.get("sessions", []) if isinstance(s, dict)]
+        session_key_lower = session_key.lower()
+        for s in sessions:
+            if str(s.get("key", "")).lower() == session_key_lower:
+                put_metric("chat.session_usage.describe.miss")
+                logger.warning(
+                    "sessions.describe missed %s for user %s; recovered by scan",
+                    session_key,
+                    self.user_id,
+                )
+                return s
+
+        logger.warning(
+            "Session %s not found for user %s (describe + %d-row scan). Available: %s",
+            session_key,
+            self.user_id,
+            len(sessions),
+            [s.get("key", "?") for s in sessions[:5]],
+        )
+        return None
+
     async def _fetch_and_record_usage(self, session_key: str, member_user_id: str) -> None:
         """Fetch session token counts via RPC and record usage.
 
@@ -1722,45 +1790,8 @@ class GatewayConnection:
         raw_cost_microcents: int | None = None
         model: str = "unknown"
         try:
-            # Query sessions.list to get token data for this session
-            req_id = str(uuid.uuid4())
-            await self.send_rpc(req_id, "sessions.list", {})
-            result = await self.wait_for_response(req_id, timeout=10)
-
-            if not isinstance(result, dict):
-                logger.warning(
-                    "sessions.list returned non-dict for user %s: type=%s",
-                    self.user_id,
-                    type(result).__name__,
-                )
-                return
-
-            # Find our session in the list.
-            # sessions.list returns "key" (not "sessionKey"), and chat.final
-            # lowercases the session key, so compare case-insensitively.
-            sessions = result.get("sessions", [])
-            session_key_lower = session_key.lower()
-            logger.info(
-                "sessions.list returned %d sessions for user %s, looking for %s",
-                len(sessions),
-                self.user_id,
-                session_key,
-            )
-            session = None
-            for s in sessions:
-                s_key = s.get("key", "")
-                if s_key.lower() == session_key_lower:
-                    session = s
-                    break
-
+            session = await self._fetch_session_row(session_key)
             if not session:
-                available_keys = [s.get("key", "?") for s in sessions[:5]]
-                logger.warning(
-                    "Session %s not found for user %s. Available: %s",
-                    session_key,
-                    self.user_id,
-                    available_keys,
-                )
                 return
 
             input_tokens = int(session.get("inputTokens", 0) or 0)
@@ -1771,8 +1802,8 @@ class GatewayConnection:
 
             # OpenClaw computes estimatedCostUsd INCLUDING cache tokens, from
             # the same per-run snapshot as inputTokens (assigned, not
-            # accumulated — see upstream session-usage.ts). sessions.list does
-            # NOT serialize the cache token counts, so the token-based pricing
+            # accumulated — see upstream session-usage.ts). The gateway session
+            # row does NOT serialize the cache token counts, so token pricing
             # path sees cacheRead/cacheWrite=0 and captures only ~3% of real
             # cost (cache tokens are ~99.99% of volume). When present, bill on
             # estimatedCostUsd as the authoritative raw cost; otherwise fall
@@ -1798,7 +1829,7 @@ class GatewayConnection:
 
             # Drop only a run with no token volume AND no billable cost. A
             # cache-heavy turn can report ~0 input/output tokens (cache counts
-            # are omitted by sessions.list) but a real positive cost — keep it.
+            # are omitted from the row) but a real positive cost — keep it.
             if input_tokens <= 0 and output_tokens <= 0 and not raw_cost_microcents:
                 logger.warning(
                     "Zero tokens + no cost in session %s for user %s — session keys: %s",

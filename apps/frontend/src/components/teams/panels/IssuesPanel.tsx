@@ -16,6 +16,7 @@ import {
 } from "@/components/getstarted/getStartedFirstTask";
 import { TasksList, type TasksGroupBy } from "@/components/teams/issues/TasksList";
 import { CreateGoalDialog } from "@/components/teams/goals/CreateGoalDialog";
+import { CreateProjectDialog } from "@/components/teams/issues/CreateProjectDialog";
 import { useIssueMutations } from "@/components/teams/issues/hooks/useIssueMutations";
 import { useLiveRuns } from "@/components/teams/dashboard/hooks/useLiveRuns";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
@@ -100,7 +101,7 @@ export function IssuesPanel({
   // are non-empty (its defaults are []). TasksList also resolves assignee /
   // status-circle names from the roster, and feeds agents to the board.
   const { data: agentsData } = read<{ agents: CompanyAgent[] }>("/agents");
-  const { data: projectsData } = read<{ projects: IssueProject[] }>(
+  const { data: projectsData, mutate: mutateProjects } = read<{ projects: IssueProject[] }>(
     "/projects",
   );
   const { data: goalsData, mutate: mutateGoals } = read<{ goals: Goal[] }>("/goals");
@@ -113,6 +114,7 @@ export function IssuesPanel({
   // dialog on first render (no effect); the prev-compare below covers re-delivery.
   const [creating, setCreating] = useState(newTask);
   const [creatingGoal, setCreatingGoal] = useState(false);
+  const [creatingProject, setCreatingProject] = useState(false);
   const [search, setSearch] = useState("");
 
   // The sidebar create pill's "New task" delivers a one-shot `newTask` prop.
@@ -206,6 +208,11 @@ export function IssuesPanel({
             {initialGroupBy === "goal" && (
               <EditorialButton variant="secondary" onClick={() => setCreatingGoal(true)}>
                 New goal
+              </EditorialButton>
+            )}
+            {initialGroupBy === "project" && (
+              <EditorialButton variant="secondary" onClick={() => setCreatingProject(true)}>
+                New project
               </EditorialButton>
             )}
             <EditorialButton variant="primary" onClick={() => setCreating(true)}>
@@ -304,6 +311,15 @@ export function IssuesPanel({
           mutate();
         }}
       />
+      {creatingProject && (
+        <CreateProjectDialog
+          onClose={() => setCreatingProject(false)}
+          onCreated={() => {
+            setCreatingProject(false);
+            mutateProjects();
+          }}
+        />
+      )}
       {creatingGoal && (
         <CreateGoalDialog
           goals={goalsData?.goals ?? []}

@@ -108,6 +108,27 @@ accept-both shims that existed only to bridge them:
 | `isol8-backend` (operator device) | `lightbulb-backend` | `operator_device.build_paired_operator_entry` `displayName` |
 | `isol8-<owner>` STS session name | `lightbulb-<owner>` | `routers/connections.py` `RoleSessionName` |
 
+**NOT yet renamed — the same class, still open (audited 2026-09-08).** These were
+missed by the 2026-08-31 pass and are NOT residue; each needs a coordinated deploy
+or an accept-both shim, so do NOT sweep them. Full audit + per-item recipes:
+`docs/superpowers/plans/2026-09-08-isol8-runtime-identifier-gap.md`.
+
+| identifier | why it can't be swept |
+|---|---|
+| `X-Isol8-Public-Host` | API GW (`api-stack.ts`) and the backend are separate stacks in one pipeline run, and the backend rolls at `maxHealthyPercent: 200`; a hard swap misroutes every `company[-env]` request during the roll. Precedent shim: `require_ws_internal_caller` in `routers/websocket_chat.py`. |
+| the `ISOL8_*` container env vars + the baked `/usr/local/bin/isol8-*.sh`, `/etc/isol8-litestream.yml`, `/opt/isol8/` paths | three-sided (image, task def, AND per-owner Atlas seed files already on EFS). `container-stack.ts` hard-`exit 1`s when the boot-script path is missing, so a CDK deploy landing before the image fails EVERY container boot. |
+| `isol8_paperclip` | live session cookie — a hard swap logs every active session out |
+| `isol8.hire_suggestion` | emitted by the baked `lightbulb-marketplace` plugin, consumed by `parseHireSuggestion`, which returns null on mismatch → the HireCard silently degrades fleet-wide during a reroll |
+| `isol8.notifications`, `PAPERCLIP_ISOL8_NOTIFY_*` | lives in the Paperclip FORK image, not this repo |
+| `.isol8-seed-fingerprint`, `.openclaw/isol8-setup-seed.json` | EFS-resident per owner — same once-only-migration shape as the protected `.isol8-guard` |
+
+**Never rename these** — the name correctly describes protected residue, or the
+value is stored data: `_ISOL8_PATCH_RE` (parses the `-isol8.N` rollback tag),
+`ISOL8_SYSTEM_SELLER_ID`'s value `"__isol8__"` (written to marketplace rows),
+`ISOL8_CURATOR_EMAIL` (human-gated mail), and the `"isol8 top-up …"` descriptions in
+`metronome_funding.py` — those are part of an idempotent Metronome request body, so
+changing the string 409s a retried top-up on the money path.
+
 Three of these have a state-on-EFS or state-in-someone-else's-account tail:
 `lightbulb-connector` needs the quick-create stack relaunched **and** a rebuilt
 extended image (the baked plugin injects the profile by name); the facts file's
@@ -470,7 +491,7 @@ entries at the root:
 
 ## Backend (FastAPI + DynamoDB)
 
-**Entry point:** `main.py` -- FastAPI app. The lifespan handler's real startup work is `_resume_wake_resize_transitions`, a one-time trial-idle reconcile sweep, and the running-gauges loop (`startup_containers()` is a no-op — ECS services are always-on; the gateway pool is created lazily on first `get_gateway_pool()`); shutdown is a `/health`-gated bounded ~20s graceful drain with `handoff_inflight_provisions`. Middleware worth knowing: `HostDispatcherMiddleware` rewrites requests arriving on `company[-env].flickmeon.ai` (via the `X-Lightbulb-Public-Host` header set by API GW parameter mapping) onto the `/__paperclip_proxy__` sentinel mount, plus `ShutdownAware`, `SecurityHeaders`, `ProxyHeaders` (VPC-CIDR-scoped), `AdminMetrics`, and observability middleware. A global `PaperclipApiError` handler self-heals Teams-BFF 401s by re-minting the Paperclip session cookie. CORS middleware, custom OpenAPI schema with BearerAuth.
+**Entry point:** `main.py` -- FastAPI app. The lifespan handler's real startup work is `_resume_wake_resize_transitions`, a one-time trial-idle reconcile sweep, and the running-gauges loop (`startup_containers()` is a no-op — ECS services are always-on; the gateway pool is created lazily on first `get_gateway_pool()`); shutdown is a `/health`-gated bounded ~20s graceful drain with `handoff_inflight_provisions`. Middleware worth knowing: `HostDispatcherMiddleware` rewrites requests arriving on `company[-env].flickmeon.ai` (via the `X-Isol8-Public-Host` header set by API GW parameter mapping) onto the `/__paperclip_proxy__` sentinel mount, plus `ShutdownAware`, `SecurityHeaders`, `ProxyHeaders` (VPC-CIDR-scoped), `AdminMetrics`, and observability middleware. A global `PaperclipApiError` handler self-heals Teams-BFF 401s by re-minting the Paperclip session cookie. CORS middleware, custom OpenAPI schema with BearerAuth.
 
 No SQLAlchemy, no ORM — DynamoDB items are plain dicts accessed via repositories.
 
@@ -739,7 +760,7 @@ the chat-state handling in `_handle_message`):
 3. Responses are pushed via the Management API (HTTPS POST to `@connections/{id}`), sequenced per-connection by `core/gateway/frame_sender.py`.
 4. Lambda Authorizer validates the Clerk JWT (`?token=` query param); DynamoDB `isol8-{env}-ws-connections` maps connectionId → user.
 5. **Raw WS door:** the browser live-view panel needs an unbuffered WS the HTTP API can't carry, so `wss://bv[-env].flickmeon.ai` is a CloudFront distribution with a **VpcOrigin** to the ALB's browser-view listener (path-capped to `/api/v1/browser-view/*`); the Clerk JWT rides the `Sec-WebSocket-Protocol` offer.
-6. REST rides the API Gateway HTTP API → VPC Link **V2** → ALB, including the `company[-env]` host dispatch (`X-Lightbulb-Public-Host` parameter mapping → `HostDispatcherMiddleware`).
+6. REST rides the API Gateway HTTP API → VPC Link **V2** → ALB, including the `company[-env]` host dispatch (`X-Isol8-Public-Host` parameter mapping → `HostDispatcherMiddleware`).
 
 ---
 
@@ -1002,7 +1023,7 @@ Located in `apps/infra/lib/stacks/`. Entry point: `apps/infra/lib/app.ts`. Per-e
 | `database-stack.ts` | The core DynamoDB tables (`isol8-{env}-{suffix}`) **and the Paperclip Aurora Serverless v2 cluster** (Postgres, 0–4 ACU, Data API). Three tables live elsewhere: `ws-connections` (api-stack), `bedrock-gate-tokens` (gate stack), `bedrock-invocation-dedup` (meter stack). |
 | `container-stack.ts` | ECS cluster for per-user OpenClaw containers, EFS filesystem, Cloud Map namespace + the one shared Cloud Map service all per-user services register into, container task-definition scaffolding |
 | `service-stack.ts` | Backend FastAPI service on ECS Fargate: task definition (Docker image from ECR), service, target-group wiring, DynamoDB/secrets IAM, the SFN provision watchdog, and the marketplace artifacts S3 bucket. **NOT autoscaled** — `desiredCount: 1` in both envs, with no scalable target, and that is deliberate: per-owner container WebSockets, `_pending_rpcs`, `_active_runs` and several other maps live in-process, so a second instance would not simply share load (see #1196). Note rolling deploys run at `maxHealthyPercent: 200`, so N is transiently 2 on every deploy — which is why the provisioning/bootstrap claim-leases exist. |
-| `api-stack.ts` | Both front doors: the HTTP API (REST) with VPC Link **V2** → ALB + custom-domain host dispatch (`X-Lightbulb-Public-Host`) + Route53 records, AND the WebSocket API with **Lambda integrations** (`ws-connect`/`ws-disconnect`/`ws-message`), the Clerk-JWT Lambda authorizer, the `ws-connections` table, and the `bv-` CloudFront VpcOrigin distribution for raw WS. |
+| `api-stack.ts` | Both front doors: the HTTP API (REST) with VPC Link **V2** → ALB + custom-domain host dispatch (`X-Isol8-Public-Host`) + Route53 records, AND the WebSocket API with **Lambda integrations** (`ws-connect`/`ws-disconnect`/`ws-message`), the Clerk-JWT Lambda authorizer, the `ws-connections` table, and the `bv-` CloudFront VpcOrigin distribution for raw WS. |
 | `bedrock-gate-stack.ts` | The streaming Lambda fronting bedrock-runtime — the enforcement fence for all Bedrock inference (+ the gate-tokens table). See the Billing section. |
 | `bedrock-meter-stack.ts` | Invocation-log meter Lambda — the auditor + backstop kill, and the sole Metronome writer (+ the invocation-dedup table). |
 | `paperclip-stack.ts` | Per-tenant Paperclip BFF — Fargate service, Cloud Map service discovery, ALB host route (the Aurora cluster comes from database-stack as a prop). Cross-stack KMS-cycle posture documented inline. See `apps/infra/paperclip/RUNBOOK.md`. |

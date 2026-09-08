@@ -240,7 +240,7 @@ describe("ChannelsStatusPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: /approve/i }));
 
     await waitFor(() => expect(mockPairingRefresh).toHaveBeenCalledTimes(1));
-    expect(screen.getByRole("button", { name: /approving/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /approve/i })).toBeDisabled();
     expect(screen.getByRole("button", { name: /reject/i })).toBeDisabled();
 
     await act(async () => settleRefresh());

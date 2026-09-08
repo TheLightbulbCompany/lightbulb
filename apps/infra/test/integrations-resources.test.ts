@@ -1,4 +1,4 @@
-import { legacyTablePrefix, tablePrefix } from "../lib/table-names";
+import { tablePrefix } from "../lib/table-names";
 import * as cdk from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import * as kms from "aws-cdk-lib/aws-kms";
@@ -165,22 +165,25 @@ describe("ServiceStack — integration secret + DDB IAM (dev)", () => {
     });
   });
 
-  test("DynamoDbIntegrations statement covers the isol8-dev-integrations table", () => {
+  test("DynamoDbOwnedTables statement covers the isol8-dev-integrations table", () => {
+    // The by-name DynamoDbIntegrations statement was deleted 2026-09: exactly
+    // subsumed by DynamoDbOwnedTables, which grants a superset of actions on
+    // every table under the env-prefixed wildcard — integrations included.
     template.hasResourceProperties("AWS::IAM::Policy", {
       PolicyDocument: {
         Statement: Match.arrayWith([
           Match.objectLike({
-            Sid: "DynamoDbIntegrations",
+            Sid: "DynamoDbOwnedTables",
             Action: Match.arrayWith([
               "dynamodb:GetItem",
               "dynamodb:PutItem",
               "dynamodb:Query",
             ]),
             Resource: Match.arrayWith([
-              // `*-dev-integrations` — the prefix is a wildcard for the
-              // duration of the table rename, so ONE entry covers both
-              // isol8-dev- and lightbulb-dev-. Narrows at step D.
-              Match.stringLikeRegexp(".*:table/\\*-dev-integrations"),
+              // `*-dev-*` — the env-prefixed wildcard covers every table
+              // under this env's namespace, both isol8-dev- and
+              // lightbulb-dev- prefixed. Narrows at step D.
+              Match.stringLikeRegexp(".*:table/\\*-dev-\\*$"),
             ]),
           }),
         ]),
@@ -208,17 +211,20 @@ describe("ServiceStack — integration secret + DDB IAM (prod)", () => {
     });
   });
 
-  test("DynamoDbIntegrations statement covers the isol8-prod-integrations table", () => {
+  test("DynamoDbOwnedTables statement covers the isol8-prod-integrations table", () => {
+    // The by-name DynamoDbIntegrations statement was deleted 2026-09: exactly
+    // subsumed by DynamoDbOwnedTables, which grants a superset of actions on
+    // every table under the env-prefixed wildcard — integrations included.
     template.hasResourceProperties("AWS::IAM::Policy", {
       PolicyDocument: {
         Statement: Match.arrayWith([
           Match.objectLike({
-            Sid: "DynamoDbIntegrations",
+            Sid: "DynamoDbOwnedTables",
             Resource: Match.arrayWith([
-              // `*-prod-integrations` — the prefix is a wildcard for the
-              // duration of the table rename, so ONE entry covers both
-              // isol8-prod- and lightbulb-prod-. Narrows at step D.
-              Match.stringLikeRegexp(".*:table/\\*-prod-integrations"),
+              // `*-prod-*` — the env-prefixed wildcard covers every table
+              // under this env's namespace, both isol8-prod- and
+              // lightbulb-prod- prefixed. Narrows at step D.
+              Match.stringLikeRegexp(".*:table/\\*-prod-\\*$"),
             ]),
           }),
         ]),

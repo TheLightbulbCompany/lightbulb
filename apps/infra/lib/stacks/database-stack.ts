@@ -3,7 +3,7 @@ import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as kms from "aws-cdk-lib/aws-kms";
 import * as rds from "aws-cdk-lib/aws-rds";
-import { legacyTablePrefix, tablePrefix } from "../table-names";
+import { tablePrefix } from "../table-names";
 import { Construct } from "constructs";
 
 export interface DatabaseStackProps extends cdk.StackProps {

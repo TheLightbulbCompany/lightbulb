@@ -21,7 +21,6 @@ import * as tasks from "aws-cdk-lib/aws-stepfunctions-tasks";
 import {
   allTableArns,
   bothTableArns,
-  legacyTablePrefix,
   alertTopicArn,
   resourcePrefix,
   tableName,
@@ -803,49 +802,6 @@ export class ServiceStack extends cdk.Stack {
     // blocks renaming or replacing the table. Granting by the table name avoids
     // the export entirely. The action set matches what integrations_repo and
     // oauth_state_repo actually call.
-    this.taskRole.addToPolicy(
-      new iam.PolicyStatement({
-        sid: "DynamoDbIntegrations",
-        actions: [
-          "dynamodb:GetItem",
-          "dynamodb:PutItem",
-          "dynamodb:UpdateItem",
-          "dynamodb:DeleteItem",
-          "dynamodb:Query",
-          "dynamodb:Scan",
-        ],
-        resources: [
-          ...bothTableArns(this.region, this.account, env, "integrations"),
-          ...bothTableArns(this.region, this.account, env, "oauth-state"),
-          // Per-owner AIP reverse index (Plan 2). Folded into this by-name DDB
-          // statement (identical action set + condition-less shape) rather than
-          // added as a separate fourth statement: the backend role's inline
-          // policy is near CloudFormation's 10 KB limit, so a separate statement
-          // risks tipping CDK into an overflow ManagedPolicy that would relocate
-          // this very statement out of the AWS::IAM::Policy resource other
-          // features assert on. Same cross-stack-export-avoidance posture; the
-          // grant (GetItem/PutItem/UpdateItem/DeleteItem/Query) is identical.
-          ...bothTableArns(this.region, this.account, env, "bedrock-aip-owners"),
-          // Metronome local fast-gate flag (Phase 2). Folded into this by-name
-          // statement for the SAME reason as bedrock-aip-owners above: a separate
-          // grantReadWriteData would both bloat the near-10 KB inline policy
-          // (tipping CDK into an overflow ManagedPolicy that relocates this very
-          // statement) AND export the table ARN cross-stack. The action set
-          // (GetItem/PutItem/UpdateItem/Query) matches MetronomeFastGate +
-          // metronome_provisioning + metronome_funding.
-          ...bothTableArns(this.region, this.account, env, "metronome-fast-gate"),
-          // bedrock-gate bearer-token table. mint_gate_token / deny_gate_token
-          // (core/billing/bedrock_gate_tokens.py) PutItem/UpdateItem/DeleteItem
-          // here for EVERY Bedrock owner at provision time, so without this grant
-          // Bedrock provisioning AccessDenies fleet-wide. Folded into this
-          // by-name statement for the SAME 10 KB-inline-policy reason as the two
-          // tables above (a separate grantReadWriteData would tip CDK into an
-          // overflow ManagedPolicy). The table itself is defined in the
-          // bedrock-gate stack (gate-private), so only the ARN is referenced.
-          ...bothTableArns(this.region, this.account, env, "bedrock-gate-tokens"),
-        ],
-      }),
-    );
     // Webhook dedup helper does conditional PutItem with attribute_not_exists;
     // never reads. Write-only grant is sufficient.
     // Paperclip integration: the proxy router (paperclip_proxy.py:388,
@@ -1147,28 +1103,6 @@ export class ServiceStack extends cdk.Stack {
         actions: ["execute-api:ManageConnections"],
         resources: [
           `arn:aws:execute-api:${this.region}:${this.account}:${props.wsApiId}/${props.wsStage}/*`,
-        ],
-      }),
-    );
-
-    // DynamoDB CRUD on connections table
-    this.taskRole.addToPolicy(
-      new iam.PolicyStatement({
-        sid: "DynamoDbConnections",
-        actions: [
-          "dynamodb:GetItem",
-          "dynamodb:PutItem",
-          "dynamodb:UpdateItem",
-          "dynamodb:DeleteItem",
-          "dynamodb:Query",
-          "dynamodb:Scan",
-        ],
-        resources: [
-          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.connectionsTableName}`,
-          // GSI ARN — required to Query the by-user-id index added in
-          // api-stack.ts. Without this, broker fanout queries 400 with
-          // AccessDeniedException at runtime.
-          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.connectionsTableName}/index/*`,
         ],
       }),
     );

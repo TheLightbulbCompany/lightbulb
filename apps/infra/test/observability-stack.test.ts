@@ -1,5 +1,4 @@
 import {
-  legacyTablePrefix,
   resourcePrefix,
   tablePrefix,
 } from "../lib/table-names";

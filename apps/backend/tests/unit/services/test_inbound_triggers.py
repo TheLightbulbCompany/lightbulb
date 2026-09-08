@@ -1321,8 +1321,12 @@ async def test_seed_trigger_routine_auto_meta_subscribes_page_and_records_bindin
     ):
         out = await seed_trigger_routine("owner_1", "meta_ads", ["leadgen"], resource="1112223334")
 
-    # The asset is bound with the PAGE token /me/accounts returned, not the
-    # user token — subscribed_apps on a Page wants the Page's own token.
+    # The user token is only for enumerating Pages; the Page-gated write uses
+    # the Page token returned for the selected Page.
+    meta_client.get.assert_awaited_once_with(
+        "https://graph.facebook.com/v23.0/me/accounts",
+        params={"fields": "id,name,access_token", "access_token": "meta_user_tok"},
+    )
     meta_client.post.assert_awaited_once()
     assert meta_client.post.await_args.args[0] == "https://graph.facebook.com/v23.0/1112223334/subscribed_apps"
     assert meta_client.post.await_args.kwargs["params"] == {
@@ -1498,6 +1502,22 @@ async def test_list_meta_pages_maps_and_strips_tokens():
     # The picker feed is owner-facing JSON — a Page access token must never
     # ride out of the resources endpoint.
     assert out == [{"id": "1112223334", "label": "Acme Page"}]
+
+
+@pytest.mark.asyncio
+async def test_list_meta_pages_never_substitutes_user_token_for_page_token():
+    from core.services.inbound_triggers import list_meta_pages
+
+    p_http, _ = _meta_http_patch(pages={"data": [{"id": "1112223334", "name": "Acme Page"}]})
+    with (
+        p_http,
+        patch(
+            "core.services.inbound_triggers.integration_secret_store.get",
+            AsyncMock(return_value={"access_token": "meta_user_tok"}),
+        ),
+        pytest.raises(RuntimeError, match="without Page access tokens"),
+    ):
+        await list_meta_pages("owner_1")
 
 
 @pytest.mark.asyncio

@@ -24,8 +24,9 @@ Implementation, isolated worktrees, tests, feature branches/PRs and verified non
 - Fork installation is blocked by its own seven-day package-age rule for pinned `pnpm@12.3.4` and matching platform packages. A narrow version-specific exception was requested from the user; no exception or safety override has been applied.
 - Open PRs requiring coordination: #1922 provider-switch desired-zero reconciliation; #1913 BYO rotation; #2325 Slack pairing; #2400 orphaned Paperclip runs. No PRs merged or modified.
 - Read-only reports completed in the original task's docs directory: `2026-09-08-fork-release-reconciliation.md`, `2026-09-08-founder-runtime-baseline.md`, `2026-09-08-lifecycle-reconciliation.md`, `2026-09-08-multiplayer-identity-seam.md`. Slack identity addendum is in progress.
-- First implementation slice: schema vendoring source/provenance guard; baseline `5e42e4d7b20d5a737e334878ee920397c3ccfbf1`; implementer `schema_source_guard`; independent review required before acceptance. Plan and SDD ledger are retained.
-- Baseline test command collected 292 version/schema/container-repository/update-service/ECS tests. Session 49850 remains live and progressing with no reported failures; final result not yet available.
+- First implementation slice accepted: schema vendoring source/provenance guard, commit `a11402079ea61c8c8bd2a23fcb631cb105b16d48`; implementer `schema_source_guard`, independent `schema_source_review` spec compliant/quality approved/no findings. Controller fresh focused verification15passed, exit0. Plan/report/review/SDD ledger retained; no artifacts or release pins changed.
+- Baseline session49850 finished:292 version/schema/container-repository/update-service/ECS test assertions passed in1501.75s. Coverage teardown could not write its worktree SQLite data file, so command exit3 is NOT a clean verification result. Correct the output-path environment and obtain clean final validation after the next fix.
+- Next implementation is stopped-service required-config failure refusal using the existing outer fenced error handler. One writer remains the rule.
 
 ### Founder read-only runtime snapshot
 
@@ -49,7 +50,7 @@ Implementation, isolated worktrees, tests, feature branches/PRs and verified non
 |---|---|---|
 | R0 target and baseline | Frozen upstream/fork refs; exact founder row/service/digest; state inventory and measurements | Source/runtime snapshot complete; restore inventory pending |
 | R1 fork and Workshop | Carried-patch regression ledger; build; durable per-agent Workshop and local SQLite tests | Pending |
-| R2 mixed releases | Persistent owner assignment; all lifecycle consumers; dual schemas; staged activation tests | Inventory complete; schema-source guard in progress |
+| R2 mixed releases | Persistent owner assignment; all lifecycle consumers; dual schemas; staged activation tests | Source guard reviewed/accepted; config-failure gate next; full release transaction pending |
 | R3 dev qualification | Final image digest; clean/migrated boot; provider/plugin/node/Paperclip workflows; restore rehearsal | Pending |
 | R4 founder rollout | Explicit approval; verified live release; replacement/lifecycle durability; representative observation | Pending approval package |
 | F0 identity/privacy | Native per-human identity; service compatibility; private-history and revocation negative tests | Source seam documented; runtime prototype pending |

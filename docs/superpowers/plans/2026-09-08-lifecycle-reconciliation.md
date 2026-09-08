@@ -1,7 +1,8 @@
 # OpenClaw 9.x founder lifecycle and reconciliation inventory
 
-**Inventory date:** 2026-09-08  
-**Source inspected:** `/Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync` at `ba58f69b47514aca8ca9a47d400d3a40a8f91256` (`main`)  
+**Inventory date:** 2026-09-08
+
+**Source inspected:** `/Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync` at `ba58f69b47514aca8ca9a47d400d3a40a8f91256` (`main`)
 **Mode:** read-only source/PR inventory. No Lightbulb source, git state, AWS state, or containers were changed. The Sep 1 graph was used only as a locator; every conclusion below was re-checked against current source.
 
 ## Executive finding

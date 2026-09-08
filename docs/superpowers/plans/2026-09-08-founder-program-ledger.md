@@ -35,7 +35,11 @@ Implementation, isolated worktrees, tests, feature branches/PRs and verified non
 - Native machine-auth qualification retained: frozen9.3 device/bootstrap paths exist and the relay forwards signed client auth verbatim. Unattributable ingress blocks fallback; roles configured require a verified identity for every operator, including backend/Paperclip. Node-role credentials are separate. Tauri currently fails to retain native hello credentials; actual packaged CLI behavior remains unverified. Test a distinct, nonhuman native proxy principal and bounded node credential enrollment before considering a bridge. No auth mode switched or compatibility test claimed.
 - Approved related-task handoff sent the machine-auth qualification and limits to `New voice chat`; production authority and program scope unchanged.
 - Broad post-fix regression run at code commit `afb5e1f92790dd50d8aa5954ff4d055bbdad6eec` started as session29406. Uses full coverage with outputs under `/private/tmp/lightbulb-founder-coverage.ACBgGi`, replacing the prior unwritable-output failure. Pending result.
-- Next independently testable slice: explicit schema selection/fail-closed artifact handling in existing config-schema module; legacy callers unchanged. Candidate artifact remains absent/unregistered until a qualified fork build. Separate read-only design resolves cross-update/provision/config fencing before release assignment implementation.
+- Explicit schema selection accepted at `2d9d8dfd59f7ef5a57f89b839b1e403ac5ef6000`:43 schema/source/staleness tests, independent spec/quality approval, no findings. Legacy callers unchanged; candidate remains absent/unregistered until qualified build.
+- Next independent slice: atomic full generated-config replacement under existing locks, preserving previous active bytes on pre-replacement failures. This is not the release-revision fence or staged activation transaction.
+- Cross-update/provision/config fencing design retained in `2026-09-08-release-fencing-contract.md`. Reuse existing claims/rows/guard and native DDB transactions; do not expose assignment before all effect boundaries participate. Unknown remote ECS mutation outcome must retain recovery-needed reservation; the existing waiter can return normally on failure and needs strict target/health evidence.
+- Workshop contract retained: one canonical per-agent durable root for active collection and backups, unchanged local state/agent SQLite plus existing durable proposal bundles. No storage change or migration executed.
+- Redactor port contract corrects the old global dollar-prefix heuristic: it can preserve literal credentials. Default is verified executable input references only, retaining registered-secret/custom-pattern priority; generic diagnostic/output literals stay masked. Native Bash parsing exists but asynchronous preparation/private source ownership needs proof. The two gateway chunk-boundary pattern additions remain the separate simple port. Neither patch is implemented or tested on9.3 yet.
 
 ### Founder read-only runtime snapshot
 
@@ -58,8 +62,8 @@ Implementation, isolated worktrees, tests, feature branches/PRs and verified non
 | Requirement | Required authoritative proof | State |
 |---|---|---|
 | R0 target and baseline | Frozen upstream/fork refs; exact founder row/service/digest; state inventory and measurements | Source/runtime snapshot complete; restore inventory pending |
-| R1 fork and Workshop | Carried-patch regression ledger; build; durable per-agent Workshop and local SQLite tests | Pending |
-| R2 mixed releases | Persistent owner assignment; all lifecycle consumers; dual schemas; staged activation tests | Source guard and stopped-config failure gate accepted; explicit schema selector next; full release transaction pending |
+| R1 fork and Workshop | Carried-patch regression ledger; build; durable per-agent Workshop and local SQLite tests | Source contracts retained; implementation/build pending toolchain decision |
+| R2 mixed releases | Persistent owner assignment; all lifecycle consumers; dual schemas; staged activation tests | Source guard, stopped-config gate and explicit schema selector accepted; atomic full write next; full release transaction pending |
 | R3 dev qualification | Final image digest; clean/migrated boot; provider/plugin/node/Paperclip workflows; restore rehearsal | Pending |
 | R4 founder rollout | Explicit approval; verified live release; replacement/lifecycle durability; representative observation | Pending approval package |
 | F0 identity/privacy | Native per-human identity; service compatibility; private-history and revocation negative tests | Source seam documented; runtime prototype pending |
@@ -84,4 +88,4 @@ Implementation, isolated worktrees, tests, feature branches/PRs and verified non
 
 ## Next action
 
-Finish the broad post-fix coverage run, implement/review explicit schema selection, and resolve the pinned toolchain decision. Port and qualify carried fork behavior, then wire persistent owner release selection with dual-schema/staged activation before exposing founder assignment. Do not mark the program complete until every required gate has direct evidence.
+Finish the broad post-fix coverage run, implement/review atomic full-config writes, and resolve the pinned toolchain decision. Port and qualify carried fork behavior, then wire persistent owner release selection with dual-schema/staged activation before exposing founder assignment. Do not mark the program complete until every required gate has direct evidence.

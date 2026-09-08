@@ -18,7 +18,7 @@ import { handleShellLinkClick, teamsPanelUrl } from "@/lib/shellNav";
 const CHIP =
   "inline-flex items-center gap-1.5 rounded-md border border-[var(--edge)] bg-card px-3 py-2 label-caps text-[var(--midnight)] no-underline transition-colors hover:bg-[var(--cream-deep)]";
 
-const NEW_TASK_URL = `${teamsPanelUrl("inbox")}&newIssue=1`;
+const NEW_TASK_URL = `${teamsPanelUrl("issues")}&new=task`;
 // The company account is a full-Dashboard Stripe account the owner logs into
 // (core/services/company_stripe.py). Provider-native, like Result's "OPEN …".
 const STRIPE_NEW_PRODUCT_URL = "https://dashboard.stripe.com/products/create";

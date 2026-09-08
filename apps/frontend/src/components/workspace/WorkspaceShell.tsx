@@ -474,7 +474,7 @@ export function WorkspaceShell(): React.ReactElement {
                     );
                   },
                   task: () =>
-                    openPanel("teams-inbox", {}, { pushUrl: true, oneShots: { newIssue: "onboarding" } }),
+                    openPanel("teams-issues", {}, { pushUrl: true, oneShots: { newIssue: "onboarding" } }),
                   hire: () => openMarketplace({ view: "browse" }),
                   channel: () => {
                     const target = defaultIdRef.current;

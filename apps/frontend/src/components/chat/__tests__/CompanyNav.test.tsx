@@ -24,14 +24,11 @@ const ALL_LABELS = [
   "Money",
   "Tasks",
   "Automations",
-  "Goals",
-  "Projects",
   "Leads",
   "Brain",
   "Library",
   "Org chart",
   "Accounts",
-  "Activity",
 ];
 
 /** Shells whose capability is not live: registered, reachable by URL, and

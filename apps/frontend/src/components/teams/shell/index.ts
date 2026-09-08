@@ -39,3 +39,6 @@ export type {
   PanelDataSortDir,
   PanelDataTableProps,
 } from "./PanelDataTable";
+
+export { PanelBand, PanelBandEmpty } from "./PanelBand";
+export type { PanelBandProps } from "./PanelBand";

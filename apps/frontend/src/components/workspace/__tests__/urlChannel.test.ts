@@ -99,8 +99,8 @@ describe("clearPanelFromUrl", () => {
   it("clears ?path when the URL-named file viewer closes", () => {
     expect(clearPanelFromUrl("?panel=file-viewer&path=%2Fnotes.md", "file-viewer")).toBe("");
   });
-  it("clears ?tab when the URL-named inbox closes", () => {
-    expect(clearPanelFromUrl("?panel=teams-inbox&tab=approvals", "teams-inbox")).toBe("");
+  it("clears ?section when the URL-named inbox closes", () => {
+    expect(clearPanelFromUrl("?panel=teams-inbox&section=needs-you", "teams-inbox")).toBe("");
   });
 });
 

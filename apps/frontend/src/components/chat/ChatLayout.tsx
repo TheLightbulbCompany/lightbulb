@@ -530,17 +530,17 @@ export function ChatLayout({
                   window.dispatchEvent(new CustomEvent("getstarted:focus-composer"));
                 },
                 task: () => {
-                  // ONE navigation to the inbox panel with the New-task
+                  // ONE navigation to the Tasks panel with the New-task
                   // intent. Mirror what `setActivePanel` (page.tsx) would
                   // build — set panel, drop stale agent/detailId filters —
-                  // and add `newIssue=onboarding` so the inbox auto-opens its
-                  // New-task dialog (read by InboxPage) pre-filled with the
+                  // and add `newIssue=onboarding` so Tasks auto-opens its
+                  // New-task dialog (read by IssuesPanel) pre-filled with the
                   // CEO-directed first task. Calling `onPanelChange` and then
                   // a second relative `?panel=…` push grew two history
                   // entries (Back needed two presses) and the relative form
                   // dropped the other query params setActivePanel preserves.
                   const params = new URLSearchParams(searchParams.toString());
-                  params.set("panel", `${TEAMS_PANEL_PREFIX}inbox`);
+                  params.set("panel", `${TEAMS_PANEL_PREFIX}issues`);
                   params.delete("agent");
                   params.delete("detailId");
                   params.set("newIssue", "onboarding");

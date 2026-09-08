@@ -38,6 +38,17 @@ export const RETIRED_PANEL_ALIASES: Readonly<Record<string, string>> = {
   "teams-products": "teams-money",
   "teams-customers": "teams-money",
   "teams-spend": "teams-money",
+  // Activity folded into Inbox's "Recently" band. Aliased, not routed: the
+  // dock dedupes by panel id, so a router-level mapping would leave an
+  // Activity link opening a SECOND tab titled "Inbox".
+  "teams-activity": "teams-inbox",
+  // Goals and Projects are groupings of the Tasks page, not tabs of their own
+  // — the same rows, cut a different way. Aliased for the same reason as
+  // Money's four keys: the dock dedupes by panel id, so a router-level
+  // mapping would open two tabs both titled "Tasks". describePanel
+  // synthesizes `groupBy` from the RAW key below.
+  "teams-goals": "teams-issues",
+  "teams-projects": "teams-issues",
 };
 
 // The sections of the Money page — the set an absorbed key or a `?section=`
@@ -48,6 +59,32 @@ export const MONEY_SECTIONS: ReadonlySet<string> = new Set([
   "customers",
   "products",
   "spend",
+]);
+
+/** The three bands of the Inbox page, in render order. A ?section deep link
+ *  scrolls to `inbox-<section>`; anything else is ignored. */
+export const INBOX_SECTIONS: ReadonlySet<string> = new Set([
+  "needs-you",
+  "happening-now",
+  "recently",
+]);
+
+/** Declared HERE, not in InboxPage, so the router and InboxPanel narrow to the
+ *  same list the registry validates against. */
+export type InboxSectionId = "needs-you" | "happening-now" | "recently";
+
+/** The Tasks page's grouping dimensions — the set an absorbed key or a
+ *  `?groupBy=` deep link may name. `TasksList.GROUP_OPTIONS` is the live list
+ *  the menu renders; `TasksList.groupBy.test.tsx` pins the two together, so a
+ *  new grouping cannot ship deep-linkable-but-unrendered (or the reverse). */
+export const TASKS_GROUP_BY: ReadonlySet<string> = new Set([
+  "none",
+  "status",
+  "assignee",
+  "priority",
+  "project",
+  "goal",
+  "parent",
 ]);
 
 // One-shot intents: copied to the target panel's open params, immediately
@@ -66,9 +103,6 @@ const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
   inbox: "Inbox",
   issues: "Tasks",
   routines: "Automations",
-  goals: "Goals",
-  projects: "Projects",
-  activity: "Activity",
   artifacts: "Library",
   brain: "Brain",
   accounts: "Accounts",
@@ -197,10 +231,27 @@ export function describePanel(
       const p: Record<string, string> = { teamsKey };
       // Durable filters ride along; one-shots are handled by the reconciler
       // at open time and never enter these params.
-      if (teamsKey === "issues" && params.agent) p.agent = params.agent;
-      // ?tab deep links (bookmarks predating the URL-sync removal still carry
-      // them) select the inbox band; tab clicks never write it back.
-      if (teamsKey === "inbox" && params.tab) p.tab = params.tab;
+      if (teamsKey === "issues") {
+        if (params.agent) p.agent = params.agent;
+        // Goals and Projects absorbed into Tasks as groupings, so the cut a
+        // link meant survives only if it is read off the RAW key — same
+        // synthesis, same reason, as `money` and `inbox`.
+        if (panelKey === "teams-goals") p.groupBy = "goal";
+        else if (panelKey === "teams-projects") p.groupBy = "project";
+        else if (params.groupBy && TASKS_GROUP_BY.has(params.groupBy)) {
+          p.groupBy = params.groupBy;
+        }
+      }
+      // Inbox absorbed Activity, so the band a link meant survives only if it
+      // is read off the RAW key — same synthesis, same reason, as `money`.
+      if (teamsKey === "inbox") {
+        if (panelKey === "teams-activity") p.section = "recently";
+        else if (params.section && INBOX_SECTIONS.has(params.section)) p.section = params.section;
+        // Bookmarks predating the pill tabs still carry ?tab=approvals; that
+        // band is now "Needs you". Every other old tab value named an issue
+        // list, which lives on Tasks — those land at the top of Inbox.
+        else if (params.tab === "approvals") p.section = "needs-you";
+      }
       // ?path mirrors the file-viewer grammar: a deep link selects a wiki
       // page; in-panel selection clicks never write it back.
       if (teamsKey === "brain" && params.path) p.path = params.path;
@@ -248,8 +299,8 @@ export function durableParamsFor(panelId: string): string[] {
   if (panelId === "file-viewer") return ["panel", "path", "agent"];
   if (panelId === "agent-inspector") return ["panel", "agent", "inspectorTab"];
   if (panelId === "control:agents") return ["panel", "agent"];
-  if (panelId === "teams-issues") return ["panel", "agent"];
-  if (panelId === "teams-inbox") return ["panel", "tab"];
+  if (panelId === "teams-issues") return ["panel", "agent", "groupBy"];
+  if (panelId === "teams-inbox") return ["panel", "section"];
   if (panelId === "teams-brain") return ["panel", "path"];
   if (panelId === "teams-money") return ["panel", "day", "section"];
   if (/^teams-(issue|routine|project|goal|run)-detail:/.test(panelId)) return ["panel", "detailId"];
@@ -263,8 +314,8 @@ export function durableParamsFor(panelId: string): string[] {
 // param (an agent filter, an inspector tab) survives an unfiltered navigation
 // — breaking the mobile invariant that plain panel nav drops stale state.
 export function clearablePanelParamKeys(panelId: string): string[] {
-  if (panelId === "teams-issues") return ["agent"];
-  if (panelId === "teams-inbox") return ["tab"];
+  if (panelId === "teams-issues") return ["agent", "groupBy"];
+  if (panelId === "teams-inbox") return ["section"];
   if (panelId === "teams-brain") return ["path"];
   if (panelId === "teams-money") return ["day", "section"];
   if (panelId === "file-viewer") return ["path", "agent"];

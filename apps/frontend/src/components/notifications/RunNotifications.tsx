@@ -87,16 +87,22 @@ function viewAgentAction(agentId: string): { label: string; onClick: () => void 
   };
 }
 
-function viewTeamsAction(panel: "teams-activity" | "teams-inbox"): {
+// Both toast families land on the ONE Inbox page, at the band that matches the
+// toast: attention toasts (approvals, blocked) are decisions → Needs you;
+// background-run toasts (working, success, failure) are history → Recently.
+function viewTeamsAction(section: "needs-you" | "recently"): {
   label: string;
   onClick: () => void;
 } {
   return {
     label: "View",
     onClick: () => {
-      capture("run_notification_clicked", { source: panel === "teams-inbox" ? "approval" : "teams" });
+      capture("run_notification_clicked", {
+        source: section === "needs-you" ? "approval" : "teams",
+      });
       const params = new URLSearchParams(window.location.search);
-      params.set("panel", panel);
+      params.set("panel", "teams-inbox");
+      params.set("section", section);
       params.delete("detailId");
       pushSearchParams(params);
     },
@@ -136,7 +142,7 @@ function executeAction(action: RunToastAction, agents: Agent[]): void {
       dedupeKey: action.key,
       // Land on the blocked task itself when we know it; the inbox is only the
       // fallback for approvals, which carry no issue id.
-      action: action.issueId ? viewIssueAction(action.issueId) : viewTeamsAction("teams-inbox"),
+      action: action.issueId ? viewIssueAction(action.issueId) : viewTeamsAction("needs-you"),
     });
     // Native notifications take a title AND a body; the specific line reads
     // better as the body under a short standing title.
@@ -145,7 +151,7 @@ function executeAction(action: RunToastAction, agents: Agent[]): void {
   }
   const isChat = action.source === "chat";
   const name = isChat ? agentName(action.agentId, agents) : null;
-  const view = isChat ? viewAgentAction(action.agentId) : viewTeamsAction("teams-activity");
+  const view = isChat ? viewAgentAction(action.agentId) : viewTeamsAction("recently");
   capture("run_notification_shown", { source: action.source, kind: action.kind });
   if (action.kind === "working") {
     notifyLoading(isChat ? `${name} is working…` : "A team agent run started…", {

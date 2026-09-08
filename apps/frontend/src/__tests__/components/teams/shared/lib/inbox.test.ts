@@ -1,14 +1,8 @@
 import { describe, test, expect } from "vitest";
 import {
-  INBOX_MINE_ISSUE_STATUSES,
-  INBOX_MINE_ISSUE_STATUS_FILTER,
   buildGroupedInboxSections,
-  buildInboxKeyboardNavEntries,
   getInboxWorkItems,
-  getRecentTouchedIssues,
-  isMineInboxTab,
   matchesInboxIssueSearch,
-  resolveInboxSelectionIndex,
   type InboxGroupedSection,
   type InboxWorkItem,
 } from "@/components/teams/shared/lib/inbox";
@@ -22,24 +16,6 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
     ...overrides,
   };
 }
-
-describe("INBOX_MINE_ISSUE_STATUS_FILTER", () => {
-  test("is a comma-joined string of the mine statuses", () => {
-    expect(INBOX_MINE_ISSUE_STATUS_FILTER).toBe(
-      "backlog,todo,in_progress,in_review,blocked,done",
-    );
-  });
-
-  test("matches the exported tuple", () => {
-    expect(INBOX_MINE_ISSUE_STATUS_FILTER).toBe(
-      INBOX_MINE_ISSUE_STATUSES.join(","),
-    );
-  });
-
-  test("contains 'todo' so the BFF default mine query returns todos", () => {
-    expect(INBOX_MINE_ISSUE_STATUS_FILTER.split(",")).toContain("todo");
-  });
-});
 
 describe("getInboxWorkItems", () => {
   test("wraps each issue in {kind:'issue', issue}", () => {
@@ -59,40 +35,6 @@ describe("getInboxWorkItems", () => {
     const issues = ["c", "a", "b"].map((id) => makeIssue({ id }));
     const ids = getInboxWorkItems(issues).map((item) => item.issue.id);
     expect(ids).toEqual(["c", "a", "b"]);
-  });
-});
-
-describe("getRecentTouchedIssues", () => {
-  test("returns all issues when unreadOnly is false / unset", () => {
-    const issues = [
-      makeIssue({ id: "1", unread: true }),
-      makeIssue({ id: "2", unread: false }),
-      makeIssue({ id: "3" }),
-    ];
-    expect(getRecentTouchedIssues(issues).map((i) => i.id)).toEqual([
-      "1",
-      "2",
-      "3",
-    ]);
-  });
-
-  test("filters by unread === true when unreadOnly is set", () => {
-    const issues = [
-      makeIssue({ id: "1", unread: true }),
-      makeIssue({ id: "2", unread: false }),
-      makeIssue({ id: "3", unread: null }),
-      makeIssue({ id: "4" }),
-    ];
-    expect(
-      getRecentTouchedIssues(issues, { unreadOnly: true }).map((i) => i.id),
-    ).toEqual(["1"]);
-  });
-
-  test("does not mutate the input array", () => {
-    const issues = [makeIssue({ id: "1" })];
-    const out = getRecentTouchedIssues(issues);
-    out.push(makeIssue({ id: "2" }));
-    expect(issues).toHaveLength(1);
   });
 });
 
@@ -213,80 +155,5 @@ describe("buildGroupedInboxSections", () => {
     ];
     const sections = buildGroupedInboxSections(items, { nowIso: NOW });
     expect(sections.map((s) => s.kind)).toEqual(["today"]);
-  });
-});
-
-describe("buildInboxKeyboardNavEntries", () => {
-  test("flattens sections into [{id, kind}] preserving order", () => {
-    const sections: InboxGroupedSection[] = [
-      {
-        kind: "today",
-        items: [
-          { kind: "issue", issue: makeIssue({ id: "a" }) },
-          { kind: "issue", issue: makeIssue({ id: "b" }) },
-        ],
-      },
-      {
-        kind: "earlier",
-        items: [{ kind: "issue", issue: makeIssue({ id: "c" }) }],
-      },
-    ];
-    expect(buildInboxKeyboardNavEntries(sections)).toEqual([
-      { id: "a", kind: "issue" },
-      { id: "b", kind: "issue" },
-      { id: "c", kind: "issue" },
-    ]);
-  });
-
-  test("returns [] for empty sections", () => {
-    expect(buildInboxKeyboardNavEntries([])).toEqual([]);
-  });
-
-  test("skips empty section.items", () => {
-    const sections: InboxGroupedSection[] = [
-      { kind: "today", items: [] },
-      {
-        kind: "earlier",
-        items: [{ kind: "issue", issue: makeIssue({ id: "x" }) }],
-      },
-    ];
-    expect(buildInboxKeyboardNavEntries(sections)).toEqual([
-      { id: "x", kind: "issue" },
-    ]);
-  });
-});
-
-describe("resolveInboxSelectionIndex", () => {
-  const navItems = [
-    { id: "a", kind: "issue" as const },
-    { id: "b", kind: "issue" as const },
-    { id: "c", kind: "issue" as const },
-  ];
-
-  test("returns the index when selectedId is found", () => {
-    expect(resolveInboxSelectionIndex(navItems, "a")).toBe(0);
-    expect(resolveInboxSelectionIndex(navItems, "b")).toBe(1);
-    expect(resolveInboxSelectionIndex(navItems, "c")).toBe(2);
-  });
-
-  test("returns -1 when selectedId is null", () => {
-    expect(resolveInboxSelectionIndex(navItems, null)).toBe(-1);
-  });
-
-  test("returns -1 when selectedId is not in navItems", () => {
-    expect(resolveInboxSelectionIndex(navItems, "missing")).toBe(-1);
-  });
-
-  test("returns -1 for empty navItems", () => {
-    expect(resolveInboxSelectionIndex([], "a")).toBe(-1);
-  });
-});
-
-describe("isMineInboxTab", () => {
-  test("true for 'mine' only", () => {
-    expect(isMineInboxTab("mine")).toBe(true);
-    expect(isMineInboxTab("recent")).toBe(false);
-    expect(isMineInboxTab("unread")).toBe(false);
-    expect(isMineInboxTab("all")).toBe(false);
   });
 });

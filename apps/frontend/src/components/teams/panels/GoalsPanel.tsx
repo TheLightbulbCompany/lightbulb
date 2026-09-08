@@ -29,12 +29,9 @@ import { teamsDetailUrl } from "@/lib/shellNav";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { notifyApiError } from "@/lib/notify";
 import { useGoalMutations } from "@/components/teams/goals/hooks/useGoalMutations";
-import { GoalPicker } from "@/components/teams/goals/GoalPicker";
+import { CreateGoalDialog } from "@/components/teams/goals/CreateGoalDialog";
 import {
-  GOAL_LEVELS,
   GOAL_STATUSES,
-  type GoalLevel,
-  type GoalStatus,
 } from "@/components/teams/shared/types";
 
 interface Goal {
@@ -294,140 +291,6 @@ export function GoalsPanel() {
         </DialogContent>
       </Dialog>
     </div>
-  );
-}
-
-function CreateGoalDialog({
-  goals,
-  onClose,
-  onCreated,
-}: {
-  goals: Goal[];
-  onClose: () => void;
-  onCreated: () => void;
-}) {
-  const { post } = useTeamsApi();
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [parentId, setParentId] = useState<string | null>(null);
-  // Defaults mirror upstream createGoalSchema (level="task", status="planned")
-  // so the server default and the form's initial state agree.
-  const [level, setLevel] = useState<GoalLevel>("task");
-  const [status, setStatus] = useState<GoalStatus>("planned");
-  const [submitting, setSubmitting] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  async function submit() {
-    setSubmitting(true);
-    setErr(null);
-    try {
-      // CreateGoalBody fields: title, description?, parent_id?, level?, status?
-      const body: Record<string, unknown> = { title, level, status };
-      if (description) body.description = description;
-      if (parentId) body.parent_id = parentId;
-      await post("/goals", body);
-      onCreated();
-    } catch (e) {
-      setErr(String(e));
-      setSubmitting(false);
-    }
-  }
-
-  return (
-    <EditorialDialog
-      open
-      onOpenChange={(o) => !o && onClose()}
-      title="New goal"
-    >
-      <div className="flex flex-col gap-3">
-        <label className="block">
-          <span className="text-sm text-[var(--midnight-soft)]">Title</span>
-          <input
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 mt-1 text-[var(--midnight)]"
-          />
-        </label>
-        <label className="block">
-          <span className="text-sm text-[var(--midnight-soft)]">Description</span>
-          <textarea
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 mt-1 text-[var(--midnight)]"
-            rows={3}
-          />
-        </label>
-        {/* Parent goal picker replaces the old raw "Parent goal ID" text input
-            — resolves from the existing /goals list (mirrors the issues
-            AssigneePicker/ProjectPicker idiom). */}
-        <div className="block">
-          <span className="text-sm text-[var(--midnight-soft)]">Parent goal</span>
-          <div className="mt-1">
-            <GoalPicker
-              goals={goals}
-              selectedGoalId={parentId}
-              onChange={setParentId}
-              className="border border-[var(--edge)] rounded-sm px-3 py-2 bg-[var(--cream)]"
-            />
-          </div>
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <label className="block">
-            <span className="text-sm text-[var(--midnight-soft)]">Level</span>
-            <select
-              value={level}
-              onChange={(e) => setLevel(e.target.value as GoalLevel)}
-              className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 mt-1 text-[var(--midnight)] capitalize"
-            >
-              {GOAL_LEVELS.map((l) => (
-                <option key={l} value={l}>
-                  {l}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="block">
-            <span className="text-sm text-[var(--midnight-soft)]">Status</span>
-            <select
-              value={status}
-              onChange={(e) => setStatus(e.target.value as GoalStatus)}
-              className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 mt-1 text-[var(--midnight)] capitalize"
-            >
-              {GOAL_STATUSES.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-        {err && (
-          <div
-            className="text-[var(--err)] text-sm rounded-sm px-3 py-2"
-            style={{
-              border:
-                "1px solid var(--err)",
-              background:
-                "var(--cream)",
-            }}
-          >
-            {err}
-          </div>
-        )}
-        <div className="flex justify-end gap-2 mt-2">
-          <EditorialButton variant="secondary" size="sm" onClick={onClose}>
-            Cancel
-          </EditorialButton>
-          <EditorialButton
-            size="sm"
-            onClick={submit}
-            disabled={submitting || !title}
-          >
-            {submitting ? "Creating…" : "Create"}
-          </EditorialButton>
-        </div>
-      </div>
-    </EditorialDialog>
   );
 }
 

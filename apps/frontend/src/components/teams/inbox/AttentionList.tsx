@@ -2,13 +2,13 @@
 "use client";
 
 import { useMemo } from "react";
-import { CircleCheck, ExternalLink } from "lucide-react";
+import { ExternalLink } from "lucide-react";
 
 import { ApprovalRow } from "@/components/teams/inbox/ApprovalRow";
 import { IssueThreadInteractionCard } from "@/components/teams/issues/IssueThreadInteractionCard";
 import { useInteractionMutations } from "@/components/teams/issues/hooks/useInteractionMutations";
 import { useAttentionFeed } from "@/components/teams/inbox/hooks/useAttentionFeed";
-import { PanelEmptyState } from "@/components/teams/shell";
+import { PanelBandEmpty } from "@/components/teams/shell";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import type {
   AskUserQuestionsAnswer,
@@ -134,6 +134,9 @@ export interface AttentionListProps {
   currentUserId?: string | null;
   /** Opens an issue thread in the shell (used by unhydrated rows). */
   onOpenIssue?: (issueId: string) => void;
+  /** When false, render nothing instead of the "nothing needs you" line —
+   *  the caller has other rows above and that line would contradict them. */
+  showEmptyState?: boolean;
 }
 
 /**
@@ -159,6 +162,7 @@ export function AttentionList({
   agents = [],
   currentUserId = null,
   onOpenIssue,
+  showEmptyState = true,
 }: AttentionListProps) {
   const { items, isLoading, isError, refresh } = useAttentionFeed();
   const { accept, reject, respond, cancel } = useInteractionMutations();
@@ -244,13 +248,10 @@ export function AttentionList({
   }
 
   if (items.length === 0) {
-    return (
-      <PanelEmptyState
-        icon={CircleCheck}
-        headline="Nothing needs you."
-        supporting="Approvals and agent questions land here the moment they're raised. No one is waiting on a decision right now."
-      />
-    );
+    // The caller says whether this line would be TRUE on the page it sits on:
+    // a failed run rendered above is itself something that needs a human.
+    if (!showEmptyState) return null;
+    return <PanelBandEmpty>Nothing needs you right now.</PanelBandEmpty>;
   }
 
   // ONE level of depth, deliberately. The interaction card already draws its

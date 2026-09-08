@@ -49,8 +49,9 @@ export const EVENT_KEY_MAP: Record<string, string[]> = {
 // deduped union of every key any event can invalidate — NOT a second literal
 // list — so the catch-all can never drift out of sync with EVENT_KEY_MAP and
 // silently skip a live key. That drift is exactly what would strand
-// /teams/approvals and /teams/inbox/runs (both feed NeedsAttentionBand via
-// useInboxTriage) behind the read layer's 15s dedup window on Teams re-entry.
+// /teams/approvals and /teams/inbox/runs (both feed Inbox's "Needs you" band —
+// InboxNeedsYou, via useAttentionFeed and useInboxTriage) behind the read
+// layer's 15s dedup window on Teams re-entry.
 /**
  * `activity.logged` is Paperclip's ONLY signal that a specific row changed —
  * there are no `issue.*` / `routine.*` / `project.*` live-event types. Every

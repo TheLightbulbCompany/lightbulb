@@ -51,3 +51,28 @@ describe("buildSubIssueProgressSummary", () => {
     expect(s.target).toBeNull();
   });
 });
+
+describe("settledCount — finished is more than literally done", () => {
+  const at = (status: string, id: string) =>
+    ({ id, status, createdAt: "2026-09-08T10:00:00Z" }) as never;
+
+  it("counts closed and won't-do as finished, so a goal can reach its own total", () => {
+    const s = buildSubIssueProgressSummary([at("closed", "a"), at("won_t_do", "b")]);
+    expect(s.totalCount).toBe(2);
+    expect(s.settledCount).toBe(2);
+    // The sub-issue strip's stricter meaning is deliberately untouched.
+    expect(s.doneCount).toBe(0);
+  });
+
+  it("still drops cancelled from the denominator", () => {
+    const s = buildSubIssueProgressSummary([at("done", "a"), at("cancelled", "b")]);
+    expect(s.totalCount).toBe(1);
+    expect(s.settledCount).toBe(1);
+  });
+
+  it("leaves open work outstanding", () => {
+    const s = buildSubIssueProgressSummary([at("closed", "a"), at("todo", "b")]);
+    expect(s.settledCount).toBe(1);
+    expect(s.totalCount).toBe(2);
+  });
+});

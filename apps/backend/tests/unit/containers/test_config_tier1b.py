@@ -411,7 +411,13 @@ class TestChannelProgressDrafts:
 
     def test_reinjected_telegram_gets_progress_streaming(self):
         cfg = _cfg(channel_accounts=self._ACCOUNTS)
-        assert cfg["channels"]["telegram"]["streaming"] == {"mode": "progress"}
+        # toolProgress off: progress posts each tool's OUTPUT into the
+        # conversation, and a Read of a bundled SKILL.md dumped the whole file
+        # into an owner's shared company channel.
+        assert cfg["channels"]["telegram"]["streaming"] == {
+            "mode": "progress",
+            "progress": {"toolProgress": False},
+        }
 
     def test_discord_left_on_upstream_default(self):
         """Discord already defaults to progress upstream — no key needed."""

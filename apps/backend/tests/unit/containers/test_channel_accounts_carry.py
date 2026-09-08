@@ -173,3 +173,28 @@ async def test_provider_with_only_husks_is_dropped_entirely():
     ):
         accounts, _ = await em._provision_channel_accounts("org_1")
     assert "slack" not in accounts
+
+
+def test_progress_streaming_never_dumps_tool_output():
+    """`progress` posts each tool's OUTPUT into the conversation. A Read of a
+    bundled SKILL.md put the entire file — including notes addressed to our own
+    engineers — into an owner's shared Slack channel."""
+    out = _build(
+        paperclip_agents=[{"id": "agent_f", "role": "ceo"}],
+        channel_accounts={"slack": {"T1": {"mode": "http"}}},
+    )
+    assert out["channels"]["slack"]["streaming"]["progress"]["toolProgress"] is False
+    assert out["channels"]["slack"]["streaming"]["mode"] == "progress"
+
+
+def test_tool_output_is_silenced_for_owners_who_already_have_a_streaming_block():
+    """The bug reaches EXISTING owners, who all carry a streaming block already
+    — so a setdefault on the parent would never touch them."""
+    out = _build(
+        paperclip_agents=[{"id": "agent_f", "role": "ceo"}],
+        channel_accounts={"telegram": {"agent_f": {"botToken": "x"}}},
+        channel_bindings=[
+            {"type": "route", "agentId": "agent_f", "match": {"channel": "telegram", "accountId": "agent_f"}}
+        ],
+    )
+    assert out["channels"]["telegram"]["streaming"]["progress"]["toolProgress"] is False

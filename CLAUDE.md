@@ -283,6 +283,36 @@ path-filtered gates (`backend.yml`, `frontend-ci.yml`, `infra-ci.yml`,
 `company-ci.yml`, `mobile-ci.yml`) can be the required check. A job-level `if:`
 is safe — a *skipped job* reports success to branch protection.
 
+> **⚠️ A path-filtered job does not run on a PR that misses its paths — even when
+> its tests READ the files that PR changes.** `backend.yml` is filtered to backend
+> paths, and backend tests happily read files under `apps/infra/**`. So a PR
+> touching only `apps/infra/**` is green on its own PR and can be red on `main`
+> the moment it lands.
+>
+> **This has happened twice.** #2303 → #2309 (a base bump that skipped the
+> vendored-schema re-pin), and #2367 on 2026-09-08 — splitting
+> `apps/infra/openclaw/skills/lightbulb/SKILL.md` into `SKILL.md` + `references/`
+> put **12 backend tests red on main**, because two of them opened `SKILL.md`
+> directly and asserted headings that had MOVED to `references/money.md`. Fixed
+> in #2382.
+>
+> **Before merging anything that touches only `apps/infra/**`:**
+> ```bash
+> cd apps/backend && uv run pytest tests/unit/services/ -q
+> ```
+>
+> Why it recurred is the more useful half. The first occurrence was written down
+> as *"a base bump PR must re-pin `tests/chaos/_schema/PINNED_TAG`"* — true, but
+> pinned to the instance, so it never fired on the second. The general form is
+> the paragraph above. **A lesson recorded at the level of the instance does not
+> catch the next instance.**
+>
+> Second-order: when a test reads a file to pin its contents, **pin the rule, not
+> the file layout.** #2382's fix searches `SKILL.md` *and* every
+> `references/*.md`, so a reorganisation cannot read as a deleted rule while a
+> genuinely removed rule still fails. A test pinned to a path fails on refactors;
+> a test pinned to behaviour fails on regressions.
+
 The same workflow posts a bare `@codex review` on open / ready-for-review /
 reopen (not on every push). That comment is the trigger, and any trailing text
 after `@codex review` stops it being picked up.

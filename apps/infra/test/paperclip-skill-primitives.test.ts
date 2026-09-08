@@ -1,10 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 
 const skillRoot = resolve(__dirname, "../openclaw/skills/paperclip");
 const helper = resolve(skillRoot, "scripts/paperclip-api.sh");
+const skillMd = readFileSync(resolve(skillRoot, "SKILL.md"), "utf8");
 
 function runHelper(args: string[], input = "") {
   return spawnSync("bash", [helper, ...args], {
@@ -274,5 +275,51 @@ describe("bundled Paperclip operating primitives", () => {
 
     expect(skill).toContain("A monitor is the wait. An approval is the authority.");
     expect(skill).toContain("escalate_to_board");
+  });
+});
+
+describe("vendor merge preserves Lightbulb-local edits", () => {
+  // Each string is the load-bearing phrase of one ISOL8-LOCAL edit. If a
+  // re-vendor drops one, the incident it prevents comes back.
+  it.each([
+    ["write-path helper mandate", "## Writing to the Paperclip API (required)"],
+    ["run-id truthfulness", "## Webchat and interactive sessions (no run id)"],
+    ["create status", "### Creating work for someone else — always say the status"],
+    ["monitor section", "## Waiting on an External Thing (Issue Monitors)"],
+    ["monitor vs approval", "### A monitor is the wait. An approval is the authority."],
+    ["company memory", "## Company Memory, Decisions, and Attention"],
+  ])("keeps the %s section", (_label, heading) => {
+    expect(skillMd).toContain(heading);
+  });
+
+  it("never writes a relative scripts/ path in a command", () => {
+    // Local edit 5: the agent's cwd is its workspace, not the skill root.
+    const relative = skillMd.match(/(?<![/\w])scripts\/paperclip-[a-z-]+\.sh/g) ?? [];
+    expect(relative).toEqual([]);
+  });
+
+  it("records the fork commit it was vendored from", () => {
+    expect(skillMd).toMatch(
+      /Vendored from TheLightbulbCompany\/paperclip skills\/paperclip at [0-9a-f]{7,40}/,
+    );
+  });
+});
+
+describe("sections vendored in from the fork", () => {
+  it.each([
+    "### Monitors and Watchers",
+    "### Delegating review tasks",
+    "## Managing A User's Inbox",
+    "### Standalone Decisions",
+    "## MCP Tool Approval Gates",
+    "## Cases",
+    "## Proposing Credentials Safely",
+    "## Reading Granted Secrets",
+  ])("has %s", (heading) => {
+    expect(skillMd).toContain(heading);
+  });
+
+  it("ships the cases reference", () => {
+    expect(existsSync(resolve(skillRoot, "references/cases.md"))).toBe(true);
   });
 });

@@ -28,7 +28,7 @@ function asRuns(data: RunsResponse): HeartbeatRun[] {
  *
  * Source: `/inbox/runs` (the BFF already forwards status=failed; we re-filter
  * defensively) minus the locally-acknowledged ids. `acknowledgedRunIds` is
- * owned by the caller (NeedsAttentionBand via useAcknowledgedRuns) so the
+ * owned by the caller (`InboxNeedsYou` via useAcknowledgedRuns) so the
  * dismiss state is shared with the rows.
  *
  * APPROVALS DELIBERATELY LEFT OUT. They used to be read here too, which meant

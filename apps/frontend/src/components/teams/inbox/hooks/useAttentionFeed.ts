@@ -24,7 +24,10 @@ export const ATTENTION_KEY = `/teams${teamsQueryKeys.attention()}`;
  *  `agent_error_alert`, `budget_alert`, `productivity_review`. Those report
  *  what happened rather than ask for anything, so counting them would inflate
  *  a badge that is supposed to mean "this many things are stuck on you".
- *  Failed runs keep their own home in the Agent failures band.
+ *  Failed runs are still excluded here for that reason, but they no longer
+ *  have a separate home: the Agent failures band was deleted with the Inbox
+ *  pill tabs, and `InboxNeedsYou` now renders this feed and the failed-run
+ *  feed (`useInboxTriage`) together under one "Needs you" label.
  */
 const DECISION_KINDS: ReadonlySet<AttentionSourceKind> = new Set([
   "approval",

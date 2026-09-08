@@ -26,20 +26,24 @@ const ALL_LABELS = [
   "Automations",
   "Goals",
   "Projects",
-  "Support",
-  "Publish",
-  "SEO & AEO",
-  "Ads",
   "Leads",
   "Brain",
   "Library",
   "Org chart",
   "Accounts",
+  "Activity",
+];
+
+/** Shells whose capability is not live: registered, reachable by URL, and
+ *  deliberately NOT offered in the rail or the palette. */
+const COMING_SOON_LABELS = [
+  "Support",
+  "Publish",
+  "SEO & AEO",
+  "Ads",
   "Identity",
-  "Domain & Site",
   "Compliance",
   "Contracts",
-  "Activity",
 ];
 
 describe("CompanyNav", () => {
@@ -52,9 +56,8 @@ describe("CompanyNav", () => {
     const { unmount } = render(<CompanyNav />);
     expect(screen.getByText("Accounts")).toBeInTheDocument();
     expect(screen.queryByText("Domain & Site")).toBeNull();
-    // Their neighbours in the Company section are untouched.
-    expect(screen.getByText("Identity")).toBeInTheDocument();
-    expect(screen.getByText("Compliance")).toBeInTheDocument();
+    // Accounts' neighbour that is NOT a shell stays put.
+    expect(screen.getByText("Org chart")).toBeInTheDocument();
     unmount();
 
     stripeStatus.data = undefined;
@@ -63,15 +66,50 @@ describe("CompanyNav", () => {
     expect(screen.queryByText("Domain & Site")).toBeNull();
   });
 
-  it("visibleCompanySections drops exactly the provisioning-marked items and nothing else", () => {
+  it("drops the shells always, and Domain & Site only while the rail is off", () => {
     const on = visibleCompanySections({ provisioningEnabled: true });
     const off = visibleCompanySections({ provisioningEnabled: false });
-    expect(on).toBe(COMPANY_SECTIONS);
     const flat = (s: typeof on) => s.flatMap((sec) => sec.items.map((i) => i.panel));
-    const dropped = flat(on).filter((p) => !flat(off).includes(p));
-    expect(dropped).toEqual(["teams-domain-site"]);
-    // No section is emptied by the filter, so the section order is intact.
+    const all = COMPANY_SECTIONS.flatMap((sec) => sec.items.map((i) => i.panel));
+
+    const shells = [
+      "teams-support",
+      "teams-publish",
+      "teams-seo",
+      "teams-ads",
+      "teams-identity",
+      "teams-compliance",
+      "teams-contracts",
+    ];
+    // Hidden in BOTH modes — a shell is not a provisioning question.
+    for (const panel of shells) {
+      expect(flat(on)).not.toContain(panel);
+      expect(flat(off)).not.toContain(panel);
+    }
+    // Compared as sets: teams-domain-site sits mid-list in the Company
+    // section, so declaration order is not the drop order.
+    expect(all.filter((p) => !flat(on).includes(p)).sort()).toEqual([...shells].sort());
+    expect(all.filter((p) => !flat(off).includes(p)).sort()).toEqual(
+      [...shells, "teams-domain-site"].sort(),
+    );
+    // No section is emptied, so the section order is intact.
     expect(off.map((s) => s.label)).toEqual(on.map((s) => s.label));
+  });
+
+  it("keeps every shell registered so an old link still opens it", () => {
+    // The rail stops offering them; the panel registry must not stop resolving
+    // them, or a saved link or an agent-built URL breaks.
+    const all = COMPANY_SECTIONS.flatMap((sec) => sec.items.map((i) => i.panel));
+    for (const panel of ["teams-support", "teams-publish", "teams-seo", "teams-ads", "teams-identity", "teams-compliance", "teams-contracts"]) {
+      expect(all).toContain(panel);
+    }
+  });
+
+  it("does not offer a shell in the rail", () => {
+    render(<CompanyNav />);
+    for (const label of COMING_SOON_LABELS) {
+      expect(screen.queryByText(label)).toBeNull();
+    }
   });
 
   it("renders every company panel", () => {

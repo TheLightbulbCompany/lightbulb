@@ -320,8 +320,8 @@ async def pre_stage_atlas(
     # a `tools-md-merged-bootstrap-limit` finding and migrates anyway). The
     # reference now ships as ATLAS-TOOLS.md, a name the migration does not
     # match; this removes any TOOLS.md an earlier bundle left behind so the
-    # next boot has nothing to merge back in. Idempotent (delete_file no-ops
-    # when absent) and best-effort like the rest of the seeder.
+    # next boot has nothing to merge back in. Best-effort like the rest of the
+    # seeder.
     # EVERY workspace, not just Atlas's. `atlas-skeleton-generator.js` writes a
     # `workspace/TOOLS.md` into every agent Atlas BUILDS, so the same doctor
     # migration is armed in those workspaces too. Measured on prod after the
@@ -330,31 +330,21 @@ async def pre_stage_atlas(
     # their next boot. The generator now emits AGENT-TOOLS.md; this repairs the
     # ones already on disk.
     #
-    # RENAME rather than delete. Doctor would consume the file either way, so
-    # its content is not "safe" where it sits — but moving it to a name the
-    # migration does not match keeps it readable on demand instead of folding
-    # it into a file that then gets truncated. Skips when the destination
-    # exists so a re-run cannot clobber a newer copy.
+    # DELETE, not rename. Doctor's own behaviour is merge-then-unlink, so the
+    # file does not survive a boot either way — deleting simply skips the
+    # harmful merge. Keeping a renamed copy would preserve bytes no agent is
+    # told to read, in a workspace where the same trap can be re-armed.
     try:
-        renamed = 0
+        removed = 0
         for agent_id in workspace.list_workspace_agent_dirs(owner_id):
             # Returns agent IDS, not directory names.
-            ws_dir = f"workspace-{agent_id}"
-            src = f"{ws_dir}/TOOLS.md"
-            dst = f"{ws_dir}/AGENT-TOOLS.md"
-            ws_path = workspace.agent_workspace_path(owner_id, agent_id)
-            if not (ws_path / "TOOLS.md").is_file():
+            if not (workspace.agent_workspace_path(owner_id, agent_id) / "TOOLS.md").is_file():
                 continue
-            if (ws_path / "AGENT-TOOLS.md").is_file():
-                workspace.delete_file(owner_id, src)  # already migrated; drop the duplicate
-                renamed += 1
-                continue
-            workspace.write_file(owner_id, dst, workspace.read_file(owner_id, src))
-            workspace.delete_file(owner_id, src)
-            renamed += 1
-        if renamed:
-            put_metric("atlas_seed.legacy_tools_md_removed", value=renamed)
-            logger.info("atlas_seed: retired %d legacy TOOLS.md file(s) for owner=%s", renamed, owner_id)
+            workspace.delete_file(owner_id, f"workspace-{agent_id}/TOOLS.md")
+            removed += 1
+        if removed:
+            put_metric("atlas_seed.legacy_tools_md_removed", value=removed)
+            logger.info("atlas_seed: deleted %d legacy TOOLS.md file(s) for owner=%s", removed, owner_id)
     except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
         put_metric("atlas_seed.legacy_tools_md_error")
         logger.warning("atlas_seed: legacy TOOLS.md removal failed owner=%s: %s", owner_id, exc)

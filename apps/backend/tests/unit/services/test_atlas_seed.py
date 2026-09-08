@@ -588,13 +588,11 @@ def _tools_sweep_ws(tmp_path, *, tools_exists: bool, extra_agents: tuple[str, ..
 
 
 @pytest.mark.asyncio
-async def test_legacy_tools_md_is_renamed_not_deleted(tmp_path, fake_files_dir):
-    """Doctor consumes TOOLS.md either way, so deleting loses the content for
-    nothing. Renaming to a name the migration does not match keeps it readable
-    on demand instead of folded into a file that then gets truncated."""
+async def test_legacy_tools_md_is_deleted(tmp_path, fake_files_dir):
+    """Doctor's own behaviour is merge-then-unlink, so the file does not
+    survive a boot either way. Deleting simply skips the harmful merge."""
     ws = _tools_sweep_ws(tmp_path, tools_exists=True)
     await pre_stage_atlas(owner_id="user_x", paperclip_agents=_AGENTS, workspace=ws)
-    ws.write_file.assert_any_call("user_x", "workspace-uuid-atlas/AGENT-TOOLS.md", "# TOOLS.md\n")
     ws.delete_file.assert_any_call("user_x", "workspace-uuid-atlas/TOOLS.md")
 
 

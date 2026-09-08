@@ -402,11 +402,42 @@ _LEGACY_SOUL_BROWSER_LINE = """\
   app is paired). You can read pages, click, fill forms — be careful with
   destructive actions."""
 
+# The `portal` tool is a WORKING capability here and is deliberately not denied:
+# the container's own Chrome shares its network namespace, the browser egress PAC
+# returns DIRECT for 127.* and the profile carries
+# ssrfPolicy.dangerouslyAllowPrivateNetwork (core/containers/config.py), so the
+# agent can open its own portal. What is false is what the tool TELLS the agent:
+# upstream's description and every result it returns claim "the operator can see
+# it in the Control UI Portals page" (fork v2026.8.1-isol8.3,
+# src/agents/tools/portal-tool-contract.ts + portal-tool.ts formatPortalResult).
+# We ship gateway.controlUi.enabled=false, and summarize() formats the URL
+# against httpBindHosts[0], so what the agent is handed is
+# 127.0.0.1:<ephemeral port> — unreachable from the owner's browser, and an
+# agent that believes the tool relays it as if it were a link.
+#
+# The owner-facing view already exists and is not that URL: the workspace's
+# Browser panel is a live VNC view of this container's display
+# (routers/browser_view.py), so the agent driving the portal in its OWN browser
+# IS the owner watching it. This bullet corrects the belief and points at that
+# door; it does not remove the capability.
+#
+# Owner-neutral and brace-free so it is safe under .format() and can be reused
+# verbatim by the heal migration below.
+_SOUL_PORTAL_LINE = (
+    "- **Portals** — `portal` opens a proxy on 127.0.0.1 INSIDE this container. "
+    'It claims your operator can watch it on a "Control UI Portals page"; there '
+    "is no such page here, and your owner's browser can never reach a 127.0.0.1 "
+    "link, so never hand one over. Use it yourself — open the portal, start the "
+    "dev server on the port it returned, then point your own browser at the URL. "
+    "Your owner watches that same Chrome in their Browser panel, so navigating "
+    "there is how you show them."
+)
+
 _SOUL_TEMPLATE = _SOUL_TEMPLATE.replace("{self_grounding_section}", _SELF_GROUNDING_SECTION)
 # Owner-agnostic, so substitute before .format() ever sees the template —
 # .replace(), not .format(), because the template's real placeholders
 # ({owner_display}) must survive until render time.
-_SOUL_TEMPLATE = _SOUL_TEMPLATE.replace("{browser_line}", _SOUL_BROWSER_LINE)
+_SOUL_TEMPLATE = _SOUL_TEMPLATE.replace("{browser_line}", _SOUL_BROWSER_LINE + "\n" + _SOUL_PORTAL_LINE)
 
 
 _USER_TEMPLATE_PERSONAL = """\
@@ -1265,6 +1296,34 @@ def _migrate_add_webchat_section(workspace: Workspace, owner_id: str, agent_uuid
     return True
 
 
+def _migrate_add_soul_portal_line(workspace: Workspace, owner_id: str, agent_uuid: str) -> bool:
+    """Insert the Portals capability bullet into an EXISTING SOUL.md.
+
+    SOUL.md is seeded write-if-missing, so the template change reaches NEW
+    provisions only; already-provisioned Fridays keep a capability list that
+    says nothing about portals while the tool keeps telling them their operator
+    can watch one. Anchored on the CURRENT browser line so the bullet lands in
+    the capability list rather than at the end of the file; the browser-line
+    heal runs earlier in the rail and has already normalized the legacy vintage
+    to that line. A SOUL.md whose browser line was edited is owner- or
+    Friday-evolved content and is left alone, the same policy the browser-line
+    heal follows. Returns True when a rewrite happened.
+    """
+    rel_path = f"workspace-{agent_uuid}/SOUL.md"
+    try:
+        content = workspace.read_file(owner_id, rel_path)
+    except Exception:  # noqa: BLE001 — no SOUL.md yet; the seed loop writes the full template
+        return False
+    if _SOUL_PORTAL_LINE in content or _SOUL_BROWSER_LINE not in content:
+        return False
+    workspace.write_file(
+        owner_id,
+        rel_path,
+        content.replace(_SOUL_BROWSER_LINE, _SOUL_BROWSER_LINE + "\n" + _SOUL_PORTAL_LINE, 1),
+    )
+    return True
+
+
 def _render_templates(profile: dict) -> dict[str, str]:
     """Render the seed files from a resolved profile dict.
 
@@ -1592,6 +1651,12 @@ def _run_heal_migrations(workspace: Workspace, owner_id: str, friday_uuid: str) 
             "friday_identity.agents_md_webchat_migrated",
             "friday_identity.agents_md_webchat_migrate_error",
             "appended webchat section to AGENTS.md",
+        ),
+        (
+            _migrate_add_soul_portal_line,
+            "friday_identity.soul_md_portal_migrated",
+            "friday_identity.soul_md_portal_migrate_error",
+            "inserted Portals capability bullet in SOUL.md",
         ),
         (
             _migrate_stale_brand_fragments,

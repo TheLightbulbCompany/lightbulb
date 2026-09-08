@@ -1039,6 +1039,73 @@ def test_migrate_add_webchat_section_noop_when_missing():
     assert friday_identity._migrate_add_webchat_section(ws, "user_abc", "uuid-f") is False
 
 
+# ---------------------------------------------------------------------------
+# Portals capability bullet — the `portal` tool tells the agent its operator can
+# watch the portal in a Control UI we do not ship, and hands back a 127.0.0.1
+# URL only the container can reach. The tool WORKS (the container's own Chrome
+# is on that loopback) and stays enabled; the bullet fixes what the agent
+# believes the URL is for, and points at the Browser panel as the real door.
+# ---------------------------------------------------------------------------
+
+
+def test_soul_md_portal_bullet_sits_in_the_capability_list():
+    """Position is the point: the list is what the agent reads for "can I do X"."""
+    soul_md = friday_identity._render_templates(_personal_profile())["SOUL.md"]
+    assert friday_identity._SOUL_PORTAL_LINE in soul_md
+    assert (
+        soul_md.index(friday_identity._SOUL_BROWSER_LINE)
+        < soul_md.index(friday_identity._SOUL_PORTAL_LINE)
+        < soul_md.index("- **Web fetch**")
+    )
+
+
+def test_soul_md_portal_bullet_keeps_the_tool_and_names_the_real_door():
+    """It must not read as a ban — denying portals would remove a working
+    self-preview — and it must say where the owner actually looks."""
+    line = friday_identity._SOUL_PORTAL_LINE
+    assert "Use it yourself" in line
+    assert "never hand one over" in line
+    assert "Browser panel" in line
+
+
+def test_migrate_add_soul_portal_line_inserts_after_the_browser_line():
+    ws = _MigrationWs("# SOUL.md\n\n" + friday_identity._SOUL_BROWSER_LINE + "\n- **Web fetch** — x.\n")
+    assert friday_identity._migrate_add_soul_portal_line(ws, "user_abc", "uuid-f") is True
+    path, content = ws.written
+    assert path == "workspace-uuid-f/SOUL.md"
+    assert (
+        content.index(friday_identity._SOUL_BROWSER_LINE)
+        < content.index(friday_identity._SOUL_PORTAL_LINE)
+        < content.index("- **Web fetch**")
+    )
+
+
+def test_migrate_add_soul_portal_line_noop_when_present():
+    rendered = friday_identity._render_templates(_personal_profile())["SOUL.md"]
+    ws = _MigrationWs(rendered)
+    assert friday_identity._migrate_add_soul_portal_line(ws, "user_abc", "uuid-f") is False
+    assert ws.written is None
+
+
+def test_migrate_add_soul_portal_line_skips_an_evolved_browser_line():
+    """No anchor means the owner or Friday rewrote it; never guess at placement."""
+    ws = _MigrationWs("# SOUL.md\n\n- **Browser** — Sam rewrote this bullet.\n")
+    assert friday_identity._migrate_add_soul_portal_line(ws, "user_abc", "uuid-f") is False
+    assert ws.written is None
+
+
+def test_migrate_add_soul_portal_line_noop_when_missing():
+    ws = _MigrationWs(None)
+    assert friday_identity._migrate_add_soul_portal_line(ws, "user_abc", "uuid-f") is False
+
+
+def test_migrate_add_soul_portal_line_is_registered_in_the_rail():
+    """A migration nobody calls heals nothing."""
+    import inspect
+
+    assert "_migrate_add_soul_portal_line" in inspect.getsource(friday_identity._run_heal_migrations)
+
+
 class _HealWs(_MigrationWs):
     """_MigrationWs plus the openclaw.json read the CEO resolver uses."""
 

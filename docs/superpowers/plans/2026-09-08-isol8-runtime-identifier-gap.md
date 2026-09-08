@@ -166,6 +166,10 @@ fixtures of §1.5.
 
 ## Part 2 — Implementation (the easy subset)
 
+> **STATUS: Tasks 1-5 are DONE** — shipped on `fix/isol8-runtime-identifier-gap`
+> (PR #2388), five independent commits. Part 3 is deliberately not implemented.
+> Steps are left checked below as the record of what was run.
+
 ### File Structure
 
 | file | responsibility | change |
@@ -190,7 +194,7 @@ fixtures of §1.5.
 - Consumes: `resourcePrefix(env) === ``lightbulb-${env}-``` from `apps/infra/lib/table-names.ts:36` — the single source of every `alarmName` in `observability-stack.ts`.
 - Produces: `alarms._severity(name) -> "critical" | "warning" | "unknown"`, unchanged signature.
 
-- [ ] **Step 1: Write the failing test** — replace the `@pytest.mark.parametrize` block at
+- [x] **Step 1: Write the failing test** — replace the `@pytest.mark.parametrize` block at
   `test_alarms.py:8-24` with the real naming convention. Keep an `isol8-*` case, now asserting
   `"unknown"`, so the retired prefix can never quietly come back:
 
@@ -217,13 +221,13 @@ def test_severity_parses_alarm_name_convention(name, expected):
     assert alarms._severity(name) == expected
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd apps/backend && uv run pytest tests/unit/core/services/ops/test_alarms.py -q`
 Expected: FAIL — the four `lightbulb-*` cases return `"unknown"`, and the `isol8-*` case
 returns `"critical"`. That failure *is* the production bug.
 
-- [ ] **Step 3: Write the minimal implementation** — `alarms.py:13-15`:
+- [x] **Step 3: Write the minimal implementation** — `alarms.py:13-15`:
 
 ```python
 # Alarm-name convention from the observability stack (resourcePrefix() in
@@ -232,12 +236,12 @@ returns `"critical"`. That failure *is* the production bug.
 _SEVERITY_RE = re.compile(r"^lightbulb-[^-]+-(P|W)\d+-")
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cd apps/backend && uv run pytest tests/unit/core/services/ops/test_alarms.py -q && uv run ruff check core/services/ops/alarms.py`
 Expected: all tests PASS, ruff clean.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/backend/core/services/ops/alarms.py apps/backend/tests/unit/core/services/ops/test_alarms.py
@@ -260,25 +264,25 @@ while the IAM resource eight lines below is `` arn:aws:s3:::lightbulb-${env}-ope
 and `LITESTREAM_BUCKET` at line 1367 is `` `lightbulb-${env}-openclaw-replicas` ``. The comment
 is simply wrong about a live resource.
 
-- [ ] **Step 1: Make the edit** — change the one path in the comment:
+- [x] **Step 1: Make the edit** — change the one path in the comment:
 
 ```
     // s3://lightbulb-{env}-openclaw-replicas/{owner}/..., or the next boot's
 ```
 
-- [ ] **Step 2: Verify the synthesized template is unchanged**
+- [x] **Step 2: Verify the synthesized template is unchanged**
 
 Run: `cd apps/infra && npx cdk synth >/dev/null && git status --short .github/workflows/deploy.yml`
 Expected: synth exits 0 and `deploy.yml` is **not** listed as modified. A comment cannot change
 the template; if `deploy.yml` did change, something else is drifting — stop and investigate
 rather than committing it alongside this.
 
-- [ ] **Step 3: Run the infra suite**
+- [x] **Step 3: Run the infra suite**
 
 Run: `cd apps/infra && npm test`
 Expected: PASS.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add apps/infra/lib/stacks/service-stack.ts
@@ -301,7 +305,7 @@ Both runbooks hand an operator a literal command against `isol8-{env}-openclaw-r
 bucket does not exist, so the wipe silently does not happen and the next boot's litestream
 restore resurrects the state the operator believed they had deleted.
 
-- [ ] **Step 1: Make the edits** — three occurrences, `isol8-` → `lightbulb-`:
+- [x] **Step 1: Make the edits** — three occurrences, `isol8-` → `lightbulb-`:
 
 ```
 # dev-clean-slate-reset/SKILL.md:57
@@ -317,12 +321,12 @@ aws s3 rm "s3://lightbulb-prod-openclaw-replicas/$OWNER/" --recursive --profile 
 Note `--profile isol8-admin` is **unchanged** — it is protected residue (`CLAUDE.md`: the SSO
 portal customization was spent on `isol8` and cannot be changed).
 
-- [ ] **Step 2: Verify no `isol8-*-openclaw-replicas` remains outside the test fixtures**
+- [x] **Step 2: Verify no `isol8-*-openclaw-replicas` remains outside the test fixtures**
 
 Run: `git grep -n 'isol8-[a-z]*-openclaw-replicas' -- . ':!apps/backend/tests'`
 Expected: no output.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add .agents/skills/dev-clean-slate-reset/SKILL.md .agents/skills/prod-org-reprovision/SKILL.md
@@ -349,9 +353,9 @@ agent trusting the docs greps for a string that does not exist and concludes the
 gone. Replace the name with the real one and mark it as a known-open rename so it is not
 mistaken for an oversight.
 
-- [ ] **Step 1: Replace the three mentions in each file** with `X-Isol8-Public-Host`.
+- [x] **Step 1: Replace the three mentions in each file** with `X-Isol8-Public-Host`.
 
-- [ ] **Step 2: Add the identifier to the residue discussion** — immediately after the
+- [x] **Step 2: Add the identifier to the residue discussion** — immediately after the
   "RUNTIME IDENTIFIERS — RETIRED 2026-08-31" table in `CLAUDE.md` (and the mirror in
   `AGENTS.md`):
 
@@ -378,12 +382,12 @@ in `metronome_funding.py` (part of an idempotent Metronome body — changing the
 string 409s a retried top-up).
 ```
 
-- [ ] **Step 3: Verify the docs no longer claim a header that does not exist**
+- [x] **Step 3: Verify the docs no longer claim a header that does not exist**
 
 Run: `git grep -n 'Lightbulb-Public-Host'`
 Expected: no output.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add CLAUDE.md AGENTS.md
@@ -402,15 +406,15 @@ git commit -m "docs: the dispatch header is X-Isol8-Public-Host; record the unre
 - Produces: nothing. Its *value* already reads `name: "lightbulb"` and
   `dockview-theme-lightbulb`; only the identifier is stale.
 
-- [ ] **Step 1: Rename both occurrences** `ISOL8_THEME` → `LIGHTBULB_THEME` (declaration at
+- [x] **Step 1: Rename both occurrences** `ISOL8_THEME` → `LIGHTBULB_THEME` (declaration at
   line 65, use at line 407). No other file references it.
 
-- [ ] **Step 2: Typecheck and test**
+- [x] **Step 2: Typecheck and test**
 
 Run: `cd apps/frontend && npx tsc --noEmit && pnpm test -- WorkspaceShell`
 Expected: PASS.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add apps/frontend/src/components/workspace/WorkspaceShell.tsx

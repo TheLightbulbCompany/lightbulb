@@ -215,7 +215,12 @@ class TestOpenclawConfigShape:
         assert entry["enabled"] is True
         dreaming = entry["config"]["dreaming"]
         assert dreaming["enabled"] is True
-        assert dreaming["frequency"] == "0 3 * * *"
+        # Nightly in the 03:00 UTC hour, jittered by owner across that hour so
+        # the whole paid fleet does not sweep in one minute (see
+        # _dreaming_frequency and test_dreaming_minute_is_jittered_per_owner).
+        minute, rest = dreaming["frequency"].split(" ", 1)
+        assert rest == "3 * * *"
+        assert 0 <= int(minute) <= 59
         assert dreaming["timezone"] == "UTC"
         assert dreaming["phases"]["light"] == {"enabled": True}
         assert dreaming["phases"]["rem"] == {"enabled": True}

@@ -746,9 +746,13 @@ def test_bedrock_trial_emits_exactly_one_model():
     assert [m["id"] for m in models] == [_AIPS["sonnet"]]
     assert models[0]["name"] == "Claude Sonnet 4.6"
     assert models[0]["cost"] == {"input": 3.3, "output": 16.5, "cacheRead": 0.33, "cacheWrite": 6.6}
-    # Primary == fallback: there is no cheaper/premium tier to route to, and
-    # the single model must not be user-swappable to one IAM would deny.
-    assert default_model == {"primary": _SONNET_REF, "fallbacks": [_SONNET_REF]}
+    # NO fallbacks key: there is no cheaper/premium tier to route to. A
+    # self-fallback used to be emitted here and could never fire —
+    # createModelCandidateCollector dedupes on provider/model and the primary is
+    # already the first candidate — while still making
+    # hasConfiguredModelFallbacks() report true, which flips `fallbackConfigured`
+    # and sends the overload path chasing an empty model lane.
+    assert default_model == {"primary": _SONNET_REF}
     # Discovery stays off — same as the paid path.
     assert plugin_entries["amazon-bedrock"]["config"]["discovery"]["enabled"] is False
 
@@ -790,7 +794,9 @@ def test_one_aip_bedrock_claude_no_longer_raises():
     )
     models = cfg["models"]["providers"]["amazon-bedrock"]["models"]
     assert [m["id"] for m in models] == [_AIPS["sonnet"]]
-    assert cfg["agents"]["defaults"]["model"] == {"primary": _SONNET_REF, "fallbacks": [_SONNET_REF]}
+    # One tier -> nothing to fall back to, so the key is omitted rather than
+    # pointed at the primary (see test_bedrock_trial_emits_exactly_one_model).
+    assert cfg["agents"]["defaults"]["model"] == {"primary": _SONNET_REF}
     assert "enabled" not in cfg["cron"]  # cron SERVICE stays on; block now carries the O6 store-key pin
     assert cfg["agents"]["defaults"]["heartbeat"]["every"] == "30m"
 
@@ -1022,16 +1028,13 @@ def test_run_retries_capped(provider_choice, kwargs):
     assert "runRetries" not in cfg["agents"]["defaults"]
 
 
-def test_subagent_concurrency_capped_on_trial_only():
+def test_subagent_concurrency_capped_tighter_on_trial():
     """Subagents do NOT count against agents.defaults.maxConcurrent, so the
-    fan-out lane needs its own bound (upstream default 8) — but only where the
-    spend is OURS.
+    fan-out lane needs its own bound (upstream default 8) on EVERY path — see
+    test_subagent_lane_is_bounded_on_every_path for why.
 
-    Unlike the other three bounds (timeoutSeconds, runRetries, loopDetection),
-    which are sane everywhere because no legitimate run wants 48 hours or 160
-    retries, this one throttles CAPABILITY. A paid owner's spend is bounded by
-    their own credits or their own API key, so there is no reason to make them
-    delegate more slowly than upstream allows."""
+    The trial gets a tighter bound still: no human is in the loop, and a fan-out
+    is the fastest way to burn the $3.00/day cap."""
     trial = build_openclaw_config_dict(
         user_id="u_1",
         gateway_token="test-token",
@@ -1052,7 +1055,7 @@ def test_subagent_concurrency_capped_on_trial_only():
             "haiku": "arn:aws:bedrock:us-east-1:1:application-inference-profile/h",
         },
     )
-    assert "maxConcurrent" not in paid["agents"]["defaults"]["subagents"]
+    assert paid["agents"]["defaults"]["subagents"]["maxConcurrent"] == 4
     assert paid["agents"]["defaults"]["subagents"]["allowAgents"] == ["*"]
 
 
@@ -1110,3 +1113,56 @@ def test_context_tokens_unset_off_bedrock(provider_choice, kwargs):
         user_id="u_1", gateway_token="test-token", provider_choice=provider_choice, **kwargs
     )
     assert "contextTokens" not in cfg["agents"]["defaults"]
+
+
+def test_dreaming_minute_is_jittered_per_owner():
+    """Dreaming is a nightly self-run per agent. Every paid container firing it
+    in the same minute is a fleet-wide thundering herd — a simultaneous Bedrock
+    burst and a simultaneous EFS/SQLite burst — for a sweep with no reason to be
+    synchronised.
+
+    The minute is derived from the owner id, not randomised, so an owner always
+    dreams in the same minute: reproducible from the owner id alone when reading
+    a container's logs, and a reprovision never silently moves it.
+    """
+
+    def freq(owner: str) -> str:
+        return build_openclaw_config_dict(
+            user_id=owner,
+            gateway_token="test-token",
+            provider_choice="bedrock_trial",
+            aip_arns={"sonnet": "arn:aws:bedrock:us-east-1:1:application-inference-profile/s"},
+        )["plugins"]["entries"]["memory-core"]["config"]["dreaming"]["frequency"]
+
+    # Same owner, same minute -- every time.
+    assert freq("user_alpha") == freq("user_alpha")
+    # The hour never moves; only the minute, and it stays a legal cron minute.
+    minute, rest = freq("user_alpha").split(" ", 1)
+    assert rest == "3 * * *"
+    assert 0 <= int(minute) <= 59
+    # Owners land on different minutes (this pair is checked, not the whole space).
+    assert freq("user_alpha") != freq("user_beta")
+
+
+def test_subagent_lane_is_bounded_on_every_path():
+    """The subagent lane is EXEMPT from agents.defaults.maxConcurrent, so leaving
+    it at upstream's 8 makes the real ceiling 4 + 8 on a 1 vCPU Fargate task —
+    the box that already crash-looped an 11-agent owner at boot. It is a CPU
+    bound, not a spend bound, so it applies to paid owners too; the two numbers
+    move together."""
+    from core.containers.config import AGENT_MAX_CONCURRENT, AGENT_SUBAGENT_MAX_CONCURRENT
+
+    assert AGENT_SUBAGENT_MAX_CONCURRENT == AGENT_MAX_CONCURRENT
+
+    paid = build_openclaw_config_dict(
+        user_id="u_1",
+        gateway_token="test-token",
+        provider_choice="bedrock_claude",
+        aip_arns={
+            "sonnet": "arn:aws:bedrock:us-east-1:1:application-inference-profile/s",
+            "haiku": "arn:aws:bedrock:us-east-1:1:application-inference-profile/h",
+        },
+    )
+    defaults = paid["agents"]["defaults"]
+    assert defaults["subagents"]["maxConcurrent"] == AGENT_SUBAGENT_MAX_CONCURRENT
+    assert defaults["maxConcurrent"] == AGENT_MAX_CONCURRENT

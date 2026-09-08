@@ -515,7 +515,7 @@ async def replace_provider_block(
         # below never collide with them.
         plugins["entries"] = {
             **workflow_plugin_entries(llm_task_model=llm_task_model),
-            **memory_plugin_entries(),
+            **memory_plugin_entries(owner_id),
             **copy.deepcopy(acpx_entry or {}),
             **copy.deepcopy(plugin_entries),
         }

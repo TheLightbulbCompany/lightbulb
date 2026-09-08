@@ -12,7 +12,6 @@ unaffected.
 
 from __future__ import annotations
 
-from core import openclaw_version
 from core.containers.config import build_openclaw_config_dict
 
 _AIPS = {
@@ -106,12 +105,16 @@ def test_defaults_heartbeat_is_explicit_30m():
     assert heartbeat["model"] == f"amazon-bedrock/{_AIPS['haiku']}"
 
 
-def test_mcp_runtime_scope_shared_when_deployed_image_supports_it(monkeypatch):
-    """When this env's deployed image is >= 2026.6.1, pin the bundled MCP
+def test_mcp_runtime_scope_shared_when_target_image_supports_it():
+    """When the image this config will RUN on is >= 2026.6.1, pin the bundled MCP
     runtime to "shared" so connected servers are reused across sessions (single
     owner per container, so no cross-session bleed). Only meaningful when an
-    mcp block exists — exercised here via an integration server."""
-    monkeypatch.setattr(openclaw_version, "deployed_upstream_at_least", lambda target: True)
+    mcp block exists — exercised here via an integration server.
+
+    The pre-6.1 side of this gate lives in ``test_config_shape_gate.py``, the
+    module that drives real ``deployed_tag`` values (this directory's autouse
+    fixture pins the target to 8.1).
+    """
     cfg = build_openclaw_config_dict(
         user_id="user_x",
         gateway_token="t" * 32,
@@ -127,24 +130,3 @@ def test_mcp_runtime_scope_shared_when_deployed_image_supports_it(monkeypatch):
         },
     )
     assert cfg["mcp"]["runtimeScope"] == "shared"
-
-
-def test_mcp_runtime_scope_omitted_on_pre_6_1_image(monkeypatch):
-    """A container still on the pre-6.1 image must NOT receive runtimeScope — its
-    strict MCP schema rejects the unknown key and crash-loops at boot."""
-    monkeypatch.setattr(openclaw_version, "deployed_upstream_at_least", lambda target: False)
-    cfg = build_openclaw_config_dict(
-        user_id="user_x",
-        gateway_token="t" * 32,
-        provider_choice="bedrock_claude",
-        aip_arns=_AIPS,
-        paperclip_agents=[_ceo_agent("friday-uuid")],
-        integration_mcp_servers={
-            "stripe": {
-                "command": "npx",
-                "args": ["-y", "@stripe/mcp"],
-                "env": {"STRIPE_SECRET_KEY": "sk_X"},
-            },
-        },
-    )
-    assert "runtimeScope" not in cfg["mcp"]

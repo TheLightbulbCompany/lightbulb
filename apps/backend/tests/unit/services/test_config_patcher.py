@@ -1090,7 +1090,9 @@ async def test_replace_provider_block_swaps_bedrock_for_chatgpt(tmp_efs_with_bed
     # amazon-bedrock dropped; bundled extensions survive the wholesale replace.
     assert result["plugins"]["entries"] == {
         **workflow_plugin_entries(),
-        **memory_plugin_entries(),
+        # Same owner id the swap ran under -- the dreaming minute is derived
+        # from it, so a bare call would compare against the un-jittered 03:00.
+        **memory_plugin_entries("user_p"),
     }
     assert "amazon-bedrock" not in result["plugins"]["entries"]
     assert result["agents"]["defaults"]["model"]["primary"] == "openai/gpt-5.5"
@@ -1233,7 +1235,7 @@ async def test_replace_provider_block_preserves_memory_core(tmp_efs_with_bedrock
     )
     with open(os.path.join(tmp_efs_with_bedrock_provider, "user_p", "openclaw.json")) as f:
         entries = json.load(f)["plugins"]["entries"]
-    assert entries["memory-core"] == memory_plugin_entries()["memory-core"]
+    assert entries["memory-core"] == memory_plugin_entries("user_p")["memory-core"]
     assert entries["memory-core"]["config"]["dreaming"]["enabled"] is True
     assert entries["memory-core"]["config"]["dreaming"]["phases"]["deep"] == {"enabled": False}
 
@@ -1274,7 +1276,7 @@ async def test_replace_provider_block_leaves_memory_search_enabled(tmp_efs_with_
     # The swap leaves memorySearch at its provisioned value — recall stays on.
     assert result["agents"]["defaults"]["memorySearch"]["enabled"] is True
     assert "memory-core" in result["plugins"]["entries"]
-    assert result["plugins"]["entries"]["memory-core"] == memory_plugin_entries()["memory-core"]
+    assert result["plugins"]["entries"]["memory-core"] == memory_plugin_entries("user_p")["memory-core"]
     # The provider-derived value survives untouched (no model key on FTS-only).
     assert result["agents"]["defaults"]["memorySearch"]["provider"] == "none"
     assert "model" not in result["agents"]["defaults"]["memorySearch"]

@@ -34,6 +34,22 @@ const SPANS = [
 /** The span the page fetches. The toggle only slices what this returns. */
 const FETCH_SPAN: RollupSpan = 90;
 
+/** The offered periods, narrowest first — `widenToCover` walks these in order. */
+const OFFERED_SPANS: readonly RollupSpan[] = [7, 30, 90];
+
+/** The smallest offered period that still contains `day`, or the chosen one if
+ *  it already does (and the widest if nothing does). */
+export function widenToCover(
+  day: string,
+  chosen: RollupSpan,
+  end: string | null,
+): RollupSpan {
+  if (!end) return chosen;
+  const covers = (s: RollupSpan) => day >= dayOffset(end, -(s - 1));
+  if (covers(chosen)) return chosen;
+  return OFFERED_SPANS.find((s) => s >= chosen && covers(s)) ?? FETCH_SPAN;
+}
+
 function sum(days: RollupDay[]): number {
   return days.reduce((acc, d) => acc + (d.revenue_microcents ?? 0), 0);
 }
@@ -53,8 +69,16 @@ export function comparison(
 }
 
 export function RevenueSection({ day, onDayCleared }: { day: string | null; onDayCleared: () => void }) {
-  const [span, setSpan] = useState<RollupSpan>(30);
+  const [chosenSpan, setSpan] = useState<RollupSpan>(30);
   const { rollup, isLoading, error, isUnavailable } = useCompanyRollup(FETCH_SPAN);
+
+  // A ?day deep link can name a day older than the chosen period — a bookmark,
+  // or a link an agent built. Widening to the smallest period that CONTAINS
+  // that day keeps the chart honest about what the ledger below is showing;
+  // leaving it at 30 would scope the payments to a day with no bar to point
+  // at. Beyond 90 the day is outside the fetch entirely, so the widest period
+  // is the closest we can get and the ledger still speaks for itself.
+  const span = day ? widenToCover(day, chosenSpan, rollup?.end ?? null) : chosenSpan;
 
   // The server's own range end, not the browser clock: a viewer in UTC-7 is
   // still on the 31st when the server has rolled to the 1st, and slicing

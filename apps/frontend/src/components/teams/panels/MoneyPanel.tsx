@@ -1,11 +1,14 @@
 "use client";
 
-// Money — the revenue page. The masthead says what landed this month and the
-// biggest day sits under it; then the revenue chart, which is the subject of
-// the page (a trend the Stripe Dashboard does not show the owner), and under
-// it Payments — a five-row preview, not a ledger — Customers, What you sell
-// and Agent spend. The four old tabs' keys open this page scrolled to their
-// section.
+// Money — the revenue page. The masthead says what landed this month, then the
+// revenue chart, which is the subject of the page (a trend the Stripe Dashboard
+// does not show the owner), and under it Payments — a five-row preview, not a
+// ledger — Customers, What you sell and Agent spend. The four old tabs' keys
+// open this page scrolled to their section.
+//
+// There is deliberately no "Biggest day: … Open that day" line under the
+// masthead any more: the tallest bar IS the biggest day and is already a link,
+// so the sentence repeated the graph one line above it.
 //
 // The Stripe sections are gated ONCE by the account state (unbound / partial /
 // under review / forbidden / unavailable — MoneyStates), read off the Payments

@@ -11,7 +11,7 @@ vi.mock("@/hooks/useCompanyRollup", async (importOriginal) => {
   return { ...mod, useCompanyRollup: (span: number) => mockRollup(span) };
 });
 
-import { RevenueSection } from "../RevenueSection";
+import { RevenueSection, widenToCover } from "../RevenueSection";
 
 // end = 2026-09-08. The 30d window starts 2026-08-10 and its previous period
 // starts 2026-07-11, which first_day reaches back past — so the comparison is
@@ -144,5 +144,34 @@ describe("Money's revenue chart", () => {
     render(<RevenueSection day={null} onDayCleared={vi.fn()} />);
     expect(screen.getByRole("tablist", { name: "Period" })).toBeInTheDocument();
     expect(screen.queryByRole("status")).toBeNull();
+  });
+});
+
+describe("widenToCover — a ?day deep link outside the chosen period", () => {
+  const END = "2026-09-06";
+
+  it("leaves the chosen period alone when it already contains the day", () => {
+    expect(widenToCover("2026-09-01", 30, END)).toBe(30);
+    expect(widenToCover("2026-09-05", 7, END)).toBe(7);
+  });
+
+  it("widens to the smallest period that contains the day", () => {
+    // 45 days back: outside 7 and 30, inside 90.
+    expect(widenToCover("2026-07-23", 7, END)).toBe(90);
+    // 20 days back: outside 7, inside 30.
+    expect(widenToCover("2026-08-17", 7, END)).toBe(30);
+  });
+
+  it("falls back to the widest period when nothing covers the day", () => {
+    // Older than the 90-day window — the day is outside the fetch entirely.
+    expect(widenToCover("2025-01-01", 7, END)).toBe(90);
+  });
+
+  it("never narrows below what the owner chose", () => {
+    expect(widenToCover("2026-09-06", 90, END)).toBe(90);
+  });
+
+  it("keeps the chosen period when the range end is not known yet", () => {
+    expect(widenToCover("2026-07-01", 30, null)).toBe(30);
   });
 });

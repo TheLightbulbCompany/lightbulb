@@ -2432,7 +2432,8 @@ def build_openclaw_config_dict(
             # (findChromeExecutableLinux probes it first); the pin keeps the
             # choice deliberate rather than an accident of list order.
             "executablePath": "/usr/bin/google-chrome",
-            # extraArgs: WebGL only. Chrome 137 removed the automatic
+            # extraArgs: WebGL, the unsupported-flag infobar, and the egress
+            # proxy. Chrome 137 removed the automatic
             # SwiftShader fallback (blink-dev "Intent to Remove: SwiftShader
             # Fallback") and prod runs Chrome 151 on GPU-less Fargate, so
             # before this the container had NO WebGL at all —
@@ -2479,6 +2480,29 @@ def build_openclaw_config_dict(
             "extraArgs": [
                 "--disable-gpu",
                 "--enable-unsafe-swiftshader",
+                # Suppresses Chrome's yellow "You are using an unsupported
+                # command-line flag: --no-sandbox. Stability and security will
+                # suffer." bubble, which the owner sees in the Browser panel
+                # every session. We do not choose --no-sandbox: `noSandbox` is
+                # set above because the gateway runs as root and Chromium
+                # refuses to start as root without it, so the bar is
+                # unavoidable collateral of a decision made for us, and it
+                # tells the owner nothing they can act on.
+                #
+                # This is the SECOND banner in this panel. The first was Chrome
+                # for Testing's "only for automated testing" bar, fixed by
+                # pinning executablePath to google-chrome above — different
+                # cause, different fix, both had to be done.
+                #
+                # It must be --test-type, NOT the --disable-infobars in
+                # upstream's own extraArgs doc example: that switch stopped
+                # suppressing this bubble around Chrome 76 and is inert on the
+                # Chrome 151 we run. Do not "simplify" to it.
+                #
+                # CONFIG-ONLY — no image roll. Verify after delivery by opening
+                # the Browser panel and looking for the bar, not by reading
+                # argv: the flag is only worth anything if the bubble is gone.
+                "--test-type",
                 # Cloudflare WARP browser egress, when the environment has the
                 # knob on. Appends at most one flag; see _browser_egress_args.
                 *_browser_egress_args(),

@@ -328,6 +328,41 @@ never call it · `MISWIRED` we call it but wrongly · `DEAD-WEIGHT` cost with no
 
 ### SEC-1 · No method allowlist in the RPC proxy (cross-member IDOR in orgs)
 
+> **⚠️ THE HEADLINE CLAIM IS RETRACTED — 2026-09-08, verified on `origin/main`.**
+> This finding said *"`chat.send` is unguarded through the generic proxy … a member
+> **writing into another member's conversation**"*, and that was the reason it was
+> ranked P0. **It is false.** `websocket_chat.py:306` defines
+> `_RUN_DISPATCH_METHODS = frozenset({"chat.send", "sessions.send", "sessions.steer", "agent"})`
+> and `:1923` refuses all four **before ECS or the pool is touched**, emitting
+> `rpc.refused` / `run_dispatch`. An existing test pins it. No member can write into
+> another member's conversation this way, and no fix was written for it.
+>
+> Three named methods are also wrong: `sessions.preview` is **not** in the registry
+> (it takes a LIST param, `keys`); `sessions.patchMany` is handled separately upstream
+> via `targets[].key`; and `sessions.visibility.set` **does not exist** — the real
+> name is `session.visibility.set`.
+>
+> *"Upstream maintains our map for us, exhaustively"* is **overstated**. Scanning every
+> non-test handler in `src/gateway/server-methods/` at the pinned tag and subtracting
+> the 52 registry rows leaves **~19 key-bearing methods absent**, including
+> `sessions.preview`, `session.members.add/remove`, `session.visibility.set`,
+> `sessions.diff`, `sessions.files.get/list/reveal`, `sessions.describe`,
+> `session.suggestions.*`, `session.typing`, `chat.toolTitles`, `audit.list`,
+> `tasks.list` and `sessions.viewers.set`. The registry is exhaustive for
+> *session-sharing mutation authorization*, which is not the question we are asking.
+> **Do not port `sessionMutationTargetFields()`** — it returns `[]` for
+> `sessions.companion.ask` / `.state`. Port the raw map.
+>
+> **What survives, and it is still worth doing:** there is genuinely no method
+> allowlist, and the opt-in key map genuinely covers only 8 methods, so the
+> *read* surface across org members is real. **The fix order is REVERSED** from
+> what this finding proposed: ship the default-deny allowlist FIRST, the registry
+> port second. The registry closes 43 of ~390 doors and all 43 are already denied by
+> the allowlist — registry-first buys partial coverage while the ~19 methods it
+> cannot model stay open.
+> Plan: `docs/superpowers/plans/2026-09-08-rpc-proxy-session-guard.md`.
+
+
 **Status:** TODO — fix on its own branch, ahead of and separate from the UX work.
 **Class:** SECURITY / MISWIRED. **Effort:** medium.
 

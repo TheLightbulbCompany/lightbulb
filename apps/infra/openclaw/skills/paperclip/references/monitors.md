@@ -44,3 +44,70 @@ These are different things and you need both when both apply:
 
 So: watching a PR with a monitor does not entitle you to merge it. If the action you intend to take on the other side of the wait is gated — by your contract, by a `ruleKey`, by company policy — you still need the approved `request_board_approval` before you take it. Schedule the monitor so you are not idling, and request the approval so you are allowed to act. Scheduling a monitor never widens what you are allowed to do.
 
+## Surviving a Dropped Run (Task Watchdogs)
+
+A monitor is **one-shot**: when it fires, `nextCheckAt` is cleared and the
+monitor is stripped from the policy. Re-arming is your job, and it can only
+happen inside a run. So if the run that was supposed to re-arm it fails, times
+out, or loses its gateway connection, the wait ends silently — no error, no
+notice, and the issue sits untouched until a human notices weeks later. This is
+not hypothetical: it is the single largest source of dead work on this board.
+
+A **watchdog** is the backstop that survives that. It is durable state on the
+issue, independent of any run. It watches the issue's subtree and, when work
+stops with no live path, files a review and wakes the owner.
+
+**The rule: arm a watchdog whenever you arm a monitor.** They are not
+alternatives. The monitor is the wait; the watchdog is what notices the wait
+died.
+
+```bash
+# Arm the watchdog on the issue you just scheduled a monitor for.
+printf '%s' '{"agentId":"'"$PAPERCLIP_AGENT_ID"'","instructions":"Resume the ISOA-168 release check if this stalls with no live monitor."}' \
+  | /app/skills/paperclip/scripts/paperclip-api.sh raw POST \
+      "/api/issues/$PAPERCLIP_TASK_ID/watchdog"
+```
+
+- `agentId` is who gets woken when the subtree goes quiet — normally yourself.
+- `instructions` is read by the agent that wakes. Say what to re-check and how
+  to resume, not "investigate".
+- Arm it once. It is durable and is not consumed by firing, unlike a monitor.
+
+**Do not** arm a watchdog instead of setting a status. It reports that work
+stopped; it does not make a parked issue legal.
+
+## Tracking a GitHub PR or Issue (External Objects)
+
+When an issue waits on a GitHub pull request or issue, **do not describe it in
+prose**. Prose is not readable by anything: a description that says "waiting for
+PR 1934 to merge" leaves nothing in the system capable of noticing when it does.
+Register it as an **external object** instead, and refresh that object whenever
+you need its state.
+
+```bash
+# Register the PR this issue waits on.
+printf '%s' '{"provider":"github","kind":"pull_request","url":"https://github.com/TheLightbulbCompany/lightbulb/pull/1934"}' \
+  | /app/skills/paperclip/scripts/paperclip-api.sh raw POST \
+      "/api/issues/$PAPERCLIP_TASK_ID/external-objects"
+
+# Re-read live state before you say anything about it.
+/app/skills/paperclip/scripts/paperclip-api.sh raw POST \
+  "/api/issues/$PAPERCLIP_TASK_ID/external-objects/refresh"
+```
+
+**State a PR, issue, CI, or deploy fact only from a refresh you ran in this
+run — never from memory and never from an earlier run.** Cite the refresh in
+your comment. Every review rejection recorded on this board so far was an agent
+asserting external state it had not re-read: "the plan says ISOA-120 was
+blocked, but live search shows it is still backlog"; "Backend CI is still
+in_progress"; "PR 1934 is still open" — written after it had merged.
+
+If the refresh fails or the provider is unreachable, **say the refresh failed**.
+Do not fall back to what you remember, and do not report an unverified claim as
+verified. A tool failure narrows what you may assert; it never lowers the
+evidence bar.
+
+Registering an external object does not replace the monitor and watchdog. Use
+all three: the object holds the truth, the monitor wakes you to look, the
+watchdog notices if the waking stops.
+

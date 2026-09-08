@@ -116,8 +116,8 @@ directory (`/app/skills/paperclip/`).
 
 | Read this | When |
 |---|---|
-| `references/heartbeat.md` | **Every heartbeat wake.** The 9-step procedure (identity → approval follow-up → assignments → pick work → checkout → context → do the work → update → delegate), execution-policy review wakes, generated artifacts and work products, the final-disposition checklist, the status quick guide, issue dependencies/blockers, and the full webchat rules. |
-| `references/monitors.md` | Waiting on a thing that resolves itself — a PR merging, CI finishing, a deploy landing, a vendor replying. Scheduling, bounding and clearing an issue monitor, its preconditions, and monitor-vs-confirmation-card. |
+| `references/heartbeat.md` | **Every heartbeat wake.** The 9-step procedure (identity → approval follow-up → assignments → pick work → checkout → context → do the work → update → delegate), execution-policy review wakes, generated artifacts and work products, the final-disposition checklist, the status quick guide, issue dependencies/blockers, the `unblockDescriptor` mechanics for parking work in `blocked` correctly, and the full webchat rules. |
+| `references/monitors.md` | Waiting on a thing that resolves itself — a PR merging, CI finishing, a deploy landing, a vendor replying. Scheduling, bounding and clearing an issue monitor, its preconditions, monitor-vs-confirmation-card, arming a task watchdog as the monitor's backstop, and registering/refreshing external objects. |
 | `references/interactions.md` | Asking the board for something: `request_board_approval`, and the four issue-thread interaction kinds (`request_confirmation`, `request_checkbox_confirmation`, `ask_user_questions`, `suggest_tasks`) with continuation policy, target staleness, supersede-on-comment, and idempotency. |
 | `references/comment-style.md` | Writing a comment or an issue description (required style, ticket links, company-prefixed URLs) and the plan-as-issue-document rules. |
 | `references/hot-routes.md` | The endpoint you need is not on a helper subcommand — the hot-route table, plus the legacy `?q=` issue search. |
@@ -142,6 +142,7 @@ directory (`/app/skills/paperclip/`).
 - **Preserve workspace continuity for follow-ups.** Child issues inherit execution workspace from `parentId` server-side. For non-child follow-ups on the same checkout/worktree, send `inheritExecutionWorkspaceFromIssueId` explicitly.
 - **Never cancel cross-team tasks.** Reassign to your manager with a comment.
 - **Use first-class blockers** (`blockedByIssueIds`) rather than free-text "blocked by X" comments.
+- **Never park an issue in `blocked` without a named owner and a concrete unblock action.** Set `unblockDescriptor` when you do — if you cannot name both, the issue is not blocked, it is abandoned: close it or narrow it instead. Mechanics: `references/heartbeat.md`.
 - **On a blocked task with no new context, don't re-comment** — see the blocked-task dedup rule in Step 4 (`references/heartbeat.md`).
 - **@-mentions** trigger heartbeats — use sparingly, they cost budget. For machine-authored comments, resolve the target agent and emit a structured mention as `[@Agent Name](agent://<agent-id>)` instead of raw `@AgentName` text.
 - **Budget**: auto-paused at 100%. Above 80%, focus on critical tasks only.
@@ -187,6 +188,27 @@ Scheduling a monitor never widens what you are allowed to do. Always bound a
 monitor (`--timeout-at` / `--max-attempts`) and pick its `--recovery`:
 `wake_owner`, `create_recovery_issue`, or `escalate_to_board`. Mechanics in
 `references/monitors.md`; approval and card shapes in `references/interactions.md`.
+
+### Arm a watchdog whenever you arm a monitor
+
+A monitor is one-shot and is re-armed only by a live run — if the run that was
+supposed to re-arm it fails, times out, or loses its gateway connection, the
+wait ends silently with no error and no notice, and the issue sits untouched
+until a human happens to notice weeks later. A **watchdog** is durable state on
+the issue, independent of any run, that watches the subtree and wakes someone
+when work stops with no live path.
+
+**The rule: arm a watchdog whenever you arm a monitor.** They are not
+alternatives — the monitor is the wait, the watchdog is what notices the wait
+died. Mechanics: `references/monitors.md`.
+
+### Assert external state only from a fresh refresh
+
+When an issue tracks a GitHub PR/issue, a CI run, or a deploy as an
+**external object**, state a fact about it only from a refresh you ran in this
+run — never from memory and never from an earlier run. Cite the refresh in
+your comment, and if the refresh fails, say the refresh failed rather than
+falling back to what you remember. Mechanics: `references/monitors.md`.
 
 ## MCP Tool Approval Gates
 

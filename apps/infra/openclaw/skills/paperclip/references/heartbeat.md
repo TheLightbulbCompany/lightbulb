@@ -155,3 +155,42 @@ The array **replaces** the current set on each update — pass `--blocked-by ""`
 
 `cancelled` blockers do **not** count as resolved — remove or replace them explicitly before expecting `issue_blockers_resolved`.
 
+## Parking Work Correctly (unblockDescriptor)
+
+Moving an issue to `blocked` without saying what unblocks it makes it invisible
+work. Paperclip acts on an `unblockDescriptor` — it wakes the named agent when
+the block is theirs to clear — and does nothing at all without one.
+
+```bash
+# Blocked on another agent: name them and the action. They get woken.
+/app/skills/paperclip/scripts/paperclip-api.sh raw PATCH \
+  "/api/issues/$PAPERCLIP_TASK_ID" <<'JSON'
+{"status":"blocked",
+ "unblockDescriptor":{"owner":{"agentId":"<agent uuid>"},
+                      "action":"Restore the shared Stripe credentials, then rerun this issue."}}
+JSON
+```
+
+For a human decision, the owner is the board. Paperclip deliberately wakes
+nobody in this case — the item surfaces in the owner's queue and waits there
+with no timer and no auto-close:
+
+```bash
+/app/skills/paperclip/scripts/paperclip-api.sh raw PATCH \
+  "/api/issues/$PAPERCLIP_TASK_ID" <<'JSON'
+{"status":"blocked",
+ "unblockDescriptor":{"owner":"board",
+                      "action":"Decide whether Tally owns finance or Friday keeps it."}}
+JSON
+```
+
+**Pick the owner honestly.** A human decision routed to an agent produces a loop
+where nobody can act. A machine-checkable condition routed to the board spends
+the owner's attention on something you could have polled — use a monitor and an
+external object for that instead.
+
+**If you cannot name an owner and an action, the issue is not blocked — it is
+abandoned.** Close it, or reduce it to the part you can actually do. Nine issues
+on this board were filed in one sitting with nothing to wait on and sat for a
+month. Filing work nobody is waiting on is worse than filing nothing.
+

@@ -6,6 +6,8 @@ import { resolve, join } from "node:path";
 const skillRoot = resolve(__dirname, "../openclaw/skills/paperclip");
 const helper = resolve(skillRoot, "scripts/paperclip-api.sh");
 const skillMd = readFileSync(resolve(skillRoot, "SKILL.md"), "utf8");
+const monitorsMd = readFileSync(resolve(skillRoot, "references/monitors.md"), "utf8");
+const heartbeatRefMd = readFileSync(resolve(skillRoot, "references/heartbeat.md"), "utf8");
 
 function runHelper(args: string[], input = "") {
   return spawnSync("bash", [helper, ...args], {
@@ -321,5 +323,64 @@ describe("sections vendored in from the fork", () => {
 
   it("ships the cases reference", () => {
     expect(existsSync(resolve(skillRoot, "references/cases.md"))).toBe(true);
+  });
+});
+
+// SKILL.md is a routing index (see MAINTENANCE.md "SHAPE"): it carries only
+// the always-loaded rules, and the mechanics for each primitive live in the
+// reference file the routing table points at. So these three headings live
+// in references/monitors.md (watchdogs, external objects) and
+// references/heartbeat.md (unblockDescriptor) — never in SKILL.md itself.
+describe("liveness primitives are documented", () => {
+  it.each([
+    ["## Surviving a Dropped Run (Task Watchdogs)"],
+    ["## Tracking a GitHub PR or Issue (External Objects)"],
+  ])("references/monitors.md has %s", (heading) => {
+    expect(monitorsMd).toContain(heading);
+  });
+
+  it("references/heartbeat.md has ## Parking Work Correctly (unblockDescriptor)", () => {
+    expect(heartbeatRefMd).toContain("## Parking Work Correctly (unblockDescriptor)");
+  });
+
+  it("states the arm-a-watchdog-with-every-monitor rule in SKILL.md", () => {
+    expect(skillMd).toContain("arm a watchdog whenever you arm a monitor");
+  });
+
+  it("forbids asserting external state from memory", () => {
+    expect(skillMd).toContain("never from memory and never from an earlier run");
+  });
+
+  it("forbids parking an issue in blocked with no named owner and action", () => {
+    expect(skillMd).toContain(
+      "Never park an issue in `blocked` without a named owner and a concrete unblock action.",
+    );
+  });
+
+  it("drives the watchdog and external-object endpoints through the helper, not curl", () => {
+    for (const path of [
+      "/api/issues/$PAPERCLIP_TASK_ID/watchdog",
+      "/api/issues/$PAPERCLIP_TASK_ID/external-objects",
+      "/api/issues/$PAPERCLIP_TASK_ID/external-objects/refresh",
+    ]) {
+      expect(monitorsMd).toContain(path);
+    }
+    // Every occurrence of those routes must be an argument to the helper.
+    for (const line of monitorsMd.split("\n")) {
+      if (line.includes("/external-objects") || line.includes("/watchdog")) {
+        if (line.trimStart().startsWith("curl")) {
+          throw new Error(`hand-rolled curl for a new endpoint: ${line}`);
+        }
+      }
+    }
+  });
+
+  it("drives the unblockDescriptor write through the helper, not curl", () => {
+    expect(heartbeatRefMd).toContain("unblockDescriptor");
+    for (const line of heartbeatRefMd.split("\n")) {
+      if (line.includes("unblockDescriptor") && line.trimStart().startsWith("curl")) {
+        throw new Error(`hand-rolled curl for unblockDescriptor: ${line}`);
+      }
+    }
   });
 });

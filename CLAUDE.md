@@ -313,6 +313,31 @@ is safe — a *skipped job* reports success to branch protection.
 > genuinely removed rule still fails. A test pinned to a path fails on refactors;
 > a test pinned to behaviour fails on regressions.
 
+> **⚠️ A red `claude-review` is not necessarily a review finding — check whether the
+> action installed at all.** Observed 2026-09-08 on #2378:
+>
+> ```
+> sha256sum: /home/prasiddha/.claude/downloads/claude-2.1.263-linux-x64.zst: No such file
+> bash: line 226: .../claude-2.1.263-linux-x64: Text file busy
+> Action failed with error: Failed to install Claude Code after 3 attempts
+> ```
+>
+> `Text file busy` on a shared path under `~/.claude/downloads` — **two concurrent
+> `claude-review` jobs on the same self-hosted runner writing the same file.** The action
+> never reviewed anything; the job's guard correctly turned the install failure into a red
+> rather than a silent pass.
+>
+> This matters more than a normal flake because `claude-review` is the **required** check
+> on `main`, so the race can block any merge, and it gets likelier the busier the runner is
+> — exactly when merges are queueing. It is the same shared-`$HOME` race class already
+> fixed for `pnpm/action-setup` in `app.ts` (via `runner.temp`); the Claude action exposes
+> no equivalent knob.
+>
+> **So: read the log before you read the diff.** A red gate has at least three distinct
+> causes on this repo — a real review finding, an expired OAuth token / usage cap (the
+> guard's own error text names these two), and this install race. Re-running the job is the
+> fix for the third; changing your code is not.
+
 The same workflow posts a bare `@codex review` on open / ready-for-review /
 reopen (not on every push). That comment is the trigger, and any trailing text
 after `@codex review` stops it being picked up.

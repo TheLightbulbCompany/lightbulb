@@ -91,4 +91,13 @@ describe("InboxNeedsYou", () => {
     render(<InboxNeedsYou companyId="c1" agents={[]} />);
     expect(screen.getByRole("alert")).toHaveTextContent(/couldn.t check for failed runs/i);
   });
+
+  it("does not claim nothing needs you when the failed-run read failed", () => {
+    // Two feeds, one band: if /inbox/runs errors we cannot vouch for the
+    // all-clear, so the alert must not sit above "Nothing needs you".
+    triage.value = { failedRuns: [], count: 0, isLoading: false, isError: true } as never;
+    render(<InboxNeedsYou companyId="c1" agents={[]} />);
+    expect(screen.getByRole("alert")).toHaveTextContent(/couldn.t check for failed runs/i);
+    expect(screen.queryByText(/nothing needs you/i)).toBeNull();
+  });
 });

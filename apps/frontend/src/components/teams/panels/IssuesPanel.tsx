@@ -115,6 +115,20 @@ export function IssuesPanel({
   const [creating, setCreating] = useState(newTask);
   const [creatingGoal, setCreatingGoal] = useState(false);
   const [creatingProject, setCreatingProject] = useState(false);
+  // The grouping the owner is LOOKING AT, which is not the same as the one the
+  // URL opened on: they can pick another from the Group select at any time.
+  // "New goal" / "New project" follow this, because gating them on the deep
+  // link alone hid "New goal" from anyone who grouped by goal by hand — and a
+  // company with no goals yet has no goal link to arrive by, so that was the
+  // whole first-goal path.
+  const [liveGroupBy, setLiveGroupBy] = useState<TasksGroupBy>(initialGroupBy ?? "none");
+  // Mirrors TasksList's own re-delivery sync (dockview merges params onto an
+  // open panel rather than remounting it), so the two cannot drift.
+  const [prevInitialGroupBy, setPrevInitialGroupBy] = useState(initialGroupBy);
+  if (initialGroupBy !== prevInitialGroupBy) {
+    setPrevInitialGroupBy(initialGroupBy);
+    setLiveGroupBy(initialGroupBy ?? "none");
+  }
   const [search, setSearch] = useState("");
 
   // The sidebar create pill's "New task" delivers a one-shot `newTask` prop.
@@ -205,12 +219,12 @@ export function IssuesPanel({
                 survive behind a group heading's link. Offered only while the
                 page is grouped by goal, so it appears where it means
                 something rather than sitting on every view. */}
-            {initialGroupBy === "goal" && (
+            {liveGroupBy === "goal" && (
               <EditorialButton variant="secondary" onClick={() => setCreatingGoal(true)}>
                 New goal
               </EditorialButton>
             )}
-            {initialGroupBy === "project" && (
+            {liveGroupBy === "project" && (
               <EditorialButton variant="secondary" onClick={() => setCreatingProject(true)}>
                 New project
               </EditorialButton>
@@ -285,6 +299,7 @@ export function IssuesPanel({
         agents={agentsData?.agents ?? []}
         goals={goalsData?.goals ?? []}
         initialGroupBy={initialGroupBy}
+        onGroupByChange={setLiveGroupBy}
         liveIssueIds={liveIssueIds}
         currentUserId={user?.id ?? null}
         searchActive={search.trim().length > 0 || agentFilter !== null}

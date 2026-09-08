@@ -184,4 +184,49 @@ describe("IssuesPanel", () => {
       screen.getByRole("switch", { name: /routine tasks/i }),
     ).toHaveAttribute("aria-checked", "true");
   });
+
+  // The Group control is an icon button (aria-label "Group") opening a
+  // popover of options — not a <select>.
+  // Grouping is a list-view affordance and board is the default view, so a
+  // test that wants the Group menu has to switch first.
+  const goToListView = () => {
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "List view" }));
+    });
+  };
+  const pickGrouping = (label: string) => {
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Group" }));
+    });
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: label }));
+    });
+  };
+
+  it("offers New goal for the grouping the owner is LOOKING AT, not the one the URL opened on", () => {
+    // The bug this pins: gating on the deep-link prop meant someone who
+    // grouped by goal from the menu saw no "New goal" — and a company with no
+    // goals yet has no goal link to arrive by, so that was the only path to
+    // its first goal.
+    render(<IssuesPanel />);
+    goToListView();
+    expect(screen.queryByRole("button", { name: "New goal" })).toBeNull();
+    pickGrouping("Goal");
+    expect(screen.getByRole("button", { name: "New goal" })).toBeInTheDocument();
+  });
+
+  it("offers New project once the owner groups by project", () => {
+    render(<IssuesPanel />);
+    goToListView();
+    expect(screen.queryByRole("button", { name: "New project" })).toBeNull();
+    pickGrouping("Project");
+    expect(screen.getByRole("button", { name: "New project" })).toBeInTheDocument();
+  });
+
+  it("drops New goal when the owner regroups away from a goal deep link", () => {
+    render(<IssuesPanel initialGroupBy="goal" />);
+    expect(screen.getByRole("button", { name: "New goal" })).toBeInTheDocument();
+    pickGrouping("Status");
+    expect(screen.queryByRole("button", { name: "New goal" })).toBeNull();
+  });
 });

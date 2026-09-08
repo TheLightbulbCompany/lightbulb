@@ -45,6 +45,9 @@ export function InboxNeedsYou({
       label="Needs you"
       right={waiting > 0 ? <span>{waiting} waiting</span> : undefined}
     >
+      {/* When the failed-run read fails we cannot vouch for "nothing needs
+          you", so the all-clear below is suppressed rather than printed under
+          its own alert. */}
       {runsError && (
         <PanelBandEmpty role="alert">Couldn&apos;t check for failed runs just now.</PanelBandEmpty>
       )}
@@ -67,7 +70,7 @@ export function InboxNeedsYou({
         agents={agents}
         currentUserId={currentUserId}
         onOpenIssue={onOpenIssue}
-        showEmptyState={groups.length === 0}
+        showEmptyState={groups.length === 0 && !runsError}
       />
     </PanelBand>
   );

@@ -212,6 +212,13 @@ function MobileChatShell() {
       params.delete("agent");
       params.delete("detailId");
       params.delete("tab");
+      // Inbox's band and Tasks' grouping are durable on desktop via
+      // clearablePanelParamKeys; mobile has no such registry, which is exactly
+      // why `tab` is deleted here. Without these two, a run toast's
+      // ?section=needs-you survives a plain sidebar nav and Inbox silently
+      // scrolls to a band nobody asked for.
+      params.delete("section");
+      params.delete("groupBy");
       pushSearchParams(params);
     },
     [searchParams],

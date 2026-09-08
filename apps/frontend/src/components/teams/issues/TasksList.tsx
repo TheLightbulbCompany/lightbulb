@@ -119,6 +119,13 @@ export interface TasksListProps {
    * Absent means the plain Tasks page: no grouping.
    */
   initialGroupBy?: TasksGroupBy;
+  /**
+   * Fired whenever the LIVE grouping changes — the deep link on mount, and
+   * every pick from the Group select after it. The panel above needs this
+   * because "New goal" / "New project" belong to the grouping the owner is
+   * actually looking at, not the one the URL happened to open on.
+   */
+  onGroupByChange?: (groupBy: TasksGroupBy) => void;
   liveIssueIds?: Set<string>;
   /** Signed-in user id; passed to the filters popover for the "Me" assignee. */
   currentUserId?: string | null;
@@ -284,6 +291,12 @@ interface GroupContext {
   issueLabel: (id: string) => string | null;
   /** Resolves a goal's TITLE for the "Goal" grouping — never its raw id. */
   goalTitle: (id: string) => string | null;
+  /**
+   * True when a search or a filter has already narrowed the issues being
+   * grouped. A goal's "N of M" is then a count of what is SHOWN, not of the
+   * goal, and must say so.
+   */
+  isFiltered: boolean;
 }
 
 // Sentinel keys for the "no value" bucket of each grouping. Kept distinct so
@@ -386,13 +399,24 @@ function groupIssues(
     // "N of M done" off the SAME progress helper the sub-issue strip uses, so
     // there is one definition of done on this surface (it drops cancelled work
     // from the denominator rather than counting it as outstanding).
-    const { doneCount, totalCount } = buildSubIssueProgressSummary(items);
+    // `settledCount`, not `doneCount`: a task that was closed or marked
+    // won't-do is finished, and counting only `done` leaves a goal stuck
+    // below its own total forever.
+    const { settledCount, totalCount } = buildSubIssueProgressSummary(items);
+    // These counts are computed from `items`, which the search box and the
+    // "See her work" agent filter have already narrowed — so the label says
+    // "shown" rather than implying it describes the whole goal.
+    const scoped = ctx.isFiltered;
     return {
       key,
       label: labelFor(key),
       items,
-      goalId: key === NO_GOAL_KEY ? undefined : key,
-      meta: `${doneCount} of ${totalCount} done`,
+      // An id with no title in the roster is an orphan: showing "Unknown goal"
+      // is fair, linking to a detail page for a goal that is not there is not.
+      goalId: key === NO_GOAL_KEY || !ctx.goalTitle(key) ? undefined : key,
+      meta: scoped
+        ? `${settledCount} of ${totalCount} shown done`
+        : `${settledCount} of ${totalCount} done`,
     };
   });
 }
@@ -590,7 +614,12 @@ function GroupHeader({
       ) : (
         heading
       )}
-      <span className="text-caption tabular-nums text-[var(--midnight-muted)]">{count}</span>
+      {/* A goal heading already states its shape as "N of M done"; printing a
+          bare item count beside it put two unlabelled numbers next to each
+          other that disagree by design (the meta drops cancelled work). */}
+      {!meta && (
+        <span className="text-caption tabular-nums text-[var(--midnight-muted)]">{count}</span>
+      )}
       {meta && (
         <span className="text-caption tabular-nums text-[var(--midnight-muted)]">{meta}</span>
       )}
@@ -825,6 +854,7 @@ export function TasksList({
   agents,
   goals,
   initialGroupBy,
+  onGroupByChange,
   liveIssueIds,
   currentUserId,
   searchActive = false,
@@ -835,7 +865,16 @@ export function TasksList({
   const storedViewMode = useTasksViewMode();
   const [sortField, setSortField] = useState<TasksSortField>("updated");
   const [sortDir, setSortDir] = useState<TasksSortDir>("desc");
-  const [groupBy, setGroupBy] = useState<TasksGroupBy>(initialGroupBy ?? "none");
+  const [groupBy, setGroupByState] = useState<TasksGroupBy>(initialGroupBy ?? "none");
+  // One writer, so the panel above can never hold a grouping the list is not
+  // showing: every path that changes the grouping goes through this.
+  const setGroupBy = useCallback(
+    (next: TasksGroupBy) => {
+      setGroupByState(next);
+      onGroupByChange?.(next);
+    },
+    [onGroupByChange],
+  );
   // A ?groupBy deep link — the old Goals / Projects links — asks for a GROUPED
   // view, and grouping is a list-view affordance. Honour it on this mount
   // without touching the stored board-vs-list preference: the view toggle
@@ -849,7 +888,7 @@ export function TasksList({
   const [prevInitialGroupBy, setPrevInitialGroupBy] = useState(initialGroupBy);
   if (initialGroupBy !== prevInitialGroupBy) {
     setPrevInitialGroupBy(initialGroupBy);
-    setGroupBy(initialGroupBy ?? "none");
+    setGroupByState(initialGroupBy ?? "none");
     setGroupingDeepLink(Boolean(initialGroupBy));
   }
   const [nestingEnabled, setNestingEnabled] = useState(true);
@@ -933,8 +972,14 @@ export function TasksList({
   );
 
   const groups = useMemo(
-    () => groupIssues(sorted, groupBy, { agentName, issueLabel, goalTitle }),
-    [sorted, groupBy, agentName, issueLabel, goalTitle],
+    () =>
+      groupIssues(sorted, groupBy, {
+        agentName,
+        issueLabel,
+        goalTitle,
+        isFiltered: filtersActive || searchActive,
+      }),
+    [sorted, groupBy, agentName, issueLabel, goalTitle, filtersActive, searchActive],
   );
 
   const toggleParent = useCallback((id: string) => {

@@ -2499,6 +2499,15 @@ def build_openclaw_config_dict(
                 # suppressing this bubble around Chrome 76 and is inert on the
                 # Chrome 151 we run. Do not "simplify" to it.
                 #
+                # --test-type is deliberately BROADER than this one bar: it is
+                # Chrome's "running under test automation" switch (it is what
+                # skips the bad-flags check in bad_flags_prompt.cc, which is
+                # why it works here) and it also suppresses some first-run and
+                # session-restore prompts. That is wanted, not tolerated —
+                # every one of those prompts is noise the owner would see in
+                # the live-view panel and could not act on. Anyone auditing
+                # this flag should expect more than the infobar.
+                #
                 # CONFIG-ONLY — no image roll. Verify after delivery by opening
                 # the Browser panel and looking for the bar, not by reading
                 # argv: the flag is only worth anything if the bubble is gone.

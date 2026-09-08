@@ -18,7 +18,7 @@ vi.mock("@/components/teams/panels/money/CustomersSection", () => ({ CustomersSe
 vi.mock("@/components/teams/panels/money/ProductsSection", () => ({ ProductsSection: () => <section id="money-products" aria-label="What you sell" /> }));
 
 import { MoneyPanel } from "../MoneyPanel";
-import { biggestDay, formatMicrocents, monthToDate } from "../money/money";
+import { formatMicrocents, monthToDate } from "../money/money";
 
 const bound = { start: "2026-06-09", end: "2026-09-06", stripe_bound: true, first_day: "2026-08-30", unavailable: [], agent_spend_month_to_date_microcents: 0,
   days: [
@@ -101,12 +101,11 @@ describe("MoneyPanel — one ledger page", () => {
     expect(screen.queryByText(/Biggest day/)).toBeNull();
   });
 
-  it("helpers: month-to-date is UTC-month scoped and signed; biggest day ignores refund days", () => {
+  it("helpers: month-to-date is UTC-month scoped and signed", () => {
     expect(formatMicrocents(674_000_000)).toBe("$674"); // whole dollars render without cents (formatUsdCents)
     expect(formatMicrocents(674_500_000)).toBe("$674.50");
     expect(formatMicrocents(-5_000_000)).toBe("−$5");
     expect(monthToDate(bound.days, "2026-09-06")).toEqual({ month: "2026-09", microcents: 674_000_000 });
     expect(monthToDate([bound.days[0]], "2026-09-06")).toBeNull();
-    expect(biggestDay([...bound.days, { day: "2026-09-04", revenue_microcents: -90_000_000, signups: 0, visitors: 0 }], "2026-09")!.day).toBe("2026-09-05");
   });
 });

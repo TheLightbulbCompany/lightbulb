@@ -137,3 +137,39 @@ def test_carried_binding_naming_a_dead_agent_is_dropped():
         ],
     )
     assert not any(b["agentId"] == "deleted_agent" for b in out["bindings"])
+
+
+@pytest.mark.asyncio
+async def test_credential_less_account_husk_is_not_carried():
+    """OpenClaw persists provider-level settings back to disk as a synthetic
+    `accounts.default`. Ours was left holding only dmPolicy after a BYO bot was
+    deleted (routers/channels.py strips the root credentials, never the husk).
+    Carrying it re-injects a bot that does not exist."""
+    cfg_on_disk = {
+        "channels": {
+            "slack": {
+                "accounts": {
+                    "T1": {"mode": "http", "webhookPath": "/slack/events/T1"},
+                    "default": {"dmPolicy": "pairing"},
+                }
+            }
+        },
+        "bindings": [],
+    }
+    with (
+        patch("core.containers.ecs_manager.read_openclaw_config_from_efs", AsyncMock(return_value=cfg_on_disk)),
+        patch("core.repositories.slack_installs_repo.list_for_owner", AsyncMock(return_value=[])),
+    ):
+        accounts, _ = await em._provision_channel_accounts("org_1")
+    assert list(accounts["slack"]) == ["T1"]
+
+
+@pytest.mark.asyncio
+async def test_provider_with_only_husks_is_dropped_entirely():
+    cfg_on_disk = {"channels": {"slack": {"accounts": {"default": {"dmPolicy": "pairing"}}}}, "bindings": []}
+    with (
+        patch("core.containers.ecs_manager.read_openclaw_config_from_efs", AsyncMock(return_value=cfg_on_disk)),
+        patch("core.repositories.slack_installs_repo.list_for_owner", AsyncMock(return_value=[])),
+    ):
+        accounts, _ = await em._provision_channel_accounts("org_1")
+    assert "slack" not in accounts

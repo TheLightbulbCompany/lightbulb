@@ -385,6 +385,24 @@ gh run view <id> --repo TheLightbulbCompany/lightbulb --json createdAt,updatedAt
 A run with jobs still `queued` and an `updatedAt` several minutes stale is stalled whatever
 its completed count says. A run whose `updatedAt` is moving is alive — wait for it.
 
+**⚠️ `queued` does NOT mean "past the concurrency gate".** A claim circulated between three
+sessions on 2026-09-08 that `pending` means blocked by concurrency while `queued` means
+through it and holding the slot. **It is false**, and it was believed hard enough to be
+encoded into a monitor as a safe-to-merge signal. The counter-example settles it: dispatch
+34177614173 reached `queued` and was cancelled by supersede anyway. `queued` at the run level
+does not distinguish "waiting at the gate" from "through the gate, waiting for a runner".
+
+**The only evidence a run is safe from supersede is `status: in_progress`, or a non-zero
+count of jobs not in `queued`.** Nothing else. Before merging while someone is promoting:
+
+```bash
+gh run view <id> --repo TheLightbulbCompany/lightbulb --json status,jobs \
+  --jq '"\(.status)", ([.jobs[]|select(.status!="queued")]|length)'
+```
+
+Anything other than `in_progress` / non-zero means the promotion is still evictable and a
+merge will kill it.
+
 Practical rules: check that job breakdown AND `updatedAt` BEFORE cancelling anything or firing
 a recovery dispatch; watch a dispatch until it reaches `in_progress` rather than assuming it
 started; and if other sessions are active, ask for a short merge hold and tell them the moment

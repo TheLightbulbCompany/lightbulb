@@ -841,7 +841,14 @@ def test_bedrock_trial_emits_no_acp_block():
 
 def test_paid_bedrock_keeps_cron_heartbeat_channels_and_acp():
     """The trial lockdown must not leak onto the paid path."""
-    cfg = _paid_cfg(channel_accounts=_CHANNEL_ACCOUNTS, acp_enabled=True)
+    # acct_1 is the telegram account id AND the agent it routes to (legacy
+    # `agentId == accountId`), so that agent must be on the roster — a binding
+    # naming an absent agent makes OpenClaw reject the whole config at load.
+    cfg = _paid_cfg(
+        paperclip_agents=[{"id": "acct_1", "role": "ceo"}],
+        channel_accounts=_CHANNEL_ACCOUNTS,
+        acp_enabled=True,
+    )
     assert "enabled" not in cfg["cron"]  # cron SERVICE stays on; block now carries the O6 store-key pin
     assert cfg["agents"]["defaults"]["heartbeat"] == {
         "every": "30m",

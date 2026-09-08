@@ -2672,6 +2672,18 @@ def build_openclaw_config_dict(
     if channel_accounts and not is_bedrock_trial:
         bindings = config.setdefault("bindings", [])
         channels = config.setdefault("channels", {})
+        # A route binding MUST name an agent that exists in this config.
+        # OpenClaw validates that at load and refuses the WHOLE file otherwise
+        # ("bindings.N.agentId: Unknown agent id ..."), so one bogus entry
+        # silently freezes an owner on their previous config — every later
+        # config change included. Two ways in, both guarded below: upstream
+        # normalizes channel-root settings into an `accounts.default` husk, and
+        # the legacy `agentId == accountId` rule then invents `agentId:
+        # "default"`; and a carried binding can name an agent since deleted.
+        agents_block = config.get("agents") or {}
+        known_agent_ids = set(agents_block.get("entries") or {}) | {
+            a.get("id") for a in (agents_block.get("list") or []) if isinstance(a, dict)
+        }
         for provider, accounts in channel_accounts.items():
             # Channels now ship empty-until-configured, so a carried-forward
             # account must (re)create its enabled channel block — otherwise the
@@ -2699,6 +2711,7 @@ def build_openclaw_config_dict(
                 for b in (channel_bindings or [])
                 if (b.get("match") or {}).get("channel") == provider
                 and (b.get("match") or {}).get("accountId") in accounts
+                and b.get("agentId") in known_agent_ids
             ]
             for b in carried:
                 if b not in bindings:
@@ -2707,6 +2720,12 @@ def build_openclaw_config_dict(
             for account_id in accounts:
                 if account_id in carried_accounts:
                     continue  # the carried binding already routes this account
+                if account_id not in known_agent_ids:
+                    # The legacy convention only holds for an account KEYED by
+                    # an agent id. Anything else (an upstream `default` husk)
+                    # would name an agent that does not exist. Leave it unbound
+                    # — which is the state the container was already happy with.
+                    continue
                 binding = {
                     "type": "route",
                     "agentId": account_id,

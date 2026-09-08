@@ -724,7 +724,13 @@ class TestChannelAccountsReinjection:
             "telegram": {"agent_a": {"botToken": "123:ABC"}},
             "slack": {"agent_b": {"mode": "socket", "appToken": "xapp-", "botToken": "xoxb-"}},
         }
-        cfg = _cfg(channel_accounts=accounts)
+        # These accounts are keyed BY agent id — which is the only reason the
+        # legacy `agentId == accountId` synthesis is sound — so those agents
+        # have to be on the roster.
+        cfg = _cfg(
+            paperclip_agents=[{"id": "agent_a", "role": "ceo"}, {"id": "agent_b", "role": "general"}],
+            channel_accounts=accounts,
+        )
         assert {
             "type": "route",
             "agentId": "agent_a",
@@ -755,6 +761,7 @@ class TestChannelAccountsReinjection:
             provider_choice="bedrock_claude",
             user_id="u_1",
             aip_arns=_AIPS,
+            paperclip_agents=[{"id": "agent_a", "role": "ceo"}],
             channel_accounts={"telegram": {"agent_a": {"botToken": "123:ABC"}}},
         )
         cfg = json.loads(out.read_text())

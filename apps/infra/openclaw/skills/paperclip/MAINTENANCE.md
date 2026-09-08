@@ -10,6 +10,13 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
   Lightbulb-local changes that upstream does not have. If you re-vendor, re-apply
   each of these rather than letting them silently revert.
 
+  Vendored from TheLightbulbCompany/paperclip skills/paperclip at 987520f9
+  (the same commit as paperclip-version.json upstreamCommit — keep them equal;
+  the same stamp also lives in a short HTML comment at the top of SKILL.md's
+  body, right after the frontmatter, since a test asserts on SKILL.md's own
+  text). To re-vendor: diff that path at the new commit against this file,
+  take upstream's changes, and re-apply each edit below.
+
   SHAPE: this SKILL.md is deliberately THIN — the non-negotiables (auth, the
   write-path helper mandate, the assigned-create status rule, the critical
   rules, the monitor-vs-approval boundary, the board-only attention feed) plus

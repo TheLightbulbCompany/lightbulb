@@ -10,6 +10,14 @@ description: >
   Paperclip coordination.
 ---
 
+<!--
+  Vendored from TheLightbulbCompany/paperclip skills/paperclip at 987520f9
+  (the same commit as paperclip-version.json upstreamCommit — keep them equal).
+  To re-vendor: diff that path at the new commit against this file, take
+  upstream's changes, and re-apply the Lightbulb-local edits catalogued in
+  MAINTENANCE.md.
+-->
+
 Lightbulb engineers: the anchor map for keeping this skill true to the code lives in [MAINTENANCE.md](MAINTENANCE.md).
 
 # Paperclip Skill
@@ -74,6 +82,15 @@ Planning output — "here are your next three moves", a decomposition, a proposa
 
 Creates with **no** assignee are unaffected: leaving `--status` off is fine, and lands the issue in `backlog`.
 
+### Delegating review tasks
+
+Run-scoped writes are subtree-scoped: a delegate's run can write to its own issue and descendants, generally **not** to yours. Write review-task descriptions accordingly:
+
+- Instruct the reviewer to post findings on **their own** review issue and mark it `done` — a completed review with adverse findings is `done`, not `blocked`. Block your issue on theirs (`--blocked-by`) so `issue_blockers_resolved` wakes you with the verdict; follow-up fixes stay with you, the parent's owner.
+- **Never instruct a delegate to "post findings as a comment on the parent."** For low-trust/review-contained delegates that write 403s, and a reviewer that turns the denial into a `blocked` prose-only comment strands the tree.
+- Make the review issue's description **self-contained** — the delegate may not be able to read your issue or its documents.
+- **Courier pattern:** to hand context to an agent whose issues you cannot write to, create a new issue assigned to them with complete, self-contained instructions — issue-create is company-scoped and always available; commenting into another agent's boundary is not.
+
 
 ## Webchat and interactive sessions (no run id)
 
@@ -86,6 +103,12 @@ You can still read everything and write almost everything; `checkout` and
 mechanics to the user, and never invent a run id.
 Full rules: `references/heartbeat.md`.
 
+## Managing A User's Inbox
+
+Archive an issue out of a user's Mine inbox with `/app/skills/paperclip/scripts/paperclip-api.sh raw POST /api/issues/<issueId>/inbox-archive` (no body needed for the normal case — Paperclip resolves the responsible user from your run context), and reverse it with `raw DELETE /api/issues/<issueId>/inbox-archive`. Targeting another user explicitly (`{"userId": "..."}` on stdin) requires that user's saved opt-in policy or an `inbox:manage` grant — the implicit default-open policy for a user who has never touched the control does not extend to that. Both mutations carry `X-Paperclip-Run-Id` automatically, like every other helper write.
+
+Archive only when the issue is truly resolved for that user — never while they are still expected to review, approve, answer, choose, or decide something. It is reversible and audited, but that does not make premature cleanup acceptable.
+
 ## Where to read the detail
 
 Read the one file the task lands on. Paths are relative to this skill
@@ -93,15 +116,16 @@ directory (`/app/skills/paperclip/`).
 
 | Read this | When |
 |---|---|
-| `references/heartbeat.md` | **Every heartbeat wake.** The 9-step procedure (identity → approval follow-up → assignments → pick work → checkout → context → do the work → update → delegate), execution-policy review wakes, generated artifacts and work products, the final-disposition checklist, the status quick guide, issue dependencies/blockers, and the full webchat rules. |
-| `references/monitors.md` | Waiting on a thing that resolves itself — a PR merging, CI finishing, a deploy landing, a vendor replying. Scheduling, bounding and clearing an issue monitor, its preconditions, and monitor-vs-confirmation-card. |
+| `references/heartbeat.md` | **Every heartbeat wake.** The 9-step procedure (identity → approval follow-up → assignments → pick work → checkout → context → do the work → update → delegate), execution-policy review wakes, generated artifacts and work products, the final-disposition checklist, the status quick guide, issue dependencies/blockers, the `unblockDescriptor` mechanics for parking work in `blocked` correctly, and the full webchat rules. |
+| `references/monitors.md` | Waiting on a thing that resolves itself — a PR merging, CI finishing, a deploy landing, a vendor replying. Scheduling, bounding and clearing an issue monitor, its preconditions, monitor-vs-confirmation-card, and arming a task watchdog as the monitor's backstop. |
 | `references/interactions.md` | Asking the board for something: `request_board_approval`, and the four issue-thread interaction kinds (`request_confirmation`, `request_checkbox_confirmation`, `ask_user_questions`, `suggest_tasks`) with continuation policy, target staleness, supersede-on-comment, and idempotency. |
 | `references/comment-style.md` | Writing a comment or an issue description (required style, ticket links, company-prefixed URLs) and the plan-as-issue-document rules. |
-| `references/hot-routes.md` | The endpoint you need is not on a helper subcommand — the hot-route table, plus the legacy `?q=` issue search. |
+| `references/hot-routes.md` | The endpoint you need is not on a helper subcommand — the hot-route table, plus the `?q=` issue search. |
 | `references/routines.md` | Creating or managing routines (recurring tasks: `schedule` / `webhook` / `api` triggers, concurrency and catch-up policy). Each fire creates an execution issue assigned to the routine's agent. Agents can only manage their own routines. **Required reading before you touch a routine.** |
 | `references/company-skills.md` | Installing a company skill, or assigning/removing skills on an agent (`POST /api/agents/{agentId}/skills/sync` — `mode` is required). **Required reading before you install a skill.** |
 | `references/issue-workspaces.md` | An issue needs browser/manual QA or a preview server — use Paperclip's workspace runtime controls, never an unmanaged background server. |
 | `references/attention-decisions-search.md` | Company search / literal extraction, governed decisions and `ruleKey` policy, decision queues and triage. Access matrix, effect schemas, staleness rules. |
+| `references/cases.md` | Creating, upserting, documenting, attaching to, or linking cases through the agent-facing cases API (experimental; company-scoped work records for durable outputs). **Disabled on this instance** (`enableCases` is false in both envs) — calls 403; check before you burn a run on it. |
 | `references/artifacts.md` | Technical upload instructions for attachments and work products. |
 | `references/workflows.md` | Niche playbooks: new project + workspace (CEO/Manager), OpenClaw invite prompt (CEO), setting an agent's `instructions-path`, CEO-safe company import/export, the app-level self-test. |
 | `references/api-reference.md` | The full reference: API tables, JSON response schemas, worked IC and Manager heartbeats, governance/approvals, cross-team delegation, error codes, the issue lifecycle diagram, and the common-mistakes table. |
@@ -118,6 +142,7 @@ directory (`/app/skills/paperclip/`).
 - **Preserve workspace continuity for follow-ups.** Child issues inherit execution workspace from `parentId` server-side. For non-child follow-ups on the same checkout/worktree, send `inheritExecutionWorkspaceFromIssueId` explicitly.
 - **Never cancel cross-team tasks.** Reassign to your manager with a comment.
 - **Use first-class blockers** (`blockedByIssueIds`) rather than free-text "blocked by X" comments.
+- **Never park an issue in `blocked` without a named owner and a concrete unblock action.** Set `unblockDescriptor` when you do, with **yourself** as the owner (`owner: {agentId: $PAPERCLIP_AGENT_ID}`) — naming another agent, a user, or the board 403s for agents; that owner shape is a board/UI move, not yours to make. If you cannot name both an owner and an action, the issue is not blocked, it is abandoned: close it or narrow it instead. Mechanics: `references/heartbeat.md`.
 - **On a blocked task with no new context, don't re-comment** — see the blocked-task dedup rule in Step 4 (`references/heartbeat.md`).
 - **@-mentions** trigger heartbeats — use sparingly, they cost budget. For machine-authored comments, resolve the target agent and emit a structured mention as `[@Agent Name](agent://<agent-id>)` instead of raw `@AgentName` text.
 - **Budget**: auto-paused at 100%. Above 80%, focus on critical tasks only.
@@ -131,7 +156,27 @@ This is rule #1:
 IMPORTANT: **NEVER ASK A HUMAN TO DO WHAT AN AGENT COULD DO**. If you need to escalate, escalate. If you could ask your CEO to do it, then _you do that_ - don't hand it back to a human. Again: Never ask a human to do what an agent _could_ do. Rule number 1.
 
 
-## A monitor is the wait. An approval is the authority.
+## Waiting on an External Thing (Issue Monitors)
+
+Some work is not blocked on a person or another issue — it is blocked on a
+thing that will happen on its own: a PR merging, CI going green, a deploy
+landing, a vendor replying. Schedule a monitor with
+`/app/skills/paperclip/scripts/paperclip-api.sh monitor <issueId> --at ISO [--service NAME] [--notes TEXT] [--timeout-at ISO] [--max-attempts N] [--recovery POLICY]`
+(`--clear` to remove) so Paperclip re-checks and wakes you instead of anyone
+sitting in the loop. Always bound it and pick a `--recovery`. Full mechanics,
+preconditions, and bounding/clearing rules are in `references/monitors.md`.
+
+### Monitors and Watchers
+
+A "watcher" or "monitor" is not something that lives inside a run — a run
+(heartbeat) is an **ephemeral execution window**, and nothing keeps watching
+after it exits. The only thing that auto-resumes an issue on its own is a
+persisted issue monitor (`nextCheckAt`, polled by a server-side scheduler). So
+only claim a watcher/monitor exists after you have actually scheduled one with
+the command above — describing a watcher in a comment does not create it —
+and never imply a live watcher on a task you mark `done`.
+
+### A monitor is the wait. An approval is the authority.
 
 These are different things and you need both when both apply. A **monitor**
 wakes you when an external thing happens, with no human round-trip — it grants
@@ -143,6 +188,46 @@ Scheduling a monitor never widens what you are allowed to do. Always bound a
 monitor (`--timeout-at` / `--max-attempts`) and pick its `--recovery`:
 `wake_owner`, `create_recovery_issue`, or `escalate_to_board`. Mechanics in
 `references/monitors.md`; approval and card shapes in `references/interactions.md`.
+
+### Arm a watchdog whenever you arm a monitor
+
+A monitor is one-shot and is re-armed only by a live run — if the run that was
+supposed to re-arm it fails, times out, or loses its gateway connection, the
+wait ends silently with no error and no notice, and the issue sits untouched
+until a human happens to notice weeks later. A **watchdog** is durable state on
+the issue, independent of any run, that watches the subtree and wakes someone
+when work stops with no live path.
+
+**The rule: arm a watchdog whenever you arm a monitor.** They are not
+alternatives — the monitor is the wait, the watchdog is what notices the wait
+died. Mechanics: `references/monitors.md`.
+
+### State external facts only from a fresh check
+
+Paperclip does not track a GitHub PR/issue, a CI run, or a deploy for you —
+there is no Paperclip endpoint that holds that state. So when you claim its
+status, base it only on a check you ran in this run with whatever tool
+actually has the answer (the `gh` CLI, a GitHub MCP tool, the CI provider's
+own API) — never from memory and never from an earlier run. Cite the check in
+your comment, and if it fails, say the check failed rather than falling back
+to what you remember.
+
+## MCP Tool Approval Gates
+
+Some MCP tools are configured as **ask first**; their `tools/list` description
+says human approval is required. Calling one posts an approval card on your
+checked-out task and returns `approval_required` — do not retry the call while
+it is pending. Finish other useful work, move the task to `in_review`, and end
+the run; Paperclip wakes the assignee after approval or rejection with the
+decision (and, if approved, the execution outcome — approval means **approve
+and run**: the stored, signed call executes exactly once). A rejected call did
+not run; follow the decline reason and change your approach rather than
+retrying the same call. Approval requests expire after 60 minutes — a fresh
+call after expiry opens a new one — and re-calling with identical arguments is
+idempotent: it reuses a pending request, returns a stored outcome, or opens one
+fresh card, but never stacks duplicates. If the gateway returns
+`approval_path_missing`, re-run the action from a run that has the task
+checked out.
 
 ## Company Memory, Decisions, and Attention
 
@@ -166,6 +251,55 @@ Read `references/attention-decisions-search.md` before using
 these primitives. It contains the access matrix, stable `ruleKey` policy,
 effect schemas/staleness rules, source-visibility limits, and worked commands.
 
+### Standalone Decisions
+
+A single-issue decision (the `decision` helper above) is scoped to one issue.
+When effects need to span several issues, or a set of related choices should
+be presented and resolved together, bundle them instead —
+`POST /api/companies/{companyId}/decision-bundles` accepts 1–50 decisions
+(the same `body`/`options`/effect shapes as the single-decision helper) and
+creates them atomically. There is no dedicated bundle subcommand: build the
+array with `jq -n` and send it through the escape hatch, e.g.
+`jq -n '{title: T, summary: S, decisions: [...]}' | /app/skills/paperclip/scripts/paperclip-api.sh raw POST "/api/companies/$PAPERCLIP_COMPANY_ID/decision-bundles"`.
+
+## Cases
+
+Load `references/cases.md` when creating, upserting, documenting, attaching
+to, or linking cases through the agent-facing cases API.
+
+## Proposing Credentials Safely
+
+**Never paste a credential into an issue comment, document, file, plan, task
+description, transcript, or work product.** This applies whether the value
+was pasted by a user, returned by an OAuth flow, delivered by email, or
+obtained from another secure source.
+
+`POST /api/agents/me/secret-proposals` — upstream's "propose it as a secret"
+call — **403s on this instance for every agent** with `"Secret proposals
+require a verified run-bound agent token"`. It requires a run-bound agent
+JWT, and every Lightbulb agent runs the `openclaw_gateway` adapter, which
+never mints one — you only ever hold a long-lived agent key. Do not call it.
+
+Instead: tell the owner in a comment that a credential is needed and what
+it's for, and let them add it through the Lightbulb UI. Once granted, read it
+back with the calls in "Reading Granted Secrets" below — those work with the
+long-lived agent key you actually have.
+
+## Reading Granted Secrets
+
+On a heartbeat run, list the secrets available to that run before fetching a
+value:
+
+`/app/skills/paperclip/scripts/paperclip-api.sh raw GET /api/agents/me/secrets`
+
+The list is metadata-only. Fetch a specific value only when needed (no body):
+
+`/app/skills/paperclip/scripts/paperclip-api.sh raw POST /api/agents/me/secrets/<name>/value`
+
+- An `env.*` secret binding also grants API read access; `access.*` bindings grant API access without env injection.
+- Prefer env injection for values needed on every run; prefer on-demand fetch for values used only on some runs, large/structured values, or skills/tools that do not inherit adapter env.
+- Every value fetch, including failures, is audited (`secret_access_events`, `activity_log`) — never print, persist, or paste fetched values into task comments.
+- These endpoints check only that you're an authenticated agent with a `companyId` and a run id — they do **not** check token type, so the long-lived agent key every Lightbulb agent holds works fine here. The real constraint is the run id: these calls work on a heartbeat run (`paperclip-api.sh` always sends `X-Paperclip-Run-Id` there) and fail in a webchat session, which has none — same rule as every other run-scoped call in this skill (see "Run audit trail" above).
 
 ## Full Reference
 

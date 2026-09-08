@@ -1,10 +1,13 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 
 const skillRoot = resolve(__dirname, "../openclaw/skills/paperclip");
 const helper = resolve(skillRoot, "scripts/paperclip-api.sh");
+const skillMd = readFileSync(resolve(skillRoot, "SKILL.md"), "utf8");
+const monitorsMd = readFileSync(resolve(skillRoot, "references/monitors.md"), "utf8");
+const heartbeatRefMd = readFileSync(resolve(skillRoot, "references/heartbeat.md"), "utf8");
 
 function runHelper(args: string[], input = "") {
   return spawnSync("bash", [helper, ...args], {
@@ -274,5 +277,192 @@ describe("bundled Paperclip operating primitives", () => {
 
     expect(skill).toContain("A monitor is the wait. An approval is the authority.");
     expect(skill).toContain("escalate_to_board");
+  });
+});
+
+describe("vendor merge preserves Lightbulb-local edits", () => {
+  // Each string is the load-bearing phrase of one ISOL8-LOCAL edit. If a
+  // re-vendor drops one, the incident it prevents comes back.
+  it.each([
+    ["write-path helper mandate", "## Writing to the Paperclip API (required)"],
+    ["run-id truthfulness", "## Webchat and interactive sessions (no run id)"],
+    ["create status", "### Creating work for someone else — always say the status"],
+    ["monitor section", "## Waiting on an External Thing (Issue Monitors)"],
+    ["monitor vs approval", "### A monitor is the wait. An approval is the authority."],
+    ["company memory", "## Company Memory, Decisions, and Attention"],
+  ])("keeps the %s section", (_label, heading) => {
+    expect(skillMd).toContain(heading);
+  });
+
+  it("never writes a relative scripts/ path in a command", () => {
+    // Local edit 5: the agent's cwd is its workspace, not the skill root.
+    const relative = skillMd.match(/(?<![/\w])scripts\/paperclip-[a-z-]+\.sh/g) ?? [];
+    expect(relative).toEqual([]);
+  });
+
+  it("records the fork commit it was vendored from", () => {
+    expect(skillMd).toMatch(
+      /Vendored from TheLightbulbCompany\/paperclip skills\/paperclip at [0-9a-f]{7,40}/,
+    );
+  });
+});
+
+describe("sections vendored in from the fork", () => {
+  it.each([
+    "### Monitors and Watchers",
+    "### Delegating review tasks",
+    "## Managing A User's Inbox",
+    "### Standalone Decisions",
+    "## MCP Tool Approval Gates",
+    "## Cases",
+    "## Proposing Credentials Safely",
+    "## Reading Granted Secrets",
+  ])("has %s", (heading) => {
+    expect(skillMd).toContain(heading);
+  });
+
+  it("ships the cases reference", () => {
+    expect(existsSync(resolve(skillRoot, "references/cases.md"))).toBe(true);
+  });
+});
+
+// SKILL.md is a routing index (see MAINTENANCE.md "SHAPE"): it carries only
+// the always-loaded rules, and the mechanics for each primitive live in the
+// reference file the routing table points at. So this heading lives in
+// references/monitors.md (watchdogs) and references/heartbeat.md
+// (unblockDescriptor) — never in SKILL.md itself.
+//
+// external_objects has no assertions here: fix round 2 found POST
+// /issues/:id/external-objects does not exist upstream (only GET, the
+// summary route, and POST .../refresh are registered), and the whole
+// feature is gated off (`experimental.enableExternalObjects` is `{}` in
+// both envs) — documenting it would have manufactured the exact
+// false-claim failure this change exists to prevent. The tool-agnostic
+// accuracy rule survives in SKILL.md; the fabricated endpoint does not.
+describe("liveness primitives are documented", () => {
+  it("references/monitors.md has ## Surviving a Dropped Run (Task Watchdogs)", () => {
+    expect(monitorsMd).toContain("## Surviving a Dropped Run (Task Watchdogs)");
+  });
+
+  it("references/heartbeat.md has ## Parking Work Correctly (unblockDescriptor)", () => {
+    expect(heartbeatRefMd).toContain("## Parking Work Correctly (unblockDescriptor)");
+  });
+
+  it("states the arm-a-watchdog-with-every-monitor rule in SKILL.md", () => {
+    expect(skillMd).toContain("arm a watchdog whenever you arm a monitor");
+  });
+
+  it("forbids asserting external state from memory (tool-agnostic, not tied to external objects)", () => {
+    expect(skillMd).toContain("never from memory and never from an earlier run");
+    // Fix round 2: the mechanism this rule pointed at (external objects) is a
+    // disabled/nonexistent endpoint. The rule text itself must no longer
+    // claim Paperclip tracks this state.
+    expect(skillMd).not.toContain("external object");
+  });
+
+  it("forbids parking an issue in blocked with no named owner and action", () => {
+    expect(skillMd).toContain(
+      "Never park an issue in `blocked` without a named owner and a concrete unblock action.",
+    );
+  });
+
+  it("arms the watchdog with PUT, not POST — a copied POST 404s", () => {
+    // Fix round 2: only get/put/delete are registered for
+    // /issues/:id/watchdog upstream. Assert the verb, not just the path —
+    // a path-only check passed straight over this bug once already.
+    expect(monitorsMd).toContain(
+      '}\' | /app/skills/paperclip/scripts/paperclip-api.sh raw PUT \\\n' +
+        '      "/api/issues/$PAPERCLIP_TASK_ID/watchdog"',
+    );
+    for (const line of monitorsMd.split("\n")) {
+      if (line.includes("/watchdog") && line.trimStart().startsWith("curl")) {
+        throw new Error(`hand-rolled curl for the watchdog endpoint: ${line}`);
+      }
+    }
+  });
+
+  it("has no trace of the disabled/nonexistent external-objects endpoints", () => {
+    expect(monitorsMd).not.toContain("external-objects");
+    expect(monitorsMd).not.toContain("External Objects");
+  });
+
+  it("states the unblockDescriptor+blocked-status precondition", () => {
+    expect(heartbeatRefMd).toContain(
+      "`unblockDescriptor` is only accepted together with\n`status: \"blocked\"`",
+    );
+    expect(heartbeatRefMd).toContain("422 unblockDescriptor requires");
+  });
+
+  it("drives the unblockDescriptor write through the helper, not curl", () => {
+    expect(heartbeatRefMd).toContain("unblockDescriptor");
+    for (const line of heartbeatRefMd.split("\n")) {
+      if (line.includes("unblockDescriptor") && line.trimStart().startsWith("curl")) {
+        throw new Error(`hand-rolled curl for unblockDescriptor: ${line}`);
+      }
+    }
+  });
+
+  it("flags Cases as disabled on this instance in the routing table", () => {
+    // Fix round 2: enableCases is false in both envs — say so before an
+    // agent burns a run on a 403.
+    expect(skillMd).toContain("references/cases.md");
+    expect(skillMd).toContain("**Disabled on this instance** (`enableCases` is false in both envs)");
+  });
+});
+
+describe("fix round 4 — agent unblock ownership and secret-access accuracy", () => {
+  // Coordinator-verified against the fork: issues.ts throws 403 "Agents may
+  // only name themselves as an unblock owner" whenever an agent actor sends
+  // owner: "board" or an owner containing userId. An owner: "board" example
+  // in agent-facing docs would be illegal for every reader.
+  it("shows no agent-facing owner: \"board\" unblockDescriptor example", () => {
+    expect(heartbeatRefMd).not.toContain('owner: "board"');
+  });
+
+  it("teaches self-ownership as the only legal unblockDescriptor shape", () => {
+    expect(heartbeatRefMd).toContain("Self-ownership is the only shape an agent can legally send");
+    expect(heartbeatRefMd).toContain("Agents may only name themselves as an unblock owner");
+    expect(heartbeatRefMd).toContain("owner: {agentId: $agentId}");
+    expect(skillMd).toContain("naming another agent, a user, or the board 403s for agents");
+  });
+
+  // secrets.ts's agentSecretContext guard (the one granted-secret reads use)
+  // checks only actor.type/agentId/companyId/runId — never actor.source — so
+  // a long-lived agent key works. Only proposalAgentContext (secret-proposals)
+  // requires source === "agent_jwt", which openclaw_gateway agents never hold.
+  it("does not claim long-lived agent keys are denied for granted-secret reads", () => {
+    expect(skillMd).not.toContain("long-lived agent keys");
+    expect(skillMd).not.toContain("are denied");
+    expect(skillMd).toContain("do **not** check token type");
+  });
+
+  it("tells agents secret-proposals 403s here instead of documenting it as callable", () => {
+    expect(skillMd).toContain("403s on this instance for every agent");
+    expect(skillMd).not.toContain(
+      "propose it as a Paperclip secret immediately",
+    );
+  });
+
+  it("drops the false \"legacy\" label from the ?q= issue-search routing row", () => {
+    expect(skillMd.toLowerCase()).not.toContain("legacy");
+  });
+
+  // The 403 guard forbids two illegal owner shapes, not one: `owner: "board"`
+  // (asserted above) AND any owner containing a userId. A doc example naming
+  // a user's id as the unblock owner would be just as illegal and just as
+  // plausible-looking as the board example already guarded against.
+  it("shows no agent-facing unblockDescriptor example naming a userId owner", () => {
+    expect(heartbeatRefMd).not.toMatch(/owner:\s*\{\s*userId/);
+  });
+
+  // The self-ownership worked example must bind the owner to the run's own
+  // agent id via the shell var, never to a literal uuid a future edit could
+  // paste in and have look self-owned without actually being so.
+  it("binds the self-ownership unblockDescriptor example to $PAPERCLIP_AGENT_ID, not a literal uuid", () => {
+    expect(heartbeatRefMd).toContain('jq -n --arg agentId "$PAPERCLIP_AGENT_ID"');
+    expect(heartbeatRefMd).toContain("owner: {agentId: $agentId}");
+    expect(heartbeatRefMd).not.toMatch(
+      /owner:\s*\{\s*agentId:\s*"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"/i,
+    );
   });
 });

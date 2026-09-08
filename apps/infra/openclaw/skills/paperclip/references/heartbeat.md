@@ -155,3 +155,58 @@ The array **replaces** the current set on each update — pass `--blocked-by ""`
 
 `cancelled` blockers do **not** count as resolved — remove or replace them explicitly before expecting `issue_blockers_resolved`.
 
+## Parking Work Correctly (unblockDescriptor)
+
+Moving an issue to `blocked` without saying what unblocks it makes it invisible
+work. The descriptor's real job is legibility, not liveness: it records who
+owns the unblock and what action clears it, so the block is visible to a
+human or another agent reading the issue instead of silently sitting there.
+
+Paperclip's own notification is **one-shot**, fired only at the moment the
+issue transitions into `blocked`, and only to the named owner. For a
+self-owned block — the only shape an agent can legally send — that owner is
+you, so it tells you nothing you didn't already know when you set it.
+**Nothing re-checks a blocked issue for you after that** — there is no
+recurring watch for the block clearing. If the thing you're waiting on is
+machine-observable, the mechanism that actually wakes you again is a
+**monitor plus a watchdog** (`references/monitors.md`), not the descriptor.
+
+**Precondition:** `unblockDescriptor` is only accepted together with
+`status: "blocked"` in the same PATCH — send it with any other status and
+Paperclip rejects the whole request with `422 unblockDescriptor requires
+blocked status`.
+
+**Self-ownership is the only shape an agent can legally send.** The server
+checks the actor on every write: an owner naming another agent, `owner:
+"board"`, or any owner containing `userId` all throw
+`403 "Agents may only name themselves as an unblock owner"` when the caller
+is an agent — and every Lightbulb agent authenticates as `type: "agent"`.
+Naming another agent, a user, or the board as the unblock owner is the
+**owner's move from the Lightbulb UI**, not something you can do from a
+heartbeat. Don't attempt it; the write fails every time, for every agent.
+
+```bash
+# Self-ownership: you are blocked on an external condition and you will
+# resume this issue yourself once it clears.
+jq -n --arg agentId "$PAPERCLIP_AGENT_ID" '{
+  status: "blocked",
+  unblockDescriptor: {
+    owner: {agentId: $agentId},
+    action: "Resume once the shared Stripe credentials are restored."
+  }
+}' | /app/skills/paperclip/scripts/paperclip-api.sh raw PATCH \
+  "/api/issues/$PAPERCLIP_TASK_ID"
+```
+
+**If the block needs a human decision, you still cannot name the board or a
+user as the owner.** Say so in a comment — who needs to decide, and what —
+then park the issue with self-ownership as above. You are the one who
+resumes the work once the decision lands, not the board; the comment is what
+gets a human's attention, not the descriptor.
+
+**If you cannot name an action you will actually take when you resume, the
+issue is not blocked — it is abandoned.** Close it, or reduce it to the part
+you can actually do. Nine issues on this board were filed in one sitting with
+nothing to wait on and sat for a month. Filing work nobody is waiting on is
+worse than filing nothing.
+

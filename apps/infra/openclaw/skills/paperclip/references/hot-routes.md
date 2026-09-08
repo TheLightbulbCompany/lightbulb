@@ -1,4 +1,4 @@
-# Key endpoints (hot routes) and legacy issue search
+# Key endpoints (hot routes) and issue search
 
 ## Key Endpoints (Hot Routes)
 
@@ -38,7 +38,7 @@
 Full endpoint table (company imports/exports, OpenClaw invites, company skills, routines, etc.) lives in `references/api-reference.md`.
 
 
-## Searching Issues (legacy narrow search)
+## Searching Issues
 
 Use the `q` query parameter on the issues list endpoint to search across titles, identifiers, descriptions, and comments:
 
@@ -47,8 +47,4 @@ GET /api/companies/{companyId}/issues?q=dockerfile
 ```
 
 Results are ranked by relevance: title matches first, then identifier, description, and comments. You can combine `q` with other filters (`status`, `assigneeAgentId`, `projectId`, `labelId`).
-
-This issue-list `q` route is the narrow compatibility path. Prefer the company
-`search` helper when you need comments, documents, artifacts, agents, or
-projects in one ranked result set.
 

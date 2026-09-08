@@ -11,6 +11,8 @@ All `L/path:line` and `U/path:line` references are exact local-source coordinate
 
 ## Decision
 
+**Controller qualification, 2026-09-08:** the shared-token/trusted-proxy conflict is verified, but the node-relay credential inference below is incomplete. `node_connection.py:236` forwards the client's signed connect verbatim; its stored `gateway_token` constructor argument is not used to rewrite that handshake. Frozen9.3 `auth-context.ts:239-350` has independent bootstrap/device-token paths subject to ingress/pairing/role rules. Actual client credentials, existing reconnect, new enrollment and service-device scopes are being traced before selecting any custom bridge. Do not treat the report's remote-token example as proof that every node path needs one.
+
 Qualifying 9.3 can preserve today's personal-chat product, but does not deliver native multiplayer. The first product seam is an authenticated human gateway connection plus a full session reference. Keep owner-service operations separate. Build one explicitly company-readable room after human identity, machine authentication, and legacy-private-history gates pass. Do not turn off current member filters or fan out the owner-admin stream to make rooms appear to work.
 
 ## Current-source matrix

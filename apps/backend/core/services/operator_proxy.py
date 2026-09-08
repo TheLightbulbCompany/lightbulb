@@ -112,6 +112,43 @@ def _tap_run_completion_telemetry(owner_id: str, frame: dict) -> None:
         )
 
 
+async def _maybe_disarm_expired_trial(owner_id: str) -> None:
+    """A routine's wake was BLOCKED — self-disarm iff the reason is a lapsed
+    trial window.
+
+    ``trial_local``'s clock is a local ``trial_end`` stamp with NO webhook, so
+    an expired trial's armed nightly routine is the one entitlement change
+    nothing else catches: teardown fires on cancel/revoke, not on a trial
+    quietly lapsing. Left armed it fires every night against a container the
+    trial gate will never let wake — a daily no-op / gateway-timeout storm.
+    Pausing it (and cancelling its looping issues) is the fix; a later
+    re-subscribe converts through ``run_conversion_reprovision`` → the executor
+    arm → ``reconcile_paused`` re-enables it, so the pause self-heals.
+
+    A DAILY_CAP block is deliberately NOT disarmed: the cap resets at UTC
+    midnight and the routine should fire again tomorrow. So this re-reads the
+    reason (one cheap read on the rare blocked path) rather than disarming on
+    any block. Never raises — a best-effort side effect of a wake attempt."""
+    try:
+        from core.services import trial_cap
+
+        if await trial_cap.trial_block_reason(owner_id) != trial_cap.TRIAL_EXPIRED:
+            return
+        from core.services.paperclip_agent_lifecycle import disarm_owner_nightly_automation
+
+        summary = await disarm_owner_nightly_automation(owner_id)
+        put_metric("nightly_ceo.disarm", dimensions={"trigger": "trial_expired", "outcome": "ran"})
+        logger.info(
+            "operator connect: disarmed expired-trial nightly routine owner=%s routines_paused=%d issues_cancelled=%d",
+            owner_id,
+            summary["routines_paused"],
+            summary["issues_cancelled"],
+        )
+    except Exception:
+        put_metric("nightly_ceo.disarm", dimensions={"trigger": "trial_expired", "outcome": "error"})
+        logger.exception("operator connect: expired-trial disarm failed owner=%s", owner_id)
+
+
 async def handle_operator_connect(
     *,
     owner_id: str,
@@ -162,6 +199,12 @@ async def handle_operator_connect(
             # already_running / no_row) — the counter to read once trial-arming
             # lands. Mirrors the put_metric on every other branch in this file.
             put_metric("operator.connect.stopped_container_wake", dimensions={"outcome": outcome})
+            if outcome == "blocked":
+                # A routine reached a sleeping container and the gate refused it.
+                # A lapsed trial has NO webhook (trial_end is a local stamp), so
+                # nothing else disarms it — pause it here or it fires nightly
+                # no-ops against a box it can never wake, forever.
+                await _maybe_disarm_expired_trial(owner_id)
         except Exception:
             put_metric("operator.connect.stopped_container_wake", dimensions={"outcome": "error"})
             logger.warning(

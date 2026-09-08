@@ -451,13 +451,13 @@ export class ServiceStack extends cdk.Stack {
     // three statements live in a dedicated ManagedPolicy attached to the task
     // role, NOT in the inline default policy: the backend role's inline policy
     // is already near CloudFormation's 10 KB inline-policy limit, and adding
-    // these inline would tip CDK into spilling statements (e.g. the by-name
-    // DynamoDbIntegrations grant) into an overflow ManagedPolicy — silently
-    // relocating them out of the AWS::IAM::Policy resource other features rely
-    // on. A standalone, explicitly named ManagedPolicy keeps the inline policy
-    // stable and is more auditable. CreateRole is boundary-conditioned so a
-    // backend that can CreateRole+PutRolePolicy cannot escalate beyond the
-    // OwnerBedrockBoundary (Bedrock+EFS+logs+ssm).
+    // these inline would tip CDK into spilling statements (e.g. the
+    // DynamoDbOwnedTables wildcard grant) into an overflow ManagedPolicy —
+    // silently relocating them out of the AWS::IAM::Policy resource other
+    // features rely on. A standalone, explicitly named ManagedPolicy keeps
+    // the inline policy stable and is more auditable. CreateRole is
+    // boundary-conditioned so a backend that can CreateRole+PutRolePolicy
+    // cannot escalate beyond the OwnerBedrockBoundary (Bedrock+EFS+logs+ssm).
     new iam.ManagedPolicy(this, "BackendOwnerBedrockManage", {
       managedPolicyName: `lightbulb-${env}-backend-owner-bedrock-manage`,
       roles: [this.taskRole],
@@ -847,7 +847,9 @@ export class ServiceStack extends cdk.Stack {
     // (no cross-stack prop threading). The parameter doubles as the fleet
     // break-glass lever — value "direct" routes new provisions straight to
     // bedrock-runtime. Single-parameter read-only grant; kept as its own tiny
-    // statement (NOT folded into DynamoDbIntegrations).
+    // statement — an SSM action doesn't fit the DynamoDbOwnedTables wildcard
+    // grant's DynamoDB-only action set, so it couldn't be folded into that
+    // one either.
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "BedrockGateUrlParamRead",
@@ -1461,8 +1463,9 @@ export class ServiceStack extends cdk.Stack {
       // synchronous chat gate's balance projection.
       METRONOME_BASE_URL: "https://api.metronome.com/v1",
       // Literal name (not a cross-stack tableName Ref) — same posture as
-      // BEDROCK_AIP_OWNERS_TABLE above: the table is granted BY NAME in the
-      // DynamoDbIntegrations statement, so no cross-stack export is created.
+      // BEDROCK_AIP_OWNERS_TABLE above: the table is covered by the
+      // DynamoDbOwnedTables wildcard statement, so no cross-stack export is
+      // created.
       METRONOME_FAST_GATE_TABLE: tableName(env, "metronome-fast-gate"),
       // Per-env rate card the per-customer contract references at
       // provision. Dev = sandbox rate card (2026-06-10); prod =

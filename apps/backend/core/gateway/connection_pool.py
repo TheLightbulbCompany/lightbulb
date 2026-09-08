@@ -3688,10 +3688,14 @@ class GatewayConnectionPool:
 
         Also called directly by Tasks 13/14 with a different *trigger* metric
         dimension. Those callers may invoke while a GatewayConnection still
-        exists, so the has_active_runs/is_parked vetoes below are load-bearing
-        there. In the grace path they always read "no connection" (close_user
-        already ran) — the meaningful vetoes there are the frontend re-check,
-        the trial re-read, and the cross-task live-chat count.
+        exists, so the has_active_runs/is_parked checks below still apply to
+        them — but they are no longer the fence that protects a live
+        connection: since the locked re-check further down was widened to
+        run for EVERY trigger (#1670), it vetoes on mere presence in
+        ``_connections`` — a superset of has_active_runs/is_parked, since
+        both require a connection to exist in the first place. A live run is
+        still caught either way; it is just the broader, later check doing
+        the catching now rather than these two.
         """
         try:
             if self._frontend_connections.get(owner_id):
@@ -3702,8 +3706,12 @@ class GatewayConnectionPool:
             # that landed mid-sleep). It must not be stopped on the old
             # cycle's deadline — skip; the old task's exit re-arm gives it
             # a full fresh cycle of its own. Direct callers (trigger !=
-            # "grace") deliberately stop despite a live connection — their
-            # has_active_runs/is_parked vetoes are the fence there.
+            # "grace") don't take this early exit — they aren't racing a
+            # grace cycle's own replacement dial — but a live connection
+            # still isn't stopped out from under them: the unconditional
+            # locked re-check further down (and the final synchronous look
+            # right before the ECS call) veto on any connection present,
+            # direct callers included.
             if trigger == "grace" and owner_id in self._connections:
                 return
             from core.repositories import billing_repo

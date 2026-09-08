@@ -19,20 +19,40 @@ Implementation, isolated worktrees, tests, feature branches/PRs and verified non
 - Isolated branch/worktree: `codex/founder-openclaw-9x`, `/Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/.worktrees/founder-openclaw-9x`.
 - Main checkout has user-owned untracked files; untouched. `.worktrees` is ignored.
 - AWS STS reverified account `877352799272` using explicit `isol8-admin`, `us-east-1`.
-- Existing Desktop fork remains untouched. A documentation-claimed `/Users/prasiddhaparthsarthy/dev/agent-fork` does not exist; a clean verified fork checkout is required.
+- Existing Desktop fork remains untouched. A documentation-claimed `/Users/prasiddhaparthsarthy/dev/agent-fork` does not exist. Clean fork checkout: `/Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/.worktrees/founder-openclaw-9x-fork`, branch `isol8/2026.9.3-founder`.
+- Frozen official stable target: `v2026.9.3`, commit `1391f7cd2d40ab5bbcf2f5f831d3a64f520e72d7`, published 2026-09-08T14:15:53Z. Shipped fork `v2026.8.1-isol8.3` peels to `dfb72bf0d187a5d3d6ef35dd9cabcca5049bd31c`, 17 carried commits over upstream 8.1. Candidate fork is not yet patched, built, or published.
+- Fork installation is blocked by its own seven-day package-age rule for pinned `pnpm@12.3.4` and matching platform packages. A narrow version-specific exception was requested from the user; no exception or safety override has been applied.
 - Open PRs requiring coordination: #1922 provider-switch desired-zero reconciliation; #1913 BYO rotation; #2325 Slack pairing; #2400 orphaned Paperclip runs. No PRs merged or modified.
-- Read-only subagents: `fork_release_reconcile` (stable target/patches/plugins), `lifecycle_inventory` (all release/config consumers).
+- Read-only reports completed in the original task's docs directory: `2026-09-08-fork-release-reconciliation.md`, `2026-09-08-founder-runtime-baseline.md`, `2026-09-08-lifecycle-reconciliation.md`, `2026-09-08-multiplayer-identity-seam.md`. Slack identity addendum is in progress.
+- First implementation slice: schema vendoring source/provenance guard; baseline `5e42e4d7b20d5a737e334878ee920397c3ccfbf1`; implementer `schema_source_guard`; independent review required before acceptance. Plan and SDD ledger are retained.
+- Baseline test command collected 292 version/schema/container-repository/update-service/ECS tests. Session 49850 remains live and progressing with no reported failures; final result not yet available.
+
+### Founder read-only runtime snapshot
+
+- Exact owner: `org_3H3viGAfq2SXc9dIdcatmGXg8Td`; ECS service `openclaw-org_3H3viGAfq2SXc9dIdcatmGXg8Td-c42489f74b24` in `lightbulb-prod-container`.
+- At 2026-09-08T21:50Z the ECS-resolved live task was `7dcd7cea19b044a3a0f4bf35823234d6`, healthy on task definition `lightbulb-prod-openclaw-user:206`, image `2026.8.1-isol8.3-4e22eb8`, digest `sha256:c23039deb00f5293f3d2a3c905e7621177527e1fe97d0f7a334d564db515ba88`.
+- DynamoDB cached a stopped Spot-interrupted task. Resolve live tasks from ECS again before any release operation; cached task/stop fields are not authoritative.
+- EFS is mounted at `.openclaw`; nested `state` and `agents` are task-local volumes. Litestream replica prefix exists, but freshness/integrity/restore is unproven. EFS has no automatic backup policy/recovery points; replica S3 bucket has no versioning. Backup and isolated restore remain release gates.
+- ECR tags are mutable. Qualify the final published/SOCI digest; do not infer immutability from workflow comments or locally built image IDs.
+
+### Confirmed cross-cutting risks
+
+- Size-only resize, stopped/silent reprovision, base-drift refresh, provider cold switch and plan/admin rebuilds all reuse the global image unless one desired-release resolver is threaded through their common builders.
+- Current image update hot-writes target config before the old writer drains. Stopped reprovision can swallow config failure. Updates become applied before gateway health. None is acceptable for candidate activation.
+- Native9.3 trusted-proxy rejects shared tokens; native password fallback is loopback-only. Current remote backend/Paperclip/node paths need demonstrated compatibility before human auth activation.
+- Preserve current member-key privacy, backend authorization and service isolation. Native missing visibility defaults to shared, and membership is not a confidential-read ACL. Full session identity must replace agent-only panel identity for rooms/side sessions.
+- Sharing the private report with task `01a082fb-5dad-7db2-8424-403b01cc9a93` was initially rejected by auto-review. The user explicitly approved that exact destination on 2026-09-08; handoff was then retried. This does not change production authority or program scope.
 
 ## Scope and proof matrix
 
 | Requirement | Required authoritative proof | State |
 |---|---|---|
-| R0 target and baseline | Frozen upstream/fork refs; exact founder row/service/digest; state inventory and measurements | Reconciling |
+| R0 target and baseline | Frozen upstream/fork refs; exact founder row/service/digest; state inventory and measurements | Source/runtime snapshot complete; restore inventory pending |
 | R1 fork and Workshop | Carried-patch regression ledger; build; durable per-agent Workshop and local SQLite tests | Pending |
-| R2 mixed releases | Persistent owner assignment; all lifecycle consumers; dual schemas; staged activation tests | Inventory in progress |
+| R2 mixed releases | Persistent owner assignment; all lifecycle consumers; dual schemas; staged activation tests | Inventory complete; schema-source guard in progress |
 | R3 dev qualification | Final image digest; clean/migrated boot; provider/plugin/node/Paperclip workflows; restore rehearsal | Pending |
 | R4 founder rollout | Explicit approval; verified live release; replacement/lifecycle durability; representative observation | Pending approval package |
-| F0 identity/privacy | Native per-human identity; service compatibility; private-history and revocation negative tests | Pending |
+| F0 identity/privacy | Native per-human identity; service compatibility; private-history and revocation negative tests | Source seam documented; runtime prototype pending |
 | F1 shared rooms | Two people, authorship/presence/typing/mentions, concurrency/reconnect; audience-safe client gating | Pending |
 | F2 handoffs | Parent yields and receives one correct specialist result with Paperclip lineage across disconnect/restart | Pending |
 | F3 side sessions | Persistent child routing/history/deep links without sibling/parent collisions | Pending |
@@ -51,4 +71,4 @@ Implementation, isolated worktrees, tests, feature branches/PRs and verified non
 
 ## Next action
 
-Complete baseline tests and source reconciliation; freeze the upstream release; write the first concrete, self-reviewed implementation plan and execute with independent task review. Do not mark the program complete until every required gate has direct evidence.
+Finish baseline tests and the schema-source guard with independent review. Resolve the pinned toolchain decision, port and qualify carried fork behavior, and implement persistent owner release selection with dual-schema/staged activation before exposing founder assignment. Do not mark the program complete until every required gate has direct evidence.

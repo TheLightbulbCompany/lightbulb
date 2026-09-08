@@ -270,7 +270,7 @@ build_id: ${spec.intake.build_id || ''}
 
 function generateToolsMd(spec) {
   const allSkills = [...new Set([...UNIVERSAL_SKILL_CORE, ...(spec.skills_required || [])])];
-  return `# TOOLS.md
+  return `# AGENT-TOOLS.md
 
 ## Lobster Pipelines
 
@@ -546,7 +546,7 @@ function draftToFastIo(spec) {
   try { agentsMd = generateAgentsMd(spec); } catch (e) { errors.push({ file: 'AGENTS.md', error: e.message }); }
   try { soulMd = generateSoulMd(spec); } catch (e) { errors.push({ file: 'SOUL.md', error: e.message }); }
   try { identityMd = generateIdentityMd(spec); } catch (e) { errors.push({ file: 'IDENTITY.md', error: e.message }); }
-  try { toolsMd = generateToolsMd(spec); } catch (e) { errors.push({ file: 'TOOLS.md', error: e.message }); }
+  try { toolsMd = generateToolsMd(spec); } catch (e) { errors.push({ file: 'AGENT-TOOLS.md', error: e.message }); }
   try { bootstrapMd = generateBootstrapMd(spec); } catch (e) { errors.push({ file: 'BOOTSTRAP.md', error: e.message }); }
   try { userMd = generateUserMd(spec); } catch (e) { errors.push({ file: 'USER.md', error: e.message }); }
 
@@ -561,7 +561,7 @@ function draftToFastIo(spec) {
     'workspace/AGENTS.md': agentsMd,
     'workspace/SOUL.md': soulMd,
     'workspace/IDENTITY.md': identityMd,
-    'workspace/TOOLS.md': toolsMd,
+    'workspace/AGENT-TOOLS.md': toolsMd,
     'workspace/BOOTSTRAP.md': bootstrapMd,
     'workspace/USER.md': userMd
   };

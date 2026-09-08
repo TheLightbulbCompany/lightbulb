@@ -916,6 +916,45 @@ the CDK edit *and* all four boto3 register paths.
 Related: the 2026-08-14 prod incident where an 11-agent owner crash-looped on boot — the
 same "over the cap, no ceiling" shape, on CPU instead of disk.
 
+### C2-c · A self-editing agent can silently exceed the bootstrap cap — Atlas already has
+**Status:** TODO — found 2026-09-08 by inspecting the live prod container, not by reading code.
+**Class:** LIVE DEFECT. **Effort:** small to detect, medium to fix properly.
+
+`DEFAULT_BOOTSTRAP_MAX_CHARS = 20_000` is a **per-file** cap
+(`src/agents/embedded-agent-helpers/bootstrap.ts:89`; total is 60,000 at `:90`, USER.md is
+hard-capped at 4,000 at `:93`). Over it, the file is **truncated before the agent ever sees
+it**, and nothing surfaces that to us.
+
+Measured on our own prod container (`org_3H3viGAfq2SXc9dIdcatmGXg8Td`):
+
+| agent | AGENTS.md on EFS | vs 20,000 cap |
+|---|---:|---|
+| **Atlas** | **32,478** | **12,478 over — losing ~38% of its own playbook** |
+| Friday | 19,552 | 448 under (this is what #2360 addresses) |
+
+The seed in the repo is only **14,723** bytes (`core/services/atlas_seed/files/AGENTS.md`), so
+this is not a bad seed — **Atlas grew its own file past the cliff in place.** Agents can write
+to their own workspace, so any self-editing agent can walk over the cap and begin silently
+discarding its own instructions. Atlas is seeded for **every** owner by
+`paperclip_provisioning.provision_org`, so this is a fleet-shaped risk, not a local quirk.
+
+**Why nobody noticed:** the `nearLimit` flag at 85% is a diagnostic in the bootstrap report,
+not an alarm, and we surface it nowhere. Truncation is silent by construction — the same shape
+as the invalid-`openclaw.json` defect (reject the whole file, keep the old one, say nothing).
+
+**Fix, in order:**
+1. **Detect** — read the bootstrap report's truncation/`nearLimit` signal and emit a metric per
+   owner+agent. Without this we cannot say how many of the 34 owners are affected; that number
+   is currently unknown and should not be guessed.
+2. **Bound the seeds** — a test asserting every seeded bootstrap file stays under the per-file
+   cap, so a template edit cannot walk a fresh provision over it (the same class of guard
+   #2360 added for Friday's AGENTS.md).
+3. **Decide about self-edits** — a growing playbook is arguably an agent working as intended;
+   the bug is that it fails *silently*. Surfacing it to the owner beats forbidding it.
+
+*Do not assume Atlas is the only one.* Step 1 is a measurement, and it should run before anyone
+sizes the fix.
+
 ### C3 · Four browser knobs we tuned for Fargate silently reverted
 **Status:** TODO — accept-and-document, or fork patch. **Class:** LEGACY. **Effort:** zero or medium.
 We correctly drop `tabCleanup.idleMinutes:30`, `maxTabsPerSession:4`,

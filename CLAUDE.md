@@ -333,6 +333,31 @@ is safe — a *skipped job* reports success to branch protection.
 > fixed for `pnpm/action-setup` in `app.ts` (via `runner.temp`); the Claude action exposes
 > no equivalent knob.
 >
+> **⚠️ WORSE: `claude-review` can go GREEN on a review that never finished.** Observed
+> 2026-09-08 on #2376 (run 34184122841): the job ran **82 seconds** and posted a sticky
+> comment headed *"Review in progress"* with **six of seven checklist boxes unchecked**,
+> ending on *"Deep-diving into the changed files now."* No findings, no verdict. It reported
+> **success**, because the action did not crash — and the guard only checks `is_error`. Two
+> earlier runs on the same branch took 6m31s and 6m54s and produced real file:line findings.
+>
+> So the guard catches a **crashed** review, not a **truncated** one, and a truncated review
+> is indistinguishable from a clean pass. This is the most dangerous of the three failure
+> modes on this gate because the other two are loud and this one reports success.
+>
+> **The discriminator is unchecked boxes, NOT duration.** A duration floor is tempting but
+> produces false positives: a genuine review of a small diff finished in 140s on #2363 with
+> every box ticked. Audited across the six PRs merged that night — 299s / 140s / 377s / 316s
+> / 245s / 159s, **zero unchecked boxes on any of them** — against 82s and six unchecked on
+> the truncated one. So:
+>
+> - **fail the step when the posted comment still contains `- [ ]`** — exact, no threshold to
+>   tune as diff sizes vary
+> - optionally add a ~60s floor as belt-and-braces, low enough never to catch a real
+>   small-diff review
+>
+> **Until that lands, a green `claude-review` is not by itself evidence a review happened.**
+> Open the sticky comment and check for a verdict before merging anything substantive.
+
 > **So: read the log before you read the diff.** A red gate has at least three distinct
 > causes on this repo — a real review finding, an expired OAuth token / usage cap (the
 > guard's own error text names these two), and this install race. Re-running the job is the

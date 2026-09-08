@@ -563,22 +563,48 @@ async def test_fresh_workspace_stays_missing_only_and_stamps_marker(workspace_st
 # next boot has nothing left to merge back in.
 
 
-def _tools_sweep_ws(tmp_path, *, tools_exists: bool):
+def _tools_sweep_ws(tmp_path, *, tools_exists: bool, extra_agents: tuple[str, ...] = ()):
+    """Workspace double for the TOOLS.md sweep.
+
+    ``extra_agents`` are agents Atlas BUILT — `atlas-skeleton-generator.js`
+    writes a `workspace/TOOLS.md` into each, so the same doctor migration is
+    armed there. Measured on prod: three such workspaces held a 12,053-byte
+    TOOLS.md beside a 13,773-byte AGENTS.md, a 25,826-byte merge on next boot.
+    """
     ws = MagicMock()
-    ws_dir = tmp_path / "workspace-uuid-atlas"
-    ws_dir.mkdir()
-    if tools_exists:
-        (ws_dir / "TOOLS.md").write_text("# TOOLS.md\n", encoding="utf-8")
-    ws.agent_workspace_path.return_value = ws_dir
+    agent_ids = ["uuid-atlas", *extra_agents]
+    dirs = {}
+    for aid in agent_ids:
+        d = tmp_path / f"workspace-{aid}"
+        d.mkdir()
+        if tools_exists:
+            (d / "TOOLS.md").write_text("# TOOLS.md\n", encoding="utf-8")
+        dirs[aid] = d
+    ws.agent_workspace_path.side_effect = lambda _o, aid: dirs[aid]
+    ws.list_workspace_agent_dirs.return_value = agent_ids
+    ws.read_file.return_value = "# TOOLS.md\n"
     ws.write_file_if_missing.return_value = True
     return ws
 
 
 @pytest.mark.asyncio
-async def test_legacy_tools_md_is_removed_from_the_workspace(tmp_path, fake_files_dir):
+async def test_legacy_tools_md_is_deleted(tmp_path, fake_files_dir):
+    """Doctor's own behaviour is merge-then-unlink, so the file does not
+    survive a boot either way. Deleting simply skips the harmful merge."""
     ws = _tools_sweep_ws(tmp_path, tools_exists=True)
     await pre_stage_atlas(owner_id="user_x", paperclip_agents=_AGENTS, workspace=ws)
-    ws.delete_file.assert_called_once_with("user_x", "workspace-uuid-atlas/TOOLS.md")
+    ws.delete_file.assert_any_call("user_x", "workspace-uuid-atlas/TOOLS.md")
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_covers_agents_atlas_BUILT_not_just_atlas(tmp_path, fake_files_dir):
+    """The regression this exists for: the first sweep only looked at Atlas's
+    own workspace, leaving built agents armed to breach on their next boot."""
+    ws = _tools_sweep_ws(tmp_path, tools_exists=True, extra_agents=("uuid-built-1", "uuid-built-2"))
+    await pre_stage_atlas(owner_id="user_x", paperclip_agents=_AGENTS, workspace=ws)
+    deleted = {c.args[1] for c in ws.delete_file.call_args_list}
+    assert "workspace-uuid-built-1/TOOLS.md" in deleted
+    assert "workspace-uuid-built-2/TOOLS.md" in deleted
 
 
 @pytest.mark.asyncio

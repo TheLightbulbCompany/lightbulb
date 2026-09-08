@@ -320,14 +320,31 @@ async def pre_stage_atlas(
     # a `tools-md-merged-bootstrap-limit` finding and migrates anyway). The
     # reference now ships as ATLAS-TOOLS.md, a name the migration does not
     # match; this removes any TOOLS.md an earlier bundle left behind so the
-    # next boot has nothing to merge back in. Idempotent (delete_file no-ops
-    # when absent) and best-effort like the rest of the seeder.
+    # next boot has nothing to merge back in. Best-effort like the rest of the
+    # seeder.
+    # EVERY workspace, not just Atlas's. `atlas-skeleton-generator.js` writes a
+    # `workspace/TOOLS.md` into every agent Atlas BUILDS, so the same doctor
+    # migration is armed in those workspaces too. Measured on prod after the
+    # Atlas repair: 3 built-agent workspaces held a 12,053-byte TOOLS.md beside
+    # a 13,773-byte AGENTS.md — a 25,826-byte merge, 5,826 over the cap, on
+    # their next boot. The generator now emits AGENT-TOOLS.md; this repairs the
+    # ones already on disk.
+    #
+    # DELETE, not rename. Doctor's own behaviour is merge-then-unlink, so the
+    # file does not survive a boot either way — deleting simply skips the
+    # harmful merge. Keeping a renamed copy would preserve bytes no agent is
+    # told to read, in a workspace where the same trap can be re-armed.
     try:
-        if (workspace.agent_workspace_path(owner_id, atlas_uuid) / "TOOLS.md").is_file():
-            tools_rel = f"workspace-{atlas_uuid}/TOOLS.md"
-            workspace.delete_file(owner_id, tools_rel)
-            put_metric("atlas_seed.legacy_tools_md_removed")
-            logger.info("atlas_seed: removed legacy TOOLS.md for owner=%s", owner_id)
+        removed = 0
+        for agent_id in workspace.list_workspace_agent_dirs(owner_id):
+            # Returns agent IDS, not directory names.
+            if not (workspace.agent_workspace_path(owner_id, agent_id) / "TOOLS.md").is_file():
+                continue
+            workspace.delete_file(owner_id, f"workspace-{agent_id}/TOOLS.md")
+            removed += 1
+        if removed:
+            put_metric("atlas_seed.legacy_tools_md_removed", value=removed)
+            logger.info("atlas_seed: deleted %d legacy TOOLS.md file(s) for owner=%s", removed, owner_id)
     except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
         put_metric("atlas_seed.legacy_tools_md_error")
         logger.warning("atlas_seed: legacy TOOLS.md removal failed owner=%s: %s", owner_id, exc)

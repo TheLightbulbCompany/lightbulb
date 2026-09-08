@@ -52,7 +52,7 @@ aws efs delete-access-point --access-point-id "$ACCESS_POINT" \
 # openclaw-version.json): delete the owner's Litestream replicas, or the
 # reprovisioned container restores the OLD hot state from S3 (sessions,
 # device trust, auth rows) instead of starting clean.
-aws s3 rm "s3://isol8-prod-openclaw-replicas/$OWNER/" --recursive --profile isol8-admin
+aws s3 rm "s3://lightbulb-prod-openclaw-replicas/$OWNER/" --recursive --profile isol8-admin
 
 # 3. rm -rf the EFS workspace dir via ECS exec on the BACKEND task.
 TASK=$(aws ecs list-tasks --cluster "$CLUSTER" --service-name "$BACKEND_SERVICE" \

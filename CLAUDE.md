@@ -112,6 +112,27 @@ accept-both shims that existed only to bridge them:
 | `isol8-backend` (operator device) | `lightbulb-backend` | `operator_device.build_paired_operator_entry` `displayName` |
 | `isol8-<owner>` STS session name | `lightbulb-<owner>` | `routers/connections.py` `RoleSessionName` |
 
+**NOT yet renamed — the same class, still open (audited 2026-09-08).** These were
+missed by the 2026-08-31 pass and are NOT residue; each needs a coordinated deploy
+or an accept-both shim, so do NOT sweep them. Full audit + per-item recipes:
+`docs/superpowers/plans/2026-09-08-isol8-runtime-identifier-gap.md`.
+
+| identifier | why it can't be swept |
+|---|---|
+| `X-Isol8-Public-Host` | API GW (`api-stack.ts`) and the backend are separate stacks in one pipeline run, and the backend rolls at `maxHealthyPercent: 200`; a hard swap misroutes every `company[-env]` request during the roll. Precedent shim: `require_ws_internal_caller` in `routers/websocket_chat.py`. |
+| the `ISOL8_*` container env vars + the baked `/usr/local/bin/isol8-*.sh`, `/etc/isol8-litestream.yml`, `/opt/isol8/` paths | three-sided (image, task def, AND per-owner Atlas seed files already on EFS). `container-stack.ts` hard-`exit 1`s when the boot-script path is missing, so a CDK deploy landing before the image fails EVERY container boot. |
+| `isol8_paperclip` | live session cookie — a hard swap logs every active session out |
+| `isol8.hire_suggestion` | emitted by the baked `lightbulb-marketplace` plugin, consumed by `parseHireSuggestion`, which returns null on mismatch → the HireCard silently degrades fleet-wide during a reroll |
+| `isol8.notifications`, `PAPERCLIP_ISOL8_NOTIFY_*` | lives in the Paperclip FORK image, not this repo |
+| `.isol8-seed-fingerprint`, `.openclaw/isol8-setup-seed.json` | EFS-resident per owner — same once-only-migration shape as the protected `.isol8-guard` |
+
+**Never rename these** — the name correctly describes protected residue, or the
+value is stored data: `_ISOL8_PATCH_RE` (parses the `-isol8.N` rollback tag),
+`ISOL8_SYSTEM_SELLER_ID`'s value `"__isol8__"` (written to marketplace rows),
+`ISOL8_CURATOR_EMAIL` (human-gated mail), and the `"isol8 top-up …"` descriptions in
+`metronome_funding.py` — those are part of an idempotent Metronome request body, so
+changing the string 409s a retried top-up on the money path.
+
 Three of these have a state-on-EFS or state-in-someone-else's-account tail:
 `lightbulb-connector` needs the quick-create stack relaunched **and** a rebuilt
 extended image (the baked plugin injects the profile by name); the facts file's

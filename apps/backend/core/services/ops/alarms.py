@@ -10,9 +10,11 @@ import boto3
 
 from core.config import settings
 
-# Alarm-name convention from the observability stack:
-# isol8-<env>-P<n>-… = paging/critical, isol8-<env>-W<n>-… = warning.
-_SEVERITY_RE = re.compile(r"^isol8-[^-]+-(P|W)\d+-")
+# Alarm-name convention from the observability stack (every alarmName there is
+# built from resourcePrefix() in apps/infra/lib/table-names.ts, which is
+# `lightbulb-{env}-`):
+#   lightbulb-<env>-P<n>-… = paging/critical, lightbulb-<env>-W<n>-… = warning.
+_SEVERITY_RE = re.compile(r"^lightbulb-[^-]+-(P|W)\d+-")
 
 _client = None
 

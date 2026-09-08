@@ -338,7 +338,7 @@ export class ServiceStack extends cdk.Stack {
 
     // Replica lifecycle: the backend owns the S3 replica prefix's lifecycle —
     // wipe/reprovision and agent-delete flows must prefix-delete
-    // s3://isol8-{env}-openclaw-replicas/{owner}/..., or the next boot's
+    // s3://lightbulb-{env}-openclaw-replicas/{owner}/..., or the next boot's
     // restore resurrects pre-wipe state (sessions, device trust, auth rows
     // with live OAuth tokens). List+Delete only across the bucket — the
     // backend's sole READ is the statement below.

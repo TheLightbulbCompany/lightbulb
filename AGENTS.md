@@ -13,7 +13,7 @@ Lightbulb (`flickmeon.ai`) is an AI agent platform powered by [OpenClaw](https:/
 
 Every freshly provisioned owner gets two seed agents inside their Paperclip company: **Friday** (the per-owner CEO / orchestrator) and **Atlas** (the in-house agent-recruiter). Both are seeded by `paperclip_provisioning.provision_org` — see the "Provisioning Flow" section below. Custom agents beyond Friday/Atlas can be **published to the Lightbulb marketplace** for other users to deploy — see the "Marketplace" section.
 
-The OpenClaw container image we run is an **extended image** built from our **OpenClaw fork** (`ghcr.io/thelightbulbcompany/agent`, a **Debian**-based image — NOT Alpine) with additional Linux skill binaries and baked plugins: the externalized upstream Slack/Discord/Bedrock plugins plus three in-repo plugins (`apps/infra/openclaw/plugins/{aws-exec-profile,lightbulb-marketplace,paperclip-exec-creds}`). Its Dockerfile lives at `apps/infra/openclaw/` and is published to ECR `isol8/openclaw-extended` by `.github/workflows/build-openclaw-image.yml`. The pinned base + per-env extended tags are tracked in `openclaw-version.json` at the repo root, where the fields mean distinct things:
+The OpenClaw container image we run is an **extended image** built from our **OpenClaw fork** (`ghcr.io/thelightbulbcompany/agent`, a **Debian**-based image — NOT Alpine) with additional Linux skill binaries and baked plugins: the externalized upstream Slack/Discord/Bedrock plugins plus three in-repo plugins (`apps/infra/openclaw/plugins/{aws-exec-profile,lightbulb-marketplace,paperclip-exec-creds}`). Its Dockerfile lives at `apps/infra/openclaw/` and is published to ECR `lightbulb/openclaw-extended` by `.github/workflows/build-openclaw-image.yml`. The pinned base + per-env extended tags are tracked in `openclaw-version.json` at the repo root, where the fields mean distinct things:
 - `upstream` — the fork base the Dockerfile `FROM`s (e.g. `ghcr.io/thelightbulbcompany/agent:2026.7.2-isol8.4`). A **private** GHCR package, pulled only by the authenticated build workflow. Keep it in lockstep with the Dockerfile `FROM` line.
 - `image`/`tag`/`full` — the **legacy public** upstream image (`ghcr.io/openclaw/openclaw`), kept only as the bootstrap/unknown-env fallback in `container-stack.ts` (pulled by per-user ECS tasks with **no** registry credentials, so it must stay anonymously pullable). `tag` also feeds the `OPENCLAW_UPSTREAM_VERSION` env fallback.
 - `extendedImage` + per-env `dev.tag`/`prod.tag` — the ECR extended image actually deployed; `dev.tag`/`prod.tag` are the per-environment promotion gate (flip dev, validate, then prod). They drive `meta.lastTouchedVersion` via `deployed_upstream_version()`.
@@ -116,6 +116,27 @@ accept-both shims that existed only to bridge them:
 | `isol8-mcp-server` | `lightbulb-mcp-server` | the Paperclip agent API-key display name |
 | `isol8-backend` (operator device) | `lightbulb-backend` | `operator_device.build_paired_operator_entry` `displayName` |
 | `isol8-<owner>` STS session name | `lightbulb-<owner>` | `routers/connections.py` `RoleSessionName` |
+
+**NOT yet renamed — the same class, still open (audited 2026-09-08).** These were
+missed by the 2026-08-31 pass and are NOT residue; each needs a coordinated deploy
+or an accept-both shim, so do NOT sweep them. Full audit + per-item recipes:
+`docs/superpowers/plans/2026-09-08-isol8-runtime-identifier-gap.md`.
+
+| identifier | why it can't be swept |
+|---|---|
+| `X-Isol8-Public-Host` | API GW (`api-stack.ts`) and the backend are separate stacks in one pipeline run, and the backend rolls at `maxHealthyPercent: 200`; a hard swap misroutes every `company[-env]` request during the roll. Precedent shim: `require_ws_internal_caller` in `routers/websocket_chat.py`. |
+| the `ISOL8_*` container env vars + the baked `/usr/local/bin/isol8-*.sh`, `/etc/isol8-litestream.yml`, `/opt/isol8/` paths | three-sided (image, task def, AND per-owner Atlas seed files already on EFS). `container-stack.ts` hard-`exit 1`s when the boot-script path is missing, so a CDK deploy landing before the image fails EVERY container boot. |
+| `isol8_paperclip` | live session cookie — a hard swap logs every active session out |
+| `isol8.hire_suggestion` | emitted by the baked `lightbulb-marketplace` plugin, consumed by `parseHireSuggestion`, which returns null on mismatch → the HireCard silently degrades fleet-wide during a reroll |
+| `isol8.notifications`, `PAPERCLIP_ISOL8_NOTIFY_*` | lives in the Paperclip FORK image, not this repo |
+| `.isol8-seed-fingerprint`, `.openclaw/isol8-setup-seed.json` | EFS-resident per owner — same once-only-migration shape as the protected `.isol8-guard` |
+
+**Never rename these** — the name correctly describes protected residue, or the
+value is stored data: `_ISOL8_PATCH_RE` (parses the `-isol8.N` rollback tag),
+`ISOL8_SYSTEM_SELLER_ID`'s value `"__isol8__"` (written to marketplace rows),
+`ISOL8_CURATOR_EMAIL` (human-gated mail), and the `"isol8 top-up …"` descriptions in
+`metronome_funding.py` — those are part of an idempotent Metronome request body, so
+changing the string 409s a retried top-up on the money path.
 
 Three of these have a state-on-EFS or state-in-someone-else's-account tail:
 `lightbulb-connector` needs the quick-create stack relaunched **and** a rebuilt
@@ -262,7 +283,7 @@ password** (Claude-in-Chrome / automation): mint a Clerk **sign-in token**
 with the admin API and redeem it via the ticket strategy in the page — no
 password/OTP typed, the same ticket mechanism `routers/desktop_auth.py`
 uses. Get the dev Clerk secret from Secrets Manager
-(`isol8/dev/clerk_secret_key`), find the user id via
+(`lightbulb/dev/clerk_secret_key`), find the user id via
 `GET https://api.clerk.com/v1/users` (dev accounts are `+clerk_test`
 addresses; the users table has no email, Clerk is the only email truth),
 then:
@@ -351,7 +372,7 @@ carries `if: github.event_name == 'workflow_dispatch'`, so a push to `main` runs
 66 jobs (dev + assets) and **skips all 14 prod jobs**. To ship to prod, a human runs the
 workflow: Actions → deploy → Run workflow, or `gh workflow run deploy.yml --ref main`.
 A dispatch run deploys dev from that ref first — prod jobs still `needs:` the full dev
-stage, so a promotion cannot skip dev. The `isol8-deploy` concurrency group is unchanged,
+stage, so a promotion cannot skip dev. The `lightbulb-deploy` concurrency group is unchanged,
 so a promotion queues behind an in-flight dev deploy.
 
 **⚠️ THE CONSEQUENCE: `main` IS AHEAD OF PROD BY DEFAULT.** Merging no longer ships. Prod
@@ -407,7 +428,7 @@ regenerate + commit `deploy.yml` for infra PRs) — synths with no daemon. **Orb
 Docker. (The `infra-ci.yml` drift-guard comment still claims "Docker is required … no
 supported way to skip bundling" — that is overstated; the repo's own `local.tryBundle` is the
 skip.)
-- **Extended OpenClaw image:** GitHub Actions (`build-openclaw-image.yml`) → build on Dockerfile/`openclaw-version.json` changes → push to ECR `isol8/openclaw-extended`. Promotion is MANUAL — the workflow never writes the version pins; a human lands a PR flipping `dev.tag`/`prod.tag`.
+- **Extended OpenClaw image:** GitHub Actions (`build-openclaw-image.yml`) → build on Dockerfile/`openclaw-version.json` changes → push to ECR `lightbulb/openclaw-extended`. Promotion is MANUAL — the workflow never writes the version pins; a human lands a PR flipping `dev.tag`/`prod.tag`.
 - **Desktop app:** GitHub Actions (`desktop-build.yml`) → signed DMG via Tauri. Standalone workflow (NOT part of `deploy.yml`), path-filtered on `apps/desktop/**`, runs on a **self-hosted macOS runner** (`runs-on: [self-hosted, macos-desktop]`). Version is `0.4.${{ github.run_number }}`.
 - **Mobile app:** `mobile-ci.yml` (PR lint/typecheck/jest + `expo export` Metro gate, self-hosted mac), `mobile-release.yml` (`eas build --local` + `eas submit` to TestFlight, on `mobile-v*` tags), `mobile-ota.yml` (`eas update --channel production` on merge to main). See the "Mobile App" section.
 - **E2E journey test:** GitHub Actions (`e2e-dev.yml`) runs the Playwright journey test against dev **on-demand only** (not on every deploy); keep regularly-needed coverage hermetic/per-PR
@@ -440,7 +461,7 @@ the fork bulk (5×) buries this repo in every ranking. Keep it single-repo.
 
 ```
 Chat WS:   Client --> wss://ws-{env}.flickmeon.ai (API Gateway v2 WebSocket, Clerk JWT authorizer, ?token=)
-             --> ws-connect / ws-disconnect / ws-message Lambdas (connectionId map in isol8-{env}-ws-connections)
+             --> ws-connect / ws-disconnect / ws-message Lambdas (connectionId map in lightbulb-{env}-ws-connections)
              --> ws-message POSTs http://{ALB}/api/v1/ws/message (x-lightbulb-ws-internal shared secret)
              --> FastAPI --> Cloud Map DiscoverInstances --> per-user OpenClaw container (ECS Fargate)
              <-- FastAPI pushes frames via the Management API (HTTPS POST @connections/{id})
@@ -509,7 +530,7 @@ section), `containers/`, `gateway/`, `repositories/`, `services/`, `crypto/`,
 
 Mostly one repo per DynamoDB table (`marketplace_repo.py` fronts five
 marketplace tables); items are plain dicts. Table names follow
-`isol8-{env}-{suffix}` (see `database-stack.ts`).
+`lightbulb-{env}-{suffix}` (see `database-stack.ts`).
 
 The **Stripe Projects provisioning rail** keeps its `integrations` rows and its
 Secrets Manager blobs under **`projects/{provider}`** (`integrations_repo.projects_key`)
@@ -598,7 +619,7 @@ you cannot guess from the filename:
 - `node_proxy.py` — per-user node-host tracking. Lives in services/, not
   routers/, despite the name; `routers/websocket_chat.py` consumes it directly.
 - `key_service.py` — BYO LLM keys. Stored **solely in AWS Secrets Manager**
-  (`isol8/{env}/user-keys/{user}/{provider}`), referenced by the ECS task def;
+  (`lightbulb/{env}/user-keys/{user}/{provider}`), referenced by the ECS task def;
   no DynamoDB copy is kept.
 - `catalog_service.deploy_from_artifact` — the consumption-side entry point for
   marketplace deploys.
@@ -751,7 +772,7 @@ the chat-state handling in `_handle_message`):
 1. **Chat WS door:** API Gateway v2 WebSocket API; `$connect`/`$disconnect`/`$default` are **Lambda integrations** (`apps/infra/lambda/ws-*`). `ws-message` POSTs the payload to `http://{ALB}/api/v1/ws/message` inside the VPC.
 2. Backend `/ws/*` endpoints require the `x-lightbulb-ws-internal` shared-secret header, so forged callers arriving over the public HTTP API are rejected.
 3. Responses are pushed via the Management API (HTTPS POST to `@connections/{id}`), sequenced per-connection by `core/gateway/frame_sender.py`.
-4. Lambda Authorizer validates the Clerk JWT (`?token=` query param); DynamoDB `isol8-{env}-ws-connections` maps connectionId → user.
+4. Lambda Authorizer validates the Clerk JWT (`?token=` query param); DynamoDB `lightbulb-{env}-ws-connections` maps connectionId → user.
 5. **Raw WS door:** the browser live-view panel needs an unbuffered WS the HTTP API can't carry, so `wss://bv[-env].flickmeon.ai` is a CloudFront distribution with a **VpcOrigin** to the ALB's browser-view listener (path-capped to `/api/v1/browser-view/*`); the Clerk JWT rides the `Sec-WebSocket-Protocol` offer.
 6. REST rides the API Gateway HTTP API → VPC Link **V2** → ALB, including the `company[-env]` host dispatch (`X-Isol8-Public-Host` parameter mapping → `HostDispatcherMiddleware`).
 
@@ -837,7 +858,7 @@ A first-time personal signup with no billing row gets a `trial_local` row and a 
 
 The trial is bounded on TWO axes: a **$3.00/day spend cap** and a **3-day trial window** (`trial_end` stamped locally at signup; expiry → permanent `TRIAL_EXPIRED`). Daily spend resets on UTC day rollover (`provision_gate.maybe_restore_trial_bedrock`). There is deliberately **no cap-only check primitive** — a cap-only check once woke EXPIRED trials, so every door must call the full predicate (`trial_block_reason` / `reason_for_account`, cap AND expiry).
 
-**The enforcement model — read this before changing anything here.** Every Bedrock inference call flows through the **bedrock-gate** (`apps/infra/lambda/bedrock-gate/`, a streaming Lambda fronting bedrock-runtime). Containers authenticate to it with per-owner bearer tokens (`AWS_BEARER_TOKEN_BEDROCK`; hash-stored in `isol8-{env}-bedrock-gate-tokens`); **owner task roles carry NO `bedrock:Invoke`** (`build_owner_bedrock_policy` is a deny-only fence), so the `exec: full` shell path AccessDenies — the gate is the only door. The gate discovers its own URL via SSM (`/isol8/{env}/bedrock-gate-url`, read by `core/billing/bedrock_gate_url.py`; the literal value `direct` is the fleet break-glass mode, paired with `scripts/bedrock_gate_break_glass.py` which re-grants direct IAM — see `docs/runbooks/bedrock-gate-break-glass.md`).
+**The enforcement model — read this before changing anything here.** Every Bedrock inference call flows through the **bedrock-gate** (`apps/infra/lambda/bedrock-gate/`, a streaming Lambda fronting bedrock-runtime). Containers authenticate to it with per-owner bearer tokens (`AWS_BEARER_TOKEN_BEDROCK`; hash-stored in `lightbulb-{env}-bedrock-gate-tokens`); **owner task roles carry NO `bedrock:Invoke`** (`build_owner_bedrock_policy` is a deny-only fence), so the `exec: full` shell path AccessDenies — the gate is the only door. The gate discovers its own URL via SSM (`/lightbulb/{env}/bedrock-gate-url`, read by `core/billing/bedrock_gate_url.py`; the literal value `direct` is the fleet break-glass mode, paired with `scripts/bedrock_gate_break_glass.py` which re-grants direct IAM — see `docs/runbooks/bedrock-gate-break-glass.md`).
 
 - **The valve (primary)** is the gate's pre-flight **reservation**: admit only if `spent + holds + ~$0.30 estimate < $3.00`, place the hold, forward verbatim (byte-identical eventstream — load-bearing for Claude Code), settle Bedrock's own reported usage on completion. Over budget → 429 before a single token is generated. Overshoot is bounded by in-flight requests (cents), so the cap is a TRUE **$3.00/day** — no enforce-early margin. **Lockstep constants — NEVER move one alone:** `CAP_MICROCENTS` has three copies (`trial_cap.py`, meter `index.py`, gate stack env) and `RESERVE_ESTIMATE_MICROCENTS` (300_000) has two (`trial_cap.py`, gate stack env); every door predicting admission must subtract the reserve or a dead zone opens.
 - **The auditor + backstop** is the invocation-log **meter Lambda** (`apps/infra/lambda/bedrock-usage-meter/`). It sees EVERY call from AWS's own records — including aborted/crashed streams the gate cannot settle and any break-glass direct traffic — and reconciles via the shared `requestId` dedup table (gate = cashier writes first; meter counts only what the gate missed, emitting `meter.reconciled_gateway_miss`). It remains the **sole Metronome writer** (paid billing never touches the gate). If the counter crosses the cap anyway it fires the backstop kill: deny the gate token + `desiredCount=0` (+ the now-vestigial IAM revoke, which still bites in break-glass direct mode).
@@ -853,7 +874,7 @@ Trial containers scale to zero when idle and wake on the next `/container/status
 Three provider paths the user / org chooses between (stored on the per-owner `billing_accounts` record, not per-user):
 1. **Bedrock managed** (`bedrock_claude`) — platform-billed Bedrock inference, draws from per-owner Bedrock credits.
 2. **ChatGPT OAuth** (`chatgpt_oauth`) — available to personal owners AND org workspaces (see `routers/oauth.py` module docstring; the org admin who completes the device-code flow is the recorded `oauth_connector_user_id`, and only they can manage/re-select it — one ChatGPT account ↔ one container); user signs in to their own OpenAI account.
-3. **BYO API key** (`byo_key`) — owner provides their own Anthropic / OpenAI key, stored **in AWS Secrets Manager** (`isol8/{env}/user-keys/{user}/{provider}`, referenced by the task def; no DynamoDB copy — `key_service.py`). Note: `ENCRYPTION_KEY`/Fernet no longer protects BYOK; it protects ChatGPT OAuth tokens + Paperclip credentials.
+3. **BYO API key** (`byo_key`) — owner provides their own Anthropic / OpenAI key, stored **in AWS Secrets Manager** (`lightbulb/{env}/user-keys/{user}/{provider}`, referenced by the task def; no DynamoDB copy — `key_service.py`). Note: `ENCRYPTION_KEY`/Fernet no longer protects BYOK; it protects ChatGPT OAuth tokens + Paperclip credentials.
 
 The provision gate (`core/services/provision_gate.py`) blocks chat when subscription is not active, OAuth tokens are missing, or Bedrock credits are exhausted. The frontend renders a structured "blocked" state instead of an indefinite spinner.
 
@@ -983,7 +1004,7 @@ Only the ones with a non-obvious constraint are worth writing down here:
 | `STRIPE_TEAM_BASE_PRICE_ID` | Org flat base, always quantity 1. Display dollars mirrored by `TEAM_BASE_PRICE_USD` (50). **Must differ from the seat price id** or checkout refuses to start. |
 | `STRIPE_TEAM_SEAT_PRICE_ID` | Org per-seat; quantity = live Clerk member count. Display dollars mirrored by `TEAM_SEAT_PRICE_USD` (20). |
 | `MARKETPLACE_LISTINGS_TABLE` | Must be set — there is NO disable gate; marketplace routers mount unconditionally and an empty value means runtime errors, not a designed off-switch. |
-| `AGENT_EMAIL_DOMAIN` | Empty disables agent-email minting entirely. Derived per-env in `isol8-stage.ts` from `PLATFORM_MAIL_DOMAIN` — the **mail** domain, never the product domain: prod gets the apex, dev gets it `dev.`-prefixed. Agent addresses are `{agent}@{slug}.{AGENT_EMAIL_DOMAIN}`: `{agent}@{slug}.thelightbulb.company` in prod, `…@{slug}.dev.thelightbulb.company` in dev. `flickmeon.ai` carries no mail at all. |
+| `AGENT_EMAIL_DOMAIN` | Empty disables agent-email minting entirely. Derived per-env in `lightbulb-stage.ts` from `PLATFORM_MAIL_DOMAIN` — the **mail** domain, never the product domain: prod gets the apex, dev gets it `dev.`-prefixed. Agent addresses are `{agent}@{slug}.{AGENT_EMAIL_DOMAIN}`: `{agent}@{slug}.thelightbulb.company` in prod, `…@{slug}.dev.thelightbulb.company` in dev. `flickmeon.ai` carries no mail at all. |
 | `CORS_ORIGINS` | Comma-separated. Note the API Gateway HTTP API handles CORS preflight at the gateway on the REST path — its allow/expose headers must match FastAPI's. |
 
 Everything ECS/EFS/WS/table-name-shaped is set by CDK — don't hand-set them.
@@ -1007,13 +1028,13 @@ The root domain is a per-environment parameter mid-rebrand; `apps/infra/lib/doma
 
 ## AWS CDK Stacks
 
-Located in `apps/infra/lib/stacks/`. Entry point: `apps/infra/lib/app.ts`. Per-environment stage class: `isol8-stage.ts`. Stacks deliberately pass secret *names* (not `ISecret`) and KMS key *ARNs* (not objects) between stacks to avoid cross-stack KMS auto-grant cycles — see comments in `service-stack.ts`.
+Located in `apps/infra/lib/stacks/`. Entry point: `apps/infra/lib/app.ts`. Per-environment stage class: `lightbulb-stage.ts`. Stacks deliberately pass secret *names* (not `ISecret`) and KMS key *ARNs* (not objects) between stacks to avoid cross-stack KMS auto-grant cycles — see comments in `service-stack.ts`.
 
 | Stack | Purpose |
 |-------|---------|
 | `network-stack.ts` | VPC (public/private subnets, NAT), ALB, security groups. (No NLB — the old WS chain is gone.) |
 | `auth-stack.ts` | Secrets Manager secrets (Clerk, Stripe, encryption keys) + KMS key |
-| `database-stack.ts` | The core DynamoDB tables (`isol8-{env}-{suffix}`) **and the Paperclip Aurora Serverless v2 cluster** (Postgres, 0–4 ACU, Data API). Three tables live elsewhere: `ws-connections` (api-stack), `bedrock-gate-tokens` (gate stack), `bedrock-invocation-dedup` (meter stack). |
+| `database-stack.ts` | The core DynamoDB tables (`lightbulb-{env}-{suffix}`) **and the Paperclip Aurora Serverless v2 cluster** (Postgres, 0–4 ACU, Data API). Three tables live elsewhere: `ws-connections` (api-stack), `bedrock-gate-tokens` (gate stack), `bedrock-invocation-dedup` (meter stack). |
 | `container-stack.ts` | ECS cluster for per-user OpenClaw containers, EFS filesystem, Cloud Map namespace + the one shared Cloud Map service all per-user services register into, container task-definition scaffolding |
 | `service-stack.ts` | Backend FastAPI service on ECS Fargate: task definition (Docker image from ECR), service, target-group wiring, DynamoDB/secrets IAM, the SFN provision watchdog, and the marketplace artifacts S3 bucket. **NOT autoscaled** — `desiredCount: 1` in both envs, with no scalable target, and that is deliberate: per-owner container WebSockets, `_pending_rpcs`, `_active_runs` and several other maps live in-process, so a second instance would not simply share load (see #1196). Note rolling deploys run at `maxHealthyPercent: 200`, so N is transiently 2 on every deploy — which is why the provisioning/bootstrap claim-leases exist. |
 | `api-stack.ts` | Both front doors: the HTTP API (REST) with VPC Link **V2** → ALB + custom-domain host dispatch (`X-Isol8-Public-Host`) + Route53 records, AND the WebSocket API with **Lambda integrations** (`ws-connect`/`ws-disconnect`/`ws-message`), the Clerk-JWT Lambda authorizer, the `ws-connections` table, and the `bv-` CloudFront VpcOrigin distribution for raw WS. |
@@ -1024,9 +1045,9 @@ Located in `apps/infra/lib/stacks/`. Entry point: `apps/infra/lib/app.ts`. Per-e
 | `dns-stack.ts` | HostedZone lookup + ONE wildcard ACM cert for the environment's root domain (`*.flickmeon.ai`; it is a cross-stack CFN Export, so a replacement cert is created alongside and consumers migrated, never edited in place). Route53 records live with their consumers (mostly api-stack). |
 | `observability-stack.ts` | CloudWatch dashboards, alarms, log retention |
 
-`apps/infra/openclaw/` is a sibling directory (not a stack) containing the extended OpenClaw Dockerfile + README. Built by `.github/workflows/build-openclaw-image.yml` and pushed to ECR `isol8/openclaw-extended`. The tag we run is pinned in `openclaw-version.json`.
+`apps/infra/openclaw/` is a sibling directory (not a stack) containing the extended OpenClaw Dockerfile + README. Built by `.github/workflows/build-openclaw-image.yml` and pushed to ECR `lightbulb/openclaw-extended`. The tag we run is pinned in `openclaw-version.json`.
 
-**Paperclip is a fork too — verify against the fork, not the in-repo clone.** Like OpenClaw, Paperclip has a vanilla-vs-fork split. The gitignored in-repo `paperclip/` clone tracks **vanilla upstream** (`paperclipai/paperclip`) and is a *read-only reference only*. What we actually deploy is the **Isol8 fork `TheLightbulbCompany/paperclip`**, checked out at **`~/dev/paperclip-fork`**. Releases are cut from **tags** (`v2026.813-isol8.<n>`, built from branch `isol8/2026.813-circuit-breaker`; current pin v2026.813-isol8.6); rollback refs are `isol8/2026.8-circuit-breaker` + tag `v2026.8-isol8.6`. The fork carries ~15 patches in **real source** (circuit breaker, agent-delete FK sweep, webhook auth hardening, self-healing gateway runs, `PAPERCLIP_SKIP_BUILTIN_AGENTS`, …) — `paperclip-version.json`'s `notes` field is the authoritative enumeration. Its own CI builds `ghcr.io/thelightbulbcompany/paperclip` (private GHCR, pinned by **digest** in `paperclip-version.json`), which `apps/infra/paperclip-extended/Dockerfile` re-tags into ECR `isol8/paperclip-extended` (via `.github/workflows/build-paperclip-image.yml`) so per-tenant ECS tasks can pull it with execution-role creds. **When you need to confirm what the deployed Paperclip BFF actually returns (route projections, run/liveness fields, watchdog logic), grep `~/dev/paperclip-fork`, not the vanilla `paperclip/` clone** — they can diverge. Treat both as outside this repo — do not commit either into it.
+**Paperclip is a fork too — verify against the fork, not the in-repo clone.** Like OpenClaw, Paperclip has a vanilla-vs-fork split. The gitignored in-repo `paperclip/` clone tracks **vanilla upstream** (`paperclipai/paperclip`) and is a *read-only reference only*. What we actually deploy is the **Isol8 fork `TheLightbulbCompany/paperclip`**, checked out at **`~/dev/paperclip-fork`**. Releases are cut from **tags** (`v2026.813-isol8.<n>`, built from branch `isol8/2026.813-circuit-breaker`; current pin v2026.813-isol8.6); rollback refs are `isol8/2026.8-circuit-breaker` + tag `v2026.8-isol8.6`. The fork carries ~15 patches in **real source** (circuit breaker, agent-delete FK sweep, webhook auth hardening, self-healing gateway runs, `PAPERCLIP_SKIP_BUILTIN_AGENTS`, …) — `paperclip-version.json`'s `notes` field is the authoritative enumeration. Its own CI builds `ghcr.io/thelightbulbcompany/paperclip` (private GHCR, pinned by **digest** in `paperclip-version.json`), which `apps/infra/paperclip-extended/Dockerfile` re-tags into ECR `lightbulb/paperclip-extended` (via `.github/workflows/build-paperclip-image.yml`) so per-tenant ECS tasks can pull it with execution-role creds. **When you need to confirm what the deployed Paperclip BFF actually returns (route projections, run/liveness fields, watchdog logic), grep `~/dev/paperclip-fork`, not the vanilla `paperclip/` clone** — they can diverge. Treat both as outside this repo — do not commit either into it.
 
 ---
 

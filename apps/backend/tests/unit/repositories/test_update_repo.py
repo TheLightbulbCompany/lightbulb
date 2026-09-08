@@ -388,3 +388,78 @@ async def test_mark_applied_from_applying_state(dynamodb_table):
     # Row is finalized: status "applied", no longer pending.
     results = await update_repo.get_pending("user_1")
     assert len(results) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "release_marker",
+    [
+        {"update_type": "release"},
+        {"update_type": "task_definition_refresh", "release_revision": 0},
+        {"update_type": "config_patch", "release_revision": None},
+    ],
+    ids=["release-type", "refresh-revision-zero", "null-revision"],
+)
+@pytest.mark.parametrize(
+    ("mutation", "status"),
+    [
+        ("set_status_conditional", "pending"),
+        ("claim_apply", "pending"),
+        ("claim_stale_apply", "applying"),
+        ("heartbeat_apply", "applying"),
+        ("set_apply_target", "applying"),
+        ("finish_claimed_apply_applied", "applying"),
+        ("finish_claimed_apply_failed", "applying"),
+        ("set_scheduled", "pending"),
+        ("set_snoozed", "pending"),
+        ("mark_applied", "applying"),
+        ("mark_failed", "applying"),
+    ],
+)
+async def test_release_owned_updates_refuse_every_ordinary_mutation(dynamodb_table, release_marker, mutation, status):
+    from core.repositories import update_repo
+
+    item = {
+        "owner_id": "release-owner",
+        "update_id": f"release-{mutation}",
+        "status": status,
+        "apply_claim_id": "claim",
+        "apply_claimed_at": 1,
+        "updated_at": "before",
+        **release_marker,
+    }
+    dynamodb_table.put_item(Item=item)
+
+    if mutation == "set_status_conditional":
+        result = await update_repo.set_status_conditional(item["owner_id"], item["update_id"], "scheduled", ["pending"])
+    elif mutation == "claim_apply":
+        result = await update_repo.claim_apply(item["owner_id"], item["update_id"], "new-claim")
+    elif mutation == "claim_stale_apply":
+        result = await update_repo.claim_stale_apply(
+            item["owner_id"], item["update_id"], "new-claim", stale_before_epoch=2
+        )
+    elif mutation == "heartbeat_apply":
+        result = await update_repo.heartbeat_apply(item["owner_id"], item["update_id"], "claim")
+    elif mutation == "set_apply_target":
+        result = await update_repo.set_apply_target(item["owner_id"], item["update_id"], "claim", "arn:winner")
+    elif mutation.startswith("finish_claimed_apply"):
+        terminal_status = mutation.rsplit("_", 1)[-1]
+        result = await update_repo.finish_claimed_apply(
+            item["owner_id"],
+            item["update_id"],
+            "claim",
+            status=terminal_status,
+            failure_reason="must-not-land",
+        )
+    elif mutation == "set_scheduled":
+        result = await update_repo.set_scheduled(item["owner_id"], item["update_id"], "2026-09-09T00:00:00+00:00")
+    elif mutation == "set_snoozed":
+        result = await update_repo.set_snoozed(item["owner_id"], item["update_id"])
+    elif mutation == "mark_applied":
+        result = await update_repo.mark_applied(item["owner_id"], item["update_id"])
+    else:
+        result = await update_repo.mark_failed(item["owner_id"], item["update_id"], "must-not-land")
+
+    assert result is None if mutation in {"claim_apply", "claim_stale_apply"} else result is False
+    stored = dynamodb_table.get_item(Key={"owner_id": item["owner_id"], "update_id": item["update_id"]})["Item"]
+    assert stored == item

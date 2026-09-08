@@ -206,6 +206,83 @@ async def test_leased_update_with_no_fields_is_a_pure_refresh(dynamodb_table):
     assert _row(dynamodb_table, "user_ref")["provision_claimed_at"] > before
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["stopped", "error", "provisioning"])
+@pytest.mark.parametrize("pointer", ["reserved", None])
+async def test_release_pointer_blocks_provision_acquisition(dynamodb_table, status, pointer):
+    from core.repositories import container_repo
+
+    item = {
+        "owner_id": "release-acquire",
+        "status": status,
+        "release_update_id": pointer,
+        "provision_claim_id": "candidate",
+        "provision_attempt_token": "candidate",
+    }
+    if status == "provisioning":
+        item.update(provision_claim_id="stale", provision_claimed_at=1)
+    dynamodb_table.put_item(Item=item)
+
+    assert await container_repo.try_claim_provision("release-acquire", claim_id="candidate") is None
+    assert _row(dynamodb_table, "release-acquire") == item
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pointer", ["reserved", None])
+async def test_release_pointer_blocks_every_provision_writer(dynamodb_table, pointer):
+    from core.repositories import container_repo
+
+    original = {
+        "owner_id": "release-provision",
+        "status": "provisioning",
+        "provision_claim_id": "claim",
+        "provision_attempt_token": "attempt",
+        "provision_claimed_at": 1,
+        "release_update_id": pointer,
+    }
+
+    def reset():
+        dynamodb_table.put_item(Item=original)
+
+    reset()
+    with pytest.raises(container_repo.ProvisionSuperseded):
+        await container_repo.upsert("release-provision", {"status": "running"})
+    assert _row(dynamodb_table, "release-provision") == original
+
+    reset()
+    with pytest.raises(container_repo.ProvisionSuperseded):
+        await container_repo.update_fields("release-provision", {"status": "running"})
+    assert _row(dynamodb_table, "release-provision") == original
+
+    reset()
+    with pytest.raises(container_repo.ProvisionSuperseded):
+        await container_repo.takeover_provision("release-provision")
+    assert _row(dynamodb_table, "release-provision") == original
+
+    reset()
+    with pytest.raises(container_repo.ProvisionSuperseded):
+        await container_repo.claim_attempt("release-provision", "claim", "next-attempt")
+    assert _row(dynamodb_table, "release-provision") == original
+
+    for release_lease in (False, True):
+        reset()
+        with pytest.raises(container_repo.ProvisionSuperseded):
+            await container_repo.update_container_leased(
+                "release-provision",
+                "claim",
+                {"status": "running"},
+                attempt_token="attempt",
+                release_lease=release_lease,
+            )
+        assert _row(dynamodb_table, "release-provision") == original
+
+    reset()
+    await container_repo.release_provision_to_error(
+        "release-provision", "claim", last_error="must-not-land", attempt_token="attempt"
+    )
+    assert _row(dynamodb_table, "release-provision") == original
+
+
 # ---------------------------------------------------------------------------
 # release_provision_to_error — failure self-healing
 

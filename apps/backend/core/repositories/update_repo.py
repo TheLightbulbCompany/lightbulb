@@ -12,6 +12,11 @@ def _get_table():
     return get_table("pending-updates")
 
 
+_UNRESERVED_UPDATE = Attr("release_revision").not_exists() & (
+    Attr("update_type").not_exists() | Attr("update_type").ne("release")
+)
+
+
 def _generate_ulid_like() -> str:
     """Generate a ULID-like ID: timestamp prefix + random suffix for sortability.
 
@@ -118,6 +123,7 @@ async def set_status_conditional(
     condition = Attr("status").eq(expected_statuses[0])
     for s in expected_statuses[1:]:
         condition = condition | Attr("status").eq(s)
+    condition = _UNRESERVED_UPDATE & condition
 
     try:
         await run_in_thread(
@@ -161,10 +167,8 @@ async def claim_apply(
                 ":claim": claim_id,
                 ":claimed": now_epoch,
                 ":updated": now_iso,
-                ":pending": "pending",
-                ":scheduled": "scheduled",
             },
-            ConditionExpression="#s = :pending OR #s = :scheduled",
+            ConditionExpression=_UNRESERVED_UPDATE & Attr("status").is_in(["pending", "scheduled"]),
             ReturnValues="ALL_NEW",
         )
         return response.get("Attributes")
@@ -190,16 +194,15 @@ async def claim_stale_apply(
             Key={"owner_id": owner_id, "update_id": update_id},
             UpdateExpression=("SET apply_claim_id = :claim, apply_claimed_at = :claimed, updated_at = :updated"),
             ExpressionAttributeValues={
-                ":applying": "applying",
                 ":claim": claim_id,
                 ":claimed": now_epoch,
                 ":updated": now_iso,
-                ":stale": stale_before_epoch,
             },
             ConditionExpression=(
-                "#s = :applying AND (attribute_not_exists(apply_claimed_at) OR apply_claimed_at <= :stale)"
+                _UNRESERVED_UPDATE
+                & Attr("status").eq("applying")
+                & (Attr("apply_claimed_at").not_exists() | Attr("apply_claimed_at").lte(stale_before_epoch))
             ),
-            ExpressionAttributeNames={"#s": "status"},
             ReturnValues="ALL_NEW",
         )
         return response.get("Attributes")
@@ -217,13 +220,12 @@ async def heartbeat_apply(owner_id: str, update_id: str, claim_id: str) -> bool:
             Key={"owner_id": owner_id, "update_id": update_id},
             UpdateExpression="SET apply_claimed_at = :claimed, updated_at = :updated",
             ExpressionAttributeValues={
-                ":applying": "applying",
-                ":claim": claim_id,
                 ":claimed": int(time.time()),
                 ":updated": utc_now_iso(),
             },
-            ConditionExpression="#s = :applying AND apply_claim_id = :claim",
-            ExpressionAttributeNames={"#s": "status"},
+            ConditionExpression=(
+                _UNRESERVED_UPDATE & Attr("status").eq("applying") & Attr("apply_claim_id").eq(claim_id)
+            ),
         )
         return True
     except table.meta.client.exceptions.ConditionalCheckFailedException:
@@ -245,17 +247,18 @@ async def set_apply_target(
             Key={"owner_id": owner_id, "update_id": update_id},
             UpdateExpression="SET target_task_definition_arn = :target, updated_at = :updated",
             ExpressionAttributeValues={
-                ":applying": "applying",
-                ":claim": claim_id,
                 ":target": task_definition_arn,
                 ":updated": utc_now_iso(),
             },
             ConditionExpression=(
-                "#s = :applying AND apply_claim_id = :claim AND "
-                "(attribute_not_exists(target_task_definition_arn) OR "
-                "target_task_definition_arn = :target)"
+                _UNRESERVED_UPDATE
+                & Attr("status").eq("applying")
+                & Attr("apply_claim_id").eq(claim_id)
+                & (
+                    Attr("target_task_definition_arn").not_exists()
+                    | Attr("target_task_definition_arn").eq(task_definition_arn)
+                )
             ),
-            ExpressionAttributeNames={"#s": "status"},
         )
         return True
     except table.meta.client.exceptions.ConditionalCheckFailedException:
@@ -280,8 +283,6 @@ async def finish_claimed_apply(
     ttl_epoch = int(time.time()) + (30 * 24 * 60 * 60)
     names = {"#s": "status", "#t": "ttl"}
     values = {
-        ":applying": "applying",
-        ":claim": claim_id,
         ":status": status,
         ":now": now,
         ":ttl": ttl_epoch,
@@ -300,7 +301,9 @@ async def finish_claimed_apply(
             UpdateExpression="SET " + ", ".join(set_parts),
             ExpressionAttributeNames=names,
             ExpressionAttributeValues=values,
-            ConditionExpression="#s = :applying AND apply_claim_id = :claim",
+            ConditionExpression=(
+                _UNRESERVED_UPDATE & Attr("status").eq("applying") & Attr("apply_claim_id").eq(claim_id)
+            ),
         )
         return True
     except table.meta.client.exceptions.ConditionalCheckFailedException:
@@ -315,7 +318,7 @@ async def set_scheduled(
     """Set an update to scheduled status with a scheduled_at timestamp."""
     table = _get_table()
     now = utc_now_iso()
-    condition = Attr("status").eq("pending")
+    condition = _UNRESERVED_UPDATE & Attr("status").eq("pending")
 
     try:
         await run_in_thread(
@@ -346,7 +349,7 @@ async def set_snoozed(owner_id: str, update_id: str) -> bool:
             Key={"owner_id": owner_id, "update_id": update_id},
             UpdateExpression="SET last_snoozed_at = :now, updated_at = :now2",
             ExpressionAttributeValues={":now": now, ":now2": now},
-            ConditionExpression=Attr("owner_id").exists(),
+            ConditionExpression=_UNRESERVED_UPDATE & Attr("owner_id").exists(),
         )
         return True
     except table.meta.client.exceptions.ConditionalCheckFailedException:
@@ -470,7 +473,7 @@ async def mark_applied(owner_id: str, update_id: str) -> bool:
             # "applied" and stayed stuck in "applying" forever (the ECS change
             # had already taken effect). "pending"/"scheduled" stay for callers
             # that mark a row applied without an intervening "applying" hop.
-            ConditionExpression=Attr("status").is_in(["applying", "pending", "scheduled"]),
+            ConditionExpression=_UNRESERVED_UPDATE & Attr("status").is_in(["applying", "pending", "scheduled"]),
         )
         return True
     except table.meta.client.exceptions.ConditionalCheckFailedException:
@@ -534,7 +537,7 @@ async def mark_failed(owner_id: str, update_id: str, reason: str) -> bool:
                 ":now": now,
                 ":ttl": ttl_epoch,
             },
-            ConditionExpression=Attr("status").is_in(["pending", "scheduled", "applying"]),
+            ConditionExpression=_UNRESERVED_UPDATE & Attr("status").is_in(["pending", "scheduled", "applying"]),
         )
         return True
     except table.meta.client.exceptions.ConditionalCheckFailedException:

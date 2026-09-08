@@ -163,12 +163,14 @@ the block is theirs to clear — and does nothing at all without one.
 
 ```bash
 # Blocked on another agent: name them and the action. They get woken.
-/app/skills/paperclip/scripts/paperclip-api.sh raw PATCH \
-  "/api/issues/$PAPERCLIP_TASK_ID" <<'JSON'
-{"status":"blocked",
- "unblockDescriptor":{"owner":{"agentId":"<agent uuid>"},
-                      "action":"Restore the shared Stripe credentials, then rerun this issue."}}
-JSON
+jq -n '{
+  status: "blocked",
+  unblockDescriptor: {
+    owner: {agentId: "<agent uuid>"},
+    action: "Restore the shared Stripe credentials, then rerun this issue."
+  }
+}' | /app/skills/paperclip/scripts/paperclip-api.sh raw PATCH \
+  "/api/issues/$PAPERCLIP_TASK_ID"
 ```
 
 For a human decision, the owner is the board. Paperclip deliberately wakes
@@ -176,12 +178,14 @@ nobody in this case — the item surfaces in the owner's queue and waits there
 with no timer and no auto-close:
 
 ```bash
-/app/skills/paperclip/scripts/paperclip-api.sh raw PATCH \
-  "/api/issues/$PAPERCLIP_TASK_ID" <<'JSON'
-{"status":"blocked",
- "unblockDescriptor":{"owner":"board",
-                      "action":"Decide whether Tally owns finance or Friday keeps it."}}
-JSON
+jq -n '{
+  status: "blocked",
+  unblockDescriptor: {
+    owner: "board",
+    action: "Decide whether Tally owns finance or Friday keeps it."
+  }
+}' | /app/skills/paperclip/scripts/paperclip-api.sh raw PATCH \
+  "/api/issues/$PAPERCLIP_TASK_ID"
 ```
 
 **Pick the owner honestly.** A human decision routed to an agent produces a loop

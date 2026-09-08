@@ -63,8 +63,10 @@ died.
 
 ```bash
 # Arm the watchdog on the issue you just scheduled a monitor for.
-printf '%s' '{"agentId":"'"$PAPERCLIP_AGENT_ID"'","instructions":"Resume the ISOA-168 release check if this stalls with no live monitor."}' \
-  | /app/skills/paperclip/scripts/paperclip-api.sh raw POST \
+jq -n --arg agentId "$PAPERCLIP_AGENT_ID" '{
+  agentId: $agentId,
+  instructions: "Resume the ISOA-168 release check if this stalls with no live monitor."
+}' | /app/skills/paperclip/scripts/paperclip-api.sh raw POST \
       "/api/issues/$PAPERCLIP_TASK_ID/watchdog"
 ```
 
@@ -86,8 +88,11 @@ you need its state.
 
 ```bash
 # Register the PR this issue waits on.
-printf '%s' '{"provider":"github","kind":"pull_request","url":"https://github.com/TheLightbulbCompany/lightbulb/pull/1934"}' \
-  | /app/skills/paperclip/scripts/paperclip-api.sh raw POST \
+jq -n '{
+  provider: "github",
+  kind: "pull_request",
+  url: "https://github.com/TheLightbulbCompany/lightbulb/pull/1934"
+}' | /app/skills/paperclip/scripts/paperclip-api.sh raw POST \
       "/api/issues/$PAPERCLIP_TASK_ID/external-objects"
 
 # Re-read live state before you say anything about it.

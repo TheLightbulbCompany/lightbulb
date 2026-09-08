@@ -251,6 +251,25 @@ class TestBrowserBounds:
         assert "--use-angle=gl" not in extra_args
         assert "--use-gl=angle" not in extra_args
 
+    def test_unsupported_flag_infobar_suppressed(self):
+        """The owner must not be shown Chrome's --no-sandbox warning bubble.
+
+        `noSandbox` is forced above (the gateway runs as root and Chromium
+        refuses to start as root without it), and Chrome answers that with a
+        yellow "You are using an unsupported command-line flag" bar on every
+        session. It is visible in the Browser live-view panel, it names a
+        decision the owner did not make, and there is nothing they can do
+        about it.
+
+        `--test-type` is the switch that suppresses it. `--disable-infobars`
+        is NOT: it stopped working on this bubble around Chrome 76 and is
+        inert on the Chrome 151 prod runs, so a swap to it would silently
+        bring the bar back.
+        """
+        extra_args = _cfg()["browser"]["extraArgs"]
+        assert "--test-type" in extra_args
+        assert "--disable-infobars" not in extra_args
+
     def test_browser_egress_proxy_off_by_default(self):
         """No knob, no proxy flag — a container keeps egressing on the AWS NAT
         IP exactly as before. The container image ships WARP inert, so an

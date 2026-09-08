@@ -37,6 +37,14 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- apps/backend/routers/company_provisioning.py (container routes, refusal codes);
                                  core/services/provisioning_workflow.py (STATES); core/services/owner_facts.py (the `provisioning` facts list)
   - Channels ................ references/integrations.md <- apps/backend/routers/channels.py
+  - Skills (install/scope) .. references/skills.md
+                              <- fork src/cli/skills-cli.ts (install <skill-ref>, --agent, --global, --as);
+                                 src/skills/lifecycle/archive-install.ts (<workspaceDir>/skills);
+                                 src/config/types.agents.ts (AgentEntry.skills allowlist REPLACES defaults);
+                                 src/gateway/methods/core-descriptors.ts (skills.install/upload.* = operator.admin);
+                                 paperclip fork server/src/routes/agents.ts — listSkills exists for
+                                 claude/codex/cursor/gemini/grok/opencode/pi but NOT openclaw_gateway,
+                                 which is why the company-skills route answers supported:false
   - Skills / self-learning .. references/marketplace.md
                               <- apps/backend/core/containers/config.py (skills.workshop block);
                                  apps/frontend/src/components/control/panels/{SkillsTab,SkillProposalsPanel}.tsx

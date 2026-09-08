@@ -2378,3 +2378,63 @@ async def test_ensure_plugin_config_keys_noop_when_entry_absent():
         assert not os.path.exists(os.path.join(tmpdir, "user_w", "openclaw.json.bak"))
 
     assert "memory-wiki" not in result["plugins"]["entries"]
+
+
+@pytest.mark.asyncio
+async def test_patch_writes_no_binding_for_an_account_that_is_not_an_agent(efs_dir):
+    """Same invariant as the reprovision path: a binding naming an agent that
+    does not exist makes OpenClaw reject the whole config at load, freezing the
+    owner on their previous file. This is the PATCH door onto that bug."""
+    path = os.path.join(efs_dir, "user_1", "openclaw.json")
+    with open(path) as f:
+        base = json.load(f)
+    base["agents"]["entries"] = {"agent_f": {}}
+    with open(path, "w") as f:
+        json.dump(base, f)
+
+    await patch_openclaw_config(
+        "user_1",
+        {"channels": {"slack": {"accounts": {"default": {"dmPolicy": "pairing"}}}}},
+    )
+    with open(path) as f:
+        result = json.load(f)
+    assert result.get("bindings", []) == []
+
+
+@pytest.mark.asyncio
+async def test_patch_still_binds_an_account_named_after_a_real_agent(efs_dir):
+    path = os.path.join(efs_dir, "user_1", "openclaw.json")
+    with open(path) as f:
+        base = json.load(f)
+    base["agents"]["entries"] = {"ray": {}}
+    with open(path, "w") as f:
+        json.dump(base, f)
+
+    await patch_openclaw_config("user_1", {"channels": {"telegram": {"accounts": {"ray": {"botToken": "T"}}}}})
+    with open(path) as f:
+        result = json.load(f)
+    assert result["bindings"] == [
+        {"type": "route", "agentId": "ray", "match": {"channel": "telegram", "accountId": "ray"}}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_patch_skips_a_mapped_binding_whose_agent_was_deleted(efs_dir):
+    """apply_install maps the account to the agent recorded when the OAuth flow
+    STARTED. If that agent is deleted before the callback lands, the mapping
+    names a dead agent — and writing it would freeze the whole config."""
+    path = os.path.join(efs_dir, "user_1", "openclaw.json")
+    with open(path) as f:
+        base = json.load(f)
+    base["agents"]["entries"] = {"agent_alive": {}}
+    with open(path, "w") as f:
+        json.dump(base, f)
+
+    await patch_openclaw_config(
+        "user_1",
+        {"channels": {"slack": {"accounts": {"T1": {"mode": "http"}}}}},
+        agent_for_account={"T1": "agent_deleted"},
+    )
+    with open(path) as f:
+        result = json.load(f)
+    assert result.get("bindings", []) == []

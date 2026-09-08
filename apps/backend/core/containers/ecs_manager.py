@@ -149,6 +149,21 @@ async def _provision_mcp_servers(owner_id: str, connected_servers: dict) -> dict
         return connected_servers
 
 
+# A real channel account carries a transport or a credential. OpenClaw reads
+# provider-LEVEL settings as a synthetic "[default]" account and persists it to
+# disk on write-back, so a config can accumulate an `accounts.default` husk
+# holding nothing but policy (ours held only dmPolicy, left behind when a
+# provider-level BYO bot was deleted — routers/channels.py strips the root
+# credentials but never the husk). Carrying one forward re-injects a bot that
+# does not exist and, before the binding guard in config.py, produced an
+# `agentId: "default"` that made the whole config unloadable.
+_CHANNEL_ACCOUNT_CONFIGURED_KEYS = ("mode", "botToken", "appToken", "token", "signingSecret", "webhookPath")
+
+
+def _is_configured_channel_account(account: object) -> bool:
+    return isinstance(account, dict) and any(k in account for k in _CHANNEL_ACCOUNT_CONFIGURED_KEYS)
+
+
 async def _provision_channel_accounts(owner_id: str) -> tuple[dict[str, dict[str, dict]], list[dict]]:
     """Channel bot accounts + their route bindings, to re-inject into a
     regenerated openclaw.json.
@@ -178,7 +193,9 @@ async def _provision_channel_accounts(owner_id: str) -> tuple[dict[str, dict[str
                 continue
             accounts = entry.get("accounts")
             if isinstance(accounts, dict) and accounts:
-                out[provider] = accounts
+                configured = {k: v for k, v in accounts.items() if _is_configured_channel_account(v)}
+                if configured:
+                    out[provider] = configured
         bindings = [
             b
             for b in (existing_cfg.get("bindings") or [])

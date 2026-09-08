@@ -196,6 +196,10 @@ def _ensure_channel_bindings_for_patch(cfg: dict, patch: dict, agent_for_account
     channels = patch.get("channels")
     if not isinstance(channels, dict):
         return
+    agents_block = cfg.get("agents") or {}
+    known_agent_ids = set(agents_block.get("entries") or {}) | {
+        a.get("id") for a in (agents_block.get("list") or []) if isinstance(a, dict)
+    }
     bindings = cfg.get("bindings")
     if not isinstance(bindings, list):
         bindings = []
@@ -210,6 +214,15 @@ def _ensure_channel_bindings_for_patch(cfg: dict, patch: dict, agent_for_account
             if not isinstance(account_cfg, dict):
                 continue
             mapped_agent_id = (agent_for_account or {}).get(account_id)
+            if mapped_agent_id is not None and known_agent_ids and mapped_agent_id not in known_agent_ids:
+                # Third door onto the same invariant. `apply_install` maps the
+                # account to the agent recorded when the OAuth flow STARTED; if
+                # that agent is deleted before the callback lands, the mapping
+                # names an agent that no longer exists. Leaving the account
+                # unbound misroutes it to the default agent — recoverable, and
+                # far better than a binding that makes the whole config
+                # unloadable and freezes every later change.
+                continue
             if mapped_agent_id is not None:
                 # Rebinding this account to a different agent must not leave
                 # the OLD account-wide binding behind, or the dispatcher can
@@ -224,6 +237,14 @@ def _ensure_channel_bindings_for_patch(cfg: dict, patch: dict, agent_for_account
                 agent_id = mapped_agent_id
             else:
                 agent_id = account_id
+                # Same invariant as the reprovision path in containers/config.py:
+                # a binding must name an agent that exists, or OpenClaw rejects
+                # the WHOLE config at load and the owner is frozen on their
+                # previous file. Enforced only when this config actually
+                # declares a roster — a config we cannot read one from must not
+                # silently lose its bindings.
+                if known_agent_ids and agent_id not in known_agent_ids:
+                    continue
             new_binding = {
                 "type": "route",
                 "agentId": agent_id,

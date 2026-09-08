@@ -328,15 +328,20 @@ describe("sections vendored in from the fork", () => {
 
 // SKILL.md is a routing index (see MAINTENANCE.md "SHAPE"): it carries only
 // the always-loaded rules, and the mechanics for each primitive live in the
-// reference file the routing table points at. So these three headings live
-// in references/monitors.md (watchdogs, external objects) and
-// references/heartbeat.md (unblockDescriptor) — never in SKILL.md itself.
+// reference file the routing table points at. So this heading lives in
+// references/monitors.md (watchdogs) and references/heartbeat.md
+// (unblockDescriptor) — never in SKILL.md itself.
+//
+// external_objects has no assertions here: fix round 2 found POST
+// /issues/:id/external-objects does not exist upstream (only GET, the
+// summary route, and POST .../refresh are registered), and the whole
+// feature is gated off (`experimental.enableExternalObjects` is `{}` in
+// both envs) — documenting it would have manufactured the exact
+// false-claim failure this change exists to prevent. The tool-agnostic
+// accuracy rule survives in SKILL.md; the fabricated endpoint does not.
 describe("liveness primitives are documented", () => {
-  it.each([
-    ["## Surviving a Dropped Run (Task Watchdogs)"],
-    ["## Tracking a GitHub PR or Issue (External Objects)"],
-  ])("references/monitors.md has %s", (heading) => {
-    expect(monitorsMd).toContain(heading);
+  it("references/monitors.md has ## Surviving a Dropped Run (Task Watchdogs)", () => {
+    expect(monitorsMd).toContain("## Surviving a Dropped Run (Task Watchdogs)");
   });
 
   it("references/heartbeat.md has ## Parking Work Correctly (unblockDescriptor)", () => {
@@ -347,8 +352,12 @@ describe("liveness primitives are documented", () => {
     expect(skillMd).toContain("arm a watchdog whenever you arm a monitor");
   });
 
-  it("forbids asserting external state from memory", () => {
+  it("forbids asserting external state from memory (tool-agnostic, not tied to external objects)", () => {
     expect(skillMd).toContain("never from memory and never from an earlier run");
+    // Fix round 2: the mechanism this rule pointed at (external objects) is a
+    // disabled/nonexistent endpoint. The rule text itself must no longer
+    // claim Paperclip tracks this state.
+    expect(skillMd).not.toContain("external object");
   });
 
   it("forbids parking an issue in blocked with no named owner and action", () => {
@@ -357,22 +366,31 @@ describe("liveness primitives are documented", () => {
     );
   });
 
-  it("drives the watchdog and external-object endpoints through the helper, not curl", () => {
-    for (const path of [
-      "/api/issues/$PAPERCLIP_TASK_ID/watchdog",
-      "/api/issues/$PAPERCLIP_TASK_ID/external-objects",
-      "/api/issues/$PAPERCLIP_TASK_ID/external-objects/refresh",
-    ]) {
-      expect(monitorsMd).toContain(path);
-    }
-    // Every occurrence of those routes must be an argument to the helper.
+  it("arms the watchdog with PUT, not POST — a copied POST 404s", () => {
+    // Fix round 2: only get/put/delete are registered for
+    // /issues/:id/watchdog upstream. Assert the verb, not just the path —
+    // a path-only check passed straight over this bug once already.
+    expect(monitorsMd).toContain(
+      '}\' | /app/skills/paperclip/scripts/paperclip-api.sh raw PUT \\\n' +
+        '      "/api/issues/$PAPERCLIP_TASK_ID/watchdog"',
+    );
     for (const line of monitorsMd.split("\n")) {
-      if (line.includes("/external-objects") || line.includes("/watchdog")) {
-        if (line.trimStart().startsWith("curl")) {
-          throw new Error(`hand-rolled curl for a new endpoint: ${line}`);
-        }
+      if (line.includes("/watchdog") && line.trimStart().startsWith("curl")) {
+        throw new Error(`hand-rolled curl for the watchdog endpoint: ${line}`);
       }
     }
+  });
+
+  it("has no trace of the disabled/nonexistent external-objects endpoints", () => {
+    expect(monitorsMd).not.toContain("external-objects");
+    expect(monitorsMd).not.toContain("External Objects");
+  });
+
+  it("states the unblockDescriptor+blocked-status precondition", () => {
+    expect(heartbeatRefMd).toContain(
+      "`unblockDescriptor` is only accepted together with\n`status: \"blocked\"`",
+    );
+    expect(heartbeatRefMd).toContain("422 unblockDescriptor requires");
   });
 
   it("drives the unblockDescriptor write through the helper, not curl", () => {
@@ -382,5 +400,12 @@ describe("liveness primitives are documented", () => {
         throw new Error(`hand-rolled curl for unblockDescriptor: ${line}`);
       }
     }
+  });
+
+  it("flags Cases as disabled on this instance in the routing table", () => {
+    // Fix round 2: enableCases is false in both envs — say so before an
+    // agent burns a run on a 403.
+    expect(skillMd).toContain("references/cases.md");
+    expect(skillMd).toContain("**Disabled on this instance** (`enableCases` is false in both envs)");
   });
 });

@@ -117,7 +117,7 @@ directory (`/app/skills/paperclip/`).
 | Read this | When |
 |---|---|
 | `references/heartbeat.md` | **Every heartbeat wake.** The 9-step procedure (identity → approval follow-up → assignments → pick work → checkout → context → do the work → update → delegate), execution-policy review wakes, generated artifacts and work products, the final-disposition checklist, the status quick guide, issue dependencies/blockers, the `unblockDescriptor` mechanics for parking work in `blocked` correctly, and the full webchat rules. |
-| `references/monitors.md` | Waiting on a thing that resolves itself — a PR merging, CI finishing, a deploy landing, a vendor replying. Scheduling, bounding and clearing an issue monitor, its preconditions, monitor-vs-confirmation-card, arming a task watchdog as the monitor's backstop, and registering/refreshing external objects. |
+| `references/monitors.md` | Waiting on a thing that resolves itself — a PR merging, CI finishing, a deploy landing, a vendor replying. Scheduling, bounding and clearing an issue monitor, its preconditions, monitor-vs-confirmation-card, and arming a task watchdog as the monitor's backstop. |
 | `references/interactions.md` | Asking the board for something: `request_board_approval`, and the four issue-thread interaction kinds (`request_confirmation`, `request_checkbox_confirmation`, `ask_user_questions`, `suggest_tasks`) with continuation policy, target staleness, supersede-on-comment, and idempotency. |
 | `references/comment-style.md` | Writing a comment or an issue description (required style, ticket links, company-prefixed URLs) and the plan-as-issue-document rules. |
 | `references/hot-routes.md` | The endpoint you need is not on a helper subcommand — the hot-route table, plus the legacy `?q=` issue search. |
@@ -125,7 +125,7 @@ directory (`/app/skills/paperclip/`).
 | `references/company-skills.md` | Installing a company skill, or assigning/removing skills on an agent (`POST /api/agents/{agentId}/skills/sync` — `mode` is required). **Required reading before you install a skill.** |
 | `references/issue-workspaces.md` | An issue needs browser/manual QA or a preview server — use Paperclip's workspace runtime controls, never an unmanaged background server. |
 | `references/attention-decisions-search.md` | Company search / literal extraction, governed decisions and `ruleKey` policy, decision queues and triage. Access matrix, effect schemas, staleness rules. |
-| `references/cases.md` | Creating, upserting, documenting, attaching to, or linking cases through the agent-facing cases API (experimental; company-scoped work records for durable outputs). |
+| `references/cases.md` | Creating, upserting, documenting, attaching to, or linking cases through the agent-facing cases API (experimental; company-scoped work records for durable outputs). **Disabled on this instance** (`enableCases` is false in both envs) — calls 403; check before you burn a run on it. |
 | `references/artifacts.md` | Technical upload instructions for attachments and work products. |
 | `references/workflows.md` | Niche playbooks: new project + workspace (CEO/Manager), OpenClaw invite prompt (CEO), setting an agent's `instructions-path`, CEO-safe company import/export, the app-level self-test. |
 | `references/api-reference.md` | The full reference: API tables, JSON response schemas, worked IC and Manager heartbeats, governance/approvals, cross-team delegation, error codes, the issue lifecycle diagram, and the common-mistakes table. |
@@ -202,13 +202,15 @@ when work stops with no live path.
 alternatives — the monitor is the wait, the watchdog is what notices the wait
 died. Mechanics: `references/monitors.md`.
 
-### Assert external state only from a fresh refresh
+### State external facts only from a fresh check
 
-When an issue tracks a GitHub PR/issue, a CI run, or a deploy as an
-**external object**, state a fact about it only from a refresh you ran in this
-run — never from memory and never from an earlier run. Cite the refresh in
-your comment, and if the refresh fails, say the refresh failed rather than
-falling back to what you remember. Mechanics: `references/monitors.md`.
+Paperclip does not track a GitHub PR/issue, a CI run, or a deploy for you —
+there is no Paperclip endpoint that holds that state. So when you claim its
+status, base it only on a check you ran in this run with whatever tool
+actually has the answer (the `gh` CLI, a GitHub MCP tool, the CI provider's
+own API) — never from memory and never from an earlier run. Cite the check in
+your comment, and if it fails, say the check failed rather than falling back
+to what you remember.
 
 ## MCP Tool Approval Gates
 

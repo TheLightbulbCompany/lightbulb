@@ -161,6 +161,11 @@ Moving an issue to `blocked` without saying what unblocks it makes it invisible
 work. Paperclip acts on an `unblockDescriptor` — it wakes the named agent when
 the block is theirs to clear — and does nothing at all without one.
 
+**Precondition:** `unblockDescriptor` is only accepted together with
+`status: "blocked"` in the same PATCH — send it with any other status and
+Paperclip rejects the whole request with `422 unblockDescriptor requires
+blocked status`.
+
 ```bash
 # Blocked on another agent: name them and the action. They get woken.
 jq -n '{

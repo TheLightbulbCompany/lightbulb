@@ -66,7 +66,7 @@ died.
 jq -n --arg agentId "$PAPERCLIP_AGENT_ID" '{
   agentId: $agentId,
   instructions: "Resume the ISOA-168 release check if this stalls with no live monitor."
-}' | /app/skills/paperclip/scripts/paperclip-api.sh raw POST \
+}' | /app/skills/paperclip/scripts/paperclip-api.sh raw PUT \
       "/api/issues/$PAPERCLIP_TASK_ID/watchdog"
 ```
 
@@ -77,42 +77,4 @@ jq -n --arg agentId "$PAPERCLIP_AGENT_ID" '{
 
 **Do not** arm a watchdog instead of setting a status. It reports that work
 stopped; it does not make a parked issue legal.
-
-## Tracking a GitHub PR or Issue (External Objects)
-
-When an issue waits on a GitHub pull request or issue, **do not describe it in
-prose**. Prose is not readable by anything: a description that says "waiting for
-PR 1934 to merge" leaves nothing in the system capable of noticing when it does.
-Register it as an **external object** instead, and refresh that object whenever
-you need its state.
-
-```bash
-# Register the PR this issue waits on.
-jq -n '{
-  provider: "github",
-  kind: "pull_request",
-  url: "https://github.com/TheLightbulbCompany/lightbulb/pull/1934"
-}' | /app/skills/paperclip/scripts/paperclip-api.sh raw POST \
-      "/api/issues/$PAPERCLIP_TASK_ID/external-objects"
-
-# Re-read live state before you say anything about it.
-/app/skills/paperclip/scripts/paperclip-api.sh raw POST \
-  "/api/issues/$PAPERCLIP_TASK_ID/external-objects/refresh"
-```
-
-**State a PR, issue, CI, or deploy fact only from a refresh you ran in this
-run — never from memory and never from an earlier run.** Cite the refresh in
-your comment. Every review rejection recorded on this board so far was an agent
-asserting external state it had not re-read: "the plan says ISOA-120 was
-blocked, but live search shows it is still backlog"; "Backend CI is still
-in_progress"; "PR 1934 is still open" — written after it had merged.
-
-If the refresh fails or the provider is unreachable, **say the refresh failed**.
-Do not fall back to what you remember, and do not report an unverified claim as
-verified. A tool failure narrows what you may assert; it never lowers the
-evidence bar.
-
-Registering an external object does not replace the monitor and watchdog. Use
-all three: the object holds the truth, the monitor wakes you to look, the
-watchdog notices if the waking stops.
 

@@ -342,6 +342,37 @@ A dispatch run deploys dev from that ref first — prod jobs still `needs:` the 
 stage, so a promotion cannot skip dev. The `lightbulb-deploy` concurrency group is unchanged,
 so a promotion queues behind an in-flight dev deploy.
 
+**⚠️ A QUEUED PROMOTION IS FRAGILE — and a stuck slot looks exactly like a busy one.**
+`lightbulb-deploy` sets `cancel-in-progress: false`, which reads as "never cancel" but means
+"only protect a run that has already STARTED". A run still `queued`/`pending` is superseded by
+any newer run in the group, so **every merge to `main` kills a promotion that has not begun**.
+On 2026-09-07 that ate four consecutive runs in 16 minutes across three sessions, and the
+dispatch each session fired to recover became the thing that killed the next one.
+
+The root cause is usually NOT merge traffic. It is one dead run holding the concurrency slot:
+a `queued` run that never got a runner, so everything behind it lands `pending` and dies to the
+next push. That night, run 34157620049 sat queued ~50 minutes with **zero jobs started**;
+cancelling it cleared the whole backlog immediately and the next dispatch went straight through.
+
+**The discriminator is job count, not queue age** — in `gh run list` a dead slot and live work
+both just say `queued`:
+
+```bash
+gh run view <id> --repo TheLightbulbCompany/lightbulb --json jobs \
+  --jq '[.jobs[]|select(.status!="queued")]|length'
+```
+
+- **0 started after a few minutes** → dead slot holding the group. Safe to cancel; it unblocks
+  everything behind it.
+- **Non-zero** → real work (43-of-44 and 49-of-49 were both live). Leave it alone and wait.
+
+Practical rules: check that job count BEFORE cancelling anything or firing a recovery dispatch;
+watch a dispatch until it reaches `in_progress` rather than assuming it started; and if other
+sessions are active, ask for a short merge hold and tell them the moment yours is protected.
+A dispatch also ships **the ref it was fired on**, so a promotion never carries anything merged
+after it — check with `git merge-base --is-ancestor <commit> <dispatch sha>` rather than
+assuming a colleague's in-flight run will take your work along.
+
 **⚠️ THE CONSEQUENCE: `main` IS AHEAD OF PROD BY DEFAULT.** Merging no longer ships. Prod
 sits at whatever was last promoted and drifts further behind with every merge, silently and
 by design. So: never infer prod's contents from `main`, and never tell an owner something is

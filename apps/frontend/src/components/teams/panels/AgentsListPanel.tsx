@@ -175,10 +175,14 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
         }
       />
       <PanelToolbar
-        searchValue={search}
+        // Chart view keeps the value (so returning to the list restores the
+        // search) but does not offer the box: a control that visibly changes
+        // nothing is worse than no control.
+        searchValue={view === "chart" ? "" : search}
         onSearchChange={setSearch}
-        searchPlaceholder="Find agent..."
+        searchPlaceholder={view === "chart" ? "" : "Find agent..."}
         searchAriaLabel="Search agents"
+        hideSearch={view === "chart"}
         actions={
           <ViewModeToggle
             view={view}
@@ -206,10 +210,12 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
           action={{ label: "New agent", onClick: () => setCreating(true) }}
         />
       ) : view === "chart" ? (
-        // The same rows the table draws — searching narrows both. `layoutTree`
-        // re-parents an agent whose manager fell out of the filter onto its
-        // nearest surviving ancestor, so a filtered chart is still a tree.
-        <OrgChart agents={filtered} />
+        // The chart draws the WHOLE roster, never the search-filtered slice.
+        // An org chart is a structure, and filtering a structure is not a
+        // smaller structure — it is several orphaned roots that misdescribe who
+        // reports to whom. Search stays a list affordance, the way grouping and
+        // sort are list-only on Tasks.
+        <OrgChart agents={agents ?? []} />
       ) : (
         <PanelDataTable<CompanyAgent>
           rows={filtered}

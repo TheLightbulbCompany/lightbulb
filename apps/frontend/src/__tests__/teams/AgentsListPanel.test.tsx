@@ -316,12 +316,29 @@ describe("AgentsListPanel — roster / chart views", () => {
     );
   });
 
-  it("the search box narrows both views", () => {
+  it("search narrows the LIST, and the chart offers no search box", () => {
+    // An org chart is a structure, and a filtered structure is not a smaller
+    // structure — it is several orphaned roots that misdescribe who reports to
+    // whom. So search stays a list affordance, the way grouping and sort are
+    // list-only on Tasks, and the chart draws the whole roster.
     render(<AgentsListPanel />);
-    fireEvent.click(screen.getByRole("button", { name: "Org chart view" }));
     fireEvent.change(screen.getByLabelText("Search agents"), { target: { value: "forge" } });
+    expect(screen.getByText("Forge")).toBeInTheDocument();
+    expect(screen.queryByText("Friday")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Org chart view" }));
+    expect(screen.queryByLabelText("Search agents")).toBeNull();
     expect(screen.getByTestId("org-chart")).toHaveTextContent("Forge");
-    expect(screen.getByTestId("org-chart")).not.toHaveTextContent("Friday");
+    expect(screen.getByTestId("org-chart")).toHaveTextContent("Friday");
+  });
+
+  it("keeps the search term for the list when returning from the chart", () => {
+    render(<AgentsListPanel />);
+    fireEvent.change(screen.getByLabelText("Search agents"), { target: { value: "forge" } });
+    fireEvent.click(screen.getByRole("button", { name: "Org chart view" }));
+    fireEvent.click(screen.getByRole("button", { name: "List view" }));
+    expect(screen.getByLabelText("Search agents")).toHaveValue("forge");
+    expect(screen.queryByText("Friday")).toBeNull();
   });
 
   it("initialView='chart' (the retired ?panel=teams-org-chart link) opens the chart without changing the preference", () => {

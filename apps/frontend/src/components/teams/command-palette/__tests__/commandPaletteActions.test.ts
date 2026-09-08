@@ -5,12 +5,18 @@
 import { describe, test, expect } from "vitest";
 import { NAV_ACTIONS, filterNavActions } from "../commandPaletteActions";
 import { COMPANY_SECTIONS } from "@/components/chat/CompanyNav";
+import { visibleCompanySections } from "@/components/chat/companySections";
+
+// NAV_ACTIONS is built from `visibleCompanySections`, so the palette offers
+// exactly what the rail offers — a shell hidden from one is hidden from both,
+// by construction rather than by two lists kept in step by hand.
+const OFFERED = visibleCompanySections({ provisioningEnabled: true });
 
 const byId = Object.fromEntries(NAV_ACTIONS.map((a) => [a.id, a]));
 
 describe("NAV_ACTIONS derives from the sidebar IA", () => {
-  test("every sidebar item appears with its section-derived path", () => {
-    for (const section of COMPANY_SECTIONS) {
+  test("every offered sidebar item appears with its section-derived path", () => {
+    for (const section of OFFERED) {
       for (const item of section.items) {
         const key = item.panel.replace(/^teams-/, "");
         const action = byId[`go-${key}`];
@@ -32,9 +38,30 @@ describe("NAV_ACTIONS derives from the sidebar IA", () => {
     expect(byId["go-settings"]?.path).toBe("/chat?panel=teams-settings");
   });
 
-  test("nothing beyond the sidebar set + the two extras", () => {
-    const sidebarCount = COMPANY_SECTIONS.flatMap((s) => s.items).length;
-    expect(NAV_ACTIONS).toHaveLength(sidebarCount + 2);
+  test("nothing beyond the offered set + the two extras", () => {
+    const offeredCount = OFFERED.flatMap((s) => s.items).length;
+    expect(NAV_ACTIONS).toHaveLength(offeredCount + 2);
+  });
+
+  test("a shell is not offered by the palette either", () => {
+    // The rail stops offering these; ⌘K must not become the back door that
+    // walks an owner into an empty frame.
+    for (const panel of [
+      "teams-support",
+      "teams-publish",
+      "teams-seo",
+      "teams-ads",
+      "teams-identity",
+      "teams-compliance",
+      "teams-contracts",
+    ]) {
+      const key = panel.replace(/^teams-/, "");
+      expect(byId[`go-${key}`], `${panel} should not be offered`).toBeUndefined();
+      expect(filterNavActions(key).map((a) => a.id)).not.toContain(`go-${key}`);
+    }
+    // ...but they are still declared in the IA, so the keys stay real.
+    const declared = COMPANY_SECTIONS.flatMap((s) => s.items).map((i) => i.panel);
+    expect(declared).toContain("teams-support");
   });
 
   test("old labels survive as keyword aliases", () => {

@@ -44,10 +44,14 @@ export default defineToolPlugin({
         tool({
             name: "marketplace_search",
             label: "Search the Lightbulb marketplace",
-            description: "Search published Lightbulb marketplace agents the owner could add to their team. " +
-                "Use whenever a task needs a capability nobody on the roster has — check here " +
-                "BEFORE asking Atlas to build one, since an existing agent is ready immediately " +
-                "and costs nothing to add.",
+            description: "Search published Lightbulb marketplace agents the owner could HIRE onto their team. " +
+                "This is a staffing tool, not a way to get work done. Call it when hiring is the " +
+                "actual question: the owner asks who could take something on, asks to hire or add " +
+                "an agent, or the team is short a role and that gap is what is blocking the work. " +
+                "Do NOT call it to carry out a request — a task you or a teammate can already do " +
+                "with the tools you have is not a hiring question, however specialised it sounds. " +
+                "When hiring IS the question, search here BEFORE asking Atlas to build an agent: an " +
+                "existing listing is ready immediately, and free ones cost nothing to add.",
             parameters: Type.Object({
                 query: Type.String({
                     description: "What the work needs, e.g. 'content marketing' or 'bookkeeping'.",

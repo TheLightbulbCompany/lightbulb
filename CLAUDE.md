@@ -348,9 +348,47 @@ run still PENDING used to be evicted by the next arrival, since a group holds on
 run by default. The pipeline is runner-bound, so a promotion sits pending for minutes and
 any merge in that window silently cancelled it (three consecutive promotions on 2026-09-07,
 each cancelled having run zero jobs — a cancelled run with **0 jobs** is the eviction
-signature; one with jobs was cancelled by a human). `queue: max` queues up to 100 runs FIFO
-instead. **A promotion no longer needs a merge freeze, and re-dispatching does not jump the
-queue — it just adds another run behind the first.** The single group is deliberate: prod
+signature; one with jobs was cancelled by a human). `queue: max` was added on the
+understanding that it queues up to 100 runs FIFO instead.
+
+> **⚠️ THAT UNDERSTANDING IS NOT ESTABLISHED — do NOT drop your merge freeze on it.**
+> Corrected 2026-09-08 03:52Z, hours after the line above was written, because the observed
+> behaviour contradicts it.
+>
+> **What `queue: max` demonstrably DID change:** six runs sat pending in `lightbulb-deploy`
+> simultaneously between 03:45 and 03:50 (two of them `workflow_dispatch`). Before the
+> change exactly one run could be pending, and each arrival evicted the last. So the key is
+> doing *something*.
+>
+> **What then happened, unexplained:** at **03:50:58**, the instant the slot freed, the
+> OLDEST pending run (34180429332, queued since 02:32) started — and four newer pending runs
+> were cancelled in the same second, including a fresh promotion (34184589391):
+>
+> ```
+> 34184589391 dispatch 03:45:08 1a133628  CANCELLED 03:50:58
+> 34184562412 push     03:44:41 1a133628  CANCELLED 03:50:58
+> 34184511185 push     03:43:48 9648db53  CANCELLED 03:50:58
+> 34182787337 push     03:13:50 7dbc6afb  CANCELLED 03:50:58
+> 34180429332 push     02:32:55 ccaf1fc3  -> STARTED 03:50:59
+> ```
+>
+> **We could not determine whether that was GitHub or a human.** The API's `actor` /
+> `triggering_actor` name whoever *started* a run, not whoever cancelled it, and all runs here
+> share one identity. Four cancellations in the same second look systemic, but a scripted
+> bulk-cancel by another session would look identical — and one session had already
+> bulk-cancelled this queue earlier the same night.
+>
+> **So two readings remain open**, and the difference matters: either `queue` is honoured and
+> its semantics are "start the oldest, drop the rest" (still eviction, just favouring the
+> oldest), or `queue` is being ignored entirely and something else cancelled these. The
+> negative-control probe proves the `concurrency` block **validates** unknown keys — which
+> proves `queue` is *recognised*, not that it is *honoured*. Those are different claims and
+> only the first was tested.
+>
+> **Until someone establishes the real semantics, operate as if eviction is still live:**
+> dispatch only when NO other deploy run is pending, treat any pending run as something that
+> may outlive or kill your dispatch, and keep asking peers for a merge freeze around a
+> promotion. The single group is deliberate: prod
 jobs `needs:` the dev stage, so a per-event group would let a promotion and a push deploy the
 same dev stacks concurrently. Note `queue: max` is a validation ERROR alongside
 `cancel-in-progress: true`, and eviction was also coalescing merge bursts — a burst now

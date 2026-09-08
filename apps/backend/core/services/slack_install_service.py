@@ -71,6 +71,15 @@ def secret_provider(team_id: str) -> str:
     return f"{PROVIDER}/{team_id}"
 
 
+# Progress drafts: one channel message edited live during long turns instead of
+# minutes of silence. `toolProgress` is OFF because it posts each tool's OUTPUT
+# into the conversation — a Read of a bundled SKILL.md put the entire file,
+# including the maintenance notes addressed to our own engineers, into the
+# owner's shared company channel. The draft card still shows that work is
+# happening; only the raw tool payloads are withheld.
+PROGRESS_STREAMING = {"mode": "progress", "progress": {"toolProgress": False}}
+
+
 def account_block(team_id: str) -> dict:
     """``channels.slack.accounts.<team_id>`` for the platform app: http mode, one
     webhook path per account (the plugin's route registry is first-writer-
@@ -195,7 +204,7 @@ async def apply_install(
                 "channels": {
                     PROVIDER: {
                         "enabled": True,
-                        "streaming": {"mode": "progress"},
+                        "streaming": PROGRESS_STREAMING,
                         "accounts": {team_id: account_block(team_id)},
                     }
                 }

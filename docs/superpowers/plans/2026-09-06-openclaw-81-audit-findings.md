@@ -1153,7 +1153,39 @@ a real version fence on the next base bump. XS.
 The Dockerfile is `FROM ghcr.io/thelightbulbcompany/agent:2026.8.1-isol8.3` (:84). The
 README's bump steps 2–3 are wrong. XS.
 
-### E11 · Ground-truth the eligibility list before acting on E3
+### E11 — MEASURED 2026-09-08. The derived list was 25% low.
+**Status:** DONE (measurement). E3 must be re-sized against this before anyone ships it.
+Ran the settling command on our own **prod** container
+(`org_3H3viGAfq2SXc9dIdcatmGXg8Td`, Friday's agent id):
+
+```
+openclaw skills list --eligible --agent <agent-id> --json
+```
+
+*(Two practical notes for whoever repeats this: the command **requires** `--agent <id>` when
+more than one agent is configured, and it prints two config lines —
+"Materialized legacy per-surface agent ownership" / "Removed retired agents.entries.*.default
+markers" — which are **in-memory only**. Verified: `openclaw.json`'s mtime did not move. That
+independently confirms C5's conclusion that the materializer does not write back.)*
+
+**Result: 54 eligible skills, against the audit's derived estimate of 43** (38 bundled + 5
+plugin). The derivation was **25% low**, so E3's "saves ~39%" figure is computed off the wrong
+denominator and the real prompt cost is higher than stated. **Re-measure the rendered block
+before sizing E3.**
+
+Confirmed live in the prompt on prod, each previously only inferred:
+- **`Lightbulb`** — capitalised, exactly as E2 predicted, so `allowBundled: ["lightbulb"]`
+  would today exclude our own most important skill. The eager *"Read BEFORE answering, not
+  after being corrected"* description is live on every turn (both fixed in #2367).
+- **`himalaya`** — an IMAP/SMTP mail CLI in every agent's prompt while our own skill argues
+  against it (binary removed in #2373; still live until a container roll).
+- **`canvas`** — offered while we deny the tool (disabled in #2374).
+- **`healthcheck`** — *"Audit/harden OpenClaw hosts: SSH, firewall, disk encryption"* on a
+  Fargate task. The audit called this "the worst kind of bait"; it is real and eligible.
+- **`eightctl`, `blucli`, `gifgrep`, `blogwatcher`, `gemini`, `clawhub`** — home-LAN control
+  and toys, all eligible on a container in a private subnet that cannot reach a home LAN.
+
+### E11 (original finding, retained for the command)
 The list is derived, not observed. One command inside a live container settles it
 (`src/cli/skills-cli.ts:1227,1277`):
 ```

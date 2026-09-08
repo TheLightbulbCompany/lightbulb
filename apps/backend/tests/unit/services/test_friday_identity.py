@@ -1995,3 +1995,109 @@ def test_self_service_heal_is_registered_in_the_rail():
 
     src = inspect.getsource(friday_identity._run_heal_migrations)
     assert "_migrate_self_service" in src
+
+
+# --- Heal completeness: the migration must deliver the WHOLE playbook fix -----
+#
+# Verified on a real prod container 2026-09-08: the first version of
+# _migrate_self_service healed the SOUL browser line and inserted the step-0
+# gate, but left step 3 still saying "If no agent is qualified, check the
+# marketplace first" and Boundaries still saying "delegate it — do not perform
+# it yourself". Two of four, and the two it missed are the instructions that
+# caused the bug. It also APPENDED without removing, so a healed AGENTS.md grew
+# to 19,552 chars — 448 from the 20,000 truncation ceiling.
+#
+# These constants are the RENDERED form (single braces). The template carries
+# `{{issueId}}` for str.format; the file on disk has `{issueId}`.
+
+
+def test_legacy_constants_are_the_rendered_form_not_the_template_form():
+    """A `{{` in a legacy constant means it was copied from the template and
+    will never match the file on disk."""
+    for name in (
+        "_LEGACY_AGENTS_STEP3_HEAD",
+        "_LEGACY_AGENTS_DELEGATE_BOUNDARY",
+        "_LEGACY_AGENTS_PAPERCLIP_REFERENCE",
+    ):
+        val = getattr(friday_identity, name)
+        assert "{{" not in val, f"{name} carries template-escaped braces"
+
+
+def _healed_store(agents_body: str) -> dict:
+    return {
+        "workspace-friday-uuid/SOUL.md": friday_identity._SOUL_BROWSER_LINE,
+        "workspace-friday-uuid/AGENTS.md": agents_body,
+    }
+
+
+def test_heal_rescopes_step_three_to_a_missing_role():
+    store = _healed_store(
+        "## The orchestration loop\n\n"
+        + friday_identity._AGENTS_DIY_GATE
+        + "\n"
+        + friday_identity._LEGACY_AGENTS_STEP3_HEAD
+    )
+    ws = _self_service_ws(store)
+    assert friday_identity._migrate_self_service(ws, "user_abc", "friday-uuid") is True
+    agents = store["workspace-friday-uuid/AGENTS.md"]
+    assert "role nobody on the roster fills" in agents
+    assert friday_identity._LEGACY_AGENTS_STEP3_HEAD not in agents
+
+
+def test_heal_narrows_the_delegation_boundary():
+    store = _healed_store(
+        "## The orchestration loop\n\n"
+        + friday_identity._AGENTS_DIY_GATE
+        + "\n"
+        + friday_identity._LEGACY_AGENTS_DELEGATE_BOUNDARY
+    )
+    ws = _self_service_ws(store)
+    assert friday_identity._migrate_self_service(ws, "user_abc", "friday-uuid") is True
+    agents = store["workspace-friday-uuid/AGENTS.md"]
+    assert "Delegate sustained specialist execution" in agents
+    assert "delegate it — do not perform it yourself" not in agents
+
+
+def test_heal_strips_the_paperclip_reference_so_the_file_shrinks():
+    """The migration appended without removing, which grew the file on exactly
+    the containers that already had the problem."""
+    body = (
+        "## The orchestration loop\n\n"
+        + friday_identity._AGENTS_DIY_GATE
+        + "\n"
+        + friday_identity._LEGACY_AGENTS_PAPERCLIP_REFERENCE
+    )
+    store = _healed_store(body)
+    ws = _self_service_ws(store)
+    assert friday_identity._migrate_self_service(ws, "user_abc", "friday-uuid") is True
+    healed = store["workspace-friday-uuid/AGENTS.md"]
+    assert len(healed) < len(body), "heal must shrink, not grow, an oversized playbook"
+    assert "GET /api/agents/me" not in healed
+    assert "skill paperclip" in healed  # the pointer replaces the tables
+
+
+def test_heal_never_clobbers_an_edited_step_three():
+    """Byte-exact or nothing — an owner-edited step 3 is theirs."""
+    edited = "3. **Identify or hire.** My own rewritten step three.\n"
+    body = "## The orchestration loop\n\n" + friday_identity._AGENTS_DIY_GATE + "\n" + edited
+    store = _healed_store(body)
+    ws = _self_service_ws(store)
+    assert friday_identity._migrate_self_service(ws, "user_abc", "friday-uuid") is False
+    assert store["workspace-friday-uuid/AGENTS.md"] == body
+
+
+def test_heal_is_idempotent_across_all_four_changes():
+    body = (
+        "## The orchestration loop\n\n"
+        + friday_identity._AGENTS_DIY_GATE
+        + "\n"
+        + friday_identity._LEGACY_AGENTS_STEP3_HEAD
+        + friday_identity._LEGACY_AGENTS_DELEGATE_BOUNDARY
+        + friday_identity._LEGACY_AGENTS_PAPERCLIP_REFERENCE
+    )
+    store = _healed_store(body)
+    ws = _self_service_ws(store)
+    assert friday_identity._migrate_self_service(ws, "user_abc", "friday-uuid") is True
+    once = store["workspace-friday-uuid/AGENTS.md"]
+    assert friday_identity._migrate_self_service(ws, "user_abc", "friday-uuid") is False
+    assert store["workspace-friday-uuid/AGENTS.md"] == once

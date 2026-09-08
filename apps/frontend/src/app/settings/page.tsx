@@ -26,6 +26,7 @@ import { IntegrationsPanel } from "@/components/control/panels/IntegrationsPanel
 import { SkillsTab } from "@/components/control/panels/SkillsTab";
 import { SkillProposalsPanel } from "@/components/control/panels/SkillProposalsPanel";
 import { ChannelsStatusPanel } from "@/components/control/panels/ChannelsStatusPanel";
+import { DreamsPanel } from "@/components/control/panels/DreamsPanel";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { SettingsNav } from "@/components/settings/SettingsNav";
 import {
@@ -56,6 +57,7 @@ type Panel =
   | "local-mcp"
   | "skills"
   | "skill-proposals"
+  | "dreams"
   | "channel-status"
   | "marketplace";
 
@@ -674,6 +676,7 @@ const PANELS: Record<Panel, () => React.ReactElement> = {
   // owner-level (global) skills surface — the engine-room home.
   skills: () => <SkillsTab />,
   "skill-proposals": SkillProposalsPanel,
+  dreams: DreamsPanel,
   "channel-status": ChannelsStatusPanel,
   marketplace: MarketplacePanel,
 };

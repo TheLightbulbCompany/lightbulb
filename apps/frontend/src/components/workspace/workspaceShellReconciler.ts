@@ -33,7 +33,8 @@ export interface ReconcilerDecision {
   // via openChatPanel with the descriptor's agentId). Deliberately NOT
   // alias-resolved: describePanel resolves the alias itself AND branches on the
   // pre-alias key to carry a retired panel's meaning onto its successor
-  // (?panel=dreams must land on Brain's DREAMS tab, panelRegistry.ts). Handing
+  // (?panel=teams-org-chart must land on the Agents CHART view,
+  // panelRegistry.ts). Handing
   // it a pre-resolved key silently drops that — the whole reason a deep link to
   // a retired panel used to open its successor's default tab.
   panelKey: string | null;

@@ -90,7 +90,8 @@ describe("filterNavActions", () => {
   test("matches by keyword alias", () => {
     const result = filterNavActions("schedule");
     expect(result.map((a) => a.id)).toContain("go-routines");
-    expect(filterNavActions("hierarchy").map((a) => a.id)).toEqual(["go-org-chart"]);
+    // The org chart is a view of the Agents panel now, so its words land there.
+    expect(filterNavActions("hierarchy").map((a) => a.id)).toEqual(["go-agents"]);
   });
 
   test("the retired Members / Skills / Costs actions are gone", () => {

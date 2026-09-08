@@ -25,15 +25,11 @@ export const RETIRED_PANEL_ALIASES: Readonly<Record<string, string>> = {
   "teams-members": "teams-settings",
   "teams-skills": "teams-dashboard",
   "teams-costs": "teams-dashboard",
-  // Dreams folded into the Brain panel as its second tab (Notes | Dreams) —
-  // the standalone control-panel surface is gone, so old deep links and
-  // persisted layouts land on Brain instead.
-  dreams: "teams-brain",
   // Money is ONE page, and Payments/Products/Customers/Spend are its sections.
   // They alias to its key so the dock (which dedupes by panel id) opens ONE
   // "Money" tab no matter which of the five keys a link carries — Home's tiles
   // link three of them. describePanel synthesizes `section` from the RAW key
-  // below, exactly as `dreams` carries Brain's tab.
+  // below.
   "teams-payments": "teams-money",
   "teams-products": "teams-money",
   "teams-customers": "teams-money",
@@ -49,6 +45,12 @@ export const RETIRED_PANEL_ALIASES: Readonly<Record<string, string>> = {
   // synthesizes `groupBy` from the RAW key below.
   "teams-goals": "teams-issues",
   "teams-projects": "teams-issues",
+  // The org chart is the SAME roster read, drawn as a tree — a view of the
+  // Agents panel, not a page of its own. Aliased for the same reason as the
+  // four Money keys: the dock dedupes by panel id, so a router-level mapping
+  // would open two tabs both titled "Agents". describePanel synthesizes
+  // `view` from the RAW key below.
+  "teams-org-chart": "teams-agents",
 };
 
 // The sections of the Money page — the set an absorbed key or a `?section=`
@@ -87,6 +89,10 @@ export const TASKS_GROUP_BY: ReadonlySet<string> = new Set([
   "parent",
 ]);
 
+/** The Agents panel's two views — the set an absorbed key or a `?view=` deep
+ *  link may name. The roster is the default; `chart` is the org chart. */
+export const AGENTS_VIEWS: ReadonlySet<string> = new Set(["list", "chart"]);
+
 // One-shot intents: copied to the target panel's open params, immediately
 // stripped from the URL, cleared after consumption, excluded from the
 // persisted layout (dockview serializes panel params — an unstripped intent
@@ -99,7 +105,6 @@ export const NON_COMMAND_PARAMS = ["checkout", "subscription", "credits", "provi
 const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
   dashboard: "Home",
   agents: "Agents",
-  "org-chart": "Org chart",
   inbox: "Inbox",
   issues: "Tasks",
   routines: "Automations",
@@ -141,6 +146,9 @@ const TEAMS_DETAIL_KEYS: Readonly<Record<string, string>> = {
 // dock panels but are NOT in the sidebar — /settings remains their home.
 const CONTROL_KEYS: Readonly<Record<string, string>> = {
   overview: "Overview",
+  // Its own panel again (owner ruling 2026-09-08): Brain is the vault, and a
+  // memory-core control surface does not belong behind a business tab.
+  dreams: "Dreams",
   sessions: "Sessions",
   channels: "Channels",
   usage: "Usage",
@@ -242,6 +250,13 @@ export function describePanel(
           p.groupBy = params.groupBy;
         }
       }
+      // Agents absorbed the org chart as its second view, so the view a link
+      // meant survives only if it is read off the RAW key — same synthesis,
+      // same reason, as `money` and `inbox`.
+      if (teamsKey === "agents") {
+        if (panelKey === "teams-org-chart") p.view = "chart";
+        else if (params.view && AGENTS_VIEWS.has(params.view)) p.view = params.view;
+      }
       // Inbox absorbed Activity, so the band a link meant survives only if it
       // is read off the RAW key — same synthesis, same reason, as `money`.
       if (teamsKey === "inbox") {
@@ -255,18 +270,11 @@ export function describePanel(
       // ?path mirrors the file-viewer grammar: a deep link selects a wiki
       // page; in-panel selection clicks never write it back.
       if (teamsKey === "brain" && params.path) p.path = params.path;
-      // The retired `dreams` control panel aliases here (RETIRED_PANEL_ALIASES) —
-      // an old ?panel=dreams link should land ON the Dreams tab, not silently
-      // default to Notes. Checked on the ORIGINAL panelKey (pre-alias), so a
-      // fresh ?panel=teams-brain link is untouched — which means every caller
-      // must hand describePanel the RAW ?panel value and let it resolve —
-      // a caller that pre-resolves makes this branch permanently dead.
-      if (teamsKey === "brain" && panelKey === "dreams") p.tab = "dreams";
       // ?day scopes the Payments section to one UTC day — the hero bar on Home links here.
       if (teamsKey === "money" && params.day) p.day = params.day;
       // The four absorbed keys (teams-payments/products/customers/spend) alias
       // to teams-money, so the section they meant survives only if it is read
-      // off the RAW key — same synthesis, same reason, as `dreams` above.
+      // off the RAW key — same synthesis, same reason, as `agents` above.
       if (teamsKey === "money") {
         const raw = panelKey.startsWith("teams-") ? panelKey.slice("teams-".length) : panelKey;
         if (MONEY_SECTIONS.has(raw)) p.section = raw;
@@ -299,6 +307,7 @@ export function durableParamsFor(panelId: string): string[] {
   if (panelId === "file-viewer") return ["panel", "path", "agent"];
   if (panelId === "agent-inspector") return ["panel", "agent", "inspectorTab"];
   if (panelId === "control:agents") return ["panel", "agent"];
+  if (panelId === "teams-agents") return ["panel", "view"];
   if (panelId === "teams-issues") return ["panel", "agent", "groupBy"];
   if (panelId === "teams-inbox") return ["panel", "section"];
   if (panelId === "teams-brain") return ["panel", "path"];
@@ -314,6 +323,7 @@ export function durableParamsFor(panelId: string): string[] {
 // param (an agent filter, an inspector tab) survives an unfiltered navigation
 // — breaking the mobile invariant that plain panel nav drops stale state.
 export function clearablePanelParamKeys(panelId: string): string[] {
+  if (panelId === "teams-agents") return ["view"];
   if (panelId === "teams-issues") return ["agent", "groupBy"];
   if (panelId === "teams-inbox") return ["section"];
   if (panelId === "teams-brain") return ["path"];

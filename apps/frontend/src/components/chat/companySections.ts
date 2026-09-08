@@ -11,10 +11,8 @@ import {
   Inbox,
   ListTodo,
   Repeat,
-  Network,
   Images,
   Search,
-  BookOpen,
   Plug,
   CreditCard,
   Send,
@@ -120,8 +118,9 @@ export const COMPANY_SECTIONS: { label: string | null; items: CompanySectionItem
   {
     label: "Knowledge",
     items: [
-      // Brain first: what the company knows is read before what it produced.
-      { panel: "teams-brain", label: "Brain", Icon: BookOpen },
+      // Brain is off the rail (owner ruling 2026-09-08 — it is not useful in
+      // its current state; the company-graph Brain is its own spec). The key
+      // stays registered, so ?panel=teams-brain still opens it.
       // Library is the spec's noun for the work-products gallery; the panel
       // key stays `teams-artifacts` (mobile builds these URLs as strings).
       { panel: "teams-artifacts", label: "Library", Icon: Images },
@@ -130,7 +129,9 @@ export const COMPANY_SECTIONS: { label: string | null; items: CompanySectionItem
   {
     label: "Company",
     items: [
-      { panel: "teams-org-chart", label: "Org chart", Icon: Network },
+      // The org chart moved INSIDE the Agents panel as its second view — same
+      // roster, drawn as a tree. `teams-org-chart` still resolves and opens
+      // Agents on the chart (RETIRED_PANEL_ALIASES).
       // What the company has accounts with, what agents set up on its behalf,
       // and the kill switch. Sits in Company, not Settings, because it is the
       // page an owner opens the first time an agent does something surprising.

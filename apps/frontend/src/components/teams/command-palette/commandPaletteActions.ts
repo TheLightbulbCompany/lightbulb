@@ -26,7 +26,6 @@ const KEYWORDS: Record<string, string[]> = {
   issues: ["issues", "tickets"],
   routines: ["cron", "schedule", "routines"],
   artifacts: ["artifacts"],
-  "org-chart": ["network", "hierarchy"],
   activity: ["events", "log"],
   // Money absorbed Payments/Products/Customers/Spend as sections of one
   // page — their old search words, plus "usage" (the label the same numbers
@@ -47,7 +46,14 @@ export function navActions(opts: { provisioningEnabled: boolean }): CommandPalet
       }),
     ),
     // The two non-sidebar surfaces: the agent roster and the Settings home.
-    { id: "go-agents", label: "Agents", path: teamsPanelUrl("agents"), Icon: Bot, keywords: ["bot"] },
+    // The org chart is a view of this panel now, so its search words point here.
+    {
+      id: "go-agents",
+      label: "Agents",
+      path: teamsPanelUrl("agents"),
+      Icon: Bot,
+      keywords: ["bot", "roster", "org chart", "network", "hierarchy"],
+    },
     { id: "go-settings", label: "Settings", path: teamsPanelUrl("settings"), Icon: Settings },
   ];
 }

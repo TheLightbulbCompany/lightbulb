@@ -144,10 +144,10 @@ describe("Settings nav — 6 intent-ordered groups", () => {
     expect(within(navEl).getByText("Skill Proposals")).toBeInTheDocument();
   });
 
-  it("no longer lists Dreams / Memory — it folded into the Brain panel as a tab", () => {
+  it("lists Dreams / Memory again — a memory-core surface, not a Brain tab", () => {
     render(<SettingsPage />);
     const navEl = screen.getByRole("navigation", { name: /settings navigation/i });
-    expect(within(navEl).queryByText("Dreams / Memory")).not.toBeInTheDocument();
+    expect(within(navEl).getByText("Dreams / Memory")).toBeInTheDocument();
   });
 
   // --- Channel Status (ENGINE ROOM) — DISTINCT key from WIRING Channels ---

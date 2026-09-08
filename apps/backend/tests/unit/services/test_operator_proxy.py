@@ -451,6 +451,98 @@ async def test_stopped_container_fires_wake(mock_ecs, mock_upstream):
 
 
 @pytest.mark.asyncio
+async def test_blocked_wake_disarms_an_expired_trial(mock_ecs, mock_upstream):
+    """A routine's wake blocked for TRIAL_EXPIRED pauses the nightly routine —
+    the one entitlement change no webhook catches (trial_end is a local stamp)."""
+    from core.services import trial_cap
+
+    mock_ecs.resolve_running_container = AsyncMock(return_value=(None, None))
+    mgmt = MagicMock()
+
+    with (
+        patch("core.services.container_wake.request_wake_silent", new_callable=AsyncMock) as wake,
+        patch("core.services.trial_cap.trial_block_reason", new_callable=AsyncMock) as reason,
+        patch(
+            "core.services.paperclip_agent_lifecycle.disarm_owner_nightly_automation",
+            new_callable=AsyncMock,
+        ) as disarm,
+        patch("core.services.operator_proxy.put_metric") as metric,
+    ):
+        wake.return_value = "blocked"
+        reason.return_value = trial_cap.TRIAL_EXPIRED
+        disarm.return_value = {"routines_paused": 1, "issues_cancelled": 2}
+        result = await handle_operator_connect(
+            owner_id="user_expired",
+            user_id="user_expired",
+            connection_id="conn_expired",
+            connect_params={},
+            management_api=mgmt,
+        )
+
+    assert result is None
+    disarm.assert_awaited_once_with("user_expired")
+    metric.assert_any_call("nightly_ceo.disarm", dimensions={"trigger": "trial_expired", "outcome": "ran"})
+
+
+@pytest.mark.asyncio
+async def test_blocked_wake_does_not_disarm_a_capped_trial(mock_ecs, mock_upstream):
+    """A DAILY_CAP block resets at UTC midnight — the routine must stay armed
+    and fire again tomorrow, so a capped block never disarms."""
+    from core.services import trial_cap
+
+    mock_ecs.resolve_running_container = AsyncMock(return_value=(None, None))
+    mgmt = MagicMock()
+
+    with (
+        patch("core.services.container_wake.request_wake_silent", new_callable=AsyncMock) as wake,
+        patch("core.services.trial_cap.trial_block_reason", new_callable=AsyncMock) as reason,
+        patch(
+            "core.services.paperclip_agent_lifecycle.disarm_owner_nightly_automation",
+            new_callable=AsyncMock,
+        ) as disarm,
+    ):
+        wake.return_value = "blocked"
+        reason.return_value = trial_cap.DAILY_CAP
+        await handle_operator_connect(
+            owner_id="user_capped",
+            user_id="user_capped",
+            connection_id="conn_capped",
+            connect_params={},
+            management_api=mgmt,
+        )
+
+    disarm.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_blocked_wake_for_a_non_trial_gate_does_not_disarm(mock_ecs, mock_upstream):
+    """A block from a non-trial gate (canceled / credits / OAuth) -> reason is
+    None -> no disarm here. Those cancellations are teardown's job."""
+    mock_ecs.resolve_running_container = AsyncMock(return_value=(None, None))
+    mgmt = MagicMock()
+
+    with (
+        patch("core.services.container_wake.request_wake_silent", new_callable=AsyncMock) as wake,
+        patch("core.services.trial_cap.trial_block_reason", new_callable=AsyncMock) as reason,
+        patch(
+            "core.services.paperclip_agent_lifecycle.disarm_owner_nightly_automation",
+            new_callable=AsyncMock,
+        ) as disarm,
+    ):
+        wake.return_value = "blocked"
+        reason.return_value = None
+        await handle_operator_connect(
+            owner_id="user_canceled",
+            user_id="user_canceled",
+            connection_id="conn_canceled",
+            connect_params={},
+            management_api=mgmt,
+        )
+
+    disarm.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_provisioning_or_zombie_row_falls_through_without_wake(mock_ecs, mock_upstream):
     """A (container, None) shape — provisioning mid-flight, or a "running" row whose
     Cloud Map lookup found nothing (transient zombie) — deliberately does NOT wake

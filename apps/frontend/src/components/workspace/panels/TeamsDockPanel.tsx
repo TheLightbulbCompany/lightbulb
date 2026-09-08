@@ -16,10 +16,10 @@ interface TeamsDockPanelParams {
   teamsKey: string; // "inbox" | "issues" | … | "issue-detail" | …
   detailId?: string;
   agent?: string; // durable issues filter
-  tab?: string; // durable inbox band deep link
+  tab?: string; // durable brain tab (the absorbed `dreams` key)
   path?: string; // durable brain page deep link
   day?: string; // durable money day scope
-  section?: string; // durable money section (the absorbed Payments/… keys)
+  section?: string; // durable Money / Inbox section (the absorbed keys)
   new?: string; // one-shot, re-delivered via updateParameters
   newIssue?: string; // one-shot
 }

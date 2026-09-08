@@ -2,7 +2,11 @@
 
 import dynamic from "next/dynamic";
 import { PageSkeleton } from "@/components/teams/shared/components/PageSkeleton";
-import { MONEY_SECTIONS } from "@/components/workspace/panelRegistry";
+import {
+  INBOX_SECTIONS,
+  MONEY_SECTIONS,
+  type InboxSectionId,
+} from "@/components/workspace/panelRegistry";
 import type { MoneySectionId } from "./panels/MoneyPanel";
 
 // Shown while a panel's code-split chunk loads. Without a loading fallback,
@@ -28,7 +32,6 @@ const PANEL_LOADERS: Record<string, () => Promise<React.ComponentType>> = {
   routines: () => import("./panels/RoutinesPanel").then((m) => m.RoutinesPanel),
   goals: () => import("./panels/GoalsPanel").then((m) => m.GoalsPanel),
   projects: () => import("./panels/ProjectsListPanel").then((m) => m.ProjectsListPanel),
-  activity: () => import("./panels/ActivityPanel").then((m) => m.ActivityPanel),
   artifacts: () => import("./panels/ArtifactsPanel").then((m) => m.ArtifactsPanel),
   brain: () => import("./panels/BrainPanel").then((m) => m.BrainPanel),
   accounts: () => import("./panels/AccountsPanel").then((m) => m.AccountsPanel),
@@ -97,6 +100,12 @@ function asMoneySection(value: string | undefined): MoneySectionId | null {
   return value && MONEY_SECTIONS.has(value) ? (value as MoneySectionId) : null;
 }
 
+// Same fence for Inbox: InboxPage feeds this into a `#inbox-${section}`
+// selector, so an arbitrary string there must never reach it.
+function asInboxSection(value: string | undefined): InboxSectionId | undefined {
+  return value && INBOX_SECTIONS.has(value) ? (value as InboxSectionId) : undefined;
+}
+
 // Warm every panel chunk (called from the shell during browser idle time) so
 // the first open of a panel mounts from the module cache instead of fetching
 // its chunk on click. Failures are ignored — the dynamic() wrappers refetch
@@ -108,12 +117,6 @@ export function preloadTeamsPanels(): void {
   ]) {
     void load().catch(() => {});
   }
-}
-
-function normalizeNewIssue(
-  value: string | undefined,
-): "1" | "onboarding" | null {
-  return value === "1" || value === "onboarding" ? value : null;
 }
 
 export interface TeamsPanelRouterProps {
@@ -163,13 +166,7 @@ export function TeamsPanelRouter({
     );
   }
   if (panel === "inbox") {
-    return (
-      <InboxPanel
-        newIssue={normalizeNewIssue(panelParams?.newIssue)}
-        onNewIssueConsumed={() => onConsumeOneShot?.("newIssue")}
-        initialTab={panelParams?.tab ?? null}
-      />
-    );
+    return <InboxPanel section={asInboxSection(panelParams?.section)} />;
   }
 
   if (panel === "brain") {

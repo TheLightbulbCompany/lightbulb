@@ -130,16 +130,26 @@ function MobileChatShell() {
   const tabParam = searchParams.get("tab") ?? (panelParam === "dreams" ? "dreams" : null);
   const pathParam = searchParams.get("path");
   const dayParam = searchParams.get("day");
-  // Same synthesis as `tab` above, for Money: ?panel=teams-spend carries no
-  // &section=, because the section IS the key. The four absorbed keys all
-  // alias to teams-money, so reading the section off the RAW key here can
-  // never leak onto another panel. A hand-written ?section= wins nothing extra
-  // — TeamsPanelRouter validates it before MoneyPanel sees it.
+  // Same synthesis as `tab` above, for Money and Inbox: ?panel=teams-spend and
+  // ?panel=teams-activity carry no &section=, because the section IS the key.
+  // Every absorbed key aliases to the page that absorbed it, so reading the
+  // section off the RAW key here can never leak onto another panel. A
+  // hand-written ?section= wins nothing extra — TeamsPanelRouter validates it
+  // before either panel sees it.
   const rawTeamsKey = panelParam?.startsWith(TEAMS_PANEL_PREFIX)
     ? panelParam.slice(TEAMS_PANEL_PREFIX.length)
     : null;
-  const sectionParam =
-    searchParams.get("section") ?? (rawTeamsKey && MONEY_SECTIONS.has(rawTeamsKey) ? rawTeamsKey : null);
+  const absorbedSection =
+    rawTeamsKey === "activity"
+      ? "recently"
+      : // Bookmarks predating the pill tabs still carry ?tab=approvals; that
+        // band is now "Needs you".
+        rawTeamsKey === "inbox" && searchParams.get("tab") === "approvals"
+        ? "needs-you"
+        : rawTeamsKey && MONEY_SECTIONS.has(rawTeamsKey)
+          ? rawTeamsKey
+          : null;
+  const sectionParam = searchParams.get("section") ?? absorbedSection;
   const oneShots = {
     new: searchParams.get("new") ?? undefined,
     newIssue: searchParams.get("newIssue") ?? undefined,

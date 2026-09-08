@@ -112,7 +112,7 @@ describe("panelRegistry", () => {
     expect(durableParamsFor("teams-issue-detail:ADM-1")).toEqual(["panel", "detailId"]);
     expect(durableParamsFor("agent-inspector")).toEqual(["panel", "agent", "inspectorTab"]);
     expect(durableParamsFor("teams-issues")).toEqual(["panel", "agent"]);
-    expect(durableParamsFor("teams-inbox")).toEqual(["panel", "tab"]);
+    expect(durableParamsFor("teams-inbox")).toEqual(["panel", "section"]);
     // ?panel=file-viewer&path=… is registered grammar — close must clear the
     // path (and any agent binding), not just ?panel.
     expect(durableParamsFor("file-viewer")).toEqual(["panel", "path", "agent"]);
@@ -123,7 +123,7 @@ describe("panelRegistry", () => {
 
   it("names the clearable PANEL params a plain re-open must reset", () => {
     expect(clearablePanelParamKeys("teams-issues")).toEqual(["agent"]);
-    expect(clearablePanelParamKeys("teams-inbox")).toEqual(["tab"]);
+    expect(clearablePanelParamKeys("teams-inbox")).toEqual(["section"]);
     expect(clearablePanelParamKeys("file-viewer")).toEqual(["path", "agent"]);
     expect(clearablePanelParamKeys("agent-inspector")).toEqual(["agentId", "initialTab"]);
     expect(clearablePanelParamKeys("control:agents")).toEqual(["agentId", "initialTab"]);
@@ -196,10 +196,33 @@ describe("panelRegistry", () => {
     expect(describePanel("teams-spend", { section: "products" })!.params.section).toBe("spend");
   });
 
-  it("teams-inbox accepts a ?tab deep link as a durable param", () => {
+  it("aliases teams-activity onto Inbox, pre-scrolled to Recently", () => {
+    const d = describePanel("teams-activity", {});
+    expect(d?.panelId).toBe("teams-inbox");
+    expect(d?.title).toBe("Inbox");
+    expect(d?.params.section).toBe("recently");
+  });
+
+  it("keeps one panel id when Activity and Inbox are both opened", () => {
+    expect(describePanel("teams-activity", {})?.panelId).toBe(
+      describePanel("teams-inbox", {})?.panelId,
+    );
+  });
+
+  it("carries an explicit ?section for a fresh Inbox deep link", () => {
+    expect(describePanel("teams-inbox", { section: "happening-now" })?.params.section).toBe(
+      "happening-now",
+    );
+  });
+
+  it("ignores a section that is not a real Inbox band", () => {
+    expect(describePanel("teams-inbox", { section: "constructor" })?.params.section).toBeUndefined();
+  });
+
+  it("lands a legacy ?tab=approvals bookmark on Needs you", () => {
     expect(describePanel("teams-inbox", { tab: "approvals" })?.params).toEqual({
       teamsKey: "inbox",
-      tab: "approvals",
+      section: "needs-you",
     });
   });
 

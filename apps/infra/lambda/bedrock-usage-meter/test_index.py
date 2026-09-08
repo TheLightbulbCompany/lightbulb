@@ -39,6 +39,8 @@ import base64
 import gzip
 import json
 import os
+import re
+import subprocess
 import sys
 import time
 from contextlib import contextmanager
@@ -53,6 +55,9 @@ from moto import mock_aws
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURES = os.path.join(HERE, "fixtures")
 BACKEND = os.path.abspath(os.path.join(HERE, "..", "..", "..", "backend"))
+INFRA_ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
+GATE_STACK_TS = os.path.join(INFRA_ROOT, "lib", "stacks", "bedrock-gate-stack.ts")
+RATES_MJS = os.path.join(INFRA_ROOT, "lambda", "bedrock-gate", "rates.mjs")
 
 BILLING_TABLE = "isol8-dev-billing-accounts"
 CONTAINERS_TABLE = "isol8-dev-containers"
@@ -830,6 +835,78 @@ def test_lambda_pricing_matches_backend_price_from_tier():
     }
     for tier in index.TIER_TO_FM:
         assert index._price_from_tier(tier, **counts) == bedrock_pricing.price_from_tier(tier, **counts)
+
+
+def test_cap_microcents_matches_backend_trial_cap():
+    """The meter's async-backstop threshold must equal the gate's primary
+    reservation cap (core.services.trial_cap.CAP_MICROCENTS) — a silent drift
+    here means the backstop kill fires at the wrong dollar amount."""
+    import index
+
+    os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
+    if BACKEND not in sys.path:
+        sys.path.insert(0, BACKEND)
+    from core.services import trial_cap
+
+    assert index.CAP_MICROCENTS == trial_cap.CAP_MICROCENTS
+
+
+def _gate_stack_env_int(name):
+    """Regex a `NAME: "<digits>"` CDK environment literal out of
+    bedrock-gate-stack.ts. Raises if the name doesn't appear exactly once —
+    a silent 0-match would make this test vacuously pass."""
+    with open(GATE_STACK_TS) as f:
+        src = f.read()
+    matches = re.findall(rf'{re.escape(name)}:\s*"(\d+)"', src)
+    assert len(matches) == 1, f"expected exactly one {name} literal in {GATE_STACK_TS}, found {matches}"
+    return int(matches[0])
+
+
+def test_gate_stack_cap_and_reserve_env_literals_match_backend():
+    """CAP_MICROCENTS and RESERVE_ESTIMATE_MICROCENTS are hardcoded CDK env
+    string literals (the Lambda has no import path to the backend) — this is
+    the only thing keeping them from drifting off core.services.trial_cap."""
+    os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
+    if BACKEND not in sys.path:
+        sys.path.insert(0, BACKEND)
+    from core.services import trial_cap
+
+    assert _gate_stack_env_int("CAP_MICROCENTS") == trial_cap.CAP_MICROCENTS
+    assert _gate_stack_env_int("RESERVE_ESTIMATE_MICROCENTS") == trial_cap.RESERVE_ESTIMATE_MICROCENTS
+
+
+def _rates_mjs_exports():
+    """Evaluate rates.mjs with node and dump RATES + TIER_TO_FM as JSON.
+
+    Shells out to node rather than regexing the source: the gate Lambda
+    actually executes this file as an ES module, so asking node to evaluate
+    it is the only way this test can't itself drift from how the Lambda
+    parses it.
+    """
+    script = (
+        f"const m = await import({json.dumps('file://' + RATES_MJS)});"
+        "console.log(JSON.stringify({RATES: m.RATES, TIER_TO_FM: m.TIER_TO_FM}));"
+    )
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, f"node failed to evaluate rates.mjs: {result.stderr}"
+    return json.loads(result.stdout)
+
+
+def test_gate_rates_mjs_matches_backend_bedrock_pricing():
+    """The FOURTH copy of the rate table (bedrock-gate/rates.mjs) is the one
+    on the settle path and, per the audit, the only one that was previously
+    unguarded — rates.mjs's own comment claimed a `rates.test.mjs` that has
+    never existed. This is the real guard."""
+    bedrock_pricing, bedrock_aip = _backend_pricing()
+    exports = _rates_mjs_exports()
+
+    assert exports["RATES"] == bedrock_pricing._RATES
+    assert exports["TIER_TO_FM"] == bedrock_aip.TIER_TO_FM
 
 
 def test_price_includes_cache_read_and_cache_write():

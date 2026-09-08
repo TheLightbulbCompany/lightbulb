@@ -195,8 +195,8 @@ jq -n '{
 
 **Pick the owner honestly.** A human decision routed to an agent produces a loop
 where nobody can act. A machine-checkable condition routed to the board spends
-the owner's attention on something you could have polled — use a monitor and an
-external object for that instead.
+the owner's attention on something you could have polled — use a monitor for
+that instead.
 
 **If you cannot name an owner and an action, the issue is not blocked — it is
 abandoned.** Close it, or reduce it to the part you can actually do. Nine issues

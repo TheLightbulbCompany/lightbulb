@@ -9,6 +9,11 @@ import {
   PanelToolbar,
 } from "@/components/teams/shell";
 import { NewIssueDialog } from "@/components/teams/issues/NewIssueDialog";
+import {
+  ONBOARDING_FIRST_TASK_DESCRIPTION,
+  ONBOARDING_FIRST_TASK_TITLE,
+  resolveCeoAgentId,
+} from "@/components/getstarted/getStartedFirstTask";
 import { TasksList } from "@/components/teams/issues/TasksList";
 import { useIssueMutations } from "@/components/teams/issues/hooks/useIssueMutations";
 import { useLiveRuns } from "@/components/teams/dashboard/hooks/useLiveRuns";
@@ -27,6 +32,13 @@ export interface IssuesPanelProps {
   agentFilter?: string | null;
   /** One-shot intent to auto-open the create dialog (from the "New task" pill). */
   newTask?: boolean;
+  /**
+   * Which composer that one-shot wants: the bare one, or the Get Started
+   * "Create your first task" step, which opens pre-filled with a CEO-directed
+   * task. Tasks owns this dialog now — the intent moved here with Inbox's
+   * issue rows.
+   */
+  newTaskPrefill?: "onboarding" | null;
   /** Fired when the create dialog closes — the shell strips its one-shot param. */
   onNewTaskConsumed?: () => void;
   /** Fired when the filter chip is dismissed — the shell clears its durable param. */
@@ -44,6 +56,7 @@ export interface IssuesPanelProps {
 export function IssuesPanel({
   agentFilter: agentFilterProp = null,
   newTask = false,
+  newTaskPrefill = null,
   onNewTaskConsumed,
   onAgentFilterCleared,
 }: IssuesPanelProps = {}) {
@@ -100,14 +113,21 @@ export function IssuesPanel({
   // render-time prev-compare pattern (React "adjust state when a prop changes")
   // rather than a setState-in-effect that would cascade renders. Closing reports
   // consumption so the shell strips its channel (URL param on mobile).
+  // Captured as STATE, not re-derived from the prop, so it survives the shell
+  // stripping its one-shot channel and any later re-open of the dialog.
+  const [prefilled, setPrefilled] = useState(newTask && newTaskPrefill === "onboarding");
   const [prevNewTask, setPrevNewTask] = useState(newTask);
   if (newTask !== prevNewTask) {
     setPrevNewTask(newTask);
-    if (newTask) setCreating(true);
+    if (newTask) {
+      setCreating(true);
+      setPrefilled(newTaskPrefill === "onboarding");
+    }
   }
   const newTaskOpen = creating;
   const closeNewTask = () => {
     setCreating(false);
+    setPrefilled(false);
     onNewTaskConsumed?.();
   };
 
@@ -245,11 +265,18 @@ export function IssuesPanel({
       />
 
       <NewIssueDialog
+        key={prefilled ? "onboarding" : "blank"}
         open={newTaskOpen}
         onOpenChange={(open) => (open ? setCreating(true) : closeNewTask())}
         agents={agentsData?.agents ?? []}
         projects={projectsData?.projects ?? []}
         goals={goalsData?.goals ?? []}
+        defaultTitle={prefilled ? ONBOARDING_FIRST_TASK_TITLE : undefined}
+        defaultDescription={prefilled ? ONBOARDING_FIRST_TASK_DESCRIPTION : undefined}
+        defaultAssigneeAgentId={
+          prefilled ? resolveCeoAgentId(agentsData?.agents ?? []) : undefined
+        }
+        defaultStatus={prefilled ? "todo" : undefined}
         onCreated={() => {
           closeNewTask();
           mutate();

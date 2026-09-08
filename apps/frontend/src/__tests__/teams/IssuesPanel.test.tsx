@@ -114,6 +114,28 @@ describe("IssuesPanel", () => {
     expect(screen.queryByTestId("new-issue-dialog-stub")).not.toBeInTheDocument();
   });
 
+  // Get Started's "Create your first task" step moved here with Inbox's issue
+  // rows; it opens the SAME dialog, pre-filled with a CEO-directed task.
+  it("pre-fills the composer for the onboarding first task, and only then", () => {
+    render(<IssuesPanel newTask newTaskPrefill="onboarding" />);
+    const props = newIssueDialogStub.mock.calls.at(-1)![0] as {
+      defaultTitle?: string;
+      defaultStatus?: string;
+    };
+    expect(props.defaultTitle).toContain("[your goal]");
+    expect(props.defaultStatus).toBe("todo");
+  });
+
+  it("leaves the composer blank for a plain New task intent", () => {
+    render(<IssuesPanel newTask />);
+    const props = newIssueDialogStub.mock.calls.at(-1)![0] as {
+      defaultTitle?: string;
+      defaultStatus?: string;
+    };
+    expect(props.defaultTitle).toBeUndefined();
+    expect(props.defaultStatus).toBeUndefined();
+  });
+
   it("re-opens the dialog when newTask goes false→true on a mounted panel", () => {
     const { rerender } = render(<IssuesPanel newTask={false} />);
     expect(screen.queryByTestId("new-issue-dialog-stub")).not.toBeInTheDocument();

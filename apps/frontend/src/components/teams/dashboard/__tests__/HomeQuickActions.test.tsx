@@ -113,11 +113,11 @@ describe("HomeQuickActions — every verb resolves to something real", () => {
     expect(prevented).toBe(false);
   });
 
-  it("New task deep-links the Inbox New-task dialog", () => {
+  it("New task deep-links the Tasks New-task dialog", () => {
     render(<HomeQuickActions stripeBound />);
     expect(screen.getByRole("link", { name: /New task/ })).toHaveAttribute(
       "href",
-      "/chat?panel=teams-inbox&newIssue=1",
+      "/chat?panel=teams-issues&new=task",
     );
   });
 

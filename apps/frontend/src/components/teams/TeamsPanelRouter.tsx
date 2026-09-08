@@ -159,8 +159,14 @@ export function TeamsPanelRouter({
     return (
       <IssuesPanel
         agentFilter={panelParams?.agent ?? null}
-        newTask={panelParams?.new === "task"}
-        onNewTaskConsumed={() => onConsumeOneShot?.("new")}
+        // Two channels, one dialog: `?new=task` from the sidebar pill, and
+        // `?newIssue=` from Get Started, which Inbox used to own.
+        newTask={panelParams?.new === "task" || Boolean(panelParams?.newIssue)}
+        newTaskPrefill={panelParams?.newIssue === "onboarding" ? "onboarding" : null}
+        onNewTaskConsumed={() => {
+          onConsumeOneShot?.("new");
+          onConsumeOneShot?.("newIssue");
+        }}
         onAgentFilterCleared={() => onUpdateDurableParam?.("agent", null)}
       />
     );

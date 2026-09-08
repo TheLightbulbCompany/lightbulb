@@ -14,14 +14,25 @@ paragraph does not fail a test; only changing the words does.
 
 from pathlib import Path
 
-SKILL = Path(__file__).resolve().parents[4] / "infra" / "openclaw" / "skills" / "lightbulb" / "SKILL.md"
+SKILL_DIR = Path(__file__).resolve().parents[4] / "infra" / "openclaw" / "skills" / "lightbulb"
+SKILL = SKILL_DIR / "SKILL.md"
 HEADING = "## Setting up accounts for the company"
 
 
 def _section() -> str:
-    text = SKILL.read_text()
-    assert HEADING in text, f"{HEADING} is gone from the skill"
-    return "\n## " + text.split(HEADING, 1)[1].split("\n## ", 1)[0]
+    """The provisioning section, wherever it currently lives.
+
+    The skill was SPLIT into a thin SKILL.md + references/ read on demand
+    (#2367), and this section moved to references/money.md. Searching both
+    keeps the test pinned to the RULES rather than to a file layout — the
+    split moved content, it did not delete it, and pinning the layout turned
+    a reorganisation into twelve red tests on main.
+    """
+    for candidate in [SKILL, *sorted((SKILL_DIR / "references").glob("*.md"))]:
+        text = candidate.read_text()
+        if HEADING in text:
+            return "\n## " + text.split(HEADING, 1)[1].split("\n## ", 1)[0]
+    raise AssertionError(f"{HEADING} is gone from the skill and every reference file")
 
 
 def _flat() -> str:

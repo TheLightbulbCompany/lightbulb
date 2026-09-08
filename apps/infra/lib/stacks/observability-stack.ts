@@ -2240,48 +2240,54 @@ def handler(event, _ctx):
     // readable string in the Budgets console and buys a resource that can
     // actually be updated. The budget is identified by the alarm/notification
     // it produces, not by its console name.
-    new budgets.CfnBudget(this, "MonthlyBudget", {
-      budget: {
-        budgetType: "COST",
-        timeUnit: "MONTHLY",
-        budgetLimit: { amount: 1500, unit: "USD" },
-      },
-      notificationsWithSubscribers: [
-        {
-          // W49a: 80% threshold → warn topic
-          notification: {
-            notificationType: "ACTUAL",
-            comparisonOperator: "GREATER_THAN",
-            threshold: 80,
-            thresholdType: "PERCENTAGE",
-          },
-          // Budgets email the address directly — no SNS, so no confirmation
-          // click and none of the silent-expiry problem the topics had. It
-          // still has to be a mailbox somebody reads.
-          subscribers: [
-            {
-              subscriptionType: "EMAIL",
-              address: this.alertEmail,
-            },
-          ],
+    // ENV-BLIND, so PROD-GATED (see W46/W47 above). AWS Budgets are
+    // account-wide with no per-environment scope; dev and prod both deploy
+    // this stack, so an ungated budget renders twice and both copies email
+    // admin@ for the same account-wide spend number.
+    if (this.envName === "prod") {
+      new budgets.CfnBudget(this, "MonthlyBudget", {
+        budget: {
+          budgetType: "COST",
+          timeUnit: "MONTHLY",
+          budgetLimit: { amount: 1500, unit: "USD" },
         },
-        {
-          // W49b: 100% threshold → page topic
-          notification: {
-            notificationType: "ACTUAL",
-            comparisonOperator: "GREATER_THAN",
-            threshold: 100,
-            thresholdType: "PERCENTAGE",
-          },
-          subscribers: [
-            {
-              subscriptionType: "EMAIL",
-              address: this.alertEmail,
+        notificationsWithSubscribers: [
+          {
+            // W49a: 80% threshold → warn topic
+            notification: {
+              notificationType: "ACTUAL",
+              comparisonOperator: "GREATER_THAN",
+              threshold: 80,
+              thresholdType: "PERCENTAGE",
             },
-          ],
-        },
-      ],
-    });
+            // Budgets email the address directly — no SNS, so no confirmation
+            // click and none of the silent-expiry problem the topics had. It
+            // still has to be a mailbox somebody reads.
+            subscribers: [
+              {
+                subscriptionType: "EMAIL",
+                address: this.alertEmail,
+              },
+            ],
+          },
+          {
+            // W49b: 100% threshold → page topic
+            notification: {
+              notificationType: "ACTUAL",
+              comparisonOperator: "GREATER_THAN",
+              threshold: 100,
+              thresholdType: "PERCENTAGE",
+            },
+            subscribers: [
+              {
+                subscriptionType: "EMAIL",
+                address: this.alertEmail,
+              },
+            ],
+          },
+        ],
+      });
+    }
 
     // W50: Bedrock spend anomaly — ENV-BLIND, so PROD-GATED (see W46/W47).
     // AWS/Bedrock Invocations is account-global with no env dimension; dev and
@@ -3043,6 +3049,14 @@ def handler(event, _ctx):
     // GuardDuty and Access Analyzer are already enabled at the account level
     // (prod has them pre-configured). We only create EventBridge rules to
     // route their findings to our SNS warn topic.
+    //
+    // ENV-BLIND, so PROD-GATED (see W46/W47/W49a-b above). GuardDuty and
+    // Access Analyzer findings are account-wide with no per-environment
+    // scope; dev and prod both deploy this stack, so an ungated rule renders
+    // twice and both copies email admin@ for the same account-wide finding.
+    if (this.envName !== "prod") {
+      return;
+    }
 
     // GuardDuty findings → warn SNS via EventBridge
     const guardDutyRule = new events.Rule(this, "GuardDutyFindings", {

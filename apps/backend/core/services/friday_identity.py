@@ -1364,6 +1364,60 @@ def _migrate_paperclip_curl_to_script(workspace: Workspace, owner_id: str, agent
     return True
 
 
+# Byte-exact PRE-#2352 text as it appears in an ALREADY-RENDERED AGENTS.md.
+#
+# RENDERED form, not template form: the template escapes braces for str.format
+# (`{{issueId}}`), so a constant copied straight from it would never match the
+# file on disk. There is a test asserting no `{{` survives in these.
+#
+# The first heal only inserted the step-0 gate and fixed the SOUL browser line.
+# Verified on a real prod container 2026-09-08, that left step 3 still routing a
+# missing TOOL to the marketplace and Boundaries still banning doing any work at
+# all — the two instructions that caused the bug — and it grew the file to
+# 19,552 chars, 448 from the 20,000 truncation ceiling, because it appended
+# without removing.
+_LEGACY_AGENTS_STEP3_HEAD = """\
+3. **Identify or hire.** For each piece, pick the right agent. If no agent
+   is qualified, **check the marketplace first**:
+"""
+
+_LEGACY_AGENTS_DELEGATE_BOUNDARY = """\
+- **Delegate specialist execution.** Your direct work is company control:
+  choose priorities, synthesize evidence, resolve or reroute blockers, and
+  verify outcomes. If the primary deliverable belongs to a specialist,
+  delegate it — do not perform it yourself.
+"""
+
+_LEGACY_AGENTS_PAPERCLIP_REFERENCE = "## Paperclip reference\n\nThe bundled `paperclip` skill documents the full REST surface — run\n`skill paperclip` for the exact endpoints, bodies, and headers. The\nendpoints you'll reach for most:\n\n**Identity / discovery:**\n\n- `GET /api/agents/me` — your own identity, role, chainOfCommand, budget\n- `GET /api/companies/$PAPERCLIP_COMPANY_ID/agents` — current team roster\n\n**Issue work:**\n\n- `POST /api/companies/$PAPERCLIP_COMPANY_ID/issues` — create + assign (primary delegation)\n- `PATCH /api/issues/{issueId}` — change status, assignee, description, priority\n- `POST /api/issues/{issueId}/checkout` — claim before work; **don't retry 409**\n- `GET /api/issues/{issueId}` — full issue (ancestors, project, goal)\n- `GET /api/issues/{issueId}/comments` — issue thread\n\n**Comments / interactions:**\n\n- `POST /api/issues/{issueId}/comments` — add a comment\n- `POST /api/issues/{issueId}/interactions` — `suggest_tasks`,\n  `ask_user_questions`, `request_confirmation`\n\n"
+
+# The replacements. Kept beside their legacy twins so a future edit cannot move
+# one without seeing the other.
+_AGENTS_STEP3_HEAD = """\
+3. **Identify or hire.** For each piece, pick the right agent. If a piece
+   needs a role nobody on the roster fills — an ongoing specialism such as
+   bookkeeping or content marketing, not a tool you have not reached for yet
+   — **check the marketplace first**:
+"""
+
+_AGENTS_DELEGATE_BOUNDARY = """\
+- **Delegate sustained specialist execution.** Your direct work is company
+  control: choose priorities, synthesize evidence, resolve or reroute
+  blockers, and verify outcomes. When a deliverable needs a specialist's
+  sustained attention over days, delegate it. This does NOT apply to a
+  one-shot action you can complete in this turn — those you simply do, per
+  step 0.
+"""
+
+_AGENTS_PAPERCLIP_REFERENCE = """\
+## Paperclip reference
+
+Every endpoint, payload and header rule lives in the `paperclip` skill. Run
+`skill paperclip`, and read its `references/api-reference.md` for the full API.
+Never work from memory for a payload shape.
+
+"""
+
+
 def _migrate_self_service(workspace: Workspace, owner_id: str, agent_uuid: str) -> bool:
     """Heal an EXISTING Friday's browser line and orchestration-loop gate.
 
@@ -1396,6 +1450,24 @@ def _migrate_self_service(workspace: Workspace, owner_id: str, agent_uuid: str) 
         agents = None
     gate = _AGENTS_DIY_GATE.rstrip("\n")
     heading = "## The orchestration loop"
+
+    # Byte-exact swaps for the rest of the playbook fix. Each is guarded twice:
+    # skip if the NEW text is already present (idempotence) and skip unless the
+    # OLD text is present verbatim (an owner- or Friday-edited section is
+    # theirs). The Paperclip swap is the one that SHRINKS the file — the tables
+    # duplicate the `paperclip` skill this same file tells her to read, and
+    # without removing them a healed AGENTS.md grows toward truncation.
+    if agents is not None:
+        for legacy, replacement in (
+            (_LEGACY_AGENTS_STEP3_HEAD, _AGENTS_STEP3_HEAD),
+            (_LEGACY_AGENTS_DELEGATE_BOUNDARY, _AGENTS_DELEGATE_BOUNDARY),
+            (_LEGACY_AGENTS_PAPERCLIP_REFERENCE, _AGENTS_PAPERCLIP_REFERENCE),
+        ):
+            if replacement not in agents and legacy in agents:
+                agents = agents.replace(legacy, replacement, 1)
+                workspace.write_file(owner_id, agents_path, agents)
+                changed = True
+
     if agents is not None and gate not in agents and heading in agents:
         # Directly under the heading, above step 1 — a gate after Decompose is
         # a gate the loop has already run past.

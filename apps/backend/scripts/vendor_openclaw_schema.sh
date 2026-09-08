@@ -2,6 +2,8 @@
 # Vendor the upstream OpenClaw config zod schema into the chaos suite as a
 # self-contained Node bundle, so CI needs only `node` (no fork checkout, no
 # GHCR auth) to validate emitted openclaw.json against the REAL schema.
+# The fork checkout must be the clean commit named by the pinned fork-image tag;
+# successful vendoring records both that image tag and the verified commit.
 #
 # The bundle re-exports zod itself alongside the schema (costs nothing — zod is
 # already inlined), which lets gen_json_schema.mjs run z.toJSONSchema against it
@@ -31,6 +33,48 @@ if [ ! -f "$SCHEMA_SRC" ]; then
   echo "ERROR: fork schema not found at $SCHEMA_SRC (set OPENCLAW_FORK)" >&2
   exit 1
 fi
+
+case "$PINNED_TAG" in
+  ghcr.io/thelightbulbcompany/agent:*@* | ghcr.io/thelightbulbcompany/agent: )
+    echo "ERROR: upstream must name a tagged Lightbulb fork image" >&2
+    exit 1
+    ;;
+  ghcr.io/thelightbulbcompany/agent:* ) IMAGE_TAG="${PINNED_TAG#ghcr.io/thelightbulbcompany/agent:}" ;;
+  * )
+    echo "ERROR: upstream must name a tagged Lightbulb fork image" >&2
+    exit 1
+    ;;
+esac
+if [[ ! "$IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+  echo "ERROR: upstream must name a tagged Lightbulb fork image" >&2
+  exit 1
+fi
+FORK_TAG="v$IMAGE_TAG"
+if ! git check-ref-format "refs/tags/$FORK_TAG" >/dev/null 2>&1; then
+  echo "ERROR: upstream must name a tagged Lightbulb fork image" >&2
+  exit 1
+fi
+if ! SOURCE_COMMIT=$(git -C "$FORK" rev-parse --verify "refs/tags/${FORK_TAG}^{commit}" 2>/dev/null); then
+  echo "ERROR: expected fork tag $FORK_TAG is missing; fetch and check out that release" >&2
+  exit 1
+fi
+if ! HEAD_COMMIT=$(git -C "$FORK" rev-parse --verify HEAD 2>/dev/null) || [ "$HEAD_COMMIT" != "$SOURCE_COMMIT" ]; then
+  echo "ERROR: fork HEAD does not match $FORK_TAG; refusing to mislabel the schema" >&2
+  exit 1
+fi
+if ! git -C "$FORK" diff --quiet --ignore-submodules -- || ! git -C "$FORK" diff --cached --quiet --ignore-submodules --; then
+  echo "ERROR: fork has tracked modifications; use the clean pinned release" >&2
+  exit 1
+fi
+if ! UNTRACKED_INPUTS=$(git -C "$FORK" ls-files --others --exclude-standard -- src packages); then
+  echo "ERROR: could not inspect fork source inputs" >&2
+  exit 1
+fi
+if [ -n "$UNTRACKED_INPUTS" ]; then
+  echo "ERROR: fork has untracked source inputs; use the clean pinned release" >&2
+  exit 1
+fi
+echo "==> Verified fork source $FORK_TAG at $SOURCE_COMMIT"
 
 # 1. Build the fork monorepo so workspace `dist/` + node_modules resolve.
 echo "==> Installing + building fork at $FORK (this is the slow part)…"
@@ -67,7 +111,8 @@ if [ ! -s "$JSON_TMP" ] || ! node -e 'JSON.parse(require("fs").readFileSync(proc
 fi
 mv "$JSON_TMP" "$JSON_OUT"
 
-# 4. Record the tag this bundle was vendored from (staleness guard reads it).
+# 4. Record the tag and verified commit this bundle was vendored from.
 printf '%s\n' "$PINNED_TAG" > "$OUT/PINNED_TAG"
+printf '%s\n' "$SOURCE_COMMIT" > "$OUT/PINNED_COMMIT"
 echo "==> Vendored schema for $PINNED_TAG -> $OUT/openclaw-config-schema.mjs"
 echo "==> Derived JSON Schema -> $JSON_OUT"

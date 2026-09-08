@@ -512,6 +512,21 @@ class TestResolveOnboardingStateThreading:
         assert result["user_id"] is None
         assert result["onboarding_submitted_by"] is None
 
+    @pytest.mark.asyncio
+    async def test_readiness_onboarding_keys_match_repo_defaults(self):
+        """readiness_state's degrade-to-defaults dict (the except branch of
+        resolve_onboarding_state) hand-copies paperclip_repo's defaults --
+        they drifted apart once already (commit 6b42f427e / #1820). This
+        pins the two key-sets identical so a future edit to one side fails
+        loudly instead of silently drifting again."""
+        from core.repositories import paperclip_repo as paperclip_repo_module
+
+        paperclip_repo = MagicMock()
+        paperclip_repo.get_onboarding_state = AsyncMock(side_effect=RuntimeError("ddb down"))
+        with patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=paperclip_repo):
+            result = await readiness_state.resolve_onboarding_state("user_x")
+        assert set(result.keys()) == set(paperclip_repo_module.ONBOARDING_STATE_DEFAULTS.keys())
+
 
 class TestGenerationThreading:
     @pytest.mark.asyncio

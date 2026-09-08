@@ -172,6 +172,43 @@ def _pending_brief_key(owner_id: str) -> str:
     return f"{_PENDING_BRIEF_PREFIX}{owner_id}"
 
 
+# The single "genuinely not started" onboarding-state shape -- SOLE owner
+# of this key set. ``get_onboarding_state`` overlays the one dynamic field
+# (`pending_brief`, computed per-call) on top of this; every other caller
+# needing an all-defaults onboarding dict (notably
+# ``core.services.readiness_state``'s degrade-to-defaults except branch)
+# must import THIS rather than hand-copy the keys -- a hand-copy already
+# drifted out of sync once (commit 6b42f427e / #1820) and silently dropped
+# first_contact_*/friday_agent_id from the degraded-read shape.
+ONBOARDING_STATE_DEFAULTS: dict = {
+    "onboarding_generation": None,
+    "funnel_state": "not_started",
+    "pending_brief": False,
+    "funnel_submitted_at": None,
+    "funnel_completed_at": None,
+    "onboarding_goal_id": None,
+    "onboarding_project_id": None,
+    "onboarding_brief_text": None,
+    "onboarding_submitted_by": None,
+    "bootstrap_state": "not_started",
+    "bootstrap_dispatch_id": None,
+    "bootstrap_dispatched_at": None,
+    "bootstrap_send_attempted_at": None,
+    "bootstrap_sent_at": None,
+    "bootstrap_delivered_at": None,
+    "bootstrap_attempts": 0,
+    "bootstrap_last_error": None,
+    "first_contact_state": "not_started",
+    "first_contact_attempts": 0,
+    "first_contact_reason": None,
+    "friday_agent_id": None,
+    "teams_state": None,
+    "company_id": None,
+    "paperclip_user_id": None,
+    "user_id": None,
+}
+
+
 @dataclass
 class PaperclipCompany:
     """Per-USER row. ``company_id`` is shared across all rows belonging
@@ -586,32 +623,12 @@ class PaperclipRepo:
         # resolve via a status-agnostic get.
         company = await self.resolve_owner_row(owner_id, include_inactive=True)
         if company is None:
+            # ONBOARDING_STATE_DEFAULTS covers every static field; only
+            # `pending_brief` is dynamic (per-owner DDB lookup) and gets
+            # overlaid here.
             return {
-                "onboarding_generation": None,
-                "funnel_state": "not_started",
+                **ONBOARDING_STATE_DEFAULTS,
                 "pending_brief": await self._has_pending_brief(owner_id),
-                "funnel_submitted_at": None,
-                "funnel_completed_at": None,
-                "onboarding_goal_id": None,
-                "onboarding_project_id": None,
-                "onboarding_brief_text": None,
-                "onboarding_submitted_by": None,
-                "bootstrap_state": "not_started",
-                "bootstrap_dispatch_id": None,
-                "bootstrap_dispatched_at": None,
-                "bootstrap_send_attempted_at": None,
-                "bootstrap_sent_at": None,
-                "bootstrap_delivered_at": None,
-                "bootstrap_attempts": 0,
-                "bootstrap_last_error": None,
-                "first_contact_state": "not_started",
-                "first_contact_attempts": 0,
-                "first_contact_reason": None,
-                "friday_agent_id": None,
-                "teams_state": None,
-                "company_id": None,
-                "paperclip_user_id": None,
-                "user_id": None,
             }
 
         # getattr(..., default) rather than direct attribute access: real

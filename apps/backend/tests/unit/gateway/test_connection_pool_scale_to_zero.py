@@ -358,6 +358,7 @@ async def test_grace_close_arms_trial_stop_after_mixed_case_session_key_run_comp
     conn._analytics_tasks = set()
     conn._run_state = {}
     conn._side_run_ids = {}
+    conn._run_text = {}
     conn._push_tasks = set()
     conn._parked = False
     # Run-completion observer registry (INV-5 bootstrap dispatcher). Not

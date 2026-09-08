@@ -33,6 +33,7 @@ async def test_sessions_changed_forwards_run_active_for_webchat(monkeypatch):
     conn._analytics_tasks = set()
     conn._run_state = {}
     conn._side_run_ids = {}
+    conn._run_text = {}
     conn._push_tasks = set()
     forwarded: list[tuple[dict, str | None]] = []
 
@@ -61,6 +62,7 @@ async def test_sessions_changed_dedupes_and_scopes(monkeypatch):
     conn._analytics_tasks = set()
     conn._run_state = {}
     conn._side_run_ids = {}
+    conn._run_text = {}
     conn._push_tasks = set()
     forwarded: list[dict] = []
 
@@ -100,6 +102,7 @@ async def test_sessions_changed_ignores_unclassified_key(monkeypatch):
     conn._analytics_tasks = set()
     conn._run_state = {}
     conn._side_run_ids = {}
+    conn._run_text = {}
     conn._push_tasks = set()
     forwarded: list[tuple[dict, str | None]] = []
 
@@ -137,6 +140,7 @@ async def test_mixed_case_session_key_clears_on_lowercased_terminal_event(monkey
     conn._analytics_tasks = set()
     conn._run_state = {}
     conn._side_run_ids = {}
+    conn._run_text = {}
     conn._push_tasks = set()
     # Run-completion observer registry (INV-5 bootstrap dispatcher). Not
     # exercised by this test, but _handle_message's TRUE-terminal branch
@@ -186,6 +190,7 @@ async def test_reset_run_state_dedup_relights_on_reconnect(monkeypatch):
     conn._analytics_tasks = set()
     conn._run_state = {}
     conn._side_run_ids = {}
+    conn._run_text = {}
     conn._push_tasks = set()
     forwarded: list[dict] = []
 
@@ -262,6 +267,7 @@ async def test_sessions_changed_clears_pill_on_terminal_status_despite_stale_fla
     conn._analytics_tasks = set()
     conn._run_state = {}
     conn._side_run_ids = {}
+    conn._run_text = {}
     conn._push_tasks = set()
     forwarded: list[dict] = []
 

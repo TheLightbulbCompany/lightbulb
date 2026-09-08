@@ -423,6 +423,42 @@ git commit -m "refactor(workspace): rename the ISOL8_THEME const to LIGHTBULB_TH
 
 ---
 
+## Part 2b — Adjacent finding: the ops runbooks name dead AWS resources
+
+Found while verifying the replica bucket; **deliberately NOT fixed here** — it is a different
+defect class (stale AWS resource names in ops docs, not runtime identifiers), it spans six
+files, and each name needs its own verification. It deserves its own PR.
+
+`docs/runbooks/page-alarms.md` is the document an operator opens at 3am, and most of its
+copy-pasteable commands target resources that no longer exist:
+
+| runbook says | CDK says | source |
+|---|---|---|
+| `isol8-{env}-alerts-page` / `-alerts-warn` SNS topics | `lightbulb-{env}-alerts-…` | `table-names.ts:49` |
+| `--alarm-name-prefix isol8-prod-` | `lightbulb-prod-` | `table-names.ts:36` |
+| `aws logs tail /ecs/isol8-prod` | `/ecs/lightbulb-{env}` | `lightbulb-stage.ts:303`, `service-stack.ts:1336` |
+| `stateMachine:isol8-prod-provision` | `lightbulb-{env}-provision` | `service-stack.ts:2215` |
+| cluster `isol8-prod-container-ClusterEB0386A7-…` | `lightbulb-{env}-container` | `container-stack.ts` (its own comment says the explicit name exists to stop embedding the old one) |
+| `isol8/prod/stripe_webhook_secret` | `lightbulb/{env}/*` | `CLAUDE.md`, verified live 2026-08-31 |
+
+Reference counts, for scoping that PR — note a large share of these are **legitimate** and must
+survive (`--profile isol8-admin`, `isol8.co` mail, historical issue refs), so this is a
+read-every-line job, not a `sed`:
+
+```
+25  docs/runbooks/domain-cutover-owner-actions.md
+21  docs/runbooks/admin-rollout.md
+11  docs/runbooks/page-alarms.md
+ 8  docs/runbooks/bedrock-gate-break-glass.md
+ 3  docs/runbooks/provisioning-requires-review.md
+ 2  docs/runbooks/openclaw-config-lock-protocol-rollout.md
+```
+
+`page-alarms.md` should go first: it is the highest-consequence one, and the alarm-name prefix
+it documents is the same convention this plan's Task 1 just fixed in code.
+
+---
+
 ## Part 3 — Deferred work (NOT implemented here)
 
 ### 3.1 `X-Isol8-Public-Host` — the shim already exists in this repo

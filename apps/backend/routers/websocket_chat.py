@@ -326,6 +326,99 @@ _RUN_DISPATCH_ALTERNATIVE = {
 # than prevent one, and the spend it represents is already committed.
 _WAKE_GATED_METHODS = _RUN_DISPATCH_METHODS
 
+# DEFAULT-DENY: the only gateway methods the browser/mobile RPC proxy will forward.
+#
+# `core-descriptors.ts` at the pinned fork tag declares ~390 dotted methods, plus
+# plugin-provided ones. The product sends 44. Everything else was reachable from any
+# org member's browser against the SHARED per-owner container — and the container has
+# no opinion about it: our operator device holds `operator.admin`
+# (core/crypto/operator_device.py), and OpenClaw's `roleVisibilityFilter` only engages
+# behind `hasOperatorBoundary` (fork src/gateway/operator-role-policy.ts), which needs a
+# configured operator role. We configure none.
+#
+# A session-key ownership check cannot be the fence here: roughly half the dangerous
+# surface (cron writes, device pairing, audit reads, config apply) carries no session
+# key at all. This table is the fence; _SESSION_KEY_PARAM_BY_METHOD is depth behind it.
+#
+# WHAT MAY BE ADDED: a method the product demonstrably sends, or one already carrying an
+# individual ownership guard. Nothing else. Adding a line here re-opens a door, so the
+# justification belongs in the PR, not in a comment.
+#
+# HOW TO SPOT AN OMISSION: a refusal emits put_metric("rpc.refused", reason="not_allowlisted")
+# with the method name. Watch it on dev after the merge, before the prod promotion.
+#
+# Deliberately NOT here (no client caller; the near-misses that look like they belong):
+#   chat.abort / agent.wait / tools.invoke / cron.list — aborts ride the typed
+#   `agent_abort` frame, not this proxy.
+#   sessions.reset — key-guarded in _SESSION_KEY_PARAM_BY_METHOD, but nothing sends it
+#   and it destructively wipes a session. Already-guarded != needed; deny is safer.
+# Deliberately NOT here (different door, diverted upstream of this function):
+#   connect, node.invoke.result (desktop node host, handle_node_message);
+#   agent, agent.wait (Paperclip operator relay).
+_PROXY_ALLOWED_METHODS = frozenset(
+    {
+        # agents + identity — AgentOverviewTab.tsx, useAgents.ts, mobile control/agents.tsx
+        "agent.identity.get",
+        "agents.create",
+        "agents.delete",
+        "agents.list",
+        "agents.update",
+        # browser live-view panel (plugin-provided; absent from core-descriptors.ts)
+        # BrowserDockPanel.tsx
+        "browser.request",
+        # channels — awaitChannelReady.ts (prop-drilled callRpc), channels panels
+        "channels.status",
+        # chat reads (key-guarded) — useAgentChat.ts
+        "chat.history",
+        "chat.message.get",
+        "commands.list",
+        # config — control/llm.tsx and the settings panels
+        "config.get",
+        "config.patch",
+        "config.set",
+        # dreams / memory doctor — DreamsPanel.tsx dispatches five of these from its
+        # module-level ADVANCED_ACTIONS table; .status and .dreamDiary are hook literals
+        "doctor.memory.backfillDreamDiary",
+        "doctor.memory.dedupeDreamDiary",
+        "doctor.memory.dreamDiary",
+        "doctor.memory.repairDreamingArtifacts",
+        "doctor.memory.resetDreamDiary",
+        "doctor.memory.resetGroundedShortTerm",
+        "doctor.memory.status",
+        # approvals — useExecApprovals.tsx picks between these two by entry kind
+        "exec.approval.resolve",
+        "plugin.approval.resolve",
+        # health / models — OverviewPanel, useSystemHealth, ProvisioningStepper
+        "health",
+        "models.authStatus",
+        "models.list",
+        # progress card — useProgressCard.ts
+        "progressCard.get",
+        # questions
+        "question.list",
+        "question.resolve",
+        # sessions (all key-guarded or response post-filtered)
+        "sessions.branches.list",
+        "sessions.branches.switch",
+        "sessions.delete",
+        "sessions.list",
+        "sessions.patch",
+        "sessions.rewind",
+        "sessions.search",
+        # skills — SkillsTab.tsx, SkillProposalsPanel.tsx
+        "skills.install",
+        "skills.proposals.apply",  # `skills.proposals.${action}` template literal
+        "skills.proposals.inspect",
+        "skills.proposals.list",
+        "skills.proposals.reject",  # same template literal
+        "skills.search",
+        "skills.status",
+        "skills.update",
+        # tools
+        "tools.catalog",
+    }
+)
+
 
 def _fit_rpc_result_for_frame(method: str, result, budget: int = _WS_FRAME_BUDGET_BYTES):
     """Keep any RPC res frame deliverable through the Management API.
@@ -1945,6 +2038,33 @@ async def _process_rpc_background(
                         f'"{use}" instead.'
                     ),
                     "details": {"method": method, "use": use},
+                },
+            },
+        )
+        return
+
+    # Default-deny. See _PROXY_ALLOWED_METHODS. Refuse before touching ECS or the pool
+    # so a denied call is a no-op on the container. This runs AFTER the run-dispatch
+    # check above so chat.send keeps its more useful "use agent_chat" message.
+    if method not in _PROXY_ALLOWED_METHODS:
+        logger.warning(
+            "[%s] rpc %s refused (not on the proxy allowlist) owner=%s conn=%s",
+            user_id,
+            method,
+            owner_id,
+            connection_id[:12],
+        )
+        put_metric("rpc.refused", dimensions={"method": method, "reason": "not_allowlisted"})
+        await management_api.send_message_async(
+            connection_id,
+            {
+                "type": "res",
+                "id": req_id,
+                "ok": False,
+                "error": {
+                    "code": "INVALID_REQUEST",
+                    "message": f'"{method}" is not available over the RPC proxy.',
+                    "details": {"method": method},
                 },
             },
         )

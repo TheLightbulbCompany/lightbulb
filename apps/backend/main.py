@@ -736,12 +736,6 @@ app.add_middleware(
 # same e2e_run_id field. No-op for traffic that doesn't send the header.
 app.add_middleware(E2ECorrelationMiddleware)
 
-# Admin metrics middleware (CEO O1) — emits admin_api.* CloudWatch metrics
-# for every /api/v1/admin/* request. No-op for non-admin paths.
-from core.middleware.admin_metrics import AdminMetricsMiddleware  # noqa: E402
-
-app.add_middleware(AdminMetricsMiddleware)
-
 # Security response headers (nosniff / frame-options / referrer-policy). Added
 # last so it wraps outermost and stamps every response, including ones a
 # downstream middleware short-circuits.

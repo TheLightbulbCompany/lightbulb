@@ -11,7 +11,6 @@ import {
   Inbox,
   ListTodo,
   Repeat,
-  Network,
   Images,
   Search,
   BookOpen,
@@ -130,7 +129,9 @@ export const COMPANY_SECTIONS: { label: string | null; items: CompanySectionItem
   {
     label: "Company",
     items: [
-      { panel: "teams-org-chart", label: "Org chart", Icon: Network },
+      // The org chart moved INSIDE the Agents panel as its second view — same
+      // roster, drawn as a tree. `teams-org-chart` still resolves and opens
+      // Agents on the chart (RETIRED_PANEL_ALIASES).
       // What the company has accounts with, what agents set up on its behalf,
       // and the kill switch. Sits in Company, not Settings, because it is the
       // page an owner opens the first time an agent does something surprising.

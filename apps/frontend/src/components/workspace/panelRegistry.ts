@@ -49,6 +49,12 @@ export const RETIRED_PANEL_ALIASES: Readonly<Record<string, string>> = {
   // synthesizes `groupBy` from the RAW key below.
   "teams-goals": "teams-issues",
   "teams-projects": "teams-issues",
+  // The org chart is the SAME roster read, drawn as a tree — a view of the
+  // Agents panel, not a page of its own. Aliased for the same reason as the
+  // four Money keys: the dock dedupes by panel id, so a router-level mapping
+  // would open two tabs both titled "Agents". describePanel synthesizes
+  // `view` from the RAW key below.
+  "teams-org-chart": "teams-agents",
 };
 
 // The sections of the Money page — the set an absorbed key or a `?section=`
@@ -87,6 +93,10 @@ export const TASKS_GROUP_BY: ReadonlySet<string> = new Set([
   "parent",
 ]);
 
+/** The Agents panel's two views — the set an absorbed key or a `?view=` deep
+ *  link may name. The roster is the default; `chart` is the org chart. */
+export const AGENTS_VIEWS: ReadonlySet<string> = new Set(["list", "chart"]);
+
 // One-shot intents: copied to the target panel's open params, immediately
 // stripped from the URL, cleared after consumption, excluded from the
 // persisted layout (dockview serializes panel params — an unstripped intent
@@ -99,7 +109,6 @@ export const NON_COMMAND_PARAMS = ["checkout", "subscription", "credits", "provi
 const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
   dashboard: "Home",
   agents: "Agents",
-  "org-chart": "Org chart",
   inbox: "Inbox",
   issues: "Tasks",
   routines: "Automations",
@@ -242,6 +251,13 @@ export function describePanel(
           p.groupBy = params.groupBy;
         }
       }
+      // Agents absorbed the org chart as its second view, so the view a link
+      // meant survives only if it is read off the RAW key — same synthesis,
+      // same reason, as `money` and `inbox`.
+      if (teamsKey === "agents") {
+        if (panelKey === "teams-org-chart") p.view = "chart";
+        else if (params.view && AGENTS_VIEWS.has(params.view)) p.view = params.view;
+      }
       // Inbox absorbed Activity, so the band a link meant survives only if it
       // is read off the RAW key — same synthesis, same reason, as `money`.
       if (teamsKey === "inbox") {
@@ -299,6 +315,7 @@ export function durableParamsFor(panelId: string): string[] {
   if (panelId === "file-viewer") return ["panel", "path", "agent"];
   if (panelId === "agent-inspector") return ["panel", "agent", "inspectorTab"];
   if (panelId === "control:agents") return ["panel", "agent"];
+  if (panelId === "teams-agents") return ["panel", "view"];
   if (panelId === "teams-issues") return ["panel", "agent", "groupBy"];
   if (panelId === "teams-inbox") return ["panel", "section"];
   if (panelId === "teams-brain") return ["panel", "path"];
@@ -314,6 +331,7 @@ export function durableParamsFor(panelId: string): string[] {
 // param (an agent filter, an inspector tab) survives an unfiltered navigation
 // — breaking the mobile invariant that plain panel nav drops stale state.
 export function clearablePanelParamKeys(panelId: string): string[] {
+  if (panelId === "teams-agents") return ["view"];
   if (panelId === "teams-issues") return ["agent", "groupBy"];
   if (panelId === "teams-inbox") return ["section"];
   if (panelId === "teams-brain") return ["path"];

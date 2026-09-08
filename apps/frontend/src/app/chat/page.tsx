@@ -156,6 +156,10 @@ function MobileChatShell() {
   const groupByParam =
     searchParams.get("groupBy") ??
     (rawTeamsKey === "goals" ? "goal" : rawTeamsKey === "projects" ? "project" : null);
+  // And for Agents: ?panel=teams-org-chart carries no &view=, because the view
+  // IS the key. It aliases to teams-agents, so reading it off the RAW key here
+  // can never leak onto another panel.
+  const viewParam = searchParams.get("view") ?? (rawTeamsKey === "org-chart" ? "chart" : null);
   const oneShots = {
     new: searchParams.get("new") ?? undefined,
     newIssue: searchParams.get("newIssue") ?? undefined,
@@ -219,6 +223,7 @@ function MobileChatShell() {
       // scrolls to a band nobody asked for.
       params.delete("section");
       params.delete("groupBy");
+      params.delete("view");
       pushSearchParams(params);
     },
     [searchParams],
@@ -368,6 +373,7 @@ function MobileChatShell() {
                 panelParams={{
                   ...(agentParam ? { agent: agentParam } : {}),
                   ...(groupByParam ? { groupBy: groupByParam } : {}),
+                  ...(viewParam ? { view: viewParam } : {}),
                   ...(tabParam ? { tab: tabParam } : {}),
                   ...(pathParam ? { path: pathParam } : {}),
                   ...(dayParam ? { day: dayParam } : {}),

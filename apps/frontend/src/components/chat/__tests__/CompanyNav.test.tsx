@@ -27,7 +27,6 @@ const ALL_LABELS = [
   "Leads",
   "Brain",
   "Library",
-  "Org chart",
   "Accounts",
 ];
 
@@ -53,8 +52,6 @@ describe("CompanyNav", () => {
     const { unmount } = render(<CompanyNav />);
     expect(screen.getByText("Accounts")).toBeInTheDocument();
     expect(screen.queryByText("Domain & Site")).toBeNull();
-    // Accounts' neighbour that is NOT a shell stays put.
-    expect(screen.getByText("Org chart")).toBeInTheDocument();
     unmount();
 
     stripeStatus.data = undefined;
@@ -148,6 +145,21 @@ describe("CompanyNav", () => {
     fireEvent.click(screen.getByText("Library"));
     expect(onPanelChange).toHaveBeenCalledWith("teams-artifacts");
   });
+  it("stops offering Org chart, which still resolves onto the Agents panel", () => {
+    // Absorbed as the Agents panel's chart view (owner ruling 2026-09-08). The
+    // rail drops it; the key must keep resolving, or a saved link, a bookmark
+    // or an agent-built URL breaks.
+    render(<CompanyNav />);
+    expect(screen.queryByText("Org chart")).toBeNull();
+    const all = COMPANY_SECTIONS.flatMap((sec) => sec.items.map((i) => i.panel));
+    expect(all).not.toContain("teams-org-chart");
+    expect(resolvePanelAlias("teams-org-chart")).toBe("teams-agents");
+    expect(describePanel("teams-org-chart", {})).toMatchObject({
+      panelId: "teams-agents",
+      params: { teamsKey: "agents", view: "chart" },
+    });
+  });
+
   it("has no dead ends — every item's panel key resolves in the registry", () => {
     for (const section of COMPANY_SECTIONS) {
       for (const item of section.items) {

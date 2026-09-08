@@ -5,7 +5,7 @@
 // must ever leak from the UI. The BFF whitelists with extra="forbid" so a
 // smuggle attempt would 422, but we enforce defense in depth at the UI
 // boundary too.
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 
 interface AgentRow {
@@ -18,14 +18,16 @@ interface AgentRow {
   marketplace?: { listingId: string; slug: string; version: number; seller: string };
 }
 interface AgentsResp {
-  data: { agents: AgentRow[] };
+  // Undefined while loading / on error — the panel's two non-row states.
+  data?: { agents: AgentRow[] };
   isLoading: boolean;
   error: unknown;
   mutate: () => void;
 }
 const mockPost = vi.fn();
 const mockMutate = vi.fn();
-const mockRead = vi.fn<() => AgentsResp>(() => ({
+// Typed with the path arg so a test can assert WHICH key was read.
+const mockRead = vi.fn<(path: string) => AgentsResp>(() => ({
   data: { agents: [] },
   isLoading: false,
   error: null,
@@ -56,6 +58,17 @@ vi.mock("@/components/teams/agents/hooks/useAgentMutations", () => ({
 const mockOpenMarketplace = vi.fn();
 vi.mock("@/components/marketplace/drawer/MarketplaceDrawerProvider", () => ({
   useMarketplaceDrawer: () => ({ open: mockOpenMarketplace }),
+}));
+
+// The chart view renders the same OrgChart the retired Org chart panel did —
+// stubbed here so these tests assert the wiring, not the pan/zoom canvas
+// (which OrgChart's own tests cover).
+const mockOrgChart = vi.fn();
+vi.mock("@/components/teams/org-chart/OrgChart", () => ({
+  OrgChart: ({ agents }: { agents: { name: string }[] }) => {
+    mockOrgChart(agents);
+    return <div data-testid="org-chart">{agents.map((a) => a.name).join(", ")}</div>;
+  },
 }));
 
 import { AgentsListPanel } from "@/components/teams/panels/AgentsListPanel";
@@ -244,5 +257,109 @@ describe("AgentsListPanel", () => {
     });
     render(<AgentsListPanel />);
     expect(screen.getByRole("button", { name: /delete/i })).toBeInTheDocument();
+  });
+});
+
+describe("AgentsListPanel — roster / chart views", () => {
+  const roster = [
+    { id: "ceo", name: "Friday", role: "ceo" },
+    { id: "eng", name: "Forge", role: "engineer" },
+  ];
+
+  beforeEach(() => {
+    localStorage.clear();
+    mockOrgChart.mockClear();
+    mockRead.mockReturnValue({
+      data: { agents: roster },
+      isLoading: false,
+      error: null,
+      mutate: mockMutate,
+    });
+  });
+
+  afterEach(() => {
+    mockRead.mockReturnValue({
+      data: { agents: [] },
+      isLoading: false,
+      error: null,
+      mutate: mockMutate,
+    });
+  });
+
+  it("opens on the roster and reads /agents exactly once for both views", () => {
+    render(<AgentsListPanel />);
+    expect(mockRead).toHaveBeenCalledWith("/agents");
+    expect(screen.getByText("Friday")).toBeInTheDocument();
+    expect(screen.queryByTestId("org-chart")).toBeNull();
+    expect(screen.getByRole("button", { name: "List view" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  });
+
+  it("switches to the chart over the roster it already has, and remembers the pick", () => {
+    const { unmount } = render(<AgentsListPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Org chart view" }));
+    expect(screen.getByTestId("org-chart")).toHaveTextContent("Friday, Forge");
+    expect(mockOrgChart).toHaveBeenCalledWith(roster);
+    // One SWR key for both views: the chart draws the roster the panel already
+    // has rather than adding a second /agents read of its own.
+    expect(new Set(mockRead.mock.calls.map((c) => c[0]))).toEqual(new Set(["/agents"]));
+    unmount();
+
+    // Persisted per browser (the tasksViewMode idiom), so a remount opens on it.
+    render(<AgentsListPanel />);
+    expect(screen.getByTestId("org-chart")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Org chart view" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  });
+
+  it("the search box narrows both views", () => {
+    render(<AgentsListPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Org chart view" }));
+    fireEvent.change(screen.getByLabelText("Search agents"), { target: { value: "forge" } });
+    expect(screen.getByTestId("org-chart")).toHaveTextContent("Forge");
+    expect(screen.getByTestId("org-chart")).not.toHaveTextContent("Friday");
+  });
+
+  it("initialView='chart' (the retired ?panel=teams-org-chart link) opens the chart without changing the preference", () => {
+    const { unmount } = render(<AgentsListPanel initialView="chart" />);
+    expect(screen.getByTestId("org-chart")).toBeInTheDocument();
+    expect(localStorage.getItem("paperclip:agents:view-mode")).toBeNull();
+    unmount();
+    // A plain Agents open clears the param, so the stored default (list) wins.
+    render(<AgentsListPanel />);
+    expect(screen.queryByTestId("org-chart")).toBeNull();
+    expect(screen.getByText("Friday")).toBeInTheDocument();
+  });
+
+  it("an explicit pick beats the deep link and becomes the preference", () => {
+    render(<AgentsListPanel initialView="chart" />);
+    fireEvent.click(screen.getByRole("button", { name: "List view" }));
+    expect(screen.queryByTestId("org-chart")).toBeNull();
+    expect(localStorage.getItem("paperclip:agents:view-mode")).toBe("list");
+  });
+
+  it("re-delivering the param on an already-open panel re-applies the view", () => {
+    const { rerender } = render(<AgentsListPanel />);
+    expect(screen.queryByTestId("org-chart")).toBeNull();
+    rerender(<AgentsListPanel initialView="chart" />);
+    expect(screen.getByTestId("org-chart")).toBeInTheDocument();
+    // ...and a plain nav (param cleared) drops back to the stored view.
+    rerender(<AgentsListPanel />);
+    expect(screen.queryByTestId("org-chart")).toBeNull();
+  });
+
+  it("says so once, calmly, when the roster cannot be read", () => {
+    mockRead.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      error: new Error("boom"),
+      mutate: mockMutate,
+    });
+    render(<AgentsListPanel />);
+    expect(screen.getByRole("alert")).toHaveTextContent("We couldn\u2019t load your agents.");
   });
 });

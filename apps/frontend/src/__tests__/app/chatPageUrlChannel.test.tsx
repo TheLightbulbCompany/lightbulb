@@ -18,7 +18,7 @@
 // assert against the LIVE window.location.search, which is where the rewrite
 // was observable.
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import React from "react";
 
 // Faithful to the App Router: useSearchParams tracks the live query string
@@ -35,8 +35,20 @@ vi.mock("@/hooks/useIsDesktop", () => ({ useIsDesktop: () => false }));
 // ChatLayout reduced to a pass-through so the inline Teams mount below is
 // reached (the sibling chatPageBranch.test.tsx swallows children instead —
 // it asserts which shell mounts, not what the shell threads down).
+// The shell hands ChatLayout its `onPanelChange` (setActivePanel) — captured
+// so a test can perform a plain sidebar nav without mounting the real nav.
+const layout = vi.hoisted(() => ({ onPanelChange: (() => {}) as (next: string) => void }));
 vi.mock("@/components/chat/ChatLayout", () => ({
-  ChatLayout: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  ChatLayout: ({
+    children,
+    onPanelChange,
+  }: {
+    children: React.ReactNode;
+    onPanelChange?: (next: string) => void;
+  }) => {
+    if (onPanelChange) layout.onPanelChange = onPanelChange;
+    return <div>{children}</div>;
+  },
 }));
 vi.mock("@/components/chat/AgentChatWindow", () => ({ AgentChatWindow: () => null }));
 vi.mock("@/components/notifications/RunNotifications", () => ({ RunNotifications: () => null }));
@@ -48,6 +60,7 @@ vi.mock("@/components/chat/InlineTeamsPanel", async (importOriginal) => ({
       data-testid="inline-teams"
       data-panel={props.panel}
       data-tab={props.panelParams?.tab ?? ""}
+      data-view={props.panelParams?.view ?? ""}
     />
   ),
 }));
@@ -113,5 +126,40 @@ describe("/chat — the shell never rewrites the URL command", () => {
       panelParams: descriptor.params,
     }) as React.ReactElement<{ initialTab: string | null }>;
     expect(element.props.initialTab).toBe("dreams");
+  });
+});
+
+describe("/chat — a retired ?panel=teams-org-chart lands on the Agents chart view", () => {
+  beforeEach(() => {
+    window.history.replaceState(null, "", "/chat?panel=teams-org-chart");
+  });
+
+  it("leaves the retired key in the address bar, and lands mobile on the chart", () => {
+    render(<ChatPage />);
+    expect(window.location.search).toBe("?panel=teams-org-chart");
+    const inline = screen.getByTestId("inline-teams");
+    expect(inline).toHaveAttribute("data-panel", "teams-agents"); // resolved at READ time
+    expect(inline).toHaveAttribute("data-view", "chart");
+  });
+
+  it("a plain sidebar nav clears the view — mobile has no clearablePanelParamKeys", () => {
+    render(<ChatPage />);
+    act(() => layout.onPanelChange("teams-issues"));
+    const params = new URLSearchParams(window.location.search);
+    expect(params.get("panel")).toBe("teams-issues");
+    expect(params.get("view")).toBeNull();
+  });
+
+  it("desktop dock resolves it to ONE Agents panel on the chart view", () => {
+    render(<ChatPage />);
+    const decision = deriveReconcilerAction(window.location.search, null)!;
+    const descriptor = describePanel(decision.panelKey!, decision.durableParams)!;
+    expect(descriptor.panelId).toBe("teams-agents");
+
+    const element = TeamsPanelRouter({
+      panel: descriptor.params.teamsKey,
+      panelParams: descriptor.params,
+    }) as React.ReactElement<{ initialView: string | null }>;
+    expect(element.props.initialView).toBe("chart");
   });
 });

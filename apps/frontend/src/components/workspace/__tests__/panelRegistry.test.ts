@@ -26,6 +26,8 @@ describe("panelRegistry", () => {
     for (const k of ["payments", "products", "customers", "spend"]) {
       expect(resolvePanelAlias(`teams-${k}`)).toBe("teams-money");
     }
+    // The org chart is a VIEW of the roster, so its key aliases onto Agents.
+    expect(resolvePanelAlias("teams-org-chart")).toBe("teams-agents");
   });
 
   it("describes a retired ?panel=dreams as the Brain panel, landing ON the Dreams tab (review finding 3)", () => {
@@ -194,6 +196,31 @@ describe("panelRegistry", () => {
     expect(describePanel("teams-money", { section: "constructor" })!.params).toEqual({ teamsKey: "money" });
     // The raw key wins: it is what the owner actually clicked.
     expect(describePanel("teams-spend", { section: "products" })!.params.section).toBe("spend");
+  });
+
+  it("aliases teams-org-chart onto ONE Agents panel, on the chart view", () => {
+    // Same reason as Money's four keys: the dock dedupes by panel id, so a
+    // router-level mapping would open a second tab also titled "Agents".
+    expect(describePanel("teams-org-chart", {})).toEqual({
+      panelId: "teams-agents",
+      component: "teams",
+      title: "Agents",
+      params: { teamsKey: "agents", view: "chart" },
+    });
+    // A plain Agents open carries no view — the panel's stored preference wins.
+    expect(describePanel("teams-agents", {})!.params).toEqual({ teamsKey: "agents" });
+    // ?view= is honoured on the canonical key, and only for a real view.
+    expect(describePanel("teams-agents", { view: "chart" })!.params).toEqual({
+      teamsKey: "agents",
+      view: "chart",
+    });
+    expect(describePanel("teams-agents", { view: "constructor" })!.params).toEqual({
+      teamsKey: "agents",
+    });
+    // The raw key wins: it is what the owner actually clicked.
+    expect(describePanel("teams-org-chart", { view: "list" })!.params.view).toBe("chart");
+    expect(durableParamsFor("teams-agents")).toEqual(["panel", "view"]);
+    expect(clearablePanelParamKeys("teams-agents")).toEqual(["view"]);
   });
 
   it("aliases teams-activity onto Inbox, pre-scrolled to Recently", () => {

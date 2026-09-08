@@ -137,24 +137,39 @@ describe("SessionList", () => {
     expect(screen.queryByRole("button", { name: "Rename Agent updates" })).toBeNull();
   });
 
-  it("asks to delete a named session via the trash affordance", () => {
-    const onDelete = vi.fn();
+  it("archives a named session via the archive affordance", () => {
+    const onArchive = vi.fn();
     render(
       <SessionList
         sessions={makeSessions()}
         activeSessionId={null}
         onSelect={vi.fn()}
         onNew={vi.fn()}
-        onDelete={onDelete}
+        onArchive={onArchive}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Delete Taxes" }));
-    expect(onDelete).toHaveBeenCalledWith(
+    fireEvent.click(screen.getByRole("button", { name: "Archive Taxes" }));
+    expect(onArchive).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: "11111111-1111-4111-8111-111111111111", key: "k1" }),
     );
   });
 
-  it("delete asks the caller — it never selects the row it sits on", () => {
+  it("offers NO delete affordance in the rail at all — archive is the only removal", () => {
+    render(
+      <SessionList
+        sessions={makeSessions()}
+        activeSessionId={null}
+        onSelect={vi.fn()}
+        onNew={vi.fn()}
+        onArchive={vi.fn()}
+        onPin={vi.fn()}
+        onRename={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /^Delete /i })).toBeNull();
+  });
+
+  it("archive asks the caller — it never selects the row it sits on", () => {
     const onSelect = vi.fn();
     render(
       <SessionList
@@ -162,24 +177,58 @@ describe("SessionList", () => {
         activeSessionId={null}
         onSelect={onSelect}
         onNew={vi.fn()}
-        onDelete={vi.fn()}
+        onArchive={vi.fn()}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Delete Taxes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Archive Taxes" }));
     expect(onSelect).not.toHaveBeenCalled();
   });
 
-  it("offers no delete affordance on the legacy row", () => {
+  it("offers no archive affordance on the legacy row", () => {
     render(
       <SessionList
         sessions={[{ sessionId: null, key: "agent:a:u", label: "Agent updates", rawLabel: "Agent updates" }]}
         activeSessionId={null}
         onSelect={vi.fn()}
         onNew={vi.fn()}
-        onDelete={vi.fn()}
+        onArchive={vi.fn()}
       />,
     );
-    expect(screen.queryByRole("button", { name: "Delete Agent updates" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Archive Agent updates" })).toBeNull();
+  });
+
+  it("toggles the pin on and off from the row", () => {
+    const onPin = vi.fn();
+    const [first, ...rest] = makeSessions();
+    render(
+      <SessionList
+        sessions={[{ ...first, pinned: true }, ...rest]}
+        activeSessionId={null}
+        onSelect={vi.fn()}
+        onNew={vi.fn()}
+        onPin={onPin}
+      />,
+    );
+    // A pinned row's control reads "Unpin" and sends false — the opposite of
+    // its current state, not a blind `true`.
+    fireEvent.click(screen.getByRole("button", { name: "Unpin Taxes" }));
+    expect(onPin).toHaveBeenCalledWith(expect.objectContaining({ key: "k1" }), false);
+    onPin.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: /^Pin / }));
+    expect(onPin).toHaveBeenCalledWith(expect.anything(), true);
+  });
+
+  it("offers no pin affordance on the legacy row", () => {
+    render(
+      <SessionList
+        sessions={[{ sessionId: null, key: "agent:a:u", label: "Agent updates", rawLabel: "Agent updates" }]}
+        activeSessionId={null}
+        onSelect={vi.fn()}
+        onNew={vi.fn()}
+        onPin={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /pin Agent updates/i })).toBeNull();
   });
 
   it("Enter followed by the unmount blur commits exactly once", () => {

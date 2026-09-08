@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { AlertTriangle, Pencil, Plus, Trash2 } from "lucide-react";
+import { AlertTriangle, Archive, Pencil, Pin, Plus } from "lucide-react";
 import { isUnhappyRun, type AgentSession } from "@/hooks/useAgentSessions";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
@@ -20,8 +20,19 @@ interface SessionListProps {
   onNew: () => void;
   /** Persist a user-set name for a materialized session (sessions.patch {label}). */
   onRename?: (session: AgentSession, label: string) => void;
-  /** Ask to delete a session — the caller owns the confirm + sessions.delete. */
-  onDelete?: (session: AgentSession) => void;
+  /**
+   * Archive a session out of the rail (sessions.patch {archived:true}).
+   *
+   * This is the rail's only removal action, deliberately. It is reversible from
+   * the archived drawer, so it needs no confirm; permanent deletion lives in
+   * that drawer, one step further in, behind its own dialog. An owner should
+   * not be able to destroy a conversation from a hover icon.
+   */
+  onArchive?: (session: AgentSession) => void;
+  /** Toggle the owner's sort pin (sessions.patch {pinned}). */
+  onPin?: (session: AgentSession, next: boolean) => void;
+  /** Rendered after "New session" — the archived drawer, supplied by the shell. */
+  archivedSlot?: React.ReactNode;
 }
 
 /**
@@ -35,7 +46,9 @@ export function SessionList({
   onSelect,
   onNew,
   onRename,
-  onDelete,
+  onArchive,
+  onPin,
+  archivedSlot,
 }: SessionListProps): React.JSX.Element {
   const [editing, setEditing] = useState<{ key: string; value: string } | null>(null);
   // Guards the editor's close: Enter (and Escape) unmount the focused input,
@@ -137,8 +150,31 @@ export function SessionList({
                       transcript has no visible user/assistant message yet. */}
                   {s.preview ? <span className="session-preview">{s.preview}</span> : null}
                 </button>
-                {/* General (sessionId null) keeps its fixed identity — only
-                    named sessions are renameable and deletable. */}
+                {/* The legacy row (sessionId null) keeps its fixed identity: it
+                    is the agent's main session, which the container refuses to
+                    archive, and it holds platform-written history nobody chose
+                    to name. Pin/rename/archive are for real sessions only. */}
+                {onPin && s.sessionId !== null && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        /* A pinned row shows its pin at rest — a hover-only
+                           control cannot explain why that row sits on top. */
+                        className={`session-rename${s.pinned ? " session-action--on" : ""}`}
+                        aria-label={s.pinned ? `Unpin ${s.label}` : `Pin ${s.label}`}
+                        aria-pressed={s.pinned ? "true" : "false"}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onPin(s, !s.pinned);
+                        }}
+                      >
+                        <Pin size={12} />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>{s.pinned ? "Unpin session" : "Pin to top"}</TooltipContent>
+                  </Tooltip>
+                )}
                 {onRename && s.sessionId !== null && (
                   <Tooltip>
                     <TooltipTrigger asChild>
@@ -157,22 +193,22 @@ export function SessionList({
                     <TooltipContent>Rename session</TooltipContent>
                   </Tooltip>
                 )}
-                {onDelete && s.sessionId !== null && (
+                {onArchive && s.sessionId !== null && (
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <button
                         type="button"
-                        className="session-rename session-delete"
-                        aria-label={`Delete ${s.label}`}
+                        className="session-rename"
+                        aria-label={`Archive ${s.label}`}
                         onClick={(e) => {
                           e.stopPropagation();
-                          onDelete(s);
+                          onArchive(s);
                         }}
                       >
-                        <Trash2 size={12} />
+                        <Archive size={12} />
                       </button>
                     </TooltipTrigger>
-                    <TooltipContent>Delete session</TooltipContent>
+                    <TooltipContent>Archive session</TooltipContent>
                   </Tooltip>
                 )}
               </>
@@ -192,6 +228,7 @@ export function SessionList({
         <Plus size={12} />
         <span>New session</span>
       </button>
+      {archivedSlot}
     </div>
   );
 }

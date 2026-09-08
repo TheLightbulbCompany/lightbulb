@@ -261,7 +261,7 @@ export function AgentDeleteDialog({ agent, onCancel, onDelete }: DeleteProps) {
           <AlertDialogCancel disabled={submitting}>Cancel</AlertDialogCancel>
           <Button variant="destructive" onClick={handleSubmit} disabled={submitting}>
             {submitting ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
-            Delete
+            Delete permanently
           </Button>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -298,9 +298,10 @@ export function SessionDeleteDialog({ session, onCancel, onDelete }: SessionDele
     <AlertDialog open={session !== null} onOpenChange={(next) => !next && !submittingRef.current && onCancel()}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Delete &ldquo;{session?.label}&rdquo;?</AlertDialogTitle>
+          <AlertDialogTitle>Delete &ldquo;{session?.label}&rdquo; permanently?</AlertDialogTitle>
           <AlertDialogDescription>
-            This deletes the session and archives its transcript. This cannot be undone.
+            This deletes the session and its transcript for good. Archiving is the reversible
+            option; this is not.
           </AlertDialogDescription>
         </AlertDialogHeader>
         {error && <p className="text-xs text-err">{error}</p>}
@@ -308,7 +309,7 @@ export function SessionDeleteDialog({ session, onCancel, onDelete }: SessionDele
           <AlertDialogCancel disabled={submitting}>Cancel</AlertDialogCancel>
           <Button variant="destructive" onClick={handleSubmit} disabled={submitting}>
             {submitting ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
-            Delete
+            Delete permanently
           </Button>
         </AlertDialogFooter>
       </AlertDialogContent>

@@ -664,6 +664,45 @@
   background: var(--cream);
   color: var(--err);
 }
+/* A pinned row's pin stays visible at rest — hover-only, the row would sit on
+   top with nothing on screen explaining why. Same button, higher specificity
+   than the `display:none` base. */
+.session-row .session-action--on {
+  display: flex;
+  color: var(--midnight);
+}
+/* Archived drawer — collapsed by default, under "New session". */
+.session-archived {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.session-archived-toggle {
+  color: var(--midnight-faint);
+}
+.session-archived-note {
+  padding: 4px 8px 4px 26px;
+  color: var(--midnight-faint);
+  font-size: var(--text-2xs);
+}
+/* Archived rows are read-only: restore or delete, never select. Dimmed rather
+   than recoloured so the whole row reads as inactive in both themes. */
+.session-row--archived {
+  opacity: 0.72;
+}
+.session-row--archived .session-item {
+  cursor: default;
+}
+/* Restore and delete stay visible at rest here. The drawer is opened
+   deliberately and holds a handful of rows, so hiding the only way back out
+   behind a hover would make archive look one-way all over again. */
+.session-row--archived .session-rename {
+  display: flex;
+}
+.session-row--archived .session-item:hover {
+  background: transparent;
+  color: var(--midnight-muted);
+}
 .session-rename-input {
   flex: 1;
   min-width: 0;

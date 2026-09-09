@@ -149,7 +149,7 @@ function RoomContent({ roomId, room, state, participants, messages, presence = [
         {visibleRoom && <p className="text-sm text-muted-foreground">{roomKindLabel[visibleRoom.kind]}</p>}
         {!loading && <div className="room-audience">
           {viewers.length > 0 && <div role="group" aria-label="People viewing this room" className="room-facepile">
-            {viewers.slice(0, 4).map(person => <span key={person.ref} title={`${person.name} · In this room`}><Identity name={`${person.name} · In this room`} size="sm" avatarOnly /></span>)}
+            {viewers.slice(0, 4).map(person => <span key={person.ref} role="group" aria-label={`${person.name} · In this room`} title={`${person.name} · In this room`}><Identity name={person.name} size="sm" avatarOnly /></span>)}
             {viewers.length > 4 && <span className="text-sm text-muted-foreground">and {viewers.length - 4} more</span>}
           </div>}
           <Button ref={memberTrigger} type="button" variant="ghost" aria-label="View members" aria-expanded={membersOpen} aria-controls={`${id}-members`}

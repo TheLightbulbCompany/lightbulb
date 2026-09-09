@@ -112,9 +112,35 @@ describe("controlled room surface", () => {
       { personId: "human-b", state: "unknown", inRoom: true, observedAt: null },
     ] })} />);
     const viewers = screen.getByRole("group", { name: "People viewing this room" });
-    expect(within(viewers).getByRole("img", { name: "Alice Example · In this room" })).toBeInTheDocument();
+    const viewingPerson = within(viewers).getByRole("group", { name: "Alice Example · In this room" });
+    expect(within(viewingPerson).getByRole("img", { name: "Alice Example" })).toHaveTextContent("AE");
     expect(within(viewers).queryByRole("img", { name: /Bob/ })).not.toBeInTheDocument();
     expect(screen.getByText("Alice Example is typing…")).toBeInTheDocument();
+  });
+
+  it("keeps viewer initials consistent with Members and authored identities while labeling human viewing separately", () => {
+    render(<RoomPanel {...props({ participants: [
+      { ...participants[0], name: "Alice Chen" }, { ...participants[1], name: "Sam Rivera" }, participants[2],
+    ], presence: [
+      { personId: "human-a", state: "available", inRoom: true, observedAt: "2026-09-09T12:00:00Z" },
+      { personId: "human-b", state: "available", inRoom: true, observedAt: "2026-09-09T12:00:00Z" },
+      { personId: "agent-f", state: "available", inRoom: true, observedAt: "2026-09-09T12:00:00Z" },
+      { personId: "not-a-member", state: "available", inRoom: true, observedAt: "2026-09-09T12:00:00Z" },
+    ] })} />);
+    const viewers = screen.getByRole("group", { name: "People viewing this room" });
+    expect(within(viewers).getByText("AC", { exact: true })).toBeInTheDocument();
+    expect(within(viewers).getByText("SR", { exact: true })).toBeInTheDocument();
+    expect(within(viewers).getAllByRole("img")).toHaveLength(2);
+    for (const [name, initials] of [["Alice Chen", "AC"], ["Sam Rivera", "SR"]]) {
+      const viewingPerson = within(viewers).getByRole("group", { name: `${name} · In this room` });
+      expect(within(viewingPerson).getByRole("img", { name })).toHaveTextContent(initials);
+    }
+    fireEvent.click(screen.getByRole("button", { name: "View members" }));
+    const members = screen.getByRole("region", { name: "Room members" });
+    expect(within(members).getByRole("img", { name: "Alice Chen" })).toHaveTextContent("AC");
+    expect(within(members).getByRole("img", { name: "Sam Rivera" })).toHaveTextContent("SR");
+    const authored = screen.getByRole("article", { name: "Message from Alice Chen" });
+    expect(within(authored).getByRole("img", { name: "Alice Chen" })).toHaveTextContent("AC");
   });
 
   it("renders markdown without remote images, raw HTML, unsafe protocols or company attachment behavior", () => {

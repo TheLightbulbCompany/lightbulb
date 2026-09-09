@@ -87,13 +87,16 @@ async def test_ws_disconnect_without_connection_id(ws_client):
 @pytest.mark.asyncio
 async def test_ws_disconnect_success(ws_client):
     """POST /ws/disconnect with connection ID returns 200."""
-    with patch("routers.websocket_chat.get_connection_service") as mock_cs:
-        mock_cs.return_value.delete_connection = MagicMock()
+    service = MagicMock()
+    service.get_connection.return_value = None
+    with patch("routers.websocket_chat.get_connection_service", return_value=service):
         response = await ws_client.post(
             "/api/v1/ws/disconnect",
             headers={"x-connection-id": "conn_abc"},
         )
     assert response.status_code == 200
+    service.get_connection.assert_called_once_with("conn_abc")
+    service.delete_connection.assert_called_once_with("conn_abc")
 
 
 # --- /ws/message ---

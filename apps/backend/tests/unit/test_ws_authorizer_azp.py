@@ -65,6 +65,8 @@ def test_matching_azp_allows_in_enforce(clerk_env):
     policy = authz.handler(_event(_mint(azp="https://dev.isol8.co")), None)
     assert _effect(policy) == "Allow"
     assert policy["context"]["userId"] == "user_abc"
+    assert policy["context"]["verifiedIssuer"] == _ISSUER
+    assert policy["context"]["verifiedSubject"] == "user_abc"
 
 
 def test_missing_azp_allows_in_enforce(clerk_env):

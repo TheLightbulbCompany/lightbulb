@@ -12,11 +12,29 @@ existing ``test_webhooks_clerk_email_sync.py``.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import boto3
 import pytest
+from moto import mock_aws
 
 from core.services.paperclip_admin_client import PaperclipApiError
+
+
+@pytest.fixture(autouse=True)
+def socket_cleanup_io(monkeypatch):
+    """Keep the real revoker/shared pool; isolate unrelated external WS storage."""
+    from core.gateway.connection_pool import GatewayConnectionPool
+
+    service = MagicMock()
+    service.query_by_owner = AsyncMock(return_value=[])
+    service.pending_member_revocations = AsyncMock(return_value=set())
+    pool = GatewayConnectionPool(MagicMock(), service)
+    monkeypatch.setattr("core.containers.get_gateway_pool", lambda: pool)
+    monkeypatch.setattr("core.services.billing_service.sync_team_seat_quantity", AsyncMock())
+    return pool
 
 
 def _bypass_svix(monkeypatch):
@@ -32,6 +50,59 @@ def _svix_headers() -> dict:
         "svix-timestamp": "1234567890",
         "svix-signature": "ignored",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("archive_failure", [False, True])
+async def test_membership_revocation_failure_redelivers_same_svix_and_still_deauthorizes(
+    socket_cleanup_io, monkeypatch, archive_failure
+):
+    from core.gateway import native_rooms
+    from core.services import webhook_dedup
+    from routers import webhooks
+
+    _bypass_svix(monkeypatch)
+    monkeypatch.setattr(native_rooms, "_qualified_owners", {})
+    socket_cleanup_io._conn_svc.query_by_owner.side_effect = [RuntimeError("socket storage down"), []]
+    provisioning = AsyncMock()
+    if archive_failure:
+        provisioning.archive_member.side_effect = PaperclipApiError("retry", 503, "")
+    monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=provisioning))
+    monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
+    enqueue = AsyncMock()
+    monkeypatch.setattr(webhooks, "_enqueue_paperclip_retry", enqueue)
+    request = SimpleNamespace(
+        headers=_svix_headers(),
+        body=AsyncMock(
+            return_value=json.dumps(
+                {
+                    "type": "organizationMembership.deleted",
+                    "data": {"organization": {"id": "org_acme"}, "user_id": "member"},
+                }
+            ).encode()
+        ),
+    )
+    # Real conditional dedup PutItem/DeleteItem, not a pre-scripted result list.
+    with mock_aws():
+        boto3.client("dynamodb", region_name="us-east-1").create_table(
+            TableName="clerk-dedup-test",
+            KeySchema=[{"AttributeName": "event_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "event_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", "clerk-dedup-test")
+        with pytest.raises(RuntimeError, match="revocation incomplete"):
+            await webhooks.handle_clerk_webhook(request)
+        provisioning.archive_member.assert_awaited_once_with(user_id="member")
+        if archive_failure:
+            provisioning.disable.assert_awaited_once_with(user_id="member")
+            enqueue.assert_awaited_once()
+        assert not await webhook_dedup.has_event("msg_test")
+        assert await webhooks.handle_clerk_webhook(request) == {"status": "ok"}
+        assert await webhook_dedup.has_event("msg_test")
+        assert await webhooks.handle_clerk_webhook(request) == {"status": "duplicate"}
+        assert provisioning.archive_member.await_count == 2
+        assert socket_cleanup_io._conn_svc.query_by_owner.await_count == 2
 
 
 # ----------------------------------------------------------------------

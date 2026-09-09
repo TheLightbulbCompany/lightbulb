@@ -11,10 +11,61 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import boto3
+from moto import mock_aws
 
 from core.gateway.connection_pool import GatewayConnectionPool
+from core.services.connection_service import ConnectionService
 
 USER = "user_1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("trigger", ["grace", "boot_reconcile"])
+async def test_native_presence_and_disconnected_run_protect_other_worker_until_terminal(trigger, monkeypatch):
+    with mock_aws():
+        client = boto3.client("dynamodb", region_name="us-east-1")
+        client.create_table(
+            TableName="native-idle-test",
+            KeySchema=[{"AttributeName": "connectionId", "KeyType": "HASH"}],
+            AttributeDefinitions=[
+                {"AttributeName": "connectionId", "AttributeType": "S"},
+                {"AttributeName": "ownerId", "AttributeType": "S"},
+            ],
+            GlobalSecondaryIndexes=[
+                {
+                    "IndexName": "by-owner-id",
+                    "KeySchema": [{"AttributeName": "ownerId", "KeyType": "HASH"}],
+                    "Projection": {"ProjectionType": "INCLUDE", "NonKeyAttributes": ["userId", "connectionType"]},
+                }
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        service = ConnectionService(table_name="native-idle-test", region_name="us-east-1")
+        pool = GatewayConnectionPool(MagicMock(), service)  # NEW worker has no local native state
+        stop = AsyncMock()
+        monkeypatch.setattr("core.containers.get_ecs_manager", lambda: MagicMock(stop_user_service=stop))
+        monkeypatch.setattr(
+            "core.repositories.billing_repo.get_by_owner_id",
+            AsyncMock(return_value={"subscription_status": "trial_local"}),
+        )
+        service.store_connection("native-tab", "member", "org_team", connection_type="native_human")
+        await pool._maybe_stop_trial_container("org_team", trigger=trigger)
+        stop.assert_not_awaited()
+        await service.begin_native_run("org_team", "room", "run")
+        service.delete_connection("native-tab")
+        assert await service.query_by_owner("org_team") == []
+        assert not pool.native_rooms.connections and not pool.native_rooms.run_holds
+        await pool._maybe_stop_trial_container("org_team", trigger=trigger)
+        stop.assert_not_awaited()
+        # Wrong-room evidence cannot release another room's hold.
+        await service.finish_native_run("org_team", "foreign-room", "run")
+        await pool._maybe_stop_trial_container("org_team", trigger=trigger)
+        stop.assert_not_awaited()
+        await service.finish_native_run("org_team", "room", "run")
+        await pool._maybe_stop_trial_container("org_team", trigger=trigger)
+        stop.assert_awaited_once_with("org_team", reason="trial_idle")
+        await pool.close_all()
 
 
 def _pool(*, frontends=None, has_conn=True, grace_task=None):

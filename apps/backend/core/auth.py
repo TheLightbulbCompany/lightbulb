@@ -77,6 +77,8 @@ class AuthContext:
     # surfaces who each customer belongs to (including bail-outs who clicked
     # Subscribe but never completed Checkout).
     email: str | None = None
+    # Immutable JWT provenance; display/email and tenant ownership are separate.
+    verified_issuer: str | None = None
 
     @property
     def is_org_context(self) -> bool:
@@ -216,6 +218,7 @@ async def get_current_user(
             org_slug=org["org_slug"],
             org_permissions=org["org_permissions"],
             email=payload.get("email"),
+            verified_issuer=payload.get("iss"),
         )
         bind_request_context(request_id_var.get() or "", payload["sub"])
         return ctx
@@ -260,6 +263,7 @@ async def get_optional_user(
             org_slug=org["org_slug"],
             org_permissions=org["org_permissions"],
             email=payload.get("email"),
+            verified_issuer=payload.get("iss"),
         )
     except Exception:
         return None

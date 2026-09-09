@@ -1,8 +1,10 @@
 """WebSocket $connect handler — stores connection in DynamoDB, notifies backend."""
+
 import os
 import urllib.request
 import boto3
 import logging
+import time
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -30,7 +32,12 @@ def _get_ws_internal_secret():
     if not arn:
         return ""
     try:
-        value = boto3.client("secretsmanager").get_secret_value(SecretId=arn).get("SecretString", "") or ""
+        value = (
+            boto3.client("secretsmanager")
+            .get_secret_value(SecretId=arn)
+            .get("SecretString", "")
+            or ""
+        )
     except Exception as e:
         logger.warning("Failed to fetch WS internal secret: %s", e)
         return ""
@@ -44,7 +51,9 @@ def handler(event, context):
     user_id = authorizer.get("userId", "")
     org_id = authorizer.get("orgId", "")
 
-    logger.info("WebSocket connect: connection_id=%s user_id=%s", connection_id, user_id)
+    logger.info(
+        "WebSocket connect: connection_id=%s user_id=%s", connection_id, user_id
+    )
 
     # Forward clientId from query for FastAPI ws_connect to recognize node-host
     # vs operator/control-ui connections. Only known values (node-host,
@@ -52,6 +61,14 @@ def handler(event, context):
     # values are forwarded verbatim and ignored.
     qs = event.get("queryStringParameters") or {}
     client_id = qs.get("clientId")
+    native_human = client_id == "lightbulb-company-room"
+    if native_human and not (
+        authorizer.get("authKind") == "clerk_user"
+        and authorizer.get("verifiedIssuer")
+        and authorizer.get("verifiedSubject") == user_id
+        and org_id
+    ):
+        return {"statusCode": 403}
 
     # Derive connectionType HERE (not only in the backend /ws/connect handler):
     # this Lambda writes the row BEFORE notifying the backend, and the owner-keyed
@@ -60,21 +77,39 @@ def handler(event, context):
     # until the backend notification overwrites the row — and permanently if that
     # notify fails. Keep these client-id sets in sync with NODE_HOST_CLIENT_IDS /
     # PAPERCLIP_OPERATOR_CLIENT_ID in routers/websocket_chat.py.
-    if client_id == "paperclip-operator":
+    if native_human:
+        connection_type = "native_human"
+    elif client_id == "paperclip-operator":
         connection_type = "operator"
     elif client_id in ("node-host", "openclaw-macos"):
         connection_type = "node"
     else:
         connection_type = "chat"
 
-    table.put_item(Item={
-        "connectionId": connection_id,
-        "userId": user_id,
-        "orgId": org_id or "",
-        "ownerId": org_id or user_id,  # owner = org for org members, else the user
-        "connectionType": connection_type,
-        "connectedAt": str(event["requestContext"].get("connectedAt", "")),
-    })
+    provenance = (
+        {
+            "authKind": authorizer.get("authKind", ""),
+            "verifiedIssuer": authorizer.get("verifiedIssuer", ""),
+            "verifiedSubject": authorizer.get("verifiedSubject", ""),
+            "sourceIp": (event["requestContext"].get("identity") or {}).get(
+                "sourceIp", ""
+            ),
+            "ttl": int(time.time()) + 7200,
+        }
+        if native_human
+        else {}
+    )
+    table.put_item(
+        Item={
+            "connectionId": connection_id,
+            "userId": user_id,
+            "orgId": org_id or "",
+            "ownerId": org_id or user_id,  # owner = org for org members, else the user
+            "connectionType": connection_type,
+            "connectedAt": str(event["requestContext"].get("connectedAt", "")),
+            **provenance,
+        }
+    )
 
     headers = {
         "x-connection-id": connection_id,
@@ -98,5 +133,8 @@ def handler(event, context):
         urllib.request.urlopen(req, timeout=5)
     except Exception as e:
         logger.warning("Failed to notify backend of connect: %s", e)
+        if native_human:
+            table.delete_item(Key={"connectionId": connection_id})
+            return {"statusCode": 403}
 
     return {"statusCode": 200}

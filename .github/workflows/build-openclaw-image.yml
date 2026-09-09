@@ -395,7 +395,10 @@ jobs:
 
           # Push the SOCI v2 image once, then prove the exact tag resolves to
           # the converted OCI target digest.
-          sudo nerdctl push --platform linux/amd64 "${IMAGE_REF}"
+          # The converted target is already amd64-only. Passing --platform here
+          # makes nerdctl create a new reduced index, changing the root digest
+          # that the exact post-push identity check must preserve.
+          sudo nerdctl push "${IMAGE_REF}"
           REGISTRY_ID="877352799272"
           REPOSITORY="lightbulb/openclaw-extended"
           TAG="${IMAGE_REF##*:}"

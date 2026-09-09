@@ -282,12 +282,10 @@ def test_restored_databases_require_quick_check_schema_role_and_agent_identity(t
 
 def test_efs_manifest_and_tar_preserve_but_never_follow_symlinks(tmp_path):
     owner_root = tmp_path / "owner"
-    outside = tmp_path / "outside-secret"
     owner_root.mkdir()
     (owner_root / "workspace-main").mkdir()
     (owner_root / "workspace-main" / "SOUL.md").write_text("inside")
-    outside.write_text("must-not-enter-archive")
-    (owner_root / "workspace-main" / "link").symlink_to(outside)
+    (owner_root / "workspace-main" / "link").symlink_to("SOUL.md")
 
     entries = recovery.scan_efs_tree(owner_root)
     sink = io.BytesIO()
@@ -295,12 +293,58 @@ def test_efs_manifest_and_tar_preserve_but_never_follow_symlinks(tmp_path):
 
     by_path = {entry["path"]: entry for entry in entries}
     assert by_path["workspace-main/link"]["type"] == "symlink"
-    assert by_path["workspace-main/link"]["link_target"] == str(outside)
+    assert by_path["workspace-main/link"]["link_target"] == "SOUL.md"
     with tarfile.open(fileobj=io.BytesIO(sink.getvalue()), mode="r:") as archive:
         link = archive.getmember("workspace-main/link")
         assert link.issym()
-        assert link.linkname == str(outside)
-        assert b"must-not-enter-archive" not in sink.getvalue()
+        assert link.linkname == "SOUL.md"
+
+
+@pytest.mark.parametrize("target", ["/etc/passwd", "../../outside-owner"])
+def test_efs_manifest_rejects_symlinks_python_data_filter_cannot_restore(tmp_path, target):
+    owner_root = tmp_path / "owner"
+    (owner_root / "workspace-main").mkdir(parents=True)
+    (owner_root / "workspace-main" / "link").symlink_to(target)
+
+    with pytest.raises(recovery.OwnerRecoverySetUnavailable, match="unsafe symlink"):
+        recovery.scan_efs_tree(owner_root)
+
+
+def test_efs_swap_resumes_from_deterministic_displaced_and_stage_state(tmp_path, monkeypatch):
+    recovery_set_id = "recovery-set-crash"
+    state_token = recovery.sha256_bytes(recovery_set_id.encode())[:24]
+    displaced_name = f".release-target-{state_token}"
+    stage_name = f".release-restore-{state_token}"
+    displaced = tmp_path / displaced_name
+    stage = tmp_path / stage_name
+    displaced.mkdir()
+    (displaced / "target.txt").write_text("post-release")
+    stage.mkdir()
+    (stage / "source.txt").write_text("pre-release")
+    expected = recovery.scan_efs_tree(stage)
+    manifest = {
+        "recovery_set_id": recovery_set_id,
+        "efs": {
+            "archive": {
+                "tree_entries": list(expected),
+                "key": "recovery-sets/archive.tar",
+                "version_id": "version-1",
+                "sha256": "a" * 64,
+            }
+        },
+    }
+    provider = recovery.OwnerRecoverySetProvider(s3=MagicMock())
+    provider._read_version_bytes = MagicMock(side_effect=AssertionError("verified stage must be reused"))
+    monkeypatch.setattr(recovery.settings, "EFS_MOUNT_PATH", str(tmp_path))
+
+    restored = provider._restore_efs_archive(OWNER, manifest, lambda: None)
+
+    assert (tmp_path / OWNER / "source.txt").read_text() == "pre-release"
+    assert (displaced / "target.txt").read_text() == "post-release"
+    assert restored["displaced_name"] == displaced_name
+    resumed = provider._restore_efs_archive(OWNER, manifest, lambda: None)
+    assert resumed["already_restored"] is True
+    assert resumed["displaced_name"] == displaced_name
 
 
 def test_tar_fails_closed_when_a_file_changes_after_the_manifest_scan(tmp_path):

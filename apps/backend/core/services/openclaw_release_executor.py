@@ -21,6 +21,7 @@ from core.services import config_schema
 from core.services.openclaw_release import (
     OpenClawRelease,
     OwnerReleaseConflict,
+    owner_lifecycle_guard,
     owner_mutation_guard,
     release_by_id,
 )
@@ -1260,25 +1261,31 @@ async def apply_owner_release(owner_id: str, update_id: str) -> bool:
     ):
         return False
     runtime = _ReleaseRuntime()
-    snapshot = await runtime.snapshot(owner_id)
-    container = await container_repo.get_by_owner_id(owner_id, consistent=True)
-    if (
-        not container
-        or snapshot.get("task_definition_arn") != container.get("task_definition_arn")
-        or type(snapshot.get("desired_count")) is not int
-        or snapshot["desired_count"] != 1
-    ):
-        return False
     claim_id = uuid.uuid4().hex
-    if not await update_repo.reserve_owner_apply(
-        container,
-        update,
-        claim_id,
-        target_release_id=release.release_id,
-        prior_task_definition_arn=snapshot["task_definition_arn"],
-        prior_desired_count=snapshot["desired_count"],
-        target_desired_count=snapshot["desired_count"],
-    ):
+    try:
+        # The same cross-process lock wraps every ordinary lifecycle mutation.
+        # Holding it across the ECS snapshot and DynamoDB reservation closes the
+        # read-then-reserve window without leaving a crash-wedged lock record.
+        async with owner_lifecycle_guard(owner_id):
+            async with owner_mutation_guard(owner_id) as container:
+                snapshot = await runtime.snapshot(owner_id)
+                if (
+                    snapshot.get("task_definition_arn") != container.get("task_definition_arn")
+                    or type(snapshot.get("desired_count")) is not int
+                    or snapshot["desired_count"] != 1
+                ):
+                    return False
+                if not await update_repo.reserve_owner_apply(
+                    container,
+                    update,
+                    claim_id,
+                    target_release_id=release.release_id,
+                    prior_task_definition_arn=snapshot["task_definition_arn"],
+                    prior_desired_count=snapshot["desired_count"],
+                    target_desired_count=snapshot["desired_count"],
+                ):
+                    return False
+    except OwnerReleaseConflict:
         return False
     try:
         return await execute_claimed_owner_release(owner_id, update_id, claim_id, runtime=runtime)

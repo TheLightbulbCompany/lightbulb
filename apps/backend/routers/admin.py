@@ -51,6 +51,7 @@ from core.services.provision_dispatch import dispatch_provision
 from core.services.update_service import (
     TASKDEF_ROLL_CHANGE_KEYS,
     apply_update,
+    queue_image_update,
     reapply_owner_config,
 )
 from schemas.config import ConfigPatchRequest
@@ -362,9 +363,9 @@ async def admin_container_available_images(
 @router.post(
     "/users/{user_id}/container/queue-image-update",
     description=(
-        "Queue a Track 2 image update for the user. Resolves user_id to owner_id "
-        "(so org members route to their org's container), then creates the pending "
-        "update. The owner sees a banner in chat and applies via "
+        "Resolve an accepted registry image to its immutable release and queue "
+        "that release for the user. Resolves user_id to owner_id (so org members "
+        "route to their org's container). The owner applies via "
         "POST /api/v1/container/updates/{id}/apply when ready. Non-destructive: "
         "container keeps running on the old image until accepted. Idempotency-Key "
         "supported."
@@ -379,29 +380,20 @@ async def admin_container_queue_image_update(
     auth: AuthContext = Depends(require_platform_admin),
 ):
     owner_id, _ = await resolve_admin_owner_id(user_id)
-    description = body.description or f"Image update to {body.new_image}"
-    item = await update_repo.create(
-        owner_id=owner_id,
-        update_type="image_update",
-        description=description,
-        changes={"new_image": body.new_image},
-    )
+    try:
+        item = await queue_image_update(owner_id, body.new_image, body.description)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"status": "queued", "update": item}
 
 
 @router.post(
     "/users/{user_id}/container/apply-image-update",
     description=(
-        "Force-apply a container image update NOW (admin-initiated) instead of "
-        "waiting for the owner to accept the Track-2 banner. Resolves user_id to "
-        "owner_id, creates the pending image_update row, then applies it via the "
-        "SAME apply_update() path the owner banner uses: the container's on-disk "
-        "openclaw.json is reused (removed-schema keys stripped first so the newer "
-        "image's strict schema can't crash-loop the gateway) and the per-user "
-        "task-def is rolled to the new image. Non-destructive — EFS workspace and "
-        "agent state are preserved; the container briefly restarts on the new "
-        "image. Returns 409 if the update could not be applied (a prior update is "
-        "already in progress); the row stays queued for a retry or owner-apply. "
+        "Resolve an accepted registry image and force-apply its recoverable release "
+        "NOW instead of waiting for the owner. The release journal captures an "
+        "immutable recovery set, migrates config, rolls the digest-pinned task "
+        "definition, validates health, and compensates on failure. "
         "Idempotency-Key supported."
     ),
 )
@@ -415,8 +407,7 @@ async def admin_container_force_apply_image_update(
 ):
     owner_id, _ = await resolve_admin_owner_id(user_id)
 
-    # Per-owner mutual exclusion. apply_update's acquire is keyed per-update_id,
-    # so a fresh row we create always acquires — that alone does NOT stop a second
+    # Per-owner mutual exclusion. A fresh row alone does NOT stop a second
     # roll when the owner already has a container update queued (admin queue button
     # / generic updates API / scheduled worker) or mid-apply (owner banner). Reject
     # up front so only one task-def roll is normally in flight per owner.
@@ -450,27 +441,23 @@ async def admin_container_force_apply_image_update(
         )
 
     description = body.description or f"Admin force-apply image update to {body.new_image}"
-    item = await update_repo.create(
-        owner_id=owner_id,
-        update_type="image_update",
-        description=description,
-        changes={"new_image": body.new_image},
-        force_by=auth.user_id,
-    )
+    try:
+        item = await queue_image_update(
+            owner_id,
+            body.new_image,
+            description,
+            force_by=auth.user_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     update_id = item["update_id"]
     applied = await apply_update(owner_id, update_id)
     if not applied:
-        # No update was in flight (guarded above) and the row we just created was
-        # 'pending', so apply_update's acquire always succeeds here. A False return
-        # therefore means the roll itself raised — apply_update caught it and marked
-        # the row 'failed', so it is NOT a live queued row the owner can retry from
-        # their banner. Surface it as a server-side failure with the EFS-safe note.
         raise HTTPException(
             status_code=502,
             detail=(
-                f"The image roll failed while applying (update_id={update_id}; row "
-                "marked failed). The container's EFS workspace/state is unchanged — "
-                "check the ECS service / container logs before retrying."
+                f"The release did not complete (update_id={update_id}). It may be "
+                "reserved for journal recovery; inspect the release row before retrying."
             ),
         )
     return {

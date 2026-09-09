@@ -96,16 +96,27 @@ def reset_worker_stop() -> None:
     _worker_stop = None
 
 
-async def queue_image_update(owner_id: str, new_image: str, description: str | None = None) -> dict:
-    """Queue a container image update for a single owner."""
+async def queue_image_update(
+    owner_id: str,
+    new_image: str,
+    description: str | None = None,
+    *,
+    force_by: str | None = None,
+) -> dict:
+    """Route an accepted image target through the recoverable release journal."""
+
+    from core.services.openclaw_release import release_by_image
+
+    release = release_by_image(new_image)
     desc = description or f"Image update to {new_image}"
     item = await update_repo.create(
         owner_id=owner_id,
-        update_type="image_update",
+        update_type="release",
         description=desc,
-        changes={"new_image": new_image},
+        changes={"target_release_id": release.release_id},
+        force_by=force_by,
     )
-    logger.info("Queued image update for owner=%s image=%s", owner_id, new_image)
+    logger.info("Queued release for owner=%s release=%s", owner_id, release.release_id)
     return item
 
 
@@ -116,6 +127,11 @@ async def queue_fleet_image_update(new_image: str, description: str | None = Non
     Returns the count of updates created.
     """
     from core.dynamodb import get_table, run_in_thread
+    from core.services.openclaw_release import release_by_image
+
+    # Validate once even for an empty fleet; an empty registry is inert rather
+    # than reporting that an unqualified rollout was queued successfully.
+    release_by_image(new_image)
 
     table = get_table("billing-accounts")
     count = 0
@@ -490,6 +506,12 @@ async def _apply_claimed_update(update: dict, claim_id: str) -> bool:
         changes = update.get("changes", {})
         update_type = update.get("update_type", "")
 
+        # Image mutations are never ordinary updates. Registered targets are
+        # queued as release rows above; legacy or hand-written rows fail before
+        # touching config, ECS, or EFS.
+        if changes.get("new_image") is not None:
+            raise ValueError("image changes require a registered OpenClaw release")
+
         # Step 2: apply config patch if present
         config_patch = changes.get("config_patch")
         if config_patch:
@@ -681,17 +703,6 @@ async def _apply_claimed_update(update: dict, claim_id: str) -> bool:
 
                     await fence_effect()
                     await heal_seeded_files(owner_id=owner_id, workspace=get_workspace())
-
-                # An image-only roll carries NO size — queue_image_update /
-                # queue_fleet_image_update write {"new_image": X} only. Passing the
-                # resulting None/None straight through would default the re-register
-                # to the standard PER_USER_* box and silently shrink an Ultra Pro
-                # owner's container on every routine image bump / fleet-force-apply
-                # — the exact revert plan-derived sizing exists to prevent. Fill the
-                # gap from the owner's plan ONLY when the change specifies neither
-                # dimension; a real resize (explicit cpu/memory) is left untouched.
-                if new_cpu is None and new_memory is None:
-                    new_cpu, new_memory = await ecs._size_for_owner(owner_id)
 
                 await fence_effect()
                 await ecs.resize_user_container(

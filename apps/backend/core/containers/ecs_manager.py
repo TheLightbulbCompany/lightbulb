@@ -1413,6 +1413,29 @@ class EcsManager:
         _release_update_id: str | None = None,
         _effect_fence: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
+        if _release_update_id is not None:
+            return await self._stop_user_service_owned(
+                user_id,
+                reason=reason,
+                _release_update_id=_release_update_id,
+                _effect_fence=_effect_fence,
+            )
+        from core.services.openclaw_release import OwnerReleaseConflict, owner_lifecycle_guard
+
+        try:
+            async with owner_lifecycle_guard(user_id):
+                return await self._stop_user_service_owned(user_id, reason=reason)
+        except OwnerReleaseConflict as exc:
+            raise EcsManagerError(str(exc), user_id) from exc
+
+    async def _stop_user_service_owned(
+        self,
+        user_id: str,
+        *,
+        reason: str = "manual",
+        _release_update_id: str | None = None,
+        _effect_fence: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
         """Scale a user's ECS service to 0 (stopped).
 
         Args:
@@ -1631,6 +1654,41 @@ class EcsManager:
         _release_update_id: str | None = None,
         _effect_fence: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
+        if _release_update_id is not None:
+            return await self._start_user_service_owned(
+                user_id,
+                force=force,
+                claim_id=claim_id,
+                generation=generation,
+                attempt_token=attempt_token,
+                _release_update_id=_release_update_id,
+                _effect_fence=_effect_fence,
+            )
+        from core.services.openclaw_release import OwnerReleaseConflict, owner_lifecycle_guard
+
+        try:
+            async with owner_lifecycle_guard(user_id):
+                return await self._start_user_service_owned(
+                    user_id,
+                    force=force,
+                    claim_id=claim_id,
+                    generation=generation,
+                    attempt_token=attempt_token,
+                )
+        except OwnerReleaseConflict as exc:
+            raise EcsManagerError(str(exc), user_id) from exc
+
+    async def _start_user_service_owned(
+        self,
+        user_id: str,
+        *,
+        force: bool = False,
+        claim_id: str | None = None,
+        generation: str | None = None,
+        attempt_token: str | None = None,
+        _release_update_id: str | None = None,
+        _effect_fence: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
         """Scale a user's ECS service to 1 (running).
 
         THE START CHOKEPOINT. Unless ``force``, every start runs
@@ -1774,6 +1832,27 @@ class EcsManager:
         _release_update_id: str | None = None,
         _effect_fence: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
+        if _release_update_id is not None:
+            return await self._force_redeploy_user_service_owned(
+                user_id,
+                _release_update_id=_release_update_id,
+                _effect_fence=_effect_fence,
+            )
+        from core.services.openclaw_release import OwnerReleaseConflict, owner_lifecycle_guard
+
+        try:
+            async with owner_lifecycle_guard(user_id):
+                return await self._force_redeploy_user_service_owned(user_id)
+        except OwnerReleaseConflict as exc:
+            raise EcsManagerError(str(exc), user_id) from exc
+
+    async def _force_redeploy_user_service_owned(
+        self,
+        user_id: str,
+        *,
+        _release_update_id: str | None = None,
+        _effect_fence: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
         """Replace the service's task with a fresh one on the CURRENT revision.
 
         No task-def re-register — this is a plain forceNewDeployment, used when
@@ -1800,6 +1879,43 @@ class EcsManager:
         )
 
     async def resize_user_container(
+        self,
+        user_id: str,
+        new_cpu: str | None = None,
+        new_memory: str | None = None,
+        new_image: str | None = None,
+        *,
+        _register_only: bool = False,
+        _release_update_id: str | None = None,
+        _effect_fence: Callable[[], Awaitable[None]] | None = None,
+    ) -> str:
+        if new_image is not None and _release_update_id is None:
+            raise EcsManagerError("Image changes require a registered OpenClaw release", user_id)
+        if _release_update_id is not None:
+            return await self._resize_user_container_owned(
+                user_id,
+                new_cpu,
+                new_memory,
+                new_image,
+                _register_only=_register_only,
+                _release_update_id=_release_update_id,
+                _effect_fence=_effect_fence,
+            )
+        from core.services.openclaw_release import OwnerReleaseConflict, owner_lifecycle_guard
+
+        try:
+            async with owner_lifecycle_guard(user_id):
+                return await self._resize_user_container_owned(
+                    user_id,
+                    new_cpu,
+                    new_memory,
+                    _register_only=_register_only,
+                    _effect_fence=_effect_fence,
+                )
+        except OwnerReleaseConflict as exc:
+            raise EcsManagerError(str(exc), user_id) from exc
+
+    async def _resize_user_container_owned(
         self,
         user_id: str,
         new_cpu: str | None = None,
@@ -1907,6 +2023,26 @@ class EcsManager:
             # base would otherwise revert the container to the shared
             # all-models task role (same self-heal class as hook_token above).
             bedrock_task_role_arn = container.get("bedrock_role_arn")
+            prior_task_def_arn = container.get("task_definition_arn")
+            prior_resp = None
+            if prior_task_def_arn:
+                prior_resp = await asyncio.to_thread(
+                    self._ecs.describe_task_definition,
+                    taskDefinition=prior_task_def_arn,
+                )
+                if new_image is None:
+                    prior_definitions = prior_resp["taskDefinition"].get("containerDefinitions", [])
+                    prior_openclaw = next(
+                        (definition for definition in prior_definitions if definition.get("name") == "openclaw"),
+                        None,
+                    )
+                    prior_image = (prior_openclaw or {}).get("image")
+                    if type(prior_image) is not str or not prior_image:
+                        raise EcsManagerError("Current OpenClaw image identity is unavailable", user_id)
+                    # A size/config refresh is not an image promotion. Preserve
+                    # the owner's existing image reference instead of silently
+                    # inheriting whatever image the CDK base names today.
+                    new_image = prior_image
             reg_kwargs = await asyncio.to_thread(
                 self._build_register_kwargs_from_base,
                 access_point_id,
@@ -1926,12 +2062,7 @@ class EcsManager:
             # Deregistered prior revisions stay describable (INACTIVE), and a
             # failure here must fail the resize loudly — proceeding would
             # register a credential-stripped revision, the very bug this fixes.
-            prior_task_def_arn = container.get("task_definition_arn")
-            if prior_task_def_arn:
-                prior_resp = await asyncio.to_thread(
-                    self._ecs.describe_task_definition,
-                    taskDefinition=prior_task_def_arn,
-                )
+            if prior_resp is not None:
                 self._carry_per_user_container_state(
                     reg_kwargs["containerDefinitions"],
                     prior_resp["taskDefinition"].get("containerDefinitions", []),
@@ -3208,7 +3339,24 @@ class EcsManager:
             from core.services.openclaw_release import release_by_id
 
             assigned_release = release_by_id(active_release_id)
-        assigned_tag = assigned_release.image.rpartition(":")[2] if assigned_release is not None else None
+        provision_image = assigned_release.digest_image if assigned_release is not None else None
+        provision_tag = assigned_release.image.rpartition(":")[2] if assigned_release is not None else None
+        if provision_image is None and (existing or {}).get("task_definition_arn"):
+            prior_response = await asyncio.to_thread(
+                self._ecs.describe_task_definition,
+                taskDefinition=existing["task_definition_arn"],
+            )
+            prior_definitions = (prior_response.get("taskDefinition") or {}).get("containerDefinitions") or []
+            prior_openclaw = next(
+                (definition for definition in prior_definitions if definition.get("name") == "openclaw"),
+                None,
+            )
+            prior_image = (prior_openclaw or {}).get("image")
+            if type(prior_image) is not str or not prior_image:
+                raise EcsManagerError("Current OpenClaw image identity is unavailable", user_id)
+            provision_image = prior_image
+            _repository, separator, tag = prior_image.rpartition(":")
+            provision_tag = tag if "@" not in prior_image and separator and "/" not in tag else ""
 
         # Every owner — regardless of provider_choice — runs under a UNIQUE
         # per-owner ECS task role (isol8-<env>-owner-bedrock-<owner_id>), minted
@@ -3426,11 +3574,12 @@ class EcsManager:
                         hook_token=existing_hook_token,
                         owner_type=owner_type,
                         aip_arns=bedrock_aip_arns,
-                        # The replacement task-def registered below is cloned
-                        # from the base family — gate on THAT image, not the
-                        # stopped service's previous one (an image rollback
-                        # would otherwise carry a key the older schema rejects).
-                        deployed_tag=assigned_tag or await self._base_image_tag(),
+                        # Gate on the exact image the replacement task will
+                        # run: assigned release, preserved legacy image, or
+                        # (only for a genuinely fresh owner) the base image.
+                        deployed_tag=(
+                            provision_tag if provision_image is not None else await self._base_image_tag()
+                        ),
                     )
                 except ProvisionSuperseded:
                     raise
@@ -3477,7 +3626,7 @@ class EcsManager:
                             task_role_arn=restart_task_role_arn,
                             new_cpu=restart_cpu,
                             new_memory=restart_memory,
-                            new_image=(assigned_release.digest_image if assigned_release is not None else None),
+                            new_image=provision_image,
                         )
                         await asyncio.to_thread(
                             self._ecs.update_service,
@@ -3708,7 +3857,7 @@ class EcsManager:
             bedrock_gate_token_hash=bedrock_gate_token_hash,
             claim_id=claim_id,
             attempt_token=attempt_token,
-            new_image=(assigned_release.digest_image if assigned_release is not None else None),
+            new_image=provision_image,
         )
 
         # create_user_service's upsert MINTED a fresh provision_generation
@@ -3740,7 +3889,7 @@ class EcsManager:
                 hook_token=hook_token,
                 owner_type=owner_type,
                 aip_arns=bedrock_aip_arns,
-                deployed_tag=assigned_tag or await self._base_image_tag(),
+                deployed_tag=(provision_tag if provision_image is not None else await self._base_image_tag()),
             )
         except ProvisionSuperseded:
             raise

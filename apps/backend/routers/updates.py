@@ -23,6 +23,7 @@ from core.services.update_service import (
     TASK_DEFINITION_REFRESH_KIND,
     apply_update,
     queue_fleet_image_update,
+    queue_image_update,
     queue_fleet_task_definition_refresh,
     queue_task_definition_refresh_for_owner,
 )
@@ -133,10 +134,27 @@ async def admin_create_update(
 ):
     if body.owner_id == "all" and body.update_type == "image_update":
         new_image = body.changes.get("new_image", "")
-        if not new_image:
-            raise HTTPException(status_code=400, detail="changes.new_image is required for fleet image updates")
-        count = await queue_fleet_image_update(new_image, body.description)
+        if set(body.changes) != {"new_image"} or not new_image:
+            raise HTTPException(status_code=400, detail="A fleet image update must name one registered release image")
+        try:
+            count = await queue_fleet_image_update(new_image, body.description)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"status": "queued", "count": count}
+
+    if body.update_type == "image_update":
+        if set(body.changes) != {"new_image"} or not body.changes.get("new_image"):
+            raise HTTPException(status_code=400, detail="changes.new_image must name one registered release image")
+        try:
+            item = await queue_image_update(
+                body.owner_id,
+                body.changes["new_image"],
+                body.description,
+                force_by=body.force_by,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"status": "created", "update": item}
 
     if body.update_type == "release":
         if body.owner_id == "all" or set(body.changes) != {"target_release_id"}:

@@ -27,7 +27,6 @@ import stat
 import subprocess
 import tarfile
 import tempfile
-import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -443,6 +442,17 @@ def _scan_directory(directory_fd: int, relative: PurePosixPath, entries: list[di
                     os.close(child_fd)
             elif stat.S_ISLNK(observed.st_mode):
                 target = os.readlink(child.name, dir_fd=directory_fd)
+                target_path = PurePosixPath(target)
+                depth = len(child_relative.parent.parts)
+                if target_path.is_absolute():
+                    raise OwnerRecoverySetUnavailable(f"unsafe symlink in EFS tree: {path}")
+                for part in target_path.parts:
+                    if part == "..":
+                        if depth == 0:
+                            raise OwnerRecoverySetUnavailable(f"unsafe symlink in EFS tree: {path}")
+                        depth -= 1
+                    elif part not in {"", "."}:
+                        depth += 1
                 entry = _manifest_stat(path, "symlink", observed)
                 entry["link_target"] = target
                 entries.append(entry)
@@ -1349,58 +1359,98 @@ class OwnerRecoverySetProvider:
             raise OwnerRecoverySetUnavailable("recovery EFS tree evidence is invalid")
         mount = Path(settings.EFS_MOUNT_PATH)
         current = mount / owner_id
-        if current.exists() and not current.is_symlink() and scan_efs_tree(current) == expected_entries:
-            return {"tree_manifest_sha256": sha256_bytes(canonical_json(expected_entries)), "already_restored": True}
         token = str(manifest["recovery_set_id"])
-        displaced_name = f".release-target-{sha256_bytes(token.encode())[:24]}"
-        if (mount / displaced_name).exists() or (mount / displaced_name).is_symlink():
+        state_token = sha256_bytes(token.encode())[:24]
+        displaced_name = f".release-target-{state_token}"
+        stage_name = f".release-restore-{state_token}"
+        displaced = mount / displaced_name
+        stage = mount / stage_name
+        current_present = current.exists() or current.is_symlink()
+        displaced_present = displaced.exists() or displaced.is_symlink()
+        if displaced_present and (displaced.is_symlink() or not displaced.is_dir()):
             raise OwnerRecoverySetUnavailable("prior rollback target is ambiguous")
-        with tempfile.TemporaryDirectory(prefix="lightbulb-efs-restore-") as local_temporary:
-            archive_bytes = self._read_version_bytes(
-                settings.MARKETPLACE_ARTIFACTS_BUCKET,
-                key,
-                version_id,
-            )
-            if sha256_bytes(archive_bytes) != expected_sha:
-                raise OwnerRecoverySetUnavailable("recovery EFS archive digest changed")
-            archive_path = Path(local_temporary) / "owner.tar"
-            archive_path.write_bytes(archive_bytes)
-            stage_name = f".release-restore-{uuid.uuid4().hex}"
-            stage = mount / stage_name
-            stage.mkdir(mode=0o700)
+        current_matches = False
+        if current_present and not current.is_symlink() and current.is_dir():
             try:
-                with tarfile.open(archive_path, mode="r:") as recovery_tar:
-                    recovery_tar.extractall(stage, filter="data")
-                for entry in sorted(expected_entries, key=lambda value: str(value["path"]).count("/"), reverse=True):
-                    relative = PurePosixPath(str(entry["path"]))
-                    if relative.is_absolute() or ".." in relative.parts:
-                        raise OwnerRecoverySetUnavailable("recovery EFS entry is unsafe")
-                    target = stage if str(relative) == "." else stage.joinpath(*relative.parts)
-                    observed = target.lstat()
-                    expected_kind = entry["type"]
-                    if (
-                        (expected_kind == "directory" and not stat.S_ISDIR(observed.st_mode))
-                        or (expected_kind == "file" and not stat.S_ISREG(observed.st_mode))
-                        or (expected_kind == "symlink" and not stat.S_ISLNK(observed.st_mode))
-                    ):
-                        raise OwnerRecoverySetUnavailable("recovery EFS entry type changed")
-                    os.chown(target, int(entry["uid"]), int(entry["gid"]), follow_symlinks=False)
-                    if expected_kind != "symlink":
-                        os.chmod(target, int(entry["mode"]), follow_symlinks=False)
-                    os.utime(
-                        target,
-                        ns=(int(entry["mtime_ns"]), int(entry["mtime_ns"])),
-                        follow_symlinks=False,
+                current_matches = scan_efs_tree(current) == expected_entries
+            except OwnerRecoverySetUnavailable:
+                # The failed target may contain a special/unsafe entry. It is
+                # still safe to preserve by renaming the entire directory.
+                current_matches = False
+        if current_matches:
+            result = {
+                "tree_manifest_sha256": sha256_bytes(canonical_json(expected_entries)),
+                "already_restored": True,
+            }
+            if displaced_present and not displaced.is_symlink() and displaced.is_dir():
+                result["displaced_name"] = displaced_name
+            return result
+        if current_present and displaced_present:
+            raise OwnerRecoverySetUnavailable("prior rollback target is ambiguous")
+        if not current_present and not displaced_present:
+            raise OwnerRecoverySetUnavailable("owner EFS rollback target is unavailable")
+        if current_present and (current.is_symlink() or not current.is_dir()):
+            raise OwnerRecoverySetUnavailable("owner EFS root is not a real directory")
+        stage_ready = False
+        if stage.exists() or stage.is_symlink():
+            if stage.is_symlink() or not stage.is_dir():
+                raise OwnerRecoverySetUnavailable("prior rollback stage is ambiguous")
+            try:
+                stage_ready = scan_efs_tree(stage) == expected_entries
+            except OwnerRecoverySetUnavailable:
+                stage_ready = False
+            if not stage_ready:
+                # A crash during extraction leaves only a deterministic private
+                # scratch directory. Rebuild it; never delete either live tree.
+                shutil.rmtree(stage)
+
+        with tempfile.TemporaryDirectory(prefix="lightbulb-efs-restore-") as local_temporary:
+            try:
+                if not stage_ready:
+                    archive_bytes = self._read_version_bytes(
+                        settings.MARKETPLACE_ARTIFACTS_BUCKET,
+                        key,
+                        version_id,
                     )
-                if scan_efs_tree(stage) != expected_entries:
-                    raise OwnerRecoverySetUnavailable("restored EFS tree does not match its manifest")
+                    if sha256_bytes(archive_bytes) != expected_sha:
+                        raise OwnerRecoverySetUnavailable("recovery EFS archive digest changed")
+                    archive_path = Path(local_temporary) / "owner.tar"
+                    archive_path.write_bytes(archive_bytes)
+                    stage.mkdir(mode=0o700)
+                    with tarfile.open(archive_path, mode="r:") as recovery_tar:
+                        recovery_tar.extractall(stage, filter="data")
+                    for entry in sorted(
+                        expected_entries,
+                        key=lambda value: str(value["path"]).count("/"),
+                        reverse=True,
+                    ):
+                        relative = PurePosixPath(str(entry["path"]))
+                        if relative.is_absolute() or ".." in relative.parts:
+                            raise OwnerRecoverySetUnavailable("recovery EFS entry is unsafe")
+                        target = stage if str(relative) == "." else stage.joinpath(*relative.parts)
+                        observed = target.lstat()
+                        expected_kind = entry["type"]
+                        if (
+                            (expected_kind == "directory" and not stat.S_ISDIR(observed.st_mode))
+                            or (expected_kind == "file" and not stat.S_ISREG(observed.st_mode))
+                            or (expected_kind == "symlink" and not stat.S_ISLNK(observed.st_mode))
+                        ):
+                            raise OwnerRecoverySetUnavailable("recovery EFS entry type changed")
+                        os.chown(target, int(entry["uid"]), int(entry["gid"]), follow_symlinks=False)
+                        if expected_kind != "symlink":
+                            os.chmod(target, int(entry["mode"]), follow_symlinks=False)
+                        os.utime(
+                            target,
+                            ns=(int(entry["mtime_ns"]), int(entry["mtime_ns"])),
+                            follow_symlinks=False,
+                        )
+                    if scan_efs_tree(stage) != expected_entries:
+                        raise OwnerRecoverySetUnavailable("restored EFS tree does not match its manifest")
                 mount_fd = os.open(mount, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
                 try:
-                    owner_stat = os.stat(owner_id, dir_fd=mount_fd, follow_symlinks=False)
-                    if not stat.S_ISDIR(owner_stat.st_mode):
-                        raise OwnerRecoverySetUnavailable("owner EFS root is not a real directory")
                     effect_fence_sync()
-                    os.replace(owner_id, displaced_name, src_dir_fd=mount_fd, dst_dir_fd=mount_fd)
+                    if current_present:
+                        os.replace(owner_id, displaced_name, src_dir_fd=mount_fd, dst_dir_fd=mount_fd)
                     try:
                         os.replace(stage_name, owner_id, src_dir_fd=mount_fd, dst_dir_fd=mount_fd)
                     except Exception:

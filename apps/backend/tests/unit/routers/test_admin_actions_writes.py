@@ -295,7 +295,7 @@ class TestContainerForceApplyImageUpdate:
     async def test_happy_path(self, async_client, admin_env):
         with (
             patch("routers.admin.update_repo.get_in_flight", new=AsyncMock(return_value=[])),
-            patch("routers.admin.update_repo.create", new=AsyncMock(return_value=self._CREATED)) as mock_create,
+            patch("routers.admin.queue_image_update", new=AsyncMock(return_value=self._CREATED)) as mock_queue,
             patch("routers.admin.apply_update", new=AsyncMock(return_value=True)) as mock_apply,
         ):
             res = await async_client.post(
@@ -306,11 +306,12 @@ class TestContainerForceApplyImageUpdate:
         body = res.json()
         assert body["status"] == "applied"
         assert body["update_id"] == "upd_123"
-        # A pending image_update row was created for the resolved owner...
-        create_kwargs = mock_create.await_args.kwargs
-        assert create_kwargs["owner_id"] == "u_target"
-        assert create_kwargs["update_type"] == "image_update"
-        assert create_kwargs["changes"]["new_image"].endswith("e8e1cce")
+        # The image is admitted and translated to a release row by the queue seam.
+        assert mock_queue.await_args.args[:2] == (
+            "u_target",
+            "ecr/lightbulb/openclaw-extended:2026.7.1-beta.3-isol8.1-e8e1cce",
+        )
+        assert mock_queue.await_args.kwargs["force_by"] == "user_test_123"
         # ...then applied via the exact apply_update() path the owner banner uses.
         mock_apply.assert_awaited_once_with("u_target", "upd_123")
 
@@ -325,7 +326,7 @@ class TestContainerForceApplyImageUpdate:
         ]
         with (
             patch("routers.admin.update_repo.get_in_flight", new=AsyncMock(return_value=non_conflicting)),
-            patch("routers.admin.update_repo.create", new=AsyncMock(return_value=self._CREATED)),
+            patch("routers.admin.queue_image_update", new=AsyncMock(return_value=self._CREATED)),
             patch("routers.admin.apply_update", new=AsyncMock(return_value=True)) as mock_apply,
         ):
             res = await async_client.post(
@@ -364,7 +365,7 @@ class TestContainerForceApplyImageUpdate:
                     return_value=[{"update_id": "other", "status": "applying", "changes": {"new_image": "old:tag"}}]
                 ),
             ),
-            patch("routers.admin.update_repo.create", new=AsyncMock()) as mock_create,
+            patch("routers.admin.queue_image_update", new=AsyncMock()) as mock_queue,
             patch("routers.admin.apply_update", new=AsyncMock()) as mock_apply,
         ):
             res = await async_client.post(
@@ -373,7 +374,7 @@ class TestContainerForceApplyImageUpdate:
             )
         assert res.status_code == 409
         # Guard runs first: neither a new row nor an apply is issued.
-        mock_create.assert_not_awaited()
+        mock_queue.assert_not_awaited()
         mock_apply.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -383,7 +384,7 @@ class TestContainerForceApplyImageUpdate:
         the row 'failed'. Surface that as 502 (not a queued-row 409)."""
         with (
             patch("routers.admin.update_repo.get_in_flight", new=AsyncMock(return_value=[])),
-            patch("routers.admin.update_repo.create", new=AsyncMock(return_value=self._CREATED)),
+            patch("routers.admin.queue_image_update", new=AsyncMock(return_value=self._CREATED)),
             patch("routers.admin.apply_update", new=AsyncMock(return_value=False)),
         ):
             res = await async_client.post(
@@ -396,7 +397,7 @@ class TestContainerForceApplyImageUpdate:
     async def test_audit_row_written(self, async_client, admin_env, mock_audit_repo):
         with (
             patch("routers.admin.update_repo.get_in_flight", new=AsyncMock(return_value=[])),
-            patch("routers.admin.update_repo.create", new=AsyncMock(return_value=self._CREATED)),
+            patch("routers.admin.queue_image_update", new=AsyncMock(return_value=self._CREATED)),
             patch("routers.admin.apply_update", new=AsyncMock(return_value=True)),
         ):
             res = await async_client.post(
@@ -413,7 +414,7 @@ class TestContainerForceApplyImageUpdate:
         """Same Idempotency-Key within 60s => the queue+apply runs exactly once."""
         with (
             patch("routers.admin.update_repo.get_in_flight", new=AsyncMock(return_value=[])),
-            patch("routers.admin.update_repo.create", new=AsyncMock(return_value=self._CREATED)),
+            patch("routers.admin.queue_image_update", new=AsyncMock(return_value=self._CREATED)),
             patch("routers.admin.apply_update", new=AsyncMock(return_value=True)) as mock_apply,
         ):
             headers = {"Idempotency-Key": "force-apply-key-1"}

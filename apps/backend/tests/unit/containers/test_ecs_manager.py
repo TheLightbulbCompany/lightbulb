@@ -6,7 +6,7 @@ DynamoDB required.
 
 import asyncio
 import threading
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -152,6 +152,17 @@ def _start_guards_clear(monkeypatch):
         "core.repositories.container_repo.get_by_owner_id",
         AsyncMock(return_value=None),
     )
+
+
+@pytest.fixture(autouse=True)
+def _owner_lifecycle_guard_stub(monkeypatch):
+    """Keep lifecycle unit tests on mocked AWS while the lock has its own focused assertion."""
+
+    @asynccontextmanager
+    async def unlocked(_owner_id, **_kwargs):
+        yield {}
+
+    monkeypatch.setattr("core.services.openclaw_release.owner_lifecycle_guard", unlocked)
 
 
 @pytest.fixture
@@ -798,6 +809,35 @@ class TestStopUserService:
             mock_repo.update_status.assert_called_once_with("user_test_123", "stopped")
             # Default reason "manual" is stamped (clears any stale parked_at).
             mock_repo.stamp_stop_reason.assert_awaited_once_with("user_test_123", "manual")
+
+    @pytest.mark.asyncio
+    async def test_ordinary_stop_holds_owner_lifecycle_guard_through_ecs_and_status(
+        self,
+        manager,
+        mock_ecs_client,
+        monkeypatch,
+    ):
+        held = False
+
+        @asynccontextmanager
+        async def lifecycle_guard(_owner_id, **_kwargs):
+            nonlocal held
+            held = True
+            try:
+                yield {}
+            finally:
+                held = False
+
+        monkeypatch.setattr("core.services.openclaw_release.owner_lifecycle_guard", lifecycle_guard)
+        mock_ecs_client.update_service.side_effect = lambda **_kwargs: held or pytest.fail("ECS ran outside guard")
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="running"))
+            mock_repo.update_status = AsyncMock(side_effect=lambda *_args: held or pytest.fail("status ran outside guard"))
+            mock_repo.stamp_stop_reason = AsyncMock()
+
+            await manager.stop_user_service("user_test_123")
+
+        assert held is False
 
     @pytest.mark.asyncio
     async def test_stop_no_db_record(self, manager, mock_ecs_client):
@@ -2560,6 +2600,14 @@ class TestResizeUserContainer:
     next backend restart catches it via the startup reconciler."""
 
     @pytest.mark.asyncio
+    async def test_direct_image_mutation_requires_release_executor(self, manager, mock_ecs_client):
+        with pytest.raises(EcsManagerError, match="registered OpenClaw release"):
+            await manager.resize_user_container("user_test_123", new_image="unqualified:mutable")
+
+        mock_ecs_client.register_task_definition.assert_not_called()
+        mock_ecs_client.update_service.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_resize_reads_env_from_base_not_current(self, manager, mock_ecs_client):
         """resize must read containerDefinitions from the CDK-managed base
         family, NOT from the user's prior per-user revision.
@@ -2675,7 +2723,6 @@ class TestResizeUserContainer:
                 "user_test_123",
                 new_cpu="2048",
                 new_memory="8192",
-                new_image="global-default:mutable",
             )
 
         definition = mock_ecs_client.register_task_definition.call_args.kwargs
@@ -2800,7 +2847,7 @@ class TestResizeUserContainer:
             )
             mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
 
-            await manager.resize_user_container("user_test_123", new_image="ecr/openclaw-extended:new")
+            await manager.resize_user_container("user_test_123", new_cpu="1024")
 
             call_kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
             env_entries = call_kwargs["containerDefinitions"][0]["environment"]
@@ -2819,8 +2866,9 @@ class TestResizeUserContainer:
             assert secrets["OPENAI_API_KEY"] == "arn:aws:secretsmanager:us-east-1:123:secret:byok"
             assert secrets["GOG_KEYRING_PASSWORD"] == "arn:aws:secretsmanager:us-east-1:123:secret:gog"
             assert len(secrets_entries) == len(secrets), "duplicate secret names registered"
-            # New image still stamped on the openclaw container
-            assert call_kwargs["containerDefinitions"][0]["image"] == "ecr/openclaw-extended:new"
+            # A size-only mutation preserves the owner's prior image instead
+            # of silently inheriting a newly deployed CDK base image.
+            assert call_kwargs["containerDefinitions"][0]["image"] == "ecr/openclaw-extended:old"
             assert call_kwargs["taskRoleArn"] == "arn:aws:iam::123:role/prior-owner"
 
     @pytest.mark.asyncio

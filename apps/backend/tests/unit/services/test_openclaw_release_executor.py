@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock
 
@@ -532,6 +533,55 @@ async def test_release_reservation_refuses_applying_ordinary_update(monkeypatch)
 
     assert not await executor.apply_owner_release("owner", "release")
     reserve.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_release_snapshot_and_reservation_hold_shared_lifecycle_owner(monkeypatch):
+    from core.services import openclaw_release_executor as executor
+
+    pending = {
+        "owner_id": "owner",
+        "update_id": "release",
+        "update_type": "release",
+        "status": "pending",
+        "changes": {"target_release_id": "candidate"},
+    }
+    held = False
+
+    @asynccontextmanager
+    async def lifecycle_guard(_owner_id):
+        nonlocal held
+        held = True
+        try:
+            yield {"owner_id": "owner", "task_definition_arn": "arn:old"}
+        finally:
+            held = False
+
+    @asynccontextmanager
+    async def mutation_guard(_owner_id):
+        assert held
+        yield {"owner_id": "owner", "task_definition_arn": "arn:old"}
+
+    async def snapshot(_owner_id):
+        assert held
+        return {"task_definition_arn": "arn:old", "desired_count": 1}
+
+    async def reserve(*_args, **_kwargs):
+        assert held
+        return False
+
+    runtime = MagicMock()
+    runtime.snapshot = AsyncMock(side_effect=snapshot)
+    monkeypatch.setattr(executor.update_repo, "get_by_id", AsyncMock(return_value=pending))
+    monkeypatch.setattr(executor.update_repo, "get_in_flight", AsyncMock(return_value=[pending]))
+    monkeypatch.setattr(executor.update_repo, "reserve_owner_apply", AsyncMock(side_effect=reserve))
+    monkeypatch.setattr(executor, "owner_lifecycle_guard", lifecycle_guard)
+    monkeypatch.setattr(executor, "owner_mutation_guard", mutation_guard)
+    monkeypatch.setattr(executor, "_ReleaseRuntime", lambda: runtime)
+    monkeypatch.setattr(executor, "release_by_id", lambda _release_id: _release())
+
+    assert not await executor.apply_owner_release("owner", "release")
+    assert held is False
 
 
 @pytest.mark.asyncio

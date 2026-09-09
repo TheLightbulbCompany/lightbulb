@@ -1754,3 +1754,33 @@ async def test_stale_ordinary_finally_cannot_clear_a_successor_marker(dynamodb_t
     row = containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"]
     assert row["ordinary_update_id"] == update["update_id"]
     assert row["ordinary_update_claim_id"] == "successor-claim"
+
+
+@pytest.mark.asyncio
+async def test_stale_ordinary_successor_can_take_over_the_same_owner_marker(dynamodb_table):
+    from core.dynamodb import get_table
+    from core.repositories import update_repo
+
+    containers = get_table("containers")
+    updates = get_table("pending-updates")
+    containers.put_item(Item={"owner_id": "u", "id": "container", "status": "running"})
+    update = await update_repo.create("u", "config_patch", "ordinary", {"config_patch": {"x": 1}})
+    claimed = await update_repo.claim_apply("u", update["update_id"], "stale-claim")
+    assert claimed is not None
+    assert await update_repo.claim_ordinary_owner("u", update["update_id"], "stale-claim")
+    updates.update_item(
+        Key={"owner_id": "u", "update_id": update["update_id"]},
+        UpdateExpression="SET apply_claimed_at = :stale",
+        ExpressionAttributeValues={":stale": 1},
+    )
+
+    successor = await update_repo.claim_stale_apply(
+        "u",
+        update["update_id"],
+        "successor-claim",
+        stale_before_epoch=2,
+    )
+    assert successor is not None
+    assert await update_repo.claim_ordinary_owner("u", update["update_id"], "successor-claim")
+    assert not await update_repo.release_ordinary_owner("u", update["update_id"], "stale-claim")
+    assert await update_repo.assert_ordinary_owner("u", update["update_id"], "successor-claim")

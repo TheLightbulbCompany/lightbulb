@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 from contextlib import asynccontextmanager
@@ -178,6 +179,19 @@ def release_by_id(release_id: str) -> OpenClawRelease:
     if release is None:
         raise OpenClawReleaseError("OpenClaw release is not registered")
     return release
+
+
+def release_by_image(image: str) -> OpenClawRelease:
+    """Resolve an operator-supplied image only through qualified registry evidence."""
+
+    if type(image) is not str or not image.strip():
+        raise OpenClawReleaseError("OpenClaw image is invalid")
+    matches = tuple(
+        release for release in available_releases() if image in {release.image, release.digest_image}
+    )
+    if len(matches) != 1:
+        raise OpenClawReleaseError("OpenClaw image is not registered")
+    return matches[0]
 
 
 def _release_ids(container: dict) -> tuple[str | None, str | None, str | None]:
@@ -392,6 +406,39 @@ def active_schema_id(context: OwnerConfigContext) -> str | None:
 def _owner_paths(owner_id: str) -> tuple[str, str]:
     config_dir = str(Path(settings.EFS_MOUNT_PATH) / owner_id)
     return config_dir, str(Path(config_dir) / "openclaw.json.lock")
+
+
+def _owner_lifecycle_paths(owner_id: str) -> tuple[str, str]:
+    lock_dir = str(Path(settings.EFS_MOUNT_PATH) / ".lightbulb-owner-lifecycle-locks")
+    token = hashlib.sha256(owner_id.encode()).hexdigest()[:32]
+    return lock_dir, str(Path(lock_dir) / f"{token}.lock")
+
+
+@asynccontextmanager
+async def owner_lifecycle_guard(
+    owner_id: str,
+    *,
+    release_update_id: str | None = None,
+) -> AsyncIterator[dict | None]:
+    """Crash-safe cross-process ownership for ECS lifecycle mutations."""
+
+    lock_dir, lock_path = _owner_lifecycle_paths(owner_id)
+    local_lock = get_file_lock(lock_path)
+    await asyncio.to_thread(local_lock.acquire)
+    guard = openclaw_config_recovery_guard(lock_dir, lock_path)
+    entered = False
+    try:
+        await asyncio.to_thread(guard.__enter__)
+        entered = True
+        row = await container_repo.get_by_owner_id(owner_id, consistent=True)
+        pointer = (row or {}).get("release_update_id")
+        if pointer != release_update_id:
+            raise OwnerReleaseConflict("owner lifecycle is reserved by another release")
+        yield row
+    finally:
+        if entered:
+            await asyncio.to_thread(guard.__exit__, None, None, None)
+        local_lock.release()
 
 
 @asynccontextmanager

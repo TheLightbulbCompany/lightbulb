@@ -50,6 +50,8 @@ def test_release_registry_is_empty_until_final_artifact_is_injected():
 
     openclaw_release._load_releases.cache_clear()
     assert openclaw_release.available_releases() == ()
+    with pytest.raises(openclaw_release.OpenClawReleaseError, match="not registered"):
+        openclaw_release.release_by_image("mutable.example/openclaw:latest")
 
 
 def test_release_registry_loads_only_complete_qualified_rows(tmp_path, monkeypatch):
@@ -72,6 +74,10 @@ def test_release_registry_loads_only_complete_qualified_rows(tmp_path, monkeypat
     assert release.digest_image.endswith(f"@sha256:{'a' * 64}")
     assert release.build_id == "2026.9.3-isol8.1-deadbee"
     assert release.config_capabilities == frozenset({"browser.sessionState", "mcp.runtimeScope"})
+    assert openclaw_release.release_by_image(release.image) is release
+    assert openclaw_release.release_by_image(release.digest_image) is release
+    with pytest.raises(openclaw_release.OpenClawReleaseError, match="not registered"):
+        openclaw_release.release_by_image("mutable.example/openclaw:latest")
 
 
 @pytest.mark.parametrize(

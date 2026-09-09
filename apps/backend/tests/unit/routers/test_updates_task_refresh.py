@@ -151,6 +151,29 @@ async def test_admin_release_queues_only_a_registered_single_owner_target():
 
 
 @pytest.mark.asyncio
+async def test_legacy_image_request_is_routed_to_registered_release_queue():
+    request = updates.AdminUpdateRequest(
+        owner_id="owner_founder",
+        update_type="image_update",
+        description="Founder 9.3",
+        changes={"new_image": "registry.example/openclaw:qualified"},
+        force_by="admin",
+    )
+    created = {"owner_id": "owner_founder", "update_id": "release-update", "update_type": "release"}
+
+    with patch.object(updates, "queue_image_update", new=AsyncMock(return_value=created)) as queue:
+        result = await updates.admin_create_update(request, MagicMock())
+
+    assert result == {"status": "created", "update": created}
+    queue.assert_awaited_once_with(
+        "owner_founder",
+        "registry.example/openclaw:qualified",
+        "Founder 9.3",
+        force_by="admin",
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "owner_id,changes",
     [

@@ -1,12 +1,4 @@
-"""Tests for the image-update apply path + the pre-roll config migration.
-
-A container rolled to a newer image reuses its existing on-disk
-openclaw.json. ``migrate_removed_config_keys`` strips keys the new image's
-strict schema no longer accepts (e.g. ``agents.defaults.embeddedHarness``,
-removed in 2026.5.28) before the roll, so the gateway doesn't crash-loop on
-boot. These tests pin that the migration runs, targets the right path, and
-runs BEFORE the ECS image roll.
-"""
+"""Tests for ordinary update execution and release-only image admission."""
 
 import asyncio
 
@@ -315,193 +307,49 @@ async def test_migrate_removed_config_keys_scrubs_defaults_and_entries():
 
 
 @pytest.mark.asyncio
-async def test_apply_update_regenerates_config_before_image_roll():
-    """An image roll must REGENERATE the on-disk config BEFORE resizing onto
-    the new image.
-
-    It used to only strip a blacklist of removed keys, which held while every
-    roll was same-upstream (2026.7.2-isol8.N -> isol8.M, identical schema).
-    Across an upstream bump the blacklist is structurally insufficient — it
-    reaches only inside agents.*, and 7.2 -> 8.1 leaves 10 rejected keys at
-    the ROOT. Both schema roots are additionalProperties:false, so the rolled
-    gateway crash-loops at boot. The generator is version-aware, so a regen
-    needs no blacklist to maintain."""
-    owner_id, update_id = "owner_1", "upd_1"
-    update_item = {
-        "owner_id": owner_id,
-        "update_id": update_id,
-        "update_type": "image_update",
-        "changes": {"new_image": "ecr/openclaw-extended:2026.5.28-abc"},
-    }
-
-    repo = _claimed_repo(update_item)
-
-    order: list[str] = []
+async def test_ordinary_image_row_fails_before_any_runtime_mutation():
+    owner_id, update_id = "owner_1", "legacy-image-row"
+    repo = _claimed_repo(
+        {
+            "owner_id": owner_id,
+            "update_id": update_id,
+            "update_type": "image_update",
+            "changes": {"new_image": "unregistered.example/openclaw:mutable"},
+        }
+    )
     ecs = MagicMock()
-    ecs._size_for_owner = AsyncMock(return_value=("512", "2048"))
-    ecs.resize_user_container = AsyncMock(side_effect=lambda *a, **k: order.append("resize"))
-    regen = AsyncMock(side_effect=lambda *a, **k: order.append("regen"))
-    migrate = AsyncMock(side_effect=lambda *a, **k: order.append("migrate"))
-    heal = AsyncMock(side_effect=lambda *a, **k: order.append("heal"))
-
-    with (
-        patch.object(update_service, "update_repo", repo),
-        patch.object(update_service, "reapply_owner_config", regen),
-        patch.object(update_service, "migrate_removed_config_keys", migrate),
-        patch.object(update_service, "heal_seeded_files", heal),
-        patch("core.containers.get_ecs_manager", return_value=ecs),
-        patch("core.containers.get_workspace", return_value=MagicMock()),
-    ):
-        result = await update_service.apply_update(owner_id, update_id)
-
-    assert result is True
-    # VALUE-checked, not just "was awaited": deployed_tag defaults to None, and
-    # None makes reapply_owner_config read the owner's CURRENT task-def. So a
-    # dropped kwarg still compiles, still passes an await-only assertion, and
-    # silently inverts every fork-level gate on the roll. The update_item's
-    # new_image is :2026.5.28-abc, deliberately unlike any tag an owner is on.
-    regen.assert_awaited_once_with(owner_id, deployed_tag="2026.5.28-abc")
-    # The strip is now only the legacy-row fallback, not the normal path.
-    migrate.assert_not_awaited()
-    # An image roll also heals seeded workspace files — the only routine
-    # fleet-wide touch-point for already-provisioned Fridays.
-    heal.assert_awaited_once()
-    assert heal.await_args.kwargs["owner_id"] == owner_id
-    ecs.resize_user_container.assert_awaited_once()
-    assert order == ["regen", "heal", "resize"]
-
-
-@pytest.mark.asyncio
-async def test_apply_update_carries_memory_wiki_bridge_keys_onto_existing_owners():
-    """The roll must deep-fill memory-wiki's config keys, not just the entry.
-
-    ``ensure_plugin_entries`` is additive at the ENTRY level, so it skips every
-    owner who already has a memory-wiki entry — precisely the cohort that
-    predates the bridge keys, which are what import memory-core's artifacts
-    into the brain. A failure here is a safety-net miss, never a reason to
-    strand an owner on an old image, so the roll still completes.
-    """
-    from core.containers.config import memory_plugin_entries
-
-    owner_id, update_id = "owner_wiki", "upd_wiki"
-    update_item = {
-        "owner_id": owner_id,
-        "update_id": update_id,
-        "update_type": "image_update",
-        "changes": {"new_image": "ecr/openclaw-extended:2026.5.28-abc"},
-    }
-
-    ecs = MagicMock()
-    ecs._size_for_owner = AsyncMock(return_value=("512", "2048"))
-    ecs.resize_user_container = AsyncMock()
-    # Raises: the same call proves both the wiring and that the roll survives it.
-    fill = AsyncMock(side_effect=RuntimeError("EFS unavailable"))
-
-    with (
-        patch.object(update_service, "update_repo", _claimed_repo(update_item)),
-        patch.object(update_service, "reapply_owner_config", AsyncMock()),
-        patch.object(update_service, "migrate_removed_config_keys", AsyncMock()),
-        patch.object(update_service, "heal_seeded_files", AsyncMock()),
-        patch("core.services.config_patcher.ensure_plugin_config_keys", fill),
-        patch("core.containers.get_ecs_manager", return_value=ecs),
-        patch("core.containers.get_workspace", return_value=MagicMock()),
-    ):
-        result = await update_service.apply_update(owner_id, update_id)
-
-    # VALUE-checked: the bridge keys are the whole point, and a call that
-    # passed the wrong subtree would still satisfy an await-only assertion.
-    fill.assert_awaited_once_with(owner_id, "memory-wiki", memory_plugin_entries()["memory-wiki"]["config"])
-    assert result is True
-    ecs.resize_user_container.assert_awaited_once()
-
-
-async def test_apply_update_falls_back_to_strip_for_legacy_rows():
-    """A legacy row with no gateway_token cannot be regenerated —
-    reapply_owner_config is the same code the admin Regenerate button 409s
-    them from. The roll must fall back to the historical strip rather than
-    fail, so a SAME-upstream roll keeps working for them exactly as before."""
-    owner_id, update_id = "owner_legacy", "upd_1"
-    update_item = {
-        "owner_id": owner_id,
-        "update_id": update_id,
-        "update_type": "image_update",
-        "changes": {"new_image": "ecr/openclaw-extended:2026.5.28-abc"},
-    }
-
-    repo = _claimed_repo(update_item)
-
-    order: list[str] = []
-    ecs = MagicMock()
-    ecs._size_for_owner = AsyncMock(return_value=("512", "2048"))
-    ecs.resize_user_container = AsyncMock(side_effect=lambda *a, **k: order.append("resize"))
-    regen = AsyncMock(side_effect=ValueError("owner has no gateway_token"))
-    migrate = AsyncMock(side_effect=lambda *a, **k: order.append("migrate"))
-
-    with (
-        patch.object(update_service, "update_repo", repo),
-        patch.object(update_service, "reapply_owner_config", regen),
-        patch.object(update_service, "migrate_removed_config_keys", migrate),
-        patch.object(update_service, "heal_seeded_files", AsyncMock()),
-        patch("core.containers.get_ecs_manager", return_value=ecs),
-        patch("core.containers.get_workspace", return_value=MagicMock()),
-    ):
-        result = await update_service.apply_update(owner_id, update_id)
-
-    assert result is True
-    migrate.assert_awaited_once_with(owner_id)
-    # The roll still happened — a legacy owner is not stranded on an old image.
-    ecs.resize_user_container.assert_awaited_once()
-    assert order == ["migrate", "resize"]
-
-
-async def _apply_image_only_update(owner_id, update_id, size):
-    """Drive apply_update for an image-ONLY change (no cpu/memory) with a
-    _size_for_owner stub returning ``size``; return the resize call kwargs."""
-    update_item = {
-        "owner_id": owner_id,
-        "update_id": update_id,
-        "update_type": "image_update",
-        "changes": {"new_image": "ecr/openclaw-extended:2026.6.1-abc"},
-    }
-    repo = _claimed_repo(update_item)
-
-    ecs = MagicMock()
-    ecs._size_for_owner = AsyncMock(return_value=size)
     ecs.resize_user_container = AsyncMock()
 
     with (
         patch.object(update_service, "update_repo", repo),
-        patch.object(update_service, "reapply_owner_config", AsyncMock()),
-        patch.object(update_service, "migrate_removed_config_keys", AsyncMock()),
-        patch.object(update_service, "heal_seeded_files", AsyncMock()),
         patch("core.containers.get_ecs_manager", return_value=ecs),
-        patch("core.containers.get_workspace", return_value=MagicMock()),
     ):
         result = await update_service.apply_update(owner_id, update_id)
 
-    assert result is True
-    ecs._size_for_owner.assert_awaited_once_with(owner_id)
-    ecs.resize_user_container.assert_awaited_once()
-    return ecs.resize_user_container.await_args.kwargs
+    assert result is False
+    ecs.resize_user_container.assert_not_awaited()
+    failed = repo.finish_claimed_apply.await_args_list[-1]
+    assert failed.kwargs["status"] == "failed"
+    assert "registered OpenClaw release" in failed.kwargs["failure_reason"]
 
 
 @pytest.mark.asyncio
-async def test_apply_image_only_update_preserves_ultra_size():
-    """An image-only roll for an ultra_pro owner must re-register the Ultra box,
-    not the standard one — otherwise every routine image bump / fleet-force-apply
-    silently shrinks the container back to 1 vCPU / 4 GB."""
-    kwargs = await _apply_image_only_update("owner_ultra", "upd_ultra", ("2048", "8192"))
-    assert kwargs["new_cpu"] == "2048"
-    assert kwargs["new_memory"] == "8192"
-    assert kwargs["new_image"] == "ecr/openclaw-extended:2026.6.1-abc"
+async def test_queue_image_update_translates_exact_registry_image_to_release(monkeypatch):
+    release = MagicMock(release_id="qualified-9.3")
+    monkeypatch.setattr("core.services.openclaw_release.release_by_image", lambda _image: release)
+    create = AsyncMock(return_value={"update_id": "release-row"})
+    monkeypatch.setattr(update_service.update_repo, "create", create)
 
+    item = await update_service.queue_image_update("owner", "registered:tag", force_by="admin")
 
-@pytest.mark.asyncio
-async def test_apply_image_only_update_keeps_standard_size():
-    """An image-only roll for a standard owner stays on the standard box."""
-    kwargs = await _apply_image_only_update("owner_std", "upd_std", ("512", "2048"))
-    assert kwargs["new_cpu"] == "512"
-    assert kwargs["new_memory"] == "2048"
+    assert item == {"update_id": "release-row"}
+    create.assert_awaited_once_with(
+        owner_id="owner",
+        update_type="release",
+        description="Image update to registered:tag",
+        changes={"target_release_id": "qualified-9.3"},
+        force_by="admin",
+    )
 
 
 @pytest.mark.asyncio

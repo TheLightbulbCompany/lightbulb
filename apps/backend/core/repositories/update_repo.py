@@ -1558,8 +1558,7 @@ async def claim_ordinary_owner(owner_id: str, update_id: str, claim_id: str) -> 
                         "ConditionExpression": (
                             "attribute_exists(owner_id) AND attribute_not_exists(release_update_id) AND "
                             "attribute_not_exists(provision_claim_id) AND "
-                            "(attribute_not_exists(ordinary_update_id) OR "
-                            "(ordinary_update_id = :update AND ordinary_update_claim_id = :claim))"
+                            "(attribute_not_exists(ordinary_update_id) OR ordinary_update_id = :update)"
                         ),
                     }
                 },

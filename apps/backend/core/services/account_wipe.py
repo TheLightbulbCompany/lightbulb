@@ -43,7 +43,8 @@ for them (see the inline notes at those call sites):
   spec #8  -> folded into "ecs_service" (bedrock_aip.reap_owner_bedrock_resources)
   spec #9  -> "metronome"             (MetronomeClient.archive_customer)
   spec #10 -> "stripe"                (billing_service.delete_stripe_customer)
-  spec #11 -> "usage_counters" / "paperclip_row" / "billing_row" / "user_row"
+  spec #11 -> "usage_counters" / "room_read_cursors" / "paperclip_row" /
+              "billing_row" / "user_row"
               (containers row + channel-links already folded into
               "ecs_service" — see note below; "paperclip_row" also carries the
               owner's ``__pending_brief__:`` item, which lives in the SAME
@@ -100,6 +101,7 @@ from core.repositories import (
     container_repo,
     integrations_repo,
     provisioning_workflow_repo,
+    room_read_cursor_repo,
     slack_installs_repo,
     usage_repo,
     user_repo,
@@ -543,6 +545,14 @@ async def preview_wipe(owner_id: str) -> WipeReport:
             detail="all usage-counter rows for owner",
         )
     )
+    steps.append(
+        WipeStep(
+            system="room_read_cursors",
+            action="delete_all_for_owner",
+            status="would_delete",
+            detail="all native-room read cursor rows for owner",
+        )
+    )
 
     paperclip_rows = [
         label
@@ -900,6 +910,12 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
         return f"deleted {count} row(s)"
 
     await _step(steps, system="usage_counters", action="delete_all_for_owner", fn=_s9a)
+
+    async def _s9a2() -> str:
+        count = await room_read_cursor_repo.delete_all_for_owner(owner_id)
+        return f"deleted {count} row(s)"
+
+    await _step(steps, system="room_read_cursors", action="delete_all_for_owner", fn=_s9a2)
 
     # Both of this owner's items in paperclip-companies, not just the company
     # row: the funnel answer lives in the SAME table under the prefixed key

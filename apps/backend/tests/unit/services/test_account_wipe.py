@@ -60,6 +60,7 @@ EXPECTED_ORDER = [
     # account deauthorize (never a delete; see account_wipe.py's docstring).
     "stripe",
     "usage_counters",
+    "room_read_cursors",
     "paperclip_row",
     "billing_row",
     "user_row",
@@ -190,6 +191,7 @@ def wipe_mocks():
     company_stripe_deauthorize = AsyncMock(return_value=True)
     billing_clear_company_stripe = AsyncMock(return_value={})
     usage_delete = AsyncMock(return_value=3)
+    room_read_cursors_delete = AsyncMock(return_value=4)
     clerk_delete = AsyncMock(return_value=None)
     agent_keys_list = AsyncMock(return_value=["lightbulb/dev/paperclip-agent-keys/user_abc123/agent-1"])
     agent_keys_delete = AsyncMock(return_value=1)
@@ -242,6 +244,10 @@ def wipe_mocks():
         ("core.services.account_wipe.company_stripe.deauthorize", company_stripe_deauthorize),
         ("core.services.account_wipe.billing_repo.clear_company_stripe_account", billing_clear_company_stripe),
         ("core.services.account_wipe.usage_repo.delete_all_for_owner", usage_delete),
+        (
+            "core.services.account_wipe.room_read_cursor_repo.delete_all_for_owner",
+            room_read_cursors_delete,
+        ),
         ("core.services.account_wipe.clerk_admin.delete_user", clerk_delete),
         ("core.services.account_wipe.list_owner_agent_key_secret_names", agent_keys_list),
         ("core.services.account_wipe.delete_owner_agent_key_secrets", agent_keys_delete),
@@ -287,6 +293,7 @@ def wipe_mocks():
             company_stripe_deauthorize=company_stripe_deauthorize,
             billing_clear_company_stripe=billing_clear_company_stripe,
             usage_delete=usage_delete,
+            room_read_cursors_delete=room_read_cursors_delete,
             clerk_delete=clerk_delete,
             agent_keys_list=agent_keys_list,
             agent_keys_delete=agent_keys_delete,
@@ -336,6 +343,7 @@ async def test_wipe_account_runs_steps_in_spec_order(wipe_mocks):
     wipe_mocks.company_stripe_deauthorize.assert_awaited_once_with(account_id="acct_xyz789")
     wipe_mocks.billing_clear_company_stripe.assert_awaited_once_with(OWNER_ID, account_id="acct_xyz789")
     wipe_mocks.usage_delete.assert_awaited_once_with(OWNER_ID)
+    wipe_mocks.room_read_cursors_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.paperclip_row_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.billing_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.user_delete.assert_awaited_once_with(OWNER_ID)
@@ -430,7 +438,7 @@ async def test_early_step_failure_does_not_abort_later_steps(wipe_mocks):
     assert "ECS API down" in (by_system["ecs_service"].error or "")
 
     # Every step after the failure still ran and succeeded.
-    for system in ("efs_workspace_dir", "metronome", "usage_counters"):
+    for system in ("efs_workspace_dir", "metronome", "usage_counters", "room_read_cursors"):
         assert by_system[system].status == "ok", f"{system} should still have run: {by_system[system]}"
 
     # "stripe" covers two steps (Step 8 delete_stripe_customer, Step 8b
@@ -732,8 +740,9 @@ async def test_preview_wipe_skips_absent_resources(wipe_mocks):
     assert by_system["paperclip_row"].status == "skipped"
     assert by_system["billing_row"].status == "skipped"
     assert by_system["user_row"].status == "skipped"
-    # usage_counters and clerk_user have no cheap existence check -- always would_delete.
+    # Owner-partition sweeps and Clerk have no cheap existence check -- always would_delete.
     assert by_system["usage_counters"].status == "would_delete"
+    assert by_system["room_read_cursors"].status == "would_delete"
     assert by_system["clerk_user"].status == "would_delete"
 
 
@@ -815,6 +824,7 @@ async def test_wipe_account_refuses_bootstrap_admin_before_any_teardown(wipe_moc
     wipe_mocks.metronome_archive.assert_not_awaited()
     wipe_mocks.stripe_delete.assert_not_awaited()
     wipe_mocks.usage_delete.assert_not_awaited()
+    wipe_mocks.room_read_cursors_delete.assert_not_awaited()
     wipe_mocks.paperclip_row_delete.assert_not_awaited()
     wipe_mocks.billing_delete.assert_not_awaited()
     wipe_mocks.user_delete.assert_not_awaited()

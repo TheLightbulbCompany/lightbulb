@@ -151,6 +151,25 @@ def invalidate_qualification(owner_id: str) -> None:
     _qualified_owners.pop(owner_id, None)
 
 
+def room_home_id(owner_id: str) -> str:
+    """Opaque stable routing identity for the current per-owner room home."""
+    return _digest(["founder-container-home-v1", owner_id])
+
+
+def room_home_generation(qualification: RoomQualification) -> str:
+    """Opaque incarnation fence; callers never route by image tag or address."""
+    return _digest(
+        [
+            "founder-container-home-generation-v1",
+            qualification.owner_id,
+            qualification.ip,
+            qualification.release_id,
+            qualification.build_id,
+            qualification.evidence_id,
+        ]
+    )
+
+
 def room_prefix(owner_id: str, agent_id: str) -> str:
     if not _AGENT.fullmatch(agent_id):
         raise RoomError("INVALID_REQUEST", "Invalid room agent")
@@ -237,6 +256,7 @@ _SCHEMAS = {
             "agentId": _AGENT_ID,
             "limit": {"type": "integer", "minimum": 1, "maximum": 200},
             "offset": {"type": "integer", "minimum": 0},
+            "cursor": {"type": "string", "pattern": "^(0|[1-9][0-9]{0,8})$"},
             "search": {"type": "string", "maxLength": 512},
             "archived": {"anyOf": [{"type": "boolean"}, {"const": "all"}]},
             "includeDerivedTitles": {"type": "boolean"},
@@ -245,6 +265,18 @@ _SCHEMAS = {
     ),
     "sessions.messages.subscribe": _object({"key": _SESSION_KEY}, ("key",)),
     "sessions.messages.unsubscribe": _object({"key": _SESSION_KEY}, ("key",)),
+    "sessions.viewers.set": _object(
+        {
+            "agentId": _AGENT_ID,
+            "sessionKeys": {
+                "type": "array",
+                "maxItems": 32,
+                "uniqueItems": True,
+                "items": _SESSION_KEY,
+            },
+        },
+        ("sessionKeys",),
+    ),
     "sessions.presence.heartbeat": _object(
         {
             "sessionKey": _SESSION_KEY,
@@ -300,6 +332,21 @@ _SCHEMAS = {
         for method in ("session.members.add", "session.members.remove")
     },
 }
+_LOCAL_SCHEMAS = {
+    "lightbulb.rooms.readState": _object(
+        {"sessionKey": _SESSION_KEY, "expectedSessionId": _STRING},
+        ("sessionKey", "expectedSessionId"),
+    ),
+    "lightbulb.rooms.markRead": _object(
+        {
+            "sessionKey": _SESSION_KEY,
+            "expectedSessionId": _STRING,
+            "messageId": _STRING,
+            "messageSeq": {"type": "integer", "minimum": 1},
+        },
+        ("sessionKey", "expectedSessionId", "messageId", "messageSeq"),
+    ),
+}
 _APPEND_RESULT = Draft202012Validator(
     _object(
         {
@@ -313,8 +360,9 @@ _APPEND_RESULT = Draft202012Validator(
         ("sessionKey", "sessionId", "messageId", "messageSeq", "appended"),
     ),
 )
-_VALIDATORS = {method: Draft202012Validator(schema) for method, schema in _SCHEMAS.items()}
+_VALIDATORS = {method: Draft202012Validator(schema) for method, schema in {**_SCHEMAS, **_LOCAL_SCHEMAS}.items()}
 ROOM_METHODS = frozenset(_SCHEMAS)
+LOCAL_ROOM_METHODS = frozenset(_LOCAL_SCHEMAS)
 _INTERNAL_METHODS = frozenset({"agent.wait", "users.self"})
 UNCERTAIN_AFTER_SUCCESS = frozenset(
     {
@@ -343,6 +391,10 @@ def admit_rpc(method: str, params: dict, identity: HumanIdentity, qualification:
     if validator is None or not validator.is_valid(params):
         raise RoomError("INVALID_REQUEST", "Unsupported room method or arguments")
     admitted = dict(params)
+    if method == "sessions.list" and "cursor" in admitted:
+        if "offset" in admitted:
+            raise RoomError("INVALID_REQUEST", "Directory cursor and offset are mutually exclusive")
+        admitted["offset"] = int(admitted.pop("cursor"))
     if "agentId" in admitted and admitted["agentId"] not in qualification.agents:
         raise RoomError("FORBIDDEN", "Room agent not authorized")
     if method == "sessions.room.create":
@@ -375,28 +427,404 @@ def admit_rpc(method: str, params: dict, identity: HumanIdentity, qualification:
     return admitted
 
 
-def filter_rpc_result(method: str, result, identity: HumanIdentity, qualification: RoomQualification):
+def _room_route(qualification: RoomQualification) -> dict[str, str]:
+    return {
+        "home_id": room_home_id(qualification.owner_id),
+        "home_generation": room_home_generation(qualification),
+    }
+
+
+def _positive_integer(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 0 < value <= _MAX_SAFE_INTEGER
+
+
+_MAX_SAFE_INTEGER = 9_007_199_254_740_991
+_PRESENCE_MAX_CONNECTIONS = 4_096
+_PRESENCE_EXPIRES_MS = 90_000
+_TYPING_EXPIRES_MS = 2_500
+_PRESENCE_FIELDS = frozenset(
+    {
+        "roomKey",
+        "actor",
+        "connectionId",
+        "connectionStartedAtMs",
+        "sequence",
+        "state",
+        "serverReceivedAtMs",
+        "expiresAtMs",
+        "visibility",
+        "visibilityObservedAtMs",
+        "recentInput",
+        "recentInputObservedAtMs",
+        "viewingIntent",
+        "viewingIntentReceivedAtMs",
+        "authoritativeLastSeenAtMs",
+    }
+)
+
+
+def _epoch_ms(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 1_000_000_000_000 <= value <= _MAX_SAFE_INTEGER
+
+
+def normalize_presence_event(value, server_now_at_ms: int) -> dict | None:
+    """Validate native timing evidence without inventing browser-derived state."""
+    if not _epoch_ms(server_now_at_ms) or not isinstance(value, dict):
+        return None
+    if set(value) - _PRESENCE_FIELDS:
+        return None
+    event = dict(value)
+    actor = event.get("actor")
+    if not (
+        isinstance(actor, dict)
+        and set(actor) == {"type", "id"}
+        and actor.get("type") in {"profile", "agent"}
+        and isinstance(actor.get("id"), str)
+        and 1 <= len(actor["id"]) <= 256
+        and isinstance(event.get("roomKey"), str)
+        and event["roomKey"]
+        and isinstance(event.get("connectionId"), str)
+        and 1 <= len(event["connectionId"]) <= 256
+        and _positive_integer(event.get("sequence"))
+        and event["sequence"] <= _MAX_SAFE_INTEGER
+        and event.get("state") in {"online", "away", "offline", "typing", "unknown"}
+        and event.get("visibility") in {"visible", "hidden", "unknown"}
+        and event.get("recentInput") in {"recent", "stale", "unknown"}
+        and event.get("viewingIntent") in {"viewing", "not-viewing", "unknown"}
+        and _epoch_ms(event.get("connectionStartedAtMs"))
+        and _epoch_ms(event.get("serverReceivedAtMs"))
+        and event["connectionStartedAtMs"] <= event["serverReceivedAtMs"] <= server_now_at_ms
+        and _epoch_ms(event.get("expiresAtMs"))
+    ):
+        return None
+    duration = _TYPING_EXPIRES_MS if event["state"] == "typing" else _PRESENCE_EXPIRES_MS
+    if not (event["serverReceivedAtMs"] <= event["expiresAtMs"] <= event["serverReceivedAtMs"] + duration):
+        return None
+    for observed_field, projection_field in (
+        ("visibilityObservedAtMs", "visibility"),
+        ("recentInputObservedAtMs", "recentInput"),
+        ("viewingIntentReceivedAtMs", "viewingIntent"),
+    ):
+        observed_at = event.get(observed_field)
+        if not (
+            _epoch_ms(observed_at) and observed_at <= event["serverReceivedAtMs"] and observed_at <= server_now_at_ms
+        ):
+            event.pop(observed_field, None)
+            event[projection_field] = "unknown"
+    last_seen = event.get("authoritativeLastSeenAtMs")
+    if not (_epoch_ms(last_seen) and last_seen <= event["serverReceivedAtMs"] and last_seen <= server_now_at_ms):
+        event.pop("authoritativeLastSeenAtMs", None)
+    if event["state"] == "online" and not (
+        event["visibility"] == "visible" and event["recentInput"] == "recent" and event["viewingIntent"] == "viewing"
+    ):
+        event["state"] = "unknown"
+    event["actor"] = dict(actor)
+    return event
+
+
+class NativePresenceProjection:
+    """Connection-local at-least-once reconciliation; never a presence authority."""
+
+    def __init__(self):
+        self._connections: dict[str, dict[str, dict]] = {}
+        self._server_now: dict[str, int] = {}
+        self._snapshots: dict[str, dict] = {}
+
+    def reconcile_event(self, value, server_now_at_ms: int) -> dict | None:
+        event = normalize_presence_event(value, server_now_at_ms)
+        if event is None:
+            return None
+        room_connections = self._connections.setdefault(event["roomKey"], {})
+        prior = room_connections.get(event["connectionId"])
+        if prior and (
+            prior["connectionStartedAtMs"] != event["connectionStartedAtMs"] or prior["actor"] != event["actor"]
+        ):
+            return None
+        if prior and (
+            event["sequence"] <= prior["sequence"] or event["serverReceivedAtMs"] < prior["serverReceivedAtMs"]
+        ):
+            return None
+        room_connections[event["connectionId"]] = event
+        self._server_now[event["roomKey"]] = max(
+            server_now_at_ms, self._server_now.get(event["roomKey"], server_now_at_ms)
+        )
+        return dict(event)
+
+    def reconcile_snapshot(self, value) -> dict:
+        if not isinstance(value, dict):
+            raise RoomError("ROOM_UNAVAILABLE", "Invalid native presence inventory")
+        if set(value) - {"roomKey", "inventoryStatus", "serverNowAtMs", "connections", "failureCode"}:
+            raise RoomError("ROOM_UNAVAILABLE", "Invalid native presence inventory")
+        room_key = value.get("roomKey")
+        status = value.get("inventoryStatus")
+        server_now = value.get("serverNowAtMs")
+        connections = value.get("connections")
+        if not (
+            isinstance(room_key, str)
+            and room_key
+            and status in {"complete", "incomplete", "failed"}
+            and _epoch_ms(server_now)
+            and isinstance(connections, list)
+            and len(connections) <= _PRESENCE_MAX_CONNECTIONS
+            and (
+                value.get("failureCode") is None
+                or isinstance(value.get("failureCode"), str)
+                and 1 <= len(value["failureCode"]) <= 128
+            )
+        ):
+            raise RoomError("ROOM_UNAVAILABLE", "Invalid native presence inventory")
+        prior_snapshot = self._snapshots.get(room_key)
+        if server_now < self._server_now.get(room_key, 0):
+            return (
+                dict(prior_snapshot)
+                if prior_snapshot
+                else {
+                    **value,
+                    "connections": [],
+                    "evidenceStatus": "invalid",
+                    "validationFailureCode": "PRESENCE_STALE_EVIDENCE",
+                }
+            )
+        previous_connections = dict(self._connections.get(room_key, {}))
+        retained = dict(previous_connections)
+        if status == "failed":
+            snapshot = {
+                **value,
+                "connections": list(retained.values()),
+                **(
+                    {"evidenceStatus": prior_snapshot["evidenceStatus"]}
+                    if prior_snapshot and prior_snapshot.get("evidenceStatus") is not None
+                    else {}
+                ),
+                **(
+                    {"validationFailureCode": prior_snapshot["validationFailureCode"]}
+                    if prior_snapshot and prior_snapshot.get("validationFailureCode") is not None
+                    else {}
+                ),
+            }
+            self._server_now[room_key] = server_now
+            self._snapshots[room_key] = snapshot
+            return dict(snapshot)
+        included = set()
+        invalid = False
+        for candidate in connections:
+            event = normalize_presence_event(candidate, server_now)
+            invalid_observation = (
+                bool(
+                    event
+                    and any(
+                        field in candidate and event.get(field) is None
+                        for field in (
+                            "visibilityObservedAtMs",
+                            "recentInputObservedAtMs",
+                            "viewingIntentReceivedAtMs",
+                            "authoritativeLastSeenAtMs",
+                        )
+                    )
+                )
+                if isinstance(candidate, dict)
+                else False
+            )
+            if event is None or event["roomKey"] != room_key or invalid_observation:
+                invalid = True
+                prior = retained.get(candidate.get("connectionId")) if isinstance(candidate, dict) else None
+                if prior:
+                    retained[prior["connectionId"]] = {
+                        **{
+                            key: value
+                            for key, value in prior.items()
+                            if key
+                            not in {
+                                "visibilityObservedAtMs",
+                                "recentInputObservedAtMs",
+                                "viewingIntentReceivedAtMs",
+                                "authoritativeLastSeenAtMs",
+                            }
+                        },
+                        "state": "unknown",
+                        "visibility": "unknown",
+                        "recentInput": "unknown",
+                        "viewingIntent": "unknown",
+                    }
+                continue
+            prior = retained.get(event["connectionId"])
+            if prior and (
+                prior["connectionStartedAtMs"] != event["connectionStartedAtMs"] or prior["actor"] != event["actor"]
+            ):
+                invalid = True
+                retained[event["connectionId"]] = {**prior, "state": "unknown"}
+                continue
+            included.add(event["connectionId"])
+            if prior and (
+                event["sequence"] <= prior["sequence"] or event["serverReceivedAtMs"] < prior["serverReceivedAtMs"]
+            ):
+                continue
+            retained[event["connectionId"]] = event
+        if status == "complete" and not invalid:
+            retained = {key: event for key, event in retained.items() if key in included}
+        if len(retained) > _PRESENCE_MAX_CONNECTIONS:
+            snapshot = {
+                **value,
+                "connections": list(previous_connections.values()),
+                "evidenceStatus": "invalid",
+                "validationFailureCode": "PRESENCE_CAPACITY_EXCEEDED",
+            }
+            self._server_now[room_key] = server_now
+            self._snapshots[room_key] = snapshot
+            return dict(snapshot)
+        self._connections[room_key] = retained
+        self._server_now[room_key] = server_now
+        snapshot = {
+            **value,
+            "connections": list(retained.values()),
+            "evidenceStatus": "invalid" if invalid else "valid",
+            **({"validationFailureCode": "PRESENCE_INVALID_EVIDENCE"} if invalid else {}),
+        }
+        self._snapshots[room_key] = snapshot
+        return dict(snapshot)
+
+
+class NativeMessageProjection:
+    """Ephemeral canonical sequence watermarks for dedupe and gap recovery."""
+
+    def __init__(self):
+        self._rooms: dict[str, tuple[str, int]] = {}
+
+    def observe_history(self, result, expected_room_key: str) -> None:
+        if not (
+            isinstance(result, dict)
+            and result.get("sessionKey") == expected_room_key
+            and isinstance(result.get("sessionId"), str)
+            and result["sessionId"]
+            and isinstance(result.get("messages"), list)
+        ):
+            return
+        identities = [_history_message_identity(message) for message in result["messages"]]
+        if any(identity is None for identity in identities):
+            return
+        observed = max((identity[1] for identity in identities if identity), default=0)
+        prior = self._rooms.get(expected_room_key)
+        if prior and prior[0] == result["sessionId"]:
+            observed = max(observed, prior[1])
+        self._rooms[expected_room_key] = (result["sessionId"], observed)
+
+    def reconcile_event(self, payload) -> str:
+        if not isinstance(payload, dict):
+            return "invalid"
+        room_key = payload.get("sessionKey")
+        session_id = payload.get("sessionId")
+        message_id = payload.get("messageId")
+        message_seq = payload.get("messageSeq")
+        if not (
+            isinstance(room_key, str)
+            and room_key
+            and isinstance(session_id, str)
+            and session_id
+            and isinstance(message_id, str)
+            and message_id
+            and _positive_integer(message_seq)
+        ):
+            return "invalid"
+        prior = self._rooms.get(room_key)
+        if prior is None or prior[0] != session_id or message_seq > prior[1] + 1:
+            return "gap"
+        if message_seq <= prior[1]:
+            return "duplicate"
+        self._rooms[room_key] = (session_id, message_seq)
+        return "forward"
+
+
+def filter_rpc_result(
+    method: str,
+    result,
+    identity: HumanIdentity,
+    qualification: RoomQualification,
+    params: dict | None = None,
+):
     """Apply depth filters to unscoped native discovery results."""
     if method == "sessions.list":
         if not isinstance(result, dict) or not isinstance(result.get("sessions"), list):
             raise RoomError("ROOM_UNAVAILABLE", "Invalid native room inventory")
-        sessions = [
-            item
-            for item in result["sessions"]
-            if isinstance(item, dict) and owns_room_key(item.get("key"), identity, qualification)
-        ]
-        return {**result, "sessions": sessions, "count": len(sessions)}
+        status = result.get("inventoryStatus", "complete")
+        if status not in {"complete", "incomplete", "failed"}:
+            raise RoomError("ROOM_UNAVAILABLE", "Invalid native room inventory status")
+        evidence_at = result.get("serverEvidenceAtMs", result.get("ts"))
+        if not _epoch_ms(evidence_at):
+            raise RoomError("ROOM_UNAVAILABLE", "Invalid native room inventory evidence time")
+        projected = []
+        # Failed inventory carries no usable fresh rows. The caller retains
+        # its visibly stale last-known directory under the unchanged status.
+        for item in [] if status == "failed" else result["sessions"]:
+            # Native list authorization projects the exact caller's role. An
+            # owner-shaped key is only a routing fence and never membership.
+            visibility = item.get("visibility") if isinstance(item, dict) else None
+            sharing_role = item.get("sharingRole") if isinstance(item, dict) else None
+            authorized_projection = (visibility == "restricted" and sharing_role in {"owner", "member"}) or (
+                visibility == "shared" and sharing_role in {"admin", "owner", "member", "viewer"}
+            )
+            if not (
+                isinstance(item, dict)
+                and owns_room_key(item.get("key"), identity, qualification)
+                and authorized_projection
+                and isinstance(item.get("sessionId"), str)
+                and item["sessionId"]
+                and item.get("roomKind") in {"channel", "dm", "group-dm", "thread"}
+            ):
+                continue
+            last_seq = item.get("lastMessageSeq")
+            if last_seq is not None and not _positive_integer(last_seq):
+                raise RoomError("ROOM_UNAVAILABLE", "Invalid native room sequence")
+            projected.append(
+                {
+                    "roomKey": item["key"],
+                    "sessionId": item["sessionId"],
+                    "roomKind": item["roomKind"],
+                    **({"lastMessageSeq": last_seq} if last_seq is not None else {}),
+                    **_room_route(qualification),
+                }
+            )
+        response = {
+            "inventoryStatus": status,
+            "serverEvidenceAtMs": evidence_at,
+            "rooms": projected,
+        }
+        next_cursor = result.get("nextCursor")
+        if next_cursor is None and _positive_integer(result.get("nextOffset")):
+            next_cursor = str(result["nextOffset"])
+        if status != "failed" and isinstance(next_cursor, str) and next_cursor:
+            response["nextCursor"] = next_cursor
+        if isinstance(result.get("failureCode"), str) and result["failureCode"]:
+            response["failureCode"] = result["failureCode"]
+        return response
     if method == "sessions.search":
         if not isinstance(result, dict) or not isinstance(result.get("results"), list):
             raise RoomError("ROOM_UNAVAILABLE", "Invalid native room search result")
+        requested = set((params or {}).get("sessionKeys", []))
         return {
             **result,
             "results": [
-                item
+                {**item, **_room_route(qualification)}
                 for item in result["results"]
-                if isinstance(item, dict) and owns_room_key(item.get("sessionKey"), identity, qualification)
+                if isinstance(item, dict)
+                and item.get("sessionKey") in requested
+                and owns_room_key(item.get("sessionKey"), identity, qualification)
             ],
         }
+    if method == "sessions.viewers.set":
+        if not isinstance(result, dict) or not isinstance(result.get("sessionKeys"), list):
+            raise RoomError("ROOM_UNAVAILABLE", "Invalid native room viewing declaration")
+        requested = set((params or {}).get("sessionKeys", []))
+        returned = result["sessionKeys"]
+        if len(returned) > 32 or not all(isinstance(key, str) for key in returned):
+            raise RoomError("ROOM_UNAVAILABLE", "Invalid native room viewing declaration")
+        returned_set = set(returned)
+        if not (
+            len(returned) == len(returned_set)
+            and returned_set == requested
+            and all(owns_room_key(key, identity, qualification) for key in returned)
+        ):
+            raise RoomError("FORBIDDEN", "Native viewing declaration changed scope")
+        return {"sessionKeys": returned}
     if method == "users.mentionable":
         if not isinstance(result, dict) or not isinstance(result.get("users"), list):
             raise RoomError("ROOM_UNAVAILABLE", "Invalid native mentionable result")
@@ -405,6 +833,10 @@ def filter_rpc_result(method: str, result, identity: HumanIdentity, qualificatio
             **result,
             "users": [item for item in result["users"] if isinstance(item, dict) and item.get("profileId") in profiles],
         }
+    if isinstance(result, dict) and (params or {}).get("sessionKey"):
+        return {**result, **_room_route(qualification)}
+    if isinstance(result, dict) and (params or {}).get("key"):
+        return {**result, **_room_route(qualification)}
     return result
 
 
@@ -472,6 +904,101 @@ def require_append_result(result, params: dict) -> None:
         raise RoomError("ROOM_UNAVAILABLE", "Native append receipt does not match the requested session")
 
 
+def _history_message_identity(message) -> tuple[str, int] | None:
+    if not isinstance(message, dict) or not isinstance(message.get("__openclaw"), dict):
+        return None
+    metadata = message["__openclaw"]
+    message_id = metadata.get("id")
+    message_seq = metadata.get("seq")
+    if not isinstance(message_id, str) or not message_id or not _positive_integer(message_seq):
+        return None
+    return message_id, message_seq
+
+
+def _require_history(result, session_key: str, expected_session_id: str) -> list[tuple[str, int]]:
+    if not (
+        isinstance(result, dict)
+        and result.get("sessionKey") == session_key
+        and result.get("sessionId") == expected_session_id
+        and isinstance(result.get("messages"), list)
+    ):
+        raise RoomError("ROOM_UNAVAILABLE", "Native room history identity changed")
+    identities = []
+    for message in result["messages"]:
+        identity = _history_message_identity(message)
+        if identity is None:
+            raise RoomError("ROOM_UNAVAILABLE", "Native room history sequence unavailable")
+        identities.append(identity)
+    return identities
+
+
+def _read_state_payload(
+    qualification: RoomQualification,
+    params: dict,
+    cursor: dict | None,
+    last_message_seq: int,
+) -> dict:
+    last_read = cursor["last_read_message_seq"] if cursor else 0
+    return {
+        "roomKey": params["sessionKey"],
+        "sessionId": params["expectedSessionId"],
+        "lastReadMessageSeq": last_read,
+        "lastMessageSeq": last_message_seq,
+        "unreadCount": max(0, last_message_seq - last_read),
+        **({"cursorUpdatedAt": cursor["updated_at"]} if cursor else {}),
+        **_room_route(qualification),
+    }
+
+
+async def handle_local_room_rpc(
+    method: str,
+    params: dict,
+    identity: HumanIdentity,
+    qualification: RoomQualification,
+    conn,
+) -> dict:
+    """Read/write product cursor state only after an authoritative native read."""
+    from core.repositories import room_read_cursor_repo
+
+    session_key = params["sessionKey"]
+    session_id = params["expectedSessionId"]
+    if method == "lightbulb.rooms.markRead":
+        anchored = await conn.rpc(
+            "chat.history",
+            {
+                "sessionKey": session_key,
+                "sessionId": session_id,
+                "messageId": params["messageId"],
+                "limit": 1,
+                "maxChars": 1,
+            },
+        )
+        identities = _require_history(anchored, session_key, session_id)
+        conn.message_projection.observe_history(anchored, session_key)
+        if (params["messageId"], params["messageSeq"]) not in identities:
+            raise RoomError("INVALID_REQUEST", "Read cursor must reference a canonical visible message")
+        # Recheck controller admission after the native ACL/history await. This
+        # row is never consulted for authorization even if revocation races it.
+        await conn.require_current()
+        await room_read_cursor_repo.advance(
+            identity.owner_id,
+            conn.device.profile_id,
+            session_key,
+            params["messageSeq"],
+        )
+    history = await conn.rpc("chat.history", {"sessionKey": session_key, "limit": 1, "maxChars": 1})
+    identities = _require_history(history, session_key, session_id)
+    conn.message_projection.observe_history(history, session_key)
+    await conn.require_current()
+    cursor = await room_read_cursor_repo.get(identity.owner_id, conn.device.profile_id, session_key)
+    return _read_state_payload(
+        qualification,
+        params,
+        cursor,
+        max((sequence for _, sequence in identities), default=0),
+    )
+
+
 async def require_current_member(identity: HumanIdentity, conn_svc) -> None:
     from core.services.clerk_admin import list_user_organizations
 
@@ -498,6 +1025,8 @@ class NativeHumanConnection:
         self.pending = {}
         self.subscriptions = set()
         self.presence_subscriptions = set()
+        self.presence_projection = NativePresenceProjection()
+        self.message_projection = NativeMessageProjection()
         self.methods = set()
         self.profile = None
         self.closed = False
@@ -646,6 +1175,11 @@ class NativeHumanConnection:
         if not owns_room_key(key, self.identity, self.qualification):
             return
         await self.require_current()
+        if frame.get("event") == "session.presence":
+            normalized = self.presence_projection.reconcile_event(payload, int(time.time() * 1000))
+            if normalized is None:
+                return
+            frame = {**frame, "payload": normalized}
         # Observe matching terminal evidence even if this tab unsubscribed.
         # Do not use display messages, another room/run, or disconnect as proof.
         run_id = payload.get("runId")
@@ -660,9 +1194,33 @@ class NativeHumanConnection:
         subscribed = self.presence_subscriptions if frame.get("event") == "session.presence" else self.subscriptions
         if key not in subscribed:
             return
+        if frame.get("event") == "session.message":
+            outcome = self.message_projection.reconcile_event(payload)
+            if outcome in {"invalid", "duplicate"}:
+                return
+            if outcome == "gap":
+                frame = {
+                    "type": "event",
+                    "event": "native.room.historyRequired",
+                    "payload": {
+                        "sessionKey": key,
+                        "sessionId": payload["sessionId"],
+                        "receivedMessageSeq": payload["messageSeq"],
+                        **_room_route(self.qualification),
+                    },
+                }
+        if isinstance(frame.get("payload"), dict):
+            frame = {
+                **frame,
+                "payload": {**frame["payload"], **_room_route(self.qualification)},
+            }
         # Native sender/creator/entryId/parentId/runId evidence stays intact.
         if len(json.dumps(frame, separators=(",", ":")).encode()) > 110_000:
-            frame = {"type": "event", "event": "native.room.historyRequired", "payload": {"sessionKey": key}}
+            frame = {
+                "type": "event",
+                "event": "native.room.historyRequired",
+                "payload": {"sessionKey": key, **_room_route(self.qualification)},
+            }
         if not await self.management_api.send_message_async(self.identity.connection_id, frame):
             raise RoomError("ROOM_UNAVAILABLE", "Native room frontend disconnected")
 

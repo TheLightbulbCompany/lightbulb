@@ -1482,10 +1482,12 @@ def _require_native_internal(presented: str | None) -> None:
 async def _process_native_room_background(connection_id: str, body: dict) -> None:
     from core.gateway.native_rooms import (
         HumanIdentity,
+        LOCAL_ROOM_METHODS,
         RoomError,
         UNCERTAIN_AFTER_SUCCESS,
         admit_rpc,
         filter_rpc_result,
+        handle_local_room_rpc,
         is_terminal_agent_wait_result,
         native_execution_run_id,
         qualification_for,
@@ -1555,7 +1557,10 @@ async def _process_native_room_background(connection_id: str, body: dict) -> Non
                     native_execution_run_id(conn.device.profile_id, admitted),
                 )
             try:
-                result = await conn.rpc(method, admitted)
+                if method in LOCAL_ROOM_METHODS:
+                    result = await handle_local_room_rpc(method, admitted, identity, qualification, conn)
+                else:
+                    result = await conn.rpc(method, admitted)
             except RoomError as exc:
                 if native_run is not None and native_run_created and getattr(exc, "native_rejection", False):
                     await pool.native_rooms.finish_run(*native_run)
@@ -1582,11 +1587,19 @@ async def _process_native_room_background(connection_id: str, body: dict) -> Non
                 raise
             if method == "sessions.message.append":
                 require_append_result(result, admitted)
+            if method == "chat.history":
+                conn.message_projection.observe_history(result, admitted["sessionKey"])
+            if method.startswith("sessions.presence."):
+                # The merged fork's sessions-presence handler responds to
+                # heartbeat/snapshot/subscribe/unsubscribe with presence.snapshot().
+                # Keep all four on this one reconciliation path; see
+                # test_all_presence_methods_reconcile_the_fork_snapshot_contract.
+                result = conn.presence_projection.reconcile_snapshot(result)
             if isinstance(result, dict):
                 for field in ("key", "sessionKey", "roomKey"):
                     if field in result and result[field] != key:
                         raise RoomError("FORBIDDEN", "Native canonical target changed")
-            result = filter_rpc_result(method, result, identity, qualification)
+            result = filter_rpc_result(method, result, identity, qualification, admitted)
             if method == "sessions.messages.subscribe":
                 conn.subscriptions.add(admitted["key"])
             elif method == "sessions.messages.unsubscribe":

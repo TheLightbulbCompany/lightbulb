@@ -104,6 +104,26 @@ describe("DatabaseStack — admin-actions table — prod", () => {
   });
 });
 
+describe("DatabaseStack — native room read cursors", () => {
+  test("creates one durable owner/profile/room cursor table without transcript indexes", () => {
+    const template = buildStack("prod");
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "lightbulb-prod-room-read-cursors",
+      KeySchema: [
+        { AttributeName: "owner_id", KeyType: "HASH" },
+        { AttributeName: "cursor_key", KeyType: "RANGE" },
+      ],
+      BillingMode: "PAY_PER_REQUEST",
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true },
+    });
+    const tables = template.findResources("AWS::DynamoDB::Table", {
+      Properties: { TableName: "lightbulb-prod-room-read-cursors" },
+    });
+    const table = Object.values(tables)[0] as { Properties: Record<string, unknown> };
+    expect(table.Properties.GlobalSecondaryIndexes).toBeUndefined();
+  });
+});
+
 describe("DatabaseStack — Paperclip Aurora cluster", () => {
   let template: Template;
   beforeAll(() => {

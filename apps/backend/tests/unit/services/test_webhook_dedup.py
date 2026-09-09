@@ -149,9 +149,7 @@ async def test_non_conditional_client_error_logs_and_reraises(monkeypatch, caplo
 
 
 @pytest.mark.asyncio
-async def test_processing_lease_retries_only_after_expiry_and_completed_events_stay_done(
-    dedup_table, monkeypatch
-):
+async def test_processing_lease_retries_only_after_expiry_and_completed_events_stay_done(dedup_table, monkeypatch):
     monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", dedup_table)
     first = await begin_event_processing("msg_delete", source="clerk", lease_seconds=30)
     assert first is not None
@@ -175,17 +173,17 @@ async def test_permanent_marker_has_no_ttl_and_is_idempotent(dedup_table, monkey
     await record_permanent_marker("human-subject-deleted:abc", source="clerk-human-deleted")
     await record_permanent_marker("human-subject-deleted:abc", source="clerk-human-deleted")
 
-    item = boto3.resource("dynamodb", region_name="us-east-1").Table(dedup_table).get_item(
-        Key={"event_id": "human-subject-deleted:abc"}, ConsistentRead=True
-    )["Item"]
+    item = (
+        boto3.resource("dynamodb", region_name="us-east-1")
+        .Table(dedup_table)
+        .get_item(Key={"event_id": "human-subject-deleted:abc"}, ConsistentRead=True)["Item"]
+    )
     assert item["state"] == "completed"
     assert "ttl" not in item
 
 
 @pytest.mark.asyncio
-async def test_container_independent_membership_epoch_serializes_and_rejects_stale_events(
-    dedup_table, monkeypatch
-):
+async def test_container_independent_membership_epoch_serializes_and_rejects_stale_events(dedup_table, monkeypatch):
     monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", dedup_table)
     owner_id = "org_without_container"
     alias = "clerk-" + "a" * 64 + "@identity.lightbulb.invalid"

@@ -143,9 +143,9 @@ async def test_membership_revocation_failure_redelivers_same_svix_and_still_deau
         if archive_failure:
             provisioning.disable.assert_awaited_once_with(user_id="member")
             enqueue.assert_awaited_once()
-        assert webhook_dedup._table().get_item(Key={"event_id": "msg_test"}).get("Item", {}).get(
-            "state"
-        ) == "processing"
+        assert (
+            webhook_dedup._table().get_item(Key={"event_id": "msg_test"}).get("Item", {}).get("state") == "processing"
+        )
         webhook_dedup._table().update_item(
             Key={"event_id": "msg_test"},
             UpdateExpression="SET lease_until = :expired",

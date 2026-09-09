@@ -141,9 +141,7 @@ async def record_permanent_marker(event_id: str, *, source: str) -> None:
 
 
 async def _read_event(event_id: str) -> dict:
-    return (
-        await run_in_thread(_table().get_item, Key={"event_id": event_id}, ConsistentRead=True)
-    ).get("Item", {})
+    return (await run_in_thread(_table().get_item, Key={"event_id": event_id}, ConsistentRead=True)).get("Item", {})
 
 
 async def begin_event_processing(
@@ -170,10 +168,7 @@ async def begin_event_processing(
                 "SET #state = :processing, claim_id = :claim, lease_until = :lease, "
                 "#source = :source, recorded_at = if_not_exists(recorded_at, :now), #ttl = :ttl"
             ),
-            ConditionExpression=(
-                "attribute_not_exists(event_id) OR "
-                "(#state = :processing AND lease_until < :now)"
-            ),
+            ConditionExpression=("attribute_not_exists(event_id) OR (#state = :processing AND lease_until < :now)"),
             ExpressionAttributeNames={"#state": "state", "#source": "source", "#ttl": "ttl"},
             ExpressionAttributeValues={
                 ":processing": "processing",

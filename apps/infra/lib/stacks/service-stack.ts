@@ -38,8 +38,12 @@ import { BROWSER_EGRESS_PROXY_PORT } from "./container-stack";
 // the read in container-stack.ts — bump openclaw-version.json only.
 interface OpenClawVersionConfig {
   tag: string;
-  dev: { tag: string };
-  prod: { tag: string };
+  forkTag: string;
+  forkCommit: string;
+  baseImageDigest: string;
+  gatewayBuildId: string;
+  dev: { tag: string; artifactDigest: string; runtimeManifestDigest: string };
+  prod: { tag: string; artifactDigest: string; runtimeManifestDigest: string };
   [key: string]: unknown;
 }
 
@@ -1274,6 +1278,9 @@ export class ServiceStack extends cdk.Stack {
     const privateSubnetIds = props.vpc
       .selectSubnets({ subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS })
       .subnetIds.join(",");
+    const currentOpenClawVersion = env.startsWith("prod")
+      ? OPENCLAW_VERSION.prod
+      : OPENCLAW_VERSION.dev;
 
     // Backend container environment + secrets, declared as consts (rather
     // than inline literals) so the provisioning-executor task definition can
@@ -1289,6 +1296,12 @@ export class ServiceStack extends cdk.Stack {
       OPENCLAW_UPSTREAM_VERSION: OPENCLAW_VERSION.tag,
       OPENCLAW_DEV_TAG: OPENCLAW_VERSION.dev.tag,
       OPENCLAW_PROD_TAG: OPENCLAW_VERSION.prod.tag,
+      OPENCLAW_FORK_TAG: OPENCLAW_VERSION.forkTag,
+      OPENCLAW_FORK_COMMIT: OPENCLAW_VERSION.forkCommit,
+      OPENCLAW_BASE_IMAGE_DIGEST: OPENCLAW_VERSION.baseImageDigest,
+      OPENCLAW_GATEWAY_BUILD_ID: OPENCLAW_VERSION.gatewayBuildId,
+      OPENCLAW_EXTENDED_ARTIFACT_DIGEST: currentOpenClawVersion.artifactDigest,
+      OPENCLAW_RUNTIME_MANIFEST_DIGEST: currentOpenClawVersion.runtimeManifestDigest,
       // The Litestream replica bucket for this env. Every backend code path
       // that touches the local-sqlite layout (sentinel writes, replica
       // lifecycle deletes) keys off this being set. Name-based (never a

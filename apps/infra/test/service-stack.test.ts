@@ -1,7 +1,9 @@
 import { tablePrefix } from "../lib/table-names";
 import * as cdk from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
+import * as fs from "fs";
 import * as kms from "aws-cdk-lib/aws-kms";
+import * as path from "path";
 import {
   BROWSER_EGRESS_PROXY_PORT,
   ContainerStack,
@@ -10,6 +12,17 @@ import { ROOT_DOMAIN } from "../lib/domains";
 import { DatabaseStack } from "../lib/stacks/database-stack";
 import { NetworkStack } from "../lib/stacks/network-stack";
 import { ServiceStack } from "../lib/stacks/service-stack";
+
+const OPENCLAW_VERSION = JSON.parse(
+  fs.readFileSync(path.join(__dirname, "..", "..", "..", "openclaw-version.json"), "utf8"),
+) as {
+  forkTag: string;
+  forkCommit: string;
+  baseImageDigest: string;
+  gatewayBuildId: string;
+  dev: { tag: string; artifactDigest: string; runtimeManifestDigest: string };
+  prod: { tag: string; artifactDigest: string; runtimeManifestDigest: string };
+};
 
 /**
  * Builds a real ServiceStack wired to real upstream stacks (Network, Database,
@@ -98,6 +111,33 @@ const SERVICE_TEMPLATE_DEV = buildServiceStack("dev");
 
 describe("ServiceStack — clean handoff / rolling deploy", () => {
   const template = SERVICE_TEMPLATE_DEV;
+
+  test.each(["dev", "prod"] as const)(
+    "injects the %s current OpenClaw release identity into backend tasks",
+    (environment) => {
+      const selected = OPENCLAW_VERSION[environment];
+      const environmentValues = [
+        ["OPENCLAW_FORK_TAG", OPENCLAW_VERSION.forkTag],
+        ["OPENCLAW_FORK_COMMIT", OPENCLAW_VERSION.forkCommit],
+        ["OPENCLAW_BASE_IMAGE_DIGEST", OPENCLAW_VERSION.baseImageDigest],
+        ["OPENCLAW_GATEWAY_BUILD_ID", OPENCLAW_VERSION.gatewayBuildId],
+        ["OPENCLAW_EXTENDED_ARTIFACT_DIGEST", selected.artifactDigest],
+        ["OPENCLAW_RUNTIME_MANIFEST_DIGEST", selected.runtimeManifestDigest],
+      ].map(([Name, Value]) => Match.objectLike({ Name, Value }));
+
+      (environment === "dev" ? template : buildServiceStack(environment)).hasResourceProperties(
+        "AWS::ECS::TaskDefinition",
+        {
+          ContainerDefinitions: Match.arrayWith([
+            Match.objectLike({
+              Name: "backend",
+              Environment: Match.arrayWith(environmentValues),
+            }),
+          ]),
+        },
+      );
+    },
+  );
 
   test("does not wire the retired platform-ops owner or token into backend tasks", () => {
     const taskDefinitions = template.findResources("AWS::ECS::TaskDefinition");

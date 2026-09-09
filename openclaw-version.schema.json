@@ -4,13 +4,45 @@
   "description": "Pinned OpenClaw images. Includes both the legacy upstream image (used by current container-stack.ts) and the new extended image with per-env tags (used after the migration completes).",
   "type": "object",
   "additionalProperties": false,
-  "required": ["upstream", "image", "tag", "full", "extendedImage", "dev", "prod"],
+  "required": [
+    "upstream",
+    "forkTag",
+    "forkCommit",
+    "baseImageDigest",
+    "gatewayBuildId",
+    "image",
+    "tag",
+    "full",
+    "extendedImage",
+    "dev",
+    "prod"
+  ],
   "properties": {
     "$schema": { "type": "string" },
     "upstream": {
       "type": "string",
       "description": "Pinned base OpenClaw image+tag the Dockerfile FROMs — either upstream ghcr.io/openclaw/openclaw or the Isol8 fork ghcr.io/thelightbulbcompany/agent.",
       "pattern": "^ghcr\\.io/[a-zA-Z0-9._/-]+:[a-zA-Z0-9._-]+$"
+    },
+    "forkTag": {
+      "type": "string",
+      "description": "Immutable source tag for the Lightbulb OpenClaw fork release.",
+      "pattern": "^v[0-9]{4}\\.[0-9]+\\.[0-9]+-isol8\\.[0-9]+$"
+    },
+    "forkCommit": {
+      "type": "string",
+      "description": "Full immutable Git commit behind forkTag.",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "baseImageDigest": {
+      "type": "string",
+      "description": "Canonical GHCR digest paired with upstream and the Dockerfile final FROM.",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "gatewayBuildId": {
+      "type": "string",
+      "description": "Gateway build identifier reported by the pinned fork runtime.",
+      "pattern": "^[0-9a-f]{7}$"
     },
     "image": {
       "type": "string",
@@ -35,24 +67,44 @@
     "dev": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["tag"],
+      "required": ["tag", "artifactDigest", "runtimeManifestDigest"],
       "properties": {
         "tag": {
           "type": "string",
           "description": "Tag of the extended image deployed to dev.",
           "pattern": "^[a-zA-Z0-9._-]+$"
+        },
+        "artifactDigest": {
+          "type": "string",
+          "description": "Canonical ECR digest for the promoted extended artifact index.",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "runtimeManifestDigest": {
+          "type": "string",
+          "description": "Canonical linux/amd64 runtime manifest digest within the promoted artifact.",
+          "pattern": "^sha256:[0-9a-f]{64}$"
         }
       }
     },
     "prod": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["tag"],
+      "required": ["tag", "artifactDigest", "runtimeManifestDigest"],
       "properties": {
         "tag": {
           "type": "string",
           "description": "Tag of the extended image deployed to prod.",
           "pattern": "^[a-zA-Z0-9._-]+$"
+        },
+        "artifactDigest": {
+          "type": "string",
+          "description": "Canonical ECR digest for the promoted extended artifact index.",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "runtimeManifestDigest": {
+          "type": "string",
+          "description": "Canonical linux/amd64 runtime manifest digest within the promoted artifact.",
+          "pattern": "^sha256:[0-9a-f]{64}$"
         }
       }
     },

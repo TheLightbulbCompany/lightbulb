@@ -21,6 +21,7 @@ kinds of reader:
 import json
 import os
 import re
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
@@ -34,6 +35,27 @@ from pathlib import Path
 # roughly current on upstream bumps; it is a safety floor, not a drift-checked
 # mirror, so exact lockstep is not required.
 _FALLBACK_UPSTREAM_VERSION = "2026.5.28"
+_FORK_TAG_RE = re.compile(r"v[0-9]{4}\.[0-9]+\.[0-9]+-isol8\.[0-9]+\Z")
+_COMMIT_RE = re.compile(r"[0-9a-f]{40}\Z")
+_BUILD_ID_RE = re.compile(r"[0-9a-f]{7}\Z")
+_DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
+
+
+@dataclass(frozen=True)
+class PinnedReleaseIdentity:
+    """Expected immutable identity for the current environment's pin.
+
+    This is configuration evidence only. It does not observe a running task or
+    qualify native-room behavior.
+    """
+
+    fork_tag: str
+    fork_commit: str
+    base_image_digest: str
+    gateway_build_id: str
+    extended_tag: str
+    extended_artifact_digest: str
+    runtime_manifest_digest: str
 
 
 @lru_cache(maxsize=1)
@@ -87,6 +109,65 @@ def prod_tag() -> str:
         return env
     prod = _load_pinned().get("prod")
     return prod.get("tag", "") if isinstance(prod, dict) else ""
+
+
+def _env_or_pinned(name: str, pinned) -> str:
+    value = os.environ[name] if name in os.environ else pinned
+    return value if isinstance(value, str) else ""
+
+
+def pinned_release_identity() -> PinnedReleaseIdentity | None:
+    """Validated expected release identity for this environment.
+
+    CDK injects every field in deployed backend tasks. Local development and
+    CI fall back to the same repo manifest. Any missing, malformed, or
+    internally inconsistent field returns ``None`` so future qualification
+    callers fail closed instead of accepting partial identity evidence.
+    """
+    pinned = _load_pinned()
+    section = "prod" if (os.getenv("ENVIRONMENT") or "").lower().startswith("prod") else "dev"
+    selected = pinned.get(section)
+    selected = selected if isinstance(selected, dict) else {}
+
+    fork_tag = _env_or_pinned("OPENCLAW_FORK_TAG", pinned.get("forkTag"))
+    fork_commit = _env_or_pinned("OPENCLAW_FORK_COMMIT", pinned.get("forkCommit"))
+    base_image_digest = _env_or_pinned("OPENCLAW_BASE_IMAGE_DIGEST", pinned.get("baseImageDigest"))
+    gateway_build_id = _env_or_pinned("OPENCLAW_GATEWAY_BUILD_ID", pinned.get("gatewayBuildId"))
+    extended_tag = _env_or_pinned(
+        "OPENCLAW_PROD_TAG" if section == "prod" else "OPENCLAW_DEV_TAG",
+        selected.get("tag"),
+    )
+    extended_artifact_digest = _env_or_pinned(
+        "OPENCLAW_EXTENDED_ARTIFACT_DIGEST",
+        selected.get("artifactDigest"),
+    )
+    runtime_manifest_digest = _env_or_pinned(
+        "OPENCLAW_RUNTIME_MANIFEST_DIGEST",
+        selected.get("runtimeManifestDigest"),
+    )
+
+    valid = (
+        _FORK_TAG_RE.fullmatch(fork_tag) is not None
+        and _COMMIT_RE.fullmatch(fork_commit) is not None
+        and _DIGEST_RE.fullmatch(base_image_digest) is not None
+        and _BUILD_ID_RE.fullmatch(gateway_build_id) is not None
+        and gateway_build_id == fork_commit[:7]
+        and re.fullmatch(rf"{re.escape(fork_tag[1:])}-[0-9a-f]{{7}}", extended_tag) is not None
+        and _DIGEST_RE.fullmatch(extended_artifact_digest) is not None
+        and _DIGEST_RE.fullmatch(runtime_manifest_digest) is not None
+        and extended_artifact_digest != runtime_manifest_digest
+    )
+    if not valid:
+        return None
+    return PinnedReleaseIdentity(
+        fork_tag=fork_tag,
+        fork_commit=fork_commit,
+        base_image_digest=base_image_digest,
+        gateway_build_id=gateway_build_id,
+        extended_tag=extended_tag,
+        extended_artifact_digest=extended_artifact_digest,
+        runtime_manifest_digest=runtime_manifest_digest,
+    )
 
 
 def deployed_upstream_version() -> str:

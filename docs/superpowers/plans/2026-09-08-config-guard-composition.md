@@ -52,7 +52,7 @@ def _openclaw_config_sidecar_under_guard(
 
 Caller must already hold the matching process-local lock and persistent recovery guard. The helper acquires only the protocol-appropriate sidecar; it never opens, locks, unlocks or closes the guard. No new call sites outside this module/tests in this task. No database, AWS, dependency, schema, marker-migration, runtime or deployment change.
 
-- [ ] **Step 1: Add tests using the existing fixture/helper style.** Import the new private helper and `get_file_lock`, plus stdlib subprocess/sys/time and contextlib.nullcontext. Keep all existing protocol/identity tests.
+- [x] **Step 1: Add tests using the existing fixture/helper style.** Import the new private helper and `get_file_lock`, plus stdlib subprocess/sys/time and contextlib.nullcontext. Keep all existing protocol/identity tests.
 
 Use a real child process for guard exclusion, not a mocked fcntl or a thread (fcntl locks are process-scoped). A small test-local helper may run this code via `[sys.executable, "-c", code, guard_path]` with captured output and timeout5seconds:
 
@@ -89,7 +89,7 @@ After leaving the outer guard, assert the child CAN acquire it. Legacy sidecar p
 
 Also test the public wrapper forwards its pre-guard deadline and poll interval to the new helper: stub `time.monotonic` to42 and use timeout7/poll0.01; a contextmanager stub records deadline49/poll0.01. Existing real protocol/identity tests prove delegation retains actual behavior. Do not add unrelated lock tests or a multiprocessing framework.
 
-- [ ] **Step 2: Prove RED before production changes.** From apps/backend:
+- [x] **Step 2: Prove RED before production changes.** From apps/backend:
 
 ```sh
 AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing AWS_EC2_METADATA_DISABLED=true PYTHONPATH=. /Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend/.venv/bin/python -m pytest tests/unit/services/test_efs_file_lock.py -q -o addopts=''
@@ -97,7 +97,7 @@ AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing AWS_EC2_METADATA_DISABLE
 
 Expected: new helper missing. Record the exact failure, then implement the extraction. The controller's preexisting two-process characterization already demonstrates the unsafe nested behavior independently.
 
-- [ ] **Step 3: Extract the existing protocol selection without rewriting it.** Insert the new helper immediately before the public wrapper:
+- [x] **Step 3: Extract the existing protocol selection without rewriting it.** Insert the new helper immediately before the public wrapper:
 
 ```python
 @contextmanager
@@ -128,7 +128,7 @@ with _openclaw_config_sidecar_under_guard(
 
 Keep `_legacy_openclaw_config_lock`, `_ephemeral_openclaw_config_lock`, recovery-guard identity checking, migration marker values, ownership, timeout handling and exception propagation unchanged. Do not implement reentrancy or bypass missing/invalid protocol markers. Do not wire a release caller in this task.
 
-- [ ] **Step 4: Verify, self-review, report and commit.** Focused GREEN then the existing relevant writer/lock regressions once:
+- [x] **Step 4: Verify, self-review, report and commit.** Focused GREEN then the existing relevant writer/lock regressions once:
 
 ```sh
 AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing AWS_EC2_METADATA_DISABLED=true PYTHONPATH=. /Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend/.venv/bin/python -m pytest tests/unit/services/test_efs_file_lock.py tests/unit/services/test_config_patcher.py tests/unit/containers/test_config.py -q -o addopts=''

@@ -11,7 +11,9 @@ let emitChatMessage: (msg: Record<string, unknown>) => void = () => {};
 let gatewayConnected = true;
 let onChatMessage = (handler: (msg: Record<string, unknown>) => void) => {
   emitChatMessage = handler;
-  return () => {};
+  return () => {
+    if (emitChatMessage === handler) emitChatMessage = () => {};
+  };
 };
 vi.mock("@/hooks/useGateway", () => ({
   useGateway: () => ({
@@ -52,7 +54,9 @@ beforeEach(() => {
   emitChatMessage = () => {};
   onChatMessage = (handler) => {
     emitChatMessage = handler;
-    return () => {};
+    return () => {
+      if (emitChatMessage === handler) emitChatMessage = () => {};
+    };
   };
 });
 
@@ -133,6 +137,19 @@ describe("useRosterEntries", () => {
     gatewayConnected = true;
     mounted.rerender();
     expect(mounted.result.current[0].state).toBe("idle");
+  });
+
+  it("keeps listening while disconnected so an immediate reconnect replay is not missed", () => {
+    teamsAgents = [{ id: "a", status: "idle" }];
+    const mounted = renderHook(() => useRosterEntries([agent("a", "Ada")]));
+
+    gatewayConnected = false;
+    mounted.rerender();
+    act(() => emitChatMessage({ type: "run_active", active: true, agent_id: "a", session_id: "s1" }));
+    gatewayConnected = true;
+    mounted.rerender();
+
+    expect(mounted.result.current[0].state).toBe("running");
   });
 
   it("keeps an agent lit while ANY of its sessions is still running", () => {

@@ -134,8 +134,10 @@ function useLiveRunAgentIds(): ReadonlySet<string> {
   useEffect(() => {
     if (!isConnected) {
       store.set(EMPTY_LIVE_RUNS);
-      return;
     }
+  }, [isConnected, store]);
+
+  useEffect(() => {
     return onChatMessage((msg) => {
       const agentId = "agent_id" in msg ? msg.agent_id : undefined;
       if (typeof agentId !== "string" || !agentId) return;
@@ -166,7 +168,7 @@ function useLiveRunAgentIds(): ReadonlySet<string> {
       }
       store.set(current);
     });
-  }, [isConnected, onChatMessage, store]);
+  }, [onChatMessage, store]);
 
   // Identity changes only when an agent enters or leaves the live set, so
   // downstream memos genuinely skip work on unrelated frames.

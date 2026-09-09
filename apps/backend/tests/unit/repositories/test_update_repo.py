@@ -1,11 +1,15 @@
 """Tests for pending-updates DynamoDB repository."""
 
 import os
-from datetime import datetime, timezone, timedelta
-from unittest.mock import patch
+from copy import deepcopy
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import boto3
 import pytest
+from botocore.exceptions import ClientError
 from moto import mock_aws
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
@@ -41,6 +45,13 @@ def dynamodb_table():
             BillingMode="PAY_PER_REQUEST",
         )
         table.meta.client.get_waiter("table_exists").wait(TableName="test-pending-updates")
+        containers = client.create_table(
+            TableName="test-containers",
+            KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        containers.meta.client.get_waiter("table_exists").wait(TableName="test-containers")
 
         with (
             patch("core.dynamodb._table_prefix", "test-"),
@@ -463,3 +474,840 @@ async def test_release_owned_updates_refuse_every_ordinary_mutation(dynamodb_tab
     assert result is None if mutation in {"claim_apply", "claim_stale_apply"} else result is False
     stored = dynamodb_table.get_item(Key={"owner_id": item["owner_id"], "update_id": item["update_id"]})["Item"]
     assert stored == item
+
+
+_OWNER_APPLY_ARN = "arn:aws:ecs:us-east-1:123456789012:task-definition/test:1"
+_OWNER_APPLY_CONTAINER_EXCLUSIONS = (
+    "release_update_id",
+    "provision_claim_id",
+    "provision_attempt_token",
+    "provision_execution_name",
+)
+_OWNER_APPLY_UPDATE_EXCLUSIONS = (
+    "release_revision",
+    "container_id",
+    "apply_claim_id",
+    "apply_claimed_at",
+    "phase",
+    "target_release_id",
+    "prior_release_id",
+    "prior_desired_release_id",
+    "prior_task_definition_arn",
+    "prior_desired_count",
+    "target_desired_count",
+    "target_task_definition_arn",
+    "staged_config_sha256",
+    "prior_config_sha256",
+    "effect_kind",
+    "effect_claim_id",
+    "effect_executor_id",
+    "applied_at",
+    "failure_reason",
+)
+
+
+async def _seed_owner_apply(
+    update_repo,
+    *,
+    owner: dict | None = None,
+    update_type: str = "release",
+    changes: dict | None = None,
+    scheduled_at: str | None = None,
+):
+    from core.dynamodb import get_table
+
+    containers = get_table("containers")
+    owner = owner or {"owner_id": "u", "id": "original", "status": "running"}
+    containers.put_item(Item=owner)
+    queued = await update_repo.create(
+        owner["owner_id"],
+        update_type,
+        "Candidate",
+        changes if changes is not None else {"target_release_id": "candidate"},
+        scheduled_at=scheduled_at,
+    )
+    snapshot = await update_repo.get_by_id(owner["owner_id"], queued["update_id"], consistent=True)
+    assert snapshot is not None
+    return containers, deepcopy(owner), snapshot
+
+
+async def _reserve_owner_apply(
+    update_repo,
+    owner: dict,
+    update: dict,
+    *,
+    target_release_id: str | None = "candidate",
+):
+    return await update_repo.reserve_owner_apply(
+        owner,
+        update,
+        "worker",
+        target_release_id=target_release_id,
+        prior_task_definition_arn=_OWNER_APPLY_ARN,
+        prior_desired_count=1,
+        target_desired_count=1,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("consistent", [False, True])
+async def test_owner_apply_lookup_uses_exact_key_and_consistency(monkeypatch, consistent):
+    from core.repositories import update_repo
+
+    row = {"owner_id": "u", "update_id": "r", "status": "pending"}
+    table = MagicMock()
+    table.get_item.return_value = {"Item": row}
+    monkeypatch.setattr(update_repo, "_get_table", lambda: table)
+
+    assert await update_repo.get_by_id("u", "r", consistent=consistent) is row
+    table.get_item.assert_called_once_with(Key={"owner_id": "u", "update_id": "r"}, ConsistentRead=consistent)
+
+
+@pytest.mark.asyncio
+async def test_owner_apply_lookup_missing_and_aws_error_propagate(monkeypatch):
+    from core.repositories import update_repo
+
+    table = MagicMock()
+    table.get_item.return_value = {}
+    monkeypatch.setattr(update_repo, "_get_table", lambda: table)
+    assert await update_repo.get_by_id("u", "missing") is None
+
+    error = ClientError({"Error": {"Code": "ThrottlingException", "Message": "x"}}, "GetItem")
+    table.get_item.side_effect = error
+    with pytest.raises(ClientError) as caught:
+        await update_repo.get_by_id("u", "r")
+    assert caught.value is error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("owner_id", "update_id", "field"), [("", "r", "owner_id"), ("u", " ", "update_id")])
+async def test_owner_apply_lookup_validates_keys_before_io(monkeypatch, owner_id, update_id, field):
+    from core.repositories import update_repo
+
+    monkeypatch.setattr(update_repo, "_get_table", MagicMock(side_effect=AssertionError("unexpected I/O")))
+    with pytest.raises(ValueError, match=field):
+        await update_repo.get_by_id(owner_id, update_id)
+
+
+@pytest.mark.asyncio
+async def test_owner_apply_reservation_is_paired(dynamodb_table):
+    from core.repositories import update_repo
+
+    containers, owner, queued = await _seed_owner_apply(update_repo)
+    owner_before = deepcopy(owner)
+    queued_before = deepcopy(queued)
+
+    assert await _reserve_owner_apply(update_repo, owner, queued)
+
+    stored_c = containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"]
+    stored_u = await update_repo.get_by_id("u", queued["update_id"], consistent=True)
+    assert stored_u is not None
+    assert stored_c["release_update_id"] == queued["update_id"]
+    assert stored_c["desired_release_id"] == stored_u["target_release_id"] == "candidate"
+    assert stored_c["release_revision"] == stored_u["release_revision"] == 1
+    assert stored_c["provision_claim_id"] == stored_c["provision_attempt_token"] == "worker"
+    assert stored_u["apply_claim_id"] == "worker"
+    assert stored_u["container_id"] == "original"
+    assert stored_u["status"] == "applying" and stored_u["phase"] == "reserved"
+    assert "active_release_id" not in stored_c and "prior_release_id" not in stored_u
+    assert "prior_desired_release_id" not in stored_u
+    assert stored_c["status"] == "running"
+    assert stored_c["provision_claimed_at"] == stored_u["apply_claimed_at"]
+    assert stored_c["updated_at"] == stored_u["updated_at"]
+    assert owner == owner_before and queued == queued_before
+
+
+@pytest.mark.asyncio
+async def test_owner_apply_release_preserves_complete_rows_and_nested_changes(dynamodb_table):
+    from core.repositories import update_repo
+
+    owner = {
+        "owner_id": "u",
+        "id": "original",
+        "status": "running",
+        "task_definition_arn": "arn:old-task",
+        "desired_release_id": "old",
+        "active_release_id": "old",
+        "release_revision": Decimal("4"),
+        "unrelated": {"keep": ["yes", Decimal("2")]},
+    }
+    nested = {"target_release_id": "candidate", "config": {"flags": [True, Decimal("3")]}}
+    containers, owner_snapshot, queued = await _seed_owner_apply(update_repo, owner=owner, changes=nested)
+    dynamodb_table.update_item(
+        Key={"owner_id": "u", "update_id": queued["update_id"]},
+        UpdateExpression="SET #t = :ttl, untouched = :value",
+        ExpressionAttributeNames={"#t": "ttl"},
+        ExpressionAttributeValues={":ttl": 123, ":value": "keep"},
+    )
+    queued = await update_repo.get_by_id("u", queued["update_id"], consistent=True)
+    owner_before, queued_before = deepcopy(owner_snapshot), deepcopy(queued)
+
+    assert await _reserve_owner_apply(update_repo, owner_snapshot, queued)
+
+    stored_c = containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"]
+    stored_u = await update_repo.get_by_id("u", queued["update_id"], consistent=True)
+    expected_c = deepcopy(owner_snapshot)
+    expected_c.update(
+        desired_release_id="candidate",
+        release_revision=5,
+        release_update_id=queued["update_id"],
+        provision_claim_id="worker",
+        provision_attempt_token="worker",
+        provision_claimed_at=stored_c["provision_claimed_at"],
+        updated_at=stored_c["updated_at"],
+    )
+    expected_u = deepcopy(queued)
+    expected_u.pop("ttl")
+    expected_u.update(
+        status="applying",
+        phase="reserved",
+        container_id="original",
+        apply_claim_id="worker",
+        apply_claimed_at=stored_u["apply_claimed_at"],
+        updated_at=stored_u["updated_at"],
+        release_revision=5,
+        target_release_id="candidate",
+        prior_release_id="old",
+        prior_desired_release_id="old",
+        prior_task_definition_arn=_OWNER_APPLY_ARN,
+        prior_desired_count=1,
+        target_desired_count=1,
+    )
+    assert stored_c == expected_c
+    assert stored_u == expected_u
+    assert stored_u["changes"] == nested and stored_u["untouched"] == "keep"
+    assert owner_snapshot == owner_before and queued == queued_before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("assigned", [False, True], ids=["legacy-unassigned", "assigned"])
+async def test_owner_apply_non_release_preserves_release_ids(dynamodb_table, assigned):
+    from core.repositories import update_repo
+
+    owner = {"owner_id": "u", "id": "original", "status": "running", "runtime": "keep"}
+    if assigned:
+        owner.update(desired_release_id="old", active_release_id="old")
+    containers, owner, queued = await _seed_owner_apply(
+        update_repo,
+        owner=owner,
+        update_type="config_patch",
+        changes={"patch": {"enabled": True}},
+    )
+
+    assert await _reserve_owner_apply(update_repo, owner, queued, target_release_id=None)
+
+    stored_c = containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"]
+    stored_u = await update_repo.get_by_id("u", queued["update_id"], consistent=True)
+    assert stored_c.get("desired_release_id") == ("old" if assigned else None)
+    assert stored_c.get("active_release_id") == ("old" if assigned else None)
+    assert "target_release_id" not in stored_u
+    if assigned:
+        assert stored_u["prior_release_id"] == stored_u["prior_desired_release_id"] == "old"
+    else:
+        assert "prior_release_id" not in stored_u and "prior_desired_release_id" not in stored_u
+    assert stored_c["release_revision"] == stored_u["release_revision"] == 1
+    assert stored_c["runtime"] == "keep" and stored_c["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_owner_apply_scheduled_update_can_be_reserved(dynamodb_table):
+    from core.repositories import update_repo
+
+    _, owner, queued = await _seed_owner_apply(
+        update_repo,
+        scheduled_at="2026-09-09T12:00:00+00:00",
+    )
+    assert queued["status"] == "scheduled"
+    assert await _reserve_owner_apply(update_repo, owner, queued)
+    stored = await update_repo.get_by_id("u", queued["update_id"], consistent=True)
+    assert stored["status"] == "applying" and stored["scheduled_at"] == queued["scheduled_at"]
+
+
+@pytest.mark.asyncio
+async def test_owner_apply_competing_updates_are_atomic(dynamodb_table):
+    from core.dynamodb import get_table
+    from core.repositories import update_repo
+
+    containers = get_table("containers")
+    owner = {"owner_id": "u", "id": "original", "status": "running"}
+    containers.put_item(Item=owner)
+    first = await update_repo.create("u", "release", "first", {"target_release_id": "candidate"})
+    second = await update_repo.create("u", "release", "second", {"target_release_id": "candidate"})
+    first = await update_repo.get_by_id("u", first["update_id"], consistent=True)
+    second = await update_repo.get_by_id("u", second["update_id"], consistent=True)
+    assert await _reserve_owner_apply(update_repo, owner, first)
+    winner_c = containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"]
+    loser_before = deepcopy(second)
+
+    assert await _reserve_owner_apply(update_repo, owner, second) is False
+    assert containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"] == winner_c
+    assert await update_repo.get_by_id("u", second["update_id"], consistent=True) == loser_before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mutation",
+    ["claimed", "scheduled", "snoozed", "edited", "update_type", "scheduled_at", "force_by"],
+)
+async def test_owner_apply_update_race_changes_neither_row(dynamodb_table, monkeypatch, mutation):
+    from core.repositories import update_repo
+
+    containers, owner, queued = await _seed_owner_apply(update_repo)
+    original_run = update_repo.run_in_thread
+    calls = 0
+
+    async def inject_at_transaction(func, *args, **kwargs):
+        nonlocal calls
+        if getattr(func, "__name__", "") == "transact_write_items":
+            calls += 1
+            if mutation == "claimed":
+                expression, values = "SET apply_claim_id = :v", {":v": "rival"}
+            elif mutation == "scheduled":
+                expression, values = "SET #s = :v", {":v": "scheduled"}
+            elif mutation == "snoozed":
+                expression, values = "SET last_snoozed_at = :v", {":v": "later"}
+            elif mutation == "edited":
+                expression, values = "SET changes = :v", {":v": {"target_release_id": "edited"}}
+            else:
+                expression, values = f"SET {mutation} = :v", {":v": "later"}
+            names = {"#s": "status"} if mutation == "scheduled" else None
+            request = {
+                "Key": {"owner_id": "u", "update_id": queued["update_id"]},
+                "UpdateExpression": expression,
+                "ExpressionAttributeValues": values,
+            }
+            if names:
+                request["ExpressionAttributeNames"] = names
+            dynamodb_table.update_item(**request)
+        return await original_run(func, *args, **kwargs)
+
+    monkeypatch.setattr(update_repo, "run_in_thread", inject_at_transaction)
+    assert await _reserve_owner_apply(update_repo, owner, queued) is False
+    assert calls == 1
+    assert containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"] == owner
+    stored_u = dynamodb_table.get_item(Key={"owner_id": "u", "update_id": queued["update_id"]})["Item"]
+    assert "release_revision" not in stored_u and "phase" not in stored_u and "ttl" not in stored_u
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("case", "mutation"),
+    [
+        ("id", "SET id = :v"),
+        ("status", "SET #s = :v"),
+        ("task_definition_arn", "SET task_definition_arn = :v"),
+        ("desired_release_id", "SET desired_release_id = :v"),
+        ("active_release_id", "SET active_release_id = :v"),
+        ("release_revision", "SET release_revision = :v"),
+        ("absent_revision_to_zero", "SET release_revision = :zero"),
+        ("absent_desired_to_null", "SET desired_release_id = :null"),
+    ],
+)
+async def test_owner_apply_container_pins_each_snapshot_field(dynamodb_table, monkeypatch, case, mutation):
+    from core.repositories import update_repo
+
+    owner = {
+        "owner_id": "u",
+        "id": "original",
+        "status": "running",
+        "task_definition_arn": "task-old",
+        "desired_release_id": "old",
+        "active_release_id": "old",
+        "release_revision": 4,
+    }
+    if case.startswith("absent_revision"):
+        owner.pop("release_revision")
+    if case.startswith("absent_desired"):
+        owner.pop("desired_release_id")
+        owner.pop("active_release_id")
+    containers, snapshot, queued = await _seed_owner_apply(update_repo, owner=owner)
+    original_run = update_repo.run_in_thread
+    winner = deepcopy(snapshot)
+
+    async def inject_at_transaction(func, *args, **kwargs):
+        if getattr(func, "__name__", "") == "transact_write_items":
+            value = None if "null" in case else 0 if "zero" in case else 5 if case == "release_revision" else "moved"
+            binding = ":null" if "null" in case else ":zero" if "zero" in case else ":v"
+            request = {
+                "Key": {"owner_id": "u"},
+                "UpdateExpression": mutation,
+                "ExpressionAttributeValues": {binding: value},
+            }
+            if case == "status":
+                request["ExpressionAttributeNames"] = {"#s": "status"}
+            containers.update_item(**request)
+            field = "desired_release_id" if case == "absent_desired_to_null" else case.removeprefix("absent_")
+            field = "release_revision" if field == "revision_to_zero" else field
+            winner[field] = value
+        return await original_run(func, *args, **kwargs)
+
+    monkeypatch.setattr(update_repo, "run_in_thread", inject_at_transaction)
+    queued_before = deepcopy(queued)
+    assert await _reserve_owner_apply(update_repo, snapshot, queued) is False
+    stored_c = containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"]
+    assert stored_c == winner
+    assert await update_repo.get_by_id("u", queued["update_id"], consistent=True) == queued_before
+
+
+@pytest.mark.asyncio
+async def test_owner_apply_container_revision_detects_release_id_aba(dynamodb_table, monkeypatch):
+    from core.repositories import update_repo
+
+    owner = {
+        "owner_id": "u",
+        "id": "original",
+        "status": "running",
+        "desired_release_id": "old",
+        "active_release_id": "old",
+        "release_revision": 4,
+    }
+    containers, snapshot, queued = await _seed_owner_apply(update_repo, owner=owner)
+    original_run = update_repo.run_in_thread
+
+    async def inject_at_transaction(func, *args, **kwargs):
+        if getattr(func, "__name__", "") == "transact_write_items":
+            containers.update_item(
+                Key={"owner_id": "u"},
+                UpdateExpression="SET desired_release_id = :same, release_revision = :next",
+                ExpressionAttributeValues={":same": "old", ":next": 5},
+            )
+        return await original_run(func, *args, **kwargs)
+
+    monkeypatch.setattr(update_repo, "run_in_thread", inject_at_transaction)
+    assert await _reserve_owner_apply(update_repo, snapshot, queued) is False
+    assert await update_repo.get_by_id("u", queued["update_id"], consistent=True) == queued
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recreate", [False, True], ids=["delete", "delete-recreate"])
+async def test_owner_apply_container_deletion_is_fenced(dynamodb_table, monkeypatch, recreate):
+    from core.repositories import update_repo
+
+    containers, owner, queued = await _seed_owner_apply(update_repo)
+    original_run = update_repo.run_in_thread
+
+    async def inject_at_transaction(func, *args, **kwargs):
+        if getattr(func, "__name__", "") == "transact_write_items":
+            containers.delete_item(Key={"owner_id": "u"})
+            if recreate:
+                containers.put_item(Item={"owner_id": "u", "id": "replacement", "status": "running"})
+        return await original_run(func, *args, **kwargs)
+
+    monkeypatch.setattr(update_repo, "run_in_thread", inject_at_transaction)
+    assert await _reserve_owner_apply(update_repo, owner, queued) is False
+    assert await update_repo.get_by_id("u", queued["update_id"], consistent=True) == queued
+    current = containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True).get("Item")
+    assert current is None if not recreate else current["id"] == "replacement"
+
+
+@pytest.mark.asyncio
+async def test_owner_apply_update_deletion_is_fenced(dynamodb_table, monkeypatch):
+    from core.repositories import update_repo
+
+    containers, owner, queued = await _seed_owner_apply(update_repo)
+    original_run = update_repo.run_in_thread
+
+    async def inject_at_transaction(func, *args, **kwargs):
+        if getattr(func, "__name__", "") == "transact_write_items":
+            dynamodb_table.delete_item(Key={"owner_id": "u", "update_id": queued["update_id"]})
+        return await original_run(func, *args, **kwargs)
+
+    monkeypatch.setattr(update_repo, "run_in_thread", inject_at_transaction)
+    assert await _reserve_owner_apply(update_repo, owner, queued) is False
+    assert containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"] == owner
+    assert await update_repo.get_by_id("u", queued["update_id"], consistent=True) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["stopped", "error"])
+@pytest.mark.parametrize("field", _OWNER_APPLY_CONTAINER_EXCLUSIONS)
+@pytest.mark.parametrize("value", ["busy", None], ids=["value", "null"])
+async def test_owner_apply_container_exclusion_snapshot_refuses_without_io(monkeypatch, status, field, value):
+    from core.repositories import update_repo
+
+    owner = {"owner_id": "u", "id": "original", "status": status, field: value}
+    update = {
+        "owner_id": "u",
+        "update_id": "r",
+        "update_type": "release",
+        "changes": {"target_release_id": "candidate"},
+        "status": "pending",
+    }
+    monkeypatch.setattr(update_repo, "get_table", MagicMock(side_effect=AssertionError("unexpected I/O")))
+    monkeypatch.setattr(update_repo, "_get_table", MagicMock(side_effect=AssertionError("unexpected I/O")))
+    assert await _reserve_owner_apply(update_repo, owner, update) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", _OWNER_APPLY_UPDATE_EXCLUSIONS)
+@pytest.mark.parametrize("value", ["busy", None], ids=["value", "null"])
+async def test_owner_apply_update_exclusion_snapshot_refuses_without_io(monkeypatch, field, value):
+    from core.repositories import update_repo
+
+    owner = {"owner_id": "u", "id": "original", "status": "running"}
+    update = {
+        "owner_id": "u",
+        "update_id": "r",
+        "update_type": "release",
+        "changes": {"target_release_id": "candidate"},
+        "status": "pending",
+        field: value,
+    }
+    monkeypatch.setattr(update_repo, "get_table", MagicMock(side_effect=AssertionError("unexpected I/O")))
+    monkeypatch.setattr(update_repo, "_get_table", MagicMock(side_effect=AssertionError("unexpected I/O")))
+    assert await _reserve_owner_apply(update_repo, owner, update) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["applying", "applied", "failed"])
+async def test_owner_apply_terminal_or_applying_update_refuses_without_io(monkeypatch, status):
+    from core.repositories import update_repo
+
+    owner = {"owner_id": "u", "id": "original", "status": "running"}
+    update = {
+        "owner_id": "u",
+        "update_id": "r",
+        "update_type": "release",
+        "changes": {"target_release_id": "candidate"},
+        "status": status,
+    }
+    monkeypatch.setattr(update_repo, "get_table", MagicMock(side_effect=AssertionError("unexpected I/O")))
+    monkeypatch.setattr(update_repo, "_get_table", MagicMock(side_effect=AssertionError("unexpected I/O")))
+    assert await _reserve_owner_apply(update_repo, owner, update) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", _OWNER_APPLY_CONTAINER_EXCLUSIONS)
+@pytest.mark.parametrize("value", ["busy", None], ids=["value", "null"])
+async def test_owner_apply_container_exclusion_is_fenced_at_transaction(dynamodb_table, monkeypatch, field, value):
+    from core.repositories import update_repo
+
+    containers, owner, queued = await _seed_owner_apply(update_repo)
+    original_run = update_repo.run_in_thread
+
+    async def inject_at_transaction(func, *args, **kwargs):
+        if getattr(func, "__name__", "") == "transact_write_items":
+            containers.update_item(
+                Key={"owner_id": "u"},
+                UpdateExpression="SET #field = :value",
+                ExpressionAttributeNames={"#field": field},
+                ExpressionAttributeValues={":value": value},
+            )
+        return await original_run(func, *args, **kwargs)
+
+    monkeypatch.setattr(update_repo, "run_in_thread", inject_at_transaction)
+    assert await _reserve_owner_apply(update_repo, owner, queued) is False
+    stored_c = containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"]
+    expected_c = deepcopy(owner)
+    expected_c[field] = value
+    assert stored_c == expected_c
+    assert await update_repo.get_by_id("u", queued["update_id"], consistent=True) == queued
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", _OWNER_APPLY_UPDATE_EXCLUSIONS)
+@pytest.mark.parametrize("value", ["busy", None], ids=["value", "null"])
+async def test_owner_apply_update_exclusion_is_fenced_at_transaction(dynamodb_table, monkeypatch, field, value):
+    from core.repositories import update_repo
+
+    containers, owner, queued = await _seed_owner_apply(update_repo)
+    original_run = update_repo.run_in_thread
+
+    async def inject_at_transaction(func, *args, **kwargs):
+        if getattr(func, "__name__", "") == "transact_write_items":
+            dynamodb_table.update_item(
+                Key={"owner_id": "u", "update_id": queued["update_id"]},
+                UpdateExpression="SET #field = :value",
+                ExpressionAttributeNames={"#field": field},
+                ExpressionAttributeValues={":value": value},
+            )
+        return await original_run(func, *args, **kwargs)
+
+    monkeypatch.setattr(update_repo, "run_in_thread", inject_at_transaction)
+    assert await _reserve_owner_apply(update_repo, owner, queued) is False
+    assert containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"] == owner
+    stored_u = await update_repo.get_by_id("u", queued["update_id"], consistent=True)
+    expected_u = deepcopy(queued)
+    expected_u[field] = value
+    assert stored_u == expected_u
+
+
+def _owner_apply_valid_arguments():
+    return (
+        {"owner_id": "u", "id": "original", "status": "running"},
+        {
+            "owner_id": "u",
+            "update_id": "r",
+            "update_type": "release",
+            "changes": {"target_release_id": "candidate"},
+            "status": "pending",
+        },
+        {
+            "target_release_id": "candidate",
+            "prior_task_definition_arn": _OWNER_APPLY_ARN,
+            "prior_desired_count": 1,
+            "target_desired_count": 1,
+        },
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("location", "field", "value"),
+    [
+        ("owner", "owner_id", " "),
+        ("owner", "id", ""),
+        ("owner", "status", None),
+        ("update", "owner_id", "other"),
+        ("update", "update_id", 1),
+        ("update", "update_type", " "),
+        ("claim", "claim_id", ["secret-value"]),
+        ("kwargs", "prior_task_definition_arn", " "),
+    ],
+)
+async def test_owner_apply_validation_rejects_bad_identity_fields_without_io(monkeypatch, location, field, value):
+    from core.repositories import update_repo
+
+    owner, update, kwargs = _owner_apply_valid_arguments()
+    if location == "owner":
+        owner[field] = value
+    elif location == "update":
+        update[field] = value
+    elif location == "kwargs":
+        kwargs[field] = value
+    claim = value if location == "claim" else "worker"
+    monkeypatch.setattr(update_repo, "get_table", MagicMock(side_effect=AssertionError("unexpected I/O")))
+    with pytest.raises(ValueError) as caught:
+        await update_repo.reserve_owner_apply(owner, update, claim, **kwargs)
+    assert field in str(caught.value)
+    assert "secret-value" not in str(caught.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("snapshot", "value", "field"),
+    [
+        ("owner", None, "expected_container"),
+        ("owner", [], "expected_container"),
+        ("update", None, "expected_update"),
+        ("update", [], "expected_update"),
+        ("changes", None, "changes"),
+        ("changes", [], "changes"),
+    ],
+)
+async def test_owner_apply_validation_rejects_non_dict_snapshots_without_io(monkeypatch, snapshot, value, field):
+    from core.repositories import update_repo
+
+    owner, update, kwargs = _owner_apply_valid_arguments()
+    if snapshot == "owner":
+        owner = value
+    elif snapshot == "update":
+        update = value
+    else:
+        update["changes"] = value
+    monkeypatch.setattr(update_repo, "get_table", MagicMock(side_effect=AssertionError("unexpected I/O")))
+    with pytest.raises(ValueError, match=field):
+        await update_repo.reserve_owner_apply(owner, update, "worker", **kwargs)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "revision",
+    [-1, Decimal("1.5"), Decimal("NaN"), Decimal("Infinity"), True, 1.0, "1", None],
+    ids=["negative", "fractional", "nan", "infinity", "bool", "float", "string", "null"],
+)
+async def test_owner_apply_validation_rejects_invalid_revision_without_io(monkeypatch, revision):
+    from core.repositories import update_repo
+
+    owner, update, kwargs = _owner_apply_valid_arguments()
+    owner["release_revision"] = revision
+    monkeypatch.setattr(update_repo, "get_table", MagicMock(side_effect=AssertionError("unexpected I/O")))
+    with pytest.raises(ValueError, match="release_revision"):
+        await update_repo.reserve_owner_apply(owner, update, "worker", **kwargs)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["prior_desired_count", "target_desired_count"])
+@pytest.mark.parametrize("value", [-1, True, 1.0], ids=["negative", "bool", "float"])
+async def test_owner_apply_validation_rejects_invalid_counts_without_io(monkeypatch, field, value):
+    from core.repositories import update_repo
+
+    owner, update, kwargs = _owner_apply_valid_arguments()
+    kwargs[field] = value
+    monkeypatch.setattr(update_repo, "get_table", MagicMock(side_effect=AssertionError("unexpected I/O")))
+    with pytest.raises(ValueError, match=field):
+        await update_repo.reserve_owner_apply(owner, update, "worker", **kwargs)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("desired", "active"),
+    [(None, None), ("", ""), ("old", None), (None, "old"), ("old", "different")],
+    ids=["nulls", "empty", "desired-only", "active-only", "mismatch"],
+)
+async def test_owner_apply_validation_rejects_invalid_optional_release_ids_without_io(monkeypatch, desired, active):
+    from core.repositories import update_repo
+
+    owner, update, kwargs = _owner_apply_valid_arguments()
+    owner["desired_release_id"] = desired
+    owner["active_release_id"] = active
+    monkeypatch.setattr(update_repo, "get_table", MagicMock(side_effect=AssertionError("unexpected I/O")))
+    with pytest.raises(ValueError, match="desired_release_id|active_release_id"):
+        await update_repo.reserve_owner_apply(owner, update, "worker", **kwargs)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("update_type", "changes", "target", "field"),
+    [
+        ("release", {}, "candidate", "target_release_id"),
+        ("release", {"target_release_id": "other"}, "candidate", "target_release_id"),
+        ("release", {"target_release_id": "candidate"}, None, "target_release_id"),
+        ("config_patch", {"patch": True}, "candidate", "target_release_id"),
+    ],
+)
+async def test_owner_apply_validation_rejects_release_contract_mismatches_without_io(
+    monkeypatch, update_type, changes, target, field
+):
+    from core.repositories import update_repo
+
+    owner, update, kwargs = _owner_apply_valid_arguments()
+    update["update_type"] = update_type
+    update["changes"] = changes
+    kwargs["target_release_id"] = target
+    monkeypatch.setattr(update_repo, "get_table", MagicMock(side_effect=AssertionError("unexpected I/O")))
+    with pytest.raises(ValueError, match=field):
+        await update_repo.reserve_owner_apply(owner, update, "worker", **kwargs)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target", ["", " ", 1], ids=["empty", "whitespace", "nonstring"])
+async def test_owner_apply_validation_rejects_invalid_explicit_target_without_io(monkeypatch, target):
+    from core.repositories import update_repo
+
+    owner, update, kwargs = _owner_apply_valid_arguments()
+    kwargs["target_release_id"] = target
+    monkeypatch.setattr(update_repo, "get_table", MagicMock(side_effect=AssertionError("unexpected I/O")))
+    with pytest.raises(ValueError, match="target_release_id"):
+        await update_repo.reserve_owner_apply(owner, update, "worker", **kwargs)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revision", [0, Decimal("0"), Decimal("4")], ids=["int-zero", "decimal-zero", "decimal"])
+async def test_owner_apply_accepts_integral_revision_and_zero_counts(dynamodb_table, revision):
+    from core.repositories import update_repo
+
+    owner = {"owner_id": "u", "id": "original", "status": "running", "release_revision": revision}
+    _, owner, queued = await _seed_owner_apply(update_repo, owner=owner)
+    assert await update_repo.reserve_owner_apply(
+        owner,
+        queued,
+        "worker",
+        target_release_id="candidate",
+        prior_task_definition_arn=_OWNER_APPLY_ARN,
+        prior_desired_count=0,
+        target_desired_count=0,
+    )
+
+
+@pytest.mark.asyncio
+async def test_owner_apply_owner_mismatch_validation_names_field_without_io(monkeypatch):
+    from core.repositories import update_repo
+
+    owner, update, kwargs = _owner_apply_valid_arguments()
+    update["owner_id"] = "do-not-leak-owner"
+    monkeypatch.setattr(update_repo, "get_table", MagicMock(side_effect=AssertionError("unexpected I/O")))
+    with pytest.raises(ValueError) as caught:
+        await update_repo.reserve_owner_apply(owner, update, "worker", **kwargs)
+    assert "owner_id" in str(caught.value) and "do-not-leak-owner" not in str(caught.value)
+
+
+def _owner_apply_transaction_error(reasons=None, *, code="TransactionCanceledException"):
+    response = {"Error": {"Code": code, "Message": "failed"}}
+    if reasons is not None:
+        response["CancellationReasons"] = reasons
+    return ClientError(response, "TransactWriteItems")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reasons",
+    [
+        [{"Code": "ConditionalCheckFailed"}, {"Code": "None"}],
+        [{"Code": None}, {"Code": "ConditionalCheckFailed"}],
+        [{"Code": "ConditionalCheckFailed"}, {"Code": "ConditionalCheckFailed"}],
+    ],
+    ids=["first", "second", "both"],
+)
+async def test_owner_apply_transaction_classifier_returns_false_only_for_conditional_matrix(monkeypatch, reasons):
+    from core.repositories import update_repo
+
+    error = _owner_apply_transaction_error(reasons)
+    client = SimpleNamespace(transact_write_items=MagicMock())
+    containers = SimpleNamespace(name="test-containers", meta=SimpleNamespace(client=client))
+    updates = SimpleNamespace(name="test-pending-updates")
+    monkeypatch.setattr(update_repo, "get_table", lambda name: containers)
+    monkeypatch.setattr(update_repo, "_get_table", lambda: updates)
+    calls = 0
+
+    async def fail_once(func, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        raise error
+
+    monkeypatch.setattr(update_repo, "run_in_thread", fail_once)
+    owner, update, kwargs = _owner_apply_valid_arguments()
+    assert await update_repo.reserve_owner_apply(owner, update, "worker", **kwargs) is False
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    [
+        _owner_apply_transaction_error(),
+        _owner_apply_transaction_error([{"Code": "ConditionalCheckFailed"}]),
+        _owner_apply_transaction_error([{"Code": "ConditionalCheckFailed"}, {"Code": "None"}, {"Code": "None"}]),
+        _owner_apply_transaction_error([{"Code": "ConditionalCheckFailed"}, "bad"]),
+        _owner_apply_transaction_error([{}, {"Code": "ConditionalCheckFailed"}]),
+        _owner_apply_transaction_error([{"Code": "None"}, {"Code": None}]),
+        _owner_apply_transaction_error([{"Code": "ThrottlingError"}, {"Code": "None"}]),
+        _owner_apply_transaction_error([{"Code": "ConditionalCheckFailed"}, {"Code": "ThrottlingError"}]),
+        _owner_apply_transaction_error(
+            [{"Code": "ConditionalCheckFailed"}, {"Code": "None"}], code="ValidationException"
+        ),
+        TimeoutError("unknown commit outcome"),
+    ],
+    ids=[
+        "missing-reasons",
+        "wrong-count-one",
+        "wrong-count-three",
+        "malformed-entry",
+        "missing-code",
+        "no-conditional",
+        "operational",
+        "mixed",
+        "non-cancellation",
+        "timeout",
+    ],
+)
+async def test_owner_apply_transaction_classifier_propagates_unproven_failures(monkeypatch, failure):
+    from core.repositories import update_repo
+
+    client = SimpleNamespace(transact_write_items=MagicMock())
+    containers = SimpleNamespace(name="test-containers", meta=SimpleNamespace(client=client))
+    updates = SimpleNamespace(name="test-pending-updates")
+    monkeypatch.setattr(update_repo, "get_table", lambda name: containers)
+    monkeypatch.setattr(update_repo, "_get_table", lambda: updates)
+    calls = 0
+
+    async def fail_once(func, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        raise failure
+
+    monkeypatch.setattr(update_repo, "run_in_thread", fail_once)
+    owner, update, kwargs = _owner_apply_valid_arguments()
+    with pytest.raises(type(failure)) as caught:
+        await update_repo.reserve_owner_apply(owner, update, "worker", **kwargs)
+    assert caught.value is failure and calls == 1

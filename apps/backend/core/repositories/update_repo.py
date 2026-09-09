@@ -2,8 +2,10 @@
 
 import time
 import uuid
+from decimal import Decimal
 
 from boto3.dynamodb.conditions import Attr, Key
+from botocore.exceptions import ClientError
 
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
 
@@ -15,6 +17,98 @@ def _get_table():
 _UNRESERVED_UPDATE = Attr("release_revision").not_exists() & (
     Attr("update_type").not_exists() | Attr("update_type").ne("release")
 )
+
+_OWNER_APPLY_CONTAINER_PINS = (
+    "id",
+    "status",
+    "task_definition_arn",
+    "desired_release_id",
+    "active_release_id",
+    "release_revision",
+)
+_OWNER_APPLY_CONTAINER_EXCLUSIONS = (
+    "release_update_id",
+    "provision_claim_id",
+    "provision_attempt_token",
+    "provision_execution_name",
+)
+_OWNER_APPLY_UPDATE_PINS = (
+    "status",
+    "update_type",
+    "changes",
+    "scheduled_at",
+    "last_snoozed_at",
+    "force_by",
+)
+_OWNER_APPLY_UPDATE_EXCLUSIONS = (
+    "release_revision",
+    "container_id",
+    "apply_claim_id",
+    "apply_claimed_at",
+    "phase",
+    "target_release_id",
+    "prior_release_id",
+    "prior_desired_release_id",
+    "prior_task_definition_arn",
+    "prior_desired_count",
+    "target_desired_count",
+    "target_task_definition_arn",
+    "staged_config_sha256",
+    "prior_config_sha256",
+    "effect_kind",
+    "effect_claim_id",
+    "effect_executor_id",
+    "applied_at",
+    "failure_reason",
+)
+
+
+def _require_nonempty_string(field: str, value: object) -> str:
+    if type(value) is not str or not value.strip():
+        raise ValueError(f"{field} is invalid")
+    return value
+
+
+def _snapshot_conditions(
+    snapshot: dict,
+    pinned_fields: tuple[str, ...],
+    exclusion_fields: tuple[str, ...],
+    prefix: str,
+    names: dict,
+    values: dict,
+) -> list[str]:
+    conditions: list[str] = []
+    for index, field in enumerate(pinned_fields):
+        name = f"#{prefix}p{index}"
+        names[name] = field
+        if field in snapshot:
+            value = f":{prefix}p{index}"
+            values[value] = snapshot[field]
+            conditions.append(f"{name} = {value}")
+        else:
+            conditions.append(f"attribute_not_exists({name})")
+    for index, field in enumerate(exclusion_fields):
+        name = f"#{prefix}x{index}"
+        names[name] = field
+        conditions.append(f"attribute_not_exists({name})")
+    return conditions
+
+
+def _is_conditional_transaction_cancel(error: ClientError) -> bool:
+    if error.response.get("Error", {}).get("Code") != "TransactionCanceledException":
+        return False
+    reasons = error.response.get("CancellationReasons")
+    if not isinstance(reasons, list) or len(reasons) != 2:
+        return False
+    codes: list[str | None] = []
+    for reason in reasons:
+        if not isinstance(reason, dict) or "Code" not in reason:
+            return False
+        code = reason["Code"]
+        if code not in ("ConditionalCheckFailed", "None", None):
+            return False
+        codes.append(code)
+    return "ConditionalCheckFailed" in codes
 
 
 def _generate_ulid_like() -> str:
@@ -57,6 +151,199 @@ async def create(
         item["scheduled_at"] = scheduled_at
     await run_in_thread(table.put_item, Item=item)
     return item
+
+
+async def get_by_id(owner_id: str, update_id: str, *, consistent: bool = False) -> dict | None:
+    """Read one update, optionally strongly consistently."""
+
+    _require_nonempty_string("owner_id", owner_id)
+    _require_nonempty_string("update_id", update_id)
+    table = _get_table()
+    response = await run_in_thread(
+        table.get_item,
+        Key={"owner_id": owner_id, "update_id": update_id},
+        ConsistentRead=consistent,
+    )
+    return response.get("Item")
+
+
+async def reserve_owner_apply(
+    expected_container: dict,
+    expected_update: dict,
+    claim_id: str,
+    *,
+    target_release_id: str | None,
+    prior_task_definition_arn: str,
+    prior_desired_count: int,
+    target_desired_count: int,
+) -> bool:
+    """Atomically reserve an owner row and its queued update for one apply."""
+
+    if not isinstance(expected_container, dict):
+        raise ValueError("expected_container is invalid")
+    if not isinstance(expected_update, dict):
+        raise ValueError("expected_update is invalid")
+
+    owner_id = _require_nonempty_string("owner_id", expected_container.get("owner_id"))
+    container_id = _require_nonempty_string("id", expected_container.get("id"))
+    _require_nonempty_string("status", expected_container.get("status"))
+    update_owner_id = _require_nonempty_string("owner_id", expected_update.get("owner_id"))
+    if update_owner_id != owner_id:
+        raise ValueError("owner_id is invalid")
+    update_id = _require_nonempty_string("update_id", expected_update.get("update_id"))
+    update_type = _require_nonempty_string("update_type", expected_update.get("update_type"))
+    _require_nonempty_string("claim_id", claim_id)
+    _require_nonempty_string("prior_task_definition_arn", prior_task_definition_arn)
+
+    changes = expected_update.get("changes")
+    if not isinstance(changes, dict):
+        raise ValueError("changes is invalid")
+    for field, count in (
+        ("prior_desired_count", prior_desired_count),
+        ("target_desired_count", target_desired_count),
+    ):
+        if type(count) is not int or count < 0:
+            raise ValueError(f"{field} is invalid")
+
+    revision_value = expected_container.get("release_revision", 0)
+    if type(revision_value) is int and revision_value >= 0:
+        revision = revision_value
+    elif (
+        isinstance(revision_value, Decimal)
+        and revision_value.is_finite()
+        and revision_value >= 0
+        and revision_value == revision_value.to_integral_value()
+    ):
+        revision = int(revision_value)
+    else:
+        raise ValueError("release_revision is invalid")
+
+    desired_present = "desired_release_id" in expected_container
+    active_present = "active_release_id" in expected_container
+    if desired_present:
+        _require_nonempty_string("desired_release_id", expected_container["desired_release_id"])
+    if active_present:
+        _require_nonempty_string("active_release_id", expected_container["active_release_id"])
+    if desired_present != active_present or (
+        desired_present and expected_container["desired_release_id"] != expected_container["active_release_id"]
+    ):
+        raise ValueError("desired_release_id and active_release_id are invalid")
+
+    if target_release_id is not None:
+        _require_nonempty_string("target_release_id", target_release_id)
+    if update_type == "release":
+        if target_release_id is None or changes.get("target_release_id") != target_release_id:
+            raise ValueError("target_release_id is invalid")
+    elif target_release_id is not None:
+        raise ValueError("target_release_id is invalid")
+
+    if any(field in expected_container for field in _OWNER_APPLY_CONTAINER_EXCLUSIONS):
+        return False
+    if expected_update.get("status") not in {"pending", "scheduled"}:
+        return False
+    if any(field in expected_update for field in _OWNER_APPLY_UPDATE_EXCLUSIONS):
+        return False
+
+    containers = get_table("containers")
+    updates = _get_table()
+    now_epoch = int(time.time())
+    now_iso = utc_now_iso()
+    next_revision = revision + 1
+
+    container_names: dict = {}
+    container_values: dict = {}
+    container_conditions = _snapshot_conditions(
+        expected_container,
+        _OWNER_APPLY_CONTAINER_PINS,
+        _OWNER_APPLY_CONTAINER_EXCLUSIONS,
+        "cp",
+        container_names,
+        container_values,
+    )
+    container_set = {
+        "release_revision": next_revision,
+        "release_update_id": update_id,
+        "provision_claim_id": claim_id,
+        "provision_attempt_token": claim_id,
+        "provision_claimed_at": now_epoch,
+        "updated_at": now_iso,
+    }
+    if update_type == "release":
+        container_set["desired_release_id"] = target_release_id
+    container_updates: list[str] = []
+    for index, (field, value) in enumerate(container_set.items()):
+        name, binding = f"#cs{index}", f":cs{index}"
+        container_names[name] = field
+        container_values[binding] = value
+        container_updates.append(f"{name} = {binding}")
+
+    update_names: dict = {}
+    update_values: dict = {}
+    update_conditions = _snapshot_conditions(
+        expected_update,
+        _OWNER_APPLY_UPDATE_PINS,
+        _OWNER_APPLY_UPDATE_EXCLUSIONS,
+        "up",
+        update_names,
+        update_values,
+    )
+    update_set = {
+        "status": "applying",
+        "phase": "reserved",
+        "container_id": container_id,
+        "apply_claim_id": claim_id,
+        "apply_claimed_at": now_epoch,
+        "updated_at": now_iso,
+        "release_revision": next_revision,
+        "prior_task_definition_arn": prior_task_definition_arn,
+        "prior_desired_count": prior_desired_count,
+        "target_desired_count": target_desired_count,
+    }
+    if update_type == "release":
+        update_set["target_release_id"] = target_release_id
+    if active_present:
+        update_set["prior_release_id"] = expected_container["active_release_id"]
+    if desired_present:
+        update_set["prior_desired_release_id"] = expected_container["desired_release_id"]
+    update_parts: list[str] = []
+    for index, (field, value) in enumerate(update_set.items()):
+        name, binding = f"#us{index}", f":us{index}"
+        update_names[name] = field
+        update_values[binding] = value
+        update_parts.append(f"{name} = {binding}")
+    update_names["#ur"] = "ttl"
+
+    try:
+        await run_in_thread(
+            containers.meta.client.transact_write_items,
+            TransactItems=[
+                {
+                    "Update": {
+                        "TableName": containers.name,
+                        "Key": {"owner_id": owner_id},
+                        "ConditionExpression": " AND ".join(container_conditions),
+                        "UpdateExpression": "SET " + ", ".join(container_updates),
+                        "ExpressionAttributeNames": container_names,
+                        "ExpressionAttributeValues": container_values,
+                    }
+                },
+                {
+                    "Update": {
+                        "TableName": updates.name,
+                        "Key": {"owner_id": owner_id, "update_id": update_id},
+                        "ConditionExpression": " AND ".join(update_conditions),
+                        "UpdateExpression": "SET " + ", ".join(update_parts) + " REMOVE #ur",
+                        "ExpressionAttributeNames": update_names,
+                        "ExpressionAttributeValues": update_values,
+                    }
+                },
+            ],
+        )
+    except ClientError as error:
+        if _is_conditional_transaction_cancel(error):
+            return False
+        raise
+    return True
 
 
 async def get_pending(owner_id: str) -> list[dict]:

@@ -18,9 +18,7 @@ def _get_table():
 
 
 def _cursor_key(profile_id: str, room_key: str) -> str:
-    encoded = json.dumps(
-        [profile_id, room_key], ensure_ascii=False, separators=(",", ":")
-    ).encode()
+    encoded = json.dumps([profile_id, room_key], ensure_ascii=False, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -43,9 +41,7 @@ async def get(owner_id: str, profile_id: str, room_key: str) -> dict | None:
         ConsistentRead=True,
     )
     item = response.get("Item")
-    if item is not None and (
-        item.get("profile_id") != profile_id or item.get("room_key") != room_key
-    ):
+    if item is not None and (item.get("profile_id") != profile_id or item.get("room_key") != room_key):
         raise RuntimeError("Room cursor key collision")
     return _project(item)
 
@@ -113,9 +109,7 @@ async def delete_all_for_owner(owner_id: str) -> int:
         def _delete_page():
             with table.batch_writer() as writer:
                 for item in items:
-                    writer.delete_item(
-                        Key={"owner_id": item["owner_id"], "cursor_key": item["cursor_key"]}
-                    )
+                    writer.delete_item(Key={"owner_id": item["owner_id"], "cursor_key": item["cursor_key"]})
 
         if items:
             await run_in_thread(_delete_page)

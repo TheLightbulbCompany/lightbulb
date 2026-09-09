@@ -76,9 +76,7 @@ async def test_cursor_row_contains_no_transcript_or_identity_presentation_data(c
 async def test_concurrent_cursor_writers_converge_on_highest_sequence(cursor_table):
     from core.repositories import room_read_cursor_repo as repo
 
-    await asyncio.gather(
-        *(repo.advance("org_a", "profile_a", "agent:friday:room:a", seq) for seq in range(1, 17))
-    )
+    await asyncio.gather(*(repo.advance("org_a", "profile_a", "agent:friday:room:a", seq) for seq in range(1, 17)))
 
     stored = await repo.get("org_a", "profile_a", "agent:friday:room:a")
     assert stored is not None

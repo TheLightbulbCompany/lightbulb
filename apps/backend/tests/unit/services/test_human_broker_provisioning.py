@@ -184,6 +184,7 @@ def harness(monkeypatch):
         "record_permanent_marker",
         AsyncMock(side_effect=lambda event_id, **kwargs: deleted_subjects.add(event_id)),
     )
+
     async def get_membership_lifecycle(owner_id, alias):
         return copy.deepcopy(
             repo.access.get(alias)

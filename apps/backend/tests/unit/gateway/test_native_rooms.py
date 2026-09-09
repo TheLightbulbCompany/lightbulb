@@ -1209,28 +1209,37 @@ def test_presence_event_sequence_dedupes_per_connection_and_reconnect_requires_n
     projection = rooms.NativePresenceProjection()
     assert projection.reconcile_event(presence_event(), 1_800_000_001_000) is not None
     assert projection.reconcile_event(presence_event(sequence=1), 1_800_000_002_000) is None
-    assert projection.reconcile_event(
-        presence_event(sequence=2, serverReceivedAtMs=1_800_000_002_000, expiresAtMs=1_800_000_092_000),
-        1_800_000_002_000,
-    ) is not None
-    assert projection.reconcile_event(
-        presence_event(
-            sequence=3,
-            connectionStartedAtMs=1_800_000_000_500,
-            serverReceivedAtMs=1_800_000_003_000,
-            expiresAtMs=1_800_000_093_000,
-        ),
-        1_800_000_003_000,
-    ) is None
-    assert projection.reconcile_event(
-        presence_event(
-            connectionId="native-reconnected",
-            connectionStartedAtMs=1_800_000_002_500,
-            serverReceivedAtMs=1_800_000_003_000,
-            expiresAtMs=1_800_000_093_000,
-        ),
-        1_800_000_003_000,
-    ) is not None
+    assert (
+        projection.reconcile_event(
+            presence_event(sequence=2, serverReceivedAtMs=1_800_000_002_000, expiresAtMs=1_800_000_092_000),
+            1_800_000_002_000,
+        )
+        is not None
+    )
+    assert (
+        projection.reconcile_event(
+            presence_event(
+                sequence=3,
+                connectionStartedAtMs=1_800_000_000_500,
+                serverReceivedAtMs=1_800_000_003_000,
+                expiresAtMs=1_800_000_093_000,
+            ),
+            1_800_000_003_000,
+        )
+        is None
+    )
+    assert (
+        projection.reconcile_event(
+            presence_event(
+                connectionId="native-reconnected",
+                connectionStartedAtMs=1_800_000_002_500,
+                serverReceivedAtMs=1_800_000_003_000,
+                expiresAtMs=1_800_000_093_000,
+            ),
+            1_800_000_003_000,
+        )
+        is not None
+    )
 
 
 @pytest.mark.parametrize(

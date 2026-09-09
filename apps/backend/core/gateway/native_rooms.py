@@ -360,10 +360,7 @@ _APPEND_RESULT = Draft202012Validator(
         ("sessionKey", "sessionId", "messageId", "messageSeq", "appended"),
     ),
 )
-_VALIDATORS = {
-    method: Draft202012Validator(schema)
-    for method, schema in {**_SCHEMAS, **_LOCAL_SCHEMAS}.items()
-}
+_VALIDATORS = {method: Draft202012Validator(schema) for method, schema in {**_SCHEMAS, **_LOCAL_SCHEMAS}.items()}
 ROOM_METHODS = frozenset(_SCHEMAS)
 LOCAL_ROOM_METHODS = frozenset(_LOCAL_SCHEMAS)
 _INTERNAL_METHODS = frozenset({"agent.wait", "users.self"})
@@ -438,11 +435,7 @@ def _room_route(qualification: RoomQualification) -> dict[str, str]:
 
 
 def _positive_integer(value) -> bool:
-    return (
-        isinstance(value, int)
-        and not isinstance(value, bool)
-        and 0 < value <= _MAX_SAFE_INTEGER
-    )
+    return isinstance(value, int) and not isinstance(value, bool) and 0 < value <= _MAX_SAFE_INTEGER
 
 
 _MAX_SAFE_INTEGER = 9_007_199_254_740_991
@@ -471,11 +464,7 @@ _PRESENCE_FIELDS = frozenset(
 
 
 def _epoch_ms(value) -> bool:
-    return (
-        isinstance(value, int)
-        and not isinstance(value, bool)
-        and 1_000_000_000_000 <= value <= _MAX_SAFE_INTEGER
-    )
+    return isinstance(value, int) and not isinstance(value, bool) and 1_000_000_000_000 <= value <= _MAX_SAFE_INTEGER
 
 
 def normalize_presence_event(value, server_now_at_ms: int) -> dict | None:
@@ -509,11 +498,7 @@ def normalize_presence_event(value, server_now_at_ms: int) -> dict | None:
     ):
         return None
     duration = _TYPING_EXPIRES_MS if event["state"] == "typing" else _PRESENCE_EXPIRES_MS
-    if not (
-        event["serverReceivedAtMs"]
-        <= event["expiresAtMs"]
-        <= event["serverReceivedAtMs"] + duration
-    ):
+    if not (event["serverReceivedAtMs"] <= event["expiresAtMs"] <= event["serverReceivedAtMs"] + duration):
         return None
     for observed_field, projection_field in (
         ("visibilityObservedAtMs", "visibility"),
@@ -522,23 +507,15 @@ def normalize_presence_event(value, server_now_at_ms: int) -> dict | None:
     ):
         observed_at = event.get(observed_field)
         if not (
-            _epoch_ms(observed_at)
-            and observed_at <= event["serverReceivedAtMs"]
-            and observed_at <= server_now_at_ms
+            _epoch_ms(observed_at) and observed_at <= event["serverReceivedAtMs"] and observed_at <= server_now_at_ms
         ):
             event.pop(observed_field, None)
             event[projection_field] = "unknown"
     last_seen = event.get("authoritativeLastSeenAtMs")
-    if not (
-        _epoch_ms(last_seen)
-        and last_seen <= event["serverReceivedAtMs"]
-        and last_seen <= server_now_at_ms
-    ):
+    if not (_epoch_ms(last_seen) and last_seen <= event["serverReceivedAtMs"] and last_seen <= server_now_at_ms):
         event.pop("authoritativeLastSeenAtMs", None)
     if event["state"] == "online" and not (
-        event["visibility"] == "visible"
-        and event["recentInput"] == "recent"
-        and event["viewingIntent"] == "viewing"
+        event["visibility"] == "visible" and event["recentInput"] == "recent" and event["viewingIntent"] == "viewing"
     ):
         event["state"] = "unknown"
     event["actor"] = dict(actor)
@@ -560,13 +537,11 @@ class NativePresenceProjection:
         room_connections = self._connections.setdefault(event["roomKey"], {})
         prior = room_connections.get(event["connectionId"])
         if prior and (
-            prior["connectionStartedAtMs"] != event["connectionStartedAtMs"]
-            or prior["actor"] != event["actor"]
+            prior["connectionStartedAtMs"] != event["connectionStartedAtMs"] or prior["actor"] != event["actor"]
         ):
             return None
         if prior and (
-            event["sequence"] <= prior["sequence"]
-            or event["serverReceivedAtMs"] < prior["serverReceivedAtMs"]
+            event["sequence"] <= prior["sequence"] or event["serverReceivedAtMs"] < prior["serverReceivedAtMs"]
         ):
             return None
         room_connections[event["connectionId"]] = event
@@ -600,12 +575,16 @@ class NativePresenceProjection:
             raise RoomError("ROOM_UNAVAILABLE", "Invalid native presence inventory")
         prior_snapshot = self._snapshots.get(room_key)
         if server_now < self._server_now.get(room_key, 0):
-            return dict(prior_snapshot) if prior_snapshot else {
-                **value,
-                "connections": [],
-                "evidenceStatus": "invalid",
-                "validationFailureCode": "PRESENCE_STALE_EVIDENCE",
-            }
+            return (
+                dict(prior_snapshot)
+                if prior_snapshot
+                else {
+                    **value,
+                    "connections": [],
+                    "evidenceStatus": "invalid",
+                    "validationFailureCode": "PRESENCE_STALE_EVIDENCE",
+                }
+            )
         previous_connections = dict(self._connections.get(room_key, {}))
         retained = dict(previous_connections)
         if status == "failed":
@@ -648,11 +627,7 @@ class NativePresenceProjection:
             )
             if event is None or event["roomKey"] != room_key or invalid_observation:
                 invalid = True
-                prior = (
-                    retained.get(candidate.get("connectionId"))
-                    if isinstance(candidate, dict)
-                    else None
-                )
+                prior = retained.get(candidate.get("connectionId")) if isinstance(candidate, dict) else None
                 if prior:
                     retained[prior["connectionId"]] = {
                         **{
@@ -674,16 +649,14 @@ class NativePresenceProjection:
                 continue
             prior = retained.get(event["connectionId"])
             if prior and (
-                prior["connectionStartedAtMs"] != event["connectionStartedAtMs"]
-                or prior["actor"] != event["actor"]
+                prior["connectionStartedAtMs"] != event["connectionStartedAtMs"] or prior["actor"] != event["actor"]
             ):
                 invalid = True
                 retained[event["connectionId"]] = {**prior, "state": "unknown"}
                 continue
             included.add(event["connectionId"])
             if prior and (
-                event["sequence"] <= prior["sequence"]
-                or event["serverReceivedAtMs"] < prior["serverReceivedAtMs"]
+                event["sequence"] <= prior["sequence"] or event["serverReceivedAtMs"] < prior["serverReceivedAtMs"]
             ):
                 continue
             retained[event["connectionId"]] = event
@@ -786,11 +759,8 @@ def filter_rpc_result(
             # owner-shaped key is only a routing fence and never membership.
             visibility = item.get("visibility") if isinstance(item, dict) else None
             sharing_role = item.get("sharingRole") if isinstance(item, dict) else None
-            authorized_projection = (
-                visibility == "restricted" and sharing_role in {"owner", "member"}
-            ) or (
-                visibility == "shared"
-                and sharing_role in {"admin", "owner", "member", "viewer"}
+            authorized_projection = (visibility == "restricted" and sharing_role in {"owner", "member"}) or (
+                visibility == "shared" and sharing_role in {"admin", "owner", "member", "viewer"}
             )
             if not (
                 isinstance(item, dict)
@@ -1206,9 +1176,7 @@ class NativeHumanConnection:
             return
         await self.require_current()
         if frame.get("event") == "session.presence":
-            normalized = self.presence_projection.reconcile_event(
-                payload, int(time.time() * 1000)
-            )
+            normalized = self.presence_projection.reconcile_event(payload, int(time.time() * 1000))
             if normalized is None:
                 return
             frame = {**frame, "payload": normalized}

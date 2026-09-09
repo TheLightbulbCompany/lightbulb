@@ -737,9 +737,7 @@ async def handle_clerk_webhook(request: Request):
     }
     lifecycle_id = svix_id or f"local-{hashlib.sha256(body).hexdigest()}"
     lifecycle_sequence = (
-        _clerk_event_sequence(payload, dict(request.headers), lifecycle_id, event_type)
-        if lifecycle_event
-        else ""
+        _clerk_event_sequence(payload, dict(request.headers), lifecycle_id, event_type) if lifecycle_event else ""
     )
     processing_claim = None
     membership_claim = None

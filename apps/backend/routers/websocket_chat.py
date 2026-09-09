@@ -1558,9 +1558,7 @@ async def _process_native_room_background(connection_id: str, body: dict) -> Non
                 )
             try:
                 if method in LOCAL_ROOM_METHODS:
-                    result = await handle_local_room_rpc(
-                        method, admitted, identity, qualification, conn
-                    )
+                    result = await handle_local_room_rpc(method, admitted, identity, qualification, conn)
                 else:
                     result = await conn.rpc(method, admitted)
             except RoomError as exc:

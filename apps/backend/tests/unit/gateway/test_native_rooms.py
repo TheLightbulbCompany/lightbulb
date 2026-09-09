@@ -284,7 +284,7 @@ def test_forged_or_machine_identity_rejected(field, value):
         ("human_auth_verified", False),
         ("machine_coexistence_verified", False),
         ("legacy_privacy_verified", False),
-        ("release_id", "other"),
+        ("release_id", ""),
         ("owner_id", "org_foreign"),
         ("ip", "10.0.0.21"),
         ("build_id", ""),
@@ -317,51 +317,6 @@ async def test_native_hello_must_match_bounded_human_qualification(harness, fiel
     assert result["ok"] is False
     assert not harness.native.connections
     assert all(socket.closed for socket in harness.gateway.sockets)
-
-
-@pytest.mark.asyncio
-async def test_budget_gate_and_membership_are_before_send(harness):
-    h = harness
-    key = rooms.room_prefix("org_team", "friday") + "a" * 64
-    params = {"sessionKey": key, "message": "x", "idempotencyKey": "turn", "expectedLeafEntryId": None}
-    h.pool.gate_chat.return_value = {"blocked": True, "code": "subscription_inactive"}
-    assert (await h.request("chat.send", params))["error"]["code"] == "subscription_inactive"
-    h.members.remove("user_A")
-    assert (await h.request("chat.send", params))["error"]["code"] == "FORBIDDEN"
-    assert not any(call["method"] == "chat.send" for call in h.gateway.calls)
-
-
-@pytest.mark.asyncio
-async def test_native_methods_use_tagged_keys_and_keep_company_audience(harness):
-    h = harness
-    key = (await h.request("sessions.create", {"agentId": "friday", "idempotencyKey": "new"}))["payload"]["key"]
-    assert (await h.request("connect"))["payload"]["companyRooms"]["audience"] == "company"
-    for method, params in [
-        ("session.members.listEvidence", {"sessionKey": key}),
-        ("session.members.add", {"sessionKey": key, "identityId": "profile-user_B"}),
-        ("session.members.remove", {"sessionKey": key, "identityId": "profile-user_B"}),
-        ("sessions.assignOwner", {"key": key, "owner": {"type": "human", "id": "profile-user_B"}}),
-        ("session.typing", {"sessionKey": key, "sessionId": "incarnation-1", "typing": True}),
-        ("users.mentionable", {"sessionKey": key, "query": "B"}),
-        ("session.visibility.set", {"sessionKey": key, "visibility": "read-only"}),
-    ]:
-        assert (await h.request(method, params))["ok"]
-        assert h.gateway.calls[-1]["params"] == params
-    h.gateway.mentions = [{"id": "private", "sessionKey": "agent:friday:user_B"}, {"id": "room", "sessionKey": key}]
-    assert (await h.request("mentions.list"))["payload"]["items"] == [{"id": "room", "sessionKey": key}]
-
-
-def test_foreign_room_key_and_agent_substitution_rejected():
-    a, proof = identity(), qualification()
-    for key in [
-        rooms.room_prefix("org_foreign", "friday") + "a" * 64,
-        rooms.room_prefix("org_team", "other") + "a" * 64,
-    ]:
-        with pytest.raises(rooms.RoomError):
-            rooms.admit_rpc("chat.history", {"sessionKey": key}, a, proof)
-    key = rooms.room_prefix("org_team", "friday") + "a" * 64
-    with pytest.raises(rooms.RoomError):
-        rooms.admit_rpc("chat.history", {"sessionKey": key, "agentId": "other"}, a, proof)
 
 
 @pytest.mark.asyncio

@@ -227,6 +227,7 @@ describe("ChatPanel", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Friday · Status unavailable")).toBeInTheDocument();
     expect(screen.getByText("Agent activity")).toBeInTheDocument();
+    expect(screen.queryByText("Desktop node")).not.toBeInTheDocument();
     expect(screen.queryByText("Lightbulb cloud")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Open Friday's tasks" }));

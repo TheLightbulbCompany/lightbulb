@@ -213,16 +213,18 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
                   {statusLabel}
                 </b>
               </div>
-              <div className="team-room__execution-row">
-                <Laptop size={17} aria-hidden="true" />
-                <div>
-                  <strong>Desktop node</strong>
-                  <span>Global connection status</span>
+              {nodeConnected || nodeStatus === "error" ? (
+                <div className="team-room__execution-row">
+                  <Laptop size={17} aria-hidden="true" />
+                  <div>
+                    <strong>Desktop node</strong>
+                    <span>Global connection status</span>
+                  </div>
+                  <b className={nodeConnected ? "text-ok" : "text-warn"}>
+                    {nodeConnected ? "Connected" : "Needs attention"}
+                  </b>
                 </div>
-                <b className={nodeConnected ? "text-ok" : nodeStatus === "error" ? "text-warn" : "text-[var(--midnight-muted)]"}>
-                  {nodeConnected ? "Connected" : nodeStatus === "error" ? "Needs attention" : "Not connected"}
-                </b>
-              </div>
+              ) : null}
             </section>
           </aside>
         ) : null}

@@ -151,7 +151,7 @@ jobs:
       packages: read
     # A boot chain that fails its own suite must never reach ECR.
     needs: [boot-chain-smoke, image-proof-tests]
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     # Pinned to the box, deliberately NOT `vars.CI_RUNNER`. Every build on a
     # standard hosted runner since the `doctor` compile-cache bake was restored
     # OOM-killed the 7 GB VM — the annotation reads "the hosted runner lost
@@ -191,7 +191,7 @@ jobs:
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/lightbulb-openclaw-image-builder
 
-      - name: Prove candidate tag is absent
+      - name: Prove immutable repository and absent candidate tag
         env:
           REGISTRY_ID: "877352799272"
           REPOSITORY: "lightbulb/openclaw-extended"
@@ -203,6 +203,13 @@ jobs:
             echo "OIDC account mismatch" >&2
             exit 1
           fi
+          REPOSITORY_FILE="${RUNNER_TEMP}/openclaw-ecr-repository.json"
+          aws ecr describe-repositories \
+            --registry-id "${REGISTRY_ID}" \
+            --repository-names "${REPOSITORY}" \
+            --region us-east-1 > "${REPOSITORY_FILE}"
+          node scripts/openclaw-image-proof.mjs \
+            repository "${REGISTRY_ID}" "${REPOSITORY}" < "${REPOSITORY_FILE}"
           RESPONSE_FILE="${RUNNER_TEMP}/openclaw-ecr-preflight.json"
           aws ecr batch-get-image \
             --registry-id "${REGISTRY_ID}" \
@@ -308,11 +315,11 @@ jobs:
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"
 
-      # NOTE: we deliberately do NOT `docker push` here. The ECR repository is
-      # mutable, but this workflow's contract is one push of the converted OCI
-      # target after proving the candidate tag absent, followed by an exact
-      # digest read-back. The SOCI step imports the docker-built image into
-      # containerd via `docker save | nerdctl image load` and pushes from there.
+      # NOTE: we deliberately do NOT `docker push` here. The preflight above
+      # proves ECR enforces tag immutability before this workflow's single push
+      # of the converted OCI target, which is followed by an exact digest
+      # read-back. The SOCI step imports the docker-built image into containerd
+      # via `docker save | nerdctl image load` and pushes from there.
 
       - name: Set up containerd
         uses: crazy-max/ghaction-setup-containerd@v3

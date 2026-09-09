@@ -5,8 +5,10 @@ import {
   assertCanonicalDigest,
   verifyCandidateAbsent,
   verifyImageMetadata,
+  verifyImmutableRepository,
   verifyPublishedImage,
 } from "./openclaw-image-proof.mjs";
+import { assertLobsterRuntimeContract } from "./openclaw-image-proof-runtime.mjs";
 
 const REGISTRY_ID = "877352799272";
 const REPOSITORY = "lightbulb/openclaw-extended";
@@ -24,6 +26,17 @@ const target = (overrides = {}) => ({
 const absentResponse = (tag = TAG) => ({
   images: [],
   failures: [{ failureCode: "ImageNotFound", imageId: { imageTag: tag } }],
+});
+
+const repositoryResponse = (overrides = {}) => ({
+  repositories: [
+    {
+      registryId: REGISTRY_ID,
+      repositoryName: REPOSITORY,
+      imageTagMutability: "IMMUTABLE",
+      ...overrides,
+    },
+  ],
 });
 
 const publishedResponse = (overrides = {}) => ({
@@ -95,6 +108,51 @@ for (const { name, metadata, dockerfile } of [
 test("preflight accepts only the exact tag's single ImageNotFound response", () => {
   assert.doesNotThrow(() => verifyCandidateAbsent(absentResponse(), target()));
 });
+
+test("repository proof accepts only the exact immutable ECR repository", () => {
+  assert.doesNotThrow(() => verifyImmutableRepository(repositoryResponse(), target()));
+});
+
+for (const { name, response, query = target() } of [
+  {
+    name: "mutable repository",
+    response: repositoryResponse({ imageTagMutability: "MUTABLE" }),
+  },
+  {
+    name: "immutability exclusion",
+    response: repositoryResponse({
+      imageTagMutability: "IMMUTABLE_WITH_EXCLUSION",
+      imageTagMutabilityExclusionFilters: [{ filterType: "WILDCARD", filter: "latest" }],
+    }),
+  },
+  {
+    name: "duplicate repositories",
+    response: {
+      repositories: [...repositoryResponse().repositories, ...repositoryResponse().repositories],
+    },
+  },
+  {
+    name: "wrong registry",
+    response: repositoryResponse({ registryId: "000000000000" }),
+  },
+  {
+    name: "wrong repository",
+    response: repositoryResponse({ repositoryName: "lightbulb/not-openclaw" }),
+  },
+  { name: "malformed response", response: {} },
+  {
+    name: "wrong requested target",
+    response: repositoryResponse(),
+    query: target({ registryId: "000000000000" }),
+  },
+]) {
+  test(`repository proof rejects ${name}`, () => {
+    assert.throws(
+      () => verifyImmutableRepository(response, query),
+      /ECR repository immutability is unproven/,
+    );
+  });
+}
 
 for (const { name, response, query } of [
   { name: "existing image", response: publishedResponse(), query: target() },
@@ -168,4 +226,19 @@ test("canonical digest validation trims runner output but rejects non-sha256 val
   for (const value of ["", "sha256:no", "sha512:" + "a".repeat(128), TARGET_DIGEST.toUpperCase()]) {
     assert.throws(() => assertCanonicalDigest(value), /canonical sha256 digest/);
   }
+});
+
+test("runtime proof accepts Lobster's static contract with an unnamed optional tool factory", () => {
+  const report = {
+    plugin: { contracts: { tools: ["lobster"] } },
+    tools: [{ names: [], optional: true }],
+  };
+  assert.doesNotThrow(() => assertLobsterRuntimeContract(report, "byo-openai.json"));
+});
+
+test("runtime proof rejects Lobster without its static tool contract", () => {
+  assert.throws(
+    () => assertLobsterRuntimeContract({ plugin: { contracts: { tools: [] } } }, "byo-openai.json"),
+    /Lobster tool contract is missing/,
+  );
 });

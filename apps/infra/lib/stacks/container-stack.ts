@@ -516,15 +516,19 @@ export class ContainerStack extends cdk.Stack {
       const builderRole = new iam.Role(this, "OpenclawImageBuilderRole", {
         roleName: "lightbulb-openclaw-image-builder",
         assumedBy: new iam.OpenIdConnectPrincipal(oidcProvider, {
-          StringLike: {
+          StringEquals: {
             // After the 2026-08-30 org/repo rename GitHub mints id-qualified
             // subs (owner@id/repo@id); the ids are immutable, so this form is
-            // rename-proof and the plain-name form never matches.
+            // rename-proof and the plain-name form never matches. Main is the
+            // publisher boundary: a feature-branch workflow must not bypass
+            // branch review and gain write access to either image repository.
             "token.actions.githubusercontent.com:sub":
-              "repo:TheLightbulbCompany@253404738/lightbulb@1182791203:*",
-          },
-          StringEquals: {
+              "repo:TheLightbulbCompany@253404738/lightbulb@1182791203:ref:refs/heads/main",
             "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+            "token.actions.githubusercontent.com:workflow": [
+              "build-openclaw-image",
+              "build-paperclip-image",
+            ],
           },
         }),
         description: "Used by .github/workflows/build-openclaw-image.yml to push to ECR",
@@ -535,6 +539,13 @@ export class ContainerStack extends cdk.Stack {
           effect: iam.Effect.ALLOW,
           actions: ["ecr:GetAuthorizationToken"],
           resources: ["*"],
+        }),
+      );
+      builderRole.addToPolicy(
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: ["ecr:DescribeRepositories"],
+          resources: [this.openclawExtendedRepo.repositoryArn],
         }),
       );
       this.openclawExtendedRepo.grantPullPush(builderRole);

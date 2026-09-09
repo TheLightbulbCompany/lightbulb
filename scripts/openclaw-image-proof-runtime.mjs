@@ -5,6 +5,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 const OPENCLAW = "/app/openclaw.mjs";
 const GATEWAY_PORT = 18789;
@@ -63,6 +64,13 @@ function configuredCapability(report, kind) {
   return new Set(report?.capabilities?.find((entry) => entry.kind === kind)?.ids ?? []);
 }
 
+export function assertLobsterRuntimeContract(report, fixtureFile) {
+  assert(
+    report?.plugin?.contracts?.tools?.includes("lobster"),
+    `${fixtureFile}: Lobster tool contract is missing`,
+  );
+}
+
 function assertConfig(config, fixture) {
   assert(config.meta?.lastTouchedVersion === "2026.9.3", `${fixture.file}: wrong config version`);
   assert(
@@ -106,7 +114,10 @@ function assertRuntimeReports(reports, fixture) {
     const tools = configuredTools(byId.get(id));
     for (const name of names) assert(tools.has(name), `${fixture.file}: ${id} missing tool ${name}`);
   };
-  requireTools("lobster", ["lobster"]);
+  // Lobster registers an unnamed optional factory in the generic runtime
+  // inventory, so its concrete name lives in the plugin's static contract.
+  // The dispatch smoke below proves the tool is actually invokable.
+  assertLobsterRuntimeContract(byId.get("lobster"), fixture.file);
   requireTools("llm-task", ["llm-task"]);
   requireTools("firecrawl", ["firecrawl_search", "firecrawl_scrape"]);
   requireTools("memory-core", ["intent", "memory_get", "memory_search"]);
@@ -368,7 +379,9 @@ async function main() {
   process.stdout.write(`${JSON.stringify({ qualified, dispatch: "lobster -> llm-task -> stub" }, null, 2)}\n`);
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.stack : String(error));
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.stack : String(error));
+    process.exitCode = 1;
+  });
+}

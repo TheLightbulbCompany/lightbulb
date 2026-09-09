@@ -394,8 +394,11 @@ jobs:
           # Read the converted OCI target from containerd immediately before
           # the workflow's single push. This is the digest ECR must retain for
           # the deploy tag; a child manifest or the pre-conversion Docker
-          # digest is not sufficient.
-          EXPECTED_DIGEST=$(sudo nerdctl image inspect --mode=native "${IMAGE_REF}" --format '{{.Image.Target.Digest}}')
+          # digest is not sufficient. Native inspect returns both local names
+          # for one target, so collapse identical values while preserving a
+          # fail-closed error if distinct digests ever appear.
+          EXPECTED_DIGEST=$(sudo nerdctl image inspect --mode=native "${IMAGE_REF}" \
+            --format '{{.Image.Target.Digest}}' | sort -u)
           EXPECTED_DIGEST=$(printf '%s\n' "${EXPECTED_DIGEST}" \
             | node scripts/openclaw-image-proof.mjs canonical-digest)
 

@@ -167,9 +167,7 @@ async def test_refresh_rejects_active_release_with_desired_absent_before_ecs(mon
 
 @pytest.mark.parametrize("release_revision", ["missing", None, "1", 0, -1])
 @pytest.mark.asyncio
-async def test_refresh_rejects_invalid_assigned_release_revision_before_ecs(
-    monkeypatch, release_revision
-):
+async def test_refresh_rejects_invalid_assigned_release_revision_before_ecs(monkeypatch, release_revision):
     from core.containers import ecs_manager
 
     manager = ecs_manager.EcsManager()

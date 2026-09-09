@@ -3675,9 +3675,7 @@ class EcsManager:
                         # Gate on the exact image the replacement task will
                         # run: assigned release, preserved legacy image, or
                         # (only for a genuinely fresh owner) the base image.
-                        deployed_tag=(
-                            provision_tag if provision_image is not None else await self._base_image_tag()
-                        ),
+                        deployed_tag=(provision_tag if provision_image is not None else await self._base_image_tag()),
                     )
                 except ProvisionSuperseded:
                     raise

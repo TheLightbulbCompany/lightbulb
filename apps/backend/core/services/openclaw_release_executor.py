@@ -939,9 +939,7 @@ async def _verify_assigned_source_before_reservation(runtime, container: dict, s
         raise OwnerReleaseValidationError("assigned source task definition image is not registered")
 
     running = [
-        task
-        for task in await runtime.running_tasks(container["owner_id"])
-        if task.get("last_status") == "RUNNING"
+        task for task in await runtime.running_tasks(container["owner_id"]) if task.get("last_status") == "RUNNING"
     ]
     if (
         len(running) != 1
@@ -1048,7 +1046,9 @@ async def execute_claimed_owner_release(
                         or source_task["image_digest"] != prior_release.image_digest
                         or source_build_id != prior_release.build_id
                     ):
-                        raise OwnerReleaseValidationError("release source no longer matches its prior registered release")
+                        raise OwnerReleaseValidationError(
+                            "release source no longer matches its prior registered release"
+                        )
                 source = {
                     "service_arn": service["service_arn"],
                     "task_arn": source_task["task_arn"],

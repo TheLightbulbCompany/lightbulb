@@ -848,7 +848,9 @@ class TestStopUserService:
         mock_ecs_client.update_service.side_effect = lambda **_kwargs: held or pytest.fail("ECS ran outside guard")
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:
             mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="running"))
-            mock_repo.update_status = AsyncMock(side_effect=lambda *_args: held or pytest.fail("status ran outside guard"))
+            mock_repo.update_status = AsyncMock(
+                side_effect=lambda *_args: held or pytest.fail("status ran outside guard")
+            )
             mock_repo.stamp_stop_reason = AsyncMock()
 
             await manager.stop_user_service("user_test_123")
@@ -996,9 +998,7 @@ class TestStartUserService:
 
         from core.services import openclaw_release
 
-        digest_image = (
-            "877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/openclaw-extended@sha256:" + "a" * 64
-        )
+        digest_image = "877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/openclaw-extended@sha256:" + "a" * 64
         task_definition_arn = "arn:aws:ecs:us-east-1:123:task-definition/openclaw-user:7"
         row = _make_container_dict(status="stopped", task_definition_arn=task_definition_arn)
         row.update(
@@ -1038,9 +1038,7 @@ class TestStartUserService:
 
         from core.services import openclaw_release
 
-        digest_image = (
-            "877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/openclaw-extended@sha256:" + "a" * 64
-        )
+        digest_image = "877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/openclaw-extended@sha256:" + "a" * 64
         row = _make_container_dict(
             status="stopped",
             task_definition_arn="arn:aws:ecs:us-east-1:123:task-definition/openclaw-user:7",
@@ -1422,9 +1420,7 @@ class TestStartUserServiceGuards:
 
         from core.services import openclaw_release
 
-        digest_image = (
-            "877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/openclaw-extended@sha256:" + "b" * 64
-        )
+        digest_image = "877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/openclaw-extended@sha256:" + "b" * 64
         row = _make_container_dict(status="stopped")
         row.update(
             desired_release_id="founder-canary",
@@ -3634,9 +3630,7 @@ class TestProvisionUserContainer:
 
         from core.services import openclaw_release
 
-        digest_image = (
-            "877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/openclaw-extended@sha256:" + "a" * 64
-        )
+        digest_image = "877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/openclaw-extended@sha256:" + "a" * 64
         task_definition_arn = "arn:aws:ecs:us-east-1:123:task-definition/openclaw-user:7"
         row = _make_container_dict(status="running", task_definition_arn=task_definition_arn)
         row.update(

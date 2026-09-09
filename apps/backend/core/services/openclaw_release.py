@@ -186,9 +186,7 @@ def release_by_image(image: str) -> OpenClawRelease:
 
     if type(image) is not str or not image.strip():
         raise OpenClawReleaseError("OpenClaw image is invalid")
-    matches = tuple(
-        release for release in available_releases() if image in {release.image, release.digest_image}
-    )
+    matches = tuple(release for release in available_releases() if image in {release.image, release.digest_image})
     if len(matches) != 1:
         raise OpenClawReleaseError("OpenClaw image is not registered")
     return matches[0]

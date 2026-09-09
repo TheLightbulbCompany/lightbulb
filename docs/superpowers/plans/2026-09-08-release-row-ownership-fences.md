@@ -48,7 +48,7 @@ No changes to AWS resources, dependencies, schemas/images/defaults, billing/gate
 - Ordinary update helpers keep their existing refusal result (`None` for claims, `False` for boolean helpers); they cannot mutate protected records or add terminal TTL.
 - `_UPSERT_PRESERVED_FIELDS` and `_UPSERT_CAS_FIELDS` include all four release fields. Whole-item CAS failure due to any changed release field is a stop, not a retry. A gate-only pointer conflict still retries as before.
 
-- [ ] **Step 1: Add behavioral tests using the existing Moto fixtures.** Name new tests with `release` so the RED selection below covers them. Use raw fixture-table writes only to seed release metadata; the ordinary production writers under test must not supply it. Required cases:
+- [x] **Step 1: Add behavioral tests using the existing Moto fixtures.** Name new tests with `release` so the RED selection below covers them. Use raw fixture-table writes only to seed release metadata; the ordinary production writers under test must not supply it. Required cases:
 
   1. Stable assigned container retains desired/active/revision and no pointer through `upsert`; unassigned first write adds none of the fields.
   2. Parameterize each of the four field names and each generic writer; passing either a value or `None` raises `ValueError` and leaves the row unchanged.
@@ -77,7 +77,7 @@ async def test_upsert_preserves_stable_release(dynamodb_table):
 
 Race injection follows the existing `racing_run_in_thread` tests: wrap only the outbound put/update boundary, let the actual Moto conditional operation execute, and assert persisted rows rather than a mocked return. No sleeps/concurrency stress loop are needed to prove the deterministic interleaving.
 
-- [ ] **Step 2: Prove RED before production edits.** From `apps/backend`:
+- [x] **Step 2: Prove RED before production edits.** From `apps/backend`:
 
 ```sh
 AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing AWS_EC2_METADATA_DISABLED=true PYTHONPATH=. /Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend/.venv/bin/python -m pytest tests/unit/repositories/test_container_repo.py tests/unit/repositories/test_container_repo_provision_claim.py tests/unit/repositories/test_update_repo.py -k release -q -o addopts=''
@@ -85,7 +85,7 @@ AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing AWS_EC2_METADATA_DISABLE
 
 Record behavioral failures (lost fields, successful forbidden writes/claims, or changed terminal state), not only missing constants/imports.
 
-- [ ] **Step 3: Extend existing container ownership/CAS paths.** Add a small release-owned tuple and rejection helper beside the existing gate-owned restriction; reuse it at all three generic field doors:
+- [x] **Step 3: Extend existing container ownership/CAS paths.** Add a small release-owned tuple and rejection helper beside the existing gate-owned restriction; reuse it at all three generic field doors:
 
 ```python
 _RELEASE_OWNED_FIELDS = (
@@ -125,7 +125,7 @@ For `update_fields`, use this condition and request the refused row:
 
 On conditional failure, use the existing `_deserialize_item` to inspect the returned row. A present reserved row raises `ProvisionSuperseded`; a genuinely absent row returns `None`. A nonempty unparseable returned Item must fail closed rather than masquerade as missing. Never reread and then blindly retry the write. Keep success status publishing unchanged.
 
-- [ ] **Step 4: Guard ordinary update-row mutations.** Define one reusable native condition value, not a wrapper repository or second client:
+- [x] **Step 4: Guard ordinary update-row mutations.** Define one reusable native condition value, not a wrapper repository or second client:
 
 ```python
 _UNRESERVED_UPDATE = Attr("release_revision").not_exists() & (
@@ -152,7 +152,7 @@ _UNRESERVED_UPDATE & Attr("status").eq("applying") & Attr("apply_claim_id").eq(c
 
 Remove manual expression values/names that become unused when Attr emits condition bindings; DynamoDB rejects unused bindings. Retain ones still referenced by UpdateExpression. Leave the legacy snooze existence predicate unchanged and just add the guard; release scheduling/recovery will use its dedicated paired-row path. No read-only query, create, deletion, or service behavior changes in this task.
 
-- [ ] **Step 5: Verify, self-review and commit only scoped files.** Run the RED command again for focused GREEN, then:
+- [x] **Step 5: Verify, self-review and commit only scoped files.** Run the RED command again for focused GREEN, then:
 
 ```sh
 AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing AWS_EC2_METADATA_DISABLED=true PYTHONPATH=. /Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend/.venv/bin/python -m pytest tests/unit/repositories/test_container_repo.py tests/unit/repositories/test_container_repo_provision_claim.py tests/unit/repositories/test_update_repo.py tests/unit/services/test_update_service.py -q -o addopts=''

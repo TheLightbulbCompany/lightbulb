@@ -14,7 +14,7 @@ Implementation, isolated worktrees, tests, feature branches/PRs and verified non
 
 ## Current execution state
 
-- Goal active. Last completed turn classified as progress: accepted atomic full-config write, fresh211-test verification, independent review and evidence commit `396598d8dd7ce8a6dc42b8a0fefb6ea5049fd516`. Continued safe repository work while the pinned-pnpm approval remains unanswered; not at a no-progress impasse.
+- Goal active. Previous turn classified as progress: current PR/build/deployment state reverified, manual production gate corrected from source, and independent repository-fence review dispatched. Current continuation accepts that review and advances paired-row operations. Safe work continues while pinned-pnpm approval remains unanswered; not at a no-progress impasse.
 - Lightbulb base: `ba58f69b47514aca8ca9a47d400d3a40a8f91256`, fetched and checked against `origin/main` on 2026-09-08.
 - Isolated branch/worktree: `codex/founder-openclaw-9x`, `/Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/.worktrees/founder-openclaw-9x`.
 - Main checkout has user-owned untracked files; untouched. `.worktrees` is ignored.
@@ -42,8 +42,13 @@ Implementation, isolated worktrees, tests, feature branches/PRs and verified non
 - Workshop contract retained: one canonical per-agent durable root for active collection and backups, unchanged local state/agent SQLite plus existing durable proposal bundles. No storage change or migration executed.
 - Redactor port contract corrects the old global dollar-prefix heuristic: it can preserve literal credentials. Default is verified executable input references only, retaining registered-secret/custom-pattern priority; generic diagnostic/output literals stay masked. Native Bash parsing exists but asynchronous preparation/private source ownership needs proof. The two gateway chunk-boundary pattern additions remain the separate simple port. Neither patch is implemented or tested on9.3 yet.
 - Next R2 implementation plan: `2026-09-08-release-row-ownership-fences.md`. Five-file task extends native DDB CAS and in-write guards; no candidate assignment or runtime effect enabled. A separate architecture check is defining the paired-row transaction API, including a persisted original container-id binding and resource-client serialization rules.
+- Controller local DynamoDB characterization (2026-09-08): existing boto3 resource-derived client with native Python Key/ExpressionAttributeValues successfully committed a two-row conditional reservation under Moto. Repeating the stale transaction returned `TransactionCanceledException` with both reasons `ConditionalCheckFailed`; both persisted rows remained byte-equivalent at the data level. Exit0. This proves the installed client/test-engine boundary, not the yet-unimplemented application transaction or AWS behavior under faults.
 
 ### Founder read-only runtime snapshot
+
+Latest implementation/release checkpoint: repository ownership fences accepted at `0a0eb66b4924fc39f4a3ebbfbee2bef6e677f2be`, independent `release_row_fences_review` spec compliant/quality approved, no findings. Controller209tests passed in31.63s, exit0; coverage `/private/tmp/lightbulb-release-fences-verification.9yTL4c/coverage.json`; five-file Ruff/diff checks clean. Full task report/review/ledger retained. No assignment enabled.
+
+Read-only GitHub queries found no PRs for either execution branch. No candidate build, fork tag, publication, push or deployment. Current `.github/workflows/deploy.yml` and `apps/infra/lib/app.ts:270-315` gate prod on `workflow_dispatch`; main pushes deploy dev. This corrects any prior inference that each main merge directly deploys prod. Manual prod dispatch still requires the release approval package.
 
 - Exact owner: `org_3H3viGAfq2SXc9dIdcatmGXg8Td`; ECS service `openclaw-org_3H3viGAfq2SXc9dIdcatmGXg8Td-c42489f74b24` in `lightbulb-prod-container`.
 - At 2026-09-08T21:50Z the ECS-resolved live task was `7dcd7cea19b044a3a0f4bf35823234d6`, healthy on task definition `lightbulb-prod-openclaw-user:206`, image `2026.8.1-isol8.3-4e22eb8`, digest `sha256:c23039deb00f5293f3d2a3c905e7621177527e1fe97d0f7a334d564db515ba88`.
@@ -65,7 +70,7 @@ Implementation, isolated worktrees, tests, feature branches/PRs and verified non
 |---|---|---|
 | R0 target and baseline | Frozen upstream/fork refs; exact founder row/service/digest; state inventory and measurements | Source/runtime snapshot complete; restore inventory pending |
 | R1 fork and Workshop | Carried-patch regression ledger; build; durable per-agent Workshop and local SQLite tests | Source contracts retained; implementation/build pending toolchain decision |
-| R2 mixed releases | Persistent owner assignment; all lifecycle consumers; dual schemas; staged activation tests | Source guard, stopped-config gate, explicit schema selector and atomic full write accepted; full release transaction pending |
+| R2 mixed releases | Persistent owner assignment; all lifecycle consumers; dual schemas; staged activation tests | Source guard, stopped-config gate, explicit schema selector, atomic full write and repository ownership fences accepted; paired transactions/effect integration pending |
 | R3 dev qualification | Final image digest; clean/migrated boot; provider/plugin/node/Paperclip workflows; restore rehearsal | Pending |
 | R4 founder rollout | Explicit approval; verified live release; replacement/lifecycle durability; representative observation | Pending approval package |
 | F0 identity/privacy | Native per-human identity; service compatibility; private-history and revocation negative tests | Source seam documented; runtime prototype pending |
@@ -90,4 +95,4 @@ Implementation, isolated worktrees, tests, feature branches/PRs and verified non
 
 ## Next action
 
-Implement/review the release row ownership fences, then the paired-row release reservation/journal and effect-boundary integration. Resolve the narrow pinned-pnpm release-age exception before dependent fork installation/build/tests; no override has been made. Production browser authentication also needs the user's interactive login before dependent UI work. Port and qualify carried fork behavior and wire persistent owner release selection with dual-schema/staged activation before exposing founder assignment. No production changes or candidate build have occurred. Do not mark the program complete until every required gate has direct evidence.
+Implement the paired-row release reservation/journal and effect-boundary integration. Resolve the narrow pinned-pnpm release-age exception before dependent fork installation/build/tests; no override has been made. Production browser authentication also needs the user's interactive login before dependent UI work. Port and qualify carried fork behavior and wire persistent owner release selection with dual-schema/staged activation before exposing founder assignment. No production changes or candidate build have occurred. Do not mark the program complete until every required gate has direct evidence.

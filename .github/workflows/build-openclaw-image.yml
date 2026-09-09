@@ -38,6 +38,8 @@ on:
       # Same staleness class: Layer 9c bakes the WARP browser-egress boot
       # script, which container-stack.ts invokes by absolute path.
       - "apps/infra/openclaw/warp/**"
+      - "apps/backend/core/containers/config.py"
+      - "apps/backend/tests/chaos/invariants/test_config_schema.py"
       - "openclaw-version.json"
       - "scripts/openclaw-image-proof*.mjs"
   # The boot chain can destroy an owner's data, so its smoke suite must gate
@@ -48,6 +50,8 @@ on:
       - "apps/infra/openclaw/Dockerfile"
       - "apps/infra/openclaw/local-sqlite/**"
       - "apps/infra/openclaw/plugins/**"
+      - "apps/backend/core/containers/config.py"
+      - "apps/backend/tests/chaos/invariants/test_config_schema.py"
       - "openclaw-version.json"
       - "scripts/openclaw-image-proof*.mjs"
   workflow_dispatch: {}
@@ -75,6 +79,7 @@ jobs:
           AWS_ACCESS_KEY_ID: testing
           AWS_DEFAULT_REGION: us-east-1
           AWS_SECRET_ACCESS_KEY: testing
+          BEDROCK_GATE_URL: https://bedrock-gate.example.invalid/
           CLERK_ISSUER: https://test.clerk.accounts.dev
           DYNAMODB_TABLE_PREFIX: isol8-test-
           HUGGINGFACE_TOKEN: test_token

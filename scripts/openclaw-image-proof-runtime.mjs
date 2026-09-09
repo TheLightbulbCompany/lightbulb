@@ -87,6 +87,11 @@ function assertConfig(config, fixture) {
       config.models?.providers?.["amazon-bedrock"],
       `${fixture.file}: generated Bedrock provider catalog is missing`,
     );
+    assert(
+      config.models.providers["amazon-bedrock"].baseUrl ===
+        "https://bedrock-gate.example.invalid/",
+      `${fixture.file}: Bedrock qualification escaped the synthetic gate`,
+    );
   }
 }
 
@@ -280,8 +285,8 @@ async function runDispatchSmoke(configPath, baseEnv) {
     ...baseEnv,
     OPENAI_API_KEY: "qualification-openai-key",
     OPENAI_BASE_URL: inference.baseUrl,
-    OPENCLAW_URL: `http://127.0.0.1:${GATEWAY_PORT}`,
-    OPENCLAW_TOKEN: GATEWAY_TOKEN,
+    OPENCLAW_GATEWAY_URL: `ws://127.0.0.1:${GATEWAY_PORT}`,
+    OPENCLAW_GATEWAY_TOKEN: GATEWAY_TOKEN,
   };
   const gateway = spawn(process.execPath, [OPENCLAW, "gateway", "--port", String(GATEWAY_PORT)], {
     env: gatewayEnv,

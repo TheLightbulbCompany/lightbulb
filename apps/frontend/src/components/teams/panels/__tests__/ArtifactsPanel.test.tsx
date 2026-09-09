@@ -50,16 +50,13 @@ vi.mock("@/hooks/useTeamsApi", () => ({
     },
     del,
     download,
+    mutate: globalMutate,
   }),
 }));
 
-// The panel invalidates issue-scoped SWR caches via useSWRConfig().mutate on
+// The panel invalidates issue-scoped SWR caches via useTeamsApi().mutate on
 // delete; spy on it so tests can assert the kind-appropriate key is refreshed.
 const globalMutate = vi.fn().mockResolvedValue(undefined);
-vi.mock("swr", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("swr")>();
-  return { ...actual, useSWRConfig: () => ({ mutate: globalMutate }) };
-});
 
 // Keep react-markdown out of the unit test — assert the raw body string reached
 // the renderer.

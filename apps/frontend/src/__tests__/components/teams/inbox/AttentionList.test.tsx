@@ -11,14 +11,10 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 const read = vi.fn();
 const post = vi.fn().mockResolvedValue({});
 vi.mock("@/hooks/useTeamsApi", () => ({
-  useTeamsApi: () => ({ read, post, patch: vi.fn(), del: vi.fn() }),
+  useTeamsApi: () => ({ read, post, patch: vi.fn(), del: vi.fn(), mutate }),
 }));
 
 const mutate = vi.fn();
-vi.mock("swr", async () => {
-  const actual = await vi.importActual<typeof import("swr")>("swr");
-  return { ...actual, useSWRConfig: () => ({ mutate }) };
-});
 
 import { AttentionList } from "@/components/teams/inbox/AttentionList";
 

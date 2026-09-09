@@ -1,6 +1,15 @@
 "use client";
 
-import useSWR, { type SWRConfiguration, type SWRResponse } from "swr";
+import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useAuth } from "@clerk/nextjs";
+import useSWR, {
+  useSWRConfig,
+  type KeyedMutator,
+  type MutatorCallback,
+  type MutatorOptions,
+  type SWRConfiguration,
+  type SWRResponse,
+} from "swr";
 import { useApi, type ApiCallOptions } from "@/lib/api";
 
 /**
@@ -34,6 +43,10 @@ export interface TeamsApiError extends Error {
   detail?: string;
 }
 
+function isTeamsPath(path: unknown): path is string {
+  return typeof path === "string" && /^\/teams(?:\/|\?|$)/.test(path);
+}
+
 /**
  * Hook for the teams BFF surface (`/api/v1/teams/*`).
  *
@@ -50,11 +63,40 @@ export interface TeamsApiError extends Error {
  * itself. Call it unconditionally at the top of a component (the standard SWR
  * usage pattern). Do NOT wrap a `read(...)` call in a conditional.
  *
- * The SWR cache key is `/teams${path}`, which guarantees uniqueness per path
- * so different panels never share state.
+ * Reads and mutations share `[logicalPath, userId, orgId]` cache keys. Mutation
+ * matchers receive the logical `/teams/...` path inside the captured identity.
  */
 export function useTeamsApi() {
   const api = useApi();
+  const { isLoaded, userId, orgId } = useAuth();
+  const { mutate: globalMutate } = useSWRConfig();
+  const scope = useMemo(
+    () => isLoaded && userId ? [userId, orgId ?? null] as const : null,
+    [isLoaded, userId, orgId],
+  );
+  const cacheKey = useCallback(
+    (path: string) => scope && isTeamsPath(path) ? [path, ...scope] as const : null,
+    [scope],
+  );
+  const isCurrentScopeKey = useCallback((key: unknown) => (
+    scope !== null && Array.isArray(key) && key.length === 3 &&
+    isTeamsPath(key[0]) && key[1] === scope[0] && key[2] === scope[1]
+  ), [scope]);
+
+  // Accounts' revoke-all also refreshes non-Teams resources. Legacy raw Teams
+  // entries have no identity and must never participate in that sweep. SWR
+  // supplies undefined for mutate-only entries with no registered read key.
+  const isCurrentScopeOrNonTeamsKey = useCallback((key: unknown) => (
+    key !== undefined && (!isTeamsPath(Array.isArray(key) ? key[0] : key) || isCurrentScopeKey(key))
+  ), [isCurrentScopeKey]);
+
+  const mutate = useCallback(<Data = unknown>(
+    path: string | ((path: string) => boolean),
+    ...args: [data?: Data | Promise<Data> | MutatorCallback<Data>, opts?: boolean | MutatorOptions<Data>]
+  ) => {
+    if (typeof path === "string") return globalMutate(cacheKey(path), ...args);
+    return globalMutate((key) => isCurrentScopeKey(key) && path((key as [string])[0]), ...args);
+  }, [globalMutate, cacheKey, isCurrentScopeKey]);
 
   // Named `useRead` (use-prefix) so the react-hooks/rules-of-hooks lint accepts
   // the internal `useSWR` call. Exposed on the returned object as `read` for
@@ -66,6 +108,15 @@ export function useTeamsApi() {
   // request until the key flips from null to a real path. Consumers gate a
   // read on readiness by passing null until it should run.
   function useRead<T = unknown>(path: string | null, swrOpts?: SWRConfiguration<T>): SWRResponse<T> {
+    // Explicit inputs to this nested hook's dependency arrays.
+    const readScope = scope;
+    const scopedKey = cacheKey;
+    const mutateCache = globalMutate;
+    const key = useMemo(() => path === null ? null : scopedKey(`/teams${path}`), [path, scopedKey]);
+    // SWR's laggy data survives key changes, including identity turnover. Only
+    // enable retention when the last data actually returned belonged to this
+    // scope; do not advance this marker while the new scope is empty/erroring.
+    const dataScope = useRef<typeof readScope>(null);
     // Diagnostic: trace every consumer call so we can correlate "Something went wrong"
     // overlays with the panel/hook that triggered them. Cheap (~one line per panel
     // mount), client-only (NEXT_PUBLIC_TEAMS_DEBUG gates it off in prod).
@@ -76,8 +127,8 @@ export function useTeamsApi() {
     ) {
       console.debug(`[useTeamsApi.read] ${path}`);
     }
-    return useSWR<T>(
-      path !== null ? `/teams${path}` : null,
+    const response = useSWR<T>(
+      key,
       async () => {
         const body = (await api.get(`/teams${path}`, TEAMS_API_OPTS)) as T | { detail?: string };
         if (
@@ -98,8 +149,22 @@ export function useTeamsApi() {
       // when the cached read is seconds old — TeamsEventsProvider's
       // event-driven mutations keep the data live in between. Callers can
       // override per read.
-      { dedupingInterval: 15000, ...swrOpts },
+      {
+        dedupingInterval: 15000, ...swrOpts,
+        keepPreviousData: !!key && readScope === dataScope.current && swrOpts?.keepPreviousData,
+      },
     );
+    const data = response.data;
+    useEffect(() => {
+      if (data !== undefined) dataScope.current = readScope;
+    }, [data, readScope]);
+    // SWR's own bound mutate reads a mutable keyRef. Capture this read's key
+    // instead so an awaited A callback cannot mutate B after a rerender.
+    const boundMutate = useMemo(
+      () => mutateCache.bind(null, key) as KeyedMutator<T>,
+      [mutateCache, key],
+    );
+    return { ...response, mutate: boundMutate };
   }
 
   async function post<T = unknown>(path: string, body: unknown): Promise<T> {
@@ -133,7 +198,7 @@ export function useTeamsApi() {
     return api.downloadBlob(`/teams${path}`, TEAMS_API_OPTS);
   }
 
-  return { read: useRead, post, patch, del, upload, download };
+  return { read: useRead, post, patch, del, upload, download, mutate, isCurrentScopeOrNonTeamsKey };
 }
 
 export type TeamsWorkspaceStatus =

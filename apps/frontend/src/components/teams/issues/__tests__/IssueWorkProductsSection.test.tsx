@@ -13,11 +13,8 @@ vi.mock("@/hooks/useTeamsApi", () => ({
     read: (path: string) =>
       reads[path] ?? { data: undefined, isLoading: false, error: undefined },
     patch,
+    mutate: swrMutate,
   }),
-}));
-vi.mock("swr", async (orig) => ({
-  ...(await orig<object>()),
-  useSWRConfig: () => ({ mutate: swrMutate }),
 }));
 
 import { IssueWorkProductsSection } from "../IssueWorkProductsSection";

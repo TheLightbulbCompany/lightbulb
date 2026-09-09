@@ -4,8 +4,7 @@ import { renderHook, act } from "@testing-library/react";
 
 const post = vi.fn();
 const swrMutate = vi.fn();
-vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: () => ({ post }) }));
-vi.mock("swr", async (orig) => ({ ...(await orig<object>()), useSWRConfig: () => ({ mutate: swrMutate }) }));
+vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: () => ({ post, mutate: swrMutate }) }));
 
 import { useApprovalMutations } from "@/components/teams/inbox/hooks/useApprovalMutations";
 

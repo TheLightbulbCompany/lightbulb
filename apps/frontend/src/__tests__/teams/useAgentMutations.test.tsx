@@ -8,9 +8,8 @@ const del = vi.fn();
 const swrMutate = vi.fn();
 
 vi.mock("@/hooks/useTeamsApi", () => ({
-  useTeamsApi: () => ({ read: vi.fn(), post, patch, del }),
+  useTeamsApi: () => ({ read: vi.fn(), post, patch, del, mutate: swrMutate }),
 }));
-vi.mock("swr", async (orig) => ({ ...(await orig<object>()), useSWRConfig: () => ({ mutate: swrMutate }) }));
 
 import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
 

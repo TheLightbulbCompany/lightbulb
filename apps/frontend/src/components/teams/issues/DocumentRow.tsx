@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronRight, ChevronDown, MessageSquare, RotateCcw } from "lucide-react";
-import { useSWRConfig } from "swr";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
@@ -47,8 +46,7 @@ export function DocumentRow({
   const [restoring, setRestoring] = useState(false);
   const bodyRef = useRef<HTMLDivElement | null>(null);
 
-  const { read, post } = useTeamsApi();
-  const { mutate } = useSWRConfig();
+  const { read, post, mutate } = useTeamsApi();
 
   const when = doc.updatedAt ?? doc.createdAt;
   const titleShown =

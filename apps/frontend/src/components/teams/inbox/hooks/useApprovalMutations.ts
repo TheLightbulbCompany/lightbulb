@@ -2,7 +2,6 @@
 "use client";
 
 import { useCallback } from "react";
-import { useSWRConfig } from "swr";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 
 const APPROVALS_KEY = "/teams/approvals";
@@ -16,8 +15,7 @@ const DASHBOARD_KEY = "/teams/dashboard"; // pending-approvals tile
  * leaves the pending list on refetch.
  */
 export function useApprovalMutations() {
-  const { post } = useTeamsApi();
-  const { mutate } = useSWRConfig();
+  const { post, mutate } = useTeamsApi();
 
   const revalidate = useCallback(() => {
     mutate(APPROVALS_KEY);

@@ -31,6 +31,7 @@ import { useProvisioningRail } from "@/components/settings/ProvisionedResources"
 import { useConnections } from "@/hooks/useConnections";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { useApi } from "@/lib/api";
+import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { notifyApiError, notifySuccess } from "@/lib/notify";
 import { cn } from "@/lib/utils";
 
@@ -99,6 +100,7 @@ function PolicySwitch({
 export function AccountsPanel() {
   const api = useApi();
   const { mutate: globalMutate } = useSWRConfig();
+  const { isCurrentScopeOrNonTeamsKey } = useTeamsApi();
   // UX gate only — every write below is re-enforced server-side (403 for a
   // non-admin org member, `company_policy._owner`).
   const canManage = useIsWorkspaceAdmin();
@@ -158,7 +160,7 @@ export function AccountsPanel() {
       notifySuccess(`Revoked ${res.revoked?.length ?? 0} item(s).`);
       // Everything on this page just changed shape — revalidate the lot rather
       // than naming four SWR keys that live in three other modules.
-      void globalMutate(() => true);
+      void globalMutate(isCurrentScopeOrNonTeamsKey);
     } catch (e) {
       notifyApiError(e, "Couldn't revoke access. Try again.");
     } finally {

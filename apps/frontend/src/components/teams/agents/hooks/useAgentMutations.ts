@@ -2,11 +2,10 @@
 "use client";
 
 import { useCallback } from "react";
-import { useSWRConfig } from "swr";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { CompanyAgent } from "@/components/teams/shared/types";
 
-// All /teams reads use keys prefixed "/teams". The agents LIST key is
+// Logical paths passed to the identity-scoped Teams mutate helper. The LIST is
 // "/teams/agents" (org chart + agents list); the per-agent DETAIL key is
 // "/teams/agents/{id}" (AgentManageSection's status +
 // reportsTo). Every mutation invalidates BOTH so the detail view doesn't show
@@ -14,8 +13,7 @@ import type { CompanyAgent } from "@/components/teams/shared/types";
 const AGENTS_KEY = "/teams/agents";
 
 export function useAgentMutations() {
-  const { patch, post, del } = useTeamsApi();
-  const { mutate } = useSWRConfig();
+  const { patch, post, del, mutate } = useTeamsApi();
 
   const revalidate = useCallback(
     (agentId: string) => {

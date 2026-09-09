@@ -38,7 +38,6 @@
 // loading — the BFF route already forwards those params.
 
 import { useEffect, useState } from "react";
-import { useSWRConfig } from "swr";
 import { ArrowLeft, Images } from "lucide-react";
 import { PanelMasthead, PanelNotice, PanelTabs, PanelToolbar } from "@/components/teams/shell";
 import { EditorialDialog } from "@/components/teams/shell/EditorialDialog";
@@ -112,12 +111,11 @@ function SortControl({
 }
 
 export function ArtifactsPanel() {
-  const { read, del, download } = useTeamsApi();
+  const { read, del, download, mutate: mutateCache } = useTeamsApi();
   // The gallery and the issue-detail sections keep SEPARATE SWR caches; deleting
   // here must also invalidate the issue-scoped list (documents/attachments/
   // work-products) or the removed artifact lingers in the task detail. Both
   // gallery keys go through this global cache mutate — see `confirmDelete`.
-  const { mutate: mutateCache } = useSWRConfig();
 
   // View state: null = the stack list; an issue id = that expanded stack. Upstream
   // holds this in a URL param (`groupIssueId`); we keep it in component state.

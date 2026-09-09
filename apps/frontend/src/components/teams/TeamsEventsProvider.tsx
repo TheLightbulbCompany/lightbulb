@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef } from "react";
-import { useSWRConfig } from "swr";
+import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { useGateway } from "@/hooks/useGateway";
 import {
   acquireTeamsEvents,
@@ -195,7 +195,7 @@ export function activityTargets(data: unknown): {
 
 export function TeamsEventsProvider({ children }: { children: React.ReactNode }) {
   const { isConnected, send, onEvent } = useGateway();
-  const { mutate } = useSWRConfig();
+  const { mutate } = useTeamsApi();
   // null = never observed; false = observed disconnected; true = observed connected.
   // Full invalidation fires on any transition INTO connected — both the first
   // subscribe (null→true) and a reconnect (false→true) — but never on a
@@ -283,10 +283,14 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
 
   useEffect(() => {
     const st = throttleRef.current;
+    wasConnectedRef.current = null;
     return () => {
       if (st.timer !== undefined) clearTimeout(st.timer);
+      st.timer = undefined;
+      st.pending.clear();
+      st.lastAt.clear();
     };
-  }, []);
+  }, [mutate]);
 
   // Refcounted hold on the shared per-connection subscription: another
   // consumer (RunNotifications) may still need teams events after this
@@ -327,8 +331,9 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
 
   // Wire event listener.
   useEffect(() => {
+    let active = true;
     const unsub = onEvent((event, data) => {
-      if (!event.startsWith("teams.")) return;
+      if (!active || !event.startsWith("teams.")) return;
       // Reconcile paths stay UNTHROTTLED (here and in the resubscribe effect):
       // they are the missed-event catch-up, they fire once per Teams entry /
       // stream resume rather than per mutation, and throttling them would
@@ -365,6 +370,7 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
       }
     });
     return () => {
+      active = false;
       unsub();
     };
   }, [onEvent, mutateKeyPrefix, mutateEntitySubtree, mutateIssueRunLists, throttledMutate]);

@@ -2,7 +2,6 @@
 "use client";
 
 import { useMemo } from "react";
-import { useSWRConfig } from "swr";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { teamsQueryKeys } from "@/components/teams/shared/queryKeys";
 import type {
@@ -11,7 +10,7 @@ import type {
   AttentionSourceKind,
 } from "@/components/teams/shared/types";
 
-/** The full SWR cache key, for mutate() after resolving an item. */
+/** Logical Teams path, scoped by mutate() after resolving an item. */
 export const ATTENTION_KEY = `/teams${teamsQueryKeys.attention()}`;
 
 /** The source kinds where work does not move until a HUMAN does something.
@@ -93,8 +92,7 @@ export interface UseAttentionFeedResult {
  * would quietly under-report the moment a company got busy.
  */
 export function useAttentionFeed(): UseAttentionFeedResult {
-  const { read } = useTeamsApi();
-  const { mutate } = useSWRConfig();
+  const { read, mutate } = useTeamsApi();
   const { data, isLoading, error } = read<AttentionFeedResponse>(
     teamsQueryKeys.attention(),
   );

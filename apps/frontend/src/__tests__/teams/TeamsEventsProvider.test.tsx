@@ -24,8 +24,8 @@ vi.mock("@/hooks/useGateway", () => ({
 }));
 
 const mutateMock = vi.fn();
-vi.mock("swr", () => ({
-  useSWRConfig: () => ({ mutate: mutateMock }),
+vi.mock("@/hooks/useTeamsApi", () => ({
+  useTeamsApi: () => ({ mutate: mutateMock }),
 }));
 
 /**

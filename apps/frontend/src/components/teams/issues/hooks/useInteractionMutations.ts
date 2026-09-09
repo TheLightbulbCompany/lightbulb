@@ -2,7 +2,6 @@
 "use client";
 
 import { useCallback } from "react";
-import { useSWRConfig } from "swr";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 
 /**
@@ -15,14 +14,13 @@ import { useTeamsApi } from "@/hooks/useTeamsApi";
  *   cancel   → POST /issues/{id}/interactions/{iid}/cancel
  *
  * KEY GOTCHA: `post()` takes a path WITHOUT the `/teams` prefix (useTeamsApi
- * prepends it), but `mutate()` keys are the FULL `/teams/...` SWR cache keys.
+ * prepends it), but scoped `mutate()` takes the FULL `/teams/...` logical path.
  * Resolving an interaction can append a comment to the thread (e.g. a decline
  * reason, an answer summary), so we revalidate BOTH the interactions list and
  * the comments list for the issue.
  */
 export function useInteractionMutations() {
-  const { post } = useTeamsApi();
-  const { mutate } = useSWRConfig();
+  const { post, mutate } = useTeamsApi();
 
   const revalidate = useCallback(
     (issueId: string) => {

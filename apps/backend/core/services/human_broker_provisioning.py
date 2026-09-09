@@ -915,6 +915,11 @@ async def _teardown_disabled(
 
 async def ensure_human_device(identity: HumanIdentity, conn_svc) -> HumanDeviceReceipt:
     _validate_identity(identity)
+    async with owner_lifecycle_guard(identity.owner_id):
+        return await _ensure_human_device_effects(identity, conn_svc)
+
+
+async def _ensure_human_device_effects(identity: HumanIdentity, conn_svc) -> HumanDeviceReceipt:
     await require_current_member(identity, conn_svc)
     await _require_subject_live(identity.alias)
     _, ip, token = await _runtime(identity.owner_id)
@@ -1213,29 +1218,30 @@ async def revoke_human_subject(
     _validate_identity(identity)
     if (revocation_id is None) != (revocation_sequence is None):
         raise HumanBrokerProvisioningError("complete Clerk revocation epoch required")
-    accepted_revocation_id = None
-    try:
-        if revocation_id is not None and revocation_sequence is not None:
-            if lifecycle_claim_id is not None:
-                await webhook_dedup.renew_membership_lifecycle(owner_id, identity.alias, lifecycle_claim_id)
-            marker = _access_marker(event_id=revocation_id, sequence=revocation_sequence, state="revoked")
-            current = await container_repo.set_human_broker_access(owner_id, identity.alias, marker)
-            if current is not None and current != marker:
-                # A newer signed membership event already superseded this delivery.
-                return HumanRevocationOutcome.STALE
-            if lifecycle_claim_id is not None:
-                await webhook_dedup.renew_membership_lifecycle(owner_id, identity.alias, lifecycle_claim_id)
-            if current is not None or lifecycle_claim_id is not None:
-                accepted_revocation_id = revocation_id
-        await _revoke_human_device(
-            identity,
-            missing_ok=True,
-            revocation_event_id=accepted_revocation_id,
-            lifecycle_claim_id=lifecycle_claim_id,
-        )
-    except (_RevocationSuperseded, webhook_dedup.MembershipLifecycleSuperseded):
-        return HumanRevocationOutcome.STALE
-    return HumanRevocationOutcome.APPLIED
+    async with owner_lifecycle_guard(owner_id):
+        accepted_revocation_id = None
+        try:
+            if revocation_id is not None and revocation_sequence is not None:
+                if lifecycle_claim_id is not None:
+                    await webhook_dedup.renew_membership_lifecycle(owner_id, identity.alias, lifecycle_claim_id)
+                marker = _access_marker(event_id=revocation_id, sequence=revocation_sequence, state="revoked")
+                current = await container_repo.set_human_broker_access(owner_id, identity.alias, marker)
+                if current is not None and current != marker:
+                    # A newer signed membership event already superseded this delivery.
+                    return HumanRevocationOutcome.STALE
+                if lifecycle_claim_id is not None:
+                    await webhook_dedup.renew_membership_lifecycle(owner_id, identity.alias, lifecycle_claim_id)
+                if current is not None or lifecycle_claim_id is not None:
+                    accepted_revocation_id = revocation_id
+            await _revoke_human_device(
+                identity,
+                missing_ok=True,
+                revocation_event_id=accepted_revocation_id,
+                lifecycle_claim_id=lifecycle_claim_id,
+            )
+        except (_RevocationSuperseded, webhook_dedup.MembershipLifecycleSuperseded):
+            return HumanRevocationOutcome.STALE
+        return HumanRevocationOutcome.APPLIED
 
 
 async def revoke_human_subject_everywhere(

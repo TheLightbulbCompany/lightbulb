@@ -182,3 +182,54 @@ Exit code: `0`. The empty final output from `git diff --name-only` confirms no f
 3. Candidate bundle, JSON, provenance, `_SCHEMA_PATHS` registration, and candidate-specific checks remain pending until those exact inputs exist.
 4. Backend CI's actual Node20 consumer run over the committed candidate remains mandatory. Local tooling/fixture tests ran with Node `v26.3.0` and are not that proof.
 5. No image digest, container/plugin proof, AWS action, workflow dispatch, PR, push, merge, or deployment was performed.
+
+## Review fix round 1
+
+Base: `765ece6865c7460b2fefb2480bcd09013bf2d7f4`.
+
+The shared `verify_source` check now rejects every non-ignored untracked file instead of using a build-input path allowlist. This closes implicit pnpm inputs such as root `.npmrc` and `.pnpmfile.cjs`; ignored `node_modules/` and `src/config/generated.ts` remain allowed through `git ls-files --exclude-standard`. A focused `.npmrc` negative proves rejection happens before dependency installation and preserves the legacy artifacts.
+
+### Exact affected batch
+
+```sh
+cd apps/backend
+/Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend/.venv/bin/python -m pytest -q tests/unit/test_vendor_openclaw_schema_source.py
+```
+
+```text
+============================= test session starts ==============================
+platform darwin -- Python 3.12.11, pytest-8.0.2, pluggy-1.6.0
+rootdir: /Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/.worktrees/founder-openclaw93-image/apps/backend
+configfile: pytest.ini
+plugins: anyio-4.12.1, asyncio-0.23.5, respx-0.20.2, schemathesis-4.10.2, cov-4.1.0, hypothesis-6.151.9, mock-3.12.0, Faker-40.11.0, subtests-0.15.0
+asyncio: mode=Mode.AUTO
+collected 22 items
+
+tests/unit/test_vendor_openclaw_schema_source.py ......................  [100%]
+
+--------- coverage: platform darwin, python 3.12.11-final-0 ----------
+Name                                             Stmts   Miss   Cover   Missing
+TOTAL                                             4454   4056   8.94%
+
+============================== 22 passed in 7.40s ==============================
+```
+
+Exit code: `0`.
+
+### Review-fix syntax, diff, and preservation checks
+
+```sh
+git diff --check
+bash -n apps/backend/scripts/vendor_openclaw_schema.sh
+shasum -a 256 apps/backend/tests/chaos/_schema/openclaw-config-schema.mjs apps/backend/core/services/openclaw_config.schema.json apps/backend/tests/chaos/_schema/PINNED_TAG
+```
+
+```text
+6e194e95823db3a58af8ca6708291ca1a9cf45149806de60851f006f20c71fc6  apps/backend/tests/chaos/_schema/openclaw-config-schema.mjs
+ce18b8954fdc14687c83925bc5157b70ef40e3a9fd28fd049e70cbc5bd0d31a1  apps/backend/core/services/openclaw_config.schema.json
+f11970c87b9a1ef73d8a0577ff24103aeea637993ee2f3655f396474fded58dd  apps/backend/tests/chaos/_schema/PINNED_TAG
+```
+
+Exit code: `0`.
+
+Self-review: the change is confined to the existing shared verifier and one focused test; no-argument behavior is unchanged, ignored generated outputs remain accepted, and no fork build/install, candidate, registry, dependency, AWS, or sibling change was made. The recorded minor existing-candidate second-invocation coverage item remains deferred to final review as directed.

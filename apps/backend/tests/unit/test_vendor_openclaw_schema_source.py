@@ -296,6 +296,15 @@ def test_untracked_source_input_is_rejected_before_dependency_install(vendor_cas
     vendor_case.assert_legacy_artifacts_unchanged()
 
 
+def test_untracked_package_manager_control_is_rejected_before_dependency_install(vendor_case: VendorCase):
+    (vendor_case.fork / ".npmrc").write_text("node-linker=hoisted\n")
+    result = vendor_case.run()
+    assert result.returncode != 0
+    assert "untracked" in result.stderr
+    assert not vendor_case.install_marker.exists()
+    vendor_case.assert_legacy_artifacts_unchanged()
+
+
 @pytest.mark.parametrize(
     "upstream",
     [

@@ -90,7 +90,7 @@ verify_source() {
     echo "ERROR: fork has tracked modifications" >&2
     return 1
   fi
-  untracked_inputs=$(git -C "$SOURCE" ls-files --others --exclude-standard -- src packages extensions package.json pnpm-lock.yaml pnpm-workspace.yaml) || {
+  untracked_inputs=$(git -C "$SOURCE" ls-files --others --exclude-standard) || {
     echo "ERROR: could not inspect fork source inputs" >&2
     return 1
   }

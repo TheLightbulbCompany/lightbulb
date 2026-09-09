@@ -297,3 +297,27 @@ async def gateway_rpc_oneshot(
                 if not data.get("ok"):
                     raise RuntimeError(data.get("error", {}).get("message", f"{method} rejected"))
                 return data.get("payload", {})
+
+
+async def gateway_hello_oneshot(
+    ip: str,
+    *,
+    owner_id: str,
+    token: str,
+    open_timeout: float = _DEFAULT_TIMEOUT,
+    recv_timeout: float = _DEFAULT_TIMEOUT,
+) -> dict:
+    """Return the authenticated hello used to qualify an exact release."""
+
+    uri = f"ws://{ip}:{GATEWAY_PORT}"
+    async with websockets.connect(uri, open_timeout=open_timeout, close_timeout=5) as ws:
+        response = await perform_signed_connect(
+            ws,
+            owner_id=owner_id,
+            token=token,
+            recv_timeout=recv_timeout,
+        )
+    hello = response.get("payload") if isinstance(response, dict) else None
+    if not isinstance(hello, dict) or hello.get("type") != "hello-ok" or hello.get("protocol") != 4:
+        raise RuntimeError("Gateway qualification handshake returned an invalid hello")
+    return hello

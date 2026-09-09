@@ -31,6 +31,7 @@ from core.services.openclaw_release import (
     OwnerReleaseConflict,
     active_schema_id,
     assert_config_context_sync,
+    assert_release_claim_sync,
     capture_config_context_if_enabled,
 )
 from core.services.paperclip_meta import (
@@ -2972,6 +2973,10 @@ async def write_openclaw_config(
     channel_bindings: list[dict] | None = None,
     acp_enabled: bool = True,
     deployed_tag: str | None = None,
+    schema_id: str | None = None,
+    release_update_id: str | None = None,
+    release_claim_id: str | None = None,
+    release_revision: int | None = None,
 ) -> None:
     """Atomically replace the user's openclaw.json with the full container config.
 
@@ -3011,11 +3016,24 @@ async def write_openclaw_config(
         ValueError: when ``provider_choice`` is unknown or
             ``byo_provider`` is missing/invalid for ``byo_key``.
     """
-    try:
-        release_context = await capture_config_context_if_enabled(user_id)
-        schema_id = active_schema_id(release_context) if release_context is not None else None
-    except (OpenClawReleaseError, OwnerReleaseConflict) as exc:
-        raise ValueError("owner release changed before config write; retry") from exc
+    release_context = None
+    if release_update_id is None:
+        try:
+            release_context = await capture_config_context_if_enabled(user_id)
+            schema_id = active_schema_id(release_context) if release_context is not None else schema_id
+        except (OpenClawReleaseError, OwnerReleaseConflict) as exc:
+            raise ValueError("owner release changed before config write; retry") from exc
+    elif (
+        type(release_claim_id) is not str
+        or not release_claim_id
+        or type(release_revision) is not int
+        or release_revision < 0
+        or type(schema_id) is not str
+        or not schema_id
+    ):
+        raise ValueError("release config write context is invalid")
+    if release_update_id is not None:
+        assert release_claim_id is not None and release_revision is not None
 
     config = build_openclaw_config_dict(
         user_id=user_id,
@@ -3053,7 +3071,14 @@ async def write_openclaw_config(
         with get_file_lock(lock_path):
             with openclaw_config_sidecar_lock(str(config_path.parent), lock_path):
                 try:
-                    if release_context is not None:
+                    if release_update_id is not None:
+                        assert_release_claim_sync(
+                            user_id,
+                            release_update_id,
+                            release_claim_id,
+                            release_revision,
+                        )
+                    elif release_context is not None:
                         assert_config_context_sync(release_context)
                 except (OpenClawReleaseError, OwnerReleaseConflict) as exc:
                     raise ValueError("owner release changed before config write; retry") from exc

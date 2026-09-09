@@ -4112,6 +4112,11 @@ class EcsManager:
         owner_type: str = "personal",
         aip_arns: dict[str, str] | None = None,
         deployed_tag: str | None = None,
+        config_path: Path | None = None,
+        schema_id: str | None = None,
+        release_update_id: str | None = None,
+        release_claim_id: str | None = None,
+        release_revision: int | None = None,
     ) -> None:
         """Write OpenClaw config files + pre-paired device trust store to EFS.
 
@@ -4293,7 +4298,8 @@ class EcsManager:
         if deployed_tag is None:
             deployed_tag = await self._deployed_image_tag(owner_id)
 
-        config_path = Path(settings.EFS_MOUNT_PATH) / owner_id / "openclaw.json"
+        staging = config_path is not None
+        config_path = config_path or Path(settings.EFS_MOUNT_PATH) / owner_id / "openclaw.json"
         await write_openclaw_config(
             config_path=config_path,
             gateway_token=gateway_token,
@@ -4309,7 +4315,14 @@ class EcsManager:
             channel_accounts=channel_accounts,
             channel_bindings=channel_bindings,
             deployed_tag=deployed_tag,
+            schema_id=schema_id,
+            release_update_id=release_update_id,
+            release_claim_id=release_claim_id,
+            release_revision=release_revision,
         )
+
+        if staging:
+            return
 
         # Seed Friday's IDENTITY/SOUL/USER/BOOTSTRAP files on EFS so they're
         # present before the container boots. Best-effort — failure here

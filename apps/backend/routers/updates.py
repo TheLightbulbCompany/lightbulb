@@ -138,6 +138,24 @@ async def admin_create_update(
         count = await queue_fleet_image_update(new_image, body.description)
         return {"status": "queued", "count": count}
 
+    if body.update_type == "release":
+        if body.owner_id == "all" or set(body.changes) != {"target_release_id"}:
+            raise HTTPException(status_code=400, detail="A release must target one owner and one registered release_id")
+        from core.services.openclaw_release import OpenClawReleaseError, release_by_id
+
+        try:
+            release = release_by_id(body.changes["target_release_id"])
+        except OpenClawReleaseError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        item = await update_repo.create(
+            owner_id=body.owner_id,
+            update_type="release",
+            description=body.description,
+            changes={"target_release_id": release.release_id},
+            force_by=body.force_by,
+        )
+        return {"status": "created", "update": item}
+
     if body.owner_id == "all" and body.update_type == TASK_DEFINITION_REFRESH_KIND:
         queued, skipped = await queue_fleet_task_definition_refresh(body.description)
         return {"status": "scheduled", "queued": queued, "skipped": skipped}

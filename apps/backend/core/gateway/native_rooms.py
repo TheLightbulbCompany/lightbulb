@@ -106,7 +106,8 @@ class RoomQualification:
             self.owner_id == identity.owner_id
             and self.ip == ip
             and self.release_id
-            and self.release_id == container.get("release_update_id")
+            and self.release_id == container.get("active_release_id")
+            and "release_update_id" not in container
             and self.build_id
             and self.evidence_id
             and self.human_auth_verified is True

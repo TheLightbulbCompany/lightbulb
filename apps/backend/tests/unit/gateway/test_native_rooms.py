@@ -224,7 +224,7 @@ async def harness(monkeypatch):
     monkeypatch.setattr(route, "get_gateway_pool", lambda: pool)
     monkeypatch.setattr("core.containers.get_gateway_pool", lambda: pool)
     manager = SimpleNamespace(
-        resolve_running_container=AsyncMock(return_value=({"release_update_id": "release-test"}, "10.0.0.20"))
+        resolve_running_container=AsyncMock(return_value=({"active_release_id": "release-test"}, "10.0.0.20"))
     )
     monkeypatch.setattr(route, "get_ecs_manager", lambda: manager)
 
@@ -484,6 +484,12 @@ def test_foreign_room_key_and_agent_substitution_rejected():
     key = rooms.room_prefix("org_team", "friday") + "a" * 64
     with pytest.raises(rooms.RoomError):
         rooms.admit_rpc("chat.history", {"sessionKey": key, "agentId": "other"}, a, proof)
+
+
+def test_release_transaction_pointer_is_never_runtime_qualification():
+    proof = qualification()
+    with pytest.raises(rooms.RoomError):
+        proof.require(identity(), {"release_update_id": proof.release_id}, proof.ip)
 
 
 def test_internal_edge_secret_required_even_when_legacy_enforcement_off(monkeypatch):

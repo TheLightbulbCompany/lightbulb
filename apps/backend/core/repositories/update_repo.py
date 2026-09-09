@@ -152,12 +152,7 @@ def _require_nonempty_string(field: str, value: object) -> str:
 def _release_revision(value: object) -> int:
     if type(value) is int and value >= 0:
         return value
-    if (
-        isinstance(value, Decimal)
-        and value.is_finite()
-        and value >= 0
-        and value == value.to_integral_value()
-    ):
+    if isinstance(value, Decimal) and value.is_finite() and value >= 0 and value == value.to_integral_value():
         return int(value)
     raise ValueError("release_revision is invalid")
 
@@ -239,8 +234,7 @@ def _valid_release_phase_evidence(phase: str, update: dict) -> bool:
         return False
     phase_index = _RELEASE_PHASE_ORDER.index(phase)
     if any(
-        not _nonempty_string(update.get(f"{milestone}_at"))
-        for milestone in _RELEASE_PHASE_ORDER[: phase_index + 1]
+        not _nonempty_string(update.get(f"{milestone}_at")) for milestone in _RELEASE_PHASE_ORDER[: phase_index + 1]
     ):
         return False
     if phase == "reserved":
@@ -271,42 +265,24 @@ def _valid_release_phase_evidence(phase: str, update: dict) -> bool:
     if phase == "activated":
         return _has_no_effect(update)
     if phase == "start_requested":
-        return _positive_integer(update.get("target_desired_count")) and _valid_effect(
-            update, "start_service"
-        )
+        return _positive_integer(update.get("target_desired_count")) and _valid_effect(update, "start_service")
     if phase == "validating":
         return _positive_integer(update.get("target_desired_count")) and _has_no_effect(update)
     return False
 
 
 def _registered_acceptance(update: dict, acceptance: object) -> dict | None:
-    if not isinstance(acceptance, dict):
-        return None
     try:
-        from core.services.openclaw_release import release_by_id
+        from core.services.openclaw_release import registered_acceptance
 
-        release = release_by_id(update.get("target_release_id"))
-    except (TypeError, ValueError):
+        return registered_acceptance(
+            update.get("target_release_id"),
+            acceptance,
+            task_definition_arn=update.get("target_task_definition_arn"),
+            config_sha256=update.get("staged_config_sha256"),
+        )
+    except TypeError:
         return None
-    expected = {
-        "release_id": release.release_id,
-        "image": release.image,
-        "image_digest": release.image_digest,
-        "fork_tag": release.fork_tag,
-        "fork_commit": release.fork_commit,
-        "schema_id": release.schema_id,
-        "schema_sha256": release.schema_sha256,
-        "task_definition_arn": update.get("target_task_definition_arn"),
-        "config_sha256": update.get("staged_config_sha256"),
-        "gateway": "accepted",
-    }
-    if set(acceptance) != set(expected) | {"task_arn"}:
-        return None
-    if any(acceptance.get(field) != value for field, value in expected.items()):
-        return None
-    if not _nonempty_string(acceptance.get("task_arn")):
-        return None
-    return acceptance
 
 
 def _valid_release_transition(

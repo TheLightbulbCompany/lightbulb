@@ -518,6 +518,7 @@ async def test_apply_update_returns_false_when_claim_is_not_acquired():
 
     repo = MagicMock()
     repo.claim_apply = AsyncMock(return_value=None)
+    repo.get_by_id = AsyncMock(return_value=None)
 
     with (
         patch.object(update_service, "update_repo", repo),

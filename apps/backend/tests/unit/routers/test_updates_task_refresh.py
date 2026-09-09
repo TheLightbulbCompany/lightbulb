@@ -122,3 +122,53 @@ async def test_single_owner_task_refresh_404s_without_container():
             await updates.admin_create_update(request, MagicMock())
 
     assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_admin_release_queues_only_a_registered_single_owner_target():
+    request = updates.AdminUpdateRequest(
+        owner_id="owner_founder",
+        update_type="release",
+        description="Founder 9.3 qualification",
+        changes={"target_release_id": "qualified-release"},
+    )
+    created = {"owner_id": "owner_founder", "update_id": "release-update"}
+
+    with (
+        patch("core.services.openclaw_release.release_by_id", return_value=MagicMock(release_id="qualified-release")),
+        patch.object(updates.update_repo, "create", new=AsyncMock(return_value=created)) as create,
+    ):
+        result = await updates.admin_create_update(request, MagicMock())
+
+    assert result == {"status": "created", "update": created}
+    create.assert_awaited_once_with(
+        owner_id="owner_founder",
+        update_type="release",
+        description="Founder 9.3 qualification",
+        changes={"target_release_id": "qualified-release"},
+        force_by=None,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "owner_id,changes",
+    [
+        ("all", {"target_release_id": "qualified-release"}),
+        ("owner_founder", {"target_release_id": "qualified-release", "image": "mutable:tag"}),
+    ],
+)
+async def test_admin_release_rejects_fleet_or_request_artifact_claims(owner_id, changes):
+    from fastapi import HTTPException
+
+    request = updates.AdminUpdateRequest(
+        owner_id=owner_id,
+        update_type="release",
+        description="refused",
+        changes=changes,
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await updates.admin_create_update(request, MagicMock())
+
+    assert exc.value.status_code == 400

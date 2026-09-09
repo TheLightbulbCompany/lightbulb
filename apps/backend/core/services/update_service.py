@@ -719,10 +719,16 @@ async def apply_update(owner_id: str, update_id: str) -> bool:
     """
     claim_id = uuid.uuid4().hex
     update = await update_repo.claim_apply(owner_id, update_id, claim_id)
-    if update is None:
-        logger.warning("Could not acquire update %s for owner %s (already applying?)", update_id, owner_id)
-        return False
-    return await _apply_claimed_update(update, claim_id)
+    if update is not None:
+        return await _apply_claimed_update(update, claim_id)
+
+    candidate = await update_repo.get_by_id(owner_id, update_id, consistent=True)
+    if candidate and candidate.get("update_type") == "release":
+        from core.services.openclaw_release_executor import apply_owner_release
+
+        return await apply_owner_release(owner_id, update_id)
+    logger.warning("Could not acquire update %s for owner %s (already applying?)", update_id, owner_id)
+    return False
 
 
 def _build_paperclip_provisioning():
@@ -1025,6 +1031,12 @@ async def run_scheduled_worker() -> None:
                 await _recover_stale_task_definition_refreshes()
             except Exception:
                 logger.exception("task-definition refresh recovery pass crashed")
+            try:
+                from core.services.openclaw_release_executor import recover_stale_owner_releases
+
+                await recover_stale_owner_releases()
+            except Exception:
+                logger.exception("owner release recovery pass crashed")
             due_updates = await update_repo.get_due_scheduled()
             if due_updates:
                 logger.info("Found %d due scheduled updates", len(due_updates))

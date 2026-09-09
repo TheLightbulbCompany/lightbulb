@@ -7,17 +7,29 @@ import pytest
 def _release_row(**overrides):
     row = {
         "release_id": "2026.9.3-isol8.1+main.deadbee",
-        "image": (
-            "877352799272.dkr.ecr.us-east-1.amazonaws.com/"
-            "lightbulb/openclaw-extended:2026.9.3-isol8.1-deadbee"
-        ),
+        "image": ("877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/openclaw-extended:2026.9.3-isol8.1-deadbee"),
         "image_digest": f"sha256:{'a' * 64}",
+        "build_id": "2026.9.3-isol8.1-deadbee",
         "upstream_version": "2026.9.3",
         "fork_tag": "v2026.9.3-isol8.1",
         "fork_commit": "1c8fcb36dc72ba15c181070d770104d9dbfe26c5",
         "schema_id": "2026.9.3-isol8.1",
         "schema_sha256": "b9444496830abc0821fed561f19ddc808b87933a96638980db830322f0786e2a",
         "config_capabilities": ["browser.sessionState", "mcp.runtimeScope"],
+        "qualification_id": "openclaw-9.3-founder-v1",
+        "evidence_id": f"sha256:{'e' * 64}",
+        "runtime_capabilities": [
+            "chat.history",
+            "sessions.create",
+            "sessions.message.append",
+            "sessions.messages.subscribe",
+            "users.self",
+        ],
+        "qualification_capabilities": [
+            "legacy-privacy",
+            "machine-coexistence",
+            "native-human-auth",
+        ],
     }
     row.update(overrides)
     return row
@@ -47,6 +59,8 @@ def test_release_registry_loads_only_complete_qualified_rows(tmp_path, monkeypat
     release = openclaw_release.release_by_id("2026.9.3-isol8.1+main.deadbee")
 
     assert release.image.endswith(":2026.9.3-isol8.1-deadbee")
+    assert release.digest_image.endswith(f"@sha256:{'a' * 64}")
+    assert release.build_id == "2026.9.3-isol8.1-deadbee"
     assert release.config_capabilities == frozenset({"browser.sessionState", "mcp.runtimeScope"})
 
 
@@ -60,6 +74,11 @@ def test_release_registry_loads_only_complete_qualified_rows(tmp_path, monkeypat
         {"schema_sha256": "unknown"},
         {"schema_sha256": "b" * 64},
         {"config_capabilities": ["browser.sessionState", 7]},
+        {"build_id": ""},
+        {"qualification_id": "mutable latest"},
+        {"evidence_id": "run-123"},
+        {"runtime_capabilities": ["sessions.create", 7]},
+        {"qualification_capabilities": ["native-human-auth"]},
     ],
 )
 def test_release_registry_rejects_unqualified_identity(tmp_path, monkeypatch, overrides):
@@ -96,9 +115,12 @@ def test_desired_and_active_resolution_allow_only_a_reserved_transition(tmp_path
     target = "2026.9.3-isol8.1+main.deadbee"
 
     assert openclaw_release.resolve_desired_release({}) is None
-    assert openclaw_release.resolve_desired_release(
-        {"desired_release_id": target, "release_update_id": "update-1"}
-    ).release_id == target
+    assert (
+        openclaw_release.resolve_desired_release(
+            {"desired_release_id": target, "release_update_id": "update-1"}
+        ).release_id
+        == target
+    )
     with pytest.raises(openclaw_release.OpenClawReleaseError):
         openclaw_release.resolve_desired_release({"desired_release_id": target})
 
@@ -145,3 +167,60 @@ def test_config_context_rejects_non_integer_revisions(revision):
             "owner-1",
             {"owner_id": "owner-1", "id": "container-1", "release_revision": revision},
         )
+
+
+def test_only_stable_finished_release_is_qualification_evidence(tmp_path, monkeypatch):
+    from core.services import openclaw_release
+
+    registry = tmp_path / "releases.json"
+    registry.write_text(json.dumps({"releases": [_release_row()]}))
+    monkeypatch.setattr(openclaw_release, "_REGISTRY_PATH", registry)
+    monkeypatch.setattr(openclaw_release.config_schema, "schema_errors", lambda _config, *, schema_id: [])
+    monkeypatch.setattr(
+        openclaw_release.config_schema,
+        "schema_artifact_sha256",
+        lambda schema_id: _release_row()["schema_sha256"],
+    )
+    openclaw_release._load_releases.cache_clear()
+    release_id = _release_row()["release_id"]
+    acceptance = {
+        "release_id": release_id,
+        "image": _release_row()["image"],
+        "image_digest": _release_row()["image_digest"],
+        "build_id": _release_row()["build_id"],
+        "upstream_version": _release_row()["upstream_version"],
+        "fork_tag": _release_row()["fork_tag"],
+        "fork_commit": _release_row()["fork_commit"],
+        "schema_id": _release_row()["schema_id"],
+        "schema_sha256": _release_row()["schema_sha256"],
+        "config_capabilities": sorted(_release_row()["config_capabilities"]),
+        "qualification_id": _release_row()["qualification_id"],
+        "evidence_id": _release_row()["evidence_id"],
+        "runtime_capabilities": sorted(_release_row()["runtime_capabilities"]),
+        "qualification_capabilities": sorted(_release_row()["qualification_capabilities"]),
+        "task_definition_arn": "arn:task-definition/qualified:1",
+        "task_arn": "arn:task/qualified",
+        "config_sha256": "b" * 64,
+        "gateway": "accepted",
+    }
+    update = {
+        "status": "applied",
+        "phase": "healthy",
+        "target_release_id": release_id,
+        "acceptance": acceptance,
+        "release_revision": 2,
+    }
+    container = {
+        "active_release_id": release_id,
+        "desired_release_id": release_id,
+        "task_definition_arn": "arn:task-definition/qualified:1",
+        "release_revision": 2,
+    }
+    update["target_task_definition_arn"] = "arn:task-definition/qualified:1"
+    update["staged_config_sha256"] = "b" * 64
+
+    assert openclaw_release.stable_active_release_evidence(container, update) == acceptance
+    assert (
+        openclaw_release.stable_active_release_evidence({**container, "release_update_id": "pointer"}, update) is None
+    )
+    assert openclaw_release.stable_active_release_evidence(container, {**update, "status": "applying"}) is None

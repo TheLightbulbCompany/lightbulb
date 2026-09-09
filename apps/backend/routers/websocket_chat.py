@@ -200,14 +200,18 @@ def _hard_truncate_message(message, original_bytes: int) -> dict:
     sub-threshold blocks whose SUM still exceeds the budget (each passes
     through unchanged), and non-list ``content`` (a plain string), where it's
     a no-op entirely. This replaces the whole message body with one marker
-    block, keeping only ``role`` (when present) so the transcript still shows
-    who "spoke". Called only after a post-elision size check has confirmed
+    block, keeping bounded native attribution and lineage when present.
+    Called only after a post-elision size check has confirmed
     elision alone didn't fit — this is what makes "the returned payload
     always fits" an enforced guarantee rather than a heuristic.
     """
     stub = {"content": [{"type": "text", "text": f"[… {original_bytes} bytes omitted — too large to display …]"}]}
     if isinstance(message, dict) and "role" in message:
         stub["role"] = message["role"]
+    if isinstance(message, dict):
+        for key in ("sender", "id", "entryId", "parentId", "runId", "timestamp"):
+            if key in message and len(json.dumps(message[key], default=str).encode()) <= 4096:
+                stub[key] = message[key]
     return stub
 
 
@@ -580,11 +584,29 @@ async def ws_connect(
     x_user_id: Optional[str] = Header(None, alias="x-user-id"),
     x_org_id: Optional[str] = Header(None, alias="x-org-id"),
     x_client_id: Optional[str] = Header(None, alias="x-client-id"),
+    x_lightbulb_ws_internal: Optional[str] = Header(None, alias="x-lightbulb-ws-internal"),
 ) -> Response:
     if not x_connection_id:
         raise HTTPException(status_code=400, detail="Missing x-connection-id header")
     if not x_user_id:
         raise HTTPException(status_code=401, detail="Missing x-user-id header")
+
+    from core.gateway.native_rooms import CLIENT_ID, HumanIdentity, RoomError, qualification_for, require_current_member
+
+    if x_client_id == CLIENT_ID:
+        _require_native_internal(x_lightbulb_ws_internal)
+        # Lambda already stored verified authorizer facts. Never overwrite them
+        # with inbound issuer/user/owner/scope headers, including on backend retry.
+        service = await get_connection_service()
+        row = await asyncio.to_thread(service.get_connection, x_connection_id)
+        try:
+            identity = HumanIdentity.from_connection(x_connection_id, row or {})
+            qualification_for(identity.owner_id)
+            await require_current_member(identity, service)
+        except RoomError as exc:
+            raise HTTPException(status_code=403, detail=exc.error) from exc
+        background_tasks.add_task(_send_connect_challenge, x_connection_id)
+        return Response(status_code=200)
 
     logger.info(
         "WS connect: conn=%s user=%s org=%s owner=%s",
@@ -760,6 +782,11 @@ async def ws_disconnect(
         return Response(status_code=200)
 
     logger.info("WebSocket disconnect: connection_id=%s", x_connection_id)
+    # Row-independent: the disconnect Lambda deletes the row before notifying.
+    try:
+        await get_gateway_pool().native_rooms.close_connection(x_connection_id)
+    except Exception:
+        logger.exception("Native human disconnect cleanup failed")
 
     # Tear down the operator relay upstream FIRST — independent of the
     # connection row. The $disconnect lambda (apps/infra/lambda/ws-disconnect)
@@ -960,6 +987,7 @@ async def ws_message(
     body: Dict[str, Any],
     background_tasks: BackgroundTasks,
     x_connection_id: Optional[str] = Header(None, alias="x-connection-id"),
+    x_lightbulb_ws_internal: Optional[str] = Header(None, alias="x-lightbulb-ws-internal"),
 ) -> Response:
     if not x_connection_id:
         raise HTTPException(status_code=400, detail="Missing x-connection-id header")
@@ -973,6 +1001,11 @@ async def ws_message(
     user_id = connection["user_id"]
     owner_id = connection.get("org_id") or user_id
     msg_type = body.get("type")
+
+    if connection.get("connection_type") == "native_human":
+        _require_native_internal(x_lightbulb_ws_internal)
+        background_tasks.add_task(_process_native_room_background, x_connection_id, body)
+        return Response(status_code=200)
 
     if msg_type == "ping":
         management_api = await get_management_api_client()
@@ -1437,6 +1470,134 @@ async def ws_message(
 # =============================================================================
 # OpenClaw RPC Proxy
 # =============================================================================
+
+
+def _require_native_internal(presented: str | None) -> None:
+    # Native identity is never available through the legacy unenforced mode.
+    secret = settings.WS_INTERNAL_SECRET
+    if not secret or not isinstance(presented, str) or not hmac.compare_digest(presented.encode(), secret.encode()):
+        raise HTTPException(status_code=403, detail="Authenticated WebSocket edge required")
+
+
+async def _process_native_room_background(connection_id: str, body: dict) -> None:
+    from core.gateway.native_rooms import (
+        HumanIdentity,
+        ROOM_METHODS,
+        RoomError,
+        admit_rpc,
+        owns_room_key,
+        qualification_for,
+        require_current_member,
+    )
+
+    management = await get_management_api_client()
+    service = await get_connection_service()
+    pool = get_gateway_pool()
+    req_id = body.get("id")
+    method = body.get("method")
+    conn = None
+    try:
+        if body == {"type": "ping"}:
+            row = await asyncio.to_thread(service.get_connection, connection_id)
+            identity = HumanIdentity.from_connection(connection_id, row or {})
+            qualification_for(identity.owner_id)
+            await require_current_member(identity, service)
+            await service.touch_connection(connection_id)
+            await management.send_message_async(connection_id, {"type": "pong"})
+            return
+        if body.get("type") != "req" or not isinstance(req_id, str) or not req_id or len(req_id) > 512:
+            raise RoomError("INVALID_REQUEST", "Native room client requires a request id and method")
+        if set(body) - {"type", "id", "method", "params"} or not isinstance(method, str):
+            raise RoomError("INVALID_REQUEST", "Unexpected native room envelope fields")
+        row = await asyncio.to_thread(service.get_connection, connection_id)
+        identity = HumanIdentity.from_connection(connection_id, row or {})
+        qualification = qualification_for(identity.owner_id)
+        params = body.get("params", {})
+        if method == "connect":
+            if params != {}:
+                raise RoomError("INVALID_REQUEST", "Native human handshake is server-owned")
+            admitted = {}
+        else:
+            admitted = admit_rpc(method, params, identity, qualification)
+        container, ip = await get_ecs_manager().resolve_running_container(identity.owner_id)
+        if not container or not ip:
+            raise RoomError("ROOM_UNAVAILABLE", "Qualified room runtime unavailable")
+        conn = await pool.native_rooms.ensure(identity, container, ip)
+        if method == "connect":
+            result = {
+                "protocol": 4,
+                "companyRooms": {
+                    "enabled": True,
+                    "audience": "company",
+                    "methods": sorted(set(conn.methods) & ROOM_METHODS),
+                    "profile": conn.profile,
+                    "historySource": "native",
+                },
+            }
+        else:
+            if method == "mentions.dismiss":
+                inbox = await conn.rpc("mentions.list", {})
+                visible_ids = {
+                    item.get("id")
+                    for item in inbox.get("items", [])
+                    if isinstance(item, dict) and owns_room_key(item.get("sessionKey"), identity, qualification)
+                }
+                if not set(admitted["ids"]) <= visible_ids:
+                    raise RoomError("FORBIDDEN", "Mention is outside the room inbox")
+            if method == "chat.send":
+                gate = await pool.gate_chat(
+                    user_id=identity.subject, owner_id=identity.owner_id, session_key=admitted["sessionKey"]
+                )
+                if gate.get("blocked"):
+                    raise RoomError(gate.get("code", "FORBIDDEN"), gate.get("message", "Chat blocked"))
+            await require_current_member(identity, service)
+            key = admitted.get("sessionKey") or admitted.get("key")
+            was_subscribed = key in conn.subscriptions
+            if method == "sessions.messages.subscribe":
+                conn.subscriptions.add(key)
+            elif method == "sessions.messages.unsubscribe":
+                conn.subscriptions.discard(key)
+            try:
+                result = await conn.rpc(method, admitted)
+            except BaseException:
+                if method == "sessions.messages.subscribe" and not was_subscribed:
+                    conn.subscriptions.discard(key)
+                raise
+            await require_current_member(identity, service)
+            if isinstance(result, dict):
+                for field in ("key", "sessionKey"):
+                    if field in result and result[field] != key:
+                        raise RoomError("FORBIDDEN", "Native canonical target changed")
+                if method == "mentions.list":
+                    result = {
+                        **result,
+                        "items": [
+                            item
+                            for item in result.get("items", [])
+                            if isinstance(item, dict) and owns_room_key(item.get("sessionKey"), identity, qualification)
+                        ],
+                    }
+            result = _fit_rpc_result_for_frame(method, result)
+        await management.send_message_async(connection_id, {"type": "res", "id": req_id, "ok": True, "payload": result})
+    except RoomError as exc:
+        if exc.error.get("code") == "FORBIDDEN":
+            await pool.native_rooms.close_connection(connection_id)
+        await management.send_message_async(
+            connection_id, {"type": "res", "id": req_id, "ok": False, "error": exc.error}
+        )
+    except Exception:
+        logger.exception("Native room request failed method=%s", method)
+        # Timeout/transport errors are not replayed; the client reconciles its
+        # deterministic idempotency key against native history after reconnect.
+        await management.send_message_async(
+            connection_id,
+            {
+                "type": "res",
+                "id": req_id,
+                "ok": False,
+                "error": {"code": "ROOM_UNAVAILABLE", "message": "Restore canonical history before retrying"},
+            },
+        )
 
 
 async def _guard_seeded_delete(

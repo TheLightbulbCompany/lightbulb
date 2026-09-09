@@ -424,6 +424,11 @@ async def _handle_organization_membership_deleted(data: dict) -> None:
         logger.warning("Clerk organizationMembership.deleted missing user_id: %s", data)
         return
 
+    if org_id:
+        from core.gateway.native_rooms import revoke_member_connections
+
+        await revoke_member_connections(org_id, user_id)
+
     provisioning = await build_paperclip_provisioning()
     try:
         try:

@@ -113,6 +113,45 @@ def _put_item_for(qs=None, **event_kwargs):
 
 def test_connect_writes_connection_type_node():
     assert _put_item_for(qs={"clientId": "node-host"})["connectionType"] == "node"
+
+
+def test_native_room_uses_verified_context_not_external_headers():
+    import index
+
+    event = _make_event(qs={"clientId": "lightbulb-company-room", "verifiedIssuer": "forged"},
+        org_id="org_team", headers={"x-openclaw-scopes": "operator.admin", "x-user-id": "forged", "x-verified-issuer": "forged"})
+    event["requestContext"]["authorizer"].update(authKind="clerk_user", verifiedIssuer="https://verified.test", verifiedSubject="user_alice")
+    event["requestContext"]["identity"] = {"sourceIp": "198.51.100.10"}
+    captured, fake_urlopen = _capture_headers()
+    with patch("index.urllib.request.urlopen", side_effect=fake_urlopen):
+        assert index.handler(event, None)["statusCode"] == 200
+    stored = index.table.put_item.call_args.kwargs["Item"]
+    assert stored["connectionType"] == "native_human"
+    assert stored["verifiedIssuer"] == "https://verified.test"
+    assert stored["verifiedSubject"] == "user_alice"
+    assert stored["sourceIp"] == "198.51.100.10"
+    assert "x-openclaw-scopes" not in captured["headers_lc"]
+    assert captured["headers_lc"]["x-user-id"] == "user_alice"
+
+
+@pytest.mark.parametrize("auth_kind", ["", "device", "service"])
+def test_native_room_rejects_unverified_and_nonhuman_auth(auth_kind):
+    import index
+
+    event = _make_event(qs={"clientId": "lightbulb-company-room"}, org_id="org_team")
+    event["requestContext"]["authorizer"].update(authKind=auth_kind, verifiedIssuer="https://verified.test", verifiedSubject="user_alice")
+    assert index.handler(event, None)["statusCode"] == 403
+    index.table.put_item.assert_not_called()
+
+
+def test_native_room_backend_refusal_does_not_leave_connection_admitted():
+    import index
+
+    event = _make_event(qs={"clientId": "lightbulb-company-room"}, org_id="org_team")
+    event["requestContext"]["authorizer"].update(authKind="clerk_user", verifiedIssuer="https://verified.test", verifiedSubject="user_alice")
+    with patch("index.urllib.request.urlopen", side_effect=RuntimeError("qualification unavailable")):
+        assert index.handler(event, None)["statusCode"] == 403
+    index.table.delete_item.assert_called_once_with(Key={"connectionId": "abc123"})
     assert _put_item_for(qs={"clientId": "openclaw-macos"})["connectionType"] == "node"
 
 

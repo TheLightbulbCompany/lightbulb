@@ -193,6 +193,7 @@ class ConnectionService:
             response = self._client.get_item(
                 TableName=self.table_name,
                 Key={"connectionId": {"S": connection_id}},
+                ConsistentRead=True,
             )
         except ClientError as e:
             logger.error(
@@ -215,6 +216,14 @@ class ConnectionService:
             "user_id": item["userId"]["S"],
             "org_id": org_id_value if org_id_value else None,  # Convert empty string to None
             "connection_type": item.get("connectionType", {}).get("S", "chat"),
+            **{
+                name: item.get(field, {}).get("S", "")
+                for name, field in (
+                    ("auth_kind", "authKind"), ("verified_issuer", "verifiedIssuer"),
+                    ("verified_subject", "verifiedSubject"), ("source_ip", "sourceIp"),
+                )
+                if field in item
+            },
         }
 
     async def count_for_user(self, user_id: str) -> int:

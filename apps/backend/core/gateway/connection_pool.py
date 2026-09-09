@@ -331,6 +331,9 @@ class GatewayConnection:
         # by-owner-id GSI via this service — so any backend instance can deliver
         # to all of an owner's tabs/devices. Defaults to the module singleton.
         self._conn_svc = conn_svc or ConnectionService()
+        from core.gateway.native_rooms import NativeRoomPool
+
+        self.native_rooms = NativeRoomPool(management_api, self._conn_svc)
         # Short-TTL cache of the owner's recipient set so we don't query DDB
         # per streamed chunk. Invalidated on a dead-conn prune.
         self._recipients_cache: Optional[list[tuple[str, str, str]]] = None
@@ -4062,6 +4065,8 @@ class GatewayConnectionPool:
 
     async def close_all(self) -> None:
         """Shutdown: close all connections concurrently, then drain delivery."""
+        if hasattr(self, "native_rooms"):
+            await self.native_rooms.close_all()
         # Fence new dials (see ensure_connection), then serialize with any
         # in-flight one: it holds _lock through connection insertion, so
         # passing through the lock once here guarantees every dial that

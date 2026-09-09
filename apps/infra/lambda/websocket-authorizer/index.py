@@ -407,6 +407,8 @@ def handler(event: dict, context: Any) -> dict:
                 "userId": user_id,
                 "orgId": org_id or "",
                 "authKind": "clerk_user",
+                "verifiedIssuer": payload["iss"],
+                "verifiedSubject": user_id,
             }
         )
 

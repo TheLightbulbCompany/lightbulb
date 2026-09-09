@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import json
+import time
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -124,10 +125,20 @@ class FakeSocket:
             ok, result = False, self.gateway.error
         elif method == "sessions.message.append":
             result = self.gateway.receipt
+        elif method.startswith("sessions.presence."):
+            result = {
+                "roomKey": params["sessionKey"],
+                "inventoryStatus": "complete",
+                "serverNowAtMs": int(time.time() * 1000),
+                "connections": [],
+            }
         elif method in self.gateway.results:
             result = self.gateway.results[method]
         else:
-            result = {"ok": True, **{k: params[k] for k in ("key", "sessionKey") if k in params}}
+            result = {
+                "ok": True,
+                **{k: params[k] for k in ("key", "sessionKey", "sessionKeys") if k in params},
+            }
         self.queue.put_nowait(
             json.dumps({"type": "res", "id": request["id"], "ok": ok, "payload" if ok else "error": result})
         )
@@ -141,7 +152,7 @@ async def harness(monkeypatch):
         calls=[],
         receipt=receipt(),
         results={
-            "sessions.list": {"sessions": [], "count": 0},
+            "sessions.list": {"ts": 1_800_000_000_000, "sessions": [], "count": 0},
             "sessions.search": {"results": []},
             "users.mentionable": {"users": [], "truncated": False},
         },
@@ -718,6 +729,7 @@ async def test_append_rejects_malformed_or_mismatched_native_receipt(harness, ov
         ("sessions.list", {"agentId": "friday", "limit": 50, "includeDerivedTitles": True}),
         ("sessions.messages.subscribe", {"key": room_key()}),
         ("sessions.messages.unsubscribe", {"key": room_key()}),
+        ("sessions.viewers.set", {"sessionKeys": [room_key()]}),
         (
             "sessions.presence.heartbeat",
             {"sessionKey": room_key(), "visibility": "visible", "recentInput": "recent"},
@@ -954,6 +966,7 @@ async def test_shared_room_mark_read_is_not_exposed_to_browser(harness):
             {"sessionKey": room_key(), "sessionId": "incarnation-1", "typing": True, "preview": "private"},
         ),
         ("sessions.presence.heartbeat", {"sessionKey": room_key(), "serverReceivedAtMs": 1_000_000_000_000}),
+        ("sessions.presence.heartbeat", {"sessionKey": room_key(), "authoritativeLastSeenAtMs": 1_800_000_000_000}),
     ],
 )
 @pytest.mark.asyncio
@@ -966,7 +979,24 @@ async def test_room_capabilities_reject_unscoped_or_server_owned_fields(harness,
 async def test_room_discovery_results_are_filtered_to_qualified_room_targets_and_profiles(harness):
     h = harness
     h.gateway.results["sessions.list"] = {
-        "sessions": [{"key": room_key()}, {"key": "agent:friday:user_A"}],
+        "ts": 1_800_000_000_000,
+        "sessions": [
+            {
+                "key": room_key(),
+                "sessionId": "incarnation-1",
+                "roomKind": "channel",
+                "visibility": "restricted",
+                "sharingRole": "member",
+                "lastMessageSeq": 7,
+            },
+            {
+                "key": rooms.room_prefix("org_team", "friday") + "b" * 64,
+                "sessionId": "known-key-but-not-authorized",
+                "roomKind": "channel",
+                "visibility": "restricted",
+            },
+            {"key": "agent:friday:user_A"},
+        ],
         "count": 2,
     }
     h.gateway.results["sessions.search"] = {
@@ -985,29 +1015,468 @@ async def test_room_discovery_results_are_filtered_to_qualified_room_targets_and
     listed = await h.request("sessions.list", {})
     searched = await h.request("sessions.search", {"sessionKeys": [room_key()], "query": "room"})
     mentionable = await h.request("users.mentionable", {"sessionKey": room_key()})
-    assert [item["key"] for item in listed["payload"]["sessions"]] == [room_key()]
+    assert listed["payload"] == {
+        "inventoryStatus": "complete",
+        "serverEvidenceAtMs": 1_800_000_000_000,
+        "rooms": [
+            {
+                "roomKey": room_key(),
+                "sessionId": "incarnation-1",
+                "roomKind": "channel",
+                "lastMessageSeq": 7,
+                "home_id": rooms.room_home_id("org_team"),
+                "home_generation": rooms.room_home_generation(h.proof),
+            }
+        ],
+    }
     assert [item["sessionKey"] for item in searched["payload"]["results"]] == [room_key()]
+    assert searched["payload"]["results"][0]["home_id"] == rooms.room_home_id("org_team")
+    assert searched["payload"]["results"][0]["home_generation"] == rooms.room_home_generation(h.proof)
     assert [item["profileId"] for item in mentionable["payload"]["users"]] == ["profile-user_A"]
+
+
+@pytest.mark.parametrize("status", ["complete", "incomplete", "failed"])
+@pytest.mark.asyncio
+async def test_directory_inventory_status_survives_native_transport_unchanged(harness, status):
+    harness.gateway.results["sessions.list"] = {
+        "inventoryStatus": status,
+        "serverEvidenceAtMs": 1_800_000_000_000,
+        "sessions": [
+            {
+                "key": room_key(),
+                "sessionId": "incarnation-1",
+                "roomKind": "channel",
+                "visibility": "restricted",
+                "sharingRole": "member",
+            }
+        ],
+        "count": 1,
+        **({"failureCode": "NATIVE_INVENTORY_FAILED"} if status == "failed" else {}),
+    }
+
+    listed = await harness.request("sessions.list", {})
+
+    assert listed["ok"] is True
+    assert listed["payload"]["inventoryStatus"] == status
+    if status == "failed":
+        assert listed["payload"]["rooms"] == []
+        assert listed["payload"]["failureCode"] == "NATIVE_INVENTORY_FAILED"
+    else:
+        assert [room["roomKey"] for room in listed["payload"]["rooms"]] == [room_key()]
+
+
+def presence_event(**overrides):
+    event = {
+        "roomKey": room_key(),
+        "actor": {"type": "profile", "id": "profile-user_A"},
+        "connectionId": "native-tab-a",
+        "connectionStartedAtMs": 1_800_000_000_000,
+        "sequence": 1,
+        "state": "online",
+        "serverReceivedAtMs": 1_800_000_001_000,
+        "expiresAtMs": 1_800_000_091_000,
+        "visibility": "visible",
+        "visibilityObservedAtMs": 1_800_000_001_000,
+        "recentInput": "recent",
+        "recentInputObservedAtMs": 1_800_000_001_000,
+        "viewingIntent": "viewing",
+        "viewingIntentReceivedAtMs": 1_800_000_001_000,
+    }
+    event.update(overrides)
+    return event
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"serverReceivedAtMs": 1_800_000_001},
+        {"connectionStartedAtMs": 1_800_000_002_000},
+        {"expiresAtMs": 1_800_000_091_001},
+        {"connectionId": ""},
+        {"sequence": 0},
+    ],
+)
+def test_presence_rejects_malformed_seconds_and_out_of_contract_future_evidence(overrides):
+    assert rooms.normalize_presence_event(presence_event(**overrides), 1_800_000_001_000) is None
+
+
+def test_presence_normalizes_unproven_projection_and_last_seen_to_unknown():
+    normalized = rooms.normalize_presence_event(
+        presence_event(
+            visibilityObservedAtMs=1_800_000_002_000,
+            authoritativeLastSeenAtMs=1_800_000_002_000,
+        ),
+        1_800_000_001_000,
+    )
+    assert normalized is not None
+    assert normalized["visibility"] == "unknown"
+    assert normalized["state"] == "unknown"
+    assert "visibilityObservedAtMs" not in normalized
+    assert "authoritativeLastSeenAtMs" not in normalized
+
+
+def test_presence_reconciliation_retains_simultaneous_connections_and_noncomplete_omissions():
+    projection = rooms.NativePresenceProjection()
+    first = projection.reconcile_snapshot(
+        {
+            "roomKey": room_key(),
+            "inventoryStatus": "complete",
+            "serverNowAtMs": 1_800_000_001_000,
+            "connections": [presence_event()],
+        }
+    )
+    second_connection = presence_event(
+        connectionId="native-tab-b",
+        connectionStartedAtMs=1_800_000_000_500,
+        serverReceivedAtMs=1_800_000_002_000,
+        expiresAtMs=1_800_000_092_000,
+    )
+    second = projection.reconcile_snapshot(
+        {
+            "roomKey": room_key(),
+            "inventoryStatus": "incomplete",
+            "serverNowAtMs": 1_800_000_002_000,
+            "connections": [second_connection],
+        }
+    )
+    failed = projection.reconcile_snapshot(
+        {
+            "roomKey": room_key(),
+            "inventoryStatus": "failed",
+            "serverNowAtMs": 1_800_000_003_000,
+            "connections": [],
+            "failureCode": "SOURCE_UNAVAILABLE",
+        }
+    )
+
+    assert len(first["connections"]) == 1
+    assert {event["connectionId"] for event in second["connections"]} == {
+        "native-tab-a",
+        "native-tab-b",
+    }
+    assert failed["inventoryStatus"] == "failed"
+    assert len(failed["connections"]) == 2
+
+
+def test_invalid_presence_snapshot_evidence_cannot_delete_or_validate_prior_connection():
+    projection = rooms.NativePresenceProjection()
+    projection.reconcile_snapshot(
+        {
+            "roomKey": room_key(),
+            "inventoryStatus": "complete",
+            "serverNowAtMs": 1_800_000_001_000,
+            "connections": [presence_event()],
+        }
+    )
+
+    invalid = projection.reconcile_snapshot(
+        {
+            "roomKey": room_key(),
+            "inventoryStatus": "complete",
+            "serverNowAtMs": 1_800_000_002_000,
+            "connections": [
+                presence_event(
+                    sequence=2,
+                    serverReceivedAtMs=1_800_000_002_000,
+                    expiresAtMs=1_800_000_092_000,
+                    visibilityObservedAtMs=1_800_000_003_000,
+                )
+            ],
+        }
+    )
+
+    assert invalid["inventoryStatus"] == "complete"
+    assert invalid["evidenceStatus"] == "invalid"
+    assert invalid["validationFailureCode"] == "PRESENCE_INVALID_EVIDENCE"
+    assert len(invalid["connections"]) == 1
+    retained = invalid["connections"][0]
+    assert retained["connectionId"] == "native-tab-a"
+    assert retained["sequence"] == 1
+    assert retained["state"] == "unknown"
+    assert retained["visibility"] == "unknown"
+    assert retained["recentInput"] == "unknown"
+    assert retained["viewingIntent"] == "unknown"
+    for field in (
+        "visibilityObservedAtMs",
+        "recentInputObservedAtMs",
+        "viewingIntentReceivedAtMs",
+        "authoritativeLastSeenAtMs",
+    ):
+        assert field not in retained
+
+
+def test_presence_event_sequence_dedupes_per_connection_and_reconnect_requires_new_id():
+    projection = rooms.NativePresenceProjection()
+    assert projection.reconcile_event(presence_event(), 1_800_000_001_000) is not None
+    assert projection.reconcile_event(presence_event(sequence=1), 1_800_000_002_000) is None
+    assert projection.reconcile_event(
+        presence_event(sequence=2, serverReceivedAtMs=1_800_000_002_000, expiresAtMs=1_800_000_092_000),
+        1_800_000_002_000,
+    ) is not None
+    assert projection.reconcile_event(
+        presence_event(
+            sequence=3,
+            connectionStartedAtMs=1_800_000_000_500,
+            serverReceivedAtMs=1_800_000_003_000,
+            expiresAtMs=1_800_000_093_000,
+        ),
+        1_800_000_003_000,
+    ) is None
+    assert projection.reconcile_event(
+        presence_event(
+            connectionId="native-reconnected",
+            connectionStartedAtMs=1_800_000_002_500,
+            serverReceivedAtMs=1_800_000_003_000,
+            expiresAtMs=1_800_000_093_000,
+        ),
+        1_800_000_003_000,
+    ) is not None
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "sessions.presence.heartbeat",
+        "sessions.presence.snapshot",
+        "sessions.presence.subscribe",
+        "sessions.presence.unsubscribe",
+    ],
+)
+@pytest.mark.asyncio
+async def test_all_presence_methods_reconcile_the_fork_snapshot_contract(harness, method):
+    params = {"sessionKey": room_key()}
+    if method == "sessions.presence.heartbeat":
+        params.update({"visibility": "visible", "recentInput": "recent"})
+
+    result = await harness.request(method, params)
+
+    assert result["ok"] is True
+    assert result["payload"]["inventoryStatus"] == "complete"
+    assert result["payload"]["evidenceStatus"] == "valid"
+    assert result["payload"]["connections"] == []
 
 
 @pytest.mark.asyncio
 async def test_message_and_presence_subscriptions_gate_native_events_per_tab(harness):
     h = harness
-    await h.request("sessions.messages.subscribe", {"key": room_key()})
+    viewed = await h.request("sessions.viewers.set", {"sessionKeys": [room_key()]})
+    assert viewed["ok"] is True
+    # Viewing is native product intent; it never mutates either transport set.
     conn = h.native.connections[identity()]
+    assert not conn.subscriptions and not conn.presence_subscriptions
+    typed = await h.request(
+        "session.typing",
+        {
+            "sessionKey": room_key(),
+            "sessionId": "incarnation-1",
+            "typing": True,
+        },
+    )
+    assert typed["ok"] is True
+    assert not conn.subscriptions and not conn.presence_subscriptions
+    await h.request("sessions.messages.subscribe", {"key": room_key()})
     h.management.send_message_async.reset_mock()
-    message = {"type": "event", "event": "session.message", "payload": {"sessionKey": room_key()}}
-    presence = {"type": "event", "event": "session.presence", "payload": {"roomKey": room_key()}}
+    message = {"type": "event", "event": "chat", "payload": {"sessionKey": room_key()}}
+    now = int(time.time() * 1000)
+    presence = {
+        "type": "event",
+        "event": "session.presence",
+        "payload": presence_event(
+            connectionStartedAtMs=now - 1_000,
+            serverReceivedAtMs=now,
+            expiresAtMs=now + 90_000,
+            visibilityObservedAtMs=now,
+            recentInputObservedAtMs=now,
+            viewingIntentReceivedAtMs=now,
+        ),
+    }
     await conn.forward_event(message)
     await conn.forward_event(presence)
-    h.management.send_message_async.assert_awaited_once_with("tab-a", message)
+    h.management.send_message_async.assert_awaited_once_with(
+        "tab-a",
+        {
+            **message,
+            "payload": {
+                **message["payload"],
+                "home_id": rooms.room_home_id("org_team"),
+                "home_generation": rooms.room_home_generation(h.proof),
+            },
+        },
+    )
     await h.request("sessions.presence.subscribe", {"sessionKey": room_key()})
     h.management.send_message_async.reset_mock()
-    await conn.forward_event(presence)
-    h.management.send_message_async.assert_awaited_once_with("tab-a", presence)
+    second_now = int(time.time() * 1000)
+    presence2 = {
+        **presence,
+        "payload": presence_event(
+            sequence=2,
+            connectionStartedAtMs=now - 1_000,
+            serverReceivedAtMs=second_now,
+            expiresAtMs=second_now + 90_000,
+            visibilityObservedAtMs=second_now,
+            recentInputObservedAtMs=second_now,
+            viewingIntentReceivedAtMs=second_now,
+        ),
+    }
+    await conn.forward_event(presence2)
+    h.management.send_message_async.assert_awaited_once_with(
+        "tab-a",
+        {
+            **presence2,
+            "payload": {
+                **presence2["payload"],
+                "home_id": rooms.room_home_id("org_team"),
+                "home_generation": rooms.room_home_generation(h.proof),
+            },
+        },
+    )
     await h.request("sessions.messages.unsubscribe", {"key": room_key()})
     await h.request("sessions.presence.unsubscribe", {"sessionKey": room_key()})
     assert not conn.subscriptions and not conn.presence_subscriptions
+
+
+@pytest.mark.asyncio
+async def test_native_message_sequence_dedupes_replays_and_requires_history_on_gap(harness):
+    h = harness
+    await h.request("sessions.messages.subscribe", {"key": room_key()})
+    conn = h.native.connections[identity()]
+    conn.message_projection.observe_history(
+        {
+            "sessionKey": room_key(),
+            "sessionId": "incarnation-1",
+            "messages": [{"__openclaw": {"id": "message-5", "seq": 5}}],
+        },
+        room_key(),
+    )
+    h.management.send_message_async.reset_mock()
+    next_event = {
+        "type": "event",
+        "event": "session.message",
+        "payload": {
+            "sessionKey": room_key(),
+            "sessionId": "incarnation-1",
+            "messageId": "message-6",
+            "messageSeq": 6,
+            "message": {"role": "user", "content": "canonical"},
+        },
+    }
+    await conn.forward_event(next_event)
+    await conn.forward_event(next_event)
+    await conn.forward_event(
+        {
+            **next_event,
+            "payload": {
+                **next_event["payload"],
+                "messageId": "message-8",
+                "messageSeq": 8,
+            },
+        }
+    )
+
+    assert h.management.send_message_async.await_args_list[0].args == (
+        "tab-a",
+        {
+            **next_event,
+            "payload": {
+                **next_event["payload"],
+                "home_id": rooms.room_home_id("org_team"),
+                "home_generation": rooms.room_home_generation(h.proof),
+            },
+        },
+    )
+    assert h.management.send_message_async.await_args_list[1].args[1] == {
+        "type": "event",
+        "event": "native.room.historyRequired",
+        "payload": {
+            "sessionKey": room_key(),
+            "sessionId": "incarnation-1",
+            "receivedMessageSeq": 8,
+            "home_id": rooms.room_home_id("org_team"),
+            "home_generation": rooms.room_home_generation(h.proof),
+        },
+    }
+    assert h.management.send_message_async.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_read_cursor_requires_canonical_native_message_and_never_grants_access(harness, monkeypatch):
+    h = harness
+    h.gateway.results["chat.history"] = {
+        "sessionKey": room_key(),
+        "sessionId": "incarnation-1",
+        "messages": [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "never persisted by Lightbulb"}],
+                "__openclaw": {"id": "message-7", "seq": 7},
+            }
+        ],
+    }
+    stored_cursor = {
+        "owner_id": "org_team",
+        "profile_id": "profile-user_A",
+        "room_key": room_key(),
+        "last_read_message_seq": 7,
+        "updated_at": "2026-09-09T00:00:00+00:00",
+    }
+    get_cursor = AsyncMock(side_effect=[None, stored_cursor])
+    advance = AsyncMock(return_value={**stored_cursor, "advanced": True})
+    monkeypatch.setattr("core.repositories.room_read_cursor_repo.get", get_cursor)
+    monkeypatch.setattr("core.repositories.room_read_cursor_repo.advance", advance)
+
+    state = await h.request(
+        "lightbulb.rooms.readState",
+        {"sessionKey": room_key(), "expectedSessionId": "incarnation-1"},
+    )
+    marked = await h.request(
+        "lightbulb.rooms.markRead",
+        {
+            "sessionKey": room_key(),
+            "expectedSessionId": "incarnation-1",
+            "messageId": "message-7",
+            "messageSeq": 7,
+        },
+    )
+
+    assert state["payload"]["lastReadMessageSeq"] == 0
+    assert state["payload"]["lastMessageSeq"] == 7
+    assert state["payload"]["unreadCount"] == 7
+    assert marked["payload"]["lastReadMessageSeq"] == 7
+    advance.assert_awaited_once_with("org_team", "profile-user_A", room_key(), 7)
+    # The only content-bearing calls stay native; DynamoDB receives sequence metadata only.
+    assert all("never persisted" not in repr(call) for call in advance.await_args_list)
+
+    h.gateway.error = {"code": "FORBIDDEN", "message": "restricted room membership required"}
+    denied = await h.request(
+        "lightbulb.rooms.readState",
+        {"sessionKey": room_key(), "expectedSessionId": "incarnation-1"},
+    )
+    assert denied["error"]["code"] == "FORBIDDEN"
+    assert get_cursor.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_mark_read_rejects_forged_sequence_before_persistence(harness, monkeypatch):
+    harness.gateway.results["chat.history"] = {
+        "sessionKey": room_key(),
+        "sessionId": "incarnation-1",
+        "messages": [{"__openclaw": {"id": "message-7", "seq": 7}}],
+    }
+    advance = AsyncMock()
+    monkeypatch.setattr("core.repositories.room_read_cursor_repo.advance", advance)
+
+    result = await harness.request(
+        "lightbulb.rooms.markRead",
+        {
+            "sessionKey": room_key(),
+            "expectedSessionId": "incarnation-1",
+            "messageId": "message-7",
+            "messageSeq": 700,
+        },
+    )
+
+    assert result["error"]["code"] == "INVALID_REQUEST"
+    advance.assert_not_awaited()
 
 
 @pytest.mark.asyncio

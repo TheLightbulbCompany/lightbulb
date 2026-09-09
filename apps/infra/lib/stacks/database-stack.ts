@@ -45,6 +45,7 @@ export class DatabaseStack extends cdk.Stack {
   public readonly integrationsTable: dynamodb.Table;
   public readonly provisioningWorkflowsTable: dynamodb.Table;
   public readonly paperclipCompaniesTable: dynamodb.Table;
+  public readonly roomReadCursorsTable: dynamodb.Table;
 
   // Paperclip Aurora Serverless v2 cluster (Task 1 of paperclip-rebuild).
   // pgvector extension is created by the drizzle migrations runner in
@@ -334,6 +335,13 @@ export class DatabaseStack extends cdk.Stack {
       partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "state", type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // Product-only per-human sequence state. Native OpenClaw SQLite remains
+    // canonical for every room message, sender, and search result.
+    this.roomReadCursorsTable = createTable("RoomReadCursorsTable", "room-read-cursors", {
+      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "cursor_key", type: dynamodb.AttributeType.STRING },
     });
 
     // Paperclip companies — maps Isol8 user_id → their Paperclip company

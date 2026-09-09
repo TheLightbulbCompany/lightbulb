@@ -100,10 +100,25 @@ function DockUnmountSentinel({ onUnmount }: { onUnmount: () => void }): null {
 
 export function WorkspaceShell(): React.ReactElement {
   const onboardingPhase = useOnboardingGate(); // exactly ONE mount (router side effects)
-  useBrowserToolAutoOpen(); // desktop-only by mount site; surfaces the Browser panel on agent browser use
   const { userId, isSignedIn } = useAuth();
   const { organization } = useOrganization();
-  const scopeId = organization?.id ?? userId ?? "anon"; // gate below makes "anon" unreachable
+
+  if (onboardingPhase !== "ready" || !isSignedIn || !userId) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
+        <div style={{ color: "var(--midnight-muted)", fontSize: 14 }}>Loading…</div>
+      </div>
+    );
+  }
+
+  const scopeId = organization?.id ?? userId;
+  // Storage stays owner-scoped; mounted panels also belong to the signed-in
+  // user. React tears down the old shell before mounting the next one.
+  return <AuthenticatedWorkspace key={`${userId}:${scopeId}`} scopeId={scopeId} />;
+}
+
+function AuthenticatedWorkspace({ scopeId }: { scopeId: string }): React.ReactElement {
+  useBrowserToolAutoOpen(); // desktop-only by mount site; surfaces the Browser panel on agent browser use
   const { agents, defaultId, isSettled: agentsSettled } = useAgents();
   const defaultIdRef = useRef<string | undefined>(defaultId);
   const agentsSettledRef = useRef(agentsSettled);
@@ -137,7 +152,7 @@ export function WorkspaceShell(): React.ReactElement {
   const lastAppliedRef = useRef<string | null>(null);
   const [recoveryTriggered, setRecoveryTriggered] = useState(false);
 
-  useUserSyncOnce(Boolean(isSignedIn) && onboardingPhase === "ready");
+  useUserSyncOnce(true);
   const { showSubscriptionSuccess } = useCheckoutReturn();
   // `chatReady` + the four completion signals (chat/hire/channel/task) are
   // derived in the shared shell hook — see its doc comment for the
@@ -221,6 +236,12 @@ export function WorkspaceShell(): React.ReactElement {
   const onReady = useCallback(
     (event: DockviewReadyEvent) => {
       const api = event.api;
+      // Recovery can mount the child dock before this parent's ref-sync
+      // effect runs. Restore/reconcile using the hooks from THIS render.
+      defaultIdRef.current = defaultId;
+      agentsSettledRef.current = agentsSettled;
+      let disposed = false;
+      disposablesRef.current.push({ dispose: () => { disposed = true; } });
       detachRef.current = attachDockviewApi(api, () => defaultIdRef.current);
 
       // Restore the persisted layout, or build Mission Control. A corrupt
@@ -262,7 +283,7 @@ export function WorkspaceShell(): React.ReactElement {
       // default agent (and vice versa) still clears.
       disposablesRef.current.push(
         api.onDidRemovePanel((panel) => {
-          if (isShellOperationInProgress()) return;
+          if (disposed || isShellOperationInProgress()) return;
           const cleared = clearClosedPanelFromUrl(
             window.location.search,
             panel.id,
@@ -277,6 +298,7 @@ export function WorkspaceShell(): React.ReactElement {
       let timer: number | null = null;
       const write = () => {
         timer = null;
+        if (disposed) return;
         try {
           writeLayout(scopeId, api.toJSON());
         } catch {
@@ -285,6 +307,7 @@ export function WorkspaceShell(): React.ReactElement {
       };
       disposablesRef.current.push(
         api.onDidLayoutChange(() => {
+          if (disposed) return;
           if (timer !== null) window.clearTimeout(timer);
           timer = window.setTimeout(write, 500);
         }),
@@ -309,7 +332,7 @@ export function WorkspaceShell(): React.ReactElement {
         },
       });
     },
-    [scopeId, runReconciler, loadedAgentIds],
+    [scopeId, runReconciler, loadedAgentIds, defaultId, agentsSettled],
   );
 
   // Dock teardown (unmount OR shell unmount): flush the pending write while
@@ -388,14 +411,6 @@ export function WorkspaceShell(): React.ReactElement {
     }),
     [],
   );
-
-  if (onboardingPhase !== "ready") {
-    return (
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
-        <div style={{ color: "var(--midnight-muted)", fontSize: 14 }}>Loading…</div>
-      </div>
-    );
-  }
 
   // Shared by both stepper branches: same element → the dock never remounts
   // when recoveryTriggered flips (prop-switch ternary, NO key).

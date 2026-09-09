@@ -19607,6 +19607,10 @@ var GatewayConfigSchema = external_exports.strictObject({
     password: SecretInputSchema.optional().register(sensitive),
     allowTailscale: external_exports.boolean().optional(),
     identityScopes: external_exports.record(external_exports.string().min(1), external_exports.array(OperatorScopeSchema)).optional(),
+    trustedBrokerProfiles: external_exports.record(
+      external_exports.string().regex(/^[a-f0-9]{64}$/u),
+      external_exports.string().regex(/^(?!gateway-owner$)[A-Za-z0-9_-]{1,128}$/u)
+    ).optional(),
     rateLimit: external_exports.strictObject({
       maxAttempts: external_exports.number().optional(),
       windowMs: external_exports.number().optional(),

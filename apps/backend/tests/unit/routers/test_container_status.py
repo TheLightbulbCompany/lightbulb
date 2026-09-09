@@ -1240,6 +1240,14 @@ class TestContainerStatusOrgMemberDispatchOnExisting:
 class TestGatewayRestart:
     """Test POST /api/v1/container/gateway/restart."""
 
+    @pytest.fixture(autouse=True)
+    def mock_efs_config(self):
+        with patch(
+            "routers.container_recover.read_openclaw_config_from_efs",
+            new=AsyncMock(return_value={"gateway": {"mode": "local"}}),
+        ):
+            yield
+
     @pytest.fixture
     def mock_ecs_manager(self):
         with patch("routers.container_recover.get_ecs_manager") as mock_getter:
@@ -1281,7 +1289,7 @@ class TestGatewayRestart:
         assert call.args[0] == "10.0.1.5"  # ip (positional)
         assert call.kwargs["token"] == "test-gw-token"
         assert call.kwargs["method"] == "config.apply"
-        assert call.kwargs["params"] == {}
+        assert call.kwargs["params"] == {"raw": '{"gateway":{"mode":"local"}}'}
         assert call.kwargs["owner_id"]  # signed handshake is scoped to the owner
 
     @pytest.mark.asyncio

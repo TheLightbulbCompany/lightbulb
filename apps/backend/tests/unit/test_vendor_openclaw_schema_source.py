@@ -13,6 +13,11 @@ _SCRIPT = _BACKEND_ROOT / "scripts" / "vendor_openclaw_schema.sh"
 _SCHEMA_ID = "2026.8.1-isol8.3"
 _TAG = f"v{_SCHEMA_ID}"
 _UPSTREAM = f"ghcr.io/thelightbulbcompany/agent:{_SCHEMA_ID}"
+_PNPM_SPEC = (
+    "pnpm@12.3.4+sha512."
+    "961aa41fb077da3a04a441d9f8e15ebc0c96da8ef710b2eb67bf9ee7cb0610e"
+    "abd48f1fd85f51cffe73846785fa0f87c56a3a872a1d893f8446741b5cce45457"
+)
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -111,7 +116,7 @@ def vendor_case(tmp_path: Path) -> VendorCase:
     source = fork / "src" / "config" / "zod-schema.ts"
     source.parent.mkdir(parents=True)
     source.write_text("export const OpenClawSchema = true;\n")
-    (fork / "package.json").write_text(json.dumps({"packageManager": "pnpm@12.3.4"}))
+    (fork / "package.json").write_text(json.dumps({"packageManager": _PNPM_SPEC}))
     (fork / ".gitignore").write_text("node_modules/\nsrc/config/generated.ts\n")
     _git(fork, "init", "-q")
     _git(fork, "add", ".gitignore", "package.json", "src/config/zod-schema.ts")
@@ -191,7 +196,7 @@ if [ "$1" = "-e" ]; then
         *) exit 1 ;;
       esac
       ;;
-    *packageManager*) printf '%s' 'pnpm@12.3.4'; exit 0 ;;
+    *packageManager*) printf '%s' 'pnpm@12.3.4+sha512.961aa41fb077da3a04a441d9f8e15ebc0c96da8ef710b2eb67bf9ee7cb0610eabd48f1fd85f51cffe73846785fa0f87c56a3a872a1d893f8446741b5cce45457'; exit 0 ;;
     *JSON.parse*) [ "$FAKE_JSON_VALID" = 1 ]; exit ;;
   esac
 fi

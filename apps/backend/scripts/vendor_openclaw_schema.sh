@@ -111,11 +111,12 @@ if (!((major === 24 && minor >= 16) || (major === 26 && minor >= 1) || major > 2
 ' || { echo "ERROR: Node $NODE_VERSION is unsupported; need >=24.16.0 <25 or >=26.1.0" >&2; exit 1; }
 
 PACKAGE_MANAGER=$(node -e 'const p=require(process.argv[1]).packageManager||"";process.stdout.write(p)' "$SOURCE/package.json")
-case "$PACKAGE_MANAGER" in
-  pnpm@*) PINNED_PNPM=${PACKAGE_MANAGER#pnpm@} ;;
-  *) echo "ERROR: fork packageManager must pin pnpm" >&2; exit 1 ;;
-esac
-ACTUAL_PNPM=$(pnpm --version)
+[[ "$PACKAGE_MANAGER" =~ ^pnpm@([0-9]+\.[0-9]+\.[0-9]+)(\+sha512\.[0-9a-f]{128})?$ ]] || {
+  echo "ERROR: fork packageManager must pin an exact pnpm release" >&2
+  exit 1
+}
+PINNED_PNPM=${BASH_REMATCH[1]}
+ACTUAL_PNPM=$(cd "$SOURCE" && pnpm --version)
 [ "$ACTUAL_PNPM" = "$PINNED_PNPM" ] || {
   echo "ERROR: fork requires pnpm $PINNED_PNPM, found $ACTUAL_PNPM" >&2
   exit 1

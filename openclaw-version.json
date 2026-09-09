@@ -1,6 +1,6 @@
 {
   "$schema": "./openclaw-version.schema.json",
-  "upstream": "ghcr.io/thelightbulbcompany/agent:2026.8.1-isol8.3",
+  "upstream": "ghcr.io/thelightbulbcompany/agent:2026.9.3-isol8.1",
   "image": "ghcr.io/openclaw/openclaw",
   "tag": "2026.5.28",
   "full": "ghcr.io/openclaw/openclaw:2026.5.28",

@@ -1,8 +1,8 @@
-# Task 1 report — NEEDS_CONTEXT
+# Task 1 report — CI_PENDING
 
 ## Status
 
-Independent plugin and artifact-identity preparation is implemented and locally checked. Task 1 is **not complete**: the final publisher-owned fork tag, source commit, and private GHCR manifest digest do not exist in the supplied context, so `openclaw-version.json#upstream` and the final Docker `FROM` remain unchanged. The new metadata gate rejects the current un-digested `FROM`.
+Independent plugin and artifact-identity preparation is implemented and locally checked. Final publisher identity is now integrated. Task 1 remains **CI pending** until the amd64 workflow qualifies and publishes the extended image; no environment default or running owner has been changed.
 
 Checkout preflight:
 
@@ -273,3 +273,18 @@ Local arm64 checks are not runtime evidence. Task 1 remains `NEEDS_CONTEXT`; no 
 Controller coordination received after checks: UI PR 2402 is merged at combined main `149c5d2c6b72bd4afdfc4efd1de23c46b6edf694` and contains two Docker-baked skill docs. Per controller instruction this isolated prep was not rebased or merged; controller will integrate main before the combined image PR. That merge supplies no 9.3 publisher/default evidence.
 
 The first scoped `git add` attempt exited 128 because the sandbox could not create the linked-worktree `index.lock`; the identical explicit file list was approved outside the sandbox and staged successfully. No broad add, reset, cleanup, rebase, or merge ran.
+
+## Final publisher integration
+
+- Annotated tag: `v2026.9.3-isol8.1`
+- Tag object: `b807e1b4b5c1e6bfeca9374385f372ed8ab6bfa1`
+- Peeled fork commit: `1c8fcb36dc72ba15c181070d770104d9dbfe26c5`
+- Frozen official upstream: `1391f7cd2d40ab5bbcf2f5f831d3a64f520e72d7`
+- Private base: `ghcr.io/thelightbulbcompany/agent:2026.9.3-isol8.1`
+- Manifest digest: `sha256:1ba582f9be7ecbd40d56c9c373aa8683446053af6388ab183a950f7284d13472`
+- Publisher run: `34318148060` (success)
+- Publisher build timestamp: `2026-09-09T06:17:22.641Z`
+
+The manifest changes only `openclaw-version.json#upstream`; the final Docker stage pins the same tag plus digest. All legacy fallback and promotion fields remain unchanged. The workflow now qualifies the built amd64 image before SOCI conversion: exact OpenClaw/plugin package versions, runtime load for all twelve required plugins, Sage's safety hook, both credential hooks, marketplace tools, and the two first-party executable test suites.
+
+Per the user's explicit direction, no local test, lint, typecheck, build, validation, or metadata-proof command was run for this final integration. The required qualified-image evidence, extended digest and workflow URL remain CI outputs; no publication or promotion is claimed here.

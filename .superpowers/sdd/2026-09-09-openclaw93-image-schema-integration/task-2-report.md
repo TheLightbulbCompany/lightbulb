@@ -1,6 +1,6 @@
 # Task 2 implementation report
 
-Status: **NEEDS_CONTEXT**. Independent schema-tooling preparation is implemented and verified. The final publisher source checkout, annotated tag, peeled commit, and candidate artifacts are unavailable, so no candidate was built, generated, registered, or claimed as Node20-proven.
+Status: **CI_PENDING**. Independent schema-tooling preparation is implemented and verified. The exact publisher candidate is now generated and registered additively. Backend CI's Node20 consumer proof is still pending; no environment selector or fleet default has changed.
 
 ## Preparation provenance
 
@@ -182,6 +182,30 @@ Exit code: `0`. The empty final output from `git diff --name-only` confirms no f
 3. Candidate bundle, JSON, provenance, `_SCHEMA_PATHS` registration, and candidate-specific checks remain pending until those exact inputs exist.
 4. Backend CI's actual Node20 consumer run over the committed candidate remains mandatory. Local tooling/fixture tests ran with Node `v26.3.0` and are not that proof.
 5. No image digest, container/plugin proof, AWS action, workflow dispatch, PR, push, merge, or deployment was performed.
+
+## Final candidate generation and registration
+
+The candidate was generated from a detached, clean `v2026.9.3-isol8.1` worktree at peeled commit `1c8fcb36dc72ba15c181070d770104d9dbfe26c5`, using Node `v26.3.0` and the fork's exact integrity-suffixed `pnpm@12.3.4` package-manager specification. The generator now accepts that canonical package-manager form and probes pnpm from the source checkout, so project-local package-manager delegation cannot substitute the Lightbulb repository's pnpm version.
+
+Generated immutable artifacts:
+
+```text
+apps/backend/tests/chaos/_schema/releases/2026.9.3-isol8.1/openclaw-config-schema.mjs
+apps/backend/tests/chaos/_schema/releases/2026.9.3-isol8.1/PROVENANCE.json
+apps/backend/core/services/openclaw_config_schemas/2026.9.3-isol8.1.json
+```
+
+Recorded provenance:
+
+```text
+schema_id: 2026.9.3-isol8.1
+tag: v2026.9.3-isol8.1
+commit: 1c8fcb36dc72ba15c181070d770104d9dbfe26c5
+bundle_sha256: a404057c34246c0434b08eb919de66146ffdc2c0662d36a43908ad4214f5ceec
+json_sha256: b9444496830abc0821fed561f19ddc808b87933a96638980db830322f0786e2a
+```
+
+Only `2026.9.3-isol8.1` was added to `_SCHEMA_PATHS`; the existing 8.1 path, bundle, JSON and default behavior were not modified. Artifact generation completed successfully, but it is implementation output rather than phase-end validation. Per the user's explicit direction, no local tests, lint, typecheck or validation commands were run after final integration. Node20 import/regeneration/fixture evidence remains CI pending.
 
 ## Review fix round 1
 

@@ -123,13 +123,12 @@ RUN git clone --depth=1 --branch "${OPENHUE_VERSION}" \
 # =============================================================================
 # Fat (non-slim) variant: bundles plugin runtime deps so first-use of
 # browser/codex/channels doesn't pay a ~6min lazy npm-install on cold start.
-FROM ghcr.io/thelightbulbcompany/agent:2026.8.1-isol8.3
+FROM ghcr.io/thelightbulbcompany/agent:2026.9.3-isol8.1@sha256:1ba582f9be7ecbd40d56c9c373aa8683446053af6388ab183a950f7284d13472
 # PLUGIN-PIN POLICY (read before bumping the @openclaw/* pins below): the baked
 # plugins pin to the latest PUBLISHED plugin dist of the FROM tag's release
-# line on npm. The FROM tag is on the 2026.8.1 line, which upstream cut as a
-# STABLE release on 2026-08-30 — so all eight baked plugins pin to the stable
-# 2026.8.1 dist (previously the 2026.8.1-beta.3 prerelease) to stay in lockstep
-# with the 8.1 host; promoting this base to dev and then prod is the separate
+# line on npm. The FROM tag is on the stable 2026.9.3 line, so all eight baked
+# plugins pin to the exact 2026.9.3 dist to stay in lockstep with the host;
+# promoting this base to dev and then prod is the separate
 # dev.tag/prod.tag flip in openclaw-version.json. Keep these
 # pins in lockstep with the FROM tag on every base bump: the 7.1 line moved the
 # channel inbound-dispatch contract (turn-adoption ack), so a stale channel

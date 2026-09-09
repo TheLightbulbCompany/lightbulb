@@ -1213,11 +1213,13 @@ def workflow_plugin_entries(llm_task_model: str | None = None) -> dict:
     - ``llm-task`` — routed to the cheap tier via ``llm_task_model`` (a
       ``<provider>/<model>`` ref, split into the plugin's ``defaultProvider``
       / ``defaultModel`` fields): llm-task calls are workflow-glue JSON steps
-      that don't need the premium default. ``None`` (no cheap tier on this
-      path — chatgpt_oauth, bedrock_trial) leaves the entry enable-only so
-      calls inherit the agent's default model. The plugin's configSchema is
-      strict (``additionalProperties: false``); only schema-listed keys may
-      ever be added here or the container crash-loops at boot.
+      that don't need the premium default. OpenClaw 9.3 requires configured
+      plugin model overrides to be explicitly allowed and named, so the same
+      exact model is also the host-level ``llm.allowedCompletionModels``
+      boundary.
+      ``None`` leaves the entry enable-only so it inherits the agent default.
+      The plugin's configSchema is strict (``additionalProperties: false``);
+      only schema-listed keys may be added here or the container crash-loops.
     - ``aws-exec-profile`` — baked in-repo plugin whose ``resolve_exec_env``
       hook injects ``AWS_PROFILE=lightbulb-connector`` into the agent's exec'd
       commands only when the owner's connector AWS profile is materialized.
@@ -1265,6 +1267,10 @@ def workflow_plugin_entries(llm_task_model: str | None = None) -> dict:
         llm_task_entry["config"] = {
             "defaultProvider": provider,
             "defaultModel": model,
+        }
+        llm_task_entry["llm"] = {
+            "allowModelOverride": True,
+            "allowedCompletionModels": [llm_task_model],
         }
     return {
         "lobster": {"enabled": True},

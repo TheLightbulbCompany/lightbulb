@@ -204,9 +204,7 @@ async def harness(monkeypatch):
     monkeypatch.setattr(route, "get_gateway_pool", lambda: pool)
     monkeypatch.setattr("core.containers.get_gateway_pool", lambda: pool)
     manager = SimpleNamespace(
-        resolve_running_container=AsyncMock(
-            return_value=({"gateway_token": "server-gateway-token"}, "10.0.0.20")
-        )
+        resolve_running_container=AsyncMock(return_value=({"gateway_token": "server-gateway-token"}, "10.0.0.20"))
     )
     monkeypatch.setattr(route, "get_ecs_manager", lambda: manager)
 
@@ -260,6 +258,10 @@ def test_trusted_broker_v4_payload_uses_unambiguous_utf8_length_frames():
     )
 
 
+def test_human_broker_scopes_are_non_administrative():
+    assert rooms.HUMAN_SCOPES == ("operator.read", "operator.write")
+
+
 @pytest.mark.parametrize(
     "field,value",
     [
@@ -301,7 +303,7 @@ async def test_unknown_or_unqualified_runtime_fails_closed(harness, monkeypatch,
 @pytest.mark.parametrize(
     "field,value",
     [
-        ("scopes", ["operator.read", "operator.write"]),
+        ("scopes", ["operator.admin", "operator.read", "operator.write"]),
         ("profile_override", "profile-user_B"),
         ("build_id", "unknown-runtime"),
         ("methods", {"users.self", "chat.send"}),
@@ -696,7 +698,7 @@ async def test_append_rejects_malformed_or_mismatched_native_receipt(harness, ov
         ("sessions.presence.unsubscribe", {"sessionKey": room_key()}),
         (
             "session.typing",
-            {"sessionKey": room_key(), "sessionId": "incarnation-1", "typing": True, "preview": "hello"},
+            {"sessionKey": room_key(), "sessionId": "incarnation-1", "typing": True},
         ),
         (
             "sessions.patch",
@@ -712,15 +714,6 @@ async def test_append_rejects_malformed_or_mismatched_native_receipt(harness, ov
         ("session.members.listEvidence", {"sessionKey": room_key()}),
         ("sessions.files.list", {"sessionKey": room_key(), "path": "", "search": "readme"}),
         ("sessions.files.get", {"sessionKey": room_key(), "path": "README.md"}),
-        (
-            "sessions.files.set",
-            {
-                "sessionKey": room_key(),
-                "path": "README.md",
-                "content": "updated",
-                "expectedHash": "a" * 64,
-            },
-        ),
         (
             "sessions.execution.dispatch",
             {
@@ -908,8 +901,24 @@ async def test_terminal_timeout_with_ended_at_for_exact_run_releases_hold(harnes
         ("sessions.search", {"query": "unscoped"}),
         ("sessions.patch", {"key": room_key(), "unread": True}),
         ("sessions.files.reveal", {"key": room_key()}),
+        (
+            "sessions.files.set",
+            {
+                "sessionKey": room_key(),
+                "path": "README.md",
+                "content": "updated",
+                "expectedHash": "a" * 64,
+            },
+        ),
         ("sessions.execution.dispatch", {**append_params(), "inputMessageId": "entry-1", "text": "forged"}),
-        ("session.typing", {"sessionKey": room_key(), "sessionId": "incarnation-1", "typing": True, "actor": "forged"}),
+        (
+            "session.typing",
+            {"sessionKey": room_key(), "sessionId": "incarnation-1", "typing": True, "actor": "forged"},
+        ),
+        (
+            "session.typing",
+            {"sessionKey": room_key(), "sessionId": "incarnation-1", "typing": True, "preview": "private"},
+        ),
         ("sessions.presence.heartbeat", {"sessionKey": room_key(), "serverReceivedAtMs": 1_000_000_000_000}),
     ],
 )

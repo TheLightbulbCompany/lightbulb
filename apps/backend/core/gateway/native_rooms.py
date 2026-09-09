@@ -23,9 +23,8 @@ from core.crypto.operator_device import OperatorDeviceIdentity, sign_connect_req
 from core.gateway.operator_rpc import GATEWAY_PORT
 
 CLIENT_ID = "lightbulb-company-room"
-# File CAS is an admin-scoped Gateway method. This credential never crosses
-# the backend boundary, and rpc() still enforces the closed method table below.
-HUMAN_SCOPES = ("operator.admin", "operator.read", "operator.write")
+# Human room brokers never receive the backend operator's administrative scope.
+HUMAN_SCOPES = ("operator.read", "operator.write")
 _AGENT = re.compile(r"[a-z0-9][a-z0-9_-]{0,127}\Z")
 
 
@@ -262,7 +261,6 @@ _SCHEMAS = {
             "sessionKey": _SESSION_KEY,
             "sessionId": _STRING,
             "typing": {"type": "boolean"},
-            "preview": {"type": "string", "maxLength": 400},
         },
         ("sessionKey", "sessionId", "typing"),
     ),
@@ -290,15 +288,6 @@ _SCHEMAS = {
     "sessions.files.get": _object(
         {"sessionKey": _SESSION_KEY, "path": {**_PATH, "minLength": 1}},
         ("sessionKey", "path"),
-    ),
-    "sessions.files.set": _object(
-        {
-            "sessionKey": _SESSION_KEY,
-            "path": {**_PATH, "minLength": 1},
-            "content": {"type": "string", "maxLength": 100_000},
-            "expectedHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        },
-        ("sessionKey", "path", "content", "expectedHash"),
     ),
     "sessions.execution.dispatch": _object(
         {
@@ -336,7 +325,6 @@ UNCERTAIN_AFTER_SUCCESS = frozenset(
         "sessions.room.create",
         "sessions.message.append",
         "sessions.patch",
-        "sessions.files.set",
         "sessions.execution.dispatch",
         "session.members.add",
         "session.members.remove",

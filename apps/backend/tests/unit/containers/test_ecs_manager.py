@@ -780,6 +780,39 @@ class TestStopUserService:
     """Test scaling service to 0."""
 
     @pytest.mark.asyncio
+    async def test_stop_holds_shared_owner_lifecycle_guard(
+        self,
+        manager,
+        mock_ecs_client,
+        monkeypatch,
+    ):
+        """Removing the ECS lifecycle decorator would let this stop race EFS credential work."""
+        from contextlib import asynccontextmanager
+
+        held = False
+
+        @asynccontextmanager
+        async def lifecycle_guard(_owner_id):
+            nonlocal held
+            held = True
+            try:
+                yield
+            finally:
+                held = False
+
+        monkeypatch.setattr("core.services.owner_lifecycle.owner_lifecycle_guard", lifecycle_guard)
+        mock_ecs_client.update_service.side_effect = lambda **_kwargs: held or pytest.fail("ECS ran outside guard")
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="running"))
+            mock_repo.update_status = AsyncMock(
+                side_effect=lambda *_args: held or pytest.fail("status ran outside guard")
+            )
+            mock_repo.stamp_stop_reason = AsyncMock()
+            await manager.stop_user_service("user_test_123")
+
+        assert held is False
+
+    @pytest.mark.asyncio
     async def test_stop_scales_to_zero(self, manager, mock_ecs_client):
         """stop_user_service calls update_service with desiredCount=0."""
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:

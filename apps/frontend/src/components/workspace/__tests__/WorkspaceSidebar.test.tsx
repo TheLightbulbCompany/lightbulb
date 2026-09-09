@@ -46,13 +46,15 @@ vi.mock("@/hooks/useGatewayRpc", () => ({ useGatewayRpc: () => ({ data: undefine
 // `useRosterEntries` subscribes to the chat-frame fan-out for live `run_active`
 // frames. `emitChatMessage` lets a test push one and assert the row lights up.
 let emitChatMessage: (msg: Record<string, unknown>) => void = () => {};
+let onChatMessage = (h: (m: Record<string, unknown>) => void) => {
+  emitChatMessage = h;
+  return () => {};
+};
 vi.mock("@/hooks/useGateway", () => ({
   useGateway: () => ({
+    isConnected: true,
     nodeConnected: false,
-    onChatMessage: (h: (m: Record<string, unknown>) => void) => {
-      emitChatMessage = h;
-      return () => {};
-    },
+    onChatMessage,
   }),
 }));
 // Durable per-agent state from the Teams BFF roster; tests set it per case.
@@ -152,6 +154,11 @@ vi.mock("@/components/chat/CompanyNav", () => ({
 import { WorkspaceSidebar } from "../WorkspaceSidebar";
 
 beforeEach(() => {
+  emitChatMessage = () => {};
+  onChatMessage = (handler) => {
+    emitChatMessage = handler;
+    return () => {};
+  };
   // The roster collapses to Friday + pins by default; these assertions are
   // about the full roster, so run it expanded.
   localStorage.setItem(

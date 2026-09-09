@@ -26,6 +26,7 @@ from core.gateway.native_rooms import (
 )
 from core.gateway.operator_rpc import gateway_rpc_oneshot
 from core.repositories import container_repo
+from core.services import webhook_dedup
 from core.services.config_patcher import set_openclaw_config_path
 from core.services.desktop_pair import EfsWorkspaceAdapter
 from core.services.paperclip_openclaw_pairing import (
@@ -35,6 +36,7 @@ from core.services.paperclip_openclaw_pairing import (
 )
 
 _FIELD = "human_broker_devices"
+_ACCESS_FIELD = "human_broker_access"
 _ALIAS = re.compile(r"clerk-[a-f0-9]{64}@identity\.lightbulb\.invalid\Z")
 _DEVICE_ID = re.compile(r"[a-f0-9]{64}\Z")
 _PUBLIC_KEY = re.compile(r"[A-Za-z0-9_-]{43}\Z")
@@ -61,6 +63,10 @@ class HumanBrokerProvisioningError(RuntimeError):
 
 
 class _CredentialChanged(HumanBrokerProvisioningError):
+    pass
+
+
+class _MembershipRevoked(HumanBrokerProvisioningError):
     pass
 
 
@@ -98,6 +104,69 @@ def _records(row: dict | None) -> dict[str, dict]:
     return records
 
 
+def _subject_tombstone_key(alias: str) -> str:
+    return f"human-subject-deleted:{alias}"
+
+
+def _access_event_id(row: dict | None, alias: str) -> str | None:
+    markers = (row or {}).get(_ACCESS_FIELD, {})
+    if not isinstance(markers, dict):
+        raise HumanBrokerProvisioningError("human membership epoch unavailable")
+    marker = markers.get(alias)
+    if marker is None:
+        return None
+    if not (
+        isinstance(marker, dict)
+        and set(marker) == {"event_id", "sequence", "state"}
+        and isinstance(marker.get("event_id"), str)
+        and 1 <= len(marker["event_id"]) <= 512
+        and isinstance(marker.get("sequence"), str)
+        and 1 <= len(marker["sequence"]) <= 600
+        and marker.get("state") in {"allowed", "revoked"}
+    ):
+        raise HumanBrokerProvisioningError("human membership epoch unavailable")
+    if marker["state"] == "revoked":
+        raise _MembershipRevoked("human membership credential revoked")
+    return marker["event_id"]
+
+
+def _with_access_event(record: dict, access_event_id: str | None) -> dict:
+    result = {**record}
+    if access_event_id is None:
+        result.pop("access_event_id", None)
+    else:
+        result["access_event_id"] = access_event_id
+    return result
+
+
+async def _subject_deleted(alias: str) -> bool:
+    try:
+        return await webhook_dedup.has_event(_subject_tombstone_key(alias))
+    except Exception as exc:
+        raise HumanBrokerProvisioningError("human subject deletion state unavailable") from exc
+
+
+async def _require_subject_live(alias: str) -> None:
+    if await _subject_deleted(alias):
+        raise HumanBrokerProvisioningError("human subject deleted")
+
+
+async def _authorized_records(row: dict | None) -> dict[str, dict]:
+    """Filter records through durable membership and terminal-subject epochs."""
+    authorized = {}
+    for alias, record in _records(row).items():
+        if not isinstance(record, dict):
+            continue
+        try:
+            access_event_id = _access_event_id(row, alias)
+        except _MembershipRevoked:
+            continue
+        if record.get("access_event_id") != access_event_id or await _subject_deleted(alias):
+            continue
+        authorized[alias] = record
+    return authorized
+
+
 def _validate_record(alias: str, record: Any, *, require_profile: bool = False) -> dict:
     valid = (
         _ALIAS.fullmatch(alias)
@@ -112,6 +181,11 @@ def _validate_record(alias: str, record: Any, *, require_profile: bool = False) 
         and _DEVICE_ID.fullmatch(record["device_id"])
         and isinstance(record.get("public_key"), str)
         and _PUBLIC_KEY.fullmatch(record["public_key"])
+        and (
+            "access_event_id" not in record
+            or isinstance(record.get("access_event_id"), str)
+            and 1 <= len(record["access_event_id"]) <= 512
+        )
     )
     profile_id = record.get("profile_id") if isinstance(record, dict) else None
     if require_profile:
@@ -376,13 +450,13 @@ def _trusted_profiles(records: dict[str, dict], *, include_provisioning: bool) -
 
 async def active_trusted_broker_profiles(owner_id: str) -> dict[str, str]:
     row = await container_repo.get_by_owner_id(owner_id, consistent=True)
-    return _trusted_profiles(_records(row), include_provisioning=False)
+    return _trusted_profiles(await _authorized_records(row), include_provisioning=False)
 
 
 async def provisioned_trusted_broker_profiles(owner_id: str) -> dict[str, str]:
     """Bindings a full config rewrite must retain while activation is pending."""
     row = await container_repo.get_by_owner_id(owner_id, consistent=True)
-    return _trusted_profiles(_records(row), include_provisioning=True)
+    return _trusted_profiles(await _authorized_records(row), include_provisioning=True)
 
 
 async def _human_pair_entries(
@@ -403,7 +477,7 @@ async def _human_pair_entries(
 
 async def provisioned_human_pair_entries(owner_id: str, gateway_token: str) -> list[dict]:
     row = await container_repo.get_by_owner_id(owner_id, consistent=True)
-    return await _human_pair_entries(owner_id, gateway_token, _records(row))
+    return await _human_pair_entries(owner_id, gateway_token, await _authorized_records(row))
 
 
 def _pair_state_fingerprint(records: dict[str, dict]) -> tuple:
@@ -426,7 +500,7 @@ def _pair_state_fingerprint(records: dict[str, dict]) -> tuple:
 async def reconcile_provisioned_human_pairs(owner_id: str, gateway_token: str) -> None:
     """Make tagged human pairing entries match a fresh durable-state read."""
     for _ in range(3):
-        records = _records(await container_repo.get_by_owner_id(owner_id, consistent=True))
+        records = await _authorized_records(await container_repo.get_by_owner_id(owner_id, consistent=True))
         fingerprint = _pair_state_fingerprint(records)
         entries = await _human_pair_entries(owner_id, gateway_token, records)
         desired = {entry["lightbulbHumanAlias"]: entry for entry in entries}
@@ -455,7 +529,7 @@ async def reconcile_provisioned_human_pairs(owner_id: str, gateway_token: str) -
             return changed
 
         await _adapter(owner_id).mutate_paired_json(mutate)
-        latest = _records(await container_repo.get_by_owner_id(owner_id, consistent=True))
+        latest = await _authorized_records(await container_repo.get_by_owner_id(owner_id, consistent=True))
         if _pair_state_fingerprint(latest) == fingerprint:
             return
     raise HumanBrokerProvisioningError("human pairing state kept changing during reconciliation")
@@ -464,7 +538,8 @@ async def reconcile_provisioned_human_pairs(owner_id: str, gateway_token: str) -
 async def load_qualified_humans(owner_id: str) -> dict[str, QualifiedHumanDevice]:
     row = await container_repo.get_by_owner_id(owner_id, consistent=True)
     humans = {}
-    for alias, raw in _records(row).items():
+    authorized = await _authorized_records(row)
+    for alias, raw in authorized.items():
         if not isinstance(raw, dict) or raw.get("state") != "active":
             continue
         record = _validate_record(alias, raw, require_profile=True)
@@ -473,7 +548,7 @@ async def load_qualified_humans(owner_id: str) -> dict[str, QualifiedHumanDevice
             record["profile_id"],
         )
     # Exercise the same one-to-one check the room qualification enforces.
-    _trusted_profiles(_records(row), include_provisioning=False)
+    _trusted_profiles(authorized, include_provisioning=False)
     return humans
 
 
@@ -483,9 +558,16 @@ async def require_active_human_device(
     device_id: str,
     profile_id: str,
 ) -> None:
+    await _require_subject_live(alias)
     row = await container_repo.get_by_owner_id(owner_id, consistent=True)
     record = _validate_record(alias, _records(row).get(alias), require_profile=True)
-    if record["state"] != "active" or record["device_id"] != device_id or record["profile_id"] != profile_id:
+    access_event_id = _access_event_id(row, alias)
+    if (
+        record["state"] != "active"
+        or record["device_id"] != device_id
+        or record["profile_id"] != profile_id
+        or record.get("access_event_id") != access_event_id
+    ):
         raise HumanBrokerProvisioningError("human credential revoked")
 
 
@@ -496,7 +578,7 @@ async def _write_trusted_profiles(
     exclude_alias: str | None = None,
 ) -> None:
     for _ in range(3):
-        records = _records(await container_repo.get_by_owner_id(owner_id, consistent=True))
+        records = await _authorized_records(await container_repo.get_by_owner_id(owner_id, consistent=True))
         if exclude_alias is not None:
             records = {alias: record for alias, record in records.items() if alias != exclude_alias}
         bindings = _trusted_profiles(records, include_provisioning=include_provisioning)
@@ -505,7 +587,7 @@ async def _write_trusted_profiles(
             ["gateway", "auth", "trustedBrokerProfiles"],
             bindings,
         )
-        latest = _records(await container_repo.get_by_owner_id(owner_id, consistent=True))
+        latest = await _authorized_records(await container_repo.get_by_owner_id(owner_id, consistent=True))
         if exclude_alias is not None:
             latest = {alias: record for alias, record in latest.items() if alias != exclude_alias}
         if _trusted_profiles(latest, include_provisioning=include_provisioning) == bindings:
@@ -528,11 +610,19 @@ async def _cleanup_superseded_reconciliation(
     """Undo an old ensure that lost a concurrent disable/rotation race."""
     invalidate_qualification(identity.owner_id)
     try:
-        current = _records(await container_repo.get_by_owner_id(identity.owner_id, consistent=True)).get(identity.alias)
+        row = await container_repo.get_by_owner_id(identity.owner_id, consistent=True)
+        current = _records(row).get(identity.alias)
     except Exception:
         return
+    try:
+        authorized = not await _subject_deleted(identity.alias) and (
+            record.get("access_event_id") == _access_event_id(row, identity.alias)
+        )
+    except HumanBrokerProvisioningError:
+        authorized = False
     if (
-        isinstance(current, dict)
+        authorized
+        and isinstance(current, dict)
         and current.get("generation") == record["generation"]
         and current.get("state") == record["state"]
         and current.get("device_id") == record["device_id"]
@@ -642,8 +732,10 @@ async def _teardown_disabled(
 async def ensure_human_device(identity: HumanIdentity, conn_svc) -> HumanDeviceReceipt:
     _validate_identity(identity)
     await require_current_member(identity, conn_svc)
+    await _require_subject_live(identity.alias)
     _, ip, token = await _runtime(identity.owner_id)
     row = await container_repo.get_by_owner_id(identity.owner_id, consistent=True)
+    access_event_id = _access_event_id(row, identity.alias)
     record = _records(row).get(identity.alias)
     if record is None:
         device = generate_operator_device()
@@ -656,20 +748,33 @@ async def ensure_human_device(identity: HumanIdentity, conn_svc) -> HumanDeviceR
         except Exception as exc:
             raise HumanBrokerProvisioningError("human credential unavailable") from exc
         now = utc_now_iso()
-        record = await container_repo.create_human_broker_device(
-            identity.owner_id,
-            identity.alias,
-            {
-                "generation": 1,
-                "state": "provisioning",
-                "seed_enc": seed_enc,
-                "device_id": device.device_id,
-                "public_key": device.public_key_b64,
-                "created_at": now,
-                "updated_at": now,
-            },
-        )
+        try:
+            record = await container_repo.create_human_broker_device(
+                identity.owner_id,
+                identity.alias,
+                _with_access_event(
+                    {
+                        "generation": 1,
+                        "state": "provisioning",
+                        "seed_enc": seed_enc,
+                        "device_id": device.device_id,
+                        "public_key": device.public_key_b64,
+                        "created_at": now,
+                        "updated_at": now,
+                    },
+                    access_event_id,
+                ),
+                access_event_id=access_event_id,
+                subject_tombstone_key=_subject_tombstone_key(identity.alias),
+            )
+        except Exception as exc:
+            raise HumanBrokerProvisioningError("human credential creation was fenced") from exc
     record = _validate_record(identity.alias, record)
+    if record.get("access_event_id") != access_event_id:
+        if record["state"] != "disabled":
+            disabled = await _disable_record(identity.owner_id, identity.alias, record)
+            await _teardown_disabled(identity, disabled, runtime=({}, ip, token), close_connections=True)
+        raise HumanBrokerProvisioningError("human membership credential revoked; rotate after re-admission")
     if record["state"] == "disabled":
         raise HumanBrokerProvisioningError("human credential revoked; rotate before reconnecting")
     try:
@@ -690,6 +795,8 @@ async def ensure_human_device(identity: HumanIdentity, conn_svc) -> HumanDeviceR
             with_profile,
             generation=record["generation"],
             state="provisioning",
+            access_event_id=access_event_id,
+            subject_tombstone_key=_subject_tombstone_key(identity.alias),
         ):
             current = _validate_record(
                 identity.alias,
@@ -726,6 +833,8 @@ async def ensure_human_device(identity: HumanIdentity, conn_svc) -> HumanDeviceR
         active,
         generation=record["generation"],
         state="provisioning",
+        access_event_id=access_event_id,
+        subject_tombstone_key=_subject_tombstone_key(identity.alias),
     ):
         current = _records(await container_repo.get_by_owner_id(identity.owner_id, consistent=True)).get(identity.alias)
         if (
@@ -735,6 +844,12 @@ async def ensure_human_device(identity: HumanIdentity, conn_svc) -> HumanDeviceR
             and current.get("device_id") == record["device_id"]
             and current.get("profile_id") == record["profile_id"]
         ):
+            await require_active_human_device(
+                identity.owner_id,
+                identity.alias,
+                current["device_id"],
+                current["profile_id"],
+            )
             return HumanDeviceReceipt(current["generation"], "active", current["device_id"])
         if isinstance(current, dict) and current.get("state") == "disabled":
             await _teardown_disabled(identity, current, runtime=({}, ip, token), close_connections=True)
@@ -794,7 +909,42 @@ async def revoke_human_device(identity: HumanIdentity, conn_svc) -> HumanDeviceR
     return receipt
 
 
-async def revoke_human_subject(owner_id: str, issuer: str, subject: str) -> HumanDeviceReceipt | None:
+def _access_marker(*, event_id: str, sequence: str, state: str) -> dict:
+    marker = {"event_id": event_id, "sequence": sequence, "state": state}
+    if not (
+        isinstance(event_id, str)
+        and 1 <= len(event_id) <= 512
+        and isinstance(sequence, str)
+        and 1 <= len(sequence) <= 600
+        and state in {"allowed", "revoked"}
+    ):
+        raise HumanBrokerProvisioningError("invalid Clerk membership epoch")
+    return marker
+
+
+async def allow_human_subject(
+    owner_id: str,
+    issuer: str,
+    subject: str,
+    *,
+    event_id: str,
+    event_sequence: str,
+) -> None:
+    """Advance a re-created Clerk membership beyond an earlier revocation."""
+    identity = HumanIdentity(owner_id, issuer, subject, "", "")
+    _validate_identity(identity)
+    marker = _access_marker(event_id=event_id, sequence=event_sequence, state="allowed")
+    await container_repo.set_human_broker_access(owner_id, identity.alias, marker)
+
+
+async def revoke_human_subject(
+    owner_id: str,
+    issuer: str,
+    subject: str,
+    *,
+    revocation_id: str | None = None,
+    revocation_sequence: str | None = None,
+) -> HumanDeviceReceipt | None:
     """Server-authenticated Clerk lifecycle revocation; no membership lookup."""
     identity = HumanIdentity(
         owner_id=owner_id,
@@ -804,16 +954,32 @@ async def revoke_human_subject(owner_id: str, issuer: str, subject: str) -> Huma
         source_ip="",
     )
     _validate_identity(identity)
+    if revocation_id is not None and revocation_sequence is not None:
+        marker = _access_marker(event_id=revocation_id, sequence=revocation_sequence, state="revoked")
+        current = await container_repo.set_human_broker_access(owner_id, identity.alias, marker)
+        if current is not None and current != marker:
+            # A newer signed membership event already superseded this delivery.
+            return None
     return await _revoke_human_device(identity, missing_ok=True)
 
 
-async def revoke_human_subject_everywhere(issuer: str, subject: str) -> None:
+async def revoke_human_subject_everywhere(
+    issuer: str,
+    subject: str,
+) -> None:
     """Disable a deleted Clerk subject in every org container that stores it."""
     probe = HumanIdentity("org_probe", issuer, subject, "", "")
     _validate_identity(probe)
     alias = probe.alias
+    # This terminal marker is the authoritative deny point. It is published
+    # before best-effort row discovery, so a scan omission cannot authorize a
+    # deleted subject or let any later credential transaction commit.
+    await webhook_dedup.record_permanent_marker(
+        _subject_tombstone_key(alias),
+        source="clerk-human-deleted",
+    )
     errors = []
-    for row in await container_repo.scan_all():
+    for row in await container_repo.scan_all(consistent=True):
         owner_id = row.get("owner_id")
         records = row.get(_FIELD)
         if not (
@@ -831,7 +997,9 @@ async def revoke_human_subject_everywhere(issuer: str, subject: str) -> None:
 async def rotate_human_device(identity: HumanIdentity, conn_svc) -> HumanDeviceReceipt:
     _validate_identity(identity)
     await require_current_member(identity, conn_svc)
+    await _require_subject_live(identity.alias)
     row = await container_repo.get_by_owner_id(identity.owner_id, consistent=True)
+    access_event_id = _access_event_id(row, identity.alias)
     raw = _records(row).get(identity.alias)
     if raw is None:
         return await ensure_human_device(identity, conn_svc)
@@ -875,22 +1043,27 @@ async def rotate_human_device(identity: HumanIdentity, conn_svc) -> HumanDeviceR
         except Exception as exc:
             raise HumanBrokerProvisioningError("human credential unavailable; old credential remains disabled") from exc
         now = utc_now_iso()
-        replacement = {
-            "generation": generation,
-            "state": "provisioning",
-            "seed_enc": seed_enc,
-            "device_id": device.device_id,
-            "public_key": device.public_key_b64,
-            "profile_id": old.get("profile_id"),
-            "created_at": now,
-            "updated_at": now,
-        }
+        replacement = _with_access_event(
+            {
+                "generation": generation,
+                "state": "provisioning",
+                "seed_enc": seed_enc,
+                "device_id": device.device_id,
+                "public_key": device.public_key_b64,
+                "profile_id": old.get("profile_id"),
+                "created_at": now,
+                "updated_at": now,
+            },
+            access_event_id,
+        )
         if not await container_repo.cas_human_broker_device(
             identity.owner_id,
             identity.alias,
             replacement,
             generation=old["generation"],
             state="disabled",
+            access_event_id=access_event_id,
+            subject_tombstone_key=_subject_tombstone_key(identity.alias),
         ):
             current = _validate_record(
                 identity.alias,

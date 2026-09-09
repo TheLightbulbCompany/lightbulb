@@ -9,8 +9,12 @@ from botocore.exceptions import ClientError
 from moto import mock_aws
 
 from core.services.webhook_dedup import (
+    WebhookProcessingInProgress,
     WebhookDedupResult,
+    begin_event_processing,
+    complete_event_processing,
     record_event_or_skip,
+    record_permanent_marker,
 )
 
 
@@ -138,3 +142,37 @@ async def test_non_conditional_client_error_logs_and_reraises(monkeypatch, caplo
     # WARNING carries the event_id + source for diagnosis.
     warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
     assert any("evt_throttled" in m and "stripe" in m for m in warnings), warnings
+
+
+@pytest.mark.asyncio
+async def test_processing_lease_retries_only_after_expiry_and_completed_events_stay_done(
+    dedup_table, monkeypatch
+):
+    monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", dedup_table)
+    first = await begin_event_processing("msg_delete", source="clerk", lease_seconds=30)
+    assert first is not None
+
+    with pytest.raises(WebhookProcessingInProgress):
+        await begin_event_processing("msg_delete", source="clerk", lease_seconds=30)
+
+    with patch("core.services.webhook_dedup.time.time", return_value=time.time() + 31):
+        replacement = await begin_event_processing("msg_delete", source="clerk", lease_seconds=30)
+    assert replacement is not None and replacement != first
+
+    with pytest.raises(RuntimeError, match="lease was lost"):
+        await complete_event_processing("msg_delete", first)
+    await complete_event_processing("msg_delete", replacement)
+    assert await begin_event_processing("msg_delete", source="clerk", lease_seconds=30) is None
+
+
+@pytest.mark.asyncio
+async def test_permanent_marker_has_no_ttl_and_is_idempotent(dedup_table, monkeypatch):
+    monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", dedup_table)
+    await record_permanent_marker("human-subject-deleted:abc", source="clerk-human-deleted")
+    await record_permanent_marker("human-subject-deleted:abc", source="clerk-human-deleted")
+
+    item = boto3.resource("dynamodb", region_name="us-east-1").Table(dedup_table).get_item(
+        Key={"event_id": "human-subject-deleted:abc"}, ConsistentRead=True
+    )["Item"]
+    assert item["state"] == "completed"
+    assert "ttl" not in item

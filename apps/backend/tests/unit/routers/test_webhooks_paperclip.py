@@ -21,6 +21,10 @@ import pytest
 from moto import mock_aws
 
 from core.services.paperclip_admin_client import PaperclipApiError
+from core.services import webhook_dedup as _webhook_dedup
+
+_REAL_BEGIN_EVENT_PROCESSING = _webhook_dedup.begin_event_processing
+_REAL_COMPLETE_EVENT_PROCESSING = _webhook_dedup.complete_event_processing
 
 
 @pytest.fixture(autouse=True)
@@ -41,7 +45,17 @@ def socket_cleanup_io(monkeypatch):
         "core.services.human_broker_provisioning.container_repo.scan_all",
         AsyncMock(return_value=[]),
     )
+    monkeypatch.setattr(
+        "core.services.human_broker_provisioning.container_repo.set_human_broker_access",
+        AsyncMock(side_effect=lambda owner_id, alias, marker: marker),
+    )
     monkeypatch.setattr("core.services.billing_service.sync_team_seat_quantity", AsyncMock())
+    monkeypatch.setattr(
+        _webhook_dedup,
+        "begin_event_processing",
+        AsyncMock(return_value="claim_test"),
+    )
+    monkeypatch.setattr(_webhook_dedup, "complete_event_processing", AsyncMock())
     return pool
 
 
@@ -70,6 +84,8 @@ async def test_membership_revocation_failure_redelivers_same_svix_and_still_deau
     from routers import webhooks
 
     _bypass_svix(monkeypatch)
+    monkeypatch.setattr(webhook_dedup, "begin_event_processing", _REAL_BEGIN_EVENT_PROCESSING)
+    monkeypatch.setattr(webhook_dedup, "complete_event_processing", _REAL_COMPLETE_EVENT_PROCESSING)
     monkeypatch.setattr(native_rooms, "_qualified_owners", {})
     socket_cleanup_io._conn_svc.query_by_owner.side_effect = [RuntimeError("socket storage down"), []]
     provisioning = AsyncMock()
@@ -105,7 +121,14 @@ async def test_membership_revocation_failure_redelivers_same_svix_and_still_deau
         if archive_failure:
             provisioning.disable.assert_awaited_once_with(user_id="member")
             enqueue.assert_awaited_once()
-        assert not await webhook_dedup.has_event("msg_test")
+        assert webhook_dedup._table().get_item(Key={"event_id": "msg_test"}).get("Item", {}).get(
+            "state"
+        ) == "processing"
+        webhook_dedup._table().update_item(
+            Key={"event_id": "msg_test"},
+            UpdateExpression="SET lease_until = :expired",
+            ExpressionAttributeValues={":expired": 0},
+        )
         assert await webhooks.handle_clerk_webhook(request) == {"status": "ok"}
         assert await webhook_dedup.has_event("msg_test")
         assert await webhooks.handle_clerk_webhook(request) == {"status": "duplicate"}
@@ -574,18 +597,16 @@ async def test_clerk_webhook_dedupes_by_svix_id(async_client, monkeypatch):
     """
     _bypass_svix(monkeypatch)
 
-    # First call: dedupe says "RECORDED", real handler runs.
-    # Second call: dedupe says "ALREADY_SEEN", handler must skip.
-    from core.services.webhook_dedup import WebhookDedupResult
-
-    dedupe_results = [WebhookDedupResult.RECORDED, WebhookDedupResult.ALREADY_SEEN]
+    # First call owns the retryable lease; the completed second call skips.
+    claim = "claim_test"
+    dedupe_results = [claim, None]
 
     async def _fake_dedupe(event_id, *, source):
         assert source == "clerk"
         return dedupe_results.pop(0)
 
     monkeypatch.setattr(
-        "core.services.webhook_dedup.record_event_or_skip",
+        "core.services.webhook_dedup.begin_event_processing",
         _fake_dedupe,
     )
 

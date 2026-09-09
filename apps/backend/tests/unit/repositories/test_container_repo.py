@@ -219,6 +219,74 @@ async def test_human_broker_device_create_cas_and_reprovision_preservation(dynam
 
 
 @pytest.mark.asyncio
+async def test_human_broker_transition_is_atomically_fenced_by_access_and_global_tombstone(dynamodb_table):
+    from core.repositories import container_repo
+
+    client = boto3.resource("dynamodb", region_name="us-east-1")
+    client.create_table(
+        TableName="test-webhook-event-dedup",
+        KeySchema=[{"AttributeName": "event_id", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "event_id", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    owner_id = "org_human_fence"
+    alias = "clerk-" + "f" * 64 + "@identity.lightbulb.invalid"
+    tombstone = "human-subject-deleted:" + alias
+    record = {
+        "generation": 1,
+        "state": "provisioning",
+        "seed_enc": "ciphertext",
+        "device_id": "b" * 64,
+        "public_key": "c" * 43,
+    }
+    await container_repo.upsert(owner_id, {"status": "running"})
+    await container_repo.create_human_broker_device(
+        owner_id,
+        alias,
+        record,
+        access_event_id=None,
+        subject_tombstone_key=tombstone,
+    )
+    await container_repo.set_human_broker_access(
+        owner_id,
+        alias,
+        {
+            "event_id": "msg_deleted",
+            "sequence": "00000000000000000001:msg_deleted",
+            "state": "revoked",
+        },
+    )
+
+    assert not await container_repo.cas_human_broker_device(
+        owner_id,
+        alias,
+        {**record, "state": "active"},
+        generation=1,
+        state="provisioning",
+        access_event_id=None,
+        subject_tombstone_key=tombstone,
+    )
+
+    # Even a current allowed membership epoch cannot cross a terminal user tombstone.
+    marker = {
+        "event_id": "msg_created",
+        "sequence": "00000000000000000002:msg_created",
+        "state": "allowed",
+    }
+    await container_repo.set_human_broker_access(owner_id, alias, marker)
+    client.Table("test-webhook-event-dedup").put_item(Item={"event_id": tombstone, "state": "completed"})
+    assert not await container_repo.cas_human_broker_device(
+        owner_id,
+        alias,
+        {**record, "state": "active", "access_event_id": marker["event_id"]},
+        generation=1,
+        state="provisioning",
+        access_event_id=marker["event_id"],
+        subject_tombstone_key=tombstone,
+    )
+
+
+@pytest.mark.asyncio
 async def test_upsert_mints_distinct_provision_generation_per_call(dynamodb_table):
     """create_user_service (the sole caller of upsert) mints a fresh
     provision_generation on every row-creating write -- this repo function

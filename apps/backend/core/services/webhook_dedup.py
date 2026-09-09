@@ -21,11 +21,13 @@ import enum
 import logging
 import os
 import time
+import uuid
 
 import boto3
 from botocore.exceptions import ClientError
 
 from core.config import settings
+from core.dynamodb import run_in_thread
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,10 @@ def _emit_dedup_metric(source: str, outcome: str) -> None:
 class WebhookDedupResult(str, enum.Enum):
     RECORDED = "recorded"
     ALREADY_SEEN = "already_seen"
+
+
+class WebhookProcessingInProgress(RuntimeError):
+    """Another live worker owns this event's retryable processing lease."""
 
 
 def _table():
@@ -90,8 +96,114 @@ async def has_event(event_id: str) -> bool:
     Strongly consistent, because the caller is deciding entitlement and an
     eventually-consistent miss would grant it.
     """
-    response = _table().get_item(Key={"event_id": event_id}, ConsistentRead=True)
+    response = await run_in_thread(_table().get_item, Key={"event_id": event_id}, ConsistentRead=True)
     return response.get("Item") is not None
+
+
+async def record_permanent_marker(event_id: str, *, source: str) -> None:
+    """Create a no-TTL terminal marker, idempotently.
+
+    This is for deny-state whose safety lifetime is not a provider retry window
+    (for example a deleted Clerk subject). The conditional put prevents an
+    accidental replay from rewriting marker metadata.
+    """
+    try:
+        await run_in_thread(
+            _table().put_item,
+            Item={
+                "event_id": event_id,
+                "source": source,
+                "state": "completed",
+                "recorded_at": int(time.time()),
+            },
+            ConditionExpression="attribute_not_exists(event_id)",
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+
+async def _read_event(event_id: str) -> dict:
+    return (
+        await run_in_thread(_table().get_item, Key={"event_id": event_id}, ConsistentRead=True)
+    ).get("Item", {})
+
+
+async def begin_event_processing(
+    event_id: str,
+    *,
+    source: str,
+    lease_seconds: int = 300,
+) -> str | None:
+    """Claim a retryable event, returning ``None`` only when it is complete.
+
+    Unlike ``record_event_or_skip``, an in-flight claim is never acknowledged
+    as a duplicate. The caller returns a retryable 5xx, then may take over after
+    the bounded lease. This removes the unsafe record-then-delete rollback gap.
+    """
+    if lease_seconds < 1:
+        raise ValueError("lease_seconds must be positive")
+    now = int(time.time())
+    claim_id = str(uuid.uuid4())
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"event_id": event_id},
+            UpdateExpression=(
+                "SET #state = :processing, claim_id = :claim, lease_until = :lease, "
+                "#source = :source, recorded_at = if_not_exists(recorded_at, :now), #ttl = :ttl"
+            ),
+            ConditionExpression=(
+                "attribute_not_exists(event_id) OR "
+                "(#state = :processing AND lease_until < :now)"
+            ),
+            ExpressionAttributeNames={"#state": "state", "#source": "source", "#ttl": "ttl"},
+            ExpressionAttributeValues={
+                ":processing": "processing",
+                ":claim": claim_id,
+                ":lease": now + lease_seconds,
+                ":source": source,
+                ":now": now,
+                ":ttl": now + _TTL_SECONDS,
+            },
+        )
+        return claim_id
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+    item = await _read_event(event_id)
+    # Pre-state-machine rows were written only after the old caller decided to
+    # suppress duplicates, so preserve them as completed during rollout.
+    if item and item.get("state") in {None, "completed"}:
+        return None
+    raise WebhookProcessingInProgress(f"webhook event {event_id} is already processing")
+
+
+async def complete_event_processing(event_id: str, claim_id: str) -> None:
+    """Publish completion only while this worker still owns the lease."""
+    now = int(time.time())
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"event_id": event_id},
+            UpdateExpression="SET #state = :completed, completed_at = :now REMOVE claim_id, lease_until",
+            ConditionExpression="#state = :processing AND claim_id = :claim",
+            ExpressionAttributeNames={"#state": "state"},
+            ExpressionAttributeValues={
+                ":completed": "completed",
+                ":processing": "processing",
+                ":claim": claim_id,
+                ":now": now,
+            },
+        )
+        return
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+    item = await _read_event(event_id)
+    if item.get("state") == "completed":
+        return
+    raise RuntimeError(f"webhook event {event_id} processing lease was lost")
 
 
 async def record_event_or_skip(event_id: str, *, source: str, ttl_seconds: int | None = None) -> WebhookDedupResult:

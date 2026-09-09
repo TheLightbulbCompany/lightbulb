@@ -12,26 +12,56 @@ class _Repo:
     def __init__(self, events):
         self.events = events
         self.devices = {}
+        self.access = {}
 
     async def get_by_owner_id(self, owner_id, *, consistent=False):
         return {
             "owner_id": owner_id,
             "gateway_token": "gateway-secret",
             "human_broker_devices": copy.deepcopy(self.devices),
+            "human_broker_access": copy.deepcopy(self.access),
         }
 
-    async def create_human_broker_device(self, owner_id, alias, record):
+    async def create_human_broker_device(
+        self, owner_id, alias, record, *, access_event_id=None, subject_tombstone_key=None
+    ):
         self.devices.setdefault(alias, copy.deepcopy(record))
         return copy.deepcopy(self.devices[alias])
 
-    async def cas_human_broker_device(self, owner_id, alias, record, *, generation, state):
+    async def cas_human_broker_device(
+        self,
+        owner_id,
+        alias,
+        record,
+        *,
+        generation,
+        state,
+        access_event_id=None,
+        subject_tombstone_key=None,
+    ):
         current = self.devices.get(alias)
         if not current or current["generation"] != generation or current["state"] != state:
             return False
+        if subject_tombstone_key is not None:
+            access = self.access.get(alias)
+            if access_event_id is None:
+                if access is not None:
+                    return False
+            elif not access or access.get("state") != "allowed" or access.get("event_id") != access_event_id:
+                return False
         self.devices[alias] = copy.deepcopy(record)
         if record["state"] == "disabled":
             self.events.append("durable-disabled")
         return True
+
+    async def set_human_broker_access(self, owner_id, alias, marker):
+        current = self.access.get(alias)
+        if current is None or current["sequence"] <= marker["sequence"]:
+            self.access[alias] = copy.deepcopy(marker)
+        return copy.deepcopy(self.access[alias])
+
+    async def scan_all(self, *, consistent=False):
+        return [await self.get_by_owner_id("org_founder", consistent=consistent)]
 
 
 class _Kms:
@@ -80,6 +110,7 @@ def harness(monkeypatch):
         "paperclip-device": {"deviceId": "paperclip-device", "displayName": "paperclip:Friday"},
     }
     profiles = {}
+    deleted_subjects = set()
 
     def profile(alias, profile_id):
         return {
@@ -127,6 +158,16 @@ def harness(monkeypatch):
     monkeypatch.setattr(provisioner, "require_current_member", AsyncMock())
     monkeypatch.setattr(provisioner, "revoke_member_connections", close_connections)
     monkeypatch.setattr(
+        provisioner.webhook_dedup,
+        "has_event",
+        AsyncMock(side_effect=lambda event_id: event_id in deleted_subjects),
+    )
+    monkeypatch.setattr(
+        provisioner.webhook_dedup,
+        "record_permanent_marker",
+        AsyncMock(side_effect=lambda event_id, **kwargs: deleted_subjects.add(event_id)),
+    )
+    monkeypatch.setattr(
         provisioner, "invalidate_qualification", lambda owner_id: events.append("qualification-disabled")
     )
     monkeypatch.setattr(provisioner.settings, "CLERK_ISSUER", "https://issuer.example")
@@ -134,6 +175,7 @@ def harness(monkeypatch):
     state.kms = kms
     state.paired = paired
     state.profiles = profiles
+    state.deleted_subjects = deleted_subjects
     state.events = events
     state.trusted = {}
     state.conn_svc = object()
@@ -347,11 +389,54 @@ async def test_clerk_lifecycle_revoke_does_not_require_deleted_membership(harnes
         human.owner_id,
         human.issuer,
         human.subject,
+        revocation_id="msg_membership_deleted",
+        revocation_sequence="00000000000000000001:msg_membership_deleted",
     )
 
     assert receipt is not None and receipt.state == "disabled"
     provisioner.require_current_member.assert_not_awaited()
     assert harness.repo.devices[human.alias]["state"] == "disabled"
+
+
+@pytest.mark.asyncio
+async def test_membership_tombstone_fences_rotation_even_if_clerk_read_lags(harness):
+    human = _human("user_alice")
+    await provisioner.ensure_human_device(human, harness.conn_svc)
+
+    await provisioner.revoke_human_subject(
+        human.owner_id,
+        human.issuer,
+        human.subject,
+        revocation_id="msg_membership_deleted",
+        revocation_sequence="00000000000000000001:msg_membership_deleted",
+    )
+
+    with pytest.raises(provisioner.HumanBrokerProvisioningError, match="membership credential revoked"):
+        await provisioner.rotate_human_device(human, harness.conn_svc)
+
+    assert harness.repo.devices[human.alias]["state"] == "disabled"
+
+
+@pytest.mark.asyncio
+async def test_user_deleted_global_tombstone_denies_omitted_active_scan_row(harness, monkeypatch):
+    human = _human("user_alice")
+    receipt = await provisioner.ensure_human_device(human, harness.conn_svc)
+    monkeypatch.setattr(harness.repo, "scan_all", AsyncMock(return_value=[]))
+
+    await provisioner.revoke_human_subject_everywhere(
+        human.issuer,
+        human.subject,
+    )
+
+    with pytest.raises(provisioner.HumanBrokerProvisioningError, match="subject deleted"):
+        await provisioner.require_active_human_device(
+            human.owner_id,
+            human.alias,
+            receipt.device_id,
+            harness.repo.devices[human.alias]["profile_id"],
+        )
+    # The scan deliberately omitted this row; the permanent marker is the deny authority.
+    assert harness.repo.devices[human.alias]["state"] == "active"
 
 
 @pytest.mark.asyncio
@@ -395,12 +480,12 @@ async def test_uncertain_activation_stays_disabled_and_fail_closed(harness, monk
     human = _human("user_alice")
     real_cas = harness.repo.cas_human_broker_device
 
-    async def revoke_before_activation(owner_id, alias, record, *, generation, state):
+    async def revoke_before_activation(owner_id, alias, record, *, generation, state, **fence):
         if record["state"] == "active":
             current = harness.repo.devices[alias]
             harness.repo.devices[alias] = {**current, "state": "disabled"}
             return False
-        return await real_cas(owner_id, alias, record, generation=generation, state=state)
+        return await real_cas(owner_id, alias, record, generation=generation, state=state, **fence)
 
     monkeypatch.setattr(harness.repo, "cas_human_broker_device", revoke_before_activation)
 
@@ -417,9 +502,9 @@ async def test_uncertain_revoke_write_is_resolved_by_consistent_disabled_state(h
     await provisioner.ensure_human_device(human, harness.conn_svc)
     real_cas = harness.repo.cas_human_broker_device
 
-    async def landed_without_response(owner_id, alias, record, *, generation, state):
+    async def landed_without_response(owner_id, alias, record, *, generation, state, **fence):
         monkeypatch.setattr(harness.repo, "cas_human_broker_device", real_cas)
-        await real_cas(owner_id, alias, record, generation=generation, state=state)
+        await real_cas(owner_id, alias, record, generation=generation, state=state, **fence)
         raise TimeoutError("response lost")
 
     monkeypatch.setattr(harness.repo, "cas_human_broker_device", landed_without_response)
@@ -437,11 +522,11 @@ async def test_revoke_and_rotate_never_report_success_while_old_record_stays_act
     human = _human("user_alice")
     old = await provisioner.ensure_human_device(human, harness.conn_svc)
 
-    async def rejected_cas(owner_id, alias, record, *, generation, state):
+    async def rejected_cas(owner_id, alias, record, *, generation, state, **fence):
         if record["state"] == "disabled":
             return False
         return await _Repo.cas_human_broker_device(
-            harness.repo, owner_id, alias, record, generation=generation, state=state
+            harness.repo, owner_id, alias, record, generation=generation, state=state, **fence
         )
 
     monkeypatch.setattr(harness.repo, "cas_human_broker_device", rejected_cas)

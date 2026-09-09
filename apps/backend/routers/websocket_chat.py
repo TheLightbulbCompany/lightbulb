@@ -1534,7 +1534,9 @@ async def _process_native_room_background(connection_id: str, body: dict) -> Non
                 "companyRooms": {"enabled": False},
             }
         else:
-            await require_current_member(identity, service)
+            # Re-check both durable credential epochs/tombstones and current
+            # Clerk membership immediately before every upstream side effect.
+            await conn.require_current()
             key = admitted.get("sessionKey") or admitted.get("key")
             # The independent native human socket owns the room ACL decision.
             native_run = None
@@ -1569,7 +1571,7 @@ async def _process_native_room_background(connection_id: str, body: dict) -> Non
                     # already-successful dispatch response.
                     logger.warning("Native dispatch reconciliation remains unresolved", exc_info=True)
             try:
-                await require_current_member(identity, service)
+                await conn.require_current()
             except RoomError:
                 await pool.native_rooms.close_connection(connection_id)
                 if method in UNCERTAIN_AFTER_SUCCESS:

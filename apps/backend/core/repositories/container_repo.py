@@ -93,7 +93,7 @@ async def get_by_status(status: str) -> list[dict]:
     return items
 
 
-async def scan_all() -> list[dict]:
+async def scan_all(*, consistent: bool = False) -> list[dict]:
     """Return every container row. Paginates via DDB LastEvaluatedKey.
 
     Used by fleet-wide ops tools (ecs_ops, bedrock_gate_break_glass).
@@ -103,7 +103,7 @@ async def scan_all() -> list[dict]:
     items: list[dict] = []
     last_evaluated_key: dict | None = None
     while True:
-        kwargs: dict = {}
+        kwargs: dict = {"ConsistentRead": True} if consistent else {}
         if last_evaluated_key is not None:
             kwargs["ExclusiveStartKey"] = last_evaluated_key
         response = await run_in_thread(table.scan, **kwargs)
@@ -141,6 +141,9 @@ _UPSERT_PRESERVED_FIELDS = (
     # Scoped writers below own this nested map. Reprovision must carry it
     # through instead of replacing away every human's durable credential.
     "human_broker_devices",
+    # Lifecycle tombstones fence human credential transitions. A stale whole-row
+    # rewrite must neither remove a revocation nor restore a prior membership epoch.
+    "human_broker_access",
 )
 
 _RELEASE_OWNED_FIELDS = (
@@ -224,6 +227,7 @@ _UPSERT_PRESERVED_FIELDS += _RELEASE_OWNED_FIELDS
 _UPSERT_CAS_FIELDS = (
     "bedrock_gate_token_hash",
     "human_broker_devices",
+    "human_broker_access",
     *_LEASE_CAS_FIELDS,
     *_RELEASE_OWNED_FIELDS,
 )
@@ -1907,7 +1911,142 @@ async def remove_paired_device(owner_id: str, device_id: str) -> None:
         raise
 
 
-async def create_human_broker_device(owner_id: str, alias: str, record: dict) -> dict:
+def _human_access_condition(access_event_id: str | None) -> tuple[str, dict, dict]:
+    names = {"#access": "human_broker_access"}
+    if access_event_id is None:
+        return "attribute_not_exists(#access.#alias)", names, {}
+    return (
+        "#access.#alias.#access_state = :allowed AND #access.#alias.#access_event = :access_event",
+        {**names, "#access_state": "state", "#access_event": "event_id"},
+        {":allowed": "allowed", ":access_event": access_event_id},
+    )
+
+
+async def _transact_human_broker_device(
+    owner_id: str,
+    alias: str,
+    record: dict,
+    *,
+    state_condition: str,
+    state_names: dict,
+    state_values: dict,
+    access_event_id: str | None,
+    subject_tombstone_key: str,
+) -> bool:
+    """Atomically fence one credential transition against both deny authorities."""
+    table = _get_table()
+    marker_table = get_table("webhook-event-dedup")
+    access_condition, access_names, access_values = _human_access_condition(access_event_id)
+    names = {
+        "#devices": "human_broker_devices",
+        "#alias": alias,
+        **access_names,
+        **state_names,
+    }
+    values = {
+        ":record": record,
+        ":now": utc_now_iso(),
+        **access_values,
+        **state_values,
+    }
+    try:
+        await run_in_thread(
+            table.meta.client.transact_write_items,
+            TransactItems=[
+                {
+                    "ConditionCheck": {
+                        "TableName": marker_table.name,
+                        "Key": {"event_id": subject_tombstone_key},
+                        "ConditionExpression": "attribute_not_exists(event_id)",
+                    }
+                },
+                {
+                    "Update": {
+                        "TableName": table.name,
+                        "Key": {"owner_id": owner_id},
+                        "UpdateExpression": "SET #devices.#alias = :record, updated_at = :now",
+                        "ConditionExpression": (
+                            f"attribute_exists(owner_id) AND {state_condition} AND {access_condition}"
+                        ),
+                        "ExpressionAttributeNames": names,
+                        "ExpressionAttributeValues": values,
+                    }
+                },
+            ],
+        )
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "TransactionCanceledException":
+            raise
+        reasons = exc.response.get("CancellationReasons")
+        if not isinstance(reasons, list) or len(reasons) != 2:
+            raise
+        codes = [reason.get("Code") if isinstance(reason, dict) else None for reason in reasons]
+        if any(code not in {"ConditionalCheckFailed", "None", None} for code in codes):
+            raise
+        if "ConditionalCheckFailed" in codes:
+            return False
+        raise
+
+
+async def set_human_broker_access(owner_id: str, alias: str, marker: dict) -> dict | None:
+    """Advance one membership epoch, idempotently and in signed-event order."""
+    table = _get_table()
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET #access = if_not_exists(#access, :empty)",
+            ConditionExpression="attribute_exists(owner_id)",
+            ExpressionAttributeNames={"#access": "human_broker_access"},
+            ExpressionAttributeValues={":empty": {}},
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return None
+        raise
+    try:
+        response = await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET #access.#alias = :marker, updated_at = :now",
+            ConditionExpression=(
+                "attribute_not_exists(#access.#alias) OR #access.#alias.#event = :event "
+                "OR #access.#alias.#sequence < :sequence"
+            ),
+            ExpressionAttributeNames={
+                "#access": "human_broker_access",
+                "#alias": alias,
+                "#event": "event_id",
+                "#sequence": "sequence",
+            },
+            ExpressionAttributeValues={
+                ":marker": marker,
+                ":event": marker["event_id"],
+                ":sequence": marker["sequence"],
+                ":now": utc_now_iso(),
+            },
+            ReturnValues="ALL_NEW",
+        )
+        return response["Attributes"]["human_broker_access"][alias]
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+    current = await get_by_owner_id(owner_id, consistent=True)
+    existing = (current or {}).get("human_broker_access", {}).get(alias)
+    if isinstance(existing, dict):
+        return existing
+    raise RuntimeError(f"container row unavailable for human membership epoch owner {owner_id}")
+
+
+async def create_human_broker_device(
+    owner_id: str,
+    alias: str,
+    record: dict,
+    *,
+    access_event_id: str | None = None,
+    subject_tombstone_key: str | None = None,
+) -> dict:
     """Create one durable human credential, returning the concurrent winner.
 
     The two-step parent-map initialization is safe because both writes are
@@ -1923,14 +2062,29 @@ async def create_human_broker_device(owner_id: str, alias: str, record: dict) ->
             ExpressionAttributeNames={"#devices": "human_broker_devices"},
             ExpressionAttributeValues={":empty": {}},
         )
-        await run_in_thread(
-            table.update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression="SET #devices.#alias = :record, updated_at = :now",
-            ConditionExpression="attribute_exists(owner_id) AND attribute_not_exists(#devices.#alias)",
-            ExpressionAttributeNames={"#devices": "human_broker_devices", "#alias": alias},
-            ExpressionAttributeValues={":record": record, ":now": utc_now_iso()},
-        )
+        if subject_tombstone_key is None:
+            await run_in_thread(
+                table.update_item,
+                Key={"owner_id": owner_id},
+                UpdateExpression="SET #devices.#alias = :record, updated_at = :now",
+                ConditionExpression="attribute_exists(owner_id) AND attribute_not_exists(#devices.#alias)",
+                ExpressionAttributeNames={"#devices": "human_broker_devices", "#alias": alias},
+                ExpressionAttributeValues={":record": record, ":now": utc_now_iso()},
+            )
+        elif not await _transact_human_broker_device(
+            owner_id,
+            alias,
+            record,
+            state_condition="attribute_not_exists(#devices.#alias)",
+            state_names={},
+            state_values={},
+            access_event_id=access_event_id,
+            subject_tombstone_key=subject_tombstone_key,
+        ):
+            raise ClientError(
+                {"Error": {"Code": "ConditionalCheckFailedException", "Message": "human credential fenced"}},
+                "TransactWriteItems",
+            )
         return record
     except ClientError as exc:
         if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
@@ -1949,8 +2103,21 @@ async def cas_human_broker_device(
     *,
     generation: int,
     state: str,
+    access_event_id: str | None = None,
+    subject_tombstone_key: str | None = None,
 ) -> bool:
     """Replace one human credential only while its generation/state match."""
+    if subject_tombstone_key is not None:
+        return await _transact_human_broker_device(
+            owner_id,
+            alias,
+            record,
+            state_condition="#devices.#alias.#generation = :generation AND #devices.#alias.#state = :state",
+            state_names={"#generation": "generation", "#state": "state"},
+            state_values={":generation": generation, ":state": state},
+            access_event_id=access_event_id,
+            subject_tombstone_key=subject_tombstone_key,
+        )
     try:
         await run_in_thread(
             _get_table().update_item,

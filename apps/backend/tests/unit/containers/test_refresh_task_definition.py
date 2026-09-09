@@ -6,9 +6,19 @@ the running task onto the new revision. Does NOT touch the EFS access
 point — losing agent state would be a backfill regression.
 """
 
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _lifecycle_guard_stub(monkeypatch):
+    @asynccontextmanager
+    async def unlocked(_owner_id, **_kwargs):
+        yield {}
+
+    monkeypatch.setattr("core.services.openclaw_release.owner_lifecycle_guard", unlocked)
 
 
 @pytest.mark.asyncio

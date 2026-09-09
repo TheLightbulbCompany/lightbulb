@@ -1,6 +1,8 @@
 """refresh_task_definition(extra_secrets=) + _build_slack_secrets_for_user."""
 
+import asyncio
 import os
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -8,6 +10,15 @@ import pytest
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 from core.containers import ecs_manager as em  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _lifecycle_guard_stub(monkeypatch):
+    @asynccontextmanager
+    async def unlocked(_owner_id, **_kwargs):
+        yield {}
+
+    monkeypatch.setattr("core.services.openclaw_release.owner_lifecycle_guard", unlocked)
 
 
 def _manager():
@@ -151,3 +162,40 @@ async def test_refresh_task_definition_serializes_per_owner():
         )
     assert results == ["arn:org_1", "arn:org_1", "arn:org_2"]
     assert overlap["seen"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"extra_secrets": [{"name": "SLACK_BOT_TOKEN_T1", "valueFrom": "arn:slack"}]},
+        {"drop_secrets": ["SLACK_BOT_TOKEN_T1"]},
+        {},
+    ],
+)
+async def test_refresh_modes_hold_release_lifecycle_exclusion_through_full_mutation(monkeypatch, kwargs):
+    """Slack install, uninstall, and hook-token refresh share one release fence."""
+
+    m = _manager()
+    held = False
+
+    @asynccontextmanager
+    async def lifecycle_guard(_owner_id, **_kwargs):
+        nonlocal held
+        held = True
+        try:
+            yield {}
+        finally:
+            held = False
+
+    async def mutation(_owner_id, **_kwargs):
+        assert held, "describe/register/deploy/row-write sequence escaped release exclusion"
+        await asyncio.sleep(0)
+        assert held, "release exclusion ended while the refresh mutation was in flight"
+        return "arn:new"
+
+    monkeypatch.setattr("core.services.openclaw_release.owner_lifecycle_guard", lifecycle_guard)
+    with patch.object(em.EcsManager, "_refresh_task_definition_locked", AsyncMock(side_effect=mutation)):
+        assert await m.refresh_task_definition("org_1", **kwargs) == "arn:new"
+
+    assert held is False

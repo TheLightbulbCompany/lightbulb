@@ -902,15 +902,21 @@ class EcsManager:
         both read the same old revision and the last register would silently
         drop the other's secret. One lock per owner makes them take turns.
         """
-        # ponytail: in-process lock. The backend runs one instance
-        # (desiredCount 1); the only overlap is the second task during a
-        # rolling deploy, and two Slack installs for one owner landing in that
-        # window is the case this deliberately leaves open. A DDB fence is the
-        # upgrade if that ever bites.
-        async with _owner_task_def_lock(owner_id):
-            return await self._refresh_task_definition_locked(
-                owner_id, extra_secrets=extra_secrets, drop_secrets=drop_secrets
-            )
+        from core.services.openclaw_release import OwnerReleaseConflict, owner_lifecycle_guard
+
+        try:
+            # Cross-process release exclusion is outermost; the existing local
+            # lock still serializes read-modify-register refreshes within this
+            # backend process. Both remain held through the ECS and row writes.
+            async with owner_lifecycle_guard(owner_id):
+                async with _owner_task_def_lock(owner_id):
+                    return await self._refresh_task_definition_locked(
+                        owner_id,
+                        extra_secrets=extra_secrets,
+                        drop_secrets=drop_secrets,
+                    )
+        except OwnerReleaseConflict as exc:
+            raise EcsManagerError(str(exc), owner_id) from exc
 
     async def _refresh_task_definition_locked(
         self,

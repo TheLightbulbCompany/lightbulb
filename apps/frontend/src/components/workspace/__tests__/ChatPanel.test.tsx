@@ -279,4 +279,17 @@ describe("ChatPanel", () => {
 
     expect(screen.getByText("Friday · Working")).toBeInTheDocument();
   });
+
+  it("surfaces an unrecognized durable agent status", () => {
+    agentsState = {
+      agents: [{ id: "agent-ceo", name: "Friday" }],
+      defaultId: "agent-ceo",
+      isSettled: true,
+    };
+    teamsAgentsData = { agents: [{ id: "agent-ceo", status: "rebalancing" }] };
+
+    render(<ChatPanel {...makeProps("agent-ceo")} />);
+
+    expect(screen.getByText("Friday · Rebalancing")).toBeInTheDocument();
+  });
 });

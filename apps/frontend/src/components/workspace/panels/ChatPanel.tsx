@@ -15,6 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { AgentChatWindow } from "@/components/chat/AgentChatWindow";
+import { unknownStateLabel } from "@/components/agents/AgentRoster";
 import { useRosterEntries } from "@/components/agents/useRosterEntries";
 import { useAgents, agentDisplayName } from "@/hooks/useAgents";
 import { useGateway } from "@/hooks/useGateway";
@@ -55,6 +56,8 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
           ? "Paused"
           : statusState === "terminated"
             ? "Unavailable"
+            : statusState === "unknown" && rosterEntry?.rawStatus
+              ? unknownStateLabel(rosterEntry.rawStatus)
             : statusState === "idle" && rosterEntry?.rawStatus
               ? "Ready"
               : "Status unavailable";

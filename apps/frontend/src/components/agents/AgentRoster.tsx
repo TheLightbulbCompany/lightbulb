@@ -155,7 +155,7 @@ export function rosterStateFor(status: string | null | undefined): RosterState {
 
 /** Render an unrecognised status readably without pretending to know it.
  *  Mirrors the org chart's `statusLabel` — capitalize the raw token. */
-function unknownStateLabel(status: string): string {
+export function unknownStateLabel(status: string): string {
   const trimmed = status.trim().slice(0, 24);
   return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
 }

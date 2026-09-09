@@ -1,5 +1,24 @@
 import { test, expect, vi, beforeEach } from "vitest";
-import { render, fireEvent, screen } from "@testing-library/react";
+import { render, fireEvent, screen, act } from "@testing-library/react";
+
+const stripeStatus = vi.hoisted(() => {
+  const enabled = {
+    account_id: null,
+    source: null,
+    details_submitted: false,
+    charges_enabled: false,
+    payouts_enabled: false,
+    livemode: null,
+    dashboard_url: null,
+    connect_configured: true,
+    provisioning_enabled: true,
+  };
+  return { enabled, data: enabled as typeof enabled | undefined };
+});
+
+vi.mock("@/components/settings/CompanyStripeSection", () => ({
+  useCompanyStripeStatus: () => stripeStatus,
+}));
 
 vi.mock("@/components/teams/command-palette/useFilteredCommandResults", () => ({
   useFilteredCommandResults: vi.fn(() => ({ agents: [], issues: [], projects: [] })),
@@ -10,7 +29,25 @@ import { useFilteredCommandResults } from "@/components/teams/command-palette/us
 
 beforeEach(() => {
   vi.clearAllMocks();
+  stripeStatus.data = stripeStatus.enabled;
   vi.mocked(useFilteredCommandResults).mockReturnValue({ agents: [], issues: [], projects: [] });
+});
+
+test("does not request provisioning status from the API", async () => {
+  const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("unexpected request"));
+  render(<CommandPalette open onOpenChange={vi.fn()} />);
+  await act(async () => {});
+  expect(fetchSpy).not.toHaveBeenCalled();
+});
+
+test.each([
+  ["enabled", stripeStatus.enabled, true],
+  ["disabled", { ...stripeStatus.enabled, provisioning_enabled: false }, false],
+  ["loading", undefined, false],
+])("shows provisioning-only navigation when status is %s", (_state, data, visible) => {
+  stripeStatus.data = data;
+  render(<CommandPalette open onOpenChange={vi.fn()} />);
+  expect(screen.queryByText("Domain & Site") !== null).toBe(visible);
 });
 
 test("renders 'Navigate' group with the IA nav actions on open with empty query", () => {

@@ -341,7 +341,8 @@ export class ServiceStack extends cdk.Stack {
     // s3://lightbulb-{env}-openclaw-replicas/{owner}/..., or the next boot's
     // restore resurrects pre-wipe state (sessions, device trust, auth rows
     // with live OAuth tokens). List+Delete only across the bucket — the
-    // backend's sole READ is the statement below.
+    // backend's standing READ is the OAuth statement below; the separate
+    // migration-only recovery read is declared immediately after it.
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "LitestreamReplicaLifecycle",
@@ -356,7 +357,7 @@ export class ServiceStack extends cdk.Stack {
         resources: [`arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*`],
       }),
     );
-    // The one read path: the OAuth seed harvest litestream-restores the
+    // The standing read path: the OAuth seed harvest litestream-restores the
     // DEFAULT agent's auth-store DB right before the prefix delete, to copy
     // the rotated ChatGPT refresh token back to DynamoDB
     // (oauth_service.harvest_rotated_oauth_seed) — without it, every
@@ -372,6 +373,21 @@ export class ServiceStack extends cdk.Stack {
         sid: "LitestreamReplicaAuthDbRead",
         actions: ["s3:GetObject"],
         resources: [`arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*/agents/main/agent/openclaw-agent.sqlite/*`],
+      }),
+    );
+    // A recovery set is produced only after the release executor has stopped
+    // the owner's service. The provider inventories and server-side copies the
+    // shared DB plus every non-tombstoned agent DB; it never reads the live
+    // replica bodies. Keep this separate from the default-agent OAuth read so
+    // the broader, migration-only permission remains explicit and auditable.
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "RecoverySetReplicaRead",
+        actions: ["s3:GetObject"],
+        resources: [
+          `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*/state/openclaw.sqlite/*`,
+          `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*/agents/*/agent/openclaw-agent.sqlite/*`,
+        ],
       }),
     );
 
@@ -1149,6 +1165,15 @@ export class ServiceStack extends cdk.Stack {
     });
 
     marketplaceArtifactsBucket.grantReadWrite(this.taskRole);
+    marketplaceArtifactsBucket.addToResourcePolicy(
+      new iam.PolicyStatement({
+        sid: "RecoverySetVersionDeletionDenied",
+        effect: iam.Effect.DENY,
+        principals: [this.taskRole],
+        actions: ["s3:DeleteObjectVersion"],
+        resources: [marketplaceArtifactsBucket.arnForObjects("recovery-sets/*")],
+      }),
+    );
 
     // -------------------------------------------------------------------------
     // CFN Templates S3 Bucket (public-read of the connector template only)

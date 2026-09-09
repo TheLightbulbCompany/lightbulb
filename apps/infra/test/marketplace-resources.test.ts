@@ -229,6 +229,39 @@ describe("ServiceStack — marketplace S3 bucket", () => {
       });
     }
   });
+
+  test("recovery-set object versions cannot be permanently deleted by the backend role", () => {
+    const policies = template.findResources("AWS::S3::BucketPolicy");
+    const statements = Object.values(policies).flatMap(
+      (policy) => policy.Properties.PolicyDocument.Statement,
+    );
+    const deny = statements.find(
+      (statement) => statement.Sid === "RecoverySetVersionDeletionDenied",
+    );
+
+    expect(deny).toMatchObject({
+      Effect: "Deny",
+      Action: "s3:DeleteObjectVersion",
+    });
+    expect(JSON.stringify(deny.Resource)).toContain("recovery-sets/*");
+    expect(JSON.stringify(deny.Principal)).toContain("TaskRole");
+  });
+
+  test("backend can read only the live Litestream database paths needed for recovery", () => {
+    const policies = template.findResources("AWS::IAM::Policy");
+    const statements = Object.values(policies).flatMap(
+      (policy) => policy.Properties.PolicyDocument.Statement,
+    );
+    const read = statements.find(
+      (statement) => statement.Sid === "RecoverySetReplicaRead",
+    );
+
+    expect(read).toMatchObject({ Effect: "Allow", Action: "s3:GetObject" });
+    const resources = JSON.stringify(read.Resource);
+    expect(resources).toContain("*/state/openclaw.sqlite/*");
+    expect(resources).toContain("*/agents/*/agent/openclaw-agent.sqlite/*");
+    expect(resources).not.toContain("recovery-sets");
+  });
 });
 
 describe("ServiceStack — gog file-keyring password", () => {

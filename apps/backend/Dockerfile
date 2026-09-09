@@ -42,11 +42,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # gog-builder stage for the version-pin rationale.
 COPY --from=gog-builder /go/bin/gog /usr/local/bin/gog
 
-# litestream — the OAuth seed harvest (oauth_service.harvest_rotated_oauth_seed)
-# restores the default agent's DB from its S3 replica to read the rotated
-# ChatGPT tokens back before a wipe destroys them. Version + sha pinned in
-# LOCKSTEP with apps/infra/openclaw/Dockerfile: the restore must speak the same
-# replica format the fleet's containers write.
+# litestream — OAuth seed harvest and pre-upgrade recovery-set verification
+# restore DBs from S3 before state is destroyed or migrated. Version + sha are
+# pinned in LOCKSTEP with apps/infra/openclaw/Dockerfile: both restore paths
+# must speak the same replica format the fleet's containers write.
 ARG LITESTREAM_VERSION=0.5.15
 ARG LITESTREAM_SHA256=839a68e69d111409262775bed78ba9f73f0835cfd23d8c128da21eedaedb50ba
 RUN set -eux; \

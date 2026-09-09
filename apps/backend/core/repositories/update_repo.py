@@ -192,6 +192,7 @@ async def reserve_owner_apply(
         raise ValueError("owner_id is invalid")
     update_id = _require_nonempty_string("update_id", expected_update.get("update_id"))
     update_type = _require_nonempty_string("update_type", expected_update.get("update_type"))
+    update_status = _require_nonempty_string("status", expected_update.get("status"))
     _require_nonempty_string("claim_id", claim_id)
     _require_nonempty_string("prior_task_definition_arn", prior_task_definition_arn)
 
@@ -239,7 +240,7 @@ async def reserve_owner_apply(
 
     if any(field in expected_container for field in _OWNER_APPLY_CONTAINER_EXCLUSIONS):
         return False
-    if expected_update.get("status") not in {"pending", "scheduled"}:
+    if update_status not in {"pending", "scheduled"}:
         return False
     if any(field in expected_update for field in _OWNER_APPLY_UPDATE_EXCLUSIONS):
         return False

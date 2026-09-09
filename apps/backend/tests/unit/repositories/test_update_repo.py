@@ -4,7 +4,6 @@ import os
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import boto3
@@ -755,21 +754,24 @@ async def test_owner_apply_update_race_changes_neither_row(dynamodb_table, monke
     containers, owner, queued = await _seed_owner_apply(update_repo)
     original_run = update_repo.run_in_thread
     calls = 0
+    winner_u = deepcopy(queued)
 
     async def inject_at_transaction(func, *args, **kwargs):
         nonlocal calls
         if getattr(func, "__name__", "") == "transact_write_items":
             calls += 1
             if mutation == "claimed":
-                expression, values = "SET apply_claim_id = :v", {":v": "rival"}
+                field, value = "apply_claim_id", "rival"
             elif mutation == "scheduled":
-                expression, values = "SET #s = :v", {":v": "scheduled"}
+                field, value = "status", "scheduled"
             elif mutation == "snoozed":
-                expression, values = "SET last_snoozed_at = :v", {":v": "later"}
+                field, value = "last_snoozed_at", "later"
             elif mutation == "edited":
-                expression, values = "SET changes = :v", {":v": {"target_release_id": "edited"}}
+                field, value = "changes", {"target_release_id": "edited"}
             else:
-                expression, values = f"SET {mutation} = :v", {":v": "later"}
+                field, value = mutation, "later"
+            expression = "SET #s = :v" if mutation == "scheduled" else f"SET {field} = :v"
+            values = {":v": value}
             names = {"#s": "status"} if mutation == "scheduled" else None
             request = {
                 "Key": {"owner_id": "u", "update_id": queued["update_id"]},
@@ -779,6 +781,7 @@ async def test_owner_apply_update_race_changes_neither_row(dynamodb_table, monke
             if names:
                 request["ExpressionAttributeNames"] = names
             dynamodb_table.update_item(**request)
+            winner_u[field] = value
         return await original_run(func, *args, **kwargs)
 
     monkeypatch.setattr(update_repo, "run_in_thread", inject_at_transaction)
@@ -786,7 +789,7 @@ async def test_owner_apply_update_race_changes_neither_row(dynamodb_table, monke
     assert calls == 1
     assert containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"] == owner
     stored_u = dynamodb_table.get_item(Key={"owner_id": "u", "update_id": queued["update_id"]})["Item"]
-    assert "release_revision" not in stored_u and "phase" not in stored_u and "ttl" not in stored_u
+    assert stored_u == winner_u
 
 
 @pytest.mark.asyncio
@@ -1112,6 +1115,37 @@ async def test_owner_apply_validation_rejects_non_dict_snapshots_without_io(monk
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("present", "status"),
+    [
+        (False, None),
+        (True, None),
+        (True, ["secret-status"]),
+        (True, {"secret-status": True}),
+        (True, ""),
+        (True, " "),
+    ],
+    ids=["missing", "null", "list", "dict", "empty", "whitespace"],
+)
+async def test_owner_apply_validation_rejects_malformed_status_before_io(monkeypatch, present, status):
+    from core.repositories import update_repo
+
+    owner, update, kwargs = _owner_apply_valid_arguments()
+    if present:
+        update["status"] = status
+    else:
+        update.pop("status")
+    monkeypatch.setattr(update_repo, "get_table", MagicMock(side_effect=AssertionError("unexpected I/O")))
+    monkeypatch.setattr(update_repo, "_get_table", MagicMock(side_effect=AssertionError("unexpected I/O")))
+
+    with pytest.raises(ValueError) as caught:
+        await update_repo.reserve_owner_apply(owner, update, "worker", **kwargs)
+
+    assert str(caught.value) == "status is invalid"
+    assert "secret-status" not in str(caught.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "revision",
     [-1, Decimal("1.5"), Decimal("NaN"), Decimal("Infinity"), True, 1.0, "1", None],
     ids=["negative", "fractional", "nan", "infinity", "bool", "float", "string", "null"],
@@ -1239,26 +1273,28 @@ def _owner_apply_transaction_error(reasons=None, *, code="TransactionCanceledExc
     ],
     ids=["first", "second", "both"],
 )
-async def test_owner_apply_transaction_classifier_returns_false_only_for_conditional_matrix(monkeypatch, reasons):
+async def test_owner_apply_transaction_classifier_returns_false_only_for_conditional_matrix(
+    dynamodb_table, monkeypatch, reasons
+):
     from core.repositories import update_repo
 
     error = _owner_apply_transaction_error(reasons)
-    client = SimpleNamespace(transact_write_items=MagicMock())
-    containers = SimpleNamespace(name="test-containers", meta=SimpleNamespace(client=client))
-    updates = SimpleNamespace(name="test-pending-updates")
-    monkeypatch.setattr(update_repo, "get_table", lambda name: containers)
-    monkeypatch.setattr(update_repo, "_get_table", lambda: updates)
+    containers, owner, update = await _seed_owner_apply(update_repo)
+    original_run = update_repo.run_in_thread
     calls = 0
 
     async def fail_once(func, *args, **kwargs):
         nonlocal calls
-        calls += 1
-        raise error
+        if getattr(func, "__name__", "") == "transact_write_items":
+            calls += 1
+            raise error
+        return await original_run(func, *args, **kwargs)
 
     monkeypatch.setattr(update_repo, "run_in_thread", fail_once)
-    owner, update, kwargs = _owner_apply_valid_arguments()
-    assert await update_repo.reserve_owner_apply(owner, update, "worker", **kwargs) is False
+    assert await _reserve_owner_apply(update_repo, owner, update) is False
     assert calls == 1
+    assert containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"] == owner
+    assert dynamodb_table.get_item(Key={"owner_id": "u", "update_id": update["update_id"]})["Item"] == update
 
 
 @pytest.mark.asyncio
@@ -1291,23 +1327,23 @@ async def test_owner_apply_transaction_classifier_returns_false_only_for_conditi
         "timeout",
     ],
 )
-async def test_owner_apply_transaction_classifier_propagates_unproven_failures(monkeypatch, failure):
+async def test_owner_apply_transaction_classifier_propagates_unproven_failures(dynamodb_table, monkeypatch, failure):
     from core.repositories import update_repo
 
-    client = SimpleNamespace(transact_write_items=MagicMock())
-    containers = SimpleNamespace(name="test-containers", meta=SimpleNamespace(client=client))
-    updates = SimpleNamespace(name="test-pending-updates")
-    monkeypatch.setattr(update_repo, "get_table", lambda name: containers)
-    monkeypatch.setattr(update_repo, "_get_table", lambda: updates)
+    containers, owner, update = await _seed_owner_apply(update_repo)
+    original_run = update_repo.run_in_thread
     calls = 0
 
     async def fail_once(func, *args, **kwargs):
         nonlocal calls
-        calls += 1
-        raise failure
+        if getattr(func, "__name__", "") == "transact_write_items":
+            calls += 1
+            raise failure
+        return await original_run(func, *args, **kwargs)
 
     monkeypatch.setattr(update_repo, "run_in_thread", fail_once)
-    owner, update, kwargs = _owner_apply_valid_arguments()
     with pytest.raises(type(failure)) as caught:
-        await update_repo.reserve_owner_apply(owner, update, "worker", **kwargs)
+        await _reserve_owner_apply(update_repo, owner, update)
     assert caught.value is failure and calls == 1
+    assert containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"] == owner
+    assert dynamodb_table.get_item(Key={"owner_id": "u", "update_id": update["update_id"]})["Item"] == update

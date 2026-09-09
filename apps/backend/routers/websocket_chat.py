@@ -1538,6 +1538,7 @@ async def _process_native_room_background(connection_id: str, body: dict) -> Non
             key = admitted.get("sessionKey") or admitted.get("key")
             # The independent native human socket owns the room ACL decision.
             native_run = None
+            native_run_created = False
             if method == "sessions.execution.dispatch":
                 gate = await pool.gate_chat(
                     user_id=identity.subject,
@@ -1546,7 +1547,7 @@ async def _process_native_room_background(connection_id: str, body: dict) -> Non
                 )
                 if gate.get("blocked"):
                     raise RoomError(gate.get("code", "blocked"), gate.get("message", "Chat blocked"))
-                native_run = await pool.native_rooms.begin_run(
+                native_run, native_run_created = await pool.native_rooms.begin_run(
                     identity.owner_id,
                     admitted["sessionKey"],
                     native_execution_run_id(conn.device.profile_id, admitted),
@@ -1554,17 +1555,13 @@ async def _process_native_room_background(connection_id: str, body: dict) -> Non
             try:
                 result = await conn.rpc(method, admitted)
             except RoomError as exc:
-                if native_run is not None and getattr(exc, "native_rejection", False):
+                if native_run is not None and native_run_created and getattr(exc, "native_rejection", False):
                     await pool.native_rooms.finish_run(*native_run)
                 raise
             if native_run is not None:
                 try:
-                    wait_result = await conn.rpc(
-                        "agent.wait", {"runId": native_run[2], "timeoutMs": 0}
-                    )
-                    if is_terminal_agent_wait_result(
-                        wait_result, native_run[2], admitted["expectedSessionId"]
-                    ):
+                    wait_result = await conn.rpc("agent.wait", {"runId": native_run[2], "timeoutMs": 0})
+                    if is_terminal_agent_wait_result(wait_result, native_run[2], admitted["expectedSessionId"]):
                         await pool.native_rooms.finish_run(*native_run)
                 except Exception:
                     # Reconciliation is observational. Unknown/transport
@@ -1597,10 +1594,7 @@ async def _process_native_room_background(connection_id: str, body: dict) -> Non
             elif method == "sessions.presence.unsubscribe":
                 conn.presence_subscriptions.discard(admitted["sessionKey"])
             result = _fit_rpc_result_for_frame(method, result)
-            if (
-                len(json.dumps(result, separators=(",", ":"), default=str).encode())
-                > _WS_FRAME_BUDGET_BYTES
-            ):
+            if len(json.dumps(result, separators=(",", ":"), default=str).encode()) > _WS_FRAME_BUDGET_BYTES:
                 raise RoomError("ROOM_UNAVAILABLE", "Native room result exceeds transport limit")
         await management.send_message_async(connection_id, {"type": "res", "id": req_id, "ok": True, "payload": result})
     except RoomError as exc:

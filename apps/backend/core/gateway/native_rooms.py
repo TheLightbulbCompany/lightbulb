@@ -110,8 +110,7 @@ class RoomQualification:
             len(bindings) != len(self.humans)
             or len(profiles) != len(self.humans)
             or any(
-                re.fullmatch(r"(?!gateway-owner$)[A-Za-z0-9_-]{1,128}", profile_id) is None
-                for profile_id in profiles
+                re.fullmatch(r"(?!gateway-owner$)[A-Za-z0-9_-]{1,128}", profile_id) is None for profile_id in profiles
             )
         ):
             raise RoomError("ROOM_UNAVAILABLE", "Qualified human device/profile bindings are ambiguous")
@@ -187,9 +186,7 @@ _SCHEMAS = {
             "roomKind": {"enum": ["channel", "dm", "group-dm", "thread"]},
             "members": {"type": "array", "maxItems": 128, "items": _MEMBER},
             "parentSessionKey": _STRING,
-            "threadOrigin": _object(
-                {"parentRoomKey": _STRING, "originRootMessageId": _STRING}, ("parentRoomKey",)
-            ),
+            "threadOrigin": _object({"parentRoomKey": _STRING, "originRootMessageId": _STRING}, ("parentRoomKey",)),
         },
         ("agentId", "idempotencyKey", "roomKind", "members"),
     ),
@@ -423,9 +420,7 @@ def filter_rpc_result(method: str, result, identity: HumanIdentity, qualificatio
         profiles = {human.profile_id for human in qualification.humans.values()}
         return {
             **result,
-            "users": [
-                item for item in result["users"] if isinstance(item, dict) and item.get("profileId") in profiles
-            ],
+            "users": [item for item in result["users"] if isinstance(item, dict) and item.get("profileId") in profiles],
         }
     return result
 
@@ -467,10 +462,7 @@ def is_terminal_agent_wait_result(result, run_id: str, session_id: str) -> bool:
         and isinstance(receipt.get("turnId"), str)
         and receipt["turnId"]
         and isinstance(requested, dict)
-        and all(
-            isinstance(requested.get(field), str) and requested[field]
-            for field in ("provider", "model")
-        )
+        and all(isinstance(requested.get(field), str) and requested[field] for field in ("provider", "model"))
         and isinstance(effective, dict)
         and all(
             isinstance(effective.get(field), str) and effective[field]
@@ -682,9 +674,7 @@ class NativeHumanConnection:
         ):
             run = (self.identity.owner_id, key, run_id)
             await _finish_native_run(self.conn_svc, self.run_holds, run)
-        subscribed = (
-            self.presence_subscriptions if frame.get("event") == "session.presence" else self.subscriptions
-        )
+        subscribed = self.presence_subscriptions if frame.get("event") == "session.presence" else self.subscriptions
         if key not in subscribed:
             return
         # Native sender/creator/entryId/parentId/runId evidence stays intact.
@@ -736,18 +726,11 @@ class NativeRoomPool:
             if self.closed:
                 raise RoomError("ROOM_UNAVAILABLE", "Room pool is shutting down")
             existing = self.connections.get(identity)
-            if (
-                existing
-                and not existing.closed
-                and existing.qualification == qualification
-                and existing.token == token
-            ):
+            if existing and not existing.closed and existing.qualification == qualification and existing.token == token:
                 return existing
             if existing:
                 await existing.close()
-            conn = NativeHumanConnection(
-                identity, qualification, device, token, self.management_api, self.conn_svc
-            )
+            conn = NativeHumanConnection(identity, qualification, device, token, self.management_api, self.conn_svc)
             conn.run_holds = self.run_holds
             try:
                 await conn.connect()
@@ -763,11 +746,11 @@ class NativeRoomPool:
             identity.owner_id == owner_id and not conn.closed for identity, conn in self.connections.items()
         )
 
-    async def begin_run(self, owner_id: str, session_key: str, run_id: str) -> tuple[str, str, str]:
+    async def begin_run(self, owner_id: str, session_key: str, run_id: str) -> tuple[tuple[str, str, str], bool]:
         run = (owner_id, session_key, run_id)
-        await self.conn_svc.begin_native_run(*run)
+        created = await self.conn_svc.begin_native_run(*run)
         self.run_holds.add(run)
-        return run
+        return run, created
 
     async def finish_run(self, owner_id: str, session_key: str, run_id: str) -> None:
         """Release only canonical terminal or explicit reconciliation evidence."""

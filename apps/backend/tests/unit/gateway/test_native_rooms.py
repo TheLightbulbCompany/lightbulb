@@ -679,16 +679,7 @@ async def test_append_receipt_replay_and_identity_bypass_billing_and_holds(harne
     assert len(appends) == 3 and all(call["params"] == params for call in appends)
     assert h.native.connections[identity()].profile["id"] == "profile-user_A"
     assert h.native.connections[identity("user_B", "tab-b")].profile["id"] == "profile-user_B"
-    assert (
-        len(
-            {
-                call["params"]["device"]["id"]
-                for call in h.gateway.calls
-                if call["method"] == "connect"
-            }
-        )
-        == 2
-    )
+    assert len({call["params"]["device"]["id"] for call in h.gateway.calls if call["method"] == "connect"}) == 2
     h.pool.gate_chat.assert_not_awaited()
     h.service.begin_native_run.assert_not_awaited()
     h.service.finish_native_run.assert_not_awaited()
@@ -793,9 +784,7 @@ async def test_reviewed_room_methods_forward_only_their_closed_native_contract(h
     forwarded = [call for call in harness.gateway.calls if call["method"] == method]
     assert forwarded[-1]["params"] == params
     if method == "sessions.execution.dispatch":
-        harness.pool.gate_chat.assert_awaited_once_with(
-            user_id="user_A", owner_id="org_team", session_key=room_key()
-        )
+        harness.pool.gate_chat.assert_awaited_once_with(user_id="user_A", owner_id="org_team", session_key=room_key())
     else:
         harness.pool.gate_chat.assert_not_awaited()
 
@@ -836,6 +825,22 @@ async def test_dispatch_verified_rejection_releases_hold(harness):
     assert result["error"] == h.gateway.error
     h.service.finish_native_run.assert_awaited_once_with(*run)
     assert run not in h.native.run_holds
+
+
+@pytest.mark.asyncio
+async def test_dispatch_retry_rejection_preserves_an_existing_hold(harness):
+    h = harness
+    await h.request("connect")
+    run = ("org_team", room_key(), rooms.native_execution_run_id("profile-user_A", dispatch_params()))
+    h.native.run_holds.add(run)
+    h.service.begin_native_run.return_value = False
+    h.gateway.error = {"code": "INVALID_REQUEST", "message": "execution input is not current"}
+
+    result = await h.request("sessions.execution.dispatch", dispatch_params())
+
+    assert result["error"] == h.gateway.error
+    h.service.finish_native_run.assert_not_awaited()
+    assert run in h.native.run_holds
 
 
 @pytest.mark.asyncio

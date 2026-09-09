@@ -65,7 +65,7 @@ async def reserve_owner_apply(
 
 Read this task first. Existing `get_table`, `_get_table`, `run_in_thread`, `utc_now_iso`, `time` and `uuid` are the reuse points. Add only stdlib `Decimal` and existing `botocore.exceptions.ClientError` imports when needed. The caller supplies strongly consistent snapshots and must hold the canonical owner recovery guard before invoking reservation; repository code acquires no filesystem lock, performs no ECS/credential/config operation and schedules no work.
 
-- [ ] **Step 1: Add focused real-Moto tests, using test names containing `owner_apply` (including lookup tests).** Extend `dynamodb_table` to create `test-containers` with `owner_id` HASH in the same resource/context. Seed rows through that resource; do not mock away `transact_write_items` for success or race tests.
+- [x] **Step 1: Add focused real-Moto tests, using test names containing `owner_apply` (including lookup tests).** Extend `dynamodb_table` to create `test-containers` with `owner_id` HASH in the same resource/context. Seed rows through that resource; do not mock away `transact_write_items` for success or race tests.
 
 Representative behavioral test:
 
@@ -110,7 +110,7 @@ Also cover these exact cases, parameterizing same-shape cases:
 7. Lookup passes ConsistentRead false by default and true explicitly, exact composite key; present returns actual row, missing None; unexpected AWS errors propagate. Validate nonempty lookup keys.
 8. Transaction cancellation classifier: return False only for an exactly two-entry reason list, each dictionary with Code in (`ConditionalCheckFailed`, `None` string, actual None), at least one conditional failure. Cover single/either/both conditional failure; propagate missing/malformed/wrong-count reasons, missing Code, no conditional failure, unknown/operational/mixed reasons, non-cancellation ClientError and transport timeout. For injected failures assert no row mutation and one call; no retries or read/adopt.
 
-- [ ] **Step 2: Prove RED before implementation.** From `apps/backend`:
+- [x] **Step 2: Prove RED before implementation.** From `apps/backend`:
 
 ```sh
 AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing AWS_EC2_METADATA_DISABLED=true PYTHONPATH=. /Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend/.venv/bin/python -m pytest tests/unit/repositories/test_update_repo.py -k owner_apply -q -o addopts=''
@@ -118,7 +118,7 @@ AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing AWS_EC2_METADATA_DISABLE
 
 Expected: new tests fail because APIs do not exist. Record exact result and representative failures, then implement and rerun focused selection while iterating.
 
-- [ ] **Step 3: Implement the lookup, validation and fixed two-row transaction.** The lookup is ordinary `get_item` with explicit `ConsistentRead`. Reservation validates before resolving tables. Keys/claim/prior ARN must be nonempty strings (reject whitespace-only; do not trim or modify values). Counts require `type(value) is int and value >= 0`. Revision accepts int or finite integral Decimal, excludes bool, rejects negatives, normalizes to int; omitted revision0 remains an absent condition. Optional release IDs are either omitted or nonempty strings; require desired/active equal with exact matching presence. `expected_update` must have nonempty update_type, dictionary changes and matching owner. A release requires matching `changes.target_release_id` and nonempty explicit target; a non-release requires target None. Raise ValueError for malformed arguments. A well-formed but ineligible snapshot returns False without I/O.
+- [x] **Step 3: Implement the lookup, validation and fixed two-row transaction.** The lookup is ordinary `get_item` with explicit `ConsistentRead`. Reservation validates before resolving tables. Keys/claim/prior ARN must be nonempty strings (reject whitespace-only; do not trim or modify values). Counts require `type(value) is int and value >= 0`. Revision accepts int or finite integral Decimal, excludes bool, rejects negatives, normalizes to int; omitted revision0 remains an absent condition. Optional release IDs are either omitted or nonempty strings; require desired/active equal with exact matching presence. `expected_update` must have nonempty update_type, dictionary changes and matching owner. A release requires matching `changes.target_release_id` and nonempty explicit target; a non-release requires target None. Raise ValueError for malformed arguments. A well-formed but ineligible snapshot returns False without I/O.
 
 Ineligible C fields (must all be absent): `release_update_id`, `provision_claim_id`, `provision_attempt_token`, `provision_execution_name`. Ineligible U fields (must all be absent): `release_revision`, `container_id`, `apply_claim_id`, `apply_claimed_at`, `phase`, `target_release_id`, `prior_release_id`, `prior_desired_release_id`, `prior_task_definition_arn`, `prior_desired_count`, `target_desired_count`, `target_task_definition_arn`, `staged_config_sha256`, `prior_config_sha256`, `effect_kind`, `effect_claim_id`, `effect_executor_id`, `applied_at`, `failure_reason`. U status must be pending or scheduled; TTL alone is permitted and removed atomically.
 
@@ -161,7 +161,7 @@ await run_in_thread(
 
 These are native Python Key/value dictionaries: the configured resource client serializes them recursively. Do not use TypeSerializer, typed DynamoDB JSON, a bare boto3 client, nested Attr condition objects, separate ConditionCheck on an updated row, or ReturnValues=ALL_NEW. Use one request, return True on success. No explicit ClientRequestToken reuse, external retry loop, post-write reread, new UUID owner identity, broad catch, logging config/change values, or fallback to one-row writes. On ClientError, return False only for the exact proven conditional-cancellation matrix from Step1; all other errors re-raise unchanged. A timeout is not proof of failed commit.
 
-- [ ] **Step 4: Verify, self-review and commit.** Focused GREEN then this broader regression command once after final changes:
+- [x] **Step 4: Verify, self-review and commit.** Focused GREEN then this broader regression command once after final changes:
 
 ```sh
 AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing AWS_EC2_METADATA_DISABLED=true PYTHONPATH=. /Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend/.venv/bin/python -m pytest tests/unit/repositories/test_update_repo.py tests/unit/repositories/test_container_repo.py tests/unit/repositories/test_container_repo_provision_claim.py tests/unit/services/test_update_service.py -q -o addopts=''

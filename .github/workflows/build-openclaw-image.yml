@@ -54,8 +54,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write
-  packages: read
 
 jobs:
   image-proof-tests:
@@ -117,6 +115,10 @@ jobs:
 
   build-and-push:
     name: Build and push extended OpenClaw image
+    permissions:
+      contents: read
+      id-token: write
+      packages: read
     # A boot chain that fails its own suite must never reach ECR.
     needs: [boot-chain-smoke, image-proof-tests]
     if: github.event_name != 'pull_request'

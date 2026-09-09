@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { act, render, screen, fireEvent } from "@testing-library/react";
 
 import { DEFAULT_AGENT_SENTINEL } from "../panelRegistry";
 
@@ -28,8 +28,18 @@ vi.mock("@/hooks/useTeamsApi", () => ({
 }));
 
 let gatewayState = { nodeConnected: false, nodeStatus: "disconnected" };
+let gatewayListener: ((message: {
+  type: string;
+  active?: boolean;
+  agent_id?: string;
+  session_id?: string;
+}) => void) | null = null;
+const onChatMessage = vi.fn((listener: typeof gatewayListener) => {
+  gatewayListener = listener;
+  return () => {};
+});
 vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => gatewayState,
+  useGateway: () => ({ ...gatewayState, onChatMessage }),
 }));
 
 const pause = vi.fn(async () => {});
@@ -77,6 +87,8 @@ beforeEach(() => {
   agentsState = { agents: [], defaultId: undefined, isSettled: true };
   teamsAgentsData = undefined;
   gatewayState = { nodeConnected: false, nodeStatus: "disconnected" };
+  gatewayListener = null;
+  onChatMessage.mockClear();
   openPanel.mockClear();
   pause.mockClear();
   resume.mockClear();
@@ -239,5 +251,28 @@ describe("ChatPanel", () => {
 
     expect(screen.getByText("Working")).toBeInTheDocument();
     expect(screen.getByText("Local tools available")).toBeInTheDocument();
+  });
+
+  it("includes an active private webchat run in the agent status", () => {
+    agentsState = {
+      agents: [{ id: "agent-ceo", name: "Friday" }],
+      defaultId: "agent-ceo",
+      isSettled: true,
+    };
+    teamsAgentsData = { agents: [{ id: "agent-ceo", status: "idle" }] };
+
+    render(<ChatPanel {...makeProps("agent-ceo")} />);
+    expect(screen.getByText("Friday · Ready")).toBeInTheDocument();
+
+    act(() => {
+      gatewayListener?.({
+        type: "run_active",
+        active: true,
+        agent_id: "agent-ceo",
+        session_id: "private-session",
+      });
+    });
+
+    expect(screen.getByText("Friday · Working")).toBeInTheDocument();
   });
 });

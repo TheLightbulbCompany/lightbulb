@@ -77,7 +77,7 @@ export function WorkspaceHeader({ onResetLayout }: WorkspaceHeaderProps): React.
       >
         <Search size={15} aria-hidden="true" />
         <span>Search agents, tasks, and work</span>
-        <kbd>⌘ K</kbd>
+        <kbd>⌘/Ctrl K</kbd>
       </button>
       <div className="workspace-header__spacer" />
       <Tooltip>

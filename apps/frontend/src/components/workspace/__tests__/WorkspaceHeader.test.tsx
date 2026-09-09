@@ -40,6 +40,6 @@ describe("WorkspaceHeader", () => {
     fireEvent.click(screen.getByRole("button", { name: /Search agents, tasks, and work/ }));
 
     expect(setPaletteOpen).toHaveBeenCalledWith(true);
-    expect(screen.getByText("⌘ K")).toBeInTheDocument();
+    expect(screen.getByText("⌘/Ctrl K")).toBeInTheDocument();
   });
 });

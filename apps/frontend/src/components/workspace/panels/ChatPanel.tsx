@@ -15,11 +15,10 @@ import {
   X,
 } from "lucide-react";
 import { AgentChatWindow } from "@/components/chat/AgentChatWindow";
+import { useRosterEntries } from "@/components/agents/useRosterEntries";
 import { useAgents, agentDisplayName } from "@/hooks/useAgents";
 import { useGateway } from "@/hooks/useGateway";
-import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
-import { classifyAgentStatus } from "@/components/teams/shared/lib/agentStatus";
 import { DEFAULT_AGENT_SENTINEL } from "../panelRegistry";
 import { openPanel } from "../workspaceController";
 
@@ -41,28 +40,22 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
   const agentGone =
     isSettled && raw !== DEFAULT_AGENT_SENTINEL && !agents.some((a) => a.id === raw);
 
-  // Per-agent action cluster (moved from ChatLayout's header — it has no
-  // single referent in a multi-chat world). Roster read is the GLOBAL
-  // /teams/agents SWR key: N panels dedupe to one fetch, and pause/resume
-  // revalidates the same key so every panel's icon updates together.
-  const { read: readTeams } = useTeamsApi();
-  const { data: teamsAgentsData } = readTeams<{ agents?: { id: string; status?: string | null }[] }>(
-    "/agents",
-  );
+  // Reuse the roster's durable + live gateway state so an active private
+  // webchat never reads "Ready" here while the sidebar reads "Working".
+  const rosterEntry = useRosterEntries(agents).find((entry) => entry.agent.id === resolvedId);
   const { pause, resume } = useAgentMutations();
-  const agentStatus = teamsAgentsData?.agents?.find((a) => a.id === resolvedId)?.status;
-  const statusClass = classifyAgentStatus(agentStatus);
-  const paused = statusClass === "paused";
+  const statusState = rosterEntry?.state;
+  const paused = statusState === "paused";
   const statusLabel =
-    statusClass === "live"
+    statusState === "running"
       ? "Working"
-      : statusClass === "attention"
+      : statusState === "attention"
         ? "Needs attention"
-        : statusClass === "paused"
+        : statusState === "paused"
           ? "Paused"
-          : statusClass === "terminated"
+          : statusState === "terminated"
             ? "Unavailable"
-            : statusClass === "idle"
+            : statusState === "idle" && rosterEntry?.rawStatus
               ? "Ready"
               : "Status unavailable";
   const [busy, setBusy] = useState(false);
@@ -208,7 +201,7 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
                   <strong>Lightbulb cloud</strong>
                   <span>{title}&apos;s agent runtime</span>
                 </div>
-                <b className={statusClass === "attention" ? "text-err" : statusClass === "live" ? "text-info" : statusClass === "paused" ? "text-warn" : "text-[var(--midnight-muted)]"}>
+                <b className={statusState === "attention" ? "text-err" : statusState === "running" ? "text-info" : statusState === "paused" ? "text-warn" : "text-[var(--midnight-muted)]"}>
                   {statusLabel}
                 </b>
               </div>

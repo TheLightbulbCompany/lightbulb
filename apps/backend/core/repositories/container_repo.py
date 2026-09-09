@@ -517,7 +517,8 @@ async def try_claim_provision(
             UpdateExpression=update_expr,
             ConditionExpression=(
                 "(attribute_not_exists(owner_id) "
-                "OR ((#s = :error OR #s = :stopped) "
+                "OR #s = :error "
+                "OR (#s = :stopped "
                 "AND attribute_not_exists(provision_claim_id) "
                 "AND attribute_not_exists(provision_attempt_token)) "
                 "OR (#s = :prov AND (attribute_not_exists(provision_claimed_at) OR provision_claimed_at < :stale))) "

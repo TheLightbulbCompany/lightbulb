@@ -71,3 +71,22 @@ AWS_EC2_METADATA_DISABLED=true AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=t
 Verified no owner-admin fallback, no client actor/scopes/device-role input, correct native method key spellings, private/foreign namespace denial, distinct human and tab keys, original native error/lineage preservation, actor+room idempotency, no automatic consequential retry, gate-before-send, current membership before replies/events, per-client subscription cleanup and fail-closed unknown runtime. Existing legacy route/pool/allowlist/history/auth tests pass. Native/private target checks and qualification flags are defensive code, not evidence that native machine coexistence or legacy privacy migration is complete.
 
 Commit: the code and this report are committed together on the assigned branch; exact commit ID is returned in the implementer's final handoff (avoids embedding a self-referential hash). Controller owns independent security/integration review, PR creation and any runtime qualification/activation decision.
+
+## PR 2403 CI formatting correction
+
+Controller reported CI run `34302638132` failed only `ruff format --check` for `core/services/connection_service.py`; Ruff lint passed and the other 936 files were formatted. Reproduced locally with the installed Python3.12 toolchain: `python -m ruff --version` returned `ruff 0.15.6`, exactly matching `apps/backend/uv.lock:1587`. No dependency changes.
+
+From the worktree root, using `/Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend/.venv/bin/python`:
+
+```sh
+python -m ruff format --check --no-cache apps/backend/core/services/connection_service.py
+# Exit 1: 1 file would be reformatted.
+python -m ruff format --no-cache apps/backend/core/services/connection_service.py
+# Exit 0: 1 file reformatted.
+python -m ruff format --check --no-cache apps/backend/core/services/connection_service.py
+# Exit 0: 1 file already formatted.
+git diff --check
+# Exit 0.
+```
+
+The sole code-file delta splits four provenance mapping tuples onto separate lines. No behavior change; no broader tests rerun. Commit contains only that file and this report; no push performed.

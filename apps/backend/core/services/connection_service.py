@@ -219,8 +219,10 @@ class ConnectionService:
             **{
                 name: item.get(field, {}).get("S", "")
                 for name, field in (
-                    ("auth_kind", "authKind"), ("verified_issuer", "verifiedIssuer"),
-                    ("verified_subject", "verifiedSubject"), ("source_ip", "sourceIp"),
+                    ("auth_kind", "authKind"),
+                    ("verified_issuer", "verifiedIssuer"),
+                    ("verified_subject", "verifiedSubject"),
+                    ("source_ip", "sourceIp"),
                 )
                 if field in item
             },

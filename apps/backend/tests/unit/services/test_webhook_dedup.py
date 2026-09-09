@@ -9,10 +9,14 @@ from botocore.exceptions import ClientError
 from moto import mock_aws
 
 from core.services.webhook_dedup import (
+    MembershipLifecycleInProgress,
     WebhookProcessingInProgress,
     WebhookDedupResult,
+    begin_membership_lifecycle,
     begin_event_processing,
+    complete_membership_lifecycle,
     complete_event_processing,
+    get_membership_lifecycle,
     record_event_or_skip,
     record_permanent_marker,
 )
@@ -176,3 +180,58 @@ async def test_permanent_marker_has_no_ttl_and_is_idempotent(dedup_table, monkey
     )["Item"]
     assert item["state"] == "completed"
     assert "ttl" not in item
+
+
+@pytest.mark.asyncio
+async def test_container_independent_membership_epoch_serializes_and_rejects_stale_events(
+    dedup_table, monkeypatch
+):
+    monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", dedup_table)
+    owner_id = "org_without_container"
+    alias = "clerk-" + "a" * 64 + "@identity.lightbulb.invalid"
+    delete_sequence = "00000000000000000001:1:msg_delete"
+    create_sequence = "00000000000000000002:0:msg_create"
+
+    delete_claim = await begin_membership_lifecycle(
+        owner_id,
+        alias,
+        event_id="msg_delete",
+        sequence=delete_sequence,
+        access_state="revoked",
+    )
+    assert delete_claim is not None
+    with pytest.raises(MembershipLifecycleInProgress):
+        await begin_membership_lifecycle(
+            owner_id,
+            alias,
+            event_id="msg_create",
+            sequence=create_sequence,
+            access_state="allowed",
+        )
+
+    await complete_membership_lifecycle(owner_id, alias, delete_claim)
+    create_claim = await begin_membership_lifecycle(
+        owner_id,
+        alias,
+        event_id="msg_create",
+        sequence=create_sequence,
+        access_state="allowed",
+    )
+    assert create_claim is not None
+    await complete_membership_lifecycle(owner_id, alias, create_claim)
+
+    assert (
+        await begin_membership_lifecycle(
+            owner_id,
+            alias,
+            event_id="msg_delete_late",
+            sequence=delete_sequence,
+            access_state="revoked",
+        )
+        is None
+    )
+    assert await get_membership_lifecycle(owner_id, alias) == {
+        "event_id": "msg_create",
+        "sequence": create_sequence,
+        "state": "allowed",
+    }

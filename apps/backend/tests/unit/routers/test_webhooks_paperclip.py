@@ -36,10 +36,24 @@ def socket_cleanup_io(monkeypatch):
     service.query_by_owner = AsyncMock(return_value=[])
     service.pending_member_revocations = AsyncMock(return_value=set())
     pool = GatewayConnectionPool(MagicMock(), service)
+    access = {}
+    lifecycle = {}
+
+    async def get_container(owner_id, *, consistent=False):
+        return {"owner_id": owner_id, "human_broker_devices": {}, "human_broker_access": dict(access)}
+
+    async def set_access(owner_id, alias, marker):
+        access[alias] = marker
+        return marker
+
+    async def begin_membership(owner_id, alias, *, event_id, sequence, access_state, **kwargs):
+        lifecycle[(owner_id, alias)] = {"event_id": event_id, "sequence": sequence, "state": access_state}
+        return "membership_claim_test"
+
     monkeypatch.setattr("core.containers.get_gateway_pool", lambda: pool)
     monkeypatch.setattr(
         "core.services.human_broker_provisioning.container_repo.get_by_owner_id",
-        AsyncMock(return_value={"human_broker_devices": {}}),
+        get_container,
     )
     monkeypatch.setattr(
         "core.services.human_broker_provisioning.container_repo.scan_all",
@@ -47,7 +61,7 @@ def socket_cleanup_io(monkeypatch):
     )
     monkeypatch.setattr(
         "core.services.human_broker_provisioning.container_repo.set_human_broker_access",
-        AsyncMock(side_effect=lambda owner_id, alias, marker: marker),
+        set_access,
     )
     monkeypatch.setattr("core.services.billing_service.sync_team_seat_quantity", AsyncMock())
     monkeypatch.setattr(
@@ -56,6 +70,14 @@ def socket_cleanup_io(monkeypatch):
         AsyncMock(return_value="claim_test"),
     )
     monkeypatch.setattr(_webhook_dedup, "complete_event_processing", AsyncMock())
+    monkeypatch.setattr(_webhook_dedup, "begin_membership_lifecycle", AsyncMock(side_effect=begin_membership))
+    monkeypatch.setattr(_webhook_dedup, "renew_membership_lifecycle", AsyncMock())
+    monkeypatch.setattr(_webhook_dedup, "complete_membership_lifecycle", AsyncMock())
+    monkeypatch.setattr(
+        _webhook_dedup,
+        "get_membership_lifecycle",
+        AsyncMock(side_effect=lambda owner_id, alias: lifecycle.get((owner_id, alias))),
+    )
     return pool
 
 
@@ -157,6 +179,46 @@ async def test_stale_membership_delete_skips_paperclip_and_seat_side_effects(mon
 
     factory.assert_not_awaited()
     billing_service.sync_team_seat_quantity.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("supersede_after", ["paperclip-archived", "seat-synced"])
+async def test_newer_admission_stops_old_delete_during_paperclip_and_seat_cleanup(
+    monkeypatch,
+    supersede_after,
+):
+    from core.services import billing_service, human_broker_provisioning
+    from routers import webhooks
+
+    events = []
+    provisioning = AsyncMock()
+    provisioning.archive_member.side_effect = lambda **kwargs: events.append("paperclip-archived")
+    sync = AsyncMock(side_effect=lambda org_id: events.append("seat-synced"))
+
+    async def renew(org_id, user_id, claim_id):
+        if supersede_after in events:
+            raise _webhook_dedup.MembershipLifecycleSuperseded("newer create owns lifecycle")
+
+    monkeypatch.setattr(
+        human_broker_provisioning,
+        "revoke_human_subject",
+        AsyncMock(return_value=human_broker_provisioning.HumanRevocationOutcome.APPLIED),
+    )
+    monkeypatch.setattr(webhooks, "_renew_member_lifecycle", AsyncMock(side_effect=renew))
+    monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=provisioning))
+    monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
+    monkeypatch.setattr(billing_service, "sync_team_seat_quantity", sync)
+
+    with pytest.raises(_webhook_dedup.MembershipLifecycleSuperseded):
+        await webhooks._handle_organization_membership_deleted(
+            {"organization": {"id": "org_acme"}, "user_id": "member"},
+            revocation_id="msg_membership_deleted",
+            revocation_sequence="00000000000000000001:1:msg_membership_deleted",
+            lifecycle_claim_id="delete-claim",
+        )
+
+    if supersede_after == "paperclip-archived":
+        assert "seat-synced" not in events
 
 
 # ----------------------------------------------------------------------

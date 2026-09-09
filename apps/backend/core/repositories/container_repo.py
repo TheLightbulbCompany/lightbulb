@@ -1933,6 +1933,8 @@ async def _transact_human_broker_device(
     access_event_id: str | None,
     access_state: str,
     subject_tombstone_key: str,
+    membership_lifecycle_key: str | None = None,
+    membership_claim_id: str | None = None,
 ) -> bool:
     """Atomically fence one credential transition against both deny authorities."""
     table = _get_table()
@@ -1950,37 +1952,62 @@ async def _transact_human_broker_device(
         **access_values,
         **state_values,
     }
+    transaction_items = [
+        {
+            "ConditionCheck": {
+                "TableName": marker_table.name,
+                "Key": {"event_id": subject_tombstone_key},
+                "ConditionExpression": "attribute_not_exists(event_id)",
+            }
+        }
+    ]
+    if membership_lifecycle_key is not None:
+        membership_condition = "lifecycle_event_id = :membership_event AND access_state = :membership_access"
+        membership_values = {
+            ":membership_event": access_event_id,
+            ":membership_access": access_state,
+        }
+        if membership_claim_id is not None:
+            membership_condition += " AND lifecycle_status = :processing AND claim_id = :membership_claim"
+            membership_values.update(
+                {
+                    ":processing": "processing",
+                    ":membership_claim": membership_claim_id,
+                }
+            )
+        transaction_items.append(
+            {
+                "ConditionCheck": {
+                    "TableName": marker_table.name,
+                    "Key": {"event_id": membership_lifecycle_key},
+                    "ConditionExpression": membership_condition,
+                    "ExpressionAttributeValues": membership_values,
+                }
+            }
+        )
+    transaction_items.append(
+        {
+            "Update": {
+                "TableName": table.name,
+                "Key": {"owner_id": owner_id},
+                "UpdateExpression": "SET #devices.#alias = :record, updated_at = :now",
+                "ConditionExpression": f"attribute_exists(owner_id) AND {state_condition} AND {access_condition}",
+                "ExpressionAttributeNames": names,
+                "ExpressionAttributeValues": values,
+            }
+        }
+    )
     try:
         await run_in_thread(
             table.meta.client.transact_write_items,
-            TransactItems=[
-                {
-                    "ConditionCheck": {
-                        "TableName": marker_table.name,
-                        "Key": {"event_id": subject_tombstone_key},
-                        "ConditionExpression": "attribute_not_exists(event_id)",
-                    }
-                },
-                {
-                    "Update": {
-                        "TableName": table.name,
-                        "Key": {"owner_id": owner_id},
-                        "UpdateExpression": "SET #devices.#alias = :record, updated_at = :now",
-                        "ConditionExpression": (
-                            f"attribute_exists(owner_id) AND {state_condition} AND {access_condition}"
-                        ),
-                        "ExpressionAttributeNames": names,
-                        "ExpressionAttributeValues": values,
-                    }
-                },
-            ],
+            TransactItems=transaction_items,
         )
         return True
     except ClientError as exc:
         if exc.response["Error"]["Code"] != "TransactionCanceledException":
             raise
         reasons = exc.response.get("CancellationReasons")
-        if not isinstance(reasons, list) or len(reasons) != 2:
+        if not isinstance(reasons, list) or len(reasons) != len(transaction_items):
             raise
         codes = [reason.get("Code") if isinstance(reason, dict) else None for reason in reasons]
         if any(code not in {"ConditionalCheckFailed", "None", None} for code in codes):
@@ -2047,6 +2074,8 @@ async def create_human_broker_device(
     *,
     access_event_id: str | None = None,
     subject_tombstone_key: str | None = None,
+    membership_lifecycle_key: str | None = None,
+    membership_claim_id: str | None = None,
 ) -> dict:
     """Create one durable human credential, returning the concurrent winner.
 
@@ -2082,6 +2111,8 @@ async def create_human_broker_device(
             access_event_id=access_event_id,
             access_state="allowed",
             subject_tombstone_key=subject_tombstone_key,
+            membership_lifecycle_key=membership_lifecycle_key,
+            membership_claim_id=membership_claim_id,
         ):
             raise ClientError(
                 {"Error": {"Code": "ConditionalCheckFailedException", "Message": "human credential fenced"}},
@@ -2108,6 +2139,8 @@ async def cas_human_broker_device(
     access_event_id: str | None = None,
     access_state: str = "allowed",
     subject_tombstone_key: str | None = None,
+    membership_lifecycle_key: str | None = None,
+    membership_claim_id: str | None = None,
 ) -> bool:
     """Replace one human credential only while its generation/state match."""
     if subject_tombstone_key is not None:
@@ -2121,6 +2154,8 @@ async def cas_human_broker_device(
             access_event_id=access_event_id,
             access_state=access_state,
             subject_tombstone_key=subject_tombstone_key,
+            membership_lifecycle_key=membership_lifecycle_key,
+            membership_claim_id=membership_claim_id,
         )
     try:
         await run_in_thread(

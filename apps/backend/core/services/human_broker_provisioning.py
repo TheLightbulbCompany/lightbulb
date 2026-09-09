@@ -118,7 +118,7 @@ def _subject_tombstone_key(alias: str) -> str:
     return f"human-subject-deleted:{alias}"
 
 
-def _access_event_id(row: dict | None, alias: str) -> str | None:
+def _container_access_marker(row: dict | None, alias: str) -> dict | None:
     markers = (row or {}).get(_ACCESS_FIELD, {})
     if not isinstance(markers, dict):
         raise HumanBrokerProvisioningError("human membership epoch unavailable")
@@ -135,19 +135,83 @@ def _access_event_id(row: dict | None, alias: str) -> str | None:
         and marker.get("state") in {"allowed", "revoked"}
     ):
         raise HumanBrokerProvisioningError("human membership epoch unavailable")
+    return marker
+
+
+def _access_event_id(row: dict | None, alias: str) -> str | None:
+    marker = _container_access_marker(row, alias)
+    if marker is None:
+        return None
     if marker["state"] == "revoked":
         raise _MembershipRevoked("human membership credential revoked")
     return marker["event_id"]
 
 
-async def _require_revocation_current(owner_id: str, alias: str, event_id: str) -> dict:
+async def _effective_access_marker(owner_id: str, alias: str, row: dict | None) -> tuple[dict | None, str | None]:
+    """Resolve central membership authority with rollout-safe legacy fallback."""
+    local = _container_access_marker(row, alias)
+    try:
+        central = await webhook_dedup.get_membership_lifecycle(owner_id, alias)
+    except Exception as exc:
+        raise HumanBrokerProvisioningError("human membership epoch unavailable") from exc
+    if central is None:
+        return local, None
+    central = _access_marker(
+        event_id=central.get("event_id"),
+        sequence=central.get("sequence"),
+        state=central.get("state"),
+    )
+    if local is not None and local["sequence"] > central["sequence"]:
+        # During rolling deployment an old worker can have advanced only the
+        # container marker. Never roll that newer signed epoch backward.
+        return local, None
+    if local is not None and local["sequence"] == central["sequence"] and local != central:
+        raise HumanBrokerProvisioningError("human membership epoch is ambiguous")
+    return central, webhook_dedup.membership_lifecycle_key(owner_id, alias)
+
+
+async def _allowed_access(
+    owner_id: str,
+    alias: str,
+    row: dict | None,
+    *,
+    project_to_container: bool,
+) -> tuple[dict | None, str | None, str | None]:
+    marker, lifecycle_key = await _effective_access_marker(owner_id, alias, row)
+    if marker is not None and marker["state"] == "revoked":
+        raise _MembershipRevoked("human membership credential revoked")
+    if project_to_container and lifecycle_key is not None and _container_access_marker(row, alias) != marker:
+        current = await container_repo.set_human_broker_access(owner_id, alias, marker)
+        if current != marker:
+            row = await container_repo.get_by_owner_id(owner_id, consistent=True)
+            marker, lifecycle_key = await _effective_access_marker(owner_id, alias, row)
+            if marker is not None and marker["state"] == "revoked":
+                raise _MembershipRevoked("human membership credential revoked")
+            if lifecycle_key is not None and _container_access_marker(row, alias) != marker:
+                raise HumanBrokerProvisioningError("human membership epoch projection failed")
+        else:
+            row = {**(row or {}), _ACCESS_FIELD: {**((row or {}).get(_ACCESS_FIELD) or {}), alias: marker}}
+    return row, marker["event_id"] if marker is not None else None, lifecycle_key
+
+
+async def _require_revocation_current(
+    owner_id: str,
+    alias: str,
+    event_id: str,
+    lifecycle_claim_id: str | None = None,
+) -> dict:
+    if lifecycle_claim_id is not None:
+        await webhook_dedup.renew_membership_lifecycle(owner_id, alias, lifecycle_claim_id)
+        central = await webhook_dedup.get_membership_lifecycle(owner_id, alias)
+        if central is None or central.get("event_id") != event_id or central.get("state") != "revoked":
+            raise _RevocationSuperseded("human membership revocation was superseded")
     row = await container_repo.get_by_owner_id(owner_id, consistent=True)
     marker = (row or {}).get(_ACCESS_FIELD, {}).get(alias)
     try:
         current = _access_marker(event_id=event_id, sequence=marker.get("sequence"), state="revoked")
     except (AttributeError, HumanBrokerProvisioningError):
         current = None
-    if marker != current:
+    if marker != current and not (lifecycle_claim_id is not None and row is None):
         raise _RevocationSuperseded("human membership revocation was superseded")
     return row
 
@@ -173,14 +237,19 @@ async def _require_subject_live(alias: str) -> None:
         raise HumanBrokerProvisioningError("human subject deleted")
 
 
-async def _authorized_records(row: dict | None) -> dict[str, dict]:
+async def _authorized_records(owner_id: str, row: dict | None) -> dict[str, dict]:
     """Filter records through durable membership and terminal-subject epochs."""
     authorized = {}
     for alias, record in _records(row).items():
         if not isinstance(record, dict):
             continue
         try:
-            access_event_id = _access_event_id(row, alias)
+            _, access_event_id, _ = await _allowed_access(
+                owner_id,
+                alias,
+                row,
+                project_to_container=False,
+            )
         except _MembershipRevoked:
             continue
         if record.get("access_event_id") != access_event_id or await _subject_deleted(alias):
@@ -472,13 +541,13 @@ def _trusted_profiles(records: dict[str, dict], *, include_provisioning: bool) -
 
 async def active_trusted_broker_profiles(owner_id: str) -> dict[str, str]:
     row = await container_repo.get_by_owner_id(owner_id, consistent=True)
-    return _trusted_profiles(await _authorized_records(row), include_provisioning=False)
+    return _trusted_profiles(await _authorized_records(owner_id, row), include_provisioning=False)
 
 
 async def provisioned_trusted_broker_profiles(owner_id: str) -> dict[str, str]:
     """Bindings a full config rewrite must retain while activation is pending."""
     row = await container_repo.get_by_owner_id(owner_id, consistent=True)
-    return _trusted_profiles(await _authorized_records(row), include_provisioning=True)
+    return _trusted_profiles(await _authorized_records(owner_id, row), include_provisioning=True)
 
 
 async def _human_pair_entries(
@@ -499,7 +568,7 @@ async def _human_pair_entries(
 
 async def provisioned_human_pair_entries(owner_id: str, gateway_token: str) -> list[dict]:
     row = await container_repo.get_by_owner_id(owner_id, consistent=True)
-    return await _human_pair_entries(owner_id, gateway_token, await _authorized_records(row))
+    return await _human_pair_entries(owner_id, gateway_token, await _authorized_records(owner_id, row))
 
 
 def _pair_state_fingerprint(records: dict[str, dict]) -> tuple:
@@ -522,7 +591,10 @@ def _pair_state_fingerprint(records: dict[str, dict]) -> tuple:
 async def reconcile_provisioned_human_pairs(owner_id: str, gateway_token: str) -> None:
     """Make tagged human pairing entries match a fresh durable-state read."""
     for _ in range(3):
-        records = await _authorized_records(await container_repo.get_by_owner_id(owner_id, consistent=True))
+        records = await _authorized_records(
+            owner_id,
+            await container_repo.get_by_owner_id(owner_id, consistent=True),
+        )
         fingerprint = _pair_state_fingerprint(records)
         entries = await _human_pair_entries(owner_id, gateway_token, records)
         desired = {entry["lightbulbHumanAlias"]: entry for entry in entries}
@@ -551,7 +623,10 @@ async def reconcile_provisioned_human_pairs(owner_id: str, gateway_token: str) -
             return changed
 
         await _adapter(owner_id).mutate_paired_json(mutate)
-        latest = await _authorized_records(await container_repo.get_by_owner_id(owner_id, consistent=True))
+        latest = await _authorized_records(
+            owner_id,
+            await container_repo.get_by_owner_id(owner_id, consistent=True),
+        )
         if _pair_state_fingerprint(latest) == fingerprint:
             return
     raise HumanBrokerProvisioningError("human pairing state kept changing during reconciliation")
@@ -560,7 +635,7 @@ async def reconcile_provisioned_human_pairs(owner_id: str, gateway_token: str) -
 async def load_qualified_humans(owner_id: str) -> dict[str, QualifiedHumanDevice]:
     row = await container_repo.get_by_owner_id(owner_id, consistent=True)
     humans = {}
-    authorized = await _authorized_records(row)
+    authorized = await _authorized_records(owner_id, row)
     for alias, raw in authorized.items():
         if not isinstance(raw, dict) or raw.get("state") != "active":
             continue
@@ -583,7 +658,12 @@ async def require_active_human_device(
     await _require_subject_live(alias)
     row = await container_repo.get_by_owner_id(owner_id, consistent=True)
     record = _validate_record(alias, _records(row).get(alias), require_profile=True)
-    access_event_id = _access_event_id(row, alias)
+    _, access_event_id, _ = await _allowed_access(
+        owner_id,
+        alias,
+        row,
+        project_to_container=False,
+    )
     if (
         record["state"] != "active"
         or record["device_id"] != device_id
@@ -600,7 +680,10 @@ async def _write_trusted_profiles(
     exclude_alias: str | None = None,
 ) -> None:
     for _ in range(3):
-        records = await _authorized_records(await container_repo.get_by_owner_id(owner_id, consistent=True))
+        records = await _authorized_records(
+            owner_id,
+            await container_repo.get_by_owner_id(owner_id, consistent=True),
+        )
         if exclude_alias is not None:
             records = {alias: record for alias, record in records.items() if alias != exclude_alias}
         bindings = _trusted_profiles(records, include_provisioning=include_provisioning)
@@ -609,7 +692,10 @@ async def _write_trusted_profiles(
             ["gateway", "auth", "trustedBrokerProfiles"],
             bindings,
         )
-        latest = await _authorized_records(await container_repo.get_by_owner_id(owner_id, consistent=True))
+        latest = await _authorized_records(
+            owner_id,
+            await container_repo.get_by_owner_id(owner_id, consistent=True),
+        )
         if exclude_alias is not None:
             latest = {alias: record for alias, record in latest.items() if alias != exclude_alias}
         if _trusted_profiles(latest, include_provisioning=include_provisioning) == bindings:
@@ -637,9 +723,13 @@ async def _cleanup_superseded_reconciliation(
     except Exception:
         return
     try:
-        authorized = not await _subject_deleted(identity.alias) and (
-            record.get("access_event_id") == _access_event_id(row, identity.alias)
+        _, access_event_id, _ = await _allowed_access(
+            identity.owner_id,
+            identity.alias,
+            row,
+            project_to_container=False,
         )
+        authorized = not await _subject_deleted(identity.alias) and record.get("access_event_id") == access_event_id
     except HumanBrokerProvisioningError:
         authorized = False
     if (
@@ -674,9 +764,10 @@ async def _disable_record(
     record: dict,
     *,
     revocation_event_id: str | None = None,
+    lifecycle_claim_id: str | None = None,
 ) -> dict:
     if revocation_event_id is not None:
-        await _require_revocation_current(owner_id, alias, revocation_event_id)
+        await _require_revocation_current(owner_id, alias, revocation_event_id, lifecycle_claim_id)
     if record["state"] == "disabled":
         return record
     disabled = {**record, "state": "disabled", "updated_at": utc_now_iso()}
@@ -685,6 +776,10 @@ async def _disable_record(
             "access_event_id": revocation_event_id,
             "access_state": "revoked",
             "subject_tombstone_key": _subject_tombstone_key(alias),
+            "membership_lifecycle_key": (
+                webhook_dedup.membership_lifecycle_key(owner_id, alias) if lifecycle_claim_id is not None else None
+            ),
+            "membership_claim_id": lifecycle_claim_id,
         }
         if revocation_event_id is not None
         else {}
@@ -703,7 +798,7 @@ async def _disable_record(
         # resolves that ambiguity; a still-active value gets one safe retry.
         row = await container_repo.get_by_owner_id(owner_id, consistent=True)
         if revocation_event_id is not None:
-            await _require_revocation_current(owner_id, alias, revocation_event_id)
+            await _require_revocation_current(owner_id, alias, revocation_event_id, lifecycle_claim_id)
         current = _validate_record(alias, _records(row).get(alias))
         if current["state"] == "disabled":
             return current
@@ -721,7 +816,7 @@ async def _disable_record(
         return disabled
     row = await container_repo.get_by_owner_id(owner_id, consistent=True)
     if revocation_event_id is not None:
-        await _require_revocation_current(owner_id, alias, revocation_event_id)
+        await _require_revocation_current(owner_id, alias, revocation_event_id, lifecycle_claim_id)
     current = _validate_record(alias, _records(row).get(alias))
     if current["state"] != "disabled":
         raise _CredentialChanged("human credential changed during revocation")
@@ -736,13 +831,24 @@ async def _teardown_disabled(
     close_connections: bool,
     runtime_error: Exception | None = None,
     revocation_event_id: str | None = None,
+    lifecycle_claim_id: str | None = None,
 ) -> None:
     if revocation_event_id is not None:
-        await _require_revocation_current(identity.owner_id, identity.alias, revocation_event_id)
+        await _require_revocation_current(
+            identity.owner_id,
+            identity.alias,
+            revocation_event_id,
+            lifecycle_claim_id,
+        )
     invalidate_qualification(identity.owner_id)
     errors = [runtime_error] if runtime_error is not None else []
     if revocation_event_id is not None:
-        await _require_revocation_current(identity.owner_id, identity.alias, revocation_event_id)
+        await _require_revocation_current(
+            identity.owner_id,
+            identity.alias,
+            revocation_event_id,
+            lifecycle_claim_id,
+        )
     try:
         await _write_trusted_profiles(
             identity.owner_id,
@@ -752,7 +858,12 @@ async def _teardown_disabled(
     except Exception as exc:
         errors.append(exc)
     if revocation_event_id is not None:
-        await _require_revocation_current(identity.owner_id, identity.alias, revocation_event_id)
+        await _require_revocation_current(
+            identity.owner_id,
+            identity.alias,
+            revocation_event_id,
+            lifecycle_claim_id,
+        )
     try:
         if revocation_event_id is None:
             await _remove_pair(identity.owner_id, identity.alias, record["device_id"])
@@ -762,7 +873,12 @@ async def _teardown_disabled(
         errors.append(exc)
     if runtime is not None:
         if revocation_event_id is not None:
-            await _require_revocation_current(identity.owner_id, identity.alias, revocation_event_id)
+            await _require_revocation_current(
+                identity.owner_id,
+                identity.alias,
+                revocation_event_id,
+                lifecycle_claim_id,
+            )
         _, ip, token = runtime
         try:
             await gateway_rpc_oneshot(
@@ -779,13 +895,23 @@ async def _teardown_disabled(
             errors.append(exc)
     if close_connections:
         if revocation_event_id is not None:
-            await _require_revocation_current(identity.owner_id, identity.alias, revocation_event_id)
+            await _require_revocation_current(
+                identity.owner_id,
+                identity.alias,
+                revocation_event_id,
+                lifecycle_claim_id,
+            )
         try:
             await revoke_member_connections(identity.owner_id, identity.subject)
         except Exception as exc:
             errors.append(exc)
     if revocation_event_id is not None:
-        await _require_revocation_current(identity.owner_id, identity.alias, revocation_event_id)
+        await _require_revocation_current(
+            identity.owner_id,
+            identity.alias,
+            revocation_event_id,
+            lifecycle_claim_id,
+        )
     if errors:
         raise HumanBrokerProvisioningError("human credential teardown incomplete; remains disabled") from errors[0]
 
@@ -796,7 +922,12 @@ async def ensure_human_device(identity: HumanIdentity, conn_svc) -> HumanDeviceR
     await _require_subject_live(identity.alias)
     _, ip, token = await _runtime(identity.owner_id)
     row = await container_repo.get_by_owner_id(identity.owner_id, consistent=True)
-    access_event_id = _access_event_id(row, identity.alias)
+    row, access_event_id, membership_key = await _allowed_access(
+        identity.owner_id,
+        identity.alias,
+        row,
+        project_to_container=True,
+    )
     record = _records(row).get(identity.alias)
     if record is None:
         device = generate_operator_device()
@@ -827,6 +958,7 @@ async def ensure_human_device(identity: HumanIdentity, conn_svc) -> HumanDeviceR
                 ),
                 access_event_id=access_event_id,
                 subject_tombstone_key=_subject_tombstone_key(identity.alias),
+                membership_lifecycle_key=membership_key,
             )
         except Exception as exc:
             raise HumanBrokerProvisioningError("human credential creation was fenced") from exc
@@ -858,6 +990,7 @@ async def ensure_human_device(identity: HumanIdentity, conn_svc) -> HumanDeviceR
             state="provisioning",
             access_event_id=access_event_id,
             subject_tombstone_key=_subject_tombstone_key(identity.alias),
+            membership_lifecycle_key=membership_key,
         ):
             current = _validate_record(
                 identity.alias,
@@ -896,6 +1029,7 @@ async def ensure_human_device(identity: HumanIdentity, conn_svc) -> HumanDeviceR
         state="provisioning",
         access_event_id=access_event_id,
         subject_tombstone_key=_subject_tombstone_key(identity.alias),
+        membership_lifecycle_key=membership_key,
     ):
         current = _records(await container_repo.get_by_owner_id(identity.owner_id, consistent=True)).get(identity.alias)
         if (
@@ -923,17 +1057,35 @@ async def _revoke_human_device(
     *,
     missing_ok: bool,
     revocation_event_id: str | None = None,
+    lifecycle_claim_id: str | None = None,
 ) -> HumanDeviceReceipt | None:
     if revocation_event_id is not None:
-        row = await _require_revocation_current(identity.owner_id, identity.alias, revocation_event_id)
+        row = await _require_revocation_current(
+            identity.owner_id,
+            identity.alias,
+            revocation_event_id,
+            lifecycle_claim_id,
+        )
     else:
         row = await container_repo.get_by_owner_id(identity.owner_id, consistent=True)
     invalidate_qualification(identity.owner_id)
     raw = _records(row).get(identity.alias)
     if raw is None:
         if revocation_event_id is not None:
-            await _require_revocation_current(identity.owner_id, identity.alias, revocation_event_id)
+            await _require_revocation_current(
+                identity.owner_id,
+                identity.alias,
+                revocation_event_id,
+                lifecycle_claim_id,
+            )
         await revoke_member_connections(identity.owner_id, identity.subject)
+        if revocation_event_id is not None:
+            await _require_revocation_current(
+                identity.owner_id,
+                identity.alias,
+                revocation_event_id,
+                lifecycle_claim_id,
+            )
         if missing_ok:
             return None
         raise HumanBrokerProvisioningError("human credential does not exist")
@@ -947,6 +1099,7 @@ async def _revoke_human_device(
                     identity.alias,
                     record,
                     revocation_event_id=revocation_event_id,
+                    lifecycle_claim_id=lifecycle_claim_id,
                 )
                 break
             except _CredentialChanged:
@@ -964,6 +1117,7 @@ async def _revoke_human_device(
             close_connections=True,
             runtime_error=runtime_error,
             revocation_event_id=revocation_event_id,
+            lifecycle_claim_id=lifecycle_claim_id,
         )
         raise HumanBrokerProvisioningError("human credential revocation uncertain; admission closed") from exc
     await _teardown_disabled(
@@ -973,6 +1127,7 @@ async def _revoke_human_device(
         close_connections=True,
         runtime_error=runtime_error,
         revocation_event_id=revocation_event_id,
+        lifecycle_claim_id=lifecycle_claim_id,
     )
     return HumanDeviceReceipt(record["generation"], "disabled", record["device_id"])
 
@@ -1005,12 +1160,19 @@ async def allow_human_subject(
     *,
     event_id: str,
     event_sequence: str,
+    lifecycle_claim_id: str | None = None,
 ) -> None:
     """Advance a re-created Clerk membership beyond an earlier revocation."""
     identity = HumanIdentity(owner_id, issuer, subject, "", "")
     _validate_identity(identity)
     marker = _access_marker(event_id=event_id, sequence=event_sequence, state="allowed")
-    await container_repo.set_human_broker_access(owner_id, identity.alias, marker)
+    if lifecycle_claim_id is not None:
+        await webhook_dedup.renew_membership_lifecycle(owner_id, identity.alias, lifecycle_claim_id)
+    current = await container_repo.set_human_broker_access(owner_id, identity.alias, marker)
+    if current is not None and current != marker:
+        raise HumanBrokerProvisioningError("human membership admission was superseded")
+    if lifecycle_claim_id is not None:
+        await webhook_dedup.renew_membership_lifecycle(owner_id, identity.alias, lifecycle_claim_id)
 
 
 async def revoke_human_subject(
@@ -1020,6 +1182,7 @@ async def revoke_human_subject(
     *,
     revocation_id: str | None = None,
     revocation_sequence: str | None = None,
+    lifecycle_claim_id: str | None = None,
 ) -> HumanRevocationOutcome:
     """Server-authenticated Clerk lifecycle revocation; no membership lookup."""
     identity = HumanIdentity(
@@ -1033,21 +1196,26 @@ async def revoke_human_subject(
     if (revocation_id is None) != (revocation_sequence is None):
         raise HumanBrokerProvisioningError("complete Clerk revocation epoch required")
     accepted_revocation_id = None
-    if revocation_id is not None and revocation_sequence is not None:
-        marker = _access_marker(event_id=revocation_id, sequence=revocation_sequence, state="revoked")
-        current = await container_repo.set_human_broker_access(owner_id, identity.alias, marker)
-        if current is not None and current != marker:
-            # A newer signed membership event already superseded this delivery.
-            return HumanRevocationOutcome.STALE
-        if current is not None:
-            accepted_revocation_id = revocation_id
     try:
+        if revocation_id is not None and revocation_sequence is not None:
+            if lifecycle_claim_id is not None:
+                await webhook_dedup.renew_membership_lifecycle(owner_id, identity.alias, lifecycle_claim_id)
+            marker = _access_marker(event_id=revocation_id, sequence=revocation_sequence, state="revoked")
+            current = await container_repo.set_human_broker_access(owner_id, identity.alias, marker)
+            if current is not None and current != marker:
+                # A newer signed membership event already superseded this delivery.
+                return HumanRevocationOutcome.STALE
+            if lifecycle_claim_id is not None:
+                await webhook_dedup.renew_membership_lifecycle(owner_id, identity.alias, lifecycle_claim_id)
+            if current is not None or lifecycle_claim_id is not None:
+                accepted_revocation_id = revocation_id
         await _revoke_human_device(
             identity,
             missing_ok=True,
             revocation_event_id=accepted_revocation_id,
+            lifecycle_claim_id=lifecycle_claim_id,
         )
-    except _RevocationSuperseded:
+    except (_RevocationSuperseded, webhook_dedup.MembershipLifecycleSuperseded):
         return HumanRevocationOutcome.STALE
     return HumanRevocationOutcome.APPLIED
 
@@ -1088,7 +1256,12 @@ async def rotate_human_device(identity: HumanIdentity, conn_svc) -> HumanDeviceR
     await require_current_member(identity, conn_svc)
     await _require_subject_live(identity.alias)
     row = await container_repo.get_by_owner_id(identity.owner_id, consistent=True)
-    access_event_id = _access_event_id(row, identity.alias)
+    row, access_event_id, membership_key = await _allowed_access(
+        identity.owner_id,
+        identity.alias,
+        row,
+        project_to_container=True,
+    )
     raw = _records(row).get(identity.alias)
     if raw is None:
         return await ensure_human_device(identity, conn_svc)
@@ -1153,6 +1326,7 @@ async def rotate_human_device(identity: HumanIdentity, conn_svc) -> HumanDeviceR
             state="disabled",
             access_event_id=access_event_id,
             subject_tombstone_key=_subject_tombstone_key(identity.alias),
+            membership_lifecycle_key=membership_key,
         ):
             current = _validate_record(
                 identity.alias,

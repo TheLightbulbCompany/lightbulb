@@ -23,7 +23,15 @@ class _Repo:
         }
 
     async def create_human_broker_device(
-        self, owner_id, alias, record, *, access_event_id=None, subject_tombstone_key=None
+        self,
+        owner_id,
+        alias,
+        record,
+        *,
+        access_event_id=None,
+        subject_tombstone_key=None,
+        membership_lifecycle_key=None,
+        membership_claim_id=None,
     ):
         self.devices.setdefault(alias, copy.deepcopy(record))
         return copy.deepcopy(self.devices[alias])
@@ -39,6 +47,8 @@ class _Repo:
         access_event_id=None,
         access_state=None,
         subject_tombstone_key=None,
+        membership_lifecycle_key=None,
+        membership_claim_id=None,
     ):
         current = self.devices.get(alias)
         if not current or current["generation"] != generation or current["state"] != state:
@@ -172,6 +182,7 @@ def harness(monkeypatch):
         "record_permanent_marker",
         AsyncMock(side_effect=lambda event_id, **kwargs: deleted_subjects.add(event_id)),
     )
+    monkeypatch.setattr(provisioner.webhook_dedup, "get_membership_lifecycle", AsyncMock(return_value=None))
     monkeypatch.setattr(
         provisioner, "invalidate_qualification", lambda owner_id: events.append("qualification-disabled")
     )
@@ -438,6 +449,62 @@ async def test_newer_membership_epoch_supersedes_delete_before_disable(harness, 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("supersede_after", "must_not_happen"),
+    [
+        ("durable-disabled", "config-written"),
+        ("config-written", "live-pair-removed"),
+        ("live-pair-removed", "connections-closed"),
+    ],
+)
+async def test_newer_admission_stops_old_delete_at_each_teardown_boundary(
+    harness,
+    monkeypatch,
+    supersede_after,
+    must_not_happen,
+):
+    human = _human("user_alice")
+    await provisioner.ensure_human_device(human, harness.conn_svc)
+    harness.events.clear()
+    deleted = {
+        "event_id": "msg_membership_deleted",
+        "sequence": "00000000000000000001:1:msg_membership_deleted",
+        "state": "revoked",
+    }
+    admitted = {
+        "event_id": "msg_membership_created_newer",
+        "sequence": "00000000000000000002:0:msg_membership_created_newer",
+        "state": "allowed",
+    }
+    central = deleted
+
+    async def renew(owner_id, alias, claim_id):
+        nonlocal central
+        if supersede_after in harness.events:
+            central = admitted
+            raise provisioner.webhook_dedup.MembershipLifecycleSuperseded("newer create owns lifecycle")
+
+    monkeypatch.setattr(provisioner.webhook_dedup, "renew_membership_lifecycle", AsyncMock(side_effect=renew))
+    monkeypatch.setattr(
+        provisioner.webhook_dedup,
+        "get_membership_lifecycle",
+        AsyncMock(side_effect=lambda owner_id, alias: central),
+    )
+
+    outcome = await provisioner.revoke_human_subject(
+        human.owner_id,
+        human.issuer,
+        human.subject,
+        revocation_id=deleted["event_id"],
+        revocation_sequence=deleted["sequence"],
+        lifecycle_claim_id="delete-claim",
+    )
+
+    assert outcome is provisioner.HumanRevocationOutcome.STALE
+    assert must_not_happen not in harness.events
+
+
+@pytest.mark.asyncio
 async def test_membership_tombstone_fences_rotation_even_if_clerk_read_lags(harness):
     human = _human("user_alice")
     await provisioner.ensure_human_device(human, harness.conn_svc)
@@ -454,6 +521,27 @@ async def test_membership_tombstone_fences_rotation_even_if_clerk_read_lags(harn
         await provisioner.rotate_human_device(human, harness.conn_svc)
 
     assert harness.repo.devices[human.alias]["state"] == "disabled"
+
+
+@pytest.mark.asyncio
+async def test_container_created_after_membership_delete_honors_central_revoked_epoch(harness, monkeypatch):
+    human = _human("user_alice")
+    monkeypatch.setattr(
+        provisioner.webhook_dedup,
+        "get_membership_lifecycle",
+        AsyncMock(
+            return_value={
+                "event_id": "msg_membership_deleted_before_container",
+                "sequence": "00000000000000000001:1:msg_membership_deleted_before_container",
+                "state": "revoked",
+            }
+        ),
+    )
+
+    with pytest.raises(provisioner.HumanBrokerProvisioningError, match="membership credential revoked"):
+        await provisioner.ensure_human_device(human, harness.conn_svc)
+
+    assert human.alias not in harness.repo.devices
 
 
 @pytest.mark.asyncio

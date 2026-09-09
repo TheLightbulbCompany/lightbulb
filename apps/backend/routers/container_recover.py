@@ -16,12 +16,14 @@ of one blocking behind an advisory lock; the only remaining cost of
 concurrency is a redundant (harmless, read-only) gateway health probe.
 """
 
+import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.containers import get_ecs_manager
+from core.containers.config import read_openclaw_config_from_efs
 from core.gateway.operator_rpc import gateway_rpc_oneshot
 from core.repositories import container_repo
 from core.services import provision_gate, trial_cap
@@ -263,14 +265,17 @@ async def gateway_restart(
     try:
         # config.apply is an operator.admin-reserved method, so this must use
         # the signed one-shot (a token-only connect would have its scope
-        # stripped and the apply rejected). Keep the original generous budget —
-        # config.apply re-reads config and restarts the gateway.
+        # stripped and the apply rejected). OpenClaw 9.3 requires the complete
+        # raw document; an inherited empty params object is schema-invalid.
+        config = await read_openclaw_config_from_efs(owner_id)
+        if not isinstance(config, dict):
+            raise RuntimeError("OpenClaw config is unavailable")
         await gateway_rpc_oneshot(
             ip,
             owner_id=owner_id,
             token=container["gateway_token"],
             method="config.apply",
-            params={},
+            params={"raw": json.dumps(config, separators=(",", ":"))},
             open_timeout=30,
             recv_timeout=10,
             rpc_timeout=30,

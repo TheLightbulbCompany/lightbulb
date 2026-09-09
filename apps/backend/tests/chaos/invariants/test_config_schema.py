@@ -10,6 +10,7 @@ Two properties:
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,7 @@ from tests.chaos import strategies as ss
 _SCHEMA_DIR = Path(__file__).resolve().parents[1] / "_schema"
 _VALIDATE = _SCHEMA_DIR / "validate.mjs"
 _LEGACY_ID = "2026.8.1-isol8.3"
+_IMAGE_QUALIFICATION_ID = "2026.9.3-isol8.1"
 
 
 def _bundle_path(schema_id: str) -> Path:
@@ -51,6 +53,8 @@ def _build(
     owner_type: str,
     paperclip_agents: list[dict] | None = None,
     schema_id: str = _LEGACY_ID,
+    acp_enabled: bool = True,
+    include_mcp: bool = True,
 ) -> dict:
     return build_openclaw_config_dict(
         user_id="user_chaos_0",
@@ -61,9 +65,15 @@ def _build(
         aip_arns=_AIPS_BY_CHOICE.get(provider_choice),
         paperclip_agents=paperclip_agents,
         deployed_tag=schema_id,
+        # Production write_openclaw_config defaults ACP on. Keep schema and
+        # built-image fixtures on that same path rather than validating the
+        # builder's lower-level, opt-out default.
+        acp_enabled=acp_enabled,
         # An mcp block is what makes mcp.runtimeScope reachable; without one the
         # key is never written and the schema never sees it.
-        integration_mcp_servers={"stripe": {"command": "npx", "args": ["-y", "@stripe/mcp"]}},
+        integration_mcp_servers=(
+            {"stripe": {"command": "npx", "args": ["-y", "@stripe/mcp"]}} if include_mcp else None
+        ),
     )
 
 
@@ -122,3 +132,39 @@ def test_emitted_config_passes_selected_schema(schema_id, provider_choice, byo_p
         text=True,
     )
     assert proc.returncode == 0, f"Emitted openclaw.json failed selected schema {schema_id}:\n{proc.stderr}"
+
+
+def _emit_image_qualification_configs(output_dir: Path) -> None:
+    """Emit hermetic production-shape configs for the built-image CI gate."""
+    cases = {
+        "bedrock.json": (
+            "bedrock_claude",
+            "anthropic",
+            "org",
+            [
+                {"id": "agent_friday", "name": "Friday", "role": "ceo"},
+                {"id": "agent_atlas", "name": "Atlas", "role": "general"},
+            ],
+        ),
+        "byo-openai.json": ("byo_key", "openai", "personal", []),
+        "chatgpt-oauth.json": ("chatgpt_oauth", "anthropic", "personal", []),
+    }
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for filename, (provider_choice, byo_provider, owner_type, paperclip_agents) in cases.items():
+        config = _build(
+            provider_choice,
+            byo_provider,
+            owner_type,
+            paperclip_agents,
+            _IMAGE_QUALIFICATION_ID,
+            include_mcp=False,
+        )
+        assert config["channels"] == {}, "qualification fixtures must not enable channels"
+        assert config["acp"]["enabled"] is True, "qualification fixtures must use the production ACP default"
+        (output_dir / filename).write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        raise SystemExit(f"usage: {Path(sys.argv[0]).name} OUTPUT_DIR")
+    _emit_image_qualification_configs(Path(sys.argv[1]))

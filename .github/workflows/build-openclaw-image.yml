@@ -65,6 +65,29 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+      - name: Install backend dependencies
+        run: uv sync --frozen
+        working-directory: apps/backend
+      - name: Emit production-shape qualification configs
+        env:
+          AWS_ACCESS_KEY_ID: testing
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_SECRET_ACCESS_KEY: testing
+          CLERK_ISSUER: https://test.clerk.accounts.dev
+          DYNAMODB_TABLE_PREFIX: isol8-test-
+          HUGGINGFACE_TOKEN: test_token
+        run: |
+          uv run python tests/chaos/invariants/test_config_schema.py \
+            "${RUNNER_TEMP}/openclaw-image-qualification-configs"
+        working-directory: apps/backend
+      - name: Upload qualification configs
+        uses: actions/upload-artifact@v4
+        with:
+          name: openclaw-image-qualification-configs
+          path: ${{ runner.temp }}/openclaw-image-qualification-configs
+          retention-days: 1
       - name: Run proof suite
         run: |
           node --test scripts/openclaw-image-proof.test.mjs
@@ -87,6 +110,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+
       # The boot script under test shells out to `sqlite3` and `jq`, and the
       # harness drives it through `sqlite3` directly. Both are preinstalled on
       # GitHub's Ubuntu image and neither is guaranteed on a self-hosted box,
@@ -140,6 +164,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+
+      - name: Download qualification configs
+        uses: actions/download-artifact@v4
+        with:
+          name: openclaw-image-qualification-configs
+          path: ${{ runner.temp }}/openclaw-image-qualification-configs
 
       - name: Read version metadata
         id: meta
@@ -219,24 +249,6 @@ jobs:
 
           PROOF_DIR=$(mktemp -d)
           trap 'rm -rf "${PROOF_DIR}"' EXIT
-          cat > "${PROOF_DIR}/openclaw.json" <<'JSON'
-          {
-            "plugins": {
-              "allow": [
-                "sage-openclaw",
-                "lightbulb-marketplace",
-                "aws-exec-profile",
-                "paperclip-exec-creds"
-              ],
-              "entries": {
-                "sage-openclaw": { "enabled": true },
-                "lightbulb-marketplace": { "enabled": true },
-                "aws-exec-profile": { "enabled": true },
-                "paperclip-exec-creds": { "enabled": true }
-              }
-            }
-          }
-          JSON
 
           docker run --rm -i --entrypoint node "${IMAGE_REF}" --input-type=module - \
             > "${PROOF_DIR}/versions.json" <<'NODE'
@@ -266,46 +278,11 @@ jobs:
           NODE
 
           docker run --rm \
-            -e HOME=/tmp/openclaw-proof-home \
-            -e OPENCLAW_STATE_DIR=/tmp/openclaw-proof-state \
-            -e OPENCLAW_CONFIG_PATH=/tmp/openclaw-proof.json \
-            -v "${PROOF_DIR}/openclaw.json:/tmp/openclaw-proof.json:ro" \
+            -v "${RUNNER_TEMP}/openclaw-image-qualification-configs:/qualification/configs:ro" \
+            -v "${GITHUB_WORKSPACE}/scripts/openclaw-image-proof-runtime.mjs:/qualification/qualify.mjs:ro" \
             --entrypoint node "${IMAGE_REF}" \
-            /app/openclaw.mjs plugins inspect --all --runtime --json \
-            > "${PROOF_DIR}/plugins.json"
-
-          node --input-type=module - "${PROOF_DIR}/plugins.json" <<'NODE'
-          import { readFileSync } from "node:fs";
-          const reports = JSON.parse(readFileSync(process.argv[2], "utf8"));
-          if (!Array.isArray(reports)) throw new Error("Plugin runtime inventory is malformed");
-          const byId = new Map(reports.map((report) => [report.plugin?.id, report]));
-          const required = [
-            "sage-openclaw",
-            "lightbulb-marketplace",
-            "aws-exec-profile",
-            "paperclip-exec-creds",
-          ];
-          for (const id of required) {
-            if (byId.get(id)?.plugin?.status !== "loaded") {
-              throw new Error(`${id}: runtime plugin did not load`);
-            }
-          }
-          const hooks = (id) => new Set((byId.get(id)?.typedHooks ?? []).map((hook) => hook.name));
-          if (!hooks("sage-openclaw").has("before_tool_call")) {
-            throw new Error("sage-openclaw: before_tool_call hook is missing");
-          }
-          for (const id of ["aws-exec-profile", "paperclip-exec-creds"]) {
-            if (!hooks(id).has("resolve_exec_env")) {
-              throw new Error(`${id}: resolve_exec_env hook is missing`);
-            }
-          }
-          const marketplaceTools = new Set(
-            (byId.get("lightbulb-marketplace")?.tools ?? []).flatMap((tool) => tool.names),
-          );
-          for (const name of ["marketplace_search", "recommend_agents"]) {
-            if (!marketplaceTools.has(name)) throw new Error(`lightbulb-marketplace: ${name} is missing`);
-          }
-          NODE
+            /qualification/qualify.mjs /qualification/configs \
+            > "${PROOF_DIR}/runtime.json"
 
           docker run --rm --entrypoint node "${IMAGE_REF}" \
             --test /app/dist/extensions/aws-exec-profile/index.test.mjs
@@ -316,11 +293,12 @@ jobs:
             echo "## Built-image qualification"
             echo ""
             echo "- Architecture: \`${ARCHITECTURE}\`"
-            echo "- Runtime plugins: Sage and all 3 first-party plugins loaded"
-            echo "- Contracts: Sage safety hook, credential hooks, and marketplace tools present"
+            echo "- Runtime: generated Bedrock, BYOK, and ChatGPT configs validated and loaded"
+            echo "- Contracts: configured plugins/providers/tools plus Lobster → LLM Task dispatch verified"
             echo ""
             echo '```json'
             cat "${PROOF_DIR}/versions.json"
+            cat "${PROOF_DIR}/runtime.json"
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"
 

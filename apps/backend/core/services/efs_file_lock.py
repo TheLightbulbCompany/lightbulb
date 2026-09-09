@@ -273,6 +273,19 @@ def openclaw_config_recovery_guard(
 
 
 @contextmanager
+def _openclaw_config_sidecar_under_guard(
+    lock_dir: str, lock_path: str, *, deadline: float, poll_interval_s: float
+) -> Iterator[None]:
+    """Acquire only the sidecar; caller holds the matching local lock and recovery guard."""
+    if _uses_ephemeral_openclaw_protocol(lock_path):
+        with _ephemeral_openclaw_config_lock(lock_path, deadline=deadline, poll_interval_s=poll_interval_s):
+            yield
+    else:
+        with _legacy_openclaw_config_lock(lock_dir, lock_path, deadline=deadline, poll_interval_s=poll_interval_s):
+            yield
+
+
+@contextmanager
 def openclaw_config_sidecar_lock(
     lock_dir: str,
     lock_path: str,
@@ -304,21 +317,10 @@ def openclaw_config_sidecar_lock(
         timeout_s=timeout_s,
         poll_interval_s=poll_interval_s,
     ):
-        if _uses_ephemeral_openclaw_protocol(lock_path):
-            with _ephemeral_openclaw_config_lock(
-                lock_path,
-                deadline=deadline,
-                poll_interval_s=poll_interval_s,
-            ):
-                yield
-        else:
-            with _legacy_openclaw_config_lock(
-                lock_dir,
-                lock_path,
-                deadline=deadline,
-                poll_interval_s=poll_interval_s,
-            ):
-                yield
+        with _openclaw_config_sidecar_under_guard(
+            lock_dir, lock_path, deadline=deadline, poll_interval_s=poll_interval_s
+        ):
+            yield
 
 
 if __name__ == "__main__":  # pragma: no cover - self-check

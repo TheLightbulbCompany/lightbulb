@@ -10,7 +10,7 @@ Built and pushed to ECR `lightbulb/openclaw-extended` by `.github/workflows/buil
 
 | field | what it is |
 |---|---|
-| `upstream` | The **fork** base this Dockerfile `FROM`s — `ghcr.io/thelightbulbcompany/agent:<tag>`. A **private** GHCR package, pulled only by the authenticated build workflow. Our patches live on `isol8/*` branches + `v<version>-isol8.<n>` tags in `TheLightbulbCompany/agent`; the fork's own `docker-release.yml` publishes them. **Must stay in lockstep with the `FROM` line below** — it is hardcoded, there is no build-arg templating. |
+| `upstream` | The **fork** base this Dockerfile `FROM`s — `ghcr.io/thelightbulbcompany/agent:<tag>`. A **private** GHCR package, pulled only by the authenticated build workflow. Our patches live on `isol8/*` branches + `v<version>-isol8.<n>` tags in `TheLightbulbCompany/agent`; the fork's own `docker-release.yml` publishes them. **Must stay in lockstep with the tag in the hardcoded `FROM <tag>@<digest>` line below** — there is no build-arg templating. |
 | `image` / `tag` / `full` | The **legacy public** upstream image `ghcr.io/openclaw/openclaw`. Kept ONLY as the bootstrap/unknown-env fallback in `container-stack.ts`, which per-user ECS tasks pull with **no registry credentials** — so it must stay anonymously pullable. Also feeds the `OPENCLAW_UPSTREAM_VERSION` env fallback. It is **not** what we run, and it does **not** move when the fork base moves. |
 | `extendedImage` + `dev.tag` / `prod.tag` | The ECR extended image actually deployed. The two tags are the per-environment promotion gate. |
 
@@ -21,11 +21,11 @@ The writable fork checkout is `~/dev/agent-fork`. Read it **at the pinned tag** 
 ## Bumping the base OpenClaw version
 
 1. Cut the new fork tag in `TheLightbulbCompany/agent` (rebase the `isol8/*` patches onto the new upstream release, tag `v<version>-isol8.<n>`, let the fork's `docker-release.yml` publish it to `ghcr.io/thelightbulbcompany/agent`)
-2. Edit `Dockerfile`: change the `FROM ghcr.io/thelightbulbcompany/agent:<old>` line to `<new>`
+2. Edit `Dockerfile`: pin `FROM ghcr.io/thelightbulbcompany/agent:<new>@sha256:<verified-manifest-digest>` to the publisher-proven tag and digest
 3. Edit `<repo-root>/openclaw-version.json`: change `"upstream"` to the same `ghcr.io/thelightbulbcompany/agent:<new>`, and add a `notes` entry enumerating the carried patches. **Leave `image`/`tag`/`full` alone** — they are the legacy public fallback, not the base
 4. Re-pin the baked `@openclaw/*` plugin versions in the Dockerfile to the release line of the new `FROM` tag (the plugin-pin policy comment above the `FROM` explains why a stale channel plugin on a newer host is not a safe skew)
-5. Re-pin the vendored config schema in the SAME PR — `apps/backend/core/services/openclaw_config.schema.json` plus `apps/backend/tests/chaos/_schema/PINNED_TAG`. An infra-only PR skips the backend suite, so a schema mismatch ships silently
-6. PR the change; CI rebuilds and pushes `{upstream}-{short-sha}` to ECR
+5. Add the candidate schema in the SAME PR under `apps/backend/tests/chaos/_schema/releases/<candidate-id>/` and `apps/backend/core/services/openclaw_config_schemas/`, then register that exact id without replacing the active fleet schema
+6. PR the change; PR CI validates it without publishing. Dispatch `build-openclaw-image.yml` once on the final branch head for qualification; merging to `main` publishes the distinct final `{upstream}-{short-sha}` tag automatically
 7. Flip `openclaw-version.json#dev.tag` to that tag in a **separate** PR, then boot a dev container on it and verify in the live container (not just artifact digests)
 8. After dev verification, copy `dev.tag` to `prod.tag` in a third PR, run ONE prod `workflow_dispatch` of `deploy.yml`, then roll each owner's container via the admin UI. **A pin is not a roll** — running containers keep their own task-def revision until rolled
 

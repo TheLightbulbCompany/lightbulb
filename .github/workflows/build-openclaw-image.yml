@@ -14,6 +14,7 @@ on:
     branches:
       - main
     paths:
+      - ".github/workflows/build-openclaw-image.yml"
       - "apps/infra/openclaw/Dockerfile"
       # The Dockerfile bakes apps/infra/openclaw/skills/** into the image, so a
       # change to the bundled skill (e.g. SKILL.md, a reference, or a helper
@@ -37,20 +38,68 @@ on:
       # Same staleness class: Layer 9c bakes the WARP browser-egress boot
       # script, which container-stack.ts invokes by absolute path.
       - "apps/infra/openclaw/warp/**"
+      - "apps/backend/core/containers/config.py"
+      - "apps/backend/tests/chaos/invariants/test_config_schema.py"
       - "openclaw-version.json"
+      - "scripts/openclaw-image-proof*.mjs"
   # The boot chain can destroy an owner's data, so its smoke suite must gate
   # the image rather than run after it ships. Same paths as the push trigger.
   pull_request:
     paths:
+      - ".github/workflows/build-openclaw-image.yml"
+      - "apps/infra/openclaw/Dockerfile"
       - "apps/infra/openclaw/local-sqlite/**"
+      - "apps/infra/openclaw/plugins/**"
+      - "apps/backend/core/containers/config.py"
+      - "apps/backend/tests/chaos/invariants/test_config_schema.py"
+      - "openclaw-version.json"
+      - "scripts/openclaw-image-proof*.mjs"
   workflow_dispatch: {}
 
 permissions:
   contents: read
-  id-token: write
-  packages: read
 
 jobs:
+  image-proof-tests:
+    name: image and plugin proof tests
+    runs-on: ${{ vars.CI_RUNNER }}
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+      - name: Install backend dependencies
+        run: uv sync --frozen
+        working-directory: apps/backend
+      - name: Emit production-shape qualification configs
+        env:
+          AWS_ACCESS_KEY_ID: testing
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_SECRET_ACCESS_KEY: testing
+          BEDROCK_GATE_URL: https://bedrock-gate.example.invalid/
+          CLERK_ISSUER: https://test.clerk.accounts.dev
+          DYNAMODB_TABLE_PREFIX: isol8-test-
+          HUGGINGFACE_TOKEN: test_token
+          PYTHONPATH: .
+        run: |
+          uv run python tests/chaos/invariants/test_config_schema.py \
+            "${RUNNER_TEMP}/openclaw-image-qualification-configs"
+        working-directory: apps/backend
+      - name: Upload qualification configs
+        uses: actions/upload-artifact@v4
+        with:
+          name: openclaw-image-qualification-configs
+          path: ${{ runner.temp }}/openclaw-image-qualification-configs
+          retention-days: 1
+      - name: Run proof suite
+        run: |
+          node --test scripts/openclaw-image-proof.test.mjs
+          node --test apps/infra/openclaw/plugins/aws-exec-profile/index.test.mjs
+          node --test apps/infra/openclaw/plugins/paperclip-exec-creds/index.test.mjs
+
   # 400+ lines of POSIX sh that migrates and can delete an owner's SQLite state.
   # It had a real smoke harness and nothing ran it — a case was asserting
   # nothing for weeks, undetected.
@@ -67,6 +116,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+
       # The boot script under test shells out to `sqlite3` and `jq`, and the
       # harness drives it through `sqlite3` directly. Both are preinstalled on
       # GitHub's Ubuntu image and neither is guaranteed on a self-hosted box,
@@ -95,8 +145,12 @@ jobs:
 
   build-and-push:
     name: Build and push extended OpenClaw image
+    permissions:
+      contents: read
+      id-token: write
+      packages: read
     # A boot chain that fails its own suite must never reach ECR.
-    needs: boot-chain-smoke
+    needs: [boot-chain-smoke, image-proof-tests]
     if: github.event_name != 'pull_request'
     # Pinned to the box, deliberately NOT `vars.CI_RUNNER`. Every build on a
     # standard hosted runner since the `doctor` compile-cache bake was restored
@@ -117,16 +171,17 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Download qualification configs
+        uses: actions/download-artifact@v4
+        with:
+          name: openclaw-image-qualification-configs
+          path: ${{ runner.temp }}/openclaw-image-qualification-configs
+
       - name: Read version metadata
         id: meta
         run: |
-          UPSTREAM=$(node -p "require('./openclaw-version.json').upstream.split(':')[1]")
-          IMAGE=$(node -p "require('./openclaw-version.json').extendedImage")
           SHORT_SHA=$(git rev-parse --short HEAD)
-          TAG="${UPSTREAM}-${SHORT_SHA}"
-          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "Building ${IMAGE}:${TAG}"
+          node scripts/openclaw-image-proof.mjs metadata "${SHORT_SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Authenticate Via OIDC Role
         uses: aws-actions/configure-aws-credentials@v4
@@ -135,6 +190,27 @@ jobs:
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/lightbulb-openclaw-image-builder
+
+      - name: Prove candidate tag is absent
+        env:
+          REGISTRY_ID: "877352799272"
+          REPOSITORY: "lightbulb/openclaw-extended"
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          if [ "${ACCOUNT_ID}" != "${REGISTRY_ID}" ]; then
+            echo "OIDC account mismatch" >&2
+            exit 1
+          fi
+          RESPONSE_FILE="${RUNNER_TEMP}/openclaw-ecr-preflight.json"
+          aws ecr batch-get-image \
+            --registry-id "${REGISTRY_ID}" \
+            --repository-name "${REPOSITORY}" \
+            --image-ids imageTag="${TAG}" \
+            --region us-east-1 > "${RESPONSE_FILE}"
+          node scripts/openclaw-image-proof.mjs \
+            preflight "${REGISTRY_ID}" "${REPOSITORY}" "${TAG}" < "${RESPONSE_FILE}"
 
       - name: Login to ECR
         uses: aws-actions/amazon-ecr-login@v2
@@ -149,20 +225,94 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Verify base image digest
+        env:
+          BASE_IMAGE: ${{ steps.meta.outputs.base_image }}
+          BASE_DIGEST: ${{ steps.meta.outputs.base_digest }}
+        run: |
+          set -euo pipefail
+          RESOLVED_DIGEST=$(docker buildx imagetools inspect \
+            "${BASE_IMAGE}" --format '{{.Manifest.Digest}}')
+          printf '%s\n' "${RESOLVED_DIGEST}" \
+            | node scripts/openclaw-image-proof.mjs digest "${BASE_DIGEST}"
+
       - name: Build image
         run: |
           docker build \
             -t "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}" \
             apps/infra/openclaw/
 
-      # NOTE: we deliberately do NOT `docker push` here. Our ECR repo has tag
-      # immutability enabled, and the SOCI v2 step below pushes a different
-      # manifest (the SOCI-enabled OCI artifact) under the same tag. If we
-      # docker-pushed first, ECR would lock the tag and reject the SOCI push
-      # with "tag is immutable" (PR #438/#440 builds hit exactly this). The
-      # SOCI step imports the docker-built image into containerd via
-      # `docker save | nerdctl image load` and pushes from there — single
-      # ECR push, immutable tag claimed by the SOCI v2 manifest.
+      - name: Qualify built image and baked plugins
+        env:
+          IMAGE_REF: "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
+        run: |
+          set -euo pipefail
+          ARCHITECTURE=$(docker image inspect "${IMAGE_REF}" --format '{{.Architecture}}')
+          [ "${ARCHITECTURE}" = amd64 ] || {
+            echo "Expected amd64 image, found ${ARCHITECTURE}" >&2
+            exit 1
+          }
+
+          PROOF_DIR=$(mktemp -d)
+          trap 'rm -rf "${PROOF_DIR}"' EXIT
+
+          docker run --rm -i --entrypoint node "${IMAGE_REF}" --input-type=module - \
+            > "${PROOF_DIR}/versions.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const expected = {
+            openclaw: ["/app/package.json", "2026.9.3-isol8.2"],
+            slack: ["/app/dist/extensions/slack/package.json", "2026.9.3"],
+            discord: ["/app/dist/extensions/discord/package.json", "2026.9.3"],
+            "amazon-bedrock": ["/app/dist/extensions/amazon-bedrock/package.json", "2026.9.3"],
+            lobster: ["/app/dist/extensions/lobster/package.json", "2026.9.3"],
+            parallel: ["/app/dist/extensions/parallel/package.json", "2026.9.3"],
+            firecrawl: ["/app/dist/extensions/firecrawl/package.json", "2026.9.3"],
+            acpx: ["/app/dist/extensions/acpx/package.json", "2026.9.3"],
+            tokenjuice: ["/app/dist/extensions/tokenjuice/package.json", "2026.9.3"],
+            "sage-openclaw": ["/app/dist/extensions/sage-openclaw/package.json", "0.11.0"],
+            "lightbulb-marketplace": ["/app/dist/extensions/lightbulb-marketplace/package.json", "0.1.0"],
+            "aws-exec-profile": ["/app/dist/extensions/aws-exec-profile/package.json", "0.0.1"],
+            "paperclip-exec-creds": ["/app/dist/extensions/paperclip-exec-creds/package.json", "0.0.1"],
+          };
+          const versions = {};
+          for (const [id, [path, want]] of Object.entries(expected)) {
+            const version = JSON.parse(readFileSync(path, "utf8")).version;
+            if (version !== want) throw new Error(`${id}: expected ${want}, found ${version}`);
+            versions[id] = version;
+          }
+          process.stdout.write(JSON.stringify(versions, null, 2) + "\n");
+          NODE
+
+          docker run --rm \
+            -v "${RUNNER_TEMP}/openclaw-image-qualification-configs:/qualification/configs:ro" \
+            -v "${GITHUB_WORKSPACE}/scripts/openclaw-image-proof-runtime.mjs:/qualification/qualify.mjs:ro" \
+            --entrypoint node "${IMAGE_REF}" \
+            /qualification/qualify.mjs /qualification/configs \
+            > "${PROOF_DIR}/runtime.json"
+
+          docker run --rm --entrypoint node "${IMAGE_REF}" \
+            --test /app/dist/extensions/aws-exec-profile/index.test.mjs
+          docker run --rm --entrypoint node "${IMAGE_REF}" \
+            --test /app/dist/extensions/paperclip-exec-creds/index.test.mjs
+
+          {
+            echo "## Built-image qualification"
+            echo ""
+            echo "- Architecture: \`${ARCHITECTURE}\`"
+            echo "- Runtime: generated Bedrock, BYOK, and ChatGPT configs validated and loaded"
+            echo "- Contracts: configured plugins/providers/tools plus Lobster → LLM Task dispatch verified"
+            echo ""
+            echo '```json'
+            cat "${PROOF_DIR}/versions.json"
+            cat "${PROOF_DIR}/runtime.json"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      # NOTE: we deliberately do NOT `docker push` here. The ECR repository is
+      # mutable, but this workflow's contract is one push of the converted OCI
+      # target after proving the candidate tag absent, followed by an exact
+      # digest read-back. The SOCI step imports the docker-built image into
+      # containerd via `docker save | nerdctl image load` and pushes from there.
 
       - name: Set up containerd
         uses: crazy-max/ghaction-setup-containerd@v3
@@ -225,9 +375,41 @@ jobs:
           sudo nerdctl rmi "${IMAGE_REF}" || true
           sudo nerdctl tag "${IMAGE_REF}-soci-staging" "${IMAGE_REF}"
 
-          # Push the SOCI v2 image — first push to ECR for this tag, no
-          # immutability conflict.
+          # Read the converted OCI target from containerd immediately before
+          # the workflow's single push. This is the digest ECR must retain for
+          # the deploy tag; a child manifest or the pre-conversion Docker
+          # digest is not sufficient. Native inspect returns both local names
+          # for one target, so collapse identical values while preserving a
+          # fail-closed error if distinct digests ever appear.
+          EXPECTED_DIGEST=$(sudo nerdctl image inspect --mode=native "${IMAGE_REF}" \
+            --format '{{.Image.Target.Digest}}' | sort -u)
+          EXPECTED_DIGEST=$(printf '%s\n' "${EXPECTED_DIGEST}" \
+            | node scripts/openclaw-image-proof.mjs canonical-digest)
+
+          # Push the SOCI v2 image once, then prove the exact tag resolves to
+          # the converted OCI target digest.
           sudo nerdctl push --platform linux/amd64 "${IMAGE_REF}"
+          REGISTRY_ID="877352799272"
+          REPOSITORY="lightbulb/openclaw-extended"
+          TAG="${IMAGE_REF##*:}"
+          RESPONSE_FILE="${RUNNER_TEMP}/openclaw-ecr-post-push.json"
+          aws ecr batch-get-image \
+            --registry-id "${REGISTRY_ID}" \
+            --repository-name "${REPOSITORY}" \
+            --image-ids imageTag="${TAG}" \
+            --region us-east-1 > "${RESPONSE_FILE}"
+          node scripts/openclaw-image-proof.mjs post-push \
+            "${REGISTRY_ID}" "${REPOSITORY}" "${TAG}" "${EXPECTED_DIGEST}" \
+            < "${RESPONSE_FILE}"
+
+          {
+            echo "## Verified image identity"
+            echo ""
+            echo "- Converted OCI target: \`${EXPECTED_DIGEST}\`"
+            echo "- Base digest: \`${{ steps.meta.outputs.base_digest }}\`"
+            echo "- Source commit: \`${GITHUB_SHA}\`"
+            echo "- Workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
       # On a SELF-HOSTED runner the container stores are not thrown away with
       # the VM, so anything this job leaves behind is permanent. The SOCI step

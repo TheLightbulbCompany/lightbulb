@@ -3,12 +3,39 @@
 // Imports the pure resolver from ./dist/resolve.js (not ./dist/index.js, which
 // imports the OpenClaw SDK that only resolves inside the container image).
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { pathToFileURL } from "node:url";
 
 import { resolve, KEY_FILENAME } from "./dist/resolve.js";
+
+async function withPluginEntry(entryPath, fn) {
+  const dir = mkdtempSync(join(tmpdir(), "paperclip-exec-creds-entry-"));
+  try {
+    const sdk = join(dir, "node_modules", "openclaw");
+    mkdirSync(join(dir, "dist"), { recursive: true });
+    mkdirSync(sdk, { recursive: true });
+    writeFileSync(
+      join(sdk, "package.json"),
+      JSON.stringify({
+        type: "module",
+        exports: { "./plugin-sdk/plugin-entry": "./plugin-entry.js" },
+      }),
+    );
+    writeFileSync(join(sdk, "plugin-entry.js"), "export const definePluginEntry = (x) => x;\n");
+    writeFileSync(
+      join(dir, "dist", "resolve.js"),
+      readFileSync(new URL("./dist/resolve.js", import.meta.url)),
+    );
+    const target = join(dir, entryPath.startsWith("./dist/") ? "dist/index.js" : "index.js");
+    writeFileSync(target, readFileSync(new URL(entryPath, import.meta.url)));
+    return await fn((await import(pathToFileURL(target))).default);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 const AGENT = "agent_11111111-2222-3333-4444-555555555555";
 const FULL = {
@@ -124,3 +151,34 @@ test("falls back to the baked default root when none is supplied", () => {
   assert.deepEqual(resolve(AGENT, undefined), {});
   assert.deepEqual(resolve(AGENT, ""), {});
 });
+
+for (const entryPath of ["./index.ts", "./dist/index.js"]) {
+  test(`${entryPath} injects only the active agent's credentials`, async () => {
+    await withPluginEntry(entryPath, (entry) => withRoot((root) => {
+      seed(root, AGENT, FULL);
+      seed(root, "agent_foreign", { ...FULL, token: "pcp_foreign" });
+      const previous = process.env.OPENCLAW_WORKSPACE_ROOT;
+      process.env.OPENCLAW_WORKSPACE_ROOT = root;
+      try {
+        let hook;
+        entry.register({
+          on(name, handler, options) {
+            hook = { name, handler, options };
+          },
+        });
+        assert.equal(hook.name, "resolve_exec_env");
+        assert.deepEqual(hook.options, { priority: 50 });
+        assert.deepEqual(hook.handler({}, { agentId: AGENT }), EXPECTED);
+        assert.equal(
+          hook.handler({}, { agentId: "agent_foreign" }).PAPERCLIP_API_KEY,
+          "pcp_foreign",
+        );
+        assert.deepEqual(hook.handler({}, { agentId: "agent_absent" }), {});
+        assert.deepEqual(hook.handler({}, {}), {});
+      } finally {
+        if (previous === undefined) delete process.env.OPENCLAW_WORKSPACE_ROOT;
+        else process.env.OPENCLAW_WORKSPACE_ROOT = previous;
+      }
+    }));
+  });
+}

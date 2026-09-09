@@ -123,13 +123,12 @@ RUN git clone --depth=1 --branch "${OPENHUE_VERSION}" \
 # =============================================================================
 # Fat (non-slim) variant: bundles plugin runtime deps so first-use of
 # browser/codex/channels doesn't pay a ~6min lazy npm-install on cold start.
-FROM ghcr.io/thelightbulbcompany/agent:2026.8.1-isol8.3
+FROM ghcr.io/thelightbulbcompany/agent:2026.9.3-isol8.2@sha256:bff34c1100fab434f7953b8529863979df7deeda6963a8b0169caa4446c2ef18
 # PLUGIN-PIN POLICY (read before bumping the @openclaw/* pins below): the baked
 # plugins pin to the latest PUBLISHED plugin dist of the FROM tag's release
-# line on npm. The FROM tag is on the 2026.8.1 line, which upstream cut as a
-# STABLE release on 2026-08-30 — so all eight baked plugins pin to the stable
-# 2026.8.1 dist (previously the 2026.8.1-beta.3 prerelease) to stay in lockstep
-# with the 8.1 host; promoting this base to dev and then prod is the separate
+# line on npm. The FROM tag is on the stable 2026.9.3 line, so all eight baked
+# plugins pin to the exact 2026.9.3 dist to stay in lockstep with the host;
+# promoting this base to dev and then prod is the separate
 # dev.tag/prod.tag flip in openclaw-version.json. Keep these
 # pins in lockstep with the FROM tag on every base bump: the 7.1 line moved the
 # channel inbound-dispatch contract (turn-adoption ack), so a stale channel
@@ -506,7 +505,7 @@ RUN chmod 0755 /usr/local/bin/isol8-warp-boot.sh
 RUN set -eux; \
     for P in slack discord; do \
       mkdir -p "/opt/stage-$P"; \
-      npm install --prefix "/opt/stage-$P" "@openclaw/$P@2026.8.1"; \
+      npm install --prefix "/opt/stage-$P" "@openclaw/$P@2026.9.3"; \
       mkdir -p "/app/dist/extensions/$P"; \
       cp -R "/opt/stage-$P/node_modules/@openclaw/$P/." "/app/dist/extensions/$P/"; \
       mkdir -p "/app/dist/extensions/$P/node_modules"; \
@@ -530,7 +529,7 @@ RUN set -eux; \
 # the FROM tag / openclaw-version.json#upstream.
 RUN set -eux; \
     mkdir -p /opt/stage-amazon-bedrock; \
-    npm install --prefix /opt/stage-amazon-bedrock "@openclaw/amazon-bedrock-provider@2026.8.1"; \
+    npm install --prefix /opt/stage-amazon-bedrock "@openclaw/amazon-bedrock-provider@2026.9.3"; \
     mkdir -p /app/dist/extensions/amazon-bedrock; \
     cp -R /opt/stage-amazon-bedrock/node_modules/@openclaw/amazon-bedrock-provider/. /app/dist/extensions/amazon-bedrock/; \
     mkdir -p /app/dist/extensions/amazon-bedrock/node_modules; \
@@ -554,7 +553,7 @@ RUN set -eux; \
 # pinned in lockstep with the FROM tag / openclaw-version.json#upstream.
 RUN set -eux; \
     mkdir -p /opt/stage-lobster; \
-    npm install --prefix /opt/stage-lobster "@openclaw/lobster@2026.8.1"; \
+    npm install --prefix /opt/stage-lobster "@openclaw/lobster@2026.9.3"; \
     mkdir -p /app/dist/extensions/lobster; \
     cp -R /opt/stage-lobster/node_modules/@openclaw/lobster/. /app/dist/extensions/lobster/; \
     mkdir -p /app/dist/extensions/lobster/node_modules; \
@@ -575,7 +574,7 @@ RUN set -eux; \
 # lockstep with the FROM tag, same as the layers above.
 RUN set -eux; \
     mkdir -p /opt/stage-parallel; \
-    npm install --prefix /opt/stage-parallel "@openclaw/parallel-plugin@2026.8.1"; \
+    npm install --prefix /opt/stage-parallel "@openclaw/parallel-plugin@2026.9.3"; \
     mkdir -p /app/dist/extensions/parallel; \
     cp -R /opt/stage-parallel/node_modules/@openclaw/parallel-plugin/. /app/dist/extensions/parallel/; \
     mkdir -p /app/dist/extensions/parallel/node_modules; \
@@ -601,14 +600,14 @@ RUN set -eux; \
 # any plugin dir not owned by uid 0; it auto-activates from
 # plugins.entries.firecrawl.enabled). The npm package is
 # `@openclaw/firecrawl-plugin`; its plugin id + discovery dir are `firecrawl`.
-# We now pin the stable 2026.8.1 dist explicitly — the same dist every other
-# baked plugin pins to on this 8.1 base — so it stays in lockstep with the FROM
+# We pin the stable 2026.9.3 dist explicitly — the same dist every other baked
+# plugin pins to on this host — so it stays in lockstep with the FROM
 # tag rather than tracking whatever `@beta` resolves to on the day of the build;
 # re-resolve `npm view @openclaw/firecrawl-plugin@beta version` on each base
 # bump. Bake it root-owned, same as the layers above.
 RUN set -eux; \
     mkdir -p /opt/stage-firecrawl; \
-    npm install --prefix /opt/stage-firecrawl "@openclaw/firecrawl-plugin@2026.8.1"; \
+    npm install --prefix /opt/stage-firecrawl "@openclaw/firecrawl-plugin@2026.9.3"; \
     mkdir -p /app/dist/extensions/firecrawl; \
     cp -R /opt/stage-firecrawl/node_modules/@openclaw/firecrawl-plugin/. /app/dist/extensions/firecrawl/; \
     mkdir -p /app/dist/extensions/firecrawl/node_modules; \
@@ -631,7 +630,7 @@ RUN set -eux; \
 # It ships NO node_modules of its own. Its two imports resolve from the host by
 # self-referencing the `openclaw` package from /app — `openclaw/plugin-sdk/
 # tool-plugin` exactly as aws-exec-profile does, and `typebox` from
-# /app/node_modules (openclaw depends on typebox 1.3.3, which the plugin pins
+# /app/node_modules (openclaw depends on typebox 1.3.18, which the plugin pins
 # in lockstep). The `openclaw` devDependency exists only to typecheck the build
 # locally and is ~460MB; it must never reach the image, which this COPY-only
 # layer guarantees structurally.
@@ -664,7 +663,7 @@ RUN chown -R root:root /app/dist/extensions/lightbulb-marketplace
 # the FROM tag / openclaw-version.json#upstream.
 RUN set -eux; \
     mkdir -p /opt/stage-acpx; \
-    npm install --prefix /opt/stage-acpx "@openclaw/acpx@2026.8.1"; \
+    npm install --prefix /opt/stage-acpx "@openclaw/acpx@2026.9.3"; \
     mkdir -p /app/dist/extensions/acpx; \
     cp -R /opt/stage-acpx/node_modules/@openclaw/acpx/. /app/dist/extensions/acpx/; \
     mkdir -p /app/dist/extensions/acpx/node_modules; \
@@ -690,7 +689,7 @@ RUN set -eux; \
 # openclaw-version.json#upstream.
 RUN set -eux; \
     mkdir -p /opt/stage-tokenjuice; \
-    npm install --prefix /opt/stage-tokenjuice "@openclaw/tokenjuice@2026.8.1"; \
+    npm install --prefix /opt/stage-tokenjuice "@openclaw/tokenjuice@2026.9.3"; \
     mkdir -p /app/dist/extensions/tokenjuice; \
     cp -R /opt/stage-tokenjuice/node_modules/@openclaw/tokenjuice/. /app/dist/extensions/tokenjuice/; \
     mkdir -p /app/dist/extensions/tokenjuice/node_modules; \

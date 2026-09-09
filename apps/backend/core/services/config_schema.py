@@ -13,12 +13,12 @@ recovery needed manual EFS surgery.
 **How the schema gets here.** The backend image is Python-only
 (``apps/backend/Dockerfile`` is ``python:3.12-slim``), so it cannot run
 OpenClaw's zod schema. ``scripts/vendor_openclaw_schema.sh`` bundles that zod
-schema for the chaos suite and then derives a JSON Schema from it
-(``tests/chaos/_schema/gen_json_schema.mjs`` → ``openclaw_config.schema.json``,
-sitting next to this module so the Docker build ships it). Both artifacts come
-from the SAME vendored source, pinned to ``openclaw-version.json#upstream``;
-``tests/chaos/test_schema_staleness.py`` fails if the tag drifts from the pinned
-image or if the JSON artifact drifts from the zod bundle.
+schema for the chaos suite and then derives the JSON Schema shipped beside this
+module. The fleet default stays at ``openclaw_config.schema.json``; additive
+candidate schemas live under ``openclaw_config_schemas/`` and become selectable
+only when their exact identifier/path is added to ``_SCHEMA_PATHS``. The drift
+tests regenerate every registered JSON artifact from its own bundle and verify
+candidate provenance independently of the fleet image pin.
 
 **Two modes, bounded both ways.** A wrong vendored schema must not brick config
 delivery fleet-wide, and untrusted input must not skate:
@@ -50,7 +50,10 @@ from core.observability.metrics import put_metric
 logger = logging.getLogger(__name__)
 
 _SCHEMA_PATH = Path(__file__).with_name("openclaw_config.schema.json")
-_SCHEMA_PATHS = {"2026.8.1-isol8.3": _SCHEMA_PATH}
+_SCHEMA_PATHS: dict[str, Path] = {
+    "2026.8.1-isol8.3": _SCHEMA_PATH,
+    "2026.9.3-isol8.2": _SCHEMA_PATH.parent / "openclaw_config_schemas" / "2026.9.3-isol8.2.json",
+}
 
 # Enough detail to diagnose from a log line without dumping a 300-error wall for
 # a config that is wrong in one structural way.

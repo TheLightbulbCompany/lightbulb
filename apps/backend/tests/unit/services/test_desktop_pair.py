@@ -1,5 +1,6 @@
 import base64
 import json
+import os
 import re
 from unittest.mock import AsyncMock, MagicMock
 
@@ -1301,6 +1302,65 @@ async def test_efs_workspace_adapter_handles_missing_paired_json_as_empty(tmp_pa
 
     await adapter.mutate_paired_json(_inspect)
     assert seen["value"] == {}
+
+
+@pytest.mark.asyncio
+async def test_efs_workspace_adapter_rejects_paired_json_symlink_without_reading_target(tmp_path):
+    workspace = Workspace(mount_path=str(tmp_path))
+    devices_dir = tmp_path / "owner" / "devices"
+    devices_dir.mkdir(parents=True)
+    target = tmp_path / "private.json"
+    target.write_text('{"secret":"must-survive"}')
+    os.symlink(target, devices_dir / "paired.json")
+    adapter = EfsWorkspaceAdapter("owner", workspace, MagicMock(), "wss://x")
+
+    with pytest.raises(OSError):
+        await adapter.mutate_paired_json(lambda paired: paired.update({"attacker": {}}) or True)
+
+    assert target.read_text() == '{"secret":"must-survive"}'
+
+
+@pytest.mark.asyncio
+async def test_efs_workspace_adapter_rejects_lock_symlink_without_chowning_target(tmp_path):
+    workspace = Workspace(mount_path=str(tmp_path))
+    devices_dir = tmp_path / "owner" / "devices"
+    devices_dir.mkdir(parents=True)
+    target = tmp_path / "lock-target"
+    target.write_text("unchanged")
+    before = target.stat()
+    os.symlink(target, devices_dir / "paired.json.lock")
+    adapter = EfsWorkspaceAdapter("owner", workspace, MagicMock(), "wss://x")
+
+    with pytest.raises(OSError):
+        await adapter.mutate_paired_json(lambda paired: paired.update({"device": {}}) or True)
+
+    after = target.stat()
+    assert target.read_text() == "unchanged"
+    assert (after.st_uid, after.st_gid) == (before.st_uid, before.st_gid)
+
+
+@pytest.mark.asyncio
+async def test_efs_workspace_adapter_absent_file_concurrent_adapters_preserve_both_writes(tmp_path):
+    workspace = Workspace(mount_path=str(tmp_path))
+    first = EfsWorkspaceAdapter("owner", workspace, MagicMock(), "wss://x")
+    second = EfsWorkspaceAdapter("owner", workspace, MagicMock(), "wss://x")
+
+    def add(device_id):
+        def mutate(paired):
+            paired[device_id] = {"deviceId": device_id}
+            return True
+
+        return mutate
+
+    import asyncio as _asyncio
+
+    await _asyncio.gather(
+        first.mutate_paired_json(add("first")),
+        second.mutate_paired_json(add("second")),
+    )
+
+    paired = json.loads((tmp_path / "owner" / "devices" / "paired.json").read_text())
+    assert set(paired) == {"first", "second"}
 
 
 async def test_efs_workspace_adapter_raises_when_no_gateway_token():

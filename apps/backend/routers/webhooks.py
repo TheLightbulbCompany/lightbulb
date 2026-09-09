@@ -52,6 +52,7 @@ from core.services.paperclip_provisioning import (
     close_paperclip_provisioning,
 )
 from core.services.update_service import PAPERCLIP_RETRY_KIND
+from core.services.webhook_dedup import MembershipLifecycleSuperseded
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +144,20 @@ def _verify_svix_signature(body: bytes, headers: dict) -> None:
 
     put_metric("webhook.clerk.sig_fail")
     raise HTTPException(status_code=400, detail="Invalid svix signature")
+
+
+def _clerk_event_sequence(payload: dict, headers: dict, event_id: str, event_type: str) -> str:
+    """Stable signed ordering token for membership allow/revoke epochs."""
+    timestamp = payload.get("timestamp")
+    if not isinstance(timestamp, int) or isinstance(timestamp, bool) or timestamp < 0:
+        try:
+            timestamp = int(headers.get("svix-timestamp", "")) * 1000
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Clerk lifecycle event timestamp unavailable")
+    # A same-timestamp create/delete pair has no trustworthy total order in the
+    # payload. Prefer deny on that ambiguity; a later create can still re-admit.
+    deny_rank = 1 if event_type.endswith(".deleted") else 0
+    return f"{timestamp:020d}:{deny_rank}:{event_id}"
 
 
 # The canonical home for ``PAPERCLIP_RETRY_KIND`` is
@@ -328,7 +343,21 @@ async def _handle_organization_created(data: dict) -> None:
     )
 
 
-async def _handle_organization_membership_created(data: dict) -> None:
+async def _renew_member_lifecycle(org_id: str, user_id: str, claim_id: str | None) -> None:
+    if claim_id is None:
+        return
+    from core.gateway.native_rooms import HumanIdentity
+    from core.services.webhook_dedup import renew_membership_lifecycle
+
+    alias = HumanIdentity(org_id, settings.CLERK_ISSUER, user_id, "", "").alias
+    await renew_membership_lifecycle(org_id, alias, claim_id)
+
+
+async def _handle_organization_membership_created(
+    data: dict,
+    *,
+    lifecycle_claim_id: str | None = None,
+) -> None:
     """Record-keeping for member acceptance + dual-tenancy invariant probe.
 
     Provisioning is intentionally NOT done here. The new member's
@@ -364,7 +393,9 @@ async def _handle_organization_membership_created(data: dict) -> None:
     # has already accepted the membership and refusing here would just
     # orphan the org provisioning.
     try:
+        await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
         personal_account = await billing_repo.get_by_owner_id(user_id)
+        await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
         if personal_account and personal_account.get("subscription_status") in (
             "active",
             "trialing",
@@ -379,6 +410,8 @@ async def _handle_organization_membership_created(data: dict) -> None:
                 "tenancy_invariant.violation",
                 dimensions={"path": "membership_created"},
             )
+    except MembershipLifecycleSuperseded:
+        raise
     except Exception:  # noqa: BLE001
         # Never let an observability check break a real provisioning path.
         logger.exception("tenancy invariant probe failed for user=%s org=%s", user_id, org_id)
@@ -398,12 +431,22 @@ async def _handle_organization_membership_created(data: dict) -> None:
     try:
         from core.services.billing_service import sync_team_seat_quantity
 
+        await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
         await sync_team_seat_quantity(org_id)
+        await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
+    except MembershipLifecycleSuperseded:
+        raise
     except Exception:
         logger.exception("seat sync on membership.created failed for org=%s", org_id)
 
 
-async def _handle_organization_membership_deleted(data: dict) -> None:
+async def _handle_organization_membership_deleted(
+    data: dict,
+    *,
+    revocation_id: str | None = None,
+    revocation_sequence: str | None = None,
+    lifecycle_claim_id: str | None = None,
+):
     """Archive the member's Paperclip membership AND disable their DDB row.
 
     Spec §3 case C. Calls ``archive_member`` rather than ``disable``
@@ -420,30 +463,41 @@ async def _handle_organization_membership_deleted(data: dict) -> None:
     pud = data.get("public_user_data") or {}
     user_id = pud.get("user_id", "") or data.get("user_id", "")
     org_id = (data.get("organization") or {}).get("id", "")
-    if not user_id:
-        logger.warning("Clerk organizationMembership.deleted missing user_id: %s", data)
-        return
+    if not user_id or not org_id:
+        raise HTTPException(status_code=400, detail="Clerk membership deletion target unavailable")
 
     revocation_error = None
-    if org_id:
-        from core.gateway.native_rooms import revoke_member_connections
+    from core.services.human_broker_provisioning import HumanRevocationOutcome, revoke_human_subject
 
-        try:
-            await revoke_member_connections(org_id, user_id)
-        except Exception as exc:
-            # Socket infrastructure cannot skip the independent stored-member
-            # deauthorization below. Redrive the incomplete socket cleanup only
-            # after archive/disable and seat synchronization have had their turn.
-            revocation_error = exc
+    try:
+        outcome = await revoke_human_subject(
+            org_id,
+            settings.CLERK_ISSUER,
+            user_id,
+            revocation_id=revocation_id,
+            revocation_sequence=revocation_sequence,
+            lifecycle_claim_id=lifecycle_claim_id,
+        )
+        if outcome is HumanRevocationOutcome.STALE:
+            return outcome
+    except Exception as exc:
+        # Credential disable and socket teardown are retried by svix after
+        # the independent Paperclip/seat cleanup below has had its turn.
+        revocation_error = exc
 
+    await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
     provisioning = await build_paperclip_provisioning()
     try:
         try:
+            await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
             await provisioning.archive_member(user_id=user_id)
+            await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
             put_metric(
                 "paperclip.webhook.archive_member",
                 dimensions={"trigger": "membership_deleted", "result": "ok"},
             )
+        except MembershipLifecycleSuperseded:
+            raise
         except Exception as e:
             retryable = _is_retryable(e)
             put_metric(
@@ -471,7 +525,9 @@ async def _handle_organization_membership_deleted(data: dict) -> None:
                 # now (idempotent; no-ops if no row exists) and let the
                 # retry re-attempt only the Paperclip-side archive.
                 try:
+                    await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
                     await provisioning.disable(user_id=user_id)
+                    await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
                     put_metric(
                         "paperclip.webhook.disable",
                         dimensions={
@@ -484,6 +540,7 @@ async def _handle_organization_membership_deleted(data: dict) -> None:
                         "disable fallback before archive_member retry enqueue failed for user=%s",
                         user_id,
                     )
+                await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
                 await _enqueue_paperclip_retry(
                     op="archive_member",
                     payload={"user_id": user_id},
@@ -501,7 +558,9 @@ async def _handle_organization_membership_deleted(data: dict) -> None:
                 # Operators can clean up the orphan Paperclip member row
                 # out-of-band if needed.
                 try:
+                    await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
                     await provisioning.disable(user_id=user_id)
+                    await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
                     put_metric(
                         "paperclip.webhook.disable",
                         dimensions={
@@ -521,12 +580,17 @@ async def _handle_organization_membership_deleted(data: dict) -> None:
         try:
             from core.services.billing_service import sync_team_seat_quantity
 
+            await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
             await sync_team_seat_quantity(org_id)
+            await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
+        except MembershipLifecycleSuperseded:
+            raise
         except Exception:
             logger.exception("seat sync on membership.deleted failed for org=%s", org_id)
 
     if revocation_error is not None:
         raise revocation_error
+    return HumanRevocationOutcome.APPLIED
 
 
 async def _handle_organization_deleted(data: dict) -> None:
@@ -658,6 +722,64 @@ async def handle_clerk_webhook(request: Request):
     body = await request.body()
     _verify_svix_signature(body, dict(request.headers))
 
+    try:
+        payload = json.loads(body)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+    event_type = payload.get("type", "")
+    data: dict[str, Any] = payload.get("data", {})
+    svix_id = request.headers.get("svix-id")
+    lifecycle_event = event_type in {
+        "user.deleted",
+        "organizationMembership.created",
+        "organizationMembership.deleted",
+    }
+    lifecycle_id = svix_id or f"local-{hashlib.sha256(body).hexdigest()}"
+    lifecycle_sequence = (
+        _clerk_event_sequence(payload, dict(request.headers), lifecycle_id, event_type)
+        if lifecycle_event
+        else ""
+    )
+    processing_claim = None
+    membership_claim = None
+    membership_owner_id = None
+    membership_alias = None
+
+    if event_type in {"organizationMembership.created", "organizationMembership.deleted"}:
+        pud = data.get("public_user_data") or {}
+        membership_user_id = pud.get("user_id", "") or data.get("user_id", "")
+        membership_owner_id = (data.get("organization") or {}).get("id", "")
+        if not membership_user_id or not membership_owner_id:
+            raise HTTPException(status_code=400, detail="Clerk membership lifecycle target unavailable")
+
+        from core.gateway.native_rooms import HumanIdentity
+        from core.services.webhook_dedup import (
+            MembershipLifecycleInProgress,
+            begin_membership_lifecycle,
+        )
+
+        membership_alias = HumanIdentity(
+            membership_owner_id,
+            settings.CLERK_ISSUER,
+            membership_user_id,
+            "",
+            "",
+        ).alias
+        try:
+            membership_claim = await begin_membership_lifecycle(
+                membership_owner_id,
+                membership_alias,
+                event_id=lifecycle_id,
+                sequence=lifecycle_sequence,
+                access_state="allowed" if event_type.endswith(".created") else "revoked",
+            )
+        except MembershipLifecycleInProgress as exc:
+            raise HTTPException(status_code=503, detail="Older Clerk membership event is still processing") from exc
+        if membership_claim is None:
+            put_metric("clerk.webhook.membership_stale", dimensions={"event_type": event_type})
+            return {"status": "stale"}
+
     # Idempotency dedupe — svix will retry on any non-2xx and on its own
     # at-least-once delivery insurance. Without this, two retries from
     # svix on a flaky webhook would each call ``provision_member``, the
@@ -666,35 +788,46 @@ async def handle_clerk_webhook(request: Request):
     # from the first run, so sign_up_user 409s) and marks the row failed
     # forever. Keyed on svix-id which is unique per genuine Clerk event,
     # identical across retries.
-    svix_id = request.headers.get("svix-id")
     if svix_id:
-        try:
+        if lifecycle_event:
             from core.services.webhook_dedup import (
-                WebhookDedupResult,
-                record_event_or_skip,
+                WebhookProcessingInProgress,
+                begin_event_processing,
             )
 
-            dedup = await record_event_or_skip(svix_id, source="clerk")
-            if dedup is WebhookDedupResult.ALREADY_SEEN:
+            try:
+                processing_claim = await begin_event_processing(svix_id, source="clerk")
+            except WebhookProcessingInProgress as exc:
+                raise HTTPException(status_code=503, detail="Clerk lifecycle event is already processing") from exc
+            if processing_claim is None:
+                if membership_claim is not None:
+                    from core.services.webhook_dedup import complete_membership_lifecycle
+
+                    await complete_membership_lifecycle(
+                        membership_owner_id,
+                        membership_alias,
+                        membership_claim,
+                    )
                 put_metric("clerk.webhook.dedup_skipped")
-                logger.info("clerk webhook duplicate suppressed: %s", svix_id)
+                logger.info("completed clerk lifecycle webhook duplicate suppressed: %s", svix_id)
                 return {"status": "duplicate"}
-        except Exception:
-            # Dedupe is best-effort — a misconfigured WEBHOOK_DEDUP_TABLE
-            # shouldn't black-hole all Clerk webhooks. Log and continue
-            # so genuine traffic still flows; the worst case (DDB
-            # outage) reverts to the pre-dedupe behavior of double-handling
-            # a retry, which the per-event idempotency in provision_*
-            # already mostly tolerates.
-            logger.exception("clerk webhook dedupe check failed; processing anyway")
+        else:
+            try:
+                from core.services.webhook_dedup import (
+                    WebhookDedupResult,
+                    record_event_or_skip,
+                )
 
-    try:
-        payload = json.loads(body)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+                dedup = await record_event_or_skip(svix_id, source="clerk")
+                if dedup is WebhookDedupResult.ALREADY_SEEN:
+                    put_metric("clerk.webhook.dedup_skipped")
+                    logger.info("clerk webhook duplicate suppressed: %s", svix_id)
+                    return {"status": "duplicate"}
+            except Exception:
+                # Non-security events retain the historical best-effort
+                # behavior; lifecycle claims above deliberately fail closed.
+                logger.exception("clerk webhook dedupe check failed; processing anyway")
 
-    event_type = payload.get("type", "")
-    data: dict[str, Any] = payload.get("data", {})
     put_metric("webhook.clerk.received", dimensions={"event_type": event_type})
 
     if event_type == "user.created":
@@ -780,8 +913,11 @@ async def handle_clerk_webhook(request: Request):
     elif event_type == "user.deleted":
         user_id = data.get("id", "")
         if not user_id:
-            logger.warning("Clerk user.deleted webhook missing data.id")
-            return {"status": "ok"}
+            raise HTTPException(status_code=400, detail="Clerk user deletion target unavailable")
+
+        from core.services.human_broker_provisioning import revoke_human_subject_everywhere
+
+        await revoke_human_subject_everywhere(settings.CLERK_ISSUER, user_id)
 
         count = await channel_link_repo.sweep_by_member(user_id)
         logger.info(
@@ -798,17 +934,38 @@ async def handle_clerk_webhook(request: Request):
         await _handle_organization_created(data)
 
     elif event_type == "organizationMembership.created":
-        await _handle_organization_membership_created(data)
+        pud = data.get("public_user_data") or {}
+        user_id = pud.get("user_id", "") or data.get("user_id", "")
+        org_id = (data.get("organization") or {}).get("id", "")
+        if not user_id or not org_id:
+            raise HTTPException(status_code=400, detail="Clerk membership creation target unavailable")
+        from core.services.human_broker_provisioning import allow_human_subject
+
+        await allow_human_subject(
+            org_id,
+            settings.CLERK_ISSUER,
+            user_id,
+            event_id=lifecycle_id,
+            event_sequence=lifecycle_sequence,
+            lifecycle_claim_id=membership_claim,
+        )
+        await _handle_organization_membership_created(data, lifecycle_claim_id=membership_claim)
 
     elif event_type == "organizationMembership.deleted":
-        try:
-            await _handle_organization_membership_deleted(data)
-        except Exception:
-            if svix_id:
-                from core.services.webhook_dedup import delete_event
+        membership_outcome = await _handle_organization_membership_deleted(
+            data,
+            revocation_id=lifecycle_id,
+            revocation_sequence=lifecycle_sequence,
+            lifecycle_claim_id=membership_claim,
+        )
+        from core.services.human_broker_provisioning import HumanRevocationOutcome
 
-                await delete_event(svix_id)
-            raise
+        if membership_outcome is HumanRevocationOutcome.STALE:
+            if processing_claim is not None:
+                from core.services.webhook_dedup import complete_event_processing
+
+                await complete_event_processing(lifecycle_id, processing_claim)
+            return {"status": "stale"}
 
     elif event_type == "organization.deleted":
         await _handle_organization_deleted(data)
@@ -816,4 +973,16 @@ async def handle_clerk_webhook(request: Request):
     else:
         logger.debug("Clerk webhook: unhandled event type %s", event_type)
 
+    if membership_claim is not None:
+        from core.services.webhook_dedup import complete_membership_lifecycle
+
+        await complete_membership_lifecycle(
+            membership_owner_id,
+            membership_alias,
+            membership_claim,
+        )
+    if processing_claim is not None:
+        from core.services.webhook_dedup import complete_event_processing
+
+        await complete_event_processing(lifecycle_id, processing_claim)
     return {"status": "ok"}

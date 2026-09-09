@@ -78,7 +78,7 @@ class HumanIdentity:
 
 @dataclass(frozen=True)
 class QualifiedHumanDevice:
-    identity: OperatorDeviceIdentity
+    identity: OperatorDeviceIdentity = field(repr=False)
     profile_id: str
 
 
@@ -144,6 +144,11 @@ def qualification_for(owner_id: str) -> RoomQualification:
     if qualification is None:
         raise RoomError("ROOM_UNAVAILABLE", "Native human and machine authentication not qualified")
     return qualification
+
+
+def invalidate_qualification(owner_id: str) -> None:
+    """Fail closed for warm native sockets before durable device teardown."""
+    _qualified_owners.pop(owner_id, None)
 
 
 def room_prefix(owner_id: str, agent_id: str) -> str:
@@ -556,9 +561,8 @@ class NativeHumanConnection:
                 and hello.get("server", {}).get("buildId") == self.qualification.build_id
                 and auth.get("role") == "operator"
                 and set(auth.get("scopes", [])) == set(HUMAN_SCOPES)
-                and not auth.get("deviceToken")
-                and not auth.get("deviceTokens")
-                and not auth.get("bootstrapToken")
+                and not {"deviceToken", "deviceTokens", "bootstrapToken"} & auth.keys()
+                and not {"deviceToken", "deviceTokens", "bootstrapToken"} & hello.keys()
             ):
                 raise RoomError("ROOM_UNAVAILABLE", "Native human handshake is not qualified")
             self.methods = set(hello.get("features", {}).get("methods", []))
@@ -569,6 +573,7 @@ class NativeHumanConnection:
             self.profile = result.get("profile", {})
             if self.profile.get("id") != self.device.profile_id:
                 raise RoomError("ROOM_UNAVAILABLE", "Native profile does not match verified human")
+            await self.require_current()
         except BaseException:
             await self.close()
             raise
@@ -664,6 +669,17 @@ class NativeHumanConnection:
     async def require_current(self):
         if qualification_for(self.identity.owner_id) != self.qualification:
             raise RoomError("ROOM_UNAVAILABLE", "Room qualification was revoked")
+        from core.services.human_broker_provisioning import require_active_human_device
+
+        try:
+            await require_active_human_device(
+                self.identity.owner_id,
+                self.identity.alias,
+                self.device.identity.device_id,
+                self.device.profile_id,
+            )
+        except Exception as exc:
+            raise RoomError("ROOM_UNAVAILABLE", "Human credential was revoked or is unavailable") from exc
         await require_current_member(self.identity, self.conn_svc)
 
     async def close(self):

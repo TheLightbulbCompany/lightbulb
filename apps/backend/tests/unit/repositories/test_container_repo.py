@@ -166,6 +166,42 @@ async def test_upsert_preserves_the_bedrock_gate_superseded_hashes(dynamodb_tabl
 
 
 @pytest.mark.asyncio
+async def test_human_broker_device_create_cas_and_reprovision_preservation(dynamodb_table):
+    from core.repositories import container_repo
+
+    owner_id = "org_human_broker"
+    alias = "clerk-" + "a" * 64 + "@identity.lightbulb.invalid"
+    record = {
+        "generation": 1,
+        "state": "provisioning",
+        "seed_enc": "ciphertext",
+        "device_id": "b" * 64,
+        "public_key": "c" * 43,
+    }
+    await container_repo.upsert(owner_id, {"status": "running"})
+
+    assert await container_repo.create_human_broker_device(owner_id, alias, record) == record
+    assert await container_repo.create_human_broker_device(owner_id, alias, {**record, "device_id": "d" * 64}) == record
+    assert await container_repo.cas_human_broker_device(
+        owner_id,
+        alias,
+        {**record, "state": "active"},
+        generation=1,
+        state="provisioning",
+    )
+    assert not await container_repo.cas_human_broker_device(
+        owner_id,
+        alias,
+        {**record, "state": "disabled"},
+        generation=1,
+        state="provisioning",
+    )
+
+    row = await container_repo.upsert(owner_id, {"status": "provisioning"})
+    assert row["human_broker_devices"][alias]["state"] == "active"
+
+
+@pytest.mark.asyncio
 async def test_upsert_mints_distinct_provision_generation_per_call(dynamodb_table):
     """create_user_service (the sole caller of upsert) mints a fresh
     provision_generation on every row-creating write -- this repo function

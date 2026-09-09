@@ -1,0 +1,296 @@
+import copy
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+
+from core.gateway.native_rooms import HumanIdentity
+from core.services import human_broker_provisioning as provisioner
+
+
+class _Repo:
+    def __init__(self, events):
+        self.events = events
+        self.devices = {}
+
+    async def get_by_owner_id(self, owner_id, *, consistent=False):
+        return {
+            "owner_id": owner_id,
+            "gateway_token": "gateway-secret",
+            "human_broker_devices": copy.deepcopy(self.devices),
+        }
+
+    async def create_human_broker_device(self, owner_id, alias, record):
+        self.devices.setdefault(alias, copy.deepcopy(record))
+        return copy.deepcopy(self.devices[alias])
+
+    async def cas_human_broker_device(self, owner_id, alias, record, *, generation, state):
+        current = self.devices.get(alias)
+        if not current or current["generation"] != generation or current["state"] != state:
+            return False
+        self.devices[alias] = copy.deepcopy(record)
+        if record["state"] == "disabled":
+            self.events.append("durable-disabled")
+        return True
+
+
+class _Kms:
+    def __init__(self):
+        self.values = {}
+        self.encrypts = 0
+        self.fail_encrypt = False
+        self.fail_decrypt = False
+
+    def encrypt_bytes(self, value, *, encryption_context):
+        if self.fail_encrypt:
+            raise RuntimeError("kms unavailable")
+        self.encrypts += 1
+        ciphertext = f"ciphertext-{self.encrypts}"
+        self.values[(ciphertext, tuple(sorted(encryption_context.items())))] = value
+        return ciphertext
+
+    def decrypt_bytes(self, value, *, encryption_context):
+        if self.fail_decrypt:
+            raise RuntimeError("kms unavailable")
+        return self.values[(value, tuple(sorted(encryption_context.items())))]
+
+
+class _Adapter:
+    def __init__(self, paired):
+        self.paired = paired
+
+    async def mutate_paired_json(self, mutator):
+        mutator(self.paired)
+
+
+class _Ecs:
+    async def resolve_running_container(self, owner_id):
+        return ({"owner_id": owner_id, "gateway_token": "gateway-secret"}, "10.0.0.8")
+
+
+@pytest.fixture
+def harness(monkeypatch):
+    state = SimpleNamespace()
+    events = []
+    repo = _Repo(events)
+    kms = _Kms()
+    paired = {
+        "node-device": {"deviceId": "node-device", "role": "node"},
+        "backend-device": {"deviceId": "backend-device", "role": "operator"},
+        "paperclip-device": {"deviceId": "paperclip-device", "displayName": "paperclip:Friday"},
+    }
+    profiles = {}
+
+    async def rpc(ip, *, method, params, **kwargs):
+        if method == "users.ensureProfile":
+            profile_id = profiles.setdefault(params["alias"], f"profile_{len(profiles) + 1}")
+            return {"profile": {"id": profile_id, "email": params["alias"]}}
+        if method == "device.pair.remove":
+            events.append("live-pair-removed")
+            return {}
+        if method == "config.apply":
+            events.append("gateway-restarted")
+            return {}
+        raise AssertionError(method)
+
+    async def set_config(owner_id, path, value):
+        assert path == ["gateway", "auth", "trustedBrokerProfiles"]
+        state.trusted = copy.deepcopy(value)
+        events.append("config-written")
+
+    async def close_connections(owner_id, user_id):
+        events.append("connections-closed")
+
+    monkeypatch.setattr(provisioner, "container_repo", repo)
+    monkeypatch.setattr(provisioner, "kms_secrets", kms)
+    monkeypatch.setattr(provisioner, "get_workspace", lambda: object())
+    monkeypatch.setattr(provisioner, "EfsWorkspaceAdapter", lambda **kwargs: _Adapter(paired))
+    monkeypatch.setattr(provisioner, "get_ecs_manager", lambda: _Ecs())
+    monkeypatch.setattr(provisioner, "gateway_rpc_oneshot", rpc)
+    monkeypatch.setattr(provisioner, "set_openclaw_config_path", set_config)
+    monkeypatch.setattr(provisioner, "_probe_pairing_request", AsyncMock(return_value=(True, None)))
+    monkeypatch.setattr(provisioner, "require_current_member", AsyncMock())
+    monkeypatch.setattr(provisioner, "revoke_member_connections", close_connections)
+    monkeypatch.setattr(
+        provisioner, "invalidate_qualification", lambda owner_id: events.append("qualification-disabled")
+    )
+    monkeypatch.setattr(provisioner.settings, "CLERK_ISSUER", "https://issuer.example")
+    state.repo = repo
+    state.kms = kms
+    state.paired = paired
+    state.profiles = profiles
+    state.events = events
+    state.trusted = {}
+    state.conn_svc = object()
+    return state
+
+
+def _human(subject, connection_id=None):
+    return HumanIdentity(
+        owner_id="org_founder",
+        issuer="https://issuer.example",
+        subject=subject,
+        connection_id=connection_id or f"connection-{subject}",
+        source_ip="203.0.113.8",
+    )
+
+
+@pytest.mark.asyncio
+async def test_two_verified_humans_get_distinct_durable_profiles_and_authorship(harness):
+    alice, bob = _human("user_alice"), _human("user_bob")
+
+    alice_receipt = await provisioner.ensure_human_device(alice, harness.conn_svc)
+    bob_receipt = await provisioner.ensure_human_device(bob, harness.conn_svc)
+    qualified = await provisioner.load_qualified_humans("org_founder")
+
+    assert alice.alias != bob.alias
+    assert alice_receipt.device_id != bob_receipt.device_id
+    assert qualified[alice.alias].profile_id != qualified[bob.alias].profile_id
+    assert harness.trusted == {
+        qualified[alice.alias].identity.device_id: qualified[alice.alias].profile_id,
+        qualified[bob.alias].identity.device_id: qualified[bob.alias].profile_id,
+    }
+
+
+@pytest.mark.asyncio
+async def test_ensure_is_idempotent_and_seed_survives_a_restart_load(harness):
+    human = _human("user_alice")
+
+    first = await provisioner.ensure_human_device(human, harness.conn_svc)
+    second = await provisioner.ensure_human_device(human, harness.conn_svc)
+    reloaded = (await provisioner.load_qualified_humans(human.owner_id))[human.alias]
+
+    assert second == first
+    assert reloaded.identity.device_id == first.device_id
+    assert harness.kms.encrypts == 1
+    assert len(harness.repo.devices) == 1
+
+
+@pytest.mark.asyncio
+async def test_rotation_disables_old_device_before_activating_a_new_generation(harness):
+    human = _human("user_alice")
+    old = await provisioner.ensure_human_device(human, harness.conn_svc)
+
+    new = await provisioner.rotate_human_device(human, harness.conn_svc)
+
+    assert new.generation == old.generation + 1
+    assert new.device_id != old.device_id
+    assert old.device_id not in harness.paired
+    assert new.device_id in harness.paired
+    assert old.device_id not in harness.trusted
+    assert harness.repo.devices[human.alias]["state"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_revoke_mid_connection_disables_admission_before_live_teardown(harness):
+    human = _human("user_alice")
+    active = await provisioner.ensure_human_device(human, harness.conn_svc)
+    harness.events.clear()
+
+    revoked = await provisioner.revoke_human_device(human, harness.conn_svc)
+
+    assert revoked.state == "disabled"
+    assert active.device_id not in harness.paired
+    assert harness.trusted == {}
+    assert harness.events.index("durable-disabled") < harness.events.index("config-written")
+    assert harness.events.index("config-written") < harness.events.index("live-pair-removed")
+    assert harness.events.index("live-pair-removed") < harness.events.index("connections-closed")
+
+
+@pytest.mark.asyncio
+async def test_human_pair_merge_preserves_node_backend_and_paperclip_entries(harness):
+    await provisioner.ensure_human_device(_human("user_alice"), harness.conn_svc)
+
+    assert harness.paired["node-device"]["role"] == "node"
+    assert harness.paired["backend-device"]["role"] == "operator"
+    assert harness.paired["paperclip-device"]["displayName"] == "paperclip:Friday"
+    assert len(harness.paired) == 4
+
+
+@pytest.mark.asyncio
+async def test_kms_failure_creates_no_credential_or_trust_binding(harness):
+    harness.kms.fail_encrypt = True
+
+    with pytest.raises(provisioner.HumanBrokerProvisioningError, match="credential unavailable"):
+        await provisioner.ensure_human_device(_human("user_alice"), harness.conn_svc)
+
+    assert harness.repo.devices == {}
+    assert len(harness.paired) == 3
+    assert harness.trusted == {}
+
+
+@pytest.mark.asyncio
+async def test_kms_failure_loading_an_active_seed_revokes_it_fail_closed(harness):
+    human = _human("user_alice")
+    await provisioner.ensure_human_device(human, harness.conn_svc)
+    harness.kms.fail_decrypt = True
+
+    with pytest.raises(provisioner.HumanBrokerProvisioningError, match="credential unavailable"):
+        await provisioner.ensure_human_device(human, harness.conn_svc)
+
+    assert harness.repo.devices[human.alias]["state"] == "disabled"
+    assert harness.trusted == {}
+    assert (await provisioner.load_qualified_humans(human.owner_id)) == {}
+
+
+@pytest.mark.asyncio
+async def test_uncertain_activation_stays_disabled_and_fail_closed(harness, monkeypatch):
+    human = _human("user_alice")
+    real_cas = harness.repo.cas_human_broker_device
+
+    async def revoke_before_activation(owner_id, alias, record, *, generation, state):
+        if record["state"] == "active":
+            current = harness.repo.devices[alias]
+            harness.repo.devices[alias] = {**current, "state": "disabled"}
+            return False
+        return await real_cas(owner_id, alias, record, generation=generation, state=state)
+
+    monkeypatch.setattr(harness.repo, "cas_human_broker_device", revoke_before_activation)
+
+    with pytest.raises(provisioner.HumanBrokerProvisioningError, match="changed during activation"):
+        await provisioner.ensure_human_device(human, harness.conn_svc)
+
+    assert harness.repo.devices[human.alias]["state"] == "disabled"
+    assert (await provisioner.load_qualified_humans(human.owner_id)) == {}
+
+
+@pytest.mark.asyncio
+async def test_uncertain_revoke_write_is_resolved_by_consistent_disabled_state(harness, monkeypatch):
+    human = _human("user_alice")
+    await provisioner.ensure_human_device(human, harness.conn_svc)
+    real_cas = harness.repo.cas_human_broker_device
+
+    async def landed_without_response(owner_id, alias, record, *, generation, state):
+        monkeypatch.setattr(harness.repo, "cas_human_broker_device", real_cas)
+        await real_cas(owner_id, alias, record, generation=generation, state=state)
+        raise TimeoutError("response lost")
+
+    monkeypatch.setattr(harness.repo, "cas_human_broker_device", landed_without_response)
+
+    receipt = await provisioner.revoke_human_device(human, harness.conn_svc)
+
+    assert receipt.state == "disabled"
+    assert harness.repo.devices[human.alias]["state"] == "disabled"
+    assert harness.trusted == {}
+
+
+@pytest.mark.asyncio
+async def test_receipts_and_errors_never_return_seed_token_or_profile(harness, monkeypatch):
+    receipt = await provisioner.ensure_human_device(_human("user_alice"), harness.conn_svc)
+
+    rendered = repr(receipt)
+    assert "gateway-secret" not in rendered
+    assert "ciphertext" not in rendered
+    assert "profile_" not in rendered
+    assert not hasattr(receipt, "profile_id")
+    assert not hasattr(receipt, "private_key_seed")
+
+    async def leaking_rpc(*args, method, params, **kwargs):
+        if method == "users.ensureProfile":
+            return {"profile": {"id": "profile_2"}, "deviceToken": "must-not-return"}
+        return {}
+
+    monkeypatch.setattr(provisioner, "gateway_rpc_oneshot", leaking_rpc)
+    with pytest.raises(provisioner.HumanBrokerProvisioningError) as exc:
+        await provisioner.ensure_human_device(_human("user_bob"), harness.conn_svc)
+    assert "must-not-return" not in str(exc.value)

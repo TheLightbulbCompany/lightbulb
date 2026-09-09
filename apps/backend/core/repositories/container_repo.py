@@ -138,6 +138,9 @@ _UPSERT_PRESERVED_FIELDS = (
     # Bedrock -> chatgpt_oauth provider-swap reprovision through the no-service
     # branch) would otherwise strand the token the LIVE container is presenting.
     "bedrock_gate_token_hash",
+    # Scoped writers below own this nested map. Reprovision must carry it
+    # through instead of replacing away every human's durable credential.
+    "human_broker_devices",
 )
 
 _RELEASE_OWNED_FIELDS = (
@@ -218,7 +221,12 @@ _UPSERT_CAS_ATTEMPTS = 3
 # ``_raise_if_superseded``.
 _LEASE_CAS_FIELDS = ("provision_claim_id", "provision_attempt_token")
 _UPSERT_PRESERVED_FIELDS += _RELEASE_OWNED_FIELDS
-_UPSERT_CAS_FIELDS = ("bedrock_gate_token_hash", *_LEASE_CAS_FIELDS, *_RELEASE_OWNED_FIELDS)
+_UPSERT_CAS_FIELDS = (
+    "bedrock_gate_token_hash",
+    "human_broker_devices",
+    *_LEASE_CAS_FIELDS,
+    *_RELEASE_OWNED_FIELDS,
+)
 
 
 def _unchanged_since_read(existing: dict | None) -> tuple[dict, dict]:
@@ -1896,6 +1904,84 @@ async def remove_paired_device(owner_id: str, device_id: str) -> None:
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
             return  # no container row — nothing to remove
+        raise
+
+
+async def create_human_broker_device(owner_id: str, alias: str, record: dict) -> dict:
+    """Create one durable human credential, returning the concurrent winner.
+
+    The two-step parent-map initialization is safe because both writes are
+    scoped and the second is conditional on this alias still being absent.
+    """
+    table = _get_table()
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET #devices = if_not_exists(#devices, :empty)",
+            ConditionExpression="attribute_exists(owner_id) AND attribute_not_exists(release_update_id)",
+            ExpressionAttributeNames={"#devices": "human_broker_devices"},
+            ExpressionAttributeValues={":empty": {}},
+        )
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET #devices.#alias = :record, updated_at = :now",
+            ConditionExpression=(
+                "attribute_exists(owner_id) AND attribute_not_exists(release_update_id) "
+                "AND attribute_not_exists(#devices.#alias)"
+            ),
+            ExpressionAttributeNames={"#devices": "human_broker_devices", "#alias": alias},
+            ExpressionAttributeValues={":record": record, ":now": utc_now_iso()},
+        )
+        return record
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        current = await get_by_owner_id(owner_id, consistent=True)
+        if current and "release_update_id" in current:
+            raise ProvisionSuperseded(f"release transaction for {owner_id} owns human credential state") from exc
+        existing = (current or {}).get("human_broker_devices", {}).get(alias)
+        if isinstance(existing, dict):
+            return existing
+        raise RuntimeError(f"container row unavailable for human credential owner {owner_id}") from exc
+
+
+async def cas_human_broker_device(
+    owner_id: str,
+    alias: str,
+    record: dict,
+    *,
+    generation: int,
+    state: str,
+) -> bool:
+    """Replace one human credential only while its generation/state match."""
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET #devices.#alias = :record, updated_at = :now",
+            ConditionExpression=(
+                "attribute_exists(owner_id) AND attribute_not_exists(release_update_id) "
+                "AND #devices.#alias.#generation = :generation AND #devices.#alias.#state = :state"
+            ),
+            ExpressionAttributeNames={
+                "#devices": "human_broker_devices",
+                "#alias": alias,
+                "#generation": "generation",
+                "#state": "state",
+            },
+            ExpressionAttributeValues={
+                ":record": record,
+                ":generation": generation,
+                ":state": state,
+                ":now": utc_now_iso(),
+            },
+        )
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
         raise
 
 

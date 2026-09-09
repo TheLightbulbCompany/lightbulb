@@ -17,6 +17,10 @@ _AIPS = {
 def _local_environment(monkeypatch):
     """Force ENVIRONMENT=local so os.chown is skipped on macOS."""
     monkeypatch.setattr(settings, "ENVIRONMENT", "local")
+    monkeypatch.setattr(
+        "core.services.human_broker_provisioning.active_trusted_broker_profiles",
+        AsyncMock(return_value={}),
+    )
 
 
 @pytest.fixture

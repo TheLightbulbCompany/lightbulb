@@ -4303,6 +4303,12 @@ class EcsManager:
         if deployed_tag is None:
             deployed_tag = await self._deployed_image_tag(owner_id)
 
+        # Durable human broker bindings are backend-owned. Reprovision must
+        # reproduce them from the container row, never from browser input.
+        from core.services.human_broker_provisioning import active_trusted_broker_profiles
+
+        trusted_broker_profiles = await active_trusted_broker_profiles(owner_id)
+
         config_path = Path(settings.EFS_MOUNT_PATH) / owner_id / "openclaw.json"
         await write_openclaw_config(
             config_path=config_path,
@@ -4319,6 +4325,7 @@ class EcsManager:
             channel_accounts=channel_accounts,
             channel_bindings=channel_bindings,
             deployed_tag=deployed_tag,
+            trusted_broker_profiles=trusted_broker_profiles,
         )
 
         # Seed Friday's IDENTITY/SOUL/USER/BOOTSTRAP files on EFS so they're
@@ -4559,10 +4566,22 @@ class EcsManager:
                 exc,
             )
 
+        from core.services.human_broker_provisioning import active_human_pair_entries
+
+        human_entries = await active_human_pair_entries(user_id, gateway_token)
+        device_ids = [
+            node_identity["device_id"],
+            operator_entry["deviceId"],
+            *(entry["deviceId"] for entry in paperclip_entries),
+            *(entry["deviceId"] for entry in human_entries),
+        ]
+        if len(device_ids) != len(set(device_ids)):
+            raise RuntimeError("human/device trust identities collide")
+
         paired_json = build_device_paired_json(
             node_identity["device_id"],
             node_identity["public_key_b64"],
             operator_entry=operator_entry,
-            extra_operator_entries=paperclip_entries,
+            extra_operator_entries=[*paperclip_entries, *human_entries],
         )
         workspace.write_file(user_id, "devices/paired.json", paired_json)

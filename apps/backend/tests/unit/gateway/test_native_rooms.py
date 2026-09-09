@@ -199,6 +199,10 @@ async def harness(monkeypatch):
     monkeypatch.setattr(rooms.websockets, "connect", dial)
     monkeypatch.setattr(rooms, "_qualified_owners", {"org_team": proof})
     monkeypatch.setattr("core.services.clerk_admin.list_user_organizations", membership)
+    monkeypatch.setattr(
+        "core.services.human_broker_provisioning.require_active_human_device",
+        AsyncMock(),
+    )
     monkeypatch.setattr(route, "get_connection_service", AsyncMock(return_value=service))
     monkeypatch.setattr(route, "get_management_api_client", AsyncMock(return_value=management))
     monkeypatch.setattr(route, "get_gateway_pool", lambda: pool)
@@ -329,6 +333,19 @@ async def test_server_gateway_token_is_required_and_browser_cannot_supply_auth(h
     forged = await harness.request("connect", {"auth": {"token": "browser-token"}})
     assert forged["error"]["code"] == "INVALID_REQUEST"
     assert not harness.gateway.sockets
+
+
+@pytest.mark.asyncio
+async def test_warm_native_socket_fails_closed_when_durable_human_device_is_revoked(harness, monkeypatch):
+    assert (await harness.request("sessions.list", {}))["ok"] is True
+    connection = harness.native.connections[identity()]
+    monkeypatch.setattr(
+        "core.services.human_broker_provisioning.require_active_human_device",
+        AsyncMock(side_effect=RuntimeError("disabled")),
+    )
+
+    with pytest.raises(rooms.RoomError, match="revoked or is unavailable"):
+        await connection.require_current()
 
 
 def test_internal_edge_secret_required_even_when_legacy_enforcement_off(monkeypatch):

@@ -73,7 +73,6 @@ export function WorkspaceHeader({ onResetLayout }: WorkspaceHeaderProps): React.
       <button
         type="button"
         className="workspace-search"
-        aria-label="Search workspace"
         onClick={() => setCommandPaletteOpen(true)}
       >
         <Search size={15} aria-hidden="true" />

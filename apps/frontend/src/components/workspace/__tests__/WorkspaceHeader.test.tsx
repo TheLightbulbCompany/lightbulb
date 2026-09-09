@@ -37,7 +37,7 @@ describe("WorkspaceHeader", () => {
   it("opens the existing command palette from a visible search control", () => {
     render(<WorkspaceHeader onResetLayout={vi.fn()} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Search workspace" }));
+    fireEvent.click(screen.getByRole("button", { name: /Search agents, tasks, and work/ }));
 
     expect(setPaletteOpen).toHaveBeenCalledWith(true);
     expect(screen.getByText("⌘ K")).toBeInTheDocument();

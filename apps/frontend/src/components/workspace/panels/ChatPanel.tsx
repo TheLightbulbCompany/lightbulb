@@ -32,6 +32,7 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
   const { nodeConnected, nodeStatus } = useGateway();
   const raw = props.params.agentId;
   const resolvedId = raw === DEFAULT_AGENT_SENTINEL ? (defaultId ?? null) : raw;
+  const hasResolvedAgent = agents.some((agent) => agent.id === resolvedId);
 
   // Agent-gone gating (spec §4): ONLY once the roster has settled
   // (data !== undefined). isLoading is false during SWR error-retry cycles
@@ -132,12 +133,20 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
         <div className="min-w-0">
           <span className="team-room__overline">Workspace</span>
           <div className="team-room__heading-row">
-            <h2 className="team-room__heading font-editorial-serif">Private with {title}</h2>
+            <h2 className="team-room__heading font-editorial-serif">
+              {hasResolvedAgent ? `Private with ${title}` : "Private conversation"}
+            </h2>
             <span className="team-room__audience">
               <LockKeyhole size={12} aria-hidden="true" /> Private
             </span>
           </div>
-          <p className="team-room__status">{title} · {statusLabel}</p>
+          <p className="team-room__status">
+            {hasResolvedAgent
+              ? `${title} · ${statusLabel}`
+              : isSettled
+                ? "Choose an agent"
+                : "Agent details loading"}
+          </p>
         </div>
         {resolvedId ? (
           <div className="team-room__actions">
@@ -157,7 +166,7 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
         <div className="team-room__conversation">
           <AgentChatWindow agentId={resolvedId} onOpenFile={handleOpenFile} />
         </div>
-        {resolvedId ? (
+        {resolvedId && hasResolvedAgent ? (
           <aside className="team-room__context" aria-label="Conversation context">
             <section className="team-room__section">
               <span className="team-room__section-label">Conversation</span>

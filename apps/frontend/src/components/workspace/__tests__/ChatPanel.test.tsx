@@ -112,6 +112,8 @@ describe("ChatPanel", () => {
     expect(screen.queryByText(/no longer exists/i)).toBeNull();
     const win = screen.getByTestId("agent-chat");
     expect(win.getAttribute("data-agent-id")).toBe("ghost");
+    expect(screen.getByRole("heading", { name: "Private conversation" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Conversation context")).toBeNull();
   });
 
   it("holds a neutral 'Chat' title while the roster is unsettled, then re-resolves to the agent name", () => {

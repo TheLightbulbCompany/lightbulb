@@ -61,6 +61,15 @@ _OWNER_APPLY_UPDATE_EXCLUSIONS = (
     "effect_executor_id",
     "applied_at",
     "failure_reason",
+    "reserved_at",
+    "prepared_at",
+    "stop_requested_at",
+    "drained_at",
+    "staged_at",
+    "activating_at",
+    "activated_at",
+    "start_requested_at",
+    "validating_at",
 )
 
 _RELEASE_CHECKPOINT_PINS = (
@@ -77,6 +86,23 @@ _RELEASE_CHECKPOINT_PINS = (
     "effect_kind",
     "effect_claim_id",
     "effect_executor_id",
+    "prior_task_definition_arn",
+    "prior_release_id",
+    "prior_desired_release_id",
+    "prior_desired_count",
+    "target_desired_count",
+    "pre_stop_task_arns",
+    "drain_evidence",
+    "acceptance",
+    "reserved_at",
+    "prepared_at",
+    "stop_requested_at",
+    "drained_at",
+    "staged_at",
+    "activating_at",
+    "activated_at",
+    "start_requested_at",
+    "validating_at",
 )
 _RELEASE_CHECKPOINT_FIELDS = frozenset(
     {
@@ -93,6 +119,28 @@ _RELEASE_CHECKPOINT_FIELDS = frozenset(
     }
 )
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_RELEASE_EFFECT_FIELDS = frozenset({"effect_kind", "effect_claim_id", "effect_executor_id"})
+_RELEASE_NEXT_PHASE = {
+    "reserved": "prepared",
+    "prepared": "stop_requested",
+    "stop_requested": "drained",
+    "drained": "staged",
+    "staged": "activating",
+    "activating": "activated",
+    "activated": "start_requested",
+    "start_requested": "validating",
+}
+_RELEASE_PHASE_ORDER = (
+    "reserved",
+    "prepared",
+    "stop_requested",
+    "drained",
+    "staged",
+    "activating",
+    "activated",
+    "start_requested",
+    "validating",
+)
 
 
 def _require_nonempty_string(field: str, value: object) -> str:
@@ -112,6 +160,200 @@ def _release_revision(value: object) -> int:
     ):
         return int(value)
     raise ValueError("release_revision is invalid")
+
+
+def _nonempty_string(value: object) -> bool:
+    return type(value) is str and bool(value.strip())
+
+
+def _nonnegative_integer(value: object) -> int | None:
+    try:
+        return _release_revision(value)
+    except ValueError:
+        return None
+
+
+def _positive_integer(value: object) -> bool:
+    normalized = _nonnegative_integer(value)
+    return normalized is not None and normalized > 0
+
+
+def _valid_task_arns(value: object) -> bool:
+    return (
+        isinstance(value, list)
+        and 0 < len(value) <= 100
+        and all(_nonempty_string(item) for item in value)
+        and len(value) == len(set(value))
+    )
+
+
+def _valid_drain_evidence(update: dict) -> bool:
+    evidence = update.get("drain_evidence")
+    pre_stop = update.get("pre_stop_task_arns")
+    return (
+        _valid_task_arns(pre_stop)
+        and isinstance(evidence, dict)
+        and set(evidence)
+        == {
+            "observed_at",
+            "service_desired_count",
+            "service_running_count",
+            "service_pending_count",
+            "stopped_task_arns",
+        }
+        and _nonempty_string(evidence.get("observed_at"))
+        and _nonnegative_integer(evidence.get("service_desired_count")) == 0
+        and _nonnegative_integer(evidence.get("service_running_count")) == 0
+        and _nonnegative_integer(evidence.get("service_pending_count")) == 0
+        and evidence.get("stopped_task_arns") == pre_stop
+    )
+
+
+def _valid_effect(update: dict, kind: str) -> bool:
+    return (
+        update.get("effect_kind") == kind
+        and _nonempty_string(update.get("effect_claim_id"))
+        and _nonempty_string(update.get("effect_executor_id"))
+    )
+
+
+def _has_no_effect(update: dict) -> bool:
+    return not any(field in update for field in _RELEASE_EFFECT_FIELDS)
+
+
+def _valid_release_phase_evidence(phase: str, update: dict) -> bool:
+    try:
+        _release_revision(update.get("release_revision"))
+    except ValueError:
+        return False
+    base = (
+        update.get("update_type") == "release"
+        and update.get("status") == "applying"
+        and _nonempty_string(update.get("container_id"))
+        and _nonempty_string(update.get("target_release_id"))
+        and _nonempty_string(update.get("prior_task_definition_arn"))
+        and _nonnegative_integer(update.get("prior_desired_count")) is not None
+        and _nonnegative_integer(update.get("target_desired_count")) is not None
+    )
+    if not base or phase not in _RELEASE_PHASE_ORDER:
+        return False
+    phase_index = _RELEASE_PHASE_ORDER.index(phase)
+    if any(
+        not _nonempty_string(update.get(f"{milestone}_at"))
+        for milestone in _RELEASE_PHASE_ORDER[: phase_index + 1]
+    ):
+        return False
+    if phase == "reserved":
+        return True
+    if not _nonempty_string(update.get("target_task_definition_arn")):
+        return False
+    if phase == "prepared":
+        return True
+    if not _valid_task_arns(update.get("pre_stop_task_arns")):
+        return False
+    if phase == "stop_requested":
+        return _valid_effect(update, "stop_service")
+    if not _valid_drain_evidence(update):
+        return False
+    if phase == "drained":
+        return _has_no_effect(update)
+    if not (
+        _nonempty_string(update.get("prior_config_sha256"))
+        and _SHA256_RE.fullmatch(update["prior_config_sha256"])
+        and _nonempty_string(update.get("staged_config_sha256"))
+        and _SHA256_RE.fullmatch(update["staged_config_sha256"])
+    ):
+        return False
+    if phase == "staged":
+        return _has_no_effect(update)
+    if phase == "activating":
+        return _valid_effect(update, "activate_config")
+    if phase == "activated":
+        return _has_no_effect(update)
+    if phase == "start_requested":
+        return _positive_integer(update.get("target_desired_count")) and _valid_effect(
+            update, "start_service"
+        )
+    if phase == "validating":
+        return _positive_integer(update.get("target_desired_count")) and _has_no_effect(update)
+    return False
+
+
+def _registered_acceptance(update: dict, acceptance: object) -> dict | None:
+    if not isinstance(acceptance, dict):
+        return None
+    try:
+        from core.services.openclaw_release import release_by_id
+
+        release = release_by_id(update.get("target_release_id"))
+    except (TypeError, ValueError):
+        return None
+    expected = {
+        "release_id": release.release_id,
+        "image": release.image,
+        "image_digest": release.image_digest,
+        "fork_tag": release.fork_tag,
+        "fork_commit": release.fork_commit,
+        "schema_id": release.schema_id,
+        "schema_sha256": release.schema_sha256,
+        "task_definition_arn": update.get("target_task_definition_arn"),
+        "config_sha256": update.get("staged_config_sha256"),
+        "gateway": "accepted",
+    }
+    if set(acceptance) != set(expected) | {"task_arn"}:
+        return None
+    if any(acceptance.get(field) != value for field, value in expected.items()):
+        return None
+    if not _nonempty_string(acceptance.get("task_arn")):
+        return None
+    return acceptance
+
+
+def _valid_release_transition(
+    expected_update: dict,
+    expected_phase: str,
+    next_phase: str,
+    fields: dict,
+    remove_fields: tuple[str, ...],
+) -> bool:
+    removals = set(remove_fields)
+    if expected_phase == next_phase:
+        if not fields and not removals:
+            return _valid_release_phase_evidence(expected_phase, expected_update)
+        if expected_phase != "validating" or set(fields) != {"acceptance"} or removals:
+            return False
+    elif _RELEASE_NEXT_PHASE.get(expected_phase) != next_phase:
+        return False
+    else:
+        required_fields: dict[tuple[str, str], set[str]] = {
+            ("reserved", "prepared"): {"target_task_definition_arn"},
+            ("prepared", "stop_requested"): set(_RELEASE_EFFECT_FIELDS) | {"pre_stop_task_arns"},
+            ("stop_requested", "drained"): {"drain_evidence"},
+            ("drained", "staged"): {"prior_config_sha256", "staged_config_sha256"},
+            ("staged", "activating"): set(_RELEASE_EFFECT_FIELDS),
+            ("activating", "activated"): set(),
+            ("activated", "start_requested"): set(_RELEASE_EFFECT_FIELDS),
+            ("start_requested", "validating"): set(),
+        }
+        required_removals = (
+            set(_RELEASE_EFFECT_FIELDS)
+            if (expected_phase, next_phase)
+            in {("stop_requested", "drained"), ("activating", "activated"), ("start_requested", "validating")}
+            else set()
+        )
+        if set(fields) != required_fields[(expected_phase, next_phase)] or removals != required_removals:
+            return False
+
+    candidate = {**expected_update, **fields, "phase": next_phase}
+    if next_phase != expected_phase:
+        candidate[f"{next_phase}_at"] = "checkpoint"
+    for field in removals:
+        candidate.pop(field, None)
+    if not _valid_release_phase_evidence(next_phase, candidate):
+        return False
+    if "acceptance" in fields and _registered_acceptance(candidate, fields["acceptance"]) is None:
+        return False
+    return True
 
 
 def _snapshot_conditions(
@@ -325,6 +567,7 @@ async def reserve_owner_apply(
     update_set = {
         "status": "applying",
         "phase": "reserved",
+        "reserved_at": now_iso,
         "container_id": container_id,
         "apply_claim_id": claim_id,
         "apply_claimed_at": now_epoch,
@@ -453,12 +696,23 @@ async def checkpoint_owner_release(
         or expected_update.get("phase") != expected_phase
     ):
         return False
-    fields = fields or {}
+    if fields is None:
+        fields = {}
+    elif not isinstance(fields, dict):
+        raise ValueError("release checkpoint fields are invalid")
+    if (
+        not isinstance(remove_fields, tuple)
+        or any(type(field) is not str for field in remove_fields)
+        or len(remove_fields) != len(set(remove_fields))
+    ):
+        raise ValueError("release checkpoint removals are invalid")
     unknown = (set(fields) | set(remove_fields)) - _RELEASE_CHECKPOINT_FIELDS
     if unknown:
         raise ValueError(f"unsupported release checkpoint fields: {sorted(unknown)}")
     if set(fields) & set(remove_fields):
         raise ValueError("release checkpoint cannot set and remove the same field")
+    if not _valid_release_transition(expected_update, expected_phase, next_phase, fields, remove_fields):
+        return False
     state = _release_transaction_conditions(expected_container, expected_update, claim_id)
     if state is None:
         return False
@@ -469,6 +723,9 @@ async def checkpoint_owner_release(
     uv.update({":heartbeat": now_epoch, ":updated": now_iso, ":phase": next_phase})
     un["#phase"] = "phase"
     update_sets = ["#phase = :phase", "apply_claimed_at = :heartbeat", "updated_at = :updated"]
+    if next_phase != expected_phase:
+        un["#milestone"] = f"{next_phase}_at"
+        update_sets.append("#milestone = :updated")
     for index, (field, value) in enumerate(fields.items()):
         name, binding = f"#rf{index}", f":rf{index}"
         un[name] = field
@@ -537,7 +794,17 @@ async def takeover_owner_release(
 ) -> bool:
     """Atomically replace both stale release fencing tokens."""
 
+    phase = expected_update.get("phase")
+    if (
+        type(phase) is not str
+        or not _valid_release_phase_evidence(phase, expected_update)
+        or type(stale_before_epoch) is not int
+        or stale_before_epoch < 0
+    ):
+        return False
     old_claim = expected_update.get("apply_claim_id")
+    if old_claim == claim_id:
+        return False
     state = _release_transaction_conditions(expected_container, expected_update, old_claim)
     if state is None:
         return False
@@ -593,12 +860,17 @@ async def finish_owner_release(
     claim_id: str,
     *,
     expected_phase: str,
-    expected_image_digest: str,
-    acceptance: dict,
 ) -> bool:
     """Accept a release and clear both claims in one DynamoDB transaction."""
 
-    if expected_phase != "validating" or expected_update.get("phase") != expected_phase:
+    if (
+        expected_phase != "validating"
+        or expected_update.get("phase") != expected_phase
+        or not _valid_release_phase_evidence("validating", expected_update)
+    ):
+        return False
+    acceptance = _registered_acceptance(expected_update, expected_update.get("acceptance"))
+    if acceptance is None:
         return False
     state = _release_transaction_conditions(expected_container, expected_update, claim_id)
     if state is None:
@@ -609,25 +881,6 @@ async def finish_owner_release(
     target_task_definition_arn = _require_nonempty_string(
         "target_task_definition_arn", expected_update.get("target_task_definition_arn")
     )
-    staged_config_sha256 = _require_nonempty_string(
-        "staged_config_sha256", expected_update.get("staged_config_sha256")
-    )
-    expected_image_digest = _require_nonempty_string("expected_image_digest", expected_image_digest)
-    if not _SHA256_RE.fullmatch(staged_config_sha256) or (
-        not expected_image_digest.startswith("sha256:")
-        or not _SHA256_RE.fullmatch(expected_image_digest[7:])
-    ):
-        raise ValueError("release acceptance identity is invalid")
-    if (
-        not isinstance(acceptance, dict)
-        or acceptance.get("task_definition_arn") != target_task_definition_arn
-        or type(acceptance.get("task_arn")) is not str
-        or not acceptance["task_arn"].strip()
-        or acceptance.get("image_digest") != expected_image_digest
-        or acceptance.get("config_sha256") != staged_config_sha256
-        or acceptance.get("gateway") != "accepted"
-    ):
-        return False
     next_revision = revision + 1
     now_iso = utc_now_iso()
     ttl_epoch = int(time.time()) + (30 * 24 * 60 * 60)

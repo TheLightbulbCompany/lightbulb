@@ -124,7 +124,6 @@ async def test_config_context_is_strong_and_rejects_reservation(monkeypatch):
     monkeypatch.setattr(container_repo, "get_by_owner_id", get)
     context = await openclaw_release.capture_config_context("owner-1")
     assert context.release_revision == 4
-    assert context.claim_id == "claim"
     assert seen == [("owner-1", True)]
 
     async def reserved(owner_id, *, consistent=False):

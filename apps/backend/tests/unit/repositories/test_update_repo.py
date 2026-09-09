@@ -1350,56 +1350,148 @@ async def test_owner_apply_transaction_classifier_propagates_unproven_failures(d
 
 
 @pytest.mark.asyncio
-async def test_release_checkpoint_and_finish_keep_both_rows_fenced(dynamodb_table):
+async def test_release_checkpoint_and_finish_require_full_evidence_chain(dynamodb_table, monkeypatch):
     from core.repositories import update_repo
+    from core.services import openclaw_release
+
+    release = openclaw_release.OpenClawRelease(
+        release_id="candidate",
+        image="877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/openclaw-extended:9.3-final",
+        image_digest=f"sha256:{'a' * 64}",
+        upstream_version="2026.9.3",
+        fork_tag="v2026.9.3-isol8.1",
+        fork_commit="c" * 40,
+        schema_id="2026.9.3-isol8.1",
+        schema_sha256="d" * 64,
+        config_capabilities=frozenset(),
+    )
+    monkeypatch.setattr(openclaw_release, "release_by_id", lambda release_id: release)
 
     containers, owner, queued = await _seed_owner_apply(update_repo)
     assert await _reserve_owner_apply(update_repo, owner, queued)
+
+    async def advance(expected_phase, next_phase, *, fields=None, remove_fields=()):
+        container = containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"]
+        update = await update_repo.get_by_id("u", queued["update_id"], consistent=True)
+        assert await update_repo.checkpoint_owner_release(
+            container,
+            update,
+            "worker",
+            expected_phase=expected_phase,
+            next_phase=next_phase,
+            fields=fields,
+            remove_fields=remove_fields,
+        )
+
     container = containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"]
     update = await update_repo.get_by_id("u", queued["update_id"], consistent=True)
-    assert await update_repo.checkpoint_owner_release(
+    assert not await update_repo.checkpoint_owner_release(
         container,
         update,
         "worker",
         expected_phase="reserved",
         next_phase="validating",
-        fields={"target_task_definition_arn": "arn:target", "staged_config_sha256": "b" * 64},
+        fields={"target_task_definition_arn": "arn:target"},
     )
-
-    prepared_container = containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"]
-    prepared_update = await update_repo.get_by_id("u", queued["update_id"], consistent=True)
-    assert prepared_update["phase"] == "validating"
-    assert prepared_update["target_task_definition_arn"] == "arn:target"
+    await advance("reserved", "prepared", fields={"target_task_definition_arn": "arn:target"})
+    await advance(
+        "prepared",
+        "stop_requested",
+        fields={
+            "effect_kind": "stop_service",
+            "effect_claim_id": "stop-effect",
+            "effect_executor_id": "worker-1",
+            "pre_stop_task_arns": ["arn:old-task"],
+        },
+    )
+    container = containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"]
+    update = await update_repo.get_by_id("u", queued["update_id"], consistent=True)
     assert not await update_repo.checkpoint_owner_release(
-        prepared_container,
-        prepared_update,
-        "stale-worker",
-        expected_phase="validating",
+        container,
+        update,
+        "worker",
+        expected_phase="stop_requested",
         next_phase="drained",
+        fields={"drain_evidence": {"service_desired_count": 0}},
+        remove_fields=("effect_kind", "effect_claim_id", "effect_executor_id"),
+    )
+    await advance(
+        "stop_requested",
+        "drained",
+        fields={
+            "drain_evidence": {
+                "observed_at": "2026-09-09T12:00:00Z",
+                "service_desired_count": 0,
+                "service_running_count": 0,
+                "service_pending_count": 0,
+                "stopped_task_arns": ["arn:old-task"],
+            }
+        },
+        remove_fields=("effect_kind", "effect_claim_id", "effect_executor_id"),
+    )
+    await advance(
+        "drained",
+        "staged",
+        fields={"prior_config_sha256": "e" * 64, "staged_config_sha256": "b" * 64},
+    )
+    await advance(
+        "staged",
+        "activating",
+        fields={
+            "effect_kind": "activate_config",
+            "effect_claim_id": "activate-effect",
+            "effect_executor_id": "worker-1",
+        },
+    )
+    await advance(
+        "activating",
+        "activated",
+        remove_fields=("effect_kind", "effect_claim_id", "effect_executor_id"),
+    )
+    await advance(
+        "activated",
+        "start_requested",
+        fields={
+            "effect_kind": "start_service",
+            "effect_claim_id": "start-effect",
+            "effect_executor_id": "worker-1",
+        },
+    )
+    await advance(
+        "start_requested",
+        "validating",
+        remove_fields=("effect_kind", "effect_claim_id", "effect_executor_id"),
     )
     acceptance = {
+        "release_id": "candidate",
+        "image": release.image,
         "task_arn": "arn:task",
         "task_definition_arn": "arn:target",
-        "image_digest": f"sha256:{'a' * 64}",
+        "image_digest": release.image_digest,
+        "fork_tag": release.fork_tag,
+        "fork_commit": release.fork_commit,
+        "schema_id": release.schema_id,
+        "schema_sha256": release.schema_sha256,
         "config_sha256": "b" * 64,
         "gateway": "accepted",
     }
-    assert not await update_repo.finish_owner_release(
-        prepared_container,
-        prepared_update,
+    assert not await update_repo.checkpoint_owner_release(
+        containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"],
+        await update_repo.get_by_id("u", queued["update_id"], consistent=True),
         "worker",
         expected_phase="validating",
-        expected_image_digest=f"sha256:{'c' * 64}",
-        acceptance=acceptance,
+        next_phase="validating",
+        fields={"acceptance": {**acceptance, "image_digest": f"sha256:{'f' * 64}"}},
     )
+    await advance("validating", "validating", fields={"acceptance": acceptance})
 
+    prepared_container = containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"]
+    prepared_update = await update_repo.get_by_id("u", queued["update_id"], consistent=True)
     assert await update_repo.finish_owner_release(
         prepared_container,
         prepared_update,
         "worker",
         expected_phase="validating",
-        expected_image_digest=f"sha256:{'a' * 64}",
-        acceptance=acceptance,
     )
     finished_container = containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"]
     finished_update = await update_repo.get_by_id("u", queued["update_id"], consistent=True)
@@ -1412,40 +1504,21 @@ async def test_release_checkpoint_and_finish_keep_both_rows_fenced(dynamodb_tabl
 
 
 @pytest.mark.asyncio
-async def test_release_finish_requires_persisted_target_task_definition(dynamodb_table):
+async def test_release_checkpoint_refuses_missing_prepared_evidence(dynamodb_table):
     from core.repositories import update_repo
 
     containers, owner, queued = await _seed_owner_apply(update_repo)
     assert await _reserve_owner_apply(update_repo, owner, queued)
     container = containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"]
     update = await update_repo.get_by_id("u", queued["update_id"], consistent=True)
-    assert await update_repo.checkpoint_owner_release(
+    assert not await update_repo.checkpoint_owner_release(
         container,
         update,
         "worker",
         expected_phase="reserved",
-        next_phase="validating",
-        fields={"staged_config_sha256": "b" * 64},
+        next_phase="prepared",
+        fields={},
     )
-    container = containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"]
-    update = await update_repo.get_by_id("u", queued["update_id"], consistent=True)
-
-    with pytest.raises(ValueError, match="target_task_definition_arn"):
-        await update_repo.finish_owner_release(
-            container,
-            update,
-            "worker",
-            expected_phase="validating",
-            expected_image_digest=f"sha256:{'a' * 64}",
-            acceptance={
-                "task_arn": "arn:task",
-                "task_definition_arn": "arn:target",
-                "image_digest": f"sha256:{'a' * 64}",
-                "config_sha256": "b" * 64,
-                "gateway": "accepted",
-            },
-        )
-
     assert containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"] == container
     assert await update_repo.get_by_id("u", queued["update_id"], consistent=True) == update
 

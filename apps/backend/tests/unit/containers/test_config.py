@@ -508,7 +508,7 @@ class TestWriteOpenclawConfigAsync:
 
         out = tmp_path / "openclaw.json"
         out.write_text('{"sentinel":"active"}')
-        context = OwnerConfigContext("u_1", "container-1", 4, None, None, None)
+        context = OwnerConfigContext("u_1", "container-1", 4, None)
 
         async def capture(_owner_id):
             return context

@@ -109,7 +109,7 @@ async def test_patch_rejects_moved_release_context_before_mutation(efs_dir, monk
     from core.services import config_patcher
     from core.services.openclaw_release import OwnerConfigContext, OwnerReleaseConflict
 
-    context = OwnerConfigContext("user_1", "container-1", 4, None, None, None)
+    context = OwnerConfigContext("user_1", "container-1", 4, None)
 
     async def capture(_owner_id):
         return context

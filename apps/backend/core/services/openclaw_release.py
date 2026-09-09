@@ -52,8 +52,6 @@ class OwnerConfigContext:
     container_id: str
     release_revision: int
     active_release_id: str | None
-    claim_id: str | None
-    attempt_token: str | None
 
 
 def _required_string(row: dict, field: str) -> str:
@@ -187,12 +185,6 @@ def _context_from_row(owner_id: str, row: dict) -> OwnerConfigContext:
     container_id = row.get("id")
     if type(container_id) is not str or not container_id:
         raise OwnerReleaseConflict("owner container identity is unavailable")
-    claim_id = row.get("provision_claim_id")
-    attempt_token = row.get("provision_attempt_token")
-    if (claim_id is None) != (attempt_token is None) or any(
-        type(value) is not str or not value for value in (claim_id, attempt_token) if value is not None
-    ):
-        raise OwnerReleaseConflict("owner mutation context is invalid")
     if active is not None:
         release_by_id(active)
     return OwnerConfigContext(
@@ -200,8 +192,6 @@ def _context_from_row(owner_id: str, row: dict) -> OwnerConfigContext:
         container_id=container_id,
         release_revision=_revision(row),
         active_release_id=active,
-        claim_id=claim_id,
-        attempt_token=attempt_token,
     )
 
 

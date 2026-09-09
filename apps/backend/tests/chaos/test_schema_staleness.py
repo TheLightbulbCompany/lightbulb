@@ -40,8 +40,7 @@ def test_registered_schema_carries_fork_runtime_scope(schema_id: str):
     """Every selectable schema must accept the shared MCP runtime scope."""
     bundle = _bundle_path(schema_id).read_text()
     assert re.search(r'runtimeScope:\s*\w+\.enum\([^)]*"shared"', bundle), (
-        f"Registered schema {schema_id} is missing the mcp.runtimeScope enum; "
-        "re-vendor from the exact fork release."
+        f"Registered schema {schema_id} is missing the mcp.runtimeScope enum; re-vendor from the exact fork release."
     )
 
 

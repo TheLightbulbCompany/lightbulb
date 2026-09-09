@@ -100,9 +100,7 @@ def test_builder_never_raises(provider_choice, byo_provider, owner_type, papercl
         pytest.param("chatgpt_oauth", "anthropic", "personal", [], id="chatgpt-oauth"),
     ],
 )
-def test_emitted_config_passes_selected_schema(
-    schema_id, provider_choice, byo_provider, owner_type, paperclip_agents
-):
+def test_emitted_config_passes_selected_schema(schema_id, provider_choice, byo_provider, owner_type, paperclip_agents):
     bundle = _bundle_path(schema_id)
     assert bundle.is_file(), f"registered schema bundle is missing: {bundle}"
     config = _build(provider_choice, byo_provider, owner_type, paperclip_agents, schema_id)
@@ -123,6 +121,4 @@ def test_emitted_config_passes_selected_schema(
         capture_output=True,
         text=True,
     )
-    assert proc.returncode == 0, (
-        f"Emitted openclaw.json failed selected schema {schema_id}:\n{proc.stderr}"
-    )
+    assert proc.returncode == 0, f"Emitted openclaw.json failed selected schema {schema_id}:\n{proc.stderr}"

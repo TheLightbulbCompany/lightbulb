@@ -335,9 +335,7 @@ def test_malformed_or_digest_image_ref_is_rejected(vendor_case: VendorCase, upst
         ({"commit": "0" * 40}, "peeled tag commit"),
     ],
 )
-def test_explicit_candidate_rejects_untrusted_identity(
-    vendor_case: VendorCase, overrides: dict[str, str], error: str
-):
+def test_explicit_candidate_rejects_untrusted_identity(vendor_case: VendorCase, overrides: dict[str, str], error: str):
     result = vendor_case.run(args=vendor_case.explicit_args(**overrides))
     assert result.returncode != 0
     assert error in result.stderr
@@ -376,24 +374,9 @@ def test_explicit_candidate_publishes_versioned_artifacts_and_provenance(vendor_
     assert result.returncode == 0, result.stderr
     vendor_case.assert_legacy_artifacts_unchanged()
 
-    release = (
-        vendor_case.root
-        / "apps"
-        / "backend"
-        / "tests"
-        / "chaos"
-        / "_schema"
-        / "releases"
-        / _SCHEMA_ID
-    )
+    release = vendor_case.root / "apps" / "backend" / "tests" / "chaos" / "_schema" / "releases" / _SCHEMA_ID
     json_path = (
-        vendor_case.root
-        / "apps"
-        / "backend"
-        / "core"
-        / "services"
-        / "openclaw_config_schemas"
-        / f"{_SCHEMA_ID}.json"
+        vendor_case.root / "apps" / "backend" / "core" / "services" / "openclaw_config_schemas" / f"{_SCHEMA_ID}.json"
     )
     bundle = release / "openclaw-config-schema.mjs"
     provenance = json.loads((release / "PROVENANCE.json").read_text())

@@ -61,6 +61,44 @@
   background: var(--cream);
 }
 
+.workspace-header__spacer {
+  min-width: 8px;
+  flex: 1 1 0;
+}
+
+.workspace-search {
+  display: grid;
+  width: min(360px, 40vw);
+  height: 32px;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  padding: 0 8px;
+  background: var(--cream-deep);
+  color: var(--midnight-muted);
+  font-size: 12px;
+  text-align: left;
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+.workspace-search:hover {
+  background: var(--cream-deeper);
+  color: var(--midnight);
+}
+
+.workspace-search:focus-visible {
+  outline: 2px solid var(--midnight);
+  outline-offset: 2px;
+}
+
+.workspace-search kbd {
+  border-left: 1px solid var(--edge);
+  padding-left: 8px;
+  font: inherit;
+}
+
 /* …but that rule and the sidebar header's own `border-bottom` (ChatLayout.css,
  * shared with the mobile shell) sat at different heights — 56px here vs
  * ~57px there — so the two hairlines met the sidebar's `border-right` as a
@@ -89,6 +127,215 @@
   min-width: 0;
   min-height: 0;
   background: var(--cream);
+}
+
+/* ── Team room ──────────────────────────────────────────────────────────
+ * Chat stays the coordination surface; durable work and execution state sit
+ * beside it as objects. Today's transport is still member-private, so this
+ * frame labels the audience explicitly instead of painting fake presence. */
+.team-room {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  background: var(--cream);
+}
+
+.team-room__header {
+  min-height: 72px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 12px 8px 16px;
+  border-bottom: 1px solid var(--edge);
+}
+
+.team-room__overline,
+.team-room__section-label {
+  display: block;
+  color: var(--midnight-muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  line-height: 16px;
+  text-transform: uppercase;
+}
+
+.team-room__heading-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.team-room__heading {
+  overflow: hidden;
+  color: var(--midnight);
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 24px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-room__audience {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--edge);
+  border-radius: 999px;
+  padding: 1px 7px;
+  color: var(--midnight-soft);
+  font-size: 11px;
+  line-height: 18px;
+}
+
+.team-room__status {
+  overflow: hidden;
+  color: var(--midnight-muted);
+  font-size: 12px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-room__actions {
+  display: flex;
+  flex: 1;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.team-room__icon-button {
+  display: flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  color: var(--midnight-muted);
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+.team-room__icon-button:hover {
+  background: var(--cream-deep);
+  color: var(--midnight);
+}
+
+.team-room__icon-button:disabled {
+  opacity: 0.5;
+}
+
+.team-room__icon-button:focus-visible,
+.team-room__work-links button:focus-visible {
+  outline: 2px solid var(--midnight);
+  outline-offset: 2px;
+}
+
+.team-room__body {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  grid-template-columns: minmax(0, 1fr) 300px;
+}
+
+.team-room__conversation {
+  min-width: 0;
+  min-height: 0;
+}
+
+.team-room__context {
+  min-height: 0;
+  overflow-y: auto;
+  border-left: 1px solid var(--edge);
+  background: var(--cream-deep);
+}
+
+.team-room__section {
+  padding: 20px;
+  border-bottom: 1px solid var(--edge);
+  color: var(--midnight-muted);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.team-room__section:last-child {
+  border-bottom: 0;
+}
+
+.team-room__section > p {
+  margin-top: 8px;
+}
+
+.team-room__context-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--midnight);
+}
+
+.team-room__work-links {
+  display: grid;
+  gap: 4px;
+  margin-top: 12px;
+}
+
+.team-room__work-links button {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) 14px;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: var(--cream);
+  color: var(--midnight-soft);
+  text-align: left;
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+.team-room__work-links button:hover {
+  background: var(--cream-deeper);
+  color: var(--midnight);
+}
+
+.team-room__execution-row {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+  margin-top: 12px;
+  color: var(--midnight-muted);
+}
+
+.team-room__execution-row strong,
+.team-room__execution-row span {
+  display: block;
+}
+
+.team-room__execution-row strong {
+  color: var(--midnight);
+  font-weight: 600;
+}
+
+.team-room__execution-row b {
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+@container (max-width: 860px) {
+  .team-room__body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .team-room__context {
+    display: none;
+  }
 }
 
 /* ── Panel-content scroll model ──────────────────────────────────────────

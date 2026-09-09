@@ -27,6 +27,11 @@ vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: () => ({ read: () => ({ data: teamsAgentsData }) }),
 }));
 
+let gatewayState = { nodeConnected: false, nodeStatus: "disconnected" };
+vi.mock("@/hooks/useGateway", () => ({
+  useGateway: () => gatewayState,
+}));
+
 const pause = vi.fn(async () => {});
 const resume = vi.fn(async () => {});
 vi.mock("@/components/teams/agents/hooks/useAgentMutations", () => ({
@@ -71,6 +76,7 @@ function makeProps(agentId: string): ChatPanelProps {
 beforeEach(() => {
   agentsState = { agents: [], defaultId: undefined, isSettled: true };
   teamsAgentsData = undefined;
+  gatewayState = { nodeConnected: false, nodeStatus: "disconnected" };
   openPanel.mockClear();
   pause.mockClear();
   resume.mockClear();
@@ -92,7 +98,9 @@ describe("ChatPanel", () => {
     );
     // ...and the tab title / header reflect the resolved agent name.
     expect(props.api.setTitle).toHaveBeenCalledWith("Friday");
-    expect(screen.getByText("Friday")).toBeTruthy();
+    expect(
+      screen.getByRole("heading", { name: "Private with Friday" }),
+    ).toBeTruthy();
   });
 
   it("does NOT show agent-gone while the roster is still settling", () => {
@@ -181,5 +189,53 @@ describe("ChatPanel", () => {
     // Paused ⇒ the toggle offers "Resume".
     expect(screen.getByTitle("Resume agent")).toBeTruthy();
     expect(screen.queryByTitle("Pause agent")).toBeNull();
+  });
+
+  it("frames the existing member-scoped chat as a private room with real work links", () => {
+    agentsState = {
+      agents: [{ id: "agent-ceo", name: "Friday" }],
+      defaultId: "agent-ceo",
+      isSettled: true,
+    };
+    const props = makeProps("agent-ceo");
+    render(<ChatPanel {...props} />);
+
+    expect(
+      screen.getByRole("heading", { name: "Private with Friday" }),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("Private")).toHaveLength(2);
+    expect(
+      screen.getByText(/isolated to your signed-in profile/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Friday · Status unavailable")).toBeInTheDocument();
+    expect(screen.getByText("Lightbulb cloud")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Friday's tasks" }));
+    expect(openPanel).toHaveBeenCalledWith(
+      "teams-issues",
+      { agent: "agent-ceo" },
+      { pushUrl: true },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Browse Library" }));
+    expect(openPanel).toHaveBeenCalledWith(
+      "teams-artifacts",
+      {},
+      { pushUrl: true },
+    );
+  });
+
+  it("states live agent and local execution status in words", () => {
+    agentsState = {
+      agents: [{ id: "agent-ceo", name: "Friday" }],
+      defaultId: "agent-ceo",
+      isSettled: true,
+    };
+    teamsAgentsData = { agents: [{ id: "agent-ceo", status: "running" }] };
+    gatewayState = { nodeConnected: true, nodeStatus: "connected" };
+
+    render(<ChatPanel {...makeProps("agent-ceo")} />);
+
+    expect(screen.getByText("Working")).toBeInTheDocument();
+    expect(screen.getByText("Local tools available")).toBeInTheDocument();
   });
 });

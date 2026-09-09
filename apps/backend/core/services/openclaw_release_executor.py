@@ -7,18 +7,17 @@ import hashlib
 import json
 import logging
 import os
-import tempfile
+import re
+import stat
 import time
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 
 from core.config import settings
 from core.containers import get_ecs_manager
 from core.containers.ecs_manager import SINGLE_WRITER_DEPLOYMENT_CONFIG
 from core.repositories import container_repo, update_repo
 from core.services import config_schema
-from core.services.efs_file_lock import chown_uid_1000_best_effort
 from core.services.openclaw_release import (
     OpenClawRelease,
     OwnerReleaseConflict,
@@ -31,6 +30,10 @@ logger = logging.getLogger(__name__)
 _HEARTBEAT_S = 30
 _STALE_S = 3 * _HEARTBEAT_S
 _MAX_RECOVERIES_PER_TICK = 1
+_SAFE_OWNER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
+_LEGACY_SHARED_SCHEMA_VERSION = 15
+_LEGACY_AGENT_SCHEMA_VERSION = 19
+_EFFECT_FIELDS = ("effect_kind", "effect_claim_id", "effect_executor_id")
 
 
 class OwnerReleaseSuperseded(RuntimeError):
@@ -45,12 +48,153 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _stage_path(owner_id: str, update_id: str) -> Path:
+def _new_effect(kind: str, claim_id: str) -> dict[str, str]:
+    return {"effect_kind": kind, "effect_claim_id": uuid.uuid4().hex, "effect_executor_id": claim_id}
+
+
+def _release_filename(update_id: str, suffix: str) -> str:
     if not update_id or any(
         character not in "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-" for character in update_id
     ):
         raise OwnerReleaseValidationError("release update id is invalid")
-    return Path(settings.EFS_MOUNT_PATH) / owner_id / f".openclaw.release-{update_id}.json"
+    return f".openclaw.release-{update_id}.{suffix}.json"
+
+
+class _OwnerConfigFiles:
+    """Descriptor-relative config I/O that never follows a tenant symlink."""
+
+    def __init__(self, owner_id: str):
+        if not _SAFE_OWNER_ID.fullmatch(owner_id):
+            raise OwnerReleaseValidationError("owner id is unsafe")
+        self.owner_id = owner_id
+        self.mount_fd = -1
+        self.root_fd = -1
+
+    def __enter__(self) -> "_OwnerConfigFiles":
+        flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            self.mount_fd = os.open(settings.EFS_MOUNT_PATH, flags)
+            self.root_fd = os.open(self.owner_id, flags, dir_fd=self.mount_fd)
+            root = os.fstat(self.root_fd)
+            if not stat.S_ISDIR(root.st_mode):
+                raise OwnerReleaseValidationError("owner EFS root is not a directory")
+        except (OSError, OwnerReleaseValidationError) as exc:
+            self.close()
+            if isinstance(exc, OwnerReleaseValidationError):
+                raise
+            raise OwnerReleaseValidationError("owner EFS root is unavailable") from exc
+        return self
+
+    def __exit__(self, *_args) -> None:
+        self.close()
+
+    def close(self) -> None:
+        if self.root_fd >= 0:
+            os.close(self.root_fd)
+            self.root_fd = -1
+        if self.mount_fd >= 0:
+            os.close(self.mount_fd)
+            self.mount_fd = -1
+
+    def _lstat(self, name: str) -> os.stat_result | None:
+        try:
+            return os.stat(name, dir_fd=self.root_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise OwnerReleaseValidationError("owner config entry could not be inspected") from exc
+
+    def read_regular(self, name: str) -> bytes:
+        observed = self._lstat(name)
+        if observed is None or not stat.S_ISREG(observed.st_mode):
+            raise OwnerReleaseValidationError("owner config entry is not a regular file")
+        try:
+            fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=self.root_fd)
+        except OSError as exc:
+            raise OwnerReleaseValidationError("owner config entry could not be opened") from exc
+        try:
+            opened = os.fstat(fd)
+            if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (
+                observed.st_dev,
+                observed.st_ino,
+            ):
+                raise OwnerReleaseValidationError("owner config entry changed while opening")
+            chunks = []
+            while True:
+                chunk = os.read(fd, 1024 * 1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            after = os.fstat(fd)
+            if (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns) != (
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
+            ):
+                raise OwnerReleaseValidationError("owner config entry changed while reading")
+            data = b"".join(chunks)
+            if len(data) != after.st_size:
+                raise OwnerReleaseValidationError("owner config entry read was incomplete")
+            return data
+        finally:
+            os.close(fd)
+
+    def atomic_write_regular(self, name: str, data: bytes) -> None:
+        target = self._lstat(name)
+        if target is not None and not stat.S_ISREG(target.st_mode):
+            raise OwnerReleaseValidationError("owner config target is not a regular file")
+        temporary = f".{name}.{uuid.uuid4().hex}.tmp"
+        fd = -1
+        try:
+            fd = os.open(
+                temporary,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+                dir_fd=self.root_fd,
+            )
+            view = memoryview(data)
+            while view:
+                written = os.write(fd, view)
+                if written <= 0:
+                    raise OwnerReleaseValidationError("owner config write was incomplete")
+                view = view[written:]
+            os.fsync(fd)
+            try:
+                os.fchown(fd, 1000, 1000)
+            except OSError:
+                logger.warning("Could not chown staged owner config", exc_info=True)
+            written_stat = os.fstat(fd)
+            if not stat.S_ISREG(written_stat.st_mode) or written_stat.st_size != len(data):
+                raise OwnerReleaseValidationError("owner config staging file is invalid")
+            os.close(fd)
+            fd = -1
+            current = self._lstat(name)
+            if current is not None and not stat.S_ISREG(current.st_mode):
+                raise OwnerReleaseValidationError("owner config target changed before replace")
+            os.replace(temporary, name, src_dir_fd=self.root_fd, dst_dir_fd=self.root_fd)
+            os.fsync(self.root_fd)
+        except OSError as exc:
+            raise OwnerReleaseValidationError("owner config could not be written safely") from exc
+        finally:
+            if fd >= 0:
+                os.close(fd)
+            try:
+                os.unlink(temporary, dir_fd=self.root_fd)
+            except FileNotFoundError:
+                pass
+
+    def replace_regular(self, source: str, target: str) -> None:
+        source_stat = self._lstat(source)
+        target_stat = self._lstat(target)
+        if source_stat is None or not stat.S_ISREG(source_stat.st_mode):
+            raise OwnerReleaseValidationError("staged owner config is not a regular file")
+        if target_stat is not None and not stat.S_ISREG(target_stat.st_mode):
+            raise OwnerReleaseValidationError("live owner config is not a regular file")
+        try:
+            os.replace(source, target, src_dir_fd=self.root_fd, dst_dir_fd=self.root_fd)
+            os.fsync(self.root_fd)
+        except OSError as exc:
+            raise OwnerReleaseValidationError("owner config activation failed") from exc
 
 
 def _config_has(config: dict, capability: str) -> bool:
@@ -104,12 +248,23 @@ async def assert_current_effect(
         or update.get("effect_executor_id") != claim_id
     ):
         raise OwnerReleaseSuperseded("release effect claim moved")
+    if not await update_repo.heartbeat_owner_release(container, update, claim_id):
+        raise OwnerReleaseSuperseded("release effect lease moved")
     return container, update
 
 
 class _ReleaseRuntime:
     def __init__(self):
         self.ecs = get_ecs_manager()
+        self._heartbeat_lost: asyncio.Event | None = None
+
+    def bind_heartbeat_loss(self, lost: asyncio.Event) -> None:
+        self._heartbeat_lost = lost
+
+    async def assert_effect(self, *args, **kwargs) -> tuple[dict, dict]:
+        if self._heartbeat_lost is not None and self._heartbeat_lost.is_set():
+            raise OwnerReleaseSuperseded("release heartbeat was lost")
+        return await assert_current_effect(*args, **kwargs)
 
     async def snapshot(self, owner_id: str) -> dict:
         response = await asyncio.to_thread(
@@ -122,6 +277,7 @@ class _ReleaseRuntime:
             raise OwnerReleaseValidationError("owner ECS service is unavailable")
         service = services[0]
         return {
+            "service_arn": service.get("serviceArn"),
             "task_definition_arn": service.get("taskDefinition"),
             "desired_count": service.get("desiredCount"),
             "running_count": service.get("runningCount"),
@@ -147,7 +303,7 @@ class _ReleaseRuntime:
             raise OwnerReleaseValidationError("owner task definition has no registered size")
 
         async def before_register() -> None:
-            await assert_current_effect(
+            await self.assert_effect(
                 owner_id,
                 update_id,
                 claim_id,
@@ -171,14 +327,16 @@ class _ReleaseRuntime:
             raise OwnerReleaseValidationError("prepared task definition is not digest-pinned")
         return task_definition_arn
 
-    async def running_tasks(self, owner_id: str) -> list[dict]:
+    async def service_tasks(self, owner_id: str, desired_status: str) -> list[dict]:
+        if desired_status not in {"RUNNING", "STOPPED"}:
+            raise ValueError("unsupported ECS desired status")
         arns: list[str] = []
         next_token = None
         while True:
             kwargs = {
                 "cluster": self.ecs._cluster,
                 "serviceName": self.ecs._service_name(owner_id),
-                "desiredStatus": "RUNNING",
+                "desiredStatus": desired_status,
             }
             if next_token is not None:
                 kwargs["nextToken"] = next_token
@@ -229,29 +387,74 @@ class _ReleaseRuntime:
                     "task_definition_arn": task.get("taskDefinitionArn"),
                     "last_status": task.get("lastStatus"),
                     "image_digest": openclaw.get("imageDigest"),
+                    "exit_code": openclaw.get("exitCode"),
+                    "container_reason": openclaw.get("reason"),
+                    "stop_code": task.get("stopCode"),
+                    "stopped_reason": task.get("stoppedReason"),
                     "ip": address,
+                    "created_at": (
+                        task.get("createdAt").astimezone(timezone.utc).isoformat()
+                        if isinstance(task.get("createdAt"), datetime)
+                        else None
+                    ),
                 }
             )
         return tasks
+
+    async def running_tasks(self, owner_id: str) -> list[dict]:
+        return await self.service_tasks(owner_id, "RUNNING")
+
+    async def _describe_tasks_exact(self, task_arns: list[str]) -> list[dict]:
+        if not task_arns:
+            raise OwnerReleaseValidationError("drain evidence has no captured task")
+        described: list[dict] = []
+        for offset in range(0, len(task_arns), 100):
+            response = await asyncio.to_thread(
+                self.ecs._ecs.describe_tasks,
+                cluster=self.ecs._cluster,
+                tasks=task_arns[offset : offset + 100],
+            )
+            if response.get("failures"):
+                raise OwnerReleaseValidationError("ECS returned failed captured-task observations")
+            described.extend(response.get("tasks") or [])
+        observed = {task.get("taskArn"): task for task in described}
+        if any(task_arn not in observed for task_arn in task_arns):
+            raise OwnerReleaseValidationError("ECS omitted a captured task observation")
+        return [observed[task_arn] for task_arn in task_arns]
 
     async def recover(
         self,
         owner_id: str,
         update_id: str,
+        release: OpenClawRelease,
+        source: dict,
+        drain_evidence: dict,
         pre_stop_task_arns: list[str],
+        captured_at: str,
         claim_id: str,
         revision: int,
         effect_id: str,
     ) -> dict:
-        await assert_current_effect(
-            owner_id,
-            update_id,
-            claim_id,
-            revision,
-            phase="recovery_requested",
-            kind="create_recovery_set",
-            effect_id=effect_id,
-        )
+        async def fence_effect() -> None:
+            await self.assert_effect(
+                owner_id,
+                update_id,
+                claim_id,
+                revision,
+                phase="recovery_requested",
+                kind="create_recovery_set",
+                effect_id=effect_id,
+            )
+
+        def fence_effect_sync() -> None:
+            asyncio.run(fence_effect())
+
+        await fence_effect()
+        reobserved = await self.drain(owner_id, pre_stop_task_arns, captured_at)
+        if {key: value for key, value in reobserved.items() if key != "observed_at"} != {
+            key: value for key, value in drain_evidence.items() if key != "observed_at"
+        }:
+            raise OwnerReleaseValidationError("owner quiescence changed before recovery capture")
         from core.services.owner_recovery_set import (
             OwnerRecoverySetUnavailable,
             create_verified_owner_recovery_set,
@@ -261,10 +464,16 @@ class _ReleaseRuntime:
             return await create_verified_owner_recovery_set(
                 owner_id=owner_id,
                 update_id=update_id,
-                source_task_arns=pre_stop_task_arns,
-                claim_id=claim_id,
-                release_revision=revision,
-                effect_claim_id=effect_id,
+                release={
+                    "release_id": release.release_id,
+                    "image_digest": release.image_digest,
+                    "build_id": release.build_id,
+                    "schema_id": release.schema_id,
+                },
+                source=source,
+                drain_evidence=drain_evidence,
+                effect_fence=fence_effect,
+                effect_fence_sync=fence_effect_sync,
             )
         except OwnerRecoverySetUnavailable as exc:
             raise OwnerReleaseValidationError(str(exc)) from exc
@@ -277,7 +486,7 @@ class _ReleaseRuntime:
         revision: int,
         effect_id: str,
     ) -> None:
-        await assert_current_effect(
+        await self.assert_effect(
             owner_id,
             update_id,
             claim_id,
@@ -293,33 +502,64 @@ class _ReleaseRuntime:
             desiredCount=0,
         )
 
-    async def drain(self, owner_id: str, pre_stop_task_arns: list[str]) -> dict:
+    async def drain(self, owner_id: str, pre_stop_task_arns: list[str], captured_at: str) -> dict:
+        try:
+            captured_after = datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
+        except (AttributeError, ValueError) as exc:
+            raise OwnerReleaseValidationError("pre-stop capture time is invalid") from exc
+        captured: set[str] = set(pre_stop_task_arns)
         for _ in range(60):
             service = await self.snapshot(owner_id)
+            running = await self.service_tasks(owner_id, "RUNNING")
+            stopped = await self.service_tasks(owner_id, "STOPPED")
+            captured.update(task["task_arn"] for task in running if task.get("task_arn"))
+            for task in stopped:
+                created_at = task.get("created_at")
+                if not task.get("task_arn") or not created_at:
+                    raise OwnerReleaseValidationError("ECS stopped task identity is incomplete")
+                try:
+                    created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                except ValueError as exc:
+                    raise OwnerReleaseValidationError("ECS stopped task has an invalid creation time") from exc
+                if created >= captured_after:
+                    captured.add(task["task_arn"])
             if (
                 service["desired_count"] == 0
                 and service["running_count"] == 0
                 and service["pending_count"] == 0
-                and not await self.running_tasks(owner_id)
+                and not running
             ):
-                described = await asyncio.to_thread(
-                    self.ecs._ecs.describe_tasks,
-                    cluster=self.ecs._cluster,
-                    tasks=pre_stop_task_arns,
-                )
-                observed = {task.get("taskArn"): task for task in described.get("tasks") or []}
-                missing = [task_arn for task_arn in pre_stop_task_arns if task_arn not in observed]
-                if missing:
-                    raise OwnerReleaseValidationError("ECS omitted a captured task from drain evidence")
-                if described.get("failures"):
-                    raise OwnerReleaseValidationError("ECS returned failed captured-task drain evidence")
-                if all(observed[task_arn].get("lastStatus") == "STOPPED" for task_arn in pre_stop_task_arns):
+                exact = await self._describe_tasks_exact(sorted(captured))
+                if all(task.get("lastStatus") == "STOPPED" for task in exact):
+                    stopped_tasks = []
+                    for task in exact:
+                        openclaw = next(
+                            (
+                                container
+                                for container in task.get("containers") or []
+                                if container.get("name") == "openclaw"
+                            ),
+                            {},
+                        )
+                        evidence = {
+                            "task_arn": task.get("taskArn"),
+                            "last_status": task.get("lastStatus"),
+                            "task_definition_arn": task.get("taskDefinitionArn"),
+                            "image_digest": openclaw.get("imageDigest"),
+                            "exit_code": openclaw.get("exitCode"),
+                            "stop_code": task.get("stopCode"),
+                            "stopped_reason": task.get("stoppedReason"),
+                        }
+                        if any(evidence[field] is None for field in evidence):
+                            raise OwnerReleaseValidationError("captured task drain evidence is incomplete")
+                        stopped_tasks.append(evidence)
                     return {
                         "observed_at": datetime.now(timezone.utc).isoformat(),
+                        "service_arn": service["service_arn"],
                         "service_desired_count": 0,
                         "service_running_count": 0,
                         "service_pending_count": 0,
-                        "stopped_task_arns": pre_stop_task_arns,
+                        "stopped_tasks": stopped_tasks,
                     }
             await asyncio.sleep(3)
         raise TimeoutError("owner ECS service did not drain")
@@ -333,13 +573,13 @@ class _ReleaseRuntime:
         revision: int,
         effect_id: str,
     ) -> tuple[str, str]:
-        live_path = Path(settings.EFS_MOUNT_PATH) / owner_id / "openclaw.json"
         try:
-            prior_bytes = live_path.read_bytes()
+            with _OwnerConfigFiles(owner_id) as files:
+                prior_bytes = files.read_regular("openclaw.json")
             prior_config = json.loads(prior_bytes)
-        except (OSError, ValueError) as exc:
+        except (OwnerReleaseValidationError, ValueError) as exc:
             raise OwnerReleaseValidationError("owner live config is unavailable") from exc
-        stage_path = _stage_path(owner_id, update_id)
+        stage_name = _release_filename(update_id, "stage")
         staged_config = json.loads(json.dumps(prior_config))
         meta = staged_config.setdefault("meta", {})
         if not isinstance(meta, dict):
@@ -361,7 +601,7 @@ class _ReleaseRuntime:
         staged_bytes = json.dumps(staged_config, indent=2).encode()
 
         async def fence_effect() -> None:
-            await assert_current_effect(
+            await self.assert_effect(
                 owner_id,
                 update_id,
                 claim_id,
@@ -377,7 +617,8 @@ class _ReleaseRuntime:
             effect_fence=fence_effect,
         ):
             await fence_effect()
-            self._atomic_write(stage_path, staged_bytes)
+            with _OwnerConfigFiles(owner_id) as files:
+                files.atomic_write_regular(stage_name, staged_bytes)
         return _sha256(prior_bytes), _sha256(staged_bytes)
 
     async def activate(
@@ -391,12 +632,11 @@ class _ReleaseRuntime:
         revision: int,
         effect_id: str,
     ) -> None:
-        live_path = Path(settings.EFS_MOUNT_PATH) / owner_id / "openclaw.json"
-        stage_path = _stage_path(owner_id, update_id)
-        backup_path = live_path.with_name(f".openclaw.release-{update_id}.backup.json")
+        stage_name = _release_filename(update_id, "stage")
+        backup_name = _release_filename(update_id, "backup")
 
         async def fence_effect() -> None:
-            await assert_current_effect(
+            await self.assert_effect(
                 owner_id,
                 update_id,
                 claim_id,
@@ -412,40 +652,37 @@ class _ReleaseRuntime:
             effect_fence=fence_effect,
         ):
             await fence_effect()
-            live_bytes = live_path.read_bytes()
-            if _sha256(live_bytes) == staged_sha256:
+            with _OwnerConfigFiles(owner_id) as files:
+                live_bytes = files.read_regular("openclaw.json")
+                if _sha256(live_bytes) == staged_sha256:
+                    backup_bytes = files.read_regular(backup_name)
+                    if _sha256(backup_bytes) != prior_sha256:
+                        raise OwnerReleaseValidationError(
+                            "activated release pre-upgrade config backup does not match checkpoint"
+                        )
+                    return
+                if _sha256(live_bytes) != prior_sha256:
+                    raise OwnerReleaseValidationError("live config changed after release reservation")
+                staged_bytes = files.read_regular(stage_name)
+                if _sha256(staged_bytes) != staged_sha256:
+                    raise OwnerReleaseValidationError("staged config digest does not match checkpoint")
                 try:
-                    backup_bytes = backup_path.read_bytes()
-                except OSError as exc:
-                    raise OwnerReleaseValidationError(
-                        "activated release has no verified pre-upgrade config backup"
-                    ) from exc
-                if _sha256(backup_bytes) != prior_sha256:
-                    raise OwnerReleaseValidationError(
-                        "activated release pre-upgrade config backup does not match checkpoint"
-                    )
-                return
-            if _sha256(live_bytes) != prior_sha256:
-                raise OwnerReleaseValidationError("live config changed after release reservation")
-            staged_bytes = stage_path.read_bytes()
-            if _sha256(staged_bytes) != staged_sha256:
-                raise OwnerReleaseValidationError("staged config digest does not match checkpoint")
-            try:
-                staged_config = json.loads(staged_bytes)
-            except ValueError as exc:
-                raise OwnerReleaseValidationError("staged config is invalid JSON") from exc
-            config_schema.gate_config(
-                staged_config,
-                owner_id=owner_id,
-                context="owner release activation",
-                enforce=True,
-                schema_id=release.schema_id,
-            )
-            self._atomic_write(backup_path, live_bytes)
-            if _sha256(backup_path.read_bytes()) != prior_sha256:
-                raise OwnerReleaseValidationError("release backup could not be verified")
-            os.replace(stage_path, live_path)
-            chown_uid_1000_best_effort(str(live_path))
+                    staged_config = json.loads(staged_bytes)
+                except ValueError as exc:
+                    raise OwnerReleaseValidationError("staged config is invalid JSON") from exc
+                config_schema.gate_config(
+                    staged_config,
+                    owner_id=owner_id,
+                    context="owner release activation",
+                    enforce=True,
+                    schema_id=release.schema_id,
+                )
+                await fence_effect()
+                files.atomic_write_regular(backup_name, live_bytes)
+                if _sha256(files.read_regular(backup_name)) != prior_sha256:
+                    raise OwnerReleaseValidationError("release backup could not be verified")
+                await fence_effect()
+                files.replace_regular(stage_name, "openclaw.json")
 
     async def start(
         self,
@@ -457,7 +694,7 @@ class _ReleaseRuntime:
         revision: int,
         effect_id: str,
     ) -> None:
-        await assert_current_effect(
+        await self.assert_effect(
             owner_id,
             update_id,
             claim_id,
@@ -530,6 +767,8 @@ class _ReleaseRuntime:
             "fork_commit": release.fork_commit,
             "schema_id": release.schema_id,
             "schema_sha256": release.schema_sha256,
+            "shared_db_schema_version": release.shared_db_schema_version,
+            "agent_db_schema_version": release.agent_db_schema_version,
             "config_capabilities": sorted(release.config_capabilities),
             "qualification_id": release.qualification_id,
             "evidence_id": release.evidence_id,
@@ -540,6 +779,119 @@ class _ReleaseRuntime:
             "config_sha256": staged_config_sha256,
             "recovery_set_id": recovery_set["recovery_set_id"],
             "recovery_manifest_sha256": recovery_set["manifest_sha256"],
+            "gateway": "accepted",
+        }
+
+    async def rollback(
+        self,
+        owner_id: str,
+        update_id: str,
+        update: dict,
+        gateway_token: str,
+        claim_id: str,
+        revision: int,
+        effect_id: str,
+    ) -> dict:
+        async def fence_effect() -> None:
+            await self.assert_effect(
+                owner_id,
+                update_id,
+                claim_id,
+                revision,
+                phase="rollback_requested",
+                kind="rollback",
+                effect_id=effect_id,
+            )
+
+        def fence_effect_sync() -> None:
+            asyncio.run(fence_effect())
+
+        rollback_captured_at = datetime.now(timezone.utc).isoformat()
+        rollback_service = await self.snapshot(owner_id)
+        target_tasks = await self.service_tasks(owner_id, "RUNNING")
+        target_task_arns = sorted(task["task_arn"] for task in target_tasks if task.get("task_arn"))
+        already_stopped = (
+            rollback_service.get("desired_count") == 0
+            and rollback_service.get("running_count") == 0
+            and rollback_service.get("pending_count") == 0
+            and not target_tasks
+        )
+        if already_stopped:
+            rollback_drain = {
+                "observed_at": rollback_captured_at,
+                "service_arn": rollback_service.get("service_arn"),
+                "already_stopped": True,
+            }
+        else:
+            if not target_task_arns:
+                raise OwnerReleaseValidationError("rollback target task identity is unavailable")
+            await fence_effect()
+            await asyncio.to_thread(
+                self.ecs._ecs.update_service,
+                cluster=self.ecs._cluster,
+                service=self.ecs._service_name(owner_id),
+                desiredCount=0,
+            )
+            rollback_drain = await self.drain(owner_id, target_task_arns, rollback_captured_at)
+        from core.services.owner_recovery_set import (
+            OwnerRecoverySetUnavailable,
+            restore_verified_owner_recovery_set,
+        )
+
+        try:
+            restored = await restore_verified_owner_recovery_set(
+                owner_id=owner_id,
+                update_id=update_id,
+                recovery_set=update["recovery_set"],
+                effect_fence=fence_effect,
+                effect_fence_sync=fence_effect_sync,
+            )
+        except OwnerRecoverySetUnavailable as exc:
+            raise OwnerReleaseValidationError(str(exc)) from exc
+        await fence_effect()
+        await asyncio.to_thread(
+            self.ecs._ecs.update_service,
+            cluster=self.ecs._cluster,
+            service=self.ecs._service_name(owner_id),
+            taskDefinition=update["prior_task_definition_arn"],
+            desiredCount=int(update["prior_desired_count"]),
+            deploymentConfiguration=SINGLE_WRITER_DEPLOYMENT_CONFIG,
+            **self.ecs._service_registries(),
+        )
+        waiter = self.ecs._ecs.get_waiter("services_stable")
+        await asyncio.to_thread(
+            waiter.wait,
+            cluster=self.ecs._cluster,
+            services=[self.ecs._service_name(owner_id)],
+            WaiterConfig={"Delay": 15, "MaxAttempts": 60},
+        )
+        await fence_effect()
+        service = await self.snapshot(owner_id)
+        tasks = [task for task in await self.running_tasks(owner_id) if task.get("last_status") == "RUNNING"]
+        source = update["source"]
+        if (
+            service.get("task_definition_arn") != update.get("prior_task_definition_arn")
+            or service.get("desired_count") != update.get("prior_desired_count")
+            or service.get("running_count") != update.get("prior_desired_count")
+            or service.get("pending_count") != 0
+            or len(tasks) != 1
+            or tasks[0].get("task_definition_arn") != update.get("prior_task_definition_arn")
+            or tasks[0].get("image_digest") != source.get("image_digest")
+            or not tasks[0].get("ip")
+        ):
+            raise OwnerReleaseValidationError("rollback source task did not converge")
+        from core.gateway.operator_rpc import gateway_hello_oneshot
+
+        hello = await gateway_hello_oneshot(tasks[0]["ip"], owner_id=owner_id, token=gateway_token)
+        if (hello.get("server") or {}).get("buildId") != source.get("build_id"):
+            raise OwnerReleaseValidationError("rollback source gateway build did not match")
+        return {
+            **restored,
+            "rollback_drain_evidence": rollback_drain,
+            "source_task_definition_arn": update["prior_task_definition_arn"],
+            "source_image_digest": source["image_digest"],
+            "source_task_arn": tasks[0]["task_arn"],
+            "source_build_id": source["build_id"],
             "gateway": "accepted",
         }
 
@@ -561,22 +913,14 @@ class _ReleaseRuntime:
             {},
         )
 
-    @staticmethod
-    def _atomic_write(path: Path, data: bytes) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "wb") as stream:
-                stream.write(data)
-                stream.flush()
-                os.fsync(stream.fileno())
-            chown_uid_1000_best_effort(temporary)
-            os.replace(temporary, path)
-        finally:
-            Path(temporary).unlink(missing_ok=True)
 
-
-async def _heartbeat(owner_id: str, update_id: str, claim_id: str, stop: asyncio.Event) -> None:
+async def _heartbeat(
+    owner_id: str,
+    update_id: str,
+    claim_id: str,
+    stop: asyncio.Event,
+    lost: asyncio.Event,
+) -> None:
     while not stop.is_set():
         try:
             await asyncio.wait_for(stop.wait(), timeout=_HEARTBEAT_S)
@@ -586,11 +930,14 @@ async def _heartbeat(owner_id: str, update_id: str, claim_id: str, stop: asyncio
         try:
             container, update = await _read_claimed(owner_id, update_id)
             if not await update_repo.heartbeat_owner_release(container, update, claim_id):
+                lost.set()
                 return
         except (OwnerReleaseSuperseded, OwnerReleaseConflict):
+            lost.set()
             return
         except Exception:
             logger.exception("Owner release heartbeat failed (owner=%s update=%s)", owner_id, update_id)
+            lost.set()
             return
 
 
@@ -603,13 +950,18 @@ async def execute_claimed_owner_release(
 ) -> bool:
     runtime = runtime or _ReleaseRuntime()
     heartbeat_stop = asyncio.Event()
+    heartbeat_lost = asyncio.Event()
     heartbeat_task = (
         None
         if not isinstance(runtime, _ReleaseRuntime)
-        else asyncio.create_task(_heartbeat(owner_id, update_id, claim_id, heartbeat_stop))
+        else asyncio.create_task(_heartbeat(owner_id, update_id, claim_id, heartbeat_stop, heartbeat_lost))
     )
+    if isinstance(runtime, _ReleaseRuntime):
+        runtime.bind_heartbeat_loss(heartbeat_lost)
     try:
         while True:
+            if heartbeat_lost.is_set():
+                raise OwnerReleaseSuperseded("release heartbeat was lost")
             container, update = await _read_claimed(owner_id, update_id)
             if update.get("apply_claim_id") != claim_id:
                 raise OwnerReleaseSuperseded("release claim moved")
@@ -617,15 +969,65 @@ async def execute_claimed_owner_release(
             phase = update.get("phase")
             checkpoint = update_repo.checkpoint_owner_release
             if phase == "reserved":
-                pre_stop = [task["task_arn"] for task in await runtime.running_tasks(owner_id) if task.get("task_arn")]
-                if not pre_stop:
-                    raise OwnerReleaseValidationError("release requires a live founder task before stop")
+                captured_at = datetime.now(timezone.utc).isoformat()
+                service = await runtime.snapshot(owner_id)
+                source_tasks = [
+                    task for task in await runtime.running_tasks(owner_id) if task.get("last_status") == "RUNNING"
+                ]
+                if len(source_tasks) != 1:
+                    raise OwnerReleaseValidationError("release requires exactly one live founder task before stop")
+                source_task = source_tasks[0]
+                if (
+                    service.get("task_definition_arn") != update.get("prior_task_definition_arn")
+                    or service.get("desired_count") != update.get("prior_desired_count")
+                    or service.get("running_count") != update.get("prior_desired_count")
+                    or service.get("pending_count") != 0
+                    or source_task.get("task_definition_arn") != update.get("prior_task_definition_arn")
+                    or not source_task.get("task_arn")
+                    or not source_task.get("image_digest")
+                    or not source_task.get("ip")
+                    or not service.get("service_arn")
+                    or not container.get("access_point_id")
+                    or not settings.EFS_FILE_SYSTEM_ID
+                ):
+                    raise OwnerReleaseValidationError("release source identity is incomplete")
+                from core.gateway.operator_rpc import gateway_hello_oneshot
+
+                source_hello = await gateway_hello_oneshot(
+                    source_task["ip"], owner_id=owner_id, token=container["gateway_token"]
+                )
+                source_build_id = (source_hello.get("server") or {}).get("buildId")
+                if type(source_build_id) is not str or not source_build_id:
+                    raise OwnerReleaseValidationError("release source gateway build identity is unavailable")
+                prior_release = (
+                    release_by_id(update["prior_release_id"]) if update.get("prior_release_id") is not None else None
+                )
+                source = {
+                    "service_arn": service["service_arn"],
+                    "task_arn": source_task["task_arn"],
+                    "task_definition_arn": source_task["task_definition_arn"],
+                    "image_digest": source_task["image_digest"],
+                    "build_id": source_build_id,
+                    "access_point_id": container["access_point_id"],
+                    "file_system_id": settings.EFS_FILE_SYSTEM_ID,
+                    "efs_root": f"/users/{owner_id}",
+                    "shared_schema_version": (
+                        prior_release.shared_db_schema_version
+                        if prior_release is not None
+                        else _LEGACY_SHARED_SCHEMA_VERSION
+                    ),
+                    "agent_schema_version": (
+                        prior_release.agent_db_schema_version
+                        if prior_release is not None
+                        else _LEGACY_AGENT_SCHEMA_VERSION
+                    ),
+                }
                 fields, next_phase, removals = (
                     {
-                        "effect_kind": "stop_service",
-                        "effect_claim_id": uuid.uuid4().hex,
-                        "effect_executor_id": claim_id,
-                        "pre_stop_task_arns": pre_stop,
+                        **_new_effect("stop_service", claim_id),
+                        "pre_stop_task_arns": [source_task["task_arn"]],
+                        "pre_stop_captured_at": captured_at,
+                        "source": source,
                     },
                     "stop_requested",
                     (),
@@ -639,17 +1041,19 @@ async def execute_claimed_owner_release(
                     update["effect_claim_id"],
                 )
                 fields, next_phase, removals = (
-                    {"drain_evidence": await runtime.drain(owner_id, list(update["pre_stop_task_arns"]))},
+                    {
+                        "drain_evidence": await runtime.drain(
+                            owner_id,
+                            list(update["pre_stop_task_arns"]),
+                            update["pre_stop_captured_at"],
+                        )
+                    },
                     "drained",
-                    ("effect_kind", "effect_claim_id", "effect_executor_id"),
+                    _EFFECT_FIELDS,
                 )
             elif phase == "drained":
                 fields, next_phase, removals = (
-                    {
-                        "effect_kind": "create_recovery_set",
-                        "effect_claim_id": uuid.uuid4().hex,
-                        "effect_executor_id": claim_id,
-                    },
+                    _new_effect("create_recovery_set", claim_id),
                     "recovery_requested",
                     (),
                 )
@@ -657,7 +1061,11 @@ async def execute_claimed_owner_release(
                 recovery_set = await runtime.recover(
                     owner_id,
                     update_id,
+                    release,
+                    dict(update["source"]),
+                    dict(update["drain_evidence"]),
                     list(update["pre_stop_task_arns"]),
+                    update["pre_stop_captured_at"],
                     claim_id,
                     int(update["release_revision"]),
                     update["effect_claim_id"],
@@ -665,15 +1073,11 @@ async def execute_claimed_owner_release(
                 fields, next_phase, removals = (
                     {"recovery_set": recovery_set},
                     "recovered",
-                    ("effect_kind", "effect_claim_id", "effect_executor_id"),
+                    _EFFECT_FIELDS,
                 )
             elif phase == "recovered":
                 fields, next_phase, removals = (
-                    {
-                        "effect_kind": "prepare_task_definition",
-                        "effect_claim_id": uuid.uuid4().hex,
-                        "effect_executor_id": claim_id,
-                    },
+                    _new_effect("prepare_task_definition", claim_id),
                     "prepare_requested",
                     (),
                 )
@@ -689,15 +1093,11 @@ async def execute_claimed_owner_release(
                 fields, next_phase, removals = (
                     {"target_task_definition_arn": target},
                     "prepared",
-                    ("effect_kind", "effect_claim_id", "effect_executor_id"),
+                    _EFFECT_FIELDS,
                 )
             elif phase == "prepared":
                 fields, next_phase, removals = (
-                    {
-                        "effect_kind": "stage_config",
-                        "effect_claim_id": uuid.uuid4().hex,
-                        "effect_executor_id": claim_id,
-                    },
+                    _new_effect("stage_config", claim_id),
                     "stage_requested",
                     (),
                 )
@@ -713,15 +1113,11 @@ async def execute_claimed_owner_release(
                 fields, next_phase, removals = (
                     {"prior_config_sha256": prior_hash, "staged_config_sha256": staged_hash},
                     "staged",
-                    ("effect_kind", "effect_claim_id", "effect_executor_id"),
+                    _EFFECT_FIELDS,
                 )
             elif phase == "staged":
                 fields, next_phase, removals = (
-                    {
-                        "effect_kind": "activate_config",
-                        "effect_claim_id": uuid.uuid4().hex,
-                        "effect_executor_id": claim_id,
-                    },
+                    _new_effect("activate_config", claim_id),
                     "activating",
                     (),
                 )
@@ -739,19 +1135,11 @@ async def execute_claimed_owner_release(
                 fields, next_phase, removals = (
                     {},
                     "activated",
-                    (
-                        "effect_kind",
-                        "effect_claim_id",
-                        "effect_executor_id",
-                    ),
+                    _EFFECT_FIELDS,
                 )
             elif phase == "activated":
                 fields, next_phase, removals = (
-                    {
-                        "effect_kind": "start_service",
-                        "effect_claim_id": uuid.uuid4().hex,
-                        "effect_executor_id": claim_id,
-                    },
+                    _new_effect("start_service", claim_id),
                     "start_requested",
                     (),
                 )
@@ -768,11 +1156,7 @@ async def execute_claimed_owner_release(
                 fields, next_phase, removals = (
                     {},
                     "validating",
-                    (
-                        "effect_kind",
-                        "effect_claim_id",
-                        "effect_executor_id",
-                    ),
+                    _EFFECT_FIELDS,
                 )
             elif phase == "validating" and "acceptance" not in update:
                 fields, next_phase, removals = (
@@ -790,14 +1174,36 @@ async def execute_claimed_owner_release(
                     (),
                 )
             elif phase == "validating":
+                if heartbeat_lost.is_set():
+                    raise OwnerReleaseSuperseded("release heartbeat was lost")
                 return await update_repo.finish_owner_release(
                     container,
                     update,
                     claim_id,
                     expected_phase="validating",
                 )
+            elif phase == "rollback_requested":
+                evidence = await runtime.rollback(
+                    owner_id,
+                    update_id,
+                    update,
+                    container["gateway_token"],
+                    claim_id,
+                    int(update["release_revision"]),
+                    update["effect_claim_id"],
+                )
+                if heartbeat_lost.is_set():
+                    raise OwnerReleaseSuperseded("release heartbeat was lost")
+                return await update_repo.finish_owner_release_rollback(
+                    container,
+                    update,
+                    claim_id,
+                    rollback_evidence=evidence,
+                )
             else:
                 raise OwnerReleaseValidationError(f"unsupported owner release phase: {phase!r}")
+            if heartbeat_lost.is_set():
+                raise OwnerReleaseSuperseded("release heartbeat was lost")
             if not await checkpoint(
                 container,
                 update,
@@ -810,9 +1216,29 @@ async def execute_claimed_owner_release(
                 raise OwnerReleaseSuperseded("release checkpoint lost its claim")
     except OwnerReleaseSuperseded:
         return False
-    except OwnerReleaseValidationError:
-        logger.exception("Owner release validation stopped (owner=%s update=%s)", owner_id, update_id)
-        return False
+    except Exception as exc:
+        logger.exception("Owner release effect failed (owner=%s update=%s)", owner_id, update_id)
+        try:
+            container, update = await _read_claimed(owner_id, update_id)
+            if update.get("phase") == "rollback_requested":
+                return False
+            rollback_effect = uuid.uuid4().hex
+            if not await update_repo.begin_owner_release_rollback(
+                container,
+                update,
+                claim_id,
+                effect_claim_id=rollback_effect,
+                failure_reason=str(exc),
+            ):
+                return False
+            heartbeat_stop.set()
+            if heartbeat_task is not None:
+                await heartbeat_task
+                heartbeat_task = None
+            return await execute_claimed_owner_release(owner_id, update_id, claim_id, runtime=runtime)
+        except Exception:
+            logger.exception("Owner release rollback could not be entered (owner=%s update=%s)", owner_id, update_id)
+            return False
     finally:
         heartbeat_stop.set()
         if heartbeat_task is not None:

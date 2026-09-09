@@ -829,6 +829,7 @@ class EcsManager:
         task_role_arn: str | None = None,
         new_cpu: str | None = None,
         new_memory: str | None = None,
+        new_image: str | None = None,
     ) -> str:
         """Clone the CDK base for a new per-user container.
 
@@ -864,6 +865,7 @@ class EcsManager:
                 task_role_arn=task_role_arn,
                 new_cpu=new_cpu,
                 new_memory=new_memory,
+                new_image=new_image,
             )
             reg_resp = self._ecs.register_task_definition(**reg_kwargs)
             task_def_arn = reg_resp["taskDefinition"]["taskDefinitionArn"]
@@ -1105,6 +1107,7 @@ class EcsManager:
         bedrock_gate_token_hash: str | None = None,
         claim_id: str | None = None,
         attempt_token: str | None = None,
+        new_image: str | None = None,
     ) -> str:
         """Create an ECS Service for a user with per-user EFS isolation.
 
@@ -1276,6 +1279,7 @@ class EcsManager:
                 task_role_arn=task_role_arn,
                 new_cpu=new_cpu,
                 new_memory=new_memory,
+                new_image=new_image,
             )
             await self._update_container(
                 user_id,
@@ -1382,7 +1386,33 @@ class EcsManager:
         logger.info("Created ECS service %s for user %s", service_name, user_id)
         return service_name
 
-    async def stop_user_service(self, user_id: str, *, reason: str = "manual") -> None:
+    async def _fence_release_lifecycle(
+        self,
+        user_id: str,
+        release_update_id: str | None,
+        effect_fence: Callable[[], Awaitable[None]] | None,
+    ) -> bool:
+        """Refuse direct lifecycle effects while a release journal owns the service."""
+
+        container = await container_repo.get_by_owner_id(user_id, consistent=True)
+        active_update = (container or {}).get("release_update_id")
+        if active_update is None:
+            if release_update_id is not None:
+                raise EcsManagerError("Owner release lifecycle claim moved", user_id)
+            return False
+        if active_update != release_update_id or effect_fence is None:
+            raise EcsManagerError("Owner is reserved by a release transaction", user_id)
+        await effect_fence()
+        return True
+
+    async def stop_user_service(
+        self,
+        user_id: str,
+        *,
+        reason: str = "manual",
+        _release_update_id: str | None = None,
+        _effect_fence: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
         """Scale a user's ECS service to 0 (stopped).
 
         Args:
@@ -1404,6 +1434,7 @@ class EcsManager:
                 delete_user_service's not-found handling below.
         """
         service_name = self._service_name(user_id)
+        release_owned = await self._fence_release_lifecycle(user_id, _release_update_id, _effect_fence)
         put_metric(
             "container.lifecycle.state_change",
             dimensions={"state": "stopping", "reason": reason},
@@ -1411,6 +1442,8 @@ class EcsManager:
 
         try:
             with timing("container.lifecycle.latency", {"op": "stop"}):
+                if _effect_fence is not None:
+                    await _effect_fence()
                 self._ecs.update_service(
                     cluster=self._cluster,
                     service=service_name,
@@ -1442,7 +1475,7 @@ class EcsManager:
             raise EcsManagerError(f"Failed to stop ECS service: {e}", user_id)
 
         container = await container_repo.get_by_owner_id(user_id)
-        if container:
+        if container and not release_owned:
             await container_repo.update_status(user_id, "stopped")
             # Separate call because stamp_stop_reason needs a conditional REMOVE
             # of parked_at that a plain field merge cannot express. Order no
@@ -1595,6 +1628,8 @@ class EcsManager:
         claim_id: str | None = None,
         generation: str | None = None,
         attempt_token: str | None = None,
+        _release_update_id: str | None = None,
+        _effect_fence: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         """Scale a user's ECS service to 1 (running).
 
@@ -1646,7 +1681,8 @@ class EcsManager:
             ContainerStartRefused: If a start guard is up (and not ``force``).
             EcsManagerError: If the ECS update_service call fails.
         """
-        if not force:
+        release_owned = await self._fence_release_lifecycle(user_id, _release_update_id, _effect_fence)
+        if not force and not release_owned:
             await self._assert_start_allowed(user_id)
 
         service_name = self._service_name(user_id)
@@ -1659,14 +1695,17 @@ class EcsManager:
                 # revision names a group that no longer exists and the task
                 # cannot start at all. Refresh before scaling up, not after.
                 refreshed = None
-                try:
-                    svc = self._ecs.describe_services(cluster=self._cluster, services=[service_name])
-                    td = (svc.get("services") or [{}])[0].get("taskDefinition")
-                    if td:
-                        refreshed = self._refresh_stale_log_config(td)
-                except Exception as e:  # noqa: BLE001 — a failed check must not block the start
-                    logger.warning("log-config refresh check failed for %s: %s", service_name, e)
+                if not release_owned:
+                    try:
+                        svc = self._ecs.describe_services(cluster=self._cluster, services=[service_name])
+                        td = (svc.get("services") or [{}])[0].get("taskDefinition")
+                        if td:
+                            refreshed = self._refresh_stale_log_config(td)
+                    except Exception as e:  # noqa: BLE001 — a failed check must not block the start
+                        logger.warning("log-config refresh check failed for %s: %s", service_name, e)
 
+                if _effect_fence is not None:
+                    await _effect_fence()
                 self._ecs.update_service(
                     cluster=self._cluster,
                     service=service_name,
@@ -1691,7 +1730,7 @@ class EcsManager:
             raise EcsManagerError(f"Failed to start ECS service: {e}", user_id)
 
         container = await container_repo.get_by_owner_id(user_id)
-        if container:
+        if container and not release_owned:
             if claim_id is None:
                 # No lease: the original unconditional write, untouched. Every
                 # caller but the provision lands here (wake-from-stopped, agent
@@ -1717,9 +1756,10 @@ class EcsManager:
 
         logger.info("Started ECS service %s for user %s", service_name, user_id)
 
-        if claim_id is not None:
+        if claim_id is not None or release_owned:
             # Fenced fresh-provision caller — its own foreground
-            # wait_for_running owns the transition; see docstring.
+            # wait_for_running owns the transition; release-owned starts are
+            # observed and finished by the release journal itself.
             return
 
         # Fire the durable poller. Any code path that sets status=provisioning
@@ -1727,7 +1767,13 @@ class EcsManager:
         # cold-start leaves the row stuck.
         asyncio.create_task(self._await_running_transition(user_id))
 
-    async def force_redeploy_user_service(self, user_id: str) -> None:
+    async def force_redeploy_user_service(
+        self,
+        user_id: str,
+        *,
+        _release_update_id: str | None = None,
+        _effect_fence: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
         """Replace the service's task with a fresh one on the CURRENT revision.
 
         No task-def re-register — this is a plain forceNewDeployment, used when
@@ -1741,7 +1787,10 @@ class EcsManager:
         # module-level import here would cycle.
         from core.services.browser_state import snapshot_browser_state
 
+        await self._fence_release_lifecycle(user_id, _release_update_id, _effect_fence)
         await snapshot_browser_state(user_id)
+        if _effect_fence is not None:
+            await _effect_fence()
         await asyncio.to_thread(
             self._ecs.update_service,
             cluster=self._cluster,
@@ -1947,11 +1996,20 @@ class EcsManager:
             if current_desired > 0:
                 # Update DB record
                 await fence_effect()
-                await self._update_container(
-                    user_id,
-                    task_definition_arn=new_task_def_arn,
-                    status="provisioning",
-                )
+                if stable_release_snapshot is not None and stable_release_snapshot[1] is not None:
+                    await container_repo.update_stable_release_runtime(
+                        user_id,
+                        stable_release_snapshot[1],
+                        stable_release_snapshot[2],
+                        new_task_def_arn,
+                        status="provisioning",
+                    )
+                else:
+                    await self._update_container(
+                        user_id,
+                        task_definition_arn=new_task_def_arn,
+                        status="provisioning",
+                    )
                 logger.info(
                     "Resized running container for user %s: cpu=%s memory=%s image=%s",
                     user_id,
@@ -1970,10 +2028,18 @@ class EcsManager:
                 # def takes effect on next start. Do NOT flip status or fire
                 # the poller -- there are no tasks to become healthy.
                 await fence_effect()
-                await self._update_container(
-                    user_id,
-                    task_definition_arn=new_task_def_arn,
-                )
+                if stable_release_snapshot is not None and stable_release_snapshot[1] is not None:
+                    await container_repo.update_stable_release_runtime(
+                        user_id,
+                        stable_release_snapshot[1],
+                        stable_release_snapshot[2],
+                        new_task_def_arn,
+                    )
+                else:
+                    await self._update_container(
+                        user_id,
+                        task_definition_arn=new_task_def_arn,
+                    )
                 logger.info(
                     "Resized stopped container for user %s: cpu=%s memory=%s image=%s (new task def applies on next start)",
                     user_id,
@@ -2939,6 +3005,9 @@ class EcsManager:
         from core.repositories import container_repo as _lease_repo
 
         caller_supplied_claim = claim_id is not None
+        existing_release = await container_repo.get_by_owner_id(user_id, consistent=True)
+        if (existing_release or {}).get("release_update_id") is not None:
+            raise EcsManagerError("Owner is reserved by a release transaction", user_id)
         if claim_id is None:
             claim_id = await _lease_repo.takeover_provision(user_id)
             logger.info("Provision lease takeover for owner %s (deliberate reprovision)", user_id)
@@ -3129,7 +3198,17 @@ class EcsManager:
         # the revoke guard; the freshly-minted bedrock_role_arn is carried in
         # the in-memory `bedrock_role_arn` local (not re-read off the row), so a
         # stale `existing` here cannot drop it.
-        existing = await container_repo.get_by_owner_id(user_id)
+        existing = await container_repo.get_by_owner_id(user_id, consistent=True)
+        assigned_release = None
+        desired_release_id = (existing or {}).get("desired_release_id")
+        active_release_id = (existing or {}).get("active_release_id")
+        if desired_release_id is not None or active_release_id is not None:
+            if desired_release_id != active_release_id or not active_release_id:
+                raise EcsManagerError("Owner release assignment is not stable", user_id)
+            from core.services.openclaw_release import release_by_id
+
+            assigned_release = release_by_id(active_release_id)
+        assigned_tag = assigned_release.image.rpartition(":")[2] if assigned_release is not None else None
 
         # Every owner — regardless of provider_choice — runs under a UNIQUE
         # per-owner ECS task role (isol8-<env>-owner-bedrock-<owner_id>), minted
@@ -3351,7 +3430,7 @@ class EcsManager:
                         # from the base family — gate on THAT image, not the
                         # stopped service's previous one (an image rollback
                         # would otherwise carry a key the older schema rejects).
-                        deployed_tag=await self._base_image_tag(),
+                        deployed_tag=assigned_tag or await self._base_image_tag(),
                     )
                 except ProvisionSuperseded:
                     raise
@@ -3398,6 +3477,7 @@ class EcsManager:
                             task_role_arn=restart_task_role_arn,
                             new_cpu=restart_cpu,
                             new_memory=restart_memory,
+                            new_image=(assigned_release.digest_image if assigned_release is not None else None),
                         )
                         await asyncio.to_thread(
                             self._ecs.update_service,
@@ -3628,6 +3708,7 @@ class EcsManager:
             bedrock_gate_token_hash=bedrock_gate_token_hash,
             claim_id=claim_id,
             attempt_token=attempt_token,
+            new_image=(assigned_release.digest_image if assigned_release is not None else None),
         )
 
         # create_user_service's upsert MINTED a fresh provision_generation
@@ -3659,7 +3740,7 @@ class EcsManager:
                 hook_token=hook_token,
                 owner_type=owner_type,
                 aip_arns=bedrock_aip_arns,
-                deployed_tag=await self._base_image_tag(),
+                deployed_tag=assigned_tag or await self._base_image_tag(),
             )
         except ProvisionSuperseded:
             raise

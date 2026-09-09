@@ -45,6 +45,8 @@ class OpenClawRelease:
     fork_commit: str
     schema_id: str
     schema_sha256: str
+    shared_db_schema_version: int
+    agent_db_schema_version: int
     config_capabilities: frozenset[str]
     qualification_id: str
     evidence_id: str
@@ -84,6 +86,8 @@ def _parse_release(row: object) -> OpenClawRelease:
     fork_commit = _required_string(row, "fork_commit")
     schema_id = _required_string(row, "schema_id")
     schema_sha256 = _required_string(row, "schema_sha256")
+    shared_db_schema_version = row.get("shared_db_schema_version")
+    agent_db_schema_version = row.get("agent_db_schema_version")
     capabilities = row.get("config_capabilities")
     qualification_id = _required_string(row, "qualification_id")
     evidence_id = _required_string(row, "evidence_id")
@@ -98,6 +102,10 @@ def _parse_release(row: object) -> OpenClawRelease:
         or not _ID_RE.fullmatch(build_id)
         or not _COMMIT_RE.fullmatch(fork_commit)
         or not _DIGEST_RE.fullmatch(f"sha256:{schema_sha256}")
+        or type(shared_db_schema_version) is not int
+        or shared_db_schema_version <= 0
+        or type(agent_db_schema_version) is not int
+        or agent_db_schema_version <= 0
         or not isinstance(capabilities, list)
         or any(type(capability) is not str or not capability for capability in capabilities)
         or len(capabilities) != len(set(capabilities))
@@ -131,6 +139,8 @@ def _parse_release(row: object) -> OpenClawRelease:
         fork_commit=fork_commit,
         schema_id=schema_id,
         schema_sha256=schema_sha256,
+        shared_db_schema_version=shared_db_schema_version,
+        agent_db_schema_version=agent_db_schema_version,
         config_capabilities=frozenset(capabilities),
         qualification_id=qualification_id,
         evidence_id=evidence_id,
@@ -235,6 +245,8 @@ def registered_acceptance(
         "fork_commit": release.fork_commit,
         "schema_id": release.schema_id,
         "schema_sha256": release.schema_sha256,
+        "shared_db_schema_version": release.shared_db_schema_version,
+        "agent_db_schema_version": release.agent_db_schema_version,
         "config_capabilities": sorted(release.config_capabilities),
         "qualification_id": release.qualification_id,
         "evidence_id": release.evidence_id,
@@ -326,9 +338,18 @@ async def capture_config_context_if_enabled(owner_id: str) -> OwnerConfigContext
     pipeline injects a reviewed image, digest, commit, and matching schema.
     """
 
-    if not available_releases():
+    if type(owner_id) is not str or not owner_id:
+        raise OwnerReleaseConflict("owner_id is invalid")
+    row = await container_repo.get_by_owner_id(owner_id, consistent=True)
+    if not row:
+        raise OwnerReleaseConflict("owner container is unavailable")
+    releases = available_releases()
+    has_assignment = any(
+        row.get(field) is not None for field in ("desired_release_id", "active_release_id", "release_update_id")
+    )
+    if not releases and not has_assignment:
         return None
-    return await capture_config_context(owner_id)
+    return _context_from_row(owner_id, row)
 
 
 def assert_config_context_sync(context: OwnerConfigContext) -> None:

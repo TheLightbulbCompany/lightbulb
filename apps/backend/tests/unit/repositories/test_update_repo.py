@@ -1,5 +1,7 @@
 """Tests for pending-updates DynamoDB repository."""
 
+import hashlib
+import json
 import os
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
@@ -1364,6 +1366,8 @@ async def test_release_checkpoint_and_finish_require_full_evidence_chain(dynamod
         fork_commit="c" * 40,
         schema_id="2026.9.3-isol8.1",
         schema_sha256="d" * 64,
+        shared_db_schema_version=20,
+        agent_db_schema_version=24,
         config_capabilities=frozenset(),
         qualification_id="founder-native-v1",
         evidence_id=f"sha256:{'e' * 64}",
@@ -1399,6 +1403,18 @@ async def test_release_checkpoint_and_finish_require_full_evidence_chain(dynamod
         fields={"target_task_definition_arn": "arn:target"},
     )
     effects = ("effect_kind", "effect_claim_id", "effect_executor_id")
+    source = {
+        "service_arn": "arn:service",
+        "task_arn": "arn:old-task",
+        "task_definition_arn": _OWNER_APPLY_ARN,
+        "image_digest": f"sha256:{'9' * 64}",
+        "build_id": "source-build",
+        "access_point_id": "fsap-source",
+        "file_system_id": "fs-source",
+        "efs_root": "/users/u",
+        "shared_schema_version": 15,
+        "agent_schema_version": 19,
+    }
     await advance(
         "reserved",
         "stop_requested",
@@ -1407,6 +1423,8 @@ async def test_release_checkpoint_and_finish_require_full_evidence_chain(dynamod
             "effect_claim_id": "stop-effect",
             "effect_executor_id": "worker",
             "pre_stop_task_arns": ["arn:old-task"],
+            "pre_stop_captured_at": "2026-09-09T11:59:00Z",
+            "source": source,
         },
     )
     container = containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"]
@@ -1420,18 +1438,28 @@ async def test_release_checkpoint_and_finish_require_full_evidence_chain(dynamod
         fields={"drain_evidence": {"service_desired_count": 0}},
         remove_fields=effects,
     )
+    drain_evidence = {
+        "observed_at": "2026-09-09T12:00:00Z",
+        "service_arn": "arn:service",
+        "service_desired_count": 0,
+        "service_running_count": 0,
+        "service_pending_count": 0,
+        "stopped_tasks": [
+            {
+                "task_arn": "arn:old-task",
+                "last_status": "STOPPED",
+                "task_definition_arn": _OWNER_APPLY_ARN,
+                "image_digest": f"sha256:{'9' * 64}",
+                "exit_code": 0,
+                "stop_code": "UserInitiated",
+                "stopped_reason": "service scale down",
+            }
+        ],
+    }
     await advance(
         "stop_requested",
         "drained",
-        fields={
-            "drain_evidence": {
-                "observed_at": "2026-09-09T12:00:00Z",
-                "service_desired_count": 0,
-                "service_running_count": 0,
-                "service_pending_count": 0,
-                "stopped_task_arns": ["arn:old-task"],
-            }
-        },
+        fields={"drain_evidence": drain_evidence},
         remove_fields=effects,
     )
     await advance(
@@ -1444,13 +1472,39 @@ async def test_release_checkpoint_and_finish_require_full_evidence_chain(dynamod
         },
     )
     recovery_set = {
-        "recovery_set_id": "u/release/recovery-v1",
+        "recovery_set_id": "rs-recovery-v1",
+        "owner_id": "u",
+        "update_id": queued["update_id"],
+        "status": "verified",
+        "manifest_bucket": "artifacts",
+        "manifest_key": "recovery-sets/u/rs-recovery-v1/manifest.json",
+        "manifest_version_id": "version-1",
         "manifest_sha256": "3" * 64,
-        "source_task_arns": ["arn:old-task"],
-        "shared_db_generation": "shared-1",
-        "agent_db_generations": {"main": "agent-1"},
+        "release_id": "candidate",
+        "release_image_digest": release.image_digest,
+        "source_service_arn": source["service_arn"],
+        "source_task_arn": source["task_arn"],
+        "source_task_definition_arn": source["task_definition_arn"],
+        "source_image_digest": source["image_digest"],
+        "source_build_id": source["build_id"],
+        "access_point_id": source["access_point_id"],
+        "file_system_id": source["file_system_id"],
+        "efs_root": source["efs_root"],
+        "drain_observed_at": drain_evidence["observed_at"],
+        "drain_evidence_sha256": hashlib.sha256(
+            json.dumps(drain_evidence, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+        "stable_replica_inventory_sha256": "6" * 64,
+        "shared_db_generation": "7" * 64,
+        "agent_db_generations": {},
+        "efs_archive_key": "recovery-sets/u/rs-recovery-v1/efs/owner-root.tar",
+        "efs_archive_version_id": "version-2",
+        "efs_archive_etag": "etag",
+        "efs_archive_size": 1,
         "efs_archive_sha256": "4" * 64,
-        "workshop_archive_sha256": "5" * 64,
+        "efs_tree_manifest_sha256": "5" * 64,
+        "provider": {"name": "lightbulb-owner-recovery-set", "version": "1"},
+        "tools": {"litestream": "0.5.15", "sqlite": "3"},
         "verified_at": "2026-09-09T12:00:00Z",
     }
     await advance(
@@ -1529,6 +1583,8 @@ async def test_release_checkpoint_and_finish_require_full_evidence_chain(dynamod
         "fork_commit": release.fork_commit,
         "schema_id": release.schema_id,
         "schema_sha256": release.schema_sha256,
+        "shared_db_schema_version": release.shared_db_schema_version,
+        "agent_db_schema_version": release.agent_db_schema_version,
         "config_capabilities": sorted(release.config_capabilities),
         "qualification_id": release.qualification_id,
         "evidence_id": release.evidence_id,
@@ -1607,6 +1663,19 @@ async def test_release_takeover_moves_both_claims_atomically(dynamodb_table):
             "effect_claim_id": "stale-effect",
             "effect_executor_id": "worker",
             "pre_stop_task_arns": ["arn:old-task"],
+            "pre_stop_captured_at": "2026-09-09T11:59:00Z",
+            "source": {
+                "service_arn": "arn:service",
+                "task_arn": "arn:old-task",
+                "task_definition_arn": _OWNER_APPLY_ARN,
+                "image_digest": f"sha256:{'9' * 64}",
+                "build_id": "source-build",
+                "access_point_id": "fsap-source",
+                "file_system_id": "fs-source",
+                "efs_root": "/users/u",
+                "shared_schema_version": 15,
+                "agent_schema_version": 19,
+            },
         },
     )
     old = 1
@@ -1662,3 +1731,26 @@ async def test_ordinary_and_release_owner_claims_exclude_each_other(dynamodb_tab
     second = await update_repo.claim_apply("u", second["update_id"], "second-claim")
     assert second is not None
     assert not await update_repo.claim_ordinary_owner("u", second["update_id"], "second-claim")
+
+
+@pytest.mark.asyncio
+async def test_stale_ordinary_finally_cannot_clear_a_successor_marker(dynamodb_table):
+    from core.dynamodb import get_table
+    from core.repositories import update_repo
+
+    containers = get_table("containers")
+    containers.put_item(Item={"owner_id": "u", "id": "container", "status": "running"})
+    update = await update_repo.create("u", "config_patch", "ordinary", {"config_patch": {"x": 1}})
+    claimed = await update_repo.claim_apply("u", update["update_id"], "stale-claim")
+    assert claimed is not None
+    assert await update_repo.claim_ordinary_owner("u", update["update_id"], "stale-claim")
+    containers.update_item(
+        Key={"owner_id": "u"},
+        UpdateExpression="SET ordinary_update_claim_id = :successor",
+        ExpressionAttributeValues={":successor": "successor-claim"},
+    )
+
+    assert not await update_repo.release_ordinary_owner("u", update["update_id"], "stale-claim")
+    row = containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"]
+    assert row["ordinary_update_id"] == update["update_id"]
+    assert row["ordinary_update_claim_id"] == "successor-claim"

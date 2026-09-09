@@ -1,5 +1,7 @@
 """Pending-updates repository -- DynamoDB CRUD for the pending-updates table."""
 
+import hashlib
+import json
 import re
 import time
 import uuid
@@ -60,11 +62,17 @@ _OWNER_APPLY_UPDATE_EXCLUSIONS = (
     "prior_desired_count",
     "target_desired_count",
     "target_task_definition_arn",
+    "pre_stop_task_arns",
+    "pre_stop_captured_at",
+    "source",
+    "drain_evidence",
+    "recovery_set",
     "staged_config_sha256",
     "prior_config_sha256",
     "effect_kind",
     "effect_claim_id",
     "effect_executor_id",
+    "acceptance",
     "applied_at",
     "failure_reason",
     "reserved_at",
@@ -80,6 +88,9 @@ _OWNER_APPLY_UPDATE_EXCLUSIONS = (
     "activated_at",
     "start_requested_at",
     "validating_at",
+    "rollback_requested_at",
+    "rolled_back_at",
+    "rollback_evidence",
 )
 
 _RELEASE_CHECKPOINT_PINS = (
@@ -102,6 +113,8 @@ _RELEASE_CHECKPOINT_PINS = (
     "prior_desired_count",
     "target_desired_count",
     "pre_stop_task_arns",
+    "pre_stop_captured_at",
+    "source",
     "recovery_set",
     "drain_evidence",
     "acceptance",
@@ -118,6 +131,10 @@ _RELEASE_CHECKPOINT_PINS = (
     "activated_at",
     "start_requested_at",
     "validating_at",
+    "rollback_requested_at",
+    "rolled_back_at",
+    "rollback_evidence",
+    "failure_reason",
 )
 _RELEASE_CHECKPOINT_FIELDS = frozenset(
     {
@@ -128,6 +145,8 @@ _RELEASE_CHECKPOINT_FIELDS = frozenset(
         "effect_claim_id",
         "effect_executor_id",
         "pre_stop_task_arns",
+        "pre_stop_captured_at",
+        "source",
         "recovery_set",
         "drain_evidence",
         "acceptance",
@@ -206,25 +225,139 @@ def _valid_task_arns(value: object) -> bool:
     )
 
 
+_STOPPED_TASK_FIELDS = {
+    "task_arn",
+    "last_status",
+    "task_definition_arn",
+    "image_digest",
+    "exit_code",
+    "stop_code",
+    "stopped_reason",
+}
+
+
+def _valid_stopped_tasks(value: object, *, require_clean_exit: bool) -> bool:
+    if not isinstance(value, list) or not value:
+        return False
+    task_arns = [task.get("task_arn") for task in value if isinstance(task, dict)]
+    return (
+        all(_nonempty_string(task_arn) for task_arn in task_arns)
+        and len(task_arns) == len(value) == len(set(task_arns))
+        and all(
+            set(task) == _STOPPED_TASK_FIELDS
+            and task.get("last_status") == "STOPPED"
+            and _nonempty_string(task.get("task_definition_arn"))
+            and _nonempty_string(task.get("image_digest"))
+            and (task.get("exit_code") == 0 if require_clean_exit else type(task.get("exit_code")) is int)
+            and (
+                task.get("stop_code") in {"UserInitiated", "ServiceSchedulerInitiated"}
+                if require_clean_exit
+                else _nonempty_string(task.get("stop_code"))
+            )
+            and _nonempty_string(task.get("stopped_reason"))
+            for task in value
+        )
+    )
+
+
 def _valid_drain_evidence(update: dict) -> bool:
     evidence = update.get("drain_evidence")
     pre_stop = update.get("pre_stop_task_arns")
+    source = update.get("source")
+    stopped = evidence.get("stopped_tasks") if isinstance(evidence, dict) else None
     return (
         _valid_task_arns(pre_stop)
+        and isinstance(source, dict)
         and isinstance(evidence, dict)
         and set(evidence)
         == {
             "observed_at",
+            "service_arn",
             "service_desired_count",
             "service_running_count",
             "service_pending_count",
-            "stopped_task_arns",
+            "stopped_tasks",
         }
         and _nonempty_string(evidence.get("observed_at"))
+        and evidence.get("service_arn") == source.get("service_arn")
         and _nonnegative_integer(evidence.get("service_desired_count")) == 0
         and _nonnegative_integer(evidence.get("service_running_count")) == 0
         and _nonnegative_integer(evidence.get("service_pending_count")) == 0
-        and evidence.get("stopped_task_arns") == pre_stop
+        and _valid_stopped_tasks(stopped, require_clean_exit=True)
+        and set(pre_stop) <= {task.get("task_arn") for task in stopped}
+        and all(
+            task.get("task_definition_arn") == source.get("task_definition_arn")
+            and task.get("image_digest") == source.get("image_digest")
+            for task in stopped
+        )
+    )
+
+
+def _valid_source(update: dict) -> bool:
+    source = update.get("source")
+    return (
+        isinstance(source, dict)
+        and set(source)
+        == {
+            "service_arn",
+            "task_arn",
+            "task_definition_arn",
+            "image_digest",
+            "build_id",
+            "access_point_id",
+            "file_system_id",
+            "efs_root",
+            "shared_schema_version",
+            "agent_schema_version",
+        }
+        and all(
+            _nonempty_string(source.get(field))
+            for field in (
+                "service_arn",
+                "task_arn",
+                "task_definition_arn",
+                "image_digest",
+                "build_id",
+                "access_point_id",
+                "file_system_id",
+                "efs_root",
+            )
+        )
+        and _positive_integer(source.get("shared_schema_version"))
+        and _positive_integer(source.get("agent_schema_version"))
+        and source.get("task_definition_arn") == update.get("prior_task_definition_arn")
+        and source.get("task_arn")
+        in (update.get("pre_stop_task_arns") if isinstance(update.get("pre_stop_task_arns"), list) else [])
+        and _nonempty_string(update.get("pre_stop_captured_at"))
+    )
+
+
+def _valid_rollback_drain(value: object, update: dict) -> bool:
+    if not isinstance(value, dict):
+        return False
+    source = update.get("source")
+    if not isinstance(source, dict) or value.get("service_arn") != source.get("service_arn"):
+        return False
+    if value.get("already_stopped") is True:
+        return set(value) == {"observed_at", "service_arn", "already_stopped"} and _nonempty_string(
+            value.get("observed_at")
+        )
+    stopped = value.get("stopped_tasks")
+    return (
+        set(value)
+        == {
+            "observed_at",
+            "service_arn",
+            "service_desired_count",
+            "service_running_count",
+            "service_pending_count",
+            "stopped_tasks",
+        }
+        and _nonempty_string(value.get("observed_at"))
+        and _nonnegative_integer(value.get("service_desired_count")) == 0
+        and _nonnegative_integer(value.get("service_running_count")) == 0
+        and _nonnegative_integer(value.get("service_pending_count")) == 0
+        and _valid_stopped_tasks(stopped, require_clean_exit=False)
     )
 
 
@@ -232,30 +365,94 @@ def _valid_recovery_set(value: object, update: dict) -> bool:
     if not isinstance(value, dict):
         return False
     agents = value.get("agent_db_generations")
+    source = update.get("source")
+    if not isinstance(source, dict):
+        return False
+    expected_fields = {
+        "recovery_set_id",
+        "owner_id",
+        "update_id",
+        "status",
+        "manifest_bucket",
+        "manifest_key",
+        "manifest_version_id",
+        "manifest_sha256",
+        "release_id",
+        "release_image_digest",
+        "source_service_arn",
+        "source_task_arn",
+        "source_task_definition_arn",
+        "source_image_digest",
+        "source_build_id",
+        "access_point_id",
+        "file_system_id",
+        "efs_root",
+        "drain_observed_at",
+        "drain_evidence_sha256",
+        "stable_replica_inventory_sha256",
+        "shared_db_generation",
+        "agent_db_generations",
+        "efs_archive_key",
+        "efs_archive_version_id",
+        "efs_archive_etag",
+        "efs_archive_size",
+        "efs_archive_sha256",
+        "efs_tree_manifest_sha256",
+        "provider",
+        "tools",
+        "verified_at",
+    }
+    drain_digest = hashlib.sha256(
+        json.dumps(update.get("drain_evidence"), sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    ).hexdigest()
+    try:
+        from core.services.openclaw_release import release_by_id
+
+        target = release_by_id(update.get("target_release_id"))
+    except (TypeError, ValueError):
+        return False
     return (
-        set(value)
-        == {
-            "recovery_set_id",
-            "manifest_sha256",
-            "source_task_arns",
-            "shared_db_generation",
-            "agent_db_generations",
-            "efs_archive_sha256",
-            "workshop_archive_sha256",
-            "verified_at",
-        }
+        set(value) == expected_fields
         and _nonempty_string(value.get("recovery_set_id"))
+        and value.get("owner_id") == update.get("owner_id")
+        and value.get("update_id") == update.get("update_id")
+        and value.get("status") == "verified"
+        and _nonempty_string(value.get("manifest_bucket"))
+        and _nonempty_string(value.get("manifest_key"))
+        and _nonempty_string(value.get("manifest_version_id"))
         and _nonempty_string(value.get("manifest_sha256"))
         and _SHA256_RE.fullmatch(value["manifest_sha256"]) is not None
-        and value.get("source_task_arns") == update.get("pre_stop_task_arns")
+        and value.get("release_id") == update.get("target_release_id")
+        and value.get("release_image_digest") == target.image_digest
+        and value.get("source_service_arn") == source.get("service_arn")
+        and value.get("source_task_arn") == source.get("task_arn")
+        and value.get("source_task_definition_arn") == source.get("task_definition_arn")
+        and value.get("source_image_digest") == source.get("image_digest")
+        and value.get("source_build_id") == source.get("build_id")
+        and value.get("access_point_id") == source.get("access_point_id")
+        and value.get("file_system_id") == source.get("file_system_id")
+        and value.get("efs_root") == source.get("efs_root")
+        and value.get("drain_observed_at") == update.get("drain_evidence", {}).get("observed_at")
+        and value.get("drain_evidence_sha256") == drain_digest
+        and _nonempty_string(value.get("stable_replica_inventory_sha256"))
+        and _SHA256_RE.fullmatch(value["stable_replica_inventory_sha256"]) is not None
         and _nonempty_string(value.get("shared_db_generation"))
+        and _SHA256_RE.fullmatch(value["shared_db_generation"]) is not None
         and isinstance(agents, dict)
-        and bool(agents)
-        and all(_nonempty_string(agent) and _nonempty_string(generation) for agent, generation in agents.items())
+        and all(
+            _nonempty_string(agent) and _nonempty_string(generation) and _SHA256_RE.fullmatch(generation) is not None
+            for agent, generation in agents.items()
+        )
+        and _nonempty_string(value.get("efs_archive_key"))
+        and _nonempty_string(value.get("efs_archive_version_id"))
+        and _nonempty_string(value.get("efs_archive_etag"))
+        and _positive_integer(value.get("efs_archive_size"))
         and _nonempty_string(value.get("efs_archive_sha256"))
         and _SHA256_RE.fullmatch(value["efs_archive_sha256"]) is not None
-        and _nonempty_string(value.get("workshop_archive_sha256"))
-        and _SHA256_RE.fullmatch(value["workshop_archive_sha256"]) is not None
+        and _nonempty_string(value.get("efs_tree_manifest_sha256"))
+        and _SHA256_RE.fullmatch(value["efs_tree_manifest_sha256"]) is not None
+        and value.get("provider") == {"name": "lightbulb-owner-recovery-set", "version": "1"}
+        and isinstance(value.get("tools"), dict)
         and _nonempty_string(value.get("verified_at"))
     )
 
@@ -287,6 +484,15 @@ def _valid_release_phase_evidence(phase: str, update: dict) -> bool:
         and _nonnegative_integer(update.get("target_desired_count")) is not None
     )
     if not base or phase not in _RELEASE_PHASE_ORDER:
+        if phase == "rollback_requested":
+            return (
+                _valid_source(update)
+                and _valid_drain_evidence(update)
+                and _valid_recovery_set(update.get("recovery_set"), update)
+                and _valid_effect(update, "rollback")
+                and _nonempty_string(update.get("rollback_requested_at"))
+                and _nonempty_string(update.get("failure_reason"))
+            )
         return False
     phase_index = _RELEASE_PHASE_ORDER.index(phase)
     if any(
@@ -296,7 +502,7 @@ def _valid_release_phase_evidence(phase: str, update: dict) -> bool:
     if phase == "reserved":
         return _has_no_effect(update)
     if phase == "stop_requested":
-        return _valid_task_arns(update.get("pre_stop_task_arns")) and _valid_effect(update, "stop_service")
+        return _valid_source(update) and _valid_effect(update, "stop_service")
     if not _valid_drain_evidence(update):
         return False
     if phase == "drained":
@@ -367,7 +573,8 @@ def _valid_release_transition(
         return False
     else:
         required_fields: dict[tuple[str, str], set[str]] = {
-            ("reserved", "stop_requested"): set(_RELEASE_EFFECT_FIELDS) | {"pre_stop_task_arns"},
+            ("reserved", "stop_requested"): set(_RELEASE_EFFECT_FIELDS)
+            | {"pre_stop_task_arns", "pre_stop_captured_at", "source"},
             ("stop_requested", "drained"): {"drain_evidence"},
             ("drained", "recovery_requested"): set(_RELEASE_EFFECT_FIELDS),
             ("recovery_requested", "recovered"): {"recovery_set"},
@@ -916,6 +1123,213 @@ async def takeover_owner_release(
     return True
 
 
+async def begin_owner_release_rollback(
+    expected_container: dict,
+    expected_update: dict,
+    claim_id: str,
+    *,
+    effect_claim_id: str,
+    failure_reason: str,
+) -> bool:
+    """Move a post-drain failure into one recoverable compensating effect."""
+
+    if expected_update.get("phase") not in {
+        "recovered",
+        "prepare_requested",
+        "prepared",
+        "stage_requested",
+        "staged",
+        "activating",
+        "activated",
+        "start_requested",
+        "validating",
+    } or not _valid_recovery_set(expected_update.get("recovery_set"), expected_update):
+        return False
+    _require_nonempty_string("effect_claim_id", effect_claim_id)
+    _require_nonempty_string("failure_reason", failure_reason)
+    state = _release_transaction_conditions(expected_container, expected_update, claim_id)
+    if state is None:
+        return False
+    owner_id, update_id, cn, cv, cc, un, uv, uc = state
+    now_epoch = int(time.time())
+    now_iso = utc_now_iso()
+    cv.update({":heartbeat": now_epoch, ":updated": now_iso})
+    uv.update(
+        {
+            ":rollback": "rollback_requested",
+            ":kind": "rollback",
+            ":effect": effect_claim_id,
+            ":executor": claim_id,
+            ":reason": failure_reason[:1000],
+            ":heartbeat": now_epoch,
+            ":updated": now_iso,
+        }
+    )
+    try:
+        await run_in_thread(
+            get_table("containers").meta.client.transact_write_items,
+            TransactItems=[
+                {
+                    "Update": {
+                        "TableName": get_table("containers").name,
+                        "Key": {"owner_id": owner_id},
+                        "ConditionExpression": " AND ".join(cc),
+                        "UpdateExpression": "SET provision_claimed_at = :heartbeat, updated_at = :updated",
+                        "ExpressionAttributeNames": cn,
+                        "ExpressionAttributeValues": cv,
+                    }
+                },
+                {
+                    "Update": {
+                        "TableName": _get_table().name,
+                        "Key": {"owner_id": owner_id, "update_id": update_id},
+                        "ConditionExpression": " AND ".join(uc),
+                        "UpdateExpression": (
+                            "SET phase = :rollback, rollback_requested_at = :updated, "
+                            "effect_kind = :kind, effect_claim_id = :effect, effect_executor_id = :executor, "
+                            "failure_reason = :reason, apply_claimed_at = :heartbeat, updated_at = :updated "
+                            "REMOVE acceptance"
+                        ),
+                        "ExpressionAttributeNames": un,
+                        "ExpressionAttributeValues": uv,
+                    }
+                },
+            ],
+        )
+    except ClientError as error:
+        if _is_conditional_transaction_cancel(error):
+            return False
+        raise
+    return True
+
+
+async def finish_owner_release_rollback(
+    expected_container: dict,
+    expected_update: dict,
+    claim_id: str,
+    *,
+    rollback_evidence: dict,
+) -> bool:
+    """Atomically restore the prior assignment and clear the failed release pointer."""
+
+    recovery_set = expected_update.get("recovery_set")
+    expected_fields = {
+        "recovery_set_id",
+        "manifest_sha256",
+        "replica_inventory_sha256",
+        "efs_tree_manifest_sha256",
+        "replica_object_count",
+        "restored_at",
+        "rollback_drain_evidence",
+        "source_task_definition_arn",
+        "source_image_digest",
+        "source_task_arn",
+        "source_build_id",
+        "gateway",
+    }
+    if isinstance(rollback_evidence, dict) and "displaced_name" in rollback_evidence:
+        expected_fields.add("displaced_name")
+    if (
+        expected_update.get("phase") != "rollback_requested"
+        or not _valid_release_phase_evidence("rollback_requested", expected_update)
+        or not isinstance(rollback_evidence, dict)
+        or not isinstance(recovery_set, dict)
+        or set(rollback_evidence) != expected_fields
+        or rollback_evidence.get("source_task_definition_arn") != expected_update.get("prior_task_definition_arn")
+        or rollback_evidence.get("source_image_digest") != expected_update.get("source", {}).get("image_digest")
+        or rollback_evidence.get("source_build_id") != expected_update.get("source", {}).get("build_id")
+        or not _nonempty_string(rollback_evidence.get("source_task_arn"))
+        or rollback_evidence.get("recovery_set_id") != recovery_set.get("recovery_set_id")
+        or rollback_evidence.get("manifest_sha256") != recovery_set.get("manifest_sha256")
+        or rollback_evidence.get("replica_inventory_sha256") != recovery_set.get("stable_replica_inventory_sha256")
+        or rollback_evidence.get("efs_tree_manifest_sha256") != recovery_set.get("efs_tree_manifest_sha256")
+        or not _positive_integer(rollback_evidence.get("replica_object_count"))
+        or not _nonempty_string(rollback_evidence.get("restored_at"))
+        or not _valid_rollback_drain(rollback_evidence.get("rollback_drain_evidence"), expected_update)
+        or ("displaced_name" in rollback_evidence and not _nonempty_string(rollback_evidence.get("displaced_name")))
+        or rollback_evidence.get("gateway") != "accepted"
+    ):
+        return False
+    state = _release_transaction_conditions(expected_container, expected_update, claim_id)
+    if state is None:
+        return False
+    owner_id, update_id, cn, cv, cc, un, uv, uc = state
+    revision = _release_revision(expected_update.get("release_revision")) + 1
+    now_iso = utc_now_iso()
+    ttl_epoch = int(time.time()) + (30 * 24 * 60 * 60)
+    prior_release = expected_update.get("prior_release_id")
+    prior_desired = expected_update.get("prior_desired_release_id")
+    if (prior_release is None) != (prior_desired is None) or prior_release != prior_desired:
+        return False
+    cv.update(
+        {
+            ":revision": revision,
+            ":target_arn": expected_update["prior_task_definition_arn"],
+            ":running": "running",
+            ":updated": now_iso,
+        }
+    )
+    uv.update(
+        {
+            ":failed": "failed",
+            ":rolled_back": "rolled_back",
+            ":evidence": rollback_evidence,
+            ":revision": revision,
+            ":updated": now_iso,
+            ":ttl": ttl_epoch,
+        }
+    )
+    assignment_set = ""
+    assignment_remove = "desired_release_id, active_release_id, "
+    if prior_release is not None:
+        cv[":prior"] = prior_release
+        assignment_set = "desired_release_id = :prior, active_release_id = :prior, "
+        assignment_remove = ""
+    try:
+        await run_in_thread(
+            get_table("containers").meta.client.transact_write_items,
+            TransactItems=[
+                {
+                    "Update": {
+                        "TableName": get_table("containers").name,
+                        "Key": {"owner_id": owner_id},
+                        "ConditionExpression": " AND ".join(cc),
+                        "UpdateExpression": (
+                            "SET "
+                            + assignment_set
+                            + "release_revision = :revision, task_definition_arn = :target_arn, "
+                            "#status = :running, updated_at = :updated REMOVE "
+                            + assignment_remove
+                            + "release_update_id, provision_claim_id, provision_attempt_token, "
+                            "provision_claimed_at, provision_execution_name"
+                        ),
+                        "ExpressionAttributeNames": {**cn, "#status": "status"},
+                        "ExpressionAttributeValues": cv,
+                    }
+                },
+                {
+                    "Update": {
+                        "TableName": _get_table().name,
+                        "Key": {"owner_id": owner_id, "update_id": update_id},
+                        "ConditionExpression": " AND ".join(uc),
+                        "UpdateExpression": (
+                            "SET #status = :failed, phase = :rolled_back, rollback_evidence = :evidence, "
+                            "rolled_back_at = :updated, release_revision = :revision, updated_at = :updated, #ttl = :ttl "
+                            "REMOVE effect_kind, effect_claim_id, effect_executor_id"
+                        ),
+                        "ExpressionAttributeNames": {**un, "#status": "status", "#ttl": "ttl"},
+                        "ExpressionAttributeValues": uv,
+                    }
+                },
+            ],
+        )
+    except ClientError as error:
+        if _is_conditional_transaction_cancel(error):
+            return False
+        raise
+    return True
+
+
 async def finish_owner_release(
     expected_container: dict,
     expected_update: dict,
@@ -1122,39 +1536,57 @@ async def claim_apply(
 async def claim_ordinary_owner(owner_id: str, update_id: str, claim_id: str) -> bool:
     """Publish an owner marker that excludes a release before ordinary effects."""
 
-    update = await get_by_id(owner_id, update_id, consistent=True)
-    if (
-        not update
-        or update.get("status") != "applying"
-        or update.get("update_type") == "release"
-        or update.get("apply_claim_id") != claim_id
-        or "release_revision" in update
-    ):
-        return False
-    table = get_table("containers")
+    containers = get_table("containers")
+    updates = _get_table()
     try:
         await run_in_thread(
-            table.update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression=(
-                "SET ordinary_update_id = :update, ordinary_update_claim_id = :claim, "
-                "ordinary_update_claimed_at = :claimed"
-            ),
-            ExpressionAttributeValues={
-                ":update": update_id,
-                ":claim": claim_id,
-                ":claimed": int(time.time()),
-            },
-            ConditionExpression=(
-                Attr("owner_id").exists()
-                & Attr("release_update_id").not_exists()
-                & Attr("provision_claim_id").not_exists()
-                & (Attr("ordinary_update_id").not_exists() | Attr("ordinary_update_id").eq(update_id))
-            ),
+            containers.meta.client.transact_write_items,
+            TransactItems=[
+                {
+                    "Update": {
+                        "TableName": containers.name,
+                        "Key": {"owner_id": owner_id},
+                        "UpdateExpression": (
+                            "SET ordinary_update_id = :update, ordinary_update_claim_id = :claim, "
+                            "ordinary_update_claimed_at = :claimed"
+                        ),
+                        "ExpressionAttributeValues": {
+                            ":update": update_id,
+                            ":claim": claim_id,
+                            ":claimed": int(time.time()),
+                        },
+                        "ConditionExpression": (
+                            "attribute_exists(owner_id) AND attribute_not_exists(release_update_id) AND "
+                            "attribute_not_exists(provision_claim_id) AND "
+                            "(attribute_not_exists(ordinary_update_id) OR "
+                            "(ordinary_update_id = :update AND ordinary_update_claim_id = :claim))"
+                        ),
+                    }
+                },
+                {
+                    "ConditionCheck": {
+                        "TableName": updates.name,
+                        "Key": {"owner_id": owner_id, "update_id": update_id},
+                        "ConditionExpression": (
+                            "#status = :applying AND apply_claim_id = :claim AND "
+                            "attribute_not_exists(release_revision) AND "
+                            "(attribute_not_exists(update_type) OR update_type <> :release)"
+                        ),
+                        "ExpressionAttributeNames": {"#status": "status"},
+                        "ExpressionAttributeValues": {
+                            ":applying": "applying",
+                            ":claim": claim_id,
+                            ":release": "release",
+                        },
+                    }
+                },
+            ],
         )
         return True
-    except table.meta.client.exceptions.ConditionalCheckFailedException:
-        return False
+    except ClientError as error:
+        if _is_conditional_transaction_cancel(error):
+            return False
+        raise
 
 
 async def assert_ordinary_owner(owner_id: str, update_id: str, claim_id: str) -> bool:

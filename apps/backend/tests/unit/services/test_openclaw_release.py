@@ -1,5 +1,6 @@
 import json
 from decimal import Decimal
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -15,6 +16,8 @@ def _release_row(**overrides):
         "fork_commit": "1c8fcb36dc72ba15c181070d770104d9dbfe26c5",
         "schema_id": "2026.9.3-isol8.1",
         "schema_sha256": "b9444496830abc0821fed561f19ddc808b87933a96638980db830322f0786e2a",
+        "shared_db_schema_version": 20,
+        "agent_db_schema_version": 24,
         "config_capabilities": ["browser.sessionState", "mcp.runtimeScope"],
         "qualification_id": "openclaw-9.3-founder-v1",
         "evidence_id": f"sha256:{'e' * 64}",
@@ -37,14 +40,8 @@ def _release_row(**overrides):
 
 def _recovery_set():
     return {
-        "recovery_set_id": "owner/update/recovery-v1",
+        "recovery_set_id": "rs-pinned",
         "manifest_sha256": "3" * 64,
-        "source_task_arns": ["arn:old-task"],
-        "shared_db_generation": "shared-1",
-        "agent_db_generations": {"main": "agent-1"},
-        "efs_archive_sha256": "4" * 64,
-        "workshop_archive_sha256": "5" * 64,
-        "verified_at": "2026-09-09T12:00:00Z",
     }
 
 
@@ -86,6 +83,8 @@ def test_release_registry_loads_only_complete_qualified_rows(tmp_path, monkeypat
         {"fork_commit": "deadbee"},
         {"schema_sha256": "unknown"},
         {"schema_sha256": "b" * 64},
+        {"shared_db_schema_version": 0},
+        {"agent_db_schema_version": "24"},
         {"config_capabilities": ["browser.sessionState", 7]},
         {"build_id": ""},
         {"qualification_id": "mutable latest"},
@@ -171,6 +170,30 @@ async def test_config_context_is_strong_and_rejects_reservation(monkeypatch):
         await openclaw_release.capture_config_context("owner-1")
 
 
+@pytest.mark.asyncio
+async def test_empty_registry_fails_closed_for_an_assigned_owner(monkeypatch):
+    from core.repositories import container_repo
+    from core.services import openclaw_release
+
+    monkeypatch.setattr(openclaw_release, "available_releases", lambda: ())
+    monkeypatch.setattr(
+        container_repo,
+        "get_by_owner_id",
+        AsyncMock(
+            return_value={
+                "owner_id": "owner-1",
+                "id": "container-1",
+                "desired_release_id": "missing-qualified-release",
+                "active_release_id": "missing-qualified-release",
+                "release_revision": 2,
+            }
+        ),
+    )
+
+    with pytest.raises(openclaw_release.OpenClawReleaseError, match="not registered"):
+        await openclaw_release.capture_config_context_if_enabled("owner-1")
+
+
 @pytest.mark.parametrize("revision", [True, Decimal("1.5"), Decimal("NaN"), -1])
 def test_config_context_rejects_non_integer_revisions(revision):
     from core.services import openclaw_release
@@ -206,6 +229,8 @@ def test_only_stable_finished_release_is_qualification_evidence(tmp_path, monkey
         "fork_commit": _release_row()["fork_commit"],
         "schema_id": _release_row()["schema_id"],
         "schema_sha256": _release_row()["schema_sha256"],
+        "shared_db_schema_version": _release_row()["shared_db_schema_version"],
+        "agent_db_schema_version": _release_row()["agent_db_schema_version"],
         "config_capabilities": sorted(_release_row()["config_capabilities"]),
         "qualification_id": _release_row()["qualification_id"],
         "evidence_id": _release_row()["evidence_id"],

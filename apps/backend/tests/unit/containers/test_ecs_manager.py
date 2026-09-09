@@ -845,6 +845,41 @@ class TestStopUserService:
             mock_repo.update_status.assert_called_once_with("user_test_123", "stopped")
             mock_repo.stamp_stop_reason.assert_awaited_once_with("user_test_123", "manual")
 
+    @pytest.mark.asyncio
+    async def test_release_pointer_refuses_unfenced_start_stop_and_force_redeploy(self, manager, mock_ecs_client):
+        row = _make_container_dict(status="running")
+        row["release_update_id"] = "release-update"
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_owner_id = AsyncMock(return_value=row)
+
+            with pytest.raises(EcsManagerError, match="reserved by a release"):
+                await manager.stop_user_service("user_test_123")
+            with pytest.raises(EcsManagerError, match="reserved by a release"):
+                await manager.start_user_service("user_test_123")
+            with pytest.raises(EcsManagerError, match="reserved by a release"):
+                await manager.force_redeploy_user_service("user_test_123")
+
+        mock_ecs_client.update_service.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_release_owned_stop_refences_immediately_and_skips_ordinary_status(self, manager, mock_ecs_client):
+        row = _make_container_dict(status="running")
+        row["release_update_id"] = "release-update"
+        fence = AsyncMock()
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_owner_id = AsyncMock(return_value=row)
+
+            await manager.stop_user_service(
+                "user_test_123",
+                _release_update_id="release-update",
+                _effect_fence=fence,
+            )
+
+            assert fence.await_count == 2
+            mock_repo.update_status.assert_not_called()
+            mock_repo.stamp_stop_reason.assert_not_called()
+        mock_ecs_client.update_service.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # start_user_service
@@ -2634,6 +2669,7 @@ class TestResizeUserContainer:
         ):
             mock_repo.get_by_owner_id = AsyncMock(return_value=row)
             mock_repo.update_fields = AsyncMock(return_value=row)
+            mock_repo.update_stable_release_runtime = AsyncMock(return_value=row)
 
             await manager.resize_user_container(
                 "user_test_123",
@@ -2645,6 +2681,12 @@ class TestResizeUserContainer:
         definition = mock_ecs_client.register_task_definition.call_args.kwargs
         openclaw = next(item for item in definition["containerDefinitions"] if item["name"] == "openclaw")
         assert openclaw["image"] == qualified
+        mock_repo.update_stable_release_runtime.assert_awaited_once_with(
+            "user_test_123",
+            "candidate",
+            2,
+            mock_ecs_client.register_task_definition.return_value["taskDefinition"]["taskDefinitionArn"],
+        )
         poller.assert_not_called()
 
     @pytest.mark.asyncio

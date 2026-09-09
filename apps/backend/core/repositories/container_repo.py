@@ -1584,6 +1584,49 @@ async def update_fields(owner_id: str, fields: dict) -> dict | None:
     return response.get("Attributes")
 
 
+async def update_stable_release_runtime(
+    owner_id: str,
+    release_id: str,
+    release_revision: int,
+    task_definition_arn: str,
+    *,
+    status: str | None = None,
+) -> dict:
+    """Reconcile runtime metadata only while an exact stable assignment still owns it."""
+
+    names = {"#status": "status"} if status is not None else None
+    values = {
+        ":release": release_id,
+        ":revision": release_revision,
+        ":task": task_definition_arn,
+        ":updated": utc_now_iso(),
+    }
+    set_parts = ["task_definition_arn = :task", "updated_at = :updated"]
+    if status is not None:
+        values[":status"] = status
+        set_parts.append("#status = :status")
+    kwargs = {
+        "Key": {"owner_id": owner_id},
+        "UpdateExpression": "SET " + ", ".join(set_parts),
+        "ConditionExpression": (
+            "desired_release_id = :release AND active_release_id = :release AND "
+            "release_revision = :revision AND attribute_not_exists(release_update_id)"
+        ),
+        "ExpressionAttributeValues": values,
+        "ReturnValues": "ALL_NEW",
+    }
+    if names:
+        kwargs["ExpressionAttributeNames"] = names
+    try:
+        response = await run_in_thread(_get_table().update_item, **kwargs)
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            raise ProvisionSuperseded(f"stable release assignment for {owner_id} moved") from exc
+        raise
+    publish_status_changed(owner_id)
+    return response["Attributes"]
+
+
 async def swap_gate_token_hash(
     owner_id: str,
     *,

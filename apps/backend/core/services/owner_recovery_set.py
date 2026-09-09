@@ -21,11 +21,13 @@ import io
 import json
 import os
 import re
+import shutil
 import sqlite3
 import stat
 import subprocess
 import tarfile
 import tempfile
+import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -54,6 +56,7 @@ _IMAGE_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 _AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _LTX_TAIL = r"(?P<level>[0-9]{4})/(?P<txid>[0-9A-Fa-f]{8,16}-[0-9A-Fa-f]{8,16})\.ltx"
+_CLEAN_STOP_CODES = frozenset({"UserInitiated", "ServiceSchedulerInitiated"})
 
 
 class OwnerRecoverySetUnavailable(RuntimeError):
@@ -69,6 +72,27 @@ def canonical_json(value: object) -> bytes:
 
 def sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def recovery_set_identity(
+    owner_id: str,
+    update_id: str,
+    release: Mapping[str, object],
+    source: Mapping[str, object],
+    drain_evidence: Mapping[str, object],
+) -> str:
+    """Bind a recovery artifact namespace to the complete immutable intent."""
+
+    identity = canonical_json(
+        {
+            "owner_id": owner_id,
+            "update_id": update_id,
+            "release": dict(release),
+            "source": dict(source),
+            "drain_evidence": dict(drain_evidence),
+        }
+    )
+    return f"rs-{sha256_bytes(identity)[:32]}"
 
 
 def _sha256_file(path: Path) -> str:
@@ -141,6 +165,7 @@ def validate_recovery_inputs(
         "task_arn",
         "task_definition_arn",
         "image_digest",
+        "build_id",
         "access_point_id",
         "file_system_id",
         "efs_root",
@@ -179,19 +204,42 @@ def validate_recovery_inputs(
     for field in ("service_desired_count", "service_running_count", "service_pending_count"):
         _zero(drain_evidence, field)
     tasks = drain_evidence.get("stopped_tasks")
-    if not isinstance(tasks, list) or len(tasks) != 1 or not isinstance(tasks[0], dict):
-        raise OwnerRecoverySetUnavailable("exactly one STOPPED source task is required")
-    task = tasks[0]
-    if set(task) != {"task_arn", "last_status", "task_definition_arn", "image_digest"}:
-        raise OwnerRecoverySetUnavailable("source task drain evidence is incomplete")
-    if task.get("last_status") != "STOPPED":
-        raise OwnerRecoverySetUnavailable("source task has not reached STOPPED")
-    if task.get("task_arn") != source.get("task_arn"):
+    if not isinstance(tasks, list) or not tasks or any(not isinstance(task, dict) for task in tasks):
+        raise OwnerRecoverySetUnavailable("STOPPED source task evidence is required")
+    expected_task_fields = {
+        "task_arn",
+        "last_status",
+        "task_definition_arn",
+        "image_digest",
+        "exit_code",
+        "stop_code",
+        "stopped_reason",
+    }
+    observed_arns: set[str] = set()
+    source_task = None
+    for task in tasks:
+        if set(task) != expected_task_fields:
+            raise OwnerRecoverySetUnavailable("source task drain evidence is incomplete")
+        task_arn = task.get("task_arn")
+        if not isinstance(task_arn, str) or not task_arn or task_arn in observed_arns:
+            raise OwnerRecoverySetUnavailable("source task drain evidence is ambiguous")
+        observed_arns.add(task_arn)
+        if (
+            task.get("last_status") != "STOPPED"
+            or task.get("exit_code") != 0
+            or task.get("stop_code") not in _CLEAN_STOP_CODES
+            or not isinstance(task.get("stopped_reason"), str)
+            or not task["stopped_reason"]
+        ):
+            raise OwnerRecoverySetUnavailable("source task did not stop cleanly under service control")
+        if task.get("task_definition_arn") != source.get("task_definition_arn") or task.get(
+            "image_digest"
+        ) != source.get("image_digest"):
+            raise OwnerRecoverySetUnavailable("drained service task does not match source runtime")
+        if task_arn == source.get("task_arn"):
+            source_task = task
+    if source_task is None:
         raise OwnerRecoverySetUnavailable("drain evidence does not identify the source task")
-    if task.get("task_definition_arn") != source.get("task_definition_arn"):
-        raise OwnerRecoverySetUnavailable("drained task definition does not match source")
-    if task.get("image_digest") != source.get("image_digest"):
-        raise OwnerRecoverySetUnavailable("drained task image digest does not match source")
 
 
 @dataclass(frozen=True, order=True)
@@ -250,9 +298,7 @@ def group_replica_objects(owner_id: str, objects: Sequence[ReplicaObject]) -> Re
     agent_re = re.compile(
         rf"^{owner}/agents/(?P<agent>[A-Za-z0-9][A-Za-z0-9._-]{{0,127}})/agent/openclaw-agent\.sqlite/{_LTX_TAIL}$"
     )
-    tombstone_re = re.compile(
-        rf"^{owner}/agents/(?P<agent>[A-Za-z0-9][A-Za-z0-9._-]{{0,127}})/\.replica-deleted$"
-    )
+    tombstone_re = re.compile(rf"^{owner}/agents/(?P<agent>[A-Za-z0-9][A-Za-z0-9._-]{{0,127}})/\.replica-deleted$")
     tombstoned: set[str] = set()
     for obj in objects:
         match = tombstone_re.fullmatch(obj.key)
@@ -564,11 +610,20 @@ def write_efs_tar(root: Path, entries: Sequence[Mapping[str, object]], sink: Bin
 
 
 class _MultipartSink:
-    def __init__(self, s3, bucket: str, key: str, metadata: dict[str, str]):
+    def __init__(
+        self,
+        s3,
+        bucket: str,
+        key: str,
+        metadata: dict[str, str],
+        effect_fence_sync: Callable[[], None],
+    ):
         self._s3 = s3
         self.bucket = bucket
         self.key = key
+        self._effect_fence_sync = effect_fence_sync
         try:
+            self._effect_fence_sync()
             response = s3.create_multipart_upload(Bucket=bucket, Key=key, Metadata=metadata)
             self._upload_id = response["UploadId"]
         except (ClientError, KeyError) as exc:
@@ -600,6 +655,7 @@ class _MultipartSink:
 
     def _upload_part(self, body: bytes) -> None:
         try:
+            self._effect_fence_sync()
             response = self._s3.upload_part(
                 Bucket=self.bucket,
                 Key=self.key,
@@ -623,6 +679,7 @@ class _MultipartSink:
             self._upload_part(bytes(self._buffer))
             self._buffer.clear()
         try:
+            self._effect_fence_sync()
             response = self._s3.complete_multipart_upload(
                 Bucket=self.bucket,
                 Key=self.key,
@@ -718,6 +775,7 @@ class OwnerRecoverySetProvider:
         source_bucket: str,
         destination_bucket: str,
         destination_key: str,
+        effect_fence_sync: Callable[[], None],
     ) -> dict:
         metadata = {
             _COPY_METADATA_SOURCE_ETAG: source.etag,
@@ -747,6 +805,7 @@ class OwnerRecoverySetProvider:
                 }
             raise OwnerRecoverySetUnavailable("recovery replica destination conflicts with a prior attempt")
         try:
+            effect_fence_sync()
             copied = self.s3.copy_object(
                 Bucket=destination_bucket,
                 Key=destination_key,
@@ -788,12 +847,7 @@ class OwnerRecoverySetProvider:
             raise OwnerRecoverySetUnavailable("pinned Litestream binary is unavailable") from exc
         version = result.stdout.strip()
         version_pattern = rf"(?:^|\s)v?{re.escape(PINNED_LITESTREAM_VERSION)}(?:\s|$)"
-        if (
-            result.returncode != 0
-            or not version
-            or len(version) > 200
-            or re.search(version_pattern, version) is None
-        ):
+        if result.returncode != 0 or not version or len(version) > 200 or re.search(version_pattern, version) is None:
             raise OwnerRecoverySetUnavailable("pinned Litestream version could not be verified")
         return version
 
@@ -844,6 +898,7 @@ class OwnerRecoverySetProvider:
         expected_schema: int,
         temporary_directory: Path,
         expected_agent_id: str | None = None,
+        effect_fence_sync: Callable[[], None],
     ) -> dict:
         destination_prefix = f"{recovery_prefix}/replicas/{relative_db_prefix}"
         copied_objects = []
@@ -858,6 +913,7 @@ class OwnerRecoverySetProvider:
                     settings.LITESTREAM_BUCKET,
                     settings.MARKETPLACE_ARTIFACTS_BUCKET,
                     f"{destination_prefix}/{suffix}",
+                    effect_fence_sync,
                 )
             )
         inventory_sha = sha256_bytes(canonical_json(copied_objects))
@@ -866,13 +922,38 @@ class OwnerRecoverySetProvider:
             if expected_agent_id is None
             else f"agent-{sha256_bytes(expected_agent_id.encode())[:16]}.sqlite"
         )
-        restored = self._restore_database(
-            replica_uri=f"s3://{settings.MARKETPLACE_ARTIFACTS_BUCKET}/{destination_prefix}",
-            output=temporary_directory / output_name,
-            expected_role=expected_role,
-            expected_schema=expected_schema,
-            expected_agent_id=expected_agent_id,
-        )
+        materialized = temporary_directory / f"replica-{sha256_bytes(destination_prefix.encode())[:16]}"
+        materialized.mkdir(mode=0o700)
+        for artifact in copied_objects:
+            key = str(artifact["key"])
+            prefix = f"{destination_prefix}/"
+            if not key.startswith(prefix):
+                raise OwnerRecoverySetUnavailable("copied replica escaped its immutable prefix")
+            relative = PurePosixPath(key[len(prefix) :])
+            if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+                raise OwnerRecoverySetUnavailable("copied replica key is unsafe")
+            data = self._read_version_bytes(
+                settings.MARKETPLACE_ARTIFACTS_BUCKET,
+                key,
+                str(artifact["version_id"]),
+            )
+            if len(data) != artifact["size"]:
+                raise OwnerRecoverySetUnavailable("copied replica version size changed")
+            output = materialized.joinpath(*relative.parts)
+            output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            output.write_bytes(data)
+        restored_path = temporary_directory / output_name
+        try:
+            restored = self._restore_database(
+                replica_uri=materialized.resolve().as_uri(),
+                output=restored_path,
+                expected_role=expected_role,
+                expected_schema=expected_schema,
+                expected_agent_id=expected_agent_id,
+            )
+        finally:
+            restored_path.unlink(missing_ok=True)
+            shutil.rmtree(materialized, ignore_errors=True)
         generation = sha256_bytes(canonical_json({"inventory_sha256": inventory_sha, "restored": restored}))
         return {
             "source_prefix": source_db_prefix.rstrip("/"),
@@ -920,7 +1001,12 @@ class OwnerRecoverySetProvider:
             raise OwnerRecoverySetUnavailable("EFS archive version could not be verified") from exc
         return digest.hexdigest(), size
 
-    def _archive_efs(self, owner_root: Path, recovery_prefix: str) -> dict:
+    def _archive_efs(
+        self,
+        owner_root: Path,
+        recovery_prefix: str,
+        effect_fence_sync: Callable[[], None],
+    ) -> dict:
         entries = scan_efs_tree(owner_root)
         tree_manifest_sha = sha256_bytes(canonical_json(entries))
         key = f"{recovery_prefix}/efs/owner-root.tar"
@@ -929,6 +1015,7 @@ class OwnerRecoverySetProvider:
             settings.MARKETPLACE_ARTIFACTS_BUCKET,
             key,
             {_ARCHIVE_METADATA_TREE_SHA: tree_manifest_sha, "provider-version": PROVIDER_VERSION},
+            effect_fence_sync,
         )
         try:
             write_efs_tar(owner_root, entries, sink)  # type: ignore[arg-type]
@@ -974,8 +1061,7 @@ class OwnerRecoverySetProvider:
             provider = manifest["provider"]
             tools = manifest["tools"]
             if not all(
-                isinstance(value, dict)
-                for value in (replicas, efs, source, release, drain, inventory, provider, tools)
+                isinstance(value, dict) for value in (replicas, efs, source, release, drain, inventory, provider, tools)
             ):
                 raise TypeError
             shared = replicas["shared"]
@@ -1003,6 +1089,7 @@ class OwnerRecoverySetProvider:
                 "source_task_arn": source["task_arn"],
                 "source_task_definition_arn": source["task_definition_arn"],
                 "source_image_digest": source["image_digest"],
+                "source_build_id": source["build_id"],
                 "access_point_id": efs["access_point_id"],
                 "file_system_id": efs["file_system_id"],
                 "efs_root": efs["root"],
@@ -1035,6 +1122,7 @@ class OwnerRecoverySetProvider:
             "source_task_arn",
             "source_task_definition_arn",
             "source_image_digest",
+            "source_build_id",
             "access_point_id",
             "file_system_id",
             "efs_root",
@@ -1084,7 +1172,8 @@ class OwnerRecoverySetProvider:
                 raise TypeError
             databases = [replicas["shared"]]
             agents = replicas["agents"]
-            if not isinstance(agents, dict):
+            tombstones = replicas["tombstones"]
+            if not isinstance(agents, dict) or not isinstance(tombstones, dict):
                 raise TypeError
             databases.extend(agents.values())
             artifacts: list[Mapping[str, object]] = []
@@ -1092,6 +1181,7 @@ class OwnerRecoverySetProvider:
                 if not isinstance(database, dict) or not isinstance(database.get("objects"), list):
                     raise TypeError
                 artifacts.extend(database["objects"])
+            artifacts.extend(tombstones.values())
             archive = efs["archive"]
             if not isinstance(archive, dict):
                 raise TypeError
@@ -1176,6 +1266,223 @@ class OwnerRecoverySetProvider:
         self._verify_manifest_artifact_versions(manifest)
         return self._manifest_summary(manifest, key, version_id, digest)
 
+    def _load_manifest_for_restore(
+        self,
+        owner_id: str,
+        update_id: str,
+        recovery_set: Mapping[str, object],
+    ) -> dict:
+        key = _required_string(recovery_set, "manifest_key")
+        version_id = _required_string(recovery_set, "manifest_version_id")
+        expected_digest = _required_string(recovery_set, "manifest_sha256")
+        expected_prefix = f"recovery-sets/{owner_id}/"
+        if not key.startswith(expected_prefix) or not key.endswith("/manifest.json"):
+            raise OwnerRecoverySetUnavailable("recovery manifest scope is invalid")
+        data = self._read_version_bytes(
+            settings.MARKETPLACE_ARTIFACTS_BUCKET,
+            key,
+            version_id,
+            limit=_MAX_MANIFEST_BYTES,
+        )
+        if sha256_bytes(data) != expected_digest:
+            raise OwnerRecoverySetUnavailable("recovery manifest digest changed")
+        try:
+            manifest = json.loads(data)
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise OwnerRecoverySetUnavailable("recovery manifest is invalid") from exc
+        if (
+            not isinstance(manifest, dict)
+            or canonical_json(manifest) != data
+            or manifest.get("owner_id") != owner_id
+            or manifest.get("update_id") != update_id
+            or manifest.get("recovery_set_id") != recovery_set.get("recovery_set_id")
+            or manifest.get("status") != "verified"
+        ):
+            raise OwnerRecoverySetUnavailable("recovery manifest identity is invalid")
+        if self._manifest_summary(manifest, key, version_id, expected_digest) != dict(recovery_set):
+            raise OwnerRecoverySetUnavailable("release journal recovery evidence does not match its manifest")
+        self._verify_manifest_artifact_versions(manifest)
+        return manifest
+
+    def _list_live_replica_objects(self, owner_id: str) -> list[dict]:
+        paginator = self.s3.get_paginator("list_objects_v2")
+        observed = []
+        try:
+            for page in paginator.paginate(Bucket=settings.LITESTREAM_BUCKET, Prefix=f"{owner_id}/"):
+                observed.extend(page.get("Contents") or [])
+        except ClientError as exc:
+            raise OwnerRecoverySetUnavailable("live replica prefix could not be listed") from exc
+        if any(not str(value.get("Key") or "").startswith(f"{owner_id}/") for value in observed):
+            raise OwnerRecoverySetUnavailable("live replica listing escaped the owner prefix")
+        return observed
+
+    @staticmethod
+    def _validate_restored_replica_heads(restored: Sequence[Mapping[str, object]], artifacts: Sequence[dict]) -> None:
+        source_keys = {str(value["source_key"]) for value in artifacts}
+        if {str(value.get("Key")) for value in restored} != source_keys:
+            raise OwnerRecoverySetUnavailable("restored live replica prefix is incomplete")
+        expected_sizes = {str(value["source_key"]): int(value["source_size"]) for value in artifacts}
+        expected_etags = {str(value["source_key"]): str(value["etag"]) for value in artifacts}
+        if any(int(value.get("Size", -1)) != expected_sizes[str(value["Key"])] for value in restored):
+            raise OwnerRecoverySetUnavailable("restored live replica object size is wrong")
+        if any(_etag(value.get("ETag")) != expected_etags[str(value["Key"])] for value in restored):
+            raise OwnerRecoverySetUnavailable("restored live replica object digest is wrong")
+
+    def _restore_efs_archive(
+        self,
+        owner_id: str,
+        manifest: Mapping[str, object],
+        effect_fence_sync: Callable[[], None],
+    ) -> dict:
+        try:
+            archive = manifest["efs"]["archive"]  # type: ignore[index]
+            entries = archive["tree_entries"]
+            if not isinstance(archive, dict) or not isinstance(entries, list):
+                raise TypeError
+            key = _required_string(archive, "key")
+            version_id = _required_string(archive, "version_id")
+            expected_sha = _required_string(archive, "sha256")
+        except (KeyError, TypeError) as exc:
+            raise OwnerRecoverySetUnavailable("recovery EFS archive evidence is incomplete") from exc
+        expected_entries = tuple(dict(entry) for entry in entries if isinstance(entry, dict))
+        if len(expected_entries) != len(entries) or not expected_entries:
+            raise OwnerRecoverySetUnavailable("recovery EFS tree evidence is invalid")
+        mount = Path(settings.EFS_MOUNT_PATH)
+        current = mount / owner_id
+        if current.exists() and not current.is_symlink() and scan_efs_tree(current) == expected_entries:
+            return {"tree_manifest_sha256": sha256_bytes(canonical_json(expected_entries)), "already_restored": True}
+        token = str(manifest["recovery_set_id"])
+        displaced_name = f".release-target-{sha256_bytes(token.encode())[:24]}"
+        if (mount / displaced_name).exists() or (mount / displaced_name).is_symlink():
+            raise OwnerRecoverySetUnavailable("prior rollback target is ambiguous")
+        with tempfile.TemporaryDirectory(prefix="lightbulb-efs-restore-") as local_temporary:
+            archive_bytes = self._read_version_bytes(
+                settings.MARKETPLACE_ARTIFACTS_BUCKET,
+                key,
+                version_id,
+            )
+            if sha256_bytes(archive_bytes) != expected_sha:
+                raise OwnerRecoverySetUnavailable("recovery EFS archive digest changed")
+            archive_path = Path(local_temporary) / "owner.tar"
+            archive_path.write_bytes(archive_bytes)
+            stage_name = f".release-restore-{uuid.uuid4().hex}"
+            stage = mount / stage_name
+            stage.mkdir(mode=0o700)
+            try:
+                with tarfile.open(archive_path, mode="r:") as recovery_tar:
+                    recovery_tar.extractall(stage, filter="data")
+                for entry in sorted(expected_entries, key=lambda value: str(value["path"]).count("/"), reverse=True):
+                    relative = PurePosixPath(str(entry["path"]))
+                    if relative.is_absolute() or ".." in relative.parts:
+                        raise OwnerRecoverySetUnavailable("recovery EFS entry is unsafe")
+                    target = stage if str(relative) == "." else stage.joinpath(*relative.parts)
+                    observed = target.lstat()
+                    expected_kind = entry["type"]
+                    if (
+                        (expected_kind == "directory" and not stat.S_ISDIR(observed.st_mode))
+                        or (expected_kind == "file" and not stat.S_ISREG(observed.st_mode))
+                        or (expected_kind == "symlink" and not stat.S_ISLNK(observed.st_mode))
+                    ):
+                        raise OwnerRecoverySetUnavailable("recovery EFS entry type changed")
+                    os.chown(target, int(entry["uid"]), int(entry["gid"]), follow_symlinks=False)
+                    if expected_kind != "symlink":
+                        os.chmod(target, int(entry["mode"]), follow_symlinks=False)
+                    os.utime(
+                        target,
+                        ns=(int(entry["mtime_ns"]), int(entry["mtime_ns"])),
+                        follow_symlinks=False,
+                    )
+                if scan_efs_tree(stage) != expected_entries:
+                    raise OwnerRecoverySetUnavailable("restored EFS tree does not match its manifest")
+                mount_fd = os.open(mount, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+                try:
+                    owner_stat = os.stat(owner_id, dir_fd=mount_fd, follow_symlinks=False)
+                    if not stat.S_ISDIR(owner_stat.st_mode):
+                        raise OwnerRecoverySetUnavailable("owner EFS root is not a real directory")
+                    effect_fence_sync()
+                    os.replace(owner_id, displaced_name, src_dir_fd=mount_fd, dst_dir_fd=mount_fd)
+                    try:
+                        os.replace(stage_name, owner_id, src_dir_fd=mount_fd, dst_dir_fd=mount_fd)
+                    except Exception:
+                        os.replace(displaced_name, owner_id, src_dir_fd=mount_fd, dst_dir_fd=mount_fd)
+                        raise
+                    os.fsync(mount_fd)
+                finally:
+                    os.close(mount_fd)
+            finally:
+                if stage.exists() and not stage.is_symlink():
+                    shutil.rmtree(stage, ignore_errors=True)
+        if scan_efs_tree(current) != expected_entries:
+            raise OwnerRecoverySetUnavailable("restored owner EFS root failed verification")
+        return {
+            "tree_manifest_sha256": sha256_bytes(canonical_json(expected_entries)),
+            "already_restored": False,
+            "displaced_name": displaced_name,
+        }
+
+    async def restore(
+        self,
+        *,
+        owner_id: str,
+        update_id: str,
+        recovery_set: Mapping[str, object],
+        effect_fence: Callable[[], Awaitable[None]],
+        effect_fence_sync: Callable[[], None],
+    ) -> dict:
+        """Restore the exact pinned replicas and EFS tree while ECS remains at 0."""
+
+        await effect_fence()
+        manifest = await asyncio.to_thread(self._load_manifest_for_restore, owner_id, update_id, recovery_set)
+        replicas = manifest["replicas"]
+        artifacts = list(replicas["shared"]["objects"])
+        for database in replicas["agents"].values():
+            artifacts.extend(database["objects"])
+        artifacts.extend(replicas["tombstones"].values())
+        source_keys = {str(value["source_key"]) for value in artifacts}
+        inventory_keys = {str(value["key"]) for value in manifest["stable_replica_inventory"]["objects"]}
+        if source_keys != inventory_keys:
+            raise OwnerRecoverySetUnavailable("recovery replicas do not cover the stable source inventory")
+        for current in await asyncio.to_thread(self._list_live_replica_objects, owner_id):
+            await effect_fence()
+            await asyncio.to_thread(
+                self.s3.delete_object,
+                Bucket=settings.LITESTREAM_BUCKET,
+                Key=current["Key"],
+            )
+        for artifact in artifacts:
+            await effect_fence()
+            copied = await asyncio.to_thread(
+                self.s3.copy_object,
+                Bucket=settings.LITESTREAM_BUCKET,
+                Key=artifact["source_key"],
+                CopySource={
+                    "Bucket": settings.MARKETPLACE_ARTIFACTS_BUCKET,
+                    "Key": artifact["key"],
+                    "VersionId": artifact["version_id"],
+                },
+                MetadataDirective="COPY",
+            )
+            if _etag(copied.get("CopyObjectResult", {}).get("ETag"), "restored replica ETag") != artifact["etag"]:
+                raise OwnerRecoverySetUnavailable("pinned replica version could not be restored")
+        restored_objects = await asyncio.to_thread(self._list_live_replica_objects, owner_id)
+        self._validate_restored_replica_heads(restored_objects, artifacts)
+        await effect_fence()
+        efs = await asyncio.to_thread(
+            self._restore_efs_archive,
+            owner_id,
+            manifest,
+            effect_fence_sync,
+        )
+        return {
+            "recovery_set_id": manifest["recovery_set_id"],
+            "manifest_sha256": recovery_set["manifest_sha256"],
+            "replica_inventory_sha256": manifest["stable_replica_inventory"]["sha256"],
+            "efs_tree_manifest_sha256": efs["tree_manifest_sha256"],
+            "replica_object_count": len(restored_objects),
+            "restored_at": self._now_iso(),
+            **({"displaced_name": efs["displaced_name"]} if "displaced_name" in efs else {}),
+        }
+
     async def create(
         self,
         *,
@@ -1184,16 +1491,18 @@ class OwnerRecoverySetProvider:
         release: Mapping[str, object],
         source: Mapping[str, object],
         drain_evidence: Mapping[str, object],
+        effect_fence: Callable[[], Awaitable[None]],
+        effect_fence_sync: Callable[[], None],
     ) -> dict:
         validate_recovery_inputs(owner_id, update_id, release, source, drain_evidence)
         if not settings.LITESTREAM_BUCKET or not settings.MARKETPLACE_ARTIFACTS_BUCKET:
             raise OwnerRecoverySetUnavailable("recovery buckets are not configured")
         if settings.LITESTREAM_BUCKET == settings.MARKETPLACE_ARTIFACTS_BUCKET:
             raise OwnerRecoverySetUnavailable("live and recovery buckets must be distinct")
-        recovery_identity = owner_id.encode() + b"\0" + update_id.encode()
-        recovery_set_id = f"rs-{sha256_bytes(recovery_identity)[:32]}"
+        recovery_set_id = recovery_set_identity(owner_id, update_id, release, source, drain_evidence)
         recovery_prefix = f"recovery-sets/{owner_id}/{recovery_set_id}"
         manifest_key = f"{recovery_prefix}/manifest.json"
+        await effect_fence()
         reused = await asyncio.to_thread(
             self._reuse_manifest,
             key=manifest_key,
@@ -1213,6 +1522,7 @@ class OwnerRecoverySetProvider:
         litestream_version = await asyncio.to_thread(self._litestream_version)
         with tempfile.TemporaryDirectory(prefix="lightbulb-recovery-") as temporary:
             temporary_path = Path(temporary)
+            await effect_fence()
             shared = await asyncio.to_thread(
                 self._copy_database,
                 objects=groups.shared,
@@ -1222,11 +1532,13 @@ class OwnerRecoverySetProvider:
                 expected_role="global",
                 expected_schema=int(source["shared_schema_version"]),
                 temporary_directory=temporary_path,
+                effect_fence_sync=effect_fence_sync,
             )
             agents = {}
             for agent_id, objects in groups.agents.items():
                 if not _AGENT_ID_RE.fullmatch(agent_id):
                     raise OwnerRecoverySetUnavailable("agent replica identity is invalid")
+                await effect_fence()
                 agents[agent_id] = await asyncio.to_thread(
                     self._copy_database,
                     objects=objects,
@@ -1237,8 +1549,29 @@ class OwnerRecoverySetProvider:
                     expected_schema=int(source["agent_schema_version"]),
                     temporary_directory=temporary_path,
                     expected_agent_id=agent_id,
+                    effect_fence_sync=effect_fence_sync,
                 )
-        efs_archive = await asyncio.to_thread(self._archive_efs, owner_root, recovery_prefix)
+            tombstones = {}
+            for source_object in inventory.objects:
+                if not source_object.key.endswith("/.replica-deleted"):
+                    continue
+                agent_id = source_object.key.split("/")[-2]
+                await effect_fence()
+                tombstones[agent_id] = await asyncio.to_thread(
+                    self.copy_replica_object,
+                    source_object,
+                    settings.LITESTREAM_BUCKET,
+                    settings.MARKETPLACE_ARTIFACTS_BUCKET,
+                    f"{recovery_prefix}/replicas/tombstones/{agent_id}/.replica-deleted",
+                    effect_fence_sync,
+                )
+        await effect_fence()
+        efs_archive = await asyncio.to_thread(
+            self._archive_efs,
+            owner_root,
+            recovery_prefix,
+            effect_fence_sync,
+        )
         verified_at = self._now_iso()
         manifest = {
             "manifest_schema_version": MANIFEST_SCHEMA_VERSION,
@@ -1256,11 +1589,12 @@ class OwnerRecoverySetProvider:
                 "second_observed_at": inventory.second_observed_at,
                 "wait_seconds": inventory.wait_seconds,
                 "object_count": len(inventory.objects),
+                "objects": [value.manifest_dict() for value in inventory.objects],
             },
             "replicas": {
                 "shared": shared,
                 "agents": agents,
-                "tombstoned_agents": list(groups.tombstoned_agents),
+                "tombstones": tombstones,
             },
             "efs": {
                 "file_system_id": source["file_system_id"],
@@ -1275,6 +1609,7 @@ class OwnerRecoverySetProvider:
         if len(manifest_bytes) > _MAX_MANIFEST_BYTES:
             raise OwnerRecoverySetUnavailable("recovery manifest is too large")
         manifest_sha = sha256_bytes(manifest_bytes)
+        await effect_fence()
         try:
             uploaded = await asyncio.to_thread(
                 self.s3.put_object,
@@ -1308,6 +1643,8 @@ async def create_verified_owner_recovery_set(
     release: Mapping[str, object],
     source: Mapping[str, object],
     drain_evidence: Mapping[str, object],
+    effect_fence: Callable[[], Awaitable[None]],
+    effect_fence_sync: Callable[[], None],
 ) -> dict:
     """Public fail-closed entry point used after the release executor drains ECS."""
 
@@ -1317,6 +1654,27 @@ async def create_verified_owner_recovery_set(
         release=release,
         source=source,
         drain_evidence=drain_evidence,
+        effect_fence=effect_fence,
+        effect_fence_sync=effect_fence_sync,
+    )
+
+
+async def restore_verified_owner_recovery_set(
+    *,
+    owner_id: str,
+    update_id: str,
+    recovery_set: Mapping[str, object],
+    effect_fence: Callable[[], Awaitable[None]],
+    effect_fence_sync: Callable[[], None],
+) -> dict:
+    """Restore only the immutable manifest pinned in the release journal."""
+
+    return await OwnerRecoverySetProvider().restore(
+        owner_id=owner_id,
+        update_id=update_id,
+        recovery_set=recovery_set,
+        effect_fence=effect_fence,
+        effect_fence_sync=effect_fence_sync,
     )
 
 
@@ -1329,6 +1687,8 @@ __all__ = [
     "create_verified_owner_recovery_set",
     "group_replica_objects",
     "inspect_restored_database",
+    "recovery_set_identity",
+    "restore_verified_owner_recovery_set",
     "scan_efs_tree",
     "sha256_bytes",
     "validate_recovery_inputs",

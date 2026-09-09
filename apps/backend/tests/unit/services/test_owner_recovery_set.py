@@ -16,11 +16,12 @@ SOURCE = {
     "task_arn": "arn:aws:ecs:us-east-1:123456789012:task/cluster/task-1",
     "task_definition_arn": "arn:aws:ecs:us-east-1:123456789012:task-definition/openclaw:1",
     "image_digest": f"sha256:{'a' * 64}",
+    "build_id": "source-build-123",
     "access_point_id": "fsap-0123456789abcdef0",
     "file_system_id": "fs-0123456789abcdef0",
     "efs_root": f"/users/{OWNER}",
     "shared_schema_version": 15,
-    "agent_schema_version": 17,
+    "agent_schema_version": 19,
 }
 RELEASE = {
     "release_id": "openclaw-2026.9.3-isol8.1",
@@ -40,6 +41,9 @@ DRAIN = {
             "last_status": "STOPPED",
             "task_definition_arn": SOURCE["task_definition_arn"],
             "image_digest": SOURCE["image_digest"],
+            "exit_code": 0,
+            "stop_code": "UserInitiated",
+            "stopped_reason": "Scaling activity initiated by service update",
         }
     ],
 }
@@ -88,6 +92,50 @@ def test_rejects_evidence_until_the_exact_source_task_is_stopped():
         recovery.validate_recovery_inputs(OWNER, UPDATE, RELEASE, SOURCE, wrong_task)
 
 
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"exit_code": 137},
+        {"stop_code": "SpotInterruption"},
+        {"stopped_reason": ""},
+    ],
+)
+def test_recovery_requires_a_clean_supervised_container_exit(change):
+    dirty = {
+        **DRAIN,
+        "stopped_tasks": [{**DRAIN["stopped_tasks"][0], **change}],
+    }
+
+    with pytest.raises(recovery.OwnerRecoverySetUnavailable, match="cleanly"):
+        recovery.validate_recovery_inputs(OWNER, UPDATE, RELEASE, SOURCE, dirty)
+
+
+def test_recovery_identity_binds_release_source_and_drain_evidence():
+    original = recovery.recovery_set_identity(OWNER, UPDATE, RELEASE, SOURCE, DRAIN)
+
+    assert original != recovery.recovery_set_identity(
+        OWNER,
+        UPDATE,
+        {**RELEASE, "build_id": "different-target"},
+        SOURCE,
+        DRAIN,
+    )
+    assert original != recovery.recovery_set_identity(
+        OWNER,
+        UPDATE,
+        RELEASE,
+        {**SOURCE, "build_id": "different-source"},
+        DRAIN,
+    )
+    assert original != recovery.recovery_set_identity(
+        OWNER,
+        UPDATE,
+        RELEASE,
+        SOURCE,
+        {**DRAIN, "observed_at": "2026-09-09T15:00:01+00:00"},
+    )
+
+
 def test_groups_shared_and_non_tombstoned_agent_replicas_and_allows_zero_agents():
     shared = _object(f"{OWNER}/state/openclaw.sqlite/0000/00000001-00000002.ltx")
     deleted = _object(f"{OWNER}/agents/deleted/agent/openclaw-agent.sqlite/0000/00000001-00000002.ltx")
@@ -129,27 +177,84 @@ async def test_stable_inventory_waits_longer_than_sync_interval_and_rejects_a_ch
 def test_copy_requires_an_immutable_destination_version():
     source = _object(f"{OWNER}/state/openclaw.sqlite/0000/00000001-00000002.ltx")
     s3 = MagicMock()
-    s3.head_object.side_effect = recovery.ClientError(
-        {"Error": {"Code": "404", "Message": "missing"}}, "HeadObject"
-    )
+    s3.head_object.side_effect = recovery.ClientError({"Error": {"Code": "404", "Message": "missing"}}, "HeadObject")
     s3.copy_object.return_value = {"CopyObjectResult": {"ETag": '"etag"'}}
     provider = recovery.OwnerRecoverySetProvider(s3=s3)
 
     with pytest.raises(recovery.OwnerRecoverySetUnavailable, match="VersionId"):
-        provider.copy_replica_object(source, "live", "artifacts", "recovery-sets/o/r/replicas/db/0000/x.ltx")
+        provider.copy_replica_object(
+            source,
+            "live",
+            "artifacts",
+            "recovery-sets/o/r/replicas/db/0000/x.ltx",
+            lambda: None,
+        )
+
+
+def test_database_copy_restores_exact_versions_and_removes_temporary_bytes(tmp_path):
+    source = _object(f"{OWNER}/state/openclaw.sqlite/0000/00000001-00000002.ltx", size=4)
+    destination = "recovery-sets/o/r/replicas/state/openclaw.sqlite/0000/00000001-00000002.ltx"
+    provider = recovery.OwnerRecoverySetProvider(s3=MagicMock())
+    provider.copy_replica_object = MagicMock(
+        return_value={
+            "key": destination,
+            "version_id": "version-1",
+            "etag": "etag",
+            "size": 4,
+            "source_key": source.key,
+            "source_etag": source.etag,
+            "source_size": source.size,
+            "source_last_modified": source.last_modified,
+        }
+    )
+    provider._read_version_bytes = MagicMock(return_value=b"data")
+
+    def restored(*, output, **_kwargs):
+        output.write_bytes(b"restored")
+        return {"quick_check": "ok", "schema_version": 15}
+
+    provider._restore_database = MagicMock(side_effect=restored)
+
+    provider._copy_database(
+        objects=[source],
+        owner_id=OWNER,
+        recovery_prefix="recovery-sets/o/r",
+        relative_db_prefix="state/openclaw.sqlite",
+        expected_role="global",
+        expected_schema=15,
+        temporary_directory=tmp_path,
+        effect_fence_sync=lambda: None,
+    )
+
+    provider._read_version_bytes.assert_called_once_with(
+        recovery.settings.MARKETPLACE_ARTIFACTS_BUCKET,
+        destination,
+        "version-1",
+    )
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_restored_replica_heads_must_match_the_pinned_key_size_and_etag():
+    artifact = {"source_key": f"{OWNER}/state/db/one.ltx", "source_size": 4, "etag": "pinned"}
+
+    with pytest.raises(recovery.OwnerRecoverySetUnavailable, match="digest"):
+        recovery.OwnerRecoverySetProvider._validate_restored_replica_heads(
+            [{"Key": artifact["source_key"], "Size": 4, "ETag": '"different"'}],
+            [artifact],
+        )
 
 
 def test_restored_databases_require_quick_check_schema_role_and_agent_identity(tmp_path):
     shared = tmp_path / "shared.sqlite"
     agent = tmp_path / "agent.sqlite"
     _sqlite(shared, role="global", schema_version=15, agent_id=None)
-    _sqlite(agent, role="agent", schema_version=17, agent_id="worker")
+    _sqlite(agent, role="agent", schema_version=19, agent_id="worker")
 
     shared_evidence = recovery.inspect_restored_database(shared, expected_role="global", expected_schema=15)
     agent_evidence = recovery.inspect_restored_database(
         agent,
         expected_role="agent",
-        expected_schema=17,
+        expected_schema=19,
         expected_agent_id="worker",
     )
 
@@ -170,7 +275,7 @@ def test_restored_databases_require_quick_check_schema_role_and_agent_identity(t
         recovery.inspect_restored_database(
             agent,
             expected_role="agent",
-            expected_schema=17,
+            expected_schema=19,
             expected_agent_id="other",
         )
 

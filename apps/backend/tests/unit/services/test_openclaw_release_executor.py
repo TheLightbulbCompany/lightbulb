@@ -16,6 +16,8 @@ def _release():
         fork_commit="c" * 40,
         schema_id="2026.9.3-isol8.2",
         schema_sha256="d" * 64,
+        shared_db_schema_version=20,
+        agent_db_schema_version=24,
         config_capabilities=frozenset({"browser.sessionState"}),
         qualification_id="founder-native-v1",
         evidence_id=f"sha256:{'e' * 64}",
@@ -30,6 +32,7 @@ def _reserved(phase="reserved"):
         "id": "container",
         "status": "running",
         "gateway_token": "token",
+        "access_point_id": "fsap-0123456789abcdef0",
         "desired_release_id": "candidate",
         "release_update_id": "update",
         "release_revision": 1,
@@ -57,14 +60,74 @@ def _reserved(phase="reserved"):
 
 def _recovery_set():
     return {
-        "recovery_set_id": "owner/update/recovery-v1",
+        "recovery_set_id": "rs-123",
+        "owner_id": "owner",
+        "update_id": "update",
+        "status": "verified",
+        "manifest_bucket": "artifacts",
+        "manifest_key": "recovery-sets/owner/rs-123/manifest.json",
+        "manifest_version_id": "version-1",
         "manifest_sha256": "3" * 64,
-        "source_task_arns": ["arn:old-task"],
-        "shared_db_generation": "shared-generation-1",
-        "agent_db_generations": {"main": "agent-generation-1"},
+        "release_id": "candidate",
+        "release_image_digest": f"sha256:{'a' * 64}",
+        "source_service_arn": "arn:service",
+        "source_task_arn": "arn:old-task",
+        "source_task_definition_arn": "arn:old",
+        "source_image_digest": f"sha256:{'b' * 64}",
+        "source_build_id": "source-build",
+        "access_point_id": "fsap-0123456789abcdef0",
+        "file_system_id": "fs-0123456789abcdef0",
+        "efs_root": "/users/owner",
+        "drain_observed_at": "2026-09-09T12:00:00+00:00",
+        "drain_evidence_sha256": "6" * 64,
+        "stable_replica_inventory_sha256": "7" * 64,
+        "shared_db_generation": "8" * 64,
+        "agent_db_generations": {},
+        "efs_archive_key": "recovery-sets/owner/rs-123/efs/owner-root.tar",
+        "efs_archive_version_id": "version-2",
+        "efs_archive_etag": "etag",
+        "efs_archive_size": 1,
         "efs_archive_sha256": "4" * 64,
-        "workshop_archive_sha256": "5" * 64,
+        "efs_tree_manifest_sha256": "5" * 64,
+        "provider": {"name": "lightbulb-owner-recovery-set", "version": "1"},
+        "tools": {"litestream": "0.5.15", "sqlite": "3"},
         "verified_at": "2026-09-09T12:00:00Z",
+    }
+
+
+def _source():
+    return {
+        "service_arn": "arn:service",
+        "task_arn": "arn:old-task",
+        "task_definition_arn": "arn:old",
+        "image_digest": f"sha256:{'b' * 64}",
+        "build_id": "source-build",
+        "access_point_id": "fsap-0123456789abcdef0",
+        "file_system_id": "fs-0123456789abcdef0",
+        "efs_root": "/users/owner",
+        "shared_schema_version": 15,
+        "agent_schema_version": 19,
+    }
+
+
+def _drain():
+    return {
+        "observed_at": "2026-09-09T12:00:00+00:00",
+        "service_arn": "arn:service",
+        "service_desired_count": 0,
+        "service_running_count": 0,
+        "service_pending_count": 0,
+        "stopped_tasks": [
+            {
+                "task_arn": "arn:old-task",
+                "last_status": "STOPPED",
+                "task_definition_arn": "arn:old",
+                "image_digest": f"sha256:{'b' * 64}",
+                "exit_code": 0,
+                "stop_code": "UserInitiated",
+                "stopped_reason": "service scale down",
+            }
+        ],
     }
 
 
@@ -89,19 +152,30 @@ async def test_release_executor_runs_the_fenced_phase_sequence(monkeypatch):
         return True
 
     runtime = SimpleNamespace(
-        prepare=AsyncMock(return_value="arn:target"),
-        recover=AsyncMock(return_value=_recovery_set()),
-        running_tasks=AsyncMock(return_value=[{"task_arn": "arn:old-task"}]),
-        stop=AsyncMock(),
-        drain=AsyncMock(
+        snapshot=AsyncMock(
             return_value={
-                "observed_at": "now",
-                "service_desired_count": 0,
-                "service_running_count": 0,
-                "service_pending_count": 0,
-                "stopped_task_arns": ["arn:old-task"],
+                "service_arn": "arn:service",
+                "task_definition_arn": "arn:old",
+                "desired_count": 1,
+                "running_count": 1,
+                "pending_count": 0,
             }
         ),
+        prepare=AsyncMock(return_value="arn:target"),
+        recover=AsyncMock(return_value=_recovery_set()),
+        running_tasks=AsyncMock(
+            return_value=[
+                {
+                    "task_arn": "arn:old-task",
+                    "task_definition_arn": "arn:old",
+                    "last_status": "RUNNING",
+                    "image_digest": f"sha256:{'b' * 64}",
+                    "ip": "10.0.0.1",
+                }
+            ]
+        ),
+        stop=AsyncMock(),
+        drain=AsyncMock(return_value=_drain()),
         stage=AsyncMock(return_value=("1" * 64, "2" * 64)),
         activate=AsyncMock(),
         start=AsyncMock(),
@@ -111,6 +185,11 @@ async def test_release_executor_runs_the_fenced_phase_sequence(monkeypatch):
     monkeypatch.setattr(executor.update_repo, "checkpoint_owner_release", checkpoint)
     monkeypatch.setattr(executor.update_repo, "finish_owner_release", AsyncMock(return_value=True))
     monkeypatch.setattr(executor, "release_by_id", lambda _release_id: _release())
+    monkeypatch.setattr(
+        "core.gateway.operator_rpc.gateway_hello_oneshot",
+        AsyncMock(return_value={"server": {"buildId": "source-build"}}),
+    )
+    monkeypatch.setattr(executor.settings, "EFS_FILE_SYSTEM_ID", "fs-0123456789abcdef0")
 
     assert await executor.execute_claimed_owner_release("owner", "update", "claim", runtime=runtime)
     assert phases == [
@@ -131,7 +210,7 @@ async def test_release_executor_runs_the_fenced_phase_sequence(monkeypatch):
     runtime.prepare.assert_awaited_once()
     runtime.recover.assert_awaited_once()
     runtime.stop.assert_awaited_once()
-    runtime.drain.assert_awaited_once_with("owner", ["arn:old-task"])
+    runtime.drain.assert_awaited_once_with("owner", ["arn:old-task"], ANY)
     runtime.activate.assert_awaited_once_with(
         "owner",
         "update",
@@ -154,13 +233,9 @@ async def test_release_executor_resumes_from_the_persisted_phase(monkeypatch, ph
     update.update(
         target_task_definition_arn="arn:target",
         pre_stop_task_arns=["arn:old-task"],
-        drain_evidence={
-            "observed_at": "now",
-            "service_desired_count": 0,
-            "service_running_count": 0,
-            "service_pending_count": 0,
-            "stopped_task_arns": ["arn:old-task"],
-        },
+        pre_stop_captured_at="2026-09-09T11:59:00+00:00",
+        source=_source(),
+        drain_evidence=_drain(),
     )
     if phase == "validating":
         update.update(
@@ -213,13 +288,13 @@ async def test_stale_worker_and_uncertain_validation_keep_the_release_reserved(m
     monkeypatch.setattr(executor, "release_by_id", lambda _release_id: _release())
     finish = AsyncMock()
     monkeypatch.setattr(executor.update_repo, "finish_owner_release", finish)
+    monkeypatch.setattr(executor.update_repo, "begin_owner_release_rollback", AsyncMock(return_value=False))
 
     stale = SimpleNamespace(accept=AsyncMock(side_effect=executor.OwnerReleaseSuperseded("moved")))
     uncertain = SimpleNamespace(accept=AsyncMock(side_effect=TimeoutError("ECS describe timed out")))
 
     assert not await executor.execute_claimed_owner_release("owner", "update", "claim", runtime=stale)
-    with pytest.raises(TimeoutError):
-        await executor.execute_claimed_owner_release("owner", "update", "claim", runtime=uncertain)
+    assert not await executor.execute_claimed_owner_release("owner", "update", "claim", runtime=uncertain)
     finish.assert_not_awaited()
 
 
@@ -237,6 +312,7 @@ async def test_validation_mismatch_never_finishes_or_clears_the_pointer(monkeypa
     monkeypatch.setattr(executor, "release_by_id", lambda _release_id: _release())
     finish = AsyncMock()
     monkeypatch.setattr(executor.update_repo, "finish_owner_release", finish)
+    monkeypatch.setattr(executor.update_repo, "begin_owner_release_rollback", AsyncMock(return_value=False))
     runtime = SimpleNamespace(accept=AsyncMock(side_effect=executor.OwnerReleaseValidationError("wrong digest")))
 
     assert not await executor.execute_claimed_owner_release("owner", "update", "claim", runtime=runtime)
@@ -251,13 +327,9 @@ async def test_recovery_set_failure_never_prepares_or_mutates_the_owner(monkeypa
     container, update = _reserved("recovery_requested")
     update.update(
         pre_stop_task_arns=["arn:old-task"],
-        drain_evidence={
-            "observed_at": "now",
-            "service_desired_count": 0,
-            "service_running_count": 0,
-            "service_pending_count": 0,
-            "stopped_task_arns": ["arn:old-task"],
-        },
+        pre_stop_captured_at="2026-09-09T11:59:00+00:00",
+        source=_source(),
+        drain_evidence=_drain(),
         effect_kind="create_recovery_set",
         effect_claim_id="recovery-effect",
         effect_executor_id="claim",
@@ -287,6 +359,8 @@ async def test_stale_effect_token_cannot_reach_runtime_mutation(monkeypatch):
     container, update = _reserved("stop_requested")
     update.update(
         pre_stop_task_arns=["arn:old-task"],
+        pre_stop_captured_at="2026-09-09T11:59:00+00:00",
+        source=_source(),
         effect_kind="stop_service",
         effect_claim_id="successor-effect",
         effect_executor_id="successor",
@@ -303,6 +377,35 @@ async def test_stale_effect_token_cannot_reach_runtime_mutation(monkeypatch):
             kind="stop_service",
             effect_id="stale-effect",
         )
+
+
+@pytest.mark.asyncio
+async def test_current_effect_renews_both_release_leases(monkeypatch):
+    from core.services import openclaw_release_executor as executor
+
+    container, update = _reserved("stop_requested")
+    update.update(
+        pre_stop_task_arns=["arn:old-task"],
+        pre_stop_captured_at="2026-09-09T11:59:00+00:00",
+        source=_source(),
+        effect_kind="stop_service",
+        effect_claim_id="effect",
+        effect_executor_id="claim",
+    )
+    heartbeat = AsyncMock(return_value=True)
+    monkeypatch.setattr(executor, "_read_claimed", AsyncMock(return_value=(container, update)))
+    monkeypatch.setattr(executor.update_repo, "heartbeat_owner_release", heartbeat)
+
+    assert await executor.assert_current_effect(
+        "owner",
+        "update",
+        "claim",
+        1,
+        phase="stop_requested",
+        kind="stop_service",
+        effect_id="effect",
+    ) == (container, update)
+    heartbeat.assert_awaited_once_with(container, update, "claim")
 
 
 @pytest.mark.asyncio
@@ -339,15 +442,71 @@ async def test_drain_rejects_missing_describe_task_observation(monkeypatch):
     from core.services import openclaw_release_executor as executor
 
     runtime = executor._ReleaseRuntime.__new__(executor._ReleaseRuntime)
-    runtime.snapshot = AsyncMock(return_value={"desired_count": 0, "running_count": 0, "pending_count": 0})
-    runtime.running_tasks = AsyncMock(return_value=[])
+    runtime.snapshot = AsyncMock(
+        return_value={
+            "service_arn": "arn:service",
+            "desired_count": 0,
+            "running_count": 0,
+            "pending_count": 0,
+        }
+    )
+    runtime.service_tasks = AsyncMock(return_value=[])
     client = SimpleNamespace(describe_tasks=MagicMock(return_value={"tasks": [], "failures": []}))
     runtime.ecs = SimpleNamespace(_ecs=client, _cluster="cluster")
     monkeypatch.setattr(executor.asyncio, "to_thread", AsyncMock(side_effect=lambda fn, **kwargs: fn(**kwargs)))
     monkeypatch.setattr(executor.asyncio, "sleep", AsyncMock())
 
     with pytest.raises(executor.OwnerReleaseValidationError, match="omitted a captured task"):
-        await runtime.drain("owner", ["arn:captured"])
+        await runtime.drain("owner", ["arn:captured"], "2026-09-09T12:00:00+00:00")
+
+
+@pytest.mark.asyncio
+async def test_drain_reconciles_a_task_started_in_the_capture_to_stop_gap(monkeypatch):
+    from core.services import openclaw_release_executor as executor
+
+    runtime = executor._ReleaseRuntime.__new__(executor._ReleaseRuntime)
+    runtime.snapshot = AsyncMock(
+        return_value={
+            "service_arn": "arn:service",
+            "desired_count": 0,
+            "running_count": 0,
+            "pending_count": 0,
+        }
+    )
+    runtime.service_tasks = AsyncMock(
+        side_effect=[
+            [{"task_arn": "arn:gap-task"}],
+            [],
+            [],
+            [{"task_arn": "arn:gap-task", "created_at": "2026-09-09T12:00:01+00:00"}],
+        ]
+    )
+    runtime._describe_tasks_exact = AsyncMock(
+        return_value=[
+            {
+                "taskArn": "arn:captured",
+                "lastStatus": "STOPPED",
+                "taskDefinitionArn": "arn:old",
+                "stopCode": "ServiceSchedulerInitiated",
+                "stoppedReason": "Scaling activity initiated by service update",
+                "containers": [{"name": "openclaw", "imageDigest": f"sha256:{'b' * 64}", "exitCode": 0}],
+            },
+            {
+                "taskArn": "arn:gap-task",
+                "lastStatus": "STOPPED",
+                "taskDefinitionArn": "arn:old",
+                "stopCode": "ServiceSchedulerInitiated",
+                "stoppedReason": "Scaling activity initiated by service update",
+                "containers": [{"name": "openclaw", "imageDigest": f"sha256:{'b' * 64}", "exitCode": 0}],
+            },
+        ]
+    )
+    monkeypatch.setattr(executor.asyncio, "sleep", AsyncMock())
+
+    evidence = await runtime.drain("owner", ["arn:captured"], "2026-09-09T12:00:00+00:00")
+
+    runtime._describe_tasks_exact.assert_awaited_once_with(["arn:captured", "arn:gap-task"])
+    assert [task["task_arn"] for task in evidence["stopped_tasks"]] == ["arn:captured", "arn:gap-task"]
 
 
 @pytest.mark.asyncio
@@ -373,3 +532,78 @@ async def test_release_reservation_refuses_applying_ordinary_update(monkeypatch)
 
     assert not await executor.apply_owner_release("owner", "release")
     reserve.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_post_activation_failure_runs_fenced_compensating_rollback(monkeypatch):
+    from core.services import openclaw_release_executor as executor
+
+    container, update = _reserved("validating")
+    update.update(
+        target_task_definition_arn="arn:target",
+        staged_config_sha256="2" * 64,
+        pre_stop_task_arns=["arn:old-task"],
+        pre_stop_captured_at="2026-09-09T11:59:00+00:00",
+        source=_source(),
+        drain_evidence=_drain(),
+        recovery_set=_recovery_set(),
+    )
+
+    async def read(_owner, _update):
+        return dict(container), dict(update)
+
+    async def begin(_container, _update, _claim, *, effect_claim_id, failure_reason):
+        update.update(
+            phase="rollback_requested",
+            rollback_requested_at="now",
+            effect_kind="rollback",
+            effect_claim_id=effect_claim_id,
+            effect_executor_id="claim",
+            failure_reason=failure_reason,
+        )
+        return True
+
+    rollback_evidence = {
+        "recovery_set_id": "rs-123",
+        "source_task_definition_arn": "arn:old",
+        "source_image_digest": f"sha256:{'b' * 64}",
+        "gateway": "accepted",
+    }
+    runtime = SimpleNamespace(
+        accept=AsyncMock(side_effect=executor.OwnerReleaseValidationError("target unhealthy")),
+        rollback=AsyncMock(return_value=rollback_evidence),
+    )
+    finish = AsyncMock(return_value=True)
+    monkeypatch.setattr(executor, "_read_claimed", read)
+    monkeypatch.setattr(executor, "release_by_id", lambda _release_id: _release())
+    monkeypatch.setattr(executor.update_repo, "begin_owner_release_rollback", begin)
+    monkeypatch.setattr(executor.update_repo, "finish_owner_release_rollback", finish)
+
+    assert await executor.execute_claimed_owner_release("owner", "update", "claim", runtime=runtime)
+    runtime.rollback.assert_awaited_once()
+    finish.assert_awaited_once()
+
+
+def test_release_config_files_refuse_live_stage_and_backup_symlinks(monkeypatch, tmp_path):
+    from core.services import openclaw_release_executor as executor
+
+    owner = tmp_path / "owner"
+    owner.mkdir()
+    outside = tmp_path / "outside"
+    outside.write_text("do not touch")
+    monkeypatch.setattr(executor.settings, "EFS_MOUNT_PATH", str(tmp_path))
+    for name in (
+        "openclaw.json",
+        executor._release_filename("update", "stage"),
+        executor._release_filename("update", "backup"),
+    ):
+        (owner / name).symlink_to(outside)
+
+    with executor._OwnerConfigFiles("owner") as files:
+        with pytest.raises(executor.OwnerReleaseValidationError, match="regular file"):
+            files.read_regular("openclaw.json")
+        with pytest.raises(executor.OwnerReleaseValidationError, match="regular file"):
+            files.atomic_write_regular(executor._release_filename("update", "stage"), b"{}")
+        with pytest.raises(executor.OwnerReleaseValidationError, match="regular file"):
+            files.atomic_write_regular(executor._release_filename("update", "backup"), b"{}")
+    assert outside.read_text() == "do not touch"

@@ -376,17 +376,18 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
     // A recovery set is produced only after the release executor has stopped
-    // the owner's service. The provider inventories and server-side copies the
-    // shared DB plus every non-tombstoned agent DB; it never reads the live
-    // replica bodies. Keep this separate from the default-agent OAuth read so
-    // the broader, migration-only permission remains explicit and auditable.
+    // the owner's service. The provider server-side copies the shared DB,
+    // every non-tombstoned agent DB, and tombstones into immutable artifacts.
+    // Compensating rollback writes only those exact pinned objects back while
+    // the service remains stopped. Keep this migration-only grant explicit.
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
-        sid: "RecoverySetReplicaRead",
-        actions: ["s3:GetObject"],
+        sid: "RecoverySetReplicaBackupRestore",
+        actions: ["s3:GetObject", "s3:PutObject"],
         resources: [
           `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*/state/openclaw.sqlite/*`,
           `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*/agents/*/agent/openclaw-agent.sqlite/*`,
+          `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*/agents/*/.replica-deleted`,
         ],
       }),
     );

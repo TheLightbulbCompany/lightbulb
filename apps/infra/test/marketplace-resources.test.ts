@@ -247,19 +247,23 @@ describe("ServiceStack — marketplace S3 bucket", () => {
     expect(JSON.stringify(deny.Principal)).toContain("TaskRole");
   });
 
-  test("backend can read only the live Litestream database paths needed for recovery", () => {
+  test("backend can back up and restore only the live Litestream recovery paths", () => {
     const policies = template.findResources("AWS::IAM::Policy");
     const statements = Object.values(policies).flatMap(
       (policy) => policy.Properties.PolicyDocument.Statement,
     );
     const read = statements.find(
-      (statement) => statement.Sid === "RecoverySetReplicaRead",
+      (statement) => statement.Sid === "RecoverySetReplicaBackupRestore",
     );
 
-    expect(read).toMatchObject({ Effect: "Allow", Action: "s3:GetObject" });
+    expect(read).toMatchObject({
+      Effect: "Allow",
+      Action: expect.arrayContaining(["s3:GetObject", "s3:PutObject"]),
+    });
     const resources = JSON.stringify(read.Resource);
     expect(resources).toContain("*/state/openclaw.sqlite/*");
     expect(resources).toContain("*/agents/*/agent/openclaw-agent.sqlite/*");
+    expect(resources).toContain("*/agents/*/.replica-deleted");
     expect(resources).not.toContain("recovery-sets");
   });
 });

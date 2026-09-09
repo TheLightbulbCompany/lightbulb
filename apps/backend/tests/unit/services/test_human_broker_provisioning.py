@@ -276,6 +276,91 @@ async def test_local_access_marker_cannot_replace_central_clerk_lifecycle(harnes
 
 
 @pytest.mark.asyncio
+async def test_ensure_serializes_the_full_owner_effect_sequence(harness, monkeypatch):
+    lock = asyncio.Lock()
+    first_runtime_started = asyncio.Event()
+    release_first_runtime = asyncio.Event()
+    second_lock_attempted = asyncio.Event()
+    attempts = 0
+    active_guards = 0
+    max_active_guards = 0
+    runtime_calls = 0
+
+    @asynccontextmanager
+    async def tracked_guard(owner_id):
+        nonlocal attempts, active_guards, max_active_guards
+        assert owner_id == "org_founder"
+        attempts += 1
+        if attempts == 2:
+            second_lock_attempted.set()
+        async with lock:
+            active_guards += 1
+            max_active_guards = max(max_active_guards, active_guards)
+            try:
+                yield
+            finally:
+                active_guards -= 1
+
+    async def paused_runtime(owner_id):
+        nonlocal runtime_calls
+        assert active_guards == 1
+        runtime_calls += 1
+        if runtime_calls == 1:
+            first_runtime_started.set()
+            await release_first_runtime.wait()
+        return {"owner_id": owner_id, "gateway_token": "gateway-secret"}, "10.0.0.8", "gateway-secret"
+
+    monkeypatch.setattr(provisioner, "owner_lifecycle_guard", tracked_guard)
+    monkeypatch.setattr(provisioner, "_runtime", paused_runtime)
+
+    first = asyncio.create_task(provisioner.ensure_human_device(_human("user_alice"), harness.conn_svc))
+    await first_runtime_started.wait()
+    second = asyncio.create_task(provisioner.ensure_human_device(_human("user_bob"), harness.conn_svc))
+    await asyncio.wait_for(second_lock_attempted.wait(), timeout=1)
+
+    assert runtime_calls == 1
+    assert max_active_guards == 1
+
+    release_first_runtime.set()
+    await asyncio.gather(first, second)
+    assert runtime_calls == 2
+    assert max_active_guards == 1
+
+
+@pytest.mark.asyncio
+async def test_clerk_revocation_effects_run_inside_owner_lifecycle_guard(harness, monkeypatch):
+    human = _human("user_alice")
+    held = False
+    events = []
+
+    @asynccontextmanager
+    async def tracked_guard(owner_id):
+        nonlocal held
+        assert owner_id == human.owner_id
+        held = True
+        events.append("guard-entered")
+        try:
+            yield
+        finally:
+            events.append("guard-exited")
+            held = False
+
+    async def revoke_effect(identity, **kwargs):
+        assert held is True
+        assert identity == HumanIdentity(human.owner_id, human.issuer, human.subject, "", "")
+        events.append("revoked")
+        return None
+
+    monkeypatch.setattr(provisioner, "owner_lifecycle_guard", tracked_guard)
+    monkeypatch.setattr(provisioner, "_revoke_human_device", revoke_effect)
+
+    outcome = await provisioner.revoke_human_subject(human.owner_id, human.issuer, human.subject)
+
+    assert outcome is provisioner.HumanRevocationOutcome.APPLIED
+    assert events == ["guard-entered", "revoked", "guard-exited"]
+
+
+@pytest.mark.asyncio
 async def test_two_verified_humans_get_distinct_durable_profiles_and_authorship(harness):
     alice, bob = _human("user_alice"), _human("user_bob")
 

@@ -28,13 +28,14 @@ vi.mock("@/hooks/useTeamsApi", () => ({
 }));
 
 let gatewayState = { nodeConnected: false, nodeStatus: "disconnected" };
-let gatewayListener: ((message: {
+type GatewayListener = (message: {
   type: string;
   active?: boolean;
   agent_id?: string;
   session_id?: string;
-}) => void) | null = null;
-const onChatMessage = vi.fn((listener: typeof gatewayListener) => {
+}) => void;
+let gatewayListener: GatewayListener | null = null;
+let onChatMessage = vi.fn((listener: GatewayListener) => {
   gatewayListener = listener;
   return () => {};
 });
@@ -88,7 +89,10 @@ beforeEach(() => {
   teamsAgentsData = undefined;
   gatewayState = { nodeConnected: false, nodeStatus: "disconnected" };
   gatewayListener = null;
-  onChatMessage.mockClear();
+  onChatMessage = vi.fn((listener: GatewayListener) => {
+    gatewayListener = listener;
+    return () => {};
+  });
   openPanel.mockClear();
   pause.mockClear();
   resume.mockClear();

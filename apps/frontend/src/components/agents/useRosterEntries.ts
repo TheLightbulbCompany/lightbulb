@@ -52,6 +52,17 @@ interface RosterAgentRow {
 
 /** Sentinel for a `run_active` frame that arrived without a `session_id`. */
 const UNKEYED_SESSION = "__unkeyed__";
+type ChatMessageSubscriber = ReturnType<typeof useGateway>["onChatMessage"];
+const EMPTY_LIVE_RUNS: ReadonlyMap<string, ReadonlySet<string>> = new Map();
+
+// One cache per GatewayProvider connection. Every hook instance still owns
+// its React subscription, but a panel mounted after run_active can seed from
+// the sidebar's already-observed state. Weak keys prevent one signed-in
+// provider lifetime from leaking into the next.
+const liveRunsByGateway = new WeakMap<
+  ChatMessageSubscriber,
+  ReadonlyMap<string, ReadonlySet<string>>
+>();
 
 /**
  * Liveness for the `/teams/agents` key, owned by this hook so BOTH hosts get
@@ -82,7 +93,7 @@ const ROSTER_SWR = { refreshInterval: 30_000, revalidateOnFocus: true };
 function useLiveRunAgentIds(): ReadonlySet<string> {
   const { onChatMessage } = useGateway();
   const [live, setLive] = useState<ReadonlyMap<string, ReadonlySet<string>>>(
-    () => new Map(),
+    () => liveRunsByGateway.get(onChatMessage) ?? EMPTY_LIVE_RUNS,
   );
 
   useEffect(() => {
@@ -102,17 +113,20 @@ function useLiveRunAgentIds(): ReadonlySet<string> {
           ? msg.session_id
           : UNKEYED_SESSION;
 
-      setLive((prev) => {
-        const sessions = prev.get(agentId);
-        if (active ? sessions?.has(sessionId) : !sessions?.has(sessionId)) return prev;
-        const next = new Map(prev);
+      const prev = liveRunsByGateway.get(onChatMessage) ?? EMPTY_LIVE_RUNS;
+      const sessions = prev.get(agentId);
+      let current = prev;
+      if (active ? !sessions?.has(sessionId) : sessions?.has(sessionId)) {
+        const updatedRuns = new Map(prev);
         const updated = new Set(sessions ?? []);
         if (active) updated.add(sessionId);
         else updated.delete(sessionId);
-        if (updated.size) next.set(agentId, updated);
-        else next.delete(agentId);
-        return next;
-      });
+        if (updated.size) updatedRuns.set(agentId, updated);
+        else updatedRuns.delete(agentId);
+        current = updatedRuns;
+      }
+      liveRunsByGateway.set(onChatMessage, current);
+      setLive(current);
     });
   }, [onChatMessage]);
 

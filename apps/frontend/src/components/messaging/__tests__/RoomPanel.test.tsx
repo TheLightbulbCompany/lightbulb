@@ -158,6 +158,15 @@ describe("controlled room surface", () => {
     expect(textbox).toBeVisible();
   });
 
+  it("returns focus to the room action after opening work from a selected thread", () => {
+    render(<RoomPanel {...props({ narrow: true })} />);
+    const trigger = screen.getAllByRole("button", { name: "Reply" })[1];
+    fireEvent.click(trigger);
+    fireEvent.click(within(screen.getByRole("complementary", { name: "Thread" })).getByRole("button", { name: "Review synthetic change" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to conversation" }));
+    expect(trigger).toHaveFocus();
+  });
+
   it.each(["loading", "unavailable", "reconnecting"] as const)("presents %s without fake history or audience claims", (state) => {
     render(<RoomPanel {...props({ state, room: undefined, messages: [], participants: [] })} />);
     expect(screen.queryByText("Private room")).not.toBeInTheDocument();

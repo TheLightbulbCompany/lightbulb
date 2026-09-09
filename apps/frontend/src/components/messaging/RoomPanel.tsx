@@ -107,8 +107,9 @@ function RoomContent({ roomId, room, state, participants, messages, presence = [
     if (selection?.kind === "thread") onSelectThread?.(null);
     setSelection(null);
   }
-  function openDetail(kind: "thread" | "context", targetId: string, button: HTMLButtonElement) {
-    trigger.current = button;
+  function openDetail(kind: "thread" | "context", targetId: string, button: HTMLButtonElement, fromThread = false) {
+    // A work link inside a thread unmounts when selected. Keep the room's opener.
+    if (!fromThread) trigger.current = button;
     if (kind === "thread") onSelectThread?.(targetId);
     else if (selection?.kind === "thread") onSelectThread?.(null);
     setSelection({ kind, id: targetId });
@@ -132,7 +133,7 @@ function RoomContent({ roomId, room, state, participants, messages, presence = [
         {message.contextIds?.map(contextId => {
           const context = contexts.find(record => record.id === contextId);
           return context && <Button key={contextId} type="button" variant="outline" className="room-work-link" disabled={!actionable}
-            onClick={event => openDetail("context", context.id, event.currentTarget)}>{context.title}</Button>;
+            onClick={event => openDetail("context", context.id, event.currentTarget, replies)}>{context.title}</Button>;
         })}
         {!replies && <Button type="button" variant="ghost" className="room-reply" disabled={!actionable}
           onClick={event => openDetail("thread", message.id, event.currentTarget)}><MessageCircle aria-hidden="true" />Reply</Button>}

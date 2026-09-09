@@ -395,7 +395,7 @@ jobs:
           # the workflow's single push. This is the digest ECR must retain for
           # the deploy tag; a child manifest or the pre-conversion Docker
           # digest is not sufficient.
-          EXPECTED_DIGEST=$(sudo nerdctl image inspect "${IMAGE_REF}" --format '{{.Target.Digest}}')
+          EXPECTED_DIGEST=$(sudo nerdctl image inspect --mode=native "${IMAGE_REF}" --format '{{.Image.Target.Digest}}')
           EXPECTED_DIGEST=$(printf '%s\n' "${EXPECTED_DIGEST}" \
             | node scripts/openclaw-image-proof.mjs canonical-digest)
 

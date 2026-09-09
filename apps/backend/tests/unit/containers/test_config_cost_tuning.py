@@ -181,6 +181,10 @@ class TestLlmTaskRouting:
                 "defaultProvider": "amazon-bedrock",
                 "defaultModel": _AIPS["haiku"],
             },
+            "llm": {
+                "allowModelOverride": True,
+                "allowedCompletionModels": [f"amazon-bedrock/{_AIPS['haiku']}"],
+            },
         }
 
     def test_llm_task_unpinned_where_no_cheap_tier(self):
@@ -201,3 +205,11 @@ class TestLlmTaskRouting:
             "defaultProvider": "openai",
             "defaultModel": "gpt-5.4-mini",
         }
+        for entry, target in (
+            (anthropic, "anthropic/claude-haiku-4-5"),
+            (openai, "openai/gpt-5.4-mini"),
+        ):
+            assert entry["llm"] == {
+                "allowModelOverride": True,
+                "allowedCompletionModels": [target],
+            }

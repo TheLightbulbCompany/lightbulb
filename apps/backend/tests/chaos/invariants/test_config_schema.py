@@ -16,31 +16,18 @@ import pytest
 from hypothesis import given, settings
 
 from core.containers.config import build_openclaw_config_dict
-from core.services.config_schema import _normalized_for_validation
+from core.services.config_schema import _SCHEMA_PATHS, _normalized_for_validation
 from tests.chaos import strategies as ss
 
 _SCHEMA_DIR = Path(__file__).resolve().parents[1] / "_schema"
 _VALIDATE = _SCHEMA_DIR / "validate.mjs"
-_BUNDLE = _SCHEMA_DIR / "openclaw-config-schema.mjs"
-_PINNED_TAG = _SCHEMA_DIR / "PINNED_TAG"
+_LEGACY_ID = "2026.8.1-isol8.3"
 
 
-def _vendored_tag() -> str | None:
-    """The extended tag the vendored zod bundle was generated FROM.
-
-    The config's shape is chosen by the image it will run on, so this test has
-    to generate for the image whose schema it validates against. That used to
-    be implicit -- it held only while openclaw-version.json's per-env pins and
-    the vendored bundle happened to be the same upstream version. They can
-    diverge for real: after the 8.1 rollback the pins went back to 7.2 while
-    `upstream` (and therefore the bundle) deliberately stayed on 8.1, so the
-    builder emitted the 7.2 shape and this test failed it against an 8.1
-    schema -- a mismatch in the HARNESS, not in the config.
-    """
-    if not _PINNED_TAG.exists():
-        return None
-    ref = _PINNED_TAG.read_text().strip()
-    return ref.rsplit(":", 1)[-1] or None
+def _bundle_path(schema_id: str) -> Path:
+    if schema_id == _LEGACY_ID:
+        return _SCHEMA_DIR / "openclaw-config-schema.mjs"
+    return _SCHEMA_DIR / "releases" / schema_id / "openclaw-config-schema.mjs"
 
 
 _DUMMY_AIP = {
@@ -63,6 +50,7 @@ def _build(
     byo_provider: str,
     owner_type: str,
     paperclip_agents: list[dict] | None = None,
+    schema_id: str = _LEGACY_ID,
 ) -> dict:
     return build_openclaw_config_dict(
         user_id="user_chaos_0",
@@ -72,7 +60,7 @@ def _build(
         owner_type=owner_type,
         aip_arns=_AIPS_BY_CHOICE.get(provider_choice),
         paperclip_agents=paperclip_agents,
-        deployed_tag=_vendored_tag(),
+        deployed_tag=schema_id,
         # An mcp block is what makes mcp.runtimeScope reachable; without one the
         # key is never written and the schema never sees it.
         integration_mcp_servers={"stripe": {"command": "npx", "args": ["-y", "@stripe/mcp"]}},
@@ -93,19 +81,34 @@ def test_builder_never_raises(provider_choice, byo_provider, owner_type, papercl
 
 
 @pytest.mark.chaos
-@pytest.mark.skipif(
-    not _BUNDLE.exists(),
-    reason="zod schema bundle not vendored — run scripts/vendor_openclaw_schema.sh",
+@pytest.mark.parametrize("schema_id", tuple(_SCHEMA_PATHS))
+@pytest.mark.parametrize(
+    "provider_choice,byo_provider,owner_type,paperclip_agents",
+    [
+        pytest.param("bedrock_trial", "anthropic", "personal", [], id="trial"),
+        pytest.param(
+            "bedrock_claude",
+            "anthropic",
+            "org",
+            [
+                {"id": "agent_friday", "name": "Friday", "role": "ceo"},
+                {"id": "agent_atlas", "name": "Atlas", "role": "general"},
+            ],
+            id="managed-multi-agent",
+        ),
+        pytest.param("byo_key", "openai", "org", [], id="byo"),
+        pytest.param("chatgpt_oauth", "anthropic", "personal", [], id="chatgpt-oauth"),
+    ],
 )
-@settings(max_examples=50)
-@given(
-    provider_choice=ss.provider_choices,
-    byo_provider=ss.byo_providers,
-    owner_type=ss.owner_types,
-    paperclip_agents=ss.paperclip_rosters,
-)
-def test_emitted_config_passes_upstream_schema(provider_choice, byo_provider, owner_type, paperclip_agents):
-    config = _build(provider_choice, byo_provider, owner_type, paperclip_agents)
+def test_emitted_config_passes_selected_schema(
+    schema_id, provider_choice, byo_provider, owner_type, paperclip_agents
+):
+    bundle = _bundle_path(schema_id)
+    assert bundle.is_file(), f"registered schema bundle is missing: {bundle}"
+    config = _build(provider_choice, byo_provider, owner_type, paperclip_agents, schema_id)
+    assert config["mcp"]["runtimeScope"] == "shared"
+    assert config["browser"]["sessionState"]["enabled"] is True
+    assert any(entry.get("enabled") is True for entry in config["plugins"]["entries"].values())
     # OpenClaw NEVER safeParses a raw on-disk config: validateConfigObject
     # (validation-core.ts:423) runs migratePersistedImplicitMainRoster FIRST,
     # converting the legacy agents.list[] roster into 8.1's agents.entries map,
@@ -115,11 +118,11 @@ def test_emitted_config_passes_upstream_schema(provider_choice, byo_provider, ow
     # base moved to 8.1. Validate the migrated form, through the same mirror the
     # production write-gate uses, so the harness and the gate agree.
     proc = subprocess.run(
-        ["node", str(_VALIDATE)],
+        ["node", str(_VALIDATE), str(bundle)],
         input=json.dumps(_normalized_for_validation(config)),
         capture_output=True,
         text=True,
     )
     assert proc.returncode == 0, (
-        f"Emitted openclaw.json failed upstream zod schema:\n{proc.stderr}\nconfig={json.dumps(config, indent=2)}"
+        f"Emitted openclaw.json failed selected schema {schema_id}:\n{proc.stderr}"
     )

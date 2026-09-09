@@ -170,13 +170,14 @@ def test_explicit_schema_real_artifact_matches_default_diagnostics():
     assert config_schema.schema_errors(invalid, schema_id="2026.8.1-isol8.3") == config_schema.schema_errors(invalid)
 
 
-def test_explicit_schema_rejects_unregistered_path_without_opening(monkeypatch):
+@pytest.mark.parametrize("schema_id", ["../openclaw_config.schema", "", "2026.9.3-unregistered"])
+def test_explicit_schema_rejects_unregistered_selector_without_opening(monkeypatch, schema_id):
     def fail_if_opened(*args, **kwargs):
         raise AssertionError("unregistered schema identifier reached the filesystem")
 
     monkeypatch.setattr(config_schema.Path, "read_text", fail_if_opened)
     with pytest.raises(config_schema.ConfigSchemaError, match="required OpenClaw config schema is unavailable"):
-        config_schema.schema_errors(VALID_CONFIG, schema_id="../openclaw_config.schema")
+        config_schema.schema_errors(VALID_CONFIG, schema_id=schema_id)
 
 
 def test_explicit_schema_preserves_audit_and_enforce_policy(caplog):

@@ -285,6 +285,8 @@ async function runDispatchSmoke(configPath, baseEnv) {
     ...baseEnv,
     OPENAI_API_KEY: "qualification-openai-key",
     OPENAI_BASE_URL: inference.baseUrl,
+    OPENCLAW_URL: `http://127.0.0.1:${GATEWAY_PORT}`,
+    OPENCLAW_TOKEN: GATEWAY_TOKEN,
     OPENCLAW_GATEWAY_URL: `ws://127.0.0.1:${GATEWAY_PORT}`,
     OPENCLAW_GATEWAY_TOKEN: GATEWAY_TOKEN,
   };

@@ -41,7 +41,9 @@ CLERK_ISSUER = os.environ.get("CLERK_ISSUER", "")
 # the token). Comma-separated allowlist; empty disables the check. Native-app
 # tokens have no `azp` and always pass (Clerk SDK semantics).
 CLERK_AUTHORIZED_PARTIES = frozenset(
-    p.strip() for p in os.environ.get("CLERK_AUTHORIZED_PARTIES", "").split(",") if p.strip()
+    p.strip()
+    for p in os.environ.get("CLERK_AUTHORIZED_PARTIES", "").split(",")
+    if p.strip()
 )
 # "audit" → log + EMF metric on mismatch, never deny; "enforce" → deny.
 CLERK_AZP_MODE = os.environ.get("CLERK_AZP_MODE", "audit")
@@ -105,9 +107,7 @@ def _emit_metric(metric_name: str, value: int) -> None:
                         }
                     ],
                 },
-                "FunctionName": os.environ.get(
-                    "AWS_LAMBDA_FUNCTION_NAME", "unknown"
-                ),
+                "FunctionName": os.environ.get("AWS_LAMBDA_FUNCTION_NAME", "unknown"),
                 metric_name: value,
             }
         )
@@ -155,7 +155,9 @@ def get_jwks_client() -> PyJWKClient:
     return _jwks_client
 
 
-def generate_policy(principal_id: str, effect: str, resource: str, context: dict = None) -> dict:
+def generate_policy(
+    principal_id: str, effect: str, resource: str, context: dict = None
+) -> dict:
     """
     Generate IAM policy document for WebSocket API authorizer.
 
@@ -380,7 +382,7 @@ def handler(event: dict, context: Any) -> dict:
                 # Clerk session tokens carry no `aud`; the origin check is the
                 # `azp` claim, validated below (SEC-8).
                 "verify_aud": False,
-            }
+            },
         )
 
         if not _azp_allowed(payload):
@@ -409,7 +411,7 @@ def handler(event: dict, context: Any) -> dict:
                 "authKind": "clerk_user",
                 "verifiedIssuer": payload["iss"],
                 "verifiedSubject": user_id,
-            }
+            },
         )
 
     except jwt.ExpiredSignatureError:

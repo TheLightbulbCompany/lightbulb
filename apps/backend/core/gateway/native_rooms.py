@@ -157,6 +157,7 @@ def _object(properties: dict, required=()):
 
 
 _STRING = {"type": "string", "minLength": 1, "maxLength": 512}
+_MENTION_REFERENCE = {"type": "string", "minLength": 1, "maxLength": 256}
 _TARGET = {"sessionKey": _STRING, "agentId": _STRING}
 _KEY = {"key": _STRING, "agentId": _STRING}
 _MENTIONS = {
@@ -164,7 +165,7 @@ _MENTIONS = {
     "maxItems": 10,
     "items": _object(
         {
-            "profileId": {"type": "string", "minLength": 1, "maxLength": 256},
+            "profileId": _MENTION_REFERENCE,
             "start": {"type": "integer", "minimum": 0},
             "end": {"type": "integer", "minimum": 1},
         },
@@ -202,6 +203,7 @@ _SCHEMAS = {
             **_TARGET,
             "cursor": {"type": "string"},
             "sessionId": _STRING,
+            "messageId": _STRING,
             "limit": {"type": "integer", "minimum": 1, "maximum": 200},
             "offset": {"type": "integer", "minimum": 0},
         },
@@ -230,10 +232,12 @@ _SCHEMAS = {
         },
         ("sessionKey", "sessionId", "typing"),
     ),
-    "users.mentionable": _object({**_TARGET, "query": {"type": "string", "maxLength": 128}}, ("sessionKey",)),
+    "users.mentionable": _object(
+        {**_TARGET, "agentId": _MENTION_REFERENCE, "query": {"type": "string", "maxLength": 128}}, ("sessionKey",)
+    ),
     "mentions.list": _object({}),
     "mentions.dismiss": _object(
-        {"ids": {"type": "array", "maxItems": 100, "uniqueItems": True, "items": _STRING}}, ("ids",)
+        {"ids": {"type": "array", "maxItems": 100, "uniqueItems": True, "items": _MENTION_REFERENCE}}, ("ids",)
     ),
 }
 _VALIDATORS = {method: Draft202012Validator(schema) for method, schema in _SCHEMAS.items()}
@@ -248,6 +252,15 @@ def admit_rpc(method: str, params: dict, identity: HumanIdentity, qualification:
     if validator is None or not validator.is_valid(params):
         raise RoomError("INVALID_REQUEST", "Unsupported room method or arguments")
     admitted = dict(params)
+    if method == "chat.history":
+        # Frozen chat-history-handler.ts rejects these selector combinations
+        # before lookup; native transcript-to-canonical-key ownership stays upstream.
+        if "sessionId" in params and "messageId" not in params:
+            raise RoomError("INVALID_REQUEST", "sessionId requires messageId")
+        if "offset" in params and "messageId" in params:
+            raise RoomError("INVALID_REQUEST", "offset and messageId cannot be used together")
+        if "cursor" in params and ("offset" in params or "messageId" in params):
+            raise RoomError("INVALID_REQUEST", "cursor cannot be used with offset or messageId")
     if method == "sessions.create":
         agent = params["agentId"]
         if agent not in qualification.agents:

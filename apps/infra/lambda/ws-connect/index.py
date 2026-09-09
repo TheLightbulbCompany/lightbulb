@@ -1,4 +1,5 @@
 """WebSocket $connect handler — stores connection in DynamoDB, notifies backend."""
+
 import os
 import urllib.request
 import boto3
@@ -31,7 +32,12 @@ def _get_ws_internal_secret():
     if not arn:
         return ""
     try:
-        value = boto3.client("secretsmanager").get_secret_value(SecretId=arn).get("SecretString", "") or ""
+        value = (
+            boto3.client("secretsmanager")
+            .get_secret_value(SecretId=arn)
+            .get("SecretString", "")
+            or ""
+        )
     except Exception as e:
         logger.warning("Failed to fetch WS internal secret: %s", e)
         return ""
@@ -45,7 +51,9 @@ def handler(event, context):
     user_id = authorizer.get("userId", "")
     org_id = authorizer.get("orgId", "")
 
-    logger.info("WebSocket connect: connection_id=%s user_id=%s", connection_id, user_id)
+    logger.info(
+        "WebSocket connect: connection_id=%s user_id=%s", connection_id, user_id
+    )
 
     # Forward clientId from query for FastAPI ws_connect to recognize node-host
     # vs operator/control-ui connections. Only known values (node-host,
@@ -78,22 +86,30 @@ def handler(event, context):
     else:
         connection_type = "chat"
 
-    provenance = {
-        "authKind": authorizer.get("authKind", ""),
-        "verifiedIssuer": authorizer.get("verifiedIssuer", ""),
-        "verifiedSubject": authorizer.get("verifiedSubject", ""),
-        "sourceIp": (event["requestContext"].get("identity") or {}).get("sourceIp", ""),
-        "ttl": int(time.time()) + 7200,
-    } if native_human else {}
-    table.put_item(Item={
-        "connectionId": connection_id,
-        "userId": user_id,
-        "orgId": org_id or "",
-        "ownerId": org_id or user_id,  # owner = org for org members, else the user
-        "connectionType": connection_type,
-        "connectedAt": str(event["requestContext"].get("connectedAt", "")),
-        **provenance,
-    })
+    provenance = (
+        {
+            "authKind": authorizer.get("authKind", ""),
+            "verifiedIssuer": authorizer.get("verifiedIssuer", ""),
+            "verifiedSubject": authorizer.get("verifiedSubject", ""),
+            "sourceIp": (event["requestContext"].get("identity") or {}).get(
+                "sourceIp", ""
+            ),
+            "ttl": int(time.time()) + 7200,
+        }
+        if native_human
+        else {}
+    )
+    table.put_item(
+        Item={
+            "connectionId": connection_id,
+            "userId": user_id,
+            "orgId": org_id or "",
+            "ownerId": org_id or user_id,  # owner = org for org members, else the user
+            "connectionType": connection_type,
+            "connectedAt": str(event["requestContext"].get("connectedAt", "")),
+            **provenance,
+        }
+    )
 
     headers = {
         "x-connection-id": connection_id,

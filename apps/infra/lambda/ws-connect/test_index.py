@@ -1,6 +1,5 @@
 """Tests for $connect Lambda forwarding semantics."""
 
-import importlib
 import os
 import sys
 from unittest.mock import MagicMock, patch
@@ -23,11 +22,14 @@ def lambda_env(monkeypatch):
         if here not in sys.path:
             sys.path.insert(0, here)
         import index  # noqa: F401
+
         yield
         sys.modules.pop("index", None)
 
 
-def _make_event(*, qs=None, headers=None, connection_id="abc123", user_id="user_alice", org_id=None):
+def _make_event(
+    *, qs=None, headers=None, connection_id="abc123", user_id="user_alice", org_id=None
+):
     return {
         "requestContext": {
             "connectionId": connection_id,
@@ -118,9 +120,20 @@ def test_connect_writes_connection_type_node():
 def test_native_room_uses_verified_context_not_external_headers():
     import index
 
-    event = _make_event(qs={"clientId": "lightbulb-company-room", "verifiedIssuer": "forged"},
-        org_id="org_team", headers={"x-openclaw-scopes": "operator.admin", "x-user-id": "forged", "x-verified-issuer": "forged"})
-    event["requestContext"]["authorizer"].update(authKind="clerk_user", verifiedIssuer="https://verified.test", verifiedSubject="user_alice")
+    event = _make_event(
+        qs={"clientId": "lightbulb-company-room", "verifiedIssuer": "forged"},
+        org_id="org_team",
+        headers={
+            "x-openclaw-scopes": "operator.admin",
+            "x-user-id": "forged",
+            "x-verified-issuer": "forged",
+        },
+    )
+    event["requestContext"]["authorizer"].update(
+        authKind="clerk_user",
+        verifiedIssuer="https://verified.test",
+        verifiedSubject="user_alice",
+    )
     event["requestContext"]["identity"] = {"sourceIp": "198.51.100.10"}
     captured, fake_urlopen = _capture_headers()
     with patch("index.urllib.request.urlopen", side_effect=fake_urlopen):
@@ -139,7 +152,11 @@ def test_native_room_rejects_unverified_and_nonhuman_auth(auth_kind):
     import index
 
     event = _make_event(qs={"clientId": "lightbulb-company-room"}, org_id="org_team")
-    event["requestContext"]["authorizer"].update(authKind=auth_kind, verifiedIssuer="https://verified.test", verifiedSubject="user_alice")
+    event["requestContext"]["authorizer"].update(
+        authKind=auth_kind,
+        verifiedIssuer="https://verified.test",
+        verifiedSubject="user_alice",
+    )
     assert index.handler(event, None)["statusCode"] == 403
     index.table.put_item.assert_not_called()
 
@@ -148,15 +165,25 @@ def test_native_room_backend_refusal_does_not_leave_connection_admitted():
     import index
 
     event = _make_event(qs={"clientId": "lightbulb-company-room"}, org_id="org_team")
-    event["requestContext"]["authorizer"].update(authKind="clerk_user", verifiedIssuer="https://verified.test", verifiedSubject="user_alice")
-    with patch("index.urllib.request.urlopen", side_effect=RuntimeError("qualification unavailable")):
+    event["requestContext"]["authorizer"].update(
+        authKind="clerk_user",
+        verifiedIssuer="https://verified.test",
+        verifiedSubject="user_alice",
+    )
+    with patch(
+        "index.urllib.request.urlopen",
+        side_effect=RuntimeError("qualification unavailable"),
+    ):
         assert index.handler(event, None)["statusCode"] == 403
     index.table.delete_item.assert_called_once_with(Key={"connectionId": "abc123"})
     assert _put_item_for(qs={"clientId": "openclaw-macos"})["connectionType"] == "node"
 
 
 def test_connect_writes_connection_type_operator():
-    assert _put_item_for(qs={"clientId": "paperclip-operator"})["connectionType"] == "operator"
+    assert (
+        _put_item_for(qs={"clientId": "paperclip-operator"})["connectionType"]
+        == "operator"
+    )
 
 
 def test_connect_defaults_connection_type_chat():
@@ -177,12 +204,15 @@ def test_attaches_ws_internal_header_when_secret_configured(monkeypatch):
     attaches it as x-lightbulb-ws-internal so the backend can authenticate the caller."""
     import index
 
-    monkeypatch.setenv("WS_INTERNAL_SECRET_SECRET_ARN", "arn:aws:secretsmanager:us-east-1:0:secret:ws")
+    monkeypatch.setenv(
+        "WS_INTERNAL_SECRET_SECRET_ARN", "arn:aws:secretsmanager:us-east-1:0:secret:ws"
+    )
     fake_sm = MagicMock()
     fake_sm.get_secret_value.return_value = {"SecretString": "s3cr3t-value"}
     captured, fake_urlopen = _capture_headers()
-    with patch("index.boto3.client", return_value=fake_sm), patch(
-        "index.urllib.request.urlopen", side_effect=fake_urlopen
+    with (
+        patch("index.boto3.client", return_value=fake_sm),
+        patch("index.urllib.request.urlopen", side_effect=fake_urlopen),
     ):
         index.handler(_make_event(qs={"token": "j"}), None)
     assert captured["headers_lc"].get("x-lightbulb-ws-internal") == "s3cr3t-value"

@@ -331,9 +331,6 @@ class GatewayConnection:
         # by-owner-id GSI via this service — so any backend instance can deliver
         # to all of an owner's tabs/devices. Defaults to the module singleton.
         self._conn_svc = conn_svc or ConnectionService()
-        from core.gateway.native_rooms import NativeRoomPool
-
-        self.native_rooms = NativeRoomPool(management_api, self._conn_svc)
         # Short-TTL cache of the owner's recipient set so we don't query DDB
         # per streamed chunk. Invalidated on a dead-conn prune.
         self._recipients_cache: Optional[list[tuple[str, str, str]]] = None
@@ -2891,6 +2888,9 @@ class GatewayConnectionPool:
         # fan-out (query_by_owner on the by-owner-id GSI). Defaults to a fresh
         # instance — the same wiring as the module singleton elsewhere.
         self._conn_svc = conn_svc or ConnectionService()
+        from core.gateway.native_rooms import NativeRoomPool
+
+        self.native_rooms = NativeRoomPool(management_api, self._conn_svc)
         self._connections: Dict[str, GatewayConnection] = {}
         self._frontend_connections: Dict[str, Set[str]] = {}  # owner_id -> set of conn_ids
         self._lock = asyncio.Lock()

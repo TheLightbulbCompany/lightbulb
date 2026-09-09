@@ -90,3 +90,145 @@ git diff --check
 ```
 
 The sole code-file delta splits four provenance mapping tuples onto separate lines. No behavior change; no broader tests rerun. Commit contains only that file and this report; no push performed.
+
+## Review fix round 1 — I1/I2 and M1/M2
+
+Read the complete task review against original feature commit `9eba0426bf7c9858faa7fd6b4a4ec220ce5d39dc`; retained formatting commit `9d7c4fff8072589b3e70fa0f15ec8aa8c8982227`. This round follows the controller's paired-selector ruling; no scope, auth activation or runtime qualification change.
+
+### Corrections and exact contract
+
+- **I1:** moved `NativeRoomPool` construction out of `GatewayConnection` into the actual `GatewayConnectionPool` constructor. The native harness now constructs that real shared pool, never injects a mock `.native_rooms` attribute, and tears down through its real `close_all()`. Only external transport/storage/membership/billing dependencies and legacy-RPC non-call observation are mocked. New integration cases exercise native route admission, Lambda-first durable-row deletion followed by native disconnect, shared shutdown, and the actual membership-deletion webhook for ordinary legacy sockets while `_qualified_owners == {}`. The latter verifies connection/subscription removal, preservation of the other member, and subsequent Paperclip archive/close plus seat synchronization.
+- **I2:** `chat.history` now accepts optional nonempty `messageId` (bounded to the existing 512-character subset), alone or paired with `sessionId`. A `sessionId` requires `messageId`; offset/messageId and cursor/(offset or messageId) combinations are rejected before any dial. Full owner/agent/room `sessionKey` authorization is unchanged. Both selectors are forwarded unchanged, and transcript-to-canonical-key ownership stays authoritative upstream. Focused cases cover both successful selectors, four invalid combinations, native foreign-transcript rejection with the error preserved, and backend rejection of a foreign/private full key before an upstream call. The synthetic gateway models these specific frozen constraints; it does not prove real native transcript behavior.
+- Frozen native evidence: read `src/gateway/server-methods/chat-history-handler.ts:160–180` (selector combinations) and `:229–249` (transcript ownership) in the sibling read-only fork. No sibling source/install changes.
+- **M2:** `mentions.dismiss.ids[]` and optional `users.mentionable.agentId` share the native 1–256-character mention-reference bound, also reused for mentioned profile IDs. Tests accept 256 and reject 257.
+- **M1:** traced the warning to the contract disconnect test's inherited AsyncMock `connection_service.get_connection()` (a synchronous production method). Replaced only that incorrect service test double with a synchronous MagicMock and explicit absent row; asserted both synchronous calls. No production coroutine behavior was changed.
+- Complete PR-changed Python checks also exposed one unused `importlib` import in `ws-connect/test_index.py` and formatting in the native test plus three Lambda files. Removed only that unused import and ran pinned Ruff formatting. Inspected those Lambda diffs: whitespace/wrapping/trailing commas only otherwise. No dependency upgrades or behavioral Lambda edits in this round.
+
+### Exact affected verification and raw evidence
+
+The earlier **255 backend +15 Lambda** evidence above remains historical evidence; it was not rerun wholesale or replaced by a claim of complete runtime qualification. All commands below used the existing Python3.12 interpreter at `/Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend/.venv/bin/python`, synthetic AWS values, metadata disabled, no custom AWS endpoint, and a fail-fast live AWS transport guard. No actual AWS/browser/production/account access occurred.
+
+Warning diagnosis: from `apps/backend`, the same common environment and guarded Python command below first selected only `tests/contract/test_websocket_contracts.py::test_ws_disconnect_success`, with `-W always::RuntimeWarning`. A `PYTHONTRACEMALLOC=5` attempt produced **1 passed,1 warning in26.78s**, but its allocation trace was not specific. The concrete follow-up added `sys.set_coroutine_origin_tracking_depth(8)` and `--log-cli-level=WARNING` (without tracemalloc):
+
+```sh
+AWS_EC2_METADATA_DISABLED=true AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing AWS_SESSION_TOKEN=testing AWS_DEFAULT_REGION=us-east-1 AWS_MAX_ATTEMPTS=1 PYTHONDONTWRITEBYTECODE=1 /Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend/.venv/bin/python -c 'import sys, pytest
+from unittest.mock import patch
+sys.set_coroutine_origin_tracking_depth(8)
+with patch("botocore.httpsession.URLLib3Session.send", side_effect=AssertionError("Unexpected live AWS transport")):
+    sys.exit(pytest.main(["-q", "--tb=short", "-W", "always::RuntimeWarning", "--log-cli-level=WARNING", "-p", "no:cacheprovider", "-o", "addopts=", "tests/contract/test_websocket_contracts.py::test_ws_disconnect_success"]))'
+```
+
+Raw warning output (before the test-double correction):
+
+```text
+
+tests/contract/test_websocket_contracts.py::test_ws_disconnect_success PASSED [100%]
+
+=============================== warnings summary ===============================
+tests/contract/test_websocket_contracts.py::test_ws_disconnect_success
+  /Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend/.venv/lib/python3.12/site-packages/_pytest/stash.py:104: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+  Coroutine created at (most recent call last)
+    File "/Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 130, in app
+      await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+    File "/Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+      await app(scope, receive, sender)
+    File "/Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 116, in app
+      response = await f(request)
+    File "/Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 670, in app
+      raw_response = await run_endpoint_function(
+    File "/Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 324, in run_endpoint_function
+      return await dependant.call(**values)
+    File "/Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/.worktrees/founder-multiplayer-backend/apps/backend/routers/websocket_chat.py", line 809, in ws_disconnect
+      connection = connection_service.get_connection(x_connection_id)
+    File "/Users/prasiddhaparthsarthy/.local/share/uv/python/cpython-3.12.11-macos-aarch64-none/lib/python3.12/unittest/mock.py", line 1139, in __call__
+      return self._mock_call(*args, **kwargs)
+    File "/Users/prasiddhaparthsarthy/.local/share/uv/python/cpython-3.12.11-macos-aarch64-none/lib/python3.12/unittest/mock.py", line 1143, in _mock_call
+      return self._execute_mock_call(*args, **kwargs)
+    del self._storage[key]
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+========================= 1 passed, 1 warning in 1.76s =========================
+
+```
+
+Affected backend run after I1/I2/M1/M2, from `apps/backend`:
+
+```sh
+AWS_EC2_METADATA_DISABLED=true AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing AWS_SESSION_TOKEN=testing AWS_DEFAULT_REGION=us-east-1 AWS_MAX_ATTEMPTS=1 PYTHONDONTWRITEBYTECODE=1 /Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend/.venv/bin/python -c 'import sys, pytest
+from unittest.mock import patch
+with patch("botocore.httpsession.URLLib3Session.send", side_effect=AssertionError("Unexpected live AWS transport")):
+    sys.exit(pytest.main(["-q", "--tb=short", "-W", "error::RuntimeWarning", "-p", "no:cacheprovider", "-o", "addopts=", "tests/unit/gateway/test_native_rooms.py", "tests/contract/test_websocket_contracts.py", "tests/unit/core/test_connection_pool_org.py", "tests/unit/gateway/test_connection_pool_rpc_id_isolation.py"]))'
+```
+
+Raw output, exit 0 (no warnings):
+
+```text
+........................................................................ [ 75%]
+........................                                                 [100%]
+96 passed in 4.20s
+
+```
+
+After Lambda formatting/unused-import cleanup, from `apps/infra/lambda/ws-connect`, ran the exact same guarded command with the four test-file arguments replaced by `"test_index.py"`. Raw output, exit 0 (no warnings):
+
+```text
+...............                                                          [100%]
+15 passed in 0.52s
+
+```
+
+All changed Python lint/format commands from the worktree root (12 files, including the contract test and all three Lambda files), with pinned Ruff **0.15.6**, matching the existing lock:
+
+```sh
+git diff --name-only -z ff8da6b2 -- '*.py' | xargs -0 /Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend/.venv/bin/python -m ruff check --no-cache
+git diff --name-only -z ff8da6b2 -- '*.py' | xargs -0 /Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend/.venv/bin/python -m ruff format --check --no-cache
+```
+
+Initial raw checks (both exit 1):
+
+```text
+F401 [*] `importlib` imported but unused
+ --> apps/infra/lambda/ws-connect/test_index.py:3:8
+  |
+1 | """Tests for $connect Lambda forwarding semantics."""
+2 |
+3 | import importlib
+  |        ^^^^^^^^^
+4 | import os
+5 | import sys
+  |
+help: Remove unused import: `importlib`
+
+Found 1 error.
+[*] 1 fixable with the `--fix` option.
+Would reformat: apps/backend/tests/unit/gateway/test_native_rooms.py
+Would reformat: apps/infra/lambda/websocket-authorizer/index.py
+Would reformat: apps/infra/lambda/ws-connect/index.py
+Would reformat: apps/infra/lambda/ws-connect/test_index.py
+4 files would be reformatted, 8 files already formatted
+
+```
+
+Applied only the unused-import edit plus:
+
+```sh
+/Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend/.venv/bin/python -m ruff format --no-cache apps/backend/tests/unit/gateway/test_native_rooms.py apps/infra/lambda/websocket-authorizer/index.py apps/infra/lambda/ws-connect/index.py apps/infra/lambda/ws-connect/test_index.py
+```
+
+Raw format output: `4 files reformatted` (exit 0). Scoped filesystem approval was granted; no network approval/access. Final exact lint/format commands above, raw output (both exit 0):
+
+```text
+All checks passed!
+12 files already formatted
+
+```
+
+`git diff --check`: exit 0, no output. No broad suite was rerun after the passing affected checks or formatting-only cleanup.
+
+### Round-1 self-review and remaining gate
+
+Confirmed the real shared container owns exactly one native pool, legacy connections no longer allocate one, disconnect works after its durable record is gone, and ordinary membership deletion continues when native qualification is empty. The added selector cannot bypass the existing full-key target gate; a selected transcript still must belong to that key according to native. The native fake is explicitly contract-only, not an alternate authorization implementation or live integration proof. No other RPC families, native loader, global auth toggle, bridge, billing bypass, UI/shared code or fork changes were added.
+
+Native activation remains **unavailable/inactive**. Actual per-owner two-human/service admission, trusted ingress/header provenance, transcript privacy, device revocation, native signatures, Paperclip/CLI/Tauri coexistence and deployment/runtime behavior still require the controller's candidate integration proof. This commit fixes deterministic reviewed defects, not shipped multiplayer. Used receiving-code-review and verification-before-completion skills for confirmed-findings and fresh-evidence discipline; the controller's consolidated affected-only test instruction overrides per-slice repetition. Exact fix commit is returned with handoff; no push, PR mutation, merge or deployment is performed here.

@@ -14,6 +14,7 @@ from httpx import ASGITransport, AsyncClient
 from core.config import settings
 from core.crypto.operator_device import generate_operator_device
 from core.gateway import native_rooms as rooms
+from core.gateway.connection_pool import GatewayConnection, GatewayConnectionPool
 from routers import websocket_chat as route
 
 
@@ -95,11 +96,12 @@ class FakeSocket:
                 params["key"],
                 {
                     "key": params["key"],
-                    "sessionId": "incarnation-1",
+                    "sessionId": f"incarnation-{len(self.gateway.sessions) + 1}",
                     "createdBy": {"type": "human", "id": human.profile_id},
                     "visibility": params["visibility"],
                 },
             )
+            self.gateway.transcripts[result["sessionId"]] = params["key"]
         elif method == "chat.send":
             messages = self.gateway.history.setdefault(params["sessionKey"], [])
             run_id = params["idempotencyKey"]
@@ -127,11 +129,19 @@ class FakeSocket:
                 result = {"runId": run_id, "status": "started"}
                 self.gateway.dedupe[run_id] = result
         elif method == "chat.history":
-            result = {
-                "sessionKey": params["sessionKey"],
-                "sessionId": "incarnation-1",
-                "messages": list(self.gateway.history.get(params["sessionKey"], [])),
-            }
+            if "sessionId" in params and "messageId" not in params:
+                ok, result = False, {"code": "INVALID_REQUEST", "message": "sessionId requires messageId"}
+            elif "sessionId" in params and self.gateway.transcripts.get(params["sessionId"]) != params["sessionKey"]:
+                ok, result = False, {"code": "INVALID_REQUEST", "message": "sessionId does not belong to sessionKey"}
+            else:
+                messages = list(self.gateway.history.get(params["sessionKey"], []))
+                if "messageId" in params:
+                    messages = [message for message in messages if message["id"] == params["messageId"]]
+                result = {
+                    "sessionKey": params["sessionKey"],
+                    "sessionId": params.get("sessionId", "incarnation-1"),
+                    "messages": messages,
+                }
         elif method == "mentions.list":
             result = {"items": self.gateway.mentions, "gatewayInstanceId": "gateway-test", "revision": 1}
         else:
@@ -148,6 +158,7 @@ async def harness(monkeypatch):
         qualification=proof,
         calls=[],
         sessions={},
+        transcripts={},
         history={},
         dedupe={},
         mentions=[],
@@ -168,12 +179,12 @@ async def harness(monkeypatch):
     )
     management = MagicMock()
     management.send_message_async = AsyncMock(return_value=True)
-    native = rooms.NativeRoomPool(management, service)
-    pool = MagicMock()
-    pool.native_rooms = native
-    pool._conn_svc = service
-    pool._management_api = management
+    pool = GatewayConnectionPool(management, service)
+    native = pool.native_rooms
     pool.gate_chat = AsyncMock(return_value={"blocked": False})
+    pool.send_rpc = AsyncMock()
+    pool.add_frontend_connection = MagicMock(wraps=pool.add_frontend_connection)
+    pool.remove_frontend_connection = MagicMock(wraps=pool.remove_frontend_connection)
     members = {"user_A", "user_B"}
 
     async def membership(subject, **kwargs):
@@ -218,7 +229,7 @@ async def harness(monkeypatch):
         manager=manager,
     )
     yield state
-    await native.close_all()
+    await pool.close_all()
 
 
 def test_alias_is_stable_under_native_normalization_and_distinct_across_issuer_and_case():
@@ -580,3 +591,114 @@ async def test_warm_reader_revokes_frontend_after_membership_removed(harness):
     await asyncio.wait_for(conn.reader, 1)
     assert conn.closed and not conn.subscriptions and "tab-a" not in h.rows
     h.management.close_connection.assert_called_once_with("tab-a")
+
+
+@pytest.mark.asyncio
+async def test_real_pool_owns_native_connections_disconnect_and_shutdown(harness):
+    h = harness
+    assert isinstance(h.pool, GatewayConnectionPool)
+    assert h.pool.native_rooms.conn_svc is h.service
+    legacy = GatewayConnection("org_team", "10.0.0.20", "synthetic-token", h.management, set(), conn_svc=h.service)
+    assert not hasattr(legacy, "native_rooms")
+    await h.request("connect")
+    first = h.pool.native_rooms.connections[identity()]
+    h.rows.pop("tab-a")  # The disconnect Lambda removes the row first.
+    assert (await route.ws_disconnect("tab-a")).status_code == 200
+    assert first.closed and identity() not in h.pool.native_rooms.connections
+    await h.request("connect", tab="tab-b")
+    second = h.pool.native_rooms.connections[identity("user_B", "tab-b")]
+    await h.pool.close_all()
+    assert second.closed and h.pool.native_rooms.closed and not h.pool.native_rooms.connections
+
+
+@pytest.mark.asyncio
+async def test_real_pool_ordinary_membership_removal_with_native_unavailable(harness, monkeypatch):
+    from routers import webhooks
+
+    h = harness
+    monkeypatch.setattr(rooms, "_qualified_owners", {})
+    h.rows.clear()
+    h.rows.update(
+        {
+            "legacy-a": {"user_id": "user_A", "org_id": "org_team", "connection_type": "chat"},
+            "legacy-b": {"user_id": "user_B", "org_id": "org_team", "connection_type": "chat"},
+        }
+    )
+    h.pool.add_frontend_connection("org_team", "legacy-a")
+    h.pool.add_frontend_connection("org_team", "legacy-b")
+    provisioning = SimpleNamespace(archive_member=AsyncMock())
+    close_provisioning = AsyncMock()
+    sync_seats = AsyncMock()
+    broker = SimpleNamespace(unsubscribe=AsyncMock())
+    monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=provisioning))
+    monkeypatch.setattr(webhooks, "close_paperclip_provisioning", close_provisioning)
+    monkeypatch.setattr("core.services.billing_service.sync_team_seat_quantity", sync_seats)
+    monkeypatch.setattr("core.services.teams_event_broker_singleton.get_broker", lambda: broker)
+    await webhooks._handle_organization_membership_deleted({"user_id": "user_A", "organization": {"id": "org_team"}})
+    assert "legacy-a" not in h.rows and "legacy-b" in h.rows
+    assert h.pool._frontend_connections["org_team"] == {"legacy-b"}
+    h.management.close_connection.assert_called_once_with("legacy-a")
+    broker.unsubscribe.assert_awaited_once_with("user_A", "legacy-a")
+    provisioning.archive_member.assert_awaited_once_with(user_id="user_A")
+    close_provisioning.assert_awaited_once_with(provisioning)
+    sync_seats.assert_awaited_once_with("org_team")
+    assert not h.pool.native_rooms.connections and not h.gateway.calls
+
+
+@pytest.mark.parametrize(
+    "selectors",
+    [
+        {"sessionId": "incarnation"},
+        {"sessionId": "incarnation", "messageId": "entry", "offset": 0},
+        {"messageId": "entry", "cursor": "cursor"},
+        {"offset": 0, "cursor": "cursor"},
+    ],
+)
+@pytest.mark.asyncio
+async def test_history_rejects_native_invalid_selector_combinations_before_dial(harness, selectors):
+    key = rooms.room_prefix("org_team", "friday") + "a" * 64
+    result = await harness.request("chat.history", {"sessionKey": key, **selectors})
+    assert result["error"]["code"] == "INVALID_REQUEST"
+    assert not harness.gateway.calls
+
+
+@pytest.mark.parametrize("with_session_id", [False, True])
+@pytest.mark.asyncio
+async def test_history_message_selector_reaches_native_unchanged(harness, with_session_id):
+    h = harness
+    created = (await h.request("sessions.create", {"agentId": "friday", "idempotencyKey": "new"}))["payload"]
+    key = created["key"]
+    await h.request(
+        "chat.send", {"sessionKey": key, "message": "selected", "idempotencyKey": "turn", "expectedLeafEntryId": None}
+    )
+    params = {"sessionKey": key, "messageId": "entry-1"}
+    if with_session_id:
+        params["sessionId"] = created["sessionId"]
+    result = await h.request("chat.history", params)
+    assert result["ok"] is True and result["payload"]["messages"][0]["content"] == "selected"
+    assert h.gateway.calls[-1]["params"] == params
+
+
+@pytest.mark.asyncio
+async def test_history_selected_transcript_ownership_remains_upstream(harness):
+    h = harness
+    key = (await h.request("sessions.create", {"agentId": "friday", "idempotencyKey": "new"}))["payload"]["key"]
+    h.gateway.transcripts["foreign-transcript"] = "agent:friday:user_B"
+    params = {"sessionKey": key, "sessionId": "foreign-transcript", "messageId": "private-message"}
+    result = await h.request("chat.history", params)
+    assert result["ok"] is False
+    assert result["error"] == {"code": "INVALID_REQUEST", "message": "sessionId does not belong to sessionKey"}
+    assert h.gateway.calls[-1]["params"] == params
+    before = len(h.gateway.calls)
+    result = await h.request("chat.history", {**params, "sessionKey": "agent:friday:user_B"})
+    assert result["error"]["code"] == "FORBIDDEN" and len(h.gateway.calls) == before
+
+
+@pytest.mark.parametrize("method,field", [("mentions.dismiss", "ids"), ("users.mentionable", "agentId")])
+def test_mention_reference_bound_matches_native(method, field):
+    # Test the closed schema directly: agent/key equality is a separate gate.
+    params = {"sessionKey": "room"} if method == "users.mentionable" else {}
+    for length, allowed in [(256, True), (257, False)]:
+        value = "a" * length
+        params[field] = [value] if field == "ids" else value
+        assert rooms._VALIDATORS[method].is_valid(params) is allowed

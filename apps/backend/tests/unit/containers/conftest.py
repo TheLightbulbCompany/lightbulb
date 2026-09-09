@@ -15,6 +15,7 @@ these to capturing mocks in their own body (the test-body setattr runs after
 this autouse fixture, so it wins).
 """
 
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
 
 import pytest
@@ -50,6 +51,17 @@ def _stub_bedrock_gate_tokens(monkeypatch, stub_gate_token):
         "core.billing.bedrock_gate_tokens.persist_gate_token_hash",
         AsyncMock(),
     )
+
+
+@pytest.fixture(autouse=True)
+def _owner_lifecycle_guard_stub(monkeypatch):
+    """Keep ECS unit tests off EFS; the mutex has focused filesystem tests."""
+
+    @asynccontextmanager
+    async def unlocked(_owner_id):
+        yield
+
+    monkeypatch.setattr("core.services.owner_lifecycle.owner_lifecycle_guard", unlocked)
 
 
 @pytest.fixture(autouse=True)

@@ -37,6 +37,7 @@ from core.containers.config import (
 from core.containers.workspace import get_workspace
 from core.repositories import billing_repo, container_repo
 from core.repositories.container_repo import ProvisionSuperseded
+from core.services.owner_lifecycle import serialize_owner_lifecycle
 
 logger = logging.getLogger(__name__)
 
@@ -884,6 +885,7 @@ class EcsManager:
         except Exception as e:
             logger.error("Failed to deregister task definition %s: %s", task_definition_arn, e)
 
+    @serialize_owner_lifecycle
     async def refresh_task_definition(
         self,
         owner_id: str,
@@ -1381,6 +1383,7 @@ class EcsManager:
         logger.info("Created ECS service %s for user %s", service_name, user_id)
         return service_name
 
+    @serialize_owner_lifecycle
     async def stop_user_service(self, user_id: str, *, reason: str = "manual") -> None:
         """Scale a user's ECS service to 0 (stopped).
 
@@ -1586,6 +1589,7 @@ class EcsManager:
             put_metric("container.start.refused", dimensions={"reason": reason})
             raise ContainerStartRefused(reason, user_id, _TRIAL_REFUSAL_COPY[reason])
 
+    @serialize_owner_lifecycle
     async def start_user_service(
         self,
         user_id: str,
@@ -1726,6 +1730,7 @@ class EcsManager:
         # cold-start leaves the row stuck.
         asyncio.create_task(self._await_running_transition(user_id))
 
+    @serialize_owner_lifecycle
     async def force_redeploy_user_service(self, user_id: str) -> None:
         """Replace the service's task with a fresh one on the CURRENT revision.
 
@@ -1749,6 +1754,7 @@ class EcsManager:
             deploymentConfiguration=SINGLE_WRITER_DEPLOYMENT_CONFIG,
         )
 
+    @serialize_owner_lifecycle
     async def resize_user_container(
         self,
         user_id: str,
@@ -1972,6 +1978,7 @@ class EcsManager:
             _register_only=True,
         )
 
+    @serialize_owner_lifecycle
     async def rollout_config_lock_protocol(
         self,
         user_id: str,
@@ -2186,6 +2193,7 @@ class EcsManager:
         """
         return await self._wait_for_service_drained(user_id, timeout_s=timeout_s)
 
+    @serialize_owner_lifecycle
     async def reprovision_for_user(self, user_id: str) -> dict:
         """Full reprovision: re-register the task def from the current CDK
         base (picks up the latest pinned image) AND rewrite the EFS
@@ -2281,6 +2289,7 @@ class EcsManager:
             "memory": new_memory,
         }
 
+    @serialize_owner_lifecycle
     async def delete_user_service(self, user_id: str) -> dict | None:
         """Remove a user's ECS service and per-user resources entirely.
 
@@ -2818,6 +2827,7 @@ class EcsManager:
         except Exception:
             logger.exception("opencode harness auth staging failed for %s", user_id)
 
+    @serialize_owner_lifecycle
     async def provision_user_container(
         self,
         user_id: str,

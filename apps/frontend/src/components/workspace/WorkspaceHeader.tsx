@@ -76,7 +76,7 @@ export function WorkspaceHeader({ onResetLayout }: WorkspaceHeaderProps): React.
         onClick={() => setCommandPaletteOpen(true)}
       >
         <Search size={15} aria-hidden="true" />
-        <span>Search agents, tasks, and work</span>
+        <span>Search agents, issues, and projects</span>
         <kbd>⌘/Ctrl K</kbd>
       </button>
       <div className="workspace-header__spacer" />

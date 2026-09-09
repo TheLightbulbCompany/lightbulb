@@ -111,7 +111,11 @@ class FakeSocket:
                 "type": "hello-ok",
                 "protocol": 4,
                 "server": {"buildId": self.gateway.build_id},
-                "auth": {"role": "operator", "scopes": self.gateway.scopes},
+                "auth": {
+                    "role": "operator",
+                    "scopes": self.gateway.scopes,
+                    **self.gateway.auth_overrides,
+                },
                 "features": {"methods": sorted(self.gateway.methods)},
             }
         elif method == "users.self":
@@ -142,8 +146,9 @@ async def harness(monkeypatch):
             "users.mentionable": {"users": [], "truncated": False},
         },
         error=None,
-        methods=rooms.ROOM_METHODS | {"users.self"},
+        methods=rooms.ROOM_METHODS | {"users.self", "agent.wait"},
         scopes=list(rooms.HUMAN_SCOPES),
+        auth_overrides={},
         build_id="build-test",
         profile_override=None,
         sockets=[],
@@ -236,6 +241,25 @@ def test_alias_is_stable_under_native_normalization_and_distinct_across_issuer_a
     assert a.alias == replace(a, connection_id="reconnected", source_ip="203.0.113.12").alias
 
 
+def test_trusted_broker_v4_payload_uses_unambiguous_utf8_length_frames():
+    assert build_v4_connect_payload(
+        device_id="d",
+        client_id="gateway-client",
+        client_mode="backend",
+        role="operator",
+        scopes=("operator.read", "operator.write"),
+        signed_at_ms=7,
+        token="t|ø",
+        nonce="n",
+        platform=" LINUX ",
+        device_family="Web|X",
+        trusted_broker_profile_id="profile_1",
+    ) == (
+        "v4|1:d|14:gateway-client|7:backend|8:operator|1:2|13:operator.read|"
+        "14:operator.write|1:7|4:t|ø|1:n|5:linux|5:web|x|9:profile_1"
+    )
+
+
 @pytest.mark.parametrize(
     "field,value",
     [
@@ -281,6 +305,9 @@ async def test_unknown_or_unqualified_runtime_fails_closed(harness, monkeypatch,
         ("profile_override", "profile-user_B"),
         ("build_id", "unknown-runtime"),
         ("methods", {"users.self", "chat.send"}),
+        ("auth_overrides", {"deviceToken": "returned-secret"}),
+        ("auth_overrides", {"deviceTokens": [{"deviceToken": "returned-secret"}]}),
+        ("auth_overrides", {"bootstrapToken": "returned-secret"}),
     ],
 )
 @pytest.mark.asyncio
@@ -763,8 +790,8 @@ async def test_append_rejects_malformed_or_mismatched_native_receipt(harness, ov
 @pytest.mark.asyncio
 async def test_reviewed_room_methods_forward_only_their_closed_native_contract(harness, method, params):
     assert (await harness.request(method, params))["ok"] is True
-    assert harness.gateway.calls[-1]["method"] == method
-    assert harness.gateway.calls[-1]["params"] == params
+    forwarded = [call for call in harness.gateway.calls if call["method"] == method]
+    assert forwarded[-1]["params"] == params
     if method == "sessions.execution.dispatch":
         harness.pool.gate_chat.assert_awaited_once_with(
             user_id="user_A", owner_id="org_team", session_key=room_key()
@@ -832,6 +859,87 @@ async def test_dispatch_uncertain_outcome_preserves_hold_until_matching_terminal
     )
     h.service.finish_native_run.assert_awaited_once_with(*run)
     assert run not in h.native.run_holds
+
+
+@pytest.mark.asyncio
+async def test_cached_completed_dispatch_retry_wait_releases_hold(harness):
+    h = harness
+    run_id = rooms.native_execution_run_id("profile-user_A", dispatch_params())
+    run = ("org_team", room_key(), run_id)
+
+    assert (await h.request("sessions.execution.dispatch", dispatch_params()))["ok"] is True
+    assert run in h.native.run_holds
+    h.service.finish_native_run.assert_not_awaited()
+
+    h.gateway.results["agent.wait"] = {"runId": run_id, "status": "ok", "endedAt": 123}
+    assert (await h.request("sessions.execution.dispatch", dispatch_params()))["ok"] is True
+    assert [call["method"] for call in h.gateway.calls[-2:]] == [
+        "sessions.execution.dispatch",
+        "agent.wait",
+    ]
+    assert h.gateway.calls[-1]["params"] == {"runId": run_id, "timeoutMs": 0}
+    h.service.finish_native_run.assert_awaited_once_with(*run)
+    assert run not in h.native.run_holds
+
+
+@pytest.mark.parametrize(
+    "wait_result",
+    [
+        {"status": "timeout"},
+        {"status": "pending"},
+        {"status": "ok", "runId": "foreign-run", "endedAt": 123},
+        {
+            "status": "timeout",
+            "terminalReceipt": {
+                "runId": "foreign-run",
+                "sessionId": "incarnation-1",
+                "turnId": "turn-1",
+                "requested": {"provider": "p", "model": "m"},
+                "effective": {"provider": "p", "model": "m", "responseModel": "m"},
+                "successfulToolNames": [],
+                "rerouted": False,
+                "terminalDisposition": "visible",
+            },
+        },
+    ],
+)
+@pytest.mark.asyncio
+async def test_dispatch_wait_ambiguous_or_mismatched_result_retains_hold(harness, wait_result):
+    h = harness
+    run_id = rooms.native_execution_run_id("profile-user_A", dispatch_params())
+    h.gateway.results["agent.wait"] = {"runId": run_id, **wait_result}
+    assert (await h.request("sessions.execution.dispatch", dispatch_params()))["ok"] is True
+    assert ("org_team", room_key(), run_id) in h.native.run_holds
+    h.service.finish_native_run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_transport_error_retains_hold(harness):
+    h = harness
+    await h.request("connect")
+    conn = h.native.connections[identity()]
+    rpc = conn.rpc
+
+    async def fail_wait(method, params):
+        if method == "agent.wait":
+            raise TimeoutError("wait transport failed")
+        return await rpc(method, params)
+
+    conn.rpc = fail_wait
+    assert (await h.request("sessions.execution.dispatch", dispatch_params()))["ok"] is True
+    run_id = rooms.native_execution_run_id("profile-user_A", dispatch_params())
+    assert ("org_team", room_key(), run_id) in h.native.run_holds
+    h.service.finish_native_run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_terminal_timeout_with_ended_at_for_exact_run_releases_hold(harness):
+    h = harness
+    run_id = rooms.native_execution_run_id("profile-user_A", dispatch_params())
+    h.gateway.results["agent.wait"] = {"runId": run_id, "status": "timeout", "endedAt": 123}
+    assert (await h.request("sessions.execution.dispatch", dispatch_params()))["ok"] is True
+    h.service.finish_native_run.assert_awaited_once_with("org_team", room_key(), run_id)
+    assert ("org_team", room_key(), run_id) not in h.native.run_holds
 
 
 @pytest.mark.parametrize(
@@ -949,6 +1057,7 @@ async def test_org_prefix_never_substitutes_for_native_membership(harness, metho
         "chat.send",
         "chat.abort",
         "sessions.send",
+        "agent.wait",
         "sessions.assignOwner",
         "session.visibility.set",
         "mentions.list",

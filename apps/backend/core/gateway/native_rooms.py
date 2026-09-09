@@ -333,6 +333,7 @@ _APPEND_RESULT = Draft202012Validator(
 )
 _VALIDATORS = {method: Draft202012Validator(schema) for method, schema in _SCHEMAS.items()}
 ROOM_METHODS = frozenset(_SCHEMAS)
+_INTERNAL_METHODS = frozenset({"agent.wait", "users.self"})
 UNCERTAIN_AFTER_SUCCESS = frozenset(
     {
         "sessions.room.create",
@@ -442,6 +443,46 @@ def native_execution_run_id(profile_id: str, params: dict) -> str:
     )
 
 
+def is_terminal_agent_wait_result(result, run_id: str, session_id: str) -> bool:
+    """Accept only canonical, exact-run terminal proof from internal agent.wait."""
+    if not isinstance(result, dict) or result.get("runId") != run_id:
+        return False
+    if result.get("retryableTransportError") is True:
+        return False
+    status = result.get("status")
+    if status in {"ok", "error"}:
+        return True
+    if status != "timeout" or result.get("pendingError") is True:
+        return False
+    ended_at = result.get("endedAt")
+    if isinstance(ended_at, int) and not isinstance(ended_at, bool) and ended_at >= 0:
+        return True
+    receipt = result.get("terminalReceipt")
+    requested = receipt.get("requested") if isinstance(receipt, dict) else None
+    effective = receipt.get("effective") if isinstance(receipt, dict) else None
+    return bool(
+        isinstance(receipt, dict)
+        and receipt.get("runId") == run_id
+        and receipt.get("sessionId") == session_id
+        and isinstance(receipt.get("turnId"), str)
+        and receipt["turnId"]
+        and isinstance(requested, dict)
+        and all(
+            isinstance(requested.get(field), str) and requested[field]
+            for field in ("provider", "model")
+        )
+        and isinstance(effective, dict)
+        and all(
+            isinstance(effective.get(field), str) and effective[field]
+            for field in ("provider", "model", "responseModel")
+        )
+        and isinstance(receipt.get("successfulToolNames"), list)
+        and all(isinstance(name, str) for name in receipt["successfulToolNames"])
+        and isinstance(receipt.get("rerouted"), bool)
+        and receipt.get("terminalDisposition") in {"visible", "not-visible"}
+    )
+
+
 async def _finish_native_run(conn_svc, run_holds: set, run: tuple[str, str, str]) -> None:
     await conn_svc.finish_native_run(*run)
     run_holds.discard(run)
@@ -546,10 +587,12 @@ class NativeHumanConnection:
                 and auth.get("role") == "operator"
                 and set(auth.get("scopes", [])) == set(HUMAN_SCOPES)
                 and not auth.get("deviceToken")
+                and not auth.get("deviceTokens")
+                and not auth.get("bootstrapToken")
             ):
                 raise RoomError("ROOM_UNAVAILABLE", "Native human handshake is not qualified")
             self.methods = set(hello.get("features", {}).get("methods", []))
-            if not ROOM_METHODS | {"users.self"} <= self.methods:
+            if not ROOM_METHODS | _INTERNAL_METHODS <= self.methods:
                 raise RoomError("ROOM_UNAVAILABLE", "Native room methods unavailable")
             self.reader = asyncio.create_task(self._read())
             result = await self.rpc("users.self", {})
@@ -561,7 +604,7 @@ class NativeHumanConnection:
             raise
 
     async def rpc(self, method, params):
-        if self.closed or method not in self.methods or method not in ROOM_METHODS | {"users.self"}:
+        if self.closed or method not in self.methods or method not in ROOM_METHODS | _INTERNAL_METHODS:
             raise RoomError("ROOM_UNAVAILABLE", "Native human connection/method unavailable; reconnect")
         req_id = str(uuid4())
         future = asyncio.get_running_loop().create_future()

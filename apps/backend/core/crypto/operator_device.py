@@ -234,23 +234,30 @@ def build_v4_connect_payload(
     device_family: str | None,
     trusted_broker_profile_id: str,
 ) -> str:
-    """Build the fork's canonical trusted-broker profile proof."""
-    return "|".join(
-        [
-            "v4",
-            device_id,
-            client_id,
-            client_mode,
-            role,
-            ",".join(scopes),
-            str(signed_at_ms),
-            token or "",
-            nonce,
-            (platform or "").strip().lower(),
-            (device_family or "").strip().lower(),
-            trusted_broker_profile_id,
-        ]
-    )
+    """Build the fork's length-framed trusted-broker profile proof."""
+
+    def normalize_metadata(value: str | None) -> str:
+        # Mirrors JS `[A-Z]` replacement; Unicode case-folding would produce
+        # different signed bytes for non-ASCII metadata.
+        lowercase_ascii = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+        return (value or "").strip().translate(lowercase_ascii)
+
+    scopes_tuple = tuple(scopes)
+    fields = [
+        device_id,
+        client_id,
+        client_mode,
+        role,
+        str(len(scopes_tuple)),
+        *scopes_tuple,
+        str(signed_at_ms),
+        token or "",
+        nonce,
+        normalize_metadata(platform),
+        normalize_metadata(device_family),
+        trusted_broker_profile_id,
+    ]
+    return "v4|" + "|".join(f"{len(value.encode('utf-8'))}:{value}" for value in fields)
 
 
 def sign_connect_request(

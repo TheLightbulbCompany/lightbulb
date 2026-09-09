@@ -1486,6 +1486,7 @@ async def _process_native_room_background(connection_id: str, body: dict) -> Non
         UNCERTAIN_AFTER_SUCCESS,
         admit_rpc,
         filter_rpc_result,
+        is_terminal_agent_wait_result,
         native_execution_run_id,
         qualification_for,
         require_append_result,
@@ -1556,6 +1557,20 @@ async def _process_native_room_background(connection_id: str, body: dict) -> Non
                 if native_run is not None and getattr(exc, "native_rejection", False):
                     await pool.native_rooms.finish_run(*native_run)
                 raise
+            if native_run is not None:
+                try:
+                    wait_result = await conn.rpc(
+                        "agent.wait", {"runId": native_run[2], "timeoutMs": 0}
+                    )
+                    if is_terminal_agent_wait_result(
+                        wait_result, native_run[2], admitted["expectedSessionId"]
+                    ):
+                        await pool.native_rooms.finish_run(*native_run)
+                except Exception:
+                    # Reconciliation is observational. Unknown/transport
+                    # outcomes retain the durable hold and cannot rewrite the
+                    # already-successful dispatch response.
+                    logger.warning("Native dispatch reconciliation remains unresolved", exc_info=True)
             try:
                 await require_current_member(identity, service)
             except RoomError:

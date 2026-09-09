@@ -1501,6 +1501,7 @@ async def _process_native_room_background(connection_id: str, body: dict) -> Non
     req_id = body.get("id")
     method = body.get("method")
     conn = None
+    provisional_presence_subscription = None
     try:
         if body == {"type": "ping"}:
             row = await asyncio.to_thread(service.get_connection, connection_id)
@@ -1556,6 +1557,14 @@ async def _process_native_room_background(connection_id: str, body: dict) -> Non
                     admitted["sessionKey"],
                     native_execution_run_id(conn.device.profile_id, admitted),
                 )
+            if method == "sessions.presence.subscribe":
+                # The fork subscribes before it snapshots. Mirror that ordering
+                # locally so an event emitted between snapshot and response is
+                # not dropped; outer error handling rolls back this reservation.
+                session_key = admitted["sessionKey"]
+                if session_key not in conn.presence_subscriptions:
+                    conn.presence_subscriptions.add(session_key)
+                    provisional_presence_subscription = session_key
             try:
                 if method in LOCAL_ROOM_METHODS:
                     result = await handle_local_room_rpc(method, admitted, identity, qualification, conn)
@@ -1611,14 +1620,19 @@ async def _process_native_room_background(connection_id: str, body: dict) -> Non
             result = _fit_rpc_result_for_frame(method, result)
             if len(json.dumps(result, separators=(",", ":"), default=str).encode()) > _WS_FRAME_BUDGET_BYTES:
                 raise RoomError("ROOM_UNAVAILABLE", "Native room result exceeds transport limit")
+            provisional_presence_subscription = None
         await management.send_message_async(connection_id, {"type": "res", "id": req_id, "ok": True, "payload": result})
     except RoomError as exc:
+        if conn is not None and provisional_presence_subscription is not None:
+            conn.presence_subscriptions.discard(provisional_presence_subscription)
         if exc.error.get("code") == "FORBIDDEN":
             await pool.native_rooms.close_connection(connection_id)
         await management.send_message_async(
             connection_id, {"type": "res", "id": req_id, "ok": False, "error": exc.error}
         )
     except Exception:
+        if conn is not None and provisional_presence_subscription is not None:
+            conn.presence_subscriptions.discard(provisional_presence_subscription)
         logger.exception("Native room request failed method=%s", method)
         # Timeout/transport errors are not replayed; the client reconciles its
         # deterministic idempotency key against native history after reconnect.

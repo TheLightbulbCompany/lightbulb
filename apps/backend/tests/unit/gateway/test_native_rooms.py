@@ -1266,6 +1266,48 @@ async def test_all_presence_methods_reconcile_the_fork_snapshot_contract(harness
 
 
 @pytest.mark.asyncio
+async def test_presence_subscribe_registers_local_audience_before_native_snapshot(harness, monkeypatch):
+    h = harness
+    await h.request("connect")
+    conn = h.native.connections[identity()]
+
+    async def subscribe(method, params):
+        assert method == "sessions.presence.subscribe"
+        assert params["sessionKey"] in conn.presence_subscriptions
+        return {
+            "roomKey": params["sessionKey"],
+            "inventoryStatus": "complete",
+            "serverNowAtMs": int(time.time() * 1000),
+            "connections": [],
+        }
+
+    monkeypatch.setattr(conn, "rpc", subscribe)
+
+    result = await h.request("sessions.presence.subscribe", {"sessionKey": room_key()})
+
+    assert result["ok"] is True
+    assert room_key() in conn.presence_subscriptions
+
+
+@pytest.mark.asyncio
+async def test_presence_subscribe_rejection_rolls_back_provisional_local_audience(harness, monkeypatch):
+    h = harness
+    await h.request("connect")
+    conn = h.native.connections[identity()]
+
+    async def reject(_method, params):
+        assert params["sessionKey"] in conn.presence_subscriptions
+        raise rooms.RoomError("NATIVE_ERROR", "Native room request rejected")
+
+    monkeypatch.setattr(conn, "rpc", reject)
+
+    result = await h.request("sessions.presence.subscribe", {"sessionKey": room_key()})
+
+    assert result["ok"] is False
+    assert room_key() not in conn.presence_subscriptions
+
+
+@pytest.mark.asyncio
 async def test_message_and_presence_subscriptions_gate_native_events_per_tab(harness):
     h = harness
     viewed = await h.request("sessions.viewers.set", {"sessionKeys": [room_key()]})

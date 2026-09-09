@@ -45,6 +45,11 @@ def _patch_provisioning(monkeypatch):
     provisioning = _fake_provisioning()
     monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=provisioning))
     monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
+    monkeypatch.setattr(
+        webhooks.room_read_cursor_repo,
+        "delete_all_for_owner",
+        AsyncMock(return_value=0),
+    )
     return provisioning
 
 
@@ -99,6 +104,23 @@ async def test_organization_deleted_no_billing_row_no_cancel(monkeypatch):
         await webhooks._handle_organization_deleted({"id": "org_no_billing"})
 
     mock_delete.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_organization_deleted_purges_owner_room_read_cursors(monkeypatch):
+    from routers import webhooks
+
+    _patch_provisioning(monkeypatch)
+    delete_cursors = AsyncMock(return_value=3)
+    monkeypatch.setattr(webhooks.room_read_cursor_repo, "delete_all_for_owner", delete_cursors)
+
+    with patch(
+        "core.services.billing_service.billing_repo.get_by_owner_id",
+        new=AsyncMock(return_value=None),
+    ):
+        await webhooks._handle_organization_deleted({"id": "org_acme"})
+
+    delete_cursors.assert_awaited_once_with("org_acme")
 
 
 @pytest.mark.asyncio

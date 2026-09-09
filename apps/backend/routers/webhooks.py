@@ -19,7 +19,7 @@ fail-closed path is the only one that runs off a laptop.
   * ``organization.created``           -> log only (provisioning deferred to /container/status)
   * ``organizationMembership.created`` -> log + dual-tenancy probe (provisioning deferred to /container/status)
   * ``organizationMembership.deleted`` -> ``disable`` for that user
-  * ``organization.deleted``           -> ``disable`` for every member of the org
+  * ``organization.deleted``           -> purge room cursors + disable every org member
   * ``user.deleted``                   -> ``disable`` for that user
 
 Retry semantics: if provisioning raises an exception with
@@ -46,7 +46,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from core.config import settings
 from core.observability.metrics import put_metric
-from core.repositories import billing_repo, channel_link_repo, update_repo
+from core.repositories import billing_repo, channel_link_repo, room_read_cursor_repo, update_repo
 from core.services.paperclip_provisioning import (
     build_paperclip_provisioning,
     close_paperclip_provisioning,
@@ -595,7 +595,7 @@ async def _handle_organization_membership_deleted(
 
 async def _handle_organization_deleted(data: dict) -> None:
     """Cancel the org's Stripe subscription so seat billing stops, then
-    disable every Paperclip member row attached to the deleted org.
+    purge its room cursors and disable every attached Paperclip member row.
 
     The org's per-seat subscription is billed on the org's own
     ``billing_accounts`` row (owner_id == org_id), which nothing else
@@ -636,6 +636,19 @@ async def _handle_organization_deleted(data: dict) -> None:
     except Exception:
         logger.exception(
             "Stripe subscription cancel on organization.deleted failed for org %s",
+            org_id,
+        )
+
+    try:
+        deleted = await room_read_cursor_repo.delete_all_for_owner(org_id)
+        logger.info(
+            "Clerk organization.deleted: deleted %d room read cursor rows for org %s",
+            deleted,
+            org_id,
+        )
+    except Exception:
+        logger.exception(
+            "Room read cursor cleanup on organization.deleted failed for org %s",
             org_id,
         )
 

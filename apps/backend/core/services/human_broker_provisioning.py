@@ -30,7 +30,7 @@ from core.repositories import container_repo
 from core.services import webhook_dedup
 from core.services.config_patcher import set_openclaw_config_path
 from core.services.desktop_pair import EfsWorkspaceAdapter
-from core.services.openclaw_release import OwnerReleaseConflict, owner_lifecycle_guard
+from core.services.owner_lifecycle import owner_lifecycle_guard
 from core.services.paperclip_openclaw_pairing import (
     _approve_pairing_request,
     _find_pending_request_id,
@@ -149,25 +149,18 @@ def _access_event_id(row: dict | None, alias: str) -> str | None:
 
 
 async def _effective_access_marker(owner_id: str, alias: str, row: dict | None) -> tuple[dict | None, str | None]:
-    """Resolve central membership authority with rollout-safe legacy fallback."""
-    local = _container_access_marker(row, alias)
+    """Resolve the mandatory central Clerk membership authority."""
     try:
         central = await webhook_dedup.get_membership_lifecycle(owner_id, alias)
     except Exception as exc:
         raise HumanBrokerProvisioningError("human membership epoch unavailable") from exc
-    if central is None:
-        return local, None
+    if not isinstance(central, dict):
+        raise HumanBrokerProvisioningError("human membership epoch unavailable")
     central = _access_marker(
         event_id=central.get("event_id"),
         sequence=central.get("sequence"),
         state=central.get("state"),
     )
-    if local is not None and local["sequence"] > central["sequence"]:
-        # During rolling deployment an old worker can have advanced only the
-        # container marker. Never roll that newer signed epoch backward.
-        return local, None
-    if local is not None and local["sequence"] == central["sequence"] and local != central:
-        raise HumanBrokerProvisioningError("human membership epoch is ambiguous")
     return central, webhook_dedup.membership_lifecycle_key(owner_id, alias)
 
 
@@ -1154,16 +1147,13 @@ async def revoke_human_device(identity: HumanIdentity, conn_svc) -> HumanDeviceR
     await require_current_member(identity, conn_svc)
     row = await container_repo.get_by_owner_id(identity.owner_id, consistent=True)
     record = _validate_record(identity.alias, _records(row).get(identity.alias))
-    try:
-        async with owner_lifecycle_guard(identity.owner_id):
-            receipt = await _revoke_human_device(
-                identity,
-                missing_ok=False,
-                expected_generation=record["generation"],
-                expected_device_id=record["device_id"],
-            )
-    except OwnerReleaseConflict as exc:
-        raise HumanBrokerProvisioningError("owner lifecycle is reserved; retry revocation") from exc
+    async with owner_lifecycle_guard(identity.owner_id):
+        receipt = await _revoke_human_device(
+            identity,
+            missing_ok=False,
+            expected_generation=record["generation"],
+            expected_device_id=record["device_id"],
+        )
     assert receipt is not None
     return receipt
 
@@ -1370,8 +1360,5 @@ async def _rotate_human_device_owned(identity: HumanIdentity, conn_svc) -> Human
 
 async def rotate_human_device(identity: HumanIdentity, conn_svc) -> HumanDeviceReceipt:
     _validate_identity(identity)
-    try:
-        async with owner_lifecycle_guard(identity.owner_id):
-            return await _rotate_human_device_owned(identity, conn_svc)
-    except OwnerReleaseConflict as exc:
-        raise HumanBrokerProvisioningError("owner lifecycle is reserved; retry rotation") from exc
+    async with owner_lifecycle_guard(identity.owner_id):
+        return await _rotate_human_device_owned(identity, conn_svc)

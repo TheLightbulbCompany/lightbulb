@@ -184,7 +184,21 @@ def harness(monkeypatch):
         "record_permanent_marker",
         AsyncMock(side_effect=lambda event_id, **kwargs: deleted_subjects.add(event_id)),
     )
-    monkeypatch.setattr(provisioner.webhook_dedup, "get_membership_lifecycle", AsyncMock(return_value=None))
+    async def get_membership_lifecycle(owner_id, alias):
+        return copy.deepcopy(
+            repo.access.get(alias)
+            or {
+                "event_id": f"membership-created:{alias}",
+                "sequence": f"00000000000000000001:0:{alias}",
+                "state": "allowed",
+            }
+        )
+
+    monkeypatch.setattr(
+        provisioner.webhook_dedup,
+        "get_membership_lifecycle",
+        AsyncMock(side_effect=get_membership_lifecycle),
+    )
     monkeypatch.setattr(
         provisioner, "invalidate_qualification", lambda owner_id: events.append("qualification-disabled")
     )
@@ -239,6 +253,26 @@ def test_profile_contract_rejects_non_array_emails_and_extra_profile_fields(muta
     }
     with pytest.raises(provisioner.HumanBrokerProvisioningError):
         provisioner._validated_profile_result({"profile": profile}, human.alias)
+
+
+@pytest.mark.asyncio
+async def test_local_access_marker_cannot_replace_central_clerk_lifecycle(harness, monkeypatch):
+    human = _human("user_alice")
+    harness.repo.access[human.alias] = {
+        "event_id": "local-only-membership",
+        "sequence": "00000000000000000001:0:local-only-membership",
+        "state": "allowed",
+    }
+    monkeypatch.setattr(
+        provisioner.webhook_dedup,
+        "get_membership_lifecycle",
+        AsyncMock(return_value=None),
+    )
+
+    with pytest.raises(provisioner.HumanBrokerProvisioningError, match="membership epoch unavailable"):
+        await provisioner.ensure_human_device(human, harness.conn_svc)
+
+    assert human.alias not in harness.repo.devices
 
 
 @pytest.mark.asyncio

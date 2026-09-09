@@ -350,6 +350,35 @@ class EcsManagerError(Exception):
         self.user_id = user_id
 
 
+def _ordinary_assigned_release(container: dict, owner_id: str):
+    """Qualified release for an ordinary runtime mutation, if assigned.
+
+    Founder remains an explicit legacy/unassigned canary until cutover. Once an
+    owner has an active release, every ordinary task-definition rewrite must
+    derive its image from that immutable registry record. A desired-only row,
+    a different desired release, or an active journal pointer is a transition,
+    not a stable image source.
+    """
+
+    if container.get("release_update_id") is not None:
+        raise EcsManagerError("Owner is reserved by a release transaction", owner_id)
+    desired_release_id = container.get("desired_release_id")
+    active_release_id = container.get("active_release_id")
+    if active_release_id is None:
+        if desired_release_id is not None:
+            raise EcsManagerError("Owner release assignment is not stable", owner_id)
+        return None
+    if desired_release_id not in (None, active_release_id):
+        raise EcsManagerError("Owner release assignment is not stable", owner_id)
+
+    from core.services.openclaw_release import release_by_id
+
+    try:
+        return release_by_id(active_release_id)
+    except (TypeError, ValueError) as exc:
+        raise EcsManagerError("Owner active release is not registered", owner_id) from exc
+
+
 # Why ``start_user_service`` may refuse to start a container. Both are POLICY
 # refusals, not failures — see ContainerStartRefused.
 #
@@ -959,9 +988,10 @@ class EcsManager:
         deployment to roll onto this revision (waiting for any RUNNING task
         races against the OLD task during ``forceNewDeployment``).
         """
-        container = await container_repo.get_by_owner_id(owner_id)
+        container = await container_repo.get_by_owner_id(owner_id, consistent=True)
         if not container or not container.get("task_definition_arn"):
             return None
+        assigned_release = _ordinary_assigned_release(container, owner_id)
 
         # Read the current task-def to pull family/volumes/secrets/networkMode/etc.
         current = self._ecs.describe_task_definition(taskDefinition=container["task_definition_arn"])
@@ -987,6 +1017,8 @@ class EcsManager:
         new_env.append({"name": _CONFIG_LOCK_PROTOCOL_ENV, "value": _CONFIG_LOCK_PROTOCOL_VERSION})
         for cd in td["containerDefinitions"]:
             if cd["name"] == "openclaw":
+                if assigned_release is not None:
+                    cd["image"] = assigned_release.digest_image
                 cd["environment"] = new_env
                 if extra_secrets or drop_secrets:
                     drop = set(drop_secrets or [])
@@ -1159,6 +1191,28 @@ class EcsManager:
         Raises:
             EcsManagerError: If any step fails.
         """
+        if new_image is not None:
+            # This low-level creator is also reachable from debug/test code, so
+            # do not trust its string argument. Normal provisioning may pass
+            # only the registry digest assigned to the row, or (during founder
+            # canary) the exact image already on an unassigned owner's task
+            # definition. A fresh/unassigned caller cannot introduce an image.
+            image_row = await container_repo.get_by_owner_id(user_id, consistent=True)
+            assigned_release = _ordinary_assigned_release(image_row or {}, user_id)
+            expected_image = assigned_release.digest_image if assigned_release is not None else None
+            if expected_image is None and (image_row or {}).get("task_definition_arn"):
+                current = await asyncio.to_thread(
+                    self._ecs.describe_task_definition,
+                    taskDefinition=image_row["task_definition_arn"],
+                )
+                definitions = (current.get("taskDefinition") or {}).get("containerDefinitions") or []
+                openclaw = next((item for item in definitions if item.get("name") == "openclaw"), None)
+                current_image = (openclaw or {}).get("image")
+                if type(current_image) is str and current_image:
+                    expected_image = current_image
+            if new_image != expected_image:
+                raise EcsManagerError("Provision image is not the owner's stable runtime image", user_id)
+
         service_name = self._service_name(user_id)
         access_point_id = None
         task_def_arn = None
@@ -1955,8 +2009,6 @@ class EcsManager:
             if container.get("release_update_id") != _release_update_id:
                 raise EcsManagerError("Owner release claim moved before task-definition prepare", user_id)
         else:
-            if container.get("release_update_id") is not None:
-                raise EcsManagerError("Owner is reserved by a release transaction", user_id)
             desired_release_id = container.get("desired_release_id")
             active_release_id = container.get("active_release_id")
             stable_release_snapshot = (
@@ -1964,12 +2016,8 @@ class EcsManager:
                 active_release_id,
                 container.get("release_revision", 0),
             )
-            if desired_release_id is not None or active_release_id is not None:
-                if desired_release_id != active_release_id or not active_release_id:
-                    raise EcsManagerError("Owner release assignment is not stable", user_id)
-                from core.services.openclaw_release import release_by_id
-
-                assigned = release_by_id(active_release_id)
+            assigned = _ordinary_assigned_release(container, user_id)
+            if assigned is not None:
                 new_image = assigned.digest_image
 
         async def fence_effect() -> None:
@@ -3336,15 +3384,7 @@ class EcsManager:
         # the in-memory `bedrock_role_arn` local (not re-read off the row), so a
         # stale `existing` here cannot drop it.
         existing = await container_repo.get_by_owner_id(user_id, consistent=True)
-        assigned_release = None
-        desired_release_id = (existing or {}).get("desired_release_id")
-        active_release_id = (existing or {}).get("active_release_id")
-        if desired_release_id is not None or active_release_id is not None:
-            if desired_release_id != active_release_id or not active_release_id:
-                raise EcsManagerError("Owner release assignment is not stable", user_id)
-            from core.services.openclaw_release import release_by_id
-
-            assigned_release = release_by_id(active_release_id)
+        assigned_release = _ordinary_assigned_release(existing or {}, user_id)
         provision_image = assigned_release.digest_image if assigned_release is not None else None
         provision_tag = assigned_release.image.rpartition(":")[2] if assigned_release is not None else None
         if provision_image is None and (existing or {}).get("task_definition_arn"):

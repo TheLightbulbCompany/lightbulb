@@ -971,6 +971,29 @@ async def test_upsert_preserves_stable_release(dynamodb_table):
 
 
 @pytest.mark.asyncio
+async def test_stable_runtime_update_accepts_active_release_with_desired_absent(dynamodb_table):
+    from core.repositories import container_repo
+
+    dynamodb_table.put_item(
+        Item={
+            "owner_id": "active-only-owner",
+            "status": "stopped",
+            "active_release_id": "founder-canary",
+            "release_revision": 3,
+        }
+    )
+
+    updated = await container_repo.update_stable_release_runtime(
+        "active-only-owner",
+        "founder-canary",
+        3,
+        "arn:task-definition/openclaw:9",
+    )
+
+    assert updated["task_definition_arn"] == "arn:task-definition/openclaw:9"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "field",
     ["desired_release_id", "active_release_id", "release_revision", "release_update_id"],

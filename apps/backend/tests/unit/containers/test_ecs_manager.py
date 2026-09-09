@@ -513,6 +513,22 @@ class TestCreateUserService:
     """Test ECS service creation with per-user EFS isolation."""
 
     @pytest.mark.asyncio
+    async def test_rejects_caller_image_for_fresh_unassigned_owner(self, manager, mock_ecs_client, mock_efs_client):
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+
+            with pytest.raises(EcsManagerError, match="stable runtime image"):
+                await manager.create_user_service(
+                    "user_test_123",
+                    "token-abc",
+                    new_image="mutable.example/openclaw:latest",
+                )
+
+        mock_repo.upsert.assert_not_called()
+        mock_ecs_client.register_task_definition.assert_not_called()
+        mock_efs_client.create_access_point.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_creates_service_and_repo_record(self, manager, mock_ecs_client, mock_efs_client):
         """create_user_service upserts repo record early, then creates access point, task def, service."""
         with (
@@ -1314,6 +1330,44 @@ class TestStartUserServiceGuards:
         started.assert_awaited_once_with(
             "user_test_123", force=True, claim_id=None, generation=None, attempt_token=None
         )
+
+    @pytest.mark.asyncio
+    async def test_reprovision_materializes_assigned_release_digest_with_desired_absent(
+        self,
+        manager,
+        mock_ecs_client,
+    ):
+        """An assigned owner's replacement service cannot inherit the mutable base image."""
+
+        from core.services import openclaw_release
+
+        digest_image = (
+            "877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/openclaw-extended@sha256:" + "b" * 64
+        )
+        row = _make_container_dict(status="stopped")
+        row.update(active_release_id="founder-canary", release_revision=1)
+        create_service = AsyncMock(return_value="svc")
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as repo,
+            patch.object(manager, "_service_exists", new=MagicMock(return_value=None)),
+            patch.object(manager, "create_user_service", new=create_service),
+            patch.object(manager, "write_user_configs", new=AsyncMock()),
+            patch.object(manager, "start_user_service", new=AsyncMock()),
+            patch.object(
+                openclaw_release,
+                "release_by_id",
+                return_value=SimpleNamespace(
+                    digest_image=digest_image,
+                    image="877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/openclaw-extended:2026.9.3",
+                ),
+            ),
+            patch("core.containers.ecs_manager.put_metric"),
+        ):
+            repo.get_by_owner_id = AsyncMock(return_value=row)
+            await manager.provision_user_container("user_test_123", provider_choice="bedrock_claude")
+
+        assert create_service.await_args.kwargs["new_image"] == digest_image
 
 
 # ---------------------------------------------------------------------------
@@ -2702,7 +2756,6 @@ class TestResizeUserContainer:
             task_definition_arn="arn:aws:ecs:us-east-1:123:task-definition/release:7",
         )
         row.update(
-            desired_release_id="candidate",
             active_release_id="candidate",
             release_revision=2,
         )

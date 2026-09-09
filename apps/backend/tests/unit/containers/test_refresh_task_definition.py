@@ -7,6 +7,7 @@ point — losing agent state would be a backfill regression.
 """
 
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -43,7 +44,14 @@ async def test_refresh_registers_new_taskdef_with_hook_token_env(monkeypatch):
     fake_ecs.update_service.return_value = {}
     fake_ecs.describe_task_definition.return_value = {
         "taskDefinition": {
-            "containerDefinitions": [{"name": "openclaw", "environment": [], "secrets": []}],
+            "containerDefinitions": [
+                {
+                    "name": "openclaw",
+                    "image": "legacy.example/openclaw:founder-canary",
+                    "environment": [],
+                    "secrets": [],
+                }
+            ],
             "family": "isol8-dev-openclaw-u-1",
             "networkMode": "awsvpc",
             "requiresCompatibilities": ["FARGATE"],
@@ -70,6 +78,7 @@ async def test_refresh_registers_new_taskdef_with_hook_token_env(monkeypatch):
     assert "OPENCLAW_HOOK_TOKEN" in env_names
     token_entry = next(e for e in cd["environment"] if e["name"] == "OPENCLAW_HOOK_TOKEN")
     assert token_entry["value"] == "freshly-set"
+    assert cd["image"] == "legacy.example/openclaw:founder-canary"
     assert [e for e in cd["environment"] if e["name"] == "ISOL8_CONFIG_LOCK_PROTOCOL"] == [
         {"name": "ISOL8_CONFIG_LOCK_PROTOCOL", "value": "guard-v1"}
     ]
@@ -80,6 +89,52 @@ async def test_refresh_registers_new_taskdef_with_hook_token_env(monkeypatch):
     assert upd_kwargs["taskDefinition"].endswith(":5")
 
     assert result == "arn:aws:ecs:us-east-1:877352799272:task-definition/isol8-dev-openclaw-u-1:5"
+
+
+@pytest.mark.asyncio
+async def test_refresh_materializes_assigned_release_digest_with_desired_absent(monkeypatch):
+    from core.containers import ecs_manager
+    from core.services import openclaw_release
+
+    manager = ecs_manager.EcsManager()
+    digest_image = "877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/openclaw-extended@sha256:" + "a" * 64
+    container = {
+        "owner_id": "u_1",
+        "service_name": "openclaw-u-1-abc",
+        "hook_token": "freshly-set",
+        "task_definition_arn": "arn:task-definition/openclaw:4",
+        "active_release_id": "founder-canary",
+        "release_revision": 1,
+    }
+    fake_ecs = MagicMock()
+    fake_ecs.describe_task_definition.return_value = {
+        "taskDefinition": {
+            "containerDefinitions": [
+                {
+                    "name": "openclaw",
+                    "image": "mutable.example/openclaw:latest",
+                    "environment": [],
+                    "secrets": [],
+                }
+            ],
+            "family": "openclaw-user",
+            "networkMode": "awsvpc",
+        }
+    }
+    fake_ecs.register_task_definition.return_value = {
+        "taskDefinition": {"taskDefinitionArn": "arn:task-definition/openclaw:5"}
+    }
+
+    with (
+        patch("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=container)),
+        patch("core.repositories.container_repo.update_fields", AsyncMock()),
+        patch.object(openclaw_release, "release_by_id", return_value=SimpleNamespace(digest_image=digest_image)),
+        patch.object(manager, "_ecs", fake_ecs),
+    ):
+        await manager.refresh_task_definition("u_1")
+
+    registered = fake_ecs.register_task_definition.call_args.kwargs["containerDefinitions"]
+    assert next(item for item in registered if item["name"] == "openclaw")["image"] == digest_image
 
 
 @pytest.mark.asyncio

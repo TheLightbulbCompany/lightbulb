@@ -51,8 +51,9 @@ function DirectoryContent({ rooms, participants, state, currentRoomId, onSelectR
   const authorizedRefs = new Set(participants.map(person => person.ref));
   const validSelection = selected.every(ref => authorizedRefs.has(ref));
   const hasNewParticipant = selected.some(ref => !newConversationFrom?.participantRefs.includes(ref));
+  const validName = name.trim().length >= 1 && name.trim().length <= 80;
   const canCreate = mode === "extend" ? !!canExtend && hasNewParticipant && validSelection
-    : permittedCreation.includes(kind) && validSelection && (kind === "conversation" ? selected.length > 0 : !!name.trim());
+    : permittedCreation.includes(kind) && validSelection && (kind === "conversation" ? selected.length > 0 : validName);
   const visibleParticipants = participants.filter(person => person.name.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
 
   if (state !== "ready") return <nav className="room-directory" aria-label="Conversations">
@@ -99,7 +100,7 @@ function DirectoryContent({ rooms, participants, state, currentRoomId, onSelectR
         <select id={`${id}-kind`} className="room-input" value={kind} disabled={creationBusy} onChange={event => setKind(event.target.value as CreationKind)}>
           {permittedCreation.map(value => <option key={value} value={value}>{value === "conversation" ? "Direct or group message" : roomKindLabel[value]}</option>)}
         </select>
-        {kind !== "conversation" && <><label htmlFor={`${id}-name`}>Room name</label><input id={`${id}-name`} className="room-input" value={name} maxLength={120} disabled={creationBusy} onChange={event => setName(event.target.value)} /></>}
+        {kind !== "conversation" && <><label htmlFor={`${id}-name`}>Room name</label><input id={`${id}-name`} className="room-input" value={name} maxLength={80} disabled={creationBusy} onChange={event => setName(event.target.value)} /></>}
         <p className="text-sm text-muted-foreground">{kind === "public" ? "Visible to your organization. Visibility is fixed at creation." : kind === "private" ? "Only invited participants can read this room. Visibility is fixed at creation." : "Choose people and agents for a new conversation."}</p>
       </>}
       {selected.length > 0 && <p className="text-sm room-wrap">Selected: {selected.map(ref => participants.find(person => person.ref === ref)?.name ?? "Unavailable participant").join(", ")}</p>}

@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
 import { safeHref } from "@/components/teams/shared/lib/safeHref";
-import { RoomComposer, type RoomComposerProps } from "./RoomComposer";
+import { RoomComposer, type RoomComposerProps, type RoomSubmission } from "./RoomComposer";
 import { roomKindLabel, type RoomContext, type RoomMessage, type RoomParticipant, type RoomState, type RoomSummary, type WorkState } from "./types";
 import "./messaging.css";
 
@@ -71,11 +71,57 @@ const getServerNarrow = () => false;
  * this boundary; no component cache, transport, or browser storage holds history.
  */
 export function RoomPanel(props: RoomPanelProps) {
-  if (props.state === "access-removed" || props.state === "unavailable") return <section className="room-panel room-blocked" aria-label="Conversation unavailable">
-    <p role="status" aria-label="Room status">{props.state === "access-removed" ? "Access removed. You can no longer view this conversation." : "This conversation is unavailable."}</p>
-    {props.state === "unavailable" && props.onRetry && <Button variant="outline" onClick={props.onRetry}>Try again</Button>}
+  return <RoomBoundary key={JSON.stringify([props.ownerScopeId, props.roomId])} {...props} />;
+}
+
+type Attempt = { observed: RoomComposerProps["sendState"]; state: RoomComposerProps["sendState"]; revision: number };
+
+function RoomBoundary(props: RoomPanelProps) {
+  // Only attempt evidence survives blocked rendering, never a cached draft or transcript.
+  const [attempts, setAttempts] = useState(() => new Map<string, Attempt>());
+  function retainAttempt(composer: RoomComposerProps): RoomComposerProps {
+    const key = composer.clientRequestId;
+    const previous = attempts.get(key);
+    const changed = composer.sendState !== "idle" && composer.sendState !== previous?.observed;
+    const record = changed ? { observed: composer.sendState, state: composer.sendState, revision: previous?.revision ?? 0 } : previous;
+    if (changed) setAttempts(current => new Map(current).set(key, record!));
+    async function invoke(callback: RoomComposerProps["onSubmit"], submission: RoomSubmission) {
+      const revision = (record?.revision ?? 0) + 1;
+      setAttempts(current => new Map(current).set(key, { observed: composer.sendState, state: "sending", revision }));
+      try { await callback(submission); }
+      catch {
+        setAttempts(current => {
+          const latest = current.get(key);
+          if (!latest || latest.revision !== revision || latest.state === "persisted" || latest.state === "rejected") return current;
+          return new Map(current).set(key, { ...latest, state: "uncertain" });
+        });
+      }
+    }
+    const members = new Map(props.participants.map(person => [person.ref, person]));
+    return { ...composer, sendState: record?.state ?? composer.sendState,
+      targets: composer.targets.flatMap(target => {
+        const member = members.get(target.ref);
+        return member?.kind === target.kind ? [member] : [];
+      }),
+      onSubmit: submission => invoke(composer.onSubmit, submission),
+      onRetry: composer.onRetry ? submission => invoke(composer.onRetry!, submission) : undefined,
+    };
+  }
+  const composer = retainAttempt(props.composer);
+  const threadComposer = props.threadComposer && { ...props.threadComposer, composer: retainAttempt(props.threadComposer.composer) };
+  if (props.state === "loading") return <section className="room-panel room-blocked" aria-label="Loading conversation">
+    <p role="status" aria-label="Room status">Loading conversation…</p>
+    <div className="room-skeleton" aria-hidden="true"><span /><span /><span /></div>
   </section>;
-  return <RoomContent key={JSON.stringify([props.ownerScopeId, props.roomId])} {...props} />;
+  const matchingIdentity = !!props.ownerScopeId && !!props.roomId && props.room?.id === props.roomId &&
+    props.messages.every(message => message.roomId === props.roomId) &&
+    (props.threads ?? []).every(thread => thread.replies.every(reply => reply.roomId === props.roomId)) &&
+    (props.contexts ?? []).every(context => context.roomId === props.roomId);
+  if (!matchingIdentity || props.state === "access-removed" || props.state === "unavailable") return <section className="room-panel room-blocked" aria-label="Conversation unavailable">
+    <p role="status" aria-label="Room status">{props.state === "access-removed" ? "Access removed. You can no longer view this conversation." : "This conversation is unavailable."}</p>
+    {matchingIdentity && props.state === "unavailable" && props.onRetry && <Button variant="outline" onClick={props.onRetry}>Try again</Button>}
+  </section>;
+  return <RoomContent {...props} composer={composer} threadComposer={threadComposer} />;
 }
 
 function RoomContent({ roomId, room, state, participants, messages, presence = [], typingRefs = [],
@@ -91,12 +137,12 @@ function RoomContent({ roomId, room, state, participants, messages, presence = [
   const visibleRoom = room?.id === roomId ? room : undefined;
   const loading = state === "loading";
   const actionable = state === "ready" && !!visibleRoom;
-  const authors = new Map(participants.map(participant => [participant.ref, participant]));
+  const membersByRef = new Map(participants.map(participant => [participant.ref, participant]));
   const parentMessage = selection?.kind === "thread" ? messages.find(message => message.id === selection.id) : undefined;
   const selectedContext = selection?.kind === "context" ? contexts.find(context => context.id === selection.id) : undefined;
   const showDetail = !loading && !!(parentMessage || selectedContext);
   const viewers = participants.filter(person => person.kind === "human" && presence.some(row => row.personId === person.ref && row.inRoom && row.observedAt !== null && (row.state === "available" || row.state === "away")));
-  const typing = [...new Set(typingRefs)].map(ref => authors.get(ref)).filter(person => person?.kind === "human");
+  const typing = [...new Set(typingRefs)].map(ref => membersByRef.get(ref)).filter(person => person?.kind === "human");
 
   useEffect(() => {
     if (selection) detailHeading.current?.focus({ preventScroll: true });
@@ -116,7 +162,10 @@ function RoomContent({ roomId, room, state, participants, messages, presence = [
   }
 
   function renderMessage(message: RoomMessage, replies = false) {
-    const author = message.senderRef ? authors.get(message.senderRef) : undefined;
+    const snapshot = message.author;
+    const author = typeof snapshot?.ref === "string" && snapshot.ref.trim() &&
+      typeof snapshot.name === "string" && snapshot.name.trim() &&
+      (snapshot.kind === "human" || snapshot.kind === "agent") ? snapshot : undefined;
     const name = author?.name || "Unknown author";
     const timestamp = message.timestamp && !Number.isNaN(Date.parse(message.timestamp)) ? message.timestamp : undefined;
     return <article key={message.id} className="room-message" aria-label={`Message from ${name}`}>

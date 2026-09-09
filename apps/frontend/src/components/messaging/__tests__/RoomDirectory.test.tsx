@@ -63,4 +63,16 @@ describe("authorized room directory", () => {
     expect(screen.queryByText("Leadership example")).not.toBeInTheDocument();
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
+
+  it.each([[" ", false], ["x", true], ["x".repeat(80), true], ["x".repeat(81), false], ["  " + "x".repeat(80) + "  ", true]])("validates trimmed named-room length independently of DOM hints (case %#)", (name, valid) => {
+    const onCreate = vi.fn();
+    render(<RoomDirectory {...props({ onCreate, permittedCreation: ["public"] })} />);
+    fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
+    const input = screen.getByRole("textbox", { name: "Room name" });
+    expect(input).toHaveAttribute("maxlength", "80");
+    fireEvent.change(input, { target: { value: name } });
+    fireEvent.submit(screen.getByRole("form", { name: "Create conversation" }));
+    expect(onCreate).toHaveBeenCalledTimes(valid ? 1 : 0);
+    if (valid) expect(onCreate).toHaveBeenCalledWith({ kind: "public", name: name.trim(), participantRefs: [] });
+  });
 });

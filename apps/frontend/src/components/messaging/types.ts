@@ -27,8 +27,10 @@ export interface RoomSummary {
 
 export interface RoomMessage {
   id: string;
-  /** Only a verified record lookup establishes authorship; missing = Unknown author. */
-  senderRef?: string;
+  roomId: string;
+  /** Historical snapshot supplied by the authorized adapter, never current membership.
+   * This local shape does not verify native sender evidence; absent evidence stays unknown. */
+  readonly author?: Readonly<Pick<RoomParticipant, "ref" | "name" | "kind">>;
   body: string;
   timestamp?: string;
   contextIds?: readonly string[];
@@ -38,6 +40,7 @@ export interface RoomMessage {
 /** Existing authorized work, never an inferred record parsed from message text. */
 export interface RoomContext {
   id: string;
+  roomId: string;
   kind: "task" | "artifact" | "approval";
   title: string;
   status?: WorkState;

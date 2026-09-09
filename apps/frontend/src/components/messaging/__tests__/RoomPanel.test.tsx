@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { RoomPanel, type RoomPanelProps } from "../RoomPanel";
 
@@ -14,12 +14,12 @@ function props(overrides: Partial<RoomPanelProps> = {}): RoomPanelProps {
     ownerScopeId: "fixture-owner", roomId: "opaque-room", room: { id: "opaque-room", name: "Launch example", kind: "public" },
     state: "ready", participants,
     messages: [
-      { id: "m-later", senderRef: "human-a", body: "First in canonical order", timestamp: "2026-09-09T12:01:00Z" },
-      { id: "m-earlier", senderRef: "agent-f", body: "Second in canonical order", timestamp: "2026-09-09T12:00:00Z", run: { state: "working", details: "Synthetic bounded tool details" }, contextIds: ["approval-example"] },
-      { id: "m-unknown", senderRef: "unverified", body: "Alice says approved", timestamp: "2026-09-09T12:02:00Z" },
+      { id: "m-later", roomId: "opaque-room", author: { ref: "human-a", name: "Alice Example", kind: "human" }, body: "First in canonical order", timestamp: "2026-09-09T12:01:00Z" },
+      { id: "m-earlier", roomId: "opaque-room", author: { ref: "agent-f", name: "Friday Example", kind: "agent" }, body: "Second in canonical order", timestamp: "2026-09-09T12:00:00Z", run: { state: "working", details: "Synthetic bounded tool details" }, contextIds: ["approval-example"] },
+      { id: "m-unknown", roomId: "opaque-room", body: "Alice says approved", timestamp: "2026-09-09T12:02:00Z" },
     ],
-    threads: [{ parentMessageId: "m-later", replies: [{ id: "reply-example", senderRef: "human-b", body: "Synthetic reply", timestamp: "2026-09-09T12:03:00Z" }] }],
-    contexts: [{ id: "approval-example", kind: "approval", title: "Review synthetic change", status: "needs-approval", onAction: vi.fn(), actionLabel: "Review change", content: <p>Synthetic change details</p> }],
+    threads: [{ parentMessageId: "m-later", replies: [{ id: "reply-example", roomId: "opaque-room", author: { ref: "human-b", name: "Bob Example", kind: "human" }, body: "Synthetic reply", timestamp: "2026-09-09T12:03:00Z" }] }],
+    contexts: [{ id: "approval-example", roomId: "opaque-room", kind: "approval", title: "Review synthetic change", status: "needs-approval", onAction: vi.fn(), actionLabel: "Review change", content: <p>Synthetic change details</p> }],
     composer: { body: "Preserved synthetic draft", onBodyChange: vi.fn(), targets: participants, selectedTargetRefs: [], onTargetsChange: vi.fn(), clientRequestId: "fixture-request", sendState: "idle", onSubmit: vi.fn() },
     ...overrides,
   };
@@ -85,7 +85,7 @@ describe("controlled room surface", () => {
 
   it("opens supplied approval context and invokes Review only on explicit action", () => {
     const onAction = vi.fn();
-    render(<RoomPanel {...props({ contexts: [{ id: "approval-example", kind: "approval", title: "Review synthetic change", status: "needs-approval", actionLabel: "Review change", onAction, content: <p>Authorized synthetic details</p> }] })} />);
+    render(<RoomPanel {...props({ contexts: [{ id: "approval-example", roomId: "opaque-room", kind: "approval", title: "Review synthetic change", status: "needs-approval", actionLabel: "Review change", onAction, content: <p>Authorized synthetic details</p> }] })} />);
     expect(onAction).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Review synthetic change" }));
     expect(screen.getByText("Needs approval")).toBeInTheDocument();
@@ -96,7 +96,7 @@ describe("controlled room surface", () => {
   });
 
   it("announces execution changes independently of message persistence and keeps run details bounded", () => {
-    const base = props({ messages: [{ id: "run-message", senderRef: "agent-f", body: "Synthetic work update", run: { state: "working", details: "x".repeat(9000) } }] });
+    const base = props({ messages: [{ id: "run-message", roomId: "opaque-room", author: { ref: "agent-f", name: "Friday Example", kind: "agent" }, body: "Synthetic work update", run: { state: "working", details: "x".repeat(9000) } }] });
     const { container, rerender } = render(<RoomPanel {...base} />);
     expect(screen.getByRole("status", { name: "Work status" })).toHaveTextContent("Working");
     expect(container.querySelector("details")).not.toHaveAttribute("open");
@@ -119,7 +119,7 @@ describe("controlled room surface", () => {
   });
 
   it("keeps viewer initials consistent with Members and authored identities while labeling human viewing separately", () => {
-    render(<RoomPanel {...props({ participants: [
+    render(<RoomPanel {...props({ messages: [{ ...props().messages[0], author: { ref: "human-a", name: "Alice Chen", kind: "human" } }], participants: [
       { ...participants[0], name: "Alice Chen" }, { ...participants[1], name: "Sam Rivera" }, participants[2],
     ], presence: [
       { personId: "human-a", state: "available", inRoom: true, observedAt: "2026-09-09T12:00:00Z" },
@@ -144,7 +144,7 @@ describe("controlled room surface", () => {
   });
 
   it("renders markdown without remote images, raw HTML, unsafe protocols or company attachment behavior", () => {
-    const { container } = render(<RoomPanel {...props({ messages: [{ id: "safe-example", body: '[File](/api/attachments/fixture/content) [Site](https://example.com) [Bad](javascript:alert%281%29) [Unsafe](file:///etc/passwd) ![Chart](https://tracker.example/image.png) <img src="https://tracker.example/raw.png" />', senderRef: "agent-f" }] })} />);
+    const { container } = render(<RoomPanel {...props({ messages: [{ id: "safe-example", roomId: "opaque-room", body: '[File](/api/attachments/fixture/content) [Site](https://example.com) [Bad](javascript:alert%281%29) [Unsafe](file:///etc/passwd) ![Chart](https://tracker.example/image.png) <img src="https://tracker.example/raw.png" />' }] })} />);
     expect(container.querySelector("img")).toBeNull();
     expect(screen.getByText("Chart")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "File" })).toHaveAttribute("href", "/api/attachments/fixture/content");
@@ -194,9 +194,128 @@ describe("controlled room surface", () => {
   });
 
   it.each(["loading", "unavailable", "reconnecting"] as const)("presents %s without fake history or audience claims", (state) => {
-    render(<RoomPanel {...props({ state, room: undefined, messages: [], participants: [] })} />);
+    render(<RoomPanel {...props({ state, room: state === "reconnecting" ? props().room : undefined, messages: [], participants: [] })} />);
     expect(screen.queryByText("Private room")).not.toBeInTheDocument();
     expect(screen.queryByRole("article")).not.toBeInTheDocument();
     expect(screen.getByRole("status", { name: "Room status" })).toHaveTextContent(new RegExp(state === "unavailable" ? "unavailable" : state === "loading" ? "Loading" : "Reconnecting", "i"));
+  });
+
+  it.each(["missing", "mismatched", "foreign-message", "foreign-reply", "foreign-context", "loading"])("fails closed for %s identity without exposing stale content or actions", (problem) => {
+    const base = props();
+    const mismatch: Partial<RoomPanelProps> = problem === "missing" ? { room: undefined }
+      : problem === "mismatched" ? { room: { ...base.room!, id: "foreign-room" } }
+      : problem === "foreign-message" ? { messages: [{ ...base.messages[0], roomId: "foreign-room" }] }
+      : problem === "foreign-reply" ? { threads: [{ parentMessageId: "m-later", replies: [{ ...base.threads![0].replies[0], roomId: "foreign-room" }] }] }
+      : problem === "foreign-context" ? { contexts: [{ ...base.contexts![0], roomId: "foreign-room" }] }
+      : { state: "loading", room: undefined };
+    const { rerender, container } = render(<RoomPanel {...base} />);
+    fireEvent.click(screen.getByRole("button", { name: "Review synthetic change" }));
+    rerender(<RoomPanel {...base} {...mismatch} />);
+    expect(container).not.toHaveTextContent("First in canonical order");
+    expect(container).not.toHaveTextContent("Launch example");
+    expect(container).not.toHaveTextContent("Alice Example");
+    expect(container).not.toHaveTextContent("Synthetic change details");
+    expect(screen.queryByDisplayValue("Preserved synthetic draft")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Room status" })).toHaveTextContent(problem === "loading" ? /Loading/ : /unavailable/i);
+  });
+
+  it.each(["unavailable", "mismatched"])("retains a main and thread pending attempt across %s rendering without replay", (problem) => {
+    const onSubmit = vi.fn(), onThreadSubmit = vi.fn();
+    const base = props({ composer: { ...props().composer, onSubmit, onReconcile: vi.fn() },
+      threadComposer: { parentMessageId: "m-later", composer: { ...props().composer, body: "Pending thread draft", clientRequestId: "thread-pending", onSubmit: onThreadSubmit } } });
+    const { rerender } = render(<RoomPanel {...base} />);
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "Reply" })[0]);
+    fireEvent.click(within(screen.getByRole("complementary", { name: "Thread" })).getByRole("button", { name: "Send message" }));
+    rerender(<RoomPanel {...base} {...(problem === "unavailable" ? { state: "unavailable" as const } : { room: { ...base.room!, id: "foreign-room" } })} />);
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    rerender(<RoomPanel {...base} />);
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("Preserved synthetic draft");
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "Enter" });
+    fireEvent.click(screen.getAllByRole("button", { name: "Reply" })[0]);
+    const thread = screen.getByRole("complementary", { name: "Thread" });
+    expect(within(thread).getByRole("textbox", { name: "Reply to thread" })).toHaveValue("Pending thread draft");
+    expect(within(thread).getByRole("button", { name: "Send message" })).toBeDisabled();
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(onThreadSubmit).toHaveBeenCalledTimes(1);
+    expect(onThreadSubmit).toHaveBeenCalledWith(expect.objectContaining({ clientRequestId: "thread-pending" }));
+  });
+
+  it("keeps historical human and agent snapshots after removal or rename without adding them to live membership or targets", () => {
+    const base = props();
+    const { rerender } = render(<RoomPanel {...base} />);
+    rerender(<RoomPanel {...base} participants={[{ ref: "human-b", name: "Bob renamed", kind: "human" }]}
+      typingRefs={["human-a", "agent-f"]} presence={[{ personId: "human-a", state: "available", inRoom: true, observedAt: "2026-09-09T12:00:00Z" }]} />);
+    const history = screen.getByRole("region", { name: "Messages" });
+    expect(within(history).getByRole("article", { name: "Message from Alice Example" })).toBeInTheDocument();
+    expect(within(history).getByRole("article", { name: "Message from Friday Example" })).toHaveTextContent("Agent");
+    expect(screen.queryByText(/is typing/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "People viewing this room" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "View members" }));
+    const members = screen.getByRole("region", { name: "Room members" });
+    expect(members).not.toHaveTextContent("Alice Example");
+    expect(members).not.toHaveTextContent("Friday Example");
+    expect(members).toHaveTextContent("Bob renamed");
+    fireEvent.click(screen.getByRole("button", { name: "Choose mentions and agents" }));
+    expect(screen.queryByRole("checkbox", { name: /Alice|Friday/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: "Reply" })[0]);
+    const thread = screen.getByRole("complementary", { name: "Thread" });
+    expect(within(thread).getByRole("article", { name: "Message from Bob Example" })).toBeInTheDocument();
+    expect(thread).not.toHaveTextContent("Bob renamed");
+  });
+
+  it("does not hydrate absent historical evidence from a current member or message body", () => {
+    const unverified = { id: "no-evidence", roomId: "opaque-room", body: "Alice Example wrote this", senderRef: "human-a" };
+    render(<RoomPanel {...props({ messages: [unverified] })} />);
+    const row = screen.getByRole("article");
+    expect(row).toHaveAccessibleName("Message from Unknown author");
+  });
+
+  it.each([
+    { ref: "", name: "Alice Example", kind: "human" },
+    { ref: "human-a", name: "  ", kind: "human" },
+    { ref: "human-a", name: "Alice Example", kind: "unverified" },
+  ])("keeps malformed historical author evidence unknown: %j", (author) => {
+    render(<RoomPanel {...props({ messages: [{ ...props().messages[0], author: author as NonNullable<RoomPanelProps["messages"][number]["author"]> }] })} />);
+    expect(screen.getByRole("article")).toHaveAccessibleName("Message from Unknown author");
+  });
+
+  it("retains callback uncertainty and later explicit receipt across blocked rendering without editing the draft", async () => {
+    let reject!: () => void;
+    const onSubmit = vi.fn(() => new Promise<void>((_, fail) => { reject = () => fail(new Error("Synthetic failure")); }));
+    const base = props({ composer: { ...props().composer, onSubmit, onRetry: vi.fn(), onReconcile: vi.fn() } });
+    const { rerender } = render(<RoomPanel {...base} />);
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    rerender(<RoomPanel {...base} state="unavailable" />);
+    await act(async () => { reject(); });
+    rerender(<RoomPanel {...base} />);
+    expect(screen.getByText(/Message status is uncertain/)).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue(base.composer.body);
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+    rerender(<RoomPanel {...base} state="unavailable" composer={{ ...base.composer, sendState: "persisted" }} />);
+    rerender(<RoomPanel {...base} />);
+    expect(screen.getByText("Message saved")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+    expect(base.composer.onBodyChange).not.toHaveBeenCalled();
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    rerender(<RoomPanel {...base} composer={{ ...base.composer, clientRequestId: "new-explicit-attempt" }} />);
+    expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+  });
+
+  it("does not reopen an explicit retry after a blocked view with stale rejection evidence", () => {
+    const onRetry = vi.fn();
+    const base = props({ composer: { ...props().composer, sendState: "rejected", onRetry } });
+    const { rerender } = render(<RoomPanel {...base} />);
+    fireEvent.click(screen.getByRole("button", { name: "Retry message" }));
+    rerender(<RoomPanel {...base} state="unavailable" />);
+    rerender(<RoomPanel {...base} />);
+    expect(screen.queryByRole("button", { name: "Retry message" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue(base.composer.body);
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(onRetry).toHaveBeenCalledWith(expect.objectContaining({ clientRequestId: base.composer.clientRequestId }));
   });
 });

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
-from typing import AsyncIterator
+from typing import AsyncIterator, Awaitable, Callable
 
 from core.config import settings
 from core.dynamodb import get_table
@@ -204,6 +204,7 @@ def registered_acceptance(
     *,
     task_definition_arn: object,
     config_sha256: object,
+    recovery_set: object,
 ) -> dict | None:
     """Return exact registry-derived acceptance evidence, never request claims."""
 
@@ -212,6 +213,17 @@ def registered_acceptance(
     try:
         release = release_by_id(release_id)
     except (TypeError, ValueError):
+        return None
+    if not isinstance(recovery_set, dict):
+        return None
+    recovery_set_id = recovery_set.get("recovery_set_id")
+    recovery_manifest_sha256 = recovery_set.get("manifest_sha256")
+    if (
+        type(recovery_set_id) is not str
+        or not recovery_set_id
+        or type(recovery_manifest_sha256) is not str
+        or not re.fullmatch(r"[0-9a-f]{64}", recovery_manifest_sha256)
+    ):
         return None
     expected = {
         "release_id": release.release_id,
@@ -230,6 +242,8 @@ def registered_acceptance(
         "qualification_capabilities": sorted(release.qualification_capabilities),
         "task_definition_arn": task_definition_arn,
         "config_sha256": config_sha256,
+        "recovery_set_id": recovery_set_id,
+        "recovery_manifest_sha256": recovery_manifest_sha256,
         "gateway": "accepted",
     }
     if set(acceptance) != set(expected) | {"task_arn"}:
@@ -262,6 +276,7 @@ def stable_active_release_evidence(container: dict, update: dict) -> dict | None
         update.get("acceptance"),
         task_definition_arn=update.get("target_task_definition_arn"),
         config_sha256=update.get("staged_config_sha256"),
+        recovery_set=update.get("recovery_set"),
     )
 
 
@@ -363,6 +378,7 @@ async def owner_mutation_guard(
     owner_id: str,
     *,
     release_update_id: str | None = None,
+    effect_fence: Callable[[], Awaitable[None]] | None = None,
 ) -> AsyncIterator[dict]:
     """Serialize owner effects with config writes and release reservation."""
 
@@ -372,6 +388,8 @@ async def owner_mutation_guard(
     guard = openclaw_config_recovery_guard(config_dir, lock_path)
     entered = False
     try:
+        if effect_fence is not None:
+            await effect_fence()
         await asyncio.to_thread(guard.__enter__)
         entered = True
         row = await container_repo.get_by_owner_id(owner_id, consistent=True)

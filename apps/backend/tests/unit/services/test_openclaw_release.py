@@ -35,6 +35,19 @@ def _release_row(**overrides):
     return row
 
 
+def _recovery_set():
+    return {
+        "recovery_set_id": "owner/update/recovery-v1",
+        "manifest_sha256": "3" * 64,
+        "source_task_arns": ["arn:old-task"],
+        "shared_db_generation": "shared-1",
+        "agent_db_generations": {"main": "agent-1"},
+        "efs_archive_sha256": "4" * 64,
+        "workshop_archive_sha256": "5" * 64,
+        "verified_at": "2026-09-09T12:00:00Z",
+    }
+
+
 def test_release_registry_is_empty_until_final_artifact_is_injected():
     from core.services import openclaw_release
 
@@ -201,6 +214,8 @@ def test_only_stable_finished_release_is_qualification_evidence(tmp_path, monkey
         "task_definition_arn": "arn:task-definition/qualified:1",
         "task_arn": "arn:task/qualified",
         "config_sha256": "b" * 64,
+        "recovery_set_id": _recovery_set()["recovery_set_id"],
+        "recovery_manifest_sha256": _recovery_set()["manifest_sha256"],
         "gateway": "accepted",
     }
     update = {
@@ -209,6 +224,7 @@ def test_only_stable_finished_release_is_qualification_evidence(tmp_path, monkey
         "target_release_id": release_id,
         "acceptance": acceptance,
         "release_revision": 2,
+        "recovery_set": _recovery_set(),
     }
     container = {
         "active_release_id": release_id,

@@ -18,6 +18,11 @@ def _get_table():
 _UNRESERVED_UPDATE = Attr("release_revision").not_exists() & (
     Attr("update_type").not_exists() | Attr("update_type").ne("release")
 )
+_ORDINARY_OWNER_FIELDS = (
+    "ordinary_update_id",
+    "ordinary_update_claim_id",
+    "ordinary_update_claimed_at",
+)
 
 _OWNER_APPLY_CONTAINER_PINS = (
     "id",
@@ -29,6 +34,7 @@ _OWNER_APPLY_CONTAINER_PINS = (
 )
 _OWNER_APPLY_CONTAINER_EXCLUSIONS = (
     "release_update_id",
+    *_ORDINARY_OWNER_FIELDS,
     "provision_claim_id",
     "provision_attempt_token",
     "provision_execution_name",
@@ -62,9 +68,13 @@ _OWNER_APPLY_UPDATE_EXCLUSIONS = (
     "applied_at",
     "failure_reason",
     "reserved_at",
+    "prepare_requested_at",
     "prepared_at",
+    "recovery_requested_at",
+    "recovered_at",
     "stop_requested_at",
     "drained_at",
+    "stage_requested_at",
     "staged_at",
     "activating_at",
     "activated_at",
@@ -92,12 +102,17 @@ _RELEASE_CHECKPOINT_PINS = (
     "prior_desired_count",
     "target_desired_count",
     "pre_stop_task_arns",
+    "recovery_set",
     "drain_evidence",
     "acceptance",
     "reserved_at",
+    "prepare_requested_at",
     "prepared_at",
+    "recovery_requested_at",
+    "recovered_at",
     "stop_requested_at",
     "drained_at",
+    "stage_requested_at",
     "staged_at",
     "activating_at",
     "activated_at",
@@ -113,6 +128,7 @@ _RELEASE_CHECKPOINT_FIELDS = frozenset(
         "effect_claim_id",
         "effect_executor_id",
         "pre_stop_task_arns",
+        "recovery_set",
         "drain_evidence",
         "acceptance",
         "failure_reason",
@@ -121,10 +137,14 @@ _RELEASE_CHECKPOINT_FIELDS = frozenset(
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _RELEASE_EFFECT_FIELDS = frozenset({"effect_kind", "effect_claim_id", "effect_executor_id"})
 _RELEASE_NEXT_PHASE = {
-    "reserved": "prepared",
-    "prepared": "stop_requested",
+    "reserved": "stop_requested",
     "stop_requested": "drained",
-    "drained": "staged",
+    "drained": "recovery_requested",
+    "recovery_requested": "recovered",
+    "recovered": "prepare_requested",
+    "prepare_requested": "prepared",
+    "prepared": "stage_requested",
+    "stage_requested": "staged",
     "staged": "activating",
     "activating": "activated",
     "activated": "start_requested",
@@ -132,9 +152,13 @@ _RELEASE_NEXT_PHASE = {
 }
 _RELEASE_PHASE_ORDER = (
     "reserved",
-    "prepared",
     "stop_requested",
     "drained",
+    "recovery_requested",
+    "recovered",
+    "prepare_requested",
+    "prepared",
+    "stage_requested",
     "staged",
     "activating",
     "activated",
@@ -204,6 +228,38 @@ def _valid_drain_evidence(update: dict) -> bool:
     )
 
 
+def _valid_recovery_set(value: object, update: dict) -> bool:
+    if not isinstance(value, dict):
+        return False
+    agents = value.get("agent_db_generations")
+    return (
+        set(value)
+        == {
+            "recovery_set_id",
+            "manifest_sha256",
+            "source_task_arns",
+            "shared_db_generation",
+            "agent_db_generations",
+            "efs_archive_sha256",
+            "workshop_archive_sha256",
+            "verified_at",
+        }
+        and _nonempty_string(value.get("recovery_set_id"))
+        and _nonempty_string(value.get("manifest_sha256"))
+        and _SHA256_RE.fullmatch(value["manifest_sha256"]) is not None
+        and value.get("source_task_arns") == update.get("pre_stop_task_arns")
+        and _nonempty_string(value.get("shared_db_generation"))
+        and isinstance(agents, dict)
+        and bool(agents)
+        and all(_nonempty_string(agent) and _nonempty_string(generation) for agent, generation in agents.items())
+        and _nonempty_string(value.get("efs_archive_sha256"))
+        and _SHA256_RE.fullmatch(value["efs_archive_sha256"]) is not None
+        and _nonempty_string(value.get("workshop_archive_sha256"))
+        and _SHA256_RE.fullmatch(value["workshop_archive_sha256"]) is not None
+        and _nonempty_string(value.get("verified_at"))
+    )
+
+
 def _valid_effect(update: dict, kind: str) -> bool:
     return (
         update.get("effect_kind") == kind
@@ -238,19 +294,27 @@ def _valid_release_phase_evidence(phase: str, update: dict) -> bool:
     ):
         return False
     if phase == "reserved":
-        return True
-    if not _nonempty_string(update.get("target_task_definition_arn")):
-        return False
-    if phase == "prepared":
-        return True
-    if not _valid_task_arns(update.get("pre_stop_task_arns")):
-        return False
+        return _has_no_effect(update)
     if phase == "stop_requested":
-        return _valid_effect(update, "stop_service")
+        return _valid_task_arns(update.get("pre_stop_task_arns")) and _valid_effect(update, "stop_service")
     if not _valid_drain_evidence(update):
         return False
     if phase == "drained":
         return _has_no_effect(update)
+    if phase == "recovery_requested":
+        return _valid_effect(update, "create_recovery_set")
+    if phase == "recovered":
+        return _valid_recovery_set(update.get("recovery_set"), update) and _has_no_effect(update)
+    if not _valid_recovery_set(update.get("recovery_set"), update):
+        return False
+    if phase == "prepare_requested":
+        return _valid_effect(update, "prepare_task_definition")
+    if not _nonempty_string(update.get("target_task_definition_arn")):
+        return False
+    if phase == "prepared":
+        return _has_no_effect(update)
+    if phase == "stage_requested":
+        return _valid_effect(update, "stage_config")
     if not (
         _nonempty_string(update.get("prior_config_sha256"))
         and _SHA256_RE.fullmatch(update["prior_config_sha256"])
@@ -280,6 +344,7 @@ def _registered_acceptance(update: dict, acceptance: object) -> dict | None:
             acceptance,
             task_definition_arn=update.get("target_task_definition_arn"),
             config_sha256=update.get("staged_config_sha256"),
+            recovery_set=update.get("recovery_set"),
         )
     except TypeError:
         return None
@@ -302,10 +367,14 @@ def _valid_release_transition(
         return False
     else:
         required_fields: dict[tuple[str, str], set[str]] = {
-            ("reserved", "prepared"): {"target_task_definition_arn"},
-            ("prepared", "stop_requested"): set(_RELEASE_EFFECT_FIELDS) | {"pre_stop_task_arns"},
+            ("reserved", "stop_requested"): set(_RELEASE_EFFECT_FIELDS) | {"pre_stop_task_arns"},
             ("stop_requested", "drained"): {"drain_evidence"},
-            ("drained", "staged"): {"prior_config_sha256", "staged_config_sha256"},
+            ("drained", "recovery_requested"): set(_RELEASE_EFFECT_FIELDS),
+            ("recovery_requested", "recovered"): {"recovery_set"},
+            ("recovered", "prepare_requested"): set(_RELEASE_EFFECT_FIELDS),
+            ("prepare_requested", "prepared"): {"target_task_definition_arn"},
+            ("prepared", "stage_requested"): set(_RELEASE_EFFECT_FIELDS),
+            ("stage_requested", "staged"): {"prior_config_sha256", "staged_config_sha256"},
             ("staged", "activating"): set(_RELEASE_EFFECT_FIELDS),
             ("activating", "activated"): set(),
             ("activated", "start_requested"): set(_RELEASE_EFFECT_FIELDS),
@@ -314,7 +383,14 @@ def _valid_release_transition(
         required_removals = (
             set(_RELEASE_EFFECT_FIELDS)
             if (expected_phase, next_phase)
-            in {("stop_requested", "drained"), ("activating", "activated"), ("start_requested", "validating")}
+            in {
+                ("prepare_requested", "prepared"),
+                ("recovery_requested", "recovered"),
+                ("stop_requested", "drained"),
+                ("stage_requested", "staged"),
+                ("activating", "activated"),
+                ("start_requested", "validating"),
+            }
             else set()
         )
         if set(fields) != required_fields[(expected_phase, next_phase)] or removals != required_removals:
@@ -625,7 +701,12 @@ def _release_transaction_conditions(expected_container: dict, expected_update: d
         "provision_attempt_token",
     )
     container_conditions = _snapshot_conditions(
-        expected_container, container_pins, (), "rc", container_names, container_values
+        expected_container,
+        container_pins,
+        _ORDINARY_OWNER_FIELDS,
+        "rc",
+        container_names,
+        container_values,
     )
     update_names: dict = {}
     update_values: dict = {}
@@ -792,6 +873,10 @@ async def takeover_owner_release(
     now_iso = utc_now_iso()
     cv.update({":claim": claim_id, ":now": now_epoch, ":updated": now_iso, ":stale": stale_before_epoch})
     uv.update({":claim": claim_id, ":now": now_epoch, ":updated": now_iso, ":stale": stale_before_epoch})
+    effect_update = ""
+    if _valid_effect(expected_update, expected_update.get("effect_kind")):
+        uv[":effect"] = uuid.uuid4().hex
+        effect_update = ", effect_claim_id = :effect, effect_executor_id = :claim"
     try:
         await run_in_thread(
             get_table("containers").meta.client.transact_write_items,
@@ -816,6 +901,7 @@ async def takeover_owner_release(
                         "ConditionExpression": " AND ".join(uc),
                         "UpdateExpression": (
                             "SET apply_claim_id = :claim, apply_claimed_at = :now, updated_at = :updated"
+                            + effect_update
                         ),
                         "ExpressionAttributeNames": un,
                         "ExpressionAttributeValues": uv,
@@ -1031,6 +1117,86 @@ async def claim_apply(
         return response.get("Attributes")
     except table.meta.client.exceptions.ConditionalCheckFailedException:
         return None
+
+
+async def claim_ordinary_owner(owner_id: str, update_id: str, claim_id: str) -> bool:
+    """Publish an owner marker that excludes a release before ordinary effects."""
+
+    update = await get_by_id(owner_id, update_id, consistent=True)
+    if (
+        not update
+        or update.get("status") != "applying"
+        or update.get("update_type") == "release"
+        or update.get("apply_claim_id") != claim_id
+        or "release_revision" in update
+    ):
+        return False
+    table = get_table("containers")
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression=(
+                "SET ordinary_update_id = :update, ordinary_update_claim_id = :claim, "
+                "ordinary_update_claimed_at = :claimed"
+            ),
+            ExpressionAttributeValues={
+                ":update": update_id,
+                ":claim": claim_id,
+                ":claimed": int(time.time()),
+            },
+            ConditionExpression=(
+                Attr("owner_id").exists()
+                & Attr("release_update_id").not_exists()
+                & Attr("provision_claim_id").not_exists()
+                & (Attr("ordinary_update_id").not_exists() | Attr("ordinary_update_id").eq(update_id))
+            ),
+        )
+        return True
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+
+
+async def assert_ordinary_owner(owner_id: str, update_id: str, claim_id: str) -> bool:
+    """Strongly prove an ordinary update still excludes owner release effects."""
+
+    container_response = await run_in_thread(
+        get_table("containers").get_item,
+        Key={"owner_id": owner_id},
+        ConsistentRead=True,
+    )
+    update = await get_by_id(owner_id, update_id, consistent=True)
+    container = container_response.get("Item")
+    return bool(
+        container
+        and update
+        and container.get("ordinary_update_id") == update_id
+        and container.get("ordinary_update_claim_id") == claim_id
+        and "release_update_id" not in container
+        and "provision_claim_id" not in container
+        and update.get("status") == "applying"
+        and update.get("update_type") != "release"
+        and update.get("apply_claim_id") == claim_id
+        and "release_revision" not in update
+    )
+
+
+async def release_ordinary_owner(owner_id: str, update_id: str, claim_id: str) -> bool:
+    """Clear the exclusion marker iff this exact ordinary claim still owns it."""
+
+    table = get_table("containers")
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="REMOVE ordinary_update_id, ordinary_update_claim_id, ordinary_update_claimed_at",
+            ConditionExpression=(
+                Attr("ordinary_update_id").eq(update_id) & Attr("ordinary_update_claim_id").eq(claim_id)
+            ),
+        )
+        return True
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
 
 
 async def claim_stale_apply(

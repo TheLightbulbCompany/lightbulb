@@ -8,6 +8,7 @@ import asyncio
 import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -2607,6 +2608,46 @@ class TestResizeUserContainer:
             assert call_kwargs["memory"] == "2048"
 
     @pytest.mark.asyncio
+    async def test_assigned_release_resize_preserves_digest_image_when_stopped(self, manager, mock_ecs_client):
+        """A size-only resize must never clone the mutable fleet image over an assigned release."""
+
+        from core.services import openclaw_release
+
+        qualified = "877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/openclaw-extended@sha256:" + "a" * 64
+        row = _make_container_dict(
+            status="stopped",
+            task_definition_arn="arn:aws:ecs:us-east-1:123:task-definition/release:7",
+        )
+        row.update(
+            desired_release_id="candidate",
+            active_release_id="candidate",
+            release_revision=2,
+        )
+        mock_ecs_client.describe_services.return_value = {
+            "services": [{"desiredCount": 0, "runningCount": 0, "deployments": []}]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(openclaw_release, "release_by_id", return_value=SimpleNamespace(digest_image=qualified)),
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock) as poller,
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=row)
+            mock_repo.update_fields = AsyncMock(return_value=row)
+
+            await manager.resize_user_container(
+                "user_test_123",
+                new_cpu="2048",
+                new_memory="8192",
+                new_image="global-default:mutable",
+            )
+
+        definition = mock_ecs_client.register_task_definition.call_args.kwargs
+        openclaw = next(item for item in definition["containerDefinitions"] if item["name"] == "openclaw")
+        assert openclaw["image"] == qualified
+        poller.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_resize_carries_per_user_env_and_secrets_from_prior_revision(self, manager, mock_ecs_client):
         """resize must preserve per-user env/secrets layered on the prior
         revision (bearer token, ACP harness env, BYOK secret refs).
@@ -3044,6 +3085,7 @@ class TestConfigLockProtocolRollout:
             new_cpu="2048",
             new_memory="8192",
             _register_only=True,
+            _effect_fence=None,
         )
         update_kwargs = mock_ecs_client.update_service.call_args.kwargs
         assert update_kwargs["taskDefinition"] == "arn:task-def:new"

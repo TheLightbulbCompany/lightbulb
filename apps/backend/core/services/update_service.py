@@ -320,7 +320,9 @@ async def reapply_owner_config(owner_id: str, *, deployed_tag: str | None = None
     ``deployed_tag`` is the tag of the image that will READ the regenerated
     config, for fork-level-gated keys. An image roll passes the image it is
     rolling TO; the admin Regenerate button and the ops script leave it
-    ``None`` so the owner's registered task definition is used.
+    ``None`` so the owner's registered task definition is used. A qualified
+    owner always keeps its active release tag and schema instead of inheriting
+    a mutable fleet-image request.
 
     Existing containers keep their PROVISION-TIME config on EFS; a backend
     deploy that changes the generator does not touch it. This pushes the
@@ -348,9 +350,17 @@ async def reapply_owner_config(owner_id: str, *, deployed_tag: str | None = None
     from core.repositories import container_repo
     from core.services import config_patcher, container_provision
 
-    container = await container_repo.get_by_owner_id(owner_id)
+    container = await container_repo.get_by_owner_id(owner_id, consistent=True)
     if not container:
         raise LookupError(f"No container row for owner {owner_id} — nothing to reapply")
+
+    active_release_id = container.get("active_release_id")
+    if active_release_id is not None:
+        if container.get("desired_release_id") != active_release_id or container.get("release_update_id") is not None:
+            raise ValueError("owner release assignment changed before config regeneration")
+        from core.services.openclaw_release import release_by_id
+
+        deployed_tag = release_by_id(active_release_id).image.rpartition(":")[2]
 
     gateway_token = container.get("gateway_token")
     if not gateway_token:
@@ -460,8 +470,21 @@ async def _apply_claimed_update(update: dict, claim_id: str) -> bool:
 
     owner_id = update["owner_id"]
     update_id = update["update_id"]
+    if not await update_repo.claim_ordinary_owner(owner_id, update_id, claim_id):
+        await update_repo.finish_claimed_apply(
+            owner_id,
+            update_id,
+            claim_id,
+            status="failed",
+            failure_reason="owner is reserved by another runtime mutation",
+        )
+        return False
     heartbeat_stop = asyncio.Event()
     heartbeat_task = asyncio.create_task(_heartbeat_apply_claim(owner_id, update_id, claim_id, heartbeat_stop))
+
+    async def fence_effect() -> None:
+        if not await update_repo.assert_ordinary_owner(owner_id, update_id, claim_id):
+            raise RuntimeError("ordinary update owner claim moved before effect")
 
     try:
         changes = update.get("changes", {})
@@ -470,6 +493,7 @@ async def _apply_claimed_update(update: dict, claim_id: str) -> bool:
         # Step 2: apply config patch if present
         config_patch = changes.get("config_patch")
         if config_patch:
+            await fence_effect()
             await patch_openclaw_config(owner_id, config_patch)
             logger.info("Applied config patch for update %s (owner=%s)", update_id, owner_id)
 
@@ -490,7 +514,11 @@ async def _apply_claimed_update(update: dict, claim_id: str) -> bool:
             if refresh_from_base:
                 target_task_definition_arn = update.get("target_task_definition_arn")
                 if not target_task_definition_arn:
-                    target_task_definition_arn = await ecs.prepare_config_lock_protocol_task_definition(owner_id)
+                    await fence_effect()
+                    target_task_definition_arn = await ecs.prepare_config_lock_protocol_task_definition(
+                        owner_id,
+                        _effect_fence=fence_effect,
+                    )
                     stored = await update_repo.set_apply_target(
                         owner_id,
                         update_id,
@@ -512,9 +540,11 @@ async def _apply_claimed_update(update: dict, claim_id: str) -> bool:
                 # idempotent and terminal DDB writes remain fenced.
                 if not await update_repo.heartbeat_apply(owner_id, update_id, claim_id):
                     return False
+                await fence_effect()
                 await ecs.rollout_config_lock_protocol(
                     owner_id,
                     target_task_definition_arn=target_task_definition_arn,
+                    _effect_fence=fence_effect,
                 )
                 logger.info(
                     "Task-definition refresh reached ECS stability for owner=%s (update=%s target=%s)",
@@ -545,6 +575,7 @@ async def _apply_claimed_update(update: dict, claim_id: str) -> bool:
                 # skills / mcp, plus anything the generator never emits such
                 # as identity and bindings) via _runtime_only_delta.
                 if new_image:
+                    await fence_effect()
                     try:
                         # deployed_tag is the image that will READ this config,
                         # i.e. the one we are rolling TO -- NOT the owner's
@@ -568,6 +599,7 @@ async def _apply_claimed_update(update: dict, claim_id: str) -> bool:
                             "update_service: config regen unavailable for owner=%s, falling back to key strip",
                             owner_id,
                         )
+                        await fence_effect()
                         await migrate_removed_config_keys(owner_id)
 
                     # Carry redaction rules onto already-provisioned containers.
@@ -585,6 +617,7 @@ async def _apply_claimed_update(update: dict, claim_id: str) -> bool:
                     )
                     from core.services.paperclip_credential_rule import PAPERCLIP_CREDS_PLUGIN_PATCH
 
+                    await fence_effect()
                     try:
                         await ensure_redact_patterns(owner_id, REDACT_PATTERNS)
                     except Exception:  # noqa: BLE001 — never block a roll on a safety-net patch
@@ -603,6 +636,7 @@ async def _apply_claimed_update(update: dict, claim_id: str) -> bool:
                     # config, so pre-existing owners would never gain the shared
                     # company-brain vault. ensure_plugin_entries is additive-only,
                     # so an owner who already configured memory-wiki keeps theirs.
+                    await fence_effect()
                     try:
                         await ensure_plugin_entries(
                             owner_id,
@@ -627,6 +661,7 @@ async def _apply_claimed_update(update: dict, claim_id: str) -> bool:
                     # so "preserve an explicit isolated choice" is not a contract
                     # either path makes; the deep-fill's never-overwrite rule is
                     # about not clobbering unrelated keys, not about opt-outs.
+                    await fence_effect()
                     try:
                         await ensure_plugin_config_keys(
                             owner_id,
@@ -644,6 +679,7 @@ async def _apply_claimed_update(update: dict, claim_id: str) -> bool:
                     # contract (never raises).
                     from core.containers import get_workspace
 
+                    await fence_effect()
                     await heal_seeded_files(owner_id=owner_id, workspace=get_workspace())
 
                 # An image-only roll carries NO size — queue_image_update /
@@ -657,11 +693,13 @@ async def _apply_claimed_update(update: dict, claim_id: str) -> bool:
                 if new_cpu is None and new_memory is None:
                     new_cpu, new_memory = await ecs._size_for_owner(owner_id)
 
+                await fence_effect()
                 await ecs.resize_user_container(
                     user_id=owner_id,
                     new_cpu=new_cpu,
                     new_memory=new_memory,
                     new_image=new_image,
+                    _effect_fence=fence_effect,
                 )
                 logger.info(
                     "ECS update applied for owner=%s image=%s cpu=%s mem=%s (update=%s)",
@@ -705,6 +743,7 @@ async def _apply_claimed_update(update: dict, claim_id: str) -> bool:
     finally:
         heartbeat_stop.set()
         await heartbeat_task
+        await update_repo.release_ordinary_owner(owner_id, update_id, claim_id)
 
 
 async def apply_update(owner_id: str, update_id: str) -> bool:

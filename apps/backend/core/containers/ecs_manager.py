@@ -15,6 +15,7 @@ import re
 import secrets
 import socket
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import boto3
@@ -1757,6 +1758,8 @@ class EcsManager:
         new_image: str | None = None,
         *,
         _register_only: bool = False,
+        _release_update_id: str | None = None,
+        _effect_fence: Callable[[], Awaitable[None]] | None = None,
     ) -> str:
         """Update a user's container with new CPU/memory/image and force redeploy.
 
@@ -1772,9 +1775,48 @@ class EcsManager:
         Returns:
             The ARN of the new task definition revision.
         """
-        container = await container_repo.get_by_owner_id(user_id)
+        container = await container_repo.get_by_owner_id(user_id, consistent=True)
         if not container:
             raise EcsManagerError(f"No container found for user {user_id}", user_id)
+
+        stable_release_snapshot = None
+        if _release_update_id is not None:
+            if container.get("release_update_id") != _release_update_id:
+                raise EcsManagerError("Owner release claim moved before task-definition prepare", user_id)
+        else:
+            if container.get("release_update_id") is not None:
+                raise EcsManagerError("Owner is reserved by a release transaction", user_id)
+            desired_release_id = container.get("desired_release_id")
+            active_release_id = container.get("active_release_id")
+            stable_release_snapshot = (
+                desired_release_id,
+                active_release_id,
+                container.get("release_revision", 0),
+            )
+            if desired_release_id is not None or active_release_id is not None:
+                if desired_release_id != active_release_id or not active_release_id:
+                    raise EcsManagerError("Owner release assignment is not stable", user_id)
+                from core.services.openclaw_release import release_by_id
+
+                assigned = release_by_id(active_release_id)
+                new_image = assigned.digest_image
+
+        async def fence_effect() -> None:
+            if _effect_fence is not None:
+                await _effect_fence()
+            if stable_release_snapshot is not None:
+                current = await container_repo.get_by_owner_id(user_id, consistent=True)
+                if (
+                    not current
+                    or current.get("release_update_id") is not None
+                    or (
+                        current.get("desired_release_id"),
+                        current.get("active_release_id"),
+                        current.get("release_revision", 0),
+                    )
+                    != stable_release_snapshot
+                ):
+                    raise EcsManagerError("Owner release assignment moved before resize", user_id)
 
         access_point_id = container.get("access_point_id")
         if not access_point_id:
@@ -1803,6 +1845,7 @@ class EcsManager:
             # rendered config stay consistent.
             hook_token = container.get("hook_token") or secrets.token_urlsafe(32)
             if not container.get("hook_token"):
+                await fence_effect()
                 await container_repo.update_fields(
                     user_id,
                     {
@@ -1851,6 +1894,7 @@ class EcsManager:
                 if not bedrock_task_role_arn and prior_resp["taskDefinition"].get("taskRoleArn"):
                     reg_kwargs["taskRoleArn"] = prior_resp["taskDefinition"]["taskRoleArn"]
 
+            await fence_effect()
             reg_resp = await asyncio.to_thread(self._ecs.register_task_definition, **reg_kwargs)
             new_task_def_arn = reg_resp["taskDefinition"]["taskDefinitionArn"]
             logger.info("Registered resized task definition %s for user %s", new_task_def_arn, user_id)
@@ -1869,9 +1913,11 @@ class EcsManager:
             # services -> containers would cycle at module load.
             from core.services.browser_state import snapshot_browser_state
 
+            await fence_effect()
             await snapshot_browser_state(user_id)
 
             # Update service to use new task def + force redeploy
+            await fence_effect()
             await asyncio.to_thread(
                 self._ecs.update_service,
                 cluster=self._cluster,
@@ -1900,6 +1946,7 @@ class EcsManager:
 
             if current_desired > 0:
                 # Update DB record
+                await fence_effect()
                 await self._update_container(
                     user_id,
                     task_definition_arn=new_task_def_arn,
@@ -1922,6 +1969,7 @@ class EcsManager:
                 # Scaled to zero: only update task_definition_arn so the new
                 # def takes effect on next start. Do NOT flip status or fire
                 # the poller -- there are no tasks to become healthy.
+                await fence_effect()
                 await self._update_container(
                     user_id,
                     task_definition_arn=new_task_def_arn,
@@ -1941,7 +1989,12 @@ class EcsManager:
         except Exception as e:
             raise EcsManagerError(f"Failed to resize container: {e}", user_id)
 
-    async def prepare_config_lock_protocol_task_definition(self, user_id: str) -> str:
+    async def prepare_config_lock_protocol_task_definition(
+        self,
+        user_id: str,
+        *,
+        _effect_fence: Callable[[], Awaitable[None]] | None = None,
+    ) -> str:
         """Register, but do not deploy, one owner's guarded base clone."""
 
         base_resp = await asyncio.to_thread(
@@ -1970,6 +2023,7 @@ class EcsManager:
             new_cpu=current_size[0],
             new_memory=current_size[1],
             _register_only=True,
+            _effect_fence=_effect_fence,
         )
 
     async def rollout_config_lock_protocol(
@@ -1979,6 +2033,7 @@ class EcsManager:
         target_task_definition_arn: str | None = None,
         timeout_s: float = 900.0,
         poll_interval_s: float = 15.0,
+        _effect_fence: Callable[[], Awaitable[None]] | None = None,
     ) -> str:
         """Converge one owner onto a prepared protocol task definition.
 
@@ -2020,7 +2075,10 @@ class EcsManager:
             return next((definition for definition in definitions if definition.get("name") == "openclaw"), {})
 
         if target_task_definition_arn is None:
-            target_task_definition_arn = await self.prepare_config_lock_protocol_task_definition(user_id)
+            target_task_definition_arn = await self.prepare_config_lock_protocol_task_definition(
+                user_id,
+                _effect_fence=_effect_fence,
+            )
 
         target = await _describe(target_task_definition_arn)
         target_openclaw = _openclaw_definition(target)
@@ -2037,6 +2095,8 @@ class EcsManager:
 
         # A changed taskDefinition starts a deployment by itself. Omitting
         # forceNewDeployment makes replaying this exact target convergent.
+        if _effect_fence is not None:
+            await _effect_fence()
         await asyncio.to_thread(
             self._ecs.update_service,
             cluster=self._cluster,
@@ -2053,6 +2113,8 @@ class EcsManager:
         pre_wait_services = pre_wait_response.get("services") or []
         desired_count = pre_wait_services[0].get("desiredCount", 0) if pre_wait_services else 0
         if desired_count > 0:
+            if _effect_fence is not None:
+                await _effect_fence()
             await self._update_container(
                 user_id,
                 task_definition_arn=target_task_definition_arn,
@@ -2060,6 +2122,8 @@ class EcsManager:
             )
             asyncio.create_task(self._await_running_transition(user_id))
         else:
+            if _effect_fence is not None:
+                await _effect_fence()
             await self._update_container(user_id, task_definition_arn=target_task_definition_arn)
 
         waiter = self._ecs.get_waiter("services_stable")
@@ -2089,6 +2153,8 @@ class EcsManager:
                 # A circuit-breaker rollback can satisfy services_stable on the
                 # prior revision. Keep the DDB pointer honest before surfacing
                 # failure so a retry reads the task definition that will run.
+                if _effect_fence is not None:
+                    await _effect_fence()
                 await self._update_container(user_id, task_definition_arn=actual_task_def_arn)
             raise EcsManagerError(
                 "Config-lock protocol rollout stabilized on a different task definition",
@@ -4112,11 +4178,6 @@ class EcsManager:
         owner_type: str = "personal",
         aip_arns: dict[str, str] | None = None,
         deployed_tag: str | None = None,
-        config_path: Path | None = None,
-        schema_id: str | None = None,
-        release_update_id: str | None = None,
-        release_claim_id: str | None = None,
-        release_revision: int | None = None,
     ) -> None:
         """Write OpenClaw config files + pre-paired device trust store to EFS.
 
@@ -4298,8 +4359,7 @@ class EcsManager:
         if deployed_tag is None:
             deployed_tag = await self._deployed_image_tag(owner_id)
 
-        staging = config_path is not None
-        config_path = config_path or Path(settings.EFS_MOUNT_PATH) / owner_id / "openclaw.json"
+        config_path = Path(settings.EFS_MOUNT_PATH) / owner_id / "openclaw.json"
         await write_openclaw_config(
             config_path=config_path,
             gateway_token=gateway_token,
@@ -4315,14 +4375,7 @@ class EcsManager:
             channel_accounts=channel_accounts,
             channel_bindings=channel_bindings,
             deployed_tag=deployed_tag,
-            schema_id=schema_id,
-            release_update_id=release_update_id,
-            release_claim_id=release_claim_id,
-            release_revision=release_revision,
         )
-
-        if staging:
-            return
 
         # Seed Friday's IDENTITY/SOUL/USER/BOOTSTRAP files on EFS so they're
         # present before the container boots. Best-effort — failure here

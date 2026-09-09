@@ -22,7 +22,6 @@ from core.services.efs_file_lock import chown_uid_1000_best_effort
 from core.services.openclaw_release import (
     OpenClawRelease,
     OwnerReleaseConflict,
-    assert_release_claim_sync,
     owner_mutation_guard,
     release_by_id,
 )
@@ -83,6 +82,31 @@ async def _read_claimed(owner_id: str, update_id: str) -> tuple[dict, dict]:
     return container, update
 
 
+async def assert_current_effect(
+    owner_id: str,
+    update_id: str,
+    claim_id: str,
+    revision: int,
+    *,
+    phase: str,
+    kind: str,
+    effect_id: str,
+) -> tuple[dict, dict]:
+    """Strongly recheck the exact journal effect immediately before mutation."""
+
+    container, update = await _read_claimed(owner_id, update_id)
+    if (
+        update.get("apply_claim_id") != claim_id
+        or update.get("release_revision") != revision
+        or update.get("phase") != phase
+        or update.get("effect_kind") != kind
+        or update.get("effect_claim_id") != effect_id
+        or update.get("effect_executor_id") != claim_id
+    ):
+        raise OwnerReleaseSuperseded("release effect claim moved")
+    return container, update
+
+
 class _ReleaseRuntime:
     def __init__(self):
         self.ecs = get_ecs_manager()
@@ -104,7 +128,15 @@ class _ReleaseRuntime:
             "pending_count": service.get("pendingCount"),
         }
 
-    async def prepare(self, owner_id: str, release: OpenClawRelease) -> str:
+    async def prepare(
+        self,
+        owner_id: str,
+        update_id: str,
+        release: OpenClawRelease,
+        claim_id: str,
+        revision: int,
+        effect_id: str,
+    ) -> str:
         container = await container_repo.get_by_owner_id(owner_id, consistent=True)
         if not container or not all(
             container.get(field) for field in ("hook_token", "gateway_token", "task_definition_arn")
@@ -113,12 +145,26 @@ class _ReleaseRuntime:
         size = await self.ecs.current_container_size(owner_id)
         if size is None:
             raise OwnerReleaseValidationError("owner task definition has no registered size")
+
+        async def before_register() -> None:
+            await assert_current_effect(
+                owner_id,
+                update_id,
+                claim_id,
+                revision,
+                phase="prepare_requested",
+                kind="prepare_task_definition",
+                effect_id=effect_id,
+            )
+
         task_definition_arn = await self.ecs.resize_user_container(
             owner_id,
             new_cpu=size[0],
             new_memory=size[1],
             new_image=release.digest_image,
             _register_only=True,
+            _release_update_id=update_id,
+            _effect_fence=before_register,
         )
         task_definition = await self._task_definition(task_definition_arn)
         if self._openclaw_definition(task_definition).get("image") != release.digest_image:
@@ -126,23 +172,41 @@ class _ReleaseRuntime:
         return task_definition_arn
 
     async def running_tasks(self, owner_id: str) -> list[dict]:
-        arns = (
-            await asyncio.to_thread(
+        arns: list[str] = []
+        next_token = None
+        while True:
+            kwargs = {
+                "cluster": self.ecs._cluster,
+                "serviceName": self.ecs._service_name(owner_id),
+                "desiredStatus": "RUNNING",
+            }
+            if next_token is not None:
+                kwargs["nextToken"] = next_token
+            page = await asyncio.to_thread(
                 self.ecs._ecs.list_tasks,
-                cluster=self.ecs._cluster,
-                serviceName=self.ecs._service_name(owner_id),
-                desiredStatus="RUNNING",
+                **kwargs,
             )
-        ).get("taskArns", [])
+            arns.extend(page.get("taskArns") or [])
+            next_token = page.get("nextToken")
+            if not next_token:
+                break
         if not arns:
             return []
-        response = await asyncio.to_thread(
-            self.ecs._ecs.describe_tasks,
-            cluster=self.ecs._cluster,
-            tasks=arns,
-        )
+        described = []
+        for offset in range(0, len(arns), 100):
+            response = await asyncio.to_thread(
+                self.ecs._ecs.describe_tasks,
+                cluster=self.ecs._cluster,
+                tasks=arns[offset : offset + 100],
+            )
+            if response.get("failures"):
+                raise OwnerReleaseValidationError("ECS returned failed listed-task observations")
+            described.extend(response.get("tasks") or [])
+        observed_arns = {task.get("taskArn") for task in described}
+        if any(task_arn not in observed_arns for task_arn in arns):
+            raise OwnerReleaseValidationError("ECS omitted a listed task observation")
         tasks = []
-        for task in response.get("tasks") or []:
+        for task in described:
             address = None
             for attachment in task.get("attachments") or []:
                 if attachment.get("type") != "ElasticNetworkInterface":
@@ -170,7 +234,58 @@ class _ReleaseRuntime:
             )
         return tasks
 
-    async def stop(self, owner_id: str) -> None:
+    async def recover(
+        self,
+        owner_id: str,
+        update_id: str,
+        pre_stop_task_arns: list[str],
+        claim_id: str,
+        revision: int,
+        effect_id: str,
+    ) -> dict:
+        await assert_current_effect(
+            owner_id,
+            update_id,
+            claim_id,
+            revision,
+            phase="recovery_requested",
+            kind="create_recovery_set",
+            effect_id=effect_id,
+        )
+        from core.services.owner_recovery_set import (
+            OwnerRecoverySetUnavailable,
+            create_verified_owner_recovery_set,
+        )
+
+        try:
+            return await create_verified_owner_recovery_set(
+                owner_id=owner_id,
+                update_id=update_id,
+                source_task_arns=pre_stop_task_arns,
+                claim_id=claim_id,
+                release_revision=revision,
+                effect_claim_id=effect_id,
+            )
+        except OwnerRecoverySetUnavailable as exc:
+            raise OwnerReleaseValidationError(str(exc)) from exc
+
+    async def stop(
+        self,
+        owner_id: str,
+        update_id: str,
+        claim_id: str,
+        revision: int,
+        effect_id: str,
+    ) -> None:
+        await assert_current_effect(
+            owner_id,
+            update_id,
+            claim_id,
+            revision,
+            phase="stop_requested",
+            kind="stop_service",
+            effect_id=effect_id,
+        )
         await asyncio.to_thread(
             self.ecs._ecs.update_service,
             cluster=self.ecs._cluster,
@@ -192,7 +307,13 @@ class _ReleaseRuntime:
                     cluster=self.ecs._cluster,
                     tasks=pre_stop_task_arns,
                 )
-                if all(task.get("lastStatus") == "STOPPED" for task in described.get("tasks") or []):
+                observed = {task.get("taskArn"): task for task in described.get("tasks") or []}
+                missing = [task_arn for task_arn in pre_stop_task_arns if task_arn not in observed]
+                if missing:
+                    raise OwnerReleaseValidationError("ECS omitted a captured task from drain evidence")
+                if described.get("failures"):
+                    raise OwnerReleaseValidationError("ECS returned failed captured-task drain evidence")
+                if all(observed[task_arn].get("lastStatus") == "STOPPED" for task_arn in pre_stop_task_arns):
                     return {
                         "observed_at": datetime.now(timezone.utc).isoformat(),
                         "service_desired_count": 0,
@@ -210,15 +331,8 @@ class _ReleaseRuntime:
         release: OpenClawRelease,
         claim_id: str,
         revision: int,
+        effect_id: str,
     ) -> tuple[str, str]:
-        from core.containers.config import BEDROCK_TRIAL_CHOICE
-        from core.services.config_patcher import _deep_merge
-        from core.services.container_provision import resolve_provider_choice
-        from core.services.update_service import _runtime_only_delta
-
-        container = await container_repo.get_by_owner_id(owner_id, consistent=True)
-        if not container or not container.get("gateway_token"):
-            raise OwnerReleaseValidationError("owner gateway token is unavailable")
         live_path = Path(settings.EFS_MOUNT_PATH) / owner_id / "openclaw.json"
         try:
             prior_bytes = live_path.read_bytes()
@@ -226,32 +340,12 @@ class _ReleaseRuntime:
         except (OSError, ValueError) as exc:
             raise OwnerReleaseValidationError("owner live config is unavailable") from exc
         stage_path = _stage_path(owner_id, update_id)
-        provider_choice, byo_provider = await resolve_provider_choice(owner_id)
-        await self.ecs.write_user_configs(
-            owner_id,
-            container["gateway_token"],
-            provider_choice=provider_choice,
-            byo_provider=byo_provider,
-            hook_token=container.get("hook_token"),
-            owner_type=container.get("owner_type") or "personal",
-            aip_arns=container.get("bedrock_aip_arns"),
-            deployed_tag=release.image.rpartition(":")[2],
-            config_path=stage_path,
-            schema_id=release.schema_id,
-            release_update_id=update_id,
-            release_claim_id=claim_id,
-            release_revision=revision,
-        )
-        try:
-            staged_config = json.loads(stage_path.read_bytes())
-        except (OSError, ValueError) as exc:
-            raise OwnerReleaseValidationError("staged release config is unavailable") from exc
-        restore = _runtime_only_delta(prior_config, staged_config)
-        if provider_choice == BEDROCK_TRIAL_CHOICE:
-            restore.pop("channels", None)
-            restore.pop("bindings", None)
-        restore = config_schema.prune_schema_rejected(staged_config, restore, schema_id=release.schema_id)
-        staged_config = _deep_merge(staged_config, restore)
+        staged_config = json.loads(json.dumps(prior_config))
+        meta = staged_config.setdefault("meta", {})
+        if not isinstance(meta, dict):
+            raise OwnerReleaseValidationError("owner live config meta is invalid")
+        meta["lastTouchedVersion"] = release.upstream_version
+        staged_config = config_schema.prune_schema_rejected({}, staged_config, schema_id=release.schema_id)
         missing = sorted(
             capability for capability in release.config_capabilities if not _config_has(staged_config, capability)
         )
@@ -265,9 +359,25 @@ class _ReleaseRuntime:
             schema_id=release.schema_id,
         )
         staged_bytes = json.dumps(staged_config, indent=2).encode()
-        assert_release_claim_sync(owner_id, update_id, claim_id, revision)
-        self._atomic_write(stage_path, staged_bytes)
-        assert_release_claim_sync(owner_id, update_id, claim_id, revision)
+
+        async def fence_effect() -> None:
+            await assert_current_effect(
+                owner_id,
+                update_id,
+                claim_id,
+                revision,
+                phase="stage_requested",
+                kind="stage_config",
+                effect_id=effect_id,
+            )
+
+        async with owner_mutation_guard(
+            owner_id,
+            release_update_id=update_id,
+            effect_fence=fence_effect,
+        ):
+            await fence_effect()
+            self._atomic_write(stage_path, staged_bytes)
         return _sha256(prior_bytes), _sha256(staged_bytes)
 
     async def activate(
@@ -279,12 +389,29 @@ class _ReleaseRuntime:
         release: OpenClawRelease,
         claim_id: str,
         revision: int,
+        effect_id: str,
     ) -> None:
         live_path = Path(settings.EFS_MOUNT_PATH) / owner_id / "openclaw.json"
         stage_path = _stage_path(owner_id, update_id)
         backup_path = live_path.with_name(f".openclaw.release-{update_id}.backup.json")
-        async with owner_mutation_guard(owner_id, release_update_id=update_id):
-            assert_release_claim_sync(owner_id, update_id, claim_id, revision)
+
+        async def fence_effect() -> None:
+            await assert_current_effect(
+                owner_id,
+                update_id,
+                claim_id,
+                revision,
+                phase="activating",
+                kind="activate_config",
+                effect_id=effect_id,
+            )
+
+        async with owner_mutation_guard(
+            owner_id,
+            release_update_id=update_id,
+            effect_fence=fence_effect,
+        ):
+            await fence_effect()
             live_bytes = live_path.read_bytes()
             if _sha256(live_bytes) == staged_sha256:
                 try:
@@ -320,7 +447,25 @@ class _ReleaseRuntime:
             os.replace(stage_path, live_path)
             chown_uid_1000_best_effort(str(live_path))
 
-    async def start(self, owner_id: str, task_definition_arn: str, desired_count: int) -> None:
+    async def start(
+        self,
+        owner_id: str,
+        update_id: str,
+        task_definition_arn: str,
+        desired_count: int,
+        claim_id: str,
+        revision: int,
+        effect_id: str,
+    ) -> None:
+        await assert_current_effect(
+            owner_id,
+            update_id,
+            claim_id,
+            revision,
+            phase="start_requested",
+            kind="start_service",
+            effect_id=effect_id,
+        )
         await asyncio.to_thread(
             self.ecs._ecs.update_service,
             cluster=self.ecs._cluster,
@@ -338,6 +483,7 @@ class _ReleaseRuntime:
         staged_config_sha256: str,
         release: OpenClawRelease,
         gateway_token: str,
+        recovery_set: dict,
     ) -> dict:
         waiter = self.ecs._ecs.get_waiter("services_stable")
         await asyncio.to_thread(
@@ -392,6 +538,8 @@ class _ReleaseRuntime:
             "task_definition_arn": task_definition_arn,
             "task_arn": task["task_arn"],
             "config_sha256": staged_config_sha256,
+            "recovery_set_id": recovery_set["recovery_set_id"],
+            "recovery_manifest_sha256": recovery_set["manifest_sha256"],
             "gateway": "accepted",
         }
 
@@ -469,9 +617,6 @@ async def execute_claimed_owner_release(
             phase = update.get("phase")
             checkpoint = update_repo.checkpoint_owner_release
             if phase == "reserved":
-                target = await runtime.prepare(owner_id, release)
-                fields, next_phase, removals = {"target_task_definition_arn": target}, "prepared", ()
-            elif phase == "prepared":
                 pre_stop = [task["task_arn"] for task in await runtime.running_tasks(owner_id) if task.get("task_arn")]
                 if not pre_stop:
                     raise OwnerReleaseValidationError("release requires a live founder task before stop")
@@ -486,24 +631,89 @@ async def execute_claimed_owner_release(
                     (),
                 )
             elif phase == "stop_requested":
-                await runtime.stop(owner_id)
+                await runtime.stop(
+                    owner_id,
+                    update_id,
+                    claim_id,
+                    int(update["release_revision"]),
+                    update["effect_claim_id"],
+                )
                 fields, next_phase, removals = (
                     {"drain_evidence": await runtime.drain(owner_id, list(update["pre_stop_task_arns"]))},
                     "drained",
                     ("effect_kind", "effect_claim_id", "effect_executor_id"),
                 )
             elif phase == "drained":
+                fields, next_phase, removals = (
+                    {
+                        "effect_kind": "create_recovery_set",
+                        "effect_claim_id": uuid.uuid4().hex,
+                        "effect_executor_id": claim_id,
+                    },
+                    "recovery_requested",
+                    (),
+                )
+            elif phase == "recovery_requested":
+                recovery_set = await runtime.recover(
+                    owner_id,
+                    update_id,
+                    list(update["pre_stop_task_arns"]),
+                    claim_id,
+                    int(update["release_revision"]),
+                    update["effect_claim_id"],
+                )
+                fields, next_phase, removals = (
+                    {"recovery_set": recovery_set},
+                    "recovered",
+                    ("effect_kind", "effect_claim_id", "effect_executor_id"),
+                )
+            elif phase == "recovered":
+                fields, next_phase, removals = (
+                    {
+                        "effect_kind": "prepare_task_definition",
+                        "effect_claim_id": uuid.uuid4().hex,
+                        "effect_executor_id": claim_id,
+                    },
+                    "prepare_requested",
+                    (),
+                )
+            elif phase == "prepare_requested":
+                target = await runtime.prepare(
+                    owner_id,
+                    update_id,
+                    release,
+                    claim_id,
+                    int(update["release_revision"]),
+                    update["effect_claim_id"],
+                )
+                fields, next_phase, removals = (
+                    {"target_task_definition_arn": target},
+                    "prepared",
+                    ("effect_kind", "effect_claim_id", "effect_executor_id"),
+                )
+            elif phase == "prepared":
+                fields, next_phase, removals = (
+                    {
+                        "effect_kind": "stage_config",
+                        "effect_claim_id": uuid.uuid4().hex,
+                        "effect_executor_id": claim_id,
+                    },
+                    "stage_requested",
+                    (),
+                )
+            elif phase == "stage_requested":
                 prior_hash, staged_hash = await runtime.stage(
                     owner_id,
                     update_id,
                     release,
                     claim_id,
                     int(update["release_revision"]),
+                    update["effect_claim_id"],
                 )
                 fields, next_phase, removals = (
                     {"prior_config_sha256": prior_hash, "staged_config_sha256": staged_hash},
                     "staged",
-                    (),
+                    ("effect_kind", "effect_claim_id", "effect_executor_id"),
                 )
             elif phase == "staged":
                 fields, next_phase, removals = (
@@ -524,6 +734,7 @@ async def execute_claimed_owner_release(
                     release,
                     claim_id,
                     int(update["release_revision"]),
+                    update["effect_claim_id"],
                 )
                 fields, next_phase, removals = (
                     {},
@@ -545,7 +756,15 @@ async def execute_claimed_owner_release(
                     (),
                 )
             elif phase == "start_requested":
-                await runtime.start(owner_id, update["target_task_definition_arn"], int(update["target_desired_count"]))
+                await runtime.start(
+                    owner_id,
+                    update_id,
+                    update["target_task_definition_arn"],
+                    int(update["target_desired_count"]),
+                    claim_id,
+                    int(update["release_revision"]),
+                    update["effect_claim_id"],
+                )
                 fields, next_phase, removals = (
                     {},
                     "validating",
@@ -564,6 +783,7 @@ async def execute_claimed_owner_release(
                             update["staged_config_sha256"],
                             release,
                             container["gateway_token"],
+                            update["recovery_set"],
                         )
                     },
                     "validating",
@@ -607,6 +827,12 @@ async def apply_owner_release(owner_id: str, update_id: str) -> bool:
     if not isinstance(changes, dict):
         return False
     release = release_by_id(changes.get("target_release_id"))
+    in_flight = await update_repo.get_in_flight(owner_id)
+    if any(
+        row.get("update_id") != update_id and row.get("status") == "applying" and row.get("update_type") != "release"
+        for row in in_flight
+    ):
+        return False
     runtime = _ReleaseRuntime()
     snapshot = await runtime.snapshot(owner_id)
     container = await container_repo.get_by_owner_id(owner_id, consistent=True)

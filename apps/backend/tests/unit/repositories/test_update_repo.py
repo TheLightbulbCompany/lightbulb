@@ -1398,14 +1398,14 @@ async def test_release_checkpoint_and_finish_require_full_evidence_chain(dynamod
         next_phase="validating",
         fields={"target_task_definition_arn": "arn:target"},
     )
-    await advance("reserved", "prepared", fields={"target_task_definition_arn": "arn:target"})
+    effects = ("effect_kind", "effect_claim_id", "effect_executor_id")
     await advance(
-        "prepared",
+        "reserved",
         "stop_requested",
         fields={
             "effect_kind": "stop_service",
             "effect_claim_id": "stop-effect",
-            "effect_executor_id": "worker-1",
+            "effect_executor_id": "worker",
             "pre_stop_task_arns": ["arn:old-task"],
         },
     )
@@ -1418,7 +1418,7 @@ async def test_release_checkpoint_and_finish_require_full_evidence_chain(dynamod
         expected_phase="stop_requested",
         next_phase="drained",
         fields={"drain_evidence": {"service_desired_count": 0}},
-        remove_fields=("effect_kind", "effect_claim_id", "effect_executor_id"),
+        remove_fields=effects,
     )
     await advance(
         "stop_requested",
@@ -1432,12 +1432,62 @@ async def test_release_checkpoint_and_finish_require_full_evidence_chain(dynamod
                 "stopped_task_arns": ["arn:old-task"],
             }
         },
-        remove_fields=("effect_kind", "effect_claim_id", "effect_executor_id"),
+        remove_fields=effects,
     )
     await advance(
         "drained",
+        "recovery_requested",
+        fields={
+            "effect_kind": "create_recovery_set",
+            "effect_claim_id": "recovery-effect",
+            "effect_executor_id": "worker",
+        },
+    )
+    recovery_set = {
+        "recovery_set_id": "u/release/recovery-v1",
+        "manifest_sha256": "3" * 64,
+        "source_task_arns": ["arn:old-task"],
+        "shared_db_generation": "shared-1",
+        "agent_db_generations": {"main": "agent-1"},
+        "efs_archive_sha256": "4" * 64,
+        "workshop_archive_sha256": "5" * 64,
+        "verified_at": "2026-09-09T12:00:00Z",
+    }
+    await advance(
+        "recovery_requested",
+        "recovered",
+        fields={"recovery_set": recovery_set},
+        remove_fields=effects,
+    )
+    await advance(
+        "recovered",
+        "prepare_requested",
+        fields={
+            "effect_kind": "prepare_task_definition",
+            "effect_claim_id": "prepare-effect",
+            "effect_executor_id": "worker",
+        },
+    )
+    await advance(
+        "prepare_requested",
+        "prepared",
+        fields={"target_task_definition_arn": "arn:target"},
+        remove_fields=effects,
+    )
+    await advance(
+        "prepared",
+        "stage_requested",
+        fields={
+            "effect_kind": "stage_config",
+            "effect_claim_id": "stage-effect",
+            "effect_executor_id": "worker",
+        },
+    )
+    await advance(
+        "stage_requested",
         "staged",
         fields={"prior_config_sha256": "e" * 64, "staged_config_sha256": "b" * 64},
+        remove_fields=effects,
     )
     await advance(
         "staged",
@@ -1445,13 +1495,13 @@ async def test_release_checkpoint_and_finish_require_full_evidence_chain(dynamod
         fields={
             "effect_kind": "activate_config",
             "effect_claim_id": "activate-effect",
-            "effect_executor_id": "worker-1",
+            "effect_executor_id": "worker",
         },
     )
     await advance(
         "activating",
         "activated",
-        remove_fields=("effect_kind", "effect_claim_id", "effect_executor_id"),
+        remove_fields=effects,
     )
     await advance(
         "activated",
@@ -1459,13 +1509,13 @@ async def test_release_checkpoint_and_finish_require_full_evidence_chain(dynamod
         fields={
             "effect_kind": "start_service",
             "effect_claim_id": "start-effect",
-            "effect_executor_id": "worker-1",
+            "effect_executor_id": "worker",
         },
     )
     await advance(
         "start_requested",
         "validating",
-        remove_fields=("effect_kind", "effect_claim_id", "effect_executor_id"),
+        remove_fields=effects,
     )
     acceptance = {
         "release_id": "candidate",
@@ -1485,6 +1535,8 @@ async def test_release_checkpoint_and_finish_require_full_evidence_chain(dynamod
         "runtime_capabilities": sorted(release.runtime_capabilities),
         "qualification_capabilities": sorted(release.qualification_capabilities),
         "config_sha256": "b" * 64,
+        "recovery_set_id": recovery_set["recovery_set_id"],
+        "recovery_manifest_sha256": recovery_set["manifest_sha256"],
         "gateway": "accepted",
     }
     assert not await update_repo.checkpoint_owner_release(
@@ -1542,6 +1594,21 @@ async def test_release_takeover_moves_both_claims_atomically(dynamodb_table):
 
     containers, owner, queued = await _seed_owner_apply(update_repo)
     assert await _reserve_owner_apply(update_repo, owner, queued)
+    container = containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"]
+    update = await update_repo.get_by_id("u", queued["update_id"], consistent=True)
+    assert await update_repo.checkpoint_owner_release(
+        container,
+        update,
+        "worker",
+        expected_phase="reserved",
+        next_phase="stop_requested",
+        fields={
+            "effect_kind": "stop_service",
+            "effect_claim_id": "stale-effect",
+            "effect_executor_id": "worker",
+            "pre_stop_task_arns": ["arn:old-task"],
+        },
+    )
     old = 1
     containers.update_item(
         Key={"owner_id": "u"},
@@ -1563,4 +1630,35 @@ async def test_release_takeover_moves_both_claims_atomically(dynamodb_table):
         stale_before_epoch=2,
     )
     assert containers.get_item(Key={"owner_id": "u"})["Item"]["provision_claim_id"] == "successor"
-    assert (await update_repo.get_by_id("u", queued["update_id"], consistent=True))["apply_claim_id"] == "successor"
+    claimed = await update_repo.get_by_id("u", queued["update_id"], consistent=True)
+    assert claimed["apply_claim_id"] == "successor"
+    assert claimed["effect_executor_id"] == "successor"
+    assert claimed["effect_claim_id"] != "stale-effect"
+
+
+@pytest.mark.asyncio
+async def test_ordinary_and_release_owner_claims_exclude_each_other(dynamodb_table):
+    from core.dynamodb import get_table
+    from core.repositories import update_repo
+
+    containers = get_table("containers")
+    owner = {"owner_id": "u", "id": "original", "status": "running", "task_definition_arn": _OWNER_APPLY_ARN}
+    containers.put_item(Item=owner)
+    ordinary = await update_repo.create("u", "config_patch", "ordinary", {"config_patch": {"x": 1}})
+    ordinary = await update_repo.claim_apply("u", ordinary["update_id"], "ordinary-claim")
+    assert ordinary is not None
+    assert await update_repo.claim_ordinary_owner("u", ordinary["update_id"], "ordinary-claim")
+    assert await update_repo.assert_ordinary_owner("u", ordinary["update_id"], "ordinary-claim")
+
+    release = await update_repo.create("u", "release", "release", {"target_release_id": "candidate"})
+    release = await update_repo.get_by_id("u", release["update_id"], consistent=True)
+    marked_owner = containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"]
+    assert await _reserve_owner_apply(update_repo, marked_owner, release) is False
+
+    assert await update_repo.release_ordinary_owner("u", ordinary["update_id"], "ordinary-claim")
+    assert await _reserve_owner_apply(update_repo, owner, release)
+
+    second = await update_repo.create("u", "config_patch", "second", {"config_patch": {"y": 2}})
+    second = await update_repo.claim_apply("u", second["update_id"], "second-claim")
+    assert second is not None
+    assert not await update_repo.claim_ordinary_owner("u", second["update_id"], "second-claim")

@@ -533,6 +533,39 @@ async def test_reapply_owner_config_threads_the_target_image_to_the_writer(deplo
     assert write_mock.call_args.kwargs["deployed_tag"] == deployed_tag
 
 
+@pytest.mark.asyncio
+async def test_reapply_assigned_owner_preserves_the_active_release_tag():
+    from core.services import update_service
+
+    write_mock, cms = _patches(
+        container={
+            "gateway_token": "gw",
+            "hook_token": "hk",
+            "owner_type": "org",
+            "desired_release_id": "qualified",
+            "active_release_id": "qualified",
+            "release_revision": 2,
+        },
+        existing_config={},
+        fresh_config={},
+    )
+    cms.append(
+        patch(
+            "core.services.openclaw_release.release_by_id",
+            return_value=MagicMock(image="ecr/openclaw:qualified-release"),
+        )
+    )
+    for cm in cms:
+        cm.start()
+    try:
+        await update_service.reapply_owner_config("org_x", deployed_tag="mutable-fleet-default")
+    finally:
+        for cm in cms:
+            cm.stop()
+
+    assert write_mock.call_args.kwargs["deployed_tag"] == "qualified-release"
+
+
 # --------------------------------------------------------------------------- #
 # --all-owners — the fleet delivery lever
 # --------------------------------------------------------------------------- #

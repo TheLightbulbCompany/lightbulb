@@ -10,7 +10,7 @@ runs BEFORE the ECS image roll.
 
 import asyncio
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -20,6 +20,9 @@ from core.services import update_service
 def _claimed_repo(update_item: dict) -> MagicMock:
     repo = MagicMock()
     repo.claim_apply = AsyncMock(return_value={**update_item, "status": "applying"})
+    repo.claim_ordinary_owner = AsyncMock(return_value=True)
+    repo.assert_ordinary_owner = AsyncMock(return_value=True)
+    repo.release_ordinary_owner = AsyncMock(return_value=True)
     repo.heartbeat_apply = AsyncMock(return_value=True)
     repo.set_apply_target = AsyncMock(return_value=True)
     repo.finish_claimed_apply = AsyncMock(return_value=True)
@@ -127,11 +130,12 @@ async def test_apply_task_definition_refresh_waits_for_protocol_rollout():
         result = await update_service.apply_update(owner_id, update_id)
 
     assert result is True
-    ecs.prepare_config_lock_protocol_task_definition.assert_awaited_once_with(owner_id)
+    ecs.prepare_config_lock_protocol_task_definition.assert_awaited_once_with(owner_id, _effect_fence=ANY)
     repo.set_apply_target.assert_awaited_once()
     ecs.rollout_config_lock_protocol.assert_awaited_once_with(
         owner_id,
         target_task_definition_arn="arn:new",
+        _effect_fence=ANY,
     )
     ecs.resize_user_container.assert_not_awaited()
     assert repo.finish_claimed_apply.await_args.kwargs["status"] == "applied"
@@ -148,6 +152,26 @@ def _refresh_item(*, target: str | None = None) -> dict:
     if target is not None:
         item["target_task_definition_arn"] = target
     return item
+
+
+@pytest.mark.asyncio
+async def test_ordinary_update_that_loses_owner_claim_runs_no_effect():
+    item = _refresh_item()
+    repo = _claimed_repo(item)
+    repo.claim_ordinary_owner = AsyncMock(return_value=False)
+    ecs = MagicMock()
+    ecs.prepare_config_lock_protocol_task_definition = AsyncMock()
+    ecs.rollout_config_lock_protocol = AsyncMock()
+
+    with (
+        patch.object(update_service, "update_repo", repo),
+        patch("core.containers.get_ecs_manager", return_value=ecs),
+    ):
+        assert not await update_service._apply_claimed_update(item, "claim-old")
+
+    ecs.prepare_config_lock_protocol_task_definition.assert_not_awaited()
+    ecs.rollout_config_lock_protocol.assert_not_awaited()
+    assert repo.finish_claimed_apply.await_args.kwargs["status"] == "failed"
 
 
 @pytest.mark.asyncio
@@ -221,6 +245,7 @@ async def test_refresh_recovery_reuses_stored_target_after_service_update_interr
     ecs.rollout_config_lock_protocol.assert_awaited_once_with(
         "owner-refresh",
         target_task_definition_arn="arn:target",
+        _effect_fence=ANY,
     )
 
 

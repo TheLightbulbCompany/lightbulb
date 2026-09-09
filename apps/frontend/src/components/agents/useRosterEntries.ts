@@ -34,7 +34,7 @@
 // a failed `/teams/agents` read or a missed frame degrades to "nothing to
 // report", never to a wrong state.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useSyncExternalStore } from "react";
 
 import { useGateway } from "@/hooks/useGateway";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
@@ -53,7 +53,31 @@ interface RosterAgentRow {
 /** Sentinel for a `run_active` frame that arrived without a `session_id`. */
 const UNKEYED_SESSION = "__unkeyed__";
 type ChatMessageSubscriber = ReturnType<typeof useGateway>["onChatMessage"];
-const EMPTY_LIVE_RUNS: ReadonlyMap<string, ReadonlySet<string>> = new Map();
+type LiveRuns = ReadonlyMap<string, ReadonlySet<string>>;
+const EMPTY_LIVE_RUNS: LiveRuns = new Map();
+
+interface LiveRunStore {
+  getSnapshot: () => LiveRuns;
+  set: (next: LiveRuns) => void;
+  subscribe: (listener: () => void) => () => void;
+}
+
+function createLiveRunStore(): LiveRunStore {
+  let current = EMPTY_LIVE_RUNS;
+  const listeners = new Set<() => void>();
+  return {
+    getSnapshot: () => current,
+    set: (next) => {
+      if (next === current) return;
+      current = next;
+      for (const listener of listeners) listener();
+    },
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+}
 
 // One cache per GatewayProvider connection. Every hook instance still owns
 // its React subscription, but a panel mounted after run_active can seed from
@@ -61,8 +85,16 @@ const EMPTY_LIVE_RUNS: ReadonlyMap<string, ReadonlySet<string>> = new Map();
 // provider lifetime from leaking into the next.
 const liveRunsByGateway = new WeakMap<
   ChatMessageSubscriber,
-  ReadonlyMap<string, ReadonlySet<string>>
+  LiveRunStore
 >();
+
+function liveRunStoreFor(onChatMessage: ChatMessageSubscriber): LiveRunStore {
+  const existing = liveRunsByGateway.get(onChatMessage);
+  if (existing) return existing;
+  const created = createLiveRunStore();
+  liveRunsByGateway.set(onChatMessage, created);
+  return created;
+}
 
 /**
  * Liveness for the `/teams/agents` key, owned by this hook so BOTH hosts get
@@ -91,12 +123,19 @@ const ROSTER_SWR = { refreshInterval: 30_000, revalidateOnFocus: true };
  * rather than gating it on a run).
  */
 function useLiveRunAgentIds(): ReadonlySet<string> {
-  const { onChatMessage } = useGateway();
-  const [live, setLive] = useState<ReadonlyMap<string, ReadonlySet<string>>>(
-    () => liveRunsByGateway.get(onChatMessage) ?? EMPTY_LIVE_RUNS,
+  const { isConnected, onChatMessage } = useGateway();
+  const store = useMemo(() => liveRunStoreFor(onChatMessage), [onChatMessage]);
+  const live = useSyncExternalStore(
+    store.subscribe,
+    store.getSnapshot,
+    store.getSnapshot,
   );
 
   useEffect(() => {
+    if (!isConnected) {
+      store.set(EMPTY_LIVE_RUNS);
+      return;
+    }
     return onChatMessage((msg) => {
       const agentId = "agent_id" in msg ? msg.agent_id : undefined;
       if (typeof agentId !== "string" || !agentId) return;
@@ -113,7 +152,7 @@ function useLiveRunAgentIds(): ReadonlySet<string> {
           ? msg.session_id
           : UNKEYED_SESSION;
 
-      const prev = liveRunsByGateway.get(onChatMessage) ?? EMPTY_LIVE_RUNS;
+      const prev = store.getSnapshot();
       const sessions = prev.get(agentId);
       let current = prev;
       if (active ? !sessions?.has(sessionId) : sessions?.has(sessionId)) {
@@ -125,10 +164,9 @@ function useLiveRunAgentIds(): ReadonlySet<string> {
         else updatedRuns.delete(agentId);
         current = updatedRuns;
       }
-      liveRunsByGateway.set(onChatMessage, current);
-      setLive(current);
+      store.set(current);
     });
-  }, [onChatMessage]);
+  }, [isConnected, onChatMessage, store]);
 
   // Identity changes only when an agent enters or leaves the live set, so
   // downstream memos genuinely skip work on unrelated frames.

@@ -27,7 +27,7 @@ vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: () => ({ read: () => ({ data: teamsAgentsData }) }),
 }));
 
-let gatewayState = { nodeConnected: false, nodeStatus: "disconnected" };
+let gatewayState = { isConnected: true, nodeConnected: false, nodeStatus: "disconnected" };
 type GatewayListener = (message: {
   type: string;
   active?: boolean;
@@ -87,7 +87,7 @@ function makeProps(agentId: string): ChatPanelProps {
 beforeEach(() => {
   agentsState = { agents: [], defaultId: undefined, isSettled: true };
   teamsAgentsData = undefined;
-  gatewayState = { nodeConnected: false, nodeStatus: "disconnected" };
+  gatewayState = { isConnected: true, nodeConnected: false, nodeStatus: "disconnected" };
   gatewayListener = null;
   onChatMessage = vi.fn((listener: GatewayListener) => {
     gatewayListener = listener;
@@ -249,7 +249,7 @@ describe("ChatPanel", () => {
       isSettled: true,
     };
     teamsAgentsData = { agents: [{ id: "agent-ceo", status: "running" }] };
-    gatewayState = { nodeConnected: true, nodeStatus: "connected" };
+    gatewayState = { isConnected: true, nodeConnected: true, nodeStatus: "connected" };
 
     render(<ChatPanel {...makeProps("agent-ceo")} />);
 

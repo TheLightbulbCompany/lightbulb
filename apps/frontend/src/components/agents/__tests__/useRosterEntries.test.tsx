@@ -8,12 +8,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 
 let emitChatMessage: (msg: Record<string, unknown>) => void = () => {};
+let gatewayConnected = true;
 let onChatMessage = (handler: (msg: Record<string, unknown>) => void) => {
   emitChatMessage = handler;
   return () => {};
 };
 vi.mock("@/hooks/useGateway", () => ({
   useGateway: () => ({
+    isConnected: gatewayConnected,
     onChatMessage,
   }),
 }));
@@ -46,6 +48,7 @@ const agent = (id: string, name: string): Agent => ({ id, name });
 beforeEach(() => {
   teamsAgents = [];
   lastSwrOpts = undefined;
+  gatewayConnected = true;
   emitChatMessage = () => {};
   onChatMessage = (handler) => {
     emitChatMessage = handler;
@@ -115,6 +118,21 @@ describe("useRosterEntries", () => {
 
     const late = renderHook(() => useRosterEntries([agent("a", "Ada")]));
     expect(late.result.current[0].state).toBe("running");
+  });
+
+  it("clears cached live runs across a gateway disconnect", () => {
+    teamsAgents = [{ id: "a", status: "idle" }];
+    const mounted = renderHook(() => useRosterEntries([agent("a", "Ada")]));
+    act(() => emitChatMessage({ type: "run_active", active: true, agent_id: "a", session_id: "s1" }));
+    expect(mounted.result.current[0].state).toBe("running");
+
+    gatewayConnected = false;
+    mounted.rerender();
+    expect(mounted.result.current[0].state).toBe("idle");
+
+    gatewayConnected = true;
+    mounted.rerender();
+    expect(mounted.result.current[0].state).toBe("idle");
   });
 
   it("keeps an agent lit while ANY of its sessions is still running", () => {

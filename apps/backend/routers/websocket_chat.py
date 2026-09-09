@@ -1482,11 +1482,14 @@ def _require_native_internal(presented: str | None) -> None:
 async def _process_native_room_background(connection_id: str, body: dict) -> None:
     from core.gateway.native_rooms import (
         HumanIdentity,
-        ROOM_METHODS,
         RoomError,
+        UNCERTAIN_AFTER_SUCCESS,
         admit_rpc,
-        owns_room_key,
+        filter_rpc_result,
+        is_terminal_agent_wait_result,
+        native_execution_run_id,
         qualification_for,
+        require_append_result,
         require_current_member,
     )
 
@@ -1526,61 +1529,73 @@ async def _process_native_room_background(connection_id: str, body: dict) -> Non
         if method == "connect":
             result = {
                 "protocol": 4,
-                "companyRooms": {
-                    "enabled": True,
-                    "audience": "company",
-                    "methods": sorted(set(conn.methods) & ROOM_METHODS),
-                    "profile": conn.profile,
-                    "historySource": "native",
-                },
+                # The RPC contract is present, but rollout requires live runtime,
+                # auth, coexistence, and legacy-privacy qualification evidence.
+                "companyRooms": {"enabled": False},
             }
         else:
-            if method == "mentions.dismiss":
-                inbox = await conn.rpc("mentions.list", {})
-                visible_ids = {
-                    item.get("id")
-                    for item in inbox.get("items", [])
-                    if isinstance(item, dict) and owns_room_key(item.get("sessionKey"), identity, qualification)
-                }
-                if not set(admitted["ids"]) <= visible_ids:
-                    raise RoomError("FORBIDDEN", "Mention is outside the room inbox")
-            if method == "chat.send":
-                gate = await pool.gate_chat(
-                    user_id=identity.subject, owner_id=identity.owner_id, session_key=admitted["sessionKey"]
-                )
-                if gate.get("blocked"):
-                    raise RoomError(gate.get("code", "FORBIDDEN"), gate.get("message", "Chat blocked"))
             await require_current_member(identity, service)
             key = admitted.get("sessionKey") or admitted.get("key")
-            was_subscribed = key in conn.subscriptions
-            if method == "sessions.messages.subscribe":
-                conn.subscriptions.add(key)
-            elif method == "sessions.messages.unsubscribe":
-                conn.subscriptions.discard(key)
+            # The independent native human socket owns the room ACL decision.
+            native_run = None
+            native_run_created = False
+            if method == "sessions.execution.dispatch":
+                gate = await pool.gate_chat(
+                    user_id=identity.subject,
+                    owner_id=identity.owner_id,
+                    session_key=admitted["sessionKey"],
+                )
+                if gate.get("blocked"):
+                    raise RoomError(gate.get("code", "blocked"), gate.get("message", "Chat blocked"))
+                native_run, native_run_created = await pool.native_rooms.begin_run(
+                    identity.owner_id,
+                    admitted["sessionKey"],
+                    native_execution_run_id(conn.device.profile_id, admitted),
+                )
             try:
                 result = await conn.rpc(method, admitted)
-            except BaseException:
-                if method in {"sessions.messages.subscribe", "sessions.messages.unsubscribe"}:
-                    if was_subscribed:
-                        conn.subscriptions.add(key)
-                    else:
-                        conn.subscriptions.discard(key)
+            except RoomError as exc:
+                if native_run is not None and native_run_created and getattr(exc, "native_rejection", False):
+                    await pool.native_rooms.finish_run(*native_run)
                 raise
-            await require_current_member(identity, service)
+            if native_run is not None:
+                try:
+                    wait_result = await conn.rpc("agent.wait", {"runId": native_run[2], "timeoutMs": 0})
+                    if is_terminal_agent_wait_result(wait_result, native_run[2], admitted["expectedSessionId"]):
+                        await pool.native_rooms.finish_run(*native_run)
+                except Exception:
+                    # Reconciliation is observational. Unknown/transport
+                    # outcomes retain the durable hold and cannot rewrite the
+                    # already-successful dispatch response.
+                    logger.warning("Native dispatch reconciliation remains unresolved", exc_info=True)
+            try:
+                await require_current_member(identity, service)
+            except RoomError:
+                await pool.native_rooms.close_connection(connection_id)
+                if method in UNCERTAIN_AFTER_SUCCESS:
+                    raise RoomError(
+                        "ROOM_UNAVAILABLE",
+                        "Native request outcome is uncertain; reconcile canonical room state",
+                    )
+                raise
+            if method == "sessions.message.append":
+                require_append_result(result, admitted)
             if isinstance(result, dict):
-                for field in ("key", "sessionKey"):
+                for field in ("key", "sessionKey", "roomKey"):
                     if field in result and result[field] != key:
                         raise RoomError("FORBIDDEN", "Native canonical target changed")
-                if method == "mentions.list":
-                    result = {
-                        **result,
-                        "items": [
-                            item
-                            for item in result.get("items", [])
-                            if isinstance(item, dict) and owns_room_key(item.get("sessionKey"), identity, qualification)
-                        ],
-                    }
+            result = filter_rpc_result(method, result, identity, qualification)
+            if method == "sessions.messages.subscribe":
+                conn.subscriptions.add(admitted["key"])
+            elif method == "sessions.messages.unsubscribe":
+                conn.subscriptions.discard(admitted["key"])
+            elif method == "sessions.presence.subscribe":
+                conn.presence_subscriptions.add(admitted["sessionKey"])
+            elif method == "sessions.presence.unsubscribe":
+                conn.presence_subscriptions.discard(admitted["sessionKey"])
             result = _fit_rpc_result_for_frame(method, result)
+            if len(json.dumps(result, separators=(",", ":"), default=str).encode()) > _WS_FRAME_BUDGET_BYTES:
+                raise RoomError("ROOM_UNAVAILABLE", "Native room result exceeds transport limit")
         await management.send_message_async(connection_id, {"type": "res", "id": req_id, "ok": True, "payload": result})
     except RoomError as exc:
         if exc.error.get("code") == "FORBIDDEN":

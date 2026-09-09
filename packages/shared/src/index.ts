@@ -119,3 +119,13 @@ export {
 } from "./chat/history";
 export type { ContentBlock, HistoryMessage } from "./chat/history";
 export { SESSION_ID_RE, buildChatSessionKey, sessionIdFromKey } from "./chat/sessionKey";
+
+export { aggregateHumanPresence } from "./messaging/presence";
+export type {
+  HumanPresenceRow,
+  HumanPresenceState,
+  NormalizedPresenceConnection,
+  NormalizedPresenceEvidence,
+  PresenceConnectionKind,
+  PresenceInventoryStatus,
+} from "./messaging/presence";

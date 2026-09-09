@@ -223,28 +223,12 @@ jobs:
           {
             "plugins": {
               "allow": [
-                "slack",
-                "discord",
-                "amazon-bedrock",
-                "lobster",
-                "parallel",
-                "firecrawl",
-                "acpx",
-                "tokenjuice",
                 "sage-openclaw",
                 "lightbulb-marketplace",
                 "aws-exec-profile",
                 "paperclip-exec-creds"
               ],
               "entries": {
-                "slack": { "enabled": true },
-                "discord": { "enabled": true },
-                "amazon-bedrock": { "enabled": true },
-                "lobster": { "enabled": true },
-                "parallel": { "enabled": true },
-                "firecrawl": { "enabled": true },
-                "acpx": { "enabled": true },
-                "tokenjuice": { "enabled": true },
                 "sage-openclaw": { "enabled": true },
                 "lightbulb-marketplace": { "enabled": true },
                 "aws-exec-profile": { "enabled": true },
@@ -296,14 +280,6 @@ jobs:
           if (!Array.isArray(reports)) throw new Error("Plugin runtime inventory is malformed");
           const byId = new Map(reports.map((report) => [report.plugin?.id, report]));
           const required = [
-            "slack",
-            "discord",
-            "amazon-bedrock",
-            "lobster",
-            "parallel",
-            "firecrawl",
-            "acpx",
-            "tokenjuice",
             "sage-openclaw",
             "lightbulb-marketplace",
             "aws-exec-profile",
@@ -340,7 +316,7 @@ jobs:
             echo "## Built-image qualification"
             echo ""
             echo "- Architecture: \`${ARCHITECTURE}\`"
-            echo "- Runtime plugins: all 12 required plugins loaded"
+            echo "- Runtime plugins: Sage and all 3 first-party plugins loaded"
             echo "- Contracts: Sage safety hook, credential hooks, and marketplace tools present"
             echo ""
             echo '```json'

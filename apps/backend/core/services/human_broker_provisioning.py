@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import enum
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -70,6 +71,15 @@ class _MembershipRevoked(HumanBrokerProvisioningError):
     pass
 
 
+class _RevocationSuperseded(HumanBrokerProvisioningError):
+    pass
+
+
+class HumanRevocationOutcome(str, enum.Enum):
+    APPLIED = "applied"
+    STALE = "stale"
+
+
 @dataclass(frozen=True)
 class HumanDeviceReceipt:
     generation: int
@@ -128,6 +138,18 @@ def _access_event_id(row: dict | None, alias: str) -> str | None:
     if marker["state"] == "revoked":
         raise _MembershipRevoked("human membership credential revoked")
     return marker["event_id"]
+
+
+async def _require_revocation_current(owner_id: str, alias: str, event_id: str) -> dict:
+    row = await container_repo.get_by_owner_id(owner_id, consistent=True)
+    marker = (row or {}).get(_ACCESS_FIELD, {}).get(alias)
+    try:
+        current = _access_marker(event_id=event_id, sequence=marker.get("sequence"), state="revoked")
+    except (AttributeError, HumanBrokerProvisioningError):
+        current = None
+    if marker != current:
+        raise _RevocationSuperseded("human membership revocation was superseded")
+    return row
 
 
 def _with_access_event(record: dict, access_event_id: str | None) -> dict:
@@ -646,10 +668,27 @@ async def _cleanup_superseded_reconciliation(
             pass
 
 
-async def _disable_record(owner_id: str, alias: str, record: dict) -> dict:
+async def _disable_record(
+    owner_id: str,
+    alias: str,
+    record: dict,
+    *,
+    revocation_event_id: str | None = None,
+) -> dict:
+    if revocation_event_id is not None:
+        await _require_revocation_current(owner_id, alias, revocation_event_id)
     if record["state"] == "disabled":
         return record
     disabled = {**record, "state": "disabled", "updated_at": utc_now_iso()}
+    fence = (
+        {
+            "access_event_id": revocation_event_id,
+            "access_state": "revoked",
+            "subject_tombstone_key": _subject_tombstone_key(alias),
+        }
+        if revocation_event_id is not None
+        else {}
+    )
     try:
         changed = await container_repo.cas_human_broker_device(
             owner_id,
@@ -657,11 +696,14 @@ async def _disable_record(owner_id: str, alias: str, record: dict) -> dict:
             disabled,
             generation=record["generation"],
             state=record["state"],
+            **fence,
         )
     except Exception:
         # A timed-out conditional write may have landed. One consistent read
         # resolves that ambiguity; a still-active value gets one safe retry.
         row = await container_repo.get_by_owner_id(owner_id, consistent=True)
+        if revocation_event_id is not None:
+            await _require_revocation_current(owner_id, alias, revocation_event_id)
         current = _validate_record(alias, _records(row).get(alias))
         if current["state"] == "disabled":
             return current
@@ -673,10 +715,13 @@ async def _disable_record(owner_id: str, alias: str, record: dict) -> dict:
             disabled,
             generation=record["generation"],
             state=record["state"],
+            **fence,
         )
     if changed:
         return disabled
     row = await container_repo.get_by_owner_id(owner_id, consistent=True)
+    if revocation_event_id is not None:
+        await _require_revocation_current(owner_id, alias, revocation_event_id)
     current = _validate_record(alias, _records(row).get(alias))
     if current["state"] != "disabled":
         raise _CredentialChanged("human credential changed during revocation")
@@ -690,9 +735,14 @@ async def _teardown_disabled(
     runtime: tuple[dict, str, str] | None,
     close_connections: bool,
     runtime_error: Exception | None = None,
+    revocation_event_id: str | None = None,
 ) -> None:
+    if revocation_event_id is not None:
+        await _require_revocation_current(identity.owner_id, identity.alias, revocation_event_id)
     invalidate_qualification(identity.owner_id)
     errors = [runtime_error] if runtime_error is not None else []
+    if revocation_event_id is not None:
+        await _require_revocation_current(identity.owner_id, identity.alias, revocation_event_id)
     try:
         await _write_trusted_profiles(
             identity.owner_id,
@@ -701,11 +751,18 @@ async def _teardown_disabled(
         )
     except Exception as exc:
         errors.append(exc)
+    if revocation_event_id is not None:
+        await _require_revocation_current(identity.owner_id, identity.alias, revocation_event_id)
     try:
-        await _remove_pair(identity.owner_id, identity.alias, record["device_id"])
+        if revocation_event_id is None:
+            await _remove_pair(identity.owner_id, identity.alias, record["device_id"])
+        else:
+            await _remove_exact_pair(identity.owner_id, record["device_id"])
     except Exception as exc:
         errors.append(exc)
     if runtime is not None:
+        if revocation_event_id is not None:
+            await _require_revocation_current(identity.owner_id, identity.alias, revocation_event_id)
         _, ip, token = runtime
         try:
             await gateway_rpc_oneshot(
@@ -721,10 +778,14 @@ async def _teardown_disabled(
         except Exception as exc:
             errors.append(exc)
     if close_connections:
+        if revocation_event_id is not None:
+            await _require_revocation_current(identity.owner_id, identity.alias, revocation_event_id)
         try:
             await revoke_member_connections(identity.owner_id, identity.subject)
         except Exception as exc:
             errors.append(exc)
+    if revocation_event_id is not None:
+        await _require_revocation_current(identity.owner_id, identity.alias, revocation_event_id)
     if errors:
         raise HumanBrokerProvisioningError("human credential teardown incomplete; remains disabled") from errors[0]
 
@@ -861,11 +922,17 @@ async def _revoke_human_device(
     identity: HumanIdentity,
     *,
     missing_ok: bool,
+    revocation_event_id: str | None = None,
 ) -> HumanDeviceReceipt | None:
+    if revocation_event_id is not None:
+        row = await _require_revocation_current(identity.owner_id, identity.alias, revocation_event_id)
+    else:
+        row = await container_repo.get_by_owner_id(identity.owner_id, consistent=True)
     invalidate_qualification(identity.owner_id)
-    row = await container_repo.get_by_owner_id(identity.owner_id, consistent=True)
     raw = _records(row).get(identity.alias)
     if raw is None:
+        if revocation_event_id is not None:
+            await _require_revocation_current(identity.owner_id, identity.alias, revocation_event_id)
         await revoke_member_connections(identity.owner_id, identity.subject)
         if missing_ok:
             return None
@@ -875,13 +942,20 @@ async def _revoke_human_device(
     try:
         for _ in range(2):
             try:
-                record = await _disable_record(identity.owner_id, identity.alias, record)
+                record = await _disable_record(
+                    identity.owner_id,
+                    identity.alias,
+                    record,
+                    revocation_event_id=revocation_event_id,
+                )
                 break
             except _CredentialChanged:
                 row = await container_repo.get_by_owner_id(identity.owner_id, consistent=True)
                 record = _validate_record(identity.alias, _records(row).get(identity.alias))
         else:
             raise _CredentialChanged("human credential kept changing during revocation")
+    except _RevocationSuperseded:
+        raise
     except Exception as exc:
         await _teardown_disabled(
             identity,
@@ -889,6 +963,7 @@ async def _revoke_human_device(
             runtime=runtime,
             close_connections=True,
             runtime_error=runtime_error,
+            revocation_event_id=revocation_event_id,
         )
         raise HumanBrokerProvisioningError("human credential revocation uncertain; admission closed") from exc
     await _teardown_disabled(
@@ -897,6 +972,7 @@ async def _revoke_human_device(
         runtime=runtime,
         close_connections=True,
         runtime_error=runtime_error,
+        revocation_event_id=revocation_event_id,
     )
     return HumanDeviceReceipt(record["generation"], "disabled", record["device_id"])
 
@@ -944,7 +1020,7 @@ async def revoke_human_subject(
     *,
     revocation_id: str | None = None,
     revocation_sequence: str | None = None,
-) -> HumanDeviceReceipt | None:
+) -> HumanRevocationOutcome:
     """Server-authenticated Clerk lifecycle revocation; no membership lookup."""
     identity = HumanIdentity(
         owner_id=owner_id,
@@ -954,13 +1030,26 @@ async def revoke_human_subject(
         source_ip="",
     )
     _validate_identity(identity)
+    if (revocation_id is None) != (revocation_sequence is None):
+        raise HumanBrokerProvisioningError("complete Clerk revocation epoch required")
+    accepted_revocation_id = None
     if revocation_id is not None and revocation_sequence is not None:
         marker = _access_marker(event_id=revocation_id, sequence=revocation_sequence, state="revoked")
         current = await container_repo.set_human_broker_access(owner_id, identity.alias, marker)
         if current is not None and current != marker:
             # A newer signed membership event already superseded this delivery.
-            return None
-    return await _revoke_human_device(identity, missing_ok=True)
+            return HumanRevocationOutcome.STALE
+        if current is not None:
+            accepted_revocation_id = revocation_id
+    try:
+        await _revoke_human_device(
+            identity,
+            missing_ok=True,
+            revocation_event_id=accepted_revocation_id,
+        )
+    except _RevocationSuperseded:
+        return HumanRevocationOutcome.STALE
+    return HumanRevocationOutcome.APPLIED
 
 
 async def revoke_human_subject_everywhere(

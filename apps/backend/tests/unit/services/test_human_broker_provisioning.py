@@ -37,12 +37,17 @@ class _Repo:
         generation,
         state,
         access_event_id=None,
+        access_state=None,
         subject_tombstone_key=None,
     ):
         current = self.devices.get(alias)
         if not current or current["generation"] != generation or current["state"] != state:
             return False
-        if subject_tombstone_key is not None:
+        if access_state is not None:
+            access = self.access.get(alias)
+            if not access or access.get("state") != access_state or access.get("event_id") != access_event_id:
+                return False
+        elif subject_tombstone_key is not None:
             access = self.access.get(alias)
             if access_event_id is None:
                 if access is not None:
@@ -385,7 +390,7 @@ async def test_clerk_lifecycle_revoke_does_not_require_deleted_membership(harnes
     await provisioner.ensure_human_device(human, harness.conn_svc)
     provisioner.require_current_member.reset_mock()
 
-    receipt = await provisioner.revoke_human_subject(
+    outcome = await provisioner.revoke_human_subject(
         human.owner_id,
         human.issuer,
         human.subject,
@@ -393,9 +398,43 @@ async def test_clerk_lifecycle_revoke_does_not_require_deleted_membership(harnes
         revocation_sequence="00000000000000000001:msg_membership_deleted",
     )
 
-    assert receipt is not None and receipt.state == "disabled"
+    assert outcome is provisioner.HumanRevocationOutcome.APPLIED
     provisioner.require_current_member.assert_not_awaited()
     assert harness.repo.devices[human.alias]["state"] == "disabled"
+
+
+@pytest.mark.asyncio
+async def test_newer_membership_epoch_supersedes_delete_before_disable(harness, monkeypatch):
+    human = _human("user_alice")
+    active = await provisioner.ensure_human_device(human, harness.conn_svc)
+    harness.events.clear()
+    real_cas = harness.repo.cas_human_broker_device
+
+    async def readmit_before_disable(owner_id, alias, record, **kwargs):
+        if record["state"] == "disabled" and kwargs.get("access_state") == "revoked":
+            harness.repo.access[alias] = {
+                "event_id": "msg_membership_created_newer",
+                "sequence": "00000000000000000002:0:msg_membership_created_newer",
+                "state": "allowed",
+            }
+        return await real_cas(owner_id, alias, record, **kwargs)
+
+    monkeypatch.setattr(harness.repo, "cas_human_broker_device", readmit_before_disable)
+    outcome = await provisioner.revoke_human_subject(
+        human.owner_id,
+        human.issuer,
+        human.subject,
+        revocation_id="msg_membership_deleted",
+        revocation_sequence="00000000000000000001:1:msg_membership_deleted",
+    )
+
+    assert outcome is provisioner.HumanRevocationOutcome.STALE
+    assert harness.repo.devices[human.alias]["state"] == "active"
+    assert harness.repo.devices[human.alias]["device_id"] == active.device_id
+    assert "durable-disabled" not in harness.events
+    assert "config-written" not in harness.events
+    assert "live-pair-removed" not in harness.events
+    assert "connections-closed" not in harness.events
 
 
 @pytest.mark.asyncio

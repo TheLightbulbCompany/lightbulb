@@ -443,16 +443,18 @@ async def _handle_organization_membership_deleted(
         raise HTTPException(status_code=400, detail="Clerk membership deletion target unavailable")
 
     revocation_error = None
-    from core.services.human_broker_provisioning import revoke_human_subject
+    from core.services.human_broker_provisioning import HumanRevocationOutcome, revoke_human_subject
 
     try:
-        await revoke_human_subject(
+        outcome = await revoke_human_subject(
             org_id,
             settings.CLERK_ISSUER,
             user_id,
             revocation_id=revocation_id,
             revocation_sequence=revocation_sequence,
         )
+        if outcome is HumanRevocationOutcome.STALE:
+            return
     except Exception as exc:
         # Credential disable and socket teardown are retried by svix after
         # the independent Paperclip/seat cleanup below has had its turn.

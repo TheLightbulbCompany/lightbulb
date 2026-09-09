@@ -1911,14 +1911,14 @@ async def remove_paired_device(owner_id: str, device_id: str) -> None:
         raise
 
 
-def _human_access_condition(access_event_id: str | None) -> tuple[str, dict, dict]:
+def _human_access_condition(access_event_id: str | None, access_state: str) -> tuple[str, dict, dict]:
     names = {"#access": "human_broker_access"}
     if access_event_id is None:
         return "attribute_not_exists(#access.#alias)", names, {}
     return (
-        "#access.#alias.#access_state = :allowed AND #access.#alias.#access_event = :access_event",
+        "#access.#alias.#access_state = :access_state AND #access.#alias.#access_event = :access_event",
         {**names, "#access_state": "state", "#access_event": "event_id"},
-        {":allowed": "allowed", ":access_event": access_event_id},
+        {":access_state": access_state, ":access_event": access_event_id},
     )
 
 
@@ -1931,12 +1931,13 @@ async def _transact_human_broker_device(
     state_names: dict,
     state_values: dict,
     access_event_id: str | None,
+    access_state: str,
     subject_tombstone_key: str,
 ) -> bool:
     """Atomically fence one credential transition against both deny authorities."""
     table = _get_table()
     marker_table = get_table("webhook-event-dedup")
-    access_condition, access_names, access_values = _human_access_condition(access_event_id)
+    access_condition, access_names, access_values = _human_access_condition(access_event_id, access_state)
     names = {
         "#devices": "human_broker_devices",
         "#alias": alias,
@@ -2079,6 +2080,7 @@ async def create_human_broker_device(
             state_names={},
             state_values={},
             access_event_id=access_event_id,
+            access_state="allowed",
             subject_tombstone_key=subject_tombstone_key,
         ):
             raise ClientError(
@@ -2104,6 +2106,7 @@ async def cas_human_broker_device(
     generation: int,
     state: str,
     access_event_id: str | None = None,
+    access_state: str = "allowed",
     subject_tombstone_key: str | None = None,
 ) -> bool:
     """Replace one human credential only while its generation/state match."""
@@ -2116,6 +2119,7 @@ async def cas_human_broker_device(
             state_names={"#generation": "generation", "#state": "state"},
             state_values={":generation": generation, ":state": state},
             access_event_id=access_event_id,
+            access_state=access_state,
             subject_tombstone_key=subject_tombstone_key,
         )
     try:

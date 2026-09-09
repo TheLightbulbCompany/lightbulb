@@ -247,6 +247,16 @@ async def test_human_broker_transition_is_atomically_fenced_by_access_and_global
         access_event_id=None,
         subject_tombstone_key=tombstone,
     )
+    assert await container_repo.cas_human_broker_device(
+        owner_id,
+        alias,
+        {**record, "state": "disabled"},
+        generation=1,
+        state="provisioning",
+        access_event_id="msg_deleted",
+        access_state="revoked",
+        subject_tombstone_key=tombstone,
+    )
     await container_repo.set_human_broker_access(
         owner_id,
         alias,
@@ -280,7 +290,7 @@ async def test_human_broker_transition_is_atomically_fenced_by_access_and_global
         alias,
         {**record, "state": "active", "access_event_id": marker["event_id"]},
         generation=1,
-        state="provisioning",
+        state="disabled",
         access_event_id=marker["event_id"],
         subject_tombstone_key=tombstone,
     )

@@ -136,6 +136,29 @@ async def test_membership_revocation_failure_redelivers_same_svix_and_still_deau
         assert socket_cleanup_io._conn_svc.query_by_owner.await_count == 2
 
 
+@pytest.mark.asyncio
+async def test_stale_membership_delete_skips_paperclip_and_seat_side_effects(monkeypatch):
+    from core.services import billing_service, human_broker_provisioning
+    from routers import webhooks
+
+    monkeypatch.setattr(
+        human_broker_provisioning,
+        "revoke_human_subject",
+        AsyncMock(return_value=human_broker_provisioning.HumanRevocationOutcome.STALE),
+    )
+    factory = AsyncMock()
+    monkeypatch.setattr(webhooks, "build_paperclip_provisioning", factory)
+
+    await webhooks._handle_organization_membership_deleted(
+        {"organization": {"id": "org_acme"}, "user_id": "member"},
+        revocation_id="msg_membership_deleted",
+        revocation_sequence="00000000000000000001:1:msg_membership_deleted",
+    )
+
+    factory.assert_not_awaited()
+    billing_service.sync_team_seat_quantity.assert_not_awaited()
+
+
 # ----------------------------------------------------------------------
 # organization.created -> provision_org
 # ----------------------------------------------------------------------

@@ -17,7 +17,7 @@
 .room-audience { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .room-facepile { display: flex; align-items: center; gap: 4px; }
 .room-history { min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; padding: 12px 20px; }
-.room-message { display: flex; gap: 12px; padding: 12px 0; }
+.room-message { display: flex; align-items: flex-start; gap: 12px; padding: 12px 0; }
 .room-message-content { flex: 1; min-width: 0; max-width: 75ch; }
 .room-message-byline { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .room-message-byline time { white-space: nowrap; }

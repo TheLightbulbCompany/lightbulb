@@ -226,7 +226,8 @@ describe("ChatPanel", () => {
       screen.getByText(/isolated to your signed-in profile/i),
     ).toBeInTheDocument();
     expect(screen.getByText("Friday · Status unavailable")).toBeInTheDocument();
-    expect(screen.getByText("Lightbulb cloud")).toBeInTheDocument();
+    expect(screen.getByText("Agent activity")).toBeInTheDocument();
+    expect(screen.queryByText("Lightbulb cloud")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Open Friday's tasks" }));
     expect(openPanel).toHaveBeenCalledWith(
@@ -242,7 +243,7 @@ describe("ChatPanel", () => {
     );
   });
 
-  it("states live agent and local execution status in words", () => {
+  it("labels agent activity and global node connectivity without claiming placement", () => {
     agentsState = {
       agents: [{ id: "agent-ceo", name: "Friday" }],
       defaultId: "agent-ceo",
@@ -254,7 +255,26 @@ describe("ChatPanel", () => {
     render(<ChatPanel {...makeProps("agent-ceo")} />);
 
     expect(screen.getByText("Working")).toBeInTheDocument();
-    expect(screen.getByText("Local tools available")).toBeInTheDocument();
+    expect(screen.getByText("Desktop node")).toBeInTheDocument();
+    expect(screen.getByText("Global connection status")).toBeInTheDocument();
+    expect(screen.getByText("Connected")).toBeInTheDocument();
+    expect(screen.queryByText("Local tools available")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["covered", "Covered"],
+    ["stalled", "Stalled"],
+  ])("preserves the known %s agent status", (status, label) => {
+    agentsState = {
+      agents: [{ id: "agent-ceo", name: "Friday" }],
+      defaultId: "agent-ceo",
+      isSettled: true,
+    };
+    teamsAgentsData = { agents: [{ id: "agent-ceo", status }] };
+
+    render(<ChatPanel {...makeProps("agent-ceo")} />);
+
+    expect(screen.getByText(`Friday · ${label}`)).toBeInTheDocument();
   });
 
   it("includes an active private webchat run in the agent status", () => {

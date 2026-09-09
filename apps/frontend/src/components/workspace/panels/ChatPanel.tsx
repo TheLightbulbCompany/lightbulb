@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { IDockviewPanelProps } from "dockview-react";
 import {
+  Activity,
   ArrowUpRight,
-  Cloud,
   Images,
   Laptop,
   ListTodo,
@@ -46,10 +46,15 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
   const rosterEntry = useRosterEntries(agents).find((entry) => entry.agent.id === resolvedId);
   const { pause, resume } = useAgentMutations();
   const statusState = rosterEntry?.state;
+  const rawStatus = rosterEntry?.rawStatus?.toLowerCase();
   const paused = statusState === "paused";
+  const liveStatusLabel =
+    rawStatus === "covered" || rawStatus === "stalled"
+      ? unknownStateLabel(rawStatus)
+      : "Working";
   const statusLabel =
     statusState === "running"
-      ? "Working"
+      ? liveStatusLabel
       : statusState === "attention"
         ? "Needs attention"
         : statusState === "paused"
@@ -197,31 +202,25 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
             </section>
 
             <section className="team-room__section">
-              <span className="team-room__section-label">Execution</span>
+              <span className="team-room__section-label">Status</span>
               <div className="team-room__execution-row">
-                <Cloud size={17} aria-hidden="true" />
+                <Activity size={17} aria-hidden="true" />
                 <div>
-                  <strong>Lightbulb cloud</strong>
-                  <span>{title}&apos;s agent runtime</span>
+                  <strong>Agent activity</strong>
+                  <span>Roster and private chat status</span>
                 </div>
-                <b className={statusState === "attention" ? "text-err" : statusState === "running" ? "text-info" : statusState === "paused" ? "text-warn" : "text-[var(--midnight-muted)]"}>
+                <b className={statusState === "attention" ? "text-err" : rawStatus === "stalled" ? "text-warn" : statusState === "running" ? "text-info" : statusState === "paused" ? "text-warn" : "text-[var(--midnight-muted)]"}>
                   {statusLabel}
                 </b>
               </div>
               <div className="team-room__execution-row">
                 <Laptop size={17} aria-hidden="true" />
                 <div>
-                  <strong>Local node</strong>
-                  <span>
-                    {nodeConnected
-                      ? "Local tools available"
-                      : nodeStatus === "error"
-                        ? "Connection failing"
-                        : "No local node connected"}
-                  </span>
+                  <strong>Desktop node</strong>
+                  <span>Global connection status</span>
                 </div>
                 <b className={nodeConnected ? "text-ok" : nodeStatus === "error" ? "text-warn" : "text-[var(--midnight-muted)]"}>
-                  {nodeConnected ? "Ready" : nodeStatus === "error" ? "Needs attention" : "Not connected"}
+                  {nodeConnected ? "Connected" : nodeStatus === "error" ? "Needs attention" : "Not connected"}
                 </b>
               </div>
             </section>

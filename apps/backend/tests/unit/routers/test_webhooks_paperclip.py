@@ -33,6 +33,14 @@ def socket_cleanup_io(monkeypatch):
     service.pending_member_revocations = AsyncMock(return_value=set())
     pool = GatewayConnectionPool(MagicMock(), service)
     monkeypatch.setattr("core.containers.get_gateway_pool", lambda: pool)
+    monkeypatch.setattr(
+        "core.services.human_broker_provisioning.container_repo.get_by_owner_id",
+        AsyncMock(return_value={"human_broker_devices": {}}),
+    )
+    monkeypatch.setattr(
+        "core.services.human_broker_provisioning.container_repo.scan_all",
+        AsyncMock(return_value=[]),
+    )
     monkeypatch.setattr("core.services.billing_service.sync_team_seat_quantity", AsyncMock())
     return pool
 
@@ -191,6 +199,7 @@ async def test_membership_deleted_calls_archive_member(async_client, monkeypatch
 
     mock_provisioning = AsyncMock()
     mock_provisioning.archive_member = AsyncMock(return_value=None)
+    durable_revoke = AsyncMock()
 
     payload = {
         "type": "organizationMembership.deleted",
@@ -201,9 +210,15 @@ async def test_membership_deleted_calls_archive_member(async_client, monkeypatch
         },
     }
 
-    with patch(
-        "routers.webhooks.build_paperclip_provisioning",
-        new=AsyncMock(return_value=mock_provisioning),
+    with (
+        patch(
+            "routers.webhooks.build_paperclip_provisioning",
+            new=AsyncMock(return_value=mock_provisioning),
+        ),
+        patch(
+            "core.services.human_broker_provisioning.revoke_human_subject",
+            new=durable_revoke,
+        ),
     ):
         resp = await async_client.post(
             "/api/v1/webhooks/clerk",
@@ -212,6 +227,7 @@ async def test_membership_deleted_calls_archive_member(async_client, monkeypatch
         )
 
     assert resp.status_code == 200
+    durable_revoke.assert_awaited_once()
     mock_provisioning.archive_member.assert_awaited_once_with(user_id="user_member")
 
 
@@ -423,6 +439,17 @@ async def test_user_deleted_calls_disable(async_client, monkeypatch):
 
     mock_provisioning = AsyncMock()
     mock_provisioning.disable = AsyncMock(return_value=None)
+    durable_revoke = AsyncMock()
+    order = []
+
+    async def revoke(*args):
+        order.append("durable-disabled")
+
+    async def sweep(*args):
+        order.append("links-swept")
+        return 0
+
+    durable_revoke.side_effect = revoke
 
     payload = {"type": "user.deleted", "data": {"id": "user_x", "deleted": True}}
 
@@ -433,7 +460,11 @@ async def test_user_deleted_calls_disable(async_client, monkeypatch):
         ),
         patch(
             "core.repositories.channel_link_repo.sweep_by_member",
-            new=AsyncMock(return_value=0),
+            new=AsyncMock(side_effect=sweep),
+        ),
+        patch(
+            "core.services.human_broker_provisioning.revoke_human_subject_everywhere",
+            new=durable_revoke,
         ),
     ):
         resp = await async_client.post(
@@ -443,6 +474,8 @@ async def test_user_deleted_calls_disable(async_client, monkeypatch):
         )
 
     assert resp.status_code == 200
+    durable_revoke.assert_awaited_once()
+    assert order == ["durable-disabled", "links-swept"]
     mock_provisioning.disable.assert_awaited_once_with(user_id="user_x")
 
 

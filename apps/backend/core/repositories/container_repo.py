@@ -1919,7 +1919,7 @@ async def create_human_broker_device(owner_id: str, alias: str, record: dict) ->
             table.update_item,
             Key={"owner_id": owner_id},
             UpdateExpression="SET #devices = if_not_exists(#devices, :empty)",
-            ConditionExpression="attribute_exists(owner_id) AND attribute_not_exists(release_update_id)",
+            ConditionExpression="attribute_exists(owner_id)",
             ExpressionAttributeNames={"#devices": "human_broker_devices"},
             ExpressionAttributeValues={":empty": {}},
         )
@@ -1927,10 +1927,7 @@ async def create_human_broker_device(owner_id: str, alias: str, record: dict) ->
             table.update_item,
             Key={"owner_id": owner_id},
             UpdateExpression="SET #devices.#alias = :record, updated_at = :now",
-            ConditionExpression=(
-                "attribute_exists(owner_id) AND attribute_not_exists(release_update_id) "
-                "AND attribute_not_exists(#devices.#alias)"
-            ),
+            ConditionExpression="attribute_exists(owner_id) AND attribute_not_exists(#devices.#alias)",
             ExpressionAttributeNames={"#devices": "human_broker_devices", "#alias": alias},
             ExpressionAttributeValues={":record": record, ":now": utc_now_iso()},
         )
@@ -1939,8 +1936,6 @@ async def create_human_broker_device(owner_id: str, alias: str, record: dict) ->
         if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
         current = await get_by_owner_id(owner_id, consistent=True)
-        if current and "release_update_id" in current:
-            raise ProvisionSuperseded(f"release transaction for {owner_id} owns human credential state") from exc
         existing = (current or {}).get("human_broker_devices", {}).get(alias)
         if isinstance(existing, dict):
             return existing
@@ -1962,8 +1957,8 @@ async def cas_human_broker_device(
             Key={"owner_id": owner_id},
             UpdateExpression="SET #devices.#alias = :record, updated_at = :now",
             ConditionExpression=(
-                "attribute_exists(owner_id) AND attribute_not_exists(release_update_id) "
-                "AND #devices.#alias.#generation = :generation AND #devices.#alias.#state = :state"
+                "attribute_exists(owner_id) AND #devices.#alias.#generation = :generation "
+                "AND #devices.#alias.#state = :state"
             ),
             ExpressionAttributeNames={
                 "#devices": "human_broker_devices",

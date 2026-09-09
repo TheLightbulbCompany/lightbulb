@@ -28,7 +28,7 @@ from core.containers.config import (
     BEDROCK_PROVIDER_CHOICES,
     BEDROCK_TRIAL_CHOICE,
     CHANNEL_PROVIDER_IDS,
-    build_device_paired_json,
+    _build_node_paired_entry,
     generate_node_device_identity,
     load_node_device_identity,
     read_openclaw_config_from_efs,
@@ -4142,7 +4142,7 @@ class EcsManager:
           the legacy ``main`` agent so provision still succeeds.
         - `devices/.node-device-key.pem` — the node role's private key, read
           by the in-container agent for loopback authentication
-        - `devices/paired.json` — the combined trust store (node + operator)
+        - `devices/paired.json` — the merged trust store (node + operators)
 
         Also ensures the operator Ed25519 private key is present in the
         container's DynamoDB row (KMS-encrypted).
@@ -4305,9 +4305,9 @@ class EcsManager:
 
         # Durable human broker bindings are backend-owned. Reprovision must
         # reproduce them from the container row, never from browser input.
-        from core.services.human_broker_provisioning import active_trusted_broker_profiles
+        from core.services.human_broker_provisioning import provisioned_trusted_broker_profiles
 
-        trusted_broker_profiles = await active_trusted_broker_profiles(owner_id)
+        trusted_broker_profiles = await provisioned_trusted_broker_profiles(owner_id)
 
         config_path = Path(settings.EFS_MOUNT_PATH) / owner_id / "openclaw.json"
         await write_openclaw_config(
@@ -4327,6 +4327,14 @@ class EcsManager:
             deployed_tag=deployed_tag,
             trusted_broker_profiles=trusted_broker_profiles,
         )
+
+        # The full config is assembled before its file lock is acquired. A
+        # human provision/revoke can therefore publish a newer binding while
+        # this snapshot waits. Re-read under the shared config writer after
+        # the full replacement so the newer durable state always wins.
+        from core.services.human_broker_provisioning import reconcile_trusted_broker_profiles
+
+        await reconcile_trusted_broker_profiles(owner_id)
 
         # Seed Friday's IDENTITY/SOUL/USER/BOOTSTRAP files on EFS so they're
         # present before the container boots. Best-effort — failure here
@@ -4453,8 +4461,8 @@ class EcsManager:
         What this writes:
 
         - `devices/.node-device-key.pem` (if not already on EFS)
-        - `devices/paired.json` (always overwritten with the latest node +
-          operator entries)
+        - `devices/paired.json` (locked merge of the latest node + managed
+          operator entries, preserving desktop and other unrelated devices)
         - DynamoDB `containers` row `operator_device_id` + `operator_priv_key_enc`
           (latter is KMS-encrypted with encryption-context bound to owner_id)
 
@@ -4537,7 +4545,7 @@ class EcsManager:
         # Pre-pair each Paperclip agent's device so its relayed operator connect
         # clears the remote-pairing wall, and bind each agent's adapterConfig
         # authToken to this container's gateway_token. Best-effort and enumerated
-        # at provision so a reprovision (which overwrites paired.json) re-includes
+        # at provision so a reprovision's locked merge re-includes
         # them. Paperclip unavailability must never block container provision.
         paperclip_entries: list[dict] = []
         try:
@@ -4566,9 +4574,13 @@ class EcsManager:
                 exc,
             )
 
-        from core.services.human_broker_provisioning import active_human_pair_entries
+        from core.services.desktop_pair import EfsWorkspaceAdapter
+        from core.services.human_broker_provisioning import (
+            provisioned_human_pair_entries,
+            reconcile_provisioned_human_pairs,
+        )
 
-        human_entries = await active_human_pair_entries(user_id, gateway_token)
+        human_entries = await provisioned_human_pair_entries(user_id, gateway_token)
         device_ids = [
             node_identity["device_id"],
             operator_entry["deviceId"],
@@ -4578,10 +4590,46 @@ class EcsManager:
         if len(device_ids) != len(set(device_ids)):
             raise RuntimeError("human/device trust identities collide")
 
-        paired_json = build_device_paired_json(
-            node_identity["device_id"],
-            node_identity["public_key_b64"],
-            operator_entry=operator_entry,
-            extra_operator_entries=[*paperclip_entries, *human_entries],
+        desired_entries = [
+            _build_node_paired_entry(node_identity["device_id"], node_identity["public_key_b64"]),
+            operator_entry,
+            *paperclip_entries,
+            *human_entries,
+        ]
+        old_operator_id = (existing_container or {}).get("operator_device_id")
+
+        def _merge_managed_devices(paired: dict) -> bool:
+            changed = False
+            if old_operator_id and old_operator_id != operator_entry["deviceId"]:
+                old_operator = paired.get(old_operator_id)
+                if isinstance(old_operator, dict) and old_operator.get("displayName") == "lightbulb-backend":
+                    paired.pop(old_operator_id)
+                    changed = True
+            for entry in desired_entries:
+                device_id = entry["deviceId"]
+                current = paired.get(device_id)
+                if current is not None and (
+                    not isinstance(current, dict) or current.get("publicKey") != entry["publicKey"]
+                ):
+                    raise RuntimeError("human/device trust identities collide")
+                wanted = {**current, **entry} if isinstance(current, dict) else entry
+                if isinstance(current, dict) and entry.get("role") == "node":
+                    # A stable node key keeps its gateway-issued role token.
+                    wanted["tokens"] = current.get("tokens", entry.get("tokens"))
+                    wanted["createdAtMs"] = current.get("createdAtMs", entry.get("createdAtMs"))
+                if current != wanted:
+                    paired[device_id] = wanted
+                    changed = True
+            return changed
+
+        adapter = EfsWorkspaceAdapter(
+            owner_id=user_id,
+            workspace=workspace,
+            container_repo=container_repo,
+            gateway_ws_url=settings.WS_GATEWAY_URL,
         )
-        workspace.write_file(user_id, "devices/paired.json", paired_json)
+        await adapter.mutate_paired_json(_merge_managed_devices)
+        # The managed-entry snapshot was loaded before the file lock. Re-read
+        # human state after the merge so a concurrent revoke/rotate cannot be
+        # resurrected by this provision-time reconciliation.
+        await reconcile_provisioned_human_pairs(user_id, gateway_token)

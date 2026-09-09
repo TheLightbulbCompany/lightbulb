@@ -105,8 +105,12 @@ def _write_user_configs_patches(manager, write_oc_mock):
         patch("core.containers.ecs_manager._provision_mcp_servers", AsyncMock(return_value={})),
         patch("core.containers.ecs_manager._provision_channel_accounts", AsyncMock(return_value=({}, []))),
         patch(
-            "core.services.human_broker_provisioning.active_trusted_broker_profiles",
+            "core.services.human_broker_provisioning.provisioned_trusted_broker_profiles",
             AsyncMock(return_value={}),
+        ),
+        patch(
+            "core.services.human_broker_provisioning.reconcile_trusted_broker_profiles",
+            AsyncMock(),
         ),
         patch("core.services.credentials.mcp_server.build_connected_integration_servers", AsyncMock(return_value={})),
         patch("core.containers.ecs_manager.get_workspace", MagicMock()),

@@ -426,14 +426,13 @@ async def _handle_organization_membership_deleted(data: dict) -> None:
 
     revocation_error = None
     if org_id:
-        from core.gateway.native_rooms import revoke_member_connections
+        from core.services.human_broker_provisioning import revoke_human_subject
 
         try:
-            await revoke_member_connections(org_id, user_id)
+            await revoke_human_subject(org_id, settings.CLERK_ISSUER, user_id)
         except Exception as exc:
-            # Socket infrastructure cannot skip the independent stored-member
-            # deauthorization below. Redrive the incomplete socket cleanup only
-            # after archive/disable and seat synchronization have had their turn.
+            # Credential disable and socket teardown are retried by svix after
+            # the independent Paperclip/seat cleanup below has had its turn.
             revocation_error = exc
 
     provisioning = await build_paperclip_provisioning()
@@ -782,6 +781,17 @@ async def handle_clerk_webhook(request: Request):
         if not user_id:
             logger.warning("Clerk user.deleted webhook missing data.id")
             return {"status": "ok"}
+
+        try:
+            from core.services.human_broker_provisioning import revoke_human_subject_everywhere
+
+            await revoke_human_subject_everywhere(settings.CLERK_ISSUER, user_id)
+        except Exception:
+            if svix_id:
+                from core.services.webhook_dedup import delete_event
+
+                await delete_event(svix_id)
+            raise
 
         count = await channel_link_repo.sweep_by_member(user_id)
         logger.info(

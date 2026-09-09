@@ -396,11 +396,17 @@ async def test_native_http_admission_uses_durable_identity_and_cannot_downgrade(
 @pytest.mark.asyncio
 async def test_organization_webhook_revocation_failure_does_not_skip_deauthorization(monkeypatch):
     from routers import webhooks
+    from core.services import human_broker_provisioning
 
     revoke = AsyncMock(side_effect=RuntimeError("revocation incomplete"))
     provisioning = SimpleNamespace(archive_member=AsyncMock())
     provision = AsyncMock(return_value=provisioning)
-    monkeypatch.setattr(rooms, "revoke_member_connections", revoke)
+    monkeypatch.setattr(human_broker_provisioning, "revoke_member_connections", revoke)
+    monkeypatch.setattr(
+        human_broker_provisioning.container_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"human_broker_devices": {}}),
+    )
     monkeypatch.setattr(webhooks, "build_paperclip_provisioning", provision)
     monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
     sync_seats = AsyncMock()
@@ -436,6 +442,7 @@ async def test_real_pool_owns_native_connections_disconnect_and_shutdown(harness
 @pytest.mark.asyncio
 async def test_real_pool_ordinary_membership_removal_with_native_unavailable(harness, monkeypatch):
     from routers import webhooks
+    from core.services import human_broker_provisioning
 
     h = harness
     monkeypatch.setattr(rooms, "_qualified_owners", {})
@@ -454,6 +461,11 @@ async def test_real_pool_ordinary_membership_removal_with_native_unavailable(har
     broker = SimpleNamespace(unsubscribe=AsyncMock())
     monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=provisioning))
     monkeypatch.setattr(webhooks, "close_paperclip_provisioning", close_provisioning)
+    monkeypatch.setattr(
+        human_broker_provisioning.container_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"human_broker_devices": {}}),
+    )
     monkeypatch.setattr("core.services.billing_service.sync_team_seat_quantity", sync_seats)
     monkeypatch.setattr("core.services.teams_event_broker_singleton.get_broker", lambda: broker)
     await webhooks._handle_organization_membership_deleted({"user_id": "user_A", "organization": {"id": "org_team"}})

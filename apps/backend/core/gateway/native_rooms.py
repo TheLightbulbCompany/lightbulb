@@ -561,9 +561,8 @@ class NativeHumanConnection:
                 and hello.get("server", {}).get("buildId") == self.qualification.build_id
                 and auth.get("role") == "operator"
                 and set(auth.get("scopes", [])) == set(HUMAN_SCOPES)
-                and not auth.get("deviceToken")
-                and not auth.get("deviceTokens")
-                and not auth.get("bootstrapToken")
+                and not {"deviceToken", "deviceTokens", "bootstrapToken"} & auth.keys()
+                and not {"deviceToken", "deviceTokens", "bootstrapToken"} & hello.keys()
             ):
                 raise RoomError("ROOM_UNAVAILABLE", "Native human handshake is not qualified")
             self.methods = set(hello.get("features", {}).get("methods", []))

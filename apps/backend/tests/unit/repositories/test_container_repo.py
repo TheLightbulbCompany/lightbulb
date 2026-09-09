@@ -200,6 +200,23 @@ async def test_human_broker_device_create_cas_and_reprovision_preservation(dynam
     row = await container_repo.upsert(owner_id, {"status": "provisioning"})
     assert row["human_broker_devices"][alias]["state"] == "active"
 
+    # A release transaction cannot block disable-first human revocation. Its
+    # eventual whole-row writer pins this nested map and must retry instead.
+    dynamodb_table.update_item(
+        Key={"owner_id": owner_id},
+        UpdateExpression="SET release_update_id = :release",
+        ExpressionAttributeValues={":release": "release-in-flight"},
+    )
+    assert await container_repo.cas_human_broker_device(
+        owner_id,
+        alias,
+        {**record, "state": "disabled"},
+        generation=1,
+        state="active",
+    )
+    row = await container_repo.get_by_owner_id(owner_id, consistent=True)
+    assert row["human_broker_devices"][alias]["state"] == "disabled"
+
 
 @pytest.mark.asyncio
 async def test_upsert_mints_distinct_provision_generation_per_call(dynamodb_table):

@@ -39,7 +39,21 @@ _ALIAS = re.compile(r"clerk-[a-f0-9]{64}@identity\.lightbulb\.invalid\Z")
 _DEVICE_ID = re.compile(r"[a-f0-9]{64}\Z")
 _PUBLIC_KEY = re.compile(r"[A-Za-z0-9_-]{43}\Z")
 _PROFILE_ID = re.compile(r"(?!gateway-owner\Z)[A-Za-z0-9_-]{1,128}\Z")
+_ANY_PROFILE_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 _STATES = frozenset({"provisioning", "active", "disabled"})
+_PROFILE_FIELDS = frozenset(
+    {
+        "id",
+        "displayName",
+        "avatarMime",
+        "mergedInto",
+        "createdAt",
+        "updatedAt",
+        "emails",
+        "githubIdentity",
+        "hasAvatar",
+    }
+)
 
 
 class HumanBrokerProvisioningError(RuntimeError):
@@ -89,6 +103,7 @@ def _validate_record(alias: str, record: Any, *, require_profile: bool = False) 
         _ALIAS.fullmatch(alias)
         and isinstance(record, dict)
         and isinstance(record.get("generation"), int)
+        and not isinstance(record.get("generation"), bool)
         and record["generation"] >= 1
         and record.get("state") in _STATES
         and isinstance(record.get("seed_enc"), str)
@@ -142,6 +157,54 @@ async def _runtime_for_teardown(owner_id: str) -> tuple[tuple[dict, str, str] | 
     return (container, ip, token), None
 
 
+def _validated_profile_result(payload: Any, alias: str, *, expected_profile_id: str | None = None) -> str:
+    profile = payload.get("profile") if isinstance(payload, dict) and set(payload) == {"profile"} else None
+    if not isinstance(profile, dict) or not (_PROFILE_FIELDS <= set(profile) <= _PROFILE_FIELDS | {"role"}):
+        raise HumanBrokerProvisioningError("canonical human profile unavailable")
+
+    profile_id = profile.get("id")
+    emails = profile.get("emails")
+    github = profile.get("githubIdentity")
+    merged_into = profile.get("mergedInto")
+    display_name = profile.get("displayName")
+    role = profile.get("role")
+    valid = (
+        isinstance(profile_id, str)
+        and _PROFILE_ID.fullmatch(profile_id)
+        and (expected_profile_id is None or profile_id == expected_profile_id)
+        and (display_name is None or isinstance(display_name, str) and len(display_name) <= 256)
+        and profile.get("avatarMime") in {None, "image/png", "image/jpeg", "image/webp"}
+        and (merged_into is None or isinstance(merged_into, str) and _ANY_PROFILE_ID.fullmatch(merged_into))
+        and isinstance(profile.get("createdAt"), int)
+        and not isinstance(profile.get("createdAt"), bool)
+        and profile["createdAt"] >= 0
+        and isinstance(profile.get("updatedAt"), int)
+        and not isinstance(profile.get("updatedAt"), bool)
+        and profile["updatedAt"] >= 0
+        and isinstance(emails, list)
+        and all(isinstance(email, str) and bool(email) for email in emails)
+        and alias in emails
+        and isinstance(profile.get("hasAvatar"), bool)
+        and (
+            github is None
+            or isinstance(github, dict)
+            and set(github) == {"login", "profileUrl", "avatarUrl"}
+            and isinstance(github.get("login"), str)
+            and 1 <= len(github["login"]) <= 39
+            and all(isinstance(github.get(field), str) and bool(github[field]) for field in ("profileUrl", "avatarUrl"))
+        )
+        and (
+            "role" not in profile
+            or isinstance(role, str)
+            and 1 <= len(role) <= 128
+            and any(not char.isspace() for char in role)
+        )
+    )
+    if not valid:
+        raise HumanBrokerProvisioningError("canonical human profile unavailable")
+    return profile_id
+
+
 async def _ensure_profile(owner_id: str, alias: str, ip: str, token: str) -> str:
     try:
         payload = await gateway_rpc_oneshot(
@@ -151,16 +214,46 @@ async def _ensure_profile(owner_id: str, alias: str, ip: str, token: str) -> str
             method="users.ensureProfile",
             params={"alias": alias},
         )
+        return _validated_profile_result(payload, alias)
+    except HumanBrokerProvisioningError:
+        raise
     except Exception as exc:
         raise HumanBrokerProvisioningError("canonical human profile unavailable") from exc
-    profile = payload.get("profile") if isinstance(payload, dict) and set(payload) == {"profile"} else None
-    profile_id = profile.get("id") if isinstance(profile, dict) else None
-    if not isinstance(profile_id, str) or not _PROFILE_ID.fullmatch(profile_id):
-        raise HumanBrokerProvisioningError("canonical human profile unavailable")
-    profile_alias = profile.get("email")
-    if profile_alias is not None and profile_alias != alias:
-        raise HumanBrokerProvisioningError("canonical human profile unavailable")
-    return profile_id
+
+
+async def _prove_v4_profile(
+    owner_id: str,
+    alias: str,
+    profile_id: str,
+    ip: str,
+    token: str,
+    device,
+) -> None:
+    last_error: Exception | None = None
+    # The EFS watcher can briefly restart or reject while it advances to the
+    # just-written trustedBrokerProfiles snapshot. Do not activate until the
+    # exact v4 assertion is accepted and users.self reads back the same profile.
+    for delay in (0.0, 0.25, 0.5, 1.0, 2.0, 4.0):
+        if delay:
+            await asyncio.sleep(delay)
+        try:
+            payload = await gateway_rpc_oneshot(
+                ip,
+                owner_id=owner_id,
+                token=token,
+                method="users.self",
+                params={},
+                scopes=HUMAN_SCOPES,
+                identity=device,
+                trusted_broker_profile_id=profile_id,
+            )
+            _validated_profile_result(payload, alias, expected_profile_id=profile_id)
+            return
+        except HumanBrokerProvisioningError:
+            raise
+        except Exception as exc:
+            last_error = exc
+    raise HumanBrokerProvisioningError("trusted human profile activation proof unavailable") from last_error
 
 
 async def _pair_live(owner_id: str, ip: str, token: str, identity) -> None:
@@ -225,8 +318,9 @@ async def _merge_pair(owner_id: str, alias: str, entry: dict) -> None:
                 paired.pop(device_id)
                 changed = True
         current = paired.get(entry["deviceId"])
-        if current and (
-            current.get("publicKey") != entry["publicKey"]
+        if current is not None and (
+            not isinstance(current, dict)
+            or current.get("publicKey") != entry["publicKey"]
             or current.get("lightbulbHumanAlias") != alias
         ):
             raise HumanBrokerProvisioningError("human device id collision")
@@ -247,6 +341,16 @@ async def _remove_pair(owner_id: str, alias: str, device_id: str) -> None:
                 paired.pop(candidate)
                 removed = True
         return removed
+
+    await _adapter(owner_id).mutate_paired_json(mutate)
+
+
+async def _remove_exact_pair(owner_id: str, device_id: str) -> None:
+    def mutate(paired: dict) -> bool:
+        if device_id not in paired:
+            return False
+        paired.pop(device_id)
+        return True
 
     await _adapter(owner_id).mutate_paired_json(mutate)
 
@@ -275,15 +379,86 @@ async def active_trusted_broker_profiles(owner_id: str) -> dict[str, str]:
     return _trusted_profiles(_records(row), include_provisioning=False)
 
 
-async def active_human_pair_entries(owner_id: str, gateway_token: str) -> list[dict]:
+async def provisioned_trusted_broker_profiles(owner_id: str) -> dict[str, str]:
+    """Bindings a full config rewrite must retain while activation is pending."""
     row = await container_repo.get_by_owner_id(owner_id, consistent=True)
+    return _trusted_profiles(_records(row), include_provisioning=True)
+
+
+async def _human_pair_entries(
+    owner_id: str,
+    gateway_token: str,
+    records: dict[str, dict],
+) -> list[dict]:
     entries = []
-    for alias, raw in _records(row).items():
-        if not isinstance(raw, dict) or raw.get("state") != "active":
+    for alias, raw in records.items():
+        if not isinstance(raw, dict) or raw.get("state") not in {"active", "provisioning"}:
+            continue
+        if raw.get("state") == "provisioning" and not raw.get("profile_id"):
             continue
         record = _validate_record(alias, raw, require_profile=True)
         entries.append(_paired_entry(alias, await _load_identity(owner_id, alias, record), gateway_token))
     return entries
+
+
+async def provisioned_human_pair_entries(owner_id: str, gateway_token: str) -> list[dict]:
+    row = await container_repo.get_by_owner_id(owner_id, consistent=True)
+    return await _human_pair_entries(owner_id, gateway_token, _records(row))
+
+
+def _pair_state_fingerprint(records: dict[str, dict]) -> tuple:
+    return tuple(
+        sorted(
+            (
+                alias,
+                raw.get("generation") if isinstance(raw, dict) else None,
+                raw.get("state") if isinstance(raw, dict) else None,
+                raw.get("seed_enc") if isinstance(raw, dict) else None,
+                raw.get("device_id") if isinstance(raw, dict) else None,
+                raw.get("public_key") if isinstance(raw, dict) else None,
+                raw.get("profile_id") if isinstance(raw, dict) else None,
+            )
+            for alias, raw in records.items()
+        )
+    )
+
+
+async def reconcile_provisioned_human_pairs(owner_id: str, gateway_token: str) -> None:
+    """Make tagged human pairing entries match a fresh durable-state read."""
+    for _ in range(3):
+        records = _records(await container_repo.get_by_owner_id(owner_id, consistent=True))
+        fingerprint = _pair_state_fingerprint(records)
+        entries = await _human_pair_entries(owner_id, gateway_token, records)
+        desired = {entry["lightbulbHumanAlias"]: entry for entry in entries}
+
+        def mutate(paired: dict) -> bool:
+            changed = False
+            for device_id, current in list(paired.items()):
+                if not isinstance(current, dict) or "lightbulbHumanAlias" not in current:
+                    continue
+                wanted = desired.get(current["lightbulbHumanAlias"])
+                if wanted is None or wanted["deviceId"] != device_id:
+                    paired.pop(device_id)
+                    changed = True
+            for entry in entries:
+                current = paired.get(entry["deviceId"])
+                if current is not None and (
+                    not isinstance(current, dict)
+                    or current.get("publicKey") != entry["publicKey"]
+                    or current.get("lightbulbHumanAlias") != entry["lightbulbHumanAlias"]
+                ):
+                    raise HumanBrokerProvisioningError("human device id collision")
+                wanted = {**current, **entry} if isinstance(current, dict) else entry
+                if current != wanted:
+                    paired[entry["deviceId"]] = wanted
+                    changed = True
+            return changed
+
+        await _adapter(owner_id).mutate_paired_json(mutate)
+        latest = _records(await container_repo.get_by_owner_id(owner_id, consistent=True))
+        if _pair_state_fingerprint(latest) == fingerprint:
+            return
+    raise HumanBrokerProvisioningError("human pairing state kept changing during reconciliation")
 
 
 async def load_qualified_humans(owner_id: str) -> dict[str, QualifiedHumanDevice]:
@@ -320,26 +495,65 @@ async def _write_trusted_profiles(
     include_provisioning: bool,
     exclude_alias: str | None = None,
 ) -> None:
-    row = await container_repo.get_by_owner_id(owner_id, consistent=True)
-    records = _records(row)
-    if exclude_alias is not None:
-        records = {alias: record for alias, record in records.items() if alias != exclude_alias}
-    bindings = _trusted_profiles(records, include_provisioning=include_provisioning)
-    await set_openclaw_config_path(
-        owner_id,
-        ["gateway", "auth", "trustedBrokerProfiles"],
-        bindings,
-    )
+    for _ in range(3):
+        records = _records(await container_repo.get_by_owner_id(owner_id, consistent=True))
+        if exclude_alias is not None:
+            records = {alias: record for alias, record in records.items() if alias != exclude_alias}
+        bindings = _trusted_profiles(records, include_provisioning=include_provisioning)
+        await set_openclaw_config_path(
+            owner_id,
+            ["gateway", "auth", "trustedBrokerProfiles"],
+            bindings,
+        )
+        latest = _records(await container_repo.get_by_owner_id(owner_id, consistent=True))
+        if exclude_alias is not None:
+            latest = {alias: record for alias, record in latest.items() if alias != exclude_alias}
+        if _trusted_profiles(latest, include_provisioning=include_provisioning) == bindings:
+            return
+    raise HumanBrokerProvisioningError("human profile bindings kept changing during reconciliation")
 
 
-async def _restart(owner_id: str, ip: str, token: str) -> None:
-    await gateway_rpc_oneshot(
-        ip,
-        owner_id=owner_id,
-        token=token,
-        method="config.apply",
-        params={},
-    )
+async def reconcile_trusted_broker_profiles(owner_id: str) -> None:
+    """Re-read durable state after a competing full-config snapshot/write."""
+    await _write_trusted_profiles(owner_id, include_provisioning=True)
+
+
+async def _cleanup_superseded_reconciliation(
+    identity: HumanIdentity,
+    record: dict,
+    *,
+    ip: str,
+    token: str,
+) -> None:
+    """Undo an old ensure that lost a concurrent disable/rotation race."""
+    invalidate_qualification(identity.owner_id)
+    try:
+        current = _records(await container_repo.get_by_owner_id(identity.owner_id, consistent=True)).get(identity.alias)
+    except Exception:
+        return
+    if (
+        isinstance(current, dict)
+        and current.get("generation") == record["generation"]
+        and current.get("state") == record["state"]
+        and current.get("device_id") == record["device_id"]
+    ):
+        return
+
+    for operation in (
+        lambda: _write_trusted_profiles(identity.owner_id, include_provisioning=True),
+        lambda: _remove_exact_pair(identity.owner_id, record["device_id"]),
+        lambda: gateway_rpc_oneshot(
+            ip,
+            owner_id=identity.owner_id,
+            token=token,
+            method="device.pair.remove",
+            params={"deviceId": record["device_id"]},
+        ),
+    ):
+        try:
+            await operation()
+        except Exception:
+            pass
 
 
 async def _disable_record(owner_id: str, alias: str, record: dict) -> dict:
@@ -416,10 +630,6 @@ async def _teardown_disabled(
                 errors.append(exc)
         except Exception as exc:
             errors.append(exc)
-        try:
-            await _restart(identity.owner_id, ip, token)
-        except Exception as exc:
-            errors.append(exc)
     if close_connections:
         try:
             await revoke_member_connections(identity.owner_id, identity.subject)
@@ -469,10 +679,6 @@ async def ensure_human_device(identity: HumanIdentity, conn_svc) -> HumanDeviceR
             disabled = await _disable_record(identity.owner_id, identity.alias, record)
             await _teardown_disabled(identity, disabled, runtime=({}, ip, token), close_connections=True)
         raise
-    if record["state"] == "active":
-        await require_current_member(identity, conn_svc)
-        return HumanDeviceReceipt(record["generation"], "active", record["device_id"])
-
     profile_id = await _ensure_profile(identity.owner_id, identity.alias, ip, token)
     if record.get("profile_id") not in (None, profile_id):
         raise HumanBrokerProvisioningError("canonical human profile changed")
@@ -495,11 +701,24 @@ async def ensure_human_device(identity: HumanIdentity, conn_svc) -> HumanDeviceR
         else:
             record = with_profile
 
-    await _merge_pair(identity.owner_id, identity.alias, _paired_entry(identity.alias, device, token))
-    await _pair_live(identity.owner_id, ip, token, device)
-    await _write_trusted_profiles(identity.owner_id, include_provisioning=True)
-    await _restart(identity.owner_id, ip, token)
-    await require_current_member(identity, conn_svc)
+    try:
+        await _merge_pair(identity.owner_id, identity.alias, _paired_entry(identity.alias, device, token))
+        await _pair_live(identity.owner_id, ip, token, device)
+        await _write_trusted_profiles(identity.owner_id, include_provisioning=True)
+        await _prove_v4_profile(identity.owner_id, identity.alias, profile_id, ip, token, device)
+        await require_current_member(identity, conn_svc)
+        if record["state"] == "active":
+            await require_active_human_device(
+                identity.owner_id,
+                identity.alias,
+                record["device_id"],
+                profile_id,
+            )
+    except Exception:
+        await _cleanup_superseded_reconciliation(identity, record, ip=ip, token=token)
+        raise
+    if record["state"] == "active":
+        return HumanDeviceReceipt(record["generation"], "active", record["device_id"])
     active = {**record, "state": "active", "updated_at": utc_now_iso()}
     if not await container_repo.cas_human_broker_device(
         identity.owner_id,
@@ -523,12 +742,18 @@ async def ensure_human_device(identity: HumanIdentity, conn_svc) -> HumanDeviceR
     return HumanDeviceReceipt(active["generation"], "active", active["device_id"])
 
 
-async def revoke_human_device(identity: HumanIdentity, conn_svc) -> HumanDeviceReceipt:
-    _validate_identity(identity)
-    await require_current_member(identity, conn_svc)
+async def _revoke_human_device(
+    identity: HumanIdentity,
+    *,
+    missing_ok: bool,
+) -> HumanDeviceReceipt | None:
+    invalidate_qualification(identity.owner_id)
     row = await container_repo.get_by_owner_id(identity.owner_id, consistent=True)
     raw = _records(row).get(identity.alias)
     if raw is None:
+        await revoke_member_connections(identity.owner_id, identity.subject)
+        if missing_ok:
+            return None
         raise HumanBrokerProvisioningError("human credential does not exist")
     record = _validate_record(identity.alias, raw)
     runtime, runtime_error = await _runtime_for_teardown(identity.owner_id)
@@ -561,6 +786,48 @@ async def revoke_human_device(identity: HumanIdentity, conn_svc) -> HumanDeviceR
     return HumanDeviceReceipt(record["generation"], "disabled", record["device_id"])
 
 
+async def revoke_human_device(identity: HumanIdentity, conn_svc) -> HumanDeviceReceipt:
+    _validate_identity(identity)
+    await require_current_member(identity, conn_svc)
+    receipt = await _revoke_human_device(identity, missing_ok=False)
+    assert receipt is not None
+    return receipt
+
+
+async def revoke_human_subject(owner_id: str, issuer: str, subject: str) -> HumanDeviceReceipt | None:
+    """Server-authenticated Clerk lifecycle revocation; no membership lookup."""
+    identity = HumanIdentity(
+        owner_id=owner_id,
+        issuer=issuer,
+        subject=subject,
+        connection_id="",
+        source_ip="",
+    )
+    _validate_identity(identity)
+    return await _revoke_human_device(identity, missing_ok=True)
+
+
+async def revoke_human_subject_everywhere(issuer: str, subject: str) -> None:
+    """Disable a deleted Clerk subject in every org container that stores it."""
+    probe = HumanIdentity("org_probe", issuer, subject, "", "")
+    _validate_identity(probe)
+    alias = probe.alias
+    errors = []
+    for row in await container_repo.scan_all():
+        owner_id = row.get("owner_id")
+        records = row.get(_FIELD)
+        if not (
+            isinstance(owner_id, str) and owner_id.startswith("org_") and isinstance(records, dict) and alias in records
+        ):
+            continue
+        try:
+            await revoke_human_subject(owner_id, issuer, subject)
+        except Exception as exc:
+            errors.append(exc)
+    if errors:
+        raise HumanBrokerProvisioningError("deleted human credential revocation incomplete") from errors[0]
+
+
 async def rotate_human_device(identity: HumanIdentity, conn_svc) -> HumanDeviceReceipt:
     _validate_identity(identity)
     await require_current_member(identity, conn_svc)
@@ -572,9 +839,15 @@ async def rotate_human_device(identity: HumanIdentity, conn_svc) -> HumanDeviceR
     runtime, runtime_error = await _runtime_for_teardown(identity.owner_id)
     try:
         try:
-            old = await _disable_record(identity.owner_id, identity.alias, old)
-        except _CredentialChanged:
-            return await ensure_human_device(identity, conn_svc)
+            for _ in range(2):
+                try:
+                    old = await _disable_record(identity.owner_id, identity.alias, old)
+                    break
+                except _CredentialChanged:
+                    row = await container_repo.get_by_owner_id(identity.owner_id, consistent=True)
+                    old = _validate_record(identity.alias, _records(row).get(identity.alias))
+            else:
+                raise _CredentialChanged("human credential kept changing during rotation")
         except Exception as exc:
             await _teardown_disabled(
                 identity,

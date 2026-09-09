@@ -11,11 +11,12 @@
 import "./workspace.css";
 
 import { UserButton } from "@clerk/nextjs";
-import { Chrome, FolderOpen, HelpCircle, CreditCard, RotateCcw } from "lucide-react";
+import { Chrome, FolderOpen, HelpCircle, CreditCard, RotateCcw, Search } from "lucide-react";
 
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { capture } from "@/lib/analytics";
 import { useSupport } from "@/components/support/SupportProvider";
+import { useCommandPalette } from "@/components/teams/command-palette/CommandPaletteProvider";
 import { openPanel } from "./workspaceController";
 
 interface WorkspaceHeaderProps {
@@ -26,6 +27,7 @@ interface WorkspaceHeaderProps {
 
 export function WorkspaceHeader({ onResetLayout }: WorkspaceHeaderProps): React.ReactElement {
   const { openSupport } = useSupport();
+  const { setOpen: setCommandPaletteOpen } = useCommandPalette();
 
   return (
     // Every button below keeps its aria-label — the tooltip is the hover
@@ -67,7 +69,17 @@ export function WorkspaceHeader({ onResetLayout }: WorkspaceHeaderProps): React.
         </TooltipTrigger>
         <TooltipContent>Reset workspace layout</TooltipContent>
       </Tooltip>
-      <div style={{ flex: 1 }} />
+      <div className="workspace-header__spacer" />
+      <button
+        type="button"
+        className="workspace-search"
+        onClick={() => setCommandPaletteOpen(true)}
+      >
+        <Search size={15} aria-hidden="true" />
+        <span>Search agents, issues, and projects</span>
+        <kbd>⌘/Ctrl K</kbd>
+      </button>
+      <div className="workspace-header__spacer" />
       <Tooltip>
         <TooltipTrigger asChild>
           <button

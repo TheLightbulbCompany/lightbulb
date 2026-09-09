@@ -8,12 +8,17 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 
 let emitChatMessage: (msg: Record<string, unknown>) => void = () => {};
+let gatewayConnected = true;
+let onChatMessage = (handler: (msg: Record<string, unknown>) => void) => {
+  emitChatMessage = handler;
+  return () => {
+    if (emitChatMessage === handler) emitChatMessage = () => {};
+  };
+};
 vi.mock("@/hooks/useGateway", () => ({
   useGateway: () => ({
-    onChatMessage: (h: (m: Record<string, unknown>) => void) => {
-      emitChatMessage = h;
-      return () => {};
-    },
+    isConnected: gatewayConnected,
+    onChatMessage,
   }),
 }));
 
@@ -45,6 +50,14 @@ const agent = (id: string, name: string): Agent => ({ id, name });
 beforeEach(() => {
   teamsAgents = [];
   lastSwrOpts = undefined;
+  gatewayConnected = true;
+  emitChatMessage = () => {};
+  onChatMessage = (handler) => {
+    emitChatMessage = handler;
+    return () => {
+      if (emitChatMessage === handler) emitChatMessage = () => {};
+    };
+  };
 });
 
 describe("useRosterEntries", () => {
@@ -98,6 +111,45 @@ describe("useRosterEntries", () => {
 
     act(() => emitChatMessage({ type: "run_ended", agent_id: "a", session_id: "s1" }));
     expect(result.current[0].state).toBe("idle");
+  });
+
+  it("shares a live run with hook instances mounted after it starts", () => {
+    teamsAgents = [{ id: "a", status: "idle" }];
+    const first = renderHook(() => useRosterEntries([agent("a", "Ada")]));
+
+    act(() => emitChatMessage({ type: "run_active", active: true, agent_id: "a", session_id: "s1" }));
+    expect(first.result.current[0].state).toBe("running");
+
+    const late = renderHook(() => useRosterEntries([agent("a", "Ada")]));
+    expect(late.result.current[0].state).toBe("running");
+  });
+
+  it("clears cached live runs across a gateway disconnect", () => {
+    teamsAgents = [{ id: "a", status: "idle" }];
+    const mounted = renderHook(() => useRosterEntries([agent("a", "Ada")]));
+    act(() => emitChatMessage({ type: "run_active", active: true, agent_id: "a", session_id: "s1" }));
+    expect(mounted.result.current[0].state).toBe("running");
+
+    gatewayConnected = false;
+    mounted.rerender();
+    expect(mounted.result.current[0].state).toBe("idle");
+
+    gatewayConnected = true;
+    mounted.rerender();
+    expect(mounted.result.current[0].state).toBe("idle");
+  });
+
+  it("keeps listening while disconnected so an immediate reconnect replay is not missed", () => {
+    teamsAgents = [{ id: "a", status: "idle" }];
+    const mounted = renderHook(() => useRosterEntries([agent("a", "Ada")]));
+
+    gatewayConnected = false;
+    mounted.rerender();
+    act(() => emitChatMessage({ type: "run_active", active: true, agent_id: "a", session_id: "s1" }));
+    gatewayConnected = true;
+    mounted.rerender();
+
+    expect(mounted.result.current[0].state).toBe("running");
   });
 
   it("keeps an agent lit while ANY of its sessions is still running", () => {

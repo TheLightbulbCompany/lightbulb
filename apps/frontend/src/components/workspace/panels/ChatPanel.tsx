@@ -2,10 +2,23 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { IDockviewPanelProps } from "dockview-react";
-import { SlidersHorizontal, ListTodo, Pause, Play, X } from "lucide-react";
+import {
+  Activity,
+  ArrowUpRight,
+  Images,
+  Laptop,
+  ListTodo,
+  LockKeyhole,
+  Pause,
+  Play,
+  SlidersHorizontal,
+  X,
+} from "lucide-react";
 import { AgentChatWindow } from "@/components/chat/AgentChatWindow";
+import { unknownStateLabel } from "@/components/agents/AgentRoster";
+import { useRosterEntries } from "@/components/agents/useRosterEntries";
 import { useAgents, agentDisplayName } from "@/hooks/useAgents";
-import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { useGateway } from "@/hooks/useGateway";
 import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
 import { DEFAULT_AGENT_SENTINEL } from "../panelRegistry";
 import { openPanel } from "../workspaceController";
@@ -16,8 +29,10 @@ interface ChatPanelParams {
 
 export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.ReactElement {
   const { agents, defaultId, isSettled } = useAgents();
+  const { nodeConnected, nodeStatus } = useGateway();
   const raw = props.params.agentId;
   const resolvedId = raw === DEFAULT_AGENT_SENTINEL ? (defaultId ?? null) : raw;
+  const hasResolvedAgent = agents.some((agent) => agent.id === resolvedId);
 
   // Agent-gone gating (spec §4): ONLY once the roster has settled
   // (data !== undefined). isLoading is false during SWR error-retry cycles
@@ -26,17 +41,31 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
   const agentGone =
     isSettled && raw !== DEFAULT_AGENT_SENTINEL && !agents.some((a) => a.id === raw);
 
-  // Per-agent action cluster (moved from ChatLayout's header — it has no
-  // single referent in a multi-chat world). Roster read is the GLOBAL
-  // /teams/agents SWR key: N panels dedupe to one fetch, and pause/resume
-  // revalidates the same key so every panel's icon updates together.
-  const { read: readTeams } = useTeamsApi();
-  const { data: teamsAgentsData } = readTeams<{ agents?: { id: string; status?: string | null }[] }>(
-    "/agents",
-  );
+  // Reuse the roster's durable + live gateway state so an active private
+  // webchat never reads "Ready" here while the sidebar reads "Working".
+  const rosterEntry = useRosterEntries(agents).find((entry) => entry.agent.id === resolvedId);
   const { pause, resume } = useAgentMutations();
-  const paused =
-    teamsAgentsData?.agents?.find((a) => a.id === resolvedId)?.status === "paused";
+  const statusState = rosterEntry?.state;
+  const rawStatus = rosterEntry?.rawStatus?.toLowerCase();
+  const paused = statusState === "paused";
+  const liveStatusLabel =
+    rawStatus === "covered" || rawStatus === "stalled"
+      ? unknownStateLabel(rawStatus)
+      : "Working";
+  const statusLabel =
+    statusState === "running"
+      ? liveStatusLabel
+      : statusState === "attention"
+        ? "Needs attention"
+        : statusState === "paused"
+          ? "Paused"
+          : statusState === "terminated"
+            ? "Unavailable"
+            : statusState === "unknown" && rosterEntry?.rawStatus
+              ? unknownStateLabel(rosterEntry.rawStatus)
+            : statusState === "idle" && rosterEntry?.rawStatus
+              ? "Ready"
+              : "Status unavailable";
   const [busy, setBusy] = useState(false);
 
   const title = useMemo(() => {
@@ -100,26 +129,105 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-10 shrink-0 items-center gap-1 border-b border-[var(--edge)] bg-[var(--cream)] px-2">
-        <span className="truncate text-sm font-medium">{title}</span>
-        <div className="flex-1" />
-        {resolvedId && (
-          <>
-            <button title="Inspect agent" aria-label="Inspect agent" className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--midnight-muted)] transition-colors duration-(--dur-fast) ease-out hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)] disabled:opacity-50" onClick={() => openPanel("agent-inspector", { agent: resolvedId }, { pushUrl: true })}>
+    <div className="team-room h-full min-h-0">
+      <header className="team-room__header">
+        <div className="min-w-0">
+          <span className="team-room__overline">Workspace</span>
+          <div className="team-room__heading-row">
+            <h2 className="team-room__heading font-editorial-serif">
+              {hasResolvedAgent ? `Private with ${title}` : "Private conversation"}
+            </h2>
+            <span className="team-room__audience">
+              <LockKeyhole size={12} aria-hidden="true" /> Private
+            </span>
+          </div>
+          <p className="team-room__status">
+            {hasResolvedAgent
+              ? `${title} · ${statusLabel}`
+              : isSettled
+                ? "Choose an agent"
+                : "Agent details loading"}
+          </p>
+        </div>
+        {resolvedId ? (
+          <div className="team-room__actions">
+            <button title="Inspect agent" aria-label="Inspect agent" className="team-room__icon-button" onClick={() => openPanel("agent-inspector", { agent: resolvedId }, { pushUrl: true })}>
               <SlidersHorizontal size={16} />
             </button>
-            <button title="Agent tasks" aria-label="Agent tasks" className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--midnight-muted)] transition-colors duration-(--dur-fast) ease-out hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)] disabled:opacity-50" onClick={() => openPanel("teams-issues", { agent: resolvedId }, { pushUrl: true })}>
+            <button title="Agent tasks" aria-label="Agent tasks" className="team-room__icon-button" onClick={() => openPanel("teams-issues", { agent: resolvedId }, { pushUrl: true })}>
               <ListTodo size={16} />
             </button>
-            <button title={paused ? "Resume agent" : "Pause agent"} aria-label={paused ? "Resume agent" : "Pause agent"} className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--midnight-muted)] transition-colors duration-(--dur-fast) ease-out hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)] disabled:opacity-50" disabled={busy} onClick={togglePause}>
+            <button title={paused ? "Resume agent" : "Pause agent"} aria-label={paused ? "Resume agent" : "Pause agent"} className="team-room__icon-button" disabled={busy} onClick={togglePause}>
               {paused ? <Play size={16} /> : <Pause size={16} />}
             </button>
-          </>
-        )}
-      </div>
-      <div className="min-h-0 flex-1">
-        <AgentChatWindow agentId={resolvedId} onOpenFile={handleOpenFile} />
+          </div>
+        ) : null}
+      </header>
+      <div className="team-room__body">
+        <div className="team-room__conversation">
+          <AgentChatWindow agentId={resolvedId} onOpenFile={handleOpenFile} />
+        </div>
+        {resolvedId && hasResolvedAgent ? (
+          <aside className="team-room__context" aria-label="Conversation context">
+            <section className="team-room__section">
+              <span className="team-room__section-label">Conversation</span>
+              <div className="team-room__context-title">
+                <LockKeyhole size={16} aria-hidden="true" />
+                <strong>Private</strong>
+              </div>
+              <p>This conversation is isolated to your signed-in profile.</p>
+            </section>
+
+            <section className="team-room__section">
+              <span className="team-room__section-label">Work</span>
+              <p>Keep the task board and finished artifacts beside the conversation.</p>
+              <div className="team-room__work-links">
+                <button
+                  type="button"
+                  onClick={() => openPanel("teams-issues", { agent: resolvedId }, { pushUrl: true })}
+                >
+                  <ListTodo size={15} aria-hidden="true" />
+                  <span>Open {title}&apos;s tasks</span>
+                  <ArrowUpRight size={14} aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openPanel("teams-artifacts", {}, { pushUrl: true })}
+                >
+                  <Images size={15} aria-hidden="true" />
+                  <span>Browse Library</span>
+                  <ArrowUpRight size={14} aria-hidden="true" />
+                </button>
+              </div>
+            </section>
+
+            <section className="team-room__section">
+              <span className="team-room__section-label">Status</span>
+              <div className="team-room__execution-row">
+                <Activity size={17} aria-hidden="true" />
+                <div>
+                  <strong>Agent activity</strong>
+                  <span>Roster and private chat status</span>
+                </div>
+                <b className={statusState === "attention" ? "text-err" : rawStatus === "stalled" ? "text-warn" : statusState === "running" ? "text-info" : statusState === "paused" ? "text-warn" : "text-[var(--midnight-muted)]"}>
+                  {statusLabel}
+                </b>
+              </div>
+              {nodeConnected || nodeStatus === "error" ? (
+                <div className="team-room__execution-row">
+                  <Laptop size={17} aria-hidden="true" />
+                  <div>
+                    <strong>Desktop node</strong>
+                    <span>Global connection status</span>
+                  </div>
+                  <b className={nodeConnected ? "text-ok" : "text-warn"}>
+                    {nodeConnected ? "Connected" : "Needs attention"}
+                  </b>
+                </div>
+              ) : null}
+            </section>
+          </aside>
+        ) : null}
       </div>
     </div>
   );

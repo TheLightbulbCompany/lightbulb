@@ -322,3 +322,47 @@ All checks passed!
 Qualification remains **empty, unavailable and inactive**. The controller explicitly accepted non-expiring unresolved native-run holds rather than a detached-drain framework. An uncertain send, disconnected sender with no later terminal observer, or completed idempotent response without a matching terminal can conservatively retain an idle trial container. No completion is inferred from elapsed time. This is an explicit ponytail ceiling: **native-runtime reconciliation and bounded operational recovery must be qualified before enabling trial native rooms**. The existing trial/spend gate is unchanged, but that is not proof of bounded idle-retention cost.
 
 All prior exact-candidate requirements remain: verified human/machine/ingress coexistence, persisted native authors and transcript privacy, live revocation, signatures, service/device lifecycle, stream rate/backpressure, legacy privacy and operational recovery. These synthetic checks and non-authorizing records are not shipped multiplayer or activation approval. Used systematic-debugging, receiving-code-review and verification-before-completion discipline to trace shared callers and validate the scoped corrections; the user's consolidated phase-end test cadence governs execution. Commit contains intended fixes/tests and this appended report; exact SHA is returned in handoff. No push, merge, deployment or auth activation.
+
+## Backend CI 34303786186 — final test-isolation correction
+
+Controller supplied the old `9016207343755b04eeed1e5653c537edc5dfe85b` Backend CI failure evidence: six membership-deleted/dedup cases in `test_webhooks_paperclip.py` and `test_webhooks_seat_sync.py::test_membership_deleted_calls_seat_sync` reached real DynamoDB transport through the new revoker with synthetic tokens. Supplied CI summary (not rerun wholesale here):
+
+```text
+7 failed, 9886 passed, 370 skipped, 51 warnings
+```
+
+The six Paperclip cases already have external socket-storage isolation in approved whole-branch fix `0abfa7ea59c0a3ea165776d7a3c95468fdce0c3f`. This final delta changes **only** the remaining seat-sync deletion test: construct the real `GatewayConnectionPool`, leave the real revoker in the handler path, and provide empty mocked external owner-query/pending-revocation storage. Assertions verify both discovery calls and the existing seat-sync call. No production behavior, exception swallowing, runtime boundary, or qualification change.
+
+Fresh affected-only command from `apps/backend`:
+
+```sh
+AWS_EC2_METADATA_DISABLED=true AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing AWS_SESSION_TOKEN=testing AWS_DEFAULT_REGION=us-east-1 AWS_MAX_ATTEMPTS=1 PYTHONDONTWRITEBYTECODE=1 /Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend/.venv/bin/python -c 'import sys, pytest
+from unittest.mock import patch
+with patch("botocore.httpsession.URLLib3Session.send", side_effect=AssertionError("Unexpected live AWS transport")):
+    sys.exit(pytest.main(["-q", "--tb=short", "-W", "error::RuntimeWarning", "-p", "no:cacheprovider", "-o", "addopts=", "tests/unit/routers/test_webhooks_seat_sync.py", "tests/unit/routers/test_webhooks_paperclip.py"]))'
+```
+
+Raw output, exit0, no warnings:
+
+```text
+.....................                                                    [100%]
+21 passed in 2.19s
+
+```
+
+Pinned existing Python3.12/Ruff0.15.6, from the worktree root:
+
+```sh
+/Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend/.venv/bin/python -m ruff check --no-cache apps/backend/tests/unit/routers/test_webhooks_seat_sync.py
+/Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend/.venv/bin/python -m ruff format --check --no-cache apps/backend/tests/unit/routers/test_webhooks_seat_sync.py
+git diff --check
+```
+
+Raw lint/format output, both exit0:
+
+```text
+All checks passed!
+1 file already formatted
+```
+
+Whitespace check exit0, no output. No broader test suite, network/AWS/browser/production access, dependency change, push, merge, deployment or agents. Used the CI-fix skill with controller-provided evidence and explicitly approved narrow scope; no additional GitHub fetch was needed. Self-review confirms only the seat-sync test and this report are staged. Whole-branch code approval remains the controller's decision; this local test evidence does not claim new remote CI success or activate native rooms.

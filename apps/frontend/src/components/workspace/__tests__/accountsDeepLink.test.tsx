@@ -16,7 +16,8 @@ vi.mock("@/lib/shellNav", () => ({
   pushSearchParams: vi.fn(),
   replaceSearchParams: vi.fn(),
 }));
-vi.mock("@/hooks/useTeamsApi", () => ({
+vi.mock("@/hooks/useTeamsApi", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/hooks/useTeamsApi")>()),
   useTeamsWorkspaceStatus: () => ({ kind: "ready" }),
 }));
 vi.mock("@/components/teams/TeamsStatusOverlays", () => ({

@@ -400,7 +400,7 @@ def test_explicit_candidate_publishes_versioned_artifacts_and_provenance(vendor_
 
 
 def test_legacy_mode_remains_usable(vendor_case: VendorCase):
-    result = vendor_case.run(upstream="ghcr.io/thelightbulbcompany/agent:2026.9.3-isol8.1")
+    result = vendor_case.run(upstream="ghcr.io/thelightbulbcompany/agent:2026.9.3-isol8.2")
     assert result.returncode == 0, result.stderr
     schema_dir = vendor_case.root / "apps" / "backend" / "tests" / "chaos" / "_schema"
     assert (schema_dir / "PINNED_COMMIT").read_text() == f"{vendor_case.source_commit}\n"

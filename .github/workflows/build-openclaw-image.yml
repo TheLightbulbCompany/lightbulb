@@ -259,7 +259,7 @@ jobs:
             > "${PROOF_DIR}/versions.json" <<'NODE'
           import { readFileSync } from "node:fs";
           const expected = {
-            openclaw: ["/app/package.json", "2026.9.3-isol8.1"],
+            openclaw: ["/app/package.json", "2026.9.3-isol8.2"],
             slack: ["/app/dist/extensions/slack/package.json", "2026.9.3"],
             discord: ["/app/dist/extensions/discord/package.json", "2026.9.3"],
             "amazon-bedrock": ["/app/dist/extensions/amazon-bedrock/package.json", "2026.9.3"],

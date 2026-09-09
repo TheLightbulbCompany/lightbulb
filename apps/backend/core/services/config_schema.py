@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 _SCHEMA_PATH = Path(__file__).with_name("openclaw_config.schema.json")
 _SCHEMA_PATHS: dict[str, Path] = {
     "2026.8.1-isol8.3": _SCHEMA_PATH,
-    "2026.9.3-isol8.1": _SCHEMA_PATH.parent / "openclaw_config_schemas" / "2026.9.3-isol8.1.json",
+    "2026.9.3-isol8.2": _SCHEMA_PATH.parent / "openclaw_config_schemas" / "2026.9.3-isol8.2.json",
 }
 
 # Enough detail to diagnose from a log line without dumping a 300-error wall for

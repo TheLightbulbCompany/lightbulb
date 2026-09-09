@@ -23,7 +23,7 @@ from tests.chaos import strategies as ss
 _SCHEMA_DIR = Path(__file__).resolve().parents[1] / "_schema"
 _VALIDATE = _SCHEMA_DIR / "validate.mjs"
 _LEGACY_ID = "2026.8.1-isol8.3"
-_IMAGE_QUALIFICATION_ID = "2026.9.3-isol8.1"
+_IMAGE_QUALIFICATION_ID = "2026.9.3-isol8.2"
 
 
 def _bundle_path(schema_id: str) -> Path:

@@ -123,7 +123,7 @@ RUN git clone --depth=1 --branch "${OPENHUE_VERSION}" \
 # =============================================================================
 # Fat (non-slim) variant: bundles plugin runtime deps so first-use of
 # browser/codex/channels doesn't pay a ~6min lazy npm-install on cold start.
-FROM ghcr.io/thelightbulbcompany/agent:2026.9.3-isol8.1@sha256:1ba582f9be7ecbd40d56c9c373aa8683446053af6388ab183a950f7284d13472
+FROM ghcr.io/thelightbulbcompany/agent:2026.9.3-isol8.2@sha256:bff34c1100fab434f7953b8529863979df7deeda6963a8b0169caa4446c2ef18
 # PLUGIN-PIN POLICY (read before bumping the @openclaw/* pins below): the baked
 # plugins pin to the latest PUBLISHED plugin dist of the FROM tag's release
 # line on npm. The FROM tag is on the stable 2026.9.3 line, so all eight baked

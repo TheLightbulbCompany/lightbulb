@@ -264,15 +264,6 @@ _SCHEMAS = {
         },
         ("sessionKey", "sessionId", "typing"),
     ),
-    "sessions.patch": _object(
-        {
-            "key": _SESSION_KEY,
-            "expectedSessionId": _STRING,
-            "expectedMarkedUnreadAt": {"type": ["integer", "null"], "minimum": 0},
-            "unread": {"const": False},
-        },
-        ("key", "expectedSessionId", "expectedMarkedUnreadAt", "unread"),
-    ),
     "users.mentionable": _object(
         {"sessionKey": _SESSION_KEY, "query": {"type": "string", "maxLength": 128}},
         ("sessionKey",),
@@ -324,7 +315,6 @@ UNCERTAIN_AFTER_SUCCESS = frozenset(
     {
         "sessions.room.create",
         "sessions.message.append",
-        "sessions.patch",
         "sessions.execution.dispatch",
         "session.members.add",
         "session.members.remove",

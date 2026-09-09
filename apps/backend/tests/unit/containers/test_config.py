@@ -502,6 +502,36 @@ class TestWriteOpenclawConfigAsync:
         assert (tmp_path / "openclaw.json.lock").is_file()
         assert (tmp_path / "openclaw.json.lock.isol8-guard").is_file()
 
+    async def test_release_context_move_rejects_full_write(self, tmp_path, monkeypatch):
+        from core.containers import config as config_module
+        from core.services.openclaw_release import OwnerConfigContext, OwnerReleaseConflict
+
+        out = tmp_path / "openclaw.json"
+        out.write_text('{"sentinel":"active"}')
+        context = OwnerConfigContext("u_1", "container-1", 4, None, None, None)
+
+        async def capture(_owner_id):
+            return context
+
+        monkeypatch.setattr(config_module, "capture_config_context_if_enabled", capture)
+        monkeypatch.setattr(
+            config_module,
+            "assert_config_context_sync",
+            lambda _context: (_ for _ in ()).throw(OwnerReleaseConflict("moved")),
+        )
+
+        with pytest.raises(ValueError, match="release changed"):
+            await write_openclaw_config(
+                config_path=out,
+                gateway_token="must-not-land",
+                provider_choice="bedrock_claude",
+                user_id="u_1",
+                aip_arns=_AIPS,
+            )
+
+        assert json.loads(out.read_text()) == {"sentinel": "active"}
+        assert not (tmp_path / "openclaw.json.bak").exists()
+
     async def test_atomic_full_write_preserves_open_reader(self, tmp_path):
         out = tmp_path / "openclaw.json"
         previous = '{"sentinel":"previous complete config"}'

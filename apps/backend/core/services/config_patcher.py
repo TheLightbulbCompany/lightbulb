@@ -8,6 +8,7 @@ import logging
 import os
 import shutil
 import tempfile
+import time
 from collections.abc import Iterable
 from typing import Any, Callable
 
@@ -16,10 +17,19 @@ from core.containers.config import memory_plugin_entries, workflow_plugin_entrie
 from core.services.agent_roster import read_agent_roster, write_agent_roster
 from core.services.config_schema import ConfigSchemaError, gate_config
 from core.services.efs_file_lock import (
+    OPENCLAW_CONFIG_LOCK_TIMEOUT_S,
+    _openclaw_config_sidecar_under_guard,
     chown_uid_1000_best_effort,
     get_file_lock,
     open_lock_fd,
-    openclaw_config_sidecar_lock,
+    openclaw_config_recovery_guard,
+)
+from core.services.openclaw_release import (
+    OpenClawReleaseError,
+    OwnerReleaseConflict,
+    active_schema_id,
+    assert_config_context_sync,
+    capture_config_context_if_enabled,
 )
 
 logger = logging.getLogger(__name__)
@@ -127,51 +137,78 @@ async def _locked_rmw(
 
     Locking uses the shared two-layer discipline (see ``efs_file_lock``): a
     per-owner in-process ``threading.Lock`` serializes threads in this worker,
-    then ``openclaw_config_sidecar_lock`` preserves the legacy fcntl protocol
-    until boot recovery publishes the transition marker, after which it uses
-    pinned OpenClaw's ephemeral ``O_EXCL`` protocol. The sidecar is separate
-    from openclaw.json because the atomic ``os.rename`` swaps the data inode.
+    then the shared recovery guard and sidecar protocol preserve the legacy
+    fcntl behavior until boot recovery publishes the transition marker, after
+    which writers use pinned OpenClaw's ephemeral ``O_EXCL`` protocol. The
+    sidecar is separate from openclaw.json because the atomic ``os.rename``
+    swaps the data inode.
     """
     config_dir = os.path.join(_efs_mount_path, owner_id)
     config_path = os.path.join(config_dir, "openclaw.json")
     backup_path = os.path.join(config_dir, "openclaw.json.bak")
     lock_path = os.path.join(config_dir, "openclaw.json.lock")
 
+    if not os.path.exists(config_path):
+        raise ConfigPatchError(f"Config not found for owner {owner_id}")
+    try:
+        release_context = await capture_config_context_if_enabled(owner_id)
+        schema_id = active_schema_id(release_context) if release_context is not None else None
+    except (OpenClawReleaseError, OwnerReleaseConflict) as exc:
+        raise ConfigPatchError("owner release changed before config write; retry") from exc
+
     def _do_rmw():
         if not os.path.exists(config_path):
             raise ConfigPatchError(f"Config not found for owner {owner_id}")
-        with openclaw_config_sidecar_lock(config_dir, lock_path):
-            with open(config_path, "r") as f:
-                current = json.load(f)
+        with open(config_path, "r") as f:
+            current = json.load(f)
 
-            changed = mutate_fn(current)
-            if not changed:
-                return  # no-op: skip backup + write
+        changed = mutate_fn(current)
+        if not changed:
+            return  # no-op: skip backup + write
 
-            # Gate BEFORE the backup + rename so a rejected write leaves both
-            # openclaw.json and openclaw.json.bak exactly as they were.
-            try:
-                gate_config(current, owner_id=owner_id, context=log_context, enforce=enforce_schema)
-            except ConfigSchemaError as exc:
-                raise ConfigPatchError(str(exc)) from exc
+        # Gate BEFORE the backup + rename so a rejected write leaves both
+        # openclaw.json and openclaw.json.bak exactly as they were.
+        try:
+            gate_config(
+                current,
+                owner_id=owner_id,
+                context=log_context,
+                enforce=enforce_schema,
+                schema_id=schema_id,
+            )
+        except ConfigSchemaError as exc:
+            raise ConfigPatchError(str(exc)) from exc
 
-            shutil.copy2(config_path, backup_path)
-            json.dumps(current)  # validate serializable
+        shutil.copy2(config_path, backup_path)
+        json.dumps(current)  # validate serializable
 
-            fd, tmp_path = tempfile.mkstemp(dir=config_dir, suffix=".tmp")
-            try:
-                with os.fdopen(fd, "w") as f:
-                    json.dump(current, f, indent=2)
-                chown_uid_1000_best_effort(tmp_path)
-                os.rename(tmp_path, config_path)
-            except Exception:
-                os.unlink(tmp_path)
-                raise
-            logger.info("openclaw.json for owner %s: %s", owner_id, log_context)
+        fd, tmp_path = tempfile.mkstemp(dir=config_dir, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(current, f, indent=2)
+            chown_uid_1000_best_effort(tmp_path)
+            os.rename(tmp_path, config_path)
+        except Exception:
+            os.unlink(tmp_path)
+            raise
+        logger.info("openclaw.json for owner %s: %s", owner_id, log_context)
 
     def _do_rmw_locked():
         with get_file_lock(lock_path):
-            _do_rmw()
+            with openclaw_config_recovery_guard(config_dir, lock_path):
+                try:
+                    if release_context is not None:
+                        assert_config_context_sync(release_context)
+                except (OpenClawReleaseError, OwnerReleaseConflict) as exc:
+                    raise ConfigPatchError("owner release changed before config write; retry") from exc
+                deadline = time.monotonic() + OPENCLAW_CONFIG_LOCK_TIMEOUT_S
+                with _openclaw_config_sidecar_under_guard(
+                    config_dir,
+                    lock_path,
+                    deadline=deadline,
+                    poll_interval_s=0.05,
+                ):
+                    _do_rmw()
 
     await asyncio.to_thread(_do_rmw_locked)
 

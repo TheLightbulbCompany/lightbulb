@@ -1,5 +1,6 @@
 """Pending-updates repository -- DynamoDB CRUD for the pending-updates table."""
 
+import re
 import time
 import uuid
 from decimal import Decimal
@@ -62,11 +63,55 @@ _OWNER_APPLY_UPDATE_EXCLUSIONS = (
     "failure_reason",
 )
 
+_RELEASE_CHECKPOINT_PINS = (
+    "status",
+    "update_type",
+    "container_id",
+    "release_revision",
+    "phase",
+    "target_release_id",
+    "apply_claim_id",
+    "target_task_definition_arn",
+    "prior_config_sha256",
+    "staged_config_sha256",
+    "effect_kind",
+    "effect_claim_id",
+    "effect_executor_id",
+)
+_RELEASE_CHECKPOINT_FIELDS = frozenset(
+    {
+        "target_task_definition_arn",
+        "prior_config_sha256",
+        "staged_config_sha256",
+        "effect_kind",
+        "effect_claim_id",
+        "effect_executor_id",
+        "pre_stop_task_arns",
+        "drain_evidence",
+        "acceptance",
+        "failure_reason",
+    }
+)
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
 
 def _require_nonempty_string(field: str, value: object) -> str:
     if type(value) is not str or not value.strip():
         raise ValueError(f"{field} is invalid")
     return value
+
+
+def _release_revision(value: object) -> int:
+    if type(value) is int and value >= 0:
+        return value
+    if (
+        isinstance(value, Decimal)
+        and value.is_finite()
+        and value >= 0
+        and value == value.to_integral_value()
+    ):
+        return int(value)
+    raise ValueError("release_revision is invalid")
 
 
 def _snapshot_conditions(
@@ -206,18 +251,7 @@ async def reserve_owner_apply(
         if type(count) is not int or count < 0:
             raise ValueError(f"{field} is invalid")
 
-    revision_value = expected_container.get("release_revision", 0)
-    if type(revision_value) is int and revision_value >= 0:
-        revision = revision_value
-    elif (
-        isinstance(revision_value, Decimal)
-        and revision_value.is_finite()
-        and revision_value >= 0
-        and revision_value == revision_value.to_integral_value()
-    ):
-        revision = int(revision_value)
-    else:
-        raise ValueError("release_revision is invalid")
+    revision = _release_revision(expected_container.get("release_revision", 0))
 
     desired_present = "desired_release_id" in expected_container
     active_present = "active_release_id" in expected_container
@@ -336,6 +370,312 @@ async def reserve_owner_apply(
                         "UpdateExpression": "SET " + ", ".join(update_parts) + " REMOVE #ur",
                         "ExpressionAttributeNames": update_names,
                         "ExpressionAttributeValues": update_values,
+                    }
+                },
+            ],
+        )
+    except ClientError as error:
+        if _is_conditional_transaction_cancel(error):
+            return False
+        raise
+    return True
+
+
+def _release_transaction_conditions(expected_container: dict, expected_update: dict, claim_id: str):
+    owner_id = _require_nonempty_string("owner_id", expected_container.get("owner_id"))
+    container_id = _require_nonempty_string("id", expected_container.get("id"))
+    update_id = _require_nonempty_string("update_id", expected_update.get("update_id"))
+    if expected_update.get("owner_id") != owner_id or expected_update.get("container_id") != container_id:
+        raise ValueError("release transaction identity is invalid")
+    _require_nonempty_string("claim_id", claim_id)
+    if expected_update.get("update_type") != "release" or expected_update.get("status") != "applying":
+        raise ValueError("release transaction state is invalid")
+    revision = expected_update.get("release_revision")
+    if expected_container.get("release_revision") != revision:
+        raise ValueError("release transaction revision is invalid")
+
+    container_names: dict = {}
+    container_values: dict = {}
+    container_pins = (
+        "id",
+        "release_update_id",
+        "release_revision",
+        "desired_release_id",
+        "active_release_id",
+        "provision_claim_id",
+        "provision_attempt_token",
+    )
+    container_conditions = _snapshot_conditions(
+        expected_container, container_pins, (), "rc", container_names, container_values
+    )
+    update_names: dict = {}
+    update_values: dict = {}
+    update_conditions = _snapshot_conditions(
+        expected_update, _RELEASE_CHECKPOINT_PINS, (), "ru", update_names, update_values
+    )
+    if expected_container.get("release_update_id") != update_id:
+        raise ValueError("release transaction pointer is invalid")
+    if (
+        expected_container.get("provision_claim_id") != claim_id
+        or expected_container.get("provision_attempt_token") != claim_id
+        or expected_update.get("apply_claim_id") != claim_id
+    ):
+        return None
+    return (
+        owner_id,
+        update_id,
+        container_names,
+        container_values,
+        container_conditions,
+        update_names,
+        update_values,
+        update_conditions,
+    )
+
+
+async def checkpoint_owner_release(
+    expected_container: dict,
+    expected_update: dict,
+    claim_id: str,
+    *,
+    expected_phase: str,
+    next_phase: str,
+    fields: dict | None = None,
+    remove_fields: tuple[str, ...] = (),
+) -> bool:
+    """Advance one release phase while both owner/update claims still match."""
+
+    if (
+        type(expected_phase) is not str
+        or not expected_phase
+        or type(next_phase) is not str
+        or not next_phase
+        or expected_update.get("phase") != expected_phase
+    ):
+        return False
+    fields = fields or {}
+    unknown = (set(fields) | set(remove_fields)) - _RELEASE_CHECKPOINT_FIELDS
+    if unknown:
+        raise ValueError(f"unsupported release checkpoint fields: {sorted(unknown)}")
+    if set(fields) & set(remove_fields):
+        raise ValueError("release checkpoint cannot set and remove the same field")
+    state = _release_transaction_conditions(expected_container, expected_update, claim_id)
+    if state is None:
+        return False
+    owner_id, update_id, cn, cv, cc, un, uv, uc = state
+    now_epoch = int(time.time())
+    now_iso = utc_now_iso()
+    cv.update({":heartbeat": now_epoch, ":updated": now_iso})
+    uv.update({":heartbeat": now_epoch, ":updated": now_iso, ":phase": next_phase})
+    un["#phase"] = "phase"
+    update_sets = ["#phase = :phase", "apply_claimed_at = :heartbeat", "updated_at = :updated"]
+    for index, (field, value) in enumerate(fields.items()):
+        name, binding = f"#rf{index}", f":rf{index}"
+        un[name] = field
+        uv[binding] = value
+        update_sets.append(f"{name} = {binding}")
+    remove_parts: list[str] = []
+    for index, field in enumerate(remove_fields):
+        name = f"#rr{index}"
+        un[name] = field
+        remove_parts.append(name)
+    update_expression = "SET " + ", ".join(update_sets)
+    if remove_parts:
+        update_expression += " REMOVE " + ", ".join(remove_parts)
+    try:
+        await run_in_thread(
+            get_table("containers").meta.client.transact_write_items,
+            TransactItems=[
+                {
+                    "Update": {
+                        "TableName": get_table("containers").name,
+                        "Key": {"owner_id": owner_id},
+                        "ConditionExpression": " AND ".join(cc),
+                        "UpdateExpression": "SET provision_claimed_at = :heartbeat, updated_at = :updated",
+                        "ExpressionAttributeNames": cn,
+                        "ExpressionAttributeValues": cv,
+                    }
+                },
+                {
+                    "Update": {
+                        "TableName": _get_table().name,
+                        "Key": {"owner_id": owner_id, "update_id": update_id},
+                        "ConditionExpression": " AND ".join(uc),
+                        "UpdateExpression": update_expression,
+                        "ExpressionAttributeNames": un,
+                        "ExpressionAttributeValues": uv,
+                    }
+                },
+            ],
+        )
+    except ClientError as error:
+        if _is_conditional_transaction_cancel(error):
+            return False
+        raise
+    return True
+
+
+async def heartbeat_owner_release(expected_container: dict, expected_update: dict, claim_id: str) -> bool:
+    phase = expected_update.get("phase")
+    if type(phase) is not str or not phase:
+        return False
+    return await checkpoint_owner_release(
+        expected_container,
+        expected_update,
+        claim_id,
+        expected_phase=phase,
+        next_phase=phase,
+    )
+
+
+async def takeover_owner_release(
+    expected_container: dict,
+    expected_update: dict,
+    claim_id: str,
+    *,
+    stale_before_epoch: int,
+) -> bool:
+    """Atomically replace both stale release fencing tokens."""
+
+    old_claim = expected_update.get("apply_claim_id")
+    state = _release_transaction_conditions(expected_container, expected_update, old_claim)
+    if state is None:
+        return False
+    _require_nonempty_string("claim_id", claim_id)
+    owner_id, update_id, cn, cv, cc, un, uv, uc = state
+    cc.append("provision_claimed_at <= :stale")
+    uc.append("apply_claimed_at <= :stale")
+    now_epoch = int(time.time())
+    now_iso = utc_now_iso()
+    cv.update({":claim": claim_id, ":now": now_epoch, ":updated": now_iso, ":stale": stale_before_epoch})
+    uv.update({":claim": claim_id, ":now": now_epoch, ":updated": now_iso, ":stale": stale_before_epoch})
+    try:
+        await run_in_thread(
+            get_table("containers").meta.client.transact_write_items,
+            TransactItems=[
+                {
+                    "Update": {
+                        "TableName": get_table("containers").name,
+                        "Key": {"owner_id": owner_id},
+                        "ConditionExpression": " AND ".join(cc),
+                        "UpdateExpression": (
+                            "SET provision_claim_id = :claim, provision_attempt_token = :claim, "
+                            "provision_claimed_at = :now, updated_at = :updated"
+                        ),
+                        "ExpressionAttributeNames": cn,
+                        "ExpressionAttributeValues": cv,
+                    }
+                },
+                {
+                    "Update": {
+                        "TableName": _get_table().name,
+                        "Key": {"owner_id": owner_id, "update_id": update_id},
+                        "ConditionExpression": " AND ".join(uc),
+                        "UpdateExpression": (
+                            "SET apply_claim_id = :claim, apply_claimed_at = :now, updated_at = :updated"
+                        ),
+                        "ExpressionAttributeNames": un,
+                        "ExpressionAttributeValues": uv,
+                    }
+                },
+            ],
+        )
+    except ClientError as error:
+        if _is_conditional_transaction_cancel(error):
+            return False
+        raise
+    return True
+
+
+async def finish_owner_release(
+    expected_container: dict,
+    expected_update: dict,
+    claim_id: str,
+    *,
+    expected_phase: str,
+    expected_image_digest: str,
+    acceptance: dict,
+) -> bool:
+    """Accept a release and clear both claims in one DynamoDB transaction."""
+
+    if expected_phase != "validating" or expected_update.get("phase") != expected_phase:
+        return False
+    state = _release_transaction_conditions(expected_container, expected_update, claim_id)
+    if state is None:
+        return False
+    owner_id, update_id, cn, cv, cc, un, uv, uc = state
+    target_release_id = _require_nonempty_string("target_release_id", expected_update.get("target_release_id"))
+    revision = _release_revision(expected_update.get("release_revision"))
+    target_task_definition_arn = _require_nonempty_string(
+        "target_task_definition_arn", expected_update.get("target_task_definition_arn")
+    )
+    staged_config_sha256 = _require_nonempty_string(
+        "staged_config_sha256", expected_update.get("staged_config_sha256")
+    )
+    expected_image_digest = _require_nonempty_string("expected_image_digest", expected_image_digest)
+    if not _SHA256_RE.fullmatch(staged_config_sha256) or (
+        not expected_image_digest.startswith("sha256:")
+        or not _SHA256_RE.fullmatch(expected_image_digest[7:])
+    ):
+        raise ValueError("release acceptance identity is invalid")
+    if (
+        not isinstance(acceptance, dict)
+        or acceptance.get("task_definition_arn") != target_task_definition_arn
+        or type(acceptance.get("task_arn")) is not str
+        or not acceptance["task_arn"].strip()
+        or acceptance.get("image_digest") != expected_image_digest
+        or acceptance.get("config_sha256") != staged_config_sha256
+        or acceptance.get("gateway") != "accepted"
+    ):
+        return False
+    next_revision = revision + 1
+    now_iso = utc_now_iso()
+    ttl_epoch = int(time.time()) + (30 * 24 * 60 * 60)
+    cv.update({":target": target_release_id, ":revision": next_revision, ":updated": now_iso})
+    uv.update(
+        {
+            ":applied": "applied",
+            ":healthy": "healthy",
+            ":acceptance": acceptance,
+            ":revision": next_revision,
+            ":updated": now_iso,
+            ":ttl": ttl_epoch,
+        }
+    )
+    try:
+        await run_in_thread(
+            get_table("containers").meta.client.transact_write_items,
+            TransactItems=[
+                {
+                    "Update": {
+                        "TableName": get_table("containers").name,
+                        "Key": {"owner_id": owner_id},
+                        "ConditionExpression": " AND ".join(cc),
+                        "UpdateExpression": (
+                            "SET desired_release_id = :target, active_release_id = :target, "
+                            "release_revision = :revision, task_definition_arn = :target_arn, updated_at = :updated "
+                            "REMOVE release_update_id, provision_claim_id, provision_attempt_token, "
+                            "provision_claimed_at, provision_execution_name"
+                        ),
+                        "ExpressionAttributeNames": cn,
+                        "ExpressionAttributeValues": {
+                            **cv,
+                            ":target_arn": target_task_definition_arn,
+                        },
+                    }
+                },
+                {
+                    "Update": {
+                        "TableName": _get_table().name,
+                        "Key": {"owner_id": owner_id, "update_id": update_id},
+                        "ConditionExpression": " AND ".join(uc),
+                        "UpdateExpression": (
+                            "SET #status = :applied, phase = :healthy, acceptance = :acceptance, "
+                            "release_revision = :revision, applied_at = :updated, updated_at = :updated, #ttl = :ttl "
+                            "REMOVE effect_kind, effect_claim_id, effect_executor_id"
+                        ),
+                        "ExpressionAttributeNames": {**un, "#status": "status", "#ttl": "ttl"},
+                        "ExpressionAttributeValues": uv,
                     }
                 },
             ],

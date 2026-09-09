@@ -1,0 +1,148 @@
+import json
+from decimal import Decimal
+
+import pytest
+
+
+def _release_row(**overrides):
+    row = {
+        "release_id": "2026.9.3-isol8.1+main.deadbee",
+        "image": (
+            "877352799272.dkr.ecr.us-east-1.amazonaws.com/"
+            "lightbulb/openclaw-extended:2026.9.3-isol8.1-deadbee"
+        ),
+        "image_digest": f"sha256:{'a' * 64}",
+        "upstream_version": "2026.9.3",
+        "fork_tag": "v2026.9.3-isol8.1",
+        "fork_commit": "1c8fcb36dc72ba15c181070d770104d9dbfe26c5",
+        "schema_id": "2026.9.3-isol8.1",
+        "schema_sha256": "b9444496830abc0821fed561f19ddc808b87933a96638980db830322f0786e2a",
+        "config_capabilities": ["browser.sessionState", "mcp.runtimeScope"],
+    }
+    row.update(overrides)
+    return row
+
+
+def test_release_registry_is_empty_until_final_artifact_is_injected():
+    from core.services import openclaw_release
+
+    openclaw_release._load_releases.cache_clear()
+    assert openclaw_release.available_releases() == ()
+
+
+def test_release_registry_loads_only_complete_qualified_rows(tmp_path, monkeypatch):
+    from core.services import openclaw_release
+
+    registry = tmp_path / "releases.json"
+    registry.write_text(json.dumps({"releases": [_release_row()]}))
+    monkeypatch.setattr(openclaw_release, "_REGISTRY_PATH", registry)
+    monkeypatch.setattr(openclaw_release.config_schema, "schema_errors", lambda _config, *, schema_id: [])
+    monkeypatch.setattr(
+        openclaw_release.config_schema,
+        "schema_artifact_sha256",
+        lambda schema_id: _release_row()["schema_sha256"],
+    )
+    openclaw_release._load_releases.cache_clear()
+
+    release = openclaw_release.release_by_id("2026.9.3-isol8.1+main.deadbee")
+
+    assert release.image.endswith(":2026.9.3-isol8.1-deadbee")
+    assert release.config_capabilities == frozenset({"browser.sessionState", "mcp.runtimeScope"})
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"image": "ghcr.io/thelightbulbcompany/agent:2026.9.3-isol8.1"},
+        {"image": "877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/openclaw-extended:latest"},
+        {"image_digest": f"sha256:{'z' * 64}"},
+        {"fork_commit": "deadbee"},
+        {"schema_sha256": "unknown"},
+        {"schema_sha256": "b" * 64},
+        {"config_capabilities": ["browser.sessionState", 7]},
+    ],
+)
+def test_release_registry_rejects_unqualified_identity(tmp_path, monkeypatch, overrides):
+    from core.services import openclaw_release
+
+    registry = tmp_path / "releases.json"
+    registry.write_text(json.dumps({"releases": [_release_row(**overrides)]}))
+    monkeypatch.setattr(openclaw_release, "_REGISTRY_PATH", registry)
+    monkeypatch.setattr(openclaw_release.config_schema, "schema_errors", lambda _config, *, schema_id: [])
+    monkeypatch.setattr(
+        openclaw_release.config_schema,
+        "schema_artifact_sha256",
+        lambda schema_id: _release_row()["schema_sha256"],
+    )
+    openclaw_release._load_releases.cache_clear()
+
+    with pytest.raises(openclaw_release.OpenClawReleaseError):
+        openclaw_release.available_releases()
+
+
+def test_desired_and_active_resolution_allow_only_a_reserved_transition(tmp_path, monkeypatch):
+    from core.services import openclaw_release
+
+    registry = tmp_path / "releases.json"
+    registry.write_text(json.dumps({"releases": [_release_row()]}))
+    monkeypatch.setattr(openclaw_release, "_REGISTRY_PATH", registry)
+    monkeypatch.setattr(openclaw_release.config_schema, "schema_errors", lambda _config, *, schema_id: [])
+    monkeypatch.setattr(
+        openclaw_release.config_schema,
+        "schema_artifact_sha256",
+        lambda schema_id: _release_row()["schema_sha256"],
+    )
+    openclaw_release._load_releases.cache_clear()
+    target = "2026.9.3-isol8.1+main.deadbee"
+
+    assert openclaw_release.resolve_desired_release({}) is None
+    assert openclaw_release.resolve_desired_release(
+        {"desired_release_id": target, "release_update_id": "update-1"}
+    ).release_id == target
+    with pytest.raises(openclaw_release.OpenClawReleaseError):
+        openclaw_release.resolve_desired_release({"desired_release_id": target})
+
+
+@pytest.mark.asyncio
+async def test_config_context_is_strong_and_rejects_reservation(monkeypatch):
+    from core.repositories import container_repo
+    from core.services import openclaw_release
+
+    seen = []
+
+    async def get(owner_id, *, consistent=False):
+        seen.append((owner_id, consistent))
+        return {
+            "owner_id": owner_id,
+            "id": "container-1",
+            "status": "running",
+            "release_revision": Decimal("4"),
+            "provision_claim_id": "claim",
+            "provision_attempt_token": "attempt",
+        }
+
+    monkeypatch.setattr(container_repo, "get_by_owner_id", get)
+    context = await openclaw_release.capture_config_context("owner-1")
+    assert context.release_revision == 4
+    assert context.claim_id == "claim"
+    assert seen == [("owner-1", True)]
+
+    async def reserved(owner_id, *, consistent=False):
+        row = await get(owner_id, consistent=consistent)
+        row["release_update_id"] = "release-1"
+        return row
+
+    monkeypatch.setattr(container_repo, "get_by_owner_id", reserved)
+    with pytest.raises(openclaw_release.OwnerReleaseConflict):
+        await openclaw_release.capture_config_context("owner-1")
+
+
+@pytest.mark.parametrize("revision", [True, Decimal("1.5"), Decimal("NaN"), -1])
+def test_config_context_rejects_non_integer_revisions(revision):
+    from core.services import openclaw_release
+
+    with pytest.raises(openclaw_release.OwnerReleaseConflict):
+        openclaw_release._context_from_row(
+            "owner-1",
+            {"owner_id": "owner-1", "id": "container-1", "release_revision": revision},
+        )

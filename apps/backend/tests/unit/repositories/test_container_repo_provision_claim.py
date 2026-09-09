@@ -423,6 +423,22 @@ async def test_try_claim_provision_losing_claim_leaves_stamp_unchanged(dynamodb_
     assert lost is None
     row = _row(dynamodb_table, "user_ghi")
     assert row["provision_claim_id"] == "winner-claim"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["stopped", "error"])
+@pytest.mark.parametrize("lease_field", ["provision_claim_id", "provision_attempt_token"])
+async def test_try_claim_provision_does_not_overwrite_lease_on_terminal_status(
+    dynamodb_table, status, lease_field
+):
+    from core.repositories import container_repo
+
+    dynamodb_table.put_item(Item={"owner_id": "owner-busy", "status": status, lease_field: "existing"})
+
+    assert await container_repo.try_claim_provision("owner-busy", claim_id="successor") is None
+    row = _row(dynamodb_table, "owner-busy")
+    assert row[lease_field] == "existing"
+    assert row["status"] == status
     assert row["provision_execution_name"] == "provision-user_ghi-winnercl"
 
 

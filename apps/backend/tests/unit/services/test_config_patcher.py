@@ -105,6 +105,34 @@ async def test_patch_nonexistent_owner_raises(efs_dir):
 
 
 @pytest.mark.asyncio
+async def test_patch_rejects_moved_release_context_before_mutation(efs_dir, monkeypatch):
+    from core.services import config_patcher
+    from core.services.openclaw_release import OwnerConfigContext, OwnerReleaseConflict
+
+    context = OwnerConfigContext("user_1", "container-1", 4, None, None, None)
+
+    async def capture(_owner_id):
+        return context
+
+    monkeypatch.setattr(config_patcher, "capture_config_context_if_enabled", capture)
+    monkeypatch.setattr(
+        config_patcher,
+        "assert_config_context_sync",
+        lambda _context: (_ for _ in ()).throw(OwnerReleaseConflict("moved")),
+    )
+    config_path = os.path.join(efs_dir, "user_1", "openclaw.json")
+    with open(config_path) as stream:
+        before = json.load(stream)
+
+    with pytest.raises(ConfigPatchError, match="release changed"):
+        await patch_openclaw_config("user_1", {"tools": {"profile": "minimal"}})
+
+    with open(config_path) as stream:
+        assert json.load(stream) == before
+    assert not os.path.exists(os.path.join(efs_dir, "user_1", "openclaw.json.bak"))
+
+
+@pytest.mark.asyncio
 async def test_patch_autowires_route_binding_for_new_channel_account(efs_dir):
     """A patch that introduces channels.<provider>.accounts.<agent_id> must
     also land a matching top-level route binding in the same atomic write.

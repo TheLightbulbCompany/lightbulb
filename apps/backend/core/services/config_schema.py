@@ -36,6 +36,7 @@ registered artifact fail closed when it is unknown or unavailable; explicit
 selection never falls back to the fleet default.
 """
 
+import hashlib
 import json
 import logging
 from functools import lru_cache
@@ -62,6 +63,18 @@ _MAX_PRUNE_PASSES = 10
 
 class ConfigSchemaError(Exception):
     """The selected schema was unavailable or rejected the merged config."""
+
+
+def schema_artifact_sha256(schema_id: str) -> str:
+    """Return the reviewed digest of one explicitly selected schema artifact."""
+
+    schema_path = _SCHEMA_PATHS.get(schema_id)
+    if schema_path is None:
+        raise ConfigSchemaError("required OpenClaw config schema is unavailable")
+    try:
+        return hashlib.sha256(schema_path.read_bytes()).hexdigest()
+    except OSError:
+        raise ConfigSchemaError("required OpenClaw config schema is unavailable") from None
 
 
 @lru_cache(maxsize=None)

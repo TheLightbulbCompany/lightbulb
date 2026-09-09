@@ -26,6 +26,13 @@ from core.services.efs_file_lock import (
     get_file_lock,
     openclaw_config_sidecar_lock,
 )
+from core.services.openclaw_release import (
+    OpenClawReleaseError,
+    OwnerReleaseConflict,
+    active_schema_id,
+    assert_config_context_sync,
+    capture_config_context_if_enabled,
+)
 from core.services.paperclip_meta import (
     PAPERCLIP_AGENT_ROLES,
     PaperclipMeta,
@@ -3004,6 +3011,12 @@ async def write_openclaw_config(
         ValueError: when ``provider_choice`` is unknown or
             ``byo_provider`` is missing/invalid for ``byo_key``.
     """
+    try:
+        release_context = await capture_config_context_if_enabled(user_id)
+        schema_id = active_schema_id(release_context) if release_context is not None else None
+    except (OpenClawReleaseError, OwnerReleaseConflict) as exc:
+        raise ValueError("owner release changed before config write; retry") from exc
+
     config = build_openclaw_config_dict(
         user_id=user_id,
         gateway_token=gateway_token,
@@ -3031,7 +3044,6 @@ async def write_openclaw_config(
     # the ~280 KB schema is non-trivial CPU, and every other gate call site runs
     # inside `asyncio.to_thread` already (config_patcher._do_rmw).
     def _write() -> None:
-        gate_config(config, owner_id=user_id, context="write_openclaw_config")
         config_path.parent.mkdir(parents=True, exist_ok=True)
         lock_path = f"{config_path}.lock"
         # This generator is also used by update paths while the owner task is
@@ -3040,6 +3052,17 @@ async def write_openclaw_config(
         # The process-local gate additionally serializes backend threads.
         with get_file_lock(lock_path):
             with openclaw_config_sidecar_lock(str(config_path.parent), lock_path):
+                try:
+                    if release_context is not None:
+                        assert_config_context_sync(release_context)
+                except (OpenClawReleaseError, OwnerReleaseConflict) as exc:
+                    raise ValueError("owner release changed before config write; retry") from exc
+                gate_config(
+                    config,
+                    owner_id=user_id,
+                    context="write_openclaw_config",
+                    schema_id=schema_id,
+                )
                 fd, temporary_path = tempfile.mkstemp(
                     dir=config_path.parent,
                     prefix=f".{config_path.name}.",

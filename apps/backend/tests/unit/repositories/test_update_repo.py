@@ -1347,3 +1347,135 @@ async def test_owner_apply_transaction_classifier_propagates_unproven_failures(d
     assert caught.value is failure and calls == 1
     assert containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"] == owner
     assert dynamodb_table.get_item(Key={"owner_id": "u", "update_id": update["update_id"]})["Item"] == update
+
+
+@pytest.mark.asyncio
+async def test_release_checkpoint_and_finish_keep_both_rows_fenced(dynamodb_table):
+    from core.repositories import update_repo
+
+    containers, owner, queued = await _seed_owner_apply(update_repo)
+    assert await _reserve_owner_apply(update_repo, owner, queued)
+    container = containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"]
+    update = await update_repo.get_by_id("u", queued["update_id"], consistent=True)
+    assert await update_repo.checkpoint_owner_release(
+        container,
+        update,
+        "worker",
+        expected_phase="reserved",
+        next_phase="validating",
+        fields={"target_task_definition_arn": "arn:target", "staged_config_sha256": "b" * 64},
+    )
+
+    prepared_container = containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"]
+    prepared_update = await update_repo.get_by_id("u", queued["update_id"], consistent=True)
+    assert prepared_update["phase"] == "validating"
+    assert prepared_update["target_task_definition_arn"] == "arn:target"
+    assert not await update_repo.checkpoint_owner_release(
+        prepared_container,
+        prepared_update,
+        "stale-worker",
+        expected_phase="validating",
+        next_phase="drained",
+    )
+    acceptance = {
+        "task_arn": "arn:task",
+        "task_definition_arn": "arn:target",
+        "image_digest": f"sha256:{'a' * 64}",
+        "config_sha256": "b" * 64,
+        "gateway": "accepted",
+    }
+    assert not await update_repo.finish_owner_release(
+        prepared_container,
+        prepared_update,
+        "worker",
+        expected_phase="validating",
+        expected_image_digest=f"sha256:{'c' * 64}",
+        acceptance=acceptance,
+    )
+
+    assert await update_repo.finish_owner_release(
+        prepared_container,
+        prepared_update,
+        "worker",
+        expected_phase="validating",
+        expected_image_digest=f"sha256:{'a' * 64}",
+        acceptance=acceptance,
+    )
+    finished_container = containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"]
+    finished_update = await update_repo.get_by_id("u", queued["update_id"], consistent=True)
+    assert finished_container["desired_release_id"] == finished_container["active_release_id"] == "candidate"
+    assert finished_container["release_revision"] == 2
+    assert "release_update_id" not in finished_container
+    assert "provision_claim_id" not in finished_container
+    assert finished_update["status"] == "applied" and finished_update["phase"] == "healthy"
+    assert finished_update["release_revision"] == 2
+
+
+@pytest.mark.asyncio
+async def test_release_finish_requires_persisted_target_task_definition(dynamodb_table):
+    from core.repositories import update_repo
+
+    containers, owner, queued = await _seed_owner_apply(update_repo)
+    assert await _reserve_owner_apply(update_repo, owner, queued)
+    container = containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"]
+    update = await update_repo.get_by_id("u", queued["update_id"], consistent=True)
+    assert await update_repo.checkpoint_owner_release(
+        container,
+        update,
+        "worker",
+        expected_phase="reserved",
+        next_phase="validating",
+        fields={"staged_config_sha256": "b" * 64},
+    )
+    container = containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"]
+    update = await update_repo.get_by_id("u", queued["update_id"], consistent=True)
+
+    with pytest.raises(ValueError, match="target_task_definition_arn"):
+        await update_repo.finish_owner_release(
+            container,
+            update,
+            "worker",
+            expected_phase="validating",
+            expected_image_digest=f"sha256:{'a' * 64}",
+            acceptance={
+                "task_arn": "arn:task",
+                "task_definition_arn": "arn:target",
+                "image_digest": f"sha256:{'a' * 64}",
+                "config_sha256": "b" * 64,
+                "gateway": "accepted",
+            },
+        )
+
+    assert containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"] == container
+    assert await update_repo.get_by_id("u", queued["update_id"], consistent=True) == update
+
+
+@pytest.mark.asyncio
+async def test_release_takeover_moves_both_claims_atomically(dynamodb_table):
+    from core.dynamodb import get_table
+    from core.repositories import update_repo
+
+    containers, owner, queued = await _seed_owner_apply(update_repo)
+    assert await _reserve_owner_apply(update_repo, owner, queued)
+    old = 1
+    containers.update_item(
+        Key={"owner_id": "u"},
+        UpdateExpression="SET provision_claimed_at = :old",
+        ExpressionAttributeValues={":old": old},
+    )
+    get_table("pending-updates").update_item(
+        Key={"owner_id": "u", "update_id": queued["update_id"]},
+        UpdateExpression="SET apply_claimed_at = :old",
+        ExpressionAttributeValues={":old": old},
+    )
+    container = containers.get_item(Key={"owner_id": "u"}, ConsistentRead=True)["Item"]
+    update = await update_repo.get_by_id("u", queued["update_id"], consistent=True)
+
+    assert await update_repo.takeover_owner_release(
+        container,
+        update,
+        "successor",
+        stale_before_epoch=2,
+    )
+    assert containers.get_item(Key={"owner_id": "u"})["Item"]["provision_claim_id"] == "successor"
+    assert (await update_repo.get_by_id("u", queued["update_id"], consistent=True))["apply_claim_id"] == "successor"

@@ -1,4 +1,6 @@
+import asyncio
 import copy
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -186,6 +188,12 @@ def harness(monkeypatch):
     monkeypatch.setattr(
         provisioner, "invalidate_qualification", lambda owner_id: events.append("qualification-disabled")
     )
+
+    @asynccontextmanager
+    async def unlocked_human_lifecycle(_owner_id):
+        yield {}
+
+    monkeypatch.setattr(provisioner, "owner_lifecycle_guard", unlocked_human_lifecycle)
     monkeypatch.setattr(provisioner.settings, "CLERK_ISSUER", "https://issuer.example")
     state.repo = repo
     state.kms = kms
@@ -377,6 +385,56 @@ async def test_rotation_disables_old_device_before_activating_a_new_generation(h
     assert new.device_id in harness.paired
     assert old.device_id not in harness.trusted
     assert harness.repo.devices[human.alias]["state"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_stale_manual_revoke_waiting_on_rotation_preserves_successor_generation(harness, monkeypatch):
+    human = _human("user_alice")
+    old = await provisioner.ensure_human_device(human, harness.conn_svc)
+    lifecycle_lock = asyncio.Lock()
+    rotation_entered = asyncio.Event()
+    stale_revoke_waiting = asyncio.Event()
+    continue_rotation = asyncio.Event()
+    lifecycle_attempts = 0
+    disable_calls = 0
+    real_disable = provisioner._disable_record
+
+    @asynccontextmanager
+    async def serialized_lifecycle(_owner_id):
+        nonlocal lifecycle_attempts
+        lifecycle_attempts += 1
+        if lifecycle_attempts == 2:
+            stale_revoke_waiting.set()
+        async with lifecycle_lock:
+            yield {}
+
+    async def pause_rotation_disable(*args, **kwargs):
+        nonlocal disable_calls
+        disable_calls += 1
+        if disable_calls == 1:
+            rotation_entered.set()
+            await continue_rotation.wait()
+        return await real_disable(*args, **kwargs)
+
+    monkeypatch.setattr(provisioner, "owner_lifecycle_guard", serialized_lifecycle)
+    monkeypatch.setattr(provisioner, "_disable_record", pause_rotation_disable)
+
+    rotation = asyncio.create_task(provisioner.rotate_human_device(human, harness.conn_svc))
+    await rotation_entered.wait()
+    stale_revoke = asyncio.create_task(provisioner.revoke_human_device(human, harness.conn_svc))
+    await stale_revoke_waiting.wait()
+    continue_rotation.set()
+
+    new = await rotation
+    with pytest.raises(provisioner.HumanBrokerProvisioningError, match="credential changed"):
+        await stale_revoke
+
+    assert new.generation == old.generation + 1
+    assert harness.repo.devices[human.alias]["generation"] == new.generation
+    assert harness.repo.devices[human.alias]["state"] == "active"
+    assert new.device_id in harness.paired
+    assert harness.trusted == {new.device_id: "profile_1"}
+    assert harness.events.count("connections-closed") == 1
 
 
 @pytest.mark.asyncio

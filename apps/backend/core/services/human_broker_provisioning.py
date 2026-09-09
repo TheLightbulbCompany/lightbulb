@@ -30,6 +30,7 @@ from core.repositories import container_repo
 from core.services import webhook_dedup
 from core.services.config_patcher import set_openclaw_config_path
 from core.services.desktop_pair import EfsWorkspaceAdapter
+from core.services.openclaw_release import OwnerReleaseConflict, owner_lifecycle_guard
 from core.services.paperclip_openclaw_pairing import (
     _approve_pairing_request,
     _find_pending_request_id,
@@ -498,18 +499,6 @@ async def _merge_pair(owner_id: str, alias: str, entry: dict) -> None:
     await _adapter(owner_id).mutate_paired_json(mutate)
 
 
-async def _remove_pair(owner_id: str, alias: str, device_id: str) -> None:
-    def mutate(paired: dict) -> bool:
-        removed = False
-        for candidate, entry in list(paired.items()):
-            if candidate == device_id or (isinstance(entry, dict) and entry.get("lightbulbHumanAlias") == alias):
-                paired.pop(candidate)
-                removed = True
-        return removed
-
-    await _adapter(owner_id).mutate_paired_json(mutate)
-
-
 async def _remove_exact_pair(owner_id: str, device_id: str) -> None:
     def mutate(paired: dict) -> bool:
         if device_id not in paired:
@@ -677,15 +666,27 @@ async def _write_trusted_profiles(
     owner_id: str,
     *,
     include_provisioning: bool,
-    exclude_alias: str | None = None,
+    exclude_record: tuple[str, int, str] | None = None,
 ) -> None:
+    def without_exact_record(records: dict[str, dict]) -> dict[str, dict]:
+        if exclude_record is None:
+            return records
+        alias, generation, device_id = exclude_record
+        current = records.get(alias)
+        if (
+            isinstance(current, dict)
+            and current.get("generation") == generation
+            and current.get("device_id") == device_id
+        ):
+            return {candidate: record for candidate, record in records.items() if candidate != alias}
+        return records
+
     for _ in range(3):
         records = await _authorized_records(
             owner_id,
             await container_repo.get_by_owner_id(owner_id, consistent=True),
         )
-        if exclude_alias is not None:
-            records = {alias: record for alias, record in records.items() if alias != exclude_alias}
+        records = without_exact_record(records)
         bindings = _trusted_profiles(records, include_provisioning=include_provisioning)
         await set_openclaw_config_path(
             owner_id,
@@ -696,8 +697,7 @@ async def _write_trusted_profiles(
             owner_id,
             await container_repo.get_by_owner_id(owner_id, consistent=True),
         )
-        if exclude_alias is not None:
-            latest = {alias: record for alias, record in latest.items() if alias != exclude_alias}
+        latest = without_exact_record(latest)
         if _trusted_profiles(latest, include_provisioning=include_provisioning) == bindings:
             return
     raise HumanBrokerProvisioningError("human profile bindings kept changing during reconciliation")
@@ -853,7 +853,7 @@ async def _teardown_disabled(
         await _write_trusted_profiles(
             identity.owner_id,
             include_provisioning=True,
-            exclude_alias=identity.alias,
+            exclude_record=(identity.alias, record["generation"], record["device_id"]),
         )
     except Exception as exc:
         errors.append(exc)
@@ -865,10 +865,7 @@ async def _teardown_disabled(
             lifecycle_claim_id,
         )
     try:
-        if revocation_event_id is None:
-            await _remove_pair(identity.owner_id, identity.alias, record["device_id"])
-        else:
-            await _remove_exact_pair(identity.owner_id, record["device_id"])
+        await _remove_exact_pair(identity.owner_id, record["device_id"])
     except Exception as exc:
         errors.append(exc)
     if runtime is not None:
@@ -902,7 +899,14 @@ async def _teardown_disabled(
                 lifecycle_claim_id,
             )
         try:
-            await revoke_member_connections(identity.owner_id, identity.subject)
+            row = await container_repo.get_by_owner_id(identity.owner_id, consistent=True)
+            current = _records(row).get(identity.alias)
+            if current is None:
+                await revoke_member_connections(identity.owner_id, identity.subject)
+            else:
+                current = _validate_record(identity.alias, current)
+                if current["generation"] == record["generation"] and current["device_id"] == record["device_id"]:
+                    await revoke_member_connections(identity.owner_id, identity.subject)
         except Exception as exc:
             errors.append(exc)
     if revocation_event_id is not None:
@@ -1058,7 +1062,11 @@ async def _revoke_human_device(
     missing_ok: bool,
     revocation_event_id: str | None = None,
     lifecycle_claim_id: str | None = None,
+    expected_generation: int | None = None,
+    expected_device_id: str | None = None,
 ) -> HumanDeviceReceipt | None:
+    if (expected_generation is None) != (expected_device_id is None):
+        raise HumanBrokerProvisioningError("complete expected human credential required")
     if revocation_event_id is not None:
         row = await _require_revocation_current(
             identity.owner_id,
@@ -1090,6 +1098,10 @@ async def _revoke_human_device(
             return None
         raise HumanBrokerProvisioningError("human credential does not exist")
     record = _validate_record(identity.alias, raw)
+    if expected_generation is not None and (
+        record["generation"] != expected_generation or record["device_id"] != expected_device_id
+    ):
+        raise _CredentialChanged("human credential changed before revocation")
     runtime, runtime_error = await _runtime_for_teardown(identity.owner_id)
     try:
         for _ in range(2):
@@ -1104,7 +1116,12 @@ async def _revoke_human_device(
                 break
             except _CredentialChanged:
                 row = await container_repo.get_by_owner_id(identity.owner_id, consistent=True)
-                record = _validate_record(identity.alias, _records(row).get(identity.alias))
+                current = _validate_record(identity.alias, _records(row).get(identity.alias))
+                if expected_generation is not None and (
+                    current["generation"] != expected_generation or current["device_id"] != expected_device_id
+                ):
+                    raise _CredentialChanged("human credential changed during revocation")
+                record = current
         else:
             raise _CredentialChanged("human credential kept changing during revocation")
     except _RevocationSuperseded:
@@ -1135,7 +1152,18 @@ async def _revoke_human_device(
 async def revoke_human_device(identity: HumanIdentity, conn_svc) -> HumanDeviceReceipt:
     _validate_identity(identity)
     await require_current_member(identity, conn_svc)
-    receipt = await _revoke_human_device(identity, missing_ok=False)
+    row = await container_repo.get_by_owner_id(identity.owner_id, consistent=True)
+    record = _validate_record(identity.alias, _records(row).get(identity.alias))
+    try:
+        async with owner_lifecycle_guard(identity.owner_id):
+            receipt = await _revoke_human_device(
+                identity,
+                missing_ok=False,
+                expected_generation=record["generation"],
+                expected_device_id=record["device_id"],
+            )
+    except OwnerReleaseConflict as exc:
+        raise HumanBrokerProvisioningError("owner lifecycle is reserved; retry revocation") from exc
     assert receipt is not None
     return receipt
 
@@ -1251,7 +1279,7 @@ async def revoke_human_subject_everywhere(
         raise HumanBrokerProvisioningError("deleted human credential revocation incomplete") from errors[0]
 
 
-async def rotate_human_device(identity: HumanIdentity, conn_svc) -> HumanDeviceReceipt:
+async def _rotate_human_device_owned(identity: HumanIdentity, conn_svc) -> HumanDeviceReceipt:
     _validate_identity(identity)
     await require_current_member(identity, conn_svc)
     await _require_subject_live(identity.alias)
@@ -1338,3 +1366,12 @@ async def rotate_human_device(identity: HumanIdentity, conn_svc) -> HumanDeviceR
         return await ensure_human_device(identity, conn_svc)
     finally:
         await revoke_member_connections(identity.owner_id, identity.subject)
+
+
+async def rotate_human_device(identity: HumanIdentity, conn_svc) -> HumanDeviceReceipt:
+    _validate_identity(identity)
+    try:
+        async with owner_lifecycle_guard(identity.owner_id):
+            return await _rotate_human_device_owned(identity, conn_svc)
+    except OwnerReleaseConflict as exc:
+        raise HumanBrokerProvisioningError("owner lifecycle is reserved; retry rotation") from exc

@@ -165,6 +165,38 @@ async def test_refresh_rejects_active_release_with_desired_absent_before_ecs(mon
     fake_ecs.update_service.assert_not_called()
 
 
+@pytest.mark.parametrize("release_revision", ["missing", None, "1", 0, -1])
+@pytest.mark.asyncio
+async def test_refresh_rejects_invalid_assigned_release_revision_before_ecs(
+    monkeypatch, release_revision
+):
+    from core.containers import ecs_manager
+
+    manager = ecs_manager.EcsManager()
+    container = {
+        "owner_id": "u_1",
+        "service_name": "openclaw-u-1-abc",
+        "hook_token": "freshly-set",
+        "task_definition_arn": "arn:task-definition/openclaw:4",
+        "desired_release_id": "founder-canary",
+        "active_release_id": "founder-canary",
+    }
+    if release_revision != "missing":
+        container["release_revision"] = release_revision
+    fake_ecs = MagicMock()
+
+    with (
+        patch("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=container)),
+        patch.object(manager, "_ecs", fake_ecs),
+        pytest.raises(ecs_manager.EcsManagerError, match="release revision is invalid"),
+    ):
+        await manager.refresh_task_definition("u_1")
+
+    fake_ecs.describe_task_definition.assert_not_called()
+    fake_ecs.register_task_definition.assert_not_called()
+    fake_ecs.update_service.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_refresh_strips_stale_paperclip_env_keeps_others(monkeypatch):
     """A task-def registered before per-agent Paperclip identity carries the old

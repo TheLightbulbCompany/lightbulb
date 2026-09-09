@@ -371,7 +371,14 @@ def _ordinary_assigned_release(container: dict, owner_id: str):
     if desired_release_id != active_release_id:
         raise EcsManagerError("Owner release assignment is not stable", owner_id)
 
-    from core.services.openclaw_release import release_by_id
+    from core.services.openclaw_release import OwnerReleaseConflict, _revision, release_by_id
+
+    try:
+        release_revision = _revision(container)
+    except OwnerReleaseConflict as exc:
+        raise EcsManagerError("Owner release revision is invalid", owner_id) from exc
+    if release_revision <= 0:
+        raise EcsManagerError("Owner release revision is invalid", owner_id)
 
     try:
         return release_by_id(active_release_id)

@@ -164,7 +164,7 @@ async def harness(monkeypatch):
     service.finish_member_revocation = AsyncMock(
         side_effect=lambda _owner, _member, key: pending_revocations.discard(key)
     )
-    service.begin_native_run = AsyncMock(side_effect=AssertionError("append must not create a hold"))
+    service.begin_native_run = AsyncMock(return_value=True)
     service.finish_native_run = AsyncMock()
     service.query_by_owner = AsyncMock(
         side_effect=lambda owner: [
@@ -771,6 +771,67 @@ async def test_reviewed_room_methods_forward_only_their_closed_native_contract(h
         )
     else:
         harness.pool.gate_chat.assert_not_awaited()
+
+
+def dispatch_params():
+    return {
+        "sessionKey": room_key(),
+        "expectedSessionId": "incarnation-1",
+        "inputMessageId": "entry-1",
+        "idempotencyKey": "dispatch-1",
+        "hopCount": 0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_dispatch_hold_survives_tab_disconnect_until_explicit_reconciliation(harness):
+    h = harness
+    assert (await h.request("sessions.execution.dispatch", dispatch_params()))["ok"] is True
+    run_id = rooms.native_execution_run_id("profile-user_A", dispatch_params())
+    run = ("org_team", room_key(), run_id)
+    h.service.begin_native_run.assert_awaited_once_with(*run)
+    assert run in h.native.run_holds
+    await h.native.close_connection("tab-a")
+    assert run in h.native.run_holds
+    h.service.finish_native_run.assert_not_awaited()
+    await h.native.finish_run(*run)
+    h.service.finish_native_run.assert_awaited_once_with(*run)
+    assert run not in h.native.run_holds
+
+
+@pytest.mark.asyncio
+async def test_dispatch_verified_rejection_releases_hold(harness):
+    h = harness
+    await h.request("connect")
+    h.gateway.error = {"code": "INVALID_REQUEST", "message": "execution input is not current"}
+    result = await h.request("sessions.execution.dispatch", dispatch_params())
+    run = ("org_team", room_key(), rooms.native_execution_run_id("profile-user_A", dispatch_params()))
+    assert result["error"] == h.gateway.error
+    h.service.finish_native_run.assert_awaited_once_with(*run)
+    assert run not in h.native.run_holds
+
+
+@pytest.mark.asyncio
+async def test_dispatch_uncertain_outcome_preserves_hold_until_matching_terminal_event(harness):
+    h = harness
+    await h.request("connect")
+    conn = h.native.connections[identity()]
+    conn.rpc = AsyncMock(side_effect=TimeoutError("unknown dispatch outcome"))
+    result = await h.request("sessions.execution.dispatch", dispatch_params())
+    run_id = rooms.native_execution_run_id("profile-user_A", dispatch_params())
+    run = ("org_team", room_key(), run_id)
+    assert result["error"]["code"] == "ROOM_UNAVAILABLE"
+    assert run in h.native.run_holds
+    h.service.finish_native_run.assert_not_awaited()
+    await conn.forward_event(
+        {
+            "type": "event",
+            "event": "chat",
+            "payload": {"sessionKey": room_key(), "runId": run_id, "state": "final"},
+        }
+    )
+    h.service.finish_native_run.assert_awaited_once_with(*run)
+    assert run not in h.native.run_holds
 
 
 @pytest.mark.parametrize(

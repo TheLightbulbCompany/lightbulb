@@ -1486,6 +1486,7 @@ async def _process_native_room_background(connection_id: str, body: dict) -> Non
         UNCERTAIN_AFTER_SUCCESS,
         admit_rpc,
         filter_rpc_result,
+        native_execution_run_id,
         qualification_for,
         require_append_result,
         require_current_member,
@@ -1535,6 +1536,7 @@ async def _process_native_room_background(connection_id: str, body: dict) -> Non
             await require_current_member(identity, service)
             key = admitted.get("sessionKey") or admitted.get("key")
             # The independent native human socket owns the room ACL decision.
+            native_run = None
             if method == "sessions.execution.dispatch":
                 gate = await pool.gate_chat(
                     user_id=identity.subject,
@@ -1543,7 +1545,17 @@ async def _process_native_room_background(connection_id: str, body: dict) -> Non
                 )
                 if gate.get("blocked"):
                     raise RoomError(gate.get("code", "blocked"), gate.get("message", "Chat blocked"))
-            result = await conn.rpc(method, admitted)
+                native_run = await pool.native_rooms.begin_run(
+                    identity.owner_id,
+                    admitted["sessionKey"],
+                    native_execution_run_id(conn.device.profile_id, admitted),
+                )
+            try:
+                result = await conn.rpc(method, admitted)
+            except RoomError as exc:
+                if native_run is not None and getattr(exc, "native_rejection", False):
+                    await pool.native_rooms.finish_run(*native_run)
+                raise
             try:
                 await require_current_member(identity, service)
             except RoomError:

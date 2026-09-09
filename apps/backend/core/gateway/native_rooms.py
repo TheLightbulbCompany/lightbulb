@@ -429,6 +429,24 @@ def filter_rpc_result(method: str, result, identity: HumanIdentity, qualificatio
     return result
 
 
+def native_execution_run_id(profile_id: str, params: dict) -> str:
+    """Mirror the fork's private-room root run identity exactly."""
+    return _digest(
+        [
+            "room-execution-v1",
+            params["expectedSessionId"],
+            {"type": "profile", "id": profile_id},
+            params["idempotencyKey"],
+            params["inputMessageId"],
+        ]
+    )
+
+
+async def _finish_native_run(conn_svc, run_holds: set, run: tuple[str, str, str]) -> None:
+    await conn_svc.finish_native_run(*run)
+    run_holds.discard(run)
+
+
 def require_append_result(result, params: dict) -> None:
     if not (
         _APPEND_RESULT.is_valid(result)
@@ -620,8 +638,7 @@ class NativeHumanConnection:
             and run_id
         ):
             run = (self.identity.owner_id, key, run_id)
-            await self.conn_svc.finish_native_run(*run)
-            self.run_holds.discard(run)
+            await _finish_native_run(self.conn_svc, self.run_holds, run)
         subscribed = (
             self.presence_subscriptions if frame.get("event") == "session.presence" else self.subscriptions
         )
@@ -702,6 +719,16 @@ class NativeRoomPool:
         return any(run[0] == owner_id for run in self.run_holds) or any(
             identity.owner_id == owner_id and not conn.closed for identity, conn in self.connections.items()
         )
+
+    async def begin_run(self, owner_id: str, session_key: str, run_id: str) -> tuple[str, str, str]:
+        run = (owner_id, session_key, run_id)
+        await self.conn_svc.begin_native_run(*run)
+        self.run_holds.add(run)
+        return run
+
+    async def finish_run(self, owner_id: str, session_key: str, run_id: str) -> None:
+        """Release only canonical terminal or explicit reconciliation evidence."""
+        await _finish_native_run(self.conn_svc, self.run_holds, (owner_id, session_key, run_id))
 
     async def close_connection(self, connection_id):
         for identity, conn in list(self.connections.items()):

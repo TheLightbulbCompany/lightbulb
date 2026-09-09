@@ -50,14 +50,16 @@ vi.mock("@/lib/analytics", () => ({
 }));
 
 let emitChatMessage: (msg: Record<string, unknown>) => void = () => {};
+let onChatMessage = (h: (m: Record<string, unknown>) => void) => {
+  emitChatMessage = h;
+  return () => {};
+};
 vi.mock("@/hooks/useGateway", () => ({
   useGateway: () => ({
+    isConnected: true,
     nodeConnected: false,
     onEvent: () => () => {},
-    onChatMessage: (h: (m: Record<string, unknown>) => void) => {
-      emitChatMessage = h;
-      return () => {};
-    },
+    onChatMessage,
     sendReq: () => Promise.resolve(),
   }),
 }));
@@ -173,6 +175,14 @@ function renderShell() {
     </ChatLayout>,
   );
 }
+
+beforeEach(() => {
+  emitChatMessage = () => {};
+  onChatMessage = (handler) => {
+    emitChatMessage = handler;
+    return () => {};
+  };
+});
 
 describe("ChatLayout — header agent-action cluster", () => {
   beforeEach(() => {

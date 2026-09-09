@@ -991,6 +991,87 @@ class TestStartUserService:
             mock_repo.update_status.assert_called_once_with("user_test_123", "provisioning")
 
     @pytest.mark.asyncio
+    async def test_start_pins_the_verified_assigned_release_task_definition(self, manager, mock_ecs_client):
+        """An assigned wake explicitly selects the row's digest-verified revision."""
+
+        from core.services import openclaw_release
+
+        digest_image = (
+            "877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/openclaw-extended@sha256:" + "a" * 64
+        )
+        task_definition_arn = "arn:aws:ecs:us-east-1:123:task-definition/openclaw-user:7"
+        row = _make_container_dict(status="stopped", task_definition_arn=task_definition_arn)
+        row.update(
+            desired_release_id="founder-canary",
+            active_release_id="founder-canary",
+            release_revision=2,
+        )
+        mock_ecs_client.describe_task_definition.return_value["taskDefinition"]["containerDefinitions"] = [
+            {"name": "openclaw", "image": digest_image}
+        ]
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(
+                openclaw_release,
+                "release_by_id",
+                return_value=SimpleNamespace(release_id="founder-canary", digest_image=digest_image),
+            ),
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=row)
+            mock_repo.update_status = AsyncMock(return_value={**row, "status": "provisioning"})
+
+            await manager.start_user_service("user_test_123")
+
+        assert mock_ecs_client.update_service.call_args.kwargs["taskDefinition"] == task_definition_arn
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("operation", ["start_user_service", "force_redeploy_user_service"])
+    async def test_assigned_start_and_redeploy_reject_drifted_task_definition(
+        self,
+        manager,
+        mock_ecs_client,
+        operation,
+    ):
+        """Neither activation door may launch an assigned row through an arbitrary image."""
+
+        from core.services import openclaw_release
+
+        digest_image = (
+            "877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/openclaw-extended@sha256:" + "a" * 64
+        )
+        row = _make_container_dict(
+            status="stopped",
+            task_definition_arn="arn:aws:ecs:us-east-1:123:task-definition/openclaw-user:7",
+        )
+        row.update(
+            desired_release_id="founder-canary",
+            active_release_id="founder-canary",
+            release_revision=2,
+        )
+        mock_ecs_client.describe_task_definition.return_value["taskDefinition"]["containerDefinitions"] = [
+            {"name": "openclaw", "image": "mutable.example/openclaw:latest"}
+        ]
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(
+                openclaw_release,
+                "release_by_id",
+                return_value=SimpleNamespace(release_id="founder-canary", digest_image=digest_image),
+            ),
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+            patch("core.services.browser_state.snapshot_browser_state", new=AsyncMock()) as snapshot_browser,
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=row)
+            with pytest.raises(EcsManagerError, match="task definition does not match"):
+                await getattr(manager, operation)("user_test_123")
+
+        mock_ecs_client.update_service.assert_not_called()
+        snapshot_browser.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_start_fires_running_transition_poller(self, manager, mock_ecs_client):
         """Cold-start restart MUST fire _await_running_transition, or the cold-
         started container will get stuck at status=provisioning forever when
@@ -1332,7 +1413,7 @@ class TestStartUserServiceGuards:
         )
 
     @pytest.mark.asyncio
-    async def test_reprovision_materializes_assigned_release_digest_with_desired_absent(
+    async def test_reprovision_materializes_stably_assigned_release_digest(
         self,
         manager,
         mock_ecs_client,
@@ -1345,7 +1426,11 @@ class TestStartUserServiceGuards:
             "877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/openclaw-extended@sha256:" + "b" * 64
         )
         row = _make_container_dict(status="stopped")
-        row.update(active_release_id="founder-canary", release_revision=1)
+        row.update(
+            desired_release_id="founder-canary",
+            active_release_id="founder-canary",
+            release_revision=1,
+        )
         create_service = AsyncMock(return_value="svc")
 
         with (
@@ -2756,6 +2841,7 @@ class TestResizeUserContainer:
             task_definition_arn="arn:aws:ecs:us-east-1:123:task-definition/release:7",
         )
         row.update(
+            desired_release_id="candidate",
             active_release_id="candidate",
             release_revision=2,
         )
@@ -3541,6 +3627,52 @@ class TestProvisionUserContainer:
             cb = dc.get("deploymentCircuitBreaker") or {}
             assert cb.get("enable") is True
             assert cb.get("rollback") is False
+
+    @pytest.mark.asyncio
+    async def test_reprovision_redeploy_pins_verified_assigned_task_definition(self, manager, mock_ecs_client):
+        """The running-service reprovision door cannot force-deploy a drifted service revision."""
+
+        from core.services import openclaw_release
+
+        digest_image = (
+            "877352799272.dkr.ecr.us-east-1.amazonaws.com/lightbulb/openclaw-extended@sha256:" + "a" * 64
+        )
+        task_definition_arn = "arn:aws:ecs:us-east-1:123:task-definition/openclaw-user:7"
+        row = _make_container_dict(status="running", task_definition_arn=task_definition_arn)
+        row.update(
+            desired_release_id="founder-canary",
+            active_release_id="founder-canary",
+            release_revision=2,
+        )
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "serviceName": "openclaw-user_test_123-f4ae64abb2db",
+                    "status": "ACTIVE",
+                    "desiredCount": 1,
+                    "runningCount": 1,
+                }
+            ]
+        }
+        mock_ecs_client.describe_task_definition.return_value["taskDefinition"]["containerDefinitions"] = [
+            {"name": "openclaw", "image": digest_image}
+        ]
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(
+                openclaw_release,
+                "release_by_id",
+                return_value=SimpleNamespace(release_id="founder-canary", digest_image=digest_image),
+            ),
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=row)
+            mock_repo.update_fields = AsyncMock()
+
+            await manager.provision_user_container("user_test_123", provider_choice="bedrock_claude")
+
+        assert mock_ecs_client.update_service.call_args.kwargs["taskDefinition"] == task_definition_arn
 
     @pytest.mark.asyncio
     async def test_redeploy_preserves_provision_generation(self, manager, mock_ecs_client):

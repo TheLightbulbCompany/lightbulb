@@ -971,7 +971,7 @@ async def test_upsert_preserves_stable_release(dynamodb_table):
 
 
 @pytest.mark.asyncio
-async def test_stable_runtime_update_accepts_active_release_with_desired_absent(dynamodb_table):
+async def test_stable_runtime_update_rejects_active_release_with_desired_absent(dynamodb_table):
     from core.repositories import container_repo
 
     dynamodb_table.put_item(
@@ -983,14 +983,16 @@ async def test_stable_runtime_update_accepts_active_release_with_desired_absent(
         }
     )
 
-    updated = await container_repo.update_stable_release_runtime(
-        "active-only-owner",
-        "founder-canary",
-        3,
-        "arn:task-definition/openclaw:9",
-    )
+    with pytest.raises(container_repo.ProvisionSuperseded, match="assignment.*moved"):
+        await container_repo.update_stable_release_runtime(
+            "active-only-owner",
+            "founder-canary",
+            3,
+            "arn:task-definition/openclaw:9",
+        )
 
-    assert updated["task_definition_arn"] == "arn:task-definition/openclaw:9"
+    stored = dynamodb_table.get_item(Key={"owner_id": "active-only-owner"})["Item"]
+    assert "task_definition_arn" not in stored
 
 
 @pytest.mark.asyncio

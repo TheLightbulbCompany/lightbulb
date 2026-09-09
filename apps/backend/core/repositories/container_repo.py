@@ -1609,8 +1609,7 @@ async def update_stable_release_runtime(
         "Key": {"owner_id": owner_id},
         "UpdateExpression": "SET " + ", ".join(set_parts),
         "ConditionExpression": (
-            "(attribute_not_exists(desired_release_id) OR desired_release_id = :release) AND "
-            "active_release_id = :release AND "
+            "desired_release_id = :release AND active_release_id = :release AND "
             "release_revision = :revision AND attribute_not_exists(release_update_id)"
         ),
         "ExpressionAttributeValues": values,

@@ -368,7 +368,7 @@ def _ordinary_assigned_release(container: dict, owner_id: str):
         if desired_release_id is not None:
             raise EcsManagerError("Owner release assignment is not stable", owner_id)
         return None
-    if desired_release_id not in (None, active_release_id):
+    if desired_release_id != active_release_id:
         raise EcsManagerError("Owner release assignment is not stable", owner_id)
 
     from core.services.openclaw_release import release_by_id
@@ -915,6 +915,31 @@ class EcsManager:
             logger.info("Deregistered task definition %s", task_definition_arn)
         except Exception as e:
             logger.error("Failed to deregister task definition %s: %s", task_definition_arn, e)
+
+    async def _verified_ordinary_assigned_runtime(self, owner_id: str):
+        """Resolve an assigned owner's immutable task revision before activation.
+
+        Unassigned founder rows deliberately keep ECS's current legacy revision.
+        Assigned rows may be started or redeployed only through the row revision
+        whose OpenClaw image still matches the registered release digest.
+        """
+
+        container = await container_repo.get_by_owner_id(owner_id, consistent=True)
+        assigned_release = _ordinary_assigned_release(container or {}, owner_id)
+        if assigned_release is None:
+            return None
+        task_definition_arn = (container or {}).get("task_definition_arn")
+        if type(task_definition_arn) is not str or not task_definition_arn:
+            raise EcsManagerError("Assigned owner task definition is unavailable", owner_id)
+        response = await asyncio.to_thread(
+            self._ecs.describe_task_definition,
+            taskDefinition=task_definition_arn,
+        )
+        definitions = (response.get("taskDefinition") or {}).get("containerDefinitions") or []
+        openclaw = next((definition for definition in definitions if definition.get("name") == "openclaw"), None)
+        if (openclaw or {}).get("image") != assigned_release.digest_image:
+            raise EcsManagerError("Assigned owner task definition does not match its registered release", owner_id)
+        return task_definition_arn, assigned_release.release_id, container.get("release_revision", 0)
 
     async def refresh_task_definition(
         self,
@@ -1802,6 +1827,7 @@ class EcsManager:
         release_owned = await self._fence_release_lifecycle(user_id, _release_update_id, _effect_fence)
         if not force and not release_owned:
             await self._assert_start_allowed(user_id)
+        assigned_runtime = None if release_owned else await self._verified_ordinary_assigned_runtime(user_id)
 
         service_name = self._service_name(user_id)
         put_metric("container.lifecycle.state_change", dimensions={"state": "starting"})
@@ -1815,12 +1841,23 @@ class EcsManager:
                 refreshed = None
                 if not release_owned:
                     try:
-                        svc = self._ecs.describe_services(cluster=self._cluster, services=[service_name])
-                        td = (svc.get("services") or [{}])[0].get("taskDefinition")
+                        if assigned_runtime is not None:
+                            td = assigned_runtime[0]
+                        else:
+                            svc = self._ecs.describe_services(cluster=self._cluster, services=[service_name])
+                            td = (svc.get("services") or [{}])[0].get("taskDefinition")
                         if td:
                             refreshed = self._refresh_stale_log_config(td)
                     except Exception as e:  # noqa: BLE001 — a failed check must not block the start
                         logger.warning("log-config refresh check failed for %s: %s", service_name, e)
+
+                if refreshed and assigned_runtime is not None:
+                    await container_repo.update_stable_release_runtime(
+                        user_id,
+                        assigned_runtime[1],
+                        assigned_runtime[2],
+                        refreshed,
+                    )
 
                 if _effect_fence is not None:
                     await _effect_fence()
@@ -1835,7 +1872,11 @@ class EcsManager:
                     # created with -- discover_ip then finds nothing and the
                     # container looks unreachable while running perfectly.
                     **self._service_registries(),
-                    **({"taskDefinition": refreshed} if refreshed else {}),
+                    **(
+                        {"taskDefinition": refreshed or assigned_runtime[0]}
+                        if refreshed or assigned_runtime is not None
+                        else {}
+                    ),
                     deploymentConfiguration=SINGLE_WRITER_DEPLOYMENT_CONFIG,
                 )
         except Exception as e:
@@ -1927,6 +1968,9 @@ class EcsManager:
         from core.services.browser_state import snapshot_browser_state
 
         await self._fence_release_lifecycle(user_id, _release_update_id, _effect_fence)
+        assigned_runtime = (
+            None if _release_update_id is not None else await self._verified_ordinary_assigned_runtime(user_id)
+        )
         await snapshot_browser_state(user_id)
         if _effect_fence is not None:
             await _effect_fence()
@@ -1936,6 +1980,7 @@ class EcsManager:
             service=self._service_name(user_id),
             forceNewDeployment=True,
             deploymentConfiguration=SINGLE_WRITER_DEPLOYMENT_CONFIG,
+            **({"taskDefinition": assigned_runtime[0]} if assigned_runtime is not None else {}),
         )
 
     async def resize_user_container(
@@ -3792,6 +3837,7 @@ class EcsManager:
                     service_name,
                     running,
                 )
+                assigned_runtime = await self._verified_ordinary_assigned_runtime(user_id)
                 if existing:
                     await self._update_container(
                         user_id,
@@ -3810,6 +3856,7 @@ class EcsManager:
                         # Same self-heal as the restart branch above.
                         **self._service_registries(),
                         deploymentConfiguration=SINGLE_WRITER_DEPLOYMENT_CONFIG,
+                        **({"taskDefinition": assigned_runtime[0]} if assigned_runtime is not None else {}),
                     )
                 except Exception as e:
                     # Metrics only; outer release owns status="error". (This

@@ -20,10 +20,12 @@ from core.repositories import container_repo, update_repo
 from core.services import config_schema
 from core.services.openclaw_release import (
     OpenClawRelease,
+    OpenClawReleaseError,
     OwnerReleaseConflict,
     owner_lifecycle_guard,
     owner_mutation_guard,
     release_by_id,
+    resolve_active_release,
 )
 
 logger = logging.getLogger(__name__)
@@ -915,6 +917,41 @@ class _ReleaseRuntime:
         )
 
 
+async def _verify_assigned_source_before_reservation(runtime, container: dict, service: dict) -> None:
+    """Attest a previously assigned source before it can become rollback truth."""
+
+    try:
+        prior_release = resolve_active_release(container)
+    except OpenClawReleaseError as exc:
+        raise OwnerReleaseValidationError("owner release assignment is inconsistent") from exc
+    if prior_release is None:
+        return
+
+    task_definition_arn = container.get("task_definition_arn")
+    if (
+        type(task_definition_arn) is not str
+        or not task_definition_arn
+        or service.get("task_definition_arn") != task_definition_arn
+    ):
+        raise OwnerReleaseValidationError("assigned source task definition is inconsistent")
+    task_definition = await runtime._task_definition(task_definition_arn)
+    if _ReleaseRuntime._openclaw_definition(task_definition).get("image") != prior_release.digest_image:
+        raise OwnerReleaseValidationError("assigned source task definition image is not registered")
+
+    running = [
+        task
+        for task in await runtime.running_tasks(container["owner_id"])
+        if task.get("last_status") == "RUNNING"
+    ]
+    if (
+        len(running) != 1
+        or not running[0].get("task_arn")
+        or running[0].get("task_definition_arn") != task_definition_arn
+        or running[0].get("image_digest") != prior_release.image_digest
+    ):
+        raise OwnerReleaseValidationError("assigned source runtime image is not registered")
+
+
 async def _heartbeat(
     owner_id: str,
     update_id: str,
@@ -1003,6 +1040,15 @@ async def execute_claimed_owner_release(
                 prior_release = (
                     release_by_id(update["prior_release_id"]) if update.get("prior_release_id") is not None else None
                 )
+                if prior_release is not None:
+                    prior_task_definition = await runtime._task_definition(update["prior_task_definition_arn"])
+                    if (
+                        _ReleaseRuntime._openclaw_definition(prior_task_definition).get("image")
+                        != prior_release.digest_image
+                        or source_task["image_digest"] != prior_release.image_digest
+                        or source_build_id != prior_release.build_id
+                    ):
+                        raise OwnerReleaseValidationError("release source no longer matches its prior registered release")
                 source = {
                     "service_arn": service["service_arn"],
                     "task_arn": source_task["task_arn"],
@@ -1274,6 +1320,10 @@ async def apply_owner_release(owner_id: str, update_id: str) -> bool:
                     or type(snapshot.get("desired_count")) is not int
                     or snapshot["desired_count"] != 1
                 ):
+                    return False
+                try:
+                    await _verify_assigned_source_before_reservation(runtime, container, snapshot)
+                except OwnerReleaseValidationError:
                     return False
                 if not await update_repo.reserve_owner_apply(
                     container,

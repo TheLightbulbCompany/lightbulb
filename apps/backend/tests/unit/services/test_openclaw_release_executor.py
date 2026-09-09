@@ -585,6 +585,83 @@ async def test_release_snapshot_and_reservation_hold_shared_lifecycle_owner(monk
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("task_definition_image", "running_task_definition", "running_image_digest"),
+    [
+        ("mutable.example/openclaw:latest", "arn:old", f"sha256:{'b' * 64}"),
+        (f"repo.example/openclaw@sha256:{'b' * 64}", "arn:other", f"sha256:{'b' * 64}"),
+        (f"repo.example/openclaw@sha256:{'b' * 64}", "arn:old", f"sha256:{'c' * 64}"),
+    ],
+)
+async def test_release_reservation_rejects_drifted_assigned_source_before_effects(
+    monkeypatch,
+    task_definition_image,
+    running_task_definition,
+    running_image_digest,
+):
+    from core.services import openclaw_release_executor as executor
+
+    pending = {
+        "owner_id": "owner",
+        "update_id": "release",
+        "update_type": "release",
+        "status": "pending",
+        "changes": {"target_release_id": "candidate"},
+    }
+    container = {
+        "owner_id": "owner",
+        "id": "container",
+        "status": "running",
+        "task_definition_arn": "arn:old",
+        "desired_release_id": "prior",
+        "active_release_id": "prior",
+        "release_revision": 4,
+    }
+    prior = SimpleNamespace(
+        release_id="prior",
+        digest_image=f"repo.example/openclaw@sha256:{'b' * 64}",
+        image_digest=f"sha256:{'b' * 64}",
+    )
+
+    @asynccontextmanager
+    async def lifecycle_guard(_owner_id):
+        yield container
+
+    @asynccontextmanager
+    async def mutation_guard(_owner_id):
+        yield container
+
+    runtime = SimpleNamespace(
+        snapshot=AsyncMock(return_value={"task_definition_arn": "arn:old", "desired_count": 1}),
+        _task_definition=AsyncMock(
+            return_value={"containerDefinitions": [{"name": "openclaw", "image": task_definition_image}]}
+        ),
+        running_tasks=AsyncMock(
+            return_value=[
+                {
+                    "task_arn": "arn:task/source",
+                    "task_definition_arn": running_task_definition,
+                    "last_status": "RUNNING",
+                    "image_digest": running_image_digest,
+                }
+            ]
+        ),
+    )
+    reserve = AsyncMock()
+    monkeypatch.setattr(executor.update_repo, "get_by_id", AsyncMock(return_value=pending))
+    monkeypatch.setattr(executor.update_repo, "get_in_flight", AsyncMock(return_value=[pending]))
+    monkeypatch.setattr(executor.update_repo, "reserve_owner_apply", reserve)
+    monkeypatch.setattr(executor, "owner_lifecycle_guard", lifecycle_guard)
+    monkeypatch.setattr(executor, "owner_mutation_guard", mutation_guard)
+    monkeypatch.setattr(executor, "_ReleaseRuntime", lambda: runtime)
+    monkeypatch.setattr(executor, "resolve_active_release", lambda _container: prior)
+    monkeypatch.setattr(executor, "release_by_id", lambda _release_id: _release())
+
+    assert not await executor.apply_owner_release("owner", "release")
+    reserve.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_post_activation_failure_runs_fenced_compensating_rollback(monkeypatch):
     from core.services import openclaw_release_executor as executor
 

@@ -25,7 +25,7 @@ The writable fork checkout is `~/dev/agent-fork`. Read it **at the pinned tag** 
 3. Edit `<repo-root>/openclaw-version.json`: change `"upstream"` to the same `ghcr.io/thelightbulbcompany/agent:<new>`, and add a `notes` entry enumerating the carried patches. **Leave `image`/`tag`/`full` alone** — they are the legacy public fallback, not the base
 4. Re-pin the baked `@openclaw/*` plugin versions in the Dockerfile to the release line of the new `FROM` tag (the plugin-pin policy comment above the `FROM` explains why a stale channel plugin on a newer host is not a safe skew)
 5. Add the candidate schema in the SAME PR under `apps/backend/tests/chaos/_schema/releases/<candidate-id>/` and `apps/backend/core/services/openclaw_config_schemas/`, then register that exact id without replacing the active fleet schema
-6. PR the change; PR CI validates it without publishing. Dispatch `build-openclaw-image.yml` once on the final branch head for qualification; merging to `main` publishes the distinct final `{upstream}-{short-sha}` tag automatically
+6. PR the change; PR CI validates it without publishing. Merging to `main` publishes the distinct final `{upstream}-{short-sha}` tag automatically. Manual dispatch is restricted to `main` and is only for retrying a main build
 7. Flip `openclaw-version.json#dev.tag` to that tag in a **separate** PR, then boot a dev container on it and verify in the live container (not just artifact digests)
 8. After dev verification, copy `dev.tag` to `prod.tag` in a third PR, run ONE prod `workflow_dispatch` of `deploy.yml`, then roll each owner's container via the admin UI. **A pin is not a roll** — running containers keep their own task-def revision until rolled
 

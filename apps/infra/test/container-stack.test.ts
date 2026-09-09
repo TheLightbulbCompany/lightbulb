@@ -262,12 +262,15 @@ describe("ContainerStack — dev", () => {
           Match.objectLike({
             Action: "sts:AssumeRoleWithWebIdentity",
             Condition: Match.objectLike({
-              StringLike: {
-                "token.actions.githubusercontent.com:sub":
-                  "repo:TheLightbulbCompany@253404738/lightbulb@1182791203:*",
-              },
+              StringLike: Match.absent(),
               StringEquals: {
+                "token.actions.githubusercontent.com:sub":
+                  "repo:TheLightbulbCompany@253404738/lightbulb@1182791203:ref:refs/heads/main",
                 "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+                "token.actions.githubusercontent.com:workflow": [
+                  "build-openclaw-image",
+                  "build-paperclip-image",
+                ],
               },
             }),
           }),
@@ -284,6 +287,19 @@ describe("ContainerStack — dev", () => {
             Action: "ecr:GetAuthorizationToken",
             Effect: "Allow",
             Resource: "*",
+          }),
+        ]),
+      }),
+    });
+  });
+
+  test("builder role can prove the imported OpenClaw repository is immutable", () => {
+    template.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: "ecr:DescribeRepositories",
+            Effect: "Allow",
           }),
         ]),
       }),

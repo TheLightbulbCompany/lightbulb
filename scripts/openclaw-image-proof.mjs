@@ -9,6 +9,7 @@ export const ECR_IMAGE = `${ECR_REGISTRY_ID}.dkr.ecr.us-east-1.amazonaws.com/${E
 
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
 const ABSENCE_ERROR = "Candidate tag absence is unproven or tag already exists";
+const IMMUTABILITY_ERROR = "ECR repository immutability is unproven";
 const PUBLISHED_ERROR = "Published image identity or digest is unproven";
 
 export function assertCanonicalDigest(value) {
@@ -50,13 +51,32 @@ export function verifyImageMetadata(metadata, dockerfile, shortSha) {
   };
 }
 
-function hasExpectedTarget({ registryId, repositoryName, tag } = {}) {
+function hasExpectedRepository({ registryId, repositoryName } = {}) {
+  return registryId === ECR_REGISTRY_ID && repositoryName === ECR_REPOSITORY;
+}
+
+function hasExpectedTarget(query) {
   return (
-    registryId === ECR_REGISTRY_ID &&
-    repositoryName === ECR_REPOSITORY &&
-    typeof tag === "string" &&
-    tag.length > 0
+    hasExpectedRepository(query) &&
+    typeof query?.tag === "string" &&
+    query.tag.length > 0
   );
+}
+
+export function verifyImmutableRepository(response, query) {
+  const repository = response?.repositories?.[0];
+  const exclusions = repository?.imageTagMutabilityExclusionFilters;
+  const immutable =
+    hasExpectedRepository(query) &&
+    Array.isArray(response?.repositories) &&
+    response.repositories.length === 1 &&
+    repository?.registryId === query.registryId &&
+    repository?.repositoryName === query.repositoryName &&
+    repository?.imageTagMutability === "IMMUTABLE" &&
+    (exclusions === undefined || (Array.isArray(exclusions) && exclusions.length === 0));
+  if (!immutable) {
+    throw new Error(IMMUTABILITY_ERROR);
+  }
 }
 
 export function verifyCandidateAbsent(response, query) {
@@ -118,6 +138,13 @@ function main([command, ...args]) {
     });
     return;
   }
+  if (command === "repository" && args.length === 2) {
+    verifyImmutableRepository(readResponse(), {
+      registryId: args[0],
+      repositoryName: args[1],
+    });
+    return;
+  }
   if (command === "post-push" && args.length === 4) {
     verifyPublishedImage(readResponse(), {
       registryId: args[0],
@@ -139,7 +166,7 @@ function main([command, ...args]) {
     return;
   }
   throw new Error(
-    "Usage: openclaw-image-proof.mjs metadata|preflight|post-push|digest|canonical-digest",
+    "Usage: openclaw-image-proof.mjs metadata|repository|preflight|post-push|digest|canonical-digest",
   );
 }
 

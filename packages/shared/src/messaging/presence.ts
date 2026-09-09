@@ -75,6 +75,7 @@ export function aggregateHumanPresence(
 
   return [...new Set(authorizedPersonIds)].map((personId) => {
     let hasFreshConnection = false;
+    let hasMalformedConnection = false;
     let available = false;
     let inRoom = false;
 
@@ -82,11 +83,15 @@ export function aggregateHumanPresence(
       for (const connection of evidence.connections) {
         if (
           connection.personId !== personId ||
-          connection.kind !== "native_human" ||
-          !isRecent(connection.lastSeenAtMs, nowMs, CONNECTION_FRESH_MS)
+          connection.kind !== "native_human"
         ) {
           continue;
         }
+        if (!isPastTimestamp(connection.lastSeenAtMs, nowMs)) {
+          hasMalformedConnection = true;
+          continue;
+        }
+        if (!isRecent(connection.lastSeenAtMs, nowMs, CONNECTION_FRESH_MS)) continue;
 
         hasFreshConnection = true;
         if (connection.visibility !== "visible") continue;
@@ -101,7 +106,7 @@ export function aggregateHumanPresence(
       ? available
         ? "available"
         : "away"
-      : evidence.inventoryStatus === "fresh_complete"
+      : evidence.inventoryStatus === "fresh_complete" && !hasMalformedConnection
         ? "offline"
         : "unknown";
 

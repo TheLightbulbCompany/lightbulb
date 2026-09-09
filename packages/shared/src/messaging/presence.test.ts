@@ -62,7 +62,7 @@ describe("aggregateHumanPresence", () => {
     ["future", NOW_MS + 1],
     ["not-a-number", Number.NaN],
     ["infinite", Number.POSITIVE_INFINITY],
-  ])("does not treat a %s server last-seen timestamp as live", (_label, lastSeenAtMs) => {
+  ])("does not treat a %s server last-seen timestamp as complete absence proof", (_label, lastSeenAtMs) => {
     expect(
       aggregateHumanPresence(
         evidence([connection({ lastSeenAtMs })]),
@@ -72,6 +72,49 @@ describe("aggregateHumanPresence", () => {
     ).toEqual([
       {
         personId: "alice",
+        state: "unknown",
+        inRoom: false,
+        observedAt: "2026-09-09T11:59:59.000Z",
+      },
+    ]);
+  });
+
+  it("lets valid positive evidence win over a malformed sibling connection", () => {
+    expect(
+      aggregateHumanPresence(
+        evidence([
+          connection({ lastSeenAtMs: Number.NaN }),
+          connection({ lastSeenAtMs: NOW_MS - 1_000 }),
+        ]),
+        ["alice"],
+        NOW_MS,
+      ),
+    ).toEqual([
+      {
+        personId: "alice",
+        state: "available",
+        inRoom: false,
+        observedAt: "2026-09-09T11:59:59.000Z",
+      },
+    ]);
+  });
+
+  it("keeps malformed timing scoped to its person", () => {
+    expect(
+      aggregateHumanPresence(
+        evidence([connection({ personId: "alice", lastSeenAtMs: Number.NaN })]),
+        ["alice", "bob"],
+        NOW_MS,
+      ),
+    ).toEqual([
+      {
+        personId: "alice",
+        state: "unknown",
+        inRoom: false,
+        observedAt: "2026-09-09T11:59:59.000Z",
+      },
+      {
+        personId: "bob",
         state: "offline",
         inRoom: false,
         observedAt: "2026-09-09T11:59:59.000Z",

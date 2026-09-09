@@ -700,15 +700,6 @@ async def test_append_rejects_malformed_or_mismatched_native_receipt(harness, ov
             "session.typing",
             {"sessionKey": room_key(), "sessionId": "incarnation-1", "typing": True},
         ),
-        (
-            "sessions.patch",
-            {
-                "key": room_key(),
-                "expectedSessionId": "incarnation-1",
-                "expectedMarkedUnreadAt": None,
-                "unread": False,
-            },
-        ),
         ("users.mentionable", {"sessionKey": room_key(), "query": "user"}),
         ("session.members.list", {"sessionKey": room_key()}),
         ("session.members.listEvidence", {"sessionKey": room_key()}),
@@ -895,11 +886,25 @@ async def test_terminal_timeout_with_ended_at_for_exact_run_releases_hold(harnes
     assert ("org_team", room_key(), run_id) not in h.native.run_holds
 
 
+@pytest.mark.asyncio
+async def test_shared_room_mark_read_is_not_exposed_to_browser(harness):
+    result = await harness.request(
+        "sessions.patch",
+        {
+            "key": room_key(),
+            "expectedSessionId": "incarnation-1",
+            "expectedMarkedUnreadAt": None,
+            "unread": False,
+        },
+    )
+    assert result["error"]["code"] == "INVALID_REQUEST"
+    assert not harness.gateway.calls
+
+
 @pytest.mark.parametrize(
     "method,params",
     [
         ("sessions.search", {"query": "unscoped"}),
-        ("sessions.patch", {"key": room_key(), "unread": True}),
         ("sessions.files.reveal", {"key": room_key()}),
         (
             "sessions.files.set",

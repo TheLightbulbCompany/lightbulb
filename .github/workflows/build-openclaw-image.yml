@@ -245,7 +245,10 @@ jobs:
 
       - name: Build image
         run: |
+          # docker save omits BuildKit's attestation blob but retains its
+          # descriptor, leaving the converted OCI index impossible to push.
           docker build \
+            --provenance=false \
             -t "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}" \
             apps/infra/openclaw/
 

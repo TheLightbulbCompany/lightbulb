@@ -22,6 +22,9 @@ _LEGACY_HASHES = {
     "json": "ce18b8954fdc14687c83925bc5157b70ef40e3a9fd28fd049e70cbc5bd0d31a1",
     "tag": "f11970c87b9a1ef73d8a0577ff24103aeea637993ee2f3655f396474fded58dd",
 }
+_CANDIDATE_COMMITS = {
+    "2026.9.3-isol8.2": "a681accbfd1871845e684937ba7af57ecf155f55",
+}
 
 
 def _bundle_path(schema_id: str) -> Path:
@@ -41,6 +44,32 @@ def test_registered_schema_carries_fork_runtime_scope(schema_id: str):
     bundle = _bundle_path(schema_id).read_text()
     assert re.search(r'runtimeScope:\s*\w+\.enum\([^)]*"shared"', bundle), (
         f"Registered schema {schema_id} is missing the mcp.runtimeScope enum; re-vendor from the exact fork release."
+    )
+
+
+@pytest.mark.chaos
+def test_multiplayer_candidate_accepts_trusted_broker_profiles():
+    """The 9.3 fork schema must accept its trusted human broker binding."""
+    schema_id = "2026.9.3-isol8.2"
+    proc = subprocess.run(
+        ["node", str(_SCHEMA_DIR / "validate.mjs"), str(_bundle_path(schema_id))],
+        input=json.dumps(
+            {
+                "gateway": {
+                    "auth": {
+                        "mode": "token",
+                        "token": "test-token",
+                        "trustedBrokerProfiles": {"a" * 64: "profile-human-1"},
+                    }
+                }
+            }
+        ),
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, (
+        f"Registered schema {schema_id} is missing the trusted broker profile contract; "
+        f"re-vendor from the exact fork release:\n{proc.stderr}"
     )
 
 
@@ -79,6 +108,6 @@ def test_candidate_artifacts_match_their_provenance(schema_id: str):
     provenance = json.loads(provenance_path.read_text())
     assert provenance["schema_id"] == schema_id
     assert provenance["tag"] == f"v{schema_id}"
-    assert re.fullmatch(r"[0-9a-f]{40}", provenance["commit"])
+    assert provenance["commit"] == _CANDIDATE_COMMITS[schema_id]
     assert provenance["bundle_sha256"] == _sha256(_bundle_path(schema_id))
     assert provenance["json_sha256"] == _sha256(_SCHEMA_PATHS[schema_id])

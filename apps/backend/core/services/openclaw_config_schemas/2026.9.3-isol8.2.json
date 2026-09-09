@@ -8504,6 +8504,17 @@
                 }
               }
             },
+            "trustedBrokerProfiles": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "additionalProperties": {
+                "type": "string",
+                "pattern": "^(?!gateway-owner$)[A-Za-z0-9_-]{1,128}$"
+              }
+            },
             "rateLimit": {
               "type": "object",
               "properties": {

@@ -13,7 +13,7 @@ that need to inspect call counts rather than DDB state).
 from __future__ import annotations
 
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import boto3
 import pytest
@@ -259,6 +259,73 @@ async def test_count_live_chat_connections_counts_fresh_chat_row(ddb_table_with_
 
     count = await svc.count_live_chat_connections("org_x")
     assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_native_presence_and_run_holds_survive_frontend_deletion(ddb_table_with_owner_gsi):
+    from core.services.connection_service import _native_runs_key
+
+    svc = ConnectionService(table_name=ddb_table_with_owner_gsi, region_name="us-east-1")
+    svc.store_connection("native-tab", "member", "org_x", connection_type="native_human")
+    assert await svc.count_live_chat_connections("org_x") == 1
+    assert await svc.begin_native_run("org_x", "room-a", "run-a") is True
+    assert await svc.begin_native_run("org_x", "room-a", "run-a") is False
+    await svc.begin_native_run("org_x", "room-b", "run-b")
+    svc.delete_connection("native-tab")
+    assert await svc.query_by_owner("org_x") == []
+    assert svc.get_connection(_native_runs_key("org_x")) is None
+    assert await svc.count_live_chat_connections("org_x") == 2
+    await svc.finish_native_run("other-owner", "room-a", "run-a")
+    await svc.finish_native_run("org_x", "wrong-room", "run-a")
+    assert await svc.count_live_chat_connections("org_x") == 2
+    await svc.finish_native_run("org_x", "room-a", "run-a")
+    assert await svc.count_live_chat_connections("org_x") == 1
+    await svc.finish_native_run("org_x", "room-b", "run-b")
+    assert await svc.count_live_chat_connections("org_x") == 0
+    item = svc._client.get_item(TableName=svc.table_name, Key={"connectionId": {"S": _native_runs_key("org_x")}})[
+        "Item"
+    ]
+    assert "ttl" not in item and "ownerId" not in item and "userId" not in item
+
+
+@pytest.mark.asyncio
+async def test_failed_edge_close_retries_durable_target_and_independent_cleanup(ddb_table_with_owner_gsi, monkeypatch):
+    from core.gateway import native_rooms
+    from core.gateway.connection_pool import GatewayConnectionPool
+    from core.services.connection_service import _revocation_key
+
+    svc = ConnectionService(table_name=ddb_table_with_owner_gsi, region_name="us-east-1")
+    svc.store_connection("legacy-tab", "member", "org_x")
+    svc.store_connection("other-tab", "other-member", "org_x")
+    management = MagicMock()
+    management.close_connection.side_effect = [RuntimeError("edge throttled"), None]
+    pool = GatewayConnectionPool(management, svc)
+    pool.add_frontend_connection("org_x", "legacy-tab")
+    monkeypatch.setattr("core.containers.get_gateway_pool", lambda: pool)
+    monkeypatch.setattr(native_rooms, "_qualified_owners", {})
+    node_close = AsyncMock(side_effect=[RuntimeError("node close failed"), None])
+    operator_close = AsyncMock()
+    broker = MagicMock(unsubscribe=AsyncMock())
+    monkeypatch.setattr("core.services.node_proxy.handle_node_disconnect", node_close)
+    monkeypatch.setattr("core.services.operator_proxy.handle_operator_disconnect", operator_close)
+    monkeypatch.setattr("core.services.teams_event_broker_singleton.get_broker", lambda: broker)
+    with pytest.raises(RuntimeError, match="revocation incomplete"):
+        await native_rooms.revoke_member_connections("org_x", "member")
+    assert svc.get_connection("legacy-tab") is None
+    assert svc.get_connection(_revocation_key("org_x", "member")) is None
+    assert await svc.query_by_owner("org_x") == [("other-tab", "other-member", "chat")]
+    assert await svc.pending_member_revocations("org_x", "member") == {"legacy-tab"}
+    assert not pool._frontend_connections.get("org_x")
+    operator_close.assert_awaited_once_with("legacy-tab")
+    broker.unsubscribe.assert_awaited_once_with("member", "legacy-tab")
+    # Actual GSI no longer has the original row; only the strong marker read
+    # can discover the second close attempt, including on another worker.
+    await native_rooms.revoke_member_connections("org_x", "member")
+    assert management.close_connection.call_count == 2
+    assert node_close.await_count == operator_close.await_count == broker.unsubscribe.await_count == 2
+    assert await svc.pending_member_revocations("org_x", "member") == set()
+    assert svc.get_connection("other-tab") is not None
+    await pool.close_all()
 
 
 @pytest.mark.asyncio

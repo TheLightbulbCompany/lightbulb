@@ -232,3 +232,93 @@ All checks passed!
 Confirmed the real shared container owns exactly one native pool, legacy connections no longer allocate one, disconnect works after its durable record is gone, and ordinary membership deletion continues when native qualification is empty. The added selector cannot bypass the existing full-key target gate; a selected transcript still must belong to that key according to native. The native fake is explicitly contract-only, not an alternate authorization implementation or live integration proof. No other RPC families, native loader, global auth toggle, bridge, billing bypass, UI/shared code or fork changes were added.
 
 Native activation remains **unavailable/inactive**. Actual per-owner two-human/service admission, trusted ingress/header provenance, transcript privacy, device revocation, native signatures, Paperclip/CLI/Tauri coexistence and deployment/runtime behavior still require the controller's candidate integration proof. This commit fixes deterministic reviewed defects, not shipped multiplayer. Used receiving-code-review and verification-before-completion skills for confirmed-findings and fresh-evidence discipline; the controller's consolidated affected-only test instruction overrides per-slice repetition. Exact fix commit is returned with handoff; no push, PR mutation, merge or deployment is performed here.
+
+## Whole-branch fix wave — WB-I1 through WB-I4
+
+Fix base: `9016207343755b04eeed1e5653c537edc5dfe85b`. Read `whole-branch-review.md` completely; all four Important findings addressed together. Earlier feature/formatting/fix commits and historical **255 backend +15 Lambda**, then **96 affected backend +15 Lambda**, remain unchanged evidence, not a fresh whole-suite claim.
+
+### Finding dispositions
+
+- **WB-I1 — addressed.** Socket revocation failure is retained until the existing Paperclip archive/defensive disable/retry and seat-sync paths have run. The real Clerk dispatcher rolls back its membership-deletion Svix dedup claim using existing `webhook_dedup.delete_event` on handler failure. Tests run the real dispatcher, handler, revoker and shared pool with a failed external socket query; Moto executes the actual conditional dedup put/delete. Same-Svix redelivery completes and only a subsequent completed delivery is suppressed. Both successful archive and retryable archive failure (immediate disable + existing retry enqueue) are covered.
+- **WB-I2 — addressed.** `ConnectionService.begin_member_revocation` atomically adds the exact connection ID to an owner/member-scoped retry marker and deletes original admission in one existing-table DynamoDB transaction. Marker keys use a digest of the owner/member pair, have no authorizing identity/type or GSI recipient attributes, and no expiry that could discard incomplete cleanup. The next revocation strongly reads that marker even when the original owner GSI row is gone. Native, cached frontend, node, operator, Teams and edge cleanup are independent; one failure no longer skips the others. The marker member is removed only when all steps succeed; empty markers are conditionally deleted without erasing concurrently added IDs. The real-service/Moto/real-pool regression proves delete-success + node/edge failures, independent operator/Teams cleanup, another member preserved, no original GSI target, and a second edge-close attempt on retry.
+- **WB-I3 — addressed under the controller's explicit conservative-hold ruling.** The existing durable idle-stop counter now includes fresh `native_human` presence and strongly read unresolved native-run holds. Native runs reserve a non-authorizing hold before consequential `chat.send`; storage failure prevents sending. Identity is exact owner + full canonical room key + already actor-scoped native idempotent run ID. The frozen native `chat-send-session.ts:88` uses the idempotency key as `clientRunId`. Holds have no TTL and are not cleared by frontend removal, transport uncertainty, another room/run's evidence, or a generic native error. Matching authorized native `chat` final/error/aborted evidence clears that exact hold, even when the sender tab is no longer subscribed. The narrow explicit rejection release is the frozen pre-admission `INVALID_REQUEST / details.reason=active-leaf-changed` response (`chat-send-pre-admission.ts:67–73`), and only for a newly created hold; a retry cannot release an earlier uncertain hold. Existing spend/trial enforcement remains before the native send path.
+- Native local presence/holds participate in grace and final idle-stop vetoes without insertion into legacy admin fanout. Final stop checking also serializes with the separate native dial lock: an in-flight human handshake finishes/fails before the stop decision. Tests cover real native route/RPC/reader/pool hold-before-send, matched/mismatched terminal release, proven rejection, uncertain send/disconnect, hold-write failure, same-worker grace, and an in-progress-handshake race. Actual ConnectionService/Moto and a new empty shared pool cover another worker's grace/boot-reconciliation veto followed by exact hold release permitting the stop.
+- **WB-I4 — addressed.** Failed subscribe **or** unsubscribe restores the captured pre-call subscription set. The focused case keeps actual router/RPC/reader methods, rejects only the upstream unsubscribe response, verifies the error reaches the client, then verifies an authorized room event still forwards.
+
+### Shared-root caller trace / self-review
+
+`pending_member_revocations`, `begin_member_revocation`, and `finish_member_revocation` are used only by the member socket revoker; the unconditional membership-deletion caller now preserves existing independent deauthorization. `get_connection` additionally returns no identity for synthetic marker rows (no `userId`); normal edge identity callers in the message/disconnect routes and native current-member checks keep their existing behavior. Retry/run markers omit both user/owner GSI fields, so existing owner fanout and Teams user fanout cannot discover them. No authorizing row is recreated for retry discovery.
+
+`begin_native_run` is used by the native human RPC method immediately before send; `finish_native_run` is called only for the qualified native terminal evidence or narrow proven pre-admission rejection described above. `count_live_chat_connections` has only one production caller, the existing trial idle-stop veto; its expanded count intentionally means human presence plus unresolved native work, not a displayed connection count. Its errors still propagate to the stop path's over-preserve catch. New local activity checks are limited to grace/idle-stop safety; legacy `has_active_runs`, readiness markers, owner delivery membership and native authority remain separate.
+
+Reviewed the invoked node/operator disconnect helpers: they already provide idempotent mapping removal and best-effort upstream close, and remain unchanged. The revoker still calls both and the Teams broker independently; edge closure errors propagate and preserve durable retry IDs. Transaction failure cannot leave admission deleted without its marker: neither transaction operation commits. External cleanup still gets an attempt on failure and the webhook is not acknowledged complete. The existing Svix rollback primitive/storage availability and provider redelivery remain the retry mechanism; no queue, table, resource, generic service or detached reader was introduced.
+
+Self-review after the consolidated run added the native-handshake lock fence described above. Existing legacy/native lock order has no reverse acquisition: native ensure takes only its own lock; shared shutdown releases native close-all's lock before acquiring the legacy lock. Final synchronous local checks remain in place after awaited cross-worker reads. The existing cross-worker distributed-stop race boundary is not claimed to have become a distributed transaction.
+
+### Exact affected commands and raw output
+
+All runs were local/synthetic only, with existing Python3.12 and pinned Ruff0.15.6 (unchanged lock). No AWS/live/production/browser/account/secret access, dependencies, deployment, fork/UI/shared changes or subagents. A fail-fast botocore transport guard forbids an accidental real AWS request while allowing Moto.
+
+Consolidated affected run, from `apps/backend`:
+
+```sh
+AWS_EC2_METADATA_DISABLED=true AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing AWS_SESSION_TOKEN=testing AWS_DEFAULT_REGION=us-east-1 AWS_MAX_ATTEMPTS=1 PYTHONDONTWRITEBYTECODE=1 /Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend/.venv/bin/python -c 'import sys, pytest
+from unittest.mock import patch
+with patch("botocore.httpsession.URLLib3Session.send", side_effect=AssertionError("Unexpected live AWS transport")):
+    sys.exit(pytest.main(["-q", "--tb=short", "-W", "error::RuntimeWarning", "-p", "no:cacheprovider", "-o", "addopts=", "tests/unit/gateway/test_native_rooms.py", "tests/unit/routers/test_webhooks_paperclip.py", "tests/unit/routers/test_webhooks.py", "tests/unit/services/test_connection_service_liveness.py", "tests/unit/services/test_connection_service_errors.py", "tests/unit/services/test_connection_service_owner.py", "tests/unit/gateway/test_arm_idle_teardown.py", "tests/unit/gateway/test_grace_close_guard.py"]))'
+```
+
+Raw output, exit0, no warnings:
+
+```text
+........................................................................ [ 50%]
+........................................................................ [100%]
+144 passed in 5.12s
+
+```
+
+After the self-review handshake fence, used the exact same environment/interpreter/guard/pytest flags, replacing the eight test-file arguments with:
+
+```text
+"tests/unit/gateway/test_native_rooms.py::test_idle_stop_waits_for_native_handshake_before_final_local_veto",
+"tests/unit/gateway/test_native_rooms.py::test_native_presence_and_disconnected_run_veto_same_worker_grace",
+"tests/unit/gateway/test_arm_idle_teardown.py"
+```
+
+Raw affected-only output, exit0, no warnings:
+
+```text
+..................                                                       [100%]
+18 passed in 1.00s
+
+```
+
+These counts overlap; they must not be summed as distinct tests. No whole-suite or unchanged broad baseline rerun occurred.
+
+Formatting used the existing pinned interpreter, from the worktree root:
+
+```sh
+git diff --name-only -z 901620734 -- '*.py' | xargs -0 /Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend/.venv/bin/python -m ruff format --no-cache
+# Exit0: 7 files reformatted, 2 files left unchanged.
+/Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend/.venv/bin/python -m ruff format --no-cache apps/backend/core/gateway/connection_pool.py apps/backend/tests/unit/gateway/test_native_rooms.py
+# Final handshake-fence formatting, exit0: 1 file reformatted, 1 file left unchanged.
+git diff --name-only -z ff8da6b2 -- '*.py' | xargs -0 /Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend/.venv/bin/python -m ruff check --no-cache
+git diff --name-only -z ff8da6b2 -- '*.py' | xargs -0 /Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync/apps/backend/.venv/bin/python -m ruff format --check --no-cache
+git diff --check
+```
+
+Final raw lint/format output for **all15 PR-changed Python files**, both exit0:
+
+```text
+All checks passed!
+15 files already formatted
+
+```
+
+`git diff --check`: exit0, no output. Scoped filesystem escalation authorized the formatter/commit in this assigned worktree; no network escalation.
+
+### Accepted ceiling / handoff
+
+Qualification remains **empty, unavailable and inactive**. The controller explicitly accepted non-expiring unresolved native-run holds rather than a detached-drain framework. An uncertain send, disconnected sender with no later terminal observer, or completed idempotent response without a matching terminal can conservatively retain an idle trial container. No completion is inferred from elapsed time. This is an explicit ponytail ceiling: **native-runtime reconciliation and bounded operational recovery must be qualified before enabling trial native rooms**. The existing trial/spend gate is unchanged, but that is not proof of bounded idle-retention cost.
+
+All prior exact-candidate requirements remain: verified human/machine/ingress coexistence, persisted native authors and transcript privacy, live revocation, signatures, service/device lifecycle, stream rate/backpressure, legacy privacy and operational recovery. These synthetic checks and non-authorizing records are not shipped multiplayer or activation approval. Used systematic-debugging, receiving-code-review and verification-before-completion discipline to trace shared callers and validate the scoped corrections; the user's consolidated phase-end test cadence governs execution. Commit contains intended fixes/tests and this appended report; exact SHA is returned in handoff. No push, merge, deployment or auth activation.

@@ -172,6 +172,26 @@ async def harness(monkeypatch):
     service.get_connection.side_effect = lambda key: rows.get(key)
     service.delete_connection.side_effect = lambda key: rows.pop(key, None)
     service.touch_connection = AsyncMock()
+    pending_revocations = set()
+
+    async def begin_revocation(owner, member, key):
+        pending_revocations.add(key)
+        rows.pop(key, None)
+
+    service.pending_member_revocations = AsyncMock(side_effect=lambda *_: set(pending_revocations))
+    service.begin_member_revocation = AsyncMock(side_effect=begin_revocation)
+    service.finish_member_revocation = AsyncMock(
+        side_effect=lambda _owner, _member, key: pending_revocations.discard(key)
+    )
+    durable_runs = set()
+
+    async def begin_run(*run):
+        new = run not in durable_runs
+        durable_runs.add(run)
+        return new
+
+    service.begin_native_run = AsyncMock(side_effect=begin_run)
+    service.finish_native_run = AsyncMock(side_effect=lambda *run: durable_runs.discard(run))
     service.query_by_owner = AsyncMock(
         side_effect=lambda owner: [
             (key, value["user_id"], value["connection_type"]) for key, value in rows.items() if value["org_id"] == owner
@@ -565,19 +585,25 @@ async def test_revoked_qualification_stops_warm_events_and_oversized_event_reque
 
 
 @pytest.mark.asyncio
-async def test_organization_webhook_revokes_connections_before_other_side_effects(monkeypatch):
+async def test_organization_webhook_revocation_failure_does_not_skip_deauthorization(monkeypatch):
     from routers import webhooks
 
     revoke = AsyncMock(side_effect=RuntimeError("revocation incomplete"))
-    provision = AsyncMock()
+    provisioning = SimpleNamespace(archive_member=AsyncMock())
+    provision = AsyncMock(return_value=provisioning)
     monkeypatch.setattr(rooms, "revoke_member_connections", revoke)
     monkeypatch.setattr(webhooks, "build_paperclip_provisioning", provision)
+    monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
+    sync_seats = AsyncMock()
+    monkeypatch.setattr("core.services.billing_service.sync_team_seat_quantity", sync_seats)
     with pytest.raises(RuntimeError, match="revocation incomplete"):
         await webhooks._handle_organization_membership_deleted(
             {"user_id": "user_A", "organization": {"id": "org_team"}}
         )
     revoke.assert_awaited_once_with("org_team", "user_A")
-    provision.assert_not_awaited()
+    provision.assert_awaited_once()
+    provisioning.archive_member.assert_awaited_once_with(user_id="user_A")
+    sync_seats.assert_awaited_once_with("org_team")
 
 
 @pytest.mark.asyncio
@@ -702,3 +728,180 @@ def test_mention_reference_bound_matches_native(method, field):
         value = "a" * length
         params[field] = [value] if field == "ids" else value
         assert rooms._VALIDATORS[method].is_valid(params) is allowed
+
+
+@pytest.mark.asyncio
+async def test_failed_native_unsubscribe_restores_subscription_and_delivery(harness):
+    h = harness
+    key = (await h.request("sessions.create", {"agentId": "friday", "idempotencyKey": "new"}))["payload"]["key"]
+    await h.request("sessions.messages.subscribe", {"key": key})
+    conn = h.native.connections[identity()]
+    # Keep the actual router + rpc + reader; fail only the upstream response.
+    send = conn.ws.send
+
+    async def reject_unsubscribe(raw):
+        request = json.loads(raw)
+        if request["method"] == "sessions.messages.unsubscribe":
+            conn.ws.queue.put_nowait(
+                json.dumps(
+                    {
+                        "type": "res",
+                        "id": request["id"],
+                        "ok": False,
+                        "error": {"code": "UNAVAILABLE", "message": "try again"},
+                    }
+                )
+            )
+        else:
+            await send(raw)
+
+    conn.ws.send = reject_unsubscribe
+    result = await h.request("sessions.messages.unsubscribe", {"key": key})
+    assert result["ok"] is False and key in conn.subscriptions
+    event = {"type": "event", "event": "session.message", "payload": {"sessionKey": key, "id": "later"}}
+    await conn.forward_event(event)
+    assert h.management.send_message_async.call_args.args[1] == event
+
+
+@pytest.mark.asyncio
+async def test_native_send_hold_precedes_send_and_matching_terminal_clears_without_subscription(harness):
+    h = harness
+    key = (await h.request("sessions.create", {"agentId": "friday", "idempotencyKey": "new"}))["payload"]["key"]
+    conn = h.native.connections[identity()]
+    send = conn.ws.send
+
+    async def verify_hold(raw):
+        request = json.loads(raw)
+        if request["method"] == "chat.send":
+            run = ("org_team", key, request["params"]["idempotencyKey"])
+            assert run in h.native.run_holds
+            h.service.begin_native_run.assert_awaited_with(*run)
+        await send(raw)
+
+    conn.ws.send = verify_hold
+    result = await h.request(
+        "chat.send", {"sessionKey": key, "message": "hello", "idempotencyKey": "send", "expectedLeafEntryId": None}
+    )
+    run_id = result["payload"]["runId"]
+    run = ("org_team", key, run_id)
+    assert run in h.native.run_holds
+    event = {"type": "event", "event": "chat", "payload": {"sessionKey": key, "runId": "unrelated", "state": "final"}}
+    await conn.forward_event(event)
+    assert run in h.native.run_holds
+    await conn.forward_event(
+        {**event, "payload": {**event["payload"], "runId": run_id, "sessionKey": "agent:friday:private"}}
+    )
+    assert run in h.native.run_holds
+    await conn.forward_event({**event, "payload": {**event["payload"], "runId": run_id}})
+    assert run not in h.native.run_holds
+    h.service.finish_native_run.assert_awaited_with(*run)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rejection", [False, True])
+async def test_native_send_uncertainty_retains_hold_but_proven_rejection_releases(harness, rejection):
+    h = harness
+    key = (await h.request("sessions.create", {"agentId": "friday", "idempotencyKey": "new"}))["payload"]["key"]
+    conn = h.native.connections[identity()]
+
+    async def fail_send(raw):
+        request = json.loads(raw)
+        if rejection:
+            conn.ws.queue.put_nowait(
+                json.dumps(
+                    {
+                        "type": "res",
+                        "id": request["id"],
+                        "ok": False,
+                        "error": {"code": "INVALID_REQUEST", "details": {"reason": "active-leaf-changed"}},
+                    }
+                )
+            )
+        else:
+            raise TimeoutError("outcome unknown after write")
+
+    conn.ws.send = fail_send
+    result = await h.request(
+        "chat.send", {"sessionKey": key, "message": "hello", "idempotencyKey": "send", "expectedLeafEntryId": None}
+    )
+    assert result["ok"] is False
+    assert bool(h.native.run_holds) is not rejection
+    h.rows.pop("tab-a")
+    await route.ws_disconnect("tab-a")
+    assert bool(h.native.run_holds) is not rejection
+
+
+@pytest.mark.asyncio
+async def test_native_send_hold_write_failure_prevents_consequential_send(harness):
+    h = harness
+    key = (await h.request("sessions.create", {"agentId": "friday", "idempotencyKey": "new"}))["payload"]["key"]
+    h.service.begin_native_run.side_effect = RuntimeError("storage unavailable")
+    before = len(h.gateway.calls)
+    result = await h.request(
+        "chat.send", {"sessionKey": key, "message": "hello", "idempotencyKey": "send", "expectedLeafEntryId": None}
+    )
+    assert result["ok"] is False and len(h.gateway.calls) == before
+
+
+@pytest.mark.asyncio
+async def test_native_presence_and_disconnected_run_veto_same_worker_grace(harness, monkeypatch):
+    from core.gateway import connection_pool
+
+    h = harness
+    stop = AsyncMock()
+    monkeypatch.setattr("core.containers.get_ecs_manager", lambda: SimpleNamespace(stop_user_service=stop))
+    monkeypatch.setattr(
+        "core.repositories.billing_repo.get_by_owner_id", AsyncMock(return_value={"subscription_status": "trial_local"})
+    )
+    monkeypatch.setattr(connection_pool, "_GRACE_PERIOD", 0)
+    monkeypatch.setattr(connection_pool, "_TRIAL_STOP_GRACE_S", 0)
+    h.service.count_live_chat_connections = AsyncMock(return_value=0)  # emulate a lagging GSI
+    key = (await h.request("sessions.create", {"agentId": "friday", "idempotencyKey": "new"}))["payload"]["key"]
+    await h.pool._maybe_stop_trial_container("org_team", trigger="grace")
+    stop.assert_not_awaited()
+    await h.request(
+        "chat.send", {"sessionKey": key, "message": "hello", "idempotencyKey": "send", "expectedLeafEntryId": None}
+    )
+    h.rows.pop("tab-a")
+    await route.ws_disconnect("tab-a")
+    assert not h.native.connections and h.native.run_holds
+    assert not h.pool._frontend_connections and not h.pool._connections
+    await h.pool._grace_close("org_team")
+    await h.pool._maybe_stop_trial_container("org_team", trigger="boot_reconcile")
+    stop.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_idle_stop_waits_for_native_handshake_before_final_local_veto(harness, monkeypatch):
+    h = harness
+    dialing, release, checked_presence = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    dial = rooms.websockets.connect
+
+    async def slow_dial(*args, **kwargs):
+        dialing.set()
+        await release.wait()
+        return await dial(*args, **kwargs)
+
+    async def no_operator(_owner):
+        checked_presence.set()
+        return False
+
+    monkeypatch.setattr(rooms.websockets, "connect", slow_dial)
+    h.service.count_live_chat_connections = AsyncMock(return_value=0)
+    h.service.has_live_operator_connection = no_operator
+    h.service.get_live_gateway_conn_token = AsyncMock(return_value=None)
+    stop = AsyncMock()
+    monkeypatch.setattr("core.containers.get_ecs_manager", lambda: SimpleNamespace(stop_user_service=stop))
+    monkeypatch.setattr(
+        "core.repositories.billing_repo.get_by_owner_id", AsyncMock(return_value={"subscription_status": "trial_local"})
+    )
+    connect = asyncio.create_task(h.request("connect"))
+    await asyncio.wait_for(dialing.wait(), 1)
+    stopping = asyncio.create_task(h.pool._maybe_stop_trial_container("org_team", trigger="boot_reconcile"))
+    await asyncio.wait_for(checked_presence.wait(), 1)
+    assert not stopping.done()
+    release.set()
+    await connect
+    await stopping
+    assert h.native.connections
+    stop.assert_not_awaited()

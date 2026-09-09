@@ -3818,7 +3818,9 @@ class GatewayConnectionPool:
                 logger.exception("grace-close billing read failed user=%s", user_id)
                 account = None
             is_trial = bool(account) and account.get("subscription_status") == "trial_local"
-            run_in_flight = self.has_active_runs(user_id) or self.is_parked(user_id)
+            run_in_flight = (
+                self.has_active_runs(user_id) or self.is_parked(user_id) or self._has_native_activity(user_id)
+            )
             # Captured BEFORE close_user pops the connection: the stop's
             # replacement veto needs to tell a genuinely new connection's
             # liveness row apart from THIS connection's own leftover row
@@ -3855,6 +3857,10 @@ class GatewayConnectionPool:
             # a normally-completed cycle closed its connection.
             self.arm_idle_teardown_if_unattended(user_id)
 
+    def _has_native_activity(self, owner_id: str) -> bool:
+        native = getattr(self, "native_rooms", None)
+        return native is not None and native.has_activity(owner_id)
+
     async def _maybe_stop_trial_container(
         self, owner_id: str, trigger: str = "grace", closed_conn_token: str | None = None
     ) -> None:
@@ -3879,7 +3885,7 @@ class GatewayConnectionPool:
         the catching now rather than these two.
         """
         try:
-            if self._frontend_connections.get(owner_id):
+            if self._frontend_connections.get(owner_id) or self._has_native_activity(owner_id):
                 return  # a client reconnected on this task
             # Grace path only: the cycle that armed this stop closed its own
             # connection before the stop-grace sleep, so ANY connection
@@ -3932,8 +3938,16 @@ class GatewayConnectionPool:
             # blind to a live connection an EXISTING worker holds. The
             # locked local check is a free no-op at boot (empty pool).
             async with self._lock:
-                if owner_id in self._connections or self._frontend_connections.get(owner_id):
-                    return
+                native = getattr(self, "native_rooms", None)
+                # Native has its own dial lock: an in-flight handshake must
+                # finish/fail before this stop can decide it has no local peer.
+                async with native.lock if native is not None else asyncio.Lock():
+                    if (
+                        owner_id in self._connections
+                        or self._frontend_connections.get(owner_id)
+                        or self._has_native_activity(owner_id)
+                    ):
+                        return
             # The lock above is process-local; the durable cross-worker
             # signal is the gateway-liveness row (mark_gateway_connected).
             # Compare TOKENS, not mere presence: the grace cycle's own
@@ -3959,7 +3973,7 @@ class GatewayConnectionPool:
             # window; the residual (an insert landing between this line and
             # the ECS call) is irreducible without a distributed fence and
             # self-corrects on the next presence-backed wake poll.
-            if owner_id in self._connections:
+            if owner_id in self._connections or self._has_native_activity(owner_id):
                 return
 
             from core.containers import get_ecs_manager

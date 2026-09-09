@@ -26,6 +26,8 @@ Note: Table creation is handled by Terraform, not this service.
 """
 
 import asyncio
+import hashlib
+import json
 import logging
 import os
 import time
@@ -85,6 +87,18 @@ _GATEWAY_LIVENESS_PREFIX = "gateway#"
 
 def _gateway_liveness_key(owner_id: str) -> str:
     return f"{_GATEWAY_LIVENESS_PREFIX}{owner_id}"
+
+
+def _revocation_key(owner_id: str, user_id: str) -> str:
+    return "revocation#" + hashlib.sha256(json.dumps([owner_id, user_id]).encode()).hexdigest()
+
+
+def _native_runs_key(owner_id: str) -> str:
+    return f"native-runs#{owner_id}"
+
+
+def _native_run_token(session_key: str, run_id: str) -> str:
+    return hashlib.sha256(json.dumps([session_key, run_id]).encode()).hexdigest()
 
 
 class ConnectionServiceError(Exception):
@@ -205,7 +219,7 @@ class ConnectionService:
                 f"Failed to get connection {connection_id}: {e.response['Error']['Message']}"
             ) from e
 
-        if "Item" not in response:
+        if "Item" not in response or "userId" not in response["Item"]:
             logger.debug("Connection %s not found", connection_id)
             return None
 
@@ -227,6 +241,58 @@ class ConnectionService:
                 if field in item
             },
         }
+
+    async def pending_member_revocations(self, owner_id: str, user_id: str) -> set[str]:
+        """Strong retry discovery independent of a deleted admission/GSI row."""
+        response = await asyncio.to_thread(
+            self._client.get_item,
+            TableName=self.table_name,
+            Key={"connectionId": {"S": _revocation_key(owner_id, user_id)}},
+            ConsistentRead=True,
+        )
+        return set(response.get("Item", {}).get("connectionIds", {}).get("SS", []))
+
+    async def begin_member_revocation(self, owner_id: str, user_id: str, connection_id: str) -> None:
+        """Atomically deny admission and retain its edge ID until teardown succeeds.
+
+        The retry marker has no userId/ownerId/type, so it is neither an
+        authorizing connection nor a user/owner fanout recipient. No TTL:
+        an outage must not silently expire an unfinished security cleanup.
+        """
+        await asyncio.to_thread(
+            self._client.transact_write_items,
+            TransactItems=[
+                {
+                    "Update": {
+                        "TableName": self.table_name,
+                        "Key": {"connectionId": {"S": _revocation_key(owner_id, user_id)}},
+                        "UpdateExpression": "ADD connectionIds :ids",
+                        "ExpressionAttributeValues": {":ids": {"SS": [connection_id]}},
+                    }
+                },
+                {"Delete": {"TableName": self.table_name, "Key": {"connectionId": {"S": connection_id}}}},
+            ],
+        )
+
+    async def finish_member_revocation(self, owner_id: str, user_id: str, connection_id: str) -> None:
+        key = {"connectionId": {"S": _revocation_key(owner_id, user_id)}}
+        await asyncio.to_thread(
+            self._client.update_item,
+            TableName=self.table_name,
+            Key=key,
+            UpdateExpression="DELETE connectionIds :ids",
+            ExpressionAttributeValues={":ids": {"SS": [connection_id]}},
+        )
+        try:
+            await asyncio.to_thread(
+                self._client.delete_item,
+                TableName=self.table_name,
+                Key=key,
+                ConditionExpression="attribute_not_exists(connectionIds)",
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
 
     async def count_for_user(self, user_id: str) -> int:
         """Count WS connection rows owned by ``user_id``.
@@ -427,13 +493,43 @@ class ConnectionService:
                     e.response["Error"]["Message"],
                 )
 
+    async def begin_native_run(self, owner_id: str, session_key: str, run_id: str) -> bool:
+        """Persist a non-authorizing idle-stop hold BEFORE consequential send.
+
+        No TTL: unknown outcome is not completion. Idempotent retries share the
+        exact owner/room/native-run token. Return whether this call added it.
+        ponytail: bounded pilot only; unresolved holds require native-runtime
+        reconciliation/operational recovery before trial-room activation.
+        """
+        token = _native_run_token(session_key, run_id)
+        response = await asyncio.to_thread(
+            self._client.update_item,
+            TableName=self.table_name,
+            Key={"connectionId": {"S": _native_runs_key(owner_id)}},
+            UpdateExpression="ADD runTokens :runs",
+            ExpressionAttributeValues={":runs": {"SS": [token]}},
+            ReturnValues="ALL_OLD",
+        )
+        return token not in response.get("Attributes", {}).get("runTokens", {}).get("SS", [])
+
+    async def finish_native_run(self, owner_id: str, session_key: str, run_id: str) -> None:
+        # No ownerId/userId/type fields: never visible to recipient GSIs or
+        # admission. DELETE of one set member cannot clear another run's hold.
+        await asyncio.to_thread(
+            self._client.update_item,
+            TableName=self.table_name,
+            Key={"connectionId": {"S": _native_runs_key(owner_id)}},
+            UpdateExpression="DELETE runTokens :runs",
+            ExpressionAttributeValues={":runs": {"SS": [_native_run_token(session_key, run_id)]}},
+        )
+
     async def count_live_chat_connections(self, owner_id: str) -> int:
-        """Count live chat-typed WS connections for owner_id.
+        """Count human presence plus unresolved native runs for idle-stop safety.
 
         "Live" (binding rules -- the scale-to-zero "is anyone here?" check
         consumes this count, and that stop side must over-preserve, never
         over-kill):
-          - connectionType == "chat" only. node/operator connections are
+          - connectionType in {"chat", "native_human"}. node/operator connections are
             transparent pipes (desktop node-host, control-UI proxy), not
             "someone looking at the chat UI".
           - lastPingAt within ``_LIVE_WINDOW_SECONDS`` (120s -- four missed
@@ -451,15 +547,28 @@ class ConnectionService:
         lastPingAt -- see the GSI comment in api-stack.ts), so each chat
         candidate needs one extra base-table read to check freshness.
         """
+        # Sole production consumer is the idle-stop veto. A run hold outlives
+        # frontend/GSI deletion, is strongly read and never expires by inference.
+        response = await asyncio.to_thread(
+            self._client.get_item,
+            TableName=self.table_name,
+            Key={"connectionId": {"S": _native_runs_key(owner_id)}},
+            ConsistentRead=True,
+        )
+        holds = len(response.get("Item", {}).get("runTokens", {}).get("SS", []))
         rows = await self.query_by_owner(owner_id)
-        chat_ids = [connection_id for connection_id, _user_id, connection_type in rows if connection_type == "chat"]
+        chat_ids = [
+            connection_id
+            for connection_id, _user_id, connection_type in rows
+            if connection_type in {"chat", "native_human"}
+        ]
         if not chat_ids:
-            return 0
+            return holds
 
         now = time.time()
 
         def _count() -> int:
-            live = 0
+            live = holds
             for connection_id in chat_ids:
                 response = self._client.get_item(
                     TableName=self.table_name,

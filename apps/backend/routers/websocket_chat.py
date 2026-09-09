@@ -1560,8 +1560,11 @@ async def _process_native_room_background(connection_id: str, body: dict) -> Non
             try:
                 result = await conn.rpc(method, admitted)
             except BaseException:
-                if method == "sessions.messages.subscribe" and not was_subscribed:
-                    conn.subscriptions.discard(key)
+                if method in {"sessions.messages.subscribe", "sessions.messages.unsubscribe"}:
+                    if was_subscribed:
+                        conn.subscriptions.add(key)
+                    else:
+                        conn.subscriptions.discard(key)
                 raise
             await require_current_member(identity, service)
             if isinstance(result, dict):

@@ -424,10 +424,17 @@ async def _handle_organization_membership_deleted(data: dict) -> None:
         logger.warning("Clerk organizationMembership.deleted missing user_id: %s", data)
         return
 
+    revocation_error = None
     if org_id:
         from core.gateway.native_rooms import revoke_member_connections
 
-        await revoke_member_connections(org_id, user_id)
+        try:
+            await revoke_member_connections(org_id, user_id)
+        except Exception as exc:
+            # Socket infrastructure cannot skip the independent stored-member
+            # deauthorization below. Redrive the incomplete socket cleanup only
+            # after archive/disable and seat synchronization have had their turn.
+            revocation_error = exc
 
     provisioning = await build_paperclip_provisioning()
     try:
@@ -517,6 +524,9 @@ async def _handle_organization_membership_deleted(data: dict) -> None:
             await sync_team_seat_quantity(org_id)
         except Exception:
             logger.exception("seat sync on membership.deleted failed for org=%s", org_id)
+
+    if revocation_error is not None:
+        raise revocation_error
 
 
 async def _handle_organization_deleted(data: dict) -> None:
@@ -791,7 +801,14 @@ async def handle_clerk_webhook(request: Request):
         await _handle_organization_membership_created(data)
 
     elif event_type == "organizationMembership.deleted":
-        await _handle_organization_membership_deleted(data)
+        try:
+            await _handle_organization_membership_deleted(data)
+        except Exception:
+            if svix_id:
+                from core.services.webhook_dedup import delete_event
+
+                await delete_event(svix_id)
+            raise
 
     elif event_type == "organization.deleted":
         await _handle_organization_deleted(data)

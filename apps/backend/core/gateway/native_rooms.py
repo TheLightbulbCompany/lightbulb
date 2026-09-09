@@ -324,6 +324,7 @@ class NativeHumanConnection:
         self.methods = set()
         self.profile = None
         self.closed = False
+        self.run_holds = set()
 
     async def connect(self):
         try:
@@ -401,11 +402,31 @@ class NativeHumanConnection:
         if self.closed or method not in self.methods:
             raise RoomError("ROOM_UNAVAILABLE", "Native human connection/method unavailable; reconnect")
         req_id = str(uuid4())
+        run = None
+        new_hold = False
+        if method == "chat.send":
+            run = (self.identity.owner_id, params["sessionKey"], params["idempotencyKey"])
+            new_hold = await self.conn_svc.begin_native_run(*run)
+            self.run_holds.add(run)
         future = asyncio.get_running_loop().create_future()
         self.pending[req_id] = future
         try:
             await self.ws.send(json.dumps({"type": "req", "id": req_id, "method": method, "params": params}))
             return await asyncio.wait_for(future, 30)
+        except RoomError as exc:
+            # Frozen pre-admission rejection; generic native/transport errors
+            # may follow acceptance and MUST retain the hold. An existing hold
+            # belongs to an earlier attempt and cannot be cleared by this retry.
+            if (
+                run
+                and new_hold
+                and getattr(exc, "native_rejection", False)
+                and exc.error.get("code") == "INVALID_REQUEST"
+                and exc.error.get("details", {}).get("reason") == "active-leaf-changed"
+            ):
+                await self.conn_svc.finish_native_run(*run)
+                self.run_holds.discard(run)
+            raise
         finally:
             self.pending.pop(req_id, None)
 
@@ -430,6 +451,7 @@ class NativeHumanConnection:
                         else:
                             error = RoomError("NATIVE_ERROR", "Native room request rejected")
                             error.error = frame.get("error") or error.error
+                            error.native_rejection = True
                             future.set_exception(error)
                     continue
                 await self.forward_event(frame)
@@ -461,9 +483,23 @@ class NativeHumanConnection:
             return
         payload = frame.get("payload") or {}
         key = payload.get("sessionKey") or payload.get("key")
-        if not owns_room_key(key, self.identity, self.qualification) or key not in self.subscriptions:
+        if not owns_room_key(key, self.identity, self.qualification):
             return
         await self.require_current()
+        # Observe matching terminal evidence even if this tab unsubscribed.
+        # Do not use display messages, another room/run, or disconnect as proof.
+        run_id = payload.get("runId")
+        if (
+            frame.get("event") == "chat"
+            and payload.get("state") in {"final", "error", "aborted"}
+            and isinstance(run_id, str)
+            and run_id
+        ):
+            run = (self.identity.owner_id, key, run_id)
+            await self.conn_svc.finish_native_run(*run)
+            self.run_holds.discard(run)
+        if key not in self.subscriptions:
+            return
         # Native sender/creator/entryId/parentId/runId evidence stays intact.
         if len(json.dumps(frame, separators=(",", ":")).encode()) > 110_000:
             frame = {"type": "event", "event": "native.room.historyRequired", "payload": {"sessionKey": key}}
@@ -496,6 +532,7 @@ class NativeRoomPool:
         self.management_api = management_api
         self.conn_svc = conn_svc
         self.connections = {}
+        self.run_holds = set()
         # ponytail: one dial lock for the pilot; per-client locks if dial latency matters.
         self.lock = asyncio.Lock()
         self.closed = False
@@ -513,6 +550,7 @@ class NativeRoomPool:
             if existing:
                 await existing.close()
             conn = NativeHumanConnection(identity, qualification, device, self.management_api, self.conn_svc)
+            conn.run_holds = self.run_holds
             try:
                 await conn.connect()
                 await require_current_member(identity, self.conn_svc)
@@ -521,6 +559,11 @@ class NativeRoomPool:
                 raise
             self.connections[identity] = conn
             return conn
+
+    def has_activity(self, owner_id):
+        return any(run[0] == owner_id for run in self.run_holds) or any(
+            identity.owner_id == owner_id and not conn.closed for identity, conn in self.connections.items()
+        )
 
     async def close_connection(self, connection_id):
         for identity, conn in list(self.connections.items()):
@@ -543,31 +586,54 @@ async def revoke_member_connections(owner_id: str, user_id: str) -> None:
     from core.services.operator_proxy import handle_operator_disconnect
 
     pool = get_gateway_pool()
-    rows = await pool._conn_svc.query_by_owner(owner_id)
+    errors = []
+    connection_ids = set()
+    try:
+        rows = await pool._conn_svc.query_by_owner(owner_id)
+        connection_ids.update(conn_id for conn_id, member_id, _ in rows if member_id == user_id)
+    except Exception as exc:
+        errors.append(exc)
+    try:
+        connection_ids.update(await pool._conn_svc.pending_member_revocations(owner_id, user_id))
+    except Exception as exc:
+        errors.append(exc)
     # Include locally admitted humans while the by-owner GSI catches up.
-    connection_ids = {conn_id for conn_id, member_id, _ in rows if member_id == user_id}
     connection_ids.update(
         identity.connection_id
         for identity in pool.native_rooms.connections
         if identity.owner_id == owner_id and identity.subject == user_id
     )
-    errors = []
     for conn_id in connection_ids:
+        connection_errors = []
         try:
-            await asyncio.to_thread(pool._conn_svc.delete_connection, conn_id)
-            await pool.native_rooms.close_connection(conn_id)
+            await pool._conn_svc.begin_member_revocation(owner_id, user_id, conn_id)
+        except Exception as exc:
+            connection_errors.append(exc)
+        # Independent teardown must continue even after a storage/transport
+        # failure. The durable retry ID is removed only when ALL steps succeed.
+        try:
             pool.remove_frontend_connection(owner_id, conn_id)  # invalidates warm recipient cache
-            await handle_node_disconnect(conn_id, owner_id, user_id)
-            await handle_operator_disconnect(conn_id)
+        except Exception as exc:
+            connection_errors.append(exc)
+        operations = [
+            pool.native_rooms.close_connection(conn_id),
+            handle_node_disconnect(conn_id, owner_id, user_id),
+            handle_operator_disconnect(conn_id),
+            asyncio.to_thread(pool._management_api.close_connection, conn_id),
+        ]
+        try:
             broker = teams_event_broker_singleton.get_broker()
             if broker is not None:
-                await broker.unsubscribe(user_id, conn_id)
+                operations.append(broker.unsubscribe(user_id, conn_id))
         except Exception as exc:
-            errors.append(exc)
-        finally:
+            connection_errors.append(exc)
+        results = await asyncio.gather(*operations, return_exceptions=True)
+        connection_errors.extend(result for result in results if isinstance(result, BaseException))
+        if not connection_errors:
             try:
-                await asyncio.to_thread(pool._management_api.close_connection, conn_id)
+                await pool._conn_svc.finish_member_revocation(owner_id, user_id, conn_id)
             except Exception as exc:
-                errors.append(exc)
+                connection_errors.append(exc)
+        errors.extend(connection_errors)
     if errors:
         raise RuntimeError("Member connection revocation incomplete; retry webhook") from errors[0]

@@ -83,6 +83,7 @@ jobs:
           CLERK_ISSUER: https://test.clerk.accounts.dev
           DYNAMODB_TABLE_PREFIX: isol8-test-
           HUGGINGFACE_TOKEN: test_token
+          PYTHONPATH: .
         run: |
           uv run python tests/chaos/invariants/test_config_schema.py \
             "${RUNNER_TEMP}/openclaw-image-qualification-configs"

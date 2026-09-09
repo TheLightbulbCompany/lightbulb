@@ -495,10 +495,65 @@ class TestWriteOpenclawConfigAsync:
         assert cfg["browser"]["defaultProfile"] == "openclaw"
         assert "nodeHost" not in cfg
         assert cfg["gateway"]["nodes"]["browser"]["mode"] == "auto"
+        assert out.stat().st_mode & 0o777 == 0o600
+        assert not list(tmp_path.glob(".openclaw.json.*.tmp"))
         # Phase one remains on the legacy persistent sidecar until boot
         # recovery publishes the protocol marker.
         assert (tmp_path / "openclaw.json.lock").is_file()
         assert (tmp_path / "openclaw.json.lock.isol8-guard").is_file()
+
+    async def test_atomic_full_write_preserves_open_reader(self, tmp_path):
+        out = tmp_path / "openclaw.json"
+        previous = '{"sentinel":"previous complete config"}'
+        out.write_text(previous)
+
+        with out.open() as held_reader:
+            await write_openclaw_config(
+                config_path=out,
+                gateway_token="synthetic-new-token",
+                provider_choice="bedrock_claude",
+                user_id="u_1",
+                aip_arns=_AIPS,
+            )
+            assert held_reader.read() == previous
+
+        assert json.loads(out.read_text())["gateway"]["auth"]["token"] == "synthetic-new-token"
+        assert out.stat().st_mode & 0o777 == 0o600
+        assert not list(tmp_path.glob(".openclaw.json.*.tmp"))
+
+    @pytest.mark.parametrize("failure_point", ["serialize", "fsync", "replace"])
+    async def test_atomic_full_write_failure_preserves_active_and_backup(self, tmp_path, failure_point):
+        out = tmp_path / "openclaw.json"
+        backup = tmp_path / "openclaw.json.bak"
+        active_bytes = b'{"sentinel":"active complete config"}'
+        backup_bytes = b'{"sentinel":"backup complete config"}'
+        out.write_bytes(active_bytes)
+        backup.write_bytes(backup_bytes)
+
+        def fail_serialization(_config, stream, **_kwargs):
+            stream.write('{"partial":')
+            raise OSError("synthetic write failure")
+
+        fault = (
+            patch("core.containers.config.json.dump", side_effect=fail_serialization)
+            if failure_point == "serialize"
+            else patch(
+                f"core.containers.config.os.{failure_point}",
+                side_effect=OSError("synthetic write failure"),
+            )
+        )
+        with fault, pytest.raises(OSError, match="synthetic write failure"):
+            await write_openclaw_config(
+                config_path=out,
+                gateway_token="must-not-land",
+                provider_choice="bedrock_claude",
+                user_id="u_1",
+                aip_arns=_AIPS,
+            )
+
+        assert out.read_bytes() == active_bytes
+        assert backup.read_bytes() == backup_bytes
+        assert not list(tmp_path.glob(".openclaw.json.*.tmp"))
 
     async def test_post_transition_full_write_uses_ephemeral_sidecar(self, tmp_path):
         out = tmp_path / "openclaw.json"

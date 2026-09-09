@@ -140,6 +140,13 @@ _UPSERT_PRESERVED_FIELDS = (
     "bedrock_gate_token_hash",
 )
 
+_RELEASE_OWNED_FIELDS = (
+    "desired_release_id",
+    "active_release_id",
+    "release_revision",
+    "release_update_id",
+)
+
 
 # The two fields ``swap_gate_token_hash`` owns outright. Enforced, not merely
 # documented: the CAS below conditions on the POINTER, so a caller naming only
@@ -156,6 +163,12 @@ def _reject_gate_owned_fields(caller: str, fields: dict) -> None:
             f"{caller}: {named} may only be written by swap_gate_token_hash — a write from "
             "anywhere else can erase a hash the bedrock-gate kill switch still needs to reach"
         )
+
+
+def _reject_release_owned_fields(caller: str, fields: dict) -> None:
+    named = sorted(set(_RELEASE_OWNED_FIELDS) & fields.keys())
+    if named:
+        raise ValueError(f"{caller}: {named} may only be written by release transactions")
 
 
 # How many times ``upsert``'s whole-item put re-reads and rebuilds after losing
@@ -204,12 +217,13 @@ _UPSERT_CAS_ATTEMPTS = 3
 # OPPOSITE thing, which is why they are named separately — see
 # ``_raise_if_superseded``.
 _LEASE_CAS_FIELDS = ("provision_claim_id", "provision_attempt_token")
-_UPSERT_CAS_FIELDS = ("bedrock_gate_token_hash", *_LEASE_CAS_FIELDS)
+_UPSERT_PRESERVED_FIELDS += _RELEASE_OWNED_FIELDS
+_UPSERT_CAS_FIELDS = ("bedrock_gate_token_hash", *_LEASE_CAS_FIELDS, *_RELEASE_OWNED_FIELDS)
 
 
 def _unchanged_since_read(existing: dict | None) -> tuple[dict, dict]:
     """``put_item`` kwargs that refuse the write if any pinned field has moved,
-    plus the LEASE subset those kwargs pinned, in the shape
+    plus the lease/release fields whose movement is a stop signal, in the shape
     ``_raise_if_superseded`` compares.
 
     Both come out of the one builder deliberately. A condition and the triage of
@@ -245,15 +259,18 @@ def _unchanged_since_read(existing: dict | None) -> tuple[dict, dict]:
     values: dict = {}
     clauses: list[str] = []
     lease_expected: dict = {}
+    snapshot = existing or {}
     for i, field in enumerate(_UPSERT_CAS_FIELDS):
         alias = f"#c{i}"
         names[alias] = field
-        seen = (existing or {}).get(field)
-        if field in _LEASE_CAS_FIELDS:
+        seen = snapshot.get(field)
+        if field in _RELEASE_OWNED_FIELDS:
+            lease_expected[field] = (field in snapshot, seen)
+        elif field in _LEASE_CAS_FIELDS:
             # Recorded whatever it is, INCLUDING None: this condition pins every
             # field unconditionally, and a None means it pinned it as absent.
             lease_expected[field] = seen
-        if seen is None:
+        if field not in snapshot or (field not in _RELEASE_OWNED_FIELDS and seen is None):
             clauses.append(f"attribute_not_exists({alias})")
         else:
             clauses.append(f"{alias} = :c{i}")
@@ -301,12 +318,14 @@ def _raise_if_superseded(owner_id: str, expected: dict, current: dict, *, where:
       through the fence meant to close it. So: stop, before the next side
       effect. Exactly what ``update_container_leased`` does at every checkpoint;
       this makes the conditional writes here honour the same contract.
+    - **Release metadata moved.** A release transaction owns the row. Exact
+      presence/value comparison makes present NULL distinct from absent.
 
     Both moved → superseded wins; the successor's mint is not ours to merge.
 
-    ``expected`` IS THE PINNED SET, and only it is compared. A key present means
-    the condition pinned that field; a value of ``None`` means it pinned it as
-    ABSENT. Comparing a field the condition did NOT pin is a bug in the
+    ``expected`` IS THE PINNED SET, and only it is compared. Release fields use
+    ``(present, value)`` tuples; lease fields retain their legacy value shape,
+    where ``None`` means absent. Comparing a field the condition did NOT pin is a bug in the
     lockout direction — ``swap_gate_token_hash`` pins the attempt token only
     when the caller supplied one, and a deliberate takeover mints its claim with
     none, so blaming the attempt token there aborts a valid lease holder on a
@@ -321,10 +340,11 @@ def _raise_if_superseded(owner_id: str, expected: dict, current: dict, *, where:
     direction, since the alternative is writing over an owner we cannot see.
     """
     for field, want in expected.items():
-        if want != current.get(field):
+        actual = (field in current, current.get(field)) if field in _RELEASE_OWNED_FIELDS else current.get(field)
+        if want != actual:
             raise ProvisionSuperseded(
-                f"provision lease for {owner_id} moved during {where} ({field}) — "
-                "a newer run owns the row; this one must write nothing further"
+                f"owner mutation state for {owner_id} moved during {where} ({field}) — "
+                "a newer writer owns the row; this one must write nothing further"
             )
 
 
@@ -366,6 +386,7 @@ async def upsert(owner_id: str, fields: dict) -> dict:
     ``_raise_if_superseded`` for why those must not be treated alike.
     """
     _reject_gate_owned_fields("upsert", fields)
+    _reject_release_owned_fields("upsert", fields)
     table = _get_table()
     for attempt in range(_UPSERT_CAS_ATTEMPTS):
         # CONSISTENT: this read is the ONLY source of the fields the whole-item
@@ -378,6 +399,8 @@ async def upsert(owner_id: str, fields: dict) -> dict:
         # ~3s /container/status poll keeps reading the eventually-consistent
         # default.
         existing = await get_by_owner_id(owner_id, consistent=True)
+        if existing and "release_update_id" in existing:
+            raise ProvisionSuperseded(f"release transaction for {owner_id} owns the row during upsert")
 
         now = utc_now_iso()
         item = {
@@ -493,8 +516,9 @@ async def try_claim_provision(
             Key={"owner_id": owner_id},
             UpdateExpression=update_expr,
             ConditionExpression=(
-                "attribute_not_exists(owner_id) OR #s = :error OR #s = :stopped "
-                "OR (#s = :prov AND (attribute_not_exists(provision_claimed_at) OR provision_claimed_at < :stale))"
+                "(attribute_not_exists(owner_id) OR #s = :error OR #s = :stopped "
+                "OR (#s = :prov AND (attribute_not_exists(provision_claimed_at) OR provision_claimed_at < :stale))) "
+                "AND attribute_not_exists(release_update_id)"
             ),
             ExpressionAttributeNames={"#s": "status"},
             ExpressionAttributeValues=values,
@@ -1016,7 +1040,7 @@ async def claim_attempt(owner_id: str, claim_id: str, attempt_token: str) -> Non
             table.update_item,
             Key={"owner_id": owner_id},
             UpdateExpression="SET provision_attempt_token = :tok, provision_claimed_at = :now, updated_at = :iso",
-            ConditionExpression="provision_claim_id = :cid",
+            ConditionExpression="provision_claim_id = :cid AND attribute_not_exists(release_update_id)",
             ExpressionAttributeValues={
                 ":tok": attempt_token,
                 ":cid": claim_id,
@@ -1031,11 +1055,12 @@ async def claim_attempt(owner_id: str, claim_id: str, attempt_token: str) -> Non
 
 
 async def takeover_provision(owner_id: str) -> str:
-    """Unconditionally take over the provision lease — deliberate doors only
+    """Take over an unreserved provision lease — deliberate doors only
     (trial->paid conversion, /container/recover, admin force-apply, provider
     change, debug). Returns the new fencing token.
 
-    Never blocked: a deliberate reprovision must always win. Any in-flight
+    Never blocked by another provision: a deliberate reprovision must win,
+    except while a release transaction owns the row. Any in-flight
     poll-driven provision is fenced out at its next leased checkpoint (its
     claim_id no longer matches). Only the LEASE fields are stamped — the row's
     ``status`` is preserved (created as "provisioning" if the row is new), so a
@@ -1045,23 +1070,29 @@ async def takeover_provision(owner_id: str) -> str:
     table = _get_table()
     claim_id = str(uuid.uuid4())
     now_iso = utc_now_iso()
-    await run_in_thread(
-        table.update_item,
-        Key={"owner_id": owner_id},
-        UpdateExpression=(
-            "SET provision_claim_id = :cid, provision_attempt_token = :cid, provision_claimed_at = :now, "
-            "updated_at = :iso, #s = if_not_exists(#s, :prov), "
-            "id = if_not_exists(id, :newid), created_at = if_not_exists(created_at, :iso)"
-        ),
-        ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues={
-            ":cid": claim_id,
-            ":now": int(time.time()),
-            ":iso": now_iso,
-            ":prov": "provisioning",
-            ":newid": str(uuid.uuid4()),
-        },
-    )
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression=(
+                "SET provision_claim_id = :cid, provision_attempt_token = :cid, provision_claimed_at = :now, "
+                "updated_at = :iso, #s = if_not_exists(#s, :prov), "
+                "id = if_not_exists(id, :newid), created_at = if_not_exists(created_at, :iso)"
+            ),
+            ConditionExpression="attribute_not_exists(release_update_id)",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={
+                ":cid": claim_id,
+                ":now": int(time.time()),
+                ":iso": now_iso,
+                ":prov": "provisioning",
+                ":newid": str(uuid.uuid4()),
+            },
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            raise ProvisionSuperseded(f"release transaction for {owner_id} owns the row") from e
+        raise
     return claim_id
 
 
@@ -1116,6 +1147,7 @@ async def update_container_leased(
     # replace it with no fence at all — the same shape _GATE_OWNED_FIELDS closes
     # on the other two.
     _reject_gate_owned_fields("update_container_leased", fields or {})
+    _reject_release_owned_fields("update_container_leased", fields or {})
     table = _get_table()
     names: dict[str, str] = {}
     set_parts: list[str] = []
@@ -1128,7 +1160,7 @@ async def update_container_leased(
     if not release_lease:
         set_parts.append("provision_claimed_at = :now")
     set_parts.append("updated_at = :iso")
-    condition = "provision_claim_id = :cid"
+    condition = "provision_claim_id = :cid AND attribute_not_exists(release_update_id)"
     values[":cid"] = claim_id
     if generation is not None:
         condition += " AND (attribute_not_exists(provision_generation) OR provision_generation = :gen)"
@@ -1224,7 +1256,7 @@ async def release_provision_to_error(
         set_parts.append("#le = :lasterr")
         names["#le"] = "last_error"
         values[":lasterr"] = str(last_error)[:500]
-    condition = "provision_claim_id = :cid AND #s = :prov"
+    condition = "provision_claim_id = :cid AND #s = :prov AND attribute_not_exists(release_update_id)"
     if generation is not None:
         condition += " AND (attribute_not_exists(provision_generation) OR provision_generation = :gen)"
         values[":gen"] = generation
@@ -1509,9 +1541,11 @@ async def update_fields(owner_id: str, fields: dict) -> dict | None:
     DynamoDB reserved word and the commonest field written here, an unaliased one
     is a ValidationException, and this codebase has shipped that as a silently
     dead fence before. A ``None`` value is written as NULL exactly as the get→put
-    did, never REMOVE'd. The condition's refusal IS the missing-row answer.
+    did, never REMOVE'd. A conditional refusal distinguishes a missing row from
+    a row reserved by a release transaction using DynamoDB's refused-item return.
     """
     _reject_gate_owned_fields("update_fields", fields)
+    _reject_release_owned_fields("update_fields", fields)
     names: dict[str, str] = {}
     set_parts: list[str] = []
     values: dict = {":iso": utc_now_iso()}
@@ -1524,9 +1558,10 @@ async def update_fields(owner_id: str, fields: dict) -> dict | None:
     kwargs: dict = {
         "Key": {"owner_id": owner_id},
         "UpdateExpression": "SET " + ", ".join(set_parts),
-        "ConditionExpression": "attribute_exists(owner_id)",
+        "ConditionExpression": "attribute_exists(owner_id) AND attribute_not_exists(release_update_id)",
         "ExpressionAttributeValues": values,
         "ReturnValues": "ALL_NEW",
+        "ReturnValuesOnConditionCheckFailure": "ALL_OLD",
     }
     if names:  # DDB rejects an empty map; an empty `fields` still stamps updated_at
         kwargs["ExpressionAttributeNames"] = names
@@ -1534,6 +1569,11 @@ async def update_fields(owner_id: str, fields: dict) -> dict | None:
         response = await run_in_thread(_get_table().update_item, **kwargs)
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            raw_item = e.response.get("Item")
+            refused = _deserialize_item(raw_item)
+            if raw_item:
+                reason = "reserved by a release transaction" if "release_update_id" in refused else "not recognisable"
+                raise ProvisionSuperseded(f"owner mutation row for {owner_id} is {reason}") from e
             return None  # no row — nothing to merge into
         raise
     publish_status_changed(owner_id)

@@ -11,7 +11,9 @@ import base64
 import hashlib
 import json
 import logging
+import os
 import secrets
+import tempfile
 import time
 from pathlib import Path
 
@@ -19,7 +21,11 @@ from core import openclaw_version
 from core.config import settings
 from core.services.company_package import COMPANY_STANDARD_PLAN_MAX_AGENTS
 from core.services.config_schema import gate_config
-from core.services.efs_file_lock import get_file_lock, openclaw_config_sidecar_lock
+from core.services.efs_file_lock import (
+    chown_uid_1000_best_effort,
+    get_file_lock,
+    openclaw_config_sidecar_lock,
+)
 from core.services.paperclip_meta import (
     PAPERCLIP_AGENT_ROLES,
     PaperclipMeta,
@@ -2960,7 +2966,7 @@ async def write_openclaw_config(
     acp_enabled: bool = True,
     deployed_tag: str | None = None,
 ) -> None:
-    """Write the user's openclaw.json with the full container config.
+    """Atomically replace the user's openclaw.json with the full container config.
 
     Per spec §4.2 (flat-fee pivot, 2026-04). Tier gating is removed —
     one config shape per ``provider_choice``. The OPENAI/ANTHROPIC API
@@ -3034,7 +3040,20 @@ async def write_openclaw_config(
         # The process-local gate additionally serializes backend threads.
         with get_file_lock(lock_path):
             with openclaw_config_sidecar_lock(str(config_path.parent), lock_path):
-                config_path.write_text(json.dumps(config, indent=2))
+                fd, temporary_path = tempfile.mkstemp(
+                    dir=config_path.parent,
+                    prefix=f".{config_path.name}.",
+                    suffix=".tmp",
+                )
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                        json.dump(config, stream, indent=2)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    chown_uid_1000_best_effort(temporary_path)
+                    os.replace(temporary_path, config_path)
+                finally:
+                    Path(temporary_path).unlink(missing_ok=True)
 
     await asyncio.to_thread(_write)
 

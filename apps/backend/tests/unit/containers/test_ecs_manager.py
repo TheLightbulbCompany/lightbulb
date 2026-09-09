@@ -40,6 +40,7 @@ _TEST_AIP_ARNS = {
 # test that needs the real lease primitives can put them back.
 _REAL_LEASED = _container_repo_module.update_container_leased
 _REAL_TAKEOVER = _container_repo_module.takeover_provision
+_REAL_RELEASE = _container_repo_module.release_provision_to_error
 _REAL_GET_BY_OWNER = _container_repo_module.get_by_owner_id
 _REAL_PERSIST_HASH = _bedrock_gate_tokens_module.persist_gate_token_hash
 
@@ -4690,22 +4691,21 @@ class TestProvisionLeaseFencing:
     # separated from it by the plan lookup, the task-def register and the ECS
     # update_service call.
 
-    async def _seed_restart_row(self, container_repo, owner):
+    async def _seed_restart_row(self, container_repo, owner, *, access_point_id="fsap-existing"):
         """Claim the row and give it the shape the restart branch needs: an
         ACTIVE service at desiredCount 0, with an access point already on
         record so the branch re-registers rather than falling back to
         start_user_service."""
         claim = await container_repo.try_claim_provision(owner, claim_id="claim-loser")
-        await container_repo.update_fields(
-            owner,
-            {
-                "service_name": f"openclaw-{owner}",
-                "gateway_token": "gw-existing",
-                "hook_token": "hook-existing",
-                "access_point_id": "fsap-existing",
-                "task_definition_arn": "arn:old",
-            },
-        )
+        fields = {
+            "service_name": f"openclaw-{owner}",
+            "gateway_token": "gw-existing",
+            "hook_token": "hook-existing",
+            "task_definition_arn": "arn:old",
+        }
+        if access_point_id is not None:
+            fields["access_point_id"] = access_point_id
+        await container_repo.update_fields(owner, fields)
         return claim
 
     def _stub_restart_branch(self, manager, monkeypatch, *, register):
@@ -4722,7 +4722,102 @@ class TestProvisionLeaseFencing:
         monkeypatch.setattr("core.billing.bedrock_gate_tokens.hash_token", MagicMock(return_value="gate-hash"))
         monkeypatch.setattr("core.billing.bedrock_gate_tokens.persist_gate_token_hash", AsyncMock())
         monkeypatch.setattr("core.billing.bedrock_gate_url.gate_url", MagicMock(return_value="https://gate"))
+        monkeypatch.setattr("core.repositories.slack_installs_repo.list_for_owner", AsyncMock(return_value=[]))
         manager._ecs.update_service = MagicMock()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("access_point_id", ["fsap-existing", None], ids=["access-point", "no-access-point"])
+    @pytest.mark.parametrize(
+        ("config_error", "retryable"),
+        [(ValueError("invalid config shape"), False), (OSError("EFS unavailable"), True)],
+        ids=["deterministic", "transient"],
+    )
+    async def test_restart_config_failure_stops_before_activation(
+        self, manager, monkeypatch, access_point_id, config_error, retryable
+    ):
+        with _real_containers_table(monkeypatch) as container_repo:
+            owner = f"user_restart_config_{type(config_error).__name__}_{access_point_id is None}"
+            claim = await self._seed_restart_row(container_repo, owner, access_point_id=access_point_id)
+            register = MagicMock(return_value="arn:new")
+            self._stub_restart_branch(manager, monkeypatch, register=register)
+            config_write = AsyncMock(side_effect=config_error)
+            monkeypatch.setattr(manager, "write_user_configs", config_write)
+            start = AsyncMock()
+            monkeypatch.setattr(manager, "start_user_service", start)
+            poller = AsyncMock()
+            monkeypatch.setattr(manager, "_await_running_transition", poller)
+            monkeypatch.setattr("core.repositories.container_repo.release_provision_to_error", _REAL_RELEASE)
+            metric = MagicMock()
+            monkeypatch.setattr("core.containers.ecs_manager.put_metric", metric)
+
+            with pytest.raises(type(config_error)) as raised:
+                await manager.provision_user_container(
+                    owner,
+                    provider_choice="bedrock_claude",
+                    claim_id=claim,
+                )
+
+            assert raised.value is config_error
+            config_write.assert_awaited_once()
+            register.assert_not_called()
+            manager._ecs.update_service.assert_not_called()
+            start.assert_not_awaited()
+            manager._deregister_task_definition.assert_not_called()
+            poller.assert_not_called()
+            assert metric.call_args_list == [
+                call("container.provision", dimensions={"status": "error"}),
+                call("container.error_state"),
+            ]
+            row = await container_repo.get_by_owner_id(owner)
+            assert row["task_definition_arn"] == "arn:old"
+            assert row["status"] == "error"
+            assert row["substatus"] == "provision_failed"
+            assert row["retryable"] is retryable
+            assert row["last_error"] == f"{type(config_error).__name__}: {config_error}"
+
+    @pytest.mark.asyncio
+    async def test_restart_config_supersession_stops_without_error_release(self, manager, monkeypatch):
+        from core.repositories.container_repo import ProvisionSuperseded
+
+        with _real_containers_table(monkeypatch) as container_repo:
+            owner = "user_restart_config_superseded"
+            claim = await self._seed_restart_row(container_repo, owner)
+            register = MagicMock(return_value="arn:loser")
+            self._stub_restart_branch(manager, monkeypatch, register=register)
+            state: dict = {}
+
+            async def config_then_takeover(*args, **kwargs):
+                state["winner"] = await container_repo.takeover_provision(owner)
+                raise ProvisionSuperseded("lease moved during config write")
+
+            config_write = AsyncMock(side_effect=config_then_takeover)
+            monkeypatch.setattr(manager, "write_user_configs", config_write)
+            start = AsyncMock()
+            monkeypatch.setattr(manager, "start_user_service", start)
+            poller = AsyncMock()
+            monkeypatch.setattr(manager, "_await_running_transition", poller)
+            metric = MagicMock()
+            monkeypatch.setattr("core.containers.ecs_manager.put_metric", metric)
+
+            with pytest.raises(ProvisionSuperseded):
+                await manager.provision_user_container(
+                    owner,
+                    provider_choice="bedrock_claude",
+                    claim_id=claim,
+                )
+
+            config_write.assert_awaited_once()
+            register.assert_not_called()
+            manager._ecs.update_service.assert_not_called()
+            start.assert_not_awaited()
+            manager._deregister_task_definition.assert_not_called()
+            poller.assert_not_called()
+            row = await container_repo.get_by_owner_id(owner)
+            assert row["task_definition_arn"] == "arn:old"
+            assert row["status"] == "provisioning"
+            assert row["provision_claim_id"] == state["winner"] != claim
+            container_repo.release_provision_to_error.assert_not_awaited()
+            metric.assert_called_once_with("container.provision", dimensions={"status": "superseded"})
 
     @pytest.mark.asyncio
     async def test_takeover_while_re_registering_cannot_stamp_the_task_def_arn(self, manager, monkeypatch):

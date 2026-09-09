@@ -3289,8 +3289,10 @@ class EcsManager:
                     )
                 except ProvisionSuperseded:
                     raise
-                except Exception as e:
-                    logger.warning("Config write failed during restart: %s (continuing anyway)", e)
+                except Exception:
+                    put_metric("container.provision", dimensions={"status": "error"})
+                    put_metric("container.error_state")
+                    raise
 
                 # Re-register the task definition with the freshly-computed
                 # secrets_for_task. Without this, a BYOK user whose container

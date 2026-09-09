@@ -111,6 +111,91 @@ def test_schema_unavailable_returns_none_not_errors():
         assert config_schema.schema_errors(VALID_CONFIG) is None
 
 
+def test_explicit_schema_selection_isolated_across_validation_gate_and_prune(tmp_path, monkeypatch):
+    paths = {}
+    for key in ("old", "new"):
+        path = tmp_path / f"{key}.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "type": "object",
+                    "properties": {key: {"type": "string"}},
+                    "additionalProperties": False,
+                }
+            )
+        )
+        paths[key] = path
+    monkeypatch.setattr(config_schema, "_SCHEMA_PATHS", paths)
+    for accepted, rejected in (("old", "new"), ("new", "old"), ("old", "new")):
+        doc = {accepted: "value"}
+        assert config_schema.schema_errors(doc, schema_id=accepted) == []
+        assert config_schema.schema_errors(doc, schema_id=rejected)
+        config_schema.gate_config(doc, owner_id="user_1", context="unit", schema_id=accepted, enforce=True)
+        with pytest.raises(config_schema.ConfigSchemaError):
+            config_schema.gate_config(doc, owner_id="user_1", context="unit", schema_id=rejected, enforce=True)
+        patch_value = {"old": "keep if old", "new": "keep if new"}
+        original = dict(patch_value)
+        assert config_schema.prune_schema_rejected({}, patch_value, schema_id=accepted) == {
+            accepted: patch_value[accepted]
+        }
+        assert patch_value == original
+
+
+@pytest.mark.parametrize("failure", ["unknown", "missing", "json", "schema"])
+def test_explicit_schema_unavailable_never_falls_back(tmp_path, monkeypatch, caplog, failure):
+    secret = "synthetic-schema-value-do-not-echo"
+    path = tmp_path / "selected.json"
+    if failure == "json":
+        path.write_text(secret)  # invalid JSON
+    elif failure == "schema":
+        path.write_text(json.dumps({"type": secret}))  # invalid JSON Schema
+    monkeypatch.setattr(config_schema, "_SCHEMA_PATHS", {} if failure == "unknown" else {"selected": path})
+    operations = (
+        lambda: config_schema.schema_errors(VALID_CONFIG, schema_id="selected"),
+        lambda: config_schema.prune_schema_rejected({}, {}, schema_id="selected"),
+        lambda: config_schema.gate_config(VALID_CONFIG, owner_id="user_1", context="unit", schema_id="selected"),
+    )
+    with patch.object(config_schema.settings, "OPENCLAW_CONFIG_SCHEMA_MODE", "audit"):
+        for operation in operations:
+            with pytest.raises(config_schema.ConfigSchemaError) as exc:
+                operation()
+            assert secret not in str(exc.value)
+    assert secret not in caplog.text
+
+
+def test_explicit_schema_real_artifact_matches_default_diagnostics():
+    invalid = {**VALID_CONFIG, "gateway": {"bind": "bogus"}}
+
+    assert config_schema.schema_errors(VALID_CONFIG, schema_id="2026.8.1-isol8.3") == []
+    assert config_schema.schema_errors(invalid, schema_id="2026.8.1-isol8.3") == config_schema.schema_errors(invalid)
+
+
+def test_explicit_schema_rejects_unregistered_path_without_opening(monkeypatch):
+    def fail_if_opened(*args, **kwargs):
+        raise AssertionError("unregistered schema identifier reached the filesystem")
+
+    monkeypatch.setattr(config_schema.Path, "read_text", fail_if_opened)
+    with pytest.raises(config_schema.ConfigSchemaError, match="required OpenClaw config schema is unavailable"):
+        config_schema.schema_errors(VALID_CONFIG, schema_id="../openclaw_config.schema")
+
+
+def test_explicit_schema_preserves_audit_and_enforce_policy(caplog):
+    invalid = {**VALID_CONFIG, "gateway": {"bind": "bogus"}}
+    schema_id = "2026.8.1-isol8.3"
+
+    with patch.object(config_schema.settings, "OPENCLAW_CONFIG_SCHEMA_MODE", "audit"):
+        config_schema.gate_config(invalid, owner_id="user_1", context="unit", schema_id=schema_id)
+        with pytest.raises(config_schema.ConfigSchemaError):
+            config_schema.gate_config(
+                invalid,
+                owner_id="user_1",
+                context="unit",
+                enforce=True,
+                schema_id=schema_id,
+            )
+    assert "SCHEMA-INVALID" in caplog.text
+
+
 # --- the gate ---------------------------------------------------------------
 
 

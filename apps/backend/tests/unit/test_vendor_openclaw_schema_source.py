@@ -43,6 +43,7 @@ class VendorCase:
         self,
         upstream: str = _UPSTREAM,
         *,
+        legacy_pin: str | None = None,
         args: list[str] | None = None,
         build_exit: int = 0,
         node_version: str = "26.1.0",
@@ -50,6 +51,9 @@ class VendorCase:
         json_valid: bool = True,
     ) -> subprocess.CompletedProcess[str]:
         (self.root / "openclaw-version.json").write_text(json.dumps({"upstream": upstream}))
+        if legacy_pin is not None:
+            schema_dir = self.root / "apps" / "backend" / "tests" / "chaos" / "_schema"
+            (schema_dir / "PINNED_TAG").write_text(f"{legacy_pin}\n")
         env = os.environ.copy()
         env.update(
             {
@@ -167,7 +171,7 @@ def vendor_case(tmp_path: Path) -> VendorCase:
     artifact_contents = {
         schema_dir / "openclaw-config-schema.mjs": b"bundle sentinel\n",
         json_schema: b'{"sentinel": true}\n',
-        schema_dir / "PINNED_TAG": b"tag sentinel\n",
+        schema_dir / "PINNED_TAG": f"{_UPSTREAM}\n".encode(),
     }
     for path, contents in artifact_contents.items():
         path.write_bytes(contents)
@@ -319,11 +323,13 @@ def test_untracked_package_manager_control_is_rejected_before_dependency_install
         "ghcr.io/thelightbulbcompany/agent:2026.8.1-isol8.3@sha256:deadbeef",
     ],
 )
-def test_malformed_or_digest_image_ref_is_rejected(vendor_case: VendorCase, upstream: str):
-    result = vendor_case.run(upstream)
+def test_malformed_or_digest_legacy_pin_is_rejected(vendor_case: VendorCase, upstream: str):
+    result = vendor_case.run(legacy_pin=upstream)
     assert result.returncode != 0
     assert "tagged Lightbulb fork image" in result.stderr
-    vendor_case.assert_legacy_artifacts_unchanged()
+    for path, contents in vendor_case.artifacts.items():
+        if path.name != "PINNED_TAG":
+            assert path.read_bytes() == contents
 
 
 @pytest.mark.parametrize(
@@ -394,7 +400,7 @@ def test_explicit_candidate_publishes_versioned_artifacts_and_provenance(vendor_
 
 
 def test_legacy_mode_remains_usable(vendor_case: VendorCase):
-    result = vendor_case.run()
+    result = vendor_case.run(upstream="ghcr.io/thelightbulbcompany/agent:2026.9.3-isol8.1")
     assert result.returncode == 0, result.stderr
     schema_dir = vendor_case.root / "apps" / "backend" / "tests" / "chaos" / "_schema"
     assert (schema_dir / "PINNED_COMMIT").read_text() == f"{vendor_case.source_commit}\n"

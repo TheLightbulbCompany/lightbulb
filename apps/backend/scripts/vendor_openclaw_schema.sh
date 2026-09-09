@@ -48,16 +48,20 @@ if $EXPLICIT; then
   PINNED_TAG="$FORK_TAG"
 else
   SOURCE="${OPENCLAW_FORK:-$HOME/Desktop/agent}"
-  PINNED_IMAGE=$(python3 -c "import json;print(json.load(open('openclaw-version.json'))['upstream'])")
+  [ -f "$LEGACY_OUT/PINNED_TAG" ] || {
+    echo "ERROR: legacy fleet PINNED_TAG is missing" >&2
+    exit 1
+  }
+  IFS= read -r PINNED_IMAGE < "$LEGACY_OUT/PINNED_TAG"
   case "$PINNED_IMAGE" in
     ghcr.io/thelightbulbcompany/agent:*@* | ghcr.io/thelightbulbcompany/agent:)
-      echo "ERROR: upstream must name a tagged Lightbulb fork image" >&2
+      echo "ERROR: legacy fleet PINNED_TAG must name a tagged Lightbulb fork image" >&2
       exit 1
       ;;
     ghcr.io/thelightbulbcompany/agent:*) SCHEMA_ID="${PINNED_IMAGE#ghcr.io/thelightbulbcompany/agent:}" ;;
-    *) echo "ERROR: upstream must name a tagged Lightbulb fork image" >&2; exit 1 ;;
+    *) echo "ERROR: legacy fleet PINNED_TAG must name a tagged Lightbulb fork image" >&2; exit 1 ;;
   esac
-  [[ "$SCHEMA_ID" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || { echo "ERROR: upstream must name a tagged Lightbulb fork image" >&2; exit 1; }
+  [[ "$SCHEMA_ID" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || { echo "ERROR: legacy fleet PINNED_TAG must name a tagged Lightbulb fork image" >&2; exit 1; }
   FORK_TAG="v$SCHEMA_ID"
   PINNED_TAG="$PINNED_IMAGE"
 fi

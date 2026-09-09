@@ -220,6 +220,39 @@ def build_v2_connect_payload(
     )
 
 
+def build_v4_connect_payload(
+    *,
+    device_id: str,
+    client_id: str,
+    client_mode: str,
+    role: str,
+    scopes: Iterable[str],
+    signed_at_ms: int,
+    token: str,
+    nonce: str,
+    platform: str | None,
+    device_family: str | None,
+    trusted_broker_profile_id: str,
+) -> str:
+    """Build the fork's canonical trusted-broker profile proof."""
+    return "|".join(
+        [
+            "v4",
+            device_id,
+            client_id,
+            client_mode,
+            role,
+            ",".join(scopes),
+            str(signed_at_ms),
+            token or "",
+            nonce,
+            (platform or "").strip().lower(),
+            (device_family or "").strip().lower(),
+            trusted_broker_profile_id,
+        ]
+    )
+
+
 def sign_connect_request(
     *,
     identity: OperatorDeviceIdentity,
@@ -230,8 +263,15 @@ def sign_connect_request(
     client_mode: str = BACKEND_CLIENT_MODE,
     role: str = BACKEND_ROLE,
     now_ms: int | None = None,
+    platform: str | None = None,
+    device_family: str | None = None,
+    trusted_broker_profile_id: str | None = None,
 ) -> dict:
     """Produce the `device` dict that goes into the connect request params.
+
+    Ordinary operator calls use v2. A server-owned trusted broker profile
+    assertion opts into the fork's v4 payload, binding that profile and the
+    normalized device metadata into the same token/device proof.
 
     Returned shape matches what `handshake-auth-helpers.ts` expects:
         {
@@ -244,16 +284,31 @@ def sign_connect_request(
     """
     scopes_tuple = tuple(scopes)
     signed_at_ms = now_ms if now_ms is not None else int(time.time() * 1000)
-    payload = build_v2_connect_payload(
-        device_id=identity.device_id,
-        client_id=client_id,
-        client_mode=client_mode,
-        role=role,
-        scopes=scopes_tuple,
-        signed_at_ms=signed_at_ms,
-        token=token,
-        nonce=nonce,
-    )
+    if trusted_broker_profile_id is not None:
+        payload = build_v4_connect_payload(
+            device_id=identity.device_id,
+            client_id=client_id,
+            client_mode=client_mode,
+            role=role,
+            scopes=scopes_tuple,
+            signed_at_ms=signed_at_ms,
+            token=token,
+            nonce=nonce,
+            platform=platform,
+            device_family=device_family,
+            trusted_broker_profile_id=trusted_broker_profile_id,
+        )
+    else:
+        payload = build_v2_connect_payload(
+            device_id=identity.device_id,
+            client_id=client_id,
+            client_mode=client_mode,
+            role=role,
+            scopes=scopes_tuple,
+            signed_at_ms=signed_at_ms,
+            token=token,
+            nonce=nonce,
+        )
     signature_bytes = identity.private_key().sign(payload.encode("utf-8"))
     return {
         "id": identity.device_id,

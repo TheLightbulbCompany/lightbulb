@@ -64,6 +64,18 @@ class TestOpenclawConfigShape:
         # test_trusted_proxies_is_loopback_only for the invariant.
         assert config["gateway"]["trustedProxies"] == ["127.0.0.1", "::1"]
 
+    def test_gateway_trusted_broker_profiles_are_explicit_and_fail_closed(self):
+        device_id = "a" * 64
+        config = _cfg(trusted_broker_profiles={device_id: "profile-human-1"})
+        assert config["gateway"]["auth"] == {
+            "mode": "token",
+            "token": "test-token",
+            "trustedBrokerProfiles": {device_id: "profile-human-1"},
+        }
+        for invalid in ({"not-a-device": "profile-human-1"}, {device_id: "gateway-owner"}):
+            with pytest.raises(ValueError, match="trusted_broker_profiles"):
+                _cfg(trusted_broker_profiles=invalid)
+
     def test_control_ui_disabled(self):
         config = _cfg()
         assert config["gateway"]["controlUi"]["enabled"] is False

@@ -23,7 +23,9 @@ from core.crypto.operator_device import OperatorDeviceIdentity, sign_connect_req
 from core.gateway.operator_rpc import GATEWAY_PORT
 
 CLIENT_ID = "lightbulb-company-room"
-HUMAN_SCOPES = ("operator.read", "operator.write")
+# File CAS is an admin-scoped Gateway method. This credential never crosses
+# the backend boundary, and rpc() still enforces the closed method table below.
+HUMAN_SCOPES = ("operator.admin", "operator.read", "operator.write")
 _AGENT = re.compile(r"[a-z0-9][a-z0-9_-]{0,127}\Z")
 
 
@@ -97,24 +99,36 @@ class RoomQualification:
     human_auth_verified: bool
     machine_coexistence_verified: bool
     legacy_privacy_verified: bool
-    identity_header: str
     agents: frozenset[str]
     humans: dict[str, QualifiedHumanDevice] = field(repr=False)
 
+    @property
+    def trusted_broker_profiles(self) -> dict[str, str]:
+        bindings = {human.identity.device_id: human.profile_id for human in self.humans.values()}
+        profiles = {human.profile_id for human in self.humans.values()}
+        if (
+            len(bindings) != len(self.humans)
+            or len(profiles) != len(self.humans)
+            or any(
+                re.fullmatch(r"(?!gateway-owner$)[A-Za-z0-9_-]{1,128}", profile_id) is None
+                for profile_id in profiles
+            )
+        ):
+            raise RoomError("ROOM_UNAVAILABLE", "Qualified human device/profile bindings are ambiguous")
+        return bindings
+
     def require(self, identity: HumanIdentity, container: dict, ip: str):
+        _ = self.trusted_broker_profiles
         if not (
             self.owner_id == identity.owner_id
             and self.ip == ip
             and self.release_id
-            and self.release_id == container.get("release_update_id")
             and self.build_id
             and self.evidence_id
             and self.human_auth_verified is True
             and self.machine_coexistence_verified is True
             and self.legacy_privacy_verified is True
             and identity.alias in self.humans
-            and re.fullmatch(r"x-[a-z0-9-]+", self.identity_header)
-            and self.identity_header not in {"x-forwarded-for", "x-openclaw-scopes"}
         ):
             raise RoomError("ROOM_UNAVAILABLE", "Native room runtime/auth qualification unavailable")
         human = self.humans[identity.alias]
@@ -158,9 +172,12 @@ def _object(properties: dict, required=()):
 
 
 _STRING = {"type": "string", "minLength": 1, "maxLength": 512}
+_SESSION_KEY = {"type": "string", "minLength": 1, "maxLength": 4096}
+_AGENT_ID = {"type": "string", "minLength": 1, "maxLength": 128}
+_PATH = {"type": "string", "maxLength": 4096}
 _MEMBER = _object({"type": {"enum": ["profile", "agent"]}, "id": _STRING}, ("type", "id"))
-# Reviewed Task 1/2 producer subset only. Task 3 and runtime qualification
-# remain incomplete: no execution, discovery, subscriptions or presence RPCs.
+# Browser callers can select only these fields. Actor, profile, auth, agent
+# override and server-authored provenance remain properties of the native socket.
 _SCHEMAS = {
     "sessions.room.create": _object(
         {
@@ -187,6 +204,115 @@ _SCHEMAS = {
         },
         ("sessionKey", "expectedSessionId", "idempotencyKey", "text"),
     ),
+    "chat.history": _object(
+        {
+            "sessionKey": _SESSION_KEY,
+            "cursor": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 1000},
+            "maxBytes": {"type": "integer", "minimum": 1024, "maximum": 1_000_000},
+            "offset": {"type": "integer", "minimum": 0},
+            "messageId": _STRING,
+            "sessionId": _STRING,
+            "maxChars": {"type": "integer", "minimum": 1, "maximum": 500_000},
+        },
+        ("sessionKey",),
+    ),
+    "sessions.search": _object(
+        {
+            "sessionKeys": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 200,
+                "uniqueItems": True,
+                "items": _SESSION_KEY,
+            },
+            "query": {"type": "string", "minLength": 1, "maxLength": 4096},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 25},
+        },
+        ("sessionKeys", "query"),
+    ),
+    "sessions.list": _object(
+        {
+            "agentId": _AGENT_ID,
+            "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+            "offset": {"type": "integer", "minimum": 0},
+            "search": {"type": "string", "maxLength": 512},
+            "archived": {"anyOf": [{"type": "boolean"}, {"const": "all"}]},
+            "includeDerivedTitles": {"type": "boolean"},
+            "includeLastMessage": {"type": "boolean"},
+        }
+    ),
+    "sessions.messages.subscribe": _object({"key": _SESSION_KEY}, ("key",)),
+    "sessions.messages.unsubscribe": _object({"key": _SESSION_KEY}, ("key",)),
+    "sessions.presence.heartbeat": _object(
+        {
+            "sessionKey": _SESSION_KEY,
+            "visibility": {"enum": ["visible", "hidden", "unknown"]},
+            "recentInput": {"enum": ["recent", "stale", "unknown"]},
+        },
+        ("sessionKey",),
+    ),
+    **{
+        method: _object({"sessionKey": _SESSION_KEY}, ("sessionKey",))
+        for method in (
+            "sessions.presence.snapshot",
+            "sessions.presence.subscribe",
+            "sessions.presence.unsubscribe",
+        )
+    },
+    "session.typing": _object(
+        {
+            "sessionKey": _SESSION_KEY,
+            "sessionId": _STRING,
+            "typing": {"type": "boolean"},
+            "preview": {"type": "string", "maxLength": 400},
+        },
+        ("sessionKey", "sessionId", "typing"),
+    ),
+    "sessions.patch": _object(
+        {
+            "key": _SESSION_KEY,
+            "expectedSessionId": _STRING,
+            "expectedMarkedUnreadAt": {"type": ["integer", "null"], "minimum": 0},
+            "unread": {"const": False},
+        },
+        ("key", "expectedSessionId", "expectedMarkedUnreadAt", "unread"),
+    ),
+    "users.mentionable": _object(
+        {"sessionKey": _SESSION_KEY, "query": {"type": "string", "maxLength": 128}},
+        ("sessionKey",),
+    ),
+    **{
+        method: _object({"sessionKey": _SESSION_KEY}, ("sessionKey",))
+        for method in ("session.members.list", "session.members.listEvidence")
+    },
+    "sessions.files.list": _object(
+        {"sessionKey": _SESSION_KEY, "path": _PATH, "search": {"type": "string", "maxLength": 4096}},
+        ("sessionKey",),
+    ),
+    "sessions.files.get": _object(
+        {"sessionKey": _SESSION_KEY, "path": {**_PATH, "minLength": 1}},
+        ("sessionKey", "path"),
+    ),
+    "sessions.files.set": _object(
+        {
+            "sessionKey": _SESSION_KEY,
+            "path": {**_PATH, "minLength": 1},
+            "content": {"type": "string", "maxLength": 100_000},
+            "expectedHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        },
+        ("sessionKey", "path", "content", "expectedHash"),
+    ),
+    "sessions.execution.dispatch": _object(
+        {
+            "sessionKey": _SESSION_KEY,
+            "expectedSessionId": _STRING,
+            "inputMessageId": _STRING,
+            "idempotencyKey": _STRING,
+            "hopCount": {"type": "integer", "minimum": 0, "maximum": 3},
+        },
+        ("sessionKey", "expectedSessionId", "inputMessageId", "idempotencyKey"),
+    ),
     **{
         method: _object({"sessionKey": _STRING, "identity": _MEMBER}, ("sessionKey", "identity"))
         for method in ("session.members.add", "session.members.remove")
@@ -207,8 +333,27 @@ _APPEND_RESULT = Draft202012Validator(
 )
 _VALIDATORS = {method: Draft202012Validator(schema) for method, schema in _SCHEMAS.items()}
 ROOM_METHODS = frozenset(_SCHEMAS)
+UNCERTAIN_AFTER_SUCCESS = frozenset(
+    {
+        "sessions.room.create",
+        "sessions.message.append",
+        "sessions.patch",
+        "sessions.files.set",
+        "sessions.execution.dispatch",
+        "session.members.add",
+        "session.members.remove",
+    }
+)
 _ROOM_EVENTS = frozenset(
-    {"chat", "agent", "session.message", "session.typing", "session.sharing", "session.sharing.evidence"}
+    {
+        "chat",
+        "agent",
+        "session.message",
+        "session.presence",
+        "session.typing",
+        "session.sharing",
+        "session.sharing.evidence",
+    }
 )
 
 
@@ -217,10 +362,10 @@ def admit_rpc(method: str, params: dict, identity: HumanIdentity, qualification:
     if validator is None or not validator.is_valid(params):
         raise RoomError("INVALID_REQUEST", "Unsupported room method or arguments")
     admitted = dict(params)
+    if "agentId" in admitted and admitted["agentId"] not in qualification.agents:
+        raise RoomError("FORBIDDEN", "Room agent not authorized")
     if method == "sessions.room.create":
         agent = params["agentId"]
-        if agent not in qualification.agents:
-            raise RoomError("FORBIDDEN", "Room agent not authorized")
         admitted["key"] = room_prefix(identity.owner_id, agent) + _digest(
             [identity.issuer, identity.subject, params["idempotencyKey"]]
         )
@@ -228,6 +373,8 @@ def admit_rpc(method: str, params: dict, identity: HumanIdentity, qualification:
     for key_field in ("sessionKey", "key", "parentSessionKey"):
         if key_field in admitted and not owns_room_key(admitted[key_field], identity, qualification):
             raise RoomError("FORBIDDEN", "Private or foreign session target")
+    if any(not owns_room_key(key, identity, qualification) for key in admitted.get("sessionKeys", [])):
+        raise RoomError("FORBIDDEN", "Private or foreign session target")
     origin = admitted.get("threadOrigin")
     if origin and not owns_room_key(origin["parentRoomKey"], identity, qualification):
         raise RoomError("FORBIDDEN", "Private or foreign thread origin")
@@ -245,6 +392,41 @@ def admit_rpc(method: str, params: dict, identity: HumanIdentity, qualification:
             [identity.owner_id, identity.issuer, identity.subject, admitted["key"], admitted["idempotencyKey"]]
         )
     return admitted
+
+
+def filter_rpc_result(method: str, result, identity: HumanIdentity, qualification: RoomQualification):
+    """Apply depth filters to unscoped native discovery results."""
+    if method == "sessions.list":
+        if not isinstance(result, dict) or not isinstance(result.get("sessions"), list):
+            raise RoomError("ROOM_UNAVAILABLE", "Invalid native room inventory")
+        sessions = [
+            item
+            for item in result["sessions"]
+            if isinstance(item, dict) and owns_room_key(item.get("key"), identity, qualification)
+        ]
+        return {**result, "sessions": sessions, "count": len(sessions)}
+    if method == "sessions.search":
+        if not isinstance(result, dict) or not isinstance(result.get("results"), list):
+            raise RoomError("ROOM_UNAVAILABLE", "Invalid native room search result")
+        return {
+            **result,
+            "results": [
+                item
+                for item in result["results"]
+                if isinstance(item, dict) and owns_room_key(item.get("sessionKey"), identity, qualification)
+            ],
+        }
+    if method == "users.mentionable":
+        if not isinstance(result, dict) or not isinstance(result.get("users"), list):
+            raise RoomError("ROOM_UNAVAILABLE", "Invalid native mentionable result")
+        profiles = {human.profile_id for human in qualification.humans.values()}
+        return {
+            **result,
+            "users": [
+                item for item in result["users"] if isinstance(item, dict) and item.get("profileId") in profiles
+            ],
+        }
+    return result
 
 
 def require_append_result(result, params: dict) -> None:
@@ -270,16 +452,18 @@ async def require_current_member(identity: HumanIdentity, conn_svc) -> None:
 
 
 class NativeHumanConnection:
-    def __init__(self, identity, qualification, device, management_api, conn_svc):
+    def __init__(self, identity, qualification, device, token, management_api, conn_svc):
         self.identity = identity
         self.qualification = qualification
         self.device = device
+        self.token = token
         self.management_api = management_api
         self.conn_svc = conn_svc
         self.ws = None
         self.reader = None
         self.pending = {}
         self.subscriptions = set()
+        self.presence_subscriptions = set()
         self.methods = set()
         self.profile = None
         self.closed = False
@@ -289,11 +473,6 @@ class NativeHumanConnection:
         try:
             self.ws = await websockets.connect(
                 f"ws://{self.qualification.ip}:{GATEWAY_PORT}",
-                additional_headers={
-                    self.qualification.identity_header: self.identity.alias,
-                    "x-forwarded-for": self.identity.source_ip,
-                    "x-openclaw-scopes": ",".join(HUMAN_SCOPES),
-                },
                 open_timeout=10,
                 close_timeout=5,
                 max_size=2**20,
@@ -314,6 +493,10 @@ class NativeHumanConnection:
                             "maxProtocol": 4,
                             "role": "operator",
                             "scopes": list(HUMAN_SCOPES),
+                            "auth": {
+                                "token": self.token,
+                                "trustedBrokerProfileId": self.device.profile_id,
+                            },
                             "client": {
                                 "id": "gateway-client",
                                 "mode": "backend",
@@ -322,7 +505,12 @@ class NativeHumanConnection:
                                 "instanceId": self.identity.connection_id,
                             },
                             "device": sign_connect_request(
-                                identity=self.device.identity, token="", nonce=nonce, scopes=HUMAN_SCOPES
+                                identity=self.device.identity,
+                                token=self.token,
+                                nonce=nonce,
+                                scopes=HUMAN_SCOPES,
+                                platform="linux",
+                                trusted_broker_profile_id=self.device.profile_id,
                             ),
                         },
                     }
@@ -418,7 +606,7 @@ class NativeHumanConnection:
         if frame.get("type") != "event" or frame.get("event") not in _ROOM_EVENTS:
             return
         payload = frame.get("payload") or {}
-        key = payload.get("sessionKey") or payload.get("key")
+        key = payload.get("sessionKey") or payload.get("key") or payload.get("roomKey")
         if not owns_room_key(key, self.identity, self.qualification):
             return
         await self.require_current()
@@ -434,7 +622,10 @@ class NativeHumanConnection:
             run = (self.identity.owner_id, key, run_id)
             await self.conn_svc.finish_native_run(*run)
             self.run_holds.discard(run)
-        if key not in self.subscriptions:
+        subscribed = (
+            self.presence_subscriptions if frame.get("event") == "session.presence" else self.subscriptions
+        )
+        if key not in subscribed:
             return
         # Native sender/creator/entryId/parentId/runId evidence stays intact.
         if len(json.dumps(frame, separators=(",", ":")).encode()) > 110_000:
@@ -452,6 +643,7 @@ class NativeHumanConnection:
             return
         self.closed = True
         self.subscriptions.clear()
+        self.presence_subscriptions.clear()
         for future in self.pending.values():
             if not future.done():
                 future.set_exception(
@@ -476,16 +668,26 @@ class NativeRoomPool:
     async def ensure(self, identity, container, ip):
         qualification = qualification_for(identity.owner_id)
         device = qualification.require(identity, container, ip)
+        token = container.get("gateway_token")
+        if not isinstance(token, str) or not token:
+            raise RoomError("ROOM_UNAVAILABLE", "Qualified room runtime authentication unavailable")
         await require_current_member(identity, self.conn_svc)
         async with self.lock:
             if self.closed:
                 raise RoomError("ROOM_UNAVAILABLE", "Room pool is shutting down")
             existing = self.connections.get(identity)
-            if existing and not existing.closed and existing.qualification == qualification:
+            if (
+                existing
+                and not existing.closed
+                and existing.qualification == qualification
+                and existing.token == token
+            ):
                 return existing
             if existing:
                 await existing.close()
-            conn = NativeHumanConnection(identity, qualification, device, self.management_api, self.conn_svc)
+            conn = NativeHumanConnection(
+                identity, qualification, device, token, self.management_api, self.conn_svc
+            )
             conn.run_holds = self.run_holds
             try:
                 await conn.connect()

@@ -1,6 +1,7 @@
 """Synthetic broker tests only; no runtime/auth/isolation qualification evidence."""
 
 import asyncio
+import base64
 import json
 from dataclasses import replace
 from types import SimpleNamespace
@@ -12,7 +13,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from core.config import settings
-from core.crypto.operator_device import generate_operator_device
+from core.crypto.operator_device import build_v4_connect_payload, generate_operator_device
 from core.gateway import native_rooms as rooms
 from core.gateway.connection_pool import GatewayConnection, GatewayConnectionPool
 from routers import websocket_chat as route
@@ -44,7 +45,6 @@ def qualification():
         True,
         True,
         True,
-        "x-lightbulb-human",
         frozenset({"friday"}),
         {
             identity(subject).alias: rooms.QualifiedHumanDevice(generate_operator_device(), f"profile-{subject}")
@@ -54,9 +54,9 @@ def qualification():
 
 
 class FakeSocket:
-    def __init__(self, gateway, headers):
+    def __init__(self, gateway):
         self.gateway = gateway
-        self.headers = headers
+        self.human = None
         self.queue = asyncio.Queue()
         self.queue.put_nowait(
             json.dumps({"type": "event", "event": "connect.challenge", "payload": {"nonce": "synthetic-nonce"}})
@@ -73,15 +73,40 @@ class FakeSocket:
         request = json.loads(raw)
         method, params = request["method"], request["params"]
         self.gateway.calls.append(request)
-        alias = self.headers["x-lightbulb-human"]
-        human = self.gateway.qualification.humans[alias]
         ok = True
         if method == "connect":
-            assert "auth" not in params
+            human = next(
+                human
+                for human in self.gateway.qualification.humans.values()
+                if human.identity.device_id == params["device"]["id"]
+            )
+            self.human = human
+            assert params["auth"] == {
+                "token": "server-gateway-token",
+                "trustedBrokerProfileId": human.profile_id,
+            }
             assert params["role"] == "operator"
             assert params["device"]["id"] == human.identity.device_id
             assert params["scopes"] == list(rooms.HUMAN_SCOPES)
-            assert self.headers["x-openclaw-scopes"] == ",".join(rooms.HUMAN_SCOPES)
+            signed = build_v4_connect_payload(
+                device_id=params["device"]["id"],
+                client_id=params["client"]["id"],
+                client_mode=params["client"]["mode"],
+                role=params["role"],
+                scopes=params["scopes"],
+                signed_at_ms=params["device"]["signedAt"],
+                token=params["auth"]["token"],
+                nonce=params["device"]["nonce"],
+                platform=params["client"].get("platform"),
+                device_family=params["client"].get("deviceFamily"),
+                trusted_broker_profile_id=params["auth"]["trustedBrokerProfileId"],
+            )
+            human.identity.public_key().verify(
+                base64.urlsafe_b64decode(
+                    params["device"]["signature"] + "=" * (-len(params["device"]["signature"]) % 4)
+                ),
+                signed.encode(),
+            )
             result = {
                 "type": "hello-ok",
                 "protocol": 4,
@@ -90,11 +115,13 @@ class FakeSocket:
                 "features": {"methods": sorted(self.gateway.methods)},
             }
         elif method == "users.self":
-            result = {"profile": {"id": self.gateway.profile_override or human.profile_id, "displayName": alias}}
+            result = {"profile": {"id": self.gateway.profile_override or self.human.profile_id}}
         elif self.gateway.error is not None:
             ok, result = False, self.gateway.error
         elif method == "sessions.message.append":
             result = self.gateway.receipt
+        elif method in self.gateway.results:
+            result = self.gateway.results[method]
         else:
             result = {"ok": True, **{k: params[k] for k in ("key", "sessionKey") if k in params}}
         self.queue.put_nowait(
@@ -109,6 +136,11 @@ async def harness(monkeypatch):
         qualification=proof,
         calls=[],
         receipt=receipt(),
+        results={
+            "sessions.list": {"sessions": [], "count": 0},
+            "sessions.search": {"results": []},
+            "users.mentionable": {"users": [], "truncated": False},
+        },
         error=None,
         methods=rooms.ROOM_METHODS | {"users.self"},
         scopes=list(rooms.HUMAN_SCOPES),
@@ -143,7 +175,7 @@ async def harness(monkeypatch):
     management.send_message_async = AsyncMock(return_value=True)
     pool = GatewayConnectionPool(management, service)
     native = pool.native_rooms
-    pool.gate_chat = AsyncMock(side_effect=AssertionError("append must not enter billing"))
+    pool.gate_chat = AsyncMock(return_value={"blocked": False})
     pool.send_rpc = AsyncMock()
     pool.add_frontend_connection = MagicMock(wraps=pool.add_frontend_connection)
     pool.remove_frontend_connection = MagicMock(wraps=pool.remove_frontend_connection)
@@ -154,7 +186,8 @@ async def harness(monkeypatch):
 
     async def dial(uri, **kwargs):
         assert uri == "ws://10.0.0.20:18789"
-        socket = FakeSocket(gateway, kwargs["additional_headers"])
+        assert "additional_headers" not in kwargs
+        socket = FakeSocket(gateway)
         gateway.sockets.append(socket)
         return socket
 
@@ -166,7 +199,9 @@ async def harness(monkeypatch):
     monkeypatch.setattr(route, "get_gateway_pool", lambda: pool)
     monkeypatch.setattr("core.containers.get_gateway_pool", lambda: pool)
     manager = SimpleNamespace(
-        resolve_running_container=AsyncMock(return_value=({"release_update_id": "release-test"}, "10.0.0.20"))
+        resolve_running_container=AsyncMock(
+            return_value=({"gateway_token": "server-gateway-token"}, "10.0.0.20")
+        )
     )
     monkeypatch.setattr(route, "get_ecs_manager", lambda: manager)
 
@@ -242,7 +277,7 @@ async def test_unknown_or_unqualified_runtime_fails_closed(harness, monkeypatch,
 @pytest.mark.parametrize(
     "field,value",
     [
-        ("scopes", ["operator.admin", "operator.read", "operator.write"]),
+        ("scopes", ["operator.read", "operator.write"]),
         ("profile_override", "profile-user_B"),
         ("build_id", "unknown-runtime"),
         ("methods", {"users.self", "chat.send"}),
@@ -300,6 +335,16 @@ def test_foreign_room_key_and_agent_substitution_rejected():
     key = rooms.room_prefix("org_team", "friday") + "a" * 64
     with pytest.raises(rooms.RoomError):
         rooms.admit_rpc("chat.history", {"sessionKey": key, "agentId": "other"}, a, proof)
+
+
+@pytest.mark.asyncio
+async def test_server_gateway_token_is_required_and_browser_cannot_supply_auth(harness):
+    harness.manager.resolve_running_container.return_value = ({}, "10.0.0.20")
+    missing = await harness.request("connect")
+    assert missing["error"]["code"] == "ROOM_UNAVAILABLE"
+    forged = await harness.request("connect", {"auth": {"token": "browser-token"}})
+    assert forged["error"]["code"] == "INVALID_REQUEST"
+    assert not harness.gateway.sockets
 
 
 def test_internal_edge_secret_required_even_when_legacy_enforcement_off(monkeypatch):
@@ -607,7 +652,16 @@ async def test_append_receipt_replay_and_identity_bypass_billing_and_holds(harne
     assert len(appends) == 3 and all(call["params"] == params for call in appends)
     assert h.native.connections[identity()].profile["id"] == "profile-user_A"
     assert h.native.connections[identity("user_B", "tab-b")].profile["id"] == "profile-user_B"
-    assert len({socket.headers["x-lightbulb-human"] for socket in h.gateway.sockets}) == 2
+    assert (
+        len(
+            {
+                call["params"]["device"]["id"]
+                for call in h.gateway.calls
+                if call["method"] == "connect"
+            }
+        )
+        == 2
+    )
     h.pool.gate_chat.assert_not_awaited()
     h.service.begin_native_run.assert_not_awaited()
     h.service.finish_native_run.assert_not_awaited()
@@ -655,6 +709,158 @@ async def test_append_rejects_malformed_or_mismatched_native_receipt(harness, ov
 @pytest.mark.parametrize(
     "method,params",
     [
+        ("chat.history", {"sessionKey": room_key(), "limit": 50}),
+        ("sessions.search", {"sessionKeys": [room_key()], "query": "plan", "limit": 10}),
+        ("sessions.list", {"agentId": "friday", "limit": 50, "includeDerivedTitles": True}),
+        ("sessions.messages.subscribe", {"key": room_key()}),
+        ("sessions.messages.unsubscribe", {"key": room_key()}),
+        (
+            "sessions.presence.heartbeat",
+            {"sessionKey": room_key(), "visibility": "visible", "recentInput": "recent"},
+        ),
+        ("sessions.presence.snapshot", {"sessionKey": room_key()}),
+        ("sessions.presence.subscribe", {"sessionKey": room_key()}),
+        ("sessions.presence.unsubscribe", {"sessionKey": room_key()}),
+        (
+            "session.typing",
+            {"sessionKey": room_key(), "sessionId": "incarnation-1", "typing": True, "preview": "hello"},
+        ),
+        (
+            "sessions.patch",
+            {
+                "key": room_key(),
+                "expectedSessionId": "incarnation-1",
+                "expectedMarkedUnreadAt": None,
+                "unread": False,
+            },
+        ),
+        ("users.mentionable", {"sessionKey": room_key(), "query": "user"}),
+        ("session.members.list", {"sessionKey": room_key()}),
+        ("session.members.listEvidence", {"sessionKey": room_key()}),
+        ("sessions.files.list", {"sessionKey": room_key(), "path": "", "search": "readme"}),
+        ("sessions.files.get", {"sessionKey": room_key(), "path": "README.md"}),
+        (
+            "sessions.files.set",
+            {
+                "sessionKey": room_key(),
+                "path": "README.md",
+                "content": "updated",
+                "expectedHash": "a" * 64,
+            },
+        ),
+        (
+            "sessions.execution.dispatch",
+            {
+                "sessionKey": room_key(),
+                "expectedSessionId": "incarnation-1",
+                "inputMessageId": "entry-1",
+                "idempotencyKey": "dispatch-1",
+                "hopCount": 0,
+            },
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_reviewed_room_methods_forward_only_their_closed_native_contract(harness, method, params):
+    assert (await harness.request(method, params))["ok"] is True
+    assert harness.gateway.calls[-1]["method"] == method
+    assert harness.gateway.calls[-1]["params"] == params
+    if method == "sessions.execution.dispatch":
+        harness.pool.gate_chat.assert_awaited_once_with(
+            user_id="user_A", owner_id="org_team", session_key=room_key()
+        )
+    else:
+        harness.pool.gate_chat.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "method,params",
+    [
+        ("sessions.search", {"query": "unscoped"}),
+        ("sessions.patch", {"key": room_key(), "unread": True}),
+        ("sessions.files.reveal", {"key": room_key()}),
+        ("sessions.execution.dispatch", {**append_params(), "inputMessageId": "entry-1", "text": "forged"}),
+        ("session.typing", {"sessionKey": room_key(), "sessionId": "incarnation-1", "typing": True, "actor": "forged"}),
+        ("sessions.presence.heartbeat", {"sessionKey": room_key(), "serverReceivedAtMs": 1_000_000_000_000}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_room_capabilities_reject_unscoped_or_server_owned_fields(harness, method, params):
+    assert (await harness.request(method, params))["error"]["code"] == "INVALID_REQUEST"
+    assert not harness.gateway.calls
+
+
+@pytest.mark.asyncio
+async def test_room_discovery_results_are_filtered_to_qualified_room_targets_and_profiles(harness):
+    h = harness
+    h.gateway.results["sessions.list"] = {
+        "sessions": [{"key": room_key()}, {"key": "agent:friday:user_A"}],
+        "count": 2,
+    }
+    h.gateway.results["sessions.search"] = {
+        "results": [
+            {"sessionKey": room_key(), "snippet": "room"},
+            {"sessionKey": "agent:friday:user_A", "snippet": "private"},
+        ]
+    }
+    h.gateway.results["users.mentionable"] = {
+        "users": [
+            {"profileId": "profile-user_A", "displayName": "A", "online": True},
+            {"profileId": "profile-foreign", "displayName": "Foreign", "online": True},
+        ],
+        "truncated": False,
+    }
+    listed = await h.request("sessions.list", {})
+    searched = await h.request("sessions.search", {"sessionKeys": [room_key()], "query": "room"})
+    mentionable = await h.request("users.mentionable", {"sessionKey": room_key()})
+    assert [item["key"] for item in listed["payload"]["sessions"]] == [room_key()]
+    assert [item["sessionKey"] for item in searched["payload"]["results"]] == [room_key()]
+    assert [item["profileId"] for item in mentionable["payload"]["users"]] == ["profile-user_A"]
+
+
+@pytest.mark.asyncio
+async def test_message_and_presence_subscriptions_gate_native_events_per_tab(harness):
+    h = harness
+    await h.request("sessions.messages.subscribe", {"key": room_key()})
+    conn = h.native.connections[identity()]
+    h.management.send_message_async.reset_mock()
+    message = {"type": "event", "event": "session.message", "payload": {"sessionKey": room_key()}}
+    presence = {"type": "event", "event": "session.presence", "payload": {"roomKey": room_key()}}
+    await conn.forward_event(message)
+    await conn.forward_event(presence)
+    h.management.send_message_async.assert_awaited_once_with("tab-a", message)
+    await h.request("sessions.presence.subscribe", {"sessionKey": room_key()})
+    h.management.send_message_async.reset_mock()
+    await conn.forward_event(presence)
+    h.management.send_message_async.assert_awaited_once_with("tab-a", presence)
+    await h.request("sessions.messages.unsubscribe", {"key": room_key()})
+    await h.request("sessions.presence.unsubscribe", {"sessionKey": room_key()})
+    assert not conn.subscriptions and not conn.presence_subscriptions
+
+
+@pytest.mark.asyncio
+async def test_post_rpc_membership_loss_reports_uncertain_without_replaying_append(harness):
+    h = harness
+    checks = 0
+
+    async def membership(subject, **kwargs):
+        nonlocal checks
+        checks += 1
+        return [{"id": "org_team"}] if checks < 4 else []
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr("core.services.clerk_admin.list_user_organizations", membership)
+        result = await h.request("sessions.message.append", append_params())
+    assert result["ok"] is False and result["error"] == {
+        "code": "ROOM_UNAVAILABLE",
+        "message": "Native request outcome is uncertain; reconcile canonical room state",
+    }
+    assert len([call for call in h.gateway.calls if call["method"] == "sessions.message.append"]) == 1
+
+
+@pytest.mark.parametrize(
+    "method,params",
+    [
         ("sessions.message.append", append_params()),
         (
             "session.members.add",
@@ -680,19 +886,10 @@ async def test_org_prefix_never_substitutes_for_native_membership(harness, metho
     [
         "sessions.create",
         "chat.send",
-        "chat.history",
         "chat.abort",
         "sessions.send",
-        "sessions.list",
-        "sessions.search",
-        "sessions.messages.subscribe",
-        "sessions.messages.unsubscribe",
         "sessions.assignOwner",
-        "session.members.list",
-        "session.members.listEvidence",
         "session.visibility.set",
-        "session.typing",
-        "users.mentionable",
         "mentions.list",
         "mentions.dismiss",
         "dispatch_agent_for_message",

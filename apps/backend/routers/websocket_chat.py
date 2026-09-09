@@ -1483,7 +1483,9 @@ async def _process_native_room_background(connection_id: str, body: dict) -> Non
     from core.gateway.native_rooms import (
         HumanIdentity,
         RoomError,
+        UNCERTAIN_AFTER_SUCCESS,
         admit_rpc,
+        filter_rpc_result,
         qualification_for,
         require_append_result,
         require_current_member,
@@ -1525,23 +1527,54 @@ async def _process_native_room_background(connection_id: str, body: dict) -> Non
         if method == "connect":
             result = {
                 "protocol": 4,
-                # Task 1/2 plumbing is not full access/isolation/presence proof.
+                # The RPC contract is present, but rollout requires live runtime,
+                # auth, coexistence, and legacy-privacy qualification evidence.
                 "companyRooms": {"enabled": False},
             }
         else:
             await require_current_member(identity, service)
             key = admitted.get("sessionKey") or admitted.get("key")
             # The independent native human socket owns the room ACL decision.
-            # None of these operations starts inference or creates a run hold.
+            if method == "sessions.execution.dispatch":
+                gate = await pool.gate_chat(
+                    user_id=identity.subject,
+                    owner_id=identity.owner_id,
+                    session_key=admitted["sessionKey"],
+                )
+                if gate.get("blocked"):
+                    raise RoomError(gate.get("code", "blocked"), gate.get("message", "Chat blocked"))
             result = await conn.rpc(method, admitted)
-            await require_current_member(identity, service)
+            try:
+                await require_current_member(identity, service)
+            except RoomError:
+                await pool.native_rooms.close_connection(connection_id)
+                if method in UNCERTAIN_AFTER_SUCCESS:
+                    raise RoomError(
+                        "ROOM_UNAVAILABLE",
+                        "Native request outcome is uncertain; reconcile canonical room state",
+                    )
+                raise
             if method == "sessions.message.append":
                 require_append_result(result, admitted)
             if isinstance(result, dict):
-                for field in ("key", "sessionKey"):
+                for field in ("key", "sessionKey", "roomKey"):
                     if field in result and result[field] != key:
                         raise RoomError("FORBIDDEN", "Native canonical target changed")
+            result = filter_rpc_result(method, result, identity, qualification)
+            if method == "sessions.messages.subscribe":
+                conn.subscriptions.add(admitted["key"])
+            elif method == "sessions.messages.unsubscribe":
+                conn.subscriptions.discard(admitted["key"])
+            elif method == "sessions.presence.subscribe":
+                conn.presence_subscriptions.add(admitted["sessionKey"])
+            elif method == "sessions.presence.unsubscribe":
+                conn.presence_subscriptions.discard(admitted["sessionKey"])
             result = _fit_rpc_result_for_frame(method, result)
+            if (
+                len(json.dumps(result, separators=(",", ":"), default=str).encode())
+                > _WS_FRAME_BUDGET_BYTES
+            ):
+                raise RoomError("ROOM_UNAVAILABLE", "Native room result exceeds transport limit")
         await management.send_message_async(connection_id, {"type": "res", "id": req_id, "ok": True, "payload": result})
     except RoomError as exc:
         if exc.error.get("code") == "FORBIDDEN":

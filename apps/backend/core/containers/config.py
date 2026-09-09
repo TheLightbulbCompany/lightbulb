@@ -12,6 +12,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import secrets
 import tempfile
 import time
@@ -1644,6 +1645,7 @@ def build_openclaw_config_dict(
     channel_bindings: list[dict] | None = None,
     acp_enabled: bool = False,
     deployed_tag: str | None = None,
+    trusted_broker_profiles: dict[str, str] | None = None,
 ) -> dict:
     """Build the openclaw.json config dict for a per-user container.
 
@@ -1675,6 +1677,18 @@ def build_openclaw_config_dict(
     # Fail fast — caller must regenerate via secrets.token_urlsafe before retry.
     if not gateway_token:
         raise ValueError("gateway_token must be a non-empty string")
+    if trusted_broker_profiles is not None and (
+        not isinstance(trusted_broker_profiles, dict)
+        or len(trusted_broker_profiles) > 256
+        or any(
+            not isinstance(device_id, str)
+            or re.fullmatch(r"[0-9a-f]{64}", device_id) is None
+            or not isinstance(profile_id, str)
+            or re.fullmatch(r"(?!gateway-owner$)[A-Za-z0-9_-]{1,128}", profile_id) is None
+            for device_id, profile_id in trusted_broker_profiles.items()
+        )
+    ):
+        raise ValueError("trusted_broker_profiles must bind valid device ids to profile ids")
 
     # The free-tier Bedrock config mode. Everything keyed off this flag is a
     # LOCKDOWN of autonomous / always-on surfaces: a trial container must only
@@ -1713,6 +1727,7 @@ def build_openclaw_config_dict(
     auth = {
         "mode": "token",
         "token": gateway_token,
+        **({"trustedBrokerProfiles": dict(trusted_broker_profiles)} if trusted_broker_profiles else {}),
     }
 
     config = {
@@ -2971,6 +2986,7 @@ async def write_openclaw_config(
     channel_bindings: list[dict] | None = None,
     acp_enabled: bool = True,
     deployed_tag: str | None = None,
+    trusted_broker_profiles: dict[str, str] | None = None,
 ) -> None:
     """Atomically replace the user's openclaw.json with the full container config.
 
@@ -3025,6 +3041,7 @@ async def write_openclaw_config(
         channel_bindings=channel_bindings,
         acp_enabled=acp_enabled,
         deployed_tag=deployed_tag,
+        trusted_broker_profiles=trusted_broker_profiles,
     )
 
     # Full-file write — this path does NOT go through config_patcher._locked_rmw,

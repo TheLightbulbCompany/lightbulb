@@ -141,6 +141,7 @@ def room_prefix(owner_id: str, agent_id: str) -> str:
 
 
 def owns_room_key(key, identity: HumanIdentity, qualification: RoomQualification) -> bool:
+    """Namespace/container fence only; the native ACL decides room membership."""
     if not isinstance(key, str):
         return False
     parts = key.split(":")
@@ -157,89 +158,53 @@ def _object(properties: dict, required=()):
 
 
 _STRING = {"type": "string", "minLength": 1, "maxLength": 512}
-_MENTION_REFERENCE = {"type": "string", "minLength": 1, "maxLength": 256}
-_TARGET = {"sessionKey": _STRING, "agentId": _STRING}
-_KEY = {"key": _STRING, "agentId": _STRING}
-_MENTIONS = {
-    "type": "array",
-    "maxItems": 10,
-    "items": _object(
-        {
-            "profileId": _MENTION_REFERENCE,
-            "start": {"type": "integer", "minimum": 0},
-            "end": {"type": "integer", "minimum": 1},
-        },
-        ("profileId", "start", "end"),
-    ),
-}
-# Deliberately a subset of frozen 9.3 closed schemas. No run dispatch in create,
-# public share, attachments, arbitrary sessions.patch, tools or account RPCs.
+_MEMBER = _object({"type": {"enum": ["profile", "agent"]}, "id": _STRING}, ("type", "id"))
+# Reviewed Task 1/2 producer subset only. Task 3 and runtime qualification
+# remain incomplete: no execution, discovery, subscriptions or presence RPCs.
 _SCHEMAS = {
-    "sessions.create": _object(
+    "sessions.room.create": _object(
         {
             "agentId": _STRING,
             "idempotencyKey": _STRING,
             "displayName": {"type": "string", "minLength": 1, "maxLength": 500},
+            "roomKind": {"enum": ["channel", "dm", "group-dm", "thread"]},
+            "members": {"type": "array", "maxItems": 128, "items": _MEMBER},
             "parentSessionKey": _STRING,
+            "threadOrigin": _object(
+                {"parentRoomKey": _STRING, "originRootMessageId": _STRING}, ("parentRoomKey",)
+            ),
         },
-        ("agentId", "idempotencyKey"),
+        ("agentId", "idempotencyKey", "roomKind", "members"),
     ),
-    "chat.send": _object(
+    "sessions.message.append": _object(
         {
-            **_TARGET,
-            "message": {"type": "string", "maxLength": 100_000},
+            "sessionKey": _STRING,
+            "expectedSessionId": _STRING,
             "idempotencyKey": _STRING,
-            "sessionId": _STRING,
-            "mentions": _MENTIONS,
-            "expectedLeafEntryId": {"type": ["string", "null"], "minLength": 1},
-            "expectedSessionRoutingContract": _STRING,
-            "queueMode": {"enum": ["steer", "followup", "collect", "interrupt"]},
+            "text": {"type": "string", "minLength": 1, "maxLength": 100_000},
             "replyToId": _STRING,
+            "mentions": {"type": "array", "maxItems": 100, "items": _MEMBER},
         },
-        ("sessionKey", "message", "idempotencyKey", "expectedLeafEntryId"),
+        ("sessionKey", "expectedSessionId", "idempotencyKey", "text"),
     ),
-    "chat.history": _object(
+    **{
+        method: _object({"sessionKey": _STRING, "identity": _MEMBER}, ("sessionKey", "identity"))
+        for method in ("session.members.add", "session.members.remove")
+    },
+}
+_APPEND_RESULT = Draft202012Validator(
+    _object(
         {
-            **_TARGET,
-            "cursor": {"type": "string"},
+            "sessionKey": _STRING,
             "sessionId": _STRING,
             "messageId": _STRING,
-            "limit": {"type": "integer", "minimum": 1, "maximum": 200},
-            "offset": {"type": "integer", "minimum": 0},
+            "messageSeq": {"type": "integer", "minimum": 1},
+            "effectiveParentId": _STRING,
+            "appended": {"type": "boolean"},
         },
-        ("sessionKey",),
+        ("sessionKey", "sessionId", "messageId", "messageSeq", "appended"),
     ),
-    "chat.abort": _object({**_TARGET, "runId": _STRING}, ("sessionKey",)),
-    "sessions.messages.subscribe": _object(_KEY, ("key",)),
-    "sessions.messages.unsubscribe": _object(_KEY, ("key",)),
-    "session.members.list": _object(_TARGET, ("sessionKey",)),
-    "session.members.listEvidence": _object(_TARGET, ("sessionKey",)),
-    "session.members.add": _object({**_TARGET, "identityId": _STRING}, ("sessionKey", "identityId")),
-    "session.members.remove": _object({**_TARGET, "identityId": _STRING}, ("sessionKey", "identityId")),
-    "session.visibility.set": _object(
-        {**_TARGET, "visibility": {"enum": ["shared", "read-only", "suggest"]}}, ("sessionKey", "visibility")
-    ),
-    "sessions.assignOwner": _object(
-        {**_KEY, "owner": _object({"type": {"enum": ["agent", "human"]}, "id": _STRING}, ("type", "id"))},
-        ("key", "owner"),
-    ),
-    "session.typing": _object(
-        {
-            **_TARGET,
-            "sessionId": _STRING,
-            "typing": {"type": "boolean"},
-            "preview": {"type": "string", "maxLength": 400},
-        },
-        ("sessionKey", "sessionId", "typing"),
-    ),
-    "users.mentionable": _object(
-        {**_TARGET, "agentId": _MENTION_REFERENCE, "query": {"type": "string", "maxLength": 128}}, ("sessionKey",)
-    ),
-    "mentions.list": _object({}),
-    "mentions.dismiss": _object(
-        {"ids": {"type": "array", "maxItems": 100, "uniqueItems": True, "items": _MENTION_REFERENCE}}, ("ids",)
-    ),
-}
+)
 _VALIDATORS = {method: Draft202012Validator(schema) for method, schema in _SCHEMAS.items()}
 ROOM_METHODS = frozenset(_SCHEMAS)
 _ROOM_EVENTS = frozenset(
@@ -252,49 +217,43 @@ def admit_rpc(method: str, params: dict, identity: HumanIdentity, qualification:
     if validator is None or not validator.is_valid(params):
         raise RoomError("INVALID_REQUEST", "Unsupported room method or arguments")
     admitted = dict(params)
-    if method == "chat.history":
-        # Frozen chat-history-handler.ts rejects these selector combinations
-        # before lookup; native transcript-to-canonical-key ownership stays upstream.
-        if "sessionId" in params and "messageId" not in params:
-            raise RoomError("INVALID_REQUEST", "sessionId requires messageId")
-        if "offset" in params and "messageId" in params:
-            raise RoomError("INVALID_REQUEST", "offset and messageId cannot be used together")
-        if "cursor" in params and ("offset" in params or "messageId" in params):
-            raise RoomError("INVALID_REQUEST", "cursor cannot be used with offset or messageId")
-    if method == "sessions.create":
+    if method == "sessions.room.create":
         agent = params["agentId"]
         if agent not in qualification.agents:
             raise RoomError("FORBIDDEN", "Room agent not authorized")
         admitted["key"] = room_prefix(identity.owner_id, agent) + _digest(
             [identity.issuer, identity.subject, params["idempotencyKey"]]
         )
-        admitted["visibility"] = "shared"
+        admitted["visibility"] = "restricted"
     for key_field in ("sessionKey", "key", "parentSessionKey"):
         if key_field in admitted and not owns_room_key(admitted[key_field], identity, qualification):
             raise RoomError("FORBIDDEN", "Private or foreign session target")
-    target = admitted.get("sessionKey") or admitted.get("key")
-    if target and "agentId" in admitted and admitted["agentId"] != target.split(":")[1]:
-        raise RoomError("FORBIDDEN", "Room agent/key mismatch")
+    origin = admitted.get("threadOrigin")
+    if origin and not owns_room_key(origin["parentRoomKey"], identity, qualification):
+        raise RoomError("FORBIDDEN", "Private or foreign thread origin")
     profiles = {human.profile_id for human in qualification.humans.values()}
-    if "identityId" in admitted and admitted["identityId"] not in profiles:
-        raise RoomError("FORBIDDEN", "Unqualified room participant")
-    if method == "sessions.assignOwner":
-        owner = admitted["owner"]
-        if owner["id"] not in (profiles if owner["type"] == "human" else qualification.agents):
-            raise RoomError("FORBIDDEN", "Unqualified room assignee")
-    if "idempotencyKey" in admitted:
-        # Native run dedupe is gateway-wide. Namespace by actor AND room so a
-        # different human cannot consume another human's retry/run identifier.
+    participants = admitted.get("members", []) + admitted.get("mentions", [])
+    if "identity" in admitted:
+        participants = [*participants, admitted["identity"]]
+    for participant in participants:
+        if participant["id"] not in (profiles if participant["type"] == "profile" else qualification.agents):
+            raise RoomError("FORBIDDEN", "Unqualified room participant")
+    if method == "sessions.room.create":
+        # Creation dedupe is gateway-wide; append dedupe is native actor/session
+        # scoped and its client key must survive unchanged for replay/conflict.
         admitted["idempotencyKey"] = _digest(
-            [identity.owner_id, identity.issuer, identity.subject, target, admitted["idempotencyKey"]]
+            [identity.owner_id, identity.issuer, identity.subject, admitted["key"], admitted["idempotencyKey"]]
         )
-    if method == "chat.send":
-        admitted["deliver"] = False
-        length = len(params["message"].encode("utf-16-le")) // 2
-        for mention in params.get("mentions", []):
-            if mention["profileId"] not in profiles or not 0 <= mention["start"] < mention["end"] <= length:
-                raise RoomError("INVALID_REQUEST", "Invalid mention offsets")
     return admitted
+
+
+def require_append_result(result, params: dict) -> None:
+    if not (
+        _APPEND_RESULT.is_valid(result)
+        and result["sessionKey"] == params["sessionKey"]
+        and result["sessionId"] == params["expectedSessionId"]
+    ):
+        raise RoomError("ROOM_UNAVAILABLE", "Native append receipt does not match the requested session")
 
 
 async def require_current_member(identity: HumanIdentity, conn_svc) -> None:
@@ -384,10 +343,7 @@ class NativeHumanConnection:
             ):
                 raise RoomError("ROOM_UNAVAILABLE", "Native human handshake is not qualified")
             self.methods = set(hello.get("features", {}).get("methods", []))
-            if (
-                not {"users.self", "sessions.create", "chat.send", "chat.history", "sessions.messages.subscribe"}
-                <= self.methods
-            ):
+            if not ROOM_METHODS | {"users.self"} <= self.methods:
                 raise RoomError("ROOM_UNAVAILABLE", "Native room methods unavailable")
             self.reader = asyncio.create_task(self._read())
             result = await self.rpc("users.self", {})
@@ -399,34 +355,14 @@ class NativeHumanConnection:
             raise
 
     async def rpc(self, method, params):
-        if self.closed or method not in self.methods:
+        if self.closed or method not in self.methods or method not in ROOM_METHODS | {"users.self"}:
             raise RoomError("ROOM_UNAVAILABLE", "Native human connection/method unavailable; reconnect")
         req_id = str(uuid4())
-        run = None
-        new_hold = False
-        if method == "chat.send":
-            run = (self.identity.owner_id, params["sessionKey"], params["idempotencyKey"])
-            new_hold = await self.conn_svc.begin_native_run(*run)
-            self.run_holds.add(run)
         future = asyncio.get_running_loop().create_future()
         self.pending[req_id] = future
         try:
             await self.ws.send(json.dumps({"type": "req", "id": req_id, "method": method, "params": params}))
             return await asyncio.wait_for(future, 30)
-        except RoomError as exc:
-            # Frozen pre-admission rejection; generic native/transport errors
-            # may follow acceptance and MUST retain the hold. An existing hold
-            # belongs to an earlier attempt and cannot be cleared by this retry.
-            if (
-                run
-                and new_hold
-                and getattr(exc, "native_rejection", False)
-                and exc.error.get("code") == "INVALID_REQUEST"
-                and exc.error.get("details", {}).get("reason") == "active-leaf-changed"
-            ):
-                await self.conn_svc.finish_native_run(*run)
-                self.run_holds.discard(run)
-            raise
         finally:
             self.pending.pop(req_id, None)
 

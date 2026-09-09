@@ -15,12 +15,14 @@ import re
 import secrets
 import socket
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import boto3
 from botocore.exceptions import ClientError
 from ulid import ULID
 
+from core import openclaw_version
 from core.config import settings
 from core.dynamodb import utc_now_iso
 from core.observability.metrics import put_metric, timing
@@ -100,6 +102,37 @@ SINGLE_WRITER_DEPLOYMENT_CONFIG = {
     "minimumHealthyPercent": 0,
     "maximumPercent": 100,
 }
+
+
+@dataclass(frozen=True)
+class LiveOpenClawRuntimeEvidence:
+    """Identity-bound address of one observed running OpenClaw task."""
+
+    task_arn: str
+    task_definition_arn: str
+    private_ip: str
+    gateway_build_id: str
+
+
+def _tagged_image_tag(image: object) -> str:
+    """Return a container image's tag, or ``""`` for digest/invalid refs."""
+    image_ref = str(image or "")
+    if "@" in image_ref:
+        return ""
+    _, separator, tag = image_ref.rpartition(":")
+    return tag if separator and "/" not in tag else ""
+
+
+def _task_private_ip(task: dict) -> str | None:
+    """Extract a private IPv4 address from an ECS task ENI."""
+    for attachment in task.get("attachments", []):
+        if attachment.get("type") != "ElasticNetworkInterface":
+            continue
+        for detail in attachment.get("details", []):
+            value = detail.get("value")
+            if detail.get("name") == "privateIPv4Address" and isinstance(value, str) and value:
+                return value
+    return None
 
 
 def _user_owned_mcp_servers(existing_servers: dict, integration_provider_keys: set[str]) -> dict:
@@ -660,11 +693,7 @@ class EcsManager:
         it has none (a digest-pinned ``@sha256:…`` image carries no tag)."""
         resp = await asyncio.to_thread(self._ecs.describe_task_definition, taskDefinition=task_definition)
         defs = (resp.get("taskDefinition") or {}).get("containerDefinitions") or []
-        image = str((defs[0] if defs else {}).get("image") or "")
-        if "@" in image:
-            return ""
-        _, sep, tag = image.rpartition(":")
-        return tag if sep and "/" not in tag else ""
+        return _tagged_image_tag((defs[0] if defs else {}).get("image"))
 
     def _build_register_kwargs_from_base(
         self,
@@ -2565,6 +2594,95 @@ class EcsManager:
         except Exception:
             return False
 
+    async def live_runtime_evidence(self, owner_id: str) -> LiveOpenClawRuntimeEvidence | None:
+        """Prove the owner's current running task matches the immutable pin.
+
+        Every value is read fresh. The task ARN from the strongly consistent
+        owner row anchors one ECS task snapshot; its service, task definition,
+        configured image tag, observed runtime digest, and ENI address must all
+        agree. Any missing or conflicting observation fails closed.
+
+        This is identity evidence only: it neither mutates container state nor
+        qualifies or advertises native-room behavior.
+        """
+        try:
+            pinned = openclaw_version.pinned_release_identity()
+            if pinned is None:
+                return None
+
+            container = await container_repo.get_by_owner_id(owner_id, consistent=True)
+            if not container or container.get("status") != "running":
+                return None
+
+            service_name = container.get("service_name")
+            task_arn = container.get("task_arn")
+            task_definition_arn = container.get("task_definition_arn")
+            if not all(isinstance(value, str) and value for value in (service_name, task_arn, task_definition_arn)):
+                return None
+
+            tasks_response = await asyncio.to_thread(
+                self._ecs.describe_tasks,
+                cluster=self._cluster,
+                tasks=[task_arn],
+            )
+            tasks = tasks_response.get("tasks") or []
+            if tasks_response.get("failures") or len(tasks) != 1:
+                return None
+            task = tasks[0]
+            if (
+                task.get("taskArn") != task_arn
+                or task.get("taskDefinitionArn") != task_definition_arn
+                or task.get("lastStatus") != "RUNNING"
+                or task.get("desiredStatus") != "RUNNING"
+                or task.get("group") != f"service:{service_name}"
+            ):
+                return None
+
+            task_definition_response = await asyncio.to_thread(
+                self._ecs.describe_task_definition,
+                taskDefinition=task_definition_arn,
+            )
+            task_definition = task_definition_response.get("taskDefinition") or {}
+            if task_definition.get("taskDefinitionArn") != task_definition_arn:
+                return None
+
+            definitions = [
+                definition
+                for definition in task_definition.get("containerDefinitions") or []
+                if definition.get("name") == "openclaw"
+            ]
+            running_containers = [
+                running
+                for running in task.get("containers") or []
+                if running.get("name") == "openclaw"
+            ]
+            if len(definitions) != 1 or len(running_containers) != 1:
+                return None
+
+            configured_image = definitions[0].get("image")
+            running = running_containers[0]
+            if (
+                _tagged_image_tag(configured_image) != pinned.extended_tag
+                or running.get("lastStatus") != "RUNNING"
+                or running.get("image") != configured_image
+                or running.get("imageDigest") != pinned.runtime_manifest_digest
+            ):
+                return None
+
+            private_ip = _task_private_ip(task)
+            if not private_ip:
+                return None
+
+            return LiveOpenClawRuntimeEvidence(
+                task_arn=task_arn,
+                task_definition_arn=task_definition_arn,
+                private_ip=private_ip,
+                gateway_build_id=pinned.gateway_build_id,
+            )
+        except Exception:
+            logger.warning("Could not prove live OpenClaw runtime identity for owner %s", owner_id, exc_info=True)
+            return None
+
     async def resolve_running_container(self, user_id: str) -> tuple[dict | None, str | None]:
         """Look up a user's container and discover its task IP.
 
@@ -4102,13 +4220,10 @@ class EcsManager:
                 continue
             if task.get("lastStatus") != "RUNNING":
                 continue
-            for attachment in task.get("attachments", []):
-                if attachment.get("type") != "ElasticNetworkInterface":
-                    continue
-                for detail in attachment.get("details", []):
-                    if detail.get("name") == "privateIPv4Address":
-                        task_arn = task.get("taskArn") or task_arns[0]
-                        return task_arn, detail.get("value"), len(task_arns)
+            private_ip = _task_private_ip(task)
+            if private_ip:
+                task_arn = task.get("taskArn") or task_arns[0]
+                return task_arn, private_ip, len(task_arns)
         return None, None, len(task_arns)
 
     async def write_user_configs(

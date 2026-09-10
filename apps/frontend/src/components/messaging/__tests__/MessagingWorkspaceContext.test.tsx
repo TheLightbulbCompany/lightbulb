@@ -5,6 +5,7 @@ import type { RoomDirectoryProps } from "../RoomDirectory";
 import type { RoomPanelProps } from "../RoomPanel";
 import { RoomComposer } from "../RoomComposer";
 import { requestFocusComposer, _resetFocusComposerRequestForTests } from "@/lib/focusComposerRequest";
+import type { LiveRoomRun } from "@/hooks/useRooms";
 
 const mocks = vi.hoisted(() => ({ rooms: vi.fn(), agents: vi.fn(), roster: vi.fn() }));
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: "owner", orgId: "org" }) }));
@@ -46,7 +47,7 @@ const state = {
   directoryError: undefined as Error | undefined, directoryLoading: false,
   activeRoomId: room.roomId as string | null, activeRoom: room,
   roomError: undefined, roomLoading: false, accessRemoved: false,
-  messages: [], optimisticMessages: [], typingMembers: [], runs: [],
+  messages: [], optimisticMessages: [], typingMembers: [], runs: [] as LiveRoomRun[],
   liveConnected: true, httpReady: true, selectRoom: vi.fn(), selectAgentDm: vi.fn(),
   directoryRoomDetails: new Map([[room.roomId, room]]),
   refreshRooms: vi.fn(), refreshRoom: vi.fn(), createRoom: vi.fn(), updateRoom: vi.fn(),
@@ -60,6 +61,7 @@ beforeEach(() => {
   state.directoryError = undefined;
   state.directoryLoading = false;
   state.accessRemoved = false;
+  state.runs = [];
   renderComposer = false;
   _resetFocusComposerRequestForTests();
   mocks.rooms.mockReturnValue(state);
@@ -84,6 +86,28 @@ it("feeds the directory and conversation from one selected-room owner", () => {
   expect(screen.getByRole("navigation", { name: "Conversations" })).toBeInTheDocument();
   expect(screen.getByRole("region", { name: "Messages" })).toBeInTheDocument();
   view.unmount();
+});
+
+it("renders OpenClaw string tool progress without crashing", () => {
+  state.runs = [{
+    roomId: room.roomId,
+    agentId: "agent-friday",
+    runId: "run-1",
+    text: "",
+    thinking: "",
+    frames: [{
+      type: "tool_progress",
+      tool: "exec",
+      toolCallId: "tool-1",
+      partialResult: "streamed output",
+      runId: "run-1",
+    } as unknown as LiveRoomRun["frames"][number]],
+    state: "running",
+  }];
+
+  compose();
+
+  expect(panel.runs[0].tools[0].progressText).toBe("streamed output");
 });
 
 it("enriches room participants with roster activity while keeping the full creation picker", () => {

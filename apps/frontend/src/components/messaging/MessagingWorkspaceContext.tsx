@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAuth } from "@clerk/nextjs";
-import type { CreateMessageRequest, ListenMode, MemberRef } from "@lightbulb/shared";
+import { extractResultText, type CreateMessageRequest, type ListenMode, type MemberRef } from "@lightbulb/shared";
 import { useRooms, type LiveRoomRun } from "@/hooks/useRooms";
 import { useAgents } from "@/hooks/useAgents";
 import { useRosterEntries } from "@/components/agents/useRosterEntries";
@@ -14,9 +14,8 @@ import type { RoomDirectoryProps, ConversationCreation } from "./RoomDirectory";
 import type { RoomPanelProps } from "./RoomPanel";
 import type { DirectoryRoom, DirectoryParticipant, RoomParticipant, RoomRunView } from "./types";
 
-function frameText(blocks: Array<{ text?: string }> | undefined): string | undefined {
-  const text = blocks?.map((block) => block.text ?? "").filter(Boolean).join("\n");
-  return text || undefined;
+function frameText(blocks: unknown): string | undefined {
+  return extractResultText({ content: blocks }) || undefined;
 }
 
 function runView(run: LiveRoomRun): RoomRunView {

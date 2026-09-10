@@ -1445,13 +1445,12 @@ export class ServiceStack extends cdk.Stack {
           ? (process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_PROD ?? "")
           : (process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV ??
               "pk_test_dXAtbW90aC01NS5jbGVyay5hY2NvdW50cy5kZXYk"),
-      // Apple IAP. Every one of these is REQUIRED for core/services/apple_iap
-      // to build a verifier at all — with any of them missing the link and
-      // notification endpoints answer 503, so a completed StoreKit purchase
-      // never grants a plan and renewals are never recorded. They are plain env
-      // vars, not secrets: the bundle/product/app ids are public (they ship in
-      // the binary and the App Store listing), and the actual trust anchor is
-      // the certificate directory below.
+      // Historical Apple subscription lifecycle only. New purchase/restore is
+      // retired and /billing/apple/link is an authenticated 410 tombstone, but
+      // every value remains required for /webhooks/apple-iap to build its JWS
+      // verifier. Missing one loses renewal, expiry, refund, and billing-retry
+      // reconciliation. These IDs are public; the trust anchor is the pinned
+      // certificate directory below.
       APPLE_IAP_BUNDLE_ID: "company.thelightbulb.mobile",
       // Retained as the allowlist for historical server notifications until
       // App Store Connect proves no subscription can still be live. A

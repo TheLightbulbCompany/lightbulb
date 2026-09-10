@@ -20,11 +20,10 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from core.auth import AuthContext, get_current_user, is_org_owner_id, require_org_admin, resolve_owner_id
+from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.repositories import billing_repo
 from core.services import apple_iap as apple_iap_service
-from core.services.billing_service import BillingService, BillingServiceError, create_mobile_web_checkout
-from core.services.provision_gate import is_trial_blocked
+from core.services.billing_service import BillingService
 
 logger = logging.getLogger(__name__)
 
@@ -40,67 +39,6 @@ async def link_apple_purchase(
     _auth: AuthContext = Depends(get_current_user),
 ):
     raise HTTPException(status_code=410, detail="Apple in-app purchases are no longer available")
-
-
-@router.post(
-    "/billing/apple/web-checkout",
-    summary="Create an app-to-web Stripe Checkout session for the iOS paywall",
-    description=(
-        "Returns a Stripe Checkout URL optimized for app-to-web purchases. The "
-        "app must open it in the DEFAULT BROWSER — never a WebView, which would "
-        "be an in-app storefront under guideline 3.1.1."
-    ),
-)
-async def create_web_checkout(auth: AuthContext = Depends(get_current_user)):
-    owner_id = resolve_owner_id(auth)
-    # Same fence as link_purchase, for the same reason: this session is built on
-    # STRIPE_WORKSPACE_PRICE_ID. Legacy organization checkout is still handled
-    # by the legacy web path until Task 2 replaces that route atomically.
-    # Checked BEFORE the customer is minted so a wrong caller leaves no Stripe
-    # residue behind.
-    if is_org_owner_id(owner_id):
-        raise HTTPException(
-            status_code=403,
-            detail="Workspace subscriptions must be started from the web app.",
-        )
-
-    # Mint or reuse the Stripe customer first. The caller is by definition
-    # someone who has not paid yet, and a trial_local row carries no
-    # stripe_customer_id — without this the session build raises and every
-    # free-tier user gets a 400 on the one button meant to convert them.
-    try:
-        await BillingService().create_customer_for_owner(
-            owner_id,
-            owner_type="personal",
-            email=auth.email,
-        )
-    except Exception as e:  # noqa: BLE001
-        logger.warning("apple_iap.web_checkout_customer_failed owner_id=%s: %s", owner_id, e)
-        raise HTTPException(status_code=502, detail="Could not reach billing provider") from e
-
-    # Same guard the web checkout uses: an owner who already has (or ever had)
-    # a subscription must not be able to mint a second one from the app.
-    account = await billing_repo.get_by_owner_id(owner_id)
-    if is_trial_blocked(account):
-        raise HTTPException(status_code=409, detail="This account already has a subscription")
-
-    try:
-        session = await create_mobile_web_checkout(owner_id=owner_id)
-    except BillingServiceError as e:
-        # A held slot means another checkout is mid-flight for this owner —
-        # a retryable conflict, not a bad request, and mapping it to 400 would
-        # tell the app the request itself was wrong.
-        if str(e) == "checkout_in_progress":
-            raise HTTPException(status_code=409, detail="A checkout is already in progress") from e
-        if str(e).startswith("already_subscribed:"):
-            # The pending session is already PAID and its webhook is still in
-            # flight, so is_trial_blocked above read a row that says nothing yet.
-            # Handing back a second session here is how one owner gets charged
-            # twice.
-            raise HTTPException(status_code=409, detail="This account already has a subscription") from e
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-    return {"url": session.url}
 
 
 @router.post(

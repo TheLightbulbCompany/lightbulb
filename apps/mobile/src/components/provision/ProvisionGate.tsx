@@ -21,9 +21,9 @@
  *     flickmeon.ai" link (Linking.openURL) — the mobile app never reimplements
  *     billing / checkout (D1). admin-only gates tell org members to ask
  *     their workspace admin instead of showing a CTA. Personal subscription
- *     gates can show the U.S.-storefront Workspace web Checkout handoff;
- *     other purchase gates use local state-only copy. `needsSignup` likewise
- *     has no purchase CTA. `error` (mobile
+ *     gates hand off to web workspace onboarding before any purchase;
+ *     other purchase gates use local state-only copy. `needsSignup` uses the
+ *     same workspace-first web onboarding handoff. `error` (mobile
  *     onboarding-parity Slice 1 — the backend-reported container failure;
  *     see `containerStatus.ts`) shows Retry only, no outbound link — there
  *     is nothing to manage on flickmeon.ai for a failed provision, only a
@@ -47,8 +47,7 @@
  * clears itself once the admin's workspace comes up.
  */
 import { useAuth, useOrganization } from "@clerk/clerk-expo";
-import { useCallback, useMemo, useRef } from "react";
-import { createApiClient } from "@lightbulb/shared";
+import { useCallback } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -69,10 +68,8 @@ import {
   type ContainerStatus,
 } from "../../lib/containerStatus";
 import { WEB_ORIGIN } from "../../config/domain";
-import { makeAdapter } from "../../lib/adapter";
 import { ContainerStatusContext } from "../../lib/containerStatusContext";
 import { isSubscriptionGate, purchaseGateCopy } from "../../lib/purchaseCta";
-import { PaywallScreen } from "../billing/PaywallScreen";
 import { ByoKeyScreen } from "./ByoKeyScreen";
 import { ChatGPTConnectScreen } from "./ChatGPTConnectScreen";
 import { FirstRunFailedNotice, ProvisioningStepper } from "./ProvisioningStepper";
@@ -254,32 +251,6 @@ function TeamsDegradedBanner({ onRetry }: { onRetry: () => void }) {
   );
 }
 
-/**
- * PaywallScreen wired to the authenticated API client.
- *
- * The screen takes `post` as a prop so it stays testable without Clerk; this
- * is the one place that supplies the real one. Same getTokenRef pattern as
- * settings.tsx — clerk-expo hands out a new getToken every render, so routing
- * it through a ref keeps the client referentially stable.
- */
-function ConnectedPaywall({ onPurchased }: { onPurchased: () => void }) {
-  const { getToken } = useAuth();
-  const getTokenRef = useRef(getToken);
-  getTokenRef.current = getToken;
-  const api = useMemo(
-    () => createApiClient(makeAdapter(() => getTokenRef.current())),
-    [],
-  );
-  const paywallApi = useMemo(
-    () => ({
-      get: (path: string) => api.get(path),
-      post: (path: string, body: unknown) => api.post(path, body as never),
-    }),
-    [api],
-  );
-  return <PaywallScreen api={paywallApi} onPurchased={onPurchased} />;
-}
-
 // ---------------------------------------------------------------------------
 // Gate
 // ---------------------------------------------------------------------------
@@ -349,16 +320,31 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
   }
 
   if (status.kind === "blocked") {
-    // Personal owners with no subscription can use the U.S.-storefront handoff
-    // to the existing workspace web Checkout. Organization workspaces keep the
-    // admin-aware web settings handoff below. isSubscriptionGate, NOT every
+    // A personal/no-org owner cannot use the org-only Checkout API. Send them
+    // to web onboarding first so they can create or select the workspace that
+    // will own billing. Organization workspaces keep the admin-aware settings
+    // handoff below. isSubscriptionGate, NOT every
     // purchase gate: the latter includes
     // credits_required and payment_past_due, which fire for owners who ALREADY
     // have an active plan — routing those here sells a second subscription that
     // adds no credits and fixes no card, so the customer is billed twice and
     // sees the identical gate afterwards.
     if (isSubscriptionGate(status.code) && !isOrgOwner) {
-      return <ConnectedPaywall onPurchased={refetch} />;
+      return (
+        <Interstitial
+          headline="Choose your workspace"
+          body="Continue on the web to create or select the workspace your agents and billing belong to."
+          onRetry={onRetry}
+          retrying={false}
+          action={
+            <ManageAction
+              adminOnly={false}
+              manageUrl={`${WEB_ORIGIN}/onboarding`}
+              actionLabel="Continue"
+            />
+          }
+        />
+      );
     }
 
     // State only for purchase gates that the web Checkout cannot resolve, with
@@ -385,9 +371,8 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
     );
   }
 
-  // needsSignup is a purchase gate in everything but name — the web page it
-  // handed off to is where a plan is bought — so it states the situation and
-  // stops. Retry + sign out (from the Interstitial itself) remain.
+  // A user with no workspace cannot buy against the org-only Checkout API.
+  // Web onboarding creates/selects that owner before it offers billing.
   if (status.kind === "needsSignup") {
     return (
       <Interstitial
@@ -395,6 +380,13 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
         body="This account doesn't have a workspace yet, so there are no agents to chat with."
         onRetry={onRetry}
         retrying={false}
+        action={
+          <ManageAction
+            adminOnly={false}
+            manageUrl={`${WEB_ORIGIN}/onboarding`}
+            actionLabel="Continue"
+          />
+        }
       />
     );
   }

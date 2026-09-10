@@ -15,10 +15,9 @@
  *
  * Entitlement is NOT granted here and must not be: a deep link is externally
  * triggerable, so treating one as proof of payment would hand anyone a free
- * subscription. The grant comes from the Stripe webhook. PaywallScreen's own
- * `Linking` listener separately sees the same URL and refetches the server's
- * view — this only decides where the user ends up standing, which is the app's
- * normal entry point in every case, success or cancel alike.
+ * subscription. The grant comes from the Stripe webhook. This only decides
+ * where the user ends up standing; ProvisionGate's status polling observes the
+ * server-side grant.
  */
 export function redirectSystemPath({ path }: { path: string; initial: boolean }): string {
   if (/^\/?checkout_redirect(\/|$)/.test(path)) return "/";

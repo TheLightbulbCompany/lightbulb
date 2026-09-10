@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react-native";
-import { Text } from "react-native";
+import { Linking, Text } from "react-native";
 
 const mockRefetch = jest.fn();
 const mockUseContainerStatus = jest.fn();
@@ -8,13 +8,6 @@ const mockUseContainerStatus = jest.fn();
 // organization workspace. Org billing stays on the existing admin handoff.
 let mockOrganization: { id: string } | null = null;
 let mockOrgLoaded = true;
-
-jest.mock("../../billing/PaywallScreen", () => ({
-  PaywallScreen: () => {
-    const { Text } = require("react-native");
-    return <Text>MOCK_PAYWALL</Text>;
-  },
-}));
 
 jest.mock("@clerk/clerk-expo", () => ({
   useAuth: () => ({ signOut: jest.fn() }),
@@ -259,10 +252,7 @@ describe("ProvisionGate provider sign-in routing", () => {
     expect(screen.queryByText(/on isol8\.co/)).toBeNull();
   });
 
-  // needsSignup used to hand off to the web page where a plan is bought, which
-  // makes it a purchase CTA in all but name (3.1.3(f)). It now states the
-  // situation and stops; Retry and Sign out still come from the Interstitial.
-  it("renders the not-set-up interstitial for needsSignup, with no outbound CTA", async () => {
+  it("hands needsSignup users to workspace-first web onboarding", async () => {
     mockUseContainerStatus.mockReturnValue({
       status: { kind: "needsSignup" },
       refetch: mockRefetch,
@@ -275,7 +265,10 @@ describe("ProvisionGate provider sign-in routing", () => {
     );
 
     expect(screen.getByText("Workspace not set up")).toBeTruthy();
-    expect(screen.queryByText(/isol8\.co/)).toBeNull();
+    const handoff = screen.getByText("Continue on flickmeon.ai");
+    await fireEvent.press(handoff);
+
+    expect(Linking.openURL).toHaveBeenCalledWith("https://flickmeon.ai/onboarding");
     expect(screen.getByText("Retry")).toBeTruthy();
     expect(screen.queryByText("APP")).toBeNull();
   });
@@ -614,9 +607,9 @@ describe("ProvisionGate first-run failure affordance (non-blocking)", () => {
   });
 });
 
-// Personal owners get the U.S.-storefront handoff to Workspace web Checkout.
+// Personal owners enter workspace-first onboarding before Workspace Checkout.
 // Organization workspaces keep the existing admin-aware web settings handoff.
-describe("ProvisionGate paywall routing is personal-owner only", () => {
+describe("ProvisionGate workspace onboarding routing is personal-owner only", () => {
   const purchaseGate = {
     kind: "blocked" as const,
     code: "team_billing_required",
@@ -632,7 +625,7 @@ describe("ProvisionGate paywall routing is personal-owner only", () => {
     ["payment_past_due"],
     ["subscription_required"],
     ["credits_required"],
-  ])("never shows the personal paywall to an org owner on a %s gate", async (code) => {
+  ])("never shows personal onboarding to an org owner on a %s gate", async (code) => {
     mockOrganization = { id: "org_abc" };
     mockUseContainerStatus.mockReturnValue({
       status: { ...purchaseGate, code },
@@ -645,10 +638,10 @@ describe("ProvisionGate paywall routing is personal-owner only", () => {
       </ProvisionGate>,
     );
 
-    expect(screen.queryByText("MOCK_PAYWALL")).toBeNull();
+    expect(screen.queryByText("Continue on flickmeon.ai")).toBeNull();
   });
 
-  it("still shows the paywall to a personal owner", async () => {
+  it("sends a personal owner through web workspace onboarding before billing", async () => {
     mockOrganization = null;
     mockUseContainerStatus.mockReturnValue({
       status: { ...purchaseGate, code: "trial_daily_cap", adminOnly: false },
@@ -661,37 +654,38 @@ describe("ProvisionGate paywall routing is personal-owner only", () => {
       </ProvisionGate>,
     );
 
-    // Same gate — only the owner type differs. This is the control that proves
-    // the org cases above are blocked by the owner guard.
-    expect(screen.getByText("MOCK_PAYWALL")).toBeTruthy();
+    const handoff = screen.getByText("Continue on flickmeon.ai");
+    await fireEvent.press(handoff);
+
+    expect(Linking.openURL).toHaveBeenCalledWith("https://flickmeon.ai/onboarding");
   });
 
-// While Clerk is still resolving, `organization` is null — indistinguishable
-// from a personal owner. If /container/status resolves a purchase gate first,
-// an org admin would briefly see the personal checkout screen. Unknown must
-// read as not-personal.
-it("does not show the paywall while Clerk has not resolved the owner type", async () => {
-  mockOrgLoaded = false;
-  mockOrganization = null;
-  mockUseContainerStatus.mockReturnValue({
-    status: {
-      kind: "blocked",
-      code: "trial_daily_cap",
-      title: "Daily free limit reached",
-      message: "You've used today's free allowance — Upgrade to keep going.",
-      href: "/settings?panel=billing",
-      actionLabel: "Upgrade",
-      adminOnly: false,
-    },
-    refetch: mockRefetch,
+  // While Clerk is still resolving, `organization` is null — indistinguishable
+  // from a personal owner. If /container/status resolves a purchase gate first,
+  // an org admin would briefly see the personal onboarding handoff. Unknown must
+  // read as not-personal.
+  it("does not show personal onboarding while Clerk has not resolved the owner type", async () => {
+    mockOrgLoaded = false;
+    mockOrganization = null;
+    mockUseContainerStatus.mockReturnValue({
+      status: {
+        kind: "blocked",
+        code: "trial_daily_cap",
+        title: "Daily free limit reached",
+        message: "You've used today's free allowance — Upgrade to keep going.",
+        href: "/settings?panel=billing",
+        actionLabel: "Upgrade",
+        adminOnly: false,
+      },
+      refetch: mockRefetch,
+    });
+
+    await render(
+      <ProvisionGate>
+        <Text>APP</Text>
+      </ProvisionGate>,
+    );
+
+    expect(screen.queryByText("Continue on flickmeon.ai")).toBeNull();
   });
-
-  await render(
-    <ProvisionGate>
-      <Text>APP</Text>
-    </ProvisionGate>,
-  );
-
-  expect(screen.queryByText("MOCK_PAYWALL")).toBeNull();
-});
 });

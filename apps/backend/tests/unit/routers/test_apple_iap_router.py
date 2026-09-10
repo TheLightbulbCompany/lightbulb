@@ -118,15 +118,12 @@ async def test_retired_link_route_is_always_gone_before_verification(request_kwa
 
 
 @pytest.mark.asyncio
-async def test_org_context_resolves_to_the_org_and_is_refused_by_the_checkout_fence():
-    """Org context → org_id, and the personal-plan endpoints refuse it. Also
-    proves the fence reads the RESOLVED owner rather than the user id, which
-    would have let every org member straight through."""
+async def test_retired_mobile_web_checkout_route_is_not_mounted():
+    """There is one subscription purchase route: /billing/checkout."""
     app = _app_with_auth(ORG)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
         r = await c.post("/api/v1/billing/apple/web-checkout", json={})
-    assert r.status_code == 403, r.text
-    assert "Workspace subscriptions" in r.text
+    assert r.status_code == 404, r.text
 
 
 @pytest.mark.asyncio

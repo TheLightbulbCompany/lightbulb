@@ -23,10 +23,12 @@ able to present an existing invitation before offering workspace creation.
 ## Read back an instance
 
 Clerk currently splits this verification across two APIs. The authenticated
-Backend API reports organization enablement and default roles. The public
-Frontend API (FAPI) environment reports membership-required and automatic
-creation. The latter two settings are changed in the Clerk Dashboard; do not
-invent or rely on an undocumented mutation request.
+Backend API organization-settings endpoint reports organization enablement,
+role defaults, and the initial Role Set. The public Frontend API (FAPI)
+environment reports membership-required and automatic creation. The latter two
+settings are changed in the Clerk Dashboard; Clerk's documented Backend API
+PATCH schema does not accept them, so do not invent an undocumented mutation
+request.
 
 Set these shell variables to the instance being checked. Do not paste their
 values into this document, tickets, or logs:
@@ -39,9 +41,10 @@ export CLERK_ISSUER='https://<instance>.clerk.accounts.dev'
 Backend API read-back:
 
 ```sh
-curl -fsS https://api.clerk.com/v1/instance \
+curl -fsS https://api.clerk.com/v1/instance/organization_settings \
   -H "Authorization: Bearer ${CLERK_SECRET_KEY}" \
-  | jq '.organization_settings | {enabled, creator_role, default_role}'
+  | jq '{enabled, creator_role, default_role: .domains_default_role,
+         initial_role_set_key}'
 ```
 
 Expected values:
@@ -49,6 +52,33 @@ Expected values:
 ```json
 {
   "enabled": true,
+  "creator_role": "org:admin",
+  "default_role": "org:member",
+  "initial_role_set_key": "role_set:default"
+}
+```
+
+`domains_default_role` is Clerk's Backend API field for the Role used for new
+Organization invitations and suggestions. Verify the initial Role Set agrees:
+
+```sh
+ROLE_SET_KEY="$(
+  curl -fsS https://api.clerk.com/v1/instance/organization_settings \
+    -H "Authorization: Bearer ${CLERK_SECRET_KEY}" \
+    | jq -er '.initial_role_set_key'
+)"
+
+curl -fsS "https://api.clerk.com/v1/role_sets/${ROLE_SET_KEY}" \
+  -H "Authorization: Bearer ${CLERK_SECRET_KEY}" \
+  | jq '{key, creator_role: .creator_role.key,
+         default_role: .default_role.key}'
+```
+
+Expected values:
+
+```json
+{
+  "key": "role_set:default",
   "creator_role": "org:admin",
   "default_role": "org:member"
 }
@@ -62,8 +92,9 @@ curl -fsS "${CLERK_ISSUER%/}/v1/environment?_clerk_js_version=5" \
     | {
         force_organization_selection,
         automatic_organization_creation_enabled:
-          (.organization_creation_defaults.automatic_organization_creation.enabled
-           // .organization_creation_defaults.enabled)
+          ([.organization_creation_defaults.automatic_organization_creation.enabled,
+            .organization_creation_defaults.enabled]
+           | map(select(. != null)) | first)
       }'
 ```
 

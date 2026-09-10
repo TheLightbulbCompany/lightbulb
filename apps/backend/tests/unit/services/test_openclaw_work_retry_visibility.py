@@ -49,10 +49,14 @@ async def test_plugin_ingress_timeout_is_a_short_retry_and_clears_the_active_run
     hold the FIFO group for 300s — the plugin dedupes by eventId, so retry soon."""
     worker = OpenClawWorkWorker(sqs_client=FakeSqs())
     cleared = []
+    subscribed = []
 
     class FakePool:
         async def ensure_connection(self, *_args):
             return None
+
+        async def subscribe_room_session(self, owner_id, session_key):
+            subscribed.append((owner_id, session_key))
 
         def mark_run_active(self, *_args, **_kwargs):
             return None
@@ -90,4 +94,9 @@ async def test_plugin_ingress_timeout_is_a_short_retry_and_clears_the_active_run
 
     with pytest.raises(WorkRetry, match="plugin ingress ReadTimeout"):
         await worker._dispatch_message(meta, member, message, "user_request")
-    assert cleared == [("owner-1", "agent:a1:lightbulb:channel:11111111-1111-4111-8111-111111111111")]
+    session_key = "agent:a1:lightbulb:channel:11111111-1111-4111-8111-111111111111"
+    assert cleared == [("owner-1", session_key)]
+    # Channel-initiated runs are hidden from the Control UI upstream, so the
+    # gateway streams their agent/chat events only to a session-message
+    # subscriber. Dispatching without this leaves the room with zero run frames.
+    assert subscribed == [("owner-1", session_key)]

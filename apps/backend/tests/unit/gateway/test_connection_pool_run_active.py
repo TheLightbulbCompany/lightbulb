@@ -149,3 +149,30 @@ async def test_publish_user_event_user_owner_uses_single_user_path(monkeypatch):
 
     assert single_calls == [("user_abc123", "user_abc123", single_calls[0][2])]
     assert fanout_calls == []
+
+
+@pytest.mark.asyncio
+async def test_subscribe_room_session_subscribes_once_and_survives_reconnect():
+    """A channel-initiated run is `isControlUiVisible: false` upstream, so the
+    gateway streams its agent/chat events only to a session-message subscriber.
+    Without this RPC the room gets no run frames at all."""
+    conn = GatewayConnection.__new__(GatewayConnection)
+    conn._ws = FakeWS()
+    conn._room_session_subs = set()
+    conn.user_id = "user_abc123"
+
+    await conn.subscribe_room_session(SESSION_KEY)
+    await conn.subscribe_room_session(SESSION_KEY)
+
+    def subscribes(ws):
+        return [m for m in ws.sent if m.get("method") == "sessions.messages.subscribe"]
+
+    assert [m["params"] for m in subscribes(conn._ws)] == [{"key": SESSION_KEY}]
+    assert subscribes(conn._ws)[0]["type"] == "req"
+    assert subscribes(conn._ws)[0].get("id")
+
+    # A reconnect replays the set onto the new socket.
+    conn._ws = FakeWS()
+    for key in list(conn._room_session_subs):
+        await conn._send_room_session_subscribe(key)
+    assert [m["params"] for m in subscribes(conn._ws)] == [{"key": SESSION_KEY}]

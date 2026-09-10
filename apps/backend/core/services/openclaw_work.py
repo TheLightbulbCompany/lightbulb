@@ -340,6 +340,10 @@ class OpenClawWorkWorker:
         pool = get_gateway_pool()
         await pool.ensure_connection(owner_id, ip, token)
         session_key = lightbulb_session_key(member["id"], meta["roomId"])
+        # Channel-initiated runs are hidden from the Control UI upstream, so the
+        # gateway only streams their agent/chat events to a client subscribed to
+        # the session. Without this the room sees no run frames at all.
+        await pool.subscribe_room_session(owner_id, session_key)
         author = message.get("author") or {}
         pool.mark_run_active(
             owner_id,

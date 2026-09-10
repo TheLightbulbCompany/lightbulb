@@ -147,16 +147,10 @@ too (a stuck claim can only be found by a poll that actually calls in);
 the dispatcher returns immediately for a fresh one. It admits ``failed``
 for the same reason -- see the bounded-retry tier below.
 
-CRITICAL UX invariant this dispatcher must never break: dispatching
-chat.send from the BACKEND instead of a browser tab does NOT change where
-Friday's work is SEEN. The gateway pool's ``_forward_to_frontends`` /
-``_transform_agent_event`` broadcast every agent event (streaming text,
-tool_start/tool_end, chat.final) to watching frontends off Friday's OUTPUT
-stream, regardless of who sent the input -- so a watching user still sees
-Friday work live, and a not-watching user sees it via ``chat.history`` on
-return. This module dispatches chat.send exactly the way
-``routers/websocket_chat.py`` does (``ensure_connection`` +
-``mark_run_active`` + ``send_rpc``), so that forwarding path is unaffected.
+This module dispatches the system-owned first-contact run directly through the
+backend gateway pool (``ensure_connection`` + ``mark_run_active`` +
+``send_rpc``). Its completion callback observes the agent-owned first-email
+side effect; public teammate speech uses canonical Lightbulb rooms instead.
 
 Failure handling is TWO-TIERED (both bounded by ``bootstrap_attempts``):
 
@@ -826,6 +820,12 @@ async def _resolve_default_agent_id(owner_id: str) -> str | None:
 
 FIRST_CONTACT_MAX_ATTEMPTS = 3
 
+
+def _bootstrap_session_key(agent_id: str, user_id: str) -> str:
+    """Build the server-owned General session used by first-contact runs."""
+    return f"agent:{agent_id}:{user_id}"
+
+
 NUDGE_MESSAGE = (
     "Before you stop: you haven't sent me your first email yet. Name the "
     "company if you haven't, then send me a short note in your own voice "
@@ -1042,8 +1042,8 @@ async def _reattach_kickoff_observer(repo, onboarding: dict, *, owner_id: str) -
     # Re-stamp the system actor: _run_actor is process-local, so a kickoff
     # handed off to THIS process across a rolling deploy has no entry here.
     # Without this the reattached observer's terminal reads actor=None and,
-    # because the kickoff runs on a webchat session_key, gets miscounted as a
-    # human activation — the exact inflation this signal exists to prevent.
+    # because the kickoff uses a human-shaped General session key, is
+    # miscounted as a human activation.
     run_analytics.record_run_actor(owner_id, dispatch_id, "system")
     now = time.monotonic()
     if _reattach_not_before.get(owner_id, 0.0) > now:
@@ -1054,10 +1054,8 @@ async def _reattach_kickoff_observer(repo, onboarding: dict, *, owner_id: str) -
         container, ip = await get_ecs_manager().resolve_running_container(owner_id)
         friday_agent_id = await _resolve_default_agent_id(owner_id) if container and ip else None
         if friday_agent_id:
-            from routers.websocket_chat import build_chat_session_key
-
             submitted_by = onboarding.get("onboarding_submitted_by") or row_user_id
-            session_key = build_chat_session_key(friday_agent_id, submitted_by, None)
+            session_key = _bootstrap_session_key(friday_agent_id, submitted_by)
             await pool.ensure_connection(owner_id, ip, container["gateway_token"])
             registered = pool.register_run_completion_callback(
                 owner_id,
@@ -1215,13 +1213,11 @@ async def maybe_dispatch_bootstrap(owner_id: str, *, onboarding: dict | None = N
         # (INV-4 silent no-op). Either way, this caller has nothing to do.
         return
 
-    from routers.websocket_chat import build_chat_session_key
-
     pool = get_gateway_pool()
     # Addressed at the SUBMITTING member (not row_user_id) -- see module
     # docstring: this is what makes the kickoff visible to whoever actually
     # submitted the brief, not just the org creator.
-    session_key = build_chat_session_key(friday_agent_id, submitted_by, None)
+    session_key = _bootstrap_session_key(friday_agent_id, submitted_by)
     # The kickoff's chat.send idempotencyKey -- which OpenClaw echoes back as
     # ``runId`` on every event of the run -- is the persisted dispatch id, NOT
     # a fresh uuid: the row alone then identifies the run, so a process that

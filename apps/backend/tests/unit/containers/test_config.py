@@ -64,18 +64,6 @@ class TestOpenclawConfigShape:
         # test_trusted_proxies_is_loopback_only for the invariant.
         assert config["gateway"]["trustedProxies"] == ["127.0.0.1", "::1"]
 
-    def test_gateway_trusted_broker_profiles_are_explicit_and_fail_closed(self):
-        device_id = "a" * 64
-        config = _cfg(trusted_broker_profiles={device_id: "profile-human-1"})
-        assert config["gateway"]["auth"] == {
-            "mode": "token",
-            "token": "test-token",
-            "trustedBrokerProfiles": {device_id: "profile-human-1"},
-        }
-        for invalid in ({"not-a-device": "profile-human-1"}, {device_id: "gateway-owner"}):
-            with pytest.raises(ValueError, match="trusted_broker_profiles"):
-                _cfg(trusted_broker_profiles=invalid)
-
     def test_control_ui_disabled(self):
         config = _cfg()
         assert config["gateway"]["controlUi"]["enabled"] is False
@@ -303,14 +291,9 @@ class TestOpenclawConfigShape:
         assert entries["command-logger"]["enabled"] is True
         assert entries["session-memory"]["enabled"] is True
 
-    def test_channels_empty_until_configured(self):
-        """Channels ship EMPTY at provision — a provider block only appears once
-        the wizard PATCHes the first account. Shipping the enabled-trio made every
-        un-set-up owner count 3 'configured' channels, which broke agent-authored
-        delivery crons (delivery.channel ambiguity) and left an orphan-credential
-        crash-loop substrate."""
+    def test_native_lightbulb_channel_present_before_external_channels(self):
         config = _cfg()
-        assert config["channels"] == {}
+        assert config["channels"] == {"lightbulb": {"enabled": True, "accounts": {"main": {"enabled": True}}}}
 
     def test_session_dm_scope(self):
         config = _cfg()
@@ -453,9 +436,9 @@ class TestOpenclawConfigStaticSectionsAcrossProviders:
             ("bedrock_trial", {}),
         ],
     )
-    def test_channels_empty_for_every_provider(self, provider_choice, kwargs):
+    def test_native_channel_present_for_every_provider(self, provider_choice, kwargs):
         config = _cfg(provider_choice=provider_choice, **kwargs)
-        assert config["channels"] == {}
+        assert config["channels"]["lightbulb"]["enabled"] is True
 
     @pytest.mark.parametrize(
         "provider_choice,kwargs",
@@ -503,7 +486,7 @@ class TestWriteOpenclawConfigAsync:
         assert cfg["gateway"]["auth"]["token"] == "t-1"
         assert cfg["agents"]["defaults"]["verboseDefault"] == "full"
         assert cfg["tools"]["exec"]["mode"] == "full"
-        assert cfg["channels"] == {}
+        assert cfg["channels"]["lightbulb"]["enabled"] is True
         assert cfg["browser"]["defaultProfile"] == "openclaw"
         assert "nodeHost" not in cfg
         assert cfg["gateway"]["nodes"]["browser"]["mode"] == "auto"
@@ -814,16 +797,16 @@ class TestChannelAccountsReinjection:
             "match": {"channel": "slack", "accountId": "agent_b"},
         } in cfg["bindings"]
 
-    def test_no_channel_accounts_emits_empty_channels(self):
+    def test_no_external_channel_accounts_keeps_native_channel(self):
         cfg = _cfg()
-        assert cfg["channels"] == {}
-        assert cfg.get("bindings", []) == []
+        assert cfg["channels"]["lightbulb"]["enabled"] is True
+        assert {binding["match"]["channel"] for binding in cfg["bindings"]} == {"lightbulb"}
 
     def test_unknown_provider_in_channel_accounts_is_skipped(self):
-        # A provider not in the static channels block must not crash or inject.
+        # An unknown external provider must not crash or inject alongside Lightbulb.
         cfg = _cfg(channel_accounts={"webchat": {"x": {"botToken": "t"}}})
         assert "webchat" not in cfg["channels"]
-        assert cfg.get("bindings", []) == []
+        assert {binding["match"]["channel"] for binding in cfg["bindings"]} == {"lightbulb"}
 
     async def test_write_openclaw_config_threads_channel_accounts(self, tmp_path):
         out = tmp_path / "openclaw.json"

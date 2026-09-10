@@ -48,32 +48,6 @@ def test_registered_schema_carries_fork_runtime_scope(schema_id: str):
 
 
 @pytest.mark.chaos
-def test_multiplayer_candidate_accepts_trusted_broker_profiles():
-    """The 9.3 fork schema must accept its trusted human broker binding."""
-    schema_id = "2026.9.3-isol8.2"
-    proc = subprocess.run(
-        ["node", str(_SCHEMA_DIR / "validate.mjs"), str(_bundle_path(schema_id))],
-        input=json.dumps(
-            {
-                "gateway": {
-                    "auth": {
-                        "mode": "token",
-                        "token": "test-token",
-                        "trustedBrokerProfiles": {"a" * 64: "profile-human-1"},
-                    }
-                }
-            }
-        ),
-        capture_output=True,
-        text=True,
-    )
-    assert proc.returncode == 0, (
-        f"Registered schema {schema_id} is missing the trusted broker profile contract; "
-        f"re-vendor from the exact fork release:\n{proc.stderr}"
-    )
-
-
-@pytest.mark.chaos
 @pytest.mark.parametrize("schema_id,json_schema", tuple(_SCHEMA_PATHS.items()))
 def test_registered_json_schema_matches_its_zod_bundle(schema_id: str, json_schema: Path):
     """Each Python artifact must regenerate from its own registered bundle."""

@@ -12,7 +12,6 @@ import hashlib
 import json
 import logging
 import os
-import re
 import secrets
 import tempfile
 import time
@@ -1170,6 +1169,25 @@ def _build_agents_list(paperclip_agents: list[dict], ceo_model: str | None = Non
     return entries
 
 
+def _lightbulb_agent_ids(paperclip_agents: list[dict]) -> list[str]:
+    """Canonical account/binding IDs from the same roster as agents.list/entries."""
+    return sorted({entry["id"] for entry in _build_agents_list(paperclip_agents)})
+
+
+def _lightbulb_bindings(agent_ids: list[str]) -> list[dict]:
+    return [
+        {
+            "agentId": agent_id,
+            "match": {
+                "channel": "lightbulb",
+                "accountId": agent_id,
+                "peer": {"kind": "channel", "id": "*"},
+            },
+        }
+        for agent_id in agent_ids
+    ]
+
+
 def _build_agents_roster(
     paperclip_agents: list[dict],
     ceo_model: str | None,
@@ -1645,7 +1663,6 @@ def build_openclaw_config_dict(
     channel_bindings: list[dict] | None = None,
     acp_enabled: bool = False,
     deployed_tag: str | None = None,
-    trusted_broker_profiles: dict[str, str] | None = None,
 ) -> dict:
     """Build the openclaw.json config dict for a per-user container.
 
@@ -1677,19 +1694,6 @@ def build_openclaw_config_dict(
     # Fail fast — caller must regenerate via secrets.token_urlsafe before retry.
     if not gateway_token:
         raise ValueError("gateway_token must be a non-empty string")
-    if trusted_broker_profiles is not None and (
-        not isinstance(trusted_broker_profiles, dict)
-        or len(trusted_broker_profiles) > 256
-        or any(
-            not isinstance(device_id, str)
-            or re.fullmatch(r"[0-9a-f]{64}", device_id) is None
-            or not isinstance(profile_id, str)
-            or re.fullmatch(r"(?!gateway-owner$)[A-Za-z0-9_-]{1,128}", profile_id) is None
-            for device_id, profile_id in trusted_broker_profiles.items()
-        )
-    ):
-        raise ValueError("trusted_broker_profiles must bind valid device ids to profile ids")
-
     # The free-tier Bedrock config mode. Everything keyed off this flag is a
     # LOCKDOWN of autonomous / always-on surfaces: a trial container must only
     # ever run when a human is in the loop, because its only spend fence is the
@@ -1716,6 +1720,7 @@ def build_openclaw_config_dict(
     # contexts where the cost difference is largest.
     cheap_model = cheap_model_ref(provider_choice, byo_provider, aip_arns=aip_arns)
     heartbeat_model = heartbeat_model_ref(provider_choice, byo_provider, aip_arns=aip_arns)
+    lightbulb_agent_ids = _lightbulb_agent_ids(paperclip_agents or [])
 
     # Token auth — shared secret between backend and container.
     # Trusted-proxy mode explicitly blocks loopback connections (OpenClaw #17761),
@@ -1727,7 +1732,6 @@ def build_openclaw_config_dict(
     auth = {
         "mode": "token",
         "token": gateway_token,
-        **({"trustedBrokerProfiles": dict(trusted_broker_profiles)} if trusted_broker_profiles else {}),
     }
 
     config = {
@@ -2182,6 +2186,10 @@ def build_openclaw_config_dict(
         },
         "tools": {
             "profile": "full",
+            # Shared company agents communicate only through canonical rooms;
+            # never expose another agent's private OpenClaw sessions/tools.
+            "sessions": {"visibility": "agent"},
+            "agentToAgent": {"enabled": False},
             # Explicit wildcard allow, separate from ``profile: "full"``.
             # The profile's implicit wildcard surfaces core tools and
             # NON-optional plugin tools, but the optional-plugin-tool gate
@@ -2358,6 +2366,13 @@ def build_openclaw_config_dict(
                 )
             },
         },
+        "messages": {
+            "groupChat": {
+                "unmentionedInbound": "room_event",
+                "visibleReplies": "automatic",
+                "historyLimit": 50,
+            }
+        },
         "hooks": {
             "internal": {
                 "entries": {
@@ -2477,28 +2492,23 @@ def build_openclaw_config_dict(
                 # is the behaviour this replaced. The tools are non-optional,
                 # so the explicit tools.allow ["*"] above surfaces them.
                 "lightbulb-marketplace": {"enabled": True},
+                # First-party canonical multiplayer channel, baked and promoted
+                # before this config shape lands.
+                "lightbulb": {"enabled": True},
             },
         },
-        # Channels: ship EMPTY until the user configures one. A provider block
-        # (channels.<id> = {enabled: true, accounts: {...}}) appears only when the
-        # setup wizard PATCHes the first account. Why not the old enabled-trio:
-        #   - An enabled channel with zero accounts still counts as a "configured
-        #     channel" for OpenClaw's cron announce-delivery guard, so shipping all
-        #     three forced agents to disambiguate delivery.channel on every announce
-        #     cron — which they don't, so agent-authored delivery crons failed.
-        #   - An enabled channel with a stale/orphaned provider-level token auth-
-        #     loops on invalid_auth and burns CPU; empty-until-configured removes
-        #     that substrate entirely.
-        # COST: the first setup of a given channel is now a full gateway restart
-        # (the plugin isn't loaded until the channel is enabled), deferred up to
-        # ~300s — handled gracefully by the deferral-aware setup wizard
-        # (awaitChannelReady). On reprovision, the channel_accounts re-injection
-        # below recreates the enabled block + accounts for any channel the user had
-        # configured. ChannelsSchema accepts an empty object (upstream
-        # zod-schema.channels-config.ts: object().passthrough().optional()).
-        "channels": {},
+        # Lightbulb is a first-party account-per-agent channel. Third-party
+        # channels remain empty until configured and are carried below.
+        "channels": {
+            "lightbulb": {
+                "enabled": True,
+                "accounts": {agent_id: {"enabled": True} for agent_id in lightbulb_agent_ids},
+            }
+        },
+        "bindings": _lightbulb_bindings(lightbulb_agent_ids),
         "session": {
             "dmScope": "per-account-channel-peer",
+            "groupScope": "per-group",
             # "warn" (the old value) never deletes ANYTHING — unbounded
             # session-store + archive growth, and giant session files are
             # upstream's documented pre-OOM signature on small tasks. The
@@ -2986,7 +2996,6 @@ async def write_openclaw_config(
     channel_bindings: list[dict] | None = None,
     acp_enabled: bool = True,
     deployed_tag: str | None = None,
-    trusted_broker_profiles: dict[str, str] | None = None,
 ) -> None:
     """Atomically replace the user's openclaw.json with the full container config.
 
@@ -3041,7 +3050,6 @@ async def write_openclaw_config(
         channel_bindings=channel_bindings,
         acp_enabled=acp_enabled,
         deployed_tag=deployed_tag,
-        trusted_broker_profiles=trusted_broker_profiles,
     )
 
     # Full-file write — this path does NOT go through config_patcher._locked_rmw,

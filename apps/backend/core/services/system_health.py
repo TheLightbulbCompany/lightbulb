@@ -162,5 +162,13 @@ async def get_system_health() -> dict:
         "upstreams": _safe(upstreams, {}),
         "fleet": _safe(fleet, {}),
         "background_tasks": _background_tasks_status(),
+        "messaging": {
+            "appsync_publisher": {
+                "status": "configured" if settings.APPSYNC_EVENTS_HTTP_ENDPOINT.strip() else "unconfigured"
+            },
+            "openclaw_work_queue": {
+                "status": "configured" if settings.OPENCLAW_WORK_QUEUE_URL.strip() else "unconfigured"
+            },
+        },
         "recent_errors": _safe(recent_errors, []),
     }

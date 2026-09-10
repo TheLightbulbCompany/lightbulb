@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> Codex-facing mirror of `CLAUDE.md`, regenerated from it on 2026-08-30 (post
+> Codex-facing mirror of `CLAUDE.md`, regenerated from it on 2026-09-10 (post
 > isol8→Lightbulb retirement). `CLAUDE.md` is the maintained original — if the
 > two disagree, `CLAUDE.md` wins; regenerate this file from it rather than
 > editing here.
@@ -9,7 +9,7 @@ This file provides guidance to Codex when working with code in this repository.
 
 ## Project Overview
 
-Lightbulb (`flickmeon.ai`) is an AI agent platform powered by [OpenClaw](https://github.com/openclaw/openclaw). Users subscribe, get a per-user ECS Fargate container running the OpenClaw Docker image, and interact with their agents via a WebSocket-based chat UI. The platform uses a Next.js 16 frontend (Vercel), FastAPI backend (ECS Fargate), Clerk for authentication, **DynamoDB** for metadata (users, containers, billing, usage counters, pending updates, channel links, admin actions, oauth tokens/state, integrations, webhook dedup, metronome fast-gate, bedrock AIP owners, agent-email, company slugs, paperclip-companies, marketplace listings/purchases/payouts/takedowns/sellers, provisioning-workflows — see `database-stack.ts` for the full set; BYO LLM keys live in **Secrets Manager**, not DynamoDB), AWS Bedrock + ChatGPT OAuth + BYO API key for LLM inference, Stripe for billing (subscription + marketplace purchases; an Apple IAP rail that is LIVE in both envs — CDK sets `APPLE_IAP_BUNDLE_ID`, `APPLE_IAP_PRODUCT_ID` and `APPLE_IAP_APP_APPLE_ID` unconditionally, so `routers/apple_iap.py` does not 503), EFS for per-user agent workspaces, and a per-tenant Paperclip BFF (Aurora Serverless v2 Postgres) for the Teams Inbox. Infrastructure is managed via **AWS CDK** in `apps/infra/` (single source of IaC truth). The desktop app is **Tauri** (not Electron) — see `project_desktop_app_tauri` memory. There is also an **Expo iOS app** at `apps/mobile/` — see the "Mobile App" section.
+Lightbulb (`flickmeon.ai`) is an AI agent platform powered by [OpenClaw](https://github.com/openclaw/openclaw). Users subscribe, get a per-user ECS Fargate container running the OpenClaw Docker image, and interact with their agents via a WebSocket-based chat UI. The platform uses a Next.js 16 frontend (Vercel), FastAPI backend (ECS Fargate), Clerk for authentication, **DynamoDB** for metadata (users, containers, billing, usage counters, pending updates, channel links, admin actions, oauth tokens/state, integrations, webhook dedup, metronome fast-gate, bedrock AIP owners, agent-email, company slugs, paperclip-companies, marketplace listings/purchases/payouts/takedowns/sellers, provisioning-workflows — see `database-stack.ts` for the full set; BYO LLM keys live in **Secrets Manager**, not DynamoDB), AWS Bedrock + ChatGPT OAuth + BYO API key for LLM inference, Stripe for new subscription and marketplace purchases, and a configured Apple server-notification/verifier path retained only for historical Apple subscription lifecycle reconciliation. EFS provides per-user agent workspaces, and a per-tenant Paperclip BFF (Aurora Serverless v2 Postgres) powers the Teams Inbox. Infrastructure is managed via **AWS CDK** in `apps/infra/` (single source of IaC truth). The desktop app is **Tauri** (not Electron) — see `project_desktop_app_tauri` memory. There is also an **Expo iOS app** at `apps/mobile/` — see the "Mobile App" section.
 
 Every freshly provisioned owner gets two seed agents inside their Paperclip company: **Friday** (the per-owner CEO / orchestrator) and **Atlas** (the in-house agent-recruiter). Both are seeded by `paperclip_provisioning.provision_org` — see the "Provisioning Flow" section below. Custom agents beyond Friday/Atlas can be **published to the Lightbulb marketplace** for other users to deploy — see the "Marketplace" section.
 
@@ -44,7 +44,7 @@ for the deliberate residue and pending items listed here. Current names:
 no mail records of any kind. Mail lives on its own domain, which is why the root
 domain and the mail domain are two separate parameters
 (`apps/infra/lib/domains.ts`: `ROOT_DOMAIN`, `PLATFORM_MAIL_DOMAIN`) threaded
-through the stacks via `Isol8StageProps`. `domains.ts` remains the per-environment
+through the stacks via `LightbulbStageProps`. `domains.ts` remains the per-environment
 truth — read it rather than trusting any doc when a hostname matters.
 
 **⚠️ GitHub OIDC subs are id-qualified since the rename.** After the 2026-08-30
@@ -285,7 +285,9 @@ password/OTP typed, the same ticket mechanism `routers/desktop_auth.py`
 uses. Get the dev Clerk secret from Secrets Manager
 (`lightbulb/dev/clerk_secret_key`), find the user id via
 `GET https://api.clerk.com/v1/users` (dev accounts are `+clerk_test`
-addresses; the users table has no email, Clerk is the only email truth),
+addresses; `/users/sync` writes the JWT's email onto the users row and
+heals rows that lack one, but rows untouched since 2026-09-03 may still
+have no `email`, so Clerk stays the fallback truth),
 then:
 ```bash
 curl -sX POST https://api.clerk.com/v1/sign_in_tokens \
@@ -363,7 +365,12 @@ gh run view <run-id> --repo TheLightbulbCompany/lightbulb --json status,jobs
 ```
 
 **Deployment methods:**
-- **Frontend:** Vercel auto-deploy on push to main (configured via Vercel dashboard)
+- **Frontend:** dev auto-deploys from main. **PROD DOES NOT** — `prod-DeployVercelProd`
+  carries the same `if: github.event_name == 'workflow_dispatch'` as every other prod job
+  (its `if:` sits at the BOTTOM of the ~107-line block, so a `grep -A` from the job header
+  misses it). Prod frontend and backend ship together on the dispatch; merging to main
+  changes nothing a customer sees. Verify by curling the live site for a string from the
+  merged diff, not by reading this table.
 - **Backend:** `deploy.yml` (the CDK pipeline) builds the Docker image and deploys the ECS Fargate service. `backend.yml` is **PR lint + test only** — its header says so; it deploys nothing.
 - **Infrastructure (CDK):** GitHub Actions (`deploy.yml`) → `cdk synth` → `cdk deploy` per environment
 
@@ -374,6 +381,71 @@ workflow: Actions → deploy → Run workflow, or `gh workflow run deploy.yml --
 A dispatch run deploys dev from that ref first — prod jobs still `needs:` the full dev
 stage, so a promotion cannot skip dev. The `lightbulb-deploy` concurrency group is unchanged,
 so a promotion queues behind an in-flight dev deploy.
+
+### `queue: max` — what it fixed, measured
+
+**It works.** Natural experiment over 60 deploy runs (34 cancelled), classifying each
+cancellation by what was happening at that instant, split on the `queue: max` merge
+(7dbc6afb7, ~03:13Z on 2026-09-08):
+
+```
+BEFORE : 22 cancellations, 19 match supersede-on-arrival   (86%)
+AFTER  : 12 cancellations,  0 match supersede-on-arrival   (0%)
+```
+
+*supersede-on-arrival* = cancelled within 5s of another run being **created**. That is the
+failure that killed four consecutive prod promotions on 2026-09-07/08: you are pending,
+somebody merges, you die silently. **It went to zero.**
+
+So the practical question — *"can my merge to `main` kill a colleague's pending promotion?"* —
+now has a measured answer: **no.** A merge freeze around a promotion is no longer buying that
+protection.
+
+**What is NOT established.** Of the 12 post-fix cancellations, 4 are a single cluster at
+03:50:57-59 (a run completed, four newer pending runs cancelled in the same second, the oldest
+pending started) and 8 are ambiguous or manual. So "oldest pending wins when the slot frees" is
+**n=1** — possibly real, unproven. It is also *orthogonal to merging*: if it exists, it fires
+when the slot frees regardless of what anyone merges.
+
+> **⚠️ A cancelled run with 0 jobs is NOT self-evidently an eviction.** Three sessions
+> independently misread the same run that way in one night, and one of those readings went into
+> this file as established before being retracted. The cheap disambiguator: check whether any
+> run actually **completed** in that second. Eviction cannot fire before the slot frees — if
+> nothing completed, something else cancelled it (usually a human).
+
+> **⚠️ A run's `status` field LAGS its jobs badly — do not use it for "has this started".**
+> Measured live 2026-09-08 14:27Z: run 34236826570 reported `status: queued` while **16 of its
+> jobs had completed** and 2 were in progress. An earlier run read `queued` with 18 jobs
+> executing. So `queued` at the run level does not mean "waiting" and does not mean "past the
+> concurrency gate" — it mostly means the field has not caught up.
+>
+> **For liveness, count jobs, not status:**
+> ```bash
+> gh run view <id> --repo TheLightbulbCompany/lightbulb --json jobs \
+>   --jq '[.jobs[]|select(.status!="queued")]|length'
+> ```
+> This lag is the likeliest root of the whole "queued means X" confusion.
+
+**Before dispatching**, the one precondition that is safe under every hypothesis above:
+```bash
+gh run list --repo TheLightbulbCompany/lightbulb --workflow deploy.yml --limit 10 \
+  --json status --jq '[.[]|select(.status!="completed")]|length'
+```
+Dispatch when that reads **0**.
+
+That group now carries **`queue: max`** (one line, patched in from `app.ts`). It exists
+because `cancel-in-progress: false` protects only a run that is already `in_progress` — a
+run still PENDING used to be evicted by the next arrival, since a group holds one pending
+run by default. The pipeline is runner-bound, so a promotion sits pending for minutes and
+any merge in that window silently cancelled it (three consecutive promotions on 2026-09-07,
+each cancelled having run zero jobs — a cancelled run with **0 jobs** is the eviction
+signature; one with jobs was cancelled by a human). `queue: max` queues up to 100 runs FIFO
+instead. **A promotion no longer needs a merge freeze, and re-dispatching does not jump the
+queue — it just adds another run behind the first.** The single group is deliberate: prod
+jobs `needs:` the dev stage, so a per-event group would let a promotion and a push deploy the
+same dev stacks concurrently. Note `queue: max` is a validation ERROR alongside
+`cancel-in-progress: true`, and eviction was also coalescing merge bursts — a burst now
+costs one dev deploy per merge.
 
 **⚠️ THE CONSEQUENCE: `main` IS AHEAD OF PROD BY DEFAULT.** Merging no longer ships. Prod
 sits at whatever was last promoted and drifts further behind with every merge, silently and
@@ -480,7 +552,7 @@ There is **no NLB and no VPC Link V1** — that architecture was replaced; see "
 
 ### Production Infrastructure
 
-Turborepo monorepo (`TheLightbulbCompany/lightbulb`): `apps/{frontend,backend,desktop,infra,mobile}`,
+Turborepo monorepo (`TheLightbulbCompany/lightbulb`): `apps/{frontend,backend,desktop,infra,mobile,company}`,
 `packages/shared` (see the Frontend section — it is load-bearing). The non-obvious
 entries at the root:
 
@@ -490,6 +562,12 @@ entries at the root:
 - `openclaw-version.json` / `paperclip-version.json` — the image pins. Both
   carry a `notes` field explaining what each field means and what may not be
   changed without breaking the fleet. Read it before bumping.
+- `stripe-app/` — the Lightbulb **Stripe App** (restricted-API-key auth), the
+  guided way for an owner to mint the read-only key they paste into Settings →
+  Connections. Deliberately OUTSIDE the pnpm workspace (own lockfile, own
+  `pnpm install --ignore-workspace`): it is uploaded with the Stripe CLI, not
+  built by our pipeline, and pulling it into `apps/*` re-resolved ~1.3k
+  lockfile lines. See its README; `stripe apps upload` is owner-gated.
 
 ### AWS Configuration
 
@@ -564,6 +642,26 @@ Friday only ever sees `/api/v1/company/provisioning/u/{owner}/…`; `remove` —
 one call that deprovisions — is reachable from the owner's typed-confirmation
 route and nowhere else, and teardown never reaches it (spec §3.6, proved by
 `tests/unit/services/test_wipe_never_deprovisions.py`).
+
+**The rail is OFF by default** — `STRIPE_PROVISIONING_ENABLED` (CDK env, default
+`false` in both envs) refuses `start()`/`on_approved()`, freezes `advance()`,
+empties Friday's catalog with `reason: provisioning_unavailable`, and hides the
+Connect doors + the Domain & Site panel. It stays off until Stripe ships
+delegated connected-account creation + KYC (isol8, Inc. is the Connect
+platform and cannot connect to itself, and `POST /v2/provisioning/*` 500s for
+us). Everything else a company-Stripe binding powers — the Money tabs, the
+revenue rollup, card status, Friday's "Stripe connected" awareness — is plain
+v1 and runs on the **API-key path**: the owner pastes a restricted key
+(`POST /company/stripe/api-key`, Read on Charges/Customers/Products/Prices/
+Balance/Account; test-mode keys bind too and the card says "Test mode" —
+Stripe's app reviewers may only use test accounts), it lives ONLY in Secrets Manager (`company_stripe` provider;
+never `openclaw.json`, `env.vars`, or EFS), and the billing row carries
+`source: "api_key"`. `company_stripe_reads._addressing` is the one resolver:
+`connected/created` rows → platform key + `stripe_account` header; `api_key`
+rows → their key, no header. The agent's own Stripe tools are a THIRD grant
+(the OAuth MCP in the container) and must never be consolidated with the key.
+`stripe-app/` (repo root) is the Stripe App (restricted-API-key auth) that mints
+a key with exactly those six permissions for an owner to paste — see its README.
 
 ### Container Orchestration (`core/containers/`)
 
@@ -844,7 +942,7 @@ The public billing contract is workspace-first: `GET /billing/account` exposes s
 Workspace billing is seat-free: `STRIPE_WORKSPACE_PRICE_ID` and
 `STRIPE_ULTRA_PRICE_ID` are the only recurring Stripe subscription prices.
 
-**Apple IAP** is a code-complete second purchase rail (App Store guideline 3.1.3(b)): `routers/apple_iap.py` (link-purchase endpoints + `POST /webhooks/apple-iap` App Store Server Notifications, deduped on `notificationUUID`, StoreKit 2 JWS verified against pinned Apple root certs), `billing_repo.set_apple_subscription`, GSI `apple-original-transaction-index` on the billing table. The rail is LIVE in both envs — CDK sets `APPLE_IAP_BUNDLE_ID`, `APPLE_IAP_PRODUCT_ID` and `APPLE_IAP_APP_APPLE_ID` unconditionally (`service-stack.ts`), so the router does not 503. The mobile app drives it (`co.isol8.mobile.plan.monthly` via expo-iap → `/billing/apple/link`); those ids change with the next App Store record (the app never shipped), not before.
+**Apple IAP no longer accepts new purchases or restores.** The authenticated `POST /billing/apple/link` endpoint is a 410 tombstone that returns before verifier or repository work; there is no Apple/mobile checkout route. Keep `POST /webhooks/apple-iap`, StoreKit 2 JWS verification against pinned Apple root certificates, the configured Apple identifiers, `billing_repo` Apple fields, GSI `apple-original-transaction-index`, entitlement teardown, and cancellation/expiration mapping until App Store Connect proves there are zero active, grace-period, billing-retry, or refunded-but-unexpired subscriptions. The mobile app retains `expo-iap` only to open Apple's subscription-management UI for a hypothetical historical subscriber; it has no SKU, purchase, restore, or link action. `POST /billing/checkout` is the only subscription purchase API.
 
 Containers default to a 1 vCPU / 4 GB box launched on **Fargate Spot** (~70% cheaper than on-demand; `ecs_manager` falls back to on-demand when Spot capacity is unavailable — at service create and via a zero-placement timeout in the provisioning poller). The old *plan*-tier size ladder is gone, but size is not uniform: `_size_for_owner` returns `ULTRA_CPU`/`ULTRA_MEMORY_MIB` (2 vCPU / 8 GB) for **either** an `ultra_pro` plan **or** a live agent count over `COMPANY_STANDARD_PLAN_MAX_AGENTS` (10) — the latter is a RELIABILITY floor, not a billing signal, added after an 11-agent prod owner crash-looped on boot 2026-08-14 (24 SQLite DBs restoring concurrently starved the single vCPU; `database is locked` is what SQLite reports when a starved process exhausts its busy timeout). Sizing is derived at every provision/reprovision, so a hand-set size not backed by plan-or-agent-count is silently undone. Paid containers stay always-on while the subscription is active. Checkout bills the first month immediately through `POST /billing/checkout` for a workspace plan; the 14-day Stripe trial was removed 2026-07-17 (evaluation happens on the no-card free tier below). Legacy `trialing` rows created before the cutover remain valid until they convert; for those, trial-clock state is owned by Stripe (do not compute trial-days-left from `trial_end` locally).
 
@@ -903,7 +1001,10 @@ The provision gate (`core/services/provision_gate.py`) blocks chat when subscrip
 - `env.vars` is re-asserted at every provision from Secrets Manager by
   `provisioning_landing.build_provisioned_env` — same class as the
   `integration_mcp_servers` merge. A reprovision overwrites openclaw.json
-  wholesale, so anything not re-injected there is simply dropped.
+  wholesale, so anything not re-injected there is simply dropped. Channel bot
+  accounts (`channels.*.accounts`) and their route bindings are the third
+  carried-forward block (`ecs_manager._provision_channel_accounts`) — the
+  platform Slack app relies on it.
 
 ---
 
@@ -1069,6 +1170,6 @@ Expo iOS app at `apps/mobile/` (`@lightbulb/mobile`): Expo SDK 57 / React Native
 - Routes: `(auth)/sign-in`; `(app)/chat`, `agent/[agentId]`, `settings`, `teams/*`, and a control tree mirroring the web panels (overview, agents, channels, integrations, llm, marketplace, sessions, skills, usage).
 - Auth: Clerk Expo + `expo-apple-authentication`, token cache in `expo-secure-store`.
 - Push: `PushRegistration.tsx` gets an Expo push token → `POST /devices {token, platform, deviceId}`; unregister `DELETE /devices/{deviceId}`.
-- **Apple IAP** via expo-iap, product `co.isol8.mobile.plan.monthly`; `src/lib/appleIap.ts` posts the signed transaction to `/billing/apple/link`, falling back to `/billing/apple/web-checkout`.
+- **Apple subscriptions:** no new StoreKit purchase/restore/link surface or SKU. Personal/no-workspace billing gates open `flickmeon.ai/onboarding` so the user creates or selects the billed workspace first; subscription purchase then uses the web app's sole `POST /billing/checkout` route. `expo-iap` remains only for `deepLinkToSubscriptions` so a hypothetical historical Apple subscriber can manage cancellation.
 - CI/release: `mobile-ci.yml` (PR: shared+mobile typecheck/lint/jest + `expo export` as the Metro-resolution gate, self-hosted mac); `mobile-release.yml` (`mobile-v*` tag → `eas build --local` → `eas submit` to TestFlight); `mobile-ota.yml` (merge to main → `eas update --channel production`). `runtimeVersion.policy: "fingerprint"` guarantees an OTA whose native fingerprint doesn't match the installed binary is never delivered.
 - **Gotcha:** Metro inlines `EXPO_PUBLIC_*` at bundle time and `eas update` does NOT read eas.json build env — a no-env export once shipped an OTA with an empty Clerk key (see the comment block in `mobile-ota.yml`).

@@ -87,46 +87,50 @@ ORG = AuthContext(user_id="user_1", org_id="org_1", org_role="org:admin", email=
 
 
 @pytest.mark.asyncio
-async def test_link_resolves_owner_from_auth_context_without_500():
-    """The owner must come from resolve_owner_id. A 400 here is fine — it means
-    the handler ran and rejected the payload; a 500 means it never got that far."""
-    app = _app_with_auth(PERSONAL)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
-        r = await c.post("/api/v1/billing/apple/link", json={})
-    assert r.status_code == 400, r.text
+async def test_retired_link_route_still_requires_authentication(client):
+    async with client as c:
+        r = await c.post("/api/v1/billing/apple/link", json={"signed_transaction": "jws"})
+    assert r.status_code in {401, 403}, r.text
 
 
 @pytest.mark.asyncio
-async def test_link_passes_the_resolved_owner_to_the_service():
-    """Personal context → user_id. Pins that the value threaded into billing is
-    the resolved owner, not something else that merely exists on AuthContext."""
-    app = _app_with_auth(PERSONAL)
-    with patch.object(apple_iap, "link_purchase", AsyncMock()) as link:
-        link.return_value = type("S", (), {"status": "active", "product_id": "p", "expires_at_ms": 1})()
+@pytest.mark.parametrize(
+    "request_kwargs",
+    [
+        {"json": {}},
+        {"json": {"signed_transaction": "jws"}},
+        {"content": b"not-json", "headers": {"content-type": "application/json"}},
+    ],
+    ids=["missing-transaction", "signed-transaction", "malformed-body"],
+)
+async def test_retired_link_route_is_always_gone_before_verification(request_kwargs):
+    app = _app_with_auth(ORG)
+    with patch.object(
+        apple_iap.apple_iap_service,
+        "link_purchase",
+        AsyncMock(side_effect=AssertionError("retired route reached Apple verification")),
+    ) as link:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
-            r = await c.post("/api/v1/billing/apple/link", json={"signed_transaction": "jws"})
+            r = await c.post("/api/v1/billing/apple/link", **request_kwargs)
 
-    assert r.status_code == 200, r.text
-    assert link.await_args.kwargs["owner_id"] == "user_1"
+    assert r.status_code == 410, r.text
+    link.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_org_context_resolves_to_the_org_and_is_refused_by_the_checkout_fence():
-    """Org context → org_id, and the personal-plan endpoints refuse it. Also
-    proves the fence reads the RESOLVED owner rather than the user id, which
-    would have let every org member straight through."""
+async def test_retired_mobile_web_checkout_route_is_not_mounted():
+    """There is one subscription purchase route: /billing/checkout."""
     app = _app_with_auth(ORG)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
         r = await c.post("/api/v1/billing/apple/web-checkout", json={})
-    assert r.status_code == 403, r.text
-    assert "Workspace subscriptions" in r.text
+    assert r.status_code == 404, r.text
 
 
 @pytest.mark.asyncio
-async def test_portal_resolves_the_owner_too():
+async def test_portal_resolves_the_workspace_owner_too():
     """The portal handler resolves its own owner; a missing binding here 500s
     exactly like the link route did."""
-    app = _app_with_auth(PERSONAL)
+    app = _app_with_auth(ORG)
     with patch.object(apple_iap.billing_repo, "get_by_owner_id", AsyncMock(return_value=None)):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
             r = await c.post("/api/v1/billing/apple/portal", json={})

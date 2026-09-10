@@ -74,9 +74,9 @@ def owner_account_token(owner_id: str) -> str:
     token to mint, store, look up, or leak — the server recomputes it and
     compares.
 
-    ``ownerAccountToken`` in ``apps/mobile/src/lib/appleIap.ts`` is the same
-    computation and the two MUST stay in lockstep: a divergence rejects every
-    real purchase, since the comparison is what authorizes the link.
+    Retired mobile purchase clients used this same computation. Keep it stable
+    while historical Apple transactions and their lifecycle remain supported:
+    changing it would invalidate the account binding on those transactions.
 
     Lowercase hex, matching what Apple echoes back and what the JS side emits.
     """

@@ -68,10 +68,6 @@ jobs:
       # the prod web bundle carries. The old key named clerk.isol8.co, whose DNS is
       # retired: an OTA built with it cannot load Clerk at all.
       EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_live_Y2xlcmsuZmxpY2ttZW9uLmFpJA
-      # Absent, APPLE_SUBSCRIPTION_SKU is "" and APPLE_IAP_AVAILABLE is false,
-      # so the paywall renders no StoreKit purchase at all — the exact condition
-      # App Review rejected 0.1.0 (17) for under guideline 3.1.1.
-      EXPO_PUBLIC_APPLE_IAP_PRODUCT_ID: company.thelightbulb.mobile.plan.monthly
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -111,8 +107,6 @@ jobs:
             || { echo '::error::Clerk publishable key NOT inlined in OTA bundle'; FAIL=1; }
           grep -aq 'https://api.flickmeon.ai' "$HBC" \
             || { echo '::error::prod API URL NOT inlined in OTA bundle'; FAIL=1; }
-          grep -aq "$EXPO_PUBLIC_APPLE_IAP_PRODUCT_ID" "$HBC" \
-            || { echo '::error::Apple IAP product id NOT inlined — the paywall would ship with no in-app purchase'; FAIL=1; }
           # Matches EITHER dev apex. This guard greps for a string that must be
           # ABSENT, so it silently stops guarding the moment the dev URL moves and
           # nothing fails -- which is exactly what happened when dev flipped to

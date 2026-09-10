@@ -66,15 +66,14 @@ describe("ChatErrorCard", () => {
     render(<ChatErrorCard code="trial_daily_cap" message="server copy" />);
 
     expect(screen.getByText("You've used today's free usage")).toBeInTheDocument();
-    // All three paths on offer, with their real prices — an owner whose free
-    // usage ran out is exactly who should get the full choice.
-    expect(screen.getByRole("button", { name: /powered by claude/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /sign in with chatgpt/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /bring your own api key/i })).toBeInTheDocument();
-    // $70 is the pre-payment disclosure for the Bedrock path: its Checkout
-    // bundles $20 of starter credits beside the $50 subscription, because
-    // provision_gate won't start that container on a zero balance.
-    expect(screen.getByText(/\$70 at checkout/i)).toBeInTheDocument();
+    // One workspace subscription CTA, plus truthful provider-cost disclosure.
+    expect(screen.getByRole("heading", { name: /powered by claude/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /sign in with chatgpt/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /bring your own api key/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /subscribe to workspace plan/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/separate ChatGPT subscription/i)).toBeInTheDocument();
+    expect(screen.getByText(/provider bills inference separately/i)).toBeInTheDocument();
+    expect(screen.getByText(/managed Claude inference uses prepaid workspace credits/i)).toBeInTheDocument();
 
     // The card renders from `code`, ignoring the server message, so the
     // pre-send and mid-run refusals are identical.
@@ -127,7 +126,7 @@ describe("ChatErrorCard", () => {
     // the hardcoded copy).
     render(<ChatErrorCard code="trial_expired" message="server copy: trial_expired" />);
     expect(screen.getByText("Your free trial has ended")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /powered by claude/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /powered by claude/i })).toBeInTheDocument();
     expect(screen.queryByText("server copy: trial_expired")).not.toBeInTheDocument();
     // trial_cap._is_expired never self-clears, so no "resets at midnight"
     // here — that line belongs to the daily-cap variant only.

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { TeamBillingCard } from "../TeamBillingCard";
 
 describe("TeamBillingCard", () => {
@@ -23,6 +23,17 @@ describe("TeamBillingCard", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: /subscribe workspace/i }));
     expect(onSubscribe).toHaveBeenCalled();
+  });
+
+  it("re-enables Subscribe after a same-plan/update response stays on this page", async () => {
+    const onSubscribe = vi.fn().mockResolvedValue(undefined);
+    render(
+      <TeamBillingCard workspacePriceUsd={50} ownerRole="admin" isSubscribed={false} onSubscribe={onSubscribe} />,
+    );
+    const button = screen.getByRole("button", { name: /subscribe workspace/i });
+    fireEvent.click(button);
+    await waitFor(() => expect(button).toBeEnabled());
+    expect(onSubscribe).toHaveBeenCalledOnce();
   });
 
   it("shows the ask-admin message and no CTA for a member", () => {

@@ -535,8 +535,8 @@ function BillingPanel() {
             carries no pricing ("the sales framing would be noise" for an
             owner who already subscribed). Rendered pre-purchase, that
             stripped the prices off the one screen whose entire job is to
-            show them — including the fact that the Bedrock path costs $70
-            today, not $50. */}
+            show them — while keeping provider inference costs separate from
+            the single workspace subscription. */}
         {isTrialLocal && (
           <div style={{ marginTop: 20 }}>
             <ProviderPicker

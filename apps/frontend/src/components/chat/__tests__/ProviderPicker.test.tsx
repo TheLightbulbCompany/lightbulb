@@ -17,6 +17,9 @@ describe("ProviderPicker", () => {
 
     expect(screen.getAllByText("$75 / month")).toHaveLength(3);
     expect(screen.getByText(/Choose your inference provider after checkout/)).toBeInTheDocument();
+    expect(screen.getByText(/separate ChatGPT subscription/i)).toBeInTheDocument();
+    expect(screen.getByText(/provider bills inference separately/i)).toBeInTheDocument();
+    expect(screen.getByText(/managed Claude inference uses prepaid workspace credits/i)).toBeInTheDocument();
     expect(screen.queryByText(/Claude credits — no second step/)).not.toBeInTheDocument();
   });
 

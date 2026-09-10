@@ -199,21 +199,29 @@ async def create_workspace_checkout(*, owner_id: str, clerk_user_id: str, plan: 
                 validate_owned_subscription(candidate, allow_legacy_metadata=True)
                 subscription = candidate
 
-    if subscription is None:
-        with timing("stripe.api.latency", {"op": "subscription.list"}):
-            subscriptions = stripe.Subscription.list(customer=account["stripe_customer_id"], status="all", limit=100)
-        live = [
-            candidate
-            for candidate in subscriptions.auto_paging_iter()
-            if candidate.get("status") in LIVE_SUBSCRIPTION_STATUSES
-        ]
-        if live:
-            # A customer may carry at most one live workspace subscription.
-            # Do not silently skip malformed/foreign entries and mint another.
-            if len(live) != 1:
-                raise BillingServiceError("Multiple live subscriptions require support")
-            validate_owned_subscription(live[0])
-            subscription = live[0]
+    # The local id is only a candidate. Stripe's complete customer list is the
+    # authority for the one-live-subscription invariant; otherwise a stale row
+    # could mask a second live subscription and let us modify the wrong one.
+    with timing("stripe.api.latency", {"op": "subscription.list"}):
+        subscriptions = stripe.Subscription.list(customer=account["stripe_customer_id"], status="all", limit=100)
+    live = [
+        candidate
+        for candidate in subscriptions.auto_paging_iter()
+        if candidate.get("status") in LIVE_SUBSCRIPTION_STATUSES
+    ]
+    if live:
+        if len(live) != 1:
+            raise BillingServiceError("Multiple live subscriptions require support")
+        listed = live[0]
+        validate_owned_subscription(
+            listed,
+            # Only a stored legacy binding may omit workspace_id. A list-only
+            # result with missing canonical metadata is never safe to adopt.
+            allow_legacy_metadata=bool(subscription and listed.get("id") == subscription.get("id")),
+        )
+        subscription = listed
+    elif subscription is not None:
+        raise BillingServiceError("Stored subscription was not found in the customer subscription list")
 
     if subscription is not None:
         sub_id = subscription.get("id") or sub_id
@@ -235,9 +243,21 @@ async def create_workspace_checkout(*, owner_id: str, clerk_user_id: str, plan: 
                 subscription["id"],
                 items=[{"id": item["id"], "price": price_id}],
                 proration_behavior="create_prorations",
-                # Partial metadata avoids overwriting Stripe-side edits and
-                # keeps this body stable for the transition idempotency key.
-                metadata={"workspace_plan_revision": revision},
+                # Canonical billing metadata is intentionally the only partial
+                # update. It neither copies arbitrary Stripe-side fields nor
+                # includes the initiating admin, so same-transition retries
+                # retain an identical body/key. Empty strings delete obsolete
+                # legacy provider/credit metadata in Stripe.
+                metadata={
+                    "workspace_id": owner_id,
+                    "owner_id": owner_id,
+                    "plan": plan,
+                    "purpose": "workspace_subscription_v2",
+                    "workspace_plan_revision": revision,
+                    "provider_choice": "",
+                    "byo_provider": "",
+                    "credits_cents": "",
+                },
                 idempotency_key=f"workspace-plan-change:v2:{transition}",
             )
         return {"updated": True}

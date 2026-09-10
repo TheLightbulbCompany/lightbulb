@@ -79,18 +79,22 @@ async def test_workspace_checkout_swaps_an_active_subscription_item_in_place(mon
             }
         ),
     )
+    stored = {
+        "id": "sub_1",
+        "customer": "cus_1",
+        "metadata": {"workspace_id": "org_1", "owner_id": "org_1", "workspace_plan_revision": "0"},
+        "status": "active",
+        "items": {"data": [{"id": "si_1", "price": {"id": "price_workspace"}}]},
+    }
     monkeypatch.setattr(
         billing_service.stripe.Subscription,
         "retrieve",
-        MagicMock(
-            return_value={
-                "id": "sub_1",
-                "customer": "cus_1",
-                "metadata": {"workspace_id": "org_1", "owner_id": "org_1", "workspace_plan_revision": "0"},
-                "status": "active",
-                "items": {"data": [{"id": "si_1", "price": {"id": "price_workspace"}}]},
-            }
-        ),
+        MagicMock(return_value=stored),
+    )
+    monkeypatch.setattr(
+        billing_service.stripe.Subscription,
+        "list",
+        MagicMock(return_value=MagicMock(auto_paging_iter=lambda: iter([stored]))),
     )
     modify = MagicMock()
     monkeypatch.setattr(billing_service.stripe.Subscription, "modify", modify)
@@ -101,7 +105,17 @@ async def test_workspace_checkout_swaps_an_active_subscription_item_in_place(mon
     assert modify.call_args.args == ("sub_1",)
     assert modify.call_args.kwargs["items"] == [{"id": "si_1", "price": "price_ultra"}]
     assert modify.call_args.kwargs["proration_behavior"] == "create_prorations"
-    assert modify.call_args.kwargs["metadata"] == {"workspace_plan_revision": "1"}
+    assert modify.call_args.kwargs["metadata"] == {
+        "workspace_id": "org_1",
+        "owner_id": "org_1",
+        "plan": "ultra",
+        "purpose": "workspace_subscription_v2",
+        "workspace_plan_revision": "1",
+        "provider_choice": "",
+        "byo_provider": "",
+        "credits_cents": "",
+    }
+    assert "clerk_user_id" not in modify.call_args.kwargs["metadata"]
     assert modify.call_args.kwargs["idempotency_key"].startswith("workspace-plan-change:v2:")
 
 
@@ -120,28 +134,63 @@ async def test_workspace_checkout_rejects_a_legacy_multi_item_subscription(monke
             }
         ),
     )
+    stored = {
+        "id": "sub_legacy_team",
+        "customer": "cus_1",
+        "metadata": {"workspace_id": "org_1", "owner_id": "org_1"},
+        "status": "active",
+        "items": {
+            "data": [
+                {"id": "si_base", "price": {"id": "price_workspace"}},
+                {"id": "si_seat", "price": {"id": "price_seat"}},
+            ]
+        },
+    }
     monkeypatch.setattr(
         billing_service.stripe.Subscription,
         "retrieve",
-        MagicMock(
-            return_value={
-                "id": "sub_legacy_team",
-                "customer": "cus_1",
-                "metadata": {"workspace_id": "org_1", "owner_id": "org_1"},
-                "status": "active",
-                "items": {
-                    "data": [
-                        {"id": "si_base", "price": {"id": "price_workspace"}},
-                        {"id": "si_seat", "price": {"id": "price_seat"}},
-                    ]
-                },
-            }
-        ),
+        MagicMock(return_value=stored),
+    )
+    monkeypatch.setattr(
+        billing_service.stripe.Subscription,
+        "list",
+        MagicMock(return_value=MagicMock(auto_paging_iter=lambda: iter([stored]))),
     )
     modify = MagicMock()
     monkeypatch.setattr(billing_service.stripe.Subscription, "modify", modify)
 
     with pytest.raises(billing_service.BillingServiceError, match="can't be changed automatically"):
+        await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="ultra")
+
+    modify.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_workspace_checkout_rejects_multiple_live_subscriptions_even_with_a_stored_id(monkeypatch):
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
+    monkeypatch.setattr(billing_service.settings, "STRIPE_ULTRA_PRICE_ID", "price_ultra")
+    stored = {
+        "id": "sub_1",
+        "customer": "cus_1",
+        "status": "active",
+        "metadata": {"workspace_id": "org_1", "owner_id": "org_1"},
+        "items": {"data": [{"id": "si_1", "price": {"id": "price_workspace"}}]},
+    }
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "org_1", "stripe_customer_id": "cus_1", "stripe_subscription_id": "sub_1"}),
+    )
+    monkeypatch.setattr(billing_service.stripe.Subscription, "retrieve", MagicMock(return_value=stored))
+    monkeypatch.setattr(
+        billing_service.stripe.Subscription,
+        "list",
+        MagicMock(return_value=MagicMock(auto_paging_iter=lambda: iter([stored, {**stored, "id": "sub_2"}]))),
+    )
+    modify = MagicMock()
+    monkeypatch.setattr(billing_service.stripe.Subscription, "modify", modify)
+
+    with pytest.raises(billing_service.BillingServiceError, match="Multiple live subscriptions"):
         await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="ultra")
 
     modify.assert_not_called()

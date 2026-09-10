@@ -2222,7 +2222,10 @@ export function ProviderPicker({
                     : `$${workspacePriceUsd} / month`}
                 </p>
                 <p className="text-xs text-[var(--midnight)] font-medium">
-                  Choose this provider after checkout.
+                  {card.subtitle}
+                </p>
+                <p className="text-xs text-[var(--midnight-muted)]">
+                  {card.trialNote}
                 </p>
                 {isOrg && card.id === "chatgpt_oauth" && (
                   <p className="text-xs text-[var(--midnight-muted)]">

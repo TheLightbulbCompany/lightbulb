@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { renderHook } from "@testing-library/react";
+import { act, renderHook } from "@testing-library/react";
 import React from "react";
 
 // `?credits=bundled` is the flag CreditsStep reads to show "Adding your Claude
@@ -29,6 +29,7 @@ describe("useCheckoutReturn — credits param", () => {
   beforeEach(() => {
     replaceSearchParams.mockClear();
     billing.refresh.mockClear();
+    billing.isSubscribed = true;
   });
 
   it("preserves credits=bundled so CreditsStep can render the waiting state", () => {
@@ -60,5 +61,22 @@ describe("useCheckoutReturn — credits param", () => {
     expect(params.get("checkout")).toBeNull();
     expect(params.get("provider")).toBe("bedrock_claude");
     expect(params.get("credits")).toBe("bundled");
+  });
+
+  it("refreshes immediately and stops bounded polling once the webhook makes billing active", () => {
+    vi.useFakeTimers();
+    nav.search = "checkout=success";
+    billing.isSubscribed = false;
+    const { rerender } = renderHook(() => useCheckoutReturn());
+    expect(billing.refresh).toHaveBeenCalledTimes(1);
+
+    act(() => vi.advanceTimersByTime(2_000));
+    expect(billing.refresh).toHaveBeenCalledTimes(2);
+    billing.isSubscribed = true;
+    rerender();
+    const refreshesAfterActive = billing.refresh.mock.calls.length;
+    act(() => vi.advanceTimersByTime(30_000));
+    expect(billing.refresh).toHaveBeenCalledTimes(refreshesAfterActive);
+    vi.useRealTimers();
   });
 });

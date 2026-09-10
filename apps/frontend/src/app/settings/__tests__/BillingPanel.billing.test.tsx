@@ -14,9 +14,9 @@ import React from "react";
 // mocked in this file, matching how billing-route.test.tsx also stays
 // minimal for its own surface.
 
-const nav = vi.hoisted(() => ({ panel: "billing" as string | null }));
+const nav = vi.hoisted(() => ({ panel: "billing" as string | null, checkout: null as string | null }));
 vi.mock("next/navigation", () => ({
-  useSearchParams: () => new URLSearchParams(nav.panel ? { panel: nav.panel } : {}),
+  useSearchParams: () => new URLSearchParams({ ...(nav.panel ? { panel: nav.panel } : {}), ...(nav.checkout ? { checkout: nav.checkout } : {}) }),
   // The page forwards a ?panel= naming an href-only nav row (Connections) to
   // that route; no test here uses one, so a no-op replace suffices.
   useRouter: () => ({ replace: vi.fn() }),
@@ -45,6 +45,7 @@ const billing = vi.hoisted(() => ({
   isLoading: false,
   isSubscribed: false,
   startCheckout: vi.fn().mockResolvedValue(undefined),
+  refresh: vi.fn(),
 }));
 
 vi.mock("@/hooks/useBilling", () => ({
@@ -55,6 +56,7 @@ vi.mock("@/hooks/useBilling", () => ({
     isSubscribed: billing.isSubscribed,
     openPortal: vi.fn(),
     startCheckout: billing.startCheckout,
+    refresh: billing.refresh,
   }),
 }));
 
@@ -63,8 +65,18 @@ import SettingsPage from "../page";
 describe("BillingPanel — workspace billing", () => {
   beforeEach(() => {
     nav.panel = "billing";
+    nav.checkout = null;
     clerk.membership = { role: "org:admin" };
     billing.isLoading = false;
+    billing.refresh.mockClear();
+  });
+
+  it("refreshes billing immediately when Settings is the Checkout success target", () => {
+    nav.checkout = "success";
+    billing.isSubscribed = false;
+    billing.account = { subscription_status: "trial_local", workspace_price_usd: 50 };
+    render(<SettingsPage />);
+    expect(billing.refresh).toHaveBeenCalled();
   });
 
   it("a subscribed workspace shows the plain plan card, not membership pricing", () => {

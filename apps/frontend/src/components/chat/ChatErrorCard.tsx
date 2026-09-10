@@ -251,18 +251,13 @@ export function ChatErrorCard({ message, code, interactive = true }: ChatErrorCa
       : undefined;
   // `interactive` is false for every error bubble except the newest, so a
   // transcript with several capped turns shows ONE live paywall instead of N.
-  // Each ProviderPicker owns its own credit-amount and loading state, so
-  // stacked copies let an owner set $100 on the visible card, scroll up, and
-  // buy an older card's $20 — charged an amount the screen never quoted — and
-  // their CTAs do not disable one another.
+  // Each ProviderPicker owns its own checkout loading state, so stacked
+  // copies would expose competing subscription actions in one transcript.
   if (paywallHeading && interactive) {
     return (
       // Deliberately NOT role="alert" (implicit aria-live="assertive" +
       // aria-atomic="true"). That was right for the static error this branch
-      // replaced and wrong for a live-updating purchase form: the price text is
-      // derived from the chosen amount and lives inside the container, so every
-      // preset click re-announced the whole pricing table as an assertive
-      // interruption, cutting off the screen-reader user mid-interaction.
+      // replaced and wrong for a live-updating checkout surface.
       <section
         aria-label={paywallHeading}
         data-testid="chat-error-card"

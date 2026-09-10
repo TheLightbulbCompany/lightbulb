@@ -103,6 +103,36 @@ export async function deleteOrg(opts: {
   }
 }
 
+export async function createOrganizationInvitation(opts: {
+  secretKey: string;
+  orgId: string;
+  inviterUserId: string;
+  email: string;
+}): Promise<string> {
+  const res = await fetch(
+    `${CLERK_API}/organizations/${opts.orgId}/invitations`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${opts.secretKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        email_address: opts.email,
+        inviter_user_id: opts.inviterUserId,
+        role: 'org:member',
+      }),
+    },
+  );
+  if (!res.ok) {
+    throw new Error(
+      `Clerk createOrganizationInvitation ${res.status}: ${await res.text()}`,
+    );
+  }
+  const body = (await res.json()) as { id: string };
+  return body.id;
+}
+
 export async function createSignInToken(opts: {
   secretKey: string;
   userId: string;

@@ -1,61 +1,163 @@
 import { test, expect } from '@playwright/test';
 import { clerkSetup, setupClerkTestingToken } from '@clerk/testing/playwright';
 import { createE2EUser, cleanupUser, type E2EUser } from './fixtures/user';
+import { createOrganizationInvitation } from './fixtures/clerk-admin';
 import { signIn } from './drivers/sign-in';
-import { onboardWorkspace } from './drivers/onboarding';
+import {
+  acceptWorkspaceInvitation,
+  onboardWorkspace,
+} from './drivers/onboarding';
 import {
   waitForChatReady,
   sendMessageAndWaitForResponse,
 } from './drivers/chat';
 import { containerHealthy } from './assertions/container';
 
-test.describe('E2E: Workspace trial happy path', () => {
+async function organizationIdForNextStatusRequest(
+  user: E2EUser,
+  expectedOrgId: string,
+): Promise<string> {
+  const token = await user.page.evaluate(async (organizationId) => {
+    const w = window as Window & {
+      Clerk?: {
+        session?: {
+          getToken: (options: {
+            organizationId: string;
+            skipCache: boolean;
+          }) => Promise<string | null>;
+        };
+      };
+    };
+    return w.Clerk?.session?.getToken({ organizationId, skipCache: true });
+  }, expectedOrgId);
+  if (!token) throw new Error('No Clerk token available for /container/status');
+
+  const payload = JSON.parse(
+    Buffer.from(token.split('.')[1], 'base64url').toString('utf8'),
+  ) as { o?: { id?: unknown } };
+  if (typeof payload.o?.id !== 'string') {
+    throw new Error('Clerk token for /container/status had no organization ID');
+  }
+  const apiUrl = (
+    process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000/api/v1'
+  ).replace(/\/$/, '');
+  const response = await fetch(`${apiUrl}/container/status`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'X-E2E-Run-Id': user.runId,
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`/container/status returned ${response.status}`);
+  }
+  return payload.o.id;
+}
+
+test.describe('E2E: Workspace invitation and trial happy path', () => {
   test.describe.configure({ mode: 'serial' });
   // Allow for a cold workspace start before its first chat.
   test.setTimeout(35 * 60_000);
 
-  let user: E2EUser;
+  let inviter: E2EUser;
+  let invitee: E2EUser;
+  const statusOwners = new Set<string>();
 
   test.beforeAll(async ({ browser }) => {
     await clerkSetup();
-    const ctx = await browser.newContext({
-      extraHTTPHeaders: process.env.VERCEL_AUTOMATION_BYPASS_SECRET
-        ? { 'x-vercel-protection-bypass': process.env.VERCEL_AUTOMATION_BYPASS_SECRET }
-        : {},
-    });
-    const page = await ctx.newPage();
-    await setupClerkTestingToken({ page });
-    user = await createE2EUser(page);
+    async function createUser() {
+      const ctx = await browser.newContext({
+        extraHTTPHeaders: process.env.VERCEL_AUTOMATION_BYPASS_SECRET
+          ? { 'x-vercel-protection-bypass': process.env.VERCEL_AUTOMATION_BYPASS_SECRET }
+          : {},
+      });
+      const page = await ctx.newPage();
+      await setupClerkTestingToken({ page });
+      return createE2EUser(page);
+    }
+    inviter = await createUser();
+    invitee = await createUser();
     console.log(
-      `[e2e] runId=${user.runId} clerkUserId=${user.clerkUserId} email=${user.email}`,
+      `[e2e] inviterRunId=${inviter.runId} inviteeRunId=${invitee.runId}`,
     );
   });
 
   test.afterAll(async () => {
-    if (user) await cleanupUser(user);
+    const failures: unknown[] = [];
+    if (invitee) {
+      try {
+        await cleanupUser(invitee, { cleanupWorkspace: false });
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (inviter) {
+      try {
+        await cleanupUser(inviter);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length) {
+      throw new Error(
+        `Workspace E2E cleanup failed:\n${failures.map(String).join('\n')}`,
+      );
+    }
   });
 
-  test('Step 1: sign in', async () => {
+  test('Step 1: sign in the inviter', async () => {
     if (!process.env.BASE_URL) throw new Error('BASE_URL is required');
-    await signIn(user.page, process.env.BASE_URL, user.clerkUserId);
-    expect(user.page.url()).not.toContain('/sign-in');
+    await signIn(inviter.page, process.env.BASE_URL, inviter.clerkUserId);
+    expect(inviter.page.url()).not.toContain('/sign-in');
   });
 
-  test('Step 2: create and activate a workspace', async () => {
+  test('Step 2: create and activate the shared workspace', async () => {
     // Record orgId on `user` the instant Clerk reports it, BEFORE the
     // /chat redirect wait — otherwise a downstream UI failure here would
     // leak the org because afterAll's cleanupUser would skip deleteOrg
     // (Codex P1 on PR #309).
-    await onboardWorkspace(user.page, `e2e-workspace-${user.runId}`, (orgId) => {
-      user.orgId = orgId;
+    await onboardWorkspace(inviter.page, `e2e-workspace-${inviter.runId}`, (orgId) => {
+      inviter.orgId = orgId;
     });
-    expect(user.page.url()).toContain('/chat');
+    expect(inviter.page.url()).toContain('/chat');
   });
 
-  test('Step 3: workspace trial chat', async () => {
-    await containerHealthy(user.api, { timeoutMs: 10 * 60_000 });
-    await waitForChatReady(user.page);
-    await sendMessageAndWaitForResponse(user.page, 'Say "hello" and nothing else.');
+  test('Step 3: invitee joins the invited workspace before creation is offered', async () => {
+    if (!process.env.BASE_URL) throw new Error('BASE_URL is required');
+    const clerkKey = process.env.CLERK_SECRET_KEY;
+    if (!clerkKey) throw new Error('CLERK_SECRET_KEY is required');
+    if (!inviter.orgId) throw new Error('Inviter workspace was not created');
+
+    await createOrganizationInvitation({
+      secretKey: clerkKey,
+      orgId: inviter.orgId,
+      inviterUserId: inviter.clerkUserId,
+      email: invitee.email,
+    });
+    await signIn(invitee.page, process.env.BASE_URL, invitee.clerkUserId);
+    const { orgId } = await acceptWorkspaceInvitation(
+      invitee.page,
+      `e2e-workspace-${inviter.runId}`,
+    );
+    invitee.orgId = orgId;
+    expect(orgId).toBe(inviter.orgId);
   });
 
+  test('Step 4: both members use one status owner and one workspace trial', async () => {
+    if (!inviter.orgId) throw new Error('Inviter workspace was not created');
+    await containerHealthy(inviter.api, { timeoutMs: 10 * 60_000 });
+
+    statusOwners.add(
+      await organizationIdForNextStatusRequest(inviter, inviter.orgId),
+    );
+    statusOwners.add(
+      await organizationIdForNextStatusRequest(invitee, inviter.orgId),
+    );
+    expect([...statusOwners]).toEqual([inviter.orgId]);
+
+    await waitForChatReady(inviter.page);
+    await sendMessageAndWaitForResponse(
+      inviter.page,
+      'Say "hello" and nothing else.',
+    );
+  });
 });

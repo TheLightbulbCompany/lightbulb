@@ -8,7 +8,11 @@ import { SwrProvider } from "@/components/SwrProvider";
 import { SupportProvider } from "@/components/support/SupportProvider";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { clerkAppearance } from "@/lib/clerkAppearance";
+import {
+  clerkAppearance,
+  clerkLocalization,
+  clerkTaskUrls,
+} from "@/lib/clerkAppearance";
 import { SITE_URL } from "@/lib/domain";
 import "./globals.css";
 
@@ -81,7 +85,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <ClerkProvider appearance={clerkAppearance}>
+    <ClerkProvider
+      appearance={clerkAppearance}
+      localization={clerkLocalization}
+      taskUrls={clerkTaskUrls}
+    >
       {/* suppressHydrationWarning: the script above writes an attribute onto
           <html> that the server-rendered markup does not carry. */}
       <html

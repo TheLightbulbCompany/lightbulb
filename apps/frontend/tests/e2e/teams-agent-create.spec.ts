@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import { clerkSetup, setupClerkTestingToken } from '@clerk/testing/playwright';
 import { createE2EUser, cleanupUser, type E2EUser } from './fixtures/user';
 import { signIn } from './drivers/sign-in';
+import { onboardWorkspace } from './drivers/onboarding';
 
 /**
  * Teams native UI — agent-create golden path (spec Task 28).
@@ -59,11 +60,18 @@ test.describe('E2E: Teams agent create', () => {
     await signIn(user.page, process.env.BASE_URL, user.clerkUserId);
     expect(user.page.url()).not.toContain('/sign-in');
 
-    // 2. Navigate to the agents panel (canonical in-shell URL — the retired
+    // 2. Membership-required sessions cannot enter the product shell until a
+    //    workspace is active. Create one through the same native task used by
+    //    the primary workspace journey and save its teardown handle first.
+    await onboardWorkspace(user.page, `e2e-workspace-${user.runId}`, (orgId) => {
+      user.orgId = orgId;
+    });
+
+    // 3. Navigate to the agents panel (canonical in-shell URL — the retired
     //    /teams/* routes no longer exist).
     await user.page.goto('/chat?panel=teams-agents');
 
-    // 3. Skip if the feature flag is off (middleware rewrites to /404 →
+    // 4. Skip if the feature flag is off (middleware rewrites to /404 →
     //    Next renders the App Router not-found UI; the "New agent" button
     //    won't appear) OR if the BFF errored because the user has no
     //    paperclip-companies row provisioned in this environment.
@@ -88,10 +96,10 @@ test.describe('E2E: Teams agent create', () => {
       );
     }
 
-    // 4. Open the create dialog.
+    // 5. Open the create dialog.
     await newAgentBtn.click();
 
-    // 5. Fill in the name input. The dialog has Name (text input) and Role
+    // 6. Fill in the name input. The dialog has Name (text input) and Role
     //    (select). Default role "engineer" is fine; don't touch the select.
     const agentName = `e2e-${user.runId}`;
     const dialog = user.page.locator('div').filter({ hasText: /^New agent$/ }).last();
@@ -101,10 +109,10 @@ test.describe('E2E: Teams agent create', () => {
       .locator('input')
       .fill(agentName);
 
-    // 6. Submit.
+    // 7. Submit.
     await user.page.getByRole('button', { name: 'Create' }).click();
 
-    // 7. Assert the new agent appears in the list. The list rows render the
+    // 8. Assert the new agent appears in the list. The list rows render the
     //    name as `<div class="font-medium">{a.name}</div>`. Once SWR
     //    re-fetches after the POST, the name should appear.
     await expect(user.page.getByText(agentName, { exact: true })).toBeVisible({

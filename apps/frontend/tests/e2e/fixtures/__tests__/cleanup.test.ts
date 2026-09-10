@@ -112,6 +112,28 @@ describe('cleanupUser', () => {
     });
   });
 
+  it('deletes only the Clerk user for a member of a shared workspace', async () => {
+    const user = makeUser({ orgId: 'org_shared' });
+
+    const promise = cleanupUser(user, { cleanupWorkspace: false });
+    await vi.runAllTimersAsync();
+    await promise;
+
+    expect(cancelSubsAndDeleteCustomer).not.toHaveBeenCalled();
+    expect(user.api.delete).not.toHaveBeenCalled();
+    expect(deleteOrg).not.toHaveBeenCalled();
+    expect(deleteUser).toHaveBeenCalledWith({
+      secretKey: ENV_KEYS.CLERK_SECRET_KEY,
+      userId: user.clerkUserId,
+    });
+    expect(findCustomerByEmail).not.toHaveBeenCalled();
+    expect(findCustomersByOwnerId).not.toHaveBeenCalled();
+    expect(findUserByEmail).toHaveBeenCalledWith({
+      secretKey: ENV_KEYS.CLERK_SECRET_KEY,
+      email: user.email,
+    });
+  });
+
   it('throws when Stripe customer still exists after teardown', async () => {
     vi.mocked(findCustomerByEmail).mockResolvedValue({
       id: 'cus_leaked',

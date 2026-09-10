@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { clerkAppearance } from "@/lib/clerkAppearance";
+import {
+  clerkAppearance,
+  clerkLocalization,
+  clerkTaskUrls,
+} from "@/lib/clerkAppearance";
 
 /**
  * Clerk's `variables` cannot read CSS custom properties, so clerkAppearance.ts
@@ -55,5 +59,22 @@ describe("clerkAppearance", () => {
       .filter(([, v]) => typeof v === "string" && v.includes("#"))
       .map(([k]) => k);
     expect(literals).toEqual([]);
+  });
+});
+
+describe("Clerk workspace configuration", () => {
+  it("routes pending choose-organization sessions to the native task page", () => {
+    expect(clerkTaskUrls).toEqual({
+      "choose-organization": "/session-tasks/choose-organization",
+    });
+  });
+
+  it("uses workspace terminology on the native organization task", () => {
+    expect(clerkLocalization.taskChooseOrganization?.chooseOrganization?.title).toBe(
+      "Choose a workspace",
+    );
+    expect(clerkLocalization.organizationList?.action__createOrganization).toBe(
+      "Create workspace",
+    );
   });
 });

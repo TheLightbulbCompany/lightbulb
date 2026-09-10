@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { createUser, deleteUser, findUserByEmail, deleteOrg } from '../clerk-admin';
+import {
+  createOrganizationInvitation,
+  createUser,
+  deleteUser,
+  findUserByEmail,
+  deleteOrg,
+} from '../clerk-admin';
 
 const FAKE_KEY = 'sk_test_fake';
 
@@ -165,6 +171,34 @@ describe('clerk-admin', () => {
         'https://api.clerk.com/v1/organizations/org_abc',
         expect.objectContaining({ method: 'DELETE' }),
       );
+    });
+  });
+
+  describe('createOrganizationInvitation', () => {
+    it('invites the user as an org member and returns the invitation ID', async () => {
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ id: 'orginv_abc' }),
+      });
+
+      await expect(
+        createOrganizationInvitation({
+          secretKey: FAKE_KEY,
+          orgId: 'org_abc',
+          inviterUserId: 'user_inviter',
+          email: 'invitee@example.com',
+        }),
+      ).resolves.toBe('orginv_abc');
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://api.clerk.com/v1/organizations/org_abc/invitations',
+        expect.objectContaining({ method: 'POST' }),
+      );
+      expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+        email_address: 'invitee@example.com',
+        inviter_user_id: 'user_inviter',
+        role: 'org:member',
+      });
     });
   });
 });

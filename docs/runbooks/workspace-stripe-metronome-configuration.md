@@ -25,10 +25,13 @@ Bedrock usage debits the workspace Metronome balance; BYO keys and ChatGPT OAuth
 do not, although both still require an entitled workspace after trial.
 
 New Apple purchase and restore paths are retired. The mobile application still
-has full product access and sends users to the web workspace onboarding and
-billing experience. Historical Apple verification, webhook reconciliation,
-entitlement teardown, and subscription management remain until readback proves
-no Apple-managed subscription can still be live. Any future native billing must
+has full product access, but its App Store purchase gates and Settings expose no
+outbound billing or purchase CTA. A user without a workspace can enter web
+workspace onboarding, and an existing Stripe subscriber can manage that existing
+subscription in the Stripe portal; new web billing remains outside the iOS
+purchase UI. Historical Apple verification, webhook reconciliation, entitlement
+teardown, and subscription management remain until readback proves no
+Apple-managed subscription can still be live. Any future native billing must
 attach the purchase to the active Clerk organization and grant that workspace's
 entitlement; it must not recreate a personal owner or mobile-only entitlement.
 
@@ -138,8 +141,10 @@ Until this is repaired, development top-up acceptance is blocked.
    legitimate workspace customers, contracts, ingest aliases, and balances.
 4. Create or select an active managed-AI credit Product in the intended Stripe
    test account, distinct from Workspace and Ultra.
-5. Update only the Metronome credit Product's Stripe Product mapping and preserve
-   its unrelated custom fields.
+5. Update only the Metronome credit Product's `stripe_product_id` custom field
+   and preserve its unrelated custom fields. In the selected Stripe integration,
+   also map that field to the Stripe invoice-item Price; the custom field alone
+   is insufficient.
 6. Bind each legitimate workspace's Metronome root billing configuration to a
    Stripe customer that exists in that same account with automatic collection.
 7. Confirm the contract uses the approved root configuration. Use Metronome's
@@ -155,6 +160,10 @@ Exhaust pagination and verify:
 
 - the configured billing provider resolves to the same account returned by the
   deployed environment's Stripe credential;
+- the selected integration maps the Metronome Product's `stripe_product_id` to
+  the Stripe invoice-item Price and is not configured to leave invoices as
+  drafts; inspect the integration UI when either setting is absent from API
+  output rather than treating omission as false;
 - the Metronome credit Product is unarchived and maps to an active Stripe Product
   in that account, separate from Workspace and Ultra;
 - the rate card and USD-cents credit type are unchanged;
@@ -164,7 +173,9 @@ Exhaust pagination and verify:
 - the contract uses that root configuration and has no scheduled reversal;
 - the local billing row retains the same workspace, Stripe customer, Metronome
   customer, and contract relationship; and
-- exactly one enabled low-balance alert remains at each required threshold.
+- exactly one enabled low-balance alert remains at 500 cents and exactly one at
+  0 cents. Freshly compare each duplicate pair before archiving only the
+  redundant alert; never archive both members of a pair.
 
 Structural readback is not payment proof. In development, use one explicit
 purchase UUID to create one payment-gated commit and one Stripe invoice. Retry
@@ -253,11 +264,12 @@ and redacted preflight snapshots until acceptance completes.
   billing-provider configuration through the supported Metronome flow, and
   reconcile the original payment UUID and invoice. Never grant replacement
   credits manually after an uncertain payment.
-- **Uncertain founder migration:** retrieve the subscription using the same
-  idempotency key before retrying. If the update definitively applied but the
-  Workspace Price is unusable, perform one reviewed reverse update from the saved
-  preflight item state with no proration and the unchanged anchor. Do not run the
-  removed seat-management application path.
+- **Uncertain founder migration:** retrieve the subscription fresh. If the
+  outcome remains uncertain, retry the identical frozen update with the original
+  idempotency key. If the update definitively applied but the Workspace Price is
+  unusable, perform one reviewed reverse update from the saved preflight item
+  state with no proration and the unchanged anchor. Do not run the removed
+  seat-management application path.
 - **Bad application release:** redeploy the last known-good commit, then repeat
   catalog and billing-row readbacks. A code rollback does not roll back Stripe or
   Metronome state.

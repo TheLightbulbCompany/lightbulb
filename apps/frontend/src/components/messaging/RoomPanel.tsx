@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
-import { ArrowLeft, Check, Circle, CircleAlert, Hash, Link2, MessageCircle, Users } from "lucide-react";
+import { ArrowLeft, Check, Circle, CircleAlert, FileText, Hash, Link2, MessageCircle, Users } from "lucide-react";
 import type { Components } from "react-markdown";
 import type { ListenMode } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
@@ -42,6 +42,7 @@ export interface RoomPanelProps {
   composer: RoomComposerProps;
   threadComposer?: { parentMessageId: string; composer: RoomComposerProps };
   onSelectThread?: (parentMessageId: string | null) => void;
+  onSelectParticipant?: (participant: RoomParticipant) => void | Promise<void>;
   onRetry?: () => void;
   onListenModeChange?: (agentId: string, mode: ListenMode) => void;
   onAbortRun?: (runId: string) => void;
@@ -148,6 +149,7 @@ function RoomContent({
   composer,
   threadComposer,
   onSelectThread,
+  onSelectParticipant,
   onRetry,
   onListenModeChange,
   onAbortRun,
@@ -210,9 +212,11 @@ function RoomContent({
     return <article key={message.messageId} className="room-message" aria-label={`Message from ${name}`}>
       {participant ? <ParticipantAvatar participant={participant} /> : <Identity name={name} avatarOnly size="default" />}
       <div className="room-message-content">
-        <div className="room-message-byline"><span className="font-semibold truncate" title={name}>{name}</span>
-          {message.author.kind === "agent" && <span className="text-sm text-muted-foreground">Agent</span>}
-          {timestamp && <time className="text-sm text-muted-foreground" dateTime={timestamp} title={timestamp}>{new Date(timestamp).toISOString().slice(11, 16)} UTC</time>}
+        <div className="room-message-byline">{participant && onSelectParticipant && !(participant.kind === "human" && participant.id === currentUserId)
+          ? <button type="button" className="room-author font-semibold truncate" title={name} disabled={!actionable} onClick={() => onSelectParticipant(participant)}>{name}</button>
+          : <span className="font-semibold truncate" title={name}>{name}</span>}
+          {message.author.kind === "agent" && <span className="room-agent-label">Agent</span>}
+          {timestamp && <time className="text-sm text-muted-foreground" dateTime={timestamp} title={new Date(timestamp).toLocaleString()}>{new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>}
         </div>
         <MarkdownView skipHtml components={roomMarkdown}>{message.text}</MarkdownView>
         {message.run && <div className="room-run"><WorkStatus state={message.run.state} />
@@ -221,11 +225,11 @@ function RoomContent({
         {message.contextIds?.map((contextId) => {
           const context = contexts.find((record) => record.id === contextId);
           return context && <Button key={contextId} type="button" variant="outline" className="room-work-link" disabled={!actionable}
-            onClick={(event) => openDetail("context", context.id, event.currentTarget, inThread)}>{context.title}</Button>;
+            onClick={(event) => openDetail("context", context.id, event.currentTarget, inThread)}><FileText size={16} aria-hidden="true" />{context.title}</Button>;
         })}
         {!inThread && <Button type="button" variant="ghost" className="room-reply" disabled={!actionable}
           aria-label={`Reply in thread${replyCount > 0 ? `, ${replyCount} ${replyCount === 1 ? "reply" : "replies"}` : ""}`}
-          onClick={(event) => openDetail("thread", message.messageId, event.currentTarget)}><MessageCircle aria-hidden="true" />Reply in thread{replyCount > 0 && ` · ${replyCount}`}</Button>}
+          onClick={(event) => openDetail("thread", message.messageId, event.currentTarget)}><MessageCircle aria-hidden="true" />{replyCount > 0 ? `${replyCount} ${replyCount === 1 ? "reply" : "replies"} · Open thread` : "Reply in thread"}</Button>}
       </div>
     </article>;
   }
@@ -234,20 +238,22 @@ function RoomContent({
   const counterparts = participants.filter((participant) => participant.kind !== "human" || participant.id !== currentUserId);
   const roomName = roomDisplayName(visibleRoom, counterparts);
   return <section className={cn("room-panel", showContext && "room-has-context", showDetail ? "room-has-detail" : "room-has-default-context")} aria-label={roomName}>
-    <div className="room-conversation" hidden={showDetail && isNarrow} onClickCapture={closeOverlay} onFocusCapture={closeOverlay}>
+    <div className="room-conversation" hidden={showContext && isNarrow} onClickCapture={closeOverlay} onFocusCapture={closeOverlay}>
       <header className="room-header">
         <div className="room-title">{visibleRoom?.kind === "dm" && counterparts.length === 1
           ? <ParticipantAvatar participant={counterparts[0]} size="sm" />
-          : <RoomIcon size={20} aria-hidden="true" />}<h2 className="font-serif text-lg truncate" title={roomName}>{roomName}</h2></div>
-        {visibleRoom && <p className="text-sm text-muted-foreground">{visibleRoom.kind === "channel" ? "Channel" : visibleRoom.kind === "dm" ? "Direct message" : "Group message"}</p>}
+          : <RoomIcon size={20} aria-hidden="true" />}<h2 className="font-semibold text-lg truncate" title={roomName}>{roomName}</h2></div>
         <div className="room-audience">
-          {onLinkToWork && <Button type="button" variant="ghost" onClick={onLinkToWork}><Link2 aria-hidden="true" />Link to work</Button>}
-          {!showDetail && <Button type="button" variant="ghost" className="room-details-toggle" aria-expanded={!contextCollapsed}
-            onClick={() => setContextCollapsed(!contextCollapsed)}>{contextCollapsed ? "Show room details" : "Hide room details"}</Button>}
           <Button ref={memberTrigger} type="button" variant="ghost" className="room-members-trigger" aria-label="View members" aria-expanded={membersOpen} aria-controls={`${id}-members`}
-            onClick={() => setMembersOpen(!membersOpen)}><Users aria-hidden="true" />Members</Button>
+            onClick={() => setMembersOpen(!membersOpen)}><Users aria-hidden="true" />{participants.length}</Button>
         </div>
       </header>
+      <nav className="room-tabs" aria-label="Conversation views">
+        <button type="button" className="room-tab" aria-current={contextCollapsed && !showDetail ? "page" : undefined} onClick={() => { closeDetail(); setContextCollapsed(true); }}>{visibleRoom?.kind === "channel" ? "Channel" : "Conversation"}</button>
+        <button type="button" className="room-tab" aria-label={contextCollapsed ? "Show room details" : "Hide room details"} aria-expanded={!contextCollapsed} aria-current={!contextCollapsed && !showDetail ? "page" : undefined}
+          onClick={() => { closeDetail(); setContextCollapsed(!contextCollapsed); }}>Context</button>
+        {onLinkToWork && <button type="button" className="room-tab" aria-label="Link to work" onClick={onLinkToWork}><Link2 size={14} aria-hidden="true" />Tasks</button>}
+      </nav>
       {membersOpen && <section id={`${id}-members`} aria-label="Room members" className="room-members"
         onKeyDown={(event) => { if (event.key === "Escape") { setMembersOpen(false); memberTrigger.current?.focus(); } }}>
         <h3 className="font-semibold">Room members</h3><ul>{participants.map((participant) => <li key={`${participant.kind}:${participant.id}`} className="room-member">
@@ -263,7 +269,7 @@ function RoomContent({
         {onRetry && <Button variant="outline" onClick={onRetry}>Check for updates</Button>}</div>}
       <div role="region" aria-label="Messages" className="room-history" tabIndex={0}>
         {mainMessages.length === 0 && pendingMessages.length === 0
-          ? <div className="room-empty"><h3 className="font-serif text-lg">Start the conversation</h3><p className="text-sm text-muted-foreground">Share an update or mention an agent when you want help.</p></div>
+          ? <div className="room-empty"><h3 className="font-semibold text-lg">Start the conversation</h3><p className="text-sm text-muted-foreground">Share an update or mention an agent when you want help.</p></div>
           : <>{mainMessages.map((message) => renderMessage(message))}
             {pendingMessages.filter((message) => message.threadRootMessageId === null).map((message) => <article key={message.clientMessageId} className="room-message" aria-label={`Pending message from ${viewer?.displayName ?? "You"}`}>
               <Identity name={viewer?.displayName ?? "You"} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{viewer?.displayName ?? "You"}</span><span className="text-sm text-muted-foreground">Sending…</span></div><MarkdownView skipHtml components={roomMarkdown}>{message.text}</MarkdownView></div>
@@ -297,7 +303,7 @@ function RoomContent({
       <RoomComposer {...composer} disabled={!actionable || composer.disabled} />
     </div>
     {showContext && !showDetail && <aside className="room-context" aria-label="Room details">
-      <header className="room-context-header"><h3 className="font-serif text-lg">Room details</h3></header>
+      <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={() => setContextCollapsed(true)}><ArrowLeft aria-hidden="true" /></Button><h3 className="font-semibold">Room details</h3></header>
       <div className="room-context-body">
         <section aria-labelledby={`${id}-context-members`}>
           <h4 id={`${id}-context-members`} className="font-semibold">Members</h4>
@@ -321,7 +327,7 @@ function RoomContent({
     </aside>}
     {showDetail && <aside className="room-context" aria-label={parentMessage ? "Thread" : selectedContext!.title} onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>
-        <h3 ref={detailHeading} tabIndex={-1} className="font-serif text-lg room-wrap">{parentMessage ? "Thread" : selectedContext!.title}</h3></header>
+        <h3 ref={detailHeading} tabIndex={-1} className="font-semibold room-wrap">{parentMessage ? "Thread" : selectedContext!.title}</h3></header>
       <div className="room-context-body">{parentMessage ? <>{renderMessage(parentMessage, true)}
         <div className="room-thread-replies" aria-label="Thread replies">{messages.filter((message) => message.threadRootMessageId === parentMessage.messageId).map((message) => renderMessage(message, true))}</div>
       </> : <><p className="text-sm text-muted-foreground">{selectedContext!.kind.charAt(0).toUpperCase() + selectedContext!.kind.slice(1)}</p>

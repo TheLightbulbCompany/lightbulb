@@ -34,6 +34,28 @@ it("excludes only the signed-in human when naming a group DM", () => {
   expect(screen.getByRole("region", { name: "Alice and Atlas" })).toBeInTheDocument();
 });
 
+it("opens the same DM action for human and agent authors and displays local time", async () => {
+  const onSelectParticipant = vi.fn();
+  const colleague = { ...owner, id: "colleague", displayName: "Aden" };
+  render(<RoomPanel {...props} onSelectParticipant={onSelectParticipant} participants={[owner, friday, colleague]} messages={[message, { ...message, messageId: "human", author: { kind: "human", id: "colleague" } }]} />);
+  for (const participant of [friday, colleague]) {
+    await userEvent.click(within(screen.getByRole("article", { name: `Message from ${participant.displayName}` })).getByRole("button", { name: participant.displayName }));
+    expect(onSelectParticipant).toHaveBeenLastCalledWith(participant);
+  }
+  const timestamp = within(screen.getByRole("article", { name: "Message from Friday" })).getByText(new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+  expect(timestamp).toHaveAttribute("datetime", message.createdAt);
+});
+
+it("opens and closes the real room context on a narrow viewport", async () => {
+  render(<RoomPanel {...props} narrow />);
+  const history = screen.getByRole("region", { name: "Messages" });
+  await userEvent.click(screen.getByRole("button", { name: "Show room details" }));
+  expect(history).not.toBeVisible();
+  expect(screen.getByRole("complementary", { name: "Room details" })).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "Back to conversation" }));
+  expect(history).toBeVisible();
+});
+
 it.each(["system", "human"] as const)("keeps unmatched %s authors neutral", (kind) => {
   render(<RoomPanel {...props} messages={[{ ...message, author: { kind, id: "friday", displayName: "Announcement" } }]} />);
   const article = screen.getByRole("article", { name: "Message from Announcement" });

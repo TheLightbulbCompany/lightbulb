@@ -30,7 +30,7 @@ describe("useCredits", () => {
 
   it("persists a failed workspace top-up intent across a remount and reuses it", async () => {
     let topUpCalls = 0;
-    const fetchMock = vi.fn((url: RequestInfo | URL) => Promise.resolve(new Response(
+    const fetchMock = vi.fn((url: RequestInfo | URL, _init?: RequestInit) => Promise.resolve(new Response(
       String(url).includes("top_up")
         ? (++topUpCalls === 1
           ? JSON.stringify({ detail: "billing unavailable" })
@@ -58,8 +58,8 @@ describe("useCredits", () => {
     await act(async () => { await secondMount.result.current.startTopUp(5000); });
 
     const calls = fetchMock.mock.calls.filter(([url]) => String(url).includes("top_up"));
-    const first = JSON.parse(calls[0][1].body);
-    const second = JSON.parse(calls[1][1].body);
+    const first = JSON.parse(String(calls[0]?.[1]?.body));
+    const second = JSON.parse(String(calls[1]?.[1]?.body));
     expect(first).toMatchObject({ amount_cents: 2000, request_id: expect.any(String) });
     expect(second).toEqual(first);
     expect(JSON.parse(localStorage.getItem("lightbulb:credits-top-up:user_credits:org_credits") ?? "{}")).toMatchObject({
@@ -70,7 +70,7 @@ describe("useCredits", () => {
   });
 
   it("keeps an accepted-but-uncollected top-up locked across a reload", async () => {
-    const fetchMock = vi.fn((url: RequestInfo | URL) => Promise.resolve(new Response(
+    const fetchMock = vi.fn((url: RequestInfo | URL, _init?: RequestInit) => Promise.resolve(new Response(
       String(url).includes("top_up")
         ? JSON.stringify({ status: "requested", amount_cents: 2000 })
         : JSON.stringify({ balance_microcents: 0, balance_dollars: "0.00" }),
@@ -82,7 +82,7 @@ describe("useCredits", () => {
     const firstMount = renderHook(() => useCredits(), { wrapper });
 
     await act(async () => { await firstMount.result.current.startTopUp(2000); });
-    const first = JSON.parse(fetchMock.mock.calls.find(([url]) => String(url).includes("top_up"))?.[1].body);
+    const first = JSON.parse(String(fetchMock.mock.calls.find(([url]) => String(url).includes("top_up"))?.[1]?.body));
     firstMount.unmount();
 
     const secondMount = renderHook(() => useCredits(), { wrapper });
@@ -95,7 +95,7 @@ describe("useCredits", () => {
     });
     await act(async () => { await secondMount.result.current.startTopUp(5000); });
     const calls = fetchMock.mock.calls.filter(([url]) => String(url).includes("top_up"));
-    expect(JSON.parse(calls[1][1].body)).toEqual(first);
+    expect(JSON.parse(String(calls[1]?.[1]?.body))).toEqual(first);
   });
 
   it("requests balance reconciliation for the browser's persisted UUID", async () => {
@@ -154,7 +154,7 @@ describe("useCredits", () => {
 
   it.each(["paid", "failed"] as const)("unlocks a matching %s payment so a new top-up gets a new UUID", async (status) => {
     let balanceCalls = 0;
-    const fetchMock = vi.fn((url: RequestInfo | URL) => {
+    const fetchMock = vi.fn((url: RequestInfo | URL, _init?: RequestInit) => {
       if (String(url).includes("top_up")) return Promise.resolve(new Response(JSON.stringify({ status: "requested", amount_cents: 2000 }), { status: 200 }));
       balanceCalls += 1;
       const requestId = JSON.parse(localStorage.getItem("lightbulb:credits-top-up:user_terminal:org_terminal") ?? "{}");
@@ -176,7 +176,7 @@ describe("useCredits", () => {
     expect(mounted.result.current.topUpOutcome).toBe(status);
     await act(async () => { await mounted.result.current.startTopUp(2000); });
     const calls = fetchMock.mock.calls.filter(([url]) => String(url).includes("top_up"));
-    expect(JSON.parse(calls[1][1].body).request_id).not.toBe(oldId);
+    expect(JSON.parse(String(calls[1]?.[1]?.body)).request_id).not.toBe(oldId);
   });
 
   it.each(["paid", "failed"] as const)("ignores a late %s reconciliation after switching accounts", async (status) => {

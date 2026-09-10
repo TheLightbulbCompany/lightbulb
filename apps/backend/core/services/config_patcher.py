@@ -12,7 +12,7 @@ from collections.abc import Iterable
 from typing import Any, Callable
 
 from core.config import settings
-from core.containers.config import memory_plugin_entries, workflow_plugin_entries
+from core.containers.config import _lightbulb_bindings, memory_plugin_entries, workflow_plugin_entries
 from core.services.agent_roster import read_agent_roster, write_agent_roster
 from core.services.config_schema import ConfigSchemaError, gate_config
 from core.services.efs_file_lock import (
@@ -885,6 +885,85 @@ async def apply_paperclip_meta(
         _mutate,
         f"paperclip-meta merge agent_id={agent_id!r}",
     )
+
+
+async def register_lightbulb_agent_account(owner_id: str, agent_id: str) -> None:
+    """Add ``agent_id`` to ``channels.lightbulb.accounts`` plus its matching
+    top-level binding — the exact shape ``core.containers.config
+    ._lightbulb_bindings`` emits at provision/reprovision time.
+
+    ``build_openclaw_config_dict`` only derives these from the live Paperclip
+    roster when the WHOLE config is (re)written (provision, reapply, image
+    update). An agent hired afterwards — chat-intercepted ``agents.create``,
+    or a marketplace/catalog deploy — never goes through that path, so without
+    this call the new agent has no inbound route on the ``lightbulb`` channel
+    and every room message dispatched to it 404s against the plugin forever.
+    The plugin declares ``reload.configPrefixes: ["channels.lightbulb"]`` +
+    ``accountScopedRestart``, so this hot patch alone is enough.
+
+    Idempotent: no-op write when the account and binding already match.
+    """
+
+    def _mutate(current: dict) -> bool:
+        changed = False
+        channels = current.get("channels")
+        if not isinstance(channels, dict):
+            channels = {}
+            current["channels"] = channels
+        lightbulb = channels.get("lightbulb")
+        if not isinstance(lightbulb, dict):
+            lightbulb = {"enabled": True}
+            channels["lightbulb"] = lightbulb
+        accounts = lightbulb.get("accounts")
+        if not isinstance(accounts, dict):
+            accounts = {}
+            lightbulb["accounts"] = accounts
+        if accounts.get(agent_id) != {"enabled": True}:
+            accounts[agent_id] = {"enabled": True}
+            changed = True
+
+        bindings = current.get("bindings")
+        if not isinstance(bindings, list):
+            bindings = []
+            current["bindings"] = bindings
+        binding = _lightbulb_bindings([agent_id])[0]
+        if binding not in bindings:
+            bindings.append(binding)
+            changed = True
+        return changed
+
+    await _locked_rmw(owner_id, _mutate, f"register lightbulb channel account agent_id={agent_id!r}")
+
+
+async def deregister_lightbulb_agent_account(owner_id: str, agent_id: str) -> None:
+    """Remove ``agent_id``'s Lightbulb channel account + binding.
+
+    Counterpart of :func:`register_lightbulb_agent_account` — called on the
+    ``agents.delete`` path (and a failed hire's rollback) so a deleted agent
+    doesn't leave a dead inbound route behind. No-op if absent.
+    """
+
+    def _mutate(current: dict) -> bool:
+        changed = False
+        channels = current.get("channels")
+        if isinstance(channels, dict):
+            lightbulb = channels.get("lightbulb")
+            if isinstance(lightbulb, dict):
+                accounts = lightbulb.get("accounts")
+                if isinstance(accounts, dict) and agent_id in accounts:
+                    del accounts[agent_id]
+                    changed = True
+
+        bindings = current.get("bindings")
+        if isinstance(bindings, list):
+            binding = _lightbulb_bindings([agent_id])[0]
+            filtered = [b for b in bindings if b != binding]
+            if len(filtered) != len(bindings):
+                current["bindings"] = filtered
+                changed = True
+        return changed
+
+    await _locked_rmw(owner_id, _mutate, f"deregister lightbulb channel account agent_id={agent_id!r}")
 
 
 async def delete_openclaw_config_path(

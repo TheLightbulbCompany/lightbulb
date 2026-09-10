@@ -341,7 +341,10 @@ async def delete_agent_everywhere(*, owner_id: str, agent_id: str) -> dict[str, 
 
     from core.containers import get_ecs_manager, get_gateway_pool, get_workspace
     from core.containers.workspace import cleanup_deleted_agent
-    from core.services.config_patcher import remove_from_openclaw_config_list
+    from core.services.config_patcher import (
+        deregister_lightbulb_agent_account,
+        remove_from_openclaw_config_list,
+    )
     from core.services.paperclip_openclaw_pairing import is_seeded_agent
 
     if await is_seeded_agent(owner_id=owner_id, agent_id=agent_id):
@@ -381,6 +384,10 @@ async def delete_agent_everywhere(*, owner_id: str, agent_id: str) -> dict[str, 
         ["agents", "list"],
         lambda entry: isinstance(entry, dict) and entry.get("id") == agent_id,
     )
+    # Same belt-and-suspenders reasoning as above: the agent's Lightbulb
+    # channel account + binding are Lightbulb-side config OpenClaw's own
+    # agents.delete RPC knows nothing about, so they never self-clean.
+    await deregister_lightbulb_agent_account(owner_id, agent_id)
     # cleanup_deleted_agent is intentionally best-effort, but the sidecar is
     # also the marketplace's install record. Remove it strictly before the
     # Paperclip handle disappears so a failed unlink leaves a visible, retryable

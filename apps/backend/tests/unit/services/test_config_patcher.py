@@ -15,7 +15,9 @@ from core.services.config_patcher import (  # noqa: E402
     apply_deploy_aux_mutations,
     delete_openclaw_config_path,
     delete_provider_level_channel_secrets,
+    deregister_lightbulb_agent_account,
     patch_openclaw_config,
+    register_lightbulb_agent_account,
     remove_from_openclaw_config_list,
     ensure_plugin_config_keys,
     replace_provider_block,
@@ -2440,3 +2442,69 @@ async def test_patch_skips_a_mapped_binding_whose_agent_was_deleted(efs_dir):
     with open(path) as f:
         result = json.load(f)
     assert result.get("bindings", []) == []
+
+
+_LIGHTBULB_BINDING = {
+    "agentId": "agent_x",
+    "match": {"channel": "lightbulb", "accountId": "agent_x", "peer": {"kind": "channel", "id": "*"}},
+}
+
+
+@pytest.mark.asyncio
+async def test_register_lightbulb_agent_account_adds_account_and_exact_binding_shape(efs_dir):
+    await register_lightbulb_agent_account("user_1", "agent_x")
+    with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
+        result = json.load(f)
+    assert result["channels"]["lightbulb"]["accounts"]["agent_x"] == {"enabled": True}
+    assert result["bindings"] == [_LIGHTBULB_BINDING]
+
+
+@pytest.mark.asyncio
+async def test_register_lightbulb_agent_account_is_idempotent(efs_dir):
+    await register_lightbulb_agent_account("user_1", "agent_x")
+    await register_lightbulb_agent_account("user_1", "agent_x")
+    with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
+        result = json.load(f)
+    assert result["channels"]["lightbulb"]["accounts"] == {"agent_x": {"enabled": True}}
+    assert result["bindings"] == [_LIGHTBULB_BINDING]
+
+
+@pytest.mark.asyncio
+async def test_register_lightbulb_agent_account_preserves_other_channels_and_agents(efs_dir):
+    path = os.path.join(efs_dir, "user_1", "openclaw.json")
+    with open(path) as f:
+        base = json.load(f)
+    base["channels"] = {"lightbulb": {"enabled": True, "accounts": {"friday": {"enabled": True}}}}
+    base["bindings"] = [
+        {
+            "agentId": "friday",
+            "match": {"channel": "lightbulb", "accountId": "friday", "peer": {"kind": "channel", "id": "*"}},
+        }
+    ]
+    with open(path, "w") as f:
+        json.dump(base, f)
+
+    await register_lightbulb_agent_account("user_1", "agent_x")
+    with open(path) as f:
+        result = json.load(f)
+    assert set(result["channels"]["lightbulb"]["accounts"]) == {"friday", "agent_x"}
+    assert len(result["bindings"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_deregister_lightbulb_agent_account_removes_account_and_binding(efs_dir):
+    await register_lightbulb_agent_account("user_1", "agent_x")
+    await deregister_lightbulb_agent_account("user_1", "agent_x")
+    with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
+        result = json.load(f)
+    assert "agent_x" not in result["channels"]["lightbulb"]["accounts"]
+    assert result["bindings"] == []
+
+
+@pytest.mark.asyncio
+async def test_deregister_lightbulb_agent_account_is_noop_when_absent(efs_dir):
+    await deregister_lightbulb_agent_account("user_1", "agent_never_registered")
+    backup = os.path.join(efs_dir, "user_1", "openclaw.json.bak")
+    # mutate_fn returned False (nothing to remove) -- _locked_rmw skips the
+    # write entirely, so no backup is taken.
+    assert not os.path.exists(backup)

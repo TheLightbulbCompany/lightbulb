@@ -118,6 +118,10 @@ async def test_delete_everywhere_removes_runtime_config_workspace_then_paperclip
             new=AsyncMock(side_effect=record_config),
         ),
         patch(
+            "core.services.config_patcher.deregister_lightbulb_agent_account",
+            new=AsyncMock(),
+        ),
+        patch(
             "core.containers.workspace.cleanup_deleted_agent",
             new=AsyncMock(side_effect=record_workspace),
         ),
@@ -167,6 +171,10 @@ async def test_delete_everywhere_retries_after_runtime_agent_is_already_absent()
             new=AsyncMock(side_effect=record_config),
         ),
         patch(
+            "core.services.config_patcher.deregister_lightbulb_agent_account",
+            new=AsyncMock(),
+        ),
+        patch(
             "core.containers.workspace.cleanup_deleted_agent",
             new=AsyncMock(side_effect=record_workspace),
         ),
@@ -209,6 +217,10 @@ async def test_delete_everywhere_retries_transient_openclaw_file_lock():
         patch(
             "core.services.config_patcher.remove_from_openclaw_config_list",
             new=AsyncMock(side_effect=lambda *_args, **_kwargs: events.append("config")),
+        ),
+        patch(
+            "core.services.config_patcher.deregister_lightbulb_agent_account",
+            new=AsyncMock(),
         ),
         patch(
             "core.containers.workspace.cleanup_deleted_agent",
@@ -313,6 +325,10 @@ async def test_delete_everywhere_reconciles_persistence_when_container_is_stoppe
             new=AsyncMock(),
         ) as remove_config,
         patch(
+            "core.services.config_patcher.deregister_lightbulb_agent_account",
+            new=AsyncMock(),
+        ),
+        patch(
             "core.containers.workspace.cleanup_deleted_agent",
             new=AsyncMock(),
         ),
@@ -344,6 +360,10 @@ async def test_delete_everywhere_keeps_paperclip_handle_when_sidecar_removal_fai
         patch("core.containers.get_workspace", return_value=workspace),
         patch(
             "core.services.config_patcher.remove_from_openclaw_config_list",
+            new=AsyncMock(),
+        ),
+        patch(
+            "core.services.config_patcher.deregister_lightbulb_agent_account",
             new=AsyncMock(),
         ),
         patch(

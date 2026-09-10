@@ -820,3 +820,49 @@ async def test_successful_connect_approves_pending_node_surface(
         gateway_token="tok123",
         device_id="abc123def456",
     )
+
+
+@pytest.mark.parametrize(
+    "resolved",
+    [
+        (None, None),  # stopped/absent container row
+        ({"gateway_token": "tok123"}, None),  # provisioning/zombie row, no discoverable IP
+    ],
+)
+@pytest.mark.asyncio
+async def test_connect_fails_closed_when_no_container_ip(mock_pool, mock_config_patcher, resolved):
+    """No running container IP must fail closed instead of building
+    ws://None:<port> (socket.gaierror) -- the prod regression this guards.
+
+    Neither an upstream connection nor per-user node state may be created,
+    and the node must be told why and disconnected rather than left hanging
+    on a connect.challenge that will never arrive.
+    """
+    with (
+        patch("core.services.node_proxy.get_ecs_manager") as get_ecs,
+        patch("core.services.node_proxy.NodeUpstreamConnection") as upstream_cls,
+    ):
+        ecs = AsyncMock()
+        ecs.resolve_running_container = AsyncMock(return_value=resolved)
+        get_ecs.return_value = ecs
+        mgmt = MagicMock()
+
+        result = await handle_node_connect(
+            owner_id="org_123",
+            user_id="user_alice",
+            connection_id="conn_1",
+            connect_params={"role": "node", "client": {"id": "node-host"}},
+            management_api=mgmt,
+        )
+
+    assert result is None
+    upstream_cls.assert_not_called()
+    assert "user_alice" not in _user_nodes
+    assert "conn_1" not in _node_upstreams
+
+    mgmt.send_message.assert_called_once()
+    sent_conn_id, sent_payload = mgmt.send_message.call_args[0]
+    assert sent_conn_id == "conn_1"
+    assert sent_payload["code"] == "container_unavailable"
+
+    mgmt.close_connection.assert_called_once_with("conn_1")

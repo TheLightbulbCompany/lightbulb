@@ -1,12 +1,12 @@
 "use client";
 
-import { useAuth } from "@clerk/nextjs";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useAuth, useOrganization } from "@clerk/nextjs";
 import { useOnboardingStatus, type StatusContract } from "@lightbulb/shared";
 
 import { recordRequestId } from "@/lib/requestIdLog";
 import { isPresent } from "@/lib/presence";
 import { signupFlowId } from "@/lib/signupFlow";
-import { hasTeamSignupIntentCookie } from "@/lib/signupIntent";
 import { webVisibilityAdapter } from "@/lib/visibility";
 
 // Deliberately NOT `import { BACKEND_URL } from "@/lib/api"`: this hook is
@@ -106,62 +106,67 @@ export function useProvisioningState(
   options: ProvisioningStateOptions = {},
 ): ProvisioningStateResult {
   const { enabled = true } = options;
-  const { isSignedIn, orgId, getToken } = useAuth();
+  const { isSignedIn, orgId, userId, sessionId, getToken } = useAuth();
+  const { organization, isLoaded: orgLoaded } = useOrganization();
 
-  // Team-signup suppression. `GET /container/status` is not a read — it
-  // dispatches `ensure_user_ready`, so the poll IS the provisioning trigger.
-  // A team signup that lands on /chat therefore provisions a throwaway
-  // PERSONAL container + trial_local billing row + Paperclip company from the
-  // renders before `useOnboardingGate`'s redirect to /onboarding lands, and
-  // the user ends up with two workspaces (prod: personal container 20:45:27Z,
-  // org 21:03Z). Both shells call this hook transitively ABOVE their
-  // `onboardingPhase !== "ready"` early return, and React runs every hook
-  // before any early return, so gating the SHELLS cannot fix it — the poll
-  // has to refuse to fire.
-  //
-  // Suppressing here rather than at the entry URL is what makes this whole
-  // and not a game of whack-a-mole: it does not matter which URL Clerk picks
-  // (`fallbackRedirectUrl` loses to a `redirect_url` param, an SSO transfer
-  // uses `signInFallbackRedirectUrl`, the /sign-in widget has its own
-  // `signUpFallbackRedirectUrl`) — every one of them lands somewhere that
-  // cannot provision until the intent is resolved. It also keeps
-  // `useOnboardingGate` the SOLE producer of `/onboarding?intent=team`, so
-  // that page keeps the membership/invitation preconditions it has no guards
-  // of its own for.
-  //
-  // Pending = cookie set AND no org on the session yet. The org half is what
-  // guarantees the poll always comes back: an org owner is never left with a
-  // dead poll even if the cookie outlives org creation (30-min TTL, or
-  // /onboarding's `clearSignupIntentCookie` never ran because `mode`
-  // resolved to "invitations" instead of "org").
-  //
-  // `orgId` comes from `useAuth`, the same hook this file already calls for
-  // `isSignedIn`/`getToken` — not from a second `useOrganization()` call.
-  // That's simplicity, not a freshness guarantee: in the installed Clerk
-  // (@clerk/nextjs 6.39 -> clerk-react 5.61 -> shared 3.47), `deriveState`
-  // computes `orgId` as `state.organization ? state.organization.id :
-  // state.organization` — the SAME client-side object `useOrganization()`
-  // returns, not something read off a refreshed JWT. `sessionClaims` would be
-  // the token-derived value, and this hook doesn't use it.
-  //
-  // Cookie-only (no `?intent=team`): every entry point that sets the query
-  // also writes the cookie (the landing CTA's onClick, and `SignupIntentCookie`
-  // for a direct/bookmarked /sign-up?intent=team), and the cookie is the
-  // signal that survives Clerk's multi-step sub-routes — which is the whole
-  // reason it exists. Reading `useSearchParams` here would additionally force
-  // a CSR-bailout Suspense boundary on every consumer of this hook.
-  const teamIntentPending = !orgId && hasTeamSignupIntentCookie();
+  // /container/status can provision. UI context alone does not prove that
+  // Clerk has minted a token for the active workspace yet.
+  const uiOrgId = organization?.id;
+  const scope = useMemo(() => ({
+    orgId,
+    userId,
+    sessionId,
+    eligible: !!(enabled && isSignedIn && orgLoaded && orgId && uiOrgId === orgId),
+  }), [enabled, isSignedIn, orgLoaded, orgId, uiOrgId, userId, sessionId]);
+  const [verifiedScope, setVerifiedScope] = useState<typeof scope | null>(null);
+  const activeScope = useRef<typeof scope | null>(null);
+
+  // Invalidate in-flight token requests as soon as the committed auth scope changes.
+  useLayoutEffect(() => {
+    activeScope.current = scope;
+    return () => { activeScope.current = null; };
+  }, [scope]);
+
+  const getWorkspaceToken = useCallback(async () => {
+    if (activeScope.current !== scope || !scope.eligible || !scope.orgId) return null;
+    let token: string | null = null;
+    try {
+      const candidate = await getToken({ organizationId: scope.orgId, skipCache: true });
+      if (candidate) {
+        // Enablement check only; the backend verifies the JWT signature/claims.
+        const payload = JSON.parse(atob(candidate.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+        if (payload.org_id === scope.orgId) token = candidate;
+      }
+    } catch {
+      // Missing, malformed or unavailable tokens keep provisioning disabled.
+    }
+    if (activeScope.current !== scope) return null;
+    setVerifiedScope(token ? scope : null);
+    return token;
+  }, [scope, getToken]);
+
+  useEffect(() => {
+    if (!scope.eligible || verifiedScope === scope) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    async function verify() {
+      const token = await getWorkspaceToken();
+      if (!cancelled && !token) timer = setTimeout(verify, 500);
+    }
+    void verify();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [scope, verifiedScope, getWorkspaceToken]);
 
   const { classified, networkError, isLoading, refresh } = useOnboardingStatus({
-    api: { apiUrl: BACKEND_URL, getToken, onRequestId: recordRequestId },
-    enabled: !!isSignedIn && enabled && !teamIntentPending,
+    api: { apiUrl: BACKEND_URL, getToken: getWorkspaceToken, onRequestId: recordRequestId },
+    enabled: scope.eligible && verifiedScope === scope,
     // Wake marker, computed at FETCH time (not baked into the SWR key —
     // key stability keeps dedupe/mutate semantics intact). wake=1 only
     // while a human is plausibly present (visible + input < 120s); wake=0
     // otherwise, which tells the backend to report a parked trial
     // container instead of starting it.
     wake: () => isPresent(),
-    // This poll is what creates a brand-new personal owner's trial_local
+    // This poll is what creates a brand-new workspace's trial_local
     // row, so it is the only request that can carry the client's
     // signup_flow_id to the server-side trial events.
     flow: signupFlowId,

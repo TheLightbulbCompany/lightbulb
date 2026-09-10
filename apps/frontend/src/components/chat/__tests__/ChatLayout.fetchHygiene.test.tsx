@@ -6,7 +6,7 @@
  * was re-firing both calls.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, waitFor } from "@testing-library/react";
+import { act, render, waitFor } from "@testing-library/react";
 
 const replaceMock = vi.fn();
 vi.mock("next/navigation", () => ({
@@ -22,7 +22,7 @@ vi.mock("@clerk/nextjs", () => ({
     getToken: vi.fn().mockResolvedValue("test-jwt"),
   }),
   useUser: () => ({
-    user: { id: "user_1", unsafeMetadata: { onboarded: true }, fullName: "Test User" },
+    user: { id: "user_1", fullName: "Test User" },
     isLoaded: true,
   }),
   useOrganization: () => ({ organization: null, isLoaded: true }),
@@ -132,23 +132,25 @@ describe("ChatLayout — per-load fetch hygiene", () => {
   });
 
   it("fetches seller listings once across remounts, not once per mount", async () => {
-    const first = renderLayout();
+    let first!: ReturnType<typeof renderLayout>;
+    await act(async () => { first = renderLayout(); });
     await waitFor(() => expect(myListingsMock).toHaveBeenCalledTimes(1));
     first.unmount();
 
-    renderLayout();
+    await act(async () => { renderLayout(); });
     // Allow any (incorrect) refetch to land before asserting.
-    await new Promise((r) => setTimeout(r, 50));
+    await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
     expect(myListingsMock).toHaveBeenCalledTimes(1);
   });
 
   it("fires users/sync once per session across remounts", async () => {
-    const first = renderLayout();
+    let first!: ReturnType<typeof renderLayout>;
+    await act(async () => { first = renderLayout(); });
     await waitFor(() => expect(syncUserMock).toHaveBeenCalledTimes(1));
     first.unmount();
 
-    renderLayout();
-    await new Promise((r) => setTimeout(r, 50));
+    await act(async () => { renderLayout(); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
     expect(syncUserMock).toHaveBeenCalledTimes(1);
   });
 });

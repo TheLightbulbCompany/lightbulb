@@ -8,8 +8,7 @@
  *
  * Answers persist to sessionStorage under LANDING_BRIEF_STORAGE_KEY on every
  * change; Start stashes and routes into Clerk signup (same tab), where
- * useLandingBriefReplay replays the brief after auth. Personal flow only —
- * the team-intent cookie belongs to PricingThreeCard and is never set here.
+ * useLandingBriefReplay replays the brief after workspace activation.
  */
 
 import * as React from "react";
@@ -18,7 +17,6 @@ import type { Path } from "@/components/onboarding/FirstRunSteps";
 import { LaunchHeroPill } from "@/components/launch/LaunchHeroPill";
 import { useLaunchInfo } from "@/components/launch/useLaunchInfo";
 import { LANDING_BRIEF_STORAGE_KEY } from "@/hooks/useLandingBriefReplay";
-import { clearSignupIntentCookie } from "@/lib/signupIntent";
 import { captureSignupCta } from "@/lib/signupFlow";
 import { HeroLamp } from "./HeroLamp";
 import { lightOn } from "./HeroLamp/lampStore";
@@ -65,10 +63,6 @@ export function HeroFunnel() {
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!canSubmit) return;
-    // This CTA is explicitly personal: a leftover team-intent cookie (30-min
-    // TTL from the pricing Teams CTA) would route the signup into team
-    // creation and strand the stashed brief in an org context.
-    clearSignupIntentCookie();
     stash(path, input.trim());
     captureSignupCta({
       ctaId: "hero_funnel_submit",

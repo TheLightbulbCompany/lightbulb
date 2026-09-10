@@ -34,7 +34,6 @@ export async function createUser(opts: {
       last_name: opts.runId,
       skip_password_checks: true,
       unsafe_metadata: {
-        onboarded: false,
         e2e_run_id: opts.runId,
       },
     }),

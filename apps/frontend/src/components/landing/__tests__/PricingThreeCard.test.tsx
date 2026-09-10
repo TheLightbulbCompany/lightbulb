@@ -5,10 +5,11 @@ import { PricingThreeCard } from "../PricingThreeCard";
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 
 describe("PricingThreeCard", () => {
-  it("renders a Teams CTA pointing at /sign-up?intent=team", () => {
+  it("renders a Teams CTA pointing at /sign-up", () => {
     render(<PricingThreeCard />);
-    const cta = screen.getByRole("link", { name: /create a team/i });
-    expect(cta).toHaveAttribute("href", "/sign-up?intent=team");
+    const cta = screen.getByRole("link", { name: /create a workspace/i });
+    expect(cta).toHaveAttribute("href", "/sign-up");
+    for (const link of screen.getAllByRole("link")) expect(link).toHaveAttribute("href", "/sign-up");
   });
 
   it("still renders the three provider cards", () => {

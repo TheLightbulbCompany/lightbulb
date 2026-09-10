@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { HeroFunnel } from "../HeroFunnel";
 import { LANDING_BRIEF_STORAGE_KEY } from "@/hooks/useLandingBriefReplay";
-import { SIGNUP_INTENT_COOKIE } from "@/lib/signupIntent";
 import { getTheme, setTheme } from "../HeroLamp/lampStore";
 
 const { pushMock, authState } = vi.hoisted(() => ({
@@ -97,14 +96,13 @@ describe("HeroFunnel", () => {
     expect(screen.getByLabelText("Your idea")).toBeInTheDocument();
   });
 
-  it("routes to /sign-up on submit without writing the team-intent cookie", () => {
+  it("routes to /sign-up and preserves the brief on submit", () => {
     render(<HeroFunnel />);
     fireEvent.change(screen.getByLabelText("Your company's website"), {
       target: { value: "acme.com" },
     });
     fireEvent.click(screen.getByRole("button", { name: /start$/i }));
     expect(pushMock).toHaveBeenCalledWith("/sign-up");
-    expect(document.cookie).not.toContain(SIGNUP_INTENT_COOKIE);
     expect(readStash()?.path).toBe("grow");
   });
 

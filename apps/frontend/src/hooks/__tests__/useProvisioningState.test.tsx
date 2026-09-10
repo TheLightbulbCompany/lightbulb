@@ -1,24 +1,19 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { SWRConfig } from "swr";
 import { useProvisioningState } from "../useProvisioningState";
-import { SIGNUP_INTENT_COOKIE } from "@/lib/signupIntent";
 
-// Per-test Clerk auth state. `orgId` is the JWT's org claim — the signal the
-// team-intent poll gate reads (see the hook's `teamIntentPending` comment).
+
 const auth = vi.hoisted(() => ({
-  isSignedIn: true as boolean,
-  orgId: undefined as string | undefined,
+  isSignedIn: true, orgId: "org_123" as string | undefined,
+  uiOrgId: "org_123" as string | undefined,
+  getToken: vi.fn(),
 }));
-
-// Clerk's useAuth — return a stub.
+const token = (orgId: string) => `header.${btoa(JSON.stringify({ org_id: orgId }))}.signature`;
 vi.mock("@clerk/nextjs", () => ({
-  useAuth: () => ({
-    getToken: vi.fn().mockResolvedValue("test-token"),
-    isSignedIn: auth.isSignedIn,
-    orgId: auth.orgId,
-  }),
+  useAuth: () => auth,
+  useOrganization: () => ({ isLoaded: true, organization: auth.uiOrgId ? { id: auth.uiOrgId } : null }),
 }));
 
 const wrapper = ({ children }: { children: React.ReactNode }) => (
@@ -39,9 +34,9 @@ describe("useProvisioningState", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     auth.isSignedIn = true;
-    auth.orgId = undefined;
-    // jsdom persists document.cookie across tests in a file.
-    document.cookie = `${SIGNUP_INTENT_COOKIE}=; max-age=0; path=/`;
+    auth.orgId = "org_123";
+    auth.uiOrgId = "org_123";
+    auth.getToken.mockReset().mockResolvedValue(token("org_123"));
   });
 
   afterEach(() => {
@@ -181,90 +176,67 @@ describe("useProvisioningState", () => {
     await waitFor(() => expect(fetchSpy.mock.calls.length).toBeGreaterThan(before));
   });
 
-  /**
-   * Team-signup poll gate.
-   *
-   * `GET /container/status` dispatches `ensure_user_ready` server-side, so
-   * this poll IS the provisioning trigger — not a read. Both chat shells call
-   * this hook (transitively, via `useGetStartedDerived`) ABOVE their
-   * `onboardingPhase !== "ready"` early return, and React runs hooks before
-   * early returns, so a team signup that lands on /chat fires the poll during
-   * the renders before `useOnboardingGate`'s redirect to /onboarding lands —
-   * provisioning a throwaway PERSONAL container, trial_local row and
-   * Paperclip company for a user who is about to create an org.
-   *
-   * Suppressing the poll (rather than steering the post-signup URL) is what
-   * makes the fix whole: it holds no matter which URL Clerk chooses.
-   */
-  describe("team-signup intent gate", () => {
-    function stubOkFetch() {
-      const fetchMock = vi.fn().mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            container_status: "running",
-            runtime_phase: "ready",
-            lifecycle: "ready",
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      );
+
+  describe("workspace JWT barrier", () => {
+    function stubFetch() {
+      const fetchMock = vi.fn().mockImplementation(async () => new Response(
+        JSON.stringify({ container_status: "running", runtime_phase: "ready", lifecycle: "ready" }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ));
       global.fetch = fetchMock;
       return fetchMock;
     }
-
-    it("does not poll while team intent is pending (cookie set, no org yet)", async () => {
-      const fetchMock = stubOkFetch();
-      document.cookie = `${SIGNUP_INTENT_COOKIE}=team; path=/`;
+    it.each(["signed out", "no org", "UI mismatch", "missing token", "wrong token", "malformed token"])("never fetches with %s", async (state) => {
+      if (state === "signed out") auth.isSignedIn = false;
+      if (state === "no org") { auth.orgId = undefined; auth.uiOrgId = undefined; }
+      if (state === "UI mismatch") auth.uiOrgId = "org_other";
+      if (state === "missing token") auth.getToken.mockResolvedValue(null);
+      if (state === "wrong token") auth.getToken.mockResolvedValue(token("org_other"));
+      if (state === "malformed token") auth.getToken.mockResolvedValue("not-a-jwt");
+      const fetchMock = stubFetch();
       const { result } = renderHook(() => useProvisioningState(), { wrapper });
-      // Same shape as the `enabled: false` case above — give SWR a tick to
-      // potentially fire, then assert it never did.
-      await new Promise((r) => setTimeout(r, 50));
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 60)); });
       expect(fetchMock).not.toHaveBeenCalled();
       expect(result.current.phase).toBe("loading");
     });
-
-    it("polls once the org exists even with the cookie still set — a stale cookie must never dead-poll an org owner", async () => {
-      const fetchMock = stubOkFetch();
-      document.cookie = `${SIGNUP_INTENT_COOKIE}=team; path=/`;
-      auth.orgId = "org_123";
-      const { result } = renderHook(() => useProvisioningState(), { wrapper });
-      await waitFor(() => expect(result.current.phase).toBe("normal"));
-      expect(fetchMock).toHaveBeenCalled();
+    it("uses a freshly minted matching workspace token for the request", async () => {
+      const fetchMock = stubFetch();
+      renderHook(() => useProvisioningState(), { wrapper });
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      expect(auth.getToken).toHaveBeenCalledWith({ organizationId: "org_123", skipCache: true });
+      expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/container/status"), expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: `Bearer ${token("org_123")}` }),
+      }));
     });
-
-    it("polls immediately when there is no intent cookie — personal signups are unchanged", async () => {
-      const fetchMock = stubOkFetch();
-      const { result } = renderHook(() => useProvisioningState(), { wrapper });
-      await waitFor(() => expect(result.current.phase).toBe("normal"));
-      expect(fetchMock).toHaveBeenCalled();
-    });
-
-    it("resumes polling on the next render once the cookie is cleared", async () => {
-      const fetchMock = stubOkFetch();
-      document.cookie = `${SIGNUP_INTENT_COOKIE}=team; path=/`;
-      const { result, rerender } = renderHook(() => useProvisioningState(), { wrapper });
-      await new Promise((r) => setTimeout(r, 50));
+    it("waits for a pending token and discards it if the workspace changes", async () => {
+      let resolveToken!: (value: string) => void;
+      auth.getToken.mockReturnValueOnce(new Promise<string>((resolve) => { resolveToken = resolve; }));
+      const fetchMock = stubFetch();
+      const { rerender } = renderHook(() => useProvisioningState(), { wrapper });
       expect(fetchMock).not.toHaveBeenCalled();
-
-      // /onboarding clears the cookie once it takes over rendering the
-      // team-creation UI (`mode === "org"`). The cookie read is not
-      // reactive, so this pins the self-heal: the very next render picks
-      // the change up.
-      document.cookie = `${SIGNUP_INTENT_COOKIE}=; max-age=0; path=/`;
+      auth.orgId = "org_new"; auth.uiOrgId = "org_new";
+      auth.getToken.mockResolvedValue(null);
       rerender();
-      await waitFor(() => expect(result.current.phase).toBe("normal"));
-      expect(fetchMock).toHaveBeenCalled();
+      await act(async () => { resolveToken(token("org_123")); });
+      expect(fetchMock).not.toHaveBeenCalled();
     });
-
-    it("fails OPEN: an undecodable cookie value polls rather than stranding the user", async () => {
-      const fetchMock = stubOkFetch();
-      // A bare "%" is what `decodeURIComponent` throws a URIError on — the
-      // read happens during render, so an unguarded throw here would take the
-      // whole chat shell down AND leave the user unable to provision.
-      document.cookie = `${SIGNUP_INTENT_COOKIE}=%; path=/`;
+    it("retries token propagation and starts fetching once the token matches", async () => {
+      auth.getToken.mockResolvedValueOnce(token("org_other"));
+      const fetchMock = stubFetch();
+      renderHook(() => useProvisioningState(), { wrapper });
+      await waitFor(() => expect(auth.getToken).toHaveBeenCalled());
+      expect(fetchMock).not.toHaveBeenCalled();
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled(), { timeout: 2500 });
+    });
+    it("revalidates the token on refresh rather than reusing an expired or wrong-org token", async () => {
+      const fetchMock = stubFetch();
       const { result } = renderHook(() => useProvisioningState(), { wrapper });
       await waitFor(() => expect(result.current.phase).toBe("normal"));
-      expect(fetchMock).toHaveBeenCalled();
+      fetchMock.mockClear();
+      auth.getToken.mockResolvedValue(token("org_other"));
+      await act(async () => { result.current.refresh(); });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 60)); });
+      expect(fetchMock).not.toHaveBeenCalled();
     });
   });
 });

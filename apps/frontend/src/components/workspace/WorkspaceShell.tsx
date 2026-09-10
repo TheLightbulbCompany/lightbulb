@@ -9,7 +9,7 @@ import "./workspace.css";
 import { constrainGroupHeight } from "./groupConstraints";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { useAuth, useOrganization } from "@clerk/nextjs";
+import { OrganizationList, useAuth, useOrganization } from "@clerk/nextjs";
 import {
   DockviewReact,
   themeLight,
@@ -102,14 +102,22 @@ export function WorkspaceShell(): React.ReactElement {
   const onboardingPhase = useOnboardingGate();
   const { userId, isSignedIn } = useAuth();
   const { organization } = useOrganization();
-  if (onboardingPhase !== "ready" || !isSignedIn || !userId) {
+  if (onboardingPhase === "selecting") {
+    return (
+      <main className="flex min-h-screen flex-col items-center justify-center gap-6 p-4">
+        <h1 className="text-2xl font-bold">Choose your workspace</h1>
+        <OrganizationList hidePersonal afterSelectOrganizationUrl="/chat" afterCreateOrganizationUrl="/onboarding" skipInvitationScreen />
+      </main>
+    );
+  }
+  if (onboardingPhase !== "ready" || !isSignedIn || !userId || !organization) {
     return (
       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
         <div style={{ color: "var(--midnight-muted)", fontSize: 14 }}>Loading…</div>
       </div>
     );
   }
-  const scopeId = organization?.id ?? userId;
+  const scopeId = organization.id;
   return <AuthenticatedWorkspace key={`${userId}:${scopeId}`} scopeId={scopeId} />;
 }
 

@@ -39,7 +39,6 @@ describe('clerk-admin', () => {
       expect(body.email_address).toEqual(['isol8-e2e-aaaaaa@mailsac.com']);
       expect(body.password).toBe('pw');
       expect(body.unsafe_metadata.e2e_run_id).toBe('1776572400000-aaaaaa');
-      expect(body.unsafe_metadata.onboarded).toBe(false);
     });
 
     it('throws on non-2xx with the API body in the message', async () => {

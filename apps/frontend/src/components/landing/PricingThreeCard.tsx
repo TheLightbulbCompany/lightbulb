@@ -87,19 +87,18 @@ export function PricingThreeCard() {
 
         <div className="ld-teams-strip">
           <div className="ld-teams-copy">
-            <h3>Lightbulb for Teams</h3>
-            <p>Shared agents, one workspace, per-seat pricing.</p>
+            <h3>Your workspace</h3>
+            <p>Agents, people, and work in one place.</p>
           </div>
           <Link
             href="/sign-up"
             className="ld-btn"
             onClick={() => {
               captureSignupCta({
-                ctaId: "pricing_create_a_team",
+                ctaId: "pricing_create_workspace",
                 label: "Create a workspace",
                 surface: "landing_pricing",
                 destination: "/sign-up",
-                providerChoice: "team",
               });
             }}
           >

@@ -1,4 +1,6 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render as renderUI, screen, waitFor } from "@testing-library/react";
+import type { ReactElement } from "react";
+import { SWRConfig } from "swr";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const auth = {
@@ -31,13 +33,17 @@ const shared = vi.hoisted(() => ({
   liveConnected: false,
   connectionRevision: 1,
   roomChannel: null as string | null,
+  onEvent: null as ((event: { type: string; payload: { resource: string } }) => void) | null,
 }));
+const statusMutate = vi.hoisted(() => vi.fn());
+vi.mock("swr", async (importOriginal) => ({ ...(await importOriginal<typeof import("swr")>()), mutate: statusMutate }));
 vi.mock("@lightbulb/shared", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@lightbulb/shared")>();
   return {
     ...actual,
-    useLiveEvents: ({ roomChannel }: { roomChannel: string | null }) => {
+    useLiveEvents: ({ roomChannel, onEvent }: { roomChannel: string | null; onEvent: typeof shared.onEvent }) => {
       shared.roomChannel = roomChannel;
+      shared.onEvent = onEvent;
       return {
         liveConnected: shared.liveConnected,
         lastEventAt: null,
@@ -50,6 +56,10 @@ vi.mock("@lightbulb/shared", async (importOriginal) => {
 });
 
 import { LiveEventsProvider, useLiveEvents } from "../useLiveEvents";
+
+function render(ui: ReactElement) {
+  return renderUI(<SWRConfig value={{ provider: () => new Map() }}>{ui}</SWRConfig>);
+}
 
 function Probe() {
   const live = useLiveEvents();
@@ -75,6 +85,7 @@ function RoomClaimProbe() {
 
 beforeEach(() => {
   get.mockClear();
+  statusMutate.mockClear();
   auth.getToken.mockClear();
   auth.userId = "user-a";
   auth.orgId = "org-a";
@@ -87,6 +98,14 @@ beforeEach(() => {
 });
 
 describe("LiveEventsProvider", () => {
+  it("invalidates only the current account/workspace status key for health updates", async () => {
+    await act(async () => { render(<LiveEventsProvider><Probe /></LiveEventsProvider>); });
+    shared.onEvent?.({ type: "runtime.resource.invalidated", payload: { resource: "health" } });
+    expect(statusMutate).toHaveBeenCalledWith(["/container/status", "user-a:org-a"]);
+    statusMutate.mockClear();
+    shared.onEvent?.({ type: "runtime.resource.invalidated", payload: { resource: "agents" } });
+    expect(statusMutate).not.toHaveBeenCalled();
+  });
   it("loads live config for the signed-in user/owner while keeping HTTP ready during AppSync reconnect", async () => {
     render(<LiveEventsProvider><Probe /></LiveEventsProvider>);
     expect(screen.getByText(/http-ready:reconnecting/)).toBeInTheDocument();

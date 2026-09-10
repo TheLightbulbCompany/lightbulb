@@ -22,8 +22,7 @@ import { signIn } from './drivers/sign-in';
  *    state. We detect that and skip, again to keep the gate green where the
  *    feature genuinely isn't available.
  *
- * Mirrors the auth + cleanup pattern from `personal.spec.ts` /
- * `org.spec.ts`: `createE2EUser` in beforeAll, `signIn` via Clerk ticket,
+ * Mirrors the auth + cleanup pattern from `workspace.spec.ts`: `createE2EUser` in beforeAll, `signIn` via Clerk ticket,
  * `cleanupUser` in afterAll wipes Clerk + Stripe + backend state.
  */
 
@@ -43,7 +42,7 @@ test.describe('E2E: Teams agent create', () => {
     });
     const page = await ctx.newPage();
     await setupClerkTestingToken({ page });
-    user = await createE2EUser(page, 'personal');
+    user = await createE2EUser(page);
     console.log(
       `[e2e] runId=${user.runId} clerkUserId=${user.clerkUserId} email=${user.email}`,
     );

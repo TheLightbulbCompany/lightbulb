@@ -10,7 +10,7 @@ const auth = vi.hoisted(() => ({
   uiOrgId: "org_123" as string | undefined,
   getToken: vi.fn(),
 }));
-const token = (orgId: string) => `header.${btoa(JSON.stringify({ org_id: orgId }))}.signature`;
+const token = (orgId: string) => `header.${btoa(JSON.stringify({ o: { id: orgId } }))}.signature`;
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => auth,
   useOrganization: () => ({ isLoaded: true, organization: auth.uiOrgId ? { id: auth.uiOrgId } : null }),
@@ -40,6 +40,7 @@ describe("useProvisioningState", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -178,6 +179,36 @@ describe("useProvisioningState", () => {
 
 
   describe("workspace JWT barrier", () => {
+    it("isolates an already-started HTTP response from a new workspace and keeps the new poll running", async () => {
+      vi.useFakeTimers();
+      let resolveA!: (response: Response) => void;
+      let resolveB!: (response: Response) => void;
+      const bodyB = { service_name: "workspace-b", runtime_phase: "starting", lifecycle: "starting", chat_available: false };
+      const respond = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+      const fetchMock = vi.fn()
+        .mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveA = resolve; }))
+        .mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveB = resolve; }))
+        .mockImplementation(async () => respond(bodyB));
+      global.fetch = fetchMock;
+      const { result, rerender } = renderHook(() => useProvisioningState(), { wrapper });
+      await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      auth.orgId = "org_b"; auth.uiOrgId = "org_b";
+      auth.getToken.mockResolvedValue(token("org_b"));
+      rerender();
+      await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+      expect(result.current.container).toBeNull();
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      await act(async () => { resolveB(respond(bodyB)); });
+      expect(result.current.container?.service_name).toBe("workspace-b");
+      await act(async () => { resolveA(respond({ service_name: "workspace-a", runtime_phase: "ready", lifecycle: "ready", chat_available: true })); });
+      expect(result.current.container?.service_name).toBe("workspace-b");
+      expect(result.current.container?.runtime_phase).toBe("starting");
+      const calls = fetchMock.mock.calls.length;
+      await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+      expect(fetchMock.mock.calls.length).toBeGreaterThan(calls);
+      expect(result.current.container?.service_name).toBe("workspace-b");
+    });
     function stubFetch() {
       const fetchMock = vi.fn().mockImplementation(async () => new Response(
         JSON.stringify({ container_status: "running", runtime_phase: "ready", lifecycle: "ready" }),
@@ -186,13 +217,14 @@ describe("useProvisioningState", () => {
       global.fetch = fetchMock;
       return fetchMock;
     }
-    it.each(["signed out", "no org", "UI mismatch", "missing token", "wrong token", "malformed token"])("never fetches with %s", async (state) => {
+    it.each(["signed out", "no org", "UI mismatch", "missing token", "wrong token", "malformed token", "obsolete token"])("never fetches with %s", async (state) => {
       if (state === "signed out") auth.isSignedIn = false;
       if (state === "no org") { auth.orgId = undefined; auth.uiOrgId = undefined; }
       if (state === "UI mismatch") auth.uiOrgId = "org_other";
       if (state === "missing token") auth.getToken.mockResolvedValue(null);
       if (state === "wrong token") auth.getToken.mockResolvedValue(token("org_other"));
       if (state === "malformed token") auth.getToken.mockResolvedValue("not-a-jwt");
+      if (state === "obsolete token") auth.getToken.mockResolvedValue(`header.${btoa(JSON.stringify({ org_id: "org_123" }))}.signature`);
       const fetchMock = stubFetch();
       const { result } = renderHook(() => useProvisioningState(), { wrapper });
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 60)); });

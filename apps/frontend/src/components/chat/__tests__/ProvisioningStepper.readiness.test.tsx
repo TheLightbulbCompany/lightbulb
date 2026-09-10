@@ -15,8 +15,8 @@ import React from "react";
 import { SWRConfig } from "swr";
 
 vi.mock("@clerk/nextjs", () => ({
-  useOrganization: () => ({ organization: null, membership: null, isLoaded: true }),
-  useAuth: () => ({ getToken: vi.fn().mockResolvedValue("tok"), isSignedIn: true, orgId: null, userId: "u1" }),
+  useOrganization: () => ({ organization: { id: "org_1" }, membership: { role: "org:admin" }, isLoaded: true }),
+  useAuth: () => ({ getToken: async () => `header.${btoa(JSON.stringify({ o: { id: "org_1" } }))}.signature`, isSignedIn: true, orgId: "org_1", userId: "u1" }),
   useUser: () => ({ user: { id: "u1", unsafeMetadata: {} }, isLoaded: true }),
 }));
 
@@ -87,7 +87,7 @@ const READY = {
   generations: { provision_generation: "g1", onboarding_generation: "g1" },
   funnel: { state: "complete", goal_id: null, project_id: null, submitted_at: null, completed_at: null },
   bootstrap: { state: "delivered", dispatched_at: null, delivered_at: null, attempts: 0, last_error: null },
-  provider: { choice: "bedrock_claude", byo_provider: null, is_org: false },
+  provider: { choice: "bedrock_claude", byo_provider: null, is_org: true },
   teams_state: "ready",
 };
 
@@ -151,7 +151,7 @@ describe("ProvisioningStepper readiness (issue #1878)", () => {
     // reload, no websocket push — only the status poll, whose cadence is 5s
     // while the elapsed timer re-renders this tree every second.
     body = READY;
-    await vi.advanceTimersByTimeAsync(10_000);
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
 
     await vi.waitFor(() => expect(screen.getByText("workspace")).toBeInTheDocument());
     expect(screen.queryByText(/finishing touches/i)).not.toBeInTheDocument();

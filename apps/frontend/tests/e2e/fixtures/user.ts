@@ -1,14 +1,14 @@
 /**
  * E2E user lifecycle helper.
  *
- * Tests call `createE2EUser(page, role)` in beforeAll, drive the UI flow, then
+ * Tests call `createE2EUser(page)` in beforeAll, drive the UI flow, then
  * call `cleanupUser(user)` in afterAll. Cleanup orchestrates Stripe -> backend
  * -> Clerk in that order, then re-queries Stripe + Clerk to hard-fail if
  * anything was left behind. This keeps the dev environment clean across runs.
  *
  * NOTE: the bare `e2eUser` Playwright fixture below is intentionally a trap
  * (it always throws). The pattern is for specs to call `createE2EUser`
- * directly inside `beforeAll`, not via a fixture — role and orgId need to be
+ * directly inside `beforeAll`, not via a fixture — orgId needs to be
  * decided per-spec, and Playwright's worker fixtures don't compose cleanly
  * with that. Tasks 11/12 (the spec files) will use the explicit helpers.
  */
@@ -23,8 +23,6 @@ import {
 } from './stripe-admin';
 import { AuthedFetch, AuthedFetchError } from './api';
 import { DDBReader } from './ddb-reader';
-
-export type E2EUserRole = 'personal' | 'org';
 
 export type E2EUser = {
   runId: string;
@@ -45,8 +43,6 @@ function makeRunId(): string {
 
 export async function createE2EUser(
   page: Page,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  _role: E2EUserRole,
 ): Promise<E2EUser> {
   const secretKey = process.env.CLERK_SECRET_KEY;
   if (!secretKey) {
@@ -174,7 +170,7 @@ export async function cleanupUser(user: E2EUser): Promise<void> {
 /**
  * Bare Playwright fixture export — intentionally throws. Specs should call
  * `createE2EUser` / `cleanupUser` directly in `beforeAll` / `afterAll` so the
- * role and (optional) orgId can be set per-spec. Kept as load-bearing
+ * orgId can be recorded as soon as the workspace is created. Kept as load-bearing
  * documentation for future contributors who go looking for `test.e2eUser`.
  */
 // `object`, not `Record<string, never>`: the latter's string index signature
@@ -186,7 +182,7 @@ export const test = base.extend<object, { e2eUser: E2EUser }>({
     async ({ browser: _browser }, use) => {
       void use;
       throw new Error(
-        'Use createE2EUser(page, role) in beforeAll, not the bare e2eUser fixture',
+        'Use createE2EUser(page) in beforeAll, not the bare e2eUser fixture',
       );
     },
     { scope: 'worker' },

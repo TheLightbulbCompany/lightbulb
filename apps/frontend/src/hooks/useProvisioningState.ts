@@ -135,7 +135,7 @@ export function useProvisioningState(
       if (candidate) {
         // Enablement check only; the backend verifies the JWT signature/claims.
         const payload = JSON.parse(atob(candidate.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
-        if (payload.org_id === scope.orgId) token = candidate;
+        if (payload.o?.id === scope.orgId) token = candidate;
       }
     } catch {
       // Missing, malformed or unavailable tokens keep provisioning disabled.
@@ -159,6 +159,7 @@ export function useProvisioningState(
 
   const { classified, networkError, isLoading, refresh } = useOnboardingStatus({
     api: { apiUrl: BACKEND_URL, getToken: getWorkspaceToken, onRequestId: recordRequestId },
+    scope: `${userId}:${orgId}`,
     enabled: scope.eligible && verifiedScope === scope,
     // Wake marker, computed at FETCH time (not baked into the SWR key —
     // key stability keeps dedupe/mutate semantics intact). wake=1 only

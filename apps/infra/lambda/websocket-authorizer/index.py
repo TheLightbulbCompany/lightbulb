@@ -1,21 +1,15 @@
 """
-Lambda authorizer for WebSocket API Gateway.
+Machine-only Lambda authorizer for WebSocket API Gateway.
 
-Validates two kinds of bearer tokens for WebSocket $connect:
+Accepts two existing credential kinds:
 
-1. Paperclip service-token JWTs (HS256, kind=paperclip_service)
-   — Long-lived JWTs minted by the FastAPI backend (core/services/service_token.py),
-     signed with a symmetric secret stored in Secrets Manager
-     (isol8/{env}/paperclip_service_token_key). Used by Paperclip agents to
-     reach a specific user's OpenClaw container via the existing WebSocket
-     gateway. Checked FIRST because symmetric verify is far cheaper than
-     a JWKS round-trip.
+1. Paired desktop device JWTs (EdDSA, kind=device), verified against the
+   signature-bound public key in the owner's container row.
+2. Paperclip service-token JWTs (HS256, kind=paperclip_service), verified with
+   the environment signing key from Secrets Manager.
 
-2. Clerk JWTs (RS256, browser sessions)
-   — Standard end-user browser auth. Verified against Clerk's JWKS.
-
-Returns IAM policy (WebSocket APIs require this format, not isAuthorized) plus
-authorization context (userId, orgId, authKind) for the backend.
+Clerk browser sessions are intentionally not accepted. Human commands use HTTP
+and live browser delivery uses AppSync Events.
 """
 
 import base64
@@ -28,31 +22,13 @@ from typing import Any, Optional
 import boto3
 import jwt
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-from jwt import PyJWKClient
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-# Clerk configuration from environment
-CLERK_JWKS_URL = os.environ.get("CLERK_JWKS_URL", "")
-CLERK_ISSUER = os.environ.get("CLERK_ISSUER", "")
-# SEC-8 token-origin fence. Clerk session tokens carry NO `aud` claim; the
-# origin check is `azp` (authorized party — the frontend origin that minted
-# the token). Comma-separated allowlist; empty disables the check. Native-app
-# tokens have no `azp` and always pass (Clerk SDK semantics).
-CLERK_AUTHORIZED_PARTIES = frozenset(
-    p.strip()
-    for p in os.environ.get("CLERK_AUTHORIZED_PARTIES", "").split(",")
-    if p.strip()
-)
-# "audit" → log + EMF metric on mismatch, never deny; "enforce" → deny.
-CLERK_AZP_MODE = os.environ.get("CLERK_AZP_MODE", "audit")
-
 # Paperclip service-token configuration
 SERVICE_TOKEN_KIND = "paperclip_service"
-PAPERCLIP_SERVICE_TOKEN_KEY_SECRET_ARN = os.environ.get(
-    "PAPERCLIP_SERVICE_TOKEN_KEY_SECRET_ARN", ""
-)
+PAPERCLIP_SERVICE_TOKEN_KEY_SECRET_ARN = os.environ.get("PAPERCLIP_SERVICE_TOKEN_KEY_SECRET_ARN", "")
 
 # Desktop device-token configuration
 DEVICE_TOKEN_KIND = "device"
@@ -61,9 +37,6 @@ DEVICE_TOKEN_KIND = "device"
 # the replay window regardless of what a compromised/buggy client mints.
 DEVICE_TOKEN_MAX_LIFETIME_S = 300
 CONTAINERS_TABLE = os.environ.get("CONTAINERS_TABLE", "")
-
-# Cache JWKS client (reused across invocations)
-_jwks_client = None
 
 # Boto client for Secrets Manager (initialized lazily)
 _secrets_client = None
@@ -117,9 +90,8 @@ def _emit_metric(metric_name: str, value: int) -> None:
 def _load_service_token_key() -> str:
     """Fetch the Paperclip service-token signing key from Secrets Manager.
 
-    Called once at cold-start. Returns "" on missing config or fetch failure
-    (the service-token branch will then short-circuit to None and the
-    Clerk path runs unchanged).
+    Called once at cold-start. Returns "" on missing config or fetch failure;
+    service-token attempts then fail closed.
     """
     arn = PAPERCLIP_SERVICE_TOKEN_KEY_SECRET_ARN
     if not arn:
@@ -138,26 +110,12 @@ def _load_service_token_key() -> str:
 # Cold-start: load the symmetric key once per Lambda container
 PAPERCLIP_SERVICE_TOKEN_KEY = _load_service_token_key()
 _emit_metric(
-    "ServiceTokenKeyLoadSuccess"
-    if PAPERCLIP_SERVICE_TOKEN_KEY
-    else "ServiceTokenKeyLoadFailure",
+    "ServiceTokenKeyLoadSuccess" if PAPERCLIP_SERVICE_TOKEN_KEY else "ServiceTokenKeyLoadFailure",
     1,
 )
 
 
-def get_jwks_client() -> PyJWKClient:
-    """Get or create cached JWKS client."""
-    global _jwks_client
-    if _jwks_client is None:
-        if not CLERK_JWKS_URL:
-            raise ValueError("CLERK_JWKS_URL environment variable not set")
-        _jwks_client = PyJWKClient(CLERK_JWKS_URL, cache_keys=True)
-    return _jwks_client
-
-
-def generate_policy(
-    principal_id: str, effect: str, resource: str, context: dict = None
-) -> dict:
+def generate_policy(principal_id: str, effect: str, resource: str, context: dict = None) -> dict:
     """
     Generate IAM policy document for WebSocket API authorizer.
 
@@ -184,9 +142,7 @@ def generate_policy(
 def _try_service_token(token: str) -> Optional[dict]:
     """Validate a Paperclip service-token JWT.
 
-    Returns the claims dict if the token is a valid service token; returns
-    None if the token is not a service token (so the caller can fall through
-    to the Clerk JWT path) or if signing-key config is missing.
+    Returns the claims dict if the token is valid; otherwise returns None.
     """
     if not PAPERCLIP_SERVICE_TOKEN_KEY:
         return None
@@ -213,14 +169,15 @@ def _try_device_token(token: str) -> Optional[dict]:
     device's registered public key, projected onto the owner's ``containers`` row
     at ``/desktop/pair`` as ``paired_devices[deviceId]`` — no long-lived bearer
     secret at rest, and revocation is un-pairing (the row entry disappears → Deny
-    on the next connect). Returns {userId, orgId, authKind} on success, else None
-    so the caller falls through to the service-token / Clerk paths. Fails CLOSED.
+    on the next connect). Returns verified user/org/auth/device provenance on success,
+    else None so the caller can try the service-token branch. Fails CLOSED.
 
     Security note: the deviceId/owner claims are read UNVERIFIED only to locate
     the registered pubkey; the signature is then verified against THAT pubkey, so
     a forged deviceId/owner points at a key the attacker cannot sign for and the
-    verification fails. The member identity is taken from the server-authored row
-    (paired_devices[deviceId].userId), never self-asserted by the device.
+    verification fails. Returns verified machine provenance on success, else None.
+    The member identity is taken from the server-authored row, never self-asserted.
+    Fails CLOSED.
     """
     try:
         header = jwt.get_unverified_header(token)
@@ -240,7 +197,9 @@ def _try_device_token(token: str) -> Optional[dict]:
         if not device_id or not owner_id:
             return None
 
-        resp = _get_containers_table().get_item(Key={"owner_id": owner_id})
+        resp = _get_containers_table().get_item(
+            Key={"owner_id": owner_id}, ConsistentRead=True
+        )
         item = resp.get("Item")
         if not item:
             return None
@@ -248,9 +207,7 @@ def _try_device_token(token: str) -> Optional[dict]:
         if not entry or not entry.get("publicKey"):
             return None  # not paired / revoked
 
-        pub = Ed25519PublicKey.from_public_bytes(
-            base64.urlsafe_b64decode(entry["publicKey"] + "==")
-        )
+        pub = Ed25519PublicKey.from_public_bytes(base64.urlsafe_b64decode(entry["publicKey"] + "=="))
         # Verify the EdDSA signature over the exact claims + enforce exp.
         claims = jwt.decode(
             token,
@@ -281,6 +238,7 @@ def _try_device_token(token: str) -> Optional[dict]:
             "userId": member_user_id,
             "orgId": org_id,
             "authKind": DEVICE_TOKEN_KIND,
+            "deviceId": claims["deviceId"],
         }
     except jwt.PyJWTError as e:
         logger.warning(f"Device token rejected: {e}")
@@ -290,29 +248,12 @@ def _try_device_token(token: str) -> Optional[dict]:
         return None
 
 
-def _azp_allowed(payload: dict) -> bool:
-    """SEC-8: check the Clerk token's `azp` claim against known origins.
-
-    Returns False only on a mismatch while CLERK_AZP_MODE=enforce. A missing
-    `azp` (native apps) or an empty allowlist passes; an audit-mode mismatch
-    logs + emits the AzpMismatch EMF metric but still passes.
-    """
-    azp = payload.get("azp")
-    if not azp or not CLERK_AUTHORIZED_PARTIES or azp in CLERK_AUTHORIZED_PARTIES:
-        return True
-    logger.warning(
-        f"JWT azp {azp!r} not in CLERK_AUTHORIZED_PARTIES (mode={CLERK_AZP_MODE})"
-    )
-    _emit_metric("AzpMismatch", 1)
-    return CLERK_AZP_MODE != "enforce"
-
-
 def handler(event: dict, context: Any) -> dict:
     """
     Lambda authorizer handler for WebSocket API.
 
-    Validates Paperclip service tokens (cheap symmetric verify, checked first)
-    and Clerk JWTs (RS256 via JWKS).
+    Validates paired device and Paperclip service credentials. Every other token,
+    including a valid Clerk browser session, is denied.
 
     Args:
         event: API Gateway authorizer event containing:
@@ -348,7 +289,7 @@ def handler(event: dict, context: Any) -> dict:
             context=device_claims,
         )
 
-    # --- Try Paperclip service token first (cheap symmetric verify) ---
+    # --- Try Paperclip service token (cheap symmetric verify) ---
     service_claims = _try_service_token(token)
     if service_claims:
         user_id = service_claims["sub"]
@@ -364,65 +305,5 @@ def handler(event: dict, context: Any) -> dict:
             },
         )
 
-    # --- Validate Clerk JWT ---
-    try:
-        # Get signing key from JWKS
-        jwks_client = get_jwks_client()
-        signing_key = jwks_client.get_signing_key_from_jwt(token)
-
-        # Decode and validate JWT
-        payload = jwt.decode(
-            token,
-            signing_key.key,
-            algorithms=["RS256"],
-            issuer=CLERK_ISSUER,
-            options={
-                "verify_exp": True,
-                "verify_iss": True,
-                # Clerk session tokens carry no `aud`; the origin check is the
-                # `azp` claim, validated below (SEC-8).
-                "verify_aud": False,
-            },
-        )
-
-        if not _azp_allowed(payload):
-            return generate_policy("unauthorized", "Deny", method_arn)
-
-        # Extract user and org info
-        user_id = payload.get("sub")
-        # Clerk v2 JWTs nest org claims under "o" key: {"id", "rol", "slg", "per"}
-        org_claims = payload.get("o", {})
-        org_id = org_claims.get("id") if isinstance(org_claims, dict) else None
-
-        if not user_id:
-            logger.warning("Token missing 'sub' claim")
-            return generate_policy("unauthorized", "Deny", method_arn)
-
-        logger.info(f"Authorized user_id={user_id}, org_id={org_id or 'personal'}")
-
-        # Return IAM policy with Allow effect and user context
-        return generate_policy(
-            principal_id=user_id,
-            effect="Allow",
-            resource=method_arn,
-            context={
-                "userId": user_id,
-                "orgId": org_id or "",
-                "authKind": "clerk_user",
-                "verifiedIssuer": payload["iss"],
-                "verifiedSubject": user_id,
-            },
-        )
-
-    except jwt.ExpiredSignatureError:
-        logger.warning("Token expired")
-        return generate_policy("unauthorized", "Deny", method_arn)
-    except jwt.InvalidIssuerError:
-        logger.warning("Invalid token issuer")
-        return generate_policy("unauthorized", "Deny", method_arn)
-    except jwt.InvalidTokenError as e:
-        logger.warning(f"Invalid token: {e}")
-        return generate_policy("unauthorized", "Deny", method_arn)
-    except Exception as e:
-        logger.exception(f"Unexpected error validating token: {e}")
-        return generate_policy("unauthorized", "Deny", method_arn)
+    logger.warning("Token is not an admitted machine credential")
+    return generate_policy("unauthorized", "Deny", method_arn)

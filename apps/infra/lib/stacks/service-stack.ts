@@ -163,6 +163,13 @@ export interface ServiceStackProps extends cdk.StackProps {
   connectionsTableName: string;
   wsApiId: string;
   wsStage: string;
+  messagingTableName: string;
+  openClawWorkQueueUrl: string;
+  openClawWorkQueueArn: string;
+  appsyncEventsHttpEndpoint: string;
+  appsyncEventsRealtimeEndpoint: string;
+  appsyncEventsApiArn: string;
+  appsyncEventsRegion: string;
   /**
    * Agent-email base domain, "isol8.co" in prod (set in lockstep with the
    * prod-only SesInboundStack — see lightbulb-stage.ts). Empty/undefined in every
@@ -323,6 +330,34 @@ export class ServiceStack extends cdk.Stack {
       roleName: `lightbulb-${env}-backend-task`,
       assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
       description: `Lightbulb ${env} Fargate task role`,
+    });
+
+    // Messaging is kept in a dedicated policy so the already size-bound inline
+    // role policy does not repack. The backend consumes work and publishes live
+    // events; the DynamoDB outbox Pipe remains the sole work-queue producer.
+    new iam.ManagedPolicy(this, "BackendMessaging", {
+      managedPolicyName: `${resourcePrefix(env)}backend-messaging`,
+      roles: [this.taskRole],
+      statements: [
+        new iam.PolicyStatement({
+          sid: "ConsumeOpenClawWork",
+          actions: [
+            "sqs:ReceiveMessage",
+            "sqs:DeleteMessage",
+            "sqs:ChangeMessageVisibility",
+            "sqs:GetQueueAttributes",
+          ],
+          resources: [props.openClawWorkQueueArn],
+        }),
+        new iam.PolicyStatement({
+          sid: "PublishMessagingEvents",
+          actions: ["appsync:EventPublish"],
+          resources: [
+            `${props.appsyncEventsApiArn}/channelNamespace/rooms`,
+            `${props.appsyncEventsApiArn}/channelNamespace/users`,
+          ],
+        }),
+      ],
     });
 
     // ECR pull + DescribeImages (admin dropdown of available openclaw-extended tags)
@@ -794,6 +829,7 @@ export class ServiceStack extends cdk.Stack {
           "dynamodb:BatchGetItem",
           "dynamodb:BatchWriteItem",
           "dynamodb:ConditionCheckItem",
+          "dynamodb:TransactWriteItems",
           "dynamodb:DescribeTable",
         ],
         resources: allTableArns(this.region, this.account, env),
@@ -1310,6 +1346,11 @@ export class ServiceStack extends cdk.Stack {
       WS_MANAGEMENT_API_URL: props.managementApiUrl,
       WS_GATEWAY_URL: props.webSocketUrl,
       WS_CONNECTIONS_TABLE: props.connectionsTableName,
+      MESSAGING_TABLE: props.messagingTableName,
+      OPENCLAW_WORK_QUEUE_URL: props.openClawWorkQueueUrl,
+      APPSYNC_EVENTS_HTTP_ENDPOINT: props.appsyncEventsHttpEndpoint,
+      APPSYNC_EVENTS_REALTIME_ENDPOINT: props.appsyncEventsRealtimeEndpoint,
+      APPSYNC_EVENTS_REGION: props.appsyncEventsRegion,
       // WS caller-attestation gate, enforced in every env. The
       // x-lightbulb-ws-internal header is verified flowing from the WS Lambdas on
       // both dev and prod (zero secret-fetch failures across real connects),

@@ -8,26 +8,42 @@ import * as apigatewayv2 from "aws-cdk-lib/aws-apigatewayv2";
 import { WebSocketApi, WebSocketStage } from "aws-cdk-lib/aws-apigatewayv2";
 import { WebSocketLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
 import { WebSocketLambdaAuthorizer } from "aws-cdk-lib/aws-apigatewayv2-authorizers";
+import * as appsync from "aws-cdk-lib/aws-appsync";
 import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
+import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
+import * as cloudwatchActions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as origins from "aws-cdk-lib/aws-cloudfront-origins";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
+import * as events from "aws-cdk-lib/aws-events";
+import * as eventTargets from "aws-cdk-lib/aws-events-targets";
 import * as iam from "aws-cdk-lib/aws-iam";
+import * as kms from "aws-cdk-lib/aws-kms";
 import * as lambda from "aws-cdk-lib/aws-lambda";
+import * as lambdaEventSources from "aws-cdk-lib/aws-lambda-event-sources";
 import * as logs from "aws-cdk-lib/aws-logs";
+import * as pipes from "aws-cdk-lib/aws-pipes";
 import * as route53 from "aws-cdk-lib/aws-route53";
 import * as route53Targets from "aws-cdk-lib/aws-route53-targets";
+import * as s3 from "aws-cdk-lib/aws-s3";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
-import { logGroupPath, resourcePrefix, tablePrefix } from "../table-names";
+import * as sns from "aws-cdk-lib/aws-sns";
+import * as sqs from "aws-cdk-lib/aws-sqs";
+import {
+  alertTopicArn,
+  logGroupPath,
+  resourcePrefix,
+  tablePrefix,
+} from "../table-names";
 import { Construct } from "constructs";
-import { CLERK_DOMAIN, ROOT_DOMAIN } from "../domains";
+import { ROOT_DOMAIN } from "../domains";
 
 // =============================================================================
 // ApiStack — HTTP API Gateway + WebSocket API Gateway
 // =============================================================================
 // HTTP API:  Vercel → API Gateway v2 (HTTP) → VPC Link v2 → ALB → Fargate
-// WebSocket: Client → API Gateway v2 (WS) → Lambda → DynamoDB + ALB
+// WebSocket: Paired nodes / Paperclip operators → API Gateway v2 → Lambda + ALB
 // =============================================================================
 
 export interface ApiStackProps extends cdk.StackProps {
@@ -48,6 +64,12 @@ export interface ApiStackProps extends cdk.StackProps {
    */
   albV2: elbv2.IApplicationLoadBalancer;
   albSecurityGroup: ec2.ISecurityGroup;
+  /**
+   * Secrets Manager name containing this environment's Clerk issuer URL. AppSync
+   * resolves it as a CloudFormation dynamic reference for OIDC configuration;
+   * the value is never synthesized or output.
+   */
+  clerkIssuerSecretName: string;
   /**
    * Secrets Manager name (NOT ISecret) of the Paperclip service-token signing
    * key. The WebSocket Lambda Authorizer fetches this at cold-start and uses
@@ -106,11 +128,138 @@ const SLACK_THROTTLE: Record<string, { burstLimit: number; rateLimit: number }> 
   prod: { burstLimit: 200, rateLimit: 100 },
 };
 
+// AppSync channel segments are deliberately UUID-only. Raw Clerk IDs never
+// appear in paths, and both handlers strong-read the current base-table state
+// before accepting a subscription or publication.
+const roomsHandlerCode = (tableName: string) => `
+import { util } from '@aws-appsync/utils';
+const TABLE = '${tableName}';
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+function pathParts(ctx) {
+  const parts = ctx.info.channel.path.split('/');
+  if (parts.length !== 4 || parts[0] !== '' || parts[1] !== 'rooms' || !UUID.test(parts[2]) || !UUID.test(parts[3])) {
+    util.unauthorized();
+  }
+  return [parts[2], parts[3]];
+}
+function denyOnReadFailure(ctx) {
+  if (ctx.error || !ctx.result) util.unauthorized();
+}
+export const onSubscribe = {
+  request(ctx) {
+    const [roomId] = pathParts(ctx);
+    const sub = ctx.identity && ctx.identity.sub;
+    if (typeof sub !== 'string' || sub.length === 0) util.unauthorized();
+    return {
+      operation: 'BatchGetItem',
+      tables: {
+        [TABLE]: {
+          keys: [
+            util.dynamodb.toMapValues({ pk: 'ROOM#' + roomId, sk: 'META' }),
+            util.dynamodb.toMapValues({ pk: 'ROOM#' + roomId, sk: 'MEMBER#human#' + sub }),
+          ],
+          consistentRead: true,
+        },
+      },
+    };
+  },
+  response(ctx) {
+    denyOnReadFailure(ctx);
+    const [, deliveryKey] = pathParts(ctx);
+    const rows = ctx.result.data && ctx.result.data[TABLE];
+    const pending = ctx.result.unprocessedKeys && ctx.result.unprocessedKeys[TABLE];
+    if (!Array.isArray(rows) || (Array.isArray(pending) && pending.length > 0)) util.unauthorized();
+    const meta = rows[0];
+    const member = rows[1];
+    if (!meta || !member || meta.deliveryKey !== deliveryKey) util.unauthorized();
+  },
+};
+export const onPublish = {
+  request(ctx) {
+    const [roomId] = pathParts(ctx);
+    return {
+      operation: 'GetItem',
+      key: util.dynamodb.toMapValues({ pk: 'ROOM#' + roomId, sk: 'META' }),
+      consistentRead: true,
+    };
+  },
+  response(ctx) {
+    denyOnReadFailure(ctx);
+    const [, deliveryKey] = pathParts(ctx);
+    if (ctx.result.deliveryKey !== deliveryKey) util.unauthorized();
+    return ctx.events;
+  },
+};
+`;
+
+const usersHandlerCode = (tableName: string) => `
+import { util } from '@aws-appsync/utils';
+const TABLE = '${tableName}';
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+function channelKey(ctx) {
+  const parts = ctx.info.channel.path.split('/');
+  if (parts.length !== 3 || parts[0] !== '' || parts[1] !== 'users' || !UUID.test(parts[2])) {
+    util.unauthorized();
+  }
+  return parts[2];
+}
+function denyOnReadFailure(ctx) {
+  if (ctx.error || !ctx.result) util.unauthorized();
+}
+export const onSubscribe = {
+  request(ctx) {
+    const key = channelKey(ctx);
+    const sub = ctx.identity && ctx.identity.sub;
+    if (typeof sub !== 'string' || sub.length === 0) util.unauthorized();
+    return {
+      operation: 'BatchGetItem',
+      tables: {
+        [TABLE]: {
+          keys: [util.dynamodb.toMapValues({ pk: 'STREAM#' + key, sk: 'META' })],
+          consistentRead: true,
+        },
+      },
+    };
+  },
+  response(ctx) {
+    denyOnReadFailure(ctx);
+    const rows = ctx.result.data && ctx.result.data[TABLE];
+    const pending = ctx.result.unprocessedKeys && ctx.result.unprocessedKeys[TABLE];
+    const mapping = Array.isArray(rows) ? rows[0] : null;
+    if ((Array.isArray(pending) && pending.length > 0) || !mapping || mapping.active !== true || mapping.userId !== ctx.identity.sub) {
+      util.unauthorized();
+    }
+  },
+};
+export const onPublish = {
+  request(ctx) {
+    const key = channelKey(ctx);
+    return {
+      operation: 'GetItem',
+      key: util.dynamodb.toMapValues({ pk: 'STREAM#' + key, sk: 'META' }),
+      consistentRead: true,
+    };
+  },
+  response(ctx) {
+    denyOnReadFailure(ctx);
+    if (ctx.result.active !== true) util.unauthorized();
+    return ctx.events;
+  },
+};
+`;
+
 export class ApiStack extends cdk.Stack {
   public readonly httpApiUrl: string;
   public readonly webSocketUrl: string;
   public readonly managementApiUrl: string;
   public readonly connectionsTableName: string;
+  public readonly messagingTableName: string;
+  public readonly openClawWorkQueueUrl: string;
+  public readonly openClawWorkQueueArn: string;
+  public readonly appsyncEventsHttpEndpoint: string;
+  public readonly appsyncEventsRealtimeEndpoint: string;
+  public readonly appsyncEventsApiArn: string;
+  public readonly appsyncEventsRegion: string;
   public readonly wsApiId: string;
   public readonly wsStage: string;
 
@@ -359,7 +508,450 @@ export class ApiStack extends cdk.Stack {
     this.connectionsTableName = `${tablePrefix(env)}ws-connections`;
 
     // =========================================================================
-    // Lambda Authorizer (Clerk JWT validation for WebSocket $connect)
+    // Canonical messaging store, live projection, and durable OpenClaw work
+    // =========================================================================
+
+    const messagingKey = kms.Key.fromKeyArn(
+      this,
+      "MessagingKey",
+      props.paperclipKmsKeyArn,
+    );
+    const messagingTable = new dynamodb.Table(this, "MessagingTable", {
+      tableName: `${tablePrefix(env)}messaging`,
+      partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: messagingKey,
+      pointInTimeRecovery: true,
+      stream: dynamodb.StreamViewType.NEW_IMAGE,
+      timeToLiveAttribute: "expiresAt",
+      removalPolicy: isProd ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+    });
+    messagingTable.addGlobalSecondaryIndex({
+      indexName: "by-member",
+      partitionKey: { name: "memberKey", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "memberSort", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+    this.messagingTableName = `${tablePrefix(env)}messaging`;
+
+    const workDlq = new sqs.Queue(this, "OpenClawWorkDlq", {
+      queueName: `${resourcePrefix(env)}openclaw-work-dlq.fifo`,
+      fifo: true,
+      contentBasedDeduplication: false,
+      retentionPeriod: cdk.Duration.days(14),
+      encryption: sqs.QueueEncryption.KMS,
+      encryptionMasterKey: messagingKey,
+    });
+    const workQueue = new sqs.Queue(this, "OpenClawWorkQueue", {
+      queueName: `${resourcePrefix(env)}openclaw-work.fifo`,
+      fifo: true,
+      contentBasedDeduplication: false,
+      retentionPeriod: cdk.Duration.days(7),
+      visibilityTimeout: cdk.Duration.minutes(5),
+      receiveMessageWaitTime: cdk.Duration.seconds(20),
+      encryption: sqs.QueueEncryption.KMS,
+      encryptionMasterKey: messagingKey,
+      deadLetterQueue: { queue: workDlq, maxReceiveCount: 8 },
+    });
+    const pipeFailureQueue = new sqs.Queue(this, "OpenClawWorkPipeFailures", {
+      queueName: `${resourcePrefix(env)}openclaw-work-pipe-failures`,
+      retentionPeriod: cdk.Duration.days(14),
+      encryption: sqs.QueueEncryption.KMS,
+      encryptionMasterKey: messagingKey,
+    });
+    this.openClawWorkQueueUrl = workQueue.queueUrl;
+    this.openClawWorkQueueArn = workQueue.queueArn;
+
+    const projectorFailureBucket = new s3.Bucket(
+      this,
+      "MessagingProjectorFailures",
+      {
+        bucketName: `${resourcePrefix(env)}messaging-projector-fail-${this.account}-${this.region}`,
+        blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+        encryption: s3.BucketEncryption.KMS,
+        encryptionKey: messagingKey,
+        enforceSSL: true,
+        lifecycleRules: [{ expiration: cdk.Duration.days(30) }],
+        removalPolicy: isProd
+          ? cdk.RemovalPolicy.RETAIN
+          : cdk.RemovalPolicy.DESTROY,
+        autoDeleteObjects: !isProd,
+      },
+    );
+
+    const clerkIssuerSecret = secretsmanager.Secret.fromSecretNameV2(
+      this,
+      "ClerkIssuerForAppSync",
+      props.clerkIssuerSecretName,
+    );
+    // Event APIs cannot exclude verbose request/response content. Omit LogConfig
+    // entirely so authorization headers, identities, and messages never reach logs.
+    const eventApi = new appsync.EventApi(this, "MessagingEventApi", {
+      apiName: `${resourcePrefix(env)}messaging-events`,
+      authorizationConfig: {
+        authProviders: [
+          {
+            authorizationType: appsync.AppSyncAuthorizationType.OIDC,
+            openIdConnectConfig: {
+              oidcProvider: clerkIssuerSecret.secretValue.unsafeUnwrap(),
+              clientId: "^lightbulb-appsync$",
+            },
+          },
+          { authorizationType: appsync.AppSyncAuthorizationType.IAM },
+        ],
+        connectionAuthModeTypes: [appsync.AppSyncAuthorizationType.OIDC],
+        defaultPublishAuthModeTypes: [appsync.AppSyncAuthorizationType.IAM],
+        defaultSubscribeAuthModeTypes: [appsync.AppSyncAuthorizationType.OIDC],
+      },
+    });
+    const messagingDataSource = new appsync.AppSyncDynamoDbDataSource(
+      this,
+      "MessagingEventDataSource",
+      {
+        api: eventApi,
+        table: messagingTable,
+        readOnlyAccess: true,
+      },
+    );
+    const roomsNamespace = eventApi.addChannelNamespace("RoomsNamespace", {
+      channelNamespaceName: "rooms",
+      code: appsync.Code.fromInline(roomsHandlerCode(messagingTable.tableName)),
+      publishHandlerConfig: { dataSource: messagingDataSource },
+      subscribeHandlerConfig: { dataSource: messagingDataSource },
+      authorizationConfig: {
+        publishAuthModeTypes: [appsync.AppSyncAuthorizationType.IAM],
+        subscribeAuthModeTypes: [appsync.AppSyncAuthorizationType.OIDC],
+      },
+    });
+    const usersNamespace = eventApi.addChannelNamespace("UsersNamespace", {
+      channelNamespaceName: "users",
+      code: appsync.Code.fromInline(usersHandlerCode(messagingTable.tableName)),
+      publishHandlerConfig: { dataSource: messagingDataSource },
+      subscribeHandlerConfig: { dataSource: messagingDataSource },
+      authorizationConfig: {
+        publishAuthModeTypes: [appsync.AppSyncAuthorizationType.IAM],
+        subscribeAuthModeTypes: [appsync.AppSyncAuthorizationType.OIDC],
+      },
+    });
+
+    this.appsyncEventsHttpEndpoint = `https://${eventApi.httpDns}/event`;
+    this.appsyncEventsRealtimeEndpoint = `wss://${eventApi.realtimeDns}/event/realtime`;
+    this.appsyncEventsApiArn = eventApi.apiArn;
+    this.appsyncEventsRegion = this.region;
+
+    const projectorFn = new lambda.Function(this, "MessagingProjector", {
+      functionName: `${resourcePrefix(env)}messaging-projector`,
+      runtime: lambda.Runtime.PYTHON_3_13,
+      handler: "index.handler",
+      code: lambda.Code.fromAsset(
+        path.join(__dirname, "..", "..", "lambda", "messaging-projector"),
+      ),
+      timeout: cdk.Duration.seconds(30),
+      memorySize: 512,
+      environment: {
+        MESSAGING_TABLE: messagingTable.tableName,
+        APPSYNC_EVENTS_HTTP_ENDPOINT: this.appsyncEventsHttpEndpoint,
+        APPSYNC_EVENTS_REGION: this.appsyncEventsRegion,
+      },
+      logGroup: new logs.LogGroup(this, "MessagingProjectorLogs", {
+        logGroupName: logGroupPath(env, "messaging-projector"),
+        retention: logs.RetentionDays.ONE_MONTH,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }),
+    });
+    messagingTable.grantReadData(projectorFn);
+    roomsNamespace.grantPublish(projectorFn);
+    usersNamespace.grantPublish(projectorFn);
+    const projectorEventSource = new lambdaEventSources.DynamoEventSource(
+      messagingTable,
+      {
+        startingPosition: lambda.StartingPosition.TRIM_HORIZON,
+        batchSize: 10,
+        maxBatchingWindow: cdk.Duration.seconds(0),
+        reportBatchItemFailures: true,
+        bisectBatchOnError: true,
+        maxRecordAge: cdk.Duration.hours(23),
+        retryAttempts: 3,
+        metricsConfig: { metrics: [lambda.MetricType.EVENT_COUNT] },
+        onFailure: new lambdaEventSources.S3OnFailureDestination(
+          projectorFailureBucket,
+        ),
+      },
+    );
+    projectorFn.addEventSource(projectorEventSource);
+
+    const pipeRole = new iam.Role(this, "OpenClawWorkPipeRole", {
+      roleName: `${resourcePrefix(env)}openclaw-work-pipe`,
+      assumedBy: new iam.ServicePrincipal("pipes.amazonaws.com"),
+    });
+    // DynamoDB ListStreams has no resource-level IAM scope; isolate its wildcard.
+    pipeRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ["dynamodb:ListStreams"],
+        resources: ["*"],
+      }),
+    );
+    pipeRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: [
+          "dynamodb:DescribeStream",
+          "dynamodb:GetRecords",
+          "dynamodb:GetShardIterator",
+        ],
+        resources: [messagingTable.tableStreamArn!],
+      }),
+    );
+    pipeRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ["sqs:SendMessage"],
+        resources: [workQueue.queueArn, pipeFailureQueue.queueArn],
+      }),
+    );
+    pipeRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ["kms:Decrypt", "kms:GenerateDataKey"],
+        resources: [messagingKey.keyArn],
+      }),
+    );
+
+    const workPipe = new pipes.CfnPipe(this, "OpenClawWorkPipe", {
+      name: `${resourcePrefix(env)}openclaw-work`,
+      desiredState: "RUNNING",
+      roleArn: pipeRole.roleArn,
+      source: messagingTable.tableStreamArn!,
+      sourceParameters: {
+        filterCriteria: {
+          filters: [
+            {
+              pattern: JSON.stringify({
+                eventName: ["INSERT"],
+                dynamodb: {
+                  NewImage: { sk: { S: [{ prefix: "WORK#" }] } },
+                },
+              }),
+            },
+          ],
+        },
+        dynamoDbStreamParameters: {
+          batchSize: 10,
+          maximumBatchingWindowInSeconds: 0,
+          startingPosition: "TRIM_HORIZON",
+          onPartialBatchItemFailure: "AUTOMATIC_BISECT",
+          maximumRecordAgeInSeconds: 23 * 60 * 60,
+          maximumRetryAttempts: 185,
+          deadLetterConfig: { arn: pipeFailureQueue.queueArn },
+        },
+      },
+      target: workQueue.queueArn,
+      targetParameters: {
+        inputTemplate: "<$.dynamodb.NewImage.payload.M>",
+        sqsQueueParameters: {
+          messageGroupId: "$.dynamodb.NewImage.messageGroupId.S",
+          messageDeduplicationId:
+            "$.dynamodb.NewImage.messageDeduplicationId.S",
+        },
+      },
+    });
+    // CloudFormation can otherwise create the Pipe after the role but before its
+    // separately synthesized inline policy, and Pipes rejects the unready role.
+    workPipe.addResourceDependency(
+      pipeRole.node.findChild("DefaultPolicy").node.defaultChild as iam.CfnPolicy,
+    );
+
+    // Pipes has execution metrics but no state metric. Poll DescribePipe and emit
+    // the one missing signal through EMF; missing monitor data also fails closed.
+    const pipeStateMonitor = new lambda.Function(this, "OpenClawWorkPipeStateMonitor", {
+      functionName: `${resourcePrefix(env)}openclaw-work-pipe-state`,
+      runtime: lambda.Runtime.PYTHON_3_13,
+      handler: "index.handler",
+      code: lambda.Code.fromInline(`
+import boto3
+import json
+import os
+import time
+
+
+def handler(event, context):
+    del event, context
+    pipe = boto3.client("pipes").describe_pipe(Name=os.environ["PIPE_NAME"])
+    not_running = int(
+        pipe.get("CurrentState") != "RUNNING"
+        or pipe.get("DesiredState") != "RUNNING"
+    )
+    print(json.dumps({
+        "_aws": {
+            "Timestamp": int(time.time() * 1000),
+            "CloudWatchMetrics": [{
+                "Namespace": "LightbulbAI/Messaging",
+                "Dimensions": [["PipeName"]],
+                "Metrics": [{"Name": "PipeNotRunning", "Unit": "Count"}],
+            }],
+        },
+        "PipeName": os.environ["PIPE_NAME"],
+        "PipeNotRunning": not_running,
+    }))
+`),
+      timeout: cdk.Duration.seconds(10),
+      environment: { PIPE_NAME: workPipe.name! },
+      logGroup: new logs.LogGroup(this, "OpenClawWorkPipeStateMonitorLogs", {
+        logGroupName: logGroupPath(env, "openclaw-work-pipe-state"),
+        retention: logs.RetentionDays.ONE_MONTH,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }),
+    });
+    pipeStateMonitor.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["pipes:DescribePipe"],
+        resources: [workPipe.attrArn],
+      }),
+    );
+    new events.Rule(this, "OpenClawWorkPipeStateSchedule", {
+      schedule: events.Schedule.rate(cdk.Duration.minutes(1)),
+      targets: [new eventTargets.LambdaFunction(pipeStateMonitor)],
+    });
+
+    const pageAction = new cloudwatchActions.SnsAction(
+      sns.Topic.fromTopicArn(
+        this,
+        "MessagingAlertsPage",
+        alertTopicArn(this.region, this.account, env, "page"),
+      ),
+    );
+    const pageAlarm = (
+      id: string,
+      props: cloudwatch.AlarmProps,
+    ): cloudwatch.Alarm => {
+      const alarm = new cloudwatch.Alarm(this, id, props);
+      alarm.addAlarmAction(pageAction);
+      return alarm;
+    };
+    pageAlarm("OpenClawWorkDlqVisibleAlarm", {
+      alarmName: `${resourcePrefix(env)}openclaw-work-dlq-visible`,
+      alarmDescription:
+        "PAGE: durable OpenClaw work exhausted queue retries and needs replay.",
+      metric: workDlq.metricApproximateNumberOfMessagesVisible({
+        period: cdk.Duration.minutes(1),
+        statistic: "Maximum",
+      }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    pageAlarm("OpenClawWorkOldestAgeAlarm", {
+      alarmName: `${resourcePrefix(env)}openclaw-work-oldest-age`,
+      alarmDescription:
+        "PAGE: durable OpenClaw work has waited longer than five minutes.",
+      metric: workQueue.metricApproximateAgeOfOldestMessage({
+        period: cdk.Duration.minutes(1),
+        statistic: "Maximum",
+      }),
+      threshold: 5 * 60,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    pageAlarm("OpenClawWorkPipeDlqVisibleAlarm", {
+      alarmName: `${resourcePrefix(env)}openclaw-work-pipe-dlq-visible`,
+      alarmDescription:
+        "PAGE: the messaging work Pipe exhausted stream retries and needs replay.",
+      metric: pipeFailureQueue.metricApproximateNumberOfMessagesVisible({
+        period: cdk.Duration.minutes(1),
+        statistic: "Maximum",
+      }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    pageAlarm("OpenClawWorkPipeFailuresAlarm", {
+      alarmName: `${resourcePrefix(env)}openclaw-work-pipe-failures`,
+      alarmDescription:
+        "PAGE: the direct messaging stream-to-work-queue Pipe is failing.",
+      metric: new cloudwatch.Metric({
+        namespace: "AWS/Pipes",
+        metricName: "ExecutionFailed",
+        dimensionsMap: { PipeName: `${resourcePrefix(env)}openclaw-work` },
+        statistic: "Sum",
+        period: cdk.Duration.minutes(1),
+      }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    pageAlarm("OpenClawWorkPipeStoppedAlarm", {
+      alarmName: `${resourcePrefix(env)}openclaw-work-pipe-stopped`,
+      alarmDescription:
+        "PAGE: the direct messaging stream-to-work-queue Pipe is not running.",
+      metric: new cloudwatch.Metric({
+        namespace: "LightbulbAI/Messaging",
+        metricName: "PipeNotRunning",
+        dimensionsMap: { PipeName: `${resourcePrefix(env)}openclaw-work` },
+        statistic: "Maximum",
+        period: cdk.Duration.minutes(5),
+      }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+    });
+    pageAlarm("MessagingProjectorErrorsAlarm", {
+      alarmName: `${resourcePrefix(env)}messaging-projector-errors`,
+      alarmDescription:
+        "PAGE: canonical messaging records are failing live projection.",
+      metric: projectorFn.metricErrors({
+        period: cdk.Duration.minutes(1),
+        statistic: "Sum",
+      }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    pageAlarm("MessagingProjectorFailuresStoredAlarm", {
+      alarmName: `${resourcePrefix(env)}messaging-projector-failures-stored`,
+      alarmDescription:
+        "PAGE: messaging stream records exhausted projector retries and were stored for replay.",
+      metric: new cloudwatch.Metric({
+        namespace: "AWS/Lambda",
+        metricName: "OnFailureDestinationDeliveredEventCount",
+        dimensionsMap: {
+          FunctionName: projectorFn.functionName,
+          EventSourceMappingUUID: projectorEventSource.eventSourceMappingId,
+        },
+        period: cdk.Duration.minutes(1),
+        statistic: "Sum",
+      }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    pageAlarm("MessagingProjectorDestinationFailuresAlarm", {
+      alarmName: `${resourcePrefix(env)}messaging-projector-s3-failures`,
+      alarmDescription:
+        "PAGE: failed messaging stream records could not reach the replay bucket.",
+      metric: projectorFn.metric("DestinationDeliveryFailures", {
+        period: cdk.Duration.minutes(1),
+        statistic: "Sum",
+      }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    pageAlarm("MessagingProjectorIteratorAgeAlarm", {
+      alarmName: `${resourcePrefix(env)}messaging-projector-iterator-age`,
+      alarmDescription:
+        "PAGE: live messaging projection is more than five minutes behind DynamoDB.",
+      metric: projectorFn.metric("IteratorAge", {
+        period: cdk.Duration.minutes(1),
+        statistic: "Maximum",
+      }),
+      threshold: 5 * 60 * 1000,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+
+    // =========================================================================
+    // Lambda Authorizer (machine credentials only for WebSocket $connect)
     // =========================================================================
 
     const authorizerFn = new lambda.Function(this, "WsAuthorizer", {
@@ -417,23 +1009,9 @@ export class ApiStack extends cdk.Stack {
       ),
       timeout: cdk.Duration.seconds(10),
       environment: {
-        CLERK_ISSUER: isProd
-          ? `https://clerk.${CLERK_DOMAIN}`
-          : "https://up-moth-55.clerk.accounts.dev",
-        CLERK_JWKS_URL: isProd
-          ? `https://clerk.${CLERK_DOMAIN}/.well-known/jwks.json`
-          : "https://up-moth-55.clerk.accounts.dev/.well-known/jwks.json",
-        // SEC-8 token-origin fence — same allowlist + mode as the backend
-        // task (service-stack.ts). azp is the origin that MINTED the token;
-        // native (mobile/desktop-node) tokens carry no azp and always pass.
-        // Ships in audit mode; flip to "enforce" once AzpMismatch is clean.
-        CLERK_AUTHORIZED_PARTIES: isProd
-          ? `https://${rootDomain},https://www.${rootDomain},https://admin.${rootDomain},https://company.${rootDomain}`
-          : `https://dev.${rootDomain},https://admin.dev.${rootDomain},https://dev.company.${rootDomain},http://localhost:3000`,
-        CLERK_AZP_MODE: "audit",
         // Owner row holding paired_devices[deviceId].publicKey for device-key
-        // WS-upgrade auth. Read via a non-VPC boto3 GetItem (public DDB endpoint,
-        // same shape as the Secrets Manager call the authorizer already makes).
+        // WS-upgrade auth. Clerk browser sessions are intentionally not an
+        // authorization provider for this machine-only API Gateway socket.
         CONTAINERS_TABLE: props.containersTableName,
       },
       logGroup: new logs.LogGroup(this, "WsAuthorizerLogs", {
@@ -447,10 +1025,9 @@ export class ApiStack extends cdk.Stack {
     authorizerFn.addToRolePolicy(
       new iam.PolicyStatement({
         sid: "ContainersTableRead",
-        actions: ["dynamodb:GetItem", "dynamodb:Query"],
+        actions: ["dynamodb:GetItem"],
         resources: [
           `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.containersTableName}`,
-          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.containersTableName}/index/*`,
         ],
       }),
     );
@@ -469,7 +1046,7 @@ export class ApiStack extends cdk.Stack {
     // `grantRead` only adds `secretsmanager:GetSecretValue` — for KMS-encrypted
     // secrets the caller also needs `kms:Decrypt` on the underlying CMK.
     // Without this, cold-start get_secret_value returns AccessDeniedException
-    // and the service-token branch silently falls through to Clerk-only.
+    // and the service-token machine path fails closed.
     authorizerFn.addToRolePolicy(
       new iam.PolicyStatement({
         sid: "KmsDecryptForServiceTokenSecret",
@@ -604,7 +1181,7 @@ export class ApiStack extends cdk.Stack {
 
     const wsDomain = isProd ? `ws.${rootDomain}` : `ws-${env}.${rootDomain}`;
 
-    const wsAuthorizer = new WebSocketLambdaAuthorizer("ClerkAuthorizer", authorizerFn, {
+    const wsAuthorizer = new WebSocketLambdaAuthorizer("MachineAuthorizer", authorizerFn, {
       identitySource: ["route.request.querystring.token"],
     });
 
@@ -780,6 +1357,48 @@ export class ApiStack extends cdk.Stack {
       value: connectionsTable.tableName,
       description: "DynamoDB connections table name",
       exportName: `lightbulb-${env}-connections-table`,
+    });
+
+    new cdk.CfnOutput(this, "MessagingTableOutput", {
+      value: this.messagingTableName,
+      description: "Canonical messaging DynamoDB table name",
+      exportName: `lightbulb-${env}-messaging-table`,
+    });
+
+    new cdk.CfnOutput(this, "OpenClawWorkQueueUrlOutput", {
+      value: this.openClawWorkQueueUrl,
+      description: "Durable OpenClaw work FIFO queue URL",
+      exportName: `lightbulb-${env}-openclaw-work-queue-url`,
+    });
+
+    new cdk.CfnOutput(this, "OpenClawWorkQueueArnOutput", {
+      value: this.openClawWorkQueueArn,
+      description: "Durable OpenClaw work FIFO queue ARN",
+      exportName: `lightbulb-${env}-openclaw-work-queue-arn`,
+    });
+
+    new cdk.CfnOutput(this, "AppSyncEventsHttpEndpointOutput", {
+      value: this.appsyncEventsHttpEndpoint,
+      description: "AppSync Events HTTP publish endpoint",
+      exportName: `lightbulb-${env}-appsync-events-http-endpoint`,
+    });
+
+    new cdk.CfnOutput(this, "AppSyncEventsRealtimeEndpointOutput", {
+      value: this.appsyncEventsRealtimeEndpoint,
+      description: "AppSync Events realtime subscription endpoint",
+      exportName: `lightbulb-${env}-appsync-events-realtime-endpoint`,
+    });
+
+    new cdk.CfnOutput(this, "AppSyncEventsApiIdOutput", {
+      value: eventApi.apiId,
+      description: "AppSync messaging Event API ID",
+      exportName: `lightbulb-${env}-appsync-events-api-id`,
+    });
+
+    new cdk.CfnOutput(this, "AppSyncEventsApiArnOutput", {
+      value: this.appsyncEventsApiArn,
+      description: "AppSync messaging Event API ARN",
+      exportName: `lightbulb-${env}-appsync-events-api-arn`,
     });
 
     new cdk.CfnOutput(this, "WsApiIdOutput", {

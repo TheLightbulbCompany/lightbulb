@@ -77,6 +77,7 @@ def test_org_owner_allows_as_member(mock_row):
         "userId": "usr_alice",
         "orgId": "org_x",
         "authKind": "device",
+        "deviceId": "dev1",
     }
 
 
@@ -107,11 +108,12 @@ def test_expired_denied(mock_row):
     assert authz._try_device_token(token) is None
 
 
-def test_unregistered_device_denied(mock_row):
+def test_revoked_device_is_denied_after_strong_read(mock_row):
     priv = Ed25519PrivateKey.generate()
-    mock_row({"paired_devices": {}})  # deviceId absent (never paired / revoked)
+    mock_row({"paired_devices": {}})  # deviceId absent after un-pairing
     token = _mint(priv, device_id="dev1", owner="o")
     assert authz._try_device_token(token) is None
+    authz._get_containers_table().get_item.assert_called_once_with(Key={"owner_id": "o"}, ConsistentRead=True)
 
 
 def test_missing_container_row_denied(mock_row):
@@ -153,7 +155,7 @@ def test_missing_iat_denied(mock_row):
 
 
 def test_non_eddsa_token_is_not_treated_as_device(mock_row):
-    """HS256/RS256 tokens must fall through to the service-token / Clerk paths."""
+    """HS256/RS256 tokens must not be mistaken for paired devices."""
     hs = jwt.encode({"sub": "u", "kind": "paperclip_service"}, "secret", algorithm="HS256")
     assert authz._try_device_token(hs) is None
 

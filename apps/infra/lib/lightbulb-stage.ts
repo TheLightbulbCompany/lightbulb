@@ -171,6 +171,7 @@ export class LightbulbStage extends cdk.Stage {
       albHttpListenerArn: network.albHttpListenerArnV2,
       albV2: network.albV2,
       albSecurityGroup: network.albSecurityGroup,
+      clerkIssuerSecretName: `lightbulb/${env}/clerk_issuer`,
       // Pass secret NAME (not ISecret) — same pattern as ServiceStack uses
       // for cross-stack secret refs to avoid KMS auto-grant cycles.
       paperclipServiceTokenKeySecretName:
@@ -229,6 +230,13 @@ export class LightbulbStage extends cdk.Stage {
       connectionsTableName: api.connectionsTableName,
       wsApiId: api.wsApiId,
       wsStage: api.wsStage,
+      messagingTableName: api.messagingTableName,
+      openClawWorkQueueUrl: api.openClawWorkQueueUrl,
+      openClawWorkQueueArn: api.openClawWorkQueueArn,
+      appsyncEventsHttpEndpoint: api.appsyncEventsHttpEndpoint,
+      appsyncEventsRealtimeEndpoint: api.appsyncEventsRealtimeEndpoint,
+      appsyncEventsApiArn: api.appsyncEventsApiArn,
+      appsyncEventsRegion: api.appsyncEventsRegion,
       // Agent-email base domain. Prod owns the apex; dev gets its own
       // subdomain so addresses can never collide and a dev message can never
       // be mistaken for a real one. Both resolve through the single

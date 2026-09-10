@@ -94,6 +94,7 @@ export function synthApiStack(
     alb: network.alb,
     albHttpListenerArn: network.albHttpListenerArn,
     albSecurityGroup: network.albSecurityGroup,
+    clerkIssuerSecretName: `lightbulb/${environment}/clerk_issuer`,
     // Pass secret name + KMS key ARN as plain strings — same cross-stack
     // pattern as lightbulb-stage.ts (avoids KMS auto-grant cycles).
     paperclipServiceTokenKeySecretName: `isol8/${environment}/paperclip_service_token_key`,

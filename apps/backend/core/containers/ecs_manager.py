@@ -2652,9 +2652,7 @@ class EcsManager:
                 if definition.get("name") == "openclaw"
             ]
             running_containers = [
-                running
-                for running in task.get("containers") or []
-                if running.get("name") == "openclaw"
+                running for running in task.get("containers") or [] if running.get("name") == "openclaw"
             ]
             if len(definitions) != 1 or len(running_containers) != 1:
                 return None

@@ -5,7 +5,7 @@ import { stripExternalContentMarkers } from "@/lib/externalContentMarkers";
 import { Copy, Check, Share2, ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useScrollToBottom } from "@/hooks/useScrollToBottom";
-import { ChatErrorCard, isTrialPaywallCode } from "@/components/chat/ChatErrorCard";
+import { ChatErrorCard } from "@/components/chat/ChatErrorCard";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import SyntaxHighlighter from "react-syntax-highlighter/dist/esm/prism-light";
@@ -625,14 +625,9 @@ function toolCallFromPair(block: ContentBlock, pairs: ToolBlockPair[]): ToolCall
 function MessageBlocks({
   message,
   onOpenFile,
-  interactive = true,
 }: {
   message: HistoryMessage;
   onOpenFile?: (path: string) => void;
-  /** Forwarded to ChatErrorCard — only the newest bubble may render the live
-   *  conversion paywall, so repeated capped turns do not stack purchase forms
-   *  each holding their own credit amount. */
-  interactive?: boolean;
 }) {
   // `content` may be a block array, a bare string, or absent with the body on
   // the top-level `text` field (older chat.history rows, cron run transcripts).
@@ -705,7 +700,6 @@ function MessageBlocks({
               key={`err:${i}`}
               message={text.slice("Error: ".length)}
               code={message.errorCode}
-              interactive={interactive}
             />
           );
         } else {
@@ -835,14 +829,9 @@ const ItemRenderer = React.memo(
   function ItemRenderer({
     item,
     onOpenFile,
-    interactive = true,
   }: {
     item: ChatRenderItem;
     onOpenFile?: (path: string) => void;
-    /** True only for the newest bubble of the newest assistant group — gates
-     *  ChatErrorCard's live conversion paywall so it cannot stack. Included in
-     *  the memo comparator below, or the flag would never propagate. */
-    interactive?: boolean;
   }) {
     if (item.kind === "divider") {
       return (
@@ -868,13 +857,12 @@ const ItemRenderer = React.memo(
       return <ThinkingBlock content={item.text} streaming />;
     }
     if (item.kind === "message") {
-      return <MessageBlocks message={item.message} onOpenFile={onOpenFile} interactive={interactive} />;
+      return <MessageBlocks message={item.message} onOpenFile={onOpenFile} />;
     }
     return null;
   },
   (prev, next) =>
     prev.onOpenFile === next.onOpenFile &&
-    prev.interactive === next.interactive &&
     itemEquals(prev.item, next.item),
 );
 
@@ -949,7 +937,6 @@ const BubbleGroup = React.memo(BubbleGroupImpl, (prev, next) =>
   prev.rewindDisabled === next.rewindDisabled &&
   prev.isStreaming === next.isStreaming &&
   prev.isLastAssistantGroup === next.isLastAssistantGroup &&
-  prev.paywallItemKey === next.paywallItemKey &&
   prev.onOpenFile === next.onOpenFile &&
   groupEquals(prev.group, next.group),
 );
@@ -1059,7 +1046,6 @@ function BubbleGroupImpl({
   agentName,
   isStreaming,
   isLastAssistantGroup,
-  paywallItemKey,
   onOpenFile,
   onRewind,
   rewindDisabled,
@@ -1070,10 +1056,6 @@ function BubbleGroupImpl({
   isLastAssistantGroup?: boolean;
   onRewind?: (entryId: string) => void;
   rewindDisabled?: boolean;
-  /** Key of the ONE transcript item allowed to render the live conversion
-   *  paywall — the newest trial-coded error card. See the computation at the
-   *  call site for why this is not simply the newest bubble. */
-  paywallItemKey?: string | null;
   onOpenFile?: (path: string) => void;
 }) {
   if (group.side === "btw") {
@@ -1113,13 +1095,7 @@ function BubbleGroupImpl({
   }
   // Assistant side
   //
-  // `w-full` when any item carries an errorCode: ChatErrorCard's conversion
-  // paywall wraps ProviderPicker, whose root is `@container` —
-  // `container-type: inline-size` zeroes the element's intrinsic width, and
-  // this column is shrink-to-fit (sized from intrinsic content), so without an
-  // explicit width the bubble collapses to the AgentHead's ~120px and the
-  // purchase form renders as a needle-thin strip that no window resize can
-  // widen. Error cards are full-width cards; plain bubbles keep hugging.
+  // Error cards are full-width cards; plain bubbles keep hugging.
   const hasErrorCard = group.items.some(
     (item) => item.kind === "message" && Boolean(item.message.errorCode),
   );
@@ -1147,17 +1123,6 @@ function BubbleGroupImpl({
               key={entry.item.key}
               item={entry.item}
               onOpenFile={onOpenFile}
-              // Exactly ONE item in the whole transcript may render the live
-              // paywall: the newest trial-coded error card (paywallItemKey,
-              // computed once at the top level). Not "the newest bubble" —
-              // a mid-run cap emits the reclassified trial error and then
-              // OpenClaw's raw rate-limited frame ~20ms later, so the newest
-              // bubble is reliably NOT the cap card and that predicate
-              // demoted the paywall to a settings link in exactly the
-              // scenario it exists for (observed live in prod). The
-              // one-key rule still prevents stacked pickers with divergent
-              // credit-amount state.
-              interactive={entry.item.key === paywallItemKey}
             />
             ),
           )}
@@ -1390,26 +1355,6 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
       }
     }
 
-    // The ONE item allowed to render the live conversion paywall: the newest
-    // trial-coded error card anywhere in the transcript. Searched backward so
-    // repeated capped turns bless only the latest (no stacked pickers with
-    // divergent credit-amount state), and searched by CODE rather than
-    // position because the cap card is reliably NOT the last bubble — a
-    // mid-run cap emits the reclassified trial error and then OpenClaw's raw
-    // rate-limited frame ~20ms behind it (prod logs: 17:58:44.187 vs .208).
-    let paywallItemKey: string | null = null;
-    outer: for (let i = renderGroups.length - 1; i >= 0; i--) {
-      if (renderGroups[i].side !== "assistant") continue;
-      const items = renderGroups[i].items;
-      for (let j = items.length - 1; j >= 0; j--) {
-        const it = items[j];
-        if (it.kind === "message" && isTrialPaywallCode(it.message.errorCode)) {
-          paywallItemKey = it.key;
-          break outer;
-        }
-      }
-    }
-
     return (
       <div
         ref={containerRef}
@@ -1444,7 +1389,6 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
               agentName={agentName}
               isStreaming={isStreaming}
               isLastAssistantGroup={idx === lastAssistantGroupIndex}
-              paywallItemKey={paywallItemKey}
               onOpenFile={onOpenFile}
               onRewind={onRewind}
               rewindDisabled={rewindDisabled}

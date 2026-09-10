@@ -12,7 +12,6 @@ import { useAuth, useUser, UserButton, useOrganization, useClerk } from "@clerk/
 import { useApi, ApiError } from "@/lib/api";
 import { useBilling } from "@/hooks/useBilling";
 import { useCheckoutReturn } from "@/components/chat/shell/useCheckoutReturn";
-import { ProviderPicker } from "@/components/chat/ProvisioningStepper";
 import { MyChannelsSection } from "@/components/settings/MyChannelsSection";
 import { WebhooksPanel } from "@/components/settings/WebhooksPanel";
 import { DesktopFileAccess } from "@/components/desktop/DesktopFileAccess";
@@ -516,37 +515,12 @@ function BillingPanel() {
               {portalLoading && <span className="settings-spinner" style={{ width: 14, height: 14, borderWidth: 2, marginRight: 6, display: "inline-block", verticalAlign: "middle" }} />}
               Manage Payment
             </button>
-          ) : isTrialLocal ? (
-            // No CTA in the header — the picker renders full-width below the
-            // card. No Manage Payment either: a trial_local row has no Stripe
-            // customer, so the portal would fail.
-            null
           ) : (
             <Link href="/chat" className="settings-btn-save">
               Sign up
             </Link>
           )}
         </div>
-        {/* The SAME picker the chat paywall renders (ChatErrorCard's trial
-            branch) — one component, so this surface cannot drift back into
-            showing a different set of choices or a different price. It used
-            to hand-roll three pill buttons over PROVIDER_SWITCH_CARDS, the
-            array documented as the POST-purchase variant that deliberately
-            carries no pricing ("the sales framing would be noise" for an
-            owner who already subscribed). Rendered pre-purchase, that
-            stripped the prices off the one screen whose entire job is to
-            show them — while keeping provider inference costs separate from
-            the single workspace subscription. */}
-        {isTrialLocal && (
-          <div style={{ marginTop: 20 }}>
-            <ProviderPicker
-              embedded
-              isOrg={false}
-              source="settings_billing"
-              heading={isTrialExpired ? "Your agents are paused" : "Subscribe to keep your agents running"}
-            />
-          </div>
-        )}
         {/* Ultra upgrade hangs off the paid card for a subscribed owner only —
             an unsubscribed / Sign-up / free-tier owner must pick the base plan
             first. */}

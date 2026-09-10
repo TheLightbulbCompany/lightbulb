@@ -104,8 +104,8 @@ vi.mock("@/lib/api", () => ({
   },
 }));
 
-// Configurable so the trial_local (free-tier) test can flip isSubscribed /
-// account shape without a persisted provider_choice.
+// Configurable so workspace trial_local tests can flip isSubscribed / account
+// shape without a persisted provider_choice.
 let billingMockIsSubscribed = true;
 let billingMockAccount: {
   provider_choice: string | null;
@@ -177,6 +177,7 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     billingMockStartCheckout.mockClear();
     clerkMockUser = null;
     clerkMockIsLoaded = true;
+    clerkMockOrganization = null;
   });
 
   afterEach(() => {
@@ -374,8 +375,13 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     expect(refresh).toHaveBeenCalled();
   });
 
-  it("renders TeamBillingCard (not the generic blocked card) for team_billing_required", async () => {
-    billingMockAccount = { provider_choice: null, workspace_price_usd: 50 };
+  it("renders TeamBillingCard for an org-admin trial_local conversion", async () => {
+    clerkMockOrganization = { id: "org_1", name: "Acme" };
+    billingMockAccount = {
+      provider_choice: null,
+      subscription_status: "trial_local",
+      workspace_price_usd: 50,
+    };
     useProvMock.mockReturnValue({
       phase: "blocked",
       container: null,
@@ -403,6 +409,9 @@ describe("ProvisioningStepper blocked-state rendering", () => {
 
     // The workspace card, not the generic gate copy.
     expect(screen.getByText(/unlimited members/i)).toBeInTheDocument();
+    expect(screen.getByText(/separate ChatGPT subscription/i)).toBeInTheDocument();
+    expect(screen.getByText(/provider bills inference separately/i)).toBeInTheDocument();
+    expect(screen.getByText(/managed Claude inference uses prepaid workspace credits/i)).toBeInTheDocument();
     expect(screen.queryByText(/Subscribe to start your team's containers/)).not.toBeInTheDocument();
 
     await act(async () => {
@@ -419,61 +428,6 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     // Same centerpiece footer the generic blocked card gets.
     expect(screen.getByRole("button", { name: /Check again/ })).toBeInTheDocument();
   });
-
-  it.each([["trial_daily_cap"], ["trial_expired"]])(
-    "renders the provider picker in place (not a link to settings) for %s",
-    (code) => {
-      // A capped/expired free-tier owner converts RIGHT HERE. The generic
-      // blocked card's action is a link out to /settings?panel=billing, which
-      // landed on a lone Subscribe button posting a HARDCODED
-      // `provider_choice: "bedrock_claude"` — so the owner never chose a
-      // provider, and (because no `?provider=` came back from Checkout) never
-      // reached CreditsStep either. They ended up on Bedrock-managed inference
-      // having chosen nothing and bought nothing.
-      useProvMock.mockReturnValue({
-        phase: "blocked",
-        container: null,
-        blocked: {
-          code,
-          title: "Daily free limit reached",
-          message: "You've used today's free allowance — resets tomorrow.",
-          action: {
-            kind: "link",
-            label: "Upgrade",
-            href: "/settings?panel=billing",
-            admin_only: false,
-          },
-          owner_role: "admin",
-        },
-        refreshInterval: 5000,
-        refresh: vi.fn(),
-      });
-
-      render(
-        <ProvisioningStepper>
-          <div>children</div>
-        </ProvisioningStepper>,
-      );
-
-      // All three paths offered — including buying Claude credits, which is
-      // what the bedrock_claude card threads through to CreditsStep.
-      expect(screen.getByText("Powered by Claude")).toBeInTheDocument();
-      expect(screen.getByText("Sign in with ChatGPT")).toBeInTheDocument();
-      expect(screen.getByText("Bring your own API key")).toBeInTheDocument();
-
-      // The gate's message is the heading, rendered EXACTLY ONCE. It used to
-      // also be concatenated into the subheading under a heading derived from
-      // the same text, so the paywall showed the sentence twice — at the exact
-      // moment someone is deciding to pay.
-      expect(screen.getAllByText(/You've used today's free allowance/)).toHaveLength(1);
-      expect(screen.getByText(/Choose your inference provider after checkout/)).toBeInTheDocument();
-
-      // And emphatically NOT the send-them-to-settings card.
-      expect(
-        screen.queryByRole("link", { name: /Upgrade/ }),
-      ).not.toBeInTheDocument();
-    },
-  );
 
   it("hides the team CTA for a member when the gate says the action is admin_only", () => {
     billingMockAccount = { provider_choice: null, workspace_price_usd: 50 };
@@ -622,15 +576,14 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     expect(provisionCalls).toHaveLength(0);
   });
 
-  it("skips ProviderPicker for a trial_local (free-tier) account and proceeds into provisioning", () => {
-    // trial_local is the free-tier subscription_status: the backend already
-    // treats it as an active subscription (isSubscribed=true), but these
-    // users never set provider_choice. The naive
+  it("skips ProviderPicker for a trial_local workspace and proceeds into provisioning", () => {
+    // A trial_local workspace has no provider choice. The naive
     // `isSubscribed && provider_choice` ownerOnboarded check would wrongly
     // fall through to the ProviderPicker mid-provision — the trap this test
     // guards against.
     billingMockIsSubscribed = true;
     billingMockAccount = { provider_choice: null, subscription_status: "trial_local" };
+    clerkMockOrganization = { id: "org_1", name: "Acme" };
 
     useProvMock.mockReturnValue({
       phase: "normal",
@@ -1610,11 +1563,10 @@ describe("ProvisioningStepper per-container onboarding gate", () => {
     expect(screen.queryByText("children")).not.toBeInTheDocument();
   });
 
-  it("shows the funnel for a trial_local owner with a ready, not-onboarded container (regression: not gated on isTrialLocal)", () => {
-    // The free-tier owner must still reach the funnel — the fix keys the funnel
-    // on container.onboarded for ALL owner types, so trial_local is neither a
-    // requirement (org/paid must reach it) nor a special case here.
+  it("shows the funnel for a trial_local workspace with a ready, not-onboarded container", () => {
+    // The funnel keys on container.onboarded for every workspace plan.
     clerkMockUser = { id: "user_1", unsafeMetadata: {} };
+    clerkMockOrganization = { id: "org_1", name: "Acme" };
     billingMockIsSubscribed = true;
     billingMockAccount = { provider_choice: null, subscription_status: "trial_local" };
     renderWith({ container_status: "running", runtime_phase: "ready", onboarded: false });

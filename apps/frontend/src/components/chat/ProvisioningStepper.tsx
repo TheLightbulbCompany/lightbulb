@@ -220,12 +220,9 @@ export function ProvisioningStepper({
     refresh: refreshBilling,
     startCheckout,
   } = useBilling();
-  // Free-tier discriminator: trial_local accounts are NOT is_subscribed
-  // (is_subscribed is the PAID predicate; the free tier grants platform use
-  // without a subscription) and never set provider_choice — there is no
-  // provider to pick for the free tier. Used below to keep these users off
-  // the payment short-circuit, the poll gate, and — the actually-broken
-  // case — the ProviderPicker fallback.
+  // A workspace trial_local account is not paid and has no provider choice.
+  // Keep it out of the pre-entitlement picker while its workspace is already
+  // provisioning; provider setup happens only after workspace billing.
   const isTrialLocal = account?.subscription_status === "trial_local";
   // Set when we first enter the container/gateway phase — _not_ at component
   // mount. Time spent on the pre-provision steps (provider choice, billing
@@ -453,8 +450,7 @@ export function ProvisioningStepper({
     // Pre-signup user lands in payment phase to pick a provider path.
     // Recovery flow skips billing — the user already has a subscription. A
     // provisioning container (200 from /container/status) means the backend
-    // already gated this user in — a fresh personal signup gets an
-    // auto-created trial_local there — so don't force payment while the
+    // already gated this workspace in — so don't force payment while the
     // container is coming up, even if billing hasn't caught up to the trial.
     if (trigger !== "recovery" && !isSubscribed && !isTrialLocal && !container) return "payment";
 
@@ -1014,18 +1010,7 @@ export function ProvisioningStepper({
             <ByoKeyStep onComplete={handleProviderComplete} />
           )}
           {providerChoice === "bedrock_claude" && (
-            // `?credits=bundled` on the Checkout success_url means the balance
-            // was already paid for in that same session and the grant is in
-            // flight through the webhook. CreditsStep otherwise only skips once
-            // the balance READS spendable, which it does not at the instant the
-            // browser gets back from Stripe — so the owner who paid precisely
-            // to avoid a second step was shown a live second purchase form, and
-            // could pay twice. The awaiting state keeps the same balance poll,
-            // so it advances by itself the moment the credits land.
-            <CreditsStep
-              onComplete={handleProviderComplete}
-              awaitingBundledGrant={searchParams.get("credits") === "bundled"}
-            />
+            <CreditsStep onComplete={handleProviderComplete} />
           )}
         </div>
       </div>
@@ -1133,42 +1118,6 @@ export function ProvisioningStepper({
           </div>
         </div>
       </div>
-    );
-  }
-
-  // Free-tier conversion: render the workspace plan and provider comparison in
-  // place. Checkout never chooses a provider or bundles credits; those happen
-  // only after entitlement.
-  //
-  // `!isOrg` is checked explicitly rather than left to the backend. These two
-  // codes can only come from a `trial_local` row, which is personal-only, so
-  // an org cannot reach here today — but that is an invariant of a different
-  // layer. The workspace checkout is available only to an org admin. If the
-  // free tier ever opens to orgs, the silent failure would be an org admin
-  // buying a personal flat subscription. Enforce it where the consequence is.
-  if (
-    gatePhase === "blocked" &&
-    blocked &&
-    providerChoice === null &&
-    !isOrg &&
-    (blocked.code === "trial_daily_cap" || blocked.code === "trial_expired")
-  ) {
-    return (
-      // `isOrg={false}` literally, not the narrowed `isOrg`: the guard above
-      // has already excluded orgs, and TS narrows `organization` to `never`
-      // here — so there is no org name to pass and no org copy to render.
-      <ProviderPicker
-        isOrg={false}
-        source="trial_conversion"
-        // The gate's own `message` is the heading, not a prefix to the
-        // subheading. Concatenating it under a heading derived from the same
-        // text rendered the sentence twice ("You've used today's free
-        // allowance." above "You've used today's free allowance — resets
-        // tomorrow…") — a duplicated-copy bug on the paywall, at the exact
-        // moment someone is deciding to pay. Backend owns the what-happened
-        // half (it knows cap vs expiry); this owns the what-now half.
-        heading={blocked.message}
-      />
     );
   }
 
@@ -1351,18 +1300,12 @@ export function ProvisioningStepper({
   //      `account.provider_choice` is set but `isSubscribed` is false.
   //      They MUST see the picker again to restart checkout.
   //
-  //   3. trial_local (free-tier) owner: is_subscribed is FALSE (it's the
-  //      PAID predicate — the free tier is usable but not subscribed) and
-  //      provider_choice is never set — there's no provider to pick on the
-  //      free tier. The `isTrialLocal` guard keeps these users off the
-  //      picker so they flow straight into container/gateway/ready instead
-  //      of being shown a payment step they don't need.
+  //   3. A trial_local workspace: it is not paid and has no provider choice.
+  //      The `isTrialLocal` guard keeps an already-provisioning workspace off
+  //      the picker while the billing state catches up.
   //   4. A provisioning container (200 from /container/status) means the
-  //      backend already gated this user in. For a fresh personal signup the
-  //      trial_local row is created there, and /billing/account may not have
-  //      caught up yet — so a live container bypasses the picker too, closing
-  //      the cross-fetch race where a real trial user briefly reads as
-  //      non-trial.
+  //      backend already gated this workspace in. /billing/account may not
+  //      have caught up yet, so a live container bypasses the picker too.
   const ownerOnboarded = isSubscribed && Boolean(account?.provider_choice);
   if (!ownerOnboarded && !isTrialLocal && !container) {
     return <ProviderPicker isOrg={isOrg} orgName={organization?.name} />;

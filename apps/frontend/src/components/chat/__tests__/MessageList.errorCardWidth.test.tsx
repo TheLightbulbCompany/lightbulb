@@ -1,12 +1,8 @@
 /**
  * Error bubbles must fill the row instead of shrink-to-fit.
  *
- * ChatErrorCard's inline conversion paywall wraps ProviderPicker, whose root
- * is Tailwind `@container` — `container-type: inline-size` zeroes the
- * element's intrinsic width. The assistant bubble column is shrink-to-fit
- * (sized from intrinsic content), so without an explicit width the bubble
- * collapsed to the AgentHead's ~120px and the purchase form rendered as a
- * needle-thin vertical strip that no window resize could widen.
+ * Error cards are wider than ordinary assistant bubbles so their recovery
+ * copy and action remain readable in the transcript.
  *
  * jsdom computes no layout, so the guard is the class on the wrapper.
  */

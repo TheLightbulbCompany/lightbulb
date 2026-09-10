@@ -246,17 +246,15 @@ describe("BillingPanel — workspace billing", () => {
   });
 });
 
-describe("BillingPanel — personal free tier (trial_local)", () => {
+describe("BillingPanel — org trial_local conversion", () => {
   beforeEach(() => {
     nav.panel = "billing";
-    clerk.membership = null; // personal context
+    clerk.membership = { role: "org:admin" };
     billing.isLoading = false;
     billing.startCheckout = vi.fn().mockResolvedValue(undefined);
   });
 
-  it("trial_local renders the Free tier card with a Subscribe CTA and no Manage Payment", async () => {
-    // is_subscribed is the PAID predicate — false for the no-card free
-    // tier even though the platform is usable.
+  it("shows the single workspace conversion card and separate inference costs", () => {
     billing.isSubscribed = false;
     billing.account = {
       is_subscribed: false,
@@ -272,107 +270,11 @@ describe("BillingPanel — personal free tier (trial_local)", () => {
 
     render(<SettingsPage />);
 
-    // Free-tier framing: mapped title + chip, never the raw enum, and
-    // never the paid "Active subscription" copy.
-    expect(screen.getByText("Lightbulb — Free tier")).toBeInTheDocument();
-    expect(screen.getByText("Free tier")).toBeInTheDocument();
-    expect(screen.getByText(/\$3\/day of included usage/)).toBeInTheDocument();
-    expect(screen.queryByText(/trial_local/i)).not.toBeInTheDocument();
-    expect(screen.queryByText("Active subscription")).not.toBeInTheDocument();
-
-    // No portal button — a trial_local row has no Stripe customer. A personal
-    // context cannot start the workspace-only checkout; it must select a
-    // workspace first.
-    expect(screen.queryByRole("button", { name: /manage payment/i })).not.toBeInTheDocument();
-    expect(screen.getByText(/Create or select a workspace to subscribe/i)).toBeInTheDocument();
-    expect(billing.startCheckout).not.toHaveBeenCalled();
-  });
-
-  it("non-expired trial_local with a future trial_end keeps the unchanged Free-tier copy", () => {
-    // A trial_local whose 3-day window is still open (trial_end in the
-    // future) must render exactly the same Free-tier framing as before —
-    // the expired-state swap must not trip early.
-    billing.isSubscribed = false;
-    billing.account = {
-      is_subscribed: false,
-      current_spend: 0.5,
-      lifetime_spend: 0.5,
-      subscription_status: "trial_local",
-      // ~1 day in the future (epoch seconds, matching the backend stamp).
-      trial_end: Math.floor(Date.now() / 1000) + 86_400,
-      provider_choice: null,
-      byo_provider: null,
-      workspace_price_usd: 50,
-      ultra_price_usd: 150,
-    };
-
-    render(<SettingsPage />);
-
-    expect(screen.getByText("Lightbulb — Free tier")).toBeInTheDocument();
-    expect(screen.getByText("Free tier")).toBeInTheDocument();
-    expect(screen.getByText(/\$3\/day of included usage/)).toBeInTheDocument();
-    // The expired framing must NOT appear while the window is open.
-    expect(screen.queryByText(/free tier ended/i)).not.toBeInTheDocument();
-    expect(screen.getByText(/Create or select a workspace to subscribe/i)).toBeInTheDocument();
-  });
-
-  it("EXPIRED trial_local swaps the $3/day promise for a paused workspace-required state", () => {
-    // trial_end is the OVERALL free-tier window expiry (created + 3 days).
-    // Once it's in the past, the backend blocks usage outright WITHOUT
-    // flipping subscription_status off trial_local — so the card must stop
-    // promising "$3/day of included usage" and show the paused state, while
-    // still offering Subscribe as the path forward.
-    billing.isSubscribed = false;
-    billing.account = {
-      is_subscribed: false,
-      current_spend: 3,
-      lifetime_spend: 3,
-      subscription_status: "trial_local",
-      // ~1 day in the past (epoch seconds).
-      trial_end: Math.floor(Date.now() / 1000) - 86_400,
-      provider_choice: null,
-      byo_provider: null,
-      workspace_price_usd: 50,
-      ultra_price_usd: 150,
-    };
-
-    render(<SettingsPage />);
-
-    // Expired framing: chip + description reflect that the free tier ended
-    // and usage is paused. The chip is the exact "Free tier ended" string.
-    expect(screen.getByText("Free tier ended")).toBeInTheDocument();
-    expect(screen.getByText(/free tier ended.*agents are paused/i)).toBeInTheDocument();
-
-    // The misleading "$3/day of included usage" promise is gone.
-    expect(screen.queryByText(/\$3\/day of included usage/)).not.toBeInTheDocument();
-    // Still not the paid "Active subscription" copy, and the raw enum never renders.
-    expect(screen.queryByText("Active subscription")).not.toBeInTheDocument();
-    expect(screen.queryByText(/trial_local/i)).not.toBeInTheDocument();
-
-    // A personal context cannot start workspace checkout (and has no portal).
-    expect(screen.queryByRole("button", { name: /manage payment/i })).not.toBeInTheDocument();
-    expect(screen.getByText(/Create or select a workspace to subscribe/i)).toBeInTheDocument();
-  });
-
-  it("active personal subscription keeps the unchanged paid card", () => {
-    billing.isSubscribed = true;
-    billing.account = {
-      is_subscribed: true,
-      current_spend: 12.5,
-      lifetime_spend: 40,
-      subscription_status: "active",
-      trial_end: null,
-      provider_choice: "bedrock_claude",
-      byo_provider: null,
-      workspace_price_usd: 50,
-      ultra_price_usd: 150,
-    };
-
-    render(<SettingsPage />);
-
-    expect(screen.getByText("Lightbulb — $50 / month")).toBeInTheDocument();
-    expect(screen.getByText("Active subscription")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /manage payment/i })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /subscribe — \$50\/mo/i })).not.toBeInTheDocument();
+    expect(screen.getByTestId("team-billing-card")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /subscribe workspace/i })).toBeInTheDocument();
+    expect(screen.getByText(/separate ChatGPT subscription/i)).toBeInTheDocument();
+    expect(screen.getByText(/provider bills inference separately/i)).toBeInTheDocument();
+    expect(screen.getByText(/managed Claude inference uses prepaid workspace credits/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Create or select a workspace/i)).not.toBeInTheDocument();
   });
 });

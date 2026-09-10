@@ -42,31 +42,23 @@ export function useCheckoutReturn(): { showSubscriptionSuccess: boolean } {
     return () => clearTimeout(dismissTimer);
   }, [showSubscriptionSuccess, refreshBilling, searchParams]);
 
-  // Post-credit-checkout return. Stripe sends users back with
-  // ?credits=success (or =cancel) when they finish the credit top-up
-  // flow. We just strip the param — the credit balance refresh happens
-  // automatically via useCredits' refreshInterval/onFocus, and the
-  // ProvisioningStepper re-evaluates needsProviderStep on URL change so
-  // the wizard advances out of CreditsStep on success.
-  // Match the RETURN markers by value, not merely "the param exists".
-  //
-  // `?credits=bundled` is a different kind of thing: not a marker that a
-  // credit Checkout just finished, but a live instruction to CreditsStep —
-  // "this balance was already paid for in the subscription Checkout, show the
-  // waiting state instead of a purchase form" — that must survive for as long
-  // as that step is mounted. Deleting on `!== null` stripped it on the first
-  // render, so `awaitingBundledGrant` was never true and the owner who had
-  // just paid $150 was shown a live second purchase form anyway. Verified on
-  // dev: the browser landed on /chat?provider=bedrock_claude with both
-  // `checkout` and `credits` already gone.
+  // Post-credit-checkout return. Stripe sends users back with a `credits`
+  // marker when an explicit top-up finishes. It is always transient: credits
+  // are refreshed by useCredits, and subscriptions never bundle a credit
+  // grant into this URL contract.
   const creditsParam = searchParams.get("credits");
-  const cameFromCreditsCheckout = creditsParam === "success" || creditsParam === "cancel";
   useEffect(() => {
-    if (!cameFromCreditsCheckout) return;
+    if (creditsParam === null) return;
     const params = new URLSearchParams(searchParams.toString());
     params.delete("credits");
+    // Both cleanup effects see the same immutable searchParams snapshot. If a
+    // stale combined URL contains checkout + credits, this effect must remove
+    // the checkout markers too rather than restoring one after the checkout
+    // effect already removed it.
+    params.delete("checkout");
+    params.delete("subscription");
     replaceSearchParams(params);
-  }, [cameFromCreditsCheckout, searchParams]);
+  }, [creditsParam, searchParams]);
 
   // Race against Stripe webhook delivery: the user returns from Checkout
   // before customer.subscription.created lands at our webhook endpoint

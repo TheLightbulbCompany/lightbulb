@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
+import { PROVIDER_CARDS } from "@/lib/providerCards";
 
 export interface TeamBillingCardProps {
   workspacePriceUsd?: number;
@@ -89,6 +90,12 @@ export function TeamBillingCard({
           </>
         )}
       </p>
+      <div className="mt-4 space-y-2 rounded-lg border border-[var(--edge)] bg-[var(--cream)] px-3.5 py-3 text-ui leading-snug text-[var(--midnight-muted)]">
+        <p className="font-semibold text-[var(--midnight)]">Inference costs are separate</p>
+        {PROVIDER_CARDS.map((card) => (
+          <p key={card.id}>{card.subtitle}</p>
+        ))}
+      </div>
 
       {error && (
         <div

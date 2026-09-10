@@ -17,6 +17,7 @@ class TestResolveOwnerId:
             resolve_owner_id(auth)
         assert exc_info.value.status_code == 409
         assert exc_info.value.detail["code"] == "workspace_required"
+        assert exc_info.value.detail["message"] == "Choose or create a workspace to continue."
 
     def test_org_context_returns_org_id(self):
         auth = AuthContext(user_id="user_123", org_id="org_456", org_role="org:admin")

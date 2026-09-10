@@ -67,8 +67,11 @@ export const lightbulbChannelPlugin = createChatChannelPlugin({
             resolveOutboundSessionRoute: ({ cfg, agentId, accountId, target }) => {
                 const roomId = normalizeTarget(target);
                 const account = resolveAccount(cfg, accountId);
-                if (!roomId || !account.configured || !account.enabled || agentId !== account.accountId)
+                if (!roomId || !account.configured || !account.enabled)
                     return null;
+                if (agentId !== account.accountId) {
+                    throw new Error("lightbulb: outbound agent does not match the selected account");
+                }
                 return buildChannelOutboundSessionRoute({
                     cfg,
                     agentId,

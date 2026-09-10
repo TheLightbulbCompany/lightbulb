@@ -15,6 +15,7 @@ import {
   MAX_PARTICIPANTS,
   MAX_TEXT_BYTES,
   ROUTE_PREFIX,
+  UNKNOWN_SEND_RECONCILIATION_TIMEOUT_MS,
   buildOutboundBody,
   createInboundHandler,
   createOutbound,
@@ -335,7 +336,7 @@ describe("routing and outbound adapter", () => {
     ).toBeUndefined();
   });
 
-  it("resolves inbound and outbound to the same exact per-agent room session", async () => {
+  it("fails closed when agent A selects sibling account B while preserving same-account routing", async () => {
     const route = await lightbulbChannelPlugin.messaging?.resolveOutboundSessionRoute?.({
       cfg: config(),
       agentId: FRIDAY,
@@ -350,14 +351,14 @@ describe("routing and outbound adapter", () => {
       chatType: "channel",
     });
     expect(sessionKeyFor(FRIDAY, ROOM)).toBe(route?.sessionKey);
-    expect(
-      await lightbulbChannelPlugin.messaging?.resolveOutboundSessionRoute?.({
+    expect(() =>
+      lightbulbChannelPlugin.messaging?.resolveOutboundSessionRoute?.({
         cfg: config(),
         agentId: GAUGE,
         accountId: FRIDAY,
         target: ROOM,
       }),
-    ).toBeNull();
+    ).toThrow("lightbulb: outbound agent does not match the selected account");
   });
 
   it("prioritizes queue/part ids and otherwise uses the prepared id", () => {
@@ -490,6 +491,30 @@ describe("routing and outbound adapter", () => {
     expect(fetch.mock.calls[0]?.[0]).toContain("/receipts/queue-1%3A0");
     if (expected === "sent") {
       expect(result).toMatchObject({ messageId: "m1", receipt: { sentAt: Date.parse(CREATED_AT) } });
+    }
+  });
+
+  it("bounds receipt body reads and maps aborts to unresolved", async () => {
+    const controller = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(controller.signal);
+    const bodyRead = vi.fn(
+      () =>
+        new Promise<never>((_resolve, reject) => {
+          controller.signal.addEventListener("abort", () => reject(controller.signal.reason), { once: true });
+        }),
+    );
+    const fetch = vi.fn(async () => ({ status: 200, json: bodyRead }) as Response);
+    try {
+      const reconciliation = createOutbound({ fetch, env: () => ENV }).reconcileUnknownSend(unknownContext());
+      await vi.waitFor(() => expect(bodyRead).toHaveBeenCalledOnce());
+      expect(timeout).toHaveBeenCalledWith(UNKNOWN_SEND_RECONCILIATION_TIMEOUT_MS);
+      expect(fetch).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ signal: controller.signal }));
+
+      controller.abort();
+
+      await expect(reconciliation).resolves.toEqual({ status: "unresolved", retryable: true });
+    } finally {
+      timeout.mockRestore();
     }
   });
 

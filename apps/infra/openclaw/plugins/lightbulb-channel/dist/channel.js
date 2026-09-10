@@ -3,6 +3,7 @@ export const PLUGIN_ID = "lightbulb";
 export const ROUTE_PREFIX = "/plugins/lightbulb-channel/inbound/";
 export const MAX_BODY_BYTES = 1_048_576;
 export const BODY_TIMEOUT_MS = 30_000;
+export const UNKNOWN_SEND_RECONCILIATION_TIMEOUT_MS = 10_000;
 export const MAX_TEXT_BYTES = 100_000;
 export const MAX_EVENT_ID_BYTES = 256;
 export const MAX_HISTORY = 50;
@@ -177,7 +178,7 @@ export function createOutbound(deps) {
             }
             try {
                 const resolved = resolveEnv(deps.env());
-                const res = await request(resolved, receiptPath(resolved.ownerId, eventId), { method: "GET" });
+                const res = await request(resolved, receiptPath(resolved.ownerId, eventId), { method: "GET" }, AbortSignal.timeout(UNKNOWN_SEND_RECONCILIATION_TIMEOUT_MS));
                 if (res.status === 404)
                     return { status: "not_sent" };
                 if (res.status !== 200)

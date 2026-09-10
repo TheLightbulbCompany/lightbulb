@@ -150,8 +150,23 @@ async def test_disconnect_broadcasts_to_member(
     mock_pool,
     mock_upstream,
     mock_config_patcher,
+    monkeypatch,
 ):
-    """Disconnect broadcasts node_status to the specific user, not the whole org."""
+    """Disconnect publishes a node-health invalidation to the specific user
+    (not the whole org) via the live-events publisher — the direct
+    management-API broadcast_to_member fanout was replaced by native
+    multiplayer's per-user live-event stream."""
+
+    class FakePublisher:
+        def __init__(self):
+            self.calls = []
+
+        async def publish_user(self, owner_id, user_id, event):
+            self.calls.append((owner_id, user_id, event))
+
+    fake_publisher = FakePublisher()
+    monkeypatch.setattr("core.services.live_events.get_live_event_publisher", lambda: fake_publisher)
+
     mgmt = MagicMock()
     await handle_node_connect(
         owner_id="org_123",
@@ -160,15 +175,15 @@ async def test_disconnect_broadcasts_to_member(
         connect_params={},
         management_api=mgmt,
     )
-    mock_pool.broadcast_to_member.reset_mock()
+    fake_publisher.calls.clear()
 
     await handle_node_disconnect("conn_1", "org_123", "user_alice")
 
-    mock_pool.broadcast_to_member.assert_called_once_with(
-        "org_123",
-        "user_alice",
-        {"type": "node_status", "status": "disconnected"},
-    )
+    assert len(fake_publisher.calls) == 1
+    owner_id, user_id, event = fake_publisher.calls[0]
+    assert (owner_id, user_id) == ("org_123", "user_alice")
+    assert event["type"] == "runtime.resource.invalidated"
+    assert event["payload"] == {"resource": "health", "resourceId": "desktop-node"}
 
 
 @pytest.mark.asyncio
@@ -259,12 +274,24 @@ async def test_disconnect_is_idempotent_on_double_call(mock_ecs, mock_pool, mock
 
 
 @pytest.mark.asyncio
-async def test_upstream_closed_callback_cleans_up_user_state(mock_ecs, mock_pool, mock_upstream, mock_config_patcher):
+async def test_upstream_closed_callback_cleans_up_user_state(
+    mock_ecs, mock_pool, mock_upstream, mock_config_patcher, monkeypatch
+):
     """When the upstream WS dies (container restart, net drop), the
     callback installed in handle_node_connect must tear down _user_nodes
-    and emit node_status=disconnected — otherwise the agent keeps
+    and publish a node-health invalidation — otherwise the agent keeps
     binding sessions to a dead nodeId while the desktop is still alive."""
     from core.services.node_proxy import _user_nodes
+
+    class FakePublisher:
+        def __init__(self):
+            self.calls = []
+
+        async def publish_user(self, owner_id, user_id, event):
+            self.calls.append((owner_id, user_id, event))
+
+    fake_publisher = FakePublisher()
+    monkeypatch.setattr("core.services.live_events.get_live_event_publisher", lambda: fake_publisher)
 
     mgmt = MagicMock()
     await handle_node_connect(
@@ -280,18 +307,18 @@ async def test_upstream_closed_callback_cleans_up_user_state(mock_ecs, mock_pool
     cb = mock_upstream.set_on_upstream_closed.call_args[0][0]
     assert callable(cb)
 
-    mock_pool.broadcast_to_member.reset_mock()
+    fake_publisher.calls.clear()
 
     # Simulate the upstream reader exiting.
     await cb()
 
-    # Per-user state cleared, disconnected broadcast emitted.
+    # Per-user state cleared, disconnected invalidation published.
     assert "user_alice" not in _user_nodes
-    mock_pool.broadcast_to_member.assert_called_once_with(
-        "org_cb",
-        "user_alice",
-        {"type": "node_status", "status": "disconnected"},
-    )
+    assert len(fake_publisher.calls) == 1
+    owner_id, user_id, event = fake_publisher.calls[0]
+    assert (owner_id, user_id) == ("org_cb", "user_alice")
+    assert event["type"] == "runtime.resource.invalidated"
+    assert event["payload"] == {"resource": "health", "resourceId": "desktop-node"}
 
 
 @pytest.mark.asyncio

@@ -1191,7 +1191,6 @@ export function ProvisioningStepper({
         // moment someone is deciding to pay. Backend owns the what-happened
         // half (it knows cap vs expiry); this owns the what-now half.
         heading={blocked.message}
-        subheading="Pick how you want to power your agents — $50/month covers your always-on infrastructure."
       />
     );
   }
@@ -2286,6 +2285,10 @@ export function ProviderPicker({
   // copy for the same three paths in the first place.
   const { startTrialCheckout, account } = useBilling();
   const workspacePriceUsd = account?.workspace_price_usd;
+  const workspacePriceDescription =
+    workspacePriceUsd === undefined
+      ? "We'll show your workspace subscription price shortly."
+      : `The $${workspacePriceUsd}/month workspace subscription covers your always-on agent infrastructure.`;
   const [loading, setLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Starter Claude credits for the bedrock_claude path. Sent with that card's
@@ -2349,8 +2352,8 @@ export function ProviderPicker({
           <p className={"text-[var(--midnight-muted)] text-sm max-w-md " + (embedded ? "" : "mx-auto")}>
             {subheading ??
               (isOrg
-                ? `Pick how ${orgName} wants to pay for inference. The $50/month covers the always-on agent infrastructure.`
-                : "Pick how you want to pay for inference. The $50/month covers your always-on agent infrastructure.")}
+                ? `Pick how ${orgName} wants to pay for inference. ${workspacePriceDescription}`
+                : `Pick how you want to pay for inference. ${workspacePriceDescription}`)}
           </p>
         </div>
 
@@ -2372,14 +2375,16 @@ export function ProviderPicker({
                 {/* Bedrock's total moves with the chosen credit amount, so its
                     price line is computed rather than the static card copy —
                     the number the customer reads here is the number Checkout
-                    charges. The other two are a flat $50 and keep the static
-                    subtitle. */}
+                    charges. The other two use the same server-owned workspace
+                    price, without a credit top-up. */}
                 <p className="text-sm text-[var(--midnight-muted)]">
-                  {card.id === "bedrock_claude" && workspacePriceUsd !== undefined
-                    ? `${formatUsdCents(workspacePriceUsd * 100 + creditsCents)} at checkout, then $${workspacePriceUsd} / month`
+                  {workspacePriceUsd === undefined
+                    ? "Loading workspace price…"
                     : card.id === "bedrock_claude"
-                      ? "Loading workspace price…"
-                    : card.subtitle}
+                      ? `${formatUsdCents(workspacePriceUsd * 100 + creditsCents)} at checkout, then $${workspacePriceUsd} / month`
+                      : card.id === "chatgpt_oauth"
+                        ? `$${workspacePriceUsd} / month + your ChatGPT subscription`
+                        : `$${workspacePriceUsd} / month + your provider bill`}
                 </p>
                 <p className="text-xs text-[var(--midnight)] font-medium">
                   {card.id === "bedrock_claude"

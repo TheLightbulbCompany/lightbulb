@@ -338,6 +338,11 @@ function BillingPanel() {
   }
 
   const subscriptionStatus = account?.subscription_status ?? null;
+  const workspacePriceUsd = account?.workspace_price_usd;
+  const workspacePlanTitle =
+    workspacePriceUsd === undefined ? "Lightbulb plan" : `Lightbulb — $${workspacePriceUsd} / month`;
+  const workspaceRecurringPrice =
+    workspacePriceUsd === undefined ? "your workspace rate" : `$${workspacePriceUsd}/mo`;
   // No-card free tier. is_subscribed is FALSE for these rows (paid
   // predicate) even though the platform is usable — the card below renders
   // the free-tier framing with a Subscribe CTA instead of Manage Payment
@@ -481,7 +486,7 @@ function BillingPanel() {
         <div className="settings-card-header">
           <div>
             <div className="settings-card-title">
-              {isTrialLocal ? "Lightbulb — Free tier" : "Lightbulb — $50 / month"}
+              {isTrialLocal ? "Lightbulb — Free tier" : workspacePlanTitle}
               {statusChipLabel && (
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 4, marginLeft: 8, fontSize: 11, fontWeight: 600, color: "var(--midnight)", background: "color-mix(in srgb, var(--midnight) 8%, transparent)", padding: "2px 8px", borderRadius: 999, textTransform: isTrialLocal ? undefined : "capitalize" }}>
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
@@ -492,8 +497,8 @@ function BillingPanel() {
             <div className="settings-card-desc">
               {subscriptionStatus === "trialing"
                 ? trialEndLabel
-                  ? `Free trial — full access until ${trialEndLabel}, then $50/mo. Cancel anytime before then.`
-                  : "Free trial — full access now, then $50/mo. Cancel anytime."
+                  ? `Free trial — full access until ${trialEndLabel}, then ${workspaceRecurringPrice}. Cancel anytime before then.`
+                  : `Free trial — full access now, then ${workspaceRecurringPrice}. Cancel anytime.`
                 : isTrialLocal
                   ? isTrialExpired
                     ? `Free tier ended${trialEndLabel ? ` on ${trialEndLabel}` : ""} — your agents are paused.`
@@ -536,7 +541,6 @@ function BillingPanel() {
               isOrg={false}
               source="settings_billing"
               heading={isTrialExpired ? "Your agents are paused" : "Subscribe to keep your agents running"}
-              subheading="Pick how you want to power your agents. The $50/month covers your always-on infrastructure."
             />
           </div>
         )}

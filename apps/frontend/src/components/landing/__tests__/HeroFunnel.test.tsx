@@ -67,6 +67,7 @@ describe("HeroFunnel", () => {
     expect(
       screen.getByText(/ChatGPT login, your own API key, or Claude credits/),
     ).toBeInTheDocument();
+    expect(screen.queryByText(/\$50 a month/)).not.toBeInTheDocument();
   });
 
   it("stashes {path, input, detail} to sessionStorage on every change", () => {

@@ -136,14 +136,15 @@ export function HeroFunnel() {
           approve, they do it.
         </p>
         {/* The price is the first question every visitor has, and until this
-            line the only answer above the fold was a 64px "$50" further down
+            line the only answer above the fold was a large fixed price further down
             the page. Free-to-try is the strongest thing we offer and it was
             invisible: owners were arriving in the product believing they had
             already been charged. The three ways to pay for inference are the
             one line no competitor can write; they were buried in pricing. */}
         <p className="ld-funnel-fine">
           <strong>Free for 3 days. No credit card.</strong> Runs on your ChatGPT
-          login, your own API key, or Claude credits. $50 a month, flat.
+          login, your own API key, or Claude credits. Then subscribe monthly,
+          flat.
         </p>
       </div>
     </section>

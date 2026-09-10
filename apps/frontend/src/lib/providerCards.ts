@@ -67,7 +67,7 @@ export const PROVIDER_CARDS: ProviderCard[] = [
   {
     id: "chatgpt_oauth",
     title: "Sign in with ChatGPT",
-    subtitle: "$50 / month + your ChatGPT subscription",
+    subtitle: "Workspace subscription + your ChatGPT subscription",
     trialNote: "Sign in to OpenAI after checkout",
     bullets: [
       "GPT-5.5 included via your ChatGPT account",
@@ -80,7 +80,7 @@ export const PROVIDER_CARDS: ProviderCard[] = [
   {
     id: "byo_key",
     title: "Bring your own API key",
-    subtitle: "$50 / month + your provider bill",
+    subtitle: "Workspace subscription + your provider bill",
     trialNote: "Add your key after checkout",
     bullets: [
       "OpenAI or Anthropic — your key, your billing",
@@ -111,7 +111,7 @@ export const PROVIDER_CARDS: ProviderCard[] = [
     // cards link to /sign-up?provider=… — where a new signup gets a card-less
     // trial_local row (user_provision), not a charge. Hence "from $5" rather
     // than a fixed total, and "at checkout" rather than "due today".
-    subtitle: "$50 / month + Claude credits from $5",
+    subtitle: "Workspace subscription + Claude credits from $5",
     trialNote: "Credits bought at checkout — no second step",
     bullets: [
       "Claude Sonnet 4.6 + Opus 4.7",

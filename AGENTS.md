@@ -834,19 +834,14 @@ Two fixes:
 
 ### Plan model
 
-Post-2026-04-26 flat-fee cutover. Three paid shapes. Orgs pay a base **plus** per-seat:
+The public billing contract is workspace-first: `GET /billing/account` exposes server-owned `workspace_price_usd` and `ultra_price_usd`, never membership counts or per-seat pricing. Public web/mobile copy must read those fields or use neutral/loading copy; do not bake a workspace price into a client release.
 
-| shape | Stripe price(s) | amount | who |
+| plan | Stripe price | display amount | owner |
 |---|---|---|---|
-| **Flat** | `STRIPE_FLAT_PRICE_ID` | $50/mo (`FLAT_PRICE_USD`, echoed by `/billing/account`) | personal owners |
-| **Teams** | `STRIPE_TEAM_BASE_PRICE_ID` **+** `STRIPE_TEAM_SEAT_PRICE_ID` | `TEAM_BASE_PRICE_USD` $50 base **+** `TEAM_SEAT_PRICE_USD` $20/seat | orgs |
-| **Ultra Pro** | `STRIPE_ULTRA_PRICE_ID` | $150/mo for personal; for orgs it is a **base-item price swap** — $150 base + N × $20 seats (seat item untouched; fresh Ultra checkout refused for an org with no live team sub). Display dollars are frontend-only (`settings/page.tsx`); the backend has only the price id. | large marketplace companies over the flat tier's agent budget |
+| **Workspace** | `STRIPE_WORKSPACE_PRICE_ID` | `WORKSPACE_PRICE_USD` (currently 50), echoed by `/billing/account` | one workspace, unlimited members |
+| **Ultra** | `STRIPE_ULTRA_PRICE_ID` | `ULTRA_PRICE_USD` (currently 150), echoed by `/billing/account` | one workspace, unlimited members |
 
-**A Teams subscription is TWO line items, not one.** `create_team_seat_checkout` builds `[{base, quantity: 1}, {seat, quantity: seat_count}]`, so a 4-person org pays `$50 + 4 × $20 = $130/mo`. Both amounts are echoed to the frontend by `/billing/account` (`team_base_price_usd`, `team_seat_price_usd`) so `TeamBillingCard` renders "$50 + N × $20" without hardcoding either number.
-
-Two constraints in that code worth not breaking:
-- **Nothing may select the line items by position** — Stripe does not guarantee order. The webhook picks the seat item by price id (`subscription_item_on_price`), and `create_team_seat_checkout` refuses to start if the base and seat price ids are equal.
-- **Seat quantity has a single writer**, `sync_team_seat_quantity`, driven off Clerk membership webhooks. Quantity is floored at 1 so a transient member-count read of 0 never creates a zero-quantity subscription. Pending invitations count as seats from the moment they're sent.
+The old `STRIPE_TEAM_*` / `TEAM_*` settings remain temporarily only because legacy checkout/webhook/seat-sync code has not yet been removed. They are not a public or new-checkout contract. Do not add callers; Task 2 removes the checkout branch and Task 3 removes the webhook/seat-sync branch and then the settings.
 
 **Apple IAP** is a code-complete second purchase rail (App Store guideline 3.1.3(b)): `routers/apple_iap.py` (link-purchase endpoints + `POST /webhooks/apple-iap` App Store Server Notifications, deduped on `notificationUUID`, StoreKit 2 JWS verified against pinned Apple root certs), `billing_repo.set_apple_subscription`, GSI `apple-original-transaction-index` on the billing table. The rail is LIVE in both envs — CDK sets `APPLE_IAP_BUNDLE_ID`, `APPLE_IAP_PRODUCT_ID` and `APPLE_IAP_APP_APPLE_ID` unconditionally (`service-stack.ts`), so the router does not 503. The mobile app drives it (`co.isol8.mobile.plan.monthly` via expo-iap → `/billing/apple/link`); those ids change with the next App Store record (the app never shipped), not before.
 
@@ -1001,8 +996,9 @@ Only the ones with a non-obvious constraint are worth writing down here:
 | `ENCRYPTION_KEY` | Fernet key protecting ChatGPT OAuth tokens + Paperclip credentials (NOT BYOK — those live in Secrets Manager). Rotating it orphans every stored token. |
 | `CLOUD_MAP_SERVICE_ARN` | Registration target — the shared Cloud Map service every per-user ECS service attaches to via `serviceRegistries`. |
 | `CLOUD_MAP_NAMESPACE_NAME` + `CLOUD_MAP_SERVICE_NAME` | Discovery side — `DiscoverInstances` takes *names*, not the ARN, so both are needed on top of the ARN. Unset ⇒ `discover_ip` returns None and every container looks unreachable. |
-| `STRIPE_TEAM_BASE_PRICE_ID` | Org flat base, always quantity 1. Display dollars mirrored by `TEAM_BASE_PRICE_USD` (50). **Must differ from the seat price id** or checkout refuses to start. |
-| `STRIPE_TEAM_SEAT_PRICE_ID` | Org per-seat; quantity = live Clerk member count. Display dollars mirrored by `TEAM_SEAT_PRICE_USD` (20). |
+| `STRIPE_WORKSPACE_PRICE_ID` | One recurring Workspace Price. Its display amount is `WORKSPACE_PRICE_USD`, returned by `/billing/account`. |
+| `STRIPE_ULTRA_PRICE_ID` | One recurring Ultra Price. Its display amount is `ULTRA_PRICE_USD`, returned by `/billing/account`. |
+| `STRIPE_TEAM_BASE_PRICE_ID` / `STRIPE_TEAM_SEAT_PRICE_ID` | Transitional legacy settings only; no new caller may use them. Remove after Task 3 proves the last checkout/webhook/seat-sync reference is gone. |
 | `MARKETPLACE_LISTINGS_TABLE` | Must be set — there is NO disable gate; marketplace routers mount unconditionally and an empty value means runtime errors, not a designed off-switch. |
 | `AGENT_EMAIL_DOMAIN` | Empty disables agent-email minting entirely. Derived per-env in `lightbulb-stage.ts` from `PLATFORM_MAIL_DOMAIN` — the **mail** domain, never the product domain: prod gets the apex, dev gets it `dev.`-prefixed. Agent addresses are `{agent}@{slug}.{AGENT_EMAIL_DOMAIN}`: `{agent}@{slug}.thelightbulb.company` in prod, `…@{slug}.dev.thelightbulb.company` in dev. `flickmeon.ai` carries no mail at all. |
 | `CORS_ORIGINS` | Comma-separated. Note the API Gateway HTTP API handles CORS preflight at the gateway on the REST path — its allow/expose headers must match FastAPI's. |

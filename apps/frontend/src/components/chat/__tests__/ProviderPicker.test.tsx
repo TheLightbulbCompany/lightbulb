@@ -18,15 +18,19 @@ vi.mock("@/lib/api", () => ({
 // Checkout goes through useBilling.startTrialCheckout — the SAME call the
 // settings Billing panel makes. It used to be a second inline api.post here,
 // which is how the two surfaces drifted apart in the first place.
-const startTrialCheckout = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const billing = vi.hoisted(() => ({
+  startTrialCheckout: vi.fn().mockResolvedValue(undefined),
+  account: { workspace_price_usd: 50, ultra_price_usd: 150 },
+}));
 vi.mock("@/hooks/useBilling", () => ({
-  useBilling: () => ({
-    startTrialCheckout,
-    account: { workspace_price_usd: 50, ultra_price_usd: 150 },
-  }),
+  useBilling: () => billing,
 }));
 
 describe("ProviderPicker", () => {
+  beforeEach(() => {
+    billing.account = { workspace_price_usd: 50, ultra_price_usd: 150 };
+  });
+
   it("renders all three provider cards for personal users", () => {
     render(<ProviderPicker isOrg={false} />);
     expect(screen.getByText("Sign in with ChatGPT")).toBeInTheDocument();
@@ -79,6 +83,16 @@ describe("ProviderPicker", () => {
       expect(container.querySelector(".md\\:grid-cols-3")).not.toBeInTheDocument();
     }
   });
+
+  it("uses the server-owned workspace price for every purchase disclosure", () => {
+    billing.account = { workspace_price_usd: 75, ultra_price_usd: 150 };
+
+    render(<ProviderPicker isOrg={false} />);
+
+    expect(screen.getByText("$75 / month + your ChatGPT subscription")).toBeInTheDocument();
+    expect(screen.getByText("$75 / month + your provider bill")).toBeInTheDocument();
+    expect(screen.getByText("$95 at checkout, then $75 / month")).toBeInTheDocument();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -91,7 +105,10 @@ describe("ProviderPicker", () => {
 // was built to prevent.
 
 describe("ProviderPicker — starter credits", () => {
-  beforeEach(() => startTrialCheckout.mockClear());
+  beforeEach(() => {
+    billing.startTrialCheckout.mockClear();
+    billing.account = { workspace_price_usd: 50, ultra_price_usd: 150 };
+  });
 
   it("defaults to $20 and quotes the combined total, not the bare subscription", () => {
     render(<ProviderPicker isOrg={false} />);
@@ -106,7 +123,7 @@ describe("ProviderPicker — starter credits", () => {
     expect(screen.getByText("$150 at checkout, then $50 / month")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /powered by claude/i }));
-    expect(startTrialCheckout).toHaveBeenCalledWith("bedrock_claude", 10000);
+    expect(billing.startTrialCheckout).toHaveBeenCalledWith("bedrock_claude", 10000);
   });
 
   it("clamps a custom amount below the $5 minimum on blur", () => {
@@ -116,7 +133,7 @@ describe("ProviderPicker — starter credits", () => {
     fireEvent.blur(input, { target: { value: "1" } });
     expect(screen.getByText("$55 at checkout, then $50 / month")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /powered by claude/i }));
-    expect(startTrialCheckout).toHaveBeenCalledWith("bedrock_claude", 500);
+    expect(billing.startTrialCheckout).toHaveBeenCalledWith("bedrock_claude", 500);
   });
 
   it("clamps a custom amount above the $1,000 ceiling on blur", () => {
@@ -125,13 +142,13 @@ describe("ProviderPicker — starter credits", () => {
     fireEvent.change(input, { target: { value: "999999" } });
     fireEvent.blur(input, { target: { value: "999999" } });
     fireEvent.click(screen.getByRole("button", { name: /powered by claude/i }));
-    expect(startTrialCheckout).toHaveBeenCalledWith("bedrock_claude", 100000);
+    expect(billing.startTrialCheckout).toHaveBeenCalledWith("bedrock_claude", 100000);
   });
 
   it("does not attach a credit amount to the two providers that spend none", () => {
     render(<ProviderPicker isOrg={false} />);
     fireEvent.click(screen.getByRole("button", { name: /sign in with chatgpt/i }));
-    expect(startTrialCheckout).toHaveBeenCalledWith("chatgpt_oauth", undefined);
+    expect(billing.startTrialCheckout).toHaveBeenCalledWith("chatgpt_oauth", undefined);
   });
 
   it("offers the chooser only on the Bedrock card", () => {
@@ -150,7 +167,7 @@ describe("ProviderPicker — starter credits", () => {
     fireEvent.blur(input, { target: { value: "" } });
     expect(screen.getByText("$150 at checkout, then $50 / month")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /powered by claude/i }));
-    expect(startTrialCheckout).toHaveBeenCalledWith("bedrock_claude", 10000);
+    expect(billing.startTrialCheckout).toHaveBeenCalledWith("bedrock_claude", 10000);
   });
 
   it("never renders float noise in the pre-payment price", () => {

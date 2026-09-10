@@ -94,7 +94,7 @@ async def create_web_checkout(auth: AuthContext = Depends(get_current_user)):
     if is_org_owner_id(owner_id):
         raise HTTPException(
             status_code=403,
-            detail="Team workspaces are billed per seat — subscribe from the web app.",
+            detail="Workspace subscriptions must be started from the web app.",
         )
 
     # Mint or reuse the Stripe customer first. The caller is by definition

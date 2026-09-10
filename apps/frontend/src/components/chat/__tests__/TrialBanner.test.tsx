@@ -14,7 +14,11 @@ vi.mock("next/link", () => ({
 
 import { TrialBanner } from "../TrialBanner";
 
-function renderWith(account: { subscription_status?: string; trial_end?: number }) {
+function renderWith(account: {
+  subscription_status?: string;
+  trial_end?: number;
+  workspace_price_usd?: number;
+}) {
   return render(
     <SWRConfig value={{ fallback: { "/billing/account": account }, provider: () => new Map() }}>
       <TrialBanner />
@@ -50,5 +54,17 @@ describe("TrialBanner", () => {
     const trialEnd = Math.floor(Date.parse("2026-06-15T04:00:00Z") / 1000);
     const { container } = renderWith({ subscription_status: "trial_local", trial_end: trialEnd });
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it("uses the server-owned workspace price when it is available", () => {
+    vi.setSystemTime(new Date("2026-06-14T20:00:00Z"));
+    const trialEnd = Math.floor(Date.parse("2026-06-15T04:00:00Z") / 1000);
+    renderWith({
+      subscription_status: "trialing",
+      trial_end: trialEnd,
+      workspace_price_usd: 75,
+    });
+
+    expect(screen.getByText(/then \$75\/mo\./)).toBeInTheDocument();
   });
 });

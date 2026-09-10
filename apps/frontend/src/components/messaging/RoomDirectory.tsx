@@ -22,6 +22,7 @@ export interface RoomDirectoryProps {
   state: "loading" | "ready" | "error" | "access-removed";
   currentRoomId?: string;
   onSelectRoom: (roomId: string) => void;
+  onSelectParticipant: (participant: DirectoryParticipant) => void;
   onCreate?: (creation: ConversationCreation) => void;
   creationBusy?: boolean;
   creationError?: string;
@@ -38,6 +39,7 @@ function DirectoryContent({
   state,
   currentRoomId,
   onSelectRoom,
+  onSelectParticipant,
   onCreate,
   creationBusy = false,
   creationError,
@@ -145,7 +147,7 @@ function DirectoryContent({
         <div className="room-picker-list">{visibleParticipants.map((participant) => {
           const key = `${participant.kind}:${participant.id}`;
           const selection = selected.get(key);
-          return <div className="room-choice" key={key}>
+          const content = <>
             {creating && <input aria-label={`Select ${participant.displayName}`} type="checkbox" checked={!!selection} disabled={creationBusy || (!selection && selected.size >= 31)} onChange={(event) => toggleParticipant(participant, event.target.checked)} />}
             <Identity name={participant.displayName} avatarOnly size="sm" />
             <span className="min-w-0 flex-1"><span className="block truncate" title={participant.displayName}>{participant.displayName}</span>
@@ -154,8 +156,10 @@ function DirectoryContent({
             {creating && selection?.kind === "agent" && <select id={`${id}-${participant.id}-listen`} className="room-listen-mode" value={selection.listenMode ?? "mentions"}
               onChange={(event) => setListenMode(participant, event.target.value as ListenMode)}>
               <option value="active">Active</option><option value="mentions">Mentions only</option><option value="observe">Observe</option>
-            </select>}
-          </div>;
+            </select>}</>;
+          return creating
+            ? <div className="room-choice" key={key}>{content}</div>
+            : <button type="button" className="room-choice room-choice-button" key={key} onClick={() => onSelectParticipant(participant)}>{content}</button>;
         })}</div>
         {visibleParticipants.length === 0 && <p className="text-sm text-muted-foreground">No matching people or agents.</p>}
       </div>}

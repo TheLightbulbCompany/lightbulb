@@ -260,6 +260,7 @@ export function MessagingWorkspaceProvider({
     state: directoryState,
     currentRoomId: rooms.activeRoomId ?? undefined,
     onSelectRoom: rooms.selectRoom,
+    onSelectParticipant: (participant) => void rooms.selectDm(participant),
     onCreate: (creation) => void createRoom(creation),
     creationBusy,
     creationError,

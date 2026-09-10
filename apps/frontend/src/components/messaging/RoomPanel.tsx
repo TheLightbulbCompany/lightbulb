@@ -157,7 +157,7 @@ function RoomContent({
 }: RoomPanelProps) {
   const id = useId();
   const [membersOpen, setMembersOpen] = useState(false);
-  const [contextCollapsed, setContextCollapsed] = useState(false);
+  const [contextCollapsed, setContextCollapsed] = useState(true);
   const [selection, setSelection] = useState<{ kind: "thread" | "context"; id: string } | null>(null);
   const trigger = useRef<HTMLButtonElement | null>(null);
   const detailHeading = useRef<HTMLHeadingElement>(null);
@@ -206,6 +206,7 @@ function RoomContent({
     const participant = participants.find((member) => member.kind === message.author.kind && member.id === message.author.id);
     const name = participant?.displayName || message.author.displayName || "Unknown author";
     const timestamp = !Number.isNaN(Date.parse(message.createdAt)) ? message.createdAt : undefined;
+    const replyCount = inThread ? 0 : messages.filter((candidate) => candidate.threadRootMessageId === message.messageId).length;
     return <article key={message.messageId} className="room-message" aria-label={`Message from ${name}`}>
       {participant ? <ParticipantAvatar participant={participant} /> : <Identity name={name} avatarOnly size="default" />}
       <div className="room-message-content">
@@ -223,7 +224,8 @@ function RoomContent({
             onClick={(event) => openDetail("context", context.id, event.currentTarget, inThread)}>{context.title}</Button>;
         })}
         {!inThread && <Button type="button" variant="ghost" className="room-reply" disabled={!actionable}
-          onClick={(event) => openDetail("thread", message.messageId, event.currentTarget)}><MessageCircle aria-hidden="true" />Reply</Button>}
+          aria-label={`Reply in thread${replyCount > 0 ? `, ${replyCount} ${replyCount === 1 ? "reply" : "replies"}` : ""}`}
+          onClick={(event) => openDetail("thread", message.messageId, event.currentTarget)}><MessageCircle aria-hidden="true" />Reply in thread{replyCount > 0 && ` · ${replyCount}`}</Button>}
       </div>
     </article>;
   }

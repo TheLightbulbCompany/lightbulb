@@ -161,6 +161,25 @@ describe("useRooms canonical reconciliation", () => {
     expect(messaging.createRoom).not.toHaveBeenCalled();
   });
 
+  it("selects an existing human DM without creating a duplicate", async () => {
+    const colleagueDm = {
+      ...room,
+      roomId: "11111111-1111-4111-8111-111111111122",
+      kind: "dm" as const,
+      name: null,
+      members: [room.members[0], { ...room.members[0], id: "user-colleague", displayName: "Colleague", role: "member" as const }],
+    };
+    messaging.listRooms.mockResolvedValue({ rooms: [room, colleagueDm] });
+    messaging.getRoom.mockImplementation(async (roomId: string) => roomId === colleagueDm.roomId ? colleagueDm : room);
+    const { result } = renderHook(() => useRooms(), { wrapper });
+    await waitFor(() => expect(result.current.directoryRoomDetails.has(colleagueDm.roomId)).toBe(true));
+
+    await act(async () => result.current.selectDm({ kind: "human", id: "user-colleague" }));
+
+    expect(result.current.activeRoomId).toBe(colleagueDm.roomId);
+    expect(messaging.createRoom).not.toHaveBeenCalled();
+  });
+
   it("keeps partial directory identities visible and retries failed hydration", async () => {
     const fridayDm = {
       ...room,
@@ -241,6 +260,28 @@ describe("useRooms canonical reconciliation", () => {
       kind: "dm",
       name: null,
       members: [{ kind: "agent", id: "agent-new", role: "member", listenMode: "active" }],
+    }));
+    expect(result.current.activeRoomId).toBe(created.roomId);
+  });
+
+  it("creates a human DM with the human listen-mode contract", async () => {
+    const created = {
+      ...room,
+      roomId: "11111111-1111-4111-8111-111111111123",
+      kind: "dm" as const,
+      name: null,
+      members: [room.members[0], { ...room.members[0], id: "user-new", displayName: "New person", role: "member" as const }],
+    };
+    messaging.createRoom.mockResolvedValue(created);
+    const { result } = renderHook(() => useRooms(), { wrapper });
+    await waitFor(() => expect(result.current.activeRoomId).toBe(room.roomId));
+
+    await act(async () => result.current.selectDm({ kind: "human", id: "user-new" }));
+
+    expect(messaging.createRoom).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "dm",
+      name: null,
+      members: [{ kind: "human", id: "user-new", role: "member", listenMode: null }],
     }));
     expect(result.current.activeRoomId).toBe(created.roomId);
   });

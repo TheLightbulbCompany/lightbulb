@@ -22,7 +22,7 @@ export interface RoomDirectoryProps {
   state: "loading" | "ready" | "error" | "access-removed";
   currentRoomId?: string;
   onSelectRoom: (roomId: string) => void;
-  onSelectParticipant: (participant: DirectoryParticipant) => void;
+  onSelectParticipant: (participant: DirectoryParticipant) => void | Promise<void>;
   onCreate?: (creation: ConversationCreation) => void;
   creationBusy?: boolean;
   creationError?: string;
@@ -136,7 +136,6 @@ function DirectoryContent({
       <p className="text-sm text-muted-foreground">Only selected workspace members can read this conversation.</p>
       <div className="room-composer-actions"><Button type="button" variant="ghost" disabled={creationBusy} onClick={() => setCreating(false)}>Cancel</Button>
         <Button type="submit" disabled={!canCreate || creationBusy}>{creationBusy ? "Creating…" : "Create conversation"}</Button></div>
-      {creationError && <p role="alert" className="text-sm text-err">{creationError}</p>}
     </form>}
     <section aria-label="People and agents">
       <Button variant="ghost" className="w-full justify-start" aria-expanded={directoryOpen || creating}
@@ -159,9 +158,10 @@ function DirectoryContent({
             </select>}</>;
           return creating
             ? <div className="room-choice" key={key}>{content}</div>
-            : <button type="button" className="room-choice room-choice-button" key={key} onClick={() => onSelectParticipant(participant)}>{content}</button>;
+            : <button type="button" className="room-choice room-choice-button" key={key} disabled={creationBusy} onClick={() => onSelectParticipant(participant)}>{content}</button>;
         })}</div>
         {visibleParticipants.length === 0 && <p className="text-sm text-muted-foreground">No matching people or agents.</p>}
+        {creationError && <p role="alert" className="text-sm text-err">{creationError}</p>}
       </div>}
     </section>
   </nav>;

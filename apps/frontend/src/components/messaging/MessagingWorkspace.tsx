@@ -15,6 +15,10 @@ export function MessagingDirectory({ onOpenRoom }: { onOpenRoom?: (room?: Direct
       const room = directoryProps.rooms.find((candidate) => candidate.roomId === roomId);
       if (room) onOpenRoom?.(room);
     }}
+    onSelectParticipant={(participant) => {
+      onOpenRoom?.();
+      return directoryProps.onSelectParticipant(participant);
+    }}
     onCreate={(creation) => {
       onOpenRoom?.();
       directoryProps.onCreate?.(creation);

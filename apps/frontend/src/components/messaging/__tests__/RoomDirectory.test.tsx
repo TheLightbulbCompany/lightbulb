@@ -38,6 +38,13 @@ it("identifies agents without handles in People and agents", () => {
   expect(onSelectParticipant).toHaveBeenNthCalledWith(2, alice);
 });
 
+it("shows a participant-selection error beside the open people directory", () => {
+  render(<RoomDirectory ownerScopeId="org" state="ready" rooms={[]} participants={[alice]} onSelectRoom={vi.fn()}
+    onSelectParticipant={vi.fn()} creationError="Conversation could not be opened." />);
+  fireEvent.click(screen.getByRole("button", { name: "People and agents" }));
+  expect(screen.getByRole("alert")).toHaveTextContent("Conversation could not be opened.");
+});
+
 it("keeps available rooms visible with a detail recovery notice", () => {
   const onRetry = vi.fn();
   render(<RoomDirectory ownerScopeId="org" state="error" rooms={[

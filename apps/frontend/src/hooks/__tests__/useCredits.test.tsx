@@ -1,5 +1,5 @@
 import { beforeEach, expect, describe, it, vi } from "vitest";
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { SWRConfig } from "swr";
 import { useCredits } from "../useCredits";
 
@@ -123,6 +123,39 @@ describe("useCredits", () => {
     await act(async () => { await mounted.result.current.startTopUp(2000); });
     const calls = fetchMock.mock.calls.filter(([url]) => String(url).includes("top_up"));
     expect(JSON.parse(calls[1][1].body).request_id).not.toBe(oldId);
+  });
+
+  it.each(["paid", "failed"] as const)("ignores a late %s reconciliation after switching accounts", async (status) => {
+    const firstKey = "lightbulb:credits-top-up:user_1:org_1";
+    localStorage.setItem(firstKey, JSON.stringify({ user_id: userId, workspace_id: orgId, request_id: "request_A", amount_cents: 2000, state: "pending" }));
+    let finishA!: (response: Response) => void;
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { finishA = resolve; }))
+      .mockResolvedValue(new Response(JSON.stringify({ balance_microcents: 0, balance_dollars: "0.00" })));
+    global.fetch = fetchMock;
+    const mounted = renderHook(() => useCredits(), { wrapper });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    userId = "user_B";
+    orgId = "org_B";
+    mounted.rerender();
+    await act(async () => {
+      finishA(new Response(JSON.stringify({ balance_microcents: 0, balance_dollars: "0.00", active_top_up: { request_id: "request_A", status } })));
+    });
+    expect(mounted.result.current.topUpOutcome).toBeNull();
+    expect(mounted.result.current.pendingTopUp).toBeNull();
+    expect(localStorage.getItem(firstKey)).not.toBeNull();
+  });
+
+  it("clears a prior outcome when the workspace changes", async () => {
+    localStorage.setItem("lightbulb:credits-top-up:user_1:org_1", JSON.stringify({ user_id: userId, workspace_id: orgId, request_id: "request_A", amount_cents: 2000, state: "requested" }));
+    global.fetch = vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify({
+      balance_microcents: 0, balance_dollars: "0.00", active_top_up: { request_id: "request_A", status: "failed" },
+    }))));
+    const mounted = renderHook(() => useCredits(), { wrapper });
+    await waitFor(() => expect(mounted.result.current.topUpOutcome).toBe("failed"));
+    orgId = "org_B";
+    mounted.rerender();
+    expect(mounted.result.current.topUpOutcome).toBeNull();
   });
 
   it("does not read a workspace balance until Clerk user and workspace auth are ready", () => {

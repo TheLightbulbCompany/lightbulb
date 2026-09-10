@@ -54,8 +54,8 @@ describe("CreditsStep", () => {
     expect(screen.queryByRole("button", { name: /^add \$/i })).toBeNull();
   });
 
-  it("shows a persisted accepted top-up as locked after a reload", async () => {
-    pendingTopUp.mockReturnValue({ amount_cents: 2000, state: "requested" });
+  it.each(["pending", "requested", "action_required"])("shows a persisted %s top-up as locked after a reload", async (state) => {
+    pendingTopUp.mockReturnValue({ amount_cents: 2000, state });
     render(<CreditsStep onComplete={vi.fn()} />);
     expect(await screen.findByRole("button", { name: "Payment requested" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "$50" })).toBeDisabled();

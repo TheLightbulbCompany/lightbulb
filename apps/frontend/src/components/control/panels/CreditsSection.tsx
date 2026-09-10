@@ -21,7 +21,7 @@ export function CreditsSection() {
     if (pendingTopUp) {
       setAmount(pendingTopUp.amount_cents);
       setLockedAmount(pendingTopUp.amount_cents);
-      setRequested(pendingTopUp.state !== "pending" ? pendingTopUp.amount_cents : null);
+      setRequested(pendingTopUp.amount_cents);
     } else {
       setLockedAmount(null);
       setRequested(null);

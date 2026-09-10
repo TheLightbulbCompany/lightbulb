@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import useSWR from "swr";
 import { useApi } from "@/lib/api";
@@ -78,23 +78,29 @@ export function useCredits() {
   const { orgId, userId, isLoaded, isSignedIn, orgRole } = useAuth();
   const ready = Boolean(isLoaded && isSignedIn && userId && orgId);
   const [, refreshPendingTopUp] = useState(0);
-  const [topUpOutcome, setTopUpOutcome] = useState<"paid" | "failed" | null>(null);
+  const authKey = ready && userId && orgId ? pendingTopUpKey(userId, orgId) : null;
+  const currentAuthKey = useRef(authKey);
+  useLayoutEffect(() => { currentAuthKey.current = authKey; }, [authKey]);
+  const [outcome, setTopUpOutcome] = useState<{ authKey: string; status: "paid" | "failed" } | null>(null);
+  const topUpOutcome = outcome?.authKey === authKey ? outcome.status : null;
   const pendingTopUp = ready && userId && orgId ? readPendingTopUp(userId, orgId) : null;
 
   const { data, error, isLoading, mutate } = useSWR<CreditsBalance>(
     ready && userId && orgId ? ["/billing/credits/balance", userId, orgId] : null,
-    async ([path]: [string, string, string]) => {
+    async ([path, fetchUserId, fetchOrgId]: [string, string, string]) => {
+      const fetchAuthKey = pendingTopUpKey(fetchUserId, fetchOrgId);
       const balance = await api.get(path) as CreditsBalance;
-      const persisted = userId && orgId ? readPendingTopUp(userId, orgId) : null;
+      if (currentAuthKey.current !== fetchAuthKey) return balance;
+      const persisted = readPendingTopUp(fetchUserId, fetchOrgId);
       const active = balance.active_top_up;
       if (persisted && active && active.request_id === persisted.request_id) {
         if (active.status === "paid" || active.status === "failed") {
-          window.localStorage.removeItem(pendingTopUpKey(userId!, orgId!));
-          setTopUpOutcome(active.status);
+          window.localStorage.removeItem(fetchAuthKey);
+          setTopUpOutcome({ authKey: fetchAuthKey, status: active.status });
           refreshPendingTopUp((version) => version + 1);
         } else if (active.status !== persisted.state) {
           window.localStorage.setItem(
-            pendingTopUpKey(userId!, orgId!),
+            fetchAuthKey,
             JSON.stringify({ ...persisted, state: active.status }),
           );
           refreshPendingTopUp((version) => version + 1);

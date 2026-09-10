@@ -161,8 +161,14 @@ async def _process_event(event: dict, event_id: str) -> Response:
             logger.warning("Metronome payment-gate event %s has unknown customer %s", event_id, customer_id)
             return Response(status_code=200)
         owner_id = account["owner_id"]
+        invoice_id = props.get("invoice_id")
+        if payment_status in {"paid", "failed"} and (not isinstance(invoice_id, str) or not invoice_id):
+            logger.warning("Metronome payment-gate event %s has no invoice binding", event_id)
+            return Response(status_code=200)
         if payment_status == "paid":
-            settled = await webhook_dedup.settle_active_top_up(owner_id, customer_id, contract_id, "paid")
+            settled = await webhook_dedup.settle_active_top_up(
+                owner_id, customer_id, contract_id, "paid", invoice_id=invoice_id
+            )
             logger.info(
                 "Metronome payment-gate paid (id=%s, customer=%s, matched=%s)",
                 event_id,
@@ -170,7 +176,9 @@ async def _process_event(event: dict, event_id: str) -> Response:
                 settled,
             )
         elif payment_status == "failed":
-            settled = await webhook_dedup.settle_active_top_up(owner_id, customer_id, contract_id, "failed")
+            settled = await webhook_dedup.settle_active_top_up(
+                owner_id, customer_id, contract_id, "failed", invoice_id=invoice_id
+            )
             logger.warning(
                 "Metronome payment-gate failed (id=%s, customer=%s, matched=%s)",
                 event_id,

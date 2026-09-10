@@ -188,10 +188,32 @@ async def test_request_description_is_deterministic(provisioned_billing_row):
     first = fake.create_gated_prepaid_commit.call_args.kwargs["description"]
     from core.services.webhook_dedup import settle_active_top_up
 
-    await settle_active_top_up("org_abc", "cust-uuid-1", "contract-1", "paid")
+    await settle_active_top_up("org_abc", "cust-uuid-1", "contract-1", "paid", invoice_id="invoice_1")
     await request_top_up("org_abc", 2573, request_id="55555555-5555-4555-8555-555555555555", client=fake)
     second = fake.create_gated_prepaid_commit.call_args.kwargs["description"]
     assert first == second == "isol8 top-up owner=org_abc amount_cents=2573"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["paid", "failed"])
+async def test_collection_can_finish_before_request_acknowledgement(provisioned_billing_row, status):
+    from core.services.webhook_dedup import get_active_top_up, settle_active_top_up
+
+    fake = _fake_client()
+
+    async def collect_before_response(**_kwargs):
+        await settle_active_top_up("org_abc", "cust-uuid-1", "contract-1", status, invoice_id="invoice_1")
+
+    fake.create_gated_prepaid_commit.side_effect = collect_before_response
+    request_id = "12345678-1234-4234-8234-123456789abc"
+    await request_top_up("org_abc", 2500, request_id=request_id, client=fake)
+    assert (await get_active_top_up("org_abc"))["status"] == status
+    item = (
+        boto3.resource("dynamodb", region_name="us-east-1")
+        .Table("test-webhook-event-dedup")
+        .get_item(Key={"event_id": f"metronome-top-up:org_abc:{request_id}"})["Item"]
+    )
+    assert item["state"] == status
 
 
 @pytest.mark.asyncio

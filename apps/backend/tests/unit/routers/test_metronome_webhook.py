@@ -388,7 +388,12 @@ def _payment_gate_body(event_type="payment_gate.payment_status", **props):
         {
             "id": "evt-pg-1",
             "type": event_type,
-            "properties": {"customer_id": METRONOME_CUSTOMER_ID, "contract_id": "contract_1", **props},
+            "properties": {
+                "customer_id": METRONOME_CUSTOMER_ID,
+                "contract_id": "contract_1",
+                "invoice_id": "invoice_1",
+                **props,
+            },
         }
     ).encode("utf-8")
 
@@ -467,7 +472,7 @@ def test_payment_gate_terminal_status_settles_matching_active_top_up(client):
         response = _post(client, _payment_gate_body(payment_status="paid"))
 
     assert response.status_code == 200
-    settle.assert_awaited_once_with(OWNER_ID, METRONOME_CUSTOMER_ID, "contract_1", "paid")
+    settle.assert_awaited_once_with(OWNER_ID, METRONOME_CUSTOMER_ID, "contract_1", "paid", invoice_id="invoice_1")
 
 
 def test_payment_gate_customer_or_contract_mismatch_does_not_settle(client):
@@ -487,7 +492,7 @@ def test_payment_gate_customer_or_contract_mismatch_does_not_settle(client):
         response = _post(client, _payment_gate_body(payment_status="failed", contract_id="contract_other"))
 
     assert response.status_code == 200
-    settle.assert_awaited_once_with(OWNER_ID, METRONOME_CUSTOMER_ID, "contract_other", "failed")
+    settle.assert_awaited_once_with(OWNER_ID, METRONOME_CUSTOMER_ID, "contract_other", "failed", invoice_id="invoice_1")
 
 
 def test_unhandled_event_type_is_counted_not_silent(client):

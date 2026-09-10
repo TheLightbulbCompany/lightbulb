@@ -300,7 +300,8 @@ async def get_or_create_top_up_intent(owner_id: str, request_id: str, binding: d
         raise TopUpIntentConflict("top-up intent binding changed")
     if existing.get("state") not in {"pending", "completed", "paid", "failed"}:
         raise TopUpIntentConflict("top-up intent state is unavailable")
-    await _claim_active_top_up(owner_id, existing)
+    if existing["state"] not in _TOP_UP_TERMINAL_STATUSES:
+        await _claim_active_top_up(owner_id, existing)
     return existing
 
 
@@ -323,6 +324,9 @@ async def complete_top_up_intent(event_id: str) -> None:
     except ClientError as exc:
         if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
+        existing = await _read_event(event_id)
+        if existing.get("kind") == "metronome-top-up" and existing.get("state") in _TOP_UP_TERMINAL_STATUSES:
+            return
         raise TopUpIntentConflict("top-up intent state is unavailable") from exc
 
 
@@ -331,6 +335,8 @@ async def set_active_top_up_status(
     metronome_customer_id: str,
     metronome_contract_id: str,
     status: str,
+    *,
+    intent_event_id: str | None = None,
 ) -> bool:
     """Advance a matching active pointer without terminally settling it."""
     if status not in {"requested", "action_required"}:
@@ -340,6 +346,7 @@ async def set_active_top_up_status(
         active is None
         or active.get("metronome_customer_id") != metronome_customer_id
         or active.get("metronome_contract_id") != metronome_contract_id
+        or (intent_event_id is not None and active.get("intent_event_id") != intent_event_id)
     ):
         return False
     if active.get("status") in _TOP_UP_TERMINAL_STATUSES:
@@ -371,55 +378,115 @@ async def settle_active_top_up(
     metronome_customer_id: str,
     metronome_contract_id: str,
     status: str,
+    *,
+    invoice_id: str,
 ) -> bool:
-    """Terminally settle the matching pointer and its immutable audit intent."""
+    """Bind an invoice permanently before settling its exact purchase intent.
+
+    Every retry resumes this binding, including after the active pointer has
+    been replaced. The marker has no TTL: a later webhook for an old invoice
+    must never settle a new purchase.
+    """
     if status not in _TOP_UP_TERMINAL_STATUSES:
         raise ValueError("invalid terminal top-up status")
-    active = await get_active_top_up(owner_id)
-    if (
-        active is None
-        or active.get("metronome_customer_id") != metronome_customer_id
-        or active.get("metronome_contract_id") != metronome_contract_id
-    ):
-        return False
-    current = active.get("status")
-    if current in _TOP_UP_TERMINAL_STATUSES and current != status:
-        return False
-    if current not in _TOP_UP_TERMINAL_STATUSES:
+    if not isinstance(invoice_id, str) or not invoice_id:
+        raise ValueError("invoice_id is required")
+    key = f"metronome-top-up-invoice:{invoice_id}"
+    marker = await _read_event(key)
+    if not marker:
+        active = await get_active_top_up(owner_id)
+        if (
+            active is None
+            or active.get("metronome_customer_id") != metronome_customer_id
+            or active.get("metronome_contract_id") != metronome_contract_id
+            or active.get("status") in _TOP_UP_TERMINAL_STATUSES
+        ):
+            return False
+        marker = {
+            "event_id": key,
+            "kind": "metronome-top-up-invoice",
+            "state": "processing",
+            "owner_id": owner_id,
+            "invoice_id": invoice_id,
+            "intent_event_id": active["intent_event_id"],
+            "request_id": active["request_id"],
+            "metronome_customer_id": metronome_customer_id,
+            "metronome_contract_id": metronome_contract_id,
+            "status": status,
+            "recorded_at": int(time.time()),
+        }
         try:
             await run_in_thread(
-                _table().update_item,
-                Key={"event_id": active_top_up_key(owner_id)},
-                UpdateExpression="SET #status = :status, settled_at = if_not_exists(settled_at, :now)",
-                ConditionExpression="#kind = :kind AND #intent = :intent AND #status = :current",
-                ExpressionAttributeNames={"#status": "status", "#kind": "kind", "#intent": "intent_event_id"},
-                ExpressionAttributeValues={
-                    ":status": status,
-                    ":current": current,
-                    ":now": int(time.time()),
-                    ":kind": "metronome-top-up-active",
-                    ":intent": active["intent_event_id"],
-                },
+                _table().put_item,
+                Item=marker,
+                ConditionExpression="attribute_not_exists(event_id)",
             )
         except ClientError as exc:
             if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
                 raise
-            latest = await get_active_top_up(owner_id)
-            if not latest or latest.get("status") != status:
-                return False
+            marker = await _read_event(key)
+
+    if (
+        marker.get("kind") != "metronome-top-up-invoice"
+        or marker.get("owner_id") != owner_id
+        or marker.get("metronome_customer_id") != metronome_customer_id
+        or marker.get("metronome_contract_id") != metronome_contract_id
+    ):
+        raise TopUpIntentConflict("top-up invoice binding changed")
+    if marker.get("state") == "completed":
+        return False
+    # The first terminal event wins, even if a conflicting status arrives
+    # while that event is still being processed.
+    status = marker["status"]
 
     await run_in_thread(
         _table().update_item,
-        Key={"event_id": active["intent_event_id"]},
+        Key={"event_id": marker["intent_event_id"]},
         UpdateExpression="SET #state = :status, settled_at = if_not_exists(settled_at, :now)",
-        ConditionExpression="#kind = :kind AND owner_id = :owner",
+        ConditionExpression=(
+            "#kind = :kind AND owner_id = :owner AND request_id = :request "
+            "AND metronome_customer_id = :customer AND metronome_contract_id = :contract "
+            "AND (#state = :pending OR #state = :completed OR #state = :status)"
+        ),
         ExpressionAttributeNames={"#state": "state", "#kind": "kind"},
         ExpressionAttributeValues={
             ":status": status,
             ":now": int(time.time()),
             ":kind": "metronome-top-up",
             ":owner": owner_id,
+            ":request": marker["request_id"],
+            ":customer": metronome_customer_id,
+            ":contract": metronome_contract_id,
+            ":pending": "pending",
+            ":completed": "completed",
         },
+    )
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"event_id": active_top_up_key(owner_id)},
+            UpdateExpression="SET #status = :status, settled_at = if_not_exists(settled_at, :now)",
+            ConditionExpression="#kind = :kind AND intent_event_id = :intent",
+            ExpressionAttributeNames={"#status": "status", "#kind": "kind"},
+            ExpressionAttributeValues={
+                ":status": status,
+                ":now": int(time.time()),
+                ":kind": "metronome-top-up-active",
+                ":intent": marker["intent_event_id"],
+            },
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        # A newer pointer may already exist; the immutable intent above is
+        # still the sole target of this invoice's replay.
+    await run_in_thread(
+        _table().update_item,
+        Key={"event_id": key},
+        UpdateExpression="SET #state = :completed",
+        ConditionExpression="intent_event_id = :intent",
+        ExpressionAttributeNames={"#state": "state"},
+        ExpressionAttributeValues={":completed": "completed", ":intent": marker["intent_event_id"]},
     )
     return True
 

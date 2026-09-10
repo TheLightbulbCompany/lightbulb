@@ -38,7 +38,7 @@ export function CreditsStep({ onComplete }: Props) {
     if (pendingTopUp) {
       setAmount(pendingTopUp.amount_cents);
       setLockedAmount(pendingTopUp.amount_cents);
-      setRequested(pendingTopUp.state !== "pending");
+      setRequested(true);
     } else {
       setLockedAmount(null);
       setRequested(false);

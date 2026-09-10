@@ -198,6 +198,7 @@ async def _request_top_up(
             intent["metronome_customer_id"],
             intent["metronome_contract_id"],
             "requested",
+            intent_event_id=intent["event_id"],
         )
         return
     if intent["state"] in {"paid", "failed"}:
@@ -223,6 +224,7 @@ async def _request_top_up(
         intent["metronome_customer_id"],
         intent["metronome_contract_id"],
         "requested",
+        intent_event_id=intent["event_id"],
     )
 
 

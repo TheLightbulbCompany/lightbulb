@@ -42,13 +42,13 @@ describe("CreditsSection", () => {
     expect(screen.queryByRole("button", { name: /add \$20/i })).toBeNull();
   });
 
-  it("shows a persisted accepted top-up as locked after a reload", async () => {
+  it.each(["pending", "requested", "action_required"])("shows a persisted %s top-up as locked after a reload", async (state) => {
     mockUseCredits.mockReturnValue({
       balance: { balance_microcents: 3_952_000_000, balance_dollars: "39.52" },
       refresh: vi.fn(),
       startTopUp: vi.fn(),
       canManageCredits: true,
-      pendingTopUp: { amount_cents: 2000, state: "requested" },
+      pendingTopUp: { amount_cents: 2000, state },
     });
     render(<CreditsSection />);
     expect(await screen.findByRole("button", { name: "Top-up requested" })).toBeDisabled();

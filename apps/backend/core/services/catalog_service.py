@@ -640,15 +640,8 @@ class CatalogService:
                 extra_update_fields=extra_update_fields,
             )
 
-            # The deployed agent now exists in the OpenClaw roster, but
-            # build_openclaw_config_dict's channels.lightbulb.accounts/
-            # bindings are only derived when the whole config is rewritten
-            # (provision/reprovision) — never for a hire deployed afterwards.
-            # Without this the new agent has no inbound route on the
-            # lightbulb channel and every room message to it 404s forever.
-            from core.services.config_patcher import register_lightbulb_agent_account
-
-            await register_lightbulb_agent_account(owner_id, new_agent_id)
+            # self._pair_fn (pair_with_openclaw) above also registers the
+            # agent's Lightbulb channel account + binding — see its docstring.
 
             # Selection-aware additions (marketplace publish flow): the
             # seller picked specific MCP servers + skills in the publish

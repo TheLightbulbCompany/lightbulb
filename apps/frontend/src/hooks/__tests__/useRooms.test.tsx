@@ -165,6 +165,26 @@ describe("useRooms canonical reconciliation", () => {
     expect(releaseActiveRoomSubscription).toHaveBeenCalledOnce();
   });
 
+  it("removes the sending bubble when delivery becomes uncertain", async () => {
+    messaging.sendMessage.mockRejectedValueOnce(new Error("network unavailable"));
+    const { result } = renderHook(() => useRooms(), { wrapper });
+    await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(room.roomId));
+    const request = {
+      clientMessageId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      text: "Check deployment",
+      mentions: [],
+      replyToMessageId: null,
+      threadRootMessageId: null,
+    };
+
+    await act(async () => {
+      await expect(result.current.sendMessage(request)).rejects.toThrow("network unavailable");
+    });
+
+    expect(result.current.optimisticMessages).toEqual([]);
+    expect(result.current.sendState(request.clientMessageId)).toBe("uncertain");
+  });
+
   it("sends over HTTP while live updates reconnect and keeps the canonical mention UUID", async () => {
     const { result } = renderHook(() => useRooms(), { wrapper });
     await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(room.roomId));

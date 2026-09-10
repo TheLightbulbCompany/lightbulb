@@ -308,6 +308,7 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
       void mutateRooms();
       return canonical;
     } catch (error) {
+      setOptimistic((current) => current.filter((message) => message.clientMessageId !== request.clientMessageId));
       setAttempts((current) => new Map(current).set(request.clientMessageId, error instanceof ApiError ? "rejected" : "uncertain"));
       throw error;
     }

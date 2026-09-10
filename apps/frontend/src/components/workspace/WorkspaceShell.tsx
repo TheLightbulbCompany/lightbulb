@@ -28,6 +28,7 @@ import { LaunchJoinModal } from "@/components/chat/LaunchJoinModal";
 import { GetStarted } from "@/components/getstarted/GetStarted";
 import { InlineTeamsNavProvider } from "@/components/chat/InlineTeamsNav";
 import { TeamsEventsProvider } from "@/components/teams/TeamsEventsProvider";
+import { MessagingWorkspaceProvider } from "@/components/messaging/MessagingWorkspaceContext";
 import { CommandPaletteProvider } from "@/components/teams/command-palette/CommandPaletteProvider";
 import { preloadTeamsPanels } from "@/components/teams/TeamsPanelRouter";
 import { DesktopPermissionsGate } from "@/components/desktop/DesktopPermissionsGate";
@@ -39,10 +40,10 @@ import { PANEL_COMPONENTS } from "./panelComponents";
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 import { buildMissionControlLayout } from "./buildDefaultLayout";
-import { readLayout, writeLayout, clearLayout } from "./layoutStorage";
+import { readLayout, writeLayout } from "./layoutStorage";
 import { useBrowserToolAutoOpen } from "./useBrowserToolAutoOpen";
 import { clearClosedPanelFromUrl } from "./urlChannel";
-import { resolvePanelAlias } from "./panelRegistry";
+import { MESSAGES_PANEL_ID, resolvePanelAlias } from "./panelRegistry";
 import { requestFocusComposer } from "@/lib/focusComposerRequest";
 import { deriveReconcilerAction, isCommandTargetOpen } from "./workspaceShellReconciler";
 import {
@@ -51,7 +52,7 @@ import {
   openChatPanel,
   closeSubjectDeleted,
   isShellOperationInProgress,
-  resetWorkspaceLayout,
+  useWorkspaceState,
   getWorkspaceSnapshot,
   refreshWorkspaceSnapshot,
 } from "./workspaceController";
@@ -96,6 +97,15 @@ function DockUnmountSentinel({ onUnmount }: { onUnmount: () => void }): null {
   });
   useEffect(() => () => ref.current(), []);
   return null;
+}
+
+function DesktopMessagingProvider({ children }: { children: React.ReactNode }) {
+  const { activePanelId } = useWorkspaceState();
+  return (
+    <MessagingWorkspaceProvider subscribeToRoom={activePanelId === MESSAGES_PANEL_ID}>
+      {children}
+    </MessagingWorkspaceProvider>
+  );
 }
 
 export function WorkspaceShell(): React.ReactElement {
@@ -191,7 +201,6 @@ function AuthenticatedWorkspace({ scopeId }: { scopeId: string }): React.ReactEl
     const wasOpen = isCommandTargetOpen(
       command,
       snapshot.openPanelIds,
-      () => defaultIdRef.current,
     );
     if (command.descriptor.component === "chat") {
       openChatPanel(command.descriptor.params.agentId);
@@ -276,16 +285,13 @@ function AuthenticatedWorkspace({ scopeId }: { scopeId: string }): React.ReactEl
       runReconciler(window.location.search);
 
       // Clear-on-close: closing the URL-named panel canonicalizes the URL in
-      // place (replace, never push) so refresh can't resurrect it. Sentinel-
-      // unified: closing chat:__default__ while the URL names the concrete
-      // default agent (and vice versa) still clears.
+      // place (replace, never push) so refresh can't resurrect it.
       disposablesRef.current.push(
         api.onDidRemovePanel((panel) => {
           if (isShellOperationInProgress()) return;
           const cleared = clearClosedPanelFromUrl(
             window.location.search,
             panel.id,
-            () => defaultIdRef.current,
           );
           if (cleared !== null) replaceSearchParams(new URLSearchParams(cleared));
         }),
@@ -367,12 +373,6 @@ function AuthenticatedWorkspace({ scopeId }: { scopeId: string }): React.ReactEl
     return () => window.clearTimeout(id);
   }, []);
 
-  const handleResetLayout = useCallback(() => {
-    resetWorkspaceLayout(buildMissionControlLayout);
-    clearLayout(scopeId);
-    capture("workspace_layout_reset");
-  }, [scopeId]);
-
   const navValue = useMemo(
     () => ({
       openDetail: (panelKey: string, id: string) =>
@@ -436,71 +436,69 @@ function AuthenticatedWorkspace({ scopeId }: { scopeId: string }): React.ReactEl
   return (
     <InlineTeamsNavProvider value={navValue}>
       <TeamsEventsProvider>
-        <CommandPaletteProvider>
-          <DesktopPermissionsGate />
-          <div className="workspace-shell">
-            <WorkspaceSidebar
-              chatReady={chatReady}
-              onRecoveryReprovision={() => setRecoveryTriggered(true)}
-            />
-            <div className="workspace-main">
-              <WorkspaceHeader onResetLayout={handleResetLayout} />
-              <div className="workspace-content">
-                <TrialBanner />
-                <OutOfCreditsBanner />
-                <LaunchJoinBanner />
-                <LaunchJoinModal />
-                {showSubscriptionSuccess && (
-                  <div className="subscription-banner">
-                    <p>Subscription confirmed! Your agent is being upgraded.</p>
-                  </div>
-                )}
-                {recoveryTriggered ? (
-                  <ProvisioningStepper trigger="recovery">{dock}</ProvisioningStepper>
-                ) : (
-                  <ProvisioningStepper>{dock}</ProvisioningStepper>
-                )}
-              </div>
-            </div>
-            {chatReady && (
-              <GetStarted
-                derived={getStartedDerived}
-                actions={{
-                  chat: () => {
-                    // Don't act on an empty id: if no real agent exists yet,
-                    // bail rather than opening a chat panel for "".
-                    const target = defaultIdRef.current;
-                    if (!target) return;
-                    // Record the focus intent BEFORE opening: when openChatPanel
-                    // ADDS a new dock panel, its ChatInput hasn't mounted (or
-                    // registered its window listener) yet — the CustomEvent below
-                    // would be lost, so the freshly-mounted composer consumes
-                    // this pending request instead. The already-mounted case is
-                    // covered by the event; its listener also consumes the slot
-                    // so the two paths can't double-fire.
-                    requestFocusComposer(target);
-                    openChatPanel(target);
-                    window.dispatchEvent(
-                      new CustomEvent("getstarted:focus-composer", { detail: { agentId: target } }),
-                    );
-                  },
-                  task: () =>
-                    openPanel("teams-issues", {}, { pushUrl: true, oneShots: { newIssue: "onboarding" } }),
-                  hire: () => openMarketplace({ view: "browse" }),
-                  channel: () => {
-                    const target = defaultIdRef.current;
-                    if (!target) return;
-                    openPanel(
-                      "agent-inspector",
-                      { agent: target, inspectorTab: "channels" },
-                      { pushUrl: true },
-                    );
-                  },
-                }}
+        <DesktopMessagingProvider>
+          <CommandPaletteProvider>
+            <DesktopPermissionsGate />
+            <div className="workspace-shell">
+              <WorkspaceSidebar
+                chatReady={chatReady}
+                onRecoveryReprovision={() => setRecoveryTriggered(true)}
               />
-            )}
-          </div>
-        </CommandPaletteProvider>
+              <div className="workspace-main">
+                <WorkspaceHeader />
+                <div className="workspace-content">
+                  <TrialBanner />
+                  <OutOfCreditsBanner />
+                  <LaunchJoinBanner />
+                  <LaunchJoinModal />
+                  {showSubscriptionSuccess && (
+                    <div className="subscription-banner">
+                      <p>Subscription confirmed! Your agent is being upgraded.</p>
+                    </div>
+                  )}
+                  {recoveryTriggered ? (
+                    <ProvisioningStepper trigger="recovery">{dock}</ProvisioningStepper>
+                  ) : (
+                    <ProvisioningStepper>{dock}</ProvisioningStepper>
+                  )}
+                </div>
+              </div>
+              {chatReady && (
+                <GetStarted
+                  derived={getStartedDerived}
+                  actions={{
+                    chat: () => {
+                      // Don't act on an empty id: if no real agent exists yet,
+                      // bail rather than opening a chat panel for "".
+                      const target = defaultIdRef.current;
+                      if (!target) return;
+                      // Record the focus intent before opening. openChatPanel
+                      // defers delivery until ChatPanel renders the selected DM,
+                      // so this event cannot focus a same-agent composer too soon.
+                      requestFocusComposer(target);
+                      openChatPanel(target);
+                      window.dispatchEvent(
+                        new CustomEvent("getstarted:focus-composer", { detail: { agentId: target } }),
+                      );
+                    },
+                    task: () =>
+                      openPanel("teams-issues", {}, { pushUrl: true, oneShots: { newIssue: "onboarding" } }),
+                    hire: () => openMarketplace({ view: "browse" }),
+                    channel: () => {
+                      const target = defaultIdRef.current;
+                      if (!target) return;
+                      openPanel(
+                        "agent-inspector",
+                        { agent: target, inspectorTab: "channels" },
+                        { pushUrl: true },
+                      );
+                    },
+                  }}
+                />
+              )}
+            </div>
+          </CommandPaletteProvider>
+        </DesktopMessagingProvider>
       </TeamsEventsProvider>
     </InlineTeamsNavProvider>
   );

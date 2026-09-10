@@ -8,7 +8,7 @@ function installMatchMedia(initialMatches: boolean) {
   const listeners = new Set<Listener>();
   const mql = {
     matches: initialMatches,
-    media: "(min-width: 769px)",
+    media: "(min-width: 860px)",
     addEventListener: (_: string, cb: Listener) => listeners.add(cb),
     removeEventListener: (_: string, cb: Listener) => listeners.delete(cb),
   };
@@ -32,9 +32,9 @@ describe("useIsDesktop", () => {
     expect(result.current).toBe(false);
   });
 
-  it("queries exactly (min-width: 769px)", () => {
+  it("queries exactly (min-width: 860px)", () => {
     installMatchMedia(false);
     renderHook(() => useIsDesktop());
-    expect(window.matchMedia).toHaveBeenCalledWith("(min-width: 769px)");
+    expect(window.matchMedia).toHaveBeenCalledWith("(min-width: 860px)");
   });
 });

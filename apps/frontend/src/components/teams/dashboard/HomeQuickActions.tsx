@@ -40,8 +40,8 @@ export function HomeQuickActions({ stripeBound }: { stripeBound: boolean }) {
   const { open: openMarketplace } = useMarketplaceDrawer();
 
   // Mirrors WorkspaceShell's Get Started "chat" action: record the focus
-  // intent BEFORE opening (a freshly added dock panel's composer has not
-  // mounted yet), then open/focus, then fire the event for the mounted case.
+  // intent before opening. Desktop delivery waits for the selected room;
+  // mobile delivers through the event below.
   // Mobile has no dock (`openChatPanel` no-ops on `!_api`), so it swaps the
   // URL to the bare chat view instead; its composer is always mounted.
   const askFriday = (e: MouseEvent<HTMLAnchorElement>) => {

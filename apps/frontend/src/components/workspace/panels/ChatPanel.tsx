@@ -1,39 +1,74 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview-react";
-import { MessagingWorkspace } from "@/components/messaging/MessagingWorkspace";
-import { useAgents, agentDisplayName } from "@/hooks/useAgents";
-import { useWorkspaceState } from "../workspaceController";
+import { MessagingConversation } from "@/components/messaging/MessagingWorkspace";
+import { useMessagingWorkspace } from "@/components/messaging/MessagingWorkspaceContext";
+import { useAgents } from "@/hooks/useAgents";
+import { useDockPanelParams } from "./useDockPanelParams";
 import { DEFAULT_AGENT_SENTINEL } from "../panelRegistry";
+import { syncMessagesPanelAgent } from "../workspaceController";
+import { cancelFocusComposerRequest, releaseFocusComposerRequest } from "@/lib/focusComposerRequest";
 
 interface ChatPanelParams {
-  agentId: string;
+  agentId?: string;
+  agentSelection?: "resolved";
 }
 
 /**
- * The historical chat panel ID remains a durable dock/deep-link identifier, but
- * its content is now the canonical Lightbulb room surface. An agent deep link
- * selects that agent's DM; the room directory remains available beside it.
+ * Agent parameters are one-shot selection intents for the shared conversation.
+ * Room changes must not snap back to the last agent requested by a deep link.
  */
 export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.ReactElement {
-  const { agents, defaultId } = useAgents();
-  const { activePanelId } = useWorkspaceState();
-  const requested = props.params.agentId;
-  const initialAgentId = requested === DEFAULT_AGENT_SENTINEL ? defaultId ?? null : requested;
-  const title = useMemo(() => {
-    const agent = agents.find((candidate) => candidate.id === initialAgentId);
-    return agent ? agentDisplayName(agent) : "Messages";
-  }, [agents, initialAgentId]);
+  const params = useDockPanelParams(props);
+  const { defaultId } = useAgents();
+  const { selectAgentDm, roomProps } = useMessagingWorkspace();
+  const lastRequested = useRef<string | null>(null);
+  const navigationRequest = useRef(0);
+  const [focusDestination, setFocusDestination] = useState<{ agentId: string; roomId: string } | null>(null);
+  const deliveredDestination = useRef<typeof focusDestination>(null);
+  const requested = params.agentSelection === "resolved" ? null : params.agentId === DEFAULT_AGENT_SENTINEL
+    ? defaultId ?? null
+    : params.agentId ?? null;
 
   useEffect(() => {
-    if (props.api.title !== title) props.api.setTitle(title);
-  }, [props.api, title]);
+    if (!requested) {
+      lastRequested.current = null;
+      return;
+    }
+    if (lastRequested.current === requested) return;
+    lastRequested.current = requested;
+    const request = ++navigationRequest.current;
+    void selectAgentDm(requested).then((roomId) => {
+      if (navigationRequest.current !== request) return;
+      if (roomId) setFocusDestination({ agentId: requested, roomId });
+      else cancelFocusComposerRequest(requested);
+    }).catch(() => {
+      if (navigationRequest.current === request) {
+        cancelFocusComposerRequest(requested);
+        lastRequested.current = null;
+      }
+    });
+  }, [requested, selectAgentDm]);
 
-  return (
-    <MessagingWorkspace
-      initialAgentId={initialAgentId}
-      subscribeToRoom={activePanelId === props.api.id}
-    />
-  );
+  const roomId = roomProps?.roomId;
+  const roomAgentId = roomProps?.composer.focusAgentId;
+  const waitingForDefault = params.agentSelection !== "resolved"
+    && params.agentId === DEFAULT_AGENT_SENTINEL && !defaultId;
+  useEffect(() => {
+    // The initial fallback room must not consume a still-unresolved deep link.
+    if (roomId && !waitingForDefault) syncMessagesPanelAgent(roomAgentId);
+  }, [roomId, roomAgentId, params.agentId, params.agentSelection, waitingForDefault]);
+
+  useEffect(() => {
+    if (!focusDestination || focusDestination === deliveredDestination.current || roomId !== focusDestination.roomId) return;
+    deliveredDestination.current = focusDestination;
+    if (releaseFocusComposerRequest(focusDestination.agentId)) {
+      window.dispatchEvent(new CustomEvent("getstarted:focus-composer", {
+        detail: { agentId: focusDestination.agentId },
+      }));
+    }
+  }, [focusDestination, roomId]);
+
+  return <MessagingConversation />;
 }

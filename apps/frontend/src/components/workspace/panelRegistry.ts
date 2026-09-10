@@ -182,6 +182,8 @@ export function chatPanelId(agentId: string): string {
   return `chat:${agentId}`;
 }
 
+export const MESSAGES_PANEL_ID = chatPanelId(DEFAULT_AGENT_SENTINEL);
+
 export function describePanel(
   panelKey: string,
   params: Record<string, string>,
@@ -192,7 +194,7 @@ export function describePanel(
     const agentId = params.agent ?? params.agentId;
     if (!agentId) return null;
     return {
-      panelId: chatPanelId(agentId),
+      panelId: MESSAGES_PANEL_ID,
       component: "chat",
       title: "Messages",
       params: { agentId },
@@ -323,6 +325,7 @@ export function durableParamsFor(panelId: string): string[] {
 // param (an agent filter, an inspector tab) survives an unfiltered navigation
 // — breaking the mobile invariant that plain panel nav drops stale state.
 export function clearablePanelParamKeys(panelId: string): string[] {
+  if (panelId === MESSAGES_PANEL_ID) return ["agentId", "agentSelection"];
   if (panelId === "teams-agents") return ["view"];
   if (panelId === "teams-issues") return ["agent", "groupBy"];
   if (panelId === "teams-inbox") return ["section"];

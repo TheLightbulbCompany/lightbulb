@@ -5,7 +5,8 @@ import { Hash, MessageCircle, Plus, Users } from "lucide-react";
 import type { ListenMode, RoomKind } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Identity } from "@/components/teams/shared/components/Identity";
-import { roomKindLabel, type DirectoryParticipant, type ParticipantSelection, type RoomSummary } from "./types";
+import { ParticipantAvatar } from "./ParticipantAvatar";
+import { roomDisplayName, roomKindLabel, type DirectoryParticipant, type ParticipantSelection, type DirectoryRoom } from "./types";
 import "./messaging.css";
 
 export interface ConversationCreation {
@@ -16,7 +17,7 @@ export interface ConversationCreation {
 
 export interface RoomDirectoryProps {
   ownerScopeId: string;
-  rooms: readonly RoomSummary[];
+  rooms: readonly DirectoryRoom[];
   participants: readonly DirectoryParticipant[];
   state: "loading" | "ready" | "error" | "access-removed";
   currentRoomId?: string;
@@ -56,8 +57,9 @@ function DirectoryContent({
     const needle = query.toLocaleLowerCase();
     return participant.displayName.toLocaleLowerCase().includes(needle) || participant.mentionHandle?.includes(needle);
   });
+  const partialError = state === "error" && rooms.length > 0;
 
-  if (state !== "ready") return <nav className="room-directory" aria-label="Conversations">
+  if (state !== "ready" && !partialError) return <nav className="room-directory" aria-label="Conversations">
     <h2 className="font-semibold">Conversations</h2>
     <p role="status">{state === "loading" ? "Loading conversations…" : state === "access-removed" ? "Access removed" : "Conversations could not be loaded."}</p>
     {state === "loading" && <div aria-hidden="true" className="room-skeleton"><span /><span /><span /></div>}
@@ -93,6 +95,7 @@ function DirectoryContent({
       {onCreate && <Button variant="ghost" size="icon" aria-label="New conversation" disabled={creationBusy}
         onClick={() => { setCreating(true); setSelected(new Map()); setQuery(""); setKind("channel"); }}><Plus aria-hidden="true" /></Button>}
     </div>
+    {partialError && <div role="alert" className="px-2 text-sm text-err">Some conversation details could not be loaded. {onRetry && <Button variant="outline" onClick={onRetry}>Try again</Button>}</div>}
     {(["Channels", "Direct messages"] as const).map((group) => {
       const entries = rooms.filter((room) => group === "Channels" ? room.kind === "channel" : room.kind !== "channel");
       return <section key={group} aria-label={group}>
@@ -100,10 +103,12 @@ function DirectoryContent({
         {entries.length === 0 && <p className="text-sm text-muted-foreground px-2">{group === "Channels" ? "Create a channel for shared work." : "Start a conversation with people or agents."}</p>}
         <ul>{entries.map((room) => {
           const Icon = room.kind === "channel" ? Hash : room.kind === "group-dm" ? Users : MessageCircle;
-          const label = room.name ?? (room.kind === "dm" ? "Direct message" : "Group message");
+          const label = roomDisplayName(room, room.participants);
           return <li key={room.roomId}><button type="button" className={`room-directory-entry ${room.unreadCount > 0 ? "font-semibold" : ""}`}
             aria-current={room.roomId === currentRoomId ? "page" : undefined} onClick={() => onSelectRoom(room.roomId)}>
-            <Icon size={16} aria-hidden="true" />
+            {room.kind === "dm" && room.participants.length === 1
+              ? <ParticipantAvatar participant={room.participants[0]} size="sm" />
+              : <Icon size={16} aria-hidden="true" />}
             <span className="min-w-0 flex-1"><span className="block truncate" title={label}>{label}</span><span className="sr-only">{roomKindLabel[room.kind]}</span></span>
             {room.unreadCount > 0 && <span className="room-count" aria-label={`${room.unreadCount} unread messages`}>{room.unreadCount}</span>}
           </button></li>;
@@ -144,7 +149,7 @@ function DirectoryContent({
             {creating && <input aria-label={`Select ${participant.displayName}`} type="checkbox" checked={!!selection} disabled={creationBusy || (!selection && selected.size >= 31)} onChange={(event) => toggleParticipant(participant, event.target.checked)} />}
             <Identity name={participant.displayName} avatarOnly size="sm" />
             <span className="min-w-0 flex-1"><span className="block truncate" title={participant.displayName}>{participant.displayName}</span>
-              <span className="text-sm text-muted-foreground">{participant.kind === "agent" && participant.mentionHandle ? `@${participant.mentionHandle}` : "Person"}</span></span>
+              <span className="text-sm text-muted-foreground">{participant.kind === "agent" ? participant.mentionHandle ? `@${participant.mentionHandle}` : "Agent" : "Person"}</span></span>
             {creating && selection?.kind === "agent" && <label className="sr-only" htmlFor={`${id}-${participant.id}-listen`}>Listen mode for {participant.displayName}</label>}
             {creating && selection?.kind === "agent" && <select id={`${id}-${participant.id}-listen`} className="room-listen-mode" value={selection.listenMode ?? "mentions"}
               onChange={(event) => setListenMode(participant, event.target.value as ListenMode)}>

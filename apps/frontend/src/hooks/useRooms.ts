@@ -13,6 +13,7 @@ import {
   type MessagePage,
   type PatchRoomRequest,
   type RoomMember,
+  type RoomDetail,
   type UpsertRoomMemberRequest,
 } from "@lightbulb/shared";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
@@ -73,8 +74,48 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
   const roomsData = roomsResponse.data;
   const mutateRooms = roomsResponse.mutate;
   const rooms = roomsData?.rooms ?? NO_ROOMS;
+  const directoryDetailCache = useRef(new Map<string, RoomDetail>());
+  const getCachedDirectoryRoomDetails = useCallback(() => {
+    const details = new Map<string, RoomDetail>();
+    for (const room of rooms) {
+      if (room.kind === "channel") continue;
+      const detail = directoryDetailCache.current.get(`${room.roomId}:${room.roomRevision}`);
+      if (detail) details.set(detail.roomId, detail);
+    }
+    return details;
+  }, [rooms]);
+  const directRoomSignature = rooms
+    .filter((room) => room.kind !== "channel")
+    .map((room) => `${room.roomId}:${room.roomRevision}`)
+    .join("|");
+  const loadDirectoryRoomDetails = useCallback(async (): Promise<Map<string, RoomDetail>> => {
+    // A cold agent shortcut must await the list, not interpret loading as no DMs.
+    const listed = roomsData ?? await mutateRooms();
+    if (!listed) throw new Error("Conversations are not ready.");
+    const directRooms = listed.rooms.filter((room) => room.kind !== "channel");
+    const results = await Promise.allSettled(directRooms.map((room) => messaging.getRoom(room.roomId)));
+    const details = new Map<string, RoomDetail>();
+    results.forEach((result, index) => {
+      if (result.status !== "fulfilled") return;
+      const room = directRooms[index];
+      directoryDetailCache.current.set(`${room.roomId}:${room.roomRevision}`, result.value);
+      details.set(result.value.roomId, result.value);
+    });
+    const failed = results.find((result) => result.status === "rejected");
+    if (failed?.status === "rejected") throw failed.reason;
+    return details;
+  }, [messaging, roomsData, mutateRooms]);
+  const directoryDetailsResponse = useSWR(
+    scope && roomsData ? ["messaging-room-directory", scope, directRoomSignature] : null,
+    loadDirectoryRoomDetails,
+    { revalidateOnFocus: false, shouldRetryOnError: false },
+  );
+  const directoryRoomDetails: ReadonlyMap<string, RoomDetail> = directoryDetailsResponse.data ?? getCachedDirectoryRoomDetails();
+  const directoryError = directoryDetailsResponse.error as Error | undefined;
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const initialDmRequest = useRef<{ agentId: string; clientRoomId: string } | null>(null);
+  const handledInitialAgent = useRef<string | null>(null);
+  const selectionRequest = useRef(0);
   const [accessRemoved, setAccessRemoved] = useState(false);
   const [deliveryOverride, setDeliveryOverride] = useState<{ roomId: string; deliveryKey: string; roomRevision: number } | null>(null);
   const detailResponse = useSWR(
@@ -102,45 +143,6 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
   const generation = useRef(0);
   const requestedAfter = useRef<number | null>(null);
   const reconciliation = useRef<Promise<void> | null>(null);
-
-  useEffect(() => {
-    if (!roomsData || activeRoomId) return;
-    let cancelled = false;
-    if (!initialAgentId) {
-      if (rooms.length > 0) setActiveRoomId(rooms[0].roomId);
-      return;
-    }
-    void Promise.all(rooms
-      .filter((room) => room.kind === "dm")
-      .map((room) => messaging.getRoom(room.roomId).catch(() => null)))
-      .then(async (details) => {
-        const dm = details.find((detail) => detail?.members.some(
-          (member) => member.kind === "agent" && member.id === initialAgentId,
-        ));
-        if (dm) return dm;
-        const creation = initialDmRequest.current?.agentId === initialAgentId
-          ? initialDmRequest.current
-          : { agentId: initialAgentId, clientRoomId: crypto.randomUUID() };
-        initialDmRequest.current = creation;
-        return messaging.createRoom({
-          clientRoomId: creation.clientRoomId,
-          kind: "dm",
-          name: null,
-          members: [{ kind: "agent", id: initialAgentId, role: "member", listenMode: "active" }],
-        });
-      })
-      .then((dm) => {
-        if (cancelled) return;
-        setActiveRoomId(dm.roomId);
-        void mutateRooms();
-      })
-      .catch(() => {
-        if (!cancelled && rooms.length > 0) setActiveRoomId(rooms[0].roomId);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [roomsData, rooms, activeRoomId, initialAgentId, messaging, mutateRooms]);
 
   useEffect(() => {
     generation.current += 1;
@@ -321,13 +323,19 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
 
   const sendMessage = useCallback(async (request: CreateMessageRequest) => {
     if (!activeRoomId) throw new Error("No room selected.");
+    const roomId = activeRoomId;
+    const sendGeneration = generation.current;
     requests.current.set(request.clientMessageId, request);
     setAttempts((current) => new Map(current).set(request.clientMessageId, "sending"));
     setOptimistic((current) => current.some((message) => message.clientMessageId === request.clientMessageId)
       ? current
-      : [...current, { ...request, roomId: activeRoomId, createdAt: new Date().toISOString() }]);
+      : [...current, { ...request, roomId, createdAt: new Date().toISOString() }]);
     try {
-      const canonical = await messaging.sendMessage(activeRoomId, request);
+      const canonical = await messaging.sendMessage(roomId, request);
+      if (generation.current !== sendGeneration) {
+        void mutateRooms();
+        return canonical;
+      }
       const merged = mergeCanonicalMessages(messagesRef.current, [canonical]);
       messagesRef.current = merged;
       setMessages(merged);
@@ -336,8 +344,10 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
       void mutateRooms();
       return canonical;
     } catch (error) {
-      setOptimistic((current) => current.filter((message) => message.clientMessageId !== request.clientMessageId));
-      setAttempts((current) => new Map(current).set(request.clientMessageId, error instanceof ApiError ? "rejected" : "uncertain"));
+      if (generation.current === sendGeneration) {
+        setOptimistic((current) => current.filter((message) => message.clientMessageId !== request.clientMessageId));
+        setAttempts((current) => new Map(current).set(request.clientMessageId, error instanceof ApiError ? "rejected" : "uncertain"));
+      }
       throw error;
     }
   }, [activeRoomId, messaging, mutateRooms]);
@@ -350,15 +360,70 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
   }, [reconcile, sendMessage]);
 
   const selectRoom = useCallback((roomId: string) => {
+    selectionRequest.current += 1;
     setActiveRoomId(roomId);
   }, []);
 
-  const createRoom = useCallback(async (request: CreateRoomRequest) => {
+  const createRoom = useCallback(async (request: CreateRoomRequest, requestId = ++selectionRequest.current) => {
     const created = await messaging.createRoom(request);
     await mutateRooms();
-    setActiveRoomId(created.roomId);
+    if (requestId === selectionRequest.current) setActiveRoomId(created.roomId);
     return created;
   }, [messaging, mutateRooms]);
+
+  const selectAgentDm = useCallback(async (agentId: string): Promise<string | null> => {
+    const requestId = ++selectionRequest.current;
+    let details = directoryDetailsResponse.data ?? getCachedDirectoryRoomDetails();
+    let hydrationError = directoryDetailsResponse.error;
+    if (!directoryDetailsResponse.data && !hydrationError) {
+      try {
+        details = await loadDirectoryRoomDetails();
+      } catch (error) {
+        details = getCachedDirectoryRoomDetails();
+        hydrationError = error;
+      }
+    }
+    if (requestId !== selectionRequest.current) return null;
+    const existing = [...details.values()].find(
+      (detail) => detail.kind === "dm" && detail.members.some(
+        (member) => member.kind === "agent" && member.id === agentId,
+      ),
+    );
+    if (existing) {
+      setActiveRoomId(existing.roomId);
+      return existing.roomId;
+    }
+    if (hydrationError) throw hydrationError;
+    const request = initialDmRequest.current?.agentId === agentId
+      ? initialDmRequest.current
+      : { agentId, clientRoomId: crypto.randomUUID() };
+    initialDmRequest.current = request;
+    const created = await createRoom({
+      clientRoomId: request.clientRoomId,
+      kind: "dm",
+      name: null,
+      members: [{ kind: "agent", id: agentId, role: "member", listenMode: "active" }],
+    }, requestId);
+    return requestId === selectionRequest.current ? created.roomId : null;
+  }, [createRoom, directoryDetailsResponse.data, directoryDetailsResponse.error, getCachedDirectoryRoomDetails, loadDirectoryRoomDetails]);
+
+  useEffect(() => {
+    if (!roomsData) return;
+    if (!initialAgentId) {
+      handledInitialAgent.current = null;
+      if (!activeRoomId && rooms.length > 0) setActiveRoomId(rooms[0].roomId);
+      return;
+    }
+    const requestKey = `${scope}:${initialAgentId}`;
+    if (handledInitialAgent.current === requestKey) return;
+    handledInitialAgent.current = requestKey;
+    const requestId = selectionRequest.current + 1;
+    void selectAgentDm(initialAgentId).catch(() => {
+      if (handledInitialAgent.current === requestKey && selectionRequest.current === requestId && rooms.length > 0) {
+        setActiveRoomId(rooms[0].roomId);
+      }
+    });
+  }, [activeRoomId, initialAgentId, rooms, roomsData, scope, selectAgentDm]);
 
   const updateRoom = useCallback(async (request: PatchRoomRequest) => {
     if (!activeRoomId) throw new Error("No room selected.");
@@ -401,6 +466,8 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
     rooms,
     roomsError: roomsResponse.error as Error | undefined,
     roomsLoading: roomsResponse.isLoading,
+    directoryError,
+    directoryLoading: directoryDetailsResponse.isLoading,
     activeRoomId,
     activeRoom,
     roomError: detailResponse.error as Error | undefined,
@@ -413,7 +480,9 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
     liveConnected,
     httpReady,
     selectRoom,
-    refreshRooms: () => mutateRooms(),
+    selectAgentDm,
+    directoryRoomDetails,
+    refreshRooms: () => Promise.all([mutateRooms(), directoryDetailsResponse.mutate()]),
     refreshRoom: () => mutateRoom(),
     createRoom,
     updateRoom,

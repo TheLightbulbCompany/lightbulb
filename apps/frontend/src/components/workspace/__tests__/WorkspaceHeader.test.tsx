@@ -20,7 +20,7 @@ vi.mock("@/components/ui/tooltip", () => ({
 
 vi.mock("@clerk/nextjs", () => {
   const UserButton = Object.assign(
-    ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
+    ({ children }: { children?: React.ReactNode }) => <div aria-label="Profile">{children}</div>,
     {
       MenuItems: ({ children }: { children: React.ReactNode }) => <>{children}</>,
       Link: () => null,
@@ -35,11 +35,16 @@ import { WorkspaceHeader } from "../WorkspaceHeader";
 
 describe("WorkspaceHeader", () => {
   it("opens the existing command palette from a visible search control", () => {
-    render(<WorkspaceHeader onResetLayout={vi.fn()} />);
+    render(<WorkspaceHeader />);
 
     fireEvent.click(screen.getByRole("button", { name: /Search agents, issues, and projects/ }));
 
     expect(setPaletteOpen).toHaveBeenCalledWith(true);
     expect(screen.getByText("⌘/Ctrl K")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Browse workspace files" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Watch your agents' browser" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Get help" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Profile")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reset workspace layout" })).not.toBeInTheDocument();
   });
 });

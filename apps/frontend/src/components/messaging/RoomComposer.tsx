@@ -5,6 +5,7 @@ import { AtSign, Send } from "lucide-react";
 import type { CreateMessageRequest, MemberRef } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { consumeFocusComposerRequest } from "@/lib/focusComposerRequest";
 import type { RoomParticipant } from "./types";
 import "./messaging.css";
 
@@ -15,6 +16,7 @@ export interface RoomComposerProps {
   selectedMentions: readonly MemberRef[];
   onMentionsChange: (mentions: MemberRef[]) => void;
   defaultAgentId?: string;
+  focusAgentId?: string;
   clientMessageId: string;
   sendState: "idle" | "sending" | "persisted" | "uncertain" | "rejected";
   onSubmit: (request: CreateMessageRequest) => void | Promise<void>;
@@ -40,6 +42,7 @@ function ComposerAttempt({
   selectedMentions,
   onMentionsChange,
   defaultAgentId,
+  focusAgentId,
   clientMessageId,
   sendState,
   onSubmit,
@@ -52,6 +55,7 @@ function ComposerAttempt({
   onTypingChange,
 }: RoomComposerProps) {
   const fieldId = useId();
+  const field = useRef<HTMLTextAreaElement>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [submitted, setSubmitted] = useState(sendState !== "idle");
@@ -63,6 +67,21 @@ function ComposerAttempt({
   const locked = useRef(sendState !== "idle");
   const retryLocked = useRef(false);
   const evidenceVersion = useRef(0);
+
+  useEffect(() => {
+    if (!focusAgentId) return;
+    const applyFocusRequest = (event?: Event) => {
+      const requestedAgent = (event as CustomEvent<{ agentId?: string }> | undefined)?.detail?.agentId;
+      if (requestedAgent && requestedAgent !== focusAgentId) return;
+      const request = consumeFocusComposerRequest(focusAgentId);
+      if (!request) return;
+      if (request.draft && !text.trim()) onTextChange(request.draft);
+      field.current?.focus();
+    };
+    applyFocusRequest();
+    window.addEventListener("getstarted:focus-composer", applyFocusRequest);
+    return () => window.removeEventListener("getstarted:focus-composer", applyFocusRequest);
+  }, [focusAgentId, onTextChange, text]);
 
   useEffect(() => {
     if (sendState === "rejected") retryLocked.current = false;
@@ -153,7 +172,7 @@ function ComposerAttempt({
   return <form className="room-composer" aria-label={`${label} composer`} aria-busy={pending || retryPending}
     onSubmit={(event) => { event.preventDefault(); submit(); }}>
     <label className="font-semibold text-sm" htmlFor={fieldId}>{label}</label>
-    <Textarea id={fieldId} value={text} disabled={!editable} rows={3} aria-invalid={!!error}
+    <Textarea ref={field} id={fieldId} value={text} disabled={!editable} rows={3} aria-invalid={!!error}
       aria-describedby={`${fieldId}-help ${fieldId}-status`} placeholder="Write a message…"
       onChange={(event) => { onTextChange(event.target.value); onTypingChange?.(!!event.target.value.trim()); }}
       onBlur={() => onTypingChange?.(false)} onCompositionStart={() => { composing.current = true; }}

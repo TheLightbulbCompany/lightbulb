@@ -4,8 +4,6 @@
 import {
   describePanel,
   durableParamsFor,
-  chatPanelId,
-  DEFAULT_AGENT_SENTINEL,
   ONE_SHOT_PARAMS,
   NON_COMMAND_PARAMS,
   type PanelDescriptor,
@@ -100,33 +98,8 @@ export function clearPanelFromUrl(search: string, closedPanelId: string): string
   return result === before ? null : result;
 }
 
-// clearPanelFromUrl with sentinel unification for chat panels. The Mission
-// Control sentinel panel (chat:__default__) durably means "the default
-// agent", but a URL command carrying the concrete default id parses to
-// chat:<concrete> — a raw id compare would leave ?agent uncleared when the
-// user closes the sentinel tab (and vice versa), so a refresh resurrects the
-// deliberately closed panel. Tries the closed id first, then its sentinel /
-// concrete twin when the resolver knows the default agent.
-export function clearClosedPanelFromUrl(
-  search: string,
-  closedPanelId: string,
-  resolveDefaultAgentId: () => string | undefined,
-): string | null {
-  const candidates = [closedPanelId];
-  const resolved = resolveDefaultAgentId();
-  if (resolved) {
-    if (closedPanelId === chatPanelId(DEFAULT_AGENT_SENTINEL)) {
-      candidates.push(chatPanelId(resolved));
-    } else if (closedPanelId === chatPanelId(resolved)) {
-      candidates.push(chatPanelId(DEFAULT_AGENT_SENTINEL));
-    }
-  }
-  for (const candidate of candidates) {
-    const cleared = clearPanelFromUrl(search, candidate);
-    if (cleared !== null) return cleared;
-  }
-  return null;
-}
+// All chat URL forms now name Messages directly.
+export { clearPanelFromUrl as clearClosedPanelFromUrl };
 
 // Dismissing a durable panel param (the Tasks agent-filter chip) must also
 // strip that param from the URL when the CURRENT URL command names the same

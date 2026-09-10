@@ -69,6 +69,36 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+      - name: Setup Node for OpenClaw 9.3
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.16.0"
+          cache: npm
+          cache-dependency-path: apps/infra/openclaw/plugins/lightbulb-channel/package-lock.json
+      - name: Test and build native Lightbulb channel
+        run: |
+          set -euo pipefail
+          npm ci
+          npm test
+          npm run build
+          if [ -n "$(git status --porcelain -- dist)" ]; then
+            git status --short -- dist
+            exit 1
+          fi
+
+          STATE_DIR=$(mktemp -d)
+          trap 'rm -rf "${STATE_DIR}"' EXIT
+          mkdir -p "${STATE_DIR}/extensions"
+          ln -s "${PWD}" "${STATE_DIR}/extensions/lightbulb-channel"
+          OPENCLAW_STATE_DIR="${STATE_DIR}" \
+          OPENCLAW_CONFIG_PATH="${PWD}/fixtures/production.json" \
+            node node_modules/openclaw/openclaw.mjs config validate --json \
+            > "${STATE_DIR}/validation.json"
+          node -e '
+            const result = require(process.argv[1]);
+            if (result.valid !== true) throw new Error("Lightbulb production fixture is invalid");
+          ' "${STATE_DIR}/validation.json"
+        working-directory: apps/infra/openclaw/plugins/lightbulb-channel
       - name: Setup uv
         uses: astral-sh/setup-uv@v4
       - name: Install backend dependencies
@@ -264,7 +294,12 @@ jobs:
           }
 
           PROOF_DIR=$(mktemp -d)
-          trap 'rm -rf "${PROOF_DIR}"' EXIT
+          CHANNEL_PROOF_CONTAINER="lightbulb-channel-proof-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup_proof() {
+            docker rm -f "${CHANNEL_PROOF_CONTAINER}" >/dev/null 2>&1 || true
+            rm -rf "${PROOF_DIR}"
+          }
+          trap cleanup_proof EXIT
 
           docker run --rm -i --entrypoint node "${IMAGE_REF}" --input-type=module - \
             > "${PROOF_DIR}/versions.json" <<'NODE'
@@ -281,6 +316,7 @@ jobs:
             tokenjuice: ["/app/dist/extensions/tokenjuice/package.json", "2026.9.3"],
             "sage-openclaw": ["/app/dist/extensions/sage-openclaw/package.json", "0.11.0"],
             "lightbulb-marketplace": ["/app/dist/extensions/lightbulb-marketplace/package.json", "0.1.0"],
+            "lightbulb-channel": ["/app/dist/extensions/lightbulb-channel/package.json", "0.1.0"],
             "aws-exec-profile": ["/app/dist/extensions/aws-exec-profile/package.json", "0.0.1"],
             "paperclip-exec-creds": ["/app/dist/extensions/paperclip-exec-creds/package.json", "0.0.1"],
           };
@@ -300,6 +336,112 @@ jobs:
             /qualification/qualify.mjs /qualification/configs \
             > "${PROOF_DIR}/runtime.json"
 
+          docker run --rm \
+            -e OPENCLAW_CONFIG_PATH=/app/dist/extensions/lightbulb-channel/fixtures/production.json \
+            -e OPENCLAW_STATE_DIR=/tmp/lightbulb-channel-validation \
+            -e ISOL8_API_URL=https://qualification.invalid \
+            -e ISOL8_OWNER_ID=qualification-owner \
+            -e OPENCLAW_HOOK_TOKEN=qualification-hook \
+            --entrypoint node "${IMAGE_REF}" \
+            /app/openclaw.mjs config validate --json \
+            > "${PROOF_DIR}/lightbulb-config.json"
+          node -e '
+            const result = require(process.argv[1]);
+            if (result.valid !== true) throw new Error("Baked Lightbulb fixture is invalid");
+          ' "${PROOF_DIR}/lightbulb-config.json"
+
+          docker run -d --name "${CHANNEL_PROOF_CONTAINER}" \
+            -e OPENCLAW_CONFIG_PATH=/app/dist/extensions/lightbulb-channel/fixtures/production.json \
+            -e OPENCLAW_STATE_DIR=/tmp/lightbulb-channel-runtime \
+            -e ISOL8_API_URL=https://qualification.invalid \
+            -e ISOL8_OWNER_ID=qualification-owner \
+            -e OPENCLAW_HOOK_TOKEN=qualification-hook \
+            --entrypoint node "${IMAGE_REF}" \
+            /app/openclaw.mjs gateway --port 18789 >/dev/null
+
+          docker exec -i "${CHANNEL_PROOF_CONTAINER}" node --input-type=module - <<'NODE'
+          import { readFile } from "node:fs/promises";
+          const friday = "11111111-1111-4111-8111-111111111111";
+          const gauge = "22222222-2222-4222-8222-222222222222";
+          const room = "33333333-3333-4333-8333-333333333333";
+          const token = "qualification-gateway-token";
+          const origin = "http://127.0.0.1:18789";
+          const deadline = Date.now() + 30_000;
+
+          async function waitFor(check, label) {
+            while (Date.now() < deadline) {
+              try {
+                if (await check()) return;
+              } catch {}
+              await new Promise((resolve) => setTimeout(resolve, 100));
+            }
+            throw new Error(`${label} timed out`);
+          }
+
+          await waitFor(async () => (await fetch(`${origin}/healthz`)).ok, "Lightbulb gateway readiness");
+          for (const accountId of [friday, gauge]) {
+            await waitFor(async () => {
+              const response = await fetch(
+                `${origin}/plugins/lightbulb-channel/inbound/${accountId}`,
+                {
+                  method: "POST",
+                  headers: {
+                    authorization: `Bearer ${token}`,
+                    "content-type": "application/json",
+                  },
+                  body: "{}",
+                },
+              );
+              return response.status === 400;
+            }, `Lightbulb route ${accountId}`);
+          }
+
+          const fixture = JSON.parse(
+            await readFile("/app/dist/extensions/lightbulb-channel/fixtures/production.json", "utf8"),
+          );
+          const { default: entry } = await import(
+            "/app/dist/extensions/lightbulb-channel/dist/index.js"
+          );
+          const route = await entry.channelPlugin.messaging.resolveOutboundSessionRoute({
+            cfg: fixture,
+            agentId: friday,
+            accountId: friday,
+            target: `lightbulb:${room}`,
+          });
+          const expectedSession = `agent:${friday}:lightbulb:channel:${room}`;
+          if (route?.sessionKey !== expectedSession || route.baseSessionKey !== expectedSession) {
+            throw new Error("Lightbulb native session route is incorrect");
+          }
+
+          const messageResponse = await fetch(`${origin}/tools/invoke`, {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${token}`,
+              "content-type": "application/json",
+              "x-openclaw-message-channel": "lightbulb",
+              "x-openclaw-account-id": friday,
+              "x-openclaw-message-to": `lightbulb:${room}`,
+            },
+            body: JSON.stringify({
+              tool: "message",
+              agentId: friday,
+              sessionKey: expectedSession,
+              idempotencyKey: "lightbulb-image-proof",
+              args: {
+                action: "send",
+                channel: "lightbulb",
+                target: `lightbulb:${room}`,
+                message: "qualification",
+                dryRun: true,
+              },
+            }),
+          });
+          const messageResult = await messageResponse.json();
+          if (messageResponse.status !== 200 || messageResult.ok !== true) {
+            throw new Error(`Native message tool is unavailable (${messageResponse.status})`);
+          }
+          NODE
+
           docker run --rm --entrypoint node "${IMAGE_REF}" \
             --test /app/dist/extensions/aws-exec-profile/index.test.mjs
           docker run --rm --entrypoint node "${IMAGE_REF}" \
@@ -310,6 +452,7 @@ jobs:
             echo ""
             echo "- Architecture: \`${ARCHITECTURE}\`"
             echo "- Runtime: generated Bedrock, BYOK, and ChatGPT configs validated and loaded"
+            echo "- Lightbulb: 9.3 plugin config, Friday/Gauge routes, exact room session, and effective message tool verified"
             echo "- Contracts: configured plugins/providers/tools plus Lobster → LLM Task dispatch verified"
             echo ""
             echo '```json'

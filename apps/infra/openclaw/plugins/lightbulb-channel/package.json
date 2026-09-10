@@ -1,0 +1,29 @@
+{
+  "name": "lightbulb-channel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.9.3"
+  },
+  "devDependencies": {
+    "openclaw": "2026.9.3",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

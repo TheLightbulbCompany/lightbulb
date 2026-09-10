@@ -1,0 +1,844 @@
+/**
+ * Lightbulb channel — the logic half.
+ *
+ * Every OpenClaw SDK *runtime* dependency is injected (`LightbulbSdk`) so this
+ * file is testable without loading the gateway into the test process; the SDK
+ * types are imported as types only. `index.ts` wires the real SDK.
+ *
+ * Contract (frozen in docs/superpowers/specs/2026-09-09-native-multiplayer-
+ * messaging-architecture.md §5): one channel account per local agent, keyed by
+ * that agent's id; each room is `agent:<agentId>:lightbulb:channel:<roomId>`.
+ */
+import type { IncomingMessage, ServerResponse } from "node:http";
+import type {
+  buildChannelInboundEventContext,
+  ChannelBotLoopProtectionFacts,
+  resolveChannelInboundRouteEnvelope,
+} from "openclaw/plugin-sdk/channel-inbound";
+import type { resolveStableChannelMessageIngress } from "openclaw/plugin-sdk/channel-ingress-runtime";
+import type { ChannelGatewayContext } from "openclaw/plugin-sdk/channel-contract";
+import type {
+  ChannelMessageSendTextContext,
+  ChannelMessageUnknownSendContext,
+  ChannelMessageUnknownSendReconciliationResult,
+  MessageReceipt,
+  waitUntilAbort,
+} from "openclaw/plugin-sdk/channel-outbound";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import type { channelReadyPatch, channelStoppedPatch } from "openclaw/plugin-sdk/gateway-runtime";
+import type { createIngressEffectOnce } from "openclaw/plugin-sdk/ingress-effect-once";
+import type { PluginRuntime } from "openclaw/plugin-sdk/runtime-store";
+import type {
+  applyBasicWebhookRequestGuards,
+  readJsonWebhookBodyOrReject,
+  registerPluginHttpRoute,
+} from "openclaw/plugin-sdk/webhook-ingress";
+
+export const CHANNEL_ID = "lightbulb";
+export const PLUGIN_ID = "lightbulb";
+export const ROUTE_PREFIX = "/plugins/lightbulb-channel/inbound/";
+export const MAX_BODY_BYTES = 1_048_576;
+export const BODY_TIMEOUT_MS = 30_000;
+export const UNKNOWN_SEND_RECONCILIATION_TIMEOUT_MS = 10_000;
+export const MAX_TEXT_BYTES = 100_000;
+export const MAX_EVENT_ID_BYTES = 256;
+export const MAX_HISTORY = 50;
+export const MAX_PARTICIPANTS = 128;
+export const EFFECT_ONCE = {
+  ttlMs: 8 * 24 * 60 * 60 * 1000,
+  stateMaxEntries: 100_000,
+  memoryMaxSize: 5_000,
+} as const;
+export const DURABLE_FINAL_CAPABILITIES = {
+  text: true,
+  replyTo: true,
+  thread: true,
+  messageSendingHooks: true,
+  reconcileUnknownSend: true,
+} as const;
+
+/** Mirrors the host's canonical agent-id rule, narrowed to lowercase inputs. */
+const AGENT_ID_PATTERN = "^[a-z0-9][a-z0-9_-]{0,63}$";
+const AGENT_ID_RE = new RegExp(AGENT_ID_PATTERN);
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const UTC_RFC3339_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|\+00:00)$/;
+
+/** The same object feeds openclaw.plugin.json (manifest validation) and buildJsonChannelConfigSchema (runtime). */
+export const CHANNEL_CONFIG_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    enabled: { type: "boolean" },
+    accounts: {
+      type: "object",
+      propertyNames: { pattern: AGENT_ID_PATTERN },
+      additionalProperties: {
+        type: "object",
+        additionalProperties: false,
+        properties: { enabled: { type: "boolean" } },
+      },
+    },
+  },
+} as const;
+
+export type LightbulbAccount = { accountId: string; enabled: boolean; configured: boolean };
+
+type LightbulbChannelConfig = { enabled?: boolean; accounts?: Record<string, { enabled?: boolean }> };
+
+function channelConfig(cfg: OpenClawConfig): LightbulbChannelConfig {
+  return ((cfg.channels as Record<string, unknown> | undefined)?.[CHANNEL_ID] ??
+    {}) as LightbulbChannelConfig;
+}
+
+export function listAccountIds(cfg: OpenClawConfig): string[] {
+  return Object.keys(channelConfig(cfg).accounts ?? {})
+    .filter((id) => AGENT_ID_RE.test(id))
+    .sort();
+}
+
+export function resolveAccount(cfg: OpenClawConfig, accountId?: string | null): LightbulbAccount {
+  const id = (accountId ?? "").trim();
+  const channel = channelConfig(cfg);
+  const account = AGENT_ID_RE.test(id) ? channel.accounts?.[id] : undefined;
+  return {
+    accountId: id || "default",
+    configured: account !== undefined,
+    enabled: channel.enabled !== false && account !== undefined && account.enabled !== false,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Environment + backend addressing
+// ---------------------------------------------------------------------------
+
+export type RawEnv = Record<string, string | undefined>;
+
+export class LightbulbConfigurationError extends Error {
+  override name = "LightbulbConfigurationError";
+}
+
+/** ISOL8_OWNER_ID is an identifier; OPENCLAW_HOOK_TOKEN is what the backend timing-safely checks. */
+export function resolveEnv(env: RawEnv): { base: string; ownerId: string; token: string } {
+  const base = (env.ISOL8_API_URL ?? "").trim().replace(/\/$/, "");
+  const ownerId = (env.ISOL8_OWNER_ID ?? "").trim();
+  const token = (env.OPENCLAW_HOOK_TOKEN ?? "").trim();
+  if (!base) throw new LightbulbConfigurationError("ISOL8_API_URL is not set on this container");
+  if (!ownerId) throw new LightbulbConfigurationError("ISOL8_OWNER_ID is not set on this container");
+  if (!token) throw new LightbulbConfigurationError("OPENCLAW_HOOK_TOKEN is not set on this container");
+  return { base, ownerId, token };
+}
+
+export function agentMessagesPath(ownerId: string): string {
+  return `/api/v1/internal/messaging/agent-messages/${encodeURIComponent(ownerId)}`;
+}
+
+export function receiptPath(ownerId: string, eventId: string): string {
+  return `${agentMessagesPath(ownerId)}/receipts/${encodeURIComponent(eventId)}`;
+}
+
+/** `lightbulb:<roomUuid>` (or a bare UUID) -> the room UUID; anything else is not a target. */
+export function normalizeTarget(raw: string): string | undefined {
+  const target = raw.trim().replace(/^lightbulb:/i, "");
+  return UUID_RE.test(target) ? target : undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Outbound: native message adapter
+// ---------------------------------------------------------------------------
+
+export type OutboundBody = {
+  eventId: string;
+  roomId: string;
+  agentId: string;
+  text: string;
+  replyToMessageId: string | null;
+  threadRootMessageId: string | null;
+};
+
+/** Durable queue id + part index first, then the prepared id; never a minted key. */
+export function resolveOutboundEventId(
+  ctx: Pick<ChannelMessageSendTextContext, "deliveryQueueId" | "deliveryPartIndex" | "preparedMessageId">,
+): string {
+  const queueId = ctx.deliveryQueueId;
+  if (queueId?.trim()) {
+    const part = ctx.deliveryPartIndex ?? 0;
+    if (!Number.isSafeInteger(part) || part < 0) {
+      throw new Error("lightbulb: durable delivery part index is invalid");
+    }
+    return requireOpaqueEventId(`${queueId}:${part}`);
+  }
+  return requireOpaqueEventId(ctx.preparedMessageId ?? "");
+}
+
+function requireOpaqueEventId(value: string): string {
+  if (!value.trim() || Buffer.byteLength(value, "utf8") > MAX_EVENT_ID_BYTES) {
+    throw new Error("lightbulb: send has no valid stable host idempotency id (queue or prepared)");
+  }
+  return value;
+}
+
+export function buildOutboundBody(ctx: ChannelMessageSendTextContext): OutboundBody {
+  const roomId = normalizeTarget(ctx.to);
+  if (!roomId) throw new Error("lightbulb: outbound target is not a room id");
+  const agentId = (ctx.accountId ?? "").trim();
+  if (!AGENT_ID_RE.test(agentId)) throw new Error("lightbulb: outbound send has no bound account");
+  return {
+    eventId: resolveOutboundEventId(ctx),
+    roomId,
+    agentId,
+    text: ctx.text,
+    replyToMessageId: ctx.replyToId ?? null,
+    threadRootMessageId: ctx.threadId == null ? null : String(ctx.threadId),
+  };
+}
+
+function receiptResponse(value: unknown, roomId: string) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("lightbulb: backend receipt is malformed");
+  }
+  const row = value as Record<string, unknown>;
+  const keys = Object.keys(row).sort();
+  if (keys.join(",") !== "createdAt,messageId,roomId") {
+    throw new Error("lightbulb: backend receipt is malformed");
+  }
+  const messageId = typeof row.messageId === "string" ? row.messageId : "";
+  const createdAt = typeof row.createdAt === "string" ? row.createdAt : "";
+  const sentAt = UTC_RFC3339_RE.test(createdAt) ? Date.parse(createdAt) : NaN;
+  if (!messageId.trim() || row.roomId !== roomId || !Number.isFinite(sentAt)) {
+    throw new Error("lightbulb: backend receipt is malformed");
+  }
+  return { messageId, sentAt };
+}
+
+/** Exact `{messageId, roomId, createdAt}` -> exact 9.3 MessageReceipt. */
+export function toReceipt(value: unknown, roomId: string): MessageReceipt {
+  const { messageId, sentAt } = receiptResponse(value, roomId);
+  return {
+    primaryPlatformMessageId: messageId,
+    platformMessageIds: [messageId],
+    parts: [{ platformMessageId: messageId, kind: "text", index: 0 }],
+    sentAt,
+  };
+}
+
+export type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
+
+export function createOutbound(deps: { fetch: FetchLike; env: () => RawEnv }) {
+  const request = async (
+    resolved: ReturnType<typeof resolveEnv>,
+    path: string,
+    init: RequestInit,
+    signal?: AbortSignal,
+  ) =>
+    await deps.fetch(`${resolved.base}${path}`, {
+      ...init,
+      headers: { ...(init.headers ?? {}), Authorization: `Bearer ${resolved.token}` },
+      signal,
+    });
+
+  return {
+    async sendText(ctx: ChannelMessageSendTextContext) {
+      const resolved = resolveEnv(deps.env());
+      const body = buildOutboundBody(ctx);
+      const res = await request(
+        resolved,
+        agentMessagesPath(resolved.ownerId),
+        { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
+        ctx.signal,
+      );
+      if (res.status !== 201) throw new Error(`lightbulb: backend rejected the message (${res.status})`);
+      const receipt = toReceipt(await res.json(), body.roomId);
+      return { messageId: receipt.primaryPlatformMessageId, receipt };
+    },
+    async reconcileUnknownSend(
+      ctx: ChannelMessageUnknownSendContext,
+    ): Promise<ChannelMessageUnknownSendReconciliationResult> {
+      const roomId = normalizeTarget(ctx.to);
+      if (!roomId) return { status: "unresolved", error: "invalid room target", retryable: false };
+      let eventId: string;
+      try {
+        eventId = requireOpaqueEventId(`${ctx.queueId}:0`);
+      } catch {
+        return { status: "unresolved", error: "invalid durable queue id", retryable: false };
+      }
+      try {
+        const resolved = resolveEnv(deps.env());
+        const res = await request(
+          resolved,
+          receiptPath(resolved.ownerId, eventId),
+          { method: "GET" },
+          AbortSignal.timeout(UNKNOWN_SEND_RECONCILIATION_TIMEOUT_MS),
+        );
+        if (res.status === 404) return { status: "not_sent" };
+        if (res.status !== 200) return { status: "unresolved", retryable: true };
+        const receipt = toReceipt(await res.json(), roomId);
+        return { status: "sent", receipt, messageId: receipt.primaryPlatformMessageId };
+      } catch {
+        return { status: "unresolved", retryable: true };
+      }
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Inbound DTO (LightbulbRoomIngress, version 1) — strict, unknown fields rejected
+// ---------------------------------------------------------------------------
+
+export type CanonicalRoomMessage = {
+  messageId: string;
+  roomId: string;
+  messageSeq: number;
+  roomRevision: number;
+  author: { kind: "human" | "agent" | "system"; id: string; displayName: string };
+  text: string;
+  mentions: Array<{ kind: "human" | "agent"; id: string }>;
+  replyToMessageId: string | null;
+  threadRootMessageId: string | null;
+  createdAt: string;
+  runId: string | null;
+};
+
+export type LightbulbRoomIngress = {
+  version: 1;
+  eventId: string;
+  targetAgentId: string;
+  eventKind: "user_request" | "room_event";
+  room: { id: string; name: string | null; kind: "channel" | "dm" | "group-dm"; revision: number };
+  sender: { kind: "human" | "agent" | "system"; id: string; displayName: string };
+  message: CanonicalRoomMessage;
+  mentions: Array<{ kind: "human" | "agent"; id: string }>;
+  participants: Array<{
+    kind: "human" | "agent";
+    id: string;
+    displayName: string;
+    mentionHandle?: string;
+    listenMode?: "active" | "mentions" | "observe";
+  }>;
+  recentHistory: CanonicalRoomMessage[];
+};
+
+class Invalid extends Error {}
+
+type Rec = Record<string, unknown>;
+
+function obj(v: unknown, path: string, keys: string[]): Rec {
+  if (!v || typeof v !== "object" || Array.isArray(v)) throw new Invalid(`${path}: expected object`);
+  for (const key of Object.keys(v)) {
+    if (!keys.includes(key)) throw new Invalid(`${path}.${key}: unknown field`);
+  }
+  return v as Rec;
+}
+function str(v: unknown, path: string): string {
+  if (typeof v !== "string") throw new Invalid(`${path}: expected string`);
+  return v;
+}
+function nonEmpty(v: unknown, path: string): string {
+  const s = str(v, path);
+  if (!s.trim()) throw new Invalid(`${path}: expected non-empty string`);
+  return s;
+}
+function uuid(v: unknown, path: string): string {
+  const s = str(v, path);
+  if (!UUID_RE.test(s)) throw new Invalid(`${path}: expected lowercase RFC-4122 uuid`);
+  return s;
+}
+function nullableUuid(v: unknown, path: string): string | null {
+  return v === null ? null : uuid(v, path);
+}
+function int(v: unknown, path: string): number {
+  if (typeof v !== "number" || !Number.isInteger(v) || v < 0) throw new Invalid(`${path}: expected non-negative integer`);
+  return v;
+}
+function oneOf<T extends string>(v: unknown, path: string, allowed: readonly T[]): T {
+  if (typeof v !== "string" || !allowed.includes(v as T)) throw new Invalid(`${path}: expected one of ${allowed.join("|")}`);
+  return v as T;
+}
+function list(v: unknown, path: string, max: number): unknown[] {
+  if (!Array.isArray(v)) throw new Invalid(`${path}: expected array`);
+  if (v.length > max) throw new Invalid(`${path}: more than ${max} entries`);
+  return v;
+}
+function memberRef(v: unknown, path: string) {
+  const row = obj(v, path, ["kind", "id"]);
+  const kind = oneOf(row.kind, `${path}.kind`, ["human", "agent"]);
+  const id = nonEmpty(row.id, `${path}.id`);
+  if (kind === "agent" && !AGENT_ID_RE.test(id)) {
+    throw new Invalid(`${path}.id: expected lowercase agent id`);
+  }
+  return { kind, id };
+}
+function text(v: unknown, path: string): string {
+  const s = str(v, path);
+  if (Buffer.byteLength(s, "utf8") > MAX_TEXT_BYTES) throw new Invalid(`${path}: exceeds ${MAX_TEXT_BYTES} bytes`);
+  return s;
+}
+function rfc3339(v: unknown, path: string): string {
+  const s = str(v, path);
+  if (!UTC_RFC3339_RE.test(s) || !Number.isFinite(Date.parse(s))) {
+    throw new Invalid(`${path}: expected UTC RFC-3339 timestamp`);
+  }
+  return s;
+}
+
+function canonicalMessage(v: unknown, path: string): CanonicalRoomMessage {
+  const r = obj(v, path, [
+    "messageId", "roomId", "messageSeq", "roomRevision", "author", "text", "mentions",
+    "replyToMessageId", "threadRootMessageId", "createdAt", "runId",
+  ]);
+  const authorRaw = obj(r.author, `${path}.author`, ["kind", "id", "displayName"]);
+  const author = {
+    kind: oneOf(authorRaw.kind, `${path}.author.kind`, ["human", "agent", "system"]),
+    id: nonEmpty(authorRaw.id, `${path}.author.id`),
+    displayName: nonEmpty(authorRaw.displayName, `${path}.author.displayName`),
+  } as const;
+  if (author.kind === "agent" && !AGENT_ID_RE.test(author.id)) {
+    throw new Invalid(`${path}.author.id: expected lowercase agent id`);
+  }
+  return {
+    messageId: uuid(r.messageId, `${path}.messageId`),
+    roomId: uuid(r.roomId, `${path}.roomId`),
+    messageSeq: int(r.messageSeq, `${path}.messageSeq`),
+    roomRevision: int(r.roomRevision, `${path}.roomRevision`),
+    author,
+    text: text(r.text, `${path}.text`),
+    mentions: list(r.mentions, `${path}.mentions`, MAX_PARTICIPANTS).map((m, i) => memberRef(m, `${path}.mentions[${i}]`)),
+    replyToMessageId: nullableUuid(r.replyToMessageId, `${path}.replyToMessageId`),
+    threadRootMessageId: nullableUuid(r.threadRootMessageId, `${path}.threadRootMessageId`),
+    createdAt: rfc3339(r.createdAt, `${path}.createdAt`),
+    runId: r.runId === null ? null : nonEmpty(r.runId, `${path}.runId`),
+  };
+}
+
+export function parseIngress(
+  value: unknown,
+): { ok: true; value: LightbulbRoomIngress } | { ok: false; error: string } {
+  try {
+    const r = obj(value, "body", [
+      "version", "eventId", "targetAgentId", "eventKind", "room", "sender", "message",
+      "mentions", "participants", "recentHistory",
+    ]);
+    if (r.version !== 1) throw new Invalid("body.version: expected 1");
+    const roomRaw = obj(r.room, "body.room", ["id", "name", "kind", "revision"]);
+    const senderRaw = obj(r.sender, "body.sender", ["kind", "id", "displayName"]);
+    const targetAgentId = str(r.targetAgentId, "body.targetAgentId");
+    if (!AGENT_ID_RE.test(targetAgentId)) throw new Invalid("body.targetAgentId: expected lowercase agent id");
+
+    const room = {
+      id: uuid(roomRaw.id, "body.room.id"),
+      name: roomRaw.name === null ? null : str(roomRaw.name, "body.room.name"),
+      kind: oneOf(roomRaw.kind, "body.room.kind", ["channel", "dm", "group-dm"]),
+      revision: int(roomRaw.revision, "body.room.revision"),
+    } as const;
+    const sender = {
+      kind: oneOf(senderRaw.kind, "body.sender.kind", ["human", "agent", "system"]),
+      id: nonEmpty(senderRaw.id, "body.sender.id"),
+      displayName: nonEmpty(senderRaw.displayName, "body.sender.displayName"),
+    } as const;
+    if (sender.kind === "agent" && !AGENT_ID_RE.test(sender.id)) {
+      throw new Invalid("body.sender.id: expected lowercase agent id");
+    }
+
+    const message = canonicalMessage(r.message, "body.message");
+    const eventId = uuid(r.eventId, "body.eventId");
+    if (eventId !== message.messageId) throw new Invalid("body.eventId: must equal message.messageId");
+    if (message.roomId !== room.id) throw new Invalid("body.message.roomId: must equal room.id");
+    if (
+      message.author.kind !== sender.kind ||
+      message.author.id !== sender.id ||
+      message.author.displayName !== sender.displayName
+    ) {
+      throw new Invalid("body.sender: must equal message.author");
+    }
+
+    const mentions = list(r.mentions, "body.mentions", MAX_PARTICIPANTS).map((m, i) =>
+      memberRef(m, `body.mentions[${i}]`),
+    );
+    if (JSON.stringify(mentions) !== JSON.stringify(message.mentions)) {
+      throw new Invalid("body.mentions: must equal message.mentions");
+    }
+    const participants = list(r.participants, "body.participants", MAX_PARTICIPANTS).map((p, i) => {
+      const path = `body.participants[${i}]`;
+      const pr = obj(p, path, ["kind", "id", "displayName", "mentionHandle", "listenMode"]);
+      const participant = memberRef({ kind: pr.kind, id: pr.id }, path);
+      const mentionHandle =
+        pr.mentionHandle === undefined ? undefined : nonEmpty(pr.mentionHandle, `${path}.mentionHandle`);
+      if (mentionHandle !== undefined && !/^[a-z0-9][a-z0-9_-]{0,31}$/.test(mentionHandle)) {
+        throw new Invalid(`${path}.mentionHandle: expected lowercase mention handle`);
+      }
+      return {
+        ...participant,
+        displayName: nonEmpty(pr.displayName, `${path}.displayName`),
+        ...(mentionHandle !== undefined ? { mentionHandle } : {}),
+        ...(pr.listenMode !== undefined
+          ? { listenMode: oneOf(pr.listenMode, `${path}.listenMode`, ["active", "mentions", "observe"]) }
+          : {}),
+      };
+    });
+    if (!participants.some((participant) => participant.kind === "agent" && participant.id === targetAgentId)) {
+      throw new Invalid("body.participants: target agent is absent");
+    }
+
+    const recentHistory = list(r.recentHistory, "body.recentHistory", MAX_HISTORY).map((entry, i) =>
+      canonicalMessage(entry, `body.recentHistory[${i}]`),
+    );
+    let previousSeq = -1;
+    for (const [index, history] of recentHistory.entries()) {
+      if (history.roomId !== room.id) {
+        throw new Invalid(`body.recentHistory[${index}].roomId: must equal room.id`);
+      }
+      if (history.messageSeq >= message.messageSeq || history.messageSeq <= previousSeq) {
+        throw new Invalid("body.recentHistory: expected prior messages in oldest-to-newest order");
+      }
+      previousSeq = history.messageSeq;
+    }
+
+    return {
+      ok: true,
+      value: {
+        version: 1,
+        eventId,
+        targetAgentId,
+        eventKind: oneOf(r.eventKind, "body.eventKind", ["user_request", "room_event"]),
+        room,
+        sender,
+        message,
+        mentions,
+        participants,
+        recentHistory,
+      },
+    };
+  } catch (error) {
+    if (error instanceof Invalid) return { ok: false, error: error.message };
+    throw error;
+  }
+}
+
+/** Exact 9.3 HistoryEntry rows; canonical DTOs never reach the SDK directly. */
+export function toHistoryEntries(rows: readonly CanonicalRoomMessage[]) {
+  return rows.map((row) => ({
+    sender: row.author.displayName,
+    body: row.text,
+    timestamp: Date.parse(row.createdAt),
+    messageId: row.messageId,
+  }));
+}
+
+export function sessionKeyFor(agentId: string, roomId: string): string {
+  return `agent:${agentId}:${CHANNEL_ID}:channel:${roomId}`;
+}
+
+// ---------------------------------------------------------------------------
+// Inbound: per-account gateway route -> native channel turn
+// ---------------------------------------------------------------------------
+
+export type LightbulbSdk = {
+  applyBasicWebhookRequestGuards: typeof applyBasicWebhookRequestGuards;
+  readJsonWebhookBodyOrReject: typeof readJsonWebhookBodyOrReject;
+  resolveChannelInboundRouteEnvelope: typeof resolveChannelInboundRouteEnvelope;
+  resolveStableChannelMessageIngress: typeof resolveStableChannelMessageIngress;
+  buildChannelInboundEventContext: typeof buildChannelInboundEventContext;
+  createIngressEffectOnce: typeof createIngressEffectOnce;
+};
+
+export type InboundDeps = {
+  sdk: LightbulbSdk;
+  cfg: OpenClawConfig;
+  accountId: string;
+  channelRuntime: PluginRuntime["channel"];
+  env: () => RawEnv;
+};
+
+/** Status-bearing rejection raised inside the guarded effect; maps to the HTTP reply. */
+export class IngressRejected extends Error {
+  constructor(
+    readonly status: 409 | 500,
+    message: string,
+    readonly details?: Record<string, unknown>,
+  ) {
+    super(message);
+  }
+}
+
+function json(res: ServerResponse, status: number, body: Record<string, unknown>): true {
+  res.statusCode = status;
+  res.setHeader("content-type", "application/json; charset=utf-8");
+  res.setHeader("cache-control", "no-store");
+  res.end(JSON.stringify(body));
+  return true;
+}
+
+export async function dispatchRoomEvent(deps: InboundDeps, event: LightbulbRoomIngress): Promise<void> {
+  const { sdk, cfg, accountId, channelRuntime } = deps;
+  const { room, sender, message, eventKind } = event;
+
+  const { route, buildEnvelope } = sdk.resolveChannelInboundRouteEnvelope({
+    cfg,
+    channel: CHANNEL_ID,
+    accountId,
+    peer: { kind: "channel", id: room.id },
+  });
+  const expectedSessionKey = sessionKeyFor(accountId, room.id);
+  if (route.agentId !== accountId || route.sessionKey !== expectedSessionKey) {
+    throw new IngressRejected(500, "lightbulb: route does not resolve to the account's room session", {
+      agentId: route.agentId,
+      sessionKey: route.sessionKey,
+    });
+  }
+
+  const wasMentioned = event.mentions.some((m) => m.kind === "agent" && m.id === accountId);
+  // Only an authenticated human asking for something may run commands.
+  const commandAuthorized = eventKind === "user_request" && sender.kind === "human";
+  const ingress = await sdk.resolveStableChannelMessageIngress({
+    channelId: CHANNEL_ID,
+    accountId,
+    cfg,
+    identity: { key: "sender", entryIdPrefix: "lightbulb-entry" },
+    subject: { stableId: sender.id },
+    conversation: { kind: "channel", id: room.id, ...(room.name ? { title: room.name } : {}) },
+    contextBinding: {
+      agentId: route.agentId,
+      sessionKey: route.sessionKey,
+      messageId: event.eventId,
+      inboundEventKind: eventKind,
+    },
+    // The gateway token plus Lightbulb's membership check is the boundary; the
+    // SDK otherwise defaults every group ingress to disabled.
+    groupPolicy: "open",
+    mentionFacts: { canDetectMention: true, wasMentioned, hasAnyMention: event.mentions.length > 0 },
+    ...(commandAuthorized ? {} : { command: false }),
+  });
+  if (ingress.ingress.admission !== "dispatch") {
+    throw new IngressRejected(409, "lightbulb: channel ingress declined the event", {
+      admission: ingress.ingress.admission,
+    });
+  }
+
+  const timestamp = Date.parse(message.createdAt);
+  const target = `${CHANNEL_ID}:${room.id}`;
+  const ctxPayload = sdk.buildChannelInboundEventContext({
+    channel: CHANNEL_ID,
+    accountId: route.accountId ?? accountId,
+    messageId: event.eventId,
+    messageIdFull: event.eventId,
+    timestamp,
+    from: `${CHANNEL_ID}:${sender.id}`,
+    sender: { id: sender.id, name: sender.displayName, isBot: sender.kind !== "human", isSelf: false },
+    conversation: {
+      kind: "channel",
+      id: room.id,
+      ...(room.name ? { label: room.name } : {}),
+      routePeer: { kind: "channel", id: room.id },
+    },
+    route: {
+      agentId: route.agentId,
+      dmScope: route.dmScope,
+      accountId: route.accountId,
+      routeSessionKey: route.sessionKey,
+      dispatchSessionKey: route.sessionKey,
+    },
+    reply: {
+      to: target,
+      originatingTo: target,
+      ...(message.replyToMessageId ? { replyToId: message.replyToMessageId } : {}),
+      ...(message.threadRootMessageId ? { messageThreadId: message.threadRootMessageId } : {}),
+    },
+    message: {
+      inboundEventKind: eventKind,
+      body: buildEnvelope({ channel: "Lightbulb", from: sender.displayName, timestamp, body: message.text }),
+      bodyForAgent: message.text,
+      rawBody: message.text,
+      commandBody: message.text,
+      inboundHistory: toHistoryEntries(event.recentHistory),
+    },
+    access: {
+      commands: { authorized: commandAuthorized },
+      mentions: {
+        canDetectMention: true,
+        wasMentioned,
+        hasAnyMention: event.mentions.length > 0,
+        explicitlyMentionedBot: wasMentioned,
+        mentionedUserIds: event.mentions.filter((m) => m.kind === "human").map((m) => m.id),
+      },
+    },
+    channelIngress: ingress,
+    extra: {
+      ChannelStructuredContext: [
+        {
+          label: "Lightbulb room",
+          type: "lightbulb_room",
+          payload: {
+            room,
+            sender,
+            mentions: event.mentions,
+            participants: event.participants,
+            eventKind,
+          },
+        },
+      ],
+      ...(commandAuthorized ? {} : { CommandInterpretationSuppressed: true }),
+    },
+  });
+
+  const botLoopProtection: ChannelBotLoopProtectionFacts | undefined =
+    sender.kind === "agent"
+      ? {
+          scopeId: `${CHANNEL_ID}:${resolveEnv(deps.env()).ownerId}`,
+          conversationId: room.id,
+          senderId: sender.id,
+          receiverId: accountId,
+          eventId: event.eventId,
+          defaultsConfig: cfg.channels?.defaults?.botLoopProtection,
+          defaultEnabled: true,
+        }
+      : undefined;
+
+  const dispatch = await channelRuntime.inbound.dispatch({
+    cfg,
+    channel: CHANNEL_ID,
+    accountId,
+    route: { agentId: route.agentId, dmScope: route.dmScope, sessionKey: route.sessionKey },
+    ctxPayload,
+    messageId: event.eventId,
+    ...(botLoopProtection ? { botLoopProtection } : {}),
+    replyPipeline: {},
+    delivery: {
+      // Addressed requests deliver their final through the durable message
+      // adapter (stable queue id); ambient room events never auto-post.
+      preparePayload: (payload, info) =>
+        eventKind === "user_request" && info.kind === "final" ? payload : null,
+      durable:
+        eventKind === "user_request"
+          ? {
+              to: target,
+              replyToId: message.replyToMessageId,
+              threadId: message.threadRootMessageId ?? undefined,
+              requiredCapabilities: DURABLE_FINAL_CAPABILITIES,
+            }
+          : false,
+      deliver: async () => {
+        throw new Error("lightbulb: direct delivery is not supported; finals must use the durable adapter");
+      },
+    },
+  });
+  if (dispatch.admission.kind !== "dispatch") {
+    throw new IngressRejected(409, "lightbulb: channel declined the turn", {
+      admission: dispatch.admission.kind,
+      reason: dispatch.admission.reason,
+    });
+  }
+  if (!dispatch.dispatched) {
+    throw new IngressRejected(500, "lightbulb: channel accepted the turn without dispatching it");
+  }
+}
+
+export function createInboundHandler(deps: InboundDeps) {
+  const { sdk, accountId } = deps;
+  const effectOnce = sdk.createIngressEffectOnce({
+    pluginId: PLUGIN_ID,
+    namespacePrefix: `lightbulb-inbound-${accountId}`,
+    ...EFFECT_ONCE,
+  });
+  return async (req: IncomingMessage, res: ServerResponse): Promise<boolean> => {
+    if (!sdk.applyBasicWebhookRequestGuards({ req, res, allowMethods: ["POST"], requireJsonContentType: true })) {
+      return true;
+    }
+    const body = await sdk.readJsonWebhookBodyOrReject({
+      req,
+      res,
+      maxBytes: MAX_BODY_BYTES,
+      timeoutMs: BODY_TIMEOUT_MS,
+      invalidJsonMessage: "invalid JSON body",
+    });
+    if (!body.ok) return true;
+    const parsed = parseIngress(body.value);
+    if (!parsed.ok) return json(res, 400, { error: "invalid_ingress", message: parsed.error });
+    const event = parsed.value;
+    if (event.targetAgentId !== accountId) {
+      return json(res, 400, { error: "invalid_ingress", message: "targetAgentId does not match this route" });
+    }
+    if (event.sender.kind === "agent" && event.sender.id === accountId) {
+      return json(res, 409, { error: "not_admitted", message: "an agent never receives its own message" });
+    }
+    try {
+      const outcome = await effectOnce.runOnce({
+        eventId: event.eventId,
+        effect: "dispatch",
+        run: () => dispatchRoomEvent(deps, event),
+      });
+      return json(res, 202, { eventId: event.eventId, status: outcome.kind === "replayed" ? "replayed" : "dispatched" });
+    } catch (error) {
+      if (error instanceof IngressRejected) {
+        return json(res, error.status, {
+          error: error.status === 409 ? "not_admitted" : "dispatch_failed",
+          message: error.message,
+          ...error.details,
+        });
+      }
+      return json(res, 500, { error: "dispatch_failed", message: "lightbulb: inbound dispatch failed" });
+    }
+  };
+}
+
+export type GatewayDeps = {
+  sdk: LightbulbSdk;
+  env: () => RawEnv;
+  registerPluginHttpRoute: typeof registerPluginHttpRoute;
+  waitUntilAbort: typeof waitUntilAbort;
+  channelReadyPatch: typeof channelReadyPatch;
+  channelStoppedPatch: typeof channelStoppedPatch;
+};
+
+/** Own one exact gateway-auth route for one configured agent account. */
+export async function startGatewayAccount(
+  ctx: ChannelGatewayContext<LightbulbAccount>,
+  deps: GatewayDeps,
+): Promise<void> {
+  const { account } = ctx;
+  if (
+    !AGENT_ID_RE.test(ctx.accountId) ||
+    account.accountId !== ctx.accountId ||
+    !account.configured ||
+    !account.enabled
+  ) {
+    throw new Error("lightbulb: channel account is not configured and enabled");
+  }
+
+  ctx.setStatus({
+    accountId: account.accountId,
+    running: true,
+    connected: false,
+    lifecycle: "starting",
+    configured: true,
+    enabled: true,
+  });
+
+  let unregister: (() => void) | undefined;
+  try {
+    if (!ctx.channelRuntime) {
+      throw new Error("lightbulb: channel runtime is unavailable");
+    }
+    const handler = createInboundHandler({
+      sdk: deps.sdk,
+      cfg: ctx.cfg,
+      accountId: account.accountId,
+      channelRuntime: ctx.channelRuntime as PluginRuntime["channel"],
+      env: deps.env,
+    });
+    unregister = deps.registerPluginHttpRoute({
+      path: `${ROUTE_PREFIX}${account.accountId}`,
+      auth: "gateway",
+      match: "exact",
+      pluginId: PLUGIN_ID,
+      source: "lightbulb-channel-gateway",
+      accountId: account.accountId,
+      replaceExisting: true,
+      throwOnFailure: true,
+      handler,
+    });
+    ctx.setStatus(deps.channelReadyPatch({ accountId: account.accountId }));
+    await deps.waitUntilAbort(ctx.abortSignal);
+  } finally {
+    unregister?.();
+    ctx.setStatus(deps.channelStoppedPatch({ accountId: account.accountId }));
+  }
+}

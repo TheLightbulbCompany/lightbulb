@@ -641,6 +641,11 @@ RUN set -eux; \
 COPY plugins/lightbulb-marketplace /app/dist/extensions/lightbulb-marketplace
 RUN chown -R root:root /app/dist/extensions/lightbulb-marketplace
 
+# ---- Layer 12e: native Lightbulb multiplayer channel ----
+# Dependency-free first-party channel plugin. The committed dist/ is the baked
+# artifact; its public plugin-sdk imports resolve from /app via Layer 17.
+COPY --chown=root:root plugins/lightbulb-channel /app/dist/extensions/lightbulb-channel
+
 # ---- Layer 13: externalized ACP runtime backend (acpx) ----
 # acpx is the official ACP runtime plugin that lets a native OpenClaw agent
 # (e.g. Forge) spawn external coding harnesses — Claude Code, Codex, Gemini —

@@ -1480,22 +1480,35 @@ class TestContainerStatusTrialConversion:
 
     @pytest.mark.asyncio
     async def test_plain_stopped_row_still_auto_retries(self):
-        """Regression: an ordinary stopped row (no conversion marker) keeps the
-        pre-existing auto-retry behaviour."""
+        """A stopped workspace initializes its trial before auto-retry gating."""
         from routers.container import container_status
 
         row = {"service_name": "svc", "status": "stopped", "substatus": None}
         repo = self._repo(row)
         captured: list[str] = []
+        initialized = False
+
+        async def initialize(_auth, owner_id):
+            nonlocal initialized
+            assert owner_id == "org_x"
+            initialized = True
+
+        async def gate(**_kwargs):
+            assert initialized, "status auto-retry evaluated its gate before trial initialization"
+            return None
+
         with contextlib.ExitStack() as stack:
             for p in self._patches(row, captured=captured, repo=repo):
                 stack.enter_context(p)
+            stack.enter_context(patch("routers.container.ensure_workspace_trial_default", new=initialize))
+            stack.enter_context(patch("routers.container.evaluate_provision_gate", new=gate))
             result = await container_status(_workspace_auth())
 
         # The racy status pre-write is deliberately gone — dispatch_provision's
         # atomic lease claim IS the transition to "provisioning" now. The poll
         # only dispatches and shapes its own response.
         repo.update_status.assert_not_awaited()
+        assert initialized is True
         assert captured == ["dispatch_provision"], f"expected the ordinary auto-retry, got {captured}"
         assert result["container_status"] == "provisioning"
         assert result["container_substatus"] == "auto_retry"

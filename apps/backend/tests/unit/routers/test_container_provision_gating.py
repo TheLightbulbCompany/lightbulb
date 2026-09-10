@@ -348,6 +348,39 @@ async def test_provision_existing_container_skips_payment_gate():
 
 
 @pytest.mark.asyncio
+async def test_provision_stopped_container_initializes_trial_before_start_guard():
+    """A stopped workspace cannot reach the ECS start guard before trial creation."""
+    from routers import container as container_mod
+
+    initialized = False
+
+    async def initialize(_auth, owner_id):
+        nonlocal initialized
+        assert owner_id == "org_paid"
+        initialized = True
+
+    async def start(owner_id):
+        assert owner_id == "org_paid"
+        assert initialized, "stopped container reached its start guard before trial initialization"
+
+    manager = MagicMock(start_user_service=AsyncMock(side_effect=start))
+    with (
+        patch.object(container_mod, "ensure_workspace_trial_default", new=initialize),
+        patch.object(
+            container_mod.container_repo,
+            "get_by_owner_id",
+            new=AsyncMock(return_value={"status": "stopped", "service_name": "openclaw-existing"}),
+        ),
+        patch.object(container_mod, "get_ecs_manager", return_value=manager),
+    ):
+        result = await container_mod.container_provision(auth=_auth())
+
+    assert initialized is True
+    assert result["status"] == "provisioning"
+    assert result["already_existed"] is True
+
+
+@pytest.mark.asyncio
 async def test_provision_402_returns_structured_blocked_payload():
     """Per provision-gate-ui spec: _assert_provision_allowed must raise
     402 with a structured `blocked` payload (not a free-form string)."""

@@ -889,9 +889,12 @@ async def container_provision(
     auth: AuthContext = Depends(get_current_user),
 ):
     owner_id = resolve_owner_id(auth)
+    await ensure_workspace_trial_default(auth, owner_id)
 
-    # Check if container already exists (idempotent). The payment gate
-    # below is intentionally NOT applied to existing containers — billing
+    # Check if container already exists (idempotent). Trial initialization is
+    # conditional and preserves any paid/existing billing row, but must happen
+    # before a stopped container reaches start_user_service's trial gate.
+    # The payment gate below is intentionally NOT applied to existing containers — billing
     # state can churn (cancel + resubscribe) and we don't want a stale
     # 402 to mask the actual container the caller is asking about.
     existing = await container_repo.get_by_owner_id(owner_id)
@@ -962,8 +965,6 @@ async def container_provision(
             "owner_id": owner_id,
             "already_existed": True,
         }
-
-    await ensure_workspace_trial_default(auth, owner_id)
 
     # Payment gate (audit C1). New-container path only — the existing-
     # container branch above intentionally bypasses this so we don't 402

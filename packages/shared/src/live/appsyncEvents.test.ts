@@ -154,7 +154,7 @@ describe("connection handshake", () => {
     await flush();
     const ws = FakeSocket.instances[0];
     ws.open();
-    ws.receive({ type: "data", id: "anything", event: [JSON.stringify(liveEvent())] });
+    ws.receive({ type: "data", id: "anything", event: JSON.stringify(liveEvent()) });
     expect(events).toEqual([]);
     expect(ws.sentOf("subscribe")).toEqual([]);
     expect(statuses.every((s) => !s.connected)).toBe(true);
@@ -211,10 +211,10 @@ describe("subscriptions", () => {
     ws.ack();
     await flush();
     const id = ws.sentOf("subscribe")[0].id;
-    ws.receive({ type: "data", id, event: [JSON.stringify(liveEvent())] });
+    ws.receive({ type: "data", id, event: JSON.stringify(liveEvent()) });
     expect(events).toEqual([]);
     ws.receive({ type: "subscribe_success", id });
-    ws.receive({ type: "data", id, event: [JSON.stringify(liveEvent())] });
+    ws.receive({ type: "data", id, event: JSON.stringify(liveEvent()) });
     expect(events).toHaveLength(1);
     client.close();
   });
@@ -234,11 +234,11 @@ describe("subscriptions", () => {
     expect(ws.sentOf("unsubscribe")).toEqual([{ type: "unsubscribe", id: oldId }]);
     expect(ws.sentOf("subscribe").map((s) => s.channel)).toEqual([USER, ROOM, nextRoom]);
     // A frame on the replaced subscription id is stale — never delivered.
-    ws.receive({ type: "data", id: oldId, event: [JSON.stringify(liveEvent())] });
+    ws.receive({ type: "data", id: oldId, event: JSON.stringify(liveEvent()) });
     expect(events).toEqual([]);
     ws.ackSubscribe(nextRoom);
     const newId = ws.sentOf("subscribe").find((s) => s.channel === nextRoom)!.id;
-    ws.receive({ type: "data", id: newId, event: [JSON.stringify(liveEvent())] });
+    ws.receive({ type: "data", id: newId, event: JSON.stringify(liveEvent()) });
     expect(events).toHaveLength(1);
     client.close();
   });
@@ -271,7 +271,7 @@ describe("subscriptions", () => {
     client.close();
     expect(ws.sentOf("unsubscribe")).toEqual([{ type: "unsubscribe", id }]);
     expect(ws.closes).toHaveLength(1);
-    ws.receive({ type: "data", id, event: [JSON.stringify(liveEvent())] });
+    ws.receive({ type: "data", id, event: JSON.stringify(liveEvent()) });
     expect(events).toEqual([]);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(FakeSocket.instances).toHaveLength(1);
@@ -290,6 +290,15 @@ describe("data delivery", () => {
     const id = ws.ackSubscribe(ROOM);
     return { ...ctx, ws, id };
   }
+
+  it("delivers the single stringified event of a real AppSync data frame", async () => {
+    // Observed on dev 2026-09-10: `{"type":"data","id":…,"event":"<json>"}` — a
+    // string, not an array. Rejecting it dropped every live room event.
+    const { client, events, ws, id } = await liveRoom();
+    ws.receive({ type: "data", id, event: JSON.stringify(liveEvent({ eventId: "solo" })) });
+    expect(events.map((e) => e.eventId)).toEqual(["solo"]);
+    client.close();
+  });
 
   it("parses every stringified item of a data event array and dedupes by eventId", async () => {
     const { client, events, ws, id } = await liveRoom();
@@ -457,7 +466,7 @@ describe("keepalive and reconnect", () => {
     await flush();
     expect(first.sentOf("subscribe")).toEqual([]); // stale continuation never sent
     // A late frame on the dead socket is ignored.
-    first.receive({ type: "data", id: "x", event: [JSON.stringify(liveEvent())] });
+    first.receive({ type: "data", id: "x", event: JSON.stringify(liveEvent()) });
     expect(events).toEqual([]);
     client.close();
   });

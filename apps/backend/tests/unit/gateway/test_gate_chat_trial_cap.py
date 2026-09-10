@@ -33,7 +33,7 @@ async def test_gate_blocks_trial_owner_at_cap():
 
     Also the trial_cap_reached telemetry site: the block fires the
     once-per-owner-per-day PostHog capture."""
-    pool = GatewayConnectionPool(management_api=None)
+    pool = GatewayConnectionPool()
     with (
         patch(
             "core.repositories.billing_repo.get_by_owner_id",
@@ -61,7 +61,7 @@ async def test_gate_allows_trial_owner_under_cap_and_writes_nothing():
     """An under-cap trial owner passes. gate_chat itself writes nothing to
     the counter — add_trial_daily_spend (zero production callers) is deleted,
     so that guard is now structural rather than a runtime mock assertion."""
-    pool = GatewayConnectionPool(management_api=None)
+    pool = GatewayConnectionPool()
     with (
         patch(
             "core.repositories.billing_repo.get_by_owner_id",
@@ -86,7 +86,7 @@ async def test_gate_does_not_read_the_container_row():
     """The cap keys on subscription_status alone. The container row's
     provider_choice stamp is gone — gate_chat must not read it (a read would
     resurrect the deleted upgrade-window coupling)."""
-    pool = GatewayConnectionPool(management_api=None)
+    pool = GatewayConnectionPool()
     with (
         patch(
             "core.repositories.billing_repo.get_by_owner_id",
@@ -109,7 +109,7 @@ async def test_paid_owner_is_never_capped():
     """A paid (bedrock_claude) owner never hits the cap check at all — the
     free tier's cap is a trial_local-only mechanism. Layer 3 (Metronome
     balance) still runs."""
-    pool = GatewayConnectionPool(management_api=None)
+    pool = GatewayConnectionPool()
     with (
         patch(
             "core.repositories.billing_repo.get_by_owner_id",
@@ -138,7 +138,7 @@ async def test_paid_owner_with_stale_trial_end_is_not_expired_or_capped():
     carries a trial_end left over from the local trial (and, for a few
     minutes, the still-trial container). The owner must NOT be told their
     trial expired, and must NOT be capped — both are gated on trial_local."""
-    pool = GatewayConnectionPool(management_api=None)
+    pool = GatewayConnectionPool()
     with (
         patch(
             "core.repositories.billing_repo.get_by_owner_id",
@@ -165,7 +165,7 @@ async def test_paid_owner_with_stale_trial_end_is_not_expired_or_capped():
 async def test_gate_blocks_expired_trial_before_the_cap_check():
     """An owner still on subscription_status='trial_local' whose trial_end has
     passed is blocked with code=trial_expired BEFORE the cap read."""
-    pool = GatewayConnectionPool(management_api=None)
+    pool = GatewayConnectionPool()
     with (
         patch(
             "core.repositories.billing_repo.get_by_owner_id",
@@ -195,7 +195,7 @@ async def test_gate_chat_cap_read_raise_propagates():
     """A raise inside the cap read (a DDB network call) must propagate rather
     than be swallowed into a permissive {"blocked": False} — an errored gate
     is the safe direction for a cost cap."""
-    pool = GatewayConnectionPool(management_api=None)
+    pool = GatewayConnectionPool()
     with (
         patch(
             "core.repositories.billing_repo.get_by_owner_id",
@@ -273,7 +273,7 @@ async def test_trial_owner_under_cap_never_reaches_the_credits_layer():
     Asserting `is_owner_blocked` is NEVER AWAITED is the point: a return value
     assertion alone would still pass if the layer ran and happened to admit.
     """
-    pool = GatewayConnectionPool(management_api=None)
+    pool = GatewayConnectionPool()
     blocked_mock = AsyncMock(return_value=True)  # would block if ever consulted
     with (
         patch(

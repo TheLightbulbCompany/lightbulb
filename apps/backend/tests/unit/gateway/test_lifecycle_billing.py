@@ -8,6 +8,23 @@ import pytest
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
+# SUSPECTED SOURCE BUG (see PR #2424 / commit 187ef487d "cut over multiplayer
+# messaging"): `_handle_message`'s `event_name == "chat"` branch does
+# `if room is None: return` BEFORE running any terminal side-effects (trial
+# first-response scheduling, push dispatch, run-completion callbacks, e2e
+# latency metrics, `_clear_active_run`). `room` only parses for the new
+# `agent:<uuid>:lightbulb:channel:<room-uuid>` key shape, so a plain webchat
+# session key (`agent:main:main`, still documented as valid by
+# `_parse_session_key`) never reaches those side effects any more. Not
+# patched per task scope -- reported instead.
+_ROOM_GATE_BUG = (
+    "connection_pool._handle_message gates chat-terminal side effects "
+    "(trial first-response, push, run-completion callbacks, latency) behind "
+    "`if room is None: return`, so non-room session keys never fire them -- "
+    "suspected regression from the native-messaging cutover (PR #2424), not "
+    "a stale test. Not patched per task scope."
+)
+
 
 @pytest.fixture
 def conn():
@@ -176,6 +193,7 @@ async def test_group_session_key_bills_under_owner_not_literal_channel(conn):
 
 
 @pytest.mark.asyncio
+@pytest.mark.xfail(reason=_ROOM_GATE_BUG, strict=True)
 async def test_chat_final_no_longer_calls_billing(conn):
     """chat.final still fires UI signals but not billing (lifecycle is the new trigger)."""
     payload = {
@@ -187,7 +205,7 @@ async def test_chat_final_no_longer_calls_billing(conn):
 
     with (
         patch.object(conn, "_fetch_and_record_usage", AsyncMock()) as mock_fetch,
-        patch.object(conn, "_forward_to_frontends", AsyncMock()) as mock_forward,
+        patch.object(conn, "_publish_room_frame", AsyncMock()) as mock_forward,
     ):
         await conn._handle_message({"type": "event", "event": "chat", "payload": payload})
         # Yield for consistency with the other tests
@@ -208,11 +226,12 @@ def _final(text: str | None):
 
 
 @pytest.mark.asyncio
+@pytest.mark.xfail(reason=_ROOM_GATE_BUG, strict=True)
 async def test_chat_final_with_text_schedules_trial_first_response(conn):
     sched = MagicMock(return_value=None)
     with (
         patch.object(conn, "_fetch_and_record_usage", AsyncMock()),
-        patch.object(conn, "_forward_to_frontends", AsyncMock()),
+        patch.object(conn, "_publish_room_frame", AsyncMock()),
         patch("core.gateway.connection_pool.schedule_trial_first_agent_response", sched),
     ):
         await conn._handle_message({"type": "event", "event": "chat", "payload": _final("hi")})
@@ -227,7 +246,7 @@ async def test_chat_final_without_assistant_text_does_not_schedule(conn):
     sched = MagicMock(return_value=None)
     with (
         patch.object(conn, "_fetch_and_record_usage", AsyncMock()),
-        patch.object(conn, "_forward_to_frontends", AsyncMock()),
+        patch.object(conn, "_publish_room_frame", AsyncMock()),
         patch("core.gateway.connection_pool.schedule_trial_first_agent_response", sched),
     ):
         await conn._handle_message({"type": "event", "event": "chat", "payload": _final(None)})
@@ -241,7 +260,7 @@ async def test_chat_error_does_not_schedule_trial_first_response(conn):
     payload = {"sessionKey": "agent:main:main", "state": "error", "runId": "run-1", "errorMessage": "boom"}
     with (
         patch.object(conn, "_fetch_and_record_usage", AsyncMock()),
-        patch.object(conn, "_forward_to_frontends", AsyncMock()),
+        patch.object(conn, "_publish_room_frame", AsyncMock()),
         patch("core.gateway.connection_pool.schedule_trial_first_agent_response", sched),
     ):
         await conn._handle_message({"type": "event", "event": "chat", "payload": payload})

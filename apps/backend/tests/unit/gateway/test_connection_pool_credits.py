@@ -28,7 +28,7 @@ from core.gateway.connection_pool import GatewayConnection, GatewayConnectionPoo
 
 @pytest.mark.asyncio
 async def test_card3_blocked_by_metronome_gate():
-    pool = GatewayConnectionPool(management_api=None)
+    pool = GatewayConnectionPool()
     with (
         patch(
             "core.repositories.billing_repo.get_by_owner_id",
@@ -49,7 +49,7 @@ async def test_card3_blocked_by_metronome_gate():
 
 @pytest.mark.asyncio
 async def test_card3_not_blocked_when_gate_clear():
-    pool = GatewayConnectionPool(management_api=None)
+    pool = GatewayConnectionPool()
     with (
         patch(
             "core.repositories.billing_repo.get_by_owner_id",
@@ -72,7 +72,7 @@ async def test_card3_gate_keyed_on_owner_for_org_credits_pool():
     keyed on owner_id. Org members all draw from one pool funded by the
     admin — without this, members get blocked with out_of_credits.
     """
-    pool = GatewayConnectionPool(management_api=None)
+    pool = GatewayConnectionPool()
     billing_mock = AsyncMock(
         return_value={
             "subscription_status": "active",
@@ -93,7 +93,7 @@ async def test_card3_gate_keyed_on_owner_for_org_credits_pool():
 
 @pytest.mark.asyncio
 async def test_card1_oauth_user_never_gated_by_credits():
-    pool = GatewayConnectionPool(management_api=None)
+    pool = GatewayConnectionPool()
     blocked = AsyncMock()
     with (
         patch(
@@ -114,7 +114,7 @@ async def test_card1_oauth_user_never_gated_by_credits():
 
 @pytest.mark.asyncio
 async def test_card2_byo_user_never_gated_by_credits():
-    pool = GatewayConnectionPool(management_api=None)
+    pool = GatewayConnectionPool()
     blocked = AsyncMock()
     with (
         patch(
@@ -137,7 +137,7 @@ async def test_card2_byo_user_never_gated_by_credits():
 async def test_billing_row_without_provider_choice_never_gated():
     """Legacy billing rows without provider_choice shouldn't be locked
     out — they keep working until provider is set."""
-    pool = GatewayConnectionPool(management_api=None)
+    pool = GatewayConnectionPool()
     with patch(
         "core.repositories.billing_repo.get_by_owner_id",
         new=AsyncMock(
@@ -164,7 +164,7 @@ async def test_inactive_subscription_blocks_chat_regardless_of_provider(status):
     """A canceled / past_due / unpaid subscription blocks chat for ANY
     provider — including chatgpt_oauth and byo_key, where the LLM cost
     is on the user but the container compute is on us."""
-    pool = GatewayConnectionPool(management_api=None)
+    pool = GatewayConnectionPool()
     with patch(
         "core.repositories.billing_repo.get_by_owner_id",
         new=AsyncMock(return_value={"subscription_status": status}),
@@ -180,7 +180,7 @@ async def test_active_or_trialing_subscription_does_not_trigger_sub_gate(status)
     """active/trialing pass the subscription gate (then fall through to
     the provider_choice + balance check). Without provider_choice set,
     Layer-2 returns blocked=False."""
-    pool = GatewayConnectionPool(management_api=None)
+    pool = GatewayConnectionPool()
     with patch(
         "core.repositories.billing_repo.get_by_owner_id",
         new=AsyncMock(
@@ -200,7 +200,7 @@ async def test_missing_billing_row_blocks_chat_when_owner_id_provided():
     (never went through trial-checkout, or got cleaned up out-of-band)
     must be blocked. Otherwise non-Bedrock providers would chat freely
     with us still on the hook for container compute."""
-    pool = GatewayConnectionPool(management_api=None)
+    pool = GatewayConnectionPool()
     with patch(
         "core.repositories.billing_repo.get_by_owner_id",
         new=AsyncMock(return_value=None),
@@ -215,7 +215,7 @@ async def test_legacy_billing_row_without_status_does_not_block():
     """A pre-Plan-3 billing row may have stripe_subscription_id but no
     subscription_status backfilled — those should NOT be locked out
     mid-deploy."""
-    pool = GatewayConnectionPool(management_api=None)
+    pool = GatewayConnectionPool()
     with patch(
         "core.repositories.billing_repo.get_by_owner_id",
         new=AsyncMock(

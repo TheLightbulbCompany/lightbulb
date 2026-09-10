@@ -26,9 +26,6 @@ class _FakeConn:
         self._parked = parked
         self.close = AsyncMock()
         self.drain_liveness_write = AsyncMock()
-        # Shared per-owner frontend set (a live GatewayConnection is handed this
-        # by reference); the recreate path must blank the detached copy.
-        self._frontend_connections = {"conn-abc"}
 
 
 def _bare_pool() -> GatewayConnectionPool:
@@ -68,9 +65,6 @@ async def test_changed_ip_tears_down_and_recreates():
     # The abandoned endpoint is recorded in the fence history (stamped at detach)
     # so a later stale resolve can't roll it back.
     assert "10.0.0.1" in pool._superseded_ip["user_1"]
-    # Detached conn's frontend set is blanked so its background teardown can't
-    # push a spurious GATEWAY_DOWN over the replacement's HEALTHY.
-    assert old._frontend_connections == set()
     # The stale (dead-IP) socket is torn down in the BACKGROUND (off the lock).
     await asyncio.gather(*pool._background_close_tasks)
     old.close.assert_awaited_once()

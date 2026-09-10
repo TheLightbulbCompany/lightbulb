@@ -243,6 +243,18 @@ export function MessagingWorkspaceProvider({
     }
   }
 
+  async function selectParticipant(participant: DirectoryParticipant) {
+    setCreationBusy(true);
+    setCreationError(undefined);
+    try {
+      await rooms.selectDm(participant);
+    } catch (error) {
+      setCreationError(error instanceof Error ? error.message : "Conversation could not be opened.");
+    } finally {
+      setCreationBusy(false);
+    }
+  }
+
   async function changeListenMode(agentId: string, listenMode: ListenMode) {
     const member = participants.find((candidate) => candidate.kind === "agent" && candidate.id === agentId);
     if (!member) return;
@@ -260,6 +272,7 @@ export function MessagingWorkspaceProvider({
     state: directoryState,
     currentRoomId: rooms.activeRoomId ?? undefined,
     onSelectRoom: rooms.selectRoom,
+    onSelectParticipant: selectParticipant,
     onCreate: (creation) => void createRoom(creation),
     creationBusy,
     creationError,

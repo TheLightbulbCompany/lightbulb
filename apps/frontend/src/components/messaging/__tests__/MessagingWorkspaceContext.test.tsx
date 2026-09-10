@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { RoomDetail } from "@lightbulb/shared";
 import type { RoomDirectoryProps } from "../RoomDirectory";
@@ -48,7 +48,7 @@ const state = {
   activeRoomId: room.roomId as string | null, activeRoom: room,
   roomError: undefined, roomLoading: false, accessRemoved: false,
   messages: [], optimisticMessages: [], typingMembers: [], runs: [] as LiveRoomRun[],
-  liveConnected: true, httpReady: true, selectRoom: vi.fn(), selectAgentDm: vi.fn(),
+  liveConnected: true, httpReady: true, selectRoom: vi.fn(), selectDm: vi.fn(), selectAgentDm: vi.fn(),
   directoryRoomDetails: new Map([[room.roomId, room]]),
   refreshRooms: vi.fn(), refreshRoom: vi.fn(), createRoom: vi.fn(), updateRoom: vi.fn(),
   upsertMember: vi.fn(), removeMember: vi.fn(), sendMessage: vi.fn(), reconcileSend: vi.fn(),
@@ -62,6 +62,7 @@ beforeEach(() => {
   state.directoryLoading = false;
   state.accessRemoved = false;
   state.runs = [];
+  state.selectDm.mockResolvedValue(null);
   renderComposer = false;
   _resetFocusComposerRequestForTests();
   mocks.rooms.mockReturnValue(state);
@@ -147,6 +148,26 @@ it("opens the selected hydrated room and opens creation without selecting a room
   await act(async () => directory.onCreate?.({ kind: "channel", name: "Launch", members: [] }));
   expect(onOpenRoom).toHaveBeenLastCalledWith();
   expect(state.createRoom).toHaveBeenCalledWith(expect.objectContaining({ kind: "channel", name: "Launch" }));
+});
+
+it("opens Messages when a person or agent is selected from the directory", async () => {
+  const onOpenRoom = vi.fn();
+  compose(onOpenRoom);
+  const participant = directory.participants[0];
+
+  await act(async () => directory.onSelectParticipant(participant));
+
+  expect(state.selectDm).toHaveBeenCalledWith(participant);
+  expect(onOpenRoom).toHaveBeenCalledWith();
+});
+
+it("surfaces DM selection failures through the directory action error", async () => {
+  state.selectDm.mockRejectedValueOnce(new Error("Conversation could not be opened."));
+  compose();
+
+  await act(async () => directory.onSelectParticipant(directory.participants[0]));
+
+  await waitFor(() => expect(directory.creationError).toBe("Conversation could not be opened."));
 });
 
 it("renders the empty conversation when no room is selected", () => {

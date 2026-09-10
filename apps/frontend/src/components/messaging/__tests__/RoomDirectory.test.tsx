@@ -10,7 +10,7 @@ const base: DirectoryRoom = { roomId: "channel", kind: "channel", name: "Launch"
 
 it("names canonical DMs from counterparts and preserves selection and unread counts", () => {
   const onSelectRoom = vi.fn();
-  render(<RoomDirectory ownerScopeId="org" state="ready" currentRoomId="friday-dm" participants={[]} onSelectRoom={onSelectRoom} rooms={[
+  render(<RoomDirectory ownerScopeId="org" state="ready" currentRoomId="friday-dm" participants={[]} onSelectRoom={onSelectRoom} onSelectParticipant={vi.fn()} rooms={[
     base,
     { ...base, roomId: "friday-dm", kind: "dm", name: null, participants: [friday], unreadCount: 3 },
     { ...base, roomId: "group", kind: "group-dm", name: null, participants: [alice, atlas] },
@@ -27,10 +27,22 @@ it("names canonical DMs from counterparts and preserves selection and unread cou
 });
 
 it("identifies agents without handles in People and agents", () => {
-  render(<RoomDirectory ownerScopeId="org" state="ready" rooms={[]} participants={[friday, alice]} onSelectRoom={vi.fn()} />);
+  const onSelectParticipant = vi.fn();
+  render(<RoomDirectory ownerScopeId="org" state="ready" rooms={[]} participants={[friday, alice]} onSelectRoom={vi.fn()} onSelectParticipant={onSelectParticipant} />);
   fireEvent.click(screen.getByRole("button", { name: "People and agents" }));
   expect(screen.getByText("Agent")).toBeInTheDocument();
   expect(screen.getAllByText("Person")).toHaveLength(1);
+  fireEvent.click(screen.getByRole("button", { name: /Friday.*Agent/ }));
+  fireEvent.click(screen.getByRole("button", { name: /Alice.*Person/ }));
+  expect(onSelectParticipant).toHaveBeenNthCalledWith(1, friday);
+  expect(onSelectParticipant).toHaveBeenNthCalledWith(2, alice);
+});
+
+it("shows a participant-selection error beside the open people directory", () => {
+  render(<RoomDirectory ownerScopeId="org" state="ready" rooms={[]} participants={[alice]} onSelectRoom={vi.fn()}
+    onSelectParticipant={vi.fn()} creationError="Conversation could not be opened." />);
+  fireEvent.click(screen.getByRole("button", { name: "People and agents" }));
+  expect(screen.getByRole("alert")).toHaveTextContent("Conversation could not be opened.");
 });
 
 it("keeps available rooms visible with a detail recovery notice", () => {
@@ -38,7 +50,7 @@ it("keeps available rooms visible with a detail recovery notice", () => {
   render(<RoomDirectory ownerScopeId="org" state="error" rooms={[
     base,
     { ...base, roomId: "friday-dm", kind: "dm", name: null, participants: [friday] },
-  ]} participants={[]} onSelectRoom={vi.fn()} onRetry={onRetry} />);
+  ]} participants={[]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onRetry={onRetry} />);
 
   expect(screen.getByRole("button", { name: /Launch/ })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: /Friday/ })).toBeInTheDocument();
@@ -48,7 +60,7 @@ it("keeps available rooms visible with a detail recovery notice", () => {
 });
 
 it("keeps an empty directory error blocking", () => {
-  render(<RoomDirectory ownerScopeId="org" state="error" rooms={[]} participants={[]} onSelectRoom={vi.fn()} onRetry={vi.fn()} />);
+  render(<RoomDirectory ownerScopeId="org" state="error" rooms={[]} participants={[]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onRetry={vi.fn()} />);
 
   expect(screen.getByRole("status")).toHaveTextContent("Conversations could not be loaded.");
   expect(screen.queryByRole("button", { name: /Launch/ })).not.toBeInTheDocument();

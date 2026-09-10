@@ -45,13 +45,16 @@ it("shows canonical members and only running work in collapsible room details", 
   const user = userEvent.setup();
   const run: RoomRunView = { roomId: "room", agentId: "friday", runId: "active", state: "running", text: "", thinking: "", tools: [] };
   const { rerender } = render(<RoomPanel {...props} runs={[run, ...(["completed", "failed", "aborted"] as const).map((state) => ({ ...run, runId: state, state }))]} />);
+  expect(screen.queryByRole("complementary", { name: "Room details" })).not.toBeInTheDocument();
+  const toggle = screen.getByRole("button", { name: "Show room details" });
+  expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await user.click(toggle);
   const details = screen.getByRole("complementary", { name: "Room details" });
   expect(within(details).getByText("Friday")).toBeInTheDocument();
   expect(within(details).getByText("Owner")).toBeInTheDocument();
   expect(within(details).getByText("Agent")).toBeInTheDocument();
   expect(within(details).getByText("Person")).toBeInTheDocument();
   expect(within(details).getAllByText("Friday is working")).toHaveLength(1);
-  const toggle = screen.getByRole("button", { name: "Hide room details" });
   expect(toggle).toHaveAttribute("aria-expanded", "true");
   await user.click(toggle);
   expect(screen.queryByRole("complementary", { name: "Room details" })).not.toBeInTheDocument();
@@ -66,9 +69,11 @@ it("shows canonical members and only running work in collapsible room details", 
 it("focuses a thread and restores its trigger and collapsed preference on Escape", async () => {
   const user = userEvent.setup();
   const onSelectThread = vi.fn();
-  render(<RoomPanel {...props} onSelectThread={onSelectThread} />);
-  await user.click(screen.getByRole("button", { name: "Hide room details" }));
-  const reply = screen.getByRole("button", { name: "Reply" });
+  render(<RoomPanel {...props} onSelectThread={onSelectThread} messages={[
+    message,
+    { ...message, messageId: "reply", messageSeq: 2, text: "Thread reply", threadRootMessageId: message.messageId, replyToMessageId: message.messageId },
+  ]} />);
+  const reply = screen.getByRole("button", { name: "Reply in thread, 1 reply" });
   await user.click(reply);
   expect(onSelectThread).toHaveBeenLastCalledWith("message");
   expect(screen.getByRole("heading", { name: "Thread" })).toHaveFocus();
@@ -84,6 +89,7 @@ it("lets wide room details change agent listen mode without giving humans a cont
   const user = userEvent.setup();
   const onListenModeChange = vi.fn();
   render(<RoomPanel {...props} onListenModeChange={onListenModeChange} />);
+  await user.click(screen.getByRole("button", { name: "Show room details" }));
   const details = within(screen.getByRole("complementary", { name: "Room details" }));
   const mode = details.getByRole("combobox", { name: "Listen mode for Friday" });
   expect(mode).toHaveValue("mentions");
@@ -104,7 +110,7 @@ it.each(["thread", "context"] as const)("replaces the narrow conversation only w
   expect(history).toBeVisible();
   await user.click(screen.getByRole("button", { name: "Link to work" }));
   expect(onLinkToWork).toHaveBeenCalledOnce();
-  const trigger = screen.getByRole("button", { name: kind === "thread" ? "Reply" : "Review proposal" });
+  const trigger = screen.getByRole("button", { name: kind === "thread" ? "Reply in thread" : "Review proposal" });
   await user.click(trigger);
   expect(history).not.toBeVisible();
   expect(screen.getByRole("heading", { name: kind === "thread" ? "Thread" : "Review proposal" })).toHaveFocus();
@@ -122,7 +128,7 @@ it.each([860, 1100, 1179, 1180])("dismisses detail on conversation return only i
   const user = userEvent.setup();
   render(<RoomPanel {...props} />);
   const history = screen.getByRole("region", { name: "Messages" });
-  const reply = screen.getByRole("button", { name: "Reply" });
+  const reply = screen.getByRole("button", { name: "Reply in thread" });
   for (const returnBy of ["click", "focus"] as const) {
     await user.click(reply);
     expect(screen.getByRole("heading", { name: "Thread" })).toHaveFocus();
@@ -146,7 +152,7 @@ it("dismisses a medium overlay on Escape from outside the room and restores its 
   const user = userEvent.setup();
   const onSelectThread = vi.fn();
   const { unmount } = render(<><button>Outside room</button><RoomPanel {...props} onSelectThread={onSelectThread} /></>);
-  const reply = screen.getByRole("button", { name: "Reply" });
+  const reply = screen.getByRole("button", { name: "Reply in thread" });
   await user.click(reply);
   await user.click(screen.getByRole("button", { name: "Outside room" }));
   expect(screen.getByRole("complementary", { name: "Thread" })).toBeInTheDocument();

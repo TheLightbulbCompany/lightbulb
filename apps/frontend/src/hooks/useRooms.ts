@@ -11,6 +11,7 @@ import {
   type CreateMessageRequest,
   type CreateRoomRequest,
   type MessagePage,
+  type MemberRef,
   type PatchRoomRequest,
   type RoomMember,
   type RoomDetail,
@@ -113,7 +114,7 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
   const directoryRoomDetails: ReadonlyMap<string, RoomDetail> = directoryDetailsResponse.data ?? getCachedDirectoryRoomDetails();
   const directoryError = directoryDetailsResponse.error as Error | undefined;
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
-  const initialDmRequest = useRef<{ agentId: string; clientRoomId: string } | null>(null);
+  const dmRequests = useRef(new Map<string, string>());
   const handledInitialAgent = useRef<string | null>(null);
   const selectionRequest = useRef(0);
   const [accessRemoved, setAccessRemoved] = useState(false);
@@ -371,7 +372,7 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
     return created;
   }, [messaging, mutateRooms]);
 
-  const selectAgentDm = useCallback(async (agentId: string): Promise<string | null> => {
+  const selectDm = useCallback(async (participant: MemberRef): Promise<string | null> => {
     const requestId = ++selectionRequest.current;
     let details = directoryDetailsResponse.data ?? getCachedDirectoryRoomDetails();
     let hydrationError = directoryDetailsResponse.error;
@@ -386,26 +387,32 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
     if (requestId !== selectionRequest.current) return null;
     const existing = [...details.values()].find(
       (detail) => detail.kind === "dm" && detail.members.some(
-        (member) => member.kind === "agent" && member.id === agentId,
+        (member) => member.kind === participant.kind && member.id === participant.id,
       ),
     );
     if (existing) {
+      dmRequests.current.delete(`${participant.kind}:${participant.id}`);
       setActiveRoomId(existing.roomId);
       return existing.roomId;
     }
     if (hydrationError) throw hydrationError;
-    const request = initialDmRequest.current?.agentId === agentId
-      ? initialDmRequest.current
-      : { agentId, clientRoomId: crypto.randomUUID() };
-    initialDmRequest.current = request;
+    const key = `${participant.kind}:${participant.id}`;
+    const clientRoomId = dmRequests.current.get(key) ?? crypto.randomUUID();
+    dmRequests.current.set(key, clientRoomId);
     const created = await createRoom({
-      clientRoomId: request.clientRoomId,
+      clientRoomId,
       kind: "dm",
       name: null,
-      members: [{ kind: "agent", id: agentId, role: "member", listenMode: "active" }],
+      members: [{ ...participant, role: "member", listenMode: participant.kind === "agent" ? "active" : null }],
     }, requestId);
+    dmRequests.current.delete(key);
     return requestId === selectionRequest.current ? created.roomId : null;
   }, [createRoom, directoryDetailsResponse.data, directoryDetailsResponse.error, getCachedDirectoryRoomDetails, loadDirectoryRoomDetails]);
+
+  const selectAgentDm = useCallback(
+    (agentId: string) => selectDm({ kind: "agent", id: agentId }),
+    [selectDm],
+  );
 
   useEffect(() => {
     if (!roomsData) return;
@@ -480,6 +487,7 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
     liveConnected,
     httpReady,
     selectRoom,
+    selectDm,
     selectAgentDm,
     directoryRoomDetails,
     refreshRooms: () => Promise.all([mutateRooms(), directoryDetailsResponse.mutate()]),

@@ -38,6 +38,7 @@
 .room-picker { border-top: 1px solid var(--border); padding-top: 12px; min-width: 0; }
 .room-picker-list { max-height: 240px; overflow-y: auto; overscroll-behavior: contain; }
 .room-choice { display: flex; align-items: center; gap: 8px; padding: 8px 4px; min-height: 44px; cursor: pointer; }
+.room-choice-button { width: 100%; border-radius: 4px; text-align: left; }
 .room-choice:hover { background: var(--accent); }
 .room-choice input { width: 16px; height: 16px; flex-shrink: 0; accent-color: var(--primary); }
 .room-choice:has(input:disabled) { cursor: default; color: var(--muted-foreground); }

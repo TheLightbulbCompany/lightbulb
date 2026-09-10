@@ -163,6 +163,9 @@ function RoomContent({
   const [selection, setSelection] = useState<{ kind: "thread" | "context"; id: string } | null>(null);
   const trigger = useRef<HTMLButtonElement | null>(null);
   const detailHeading = useRef<HTMLHeadingElement>(null);
+  const contextHeading = useRef<HTMLHeadingElement>(null);
+  const contextTrigger = useRef<HTMLButtonElement>(null);
+  const contextWasOpen = useRef(false);
   const memberTrigger = useRef<HTMLButtonElement>(null);
   const viewportNarrow = useSyncExternalStore(subscribeNarrow, getNarrow, getServerNarrow);
   const isNarrow = narrow ?? viewportNarrow;
@@ -180,6 +183,12 @@ function RoomContent({
     if (selection) detailHeading.current?.focus({ preventScroll: true });
     else trigger.current?.focus({ preventScroll: true });
   }, [selection]);
+
+  useEffect(() => {
+    if (!contextCollapsed && isNarrow && !selection) contextHeading.current?.focus({ preventScroll: true });
+    else if (contextCollapsed && contextWasOpen.current && isNarrow && !selection) contextTrigger.current?.focus({ preventScroll: true });
+    contextWasOpen.current = !contextCollapsed;
+  }, [contextCollapsed, isNarrow, selection]);
 
   const closeDetail = useCallback(() => {
     if (selection?.kind === "thread") onSelectThread?.(null);
@@ -250,7 +259,7 @@ function RoomContent({
       </header>
       <nav className="room-tabs" aria-label="Conversation views">
         <button type="button" className="room-tab" aria-current={contextCollapsed && !showDetail ? "page" : undefined} onClick={() => { closeDetail(); setContextCollapsed(true); }}>{visibleRoom?.kind === "channel" ? "Channel" : "Conversation"}</button>
-        <button type="button" className="room-tab" aria-label={contextCollapsed ? "Show room details" : "Hide room details"} aria-expanded={!contextCollapsed} aria-current={!contextCollapsed && !showDetail ? "page" : undefined}
+        <button ref={contextTrigger} type="button" className="room-tab" aria-label={contextCollapsed ? "Show room details" : "Hide room details"} aria-expanded={!contextCollapsed} aria-current={!contextCollapsed && !showDetail ? "page" : undefined}
           onClick={() => { closeDetail(); setContextCollapsed(!contextCollapsed); }}>Context</button>
         {onLinkToWork && <button type="button" className="room-tab" aria-label="Link to work" onClick={onLinkToWork}><Link2 size={14} aria-hidden="true" />Tasks</button>}
       </nav>
@@ -303,7 +312,7 @@ function RoomContent({
       <RoomComposer {...composer} disabled={!actionable || composer.disabled} />
     </div>
     {showContext && !showDetail && <aside className="room-context" aria-label="Room details">
-      <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={() => setContextCollapsed(true)}><ArrowLeft aria-hidden="true" /></Button><h3 className="font-semibold">Room details</h3></header>
+      <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={() => setContextCollapsed(true)}><ArrowLeft aria-hidden="true" /></Button><h3 ref={contextHeading} tabIndex={-1} className="font-semibold">Room details</h3></header>
       <div className="room-context-body">
         <section aria-labelledby={`${id}-context-members`}>
           <h4 id={`${id}-context-members`} className="font-semibold">Members</h4>

@@ -52,8 +52,10 @@ it("opens and closes the real room context on a narrow viewport", async () => {
   await userEvent.click(screen.getByRole("button", { name: "Show room details" }));
   expect(history).not.toBeVisible();
   expect(screen.getByRole("complementary", { name: "Room details" })).toBeVisible();
+  expect(screen.getByRole("heading", { name: "Room details" })).toHaveFocus();
   await userEvent.click(screen.getByRole("button", { name: "Back to conversation" }));
   expect(history).toBeVisible();
+  expect(screen.getByRole("button", { name: "Show room details" })).toHaveFocus();
 });
 
 it.each(["system", "human"] as const)("keeps unmatched %s authors neutral", (kind) => {

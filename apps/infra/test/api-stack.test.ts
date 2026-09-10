@@ -204,3 +204,24 @@ describe("ApiStack — Slack events route has its own throttle bucket", () => {
     });
   });
 });
+
+describe("ApiStack — messaging AppSync Events (OIDC subscribe / IAM publish)", () => {
+  // The Event API's per-namespace onSubscribe handler is the membership
+  // check for every browser subscription; it is only expressible once the
+  // CDK release exposes DynamoDB-backed handler configs (2.267.0). Before
+  // the pin/resource work this fails because the resource is absent.
+  test("rooms namespace has a DynamoDB-backed onSubscribe handler", () => {
+    API_TEMPLATE.hasResourceProperties("AWS::AppSync::DataSource", {
+      Type: "AMAZON_DYNAMODB",
+    });
+    API_TEMPLATE.hasResourceProperties("AWS::AppSync::ChannelNamespace", {
+      Name: "rooms",
+      HandlerConfigs: Match.objectLike({
+        OnSubscribe: Match.objectLike({
+          Behavior: "CODE",
+          Integration: Match.objectLike({ DataSourceName: Match.anyValue() }),
+        }),
+      }),
+    });
+  });
+});

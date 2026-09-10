@@ -151,6 +151,41 @@ async def handle_node_connect(
     ecs = get_ecs_manager()
     container, ip = await ecs.resolve_running_container(owner_id)
 
+    if container is None or ip is None:
+        # No reachable container: resolve_running_container returns (None, None)
+        # for a stopped/absent row, or (container, None) for a provisioning row
+        # with no service yet / a "running" row Cloud Map can't find an
+        # instance for. Fail closed here instead of building
+        # ws://None:{GATEWAY_PORT} below -- that getaddrinfo failure fires on
+        # every desktop reconnect attempt against a paired device whose
+        # container isn't up, logged with a full traceback each time (a retry
+        # storm against an unresolvable host). Tell the node why and close
+        # the socket so its own backoff kicks in instead of it waiting on a
+        # connect.challenge that will never arrive.
+        logger.warning(
+            "node relay: no running container owner=%s user=%s conn=%s",
+            owner_id,
+            user_id,
+            connection_id,
+        )
+        put_metric("node.connect.no_container_ip")
+        try:
+            management_api.send_message(
+                connection_id,
+                {
+                    "type": "error",
+                    "code": "container_unavailable",
+                    "message": "No running container to relay to",
+                },
+            )
+        except Exception:
+            pass
+        try:
+            management_api.close_connection(connection_id)
+        except Exception:
+            pass
+        return None
+
     # Build a displayable name for node.list. Prefer the name the desktop
     # client already sent in connect_params (set by the Tauri IPC from the
     # user's Clerk profile) so each member's node is individually

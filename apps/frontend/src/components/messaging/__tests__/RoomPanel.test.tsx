@@ -37,7 +37,7 @@ it("excludes only the signed-in human when naming a group DM", () => {
 it("opens the same DM action for human and agent authors and displays local time", async () => {
   const onSelectParticipant = vi.fn();
   const colleague = { ...owner, id: "colleague", displayName: "Aden" };
-  render(<RoomPanel {...props} onSelectParticipant={onSelectParticipant} participants={[owner, friday, colleague]} messages={[message, { ...message, messageId: "human", author: { kind: "human", id: "colleague" } }]} />);
+  render(<RoomPanel {...props} onSelectParticipant={onSelectParticipant} participants={[owner, friday, colleague]} messages={[message, { ...message, messageId: "human", author: { kind: "human", id: "colleague", displayName: "Aden" } }]} />);
   for (const participant of [friday, colleague]) {
     await userEvent.click(within(screen.getByRole("article", { name: `Message from ${participant.displayName}` })).getByRole("button", { name: participant.displayName }));
     expect(onSelectParticipant).toHaveBeenLastCalledWith(participant);

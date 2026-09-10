@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import useSWR from "swr";
 import {
@@ -10,7 +10,6 @@ import {
   type ChatIncomingMessage,
   type CreateMessageRequest,
   type CreateRoomRequest,
-  type LiveEventOf,
   type MessagePage,
   type PatchRoomRequest,
   type RoomMember,
@@ -51,18 +50,29 @@ export function mergeCanonicalMessages(
 }
 
 const lastSequence = (messages: readonly CanonicalRoomMessage[]) => messages.at(-1)?.messageSeq ?? 0;
+const NO_ROOMS: never[] = [];
 
 export function useRooms(initialAgentId?: string | null) {
   const { isLoaded, userId, orgId } = useAuth();
   const live = useLiveEvents();
-  const { messaging } = live;
+  const {
+    messaging,
+    setActiveRoomSubscription,
+    onEvent,
+    liveChannels,
+    connectionRevision,
+    liveConnected,
+    httpReady,
+  } = live;
   const scope = isLoaded && userId ? `${userId}:${orgId ?? userId}` : null;
   const roomsResponse = useSWR(
     scope ? ["messaging-rooms", scope] : null,
     () => messaging.listRooms(),
     { revalidateOnFocus: false },
   );
-  const rooms = roomsResponse.data?.rooms ?? [];
+  const roomsData = roomsResponse.data;
+  const mutateRooms = roomsResponse.mutate;
+  const rooms = roomsData?.rooms ?? NO_ROOMS;
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const initialDmRequest = useRef<{ agentId: string; clientRoomId: string } | null>(null);
   const [accessRemoved, setAccessRemoved] = useState(false);
@@ -77,6 +87,8 @@ export function useRooms(initialAgentId?: string | null) {
     },
   );
   const activeRoom = detailResponse.data;
+  const roomError = detailResponse.error;
+  const mutateRoom = detailResponse.mutate;
   const [messages, setMessages] = useState<CanonicalRoomMessage[]>([]);
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
@@ -90,7 +102,7 @@ export function useRooms(initialAgentId?: string | null) {
   const reconciliation = useRef<Promise<void> | null>(null);
 
   useEffect(() => {
-    if (!roomsResponse.data || activeRoomId) return;
+    if (!roomsData || activeRoomId) return;
     let cancelled = false;
     if (!initialAgentId) {
       if (rooms.length > 0) setActiveRoomId(rooms[0].roomId);
@@ -118,7 +130,7 @@ export function useRooms(initialAgentId?: string | null) {
       .then((dm) => {
         if (cancelled) return;
         setActiveRoomId(dm.roomId);
-        void roomsResponse.mutate();
+        void mutateRooms();
       })
       .catch(() => {
         if (!cancelled && rooms.length > 0) setActiveRoomId(rooms[0].roomId);
@@ -126,7 +138,7 @@ export function useRooms(initialAgentId?: string | null) {
     return () => {
       cancelled = true;
     };
-  }, [roomsResponse.data, rooms, activeRoomId, initialAgentId, messaging, roomsResponse.mutate]);
+  }, [roomsData, rooms, activeRoomId, initialAgentId, messaging, mutateRooms]);
 
   useEffect(() => {
     generation.current += 1;
@@ -144,23 +156,29 @@ export function useRooms(initialAgentId?: string | null) {
   }, [scope, activeRoomId]);
 
   useEffect(() => {
-    const error = detailResponse.error;
+    const error = roomError;
     if (!(error instanceof ApiError) || (error.status !== 403 && error.status !== 404)) return;
     setAccessRemoved(true);
     messagesRef.current = [];
     setMessages([]);
-    live.setActiveRoomSubscription(null);
-  }, [detailResponse.error, live]);
+    setActiveRoomSubscription(null);
+  }, [roomError, setActiveRoomSubscription]);
 
   const subscription = activeRoom && deliveryOverride?.roomId === activeRoom.roomId && deliveryOverride.roomRevision >= activeRoom.roomRevision
     ? { roomId: activeRoom.roomId, deliveryKey: deliveryOverride.deliveryKey }
     : activeRoom ? { roomId: activeRoom.roomId, deliveryKey: activeRoom.deliveryKey } : null;
   const subscriptionPath = subscription ? `/rooms/${subscription.roomId}/${subscription.deliveryKey}` : null;
+  const subscriptionRoomId = subscription?.roomId ?? null;
+  const subscriptionDeliveryKey = subscription?.deliveryKey ?? null;
 
   useEffect(() => {
-    live.setActiveRoomSubscription(accessRemoved ? null : subscription);
-    return () => live.setActiveRoomSubscription(null);
-  }, [live.setActiveRoomSubscription, subscription?.roomId, subscription?.deliveryKey, accessRemoved]);
+    setActiveRoomSubscription(
+      accessRemoved || !subscriptionRoomId || !subscriptionDeliveryKey
+        ? null
+        : { roomId: subscriptionRoomId, deliveryKey: subscriptionDeliveryKey },
+    );
+    return () => setActiveRoomSubscription(null);
+  }, [setActiveRoomSubscription, subscriptionRoomId, subscriptionDeliveryKey, accessRemoved]);
 
   const reconcile = useCallback((afterSeq: number) => {
     if (!activeRoomId || accessRemoved) return Promise.resolve();
@@ -192,28 +210,28 @@ export function useRooms(initialAgentId?: string | null) {
   }, [activeRoomId, accessRemoved, messaging]);
 
   useEffect(() => {
-    if (!subscriptionPath || !live.liveChannels.includes(subscriptionPath)) return;
+    if (!subscriptionPath || !liveChannels.includes(subscriptionPath)) return;
     void reconcile(lastSequence(messagesRef.current));
-  }, [subscriptionPath, activeRoom?.roomRevision, live.liveChannels, live.connectionRevision, reconcile]);
+  }, [subscriptionPath, activeRoom?.roomRevision, liveChannels, connectionRevision, reconcile]);
 
-  useEffect(() => live.onEvent((event) => {
+  useEffect(() => onEvent((event) => {
     if (event.type === "room.access.removed" && event.payload.roomId === activeRoomId) {
       setAccessRemoved(true);
       messagesRef.current = [];
       setMessages([]);
       setOptimistic([]);
-      live.setActiveRoomSubscription(null);
-      void roomsResponse.mutate();
+      setActiveRoomSubscription(null);
+      void mutateRooms();
       return;
     }
     if (event.type === "room.subscription.rotated" && event.payload.roomId === activeRoomId) {
       setDeliveryOverride(event.payload);
-      live.setActiveRoomSubscription({ roomId: event.payload.roomId, deliveryKey: event.payload.deliveryKey });
-      void detailResponse.mutate();
+      setActiveRoomSubscription({ roomId: event.payload.roomId, deliveryKey: event.payload.deliveryKey });
+      void mutateRoom();
       return;
     }
     if (event.type === "room.metadata.changed" && event.payload.roomId === activeRoomId) {
-      void detailResponse.mutate();
+      void mutateRoom();
       return;
     }
     if (event.type === "room.message.created" && event.payload.roomId === activeRoomId) {
@@ -222,7 +240,7 @@ export function useRooms(initialAgentId?: string | null) {
       messagesRef.current = merged;
       setMessages(merged);
       if (event.payload.messageSeq > previous + 1) void reconcile(previous);
-      void roomsResponse.mutate();
+      void mutateRooms();
       return;
     }
     if (event.type === "room.typing.changed" && event.payload.roomId === activeRoomId) {
@@ -255,7 +273,7 @@ export function useRooms(initialAgentId?: string | null) {
         return new Map(current).set(key, next);
       });
     }
-  }), [activeRoomId, live, detailResponse, roomsResponse, reconcile]);
+  }), [activeRoomId, onEvent, setActiveRoomSubscription, mutateRoom, mutateRooms, reconcile]);
 
   useEffect(() => {
     if (typing.size === 0) return;
@@ -272,10 +290,10 @@ export function useRooms(initialAgentId?: string | null) {
     const sequence = lastSequence(messages);
     if (!activeRoom || sequence <= activeRoom.lastReadSeq || accessRemoved) return;
     void messaging.markRead(activeRoom.roomId, { lastReadSeq: sequence }).then(() => {
-      void detailResponse.mutate();
-      void roomsResponse.mutate();
+      void mutateRoom();
+      void mutateRooms();
     }).catch(() => {});
-  }, [messages, activeRoom, accessRemoved, messaging, detailResponse, roomsResponse]);
+  }, [messages, activeRoom, accessRemoved, messaging, mutateRoom, mutateRooms]);
 
   const sendMessage = useCallback(async (request: CreateMessageRequest) => {
     if (!activeRoomId) throw new Error("No room selected.");
@@ -291,13 +309,13 @@ export function useRooms(initialAgentId?: string | null) {
       setMessages(merged);
       setOptimistic((current) => current.filter((message) => message.clientMessageId !== request.clientMessageId));
       setAttempts((current) => new Map(current).set(request.clientMessageId, "persisted"));
-      void roomsResponse.mutate();
+      void mutateRooms();
       return canonical;
     } catch (error) {
       setAttempts((current) => new Map(current).set(request.clientMessageId, error instanceof ApiError ? "rejected" : "uncertain"));
       throw error;
     }
-  }, [activeRoomId, messaging, roomsResponse]);
+  }, [activeRoomId, messaging, mutateRooms]);
 
   const reconcileSend = useCallback(async (clientMessageId: string) => {
     const request = requests.current.get(clientMessageId);
@@ -312,30 +330,30 @@ export function useRooms(initialAgentId?: string | null) {
 
   const createRoom = useCallback(async (request: CreateRoomRequest) => {
     const created = await messaging.createRoom(request);
-    await roomsResponse.mutate();
+    await mutateRooms();
     setActiveRoomId(created.roomId);
     return created;
-  }, [messaging, roomsResponse]);
+  }, [messaging, mutateRooms]);
 
   const updateRoom = useCallback(async (request: PatchRoomRequest) => {
     if (!activeRoomId) throw new Error("No room selected.");
     const updated = await messaging.updateRoom(activeRoomId, request);
-    await Promise.all([detailResponse.mutate(updated, false), roomsResponse.mutate()]);
+    await Promise.all([mutateRoom(updated, false), mutateRooms()]);
     return updated;
-  }, [activeRoomId, messaging, detailResponse, roomsResponse]);
+  }, [activeRoomId, messaging, mutateRoom, mutateRooms]);
 
   const upsertMember = useCallback(async (request: UpsertRoomMemberRequest) => {
     if (!activeRoomId) throw new Error("No room selected.");
     const updated = await messaging.upsertMember(activeRoomId, request);
-    await detailResponse.mutate(updated, false);
+    await mutateRoom(updated, false);
     return updated;
-  }, [activeRoomId, messaging, detailResponse]);
+  }, [activeRoomId, messaging, mutateRoom]);
 
   const removeMember = useCallback(async (member: Pick<RoomMember, "kind" | "id">) => {
     if (!activeRoomId) throw new Error("No room selected.");
     await messaging.removeMember(activeRoomId, member.kind, member.id);
-    await Promise.all([detailResponse.mutate(), roomsResponse.mutate()]);
-  }, [activeRoomId, messaging, detailResponse, roomsResponse]);
+    await Promise.all([mutateRoom(), mutateRooms()]);
+  }, [activeRoomId, messaging, mutateRoom, mutateRooms]);
 
   const setRoomTyping = useCallback((isTyping: boolean) => activeRoomId
     ? messaging.setTyping({ roomId: activeRoomId, isTyping })
@@ -356,11 +374,11 @@ export function useRooms(initialAgentId?: string | null) {
     optimisticMessages: optimistic,
     typingMembers: [...typing.values()],
     runs: [...runs.values()].filter((run) => !messages.some((message) => message.runId === run.runId)),
-    liveConnected: live.liveConnected,
-    httpReady: live.httpReady,
+    liveConnected,
+    httpReady,
     selectRoom,
-    refreshRooms: () => roomsResponse.mutate(),
-    refreshRoom: () => detailResponse.mutate(),
+    refreshRooms: () => mutateRooms(),
+    refreshRoom: () => mutateRoom(),
     createRoom,
     updateRoom,
     upsertMember,

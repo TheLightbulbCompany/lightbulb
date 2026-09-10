@@ -409,7 +409,7 @@ export function AgentChatWindow({
         console.error("Failed to send message:", err);
       }
     },
-    [sendMessage, api, agentId],
+    [sendMessage, api, agentId, mutateSessions],
   );
 
   // NOTE: there is deliberately no `if (chatError)` branch. Errors render as

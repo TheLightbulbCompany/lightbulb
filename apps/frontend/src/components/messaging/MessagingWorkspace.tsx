@@ -70,6 +70,8 @@ function runView(run: LiveRoomRun): RoomRunView {
 export function MessagingWorkspace({ initialAgentId }: { initialAgentId?: string | null }) {
   const { userId, orgId } = useAuth();
   const rooms = useRooms(initialAgentId);
+  const setRoomTyping = rooms.setTyping;
+  const sendRoomMessage = rooms.sendMessage;
   const teams = useTeamsApi();
   const { data: agentRoster } = teams.read<{ agents?: CompanyAgent[] }>("/agents");
   const { data: humanRoster } = teams.read<{ members?: CompanyMember[] }>("/members");
@@ -97,8 +99,8 @@ export function MessagingWorkspace({ initialAgentId }: { initialAgentId?: string
 
   useEffect(() => () => {
     if (typingTimer.current) clearTimeout(typingTimer.current);
-    if (typingActive.current) void rooms.setTyping(false);
-  }, [rooms.setTyping]);
+    if (typingActive.current) void setRoomTyping(false);
+  }, [setRoomTyping]);
 
   const participants: RoomParticipant[] = useMemo(() => rooms.activeRoom?.members.map((member) => ({ ...member, agentState: "unknown" })) ?? [], [rooms.activeRoom]);
   const directoryParticipants: DirectoryParticipant[] = useMemo(() => {
@@ -122,20 +124,20 @@ export function MessagingWorkspace({ initialAgentId }: { initialAgentId?: string
   const handleTyping = useCallback((isTyping: boolean) => {
     if (typingTimer.current) clearTimeout(typingTimer.current);
     if (!isTyping) {
-      if (typingActive.current) void rooms.setTyping(false);
+      if (typingActive.current) void setRoomTyping(false);
       typingActive.current = false;
       return;
     }
-    if (!typingActive.current) void rooms.setTyping(true);
+    if (!typingActive.current) void setRoomTyping(true);
     typingActive.current = true;
     typingTimer.current = setTimeout(() => {
       typingActive.current = false;
-      void rooms.setTyping(false);
+      void setRoomTyping(false);
     }, 3_000);
-  }, [rooms.setTyping]);
+  }, [setRoomTyping]);
 
   const send = useCallback(async (request: CreateMessageRequest, thread = false) => {
-    await rooms.sendMessage(request);
+    await sendRoomMessage(request);
     if (thread) {
       setThreadDraft("");
       setThreadMentions([]);
@@ -145,7 +147,7 @@ export function MessagingWorkspace({ initialAgentId }: { initialAgentId?: string
       setMentions([]);
       setClientMessageId(crypto.randomUUID());
     }
-  }, [rooms.sendMessage]);
+  }, [sendRoomMessage]);
 
   const composer: RoomComposerProps = {
     text: draft,

@@ -8,7 +8,7 @@ const auth = {
 };
 const user = { id: "user-a", fullName: "Alice Example", firstName: "Alice" };
 vi.mock("@clerk/nextjs", () => ({
-  useAuth: () => ({ userId: auth.userId, orgId: auth.orgId, isSignedIn: !!auth.userId, getToken: auth.getToken }),
+  useAuth: () => ({ userId: auth.userId, orgId: auth.orgId, isLoaded: true, isSignedIn: !!auth.userId, getToken: auth.getToken }),
   useUser: () => ({ user }),
 }));
 

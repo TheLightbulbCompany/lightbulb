@@ -10,11 +10,10 @@ import { RoutinesPanel } from "@/components/teams/panels/RoutinesPanel";
 import { AgentOrgControls } from "@/components/teams/agents/AgentOrgControls";
 import { useBilling } from "@/hooks/useBilling";
 import { useAgents } from "@/hooks/useAgents";
-import { useRuntimeRpc } from "@/hooks/useRuntimeRpc";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { cn } from "@/lib/utils";
 import type { CompanyAgent } from "@/components/teams/shared/types";
-import type { AgentEntry, AgentsListResponse } from "./agents-types";
+import type { AgentEntry } from "./agents-types";
 
 type InspectorTab =
   | "overview"

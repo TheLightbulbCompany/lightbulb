@@ -11,8 +11,16 @@ import { useLiveEvents } from "@/hooks/useLiveEvents";
  * subscription.
  */
 export function useAgentRoomTransport(agentId: string | null) {
-  const live = useLiveEvents();
-  const [room, setRoom] = useState<RoomDetail | null>(null);
+  const {
+    httpReady,
+    liveConnected,
+    messaging,
+    runtime,
+    setActiveRoomSubscription,
+    onChatMessage: subscribeChatMessage,
+  } = useLiveEvents();
+  const [roomState, setRoomState] = useState<{ agentId: string; room: RoomDetail } | null>(null);
+  const room = roomState?.agentId === agentId ? roomState.room : null;
   const roomRef = useRef<RoomDetail | null>(null);
   const roomCreationRef = useRef<{ agentId: string; clientRoomId: string } | null>(null);
   const lookupRef = useRef<{ agentId: string; promise: Promise<RoomDetail> } | null>(null);
@@ -24,10 +32,10 @@ export function useAgentRoomTransport(agentId: string | null) {
     }
     if (lookupRef.current?.agentId === agentId) return lookupRef.current.promise;
 
-    const promise = live.messaging.listRooms().then(async ({ rooms }) => {
+    const promise = messaging.listRooms().then(async ({ rooms }) => {
       const details = await Promise.all(rooms
         .filter((summary) => summary.kind === "dm")
-        .map((summary) => live.messaging.getRoom(summary.roomId).catch(() => null)));
+        .map((summary) => messaging.getRoom(summary.roomId).catch(() => null)));
       const existing = details.find((detail): detail is RoomDetail => !!detail && detail.members.some(
         (member) => member.kind === "agent" && member.id === agentId,
       ));
@@ -36,7 +44,7 @@ export function useAgentRoomTransport(agentId: string | null) {
         ? roomCreationRef.current
         : { agentId, clientRoomId: crypto.randomUUID() };
       roomCreationRef.current = creation;
-      return live.messaging.createRoom({
+      return messaging.createRoom({
         clientRoomId: creation.clientRoomId,
         kind: "dm",
         name: null,
@@ -47,44 +55,43 @@ export function useAgentRoomTransport(agentId: string | null) {
     void promise.then((detail) => {
       if (lookupRef.current?.promise !== promise) return;
       roomRef.current = detail;
-      setRoom(detail);
+      setRoomState({ agentId, room: detail });
     }).catch(() => {
       if (lookupRef.current?.promise === promise) lookupRef.current = null;
     });
     return promise;
-  }, [agentId, live.messaging]);
+  }, [agentId, messaging]);
 
   useEffect(() => {
     roomRef.current = null;
-    setRoom(null);
     lookupRef.current = null;
-    if (agentId && live.httpReady) void resolveRoom().catch(() => {});
-  }, [agentId, live.httpReady, resolveRoom]);
+    if (agentId && httpReady) void resolveRoom().catch(() => {});
+  }, [agentId, httpReady, resolveRoom]);
 
   useEffect(() => {
     if (!room) return;
-    live.setActiveRoomSubscription({ roomId: room.roomId, deliveryKey: room.deliveryKey });
-    return () => live.setActiveRoomSubscription(null);
-  }, [room, live.setActiveRoomSubscription]);
+    setActiveRoomSubscription({ roomId: room.roomId, deliveryKey: room.deliveryKey });
+    return () => setActiveRoomSubscription(null);
+  }, [room, setActiveRoomSubscription]);
 
-  const onChatMessage = useCallback((handler: (frame: ChatIncomingMessage) => void) => live.onChatMessage((frame, event) => {
+  const onChatMessage = useCallback((handler: (frame: ChatIncomingMessage) => void) => subscribeChatMessage((frame, event) => {
     if (event.payload.agentId !== agentId || event.payload.roomId !== roomRef.current?.roomId) return;
     handler(frame);
-  }), [agentId, live.onChatMessage]);
+  }), [agentId, subscribeChatMessage]);
 
   const sendRoomMessage = useCallback(async (text: string, clientMessageId: string) => {
     const target = await resolveRoom();
-    return live.messaging.sendMessage(target.roomId, {
+    return messaging.sendMessage(target.roomId, {
       clientMessageId,
       text,
       mentions: [],
       replyToMessageId: null,
       threadRootMessageId: null,
     });
-  }, [live.messaging, resolveRoom]);
+  }, [messaging, resolveRoom]);
 
   const rpc = useCallback(async <T,>(method: string, params?: Record<string, unknown>): Promise<T> => {
-    const outcome = await live.runtime.rpc<T>(method, params);
+    const outcome = await runtime.rpc<T>(method, params);
     if (outcome.kind === "result") return outcome.value;
     throw new RuntimeRpcError({
       status: 202,
@@ -93,17 +100,17 @@ export function useAgentRoomTransport(agentId: string | null) {
       retryable: true,
       details: { operationId: outcome.operationId },
     });
-  }, [live.runtime]);
+  }, [runtime]);
 
   return {
     // Sending is an authenticated HTTP capability and must not depend on
     // AppSync's transient connection state.
-    isConnected: live.httpReady,
-    liveConnected: live.liveConnected,
+    isConnected: httpReady,
+    liveConnected,
     onChatMessage,
     sendRoomMessage,
-    abortRun: live.messaging.abortRun,
-    steerRun: (runId: string, text: string) => live.messaging.steerRun(runId, { text }),
+    abortRun: messaging.abortRun,
+    steerRun: (runId: string, text: string) => messaging.steerRun(runId, { text }),
     rpc,
   };
 }

@@ -52,22 +52,24 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
   const api = useApi();
   const messaging = useMemo(() => createMessagingClient(api), [api]);
   const runtimeClient = useMemo(() => createRuntimeClient(api, () => crypto.randomUUID()), [api]);
-  const ownerScope = orgId ?? userId;
+  const ownerScope = orgId ?? userId ?? null;
   const httpReady = !!isLoaded && !!userId;
   const { data: config, error: configError } = useSWR(
     httpReady ? ["messaging-live-config", userId, ownerScope] : null,
     () => messaging.getLiveConfig(),
     { revalidateOnFocus: false },
   );
-  const [activeRoom, setActiveRoom] = useState<ActiveRoomSubscription | null>(null);
+  const [activeRoomState, setActiveRoomState] = useState<{
+    ownerScope: string | null;
+    room: ActiveRoomSubscription | null;
+  } | null>(null);
+  const activeRoom = ownerScope && activeRoomState?.ownerScope === ownerScope
+    ? activeRoomState.room
+    : null;
   const [nodeStatus, setNodeStatus] = useState("disconnected");
   const [desktopPermissionRevision, setDesktopPermissionRevision] = useState(0);
   const eventHandlers = useRef(new Set<(event: LiveEvent) => void>());
   const chatHandlers = useRef(new Set<(frame: ChatIncomingMessage, event: LiveEventOf<"room.run.frame">) => void>());
-
-  useEffect(() => {
-    setActiveRoom(null);
-  }, [userId, ownerScope]);
 
   const dispatchEvent = useCallback((event: LiveEvent) => {
     if (event.type === "runtime.resource.invalidated" && (event.payload.resource === "onboarding" || event.payload.resource === "health")) {
@@ -100,8 +102,14 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     return () => chatHandlers.current.delete(handler);
   }, []);
   const setActiveRoomSubscription = useCallback((room: ActiveRoomSubscription | null) => {
-    setActiveRoom((current) => current?.roomId === room?.roomId && current?.deliveryKey === room?.deliveryKey ? current : room);
-  }, []);
+    setActiveRoomState((current) =>
+      current?.ownerScope === ownerScope &&
+      current?.room?.roomId === room?.roomId &&
+      current?.room?.deliveryKey === room?.deliveryKey
+        ? current
+        : { ownerScope, room },
+    );
+  }, [ownerScope]);
 
   useEffect(() => subscribeDesktopPermissions(() => {
     setDesktopPermissionRevision((revision) => revision + 1);

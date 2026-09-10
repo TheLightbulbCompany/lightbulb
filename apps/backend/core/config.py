@@ -460,6 +460,26 @@ class Settings(BaseSettings):
     # listed price. 15 = launch decision 2026-08-13.
     MARKETPLACE_PLATFORM_FEE_PERCENT: int = 15
 
+    # --- Native multiplayer messaging (set by CDK ServiceStack; spec
+    # docs/superpowers/specs/2026-09-09-native-multiplayer-messaging-architecture.md).
+    # The env names are the frozen cross-packet contract — do not rename.
+    MESSAGING_TABLE: str = ""
+    """Canonical room/message table (``lightbulb-{env}-messaging``). Empty is
+    only legal outside a deployed task; ``_validate_deployed_security`` fails
+    boot without it because every room command would 500 at first use."""
+    OPENCLAW_WORK_QUEUE_URL: str = ""
+    """FIFO wake queue (``lightbulb-{env}-openclaw-work.fifo``). Empty disables
+    the in-process worker (tests, local dev without AWS)."""
+    APPSYNC_EVENTS_HTTP_ENDPOINT: str = ""
+    """AppSync Events HTTP publish endpoint (ends ``/event``). Empty makes the
+    live publisher a metric-only no-op."""
+    APPSYNC_EVENTS_REALTIME_ENDPOINT: str = ""
+    """AppSync Events realtime endpoint (ends ``/event/realtime``) handed to
+    browsers by ``GET /messaging/live-config``."""
+    APPSYNC_EVENTS_REGION: str = ""
+    """Region the Event API lives in — the SigV4 signing region, which is not
+    necessarily ``AWS_REGION``."""
+
     # Encryption (base64-encoded 32-byte key for Fernet encryption of BYOK API keys)
     ENCRYPTION_KEY: str = ""
 
@@ -610,6 +630,10 @@ class Settings(BaseSettings):
                 "WS internal-caller enforcement must be ON with a secret in a deployed environment; "
                 "otherwise /ws/connect can be re-bound to another user via forged headers."
             )
+        # The canonical messaging table is wired by the same CDK stack; a
+        # missing value is a dropped variable, not a feature toggle.
+        if not self.MESSAGING_TABLE:
+            raise ValueError("MESSAGING_TABLE must be set in a deployed environment (native multiplayer rooms).")
         # SEC-8: token-origin (`azp`) verification. In enforce mode an empty
         # allowlist would silently verify nothing while looking secure — fail
         # closed. In audit mode, warn loudly so the gap can't go quiet again.

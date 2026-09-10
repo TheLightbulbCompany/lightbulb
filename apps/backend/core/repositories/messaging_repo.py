@@ -1,0 +1,1111 @@
+"""Canonical multiplayer messaging store — ONE DynamoDB table (``MESSAGING_TABLE``).
+
+Key registry (architecture spec §7; the ``by-member`` GSI is discovery ONLY —
+every protected operation rechecks the base ``MEMBER#`` row strongly):
+
+    OWNER#<owner>   ROOM#<room>                        room directory projection
+    ROOM#<room>     META                               owner, fields, revision, lastSeq, deliveryKey
+    ROOM#<room>     MEMBER#<kind>#<id>                 role, listenMode, mentionHandle, joinedSeq
+    ROOM#<room>     MSG#<20-digit seq>                 immutable message + dispatchTargets
+    ROOM#<room>     IDEMP#human#<user>#<clientMessageId>  durable human retry receipt
+    OWNER#<owner>   IDEMP#AGENT#<eventId>              durable agent retry receipt (owner-scoped
+                                                       because the receipt route carries no roomId)
+    ROOM#<room>     READ#human#<user>                  last read seq
+    ROOM#<room>     DELIVERY#AGENT#<agent>             last drained seq per agent
+    ROOM#<room>     WORK#MESSAGE#<seq>#AGENT#<agent>   one-shot outbox -> EventBridge Pipe -> FIFO
+    ROOM#<room>     LIVE#<eventId>#USER#<user>         one-shot private-user notification outbox
+    OWNER#<owner>   USERSTREAM#<user>                  current opaque private-channel key
+    STREAM#<key>    META                               reverse mapping AppSync onSubscribe reads
+    OWNER#<owner>   OPERATION#<id>                     async runtime op status/result
+    OWNER#<owner>   WORK#OPERATION#<id>                one-shot outbox for runtime work
+
+Only ``WORK#`` and ``LIVE#`` rows carry ``expiresAt`` (7 days). Every read here is
+``ConsistentRead=True``; the GSI is queried by ``list_rooms_for_member`` and nowhere else.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+import time
+import uuid
+from decimal import Decimal
+from typing import Any
+
+from botocore.exceptions import ClientError
+
+from core.config import settings
+from core.dynamodb import _get_resource, run_in_thread, utc_now_iso
+
+logger = logging.getLogger(__name__)
+
+GSI_BY_MEMBER = "by-member"
+MAX_ROOM_MEMBERS = 32
+OUTBOX_TTL_S = 7 * 24 * 3600
+# Room-create is 3 fixed actions (META, owner catalog, IDEMP) + members + agent
+# delivery rows. The 32-member worst case is 66; DynamoDB caps a transaction at 100.
+_FIXED_CREATE_ACTIONS = 3
+_TRANSACT_LIMIT = 100
+_SEQ_RETRY_ATTEMPTS = 6
+
+
+class MessagingRepoError(Exception):
+    pass
+
+
+class IdempotencyConflict(MessagingRepoError):
+    """Same idempotency key, different canonical request."""
+
+
+class MemberLimitExceeded(MessagingRepoError):
+    pass
+
+
+class RoomNotFound(MessagingRepoError):
+    pass
+
+
+# ---------------------------------------------------------------------------
+# keys / ids
+# ---------------------------------------------------------------------------
+
+
+def room_pk(room_id: str) -> str:
+    return f"ROOM#{room_id}"
+
+
+def owner_pk(owner_id: str) -> str:
+    return f"OWNER#{owner_id}"
+
+
+def msg_sk(seq: int) -> str:
+    return f"MSG#{int(seq):020d}"
+
+
+def member_sk(kind: str, member_id: str) -> str:
+    return f"MEMBER#{kind}#{member_id}"
+
+
+def member_key(owner_id: str, kind: str, member_id: str) -> str:
+    return f"OWNER#{owner_id}#{kind}#{member_id}"
+
+
+def human_idemp_sk(user_id: str, client_message_id: str) -> str:
+    return f"IDEMP#human#{user_id}#{client_message_id}"
+
+
+def agent_idemp_sk(event_id: str) -> str:
+    return f"IDEMP#AGENT#{event_id}"
+
+
+def read_sk(user_id: str) -> str:
+    return f"READ#human#{user_id}"
+
+
+def delivery_sk(agent_id: str) -> str:
+    return f"DELIVERY#AGENT#{agent_id}"
+
+
+def work_message_sk(seq: int, agent_id: str) -> str:
+    return f"WORK#MESSAGE#{int(seq):020d}#AGENT#{agent_id}"
+
+
+def live_sk(event_id: str, user_id: str) -> str:
+    return f"LIVE#{event_id}#USER#{user_id}"
+
+
+def userstream_sk(user_id: str) -> str:
+    return f"USERSTREAM#{user_id}"
+
+
+def stream_pk(channel_key: str) -> str:
+    return f"STREAM#{channel_key}"
+
+
+def operation_sk(operation_id: str) -> str:
+    return f"OPERATION#{operation_id}"
+
+
+def work_operation_sk(operation_id: str) -> str:
+    return f"WORK#OPERATION#{operation_id}"
+
+
+def _sha256(s: str) -> str:
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()
+
+
+def room_fifo_ids(owner_id: str, room_id: str, agent_id: str, message_id: str) -> tuple[str, str]:
+    """(MessageGroupId, MessageDeduplicationId) for a room wake — spec §9."""
+    return _sha256(f"room|{owner_id}|{room_id}|{agent_id}"), _sha256(f"message|{message_id}|{agent_id}")
+
+
+def operation_fifo_ids(owner_id: str, operation_id: str) -> tuple[str, str]:
+    return _sha256(f"runtime|{owner_id}"), _sha256(f"operation|{operation_id}")
+
+
+def deterministic_room_id(owner_id: str, user_id: str, client_room_id: str) -> str:
+    """Server room id for a create request. uuid5 over the idempotency triple so
+    a replay lands on the SAME ``ROOM#`` partition and the durable IDEMP row can
+    live under the spec's ``ROOM#<roomId>/IDEMP#human#…`` key."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-room|{owner_id}|{user_id}|{client_room_id}"))
+
+
+def request_hash(*parts: Any) -> str:
+    """SHA-256 over the canonical request fields (JSON-ish, order-preserving)."""
+    import json
+
+    return _sha256(json.dumps(list(parts), sort_keys=True, separators=(",", ":"), default=str))
+
+
+def _expires_at() -> int:
+    return int(time.time()) + OUTBOX_TTL_S
+
+
+def _plain(value: Any) -> Any:
+    """Decimal -> int for everything we store (we only ever store integers)."""
+    if isinstance(value, Decimal):
+        return int(value)
+    if isinstance(value, dict):
+        return {k: _plain(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_plain(v) for v in value]
+    return value
+
+
+# ---------------------------------------------------------------------------
+# table access
+# ---------------------------------------------------------------------------
+
+
+def _table():
+    if not settings.MESSAGING_TABLE:
+        raise MessagingRepoError("MESSAGING_TABLE is not configured")
+    return _get_resource().Table(settings.MESSAGING_TABLE)
+
+
+async def _get(pk: str, sk: str) -> dict | None:
+    table = _table()
+    response = await run_in_thread(table.get_item, Key={"pk": pk, "sk": sk}, ConsistentRead=True)
+    item = response.get("Item")
+    return _plain(item) if item else None
+
+
+async def _transact(items: list[dict]) -> None:
+    """Run one TransactWriteItems. Raises ``ClientError`` on cancellation so the
+    caller can triage the reasons."""
+    if len(items) > _TRANSACT_LIMIT:
+        raise MessagingRepoError(f"transaction has {len(items)} actions (limit {_TRANSACT_LIMIT})")
+    table = _table()
+    await run_in_thread(table.meta.client.transact_write_items, TransactItems=items)
+
+
+def _is_cancelled(exc: ClientError) -> bool:
+    return exc.response.get("Error", {}).get("Code") == "TransactionCanceledException"
+
+
+def _cancel_codes(exc: ClientError) -> list[str | None]:
+    reasons = exc.response.get("CancellationReasons")
+    if not isinstance(reasons, list):
+        return []
+    return [r.get("Code") if isinstance(r, dict) else None for r in reasons]
+
+
+async def _query(
+    pk: str,
+    *,
+    begins_with: str | None = None,
+    ascending: bool = True,
+    limit: int | None = None,
+    between: tuple[str, str] | None = None,
+    lt: str | None = None,
+) -> list[dict]:
+    from boto3.dynamodb.conditions import Key
+
+    cond = Key("pk").eq(pk)
+    if begins_with is not None:
+        cond = cond & Key("sk").begins_with(begins_with)
+    elif between is not None:
+        cond = cond & Key("sk").between(*between)
+    elif lt is not None:
+        cond = cond & Key("sk").lt(lt)
+    table = _table()
+    items: list[dict] = []
+    kwargs: dict = {"KeyConditionExpression": cond, "ConsistentRead": True, "ScanIndexForward": ascending}
+    if limit is not None:
+        kwargs["Limit"] = limit
+    while True:
+        response = await run_in_thread(table.query, **kwargs)
+        items.extend(_plain(response.get("Items", [])))
+        if limit is not None and len(items) >= limit:
+            return items[:limit]
+        last = response.get("LastEvaluatedKey")
+        if not last:
+            return items
+        kwargs["ExclusiveStartKey"] = last
+
+
+# ---------------------------------------------------------------------------
+# reads
+# ---------------------------------------------------------------------------
+
+
+async def get_room(room_id: str) -> dict | None:
+    return await _get(room_pk(room_id), "META")
+
+
+async def get_member(room_id: str, kind: str, member_id: str) -> dict | None:
+    return await _get(room_pk(room_id), member_sk(kind, member_id))
+
+
+async def list_members(room_id: str) -> list[dict]:
+    return await _query(room_pk(room_id), begins_with="MEMBER#")
+
+
+async def get_message(room_id: str, seq: int) -> dict | None:
+    return await _get(room_pk(room_id), msg_sk(seq))
+
+
+async def get_agent_delivery(room_id: str, agent_id: str) -> dict | None:
+    return await _get(room_pk(room_id), delivery_sk(agent_id))
+
+
+async def get_read_cursor(room_id: str, user_id: str) -> int:
+    row = await _get(room_pk(room_id), read_sk(user_id))
+    return int(row["lastReadSeq"]) if row else 0
+
+
+async def get_human_idempotency(room_id: str, user_id: str, client_message_id: str) -> dict | None:
+    return await _get(room_pk(room_id), human_idemp_sk(user_id, client_message_id))
+
+
+async def get_agent_idempotency(owner_id: str, event_id: str) -> dict | None:
+    return await _get(owner_pk(owner_id), agent_idemp_sk(event_id))
+
+
+async def list_messages(room_id: str, after_seq: int, limit: int) -> tuple[list[dict], int | None]:
+    """Ascending ``MSG#`` page strictly after ``after_seq``; ``1 <= limit <= 100``."""
+    if not 1 <= limit <= 100:
+        raise ValueError("limit must be 1..100")
+    if after_seq < 0:
+        raise ValueError("afterSeq must be >= 0")
+    rows = await _query(room_pk(room_id), between=(msg_sk(after_seq + 1), msg_sk(10**19)), limit=limit + 1)
+    page = rows[:limit]
+    next_after = page[-1]["messageSeq"] if len(rows) > limit else None
+    return page, next_after
+
+
+async def list_messages_between(room_id: str, from_seq: int, through_seq: int) -> list[dict]:
+    """Ascending ``MSG#`` rows with ``from_seq <= seq <= through_seq``."""
+    if through_seq < from_seq:
+        return []
+    return await _query(room_pk(room_id), between=(msg_sk(from_seq), msg_sk(through_seq)))
+
+
+async def list_messages_before(room_id: str, before_seq: int, limit: int) -> list[dict]:
+    """The ``limit`` newest rows with ``seq < before_seq``, returned oldest→newest."""
+    rows = await _query(room_pk(room_id), between=(msg_sk(1), msg_sk(before_seq - 1)), ascending=False, limit=limit)
+    return list(reversed(rows))
+
+
+async def list_rooms_for_member(owner_id: str, kind: str, member_id: str) -> list[dict]:
+    """DISCOVERY ONLY: membership rows from the ``by-member`` GSI, joined with a
+    strongly consistent batch read of each room's ``META``. Callers must still
+    recheck the base membership row before trusting a room."""
+    from boto3.dynamodb.conditions import Key
+
+    table = _table()
+    rows: list[dict] = []
+    kwargs: dict = {
+        "IndexName": GSI_BY_MEMBER,
+        "KeyConditionExpression": Key("memberKey").eq(member_key(owner_id, kind, member_id)),
+    }
+    while True:
+        response = await run_in_thread(table.query, **kwargs)
+        rows.extend(_plain(response.get("Items", [])))
+        last = response.get("LastEvaluatedKey")
+        if not last:
+            break
+        kwargs["ExclusiveStartKey"] = last
+    if not rows:
+        return []
+    metas: dict[str, dict] = {}
+    keys = [{"pk": r["pk"], "sk": "META"} for r in rows]
+    for i in range(0, len(keys), 100):
+        request = {table.name: {"Keys": keys[i : i + 100], "ConsistentRead": True}}
+        while request:
+            response = await run_in_thread(table.meta.client.batch_get_item, RequestItems=request)
+            for item in response.get("Responses", {}).get(table.name, []):
+                item = _plain(item)
+                metas[item["roomId"]] = item
+            request = response.get("UnprocessedKeys") or {}
+    out = []
+    for r in rows:
+        meta = metas.get(r["roomId"])
+        if meta is not None and meta.get("ownerId") == owner_id:
+            out.append({"member": r, "meta": meta})
+    return out
+
+
+# ---------------------------------------------------------------------------
+# room creation
+# ---------------------------------------------------------------------------
+
+
+def _member_item(room_id: str, owner_id: str, m: dict, joined_seq: int, now: str) -> dict:
+    return {
+        "pk": room_pk(room_id),
+        "sk": member_sk(m["kind"], m["id"]),
+        "memberKey": member_key(owner_id, m["kind"], m["id"]),
+        "memberSort": room_pk(room_id),
+        "roomId": room_id,
+        "ownerId": owner_id,
+        "kind": m["kind"],
+        "id": m["id"],
+        "displayName": m.get("displayName") or m["id"],
+        "mentionHandle": m.get("mentionHandle"),
+        "role": m["role"],
+        "listenMode": m.get("listenMode"),
+        "joinedAt": now,
+        "joinedSeq": joined_seq,
+    }
+
+
+async def create_room(
+    *,
+    owner_id: str,
+    room_id: str,
+    client_room_id: str,
+    creator_user_id: str,
+    name: str | None,
+    kind: str,
+    members: list[dict],
+    req_hash: str,
+) -> dict:
+    """One transaction: META + owner catalog + IDEMP + every member row + one
+    delivery cursor per agent (at seq 0). ``members`` must already include the
+    creator (role ``owner``). Returns the META item; a byte-identical replay
+    returns the existing META, a different one raises ``IdempotencyConflict``."""
+    if len(members) > MAX_ROOM_MEMBERS:
+        raise MemberLimitExceeded(f"rooms hold at most {MAX_ROOM_MEMBERS} members")
+    agents = [m for m in members if m["kind"] == "agent"]
+    actions = _FIXED_CREATE_ACTIONS + len(members) + len(agents)
+    assert actions <= _TRANSACT_LIMIT, f"room create needs {actions} actions"
+
+    now = utc_now_iso()
+    table_name = _table().name
+    meta = {
+        "pk": room_pk(room_id),
+        "sk": "META",
+        "roomId": room_id,
+        "ownerId": owner_id,
+        "name": name,
+        "kind": kind,
+        "revision": 1,
+        "lastSeq": 0,
+        "lastMessageAt": None,
+        "deliveryKey": str(uuid.uuid4()),
+        "createdAt": now,
+        "updatedAt": now,
+    }
+    items: list[dict] = [
+        {"Put": {"TableName": table_name, "Item": meta, "ConditionExpression": "attribute_not_exists(pk)"}},
+        {
+            "Put": {
+                "TableName": table_name,
+                "Item": {
+                    "pk": owner_pk(owner_id),
+                    "sk": room_pk(room_id),
+                    "roomId": room_id,
+                    "name": name,
+                    "kind": kind,
+                    "createdAt": now,
+                    "updatedAt": now,
+                },
+            }
+        },
+        {
+            "Put": {
+                "TableName": table_name,
+                "Item": {
+                    "pk": room_pk(room_id),
+                    "sk": human_idemp_sk(creator_user_id, client_room_id),
+                    "requestHash": req_hash,
+                    "roomId": room_id,
+                    "createdAt": now,
+                },
+                "ConditionExpression": "attribute_not_exists(pk)",
+            }
+        },
+    ]
+    for m in members:
+        items.append({"Put": {"TableName": table_name, "Item": _member_item(room_id, owner_id, m, 0, now)}})
+    for a in agents:
+        items.append(
+            {
+                "Put": {
+                    "TableName": table_name,
+                    "Item": {"pk": room_pk(room_id), "sk": delivery_sk(a["id"]), "agentId": a["id"], "lastSeq": 0},
+                }
+            }
+        )
+    try:
+        await _transact(items)
+        return meta
+    except ClientError as exc:
+        if not _is_cancelled(exc):
+            raise
+    existing = await _get(room_pk(room_id), human_idemp_sk(creator_user_id, client_room_id))
+    if existing is None:
+        raise MessagingRepoError("room create cancelled without a durable receipt")
+    if existing.get("requestHash") != req_hash:
+        raise IdempotencyConflict("clientRoomId was already used with a different request")
+    meta = await get_room(room_id)
+    if meta is None:
+        raise RoomNotFound(room_id)
+    return meta
+
+
+# ---------------------------------------------------------------------------
+# message creation
+# ---------------------------------------------------------------------------
+
+
+def _work_message_item(table_name: str, owner_id: str, room_id: str, message_id: str, seq: int, agent_id: str) -> dict:
+    group, dedup = room_fifo_ids(owner_id, room_id, agent_id, message_id)
+    return {
+        "Put": {
+            "TableName": table_name,
+            "Item": {
+                "pk": room_pk(room_id),
+                "sk": work_message_sk(seq, agent_id),
+                "payload": {"kind": "room_dispatch", "roomId": room_id, "agentId": agent_id, "throughSeq": seq},
+                "messageGroupId": group,
+                "messageDeduplicationId": dedup,
+                "expiresAt": _expires_at(),
+            },
+        }
+    }
+
+
+async def create_message(
+    *,
+    room_id: str,
+    owner_id: str,
+    idemp_pk: str,
+    idemp_sk: str,
+    req_hash: str,
+    author: dict,
+    text: str,
+    mentions: list[dict],
+    reply_to_message_id: str | None,
+    thread_root_message_id: str | None,
+    run_id: str | None,
+    dispatch_targets: list[dict],
+    source_agent_id: str | None,
+    client_message_id: str | None,
+) -> dict:
+    """Strong-read ``META.lastSeq`` then conditionally transact: bump META, put
+    the immutable ``MSG``, put the ``IDEMP`` receipt, put one ``WORK#MESSAGE``
+    outbox row per dispatch target. Retries the sequence race; a durable
+    replay returns the original message; a changed body raises
+    ``IdempotencyConflict``."""
+    prior = await _get(idemp_pk, idemp_sk)
+    if prior is not None:
+        return await _replay_or_conflict(prior, req_hash)
+
+    table_name = _table().name
+    target_ids = [t["agentId"] for t in dispatch_targets]
+    for attempt in range(_SEQ_RETRY_ATTEMPTS):
+        meta = await get_room(room_id)
+        if meta is None:
+            raise RoomNotFound(room_id)
+        expected = int(meta["lastSeq"])
+        seq = expected + 1
+        now = utc_now_iso()
+        message_id = str(uuid.uuid4())
+        message = {
+            "pk": room_pk(room_id),
+            "sk": msg_sk(seq),
+            "messageId": message_id,
+            "roomId": room_id,
+            "ownerId": owner_id,
+            "messageSeq": seq,
+            "roomRevision": int(meta["revision"]),
+            "author": author,
+            "text": text,
+            "mentions": mentions,
+            "replyToMessageId": reply_to_message_id,
+            "threadRootMessageId": thread_root_message_id,
+            "createdAt": now,
+            "runId": run_id,
+            "dispatchTargets": dispatch_targets,
+            "sourceAgentId": source_agent_id,
+            "clientMessageId": client_message_id,
+            "requestHash": req_hash,
+        }
+        items: list[dict] = [
+            {
+                "Update": {
+                    "TableName": table_name,
+                    "Key": {"pk": room_pk(room_id), "sk": "META"},
+                    "UpdateExpression": "SET lastSeq = :seq, lastMessageAt = :now, updatedAt = :now",
+                    "ConditionExpression": "lastSeq = :expected",
+                    "ExpressionAttributeValues": {":seq": seq, ":expected": expected, ":now": now},
+                }
+            },
+            {"Put": {"TableName": table_name, "Item": message, "ConditionExpression": "attribute_not_exists(sk)"}},
+            {
+                "Put": {
+                    "TableName": table_name,
+                    "Item": {
+                        "pk": idemp_pk,
+                        "sk": idemp_sk,
+                        "requestHash": req_hash,
+                        "roomId": room_id,
+                        "messageId": message_id,
+                        "messageSeq": seq,
+                        "createdAt": now,
+                    },
+                    "ConditionExpression": "attribute_not_exists(sk)",
+                }
+            },
+        ]
+        items.extend(_work_message_item(table_name, owner_id, room_id, message_id, seq, a) for a in target_ids)
+        try:
+            await _transact(items)
+            return _plain(message)
+        except ClientError as exc:
+            if not _is_cancelled(exc):
+                raise
+        prior = await _get(idemp_pk, idemp_sk)
+        if prior is not None:
+            return await _replay_or_conflict(prior, req_hash)
+        # Sequence race (or a same-instant duplicate seq) — reread and retry.
+        logger.info("messaging: sequence conflict on room=%s attempt=%d", room_id, attempt + 1)
+    raise MessagingRepoError(f"could not append to room {room_id} after {_SEQ_RETRY_ATTEMPTS} attempts")
+
+
+async def _replay_or_conflict(receipt: dict, req_hash: str) -> dict:
+    if receipt.get("requestHash") != req_hash:
+        raise IdempotencyConflict("idempotency key reused with a different request")
+    message = await get_message(receipt["roomId"], int(receipt["messageSeq"]))
+    if message is None:
+        raise MessagingRepoError("durable receipt without its message")
+    return message
+
+
+# ---------------------------------------------------------------------------
+# membership
+# ---------------------------------------------------------------------------
+
+
+async def upsert_member(
+    *, room_id: str, owner_id: str, member: dict, handle_updates: dict[str, str] | None = None
+) -> dict:
+    """Add or update one member; bump ``META.revision``. A new agent gets its
+    delivery cursor at the CURRENT ``lastSeq`` so it never replays history.
+    ``handle_updates`` re-stamps other agents' ``mentionHandle`` when the new
+    roster changed their collision suffix. Returns the new META."""
+    meta = await get_room(room_id)
+    if meta is None:
+        raise RoomNotFound(room_id)
+    existing = await get_member(room_id, member["kind"], member["id"])
+    if existing is None:
+        current = await list_members(room_id)
+        if len(current) + 1 > MAX_ROOM_MEMBERS:
+            raise MemberLimitExceeded(f"rooms hold at most {MAX_ROOM_MEMBERS} members")
+    now = utc_now_iso()
+    table_name = _table().name
+    revision = int(meta["revision"]) + 1
+    items: list[dict] = [
+        {
+            "Update": {
+                "TableName": table_name,
+                "Key": {"pk": room_pk(room_id), "sk": "META"},
+                "UpdateExpression": "SET revision = :rev, updatedAt = :now",
+                "ConditionExpression": "revision = :expected",
+                "ExpressionAttributeValues": {":rev": revision, ":expected": revision - 1, ":now": now},
+            }
+        }
+    ]
+    if existing is None:
+        items.append(
+            {
+                "Put": {
+                    "TableName": table_name,
+                    "Item": _member_item(room_id, owner_id, member, int(meta["lastSeq"]), now),
+                    "ConditionExpression": "attribute_not_exists(sk)",
+                }
+            }
+        )
+        if member["kind"] == "agent":
+            items.append(
+                {
+                    "Put": {
+                        "TableName": table_name,
+                        "Item": {
+                            "pk": room_pk(room_id),
+                            "sk": delivery_sk(member["id"]),
+                            "agentId": member["id"],
+                            "lastSeq": int(meta["lastSeq"]),
+                        },
+                        "ConditionExpression": "attribute_not_exists(sk)",
+                    }
+                }
+            )
+    else:
+        items.append(
+            {
+                "Update": {
+                    "TableName": table_name,
+                    "Key": {"pk": room_pk(room_id), "sk": member_sk(member["kind"], member["id"])},
+                    "UpdateExpression": "SET #role = :role, listenMode = :lm, displayName = :dn, mentionHandle = :mh",
+                    "ConditionExpression": "attribute_exists(sk)",
+                    "ExpressionAttributeNames": {"#role": "role"},
+                    "ExpressionAttributeValues": {
+                        ":role": member["role"],
+                        ":lm": member.get("listenMode"),
+                        ":dn": member.get("displayName") or member["id"],
+                        ":mh": member.get("mentionHandle"),
+                    },
+                }
+            }
+        )
+    for agent_id, handle in (handle_updates or {}).items():
+        if agent_id == member["id"]:
+            continue
+        items.append(
+            {
+                "Update": {
+                    "TableName": table_name,
+                    "Key": {"pk": room_pk(room_id), "sk": member_sk("agent", agent_id)},
+                    "UpdateExpression": "SET mentionHandle = :mh",
+                    "ConditionExpression": "attribute_exists(sk)",
+                    "ExpressionAttributeValues": {":mh": handle},
+                }
+            }
+        )
+    await _transact(items)
+    return {**meta, "revision": revision, "updatedAt": now}
+
+
+def _live_item(
+    table_name: str, room_id: str, owner_id: str, user_id: str, channel_key: str | None, event: dict
+) -> dict:
+    return {
+        "Put": {
+            "TableName": table_name,
+            "Item": {
+                "pk": room_pk(room_id),
+                "sk": live_sk(event["eventId"], user_id),
+                "roomId": room_id,
+                "ownerId": owner_id,
+                "userId": user_id,
+                "channelKey": channel_key or "",
+                "event": event,
+                "expiresAt": _expires_at(),
+            },
+        }
+    }
+
+
+async def remove_member(
+    *, room_id: str, owner_id: str, kind: str, member_id: str, live_events: list[dict] | None = None
+) -> dict:
+    """Delete one membership; bump revision. A HUMAN removal also rotates
+    ``deliveryKey`` and writes the supplied ``LIVE`` rows (``{userId,
+    channelKey, event}`` per affected human — built by the service from the
+    frozen registry) in the same transaction. An agent removal drops its
+    delivery cursor. Returns the new META (with the rotated key)."""
+    meta = await get_room(room_id)
+    if meta is None:
+        raise RoomNotFound(room_id)
+    now = utc_now_iso()
+    table_name = _table().name
+    revision = int(meta["revision"]) + 1
+    new_key = str(uuid.uuid4()) if kind == "human" else meta["deliveryKey"]
+    update = "SET revision = :rev, updatedAt = :now" + (", deliveryKey = :key" if kind == "human" else "")
+    values: dict = {":rev": revision, ":expected": revision - 1, ":now": now}
+    if kind == "human":
+        values[":key"] = new_key
+    items: list[dict] = [
+        {
+            "Update": {
+                "TableName": table_name,
+                "Key": {"pk": room_pk(room_id), "sk": "META"},
+                "UpdateExpression": update,
+                "ConditionExpression": "revision = :expected",
+                "ExpressionAttributeValues": values,
+            }
+        },
+        {
+            "Delete": {
+                "TableName": table_name,
+                "Key": {"pk": room_pk(room_id), "sk": member_sk(kind, member_id)},
+                "ConditionExpression": "attribute_exists(sk)",
+            }
+        },
+    ]
+    if kind == "agent":
+        items.append(
+            {"Delete": {"TableName": table_name, "Key": {"pk": room_pk(room_id), "sk": delivery_sk(member_id)}}}
+        )
+    for live in live_events or []:
+        items.append(_live_item(table_name, room_id, owner_id, live["userId"], live.get("channelKey"), live["event"]))
+    await _transact(items)
+    return {**meta, "revision": revision, "updatedAt": now, "deliveryKey": new_key}
+
+
+async def patch_room_name(room_id: str, name: str | None) -> dict:
+    meta = await get_room(room_id)
+    if meta is None:
+        raise RoomNotFound(room_id)
+    now = utc_now_iso()
+    table_name = _table().name
+    revision = int(meta["revision"]) + 1
+    await _transact(
+        [
+            {
+                "Update": {
+                    "TableName": table_name,
+                    "Key": {"pk": room_pk(room_id), "sk": "META"},
+                    "UpdateExpression": "SET #name = :name, revision = :rev, updatedAt = :now",
+                    "ConditionExpression": "revision = :expected",
+                    "ExpressionAttributeNames": {"#name": "name"},
+                    "ExpressionAttributeValues": {
+                        ":name": name,
+                        ":rev": revision,
+                        ":expected": revision - 1,
+                        ":now": now,
+                    },
+                }
+            },
+            {
+                "Update": {
+                    "TableName": table_name,
+                    "Key": {"pk": owner_pk(meta["ownerId"]), "sk": room_pk(room_id)},
+                    "UpdateExpression": "SET #name = :name, updatedAt = :now",
+                    "ExpressionAttributeNames": {"#name": "name"},
+                    "ExpressionAttributeValues": {":name": name, ":now": now},
+                }
+            },
+        ]
+    )
+    return {**meta, "name": name, "revision": revision, "updatedAt": now}
+
+
+# ---------------------------------------------------------------------------
+# cursors
+# ---------------------------------------------------------------------------
+
+
+async def advance_agent_delivery(room_id: str, agent_id: str, expected: int, through: int) -> bool:
+    """Compare-and-set the agent cursor ``expected -> through``. False when the
+    cursor moved (a concurrent drain) or is absent (agent removed)."""
+    if through < expected:
+        return False
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"pk": room_pk(room_id), "sk": delivery_sk(agent_id)},
+            UpdateExpression="SET lastSeq = :through",
+            ConditionExpression="attribute_exists(sk) AND lastSeq = :expected",
+            ExpressionAttributeValues={":through": int(through), ":expected": int(expected)},
+        )
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+
+
+async def set_read_cursor(room_id: str, user_id: str, last_read_seq: int) -> int:
+    """Monotonic upsert bounded by the room's current ``lastSeq``."""
+    meta = await get_room(room_id)
+    if meta is None:
+        raise RoomNotFound(room_id)
+    target = max(0, min(int(last_read_seq), int(meta["lastSeq"])))
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"pk": room_pk(room_id), "sk": read_sk(user_id)},
+            UpdateExpression="SET lastReadSeq = :n, userId = :u, updatedAt = :now",
+            ConditionExpression="attribute_not_exists(lastReadSeq) OR lastReadSeq <= :n",
+            ExpressionAttributeValues={":n": target, ":u": user_id, ":now": utc_now_iso()},
+        )
+        return target
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+    return await get_read_cursor(room_id, user_id)
+
+
+# ---------------------------------------------------------------------------
+# private user streams
+# ---------------------------------------------------------------------------
+
+
+async def get_user_stream(owner_id: str, user_id: str) -> dict | None:
+    return await _get(owner_pk(owner_id), userstream_sk(user_id))
+
+
+async def get_stream(channel_key: str) -> dict | None:
+    return await _get(stream_pk(channel_key), "META")
+
+
+async def list_active_user_streams(owner_id: str) -> list[dict]:
+    rows = await _query(owner_pk(owner_id), begins_with="USERSTREAM#")
+    return [r for r in rows if r.get("active")]
+
+
+async def ensure_user_stream(owner_id: str, user_id: str) -> str:
+    """Return the user's CURRENT active channel key, allocating a fresh UUID when
+    there is none (first call, or after a deactivation — an old key is never
+    reactivated)."""
+    current = await get_user_stream(owner_id, user_id)
+    if current is not None and current.get("active"):
+        return current["channelKey"]
+    table_name = _table().name
+    now = utc_now_iso()
+    key = str(uuid.uuid4())
+    mapping = {
+        "pk": owner_pk(owner_id),
+        "sk": userstream_sk(user_id),
+        "ownerId": owner_id,
+        "userId": user_id,
+        "channelKey": key,
+        "active": True,
+        "updatedAt": now,
+    }
+    reverse = {
+        "pk": stream_pk(key),
+        "sk": "META",
+        "channelKey": key,
+        "ownerId": owner_id,
+        "userId": user_id,
+        "active": True,
+        "createdAt": now,
+    }
+    if current is None:
+        items = [
+            {"Put": {"TableName": table_name, "Item": mapping, "ConditionExpression": "attribute_not_exists(sk)"}},
+            {"Put": {"TableName": table_name, "Item": reverse, "ConditionExpression": "attribute_not_exists(pk)"}},
+        ]
+    else:
+        items = [
+            {
+                "Update": {
+                    "TableName": table_name,
+                    "Key": {"pk": owner_pk(owner_id), "sk": userstream_sk(user_id)},
+                    "UpdateExpression": "SET channelKey = :key, active = :t, updatedAt = :now",
+                    "ConditionExpression": "active = :f AND channelKey = :old",
+                    "ExpressionAttributeValues": {
+                        ":key": key,
+                        ":t": True,
+                        ":f": False,
+                        ":now": now,
+                        ":old": current["channelKey"],
+                    },
+                }
+            },
+            {"Put": {"TableName": table_name, "Item": reverse, "ConditionExpression": "attribute_not_exists(pk)"}},
+        ]
+    try:
+        await _transact(items)
+        return key
+    except ClientError as exc:
+        if not _is_cancelled(exc):
+            raise
+    # Lost the race to a concurrent allocation — read the winner.
+    winner = await get_user_stream(owner_id, user_id)
+    if winner is None or not winner.get("active"):
+        raise MessagingRepoError("user stream allocation raced and no active mapping exists")
+    return winner["channelKey"]
+
+
+async def deactivate_user_stream(owner_id: str, user_id: str) -> bool:
+    """Mark BOTH mappings inactive (idempotent). Returns whether anything changed."""
+    current = await get_user_stream(owner_id, user_id)
+    if current is None or not current.get("active"):
+        return False
+    table_name = _table().name
+    now = utc_now_iso()
+    try:
+        await _transact(
+            [
+                {
+                    "Update": {
+                        "TableName": table_name,
+                        "Key": {"pk": owner_pk(owner_id), "sk": userstream_sk(user_id)},
+                        "UpdateExpression": "SET active = :f, updatedAt = :now",
+                        "ConditionExpression": "active = :t AND channelKey = :key",
+                        "ExpressionAttributeValues": {
+                            ":f": False,
+                            ":t": True,
+                            ":key": current["channelKey"],
+                            ":now": now,
+                        },
+                    }
+                },
+                {
+                    "Update": {
+                        "TableName": table_name,
+                        "Key": {"pk": stream_pk(current["channelKey"]), "sk": "META"},
+                        "UpdateExpression": "SET active = :f, deactivatedAt = :now",
+                        "ExpressionAttributeValues": {":f": False, ":now": now},
+                    }
+                },
+            ]
+        )
+        return True
+    except ClientError as exc:
+        if _is_cancelled(exc):
+            return False
+        raise
+
+
+# ---------------------------------------------------------------------------
+# runtime operations
+# ---------------------------------------------------------------------------
+
+
+async def create_operation(
+    *, owner_id: str, operation_id: str, requester_user_id: str, method: str, params: dict
+) -> dict:
+    now = utc_now_iso()
+    table_name = _table().name
+    group, dedup = operation_fifo_ids(owner_id, operation_id)
+    row = {
+        "pk": owner_pk(owner_id),
+        "sk": operation_sk(operation_id),
+        "operationId": operation_id,
+        "ownerId": owner_id,
+        "requesterUserId": requester_user_id,
+        "method": method,
+        "params": params,
+        "state": "queued",
+        "result": None,
+        "error": None,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+    await _transact(
+        [
+            {"Put": {"TableName": table_name, "Item": row, "ConditionExpression": "attribute_not_exists(sk)"}},
+            {
+                "Put": {
+                    "TableName": table_name,
+                    "Item": {
+                        "pk": owner_pk(owner_id),
+                        "sk": work_operation_sk(operation_id),
+                        "payload": {"kind": "runtime_operation", "ownerId": owner_id, "operationId": operation_id},
+                        "messageGroupId": group,
+                        "messageDeduplicationId": dedup,
+                        "expiresAt": _expires_at(),
+                    },
+                    "ConditionExpression": "attribute_not_exists(sk)",
+                }
+            },
+        ]
+    )
+    return row
+
+
+async def get_operation(owner_id: str, operation_id: str) -> dict | None:
+    return await _get(owner_pk(owner_id), operation_sk(operation_id))
+
+
+async def claim_operation(owner_id: str, operation_id: str, *, lease_token: str, lease_until: int) -> dict | None:
+    """queued -> running, or reclaim a ``running`` row whose lease expired.
+    Returns the row when this caller holds the lease, else None (terminal or
+    someone else's live lease)."""
+    now_epoch = int(time.time())
+    try:
+        response = await run_in_thread(
+            _table().update_item,
+            Key={"pk": owner_pk(owner_id), "sk": operation_sk(operation_id)},
+            UpdateExpression="SET #state = :running, leaseToken = :token, leaseUntil = :until, updatedAt = :now",
+            ConditionExpression="attribute_exists(sk) AND (#state = :queued OR (#state = :running AND leaseUntil < :now_epoch))",
+            ExpressionAttributeNames={"#state": "state"},
+            ExpressionAttributeValues={
+                ":running": "running",
+                ":queued": "queued",
+                ":token": lease_token,
+                ":until": int(lease_until),
+                ":now": utc_now_iso(),
+                ":now_epoch": now_epoch,
+            },
+            ReturnValues="ALL_NEW",
+        )
+        return _plain(response["Attributes"])
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return None
+        raise
+
+
+async def complete_operation(
+    owner_id: str, operation_id: str, *, lease_token: str, state: str, result: Any, error: dict | None
+) -> dict | None:
+    """running -> succeeded|failed, only for the lease holder. Returns the row or None."""
+    try:
+        response = await run_in_thread(
+            _table().update_item,
+            Key={"pk": owner_pk(owner_id), "sk": operation_sk(operation_id)},
+            UpdateExpression="SET #state = :state, #result = :result, #error = :error, updatedAt = :now REMOVE leaseToken, leaseUntil",
+            ConditionExpression="#state = :running AND leaseToken = :token",
+            ExpressionAttributeNames={"#state": "state", "#result": "result", "#error": "error"},
+            ExpressionAttributeValues={
+                ":state": state,
+                ":result": result,
+                ":error": error,
+                ":now": utc_now_iso(),
+                ":running": "running",
+                ":token": lease_token,
+            },
+            ReturnValues="ALL_NEW",
+        )
+        return _plain(response["Attributes"])
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return None
+        raise
+
+
+# ---------------------------------------------------------------------------
+# wipe
+# ---------------------------------------------------------------------------
+
+
+async def list_owner_room_ids(owner_id: str) -> list[str]:
+    rows = await _query(owner_pk(owner_id), begins_with="ROOM#")
+    return [r["roomId"] for r in rows]
+
+
+async def _delete_partition(pk: str) -> int:
+    table = _table()
+    rows = await _query(pk)
+    if not rows:
+        return 0
+
+    def _batch() -> None:
+        with table.batch_writer() as batch:
+            for r in rows:
+                batch.delete_item(Key={"pk": r["pk"], "sk": r["sk"]})
+
+    await run_in_thread(_batch)
+    return len(rows)
+
+
+async def delete_room_partition(room_id: str) -> int:
+    return await _delete_partition(room_pk(room_id))
+
+
+async def delete_owner_partition(owner_id: str) -> int:
+    """Delete every ``OWNER#`` row plus the reverse ``STREAM#`` rows it names."""
+    streams = await _query(owner_pk(owner_id), begins_with="USERSTREAM#")
+    count = 0
+    for s in streams:
+        count += await _delete_partition(stream_pk(s["channelKey"]))
+    count += await _delete_partition(owner_pk(owner_id))
+    return count

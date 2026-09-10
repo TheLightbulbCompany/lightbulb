@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 
 const replaceMock = vi.fn();
 vi.mock("next/navigation", () => ({
@@ -26,6 +26,7 @@ vi.mock("@clerk/nextjs", () => ({
     isSignedIn: clerkState.isSignedIn,
     isLoaded: true,
     userId: clerkState.user?.id ?? null,
+    orgId: clerkState.organization?.id ?? null,
     getToken: vi.fn().mockResolvedValue("test-jwt"),
   }),
   useUser: () => ({ user: clerkState.user, isLoaded: true }),
@@ -37,9 +38,10 @@ vi.mock("@clerk/nextjs", () => ({
     userMemberships: { data: clerkState.memberships },
     userInvitations: { data: clerkState.invitations },
     isLoaded: true,
-    setActive: vi.fn(),
+    setActive: vi.fn().mockResolvedValue(undefined),
   }),
   UserButton: () => null,
+  OrganizationList: () => null,
 }));
 
 // Stub the heavy hooks ChatLayout pulls in — irrelevant to the routing test.
@@ -152,41 +154,47 @@ describe("ChatLayout — needsInvitationFlow", () => {
     vi.resetModules();
   });
 
-  it("redirects an already-onboarded user with a pending invite to /onboarding", async () => {
+  it("redirects a user with a pending invite to /onboarding", async () => {
     clerkState = {
       isSignedIn: true,
-      // load-bearing: this used to block the redirect under the old logic
-      user: { unsafeMetadata: { onboarded: true }, fullName: "Test User" },
+      user: { fullName: "Test User" },
       organization: null,
       memberships: [],
       invitations: [{ id: "orginv_1" }],
     };
     const { ChatLayout } = await import("../ChatLayout");
-    render(
+    await act(async () => { render(
       <ChatLayout>
         <div />
       </ChatLayout>,
-    );
+    ); });
     expect(replaceMock).toHaveBeenCalledWith("/onboarding");
   });
 
   it("does NOT redirect when user has memberships (already in an org)", async () => {
     clerkState = {
       isSignedIn: true,
-      user: { unsafeMetadata: { onboarded: true }, fullName: "Test User" },
+      user: { fullName: "Test User" },
       organization: { id: "org_a" },
       memberships: [{ organization: { id: "org_a" } }],
       invitations: [],
     };
     const { ChatLayout } = await import("../ChatLayout");
-    render(
+    await act(async () => { render(
       <ChatLayout>
         <div />
       </ChatLayout>,
-    );
+    ); });
     expect(replaceMock).not.toHaveBeenCalledWith("/onboarding");
-    // Smoke: the launch join banner is mounted in the mobile shell's banner
-    // row (beside TrialBanner/OutOfCreditsBanner).
-    expect(screen.getByTestId("launch-join-banner")).toBeInTheDocument();
+
+  });
+
+  it("shows workspace selection for multiple memberships without an active workspace", async () => {
+    clerkState = { isSignedIn: true, user: { id: "user_1" }, organization: null,
+      memberships: [{ organization: { id: "org_a" } }, { organization: { id: "org_b" } }], invitations: [] };
+    const { ChatLayout } = await import("../ChatLayout");
+    await act(async () => { render(<ChatLayout><div /></ChatLayout>); });
+    expect(screen.getByRole("heading", { name: "Choose your workspace" })).toBeInTheDocument();
+    expect(replaceMock).not.toHaveBeenCalled();
   });
 });

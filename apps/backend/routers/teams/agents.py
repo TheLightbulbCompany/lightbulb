@@ -51,7 +51,7 @@ from core.services.paperclip_agent_lifecycle import delete_agent_everywhere
 from core.services.paperclip_provisioning import _ws_gateway_url  # noqa: F401 — re-exported for downstream tasks.
 from core.services.paperclip_user_session import get_user_session_cookie
 from core.services.provision_gate import evaluate_provision_gate
-from core.services.user_provision import ensure_user_ready
+from core.services.user_provision import ensure_user_ready, ensure_workspace_trial_default
 
 from . import deps as deps_mod
 from ._guards import require_trial_runway
@@ -393,6 +393,7 @@ async def _self_heal_reconcile(auth: AuthContext) -> dict | None:
     owner_id = resolve_owner_id(auth)
     is_admin = auth.is_org_admin if auth.is_org_context else True
 
+    await ensure_workspace_trial_default(auth, owner_id)
     gate = await evaluate_provision_gate(
         owner_id=owner_id,
         is_admin=is_admin,

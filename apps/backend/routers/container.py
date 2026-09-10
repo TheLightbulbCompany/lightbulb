@@ -26,7 +26,7 @@ from core.services.bootstrap_dispatcher import maybe_dispatch_bootstrap
 from core.services.onboarding_brief import reconcile_pending_brief
 from core.services.management_api_client import ManagementApiClientError
 from core.observability.metrics import put_metric, timing
-from core.repositories import container_repo
+from core.repositories import billing_repo, container_repo
 from core.services.provision_dispatch import dispatch_provision
 from core.services.provision_gate import (
     evaluate_provision_gate,
@@ -35,7 +35,7 @@ from core.services.provision_gate import (
     trial_expired_gate,
 )
 from core.services.stripe_webhook_handlers import CONVERTING_SUBSTATUS, maybe_resume_stuck_conversion
-from core.services.user_provision import ensure_personal_trial_default, ensure_user_ready
+from core.services.user_provision import ensure_workspace_trial_default, ensure_user_ready
 
 logger = logging.getLogger(__name__)
 
@@ -157,10 +157,7 @@ def _resolve_cold_start_phase(container: dict, gateway_pool, owner_id: str) -> s
 
 
 def _owner_role(auth: AuthContext) -> str:
-    """ "admin" | "member" — the role a Gate payload is rendered for.
-
-    Personal owners are always admin of themselves.
-    """
+    """ "admin" | "member" — the role a Gate payload is rendered for."""
     is_admin = auth.is_org_admin if auth.is_org_context else True
     return "admin" if is_admin else "member"
 
@@ -241,7 +238,7 @@ async def container_status(
             "trial events back to the anonymous half of their signup journey "
             "(apps/frontend/src/lib/signupFlow.ts). Opaque and untrusted — it "
             "only ever lands in a PostHog property. Deliberately NOT validated "
-            "here: a bad value is dropped inside ensure_personal_trial_default, "
+            "here: a bad value is dropped inside ensure_workspace_trial_default, "
             "never 422'd, because this is the readiness poll and a polluted "
             "localStorage entry must not be able to strand a user on a spinner."
         ),
@@ -285,14 +282,8 @@ async def container_status(
         # state.
         is_admin = auth.is_org_admin if auth.is_org_context else True
 
-        # Auto-default a brand-new PERSONAL owner into trial_local BEFORE the
-        # gate. Otherwise the gate sees no billing row, returns signup_required,
-        # and this endpoint 404s below — before ensure_user_ready (the
-        # background trial-creator) is ever dispatched — trapping a fresh
-        # personal signup on the ProviderPicker instead of provisioning the trial container.
-        # Idempotent conditional put; no-op for orgs and for owners who already
-        # have a row.
-        await ensure_personal_trial_default(auth, owner_id, signup_flow_id=flow)
+        # Create the workspace's unarmed trial before the gate reads billing.
+        await ensure_workspace_trial_default(auth, owner_id, signup_flow_id=flow)
         gate = await evaluate_provision_gate(
             owner_id=owner_id,
             is_admin=is_admin,
@@ -423,6 +414,8 @@ async def container_status(
     # otherwise do internally (a by-org-id GSI query for an org owner), so
     # without threading it every ~3s ready poll fleet-wide would pay it twice.
     contract = await readiness_state.compute_status(owner_id, container=container, onboarding=onboarding)
+    if contract["runtime_phase"] == "ready" and contract["provider"]["subscription_status"] == "trial_local":
+        await billing_repo.arm_trial_if_unset(owner_id)
 
     # Auto-retry: if container is in a failed/stuck state AND the owner can
     # currently afford to provision, trigger re-provisioning in the
@@ -461,6 +454,7 @@ async def container_status(
         )
         if trial_gate is not None:
             raise HTTPException(status_code=402, detail=trial_gate.to_payload())
+        await ensure_workspace_trial_default(auth, owner_id)
         try:
             await _assert_provision_allowed(
                 owner_id,
@@ -829,6 +823,7 @@ async def container_wake_endpoint(
     every other door. Old backends 404 this route; clients must treat that as
     a per-request soft-fail (never cache it)."""
     owner_id = resolve_owner_id(auth)
+    await ensure_workspace_trial_default(auth, owner_id)
     if reason not in container_wake.WAKE_REASONS:
         reason = "interaction"
     result = await container_wake.request_wake(
@@ -894,9 +889,12 @@ async def container_provision(
     auth: AuthContext = Depends(get_current_user),
 ):
     owner_id = resolve_owner_id(auth)
+    await ensure_workspace_trial_default(auth, owner_id)
 
-    # Check if container already exists (idempotent). The payment gate
-    # below is intentionally NOT applied to existing containers — billing
+    # Check if container already exists (idempotent). Trial initialization is
+    # conditional and preserves any paid/existing billing row, but must happen
+    # before a stopped container reaches start_user_service's trial gate.
+    # The payment gate below is intentionally NOT applied to existing containers — billing
     # state can churn (cancel + resubscribe) and we don't want a stale
     # 402 to mask the actual container the caller is asking about.
     existing = await container_repo.get_by_owner_id(owner_id)
@@ -1013,6 +1011,7 @@ async def container_retry(
     auth: AuthContext = Depends(get_current_user),
 ):
     owner_id = resolve_owner_id(auth)
+    await ensure_workspace_trial_default(auth, owner_id)
     # Audit C1: same hardened gate as /provision — ID existence isn't
     # enough; status must be active/trialing AND bedrock_claude needs
     # a positive credit balance.

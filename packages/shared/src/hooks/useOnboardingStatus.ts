@@ -95,11 +95,13 @@ export interface UseOnboardingStatusOptions {
   enabled: boolean;
   /** SWR key / endpoint path. Defaults to "/container/status". */
   swrKey?: string;
+  /** Optional account/workspace cache scope. Never appended to the request URL. */
+  scope?: string;
   /** Computed fresh at each fetch ATTEMPT and appended as `?wake=0|1`. Omit
    * to never send the param (an old backend simply ignores it). */
   wake?: () => boolean;
   /** Client-minted signup_flow_id, appended as `?flow=`. This poll is what
-   * creates a new personal owner's trial row, so it is the one request that
+   * creates a new workspace's trial row, so it is the one request that
    * can hand the id to the server-side `trial_started`. Omit to never send
    * it (mobile does not run the web signup funnel). */
   flow?: () => string | undefined;
@@ -156,7 +158,7 @@ function cadenceFor(ready: boolean, windowStartedAt: number, now: number): numbe
 export function useOnboardingStatus(
   options: UseOnboardingStatusOptions,
 ): UseOnboardingStatusResult {
-  const { api, enabled, swrKey = "/container/status", wake, flow, visibility } = options;
+  const { api, enabled, swrKey = "/container/status", scope, wake, flow, visibility } = options;
 
   // Timestamp of the most recent fetch ATTEMPT (not completion) — read by
   // the backstop to decide whether the SWR chain looks stalled.
@@ -177,9 +179,7 @@ export function useOnboardingStatus(
       if (wakeFlag !== undefined) params.set("wake", wakeFlag);
       if (flowId) params.set("flow", flowId);
       const query = params.toString();
-      // NOTE the SWR key stays `swrKey` — these params must never reach it,
-      // or the `mutate("/container/status")` calls scattered across the web
-      // app would target a key nothing is subscribed to.
+      // Request parameters and cache scope are separate from the endpoint.
       const url = query ? `${swrKey}${swrKey.includes("?") ? "&" : "?"}${query}` : swrKey;
       const { status, body } = await fetchJsonWithStatus(api, url, controller.signal);
       return { kind: "classified", classified: classifyContainerStatus({ status, body }) };
@@ -202,7 +202,19 @@ export function useOnboardingStatus(
     }
   }, [api, swrKey, wake, flow]);
 
-  const key = enabled ? swrKey : null;
+  const key = useMemo(
+    () => enabled ? (scope === undefined ? swrKey : [swrKey, scope]) : null,
+    [enabled, swrKey, scope],
+  );
+  const previousKey = useRef<typeof key>(null);
+  const lastGoodRef = useRef<Outcome | undefined>(undefined);
+  if (previousKey.current !== key) {
+    previousKey.current = key;
+    lastGoodRef.current = undefined;
+    windowStartRef.current = Date.now();
+    lastAttemptRef.current = 0;
+    prevReadyRef.current = false;
+  }
 
   // STABLE identity, deliberately. SWR lists `refreshInterval` in its polling
   // effect's dependency array and the effect's cleanup CLEARS the pending
@@ -224,6 +236,7 @@ export function useOnboardingStatus(
     // mobile via the injected adapter) instead of SWR's own DOM-coupled
     // revalidateOnFocus, which mobile has no equivalent of.
     revalidateOnFocus: false,
+    keepPreviousData: false,
     refreshInterval: refreshIntervalFn,
   });
 
@@ -309,7 +322,6 @@ export function useOnboardingStatus(
   const isServerState =
     data?.kind === "classified" && data.classified.kind !== "unrecognized";
 
-  const lastGoodRef = useRef<Outcome | undefined>(undefined);
   if (!key) {
     lastGoodRef.current = undefined;
   } else if (isServerState) {

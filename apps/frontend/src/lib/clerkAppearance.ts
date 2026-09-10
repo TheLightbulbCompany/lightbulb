@@ -20,7 +20,44 @@ import type { ClerkProvider } from "@clerk/nextjs";
  * this package, and @clerk/nextjs does not re-export `Appearance` — so take the
  * type from the prop that consumes it. Same type, no new dependency.
  */
-type Appearance = NonNullable<ComponentProps<typeof ClerkProvider>["appearance"]>;
+type ClerkProviderProps = ComponentProps<typeof ClerkProvider>;
+type Appearance = NonNullable<ClerkProviderProps["appearance"]>;
+type Localization = NonNullable<ClerkProviderProps["localization"]>;
+type TaskUrls = NonNullable<ClerkProviderProps["taskUrls"]>;
+
+export const clerkTaskUrls: TaskUrls = {
+  "choose-organization": "/session-tasks/choose-organization",
+};
+
+export const clerkLocalization: Localization = {
+  createOrganization: {
+    formButtonSubmit: "Create workspace",
+    title: "Create workspace",
+  },
+  organizationList: {
+    action__createOrganization: "Create workspace",
+    createOrganization: "Create workspace",
+    titleWithoutPersonal: "Choose a workspace",
+  },
+  taskChooseOrganization: {
+    chooseOrganization: {
+      action__createOrganization: "Create a workspace",
+      subtitle: "Join an invited workspace or create a new one",
+      subtitle__createOrganizationDisabled: "Join an invited workspace",
+      title: "Choose a workspace",
+    },
+    createOrganization: {
+      formFieldInputPlaceholder__name: "My workspace",
+      formFieldInputPlaceholder__slug: "my-workspace",
+      subtitle: "Enter your workspace details to continue",
+      title: "Create a workspace",
+    },
+    organizationCreationDisabled: {
+      subtitle: "Ask a workspace admin to invite you.",
+      title: "You must belong to a workspace",
+    },
+  },
+};
 
 export const clerkAppearance: Appearance = {
   variables: {

@@ -3,7 +3,6 @@ import Link from "next/link";
 
 import { PROVIDER_CARDS } from "@/lib/providerCards";
 import { captureSignupCta } from "@/lib/signupFlow";
-import { writeSignupIntentCookie } from "@/lib/signupIntent";
 
 export function PricingThreeCard() {
   return (
@@ -28,13 +27,6 @@ export function PricingThreeCard() {
           </span>
         </div>
 
-        {/* The free tier used to be an 11px aside on the price line, while all
-            three card CTAs below carry a ?provider= that SKIPS it and lands
-            the visitor straight in Stripe Checkout. So the cheapest way in was
-            reachable only by the one route that never mentioned it, and people
-            reasonably concluded it costs $50 to try. This is the free path,
-            stated once, at the size the claim deserves — and it deliberately
-            links to a bare /sign-up with no provider attached. */}
         <p className="ld-price-free">
           <strong>Start free for 3 days — no credit card.</strong>{" "}
           <Link
@@ -66,29 +58,20 @@ export function PricingThreeCard() {
               <h3>{card.title}</h3>
               <p className="ld-pc-sub">{card.subtitle}</p>
               <p className="ld-pc-trial">{card.trialNote}</p>
-              {/* Says out loud what these three buttons actually do. Each one
-                  carries a `?provider=` that skips the free tier and goes
-                  straight to Stripe Checkout — which is the whole reason people
-                  believe it costs $50 to try. Putting a free path above them
-                  (see .ld-price-free) without labelling these would just make
-                  the section contradict itself: "start free" directly over a
-                  button that charges. The route itself is unchanged; this makes
-                  the choice honest at the point of click. */}
-              <p className="ld-pc-charge">Billed today — skips the free trial</p>
               <ul>
                 {card.bullets.map((b) => (
                   <li key={b}>{b}</li>
                 ))}
               </ul>
               <Link
-                href={card.href}
+                href="/sign-up"
                 className="ld-btn"
                 onClick={() => {
                   captureSignupCta({
                     ctaId: `pricing_card_${card.id}`,
                     label: card.cta,
                     surface: "landing_pricing",
-                    destination: card.href,
+                    destination: "/sign-up",
                     providerChoice: card.id,
                   });
                 }}
@@ -104,27 +87,22 @@ export function PricingThreeCard() {
 
         <div className="ld-teams-strip">
           <div className="ld-teams-copy">
-            <h3>Lightbulb for Teams</h3>
-            <p>Shared agents, one workspace, per-seat pricing.</p>
+            <h3>Your workspace</h3>
+            <p>Agents, people, and work in one place.</p>
           </div>
           <Link
-            href="/sign-up?intent=team"
+            href="/sign-up"
             className="ld-btn"
             onClick={() => {
-              // Robust team-intent transport: the cookie survives Clerk's
-              // multi-step signup (which drops the ?intent=team query); the
-              // gate reads it on /chat and routes to team creation.
-              writeSignupIntentCookie("team");
               captureSignupCta({
-                ctaId: "pricing_create_a_team",
-                label: "Create a team",
+                ctaId: "pricing_create_workspace",
+                label: "Create a workspace",
                 surface: "landing_pricing",
-                destination: "/sign-up?intent=team",
-                providerChoice: "team",
+                destination: "/sign-up",
               });
             }}
           >
-            Create a team
+            Create a workspace
             <span className="ld-btn-arrow" aria-hidden="true">
               →
             </span>

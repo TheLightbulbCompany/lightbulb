@@ -74,10 +74,10 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
 
   const dispatchEvent = useCallback((event: LiveEvent) => {
     if (event.type === "runtime.resource.invalidated" && (event.payload.resource === "onboarding" || event.payload.resource === "health")) {
-      void mutate("/container/status");
+      void mutate(["/container/status", `${userId}:${orgId}`]);
     }
     for (const handler of eventHandlers.current) handler(event);
-  }, []);
+  }, [userId, orgId]);
   const dispatchChat = useCallback((frame: ChatIncomingMessage, event: LiveEventOf<"room.run.frame">) => {
     for (const handler of chatHandlers.current) handler(frame, event);
   }, []);

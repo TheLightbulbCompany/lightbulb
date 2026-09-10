@@ -19,6 +19,19 @@ import pytest
 from core.tenancy_codes import PENDING_ORG_INVITATION
 
 
+@pytest.fixture
+def mock_auth_context(request, mock_org_admin_context):
+    if request.node.name in {
+        "test_trial_checkout_with_pending_org_invitation_returns_409",
+        "test_trial_checkout_with_pending_invite_no_org_name_falls_back",
+        "test_trial_checkout_with_no_pending_invitations_passes_gate_b",
+    }:
+        from core.auth import AuthContext
+
+        return AuthContext(user_id="user_test_123", email="test@example.com")
+    return mock_org_admin_context
+
+
 _BLOCKED_LOCAL_STATUSES = [
     "active",
     "trialing",
@@ -39,7 +52,7 @@ async def test_trial_checkout_409s_on_blocked_local_status(mock_repo, blocked_st
     new Checkout session created."""
     mock_repo.get_by_owner_id = AsyncMock(
         return_value={
-            "owner_id": "user_test_123",
+            "owner_id": "org_test_456",
             "stripe_customer_id": "cus_X",
             "stripe_subscription_id": "sub_X",
             "subscription_status": blocked_status,
@@ -69,7 +82,7 @@ async def test_trial_checkout_409s_when_live_stripe_status_is_canceled(
     """
     mock_repo.get_by_owner_id = AsyncMock(
         return_value={
-            "owner_id": "user_test_123",
+            "owner_id": "org_test_456",
             "stripe_customer_id": "cus_X",
             "stripe_subscription_id": "sub_X",
             "subscription_status": None,  # local row not backfilled
@@ -153,8 +166,8 @@ async def test_trial_checkout_with_no_pending_invitations_passes_gate_b(
     # Mock the downstream Stripe customer + checkout creation so the test
     # doesn't reach real DDB / Stripe.
     mock_create_customer.return_value = {
-        "owner_id": "user_test_123",
-        "owner_type": "personal",
+        "owner_id": "org_test_456",
+        "owner_type": "org",
         "stripe_customer_id": "cus_test",
     }
     mock_create_checkout.return_value = type("Session", (), {"url": "https://checkout.stripe.com/test"})()
@@ -220,8 +233,8 @@ async def test_trial_local_owner_gets_a_stripe_customer_backfilled(
     the MISSING FIELD, not the missing row."""
     mock_repo.get_by_owner_id = AsyncMock(
         return_value={
-            "owner_id": "user_test_123",
-            "owner_type": "personal",
+            "owner_id": "org_test_456",
+            "owner_type": "org",
             "subscription_status": "trial_local",
             # no stripe_customer_id — the trial row writes no stripe_* fields
         }
@@ -229,8 +242,8 @@ async def test_trial_local_owner_gets_a_stripe_customer_backfilled(
     mock_repo.set_provider_choice = AsyncMock(return_value=None)
     mock_clerk.list_pending_invitations_for_user = AsyncMock(return_value=[])
     mock_create_customer.return_value = {
-        "owner_id": "user_test_123",
-        "owner_type": "personal",
+        "owner_id": "org_test_456",
+        "owner_type": "org",
         "subscription_status": "trial_local",
         "stripe_customer_id": "cus_backfilled",
     }
@@ -258,15 +271,15 @@ async def test_trial_local_owner_gets_a_stripe_customer_backfilled(
 # ---------------------------------------------------------------------------
 
 _TRIAL_LOCAL_ROW = {
-    "owner_id": "user_test_123",
-    "owner_type": "personal",
+    "owner_id": "org_test_456",
+    "owner_type": "org",
     "subscription_status": "trial_local",
     "stripe_customer_id": "cus_X",
     # no stripe_subscription_id — the legacy-sub retrieve path must not run
 }
 
 
-def _live_sub(status, owner_id="user_test_123"):
+def _live_sub(status, owner_id="org_test_456"):
     return {"id": "sub_live", "status": status, "metadata": {"owner_id": owner_id}}
 
 

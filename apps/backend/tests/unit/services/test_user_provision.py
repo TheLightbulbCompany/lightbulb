@@ -2,14 +2,12 @@
 
 import asyncio
 import time
-import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from core.auth import AuthContext
 from core.services import user_provision
-from core.services.trial_cap import utc_today
 from core.services.provision_gate import should_arm_nightly_ceo
 from core.services.user_provision import (
     _ensure_paperclip_for_member,
@@ -17,7 +15,6 @@ from core.services.user_provision import (
     _ensure_paperclip_for_owner,
     _maybe_arm_nightly_ceo,
     arm_nightly_ceo,
-    ensure_personal_trial_default,
     ensure_user_ready,
 )
 
@@ -31,6 +28,14 @@ def _mock_ensure_metronome_customer():
         new=AsyncMock(return_value="cust-uuid"),
     ) as mock:
         yield mock
+
+
+@pytest.fixture(autouse=True)
+def _existing_billing_account():
+    with patch.object(
+        user_provision.billing_repo, "get_by_owner_id", AsyncMock(return_value={"subscription_status": "active"})
+    ):
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -84,16 +89,18 @@ def _container_running(_no_container_row):
 
 @pytest.fixture
 def _stub_trial_default():
-    """Neutralize the unconditional trial-default prelude for tests that
-    exercise ensure_user_ready's provisioning orchestration rather than the
-    trial row itself. The trial-default path has its own dedicated tests
-    (test_new_personal_owner_* and test_ensure_personal_trial_default_*),
-    which call the real helper; everything else stubs it so the personal
-    path never reaches billing/Clerk DDB."""
-    with patch(
-        "core.services.user_provision.ensure_personal_trial_default",
-        new=AsyncMock(),
-    ) as mock:
+    """Keep billing initialization and member JOIN external to dispatch tests.
+
+    The workspace trial tests below call the real initializer. Membership
+    tests override the join stub with their own Paperclip boundary doubles.
+    """
+    with (
+        patch(
+            "core.services.user_provision.ensure_workspace_trial_default",
+            new=AsyncMock(),
+        ) as mock,
+        patch.object(user_provision, "_ensure_paperclip_for_member", AsyncMock()),
+    ):
         yield mock
 
 
@@ -155,7 +162,7 @@ async def test_ensure_user_ready_no_op_when_gate_blocks(_stub_trial_default):
             new=AsyncMock(),
         ) as mock_container,
     ):
-        await ensure_user_ready(_personal_auth())
+        await ensure_user_ready(_org_admin_auth())
     mock_paperclip.assert_not_awaited()
     mock_container.assert_not_awaited()
 
@@ -301,35 +308,6 @@ async def test_gate_up_membership_add_failure_is_swallowed_and_metered():
         # Should NOT raise.
         await ensure_user_ready(_org_member_auth("user_m", "org_o", "m@example.com"))
     mock_metric.assert_any_call("paperclip.seed.error")
-
-
-@pytest.mark.asyncio
-async def test_gate_up_personal_owner_stays_a_pure_no_op():
-    """The gate-up membership-add is org-context only — a gated PERSONAL
-    owner must not touch Paperclip at all (no company exists to join, and
-    the personal seed is create-shaped, which stays gated)."""
-    fake_provisioning = MagicMock()
-    build = AsyncMock(return_value=fake_provisioning)
-    with (
-        patch(
-            "core.services.user_provision.evaluate_provision_gate",
-            new=AsyncMock(return_value=_up_gate("signup_required")),
-        ),
-        patch("core.services.user_provision.ensure_personal_trial_default", new=AsyncMock()),
-        patch("core.services.user_provision.build_paperclip_provisioning", new=build),
-        patch("core.services.user_provision.dispatch_provision", new=AsyncMock()) as mock_container,
-    ):
-        await ensure_user_ready(_personal_auth())
-    build.assert_not_awaited()
-    mock_container.assert_not_awaited()
-
-
-# The owner company-CREATE helpers below are exercised DIRECTLY: their sole
-# production caller is scripts.provision_runner._seed_owner_paperclip (step 0
-# of the provisioning executor's runner), not ensure_user_ready. The runner's
-# own wiring — org-vs-personal resolution, the Clerk-creator bootstrap identity
-# and the exit-code classification — is covered in
-# tests/unit/scripts/test_provision_runner.py.
 
 
 @pytest.mark.asyncio
@@ -727,7 +705,7 @@ async def test_ensure_user_ready_dispatches_container_for_owner(_stub_trial_defa
             side_effect=capture_task,
         ),
     ):
-        await ensure_user_ready(_personal_auth("user_p"))
+        await ensure_user_ready(_org_admin_auth("user_p", "org_p"))
     assert captured == ["dispatch_provision"], (
         f"expected one create_task call dispatching dispatch_provision, got {captured}"
     )
@@ -1146,8 +1124,8 @@ async def test_metronome_failure_does_not_block_provisioning(_mock_ensure_metron
         patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
         patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
     ):
-        await ensure_user_ready(_personal_auth("user_p", "p@example.com"))
-    _mock_ensure_metronome_customer.assert_awaited_once_with(owner_id="user_p")
+        await ensure_user_ready(_org_admin_auth("user_p", "org_p", "p@example.com"))
+    _mock_ensure_metronome_customer.assert_awaited_once_with(owner_id="org_p")
     assert captured == ["dispatch_provision"]
 
 
@@ -1240,409 +1218,140 @@ async def test_metronome_customer_provisioned_for_org_admin_with_org_owner_id(_m
     _mock_ensure_metronome_customer.assert_awaited_once_with(owner_id="org_xyz")
 
 
-# ---------------------------------------------------------------------------
-# Trial auto-default (Task 3)
-# ---------------------------------------------------------------------------
-#
-# A genuinely-new owner (no billing row) is auto-defaulted into trial_local
-# BEFORE the gate is evaluated, so the gate (which now accepts trial_local
-# as active + provision-eligible, per Task 2) returns None and the normal
-# Paperclip-seed + dispatch_provision flow runs. create_trial_local_if_absent
-# is an idempotent no-op if any row already exists (Task 1), so this call is
-# safe on every ~3s poll and never overwrites a paid/canceled owner. The gate
-# itself stays pure -- this is the only new write, and it lives only here.
-
-
-@pytest.mark.asyncio
-async def test_new_personal_owner_creates_trial_before_gate_and_dispatches_provisioning(
-    _mock_create_trial_local_if_absent,
-    _fresh_personal_signup,
-):
-    """A no-billing NEW personal owner: create_trial_local_if_absent is
-    awaited (with owner_id=user_id, owner_type='personal') BEFORE the gate
-    is evaluated, the gate then returns None, and dispatch_provision is
-    dispatched."""
-    call_order: list[str] = []
-
-    async def fake_create_trial(*, owner_id, owner_type):
-        call_order.append("create_trial")
-        assert owner_id == "user_p"
-        assert owner_type == "personal"
-
-    async def fake_gate(*, owner_id, is_admin):
-        call_order.append("gate")
-        return None
-
-    _mock_create_trial_local_if_absent.side_effect = fake_create_trial
-    captured: list[str] = []
-
-    def capture_task(coro):
-        captured.append(coro.__qualname__)
-        coro.close()
-
-    with (
-        patch("core.services.user_provision.evaluate_provision_gate", side_effect=fake_gate),
-        patch("core.services.user_provision._ensure_paperclip_for_owner", new=AsyncMock()),
-        patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
-    ):
-        await ensure_user_ready(_personal_auth("user_p", "p@example.com"))
-
-    assert call_order == ["create_trial", "gate"], f"expected create-then-gate ordering, got {call_order}"
-    _mock_create_trial_local_if_absent.assert_awaited_once_with(owner_id="user_p", owner_type="personal")
-    assert captured == ["dispatch_provision"]
-
-
-@pytest.mark.asyncio
-async def test_org_member_no_billing_does_not_create_trial(_mock_create_trial_local_if_absent):
-    """A no-billing NON-ADMIN org member does not create a trial row -- the
-    predicate `not auth.is_org_context or auth.is_org_admin` excludes them,
-    mirroring the container-dispatch predicate. They ride the org admin's
-    billing account."""
-    fake_provisioning = MagicMock()
-    fake_provisioning.find_org_owner = AsyncMock(return_value=None)
-    fake_provisioning.provision_member = AsyncMock()
-
-    with (
-        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-        patch(
-            "core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)
-        ),
-        patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
-        patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c.close()),
-    ):
-        await ensure_user_ready(_org_member_auth())
-
-    _mock_create_trial_local_if_absent.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_org_admin_no_billing_does_not_create_trial(_mock_create_trial_local_if_absent):
-    """A no-billing NEW org admin does NOT create a trial row. The free tier is
-    personal-only and Teams billing is per-seat/no-trial, so the predicate
-    `not auth.is_org_context` excludes every org context -- admin included. The
-    org-company provisioning flow still runs; only the card-less trial is
-    withheld."""
-    fake_provisioning = MagicMock()
-    fake_provisioning.find_org_owner = AsyncMock(return_value=None)
-    fake_provisioning.try_acquire_org_create_claim = AsyncMock(return_value="tok-1")
-    fake_provisioning.provision_org = AsyncMock()
-    fake_provisioning.get_company_row = AsyncMock(return_value=MagicMock(status="active", org_id="org_xyz"))
-
-    with (
-        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-        patch(
-            "core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)
-        ),
-        patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
-        patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c.close()),
-    ):
-        await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
-
-    _mock_create_trial_local_if_absent.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_org_admin_join_existing_company_creates_no_trial(_mock_create_trial_local_if_absent):
-    """An org admin joining an already-provisioned company: no trial row is
-    created (orgs never get the card-less trial), and the normal join flow for
-    an org whose company already exists proceeds exactly as before."""
-    fake_owner_row = MagicMock(status="active", company_id="co_1", user_id="user_first")
-    fake_provisioning = MagicMock()
-    fake_provisioning.find_org_owner = AsyncMock(return_value=fake_owner_row)
-    fake_provisioning.provision_member = AsyncMock()
-    fake_provisioning.provision_org = AsyncMock()
-
-    with (
-        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-        patch(
-            "core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)
-        ),
-        patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
-        patch("core.services.user_provision.lookup_owner_email", new=AsyncMock(return_value="owner@example.com")),
-        patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c.close()),
-    ):
-        await ensure_user_ready(_org_admin_auth("user_second_admin", "org_xyz", "b@example.com"))
-
-    _mock_create_trial_local_if_absent.assert_not_awaited()
-    fake_provisioning.provision_member.assert_awaited_once_with(
-        owner_id="org_xyz",
-        user_id="user_second_admin",
-        email="b@example.com",
-        owner_email="owner@example.com",
-    )
-    fake_provisioning.provision_org.assert_not_awaited()
-
-
-# ---------------------------------------------------------------------------
-# Trial funnel telemetry. `trial_started` fires ONLY on the call that actually
-# creates the row, never on a later idempotent no-op (each ~3s poll calls
-# ensure_personal_trial_default again), and carries a DETERMINISTIC event uuid
-# so PostHog drops a duplicate the `created` flag cannot see. It is bracketed
-# by `trial_start_requested` (an attempt began) and `trial_start_failed` (the
-# attempt was refused or the write blew up), which is what makes a stalled
-# signup visible at all.
-# ---------------------------------------------------------------------------
+# Workspace trial initialization.
 
 
 @pytest.fixture
-def _fresh_personal_signup(monkeypatch):
-    """Brand-new personal user: no billing row yet, no pending org invitation."""
-    monkeypatch.setattr(
-        "core.services.user_provision.billing_repo.get_by_owner_id",
-        AsyncMock(return_value=None),
-    )
-    invites = AsyncMock(return_value=[])
-    monkeypatch.setattr(
-        "core.services.user_provision.clerk_admin.list_pending_invitations_for_user",
-        invites,
-    )
-    return invites
+def _fresh_workspace_signup(monkeypatch):
+    from core.services import clerk_admin
+
+    monkeypatch.setattr(user_provision.billing_repo, "get_by_owner_id", AsyncMock(return_value=None))
+    invites = AsyncMock(side_effect=AssertionError("Workspace initialization must not query invitations"))
+    monkeypatch.setattr(clerk_admin, "list_pending_invitations_for_user", invites)
 
 
 @pytest.mark.asyncio
-async def test_ensure_personal_trial_default_fires_trial_started_on_create(
-    _mock_create_trial_local_if_absent,
-    _fresh_personal_signup,
+@pytest.mark.parametrize("auth", [_org_admin_auth(), _org_member_auth()])
+async def test_workspace_trial_is_unarmed_and_shared_by_all_members(
+    auth, _fresh_workspace_signup, _mock_create_trial_local_if_absent
 ):
-    """billing_repo.create_trial_local_if_absent returning True (this call
-    actually wrote the row) fires trial_started keyed on the owner id, after
-    the trial_start_requested that opened the attempt."""
     _mock_create_trial_local_if_absent.return_value = True
-    with (
-        patch("core.services.user_provision.capture_product_event") as mock_capture,
-        patch("core.services.user_provision.capture_once_per_owner_per_day") as mock_daily,
-    ):
-        await ensure_personal_trial_default(
-            _personal_auth("user_p", "p@example.com"), "user_p", signup_flow_id="flow-abc"
-        )
-
-    # requested is daily-gated; started is not (it fires once, by construction).
-    assert [c.kwargs["event"] for c in mock_daily.call_args_list] == ["trial_start_requested"]
-    assert [c.kwargs["event"] for c in mock_capture.call_args_list] == ["trial_started"]
-    started = mock_capture.call_args_list[-1].kwargs
-    assert started["distinct_id"] == "user_p"
-    assert started["properties"] == {"signup_flow_id": "flow-abc", "owner_type": "personal"}
-    # Deterministic within a day: the SAME owner on the SAME day must produce
-    # the SAME uuid, or the restart/rolling-deploy dedup does nothing...
-    today = utc_today()
-    ns = user_provision._TRIAL_STARTED_NAMESPACE
-    assert started["event_uuid"] == str(uuid.uuid5(ns, f"user_p:{today}"))
-    assert started["event_uuid"] != str(uuid.uuid5(ns, f"user_other:{today}"))
-    # ...but NOT across days: a genuine second trial (re-signup after a wipe,
-    # a dev clean-slate reset) must still count.
-    assert started["event_uuid"] != str(uuid.uuid5(ns, "user_p:2000-01-01"))
+    with patch.object(user_provision, "capture_product_event") as capture:
+        await user_provision.ensure_workspace_trial_default(auth, "org_456", signup_flow_id="flow-abc")
+    _mock_create_trial_local_if_absent.assert_awaited_once_with(owner_id="org_456", owner_type="org", trial_end=None)
+    event = capture.call_args.kwargs
+    assert event["distinct_id"] == "org_456"
+    assert event["event"] == "trial_started"
+    assert event["properties"] == {"signup_flow_id": "flow-abc", "owner_type": "org"}
 
 
 @pytest.mark.asyncio
-async def test_ensure_personal_trial_default_does_not_refire_on_noop(
-    _mock_create_trial_local_if_absent,
-    _fresh_personal_signup,
+@pytest.mark.parametrize(
+    "auth,workspace_id,status",
+    [
+        (_personal_auth(), "user_123", 409),
+        (_org_admin_auth(), "org_other", 403),
+    ],
+)
+async def test_workspace_trial_rejects_missing_or_mismatched_org(
+    auth, workspace_id, status, _mock_create_trial_local_if_absent
 ):
-    """The conditional put losing its race (returns False) must not fire
-    trial_started. The attempt itself is still real, so the bracketing
-    trial_start_requested does fire — it is an attempt count, not a success
-    count."""
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc:
+        await user_provision.ensure_workspace_trial_default(auth, workspace_id)
+    assert exc.value.status_code == status
+    _mock_create_trial_local_if_absent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_missing_org_cannot_provision_even_when_trial_helper_is_stubbed(_stub_trial_default):
+    from fastapi import HTTPException
+
+    with patch.object(user_provision, "evaluate_provision_gate", AsyncMock(return_value=_up_gate())):
+        with pytest.raises(HTTPException) as exc:
+            await ensure_user_ready(_personal_auth())
+    assert exc.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_workspace_trial_exists_before_canonical_gate(
+    _fresh_workspace_signup, _mock_create_trial_local_if_absent
+):
+    from core.services.provision_gate import evaluate_provision_gate
+    from core.repositories import billing_repo
+
+    row = {}
+
+    async def create(*, owner_id, owner_type, trial_end):
+        row.update(owner_id=owner_id, owner_type=owner_type, subscription_status="trial_local")
+        return True
+
+    async def gate(**kwargs):
+        assert row["owner_id"] == "org_456"
+        result = await evaluate_provision_gate(**kwargs)
+        assert result is None
+        return result
+
+    _mock_create_trial_local_if_absent.side_effect = create
+    with (
+        patch.object(billing_repo, "get_by_owner_id", AsyncMock(side_effect=lambda *a, **k: row or None)),
+        patch.object(billing_repo, "get_trial_daily_spend", AsyncMock(return_value=0)),
+        patch.object(user_provision, "evaluate_provision_gate", side_effect=gate),
+        patch.object(user_provision, "_ensure_paperclip_for_member", AsyncMock()),
+        patch.object(user_provision, "asyncio") as aio,
+    ):
+        aio.create_task.side_effect = lambda c: c.close()
+        await ensure_user_ready(_org_admin_auth())
+    assert "trial_end" not in row
+
+
+@pytest.mark.asyncio
+async def test_workspace_trial_existing_row_and_lost_create_do_not_emit_started(
+    _fresh_workspace_signup, _mock_create_trial_local_if_absent
+):
     _mock_create_trial_local_if_absent.return_value = False
-    with (
-        patch("core.services.user_provision.capture_product_event") as mock_capture,
-        patch("core.services.user_provision.capture_once_per_owner_per_day") as mock_daily,
-    ):
-        await ensure_personal_trial_default(_personal_auth("user_p", "p@example.com"), "user_p")
-
-    assert [c.kwargs["event"] for c in mock_daily.call_args_list] == ["trial_start_requested"]
-    mock_capture.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_ensure_personal_trial_default_org_context_never_captures(
-    _mock_create_trial_local_if_absent,
-):
-    """Org context never even calls create_trial_local_if_absent (free tier
-    is personal-only), so NONE of the three trial events can fire for an org.
-    This is why org owners are structurally absent from the trial funnel —
-    two of the three prod "ready without a trial" people are exactly this."""
-    with (
-        patch("core.services.user_provision.capture_product_event") as mock_capture,
-        patch("core.services.user_provision.capture_once_per_owner_per_day") as mock_daily,
-    ):
-        await ensure_personal_trial_default(_org_admin_auth("user_admin", "org_xyz", "a@example.com"), "org_xyz")
-
-    _mock_create_trial_local_if_absent.assert_not_awaited()
-    # STRICT, on both emitters: the org return sits ABOVE every capture, so
-    # nothing may fire. A future emit placed before the org check would put
-    # org owners into a funnel the docstring says they are absent from.
-    mock_capture.assert_not_called()
-    mock_daily.assert_not_called()
+    with patch.object(user_provision, "capture_product_event") as capture:
+        await user_provision.ensure_workspace_trial_default(_org_admin_auth(), "org_456")
+        with patch.object(
+            user_provision.billing_repo, "get_by_owner_id", AsyncMock(return_value={"subscription_status": "active"})
+        ):
+            await user_provision.ensure_workspace_trial_default(_org_admin_auth(), "org_456")
+    _mock_create_trial_local_if_absent.assert_awaited_once()
+    capture.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_ensure_personal_trial_default_fires_failed_on_pending_invitation(
-    _mock_create_trial_local_if_absent,
-    _fresh_personal_signup,
+async def test_workspace_trial_write_failure_is_reported_once_per_day(
+    _fresh_workspace_signup, _mock_create_trial_local_if_absent
 ):
-    """Gate B refusal is a dead end for the user — it must leave an event
-    naming the reason, not just a log line and a spinner."""
-    _fresh_personal_signup.return_value = [{"id": "inv_1"}]
-    with (
-        patch("core.services.user_provision.capture_product_event") as mock_capture,
-        patch("core.services.user_provision.capture_once_per_owner_per_day") as mock_daily,
-    ):
-        await ensure_personal_trial_default(
-            _personal_auth("user_p", "p@example.com"), "user_p", signup_flow_id="flow-abc"
-        )
-
-    assert [c.kwargs["event"] for c in mock_daily.call_args_list] == [
-        "trial_start_requested",
-        "trial_start_failed",
-    ]
-    assert mock_daily.call_args_list[-1].kwargs["properties"] == {
-        "signup_flow_id": "flow-abc",
-        "error_code": "pending_org_invitation",
-    }
-    mock_capture.assert_not_called()
-    _mock_create_trial_local_if_absent.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_ensure_personal_trial_default_fires_failed_and_reraises_on_write_error(
-    _mock_create_trial_local_if_absent,
-    _fresh_personal_signup,
-):
-    """A failed write is the one way a user ends up permanently stuck on the
-    ProviderPicker. Name it, and still re-raise — telemetry must not swallow
-    the caller's error."""
-    _mock_create_trial_local_if_absent.side_effect = RuntimeError("ddb down")
-    with (
-        patch("core.services.user_provision.capture_product_event") as mock_capture,
-        patch("core.services.user_provision.capture_once_per_owner_per_day") as mock_daily,
-    ):
-        with pytest.raises(RuntimeError):
-            await ensure_personal_trial_default(_personal_auth("user_p", "p@example.com"), "user_p")
-
-    assert [c.kwargs["event"] for c in mock_daily.call_args_list] == [
-        "trial_start_requested",
-        "trial_start_failed",
-    ]
-    assert mock_daily.call_args_list[-1].kwargs["properties"] == {"error_code": "RuntimeError"}
-    mock_capture.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_malformed_signup_flow_id_is_dropped_not_raised(
-    _mock_create_trial_local_if_absent,
-    _fresh_personal_signup,
-):
-    """The flow id is telemetry riding the READINESS poll. A polluted
-    localStorage value must degrade to "no flow id", never to an exception
-    that strands the user on a spinner."""
-    _mock_create_trial_local_if_absent.return_value = True
-    with (
-        patch("core.services.user_provision.capture_product_event") as mock_capture,
-        patch("core.services.user_provision.capture_once_per_owner_per_day") as mock_daily,
-    ):
-        await ensure_personal_trial_default(
-            _personal_auth("user_p", "p@example.com"),
-            "user_p",
-            signup_flow_id="not ok: has spaces & punctuation" + "x" * 80,
-        )
-
-    assert mock_daily.call_args_list[0].kwargs["properties"] == {}
-    assert mock_capture.call_args_list[0].kwargs["properties"] == {"owner_type": "personal"}
-
-
-@pytest.mark.asyncio
-async def test_blocked_owner_polling_does_not_spam_the_funnel(
-    _mock_create_trial_local_if_absent,
-    _fresh_personal_signup,
-):
-    """THE REGRESSION THIS GUARDS. Nothing above the capture short-circuits for
-    an invitation-blocked owner — ``get_by_owner_id`` stays None because a
-    blocked owner never gets a billing row — so this function runs end to end on
-    EVERY /container/status poll for as long as they leave the tab open. At the
-    15s steady-state cadence that is ~480 events an hour from one person, which
-    would turn trial_start_requested/failed into a measure of tab-open time
-    rather than of how many people hit the block.
-
-    Exercises the REAL ``capture_once_per_owner_per_day``, not a mock, because
-    the thing under test IS the dedup: mocking it would let a revert to
-    ``capture_product_event`` pass.
-    """
     from core.observability import product_analytics
 
-    _fresh_personal_signup.return_value = [{"id": "inv_1"}]
+    _mock_create_trial_local_if_absent.side_effect = RuntimeError("ddb down")
     product_analytics._daily_dedup_seen.clear()
     try:
-        with patch("core.observability.product_analytics.capture_product_event") as mock_capture:
-            for _ in range(5):  # five polls, ~1 minute of sitting on the screen
-                await ensure_personal_trial_default(_personal_auth("user_blocked", "b@example.com"), "user_blocked")
-
-        events = [c.kwargs["event"] for c in mock_capture.call_args_list]
-        assert events == ["trial_start_requested", "trial_start_failed"], (
-            f"five polls should emit each event once, got {events}"
-        )
+        with patch.object(product_analytics, "capture_product_event") as capture:
+            for _ in range(3):
+                with pytest.raises(RuntimeError, match="ddb down"):
+                    await user_provision.ensure_workspace_trial_default(_org_admin_auth(), "org_456")
+        assert [c.kwargs["event"] for c in capture.call_args_list] == ["trial_start_requested", "trial_start_failed"]
+        assert capture.call_args.kwargs["properties"] == {"error_code": "RuntimeError"}
+        assert all(c.kwargs["distinct_id"] == "org_456" for c in capture.call_args_list)
     finally:
         product_analytics._daily_dedup_seen.clear()
 
 
-# ---------------------------------------------------------------------------
-# Tenancy invariant (Gate B): a user with a pending org invitation may not take
-# a personal plan — they must accept the invite and become a seat.
-# /billing/trial-checkout has always enforced this. The auto-trial default runs
-# on every /container/status poll, so without the same check it is simply a way
-# around that gate: the invited user need only let the poll run to land a
-# personal trial_local row + a personal container.
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
-async def test_pending_org_invitation_refuses_the_personal_trial_default(
-    _mock_create_trial_local_if_absent,
-    monkeypatch,
+async def test_workspace_trial_drops_invalid_flow_and_preserves_event_dedup(
+    _fresh_workspace_signup, _mock_create_trial_local_if_absent
 ):
-    monkeypatch.setattr(
-        "core.services.user_provision.billing_repo.get_by_owner_id",
-        AsyncMock(return_value=None),
-    )
-    monkeypatch.setattr(
-        "core.services.user_provision.clerk_admin.list_pending_invitations_for_user",
-        AsyncMock(return_value=[{"public_organization_data": {"name": "Acme"}}]),
-    )
-
-    with (
-        patch("core.services.user_provision.capture_product_event") as mock_capture,
-        patch("core.services.user_provision.capture_once_per_owner_per_day"),
-    ):
-        await ensure_personal_trial_default(_personal_auth("user_p", "p@example.com"), "user_p")
-
-    _mock_create_trial_local_if_absent.assert_not_awaited()
-    # The refusal now DOES emit (trial_start_requested + trial_start_failed,
-    # see the telemetry block above); what must never fire is the success
-    # event, which is what this test has always been about.
-    assert "trial_started" not in [c.kwargs["event"] for c in mock_capture.call_args_list]
-
-
-@pytest.mark.asyncio
-async def test_an_existing_billing_row_short_circuits_before_the_clerk_call(
-    _mock_create_trial_local_if_absent,
-    monkeypatch,
-):
-    """This helper runs on EVERY ~3s /container/status poll. The invitation
-    lookup is a Clerk API call and must not fire on each one — an existing
-    billing row means there is nothing to create, so we never reach Clerk."""
-    monkeypatch.setattr(
-        "core.services.user_provision.billing_repo.get_by_owner_id",
-        AsyncMock(return_value={"owner_id": "user_p", "subscription_status": "trial_local"}),
-    )
-    invites = AsyncMock(return_value=[])
-    monkeypatch.setattr(
-        "core.services.user_provision.clerk_admin.list_pending_invitations_for_user",
-        invites,
-    )
-
-    await ensure_personal_trial_default(_personal_auth("user_p", "p@example.com"), "user_p")
-
-    invites.assert_not_awaited()
-    _mock_create_trial_local_if_absent.assert_not_awaited()
+    _mock_create_trial_local_if_absent.return_value = True
+    with patch.object(user_provision, "capture_product_event") as capture:
+        await user_provision.ensure_workspace_trial_default(_org_admin_auth(), "org_456", signup_flow_id="bad flow!")
+        await user_provision.ensure_workspace_trial_default(_org_member_auth(), "org_456")
+    first, second = [c.kwargs for c in capture.call_args_list]
+    assert first["properties"] == {"owner_type": "org"}
+    assert first["event_uuid"] == second["event_uuid"]
 
 
 # ---------------------------------------------------------------------------
@@ -2043,16 +1752,16 @@ async def test_maybe_arm_wrapper_swallows():
 
 
 @pytest.mark.asyncio
-async def test_ensure_user_ready_invokes_arm_for_personal_owner(_stub_trial_default, _stub_arm_nightly):
+async def test_ensure_user_ready_invokes_arm_for_workspace_owner(_stub_trial_default, _stub_arm_nightly):
     """Owner path → _maybe_arm_nightly_ceo awaited once with (auth, owner_id)."""
     with (
         patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
         patch("core.services.user_provision._ensure_paperclip_for_owner", new=AsyncMock()),
         patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c.close()),
     ):
-        await ensure_user_ready(_personal_auth("user_p"))
+        await ensure_user_ready(_org_admin_auth("user_p", "org_p"))
     _stub_arm_nightly.assert_awaited_once()
-    assert _stub_arm_nightly.await_args.args[1] == "user_p"
+    assert _stub_arm_nightly.await_args.args[1] == "org_p"
 
 
 @pytest.mark.asyncio
@@ -2100,10 +1809,10 @@ async def test_ensure_user_ready_does_not_invoke_arm_for_org_member(_stub_arm_ni
 
 
 @pytest.mark.asyncio
-async def test_personal_no_container_skips_inline_owner_seed_only_dispatches(_stub_trial_default):
+async def test_workspace_no_container_skips_inline_owner_seed_only_dispatches(_stub_trial_default):
     """No container row yet (the new-signup path): NO inline owner seed (the
-    runner's step 0 does it), NO member call (personal has no join), and the
-    container is dispatched exactly once."""
+    runner's step 0 does it), member JOIN runs, and the container is
+    dispatched exactly once."""
     captured: list[str] = []
 
     def capture_task(coro):
@@ -2120,10 +1829,10 @@ async def test_personal_no_container_skips_inline_owner_seed_only_dispatches(_st
         patch("core.services.user_provision._ensure_paperclip_for_member", new=inline_member),
         patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
     ):
-        await ensure_user_ready(_personal_auth("user_p"))
+        await ensure_user_ready(_org_admin_auth("user_p", "org_p"))
     inline_owner.assert_not_awaited()
     inline_org.assert_not_awaited()
-    inline_member.assert_not_awaited()
+    inline_member.assert_awaited_once()
     assert captured == ["dispatch_provision"]
 
 
@@ -2197,7 +1906,7 @@ async def test_concurrent_polls_run_no_inline_owner_seed(_stub_trial_default):
         patch("core.services.user_provision._ensure_paperclip_for_owner", new=inline_owner),
         patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
     ):
-        await asyncio.gather(*[ensure_user_ready(_personal_auth("user_race")) for _ in range(15)])
+        await asyncio.gather(*[ensure_user_ready(_org_admin_auth("user_race", "org_race")) for _ in range(15)])
     inline_owner.assert_not_awaited()
     assert dispatched == ["dispatch_provision"] * 15
 
@@ -2211,11 +1920,9 @@ async def test_concurrent_polls_run_no_inline_owner_seed(_stub_trial_default):
 
 
 @pytest.mark.asyncio
-async def test_running_container_personal_owner_seed_is_reconciled(_stub_trial_default, _container_running):
-    """REGRESSION (/container/status): a PERSONAL owner with a running container
-    and teams_state == "failed" is re-dispatched on every poll. The executor
-    cannot help (running rows are unclaimable), so the seed must run HERE or a
-    failed personal Teams seed never heals."""
+async def test_running_container_workspace_owner_seed_is_reconciled(_stub_trial_default, _container_running):
+    """A running workspace with no active company seeds on the poll thread;
+    the executor cannot help because running rows are unclaimable."""
     inline_owner = AsyncMock()
     captured: list[str] = []
 
@@ -2223,24 +1930,27 @@ async def test_running_container_personal_owner_seed_is_reconciled(_stub_trial_d
         captured.append(coro.__qualname__)
         coro.close()
 
+    provisioning = MagicMock(find_org_owner=AsyncMock(return_value=None))
     with (
+        patch.object(user_provision, "build_paperclip_provisioning", AsyncMock(return_value=provisioning)),
+        patch.object(user_provision, "close_paperclip_provisioning", AsyncMock()),
         patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-        patch("core.services.user_provision._ensure_paperclip_for_owner", new=inline_owner),
+        patch("core.services.user_provision._ensure_paperclip_for_org", new=inline_owner),
         patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
     ):
-        await ensure_user_ready(_personal_auth("user_p", "p@example.com"))
+        await ensure_user_ready(_org_admin_auth("user_p", "org_p", "p@example.com"))
     inline_owner.assert_awaited_once_with(
-        owner_id="user_p",
-        owner_user_id="user_p",
-        owner_email="p@example.com",
-        org_id=None,
+        org_id="org_p",
+        user_id="user_p",
+        email="p@example.com",
+        is_admin=True,
     )
     assert captured == [], f"a running container must not be re-provisioned, got {captured}"
 
 
 @pytest.mark.asyncio
 async def test_parked_trial_box_seeds_without_waking_the_container(_stub_trial_default, _no_container_row):
-    """REGRESSION (/teams): a personal owner entering Teams on a deliberately
+    """REGRESSION (/teams): a workspace owner entering Teams on a deliberately
     parked trial box must get the seed WITHOUT a container start — a passive
     read never wakes a parked box (wake_policy is the single predicate), but it
     must not leave the workspace unseeded either (that was the infinite 202)."""
@@ -2252,14 +1962,17 @@ async def test_parked_trial_box_seeds_without_waking_the_container(_stub_trial_d
         captured.append(coro.__qualname__)
         coro.close()
 
+    provisioning = MagicMock(find_org_owner=AsyncMock(return_value=None))
     with (
+        patch.object(user_provision, "build_paperclip_provisioning", AsyncMock(return_value=provisioning)),
+        patch.object(user_provision, "close_paperclip_provisioning", AsyncMock()),
         patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
         patch("core.services.user_provision.wake_policy.is_parked_trial", new=AsyncMock(return_value=True)),
         patch("core.services.user_provision.wake_policy.note_wake_suppressed") as note,
-        patch("core.services.user_provision._ensure_paperclip_for_owner", new=inline_owner),
+        patch("core.services.user_provision._ensure_paperclip_for_org", new=inline_owner),
         patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
     ):
-        await ensure_user_ready(_personal_auth("user_p", "p@example.com"))
+        await ensure_user_ready(_org_admin_auth("user_p", "org_p", "p@example.com"))
     inline_owner.assert_awaited_once()
     note.assert_called_once()
     assert captured == [], f"a parked trial box must never be woken by a passive read, got {captured}"
@@ -2283,7 +1996,7 @@ async def test_stopped_but_not_parked_container_still_dispatches(_stub_trial_def
         patch("core.services.user_provision._ensure_paperclip_for_owner", new=inline_owner),
         patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
     ):
-        await ensure_user_ready(_personal_auth("user_p", "p@example.com"))
+        await ensure_user_ready(_org_admin_auth("user_p", "org_p", "p@example.com"))
     inline_owner.assert_not_awaited()
     assert captured == ["dispatch_provision"]
 
@@ -2292,16 +2005,19 @@ async def test_stopped_but_not_parked_container_still_dispatches(_stub_trial_def
 async def test_running_container_seed_failure_is_swallowed_and_metered(_stub_trial_default, _container_running):
     """The reconcile is best-effort like every other Paperclip step here: a
     failure records paperclip.seed.error and never escapes the poll."""
+    provisioning = MagicMock(find_org_owner=AsyncMock(return_value=None))
     with (
+        patch.object(user_provision, "build_paperclip_provisioning", AsyncMock(return_value=provisioning)),
+        patch.object(user_provision, "close_paperclip_provisioning", AsyncMock()),
         patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
         patch(
-            "core.services.user_provision._ensure_paperclip_for_owner",
+            "core.services.user_provision._ensure_paperclip_for_org",
             new=AsyncMock(side_effect=RuntimeError("paperclip 502")),
         ),
         patch("core.services.user_provision.put_metric") as mock_metric,
         patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c.close()),
     ):
-        await ensure_user_ready(_personal_auth("user_p", "p@example.com"))
+        await ensure_user_ready(_org_admin_auth("user_p", "org_p", "p@example.com"))
     mock_metric.assert_any_call("paperclip.seed.error")
 
 
@@ -2327,9 +2043,9 @@ async def test_metronome_provisioning_runs_even_when_the_gate_is_up(
         patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=gate)),
         patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c.close()),
     ):
-        await ensure_user_ready(_personal_auth("user_p", "p@example.com"))
+        await ensure_user_ready(_org_admin_auth("user_p", "org_p", "p@example.com"))
 
-    _mock_ensure_metronome_customer.assert_awaited_once_with(owner_id="user_p")
+    _mock_ensure_metronome_customer.assert_awaited_once_with(owner_id="org_p")
 
 
 @pytest.mark.asyncio

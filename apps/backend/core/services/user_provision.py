@@ -24,7 +24,9 @@ import re
 import uuid
 from collections import defaultdict
 
-from core.auth import AuthContext, is_org_owner_id
+from fastapi import HTTPException
+
+from core.auth import AuthContext, is_org_owner_id, resolve_owner_id
 from core.billing.metronome_provisioning import ensure_metronome_customer
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import (
@@ -32,7 +34,7 @@ from core.observability.product_analytics import (
     capture_product_event,
 )
 from core.repositories import billing_repo, container_repo
-from core.services import clerk_admin, wake_policy
+from core.services import wake_policy
 from core.services.agent_routine_provisioning import (
     NIGHTLY_CEO_ROUTINE_CRON,
     NIGHTLY_CEO_ROUTINE_DESCRIPTION,
@@ -81,138 +83,40 @@ def _clean_signup_flow_id(value: str | None) -> str | None:
     return None
 
 
-async def ensure_personal_trial_default(auth: AuthContext, owner_id: str, *, signup_flow_id: str | None = None) -> None:
-    """Auto-default a brand-new PERSONAL owner into a card-less ``trial_local``
-    billing row (idempotent conditional put — no-op if any row already exists).
+async def ensure_workspace_trial_default(
+    auth: AuthContext, workspace_id: str, *, signup_flow_id: str | None = None
+) -> None:
+    """Create the active workspace's unarmed trial once, before either provision gate.
 
-    The free tier is PERSONAL-ONLY: orgs get no card-less trial (the master
-    plan refuses org owners; Teams billing is per-seat / no-trial), so
-    ``not auth.is_org_context`` excludes every org context, admin included.
-
-    Called from BOTH ``ensure_user_ready`` (before its gate) AND
-    ``GET /container/status`` (before ITS gate). Each evaluates the provision
-    gate independently, and the row must exist before whichever gate runs
-    first — otherwise the gate sees no billing row, returns ``signup_required``,
-    and the caller short-circuits (``/container/status`` 404s to the
-    ProviderPicker) before the trial is ever created. Keeping the personal-only
-    predicate in one place stops the two gate sites from drifting.
-
-    Enforces the SAME tenancy invariant (Gate B) as ``/billing/trial-checkout``:
-    a user with a pending org invitation may not take a personal plan — they
-    must accept the invite and become a seat. Without it, this auto-default
-    would be a way around that gate: the invited user need only let the
-    ``/container/status`` poll run to land a personal ``trial_local`` row and a
-    personal container. The frontend normally routes them to the invitation
-    screen, but a direct poll or a routing race must not be able to violate a
-    backend invariant.
-
-    ANALYTICS. This function is the sole emitter of the trial funnel's three
-    server events, because it is the only place that decides whether a trial
-    exists:
-
-    - ``trial_start_requested`` — a personal owner with no billing row is
-      about to be given one. Fires once per attempt.
-    - ``trial_started`` — the conditional put actually wrote the row.
-      Carries a DETERMINISTIC ``event_uuid`` (uuid5 over owner id + UTC day),
-      so PostHog ingestion drops the duplicates the ``created`` flag cannot
-      see — a backend restart, the transient second task during a rolling
-      deploy — while a GENUINE second trial on a later day (a re-signup after
-      an account wipe, a dev clean-slate reset, the founder re-testing) still
-      counts. Keying on the owner alone would have silently zeroed every one
-      of those. There was a second, CLIENT-side emitter until this change; it
-      double-counted every trial started in a browser that kept its storage
-      and single-counted the rest.
-    - ``trial_start_failed`` — a personal owner who wanted a trial did not
-      get one, with the reason in ``error_code``. Previously invisible: a
-      user blocked by Gate B just sat on a spinner and left no event.
-
-    ``requested`` and ``failed`` go through ``capture_once_per_owner_per_day``
-    (the helper ``trial_cap_reached``/``trial_expired_block`` already use)
-    because both sit on a path the status poll re-enters indefinitely while the
-    owner stays blocked. ``trial_started`` does not need it — it fires only on
-    the write that created the row, and carries its own deterministic uuid.
-
-    ``signup_flow_id`` comes from the client on the ``/container/status``
-    poll (``?flow=``) and is the join key back to the anonymous half of the
-    journey, for the cases where PostHog's own identity stitch breaks. The
-    ``ensure_user_ready`` path also reaches here (from the Paperclip-proxy
-    handshake and the Teams reconcile) and has no flow id to give — if that
-    path wins the race for a brand-new owner, ``trial_started`` lands without
-    one. The status poll is the first thing /chat does, so in practice it
-    wins; when it does not, the person-level ``signup_flow_id`` set at
-    identify() is the fallback join.
-    An org context emits NOTHING here — orgs are excluded from the free
-    tier by design, so an org owner never appears in the trial funnel at
-    all. Read org activation off the subscription events, not these.
+    The conditional put selects one creator across members and backend instances.
+    Existing trial analytics describe row creation; runtime readiness arms its clock.
     """
-    if auth.is_org_context:
-        return
-
-    # Short-circuit on an existing row BEFORE the Clerk call. This helper runs on
-    # every ~3s /container/status poll; the invitation lookup is a Clerk API call
-    # and must not run on each one. Once the row exists there is nothing to
-    # create, so the only callers that reach Clerk are those at the actual signup
-    # moment (no billing row yet) — and an invited user gets routed to the
-    # invitation screen rather than left polling.
-    if await billing_repo.get_by_owner_id(owner_id):
+    if resolve_owner_id(auth) != workspace_id:
+        raise HTTPException(status_code=403, detail="Workspace does not match the active organization")
+    if await billing_repo.get_by_owner_id(workspace_id):
         return
 
     signup_flow_id = _clean_signup_flow_id(signup_flow_id)
     flow_props = {"signup_flow_id": signup_flow_id} if signup_flow_id else {}
-    # Once per owner per UTC day, NOT once per call. Everything below this line
-    # runs on EVERY status poll for as long as the owner stays blocked, because
-    # the only short-circuit above is "a billing row exists" and a blocked owner
-    # never gets one. At the 15s steady-state poll cadence that is ~480 events
-    # an hour from one person sitting on the invitation screen, which would make
-    # these two events a measure of how long tabs stay open rather than of how
-    # many people hit the block.
-    capture_once_per_owner_per_day(owner_id=owner_id, event="trial_start_requested", properties=flow_props)
-
-    pending = await clerk_admin.list_pending_invitations_for_user(auth.user_id)
-    if pending:
-        logger.info(
-            "user_provision: personal trial default refused for user=%s — pending org invitation",
-            auth.user_id,
-        )
-        capture_once_per_owner_per_day(
-            owner_id=owner_id,
-            event="trial_start_failed",
-            properties={**flow_props, "error_code": "pending_org_invitation"},
-        )
-        return
-
+    capture_once_per_owner_per_day(owner_id=workspace_id, event="trial_start_requested", properties=flow_props)
     try:
         created = await billing_repo.create_trial_local_if_absent(
-            owner_id=owner_id,
-            owner_type="personal",
+            owner_id=workspace_id, owner_type="org", trial_end=None
         )
     except Exception as exc:
-        # The write is the one step here that can fail on us rather than on
-        # a policy decision, and a user whose trial row never landed is a
-        # user stuck on the ProviderPicker forever. Name it, then re-raise —
-        # the caller's own error handling is unchanged.
-        # Same daily gate. Note the consequence: a second, DIFFERENT failure for
-        # the same owner on the same day is suppressed, because the key is
-        # (event, owner, day) and not the error code. That is the right trade
-        # for a funnel signal — the operational channel for a repeated write
-        # failure is the raised exception, not PostHog.
         capture_once_per_owner_per_day(
-            owner_id=owner_id,
+            owner_id=workspace_id,
             event="trial_start_failed",
             properties={**flow_props, "error_code": type(exc).__name__},
         )
         raise
 
     if created:
-        # Only the call that actually wrote the row fires this — every
-        # later idempotent no-op (each ~3s poll) must not re-fire it. The
-        # deterministic uuid is the second line of defence, covering the
-        # cases the `created` flag cannot see (see the docstring).
         capture_product_event(
-            distinct_id=owner_id,
+            distinct_id=workspace_id,
             event="trial_started",
-            properties={**flow_props, "owner_type": "personal"},
-            event_uuid=str(uuid.uuid5(_TRIAL_STARTED_NAMESPACE, f"{owner_id}:{utc_today()}")),
+            properties={**flow_props, "owner_type": "org"},
+            event_uuid=str(uuid.uuid5(_TRIAL_STARTED_NAMESPACE, f"{workspace_id}:{utc_today()}")),
         )
 
 
@@ -227,7 +131,7 @@ async def ensure_user_ready(auth: AuthContext) -> None:
          ONE shared company is normally CREATED by the provisioning
          executor's runner (scripts.provision_runner step 0), not here.
       3. Container (ECS) provisioning + the owner company-CREATE, for
-         container-owners only (personal user OR org admin), via
+         workspace admins only, via
          ``_provision_or_reconcile`` — which reads the container row and
          decides between "dispatch the executor" and "seed here",
          because those are the same job routed by live state. See its
@@ -236,15 +140,10 @@ async def ensure_user_ready(auth: AuthContext) -> None:
          decision, and got it wrong for the seed half — a self-healing
          poll on a running container seeded nothing).
     """
-    owner_id = auth.org_id if auth.is_org_context else auth.user_id
+    owner_id = resolve_owner_id(auth)
 
-    # Auto-default a brand-new personal owner into a card-less trial_local
-    # BEFORE the gate is evaluated, so the gate (which treats trial_local as
-    # active + provision-eligible) returns None below and the normal
-    # Paperclip-seed + dispatch_provision flow runs. Personal-only + the
-    # rationale for the shared helper live in its docstring; /container/status
-    # calls the SAME helper before its own gate.
-    await ensure_personal_trial_default(auth, owner_id)
+    # Both status and this background entry point need the row before gating.
+    await ensure_workspace_trial_default(auth, owner_id)
 
     # Metronome customer lifecycle, BEFORE the gate — not after it.
     #

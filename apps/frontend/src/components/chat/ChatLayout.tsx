@@ -2,7 +2,7 @@
 
 import "./ChatLayout.css";
 import { useEffect, useRef, useState } from "react";
-import { useAuth, useUser, UserButton } from "@clerk/nextjs";
+import { OrganizationList, useAuth, useUser, UserButton } from "@clerk/nextjs";
 
 import { capture } from "@/lib/analytics";
 import { useSearchParams } from "next/navigation";
@@ -275,11 +275,15 @@ export function ChatLayout({
     setCreateFormOpen(true);
   }
 
-  // Block the chat shell until the gate is ``ready``. See
-  // ``useOnboardingGate`` for the full state-machine; the rule is the
-  // same as before — anything other than ``ready`` means we're either
-  // still loading, mid-redirect to /onboarding, or auto-activating an org
-  // membership, none of which should let owner_id-aware hooks render.
+  if (onboardingPhase === "selecting") {
+    return (
+      <main className="flex min-h-screen flex-col items-center justify-center gap-6 p-4">
+        <h1 className="text-2xl font-bold">Choose your workspace</h1>
+        <OrganizationList hidePersonal afterSelectOrganizationUrl="/chat" afterCreateOrganizationUrl="/onboarding" skipInvitationScreen />
+      </main>
+    );
+  }
+  // The shell waits for routing; useProvisioningState independently gates polling.
   if (onboardingPhase !== "ready") {
     return (
       <div className="app-shell" style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>

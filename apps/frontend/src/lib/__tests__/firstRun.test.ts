@@ -24,13 +24,11 @@ describe("readFirstRun", () => {
 describe("writeFirstRun", () => {
   it("merges the patch and preserves sibling metadata keys", async () => {
     const u = fakeUser({
-      onboarded: true,
       getStarted: { seen: true },
       firstRun: { briefSubmitted: true },
     });
     await writeFirstRun(u, { path: "grow" });
     const arg = (u as { update: ReturnType<typeof vi.fn> }).update.mock.calls[0][0];
-    expect(arg.unsafeMetadata.onboarded).toBe(true);
     expect(arg.unsafeMetadata.getStarted).toEqual({ seen: true });
     expect(arg.unsafeMetadata.firstRun).toEqual({ briefSubmitted: true, path: "grow" });
   });

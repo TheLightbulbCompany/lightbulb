@@ -1,14 +1,14 @@
 /**
  * E2E user lifecycle helper.
  *
- * Tests call `createE2EUser(page, role)` in beforeAll, drive the UI flow, then
+ * Tests call `createE2EUser(page)` in beforeAll, drive the UI flow, then
  * call `cleanupUser(user)` in afterAll. Cleanup orchestrates Stripe -> backend
  * -> Clerk in that order, then re-queries Stripe + Clerk to hard-fail if
  * anything was left behind. This keeps the dev environment clean across runs.
  *
  * NOTE: the bare `e2eUser` Playwright fixture below is intentionally a trap
  * (it always throws). The pattern is for specs to call `createE2EUser`
- * directly inside `beforeAll`, not via a fixture — role and orgId need to be
+ * directly inside `beforeAll`, not via a fixture — orgId needs to be
  * decided per-spec, and Playwright's worker fixtures don't compose cleanly
  * with that. Tasks 11/12 (the spec files) will use the explicit helpers.
  */
@@ -23,8 +23,6 @@ import {
 } from './stripe-admin';
 import { AuthedFetch, AuthedFetchError } from './api';
 import { DDBReader } from './ddb-reader';
-
-export type E2EUserRole = 'personal' | 'org';
 
 export type E2EUser = {
   runId: string;
@@ -45,8 +43,6 @@ function makeRunId(): string {
 
 export async function createE2EUser(
   page: Page,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  _role: E2EUserRole,
 ): Promise<E2EUser> {
   const secretKey = process.env.CLERK_SECRET_KEY;
   if (!secretKey) {
@@ -65,10 +61,16 @@ export async function createE2EUser(
   return { runId, email, password, clerkUserId, page, api, ddb };
 }
 
-export async function cleanupUser(user: E2EUser): Promise<void> {
+export async function cleanupUser(
+  user: E2EUser,
+  options: { cleanupWorkspace?: boolean } = {},
+): Promise<void> {
+  const cleanupWorkspace = options.cleanupWorkspace ?? true;
   const stripeKey = process.env.STRIPE_SECRET_KEY;
   const clerkKey = process.env.CLERK_SECRET_KEY;
-  if (!stripeKey) throw new Error('STRIPE_SECRET_KEY required for cleanupUser');
+  if (cleanupWorkspace && !stripeKey) {
+    throw new Error('STRIPE_SECRET_KEY required for cleanupUser');
+  }
   if (!clerkKey) throw new Error('CLERK_SECRET_KEY required for cleanupUser');
 
   // Each step is run independently and its failure is collected; we only
@@ -87,10 +89,12 @@ export async function cleanupUser(user: E2EUser): Promise<void> {
   // customer with metadata.owner_id, so that lookup is the canonical one.
   // owner_id == clerkUserId in personal context, == orgId in org context.
   const stripeOwnerId = user.orgId ?? user.clerkUserId;
-  try {
-    await cancelSubsAndDeleteCustomer(stripeKey, user.email, stripeOwnerId);
-  } catch (err) {
-    failures.push(`stripe: ${err}`);
+  if (cleanupWorkspace) {
+    try {
+      await cancelSubsAndDeleteCustomer(stripeKey!, user.email, stripeOwnerId);
+    } catch (err) {
+      failures.push(`stripe: ${err}`);
+    }
   }
 
   // 2. Backend — DELETE /debug/user-data wipes DDB rows + EFS workspace +
@@ -101,34 +105,36 @@ export async function cleanupUser(user: E2EUser): Promise<void> {
   //    Navigate the page back to the app first so Clerk is loaded and
   //    AuthedFetch.token() can mint a JWT — without this, a spec that
   //    failed on Stripe Checkout would 401 here.
-  try {
-    const baseUrl = process.env.BASE_URL ?? user.page.url();
-    await user.page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
-    // domcontentloaded fires before Clerk's JS bootstraps the session, so
-    // AuthedFetch.token() can throw if we issue the delete immediately.
-    // Wait for window.Clerk.session to be live (Codex P2 on PR #309).
-    await user.page.waitForFunction(
-      () => {
-        const w = window as Window & {
-          Clerk?: { loaded?: boolean; session?: unknown };
-        };
-        return w.Clerk?.loaded === true && w.Clerk?.session != null;
-      },
-      { timeout: 30_000 },
-    );
-    await user.api.delete('/debug/user-data');
-  } catch (err) {
-    if (err instanceof AuthedFetchError && err.status === 404) {
-      console.warn('[e2e] /debug/user-data 404 — treating as idempotent success');
-    } else {
-      failures.push(`backend: ${err}`);
+  if (cleanupWorkspace) {
+    try {
+      const baseUrl = process.env.BASE_URL ?? user.page.url();
+      await user.page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+      // domcontentloaded fires before Clerk's JS bootstraps the session, so
+      // AuthedFetch.token() can throw if we issue the delete immediately.
+      // Wait for window.Clerk.session to be live (Codex P2 on PR #309).
+      await user.page.waitForFunction(
+        () => {
+          const w = window as Window & {
+            Clerk?: { loaded?: boolean; session?: unknown };
+          };
+          return w.Clerk?.loaded === true && w.Clerk?.session != null;
+        },
+        { timeout: 30_000 },
+      );
+      await user.api.delete('/debug/user-data');
+    } catch (err) {
+      if (err instanceof AuthedFetchError && err.status === 404) {
+        console.warn('[e2e] /debug/user-data 404 — treating as idempotent success');
+      } else {
+        failures.push(`backend: ${err}`);
+      }
     }
   }
 
   // 3. Clerk — runs even if backend cleanup failed. Org first (if any),
   //    then the user. Both helpers treat 404 as success.
   try {
-    if (user.orgId) {
+    if (cleanupWorkspace && user.orgId) {
       await deleteOrg({ secretKey: clerkKey, orgId: user.orgId });
     }
     await deleteUser({ secretKey: clerkKey, userId: user.clerkUserId });
@@ -142,17 +148,19 @@ export async function cleanupUser(user: E2EUser): Promise<void> {
 
   // 5. Hard-fail verification on external systems. Check by both email
   // and owner_id — same defensive split as the cleanup call above.
-  try {
-    const stripeRemaining = await findCustomerByEmail(stripeKey, user.email);
-    if (stripeRemaining) {
-      failures.push(`stripe leak: customer ${stripeRemaining.id} (by-email) not deleted`);
+  if (cleanupWorkspace) {
+    try {
+      const stripeRemaining = await findCustomerByEmail(stripeKey!, user.email);
+      if (stripeRemaining) {
+        failures.push(`stripe leak: customer ${stripeRemaining.id} (by-email) not deleted`);
+      }
+      const ownerRemaining = await findCustomersByOwnerId(stripeKey!, stripeOwnerId);
+      for (const c of ownerRemaining) {
+        failures.push(`stripe leak: customer ${c.id} (by-owner_id) not deleted`);
+      }
+    } catch (err) {
+      failures.push(`stripe verify: ${err}`);
     }
-    const ownerRemaining = await findCustomersByOwnerId(stripeKey, stripeOwnerId);
-    for (const c of ownerRemaining) {
-      failures.push(`stripe leak: customer ${c.id} (by-owner_id) not deleted`);
-    }
-  } catch (err) {
-    failures.push(`stripe verify: ${err}`);
   }
   try {
     const clerkRemaining = await findUserByEmail({
@@ -174,7 +182,7 @@ export async function cleanupUser(user: E2EUser): Promise<void> {
 /**
  * Bare Playwright fixture export — intentionally throws. Specs should call
  * `createE2EUser` / `cleanupUser` directly in `beforeAll` / `afterAll` so the
- * role and (optional) orgId can be set per-spec. Kept as load-bearing
+ * orgId can be recorded as soon as the workspace is created. Kept as load-bearing
  * documentation for future contributors who go looking for `test.e2eUser`.
  */
 // `object`, not `Record<string, never>`: the latter's string index signature
@@ -186,7 +194,7 @@ export const test = base.extend<object, { e2eUser: E2EUser }>({
     async ({ browser: _browser }, use) => {
       void use;
       throw new Error(
-        'Use createE2EUser(page, role) in beforeAll, not the bare e2eUser fixture',
+        'Use createE2EUser(page) in beforeAll, not the bare e2eUser fixture',
       );
     },
     { scope: 'worker' },

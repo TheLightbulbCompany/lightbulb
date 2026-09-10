@@ -855,7 +855,7 @@ async def create_if_not_exists(
 _TRIAL_LOCAL_DURATION_SECONDS = 3 * 24 * 60 * 60
 
 
-async def create_trial_local_if_absent(owner_id: str, owner_type: str) -> bool:
+async def create_trial_local_if_absent(owner_id: str, owner_type: str, *, trial_end: int | None = None) -> bool:
     """Atomically create a card-less local trial billing row if one doesn't
     exist for this owner.
 
@@ -876,10 +876,11 @@ async def create_trial_local_if_absent(owner_id: str, owner_type: str) -> bool:
         "owner_id": owner_id,
         "owner_type": owner_type,
         "subscription_status": "trial_local",
-        "trial_end": int(time.time()) + _TRIAL_LOCAL_DURATION_SECONDS,
         "created_at": now,
         "updated_at": now,
     }
+    if trial_end is not None:
+        item["trial_end"] = trial_end
     try:
         await run_in_thread(
             table.put_item,
@@ -891,6 +892,27 @@ async def create_trial_local_if_absent(owner_id: str, owner_type: str) -> bool:
             return False
         raise
     return True
+
+
+async def arm_trial_if_unset(workspace_id: str, now_s: int | None = None) -> int | None:
+    """Start an unarmed local trial once; losing polls read the winner's expiry."""
+    trial_end = (int(time.time()) if now_s is None else now_s) + _TRIAL_LOCAL_DURATION_SECONDS
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": workspace_id},
+            UpdateExpression="SET trial_end = :end, updated_at = :now",
+            ConditionExpression="subscription_status = :trial AND attribute_not_exists(trial_end)",
+            ExpressionAttributeValues={":trial": "trial_local", ":end": trial_end, ":now": utc_now_iso()},
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        row = await get_by_owner_id(workspace_id, consistent_read=True)
+        if row and row.get("subscription_status") == "trial_local" and row.get("trial_end") is not None:
+            return int(row["trial_end"])
+        return None
+    return trial_end
 
 
 async def mark_trial_first_agent_response(owner_id: str) -> bool:

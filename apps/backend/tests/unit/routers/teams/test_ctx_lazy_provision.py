@@ -110,16 +110,33 @@ async def test_self_heal_reconcile_backgrounds_provision_when_gate_clear():
     strand the user (the Teams frontend only auto-retries the 202 sentinel)."""
     from routers.teams import agents as agents_mod
 
-    auth = _auth(user_id="owner1")
+    initialized = False
+
+    async def initialize(_auth, owner_id):
+        nonlocal initialized
+        assert owner_id == "org_1"
+        initialized = True
+
+    async def gate(**_kwargs):
+        if initialized:
+            return None
+        blocked = MagicMock()
+        blocked.to_payload.return_value = {"blocked": {"code": "team_billing_required"}}
+        return blocked
+
+    auth = _auth(user_id="owner1", org_id="org_1", is_org_context=True)
+    auth.is_org_admin = True
     with (
-        patch.object(agents_mod, "evaluate_provision_gate", new_callable=AsyncMock, return_value=None),
+        patch.object(agents_mod, "ensure_workspace_trial_default", new=initialize, create=True),
+        patch.object(agents_mod, "evaluate_provision_gate", new=gate),
         patch.object(agents_mod, "_provision_after_gate") as mock_bg,
-        patch.object(agents_mod.asyncio, "create_task") as mock_create,
+        patch.object(agents_mod.asyncio, "create_task", side_effect=lambda c: c.close()) as mock_create,
     ):
         result = await agents_mod._self_heal_reconcile(auth)
 
     assert result is None  # gate clear → 202 keep-polling
-    mock_bg.assert_called_once_with(auth, "owner1")  # scheduled, not awaited inline
+    assert initialized is True
+    mock_bg.assert_called_once_with(auth, "org_1")  # scheduled, not awaited inline
     mock_create.assert_called_once()  # dispatched as a background task
 
 
@@ -133,8 +150,15 @@ async def test_self_heal_reconcile_returns_payload_and_skips_provision_when_gate
 
     gate = MagicMock()
     gate.to_payload.return_value = {"blocked": {"code": "subscription_required"}}
-    auth = _auth(user_id="owner1")
+    auth = _auth(user_id="owner1", org_id="org_1", is_org_context=True)
+    auth.is_org_admin = True
     with (
+        patch.object(
+            agents_mod,
+            "ensure_workspace_trial_default",
+            new_callable=AsyncMock,
+            create=True,
+        ),
         patch.object(agents_mod, "evaluate_provision_gate", new_callable=AsyncMock, return_value=gate),
         patch.object(agents_mod, "_provision_after_gate") as mock_bg,
         patch.object(agents_mod.asyncio, "create_task") as mock_create,

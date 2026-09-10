@@ -256,19 +256,50 @@ async def test_set_and_get_by_metronome_customer_id(dynamodb_table):
 async def test_create_trial_local_if_absent_writes_trial_row(dynamodb_table):
     from core.repositories import billing_repo
 
-    before = int(time.time())
-    created = await billing_repo.create_trial_local_if_absent("user_trial_1", "personal")
-    after = int(time.time())
+    created = await billing_repo.create_trial_local_if_absent("org_trial_1", "org", trial_end=None)
 
-    assert created is True, "the call that actually writes the row must return True"
-    item = await billing_repo.get_by_owner_id("user_trial_1")
-    assert item is not None
+    assert created is True
+    item = await billing_repo.get_by_owner_id("org_trial_1")
     assert item["subscription_status"] == "trial_local"
-    assert item["owner_type"] == "personal"
-    assert "trial_end" in item
-    three_days = 3 * 24 * 60 * 60
-    assert before + three_days <= item["trial_end"] <= after + three_days
+    assert item["owner_type"] == "org"
+    assert "trial_end" not in item
     assert not any(k.startswith("stripe_") for k in item)
+
+
+@pytest.mark.asyncio
+async def test_trial_arms_once_even_when_ready_polls_race(dynamodb_table):
+    import asyncio
+    from core.repositories import billing_repo
+
+    dynamodb_table.put_item(Item={"owner_id": "org_trial", "owner_type": "org", "subscription_status": "trial_local"})
+    ends = await asyncio.gather(
+        billing_repo.arm_trial_if_unset("org_trial", now_s=1_000),
+        billing_repo.arm_trial_if_unset("org_trial", now_s=9_999),
+    )
+    assert ends[0] == ends[1]
+    assert ends[0] in (260_200, 269_199)
+    assert await billing_repo.arm_trial_if_unset("org_trial", now_s=50_000) == ends[0]
+    assert (await billing_repo.get_by_owner_id("org_trial"))["trial_end"] == ends[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [None, "active", "trialing", "canceled"])
+async def test_trial_armer_leaves_missing_and_non_trial_rows_untouched(dynamodb_table, status):
+    from core.repositories import billing_repo
+
+    if status:
+        dynamodb_table.put_item(Item={"owner_id": "org_other", "subscription_status": status, "trial_end": 123})
+    before = await billing_repo.get_by_owner_id("org_other")
+    assert await billing_repo.arm_trial_if_unset("org_other", now_s=1_000) is None
+    assert await billing_repo.get_by_owner_id("org_other") == before
+
+
+@pytest.mark.asyncio
+async def test_trial_armer_returns_first_ready_plus_three_days(dynamodb_table):
+    from core.repositories import billing_repo
+
+    dynamodb_table.put_item(Item={"owner_id": "org_trial", "subscription_status": "trial_local"})
+    assert await billing_repo.arm_trial_if_unset("org_trial", now_s=1_000) == 260_200
 
 
 @pytest.mark.asyncio
@@ -352,7 +383,7 @@ async def test_set_stripe_customer_id_backfills_existing_trial_local_row(dynamod
     assert after["stripe_customer_id"] == "cus_backfilled"
     # Rest of the trial row is untouched.
     assert after["subscription_status"] == "trial_local"
-    assert after["trial_end"] == before["trial_end"]
+    assert "trial_end" not in after
 
 
 @pytest.mark.asyncio

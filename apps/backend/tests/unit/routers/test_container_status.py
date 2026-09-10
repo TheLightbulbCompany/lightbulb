@@ -22,10 +22,15 @@ def mock_auth_context(mock_org_admin_context):
 
 @pytest.fixture(autouse=True)
 def _close_request_background_tasks(request):
-    if "async_client" not in request.fixturenames:
-        yield
-        return
-    with patch("routers.container.asyncio.create_task", side_effect=lambda coro: coro.close() or MagicMock()):
+    create_task = asyncio.create_task
+
+    def dispatch(coro):
+        if "async_client" in request.fixturenames or coro.__qualname__ == "sync_team_seat_quantity":
+            coro.close()
+            return MagicMock()
+        return create_task(coro)
+
+    with patch("routers.container.asyncio.create_task", side_effect=dispatch):
         yield
 
 
@@ -86,13 +91,13 @@ async def _noop_ensure_user_ready(auth):
 
 
 @pytest.fixture(autouse=True)
-def _stub_personal_trial_default():
-    """The no-container /status path now auto-defaults a personal owner into a
+def _stub_workspace_trial_default():
+    """The no-container /status path now auto-defaults a workspace into a
     trial_local row BEFORE the gate (create-before-gate fix). Stub it by default
     so the gate→response-mapping tests below don't hit real DynamoDB; the
     dedicated regression test patches it explicitly to assert the call and its
     ordering relative to the gate."""
-    with patch("routers.container.ensure_personal_trial_default", new=AsyncMock()) as stub:
+    with patch("routers.container.ensure_workspace_trial_default", new=AsyncMock()) as stub:
         yield stub
 
 
@@ -159,6 +164,15 @@ def _stub_teams_status_repo():
         yield repo
 
 
+@pytest.fixture(autouse=True)
+def _stub_trial_armer(request):
+    if request.node.name == "test_workspace_trial_clock_starts_only_at_first_canonical_ready_poll":
+        yield
+    else:
+        with patch("routers.container.billing_repo.arm_trial_if_unset", AsyncMock(return_value=None)):
+            yield
+
+
 class TestColdStartPhaseResolver:
     """Pure unit tests for the (DDB status, pool state) -> phase mapping.
 
@@ -190,6 +204,49 @@ class TestColdStartPhaseResolver:
         # Defensive: status route may briefly hit this if the DDB row is
         # being written concurrently with a poll. Don't crash.
         assert _resolve_cold_start_phase(None, self._pool(False), "u_1") == "provisioning"
+
+
+@pytest.mark.asyncio
+async def test_workspace_trial_clock_starts_only_at_first_canonical_ready_poll():
+    import boto3
+    from moto import mock_aws
+    from core.repositories import billing_repo
+    from routers.container import container_status
+
+    with mock_aws():
+        table = boto3.resource("dynamodb", region_name="us-east-1").create_table(
+            TableName="workspace-trials",
+            KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        table.put_item(Item={"owner_id": "org_x", "owner_type": "org", "subscription_status": "trial_local"})
+        row = {"owner_id": "org_x", "status": "provisioning", "service_name": "svc"}
+        ecs = MagicMock(
+            resolve_running_container=AsyncMock(side_effect=lambda _: (row, "10.0.0.1")),
+            has_live_service=AsyncMock(return_value=True),
+        )
+        with (
+            patch.object(billing_repo, "_get_table", return_value=table),
+            patch("routers.container.get_ecs_manager", return_value=ecs),
+            patch("core.services.connection_service.is_gateway_connected", AsyncMock(return_value=False)) as connected,
+            patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
+            patch("routers.container.evaluate_provision_gate", AsyncMock(return_value=None)),
+        ):
+            for status, phase in [("provisioning", "provisioning"), ("running", "starting"), ("error", "provisioning")]:
+                row["status"] = status
+                result = await container_status(_workspace_auth(), wake="0", flow=None)
+                assert result["runtime_phase"] == phase
+                assert "trial_end" not in (await billing_repo.get_by_owner_id("org_x"))
+            row["status"] = "running"
+            connected.return_value = True
+            with patch("core.repositories.billing_repo.time.time", return_value=1_000):
+                result = await container_status(_workspace_auth(), wake="0", flow=None)
+            assert result["runtime_phase"] == "ready"
+            assert (await billing_repo.get_by_owner_id("org_x"))["trial_end"] == 260_200
+            with patch("core.repositories.billing_repo.time.time", return_value=9_999):
+                await container_status(_workspace_auth(), wake="0", flow=None)
+            assert (await billing_repo.get_by_owner_id("org_x"))["trial_end"] == 260_200
 
 
 class TestContainerStatusPhaseField:

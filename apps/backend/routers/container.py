@@ -26,7 +26,7 @@ from core.services.bootstrap_dispatcher import maybe_dispatch_bootstrap
 from core.services.onboarding_brief import reconcile_pending_brief
 from core.services.management_api_client import ManagementApiClientError
 from core.observability.metrics import put_metric, timing
-from core.repositories import container_repo
+from core.repositories import billing_repo, container_repo
 from core.services.provision_dispatch import dispatch_provision
 from core.services.provision_gate import (
     evaluate_provision_gate,
@@ -35,7 +35,7 @@ from core.services.provision_gate import (
     trial_expired_gate,
 )
 from core.services.stripe_webhook_handlers import CONVERTING_SUBSTATUS, maybe_resume_stuck_conversion
-from core.services.user_provision import ensure_personal_trial_default, ensure_user_ready
+from core.services.user_provision import ensure_workspace_trial_default, ensure_user_ready
 
 logger = logging.getLogger(__name__)
 
@@ -241,7 +241,7 @@ async def container_status(
             "trial events back to the anonymous half of their signup journey "
             "(apps/frontend/src/lib/signupFlow.ts). Opaque and untrusted — it "
             "only ever lands in a PostHog property. Deliberately NOT validated "
-            "here: a bad value is dropped inside ensure_personal_trial_default, "
+            "here: a bad value is dropped inside ensure_workspace_trial_default, "
             "never 422'd, because this is the readiness poll and a polluted "
             "localStorage entry must not be able to strand a user on a spinner."
         ),
@@ -285,14 +285,8 @@ async def container_status(
         # state.
         is_admin = auth.is_org_admin if auth.is_org_context else True
 
-        # Auto-default a brand-new PERSONAL owner into trial_local BEFORE the
-        # gate. Otherwise the gate sees no billing row, returns signup_required,
-        # and this endpoint 404s below — before ensure_user_ready (the
-        # background trial-creator) is ever dispatched — trapping a fresh
-        # personal signup on the ProviderPicker instead of provisioning the trial container.
-        # Idempotent conditional put; no-op for orgs and for owners who already
-        # have a row.
-        await ensure_personal_trial_default(auth, owner_id, signup_flow_id=flow)
+        # Create the workspace's unarmed trial before the gate reads billing.
+        await ensure_workspace_trial_default(auth, owner_id, signup_flow_id=flow)
         gate = await evaluate_provision_gate(
             owner_id=owner_id,
             is_admin=is_admin,
@@ -423,6 +417,8 @@ async def container_status(
     # otherwise do internally (a by-org-id GSI query for an org owner), so
     # without threading it every ~3s ready poll fleet-wide would pay it twice.
     contract = await readiness_state.compute_status(owner_id, container=container, onboarding=onboarding)
+    if contract["runtime_phase"] == "ready":
+        await billing_repo.arm_trial_if_unset(owner_id)
 
     # Auto-retry: if container is in a failed/stuck state AND the owner can
     # currently afford to provision, trigger re-provisioning in the

@@ -103,6 +103,38 @@ beforeEach(() => {
 });
 
 describe("useRooms canonical reconciliation", () => {
+  it("waits for the room list before selecting an existing agent DM", async () => {
+    const fridayDm = {
+      ...room,
+      roomId: "11111111-1111-4111-8111-111111111116",
+      kind: "dm" as const,
+      name: null,
+      members: [room.members[0], { ...room.members[1], id: "agent-friday" }],
+    };
+    let resolveRooms!: (value: { rooms: RoomSummary[] }) => void;
+    const pendingRooms = new Promise<{ rooms: RoomSummary[] }>((resolve) => { resolveRooms = resolve; });
+    messaging.listRooms.mockReturnValue(pendingRooms);
+    messaging.getRoom.mockImplementation(async (id) => id === fridayDm.roomId ? fridayDm : room);
+    messaging.createRoom.mockResolvedValue({ ...fridayDm, roomId: "unwanted-duplicate" });
+    const { result } = renderHook(() => useRooms(), { wrapper });
+
+    let selectingFriday!: Promise<void>;
+    await act(async () => { selectingFriday = result.current.selectAgentDm("agent-friday"); });
+
+    expect(result.current.roomsLoading).toBe(true);
+    expect(result.current.activeRoomId).toBeNull();
+    expect(messaging.getRoom).not.toHaveBeenCalled();
+    expect(messaging.createRoom).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveRooms({ rooms: [room, fridayDm] });
+      await selectingFriday;
+    });
+
+    expect(result.current.activeRoomId).toBe(fridayDm.roomId);
+    expect(messaging.createRoom).not.toHaveBeenCalled();
+  });
+
   it("hydrates direct-message members and retargets an existing DM", async () => {
     const fridayDm = {
       ...room,

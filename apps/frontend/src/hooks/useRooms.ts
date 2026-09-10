@@ -80,11 +80,14 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
     .map((room) => `${room.roomId}:${room.roomRevision}`)
     .join("|");
   const loadDirectoryRoomDetails = useCallback(async (): Promise<Map<string, RoomDetail>> => {
+    // A cold agent shortcut must await the list, not interpret loading as no DMs.
+    const listed = roomsData ?? await mutateRooms();
+    if (!listed) throw new Error("Conversations are not ready.");
     const details = await Promise.all(
-      rooms.filter((room) => room.kind !== "channel").map((room) => messaging.getRoom(room.roomId)),
+      listed.rooms.filter((room) => room.kind !== "channel").map((room) => messaging.getRoom(room.roomId)),
     );
     return new Map(details.map((detail) => [detail.roomId, detail]));
-  }, [messaging, rooms]);
+  }, [messaging, roomsData, mutateRooms]);
   const directoryDetailsResponse = useSWR(
     scope && roomsData ? ["messaging-room-directory", scope, directRoomSignature] : null,
     loadDirectoryRoomDetails,

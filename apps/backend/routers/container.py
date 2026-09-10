@@ -157,10 +157,7 @@ def _resolve_cold_start_phase(container: dict, gateway_pool, owner_id: str) -> s
 
 
 def _owner_role(auth: AuthContext) -> str:
-    """ "admin" | "member" — the role a Gate payload is rendered for.
-
-    Personal owners are always admin of themselves.
-    """
+    """ "admin" | "member" — the role a Gate payload is rendered for."""
     is_admin = auth.is_org_admin if auth.is_org_context else True
     return "admin" if is_admin else "member"
 
@@ -417,7 +414,7 @@ async def container_status(
     # otherwise do internally (a by-org-id GSI query for an org owner), so
     # without threading it every ~3s ready poll fleet-wide would pay it twice.
     contract = await readiness_state.compute_status(owner_id, container=container, onboarding=onboarding)
-    if contract["runtime_phase"] == "ready":
+    if contract["runtime_phase"] == "ready" and contract["provider"]["subscription_status"] == "trial_local":
         await billing_repo.arm_trial_if_unset(owner_id)
 
     # Auto-retry: if container is in a failed/stuck state AND the owner can
@@ -457,6 +454,7 @@ async def container_status(
         )
         if trial_gate is not None:
             raise HTTPException(status_code=402, detail=trial_gate.to_payload())
+        await ensure_workspace_trial_default(auth, owner_id)
         try:
             await _assert_provision_allowed(
                 owner_id,
@@ -825,6 +823,7 @@ async def container_wake_endpoint(
     every other door. Old backends 404 this route; clients must treat that as
     a per-request soft-fail (never cache it)."""
     owner_id = resolve_owner_id(auth)
+    await ensure_workspace_trial_default(auth, owner_id)
     if reason not in container_wake.WAKE_REASONS:
         reason = "interaction"
     result = await container_wake.request_wake(
@@ -964,6 +963,8 @@ async def container_provision(
             "already_existed": True,
         }
 
+    await ensure_workspace_trial_default(auth, owner_id)
+
     # Payment gate (audit C1). New-container path only — the existing-
     # container branch above intentionally bypasses this so we don't 402
     # callers asking about a container they already have.
@@ -1009,6 +1010,7 @@ async def container_retry(
     auth: AuthContext = Depends(get_current_user),
 ):
     owner_id = resolve_owner_id(auth)
+    await ensure_workspace_trial_default(auth, owner_id)
     # Audit C1: same hardened gate as /provision — ID existence isn't
     # enough; status must be active/trialing AND bedrock_claude needs
     # a positive credit balance.

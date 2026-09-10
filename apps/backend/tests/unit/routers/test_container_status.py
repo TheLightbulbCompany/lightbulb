@@ -249,6 +249,50 @@ async def test_workspace_trial_clock_starts_only_at_first_canonical_ready_poll()
             assert (await billing_repo.get_by_owner_id("org_x"))["trial_end"] == 260_200
 
 
+@pytest.mark.asyncio
+async def test_ready_paid_workspace_does_not_try_to_arm_a_trial():
+    import boto3
+    from moto import mock_aws
+    from core.repositories import billing_repo
+    from routers.container import container_status
+
+    with mock_aws():
+        table = boto3.resource("dynamodb", region_name="us-east-1").create_table(
+            TableName="paid-workspace",
+            KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        table.put_item(
+            Item={
+                "owner_id": "org_x",
+                "owner_type": "org",
+                "subscription_status": "active",
+                "stripe_subscription_id": "sub_paid",
+                "provider_choice": "chatgpt_oauth",
+            }
+        )
+        row = {"owner_id": "org_x", "status": "running", "service_name": "svc"}
+        ecs = MagicMock(
+            resolve_running_container=AsyncMock(return_value=(row, "10.0.0.1")),
+            has_live_service=AsyncMock(return_value=True),
+        )
+        with (
+            patch.object(billing_repo, "_get_table", return_value=table),
+            patch("routers.container.get_ecs_manager", return_value=ecs),
+            patch("core.services.connection_service.is_gateway_connected", AsyncMock(return_value=True)),
+            patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
+            patch(
+                "routers.container.billing_repo.arm_trial_if_unset",
+                AsyncMock(side_effect=AssertionError("paid workspaces must not hit the trial armer")),
+            ),
+        ):
+            result = await container_status(_workspace_auth(), wake="0", flow=None)
+
+        assert result["runtime_phase"] == "ready"
+        assert result["provider"]["subscription_status"] == "active"
+
+
 class TestContainerStatusPhaseField:
     """Verify the /status response actually carries the phase."""
 

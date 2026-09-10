@@ -355,8 +355,8 @@ def gate_for_trial_reason(reason: str | None, owner_role: str) -> Gate | None:
 
 def trial_expired_gate(owner_role: str) -> Gate:
     """The blocked-gate a trial_local owner sees once their 3-day window
-    (``trial_end``, stamped by ``billing_repo.create_trial_local_if_absent``
-    at signup) has passed. Mirrors ``trial_daily_cap_gate`` field-for-field
+    (``trial_end``, armed by the first canonical ready status poll) has
+    passed. Mirrors ``trial_daily_cap_gate`` field-for-field
     so the provision gate and gate_chat's Layer 2 render an identical
     'trial ended' card instead of a spinner or a generic error."""
     return Gate(

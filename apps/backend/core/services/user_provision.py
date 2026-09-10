@@ -131,7 +131,7 @@ async def ensure_user_ready(auth: AuthContext) -> None:
          ONE shared company is normally CREATED by the provisioning
          executor's runner (scripts.provision_runner step 0), not here.
       3. Container (ECS) provisioning + the owner company-CREATE, for
-         container-owners only (personal user OR org admin), via
+         workspace admins only, via
          ``_provision_or_reconcile`` — which reads the container row and
          decides between "dispatch the executor" and "seed here",
          because those are the same job routed by live state. See its

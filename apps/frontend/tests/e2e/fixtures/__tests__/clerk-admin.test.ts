@@ -4,6 +4,7 @@ import {
   createUser,
   deleteUser,
   findUserByEmail,
+  listUserOrganizationIds,
   deleteOrg,
 } from '../clerk-admin';
 
@@ -170,6 +171,30 @@ describe('clerk-admin', () => {
       expect(fetchMock).toHaveBeenCalledWith(
         'https://api.clerk.com/v1/organizations/org_abc',
         expect.objectContaining({ method: 'DELETE' }),
+      );
+    });
+  });
+
+  describe('listUserOrganizationIds', () => {
+    it('lists the user memberships through Clerk BAPI', async () => {
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          data: [{ organization: { id: 'org_recovered' } }],
+          total_count: 1,
+        }),
+      });
+
+      await expect(listUserOrganizationIds({
+        secretKey: FAKE_KEY,
+        userId: 'user_abc',
+      })).resolves.toEqual(['org_recovered']);
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://api.clerk.com/v1/users/user_abc/organization_memberships?limit=500&offset=0',
+        expect.objectContaining({
+          headers: expect.objectContaining({ Authorization: 'Bearer sk_test_fake' }),
+        }),
       );
     });
   });

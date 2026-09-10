@@ -5,6 +5,7 @@ vi.mock('../clerk-admin', () => ({
   deleteUser: vi.fn(),
   deleteOrg: vi.fn(),
   findUserByEmail: vi.fn(),
+  listUserOrganizationIds: vi.fn(),
 }));
 
 vi.mock('../stripe-admin', () => ({
@@ -19,6 +20,7 @@ import {
   deleteUser,
   deleteOrg,
   findUserByEmail,
+  listUserOrganizationIds,
 } from '../clerk-admin';
 import {
   cancelSubsAndDeleteCustomer,
@@ -41,6 +43,7 @@ function makeUser(overrides: Partial<E2EUser> = {}): E2EUser {
       goto: vi.fn().mockResolvedValue(null),
       url: vi.fn().mockReturnValue('http://localhost:3000/chat'),
       waitForFunction: vi.fn().mockResolvedValue(null),
+      evaluate: vi.fn().mockResolvedValue(null),
     } as unknown as E2EUser['page'],
     api: { delete: vi.fn().mockResolvedValue({ deleted: {} }) } as unknown as E2EUser['api'],
     ddb: {} as E2EUser['ddb'],
@@ -59,6 +62,7 @@ describe('cleanupUser', () => {
     vi.mocked(findCustomerByEmail).mockReset().mockResolvedValue(null);
     vi.mocked(findCustomersByOwnerId).mockReset().mockResolvedValue([]);
     vi.mocked(findUserByEmail).mockReset().mockResolvedValue(null);
+    vi.mocked(listUserOrganizationIds).mockReset().mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -66,7 +70,7 @@ describe('cleanupUser', () => {
   });
 
   it('runs Stripe → backend → Clerk → verification in order', async () => {
-    const user = makeUser();
+    const user = makeUser({ orgId: 'org_abc' });
 
     const promise = cleanupUser(user);
     await vi.runAllTimersAsync();
@@ -86,14 +90,17 @@ describe('cleanupUser', () => {
     expect(cancelSubsAndDeleteCustomer).toHaveBeenCalledWith(
       ENV_KEYS.STRIPE_SECRET_KEY,
       user.email,
-      user.clerkUserId, // owner_id == clerkUserId in personal context
+      user.orgId,
     );
     expect(user.api.delete).toHaveBeenCalledWith('/debug/user-data');
     expect(deleteUser).toHaveBeenCalledWith({
       secretKey: ENV_KEYS.CLERK_SECRET_KEY,
       userId: user.clerkUserId,
     });
-    expect(deleteOrg).not.toHaveBeenCalled();
+    expect(deleteOrg).toHaveBeenCalledWith({
+      secretKey: ENV_KEYS.CLERK_SECRET_KEY,
+      orgId: user.orgId,
+    });
   });
 
   it('deletes the org before the user when orgId is set', async () => {
@@ -126,7 +133,10 @@ describe('cleanupUser', () => {
       secretKey: ENV_KEYS.CLERK_SECRET_KEY,
       userId: user.clerkUserId,
     });
-    expect(findCustomerByEmail).not.toHaveBeenCalled();
+    expect(findCustomerByEmail).toHaveBeenCalledWith(
+      ENV_KEYS.STRIPE_SECRET_KEY,
+      user.email,
+    );
     expect(findCustomersByOwnerId).not.toHaveBeenCalled();
     expect(findUserByEmail).toHaveBeenCalledWith({
       secretKey: ENV_KEYS.CLERK_SECRET_KEY,
@@ -134,12 +144,92 @@ describe('cleanupUser', () => {
     });
   });
 
+  it('skips workspace cleanup for a fresh user without an organization', async () => {
+    const user = makeUser();
+
+    const promise = cleanupUser(user);
+    await vi.runAllTimersAsync();
+    await expect(promise).resolves.toBeUndefined();
+
+    expect(cancelSubsAndDeleteCustomer).not.toHaveBeenCalled();
+    expect(user.api.delete).not.toHaveBeenCalled();
+    expect(deleteOrg).not.toHaveBeenCalled();
+    expect(deleteUser).toHaveBeenCalledWith({
+      secretKey: ENV_KEYS.CLERK_SECRET_KEY,
+      userId: user.clerkUserId,
+    });
+    expect(findCustomerByEmail).toHaveBeenCalledWith(
+      ENV_KEYS.STRIPE_SECRET_KEY,
+      user.email,
+    );
+    expect(findCustomersByOwnerId).not.toHaveBeenCalled();
+    expect(findUserByEmail).toHaveBeenCalledWith({
+      secretKey: ENV_KEYS.CLERK_SECRET_KEY,
+      email: user.email,
+    });
+  });
+
+  it('reports an email-matched Stripe customer for a user with no workspace', async () => {
+    const user = makeUser();
+    vi.mocked(findCustomerByEmail).mockResolvedValue({
+      id: 'cus_orphaned',
+    } as Awaited<ReturnType<typeof findCustomerByEmail>>);
+
+    const promise = cleanupUser(user);
+    const settled = promise.catch((err) => err);
+    await vi.runAllTimersAsync();
+    const err = await settled;
+
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/stripe leak.*cus_orphaned/);
+    expect(findCustomersByOwnerId).not.toHaveBeenCalled();
+  });
+
+  it('recovers and activates one workspace before its teardown', async () => {
+    const user = makeUser();
+    vi.mocked(listUserOrganizationIds).mockResolvedValue(['org_recovered']);
+
+    const promise = cleanupUser(user);
+    await vi.runAllTimersAsync();
+    await expect(promise).resolves.toBeUndefined();
+
+    expect(user.orgId).toBe('org_recovered');
+    expect(cancelSubsAndDeleteCustomer).toHaveBeenCalledWith(
+      ENV_KEYS.STRIPE_SECRET_KEY,
+      user.email,
+      'org_recovered',
+    );
+    expect(user.api.delete).toHaveBeenCalledWith('/debug/user-data');
+    expect(deleteOrg).toHaveBeenCalledWith({
+      secretKey: ENV_KEYS.CLERK_SECRET_KEY,
+      orgId: 'org_recovered',
+    });
+    expect(user.page.evaluate).toHaveBeenLastCalledWith(expect.any(Function), 'org_recovered');
+  });
+
+  it('fails closed when workspace discovery finds multiple memberships', async () => {
+    const user = makeUser();
+    vi.mocked(listUserOrganizationIds).mockResolvedValue(['org_a', 'org_b']);
+
+    const promise = cleanupUser(user);
+    const settled = promise.catch((err) => err);
+    await vi.runAllTimersAsync();
+    const err = await settled;
+
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/workspace discovery.*multiple memberships/i);
+    expect(cancelSubsAndDeleteCustomer).not.toHaveBeenCalled();
+    expect(user.api.delete).not.toHaveBeenCalled();
+    expect(deleteOrg).not.toHaveBeenCalled();
+    expect(deleteUser).toHaveBeenCalledOnce();
+  });
+
   it('throws when Stripe customer still exists after teardown', async () => {
     vi.mocked(findCustomerByEmail).mockResolvedValue({
       id: 'cus_leaked',
     } as Awaited<ReturnType<typeof findCustomerByEmail>>);
 
-    const promise = cleanupUser(makeUser());
+    const promise = cleanupUser(makeUser({ orgId: 'org_abc' }));
     const settled = promise.catch((err) => err);
     await vi.runAllTimersAsync();
     const err = await settled;
@@ -164,7 +254,7 @@ describe('cleanupUser', () => {
   });
 
   it('treats 404 from /debug/user-data as success (idempotent re-run)', async () => {
-    const user = makeUser();
+    const user = makeUser({ orgId: 'org_abc' });
     vi.mocked(user.api.delete).mockRejectedValue(
       new AuthedFetchError('DELETE', '/debug/user-data', 404, 'not found'),
     );
@@ -184,7 +274,7 @@ describe('cleanupUser', () => {
     // tab) must NOT abort cleanup before Clerk delete runs — the Clerk user
     // would leak. cleanupUser collects per-step failures and only throws
     // at the end, so each step still gets to run.
-    const user = makeUser();
+    const user = makeUser({ orgId: 'org_abc' });
     vi.mocked(user.api.delete).mockRejectedValue(
       new AuthedFetchError('DELETE', '/debug/user-data', 500, 'server error: nested 404 message'),
     );
@@ -202,7 +292,7 @@ describe('cleanupUser', () => {
 
   it('throws when STRIPE_SECRET_KEY is missing', async () => {
     delete process.env.STRIPE_SECRET_KEY;
-    await expect(cleanupUser(makeUser())).rejects.toThrow(/STRIPE_SECRET_KEY/);
+    await expect(cleanupUser(makeUser({ orgId: 'org_abc' }))).rejects.toThrow(/STRIPE_SECRET_KEY/);
   });
 
   it('throws when CLERK_SECRET_KEY is missing', async () => {

@@ -249,6 +249,22 @@ class AbortRunResponse(ContractModel):
     state: Literal["aborting", "already-terminal"]
 
 
+class RunStatusResponse(ContractModel):
+    """Reconciliation read for a run's terminal state.
+
+    ``room.run.frame`` (which carries ``run_ended``) is EPHEMERAL over the live
+    channel -- unlike ``room.message.created`` it has no ``afterSeq`` gap
+    recovery, so a client that reconnects mid-run (or misses a frame across a
+    delivery-key rotation) can be left showing "running" forever with no other
+    signal. This mirrors ``pool.resolve_run``'s own truth (also used by
+    ``abort``/``steer``) so the frontend can self-heal on reconnect instead of
+    requiring a page reload.
+    """
+
+    run_id: str
+    state: Literal["running", "terminal"]
+
+
 class SteerRunRequest(ContractModel):
     text: str
 

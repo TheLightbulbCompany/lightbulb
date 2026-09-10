@@ -126,6 +126,7 @@ export type {
   RoomListResponse,
   RoomMember,
   RoomSummary,
+  RunStatusResponse,
   SteerRunRequest,
   SteerRunResponse,
   TypingRequest,

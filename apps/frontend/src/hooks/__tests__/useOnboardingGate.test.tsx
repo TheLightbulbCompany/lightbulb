@@ -59,6 +59,19 @@ describe("workspace onboarding gate", () => {
     expect(clerk.replace).not.toHaveBeenCalled();
     expect(clerk.setActive).not.toHaveBeenCalled();
   });
+  it.each([
+    { invited: true, count: 1 },
+    { invited: false, count: 1 },
+    { invited: false, count: 2 },
+  ])("holds an auth-active workspace while UI organization is unresolved: %j", ({ invited, count }) => {
+    clerk.orgId = "org_active";
+    clerk.organization = null;
+    clerk.invitations = invited ? [{ id: "inv_1" }] : [];
+    clerk.memberships = [{ organization: { id: "org_other" } }, { organization: { id: "org_another" } }].slice(0, count);
+    expect(renderHook(useOnboardingGate).result.current).toBe("loading");
+    expect(clerk.replace).not.toHaveBeenCalled();
+    expect(clerk.setActive).not.toHaveBeenCalled();
+  });
   it("activates a sole membership and holds until both Clerk contexts agree", () => {
     clerk.memberships = [{ organization: { id: "org_only" } }];
     const { result, rerender } = renderHook(useOnboardingGate);

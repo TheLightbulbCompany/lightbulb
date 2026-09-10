@@ -121,7 +121,7 @@ test.describe('E2E: Workspace invitation and trial happy path', () => {
     expect(inviter.page.url()).toContain('/chat');
   });
 
-  test('Step 3: invitee joins the invited workspace before creation is offered', async () => {
+  test('Step 3: invitee joins with native invitation precedence over creation', async () => {
     if (!process.env.BASE_URL) throw new Error('BASE_URL is required');
     const clerkKey = process.env.CLERK_SECRET_KEY;
     if (!clerkKey) throw new Error('CLERK_SECRET_KEY is required');

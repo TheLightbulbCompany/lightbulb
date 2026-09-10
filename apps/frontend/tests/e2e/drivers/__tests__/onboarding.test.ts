@@ -60,26 +60,57 @@ it("records the cleanup handle even if the final redirect fails", async () => {
   expect(record).toHaveBeenCalledWith("org_created");
 });
 
-it("accepts an invitation before exposing workspace creation", async () => {
+function invitationFixture(createFirst = false, nativeTask = true) {
   const click = vi.fn().mockResolvedValue(undefined);
   const waitFor = vi.fn().mockResolvedValue(undefined);
+  const row = document.createElement("div");
+  const accept = document.createElement("button");
+  const create = document.createElement("button");
+  row.append(...(createFirst ? [create, accept] : [accept, create]));
+  const acceptAction = {
+    click,
+    evaluate: async (fn: (node: HTMLElement, other: HTMLElement) => boolean, other: HTMLElement) => fn(accept, other),
+  };
+  const createAction = {
+    waitFor,
+    elementHandle: async () => create,
+  };
   const page = {
     goto: vi.fn().mockResolvedValue(undefined),
+    url: () => nativeTask ? "/session-tasks/choose-organization" : "/onboarding",
     waitForURL: vi.fn().mockResolvedValue(undefined),
-    getByRole: vi.fn((role: string) => {
+    getByRole: vi.fn((role: string, options: { name: RegExp }) => {
       if (role === "heading") return { isVisible: vi.fn().mockResolvedValue(false) };
-      if (role === "button") return { first: () => ({ click }) };
+      if (role === "button") return { first: () => options.name.test("Accept") ? acceptAction : createAction };
       throw new Error(`Unexpected role: ${role}`);
     }),
     getByText: vi.fn(() => ({ waitFor })),
     waitForFunction: vi.fn().mockResolvedValue(undefined),
     evaluate: vi.fn().mockResolvedValue("org_invited"),
   } as unknown as Page;
+  return { page, click };
+}
 
+it("accepts the native invitation shown before the create-workspace action", async () => {
+  const { page, click } = invitationFixture();
   await expect(
     acceptWorkspaceInvitation(page, "Inviter workspace"),
   ).resolves.toEqual({ orgId: "org_invited" });
 
   expect(click).toHaveBeenCalledOnce();
   expect(page.evaluate).toHaveBeenCalledOnce();
+});
+
+it("rejects native create-first ordering before accepting an invitation", async () => {
+  const { page, click } = invitationFixture(true);
+  await expect(acceptWorkspaceInvitation(page, "Inviter workspace"))
+    .rejects.toThrow("Pending invitation must precede the create-workspace action");
+  expect(click).not.toHaveBeenCalled();
+});
+
+it("accepts an invitation on onboarding without requiring a create action", async () => {
+  const { page, click } = invitationFixture(false, false);
+  await expect(acceptWorkspaceInvitation(page, "Inviter workspace"))
+    .resolves.toEqual({ orgId: "org_invited" });
+  expect(click).toHaveBeenCalledOnce();
 });

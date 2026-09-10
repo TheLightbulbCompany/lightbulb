@@ -51,7 +51,7 @@ export async function onboardWorkspace(
   return { orgId };
 }
 
-/** Accept the invited workspace before any create-workspace form is shown. */
+/** Verify native invitation precedence, then accept and activate the workspace. */
 export async function acceptWorkspaceInvitation(
   page: Page,
   workspaceName: string,
@@ -73,7 +73,21 @@ export async function acceptWorkspaceInvitation(
     throw new Error('Workspace creation was shown before the pending invitation');
   }
 
-  await page.getByRole('button', { name: /^accept/i }).first().click();
+  const acceptAction = page.getByRole('button', { name: /^accept/i }).first();
+  if (page.url().includes('/session-tasks/choose-organization')) {
+    // Native Clerk offers creation below invitations; precedence means order,
+    // not hiding that action. The active-session onboarding page has no action.
+    const createAction = page.getByRole('button', { name: /^create (a )?workspace$/i }).first();
+    await createAction.waitFor({ state: 'visible', timeout: 30_000 });
+    const invitationFirst = await acceptAction.evaluate(
+      (accept, create) => !!create && accept.compareDocumentPosition(create) === Node.DOCUMENT_POSITION_FOLLOWING,
+      await createAction.elementHandle(),
+    );
+    if (!invitationFirst) {
+      throw new Error('Pending invitation must precede the create-workspace action');
+    }
+  }
+  await acceptAction.click();
   await page.waitForFunction(
     () => {
       const w = window as Window & {

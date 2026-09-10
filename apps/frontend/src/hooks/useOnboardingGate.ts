@@ -18,8 +18,9 @@ export function useOnboardingGate(): OnboardingGatePhase {
     !userMemberships?.isLoading && !userInvitations?.isLoading;
   const count = userMemberships?.data?.length ?? 0;
   const invited = (userInvitations?.data?.length ?? 0) > 0;
-  const redirect = loaded && isSignedIn && !organization && (invited || count === 0);
-  const soleOrgId = loaded && isSignedIn && !invited && !organization && count === 1
+  const noActiveWorkspace = !orgId && !organization;
+  const redirect = loaded && isSignedIn && noActiveWorkspace && (invited || count === 0);
+  const soleOrgId = loaded && isSignedIn && !invited && noActiveWorkspace && count === 1
     ? userMemberships?.data?.[0]?.organization.id : undefined;
 
   useEffect(() => {
@@ -33,6 +34,7 @@ export function useOnboardingGate(): OnboardingGatePhase {
 
   if (!loaded || !isSignedIn) return "loading";
   if (redirect) return "redirecting";
+  if (orgId && !organization) return "loading";
   if (!organization) return count > 1 ? "selecting" : "loading";
   return orgId === organization.id ? "ready" : "loading";
 }

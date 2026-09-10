@@ -211,7 +211,7 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
             # started signup" / "needs to re-subscribe" -- the picker.
             # Org: the free tier is personal-only (trial_local never
             # applies to an org_ owner), so an inactive/absent org billing
-            # row is the Teams per-seat paywall, folded into "blocked"
+            # row is the workspace billing paywall, folded into "blocked"
             # here -- the router's own evaluate_provision_gate call still
             # supplies the precise blocked-gate payload (team_billing_required
             # vs subscription_required vs payment_past_due); this composer

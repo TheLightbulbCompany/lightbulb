@@ -2,7 +2,7 @@
 
 Before this fix, ``_handle_organization_deleted`` only disabled Paperclip
 member rows for the deleted org -- it never touched Stripe, so a deleted
-Clerk org kept billing its per-seat subscription forever.
+Clerk org kept billing its workspace subscription forever.
 
 The fix reuses the same Stripe-cancel path as the admin "cancel
 subscription" action (``billing_service.cancel_subscription_for_owner``),

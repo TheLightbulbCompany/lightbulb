@@ -74,8 +74,7 @@ async def test_update_fields_on_missing_row_does_not_publish(containers_table):
 
 
 # ---------------------------------------------------------------------------
-# billing-accounts table -- set_subscription / set_team_subscription /
-# set_provider_choice
+# billing-accounts table -- set_subscription / set_provider_choice
 # ---------------------------------------------------------------------------
 
 
@@ -126,23 +125,6 @@ async def test_set_subscription_missing_row_does_not_publish(billing_table):
         result = await billing_repo.set_subscription(owner_id="owner_ghost", subscription_id="sub_1", status="active")
     assert result is None
     mocked.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_set_team_subscription_publishes_status_changed(billing_table):
-    from core.repositories import billing_repo
-
-    billing_table.put_item(Item={"owner_id": "org_1", "created_at": "2026-01-01T00:00:00Z"})
-    with patch("core.repositories.billing_repo.publish_status_changed") as mocked:
-        result = await billing_repo.set_team_subscription(
-            "org_1",
-            subscription_id="sub_1",
-            subscription_item_id="si_1",
-            status="active",
-            seat_count=3,
-        )
-    assert result is not None
-    mocked.assert_called_once_with("org_1")
 
 
 @pytest.mark.asyncio

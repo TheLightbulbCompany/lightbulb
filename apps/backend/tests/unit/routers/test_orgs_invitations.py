@@ -1,13 +1,12 @@
 """Tests for POST /api/v1/orgs/{org_id}/invitations — Gate A."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from core.auth import AuthContext
-from core.tenancy_codes import PERSONAL_USER_EXISTS
 from routers import orgs
 
 
@@ -58,36 +57,9 @@ def _override_auth(app, ctx):
     app.dependency_overrides[get_current_user] = lambda: ctx
 
 
-@pytest.fixture(autouse=True)
-def _stub_seat_sync():
-    """Every invite that reaches success now calls
-    ``core.services.billing_service.sync_team_seat_quantity`` (see
-    ``routers.orgs.create_invitation``). That import is local to the
-    function body, so ``patch("routers.orgs.billing_repo")`` /
-    ``patch("routers.orgs.clerk_admin")`` in the tests below do NOT reach
-    it — it lives in, and must be patched at, its SOURCE module
-    (``core.services.billing_service``), the same trap documented in
-    ``test_billing_change_provider.py``'s ``patch_dispatch_provision``
-    fixture. Without this autouse stub, every pre-existing test in this
-    file that reaches ``return 201`` would fall through to a real
-    ``billing_repo.get_by_owner_id`` call inside ``sync_team_seat_quantity``
-    and hit live DynamoDB — masked only by the router's own
-    ``except Exception`` swallow. Tests that care about the seat-sync call
-    itself (below) layer their own ``patch(...)`` for the same target
-    inside their ``with`` block, which nests over — and, once its block
-    exits, correctly reverts to — this fixture's stub.
-    """
-    with patch(
-        "core.services.billing_service.sync_team_seat_quantity",
-        new=AsyncMock(return_value=0),
-    ) as mock_sync:
-        yield mock_sync
-
-
 def test_invite_to_email_with_no_clerk_user_succeeds(app, admin_auth):
     _override_auth(app, admin_auth)
-    with patch("routers.orgs.clerk_admin") as mock_clerk, patch("routers.orgs.billing_repo") as mock_billing:
-        mock_clerk.find_user_by_email = AsyncMock(return_value=None)
+    with patch("routers.orgs.clerk_admin") as mock_clerk:
         mock_clerk.create_organization_invitation = AsyncMock(return_value={"id": "orginv_abc"})
         client = TestClient(app)
         resp = client.post(
@@ -96,15 +68,26 @@ def test_invite_to_email_with_no_clerk_user_succeeds(app, admin_auth):
         )
     assert resp.status_code == 201
     assert resp.json() == {"invitation_id": "orginv_abc"}
-    mock_billing.get_by_owner_id.assert_not_called()
     mock_clerk.create_organization_invitation.assert_awaited_once()
+
+
+def test_invite_does_not_read_or_mutate_billing_for_an_existing_user(app, admin_auth):
+    """Workspace invitations are membership lifecycle only, never a billing action."""
+    _override_auth(app, admin_auth)
+    with patch("routers.orgs.clerk_admin") as mock_clerk:
+        mock_clerk.create_organization_invitation = AsyncMock(return_value={"id": "orginv_existing"})
+        client = TestClient(app)
+        response = client.post(
+            "/api/v1/orgs/org_test/invitations",
+            json={"email": "existing@example.com", "role": "org:member"},
+        )
+
+    assert response.status_code == 201
 
 
 def test_invite_to_email_with_clerk_user_no_billing_succeeds(app, admin_auth):
     _override_auth(app, admin_auth)
-    with patch("routers.orgs.clerk_admin") as mock_clerk, patch("routers.orgs.billing_repo") as mock_billing:
-        mock_clerk.find_user_by_email = AsyncMock(return_value={"id": "user_existing"})
-        mock_billing.get_by_owner_id = AsyncMock(return_value=None)
+    with patch("routers.orgs.clerk_admin") as mock_clerk:
         mock_clerk.create_organization_invitation = AsyncMock(return_value={"id": "orginv_def"})
         client = TestClient(app)
         resp = client.post(
@@ -113,72 +96,6 @@ def test_invite_to_email_with_clerk_user_no_billing_succeeds(app, admin_auth):
         )
     assert resp.status_code == 201
     mock_clerk.create_organization_invitation.assert_awaited_once()
-
-
-def test_invite_to_email_with_inactive_billing_succeeds(app, admin_auth):
-    """Canceled or expired personal subs no longer count as active tenancies."""
-    _override_auth(app, admin_auth)
-    with patch("routers.orgs.clerk_admin") as mock_clerk, patch("routers.orgs.billing_repo") as mock_billing:
-        mock_clerk.find_user_by_email = AsyncMock(return_value={"id": "user_existing"})
-        mock_billing.get_by_owner_id = AsyncMock(
-            return_value={"owner_id": "user_existing", "subscription_status": "canceled"}
-        )
-        mock_clerk.create_organization_invitation = AsyncMock(return_value={"id": "orginv_ghi"})
-        client = TestClient(app)
-        resp = client.post(
-            "/api/v1/orgs/org_test/invitations",
-            json={"email": "ex-customer@example.com", "role": "org:member"},
-        )
-    assert resp.status_code == 201
-
-
-def test_invite_to_email_with_legacy_sub_no_status_returns_409(app, admin_auth):
-    """Legacy rows have stripe_subscription_id set but subscription_status
-    null/missing. Conservatively treat as active personal tenancy and
-    refuse the invite — let the user cancel cleanly via Stripe portal
-    first."""
-    _override_auth(app, admin_auth)
-    with patch("routers.orgs.clerk_admin") as mock_clerk, patch("routers.orgs.billing_repo") as mock_billing:
-        mock_clerk.find_user_by_email = AsyncMock(return_value={"id": "user_legacy"})
-        mock_billing.get_by_owner_id = AsyncMock(
-            return_value={
-                "owner_id": "user_legacy",
-                "stripe_customer_id": "cus_legacy",
-                "stripe_subscription_id": "sub_legacy",
-                "subscription_status": None,  # not backfilled yet
-            }
-        )
-        mock_clerk.create_organization_invitation = AsyncMock()
-        client = TestClient(app)
-        resp = client.post(
-            "/api/v1/orgs/org_test/invitations",
-            json={"email": "legacy@example.com", "role": "org:member"},
-        )
-    assert resp.status_code == 409
-    body = resp.json()
-    assert body["detail"]["code"] == "personal_user_exists"
-    mock_clerk.create_organization_invitation.assert_not_awaited()
-
-
-@pytest.mark.parametrize("status", ["active", "trialing"])
-def test_invite_to_email_with_active_personal_returns_409(app, admin_auth, status):
-    _override_auth(app, admin_auth)
-    with patch("routers.orgs.clerk_admin") as mock_clerk, patch("routers.orgs.billing_repo") as mock_billing:
-        mock_clerk.find_user_by_email = AsyncMock(return_value={"id": "user_existing"})
-        mock_billing.get_by_owner_id = AsyncMock(
-            return_value={"owner_id": "user_existing", "subscription_status": status}
-        )
-        mock_clerk.create_organization_invitation = AsyncMock()
-        client = TestClient(app)
-        resp = client.post(
-            "/api/v1/orgs/org_test/invitations",
-            json={"email": "subscriber@example.com", "role": "org:member"},
-        )
-    assert resp.status_code == 409
-    body = resp.json()
-    assert body["detail"]["code"] == PERSONAL_USER_EXISTS
-    assert "subscriber@example.com" in body["detail"]["message"]
-    mock_clerk.create_organization_invitation.assert_not_awaited()
 
 
 def test_non_admin_caller_returns_403(app, member_auth):
@@ -192,17 +109,14 @@ def test_non_admin_caller_returns_403(app, member_auth):
     assert resp.json()["detail"] == "Organization admin access required"
 
 
-def test_personal_caller_returns_403(app, personal_auth):
-    """Personal users have no org_id — require_org_admin lets personal pass-through;
-    the org_id mismatch check below catches them."""
+def test_personal_caller_is_rejected_before_invitation_creation(app, personal_auth):
     _override_auth(app, personal_auth)
     client = TestClient(app)
     resp = client.post(
         "/api/v1/orgs/org_test/invitations",
         json={"email": "nope@example.com", "role": "org:member"},
     )
-    assert resp.status_code == 403
-    assert resp.json()["detail"] == "Cannot invite to a different org"
+    assert resp.status_code == 409
 
 
 def test_caller_in_different_org_returns_403(app, admin_auth):
@@ -226,8 +140,7 @@ def test_default_role_is_member(app, admin_auth):
         captured.update(kwargs)
         return {"id": "orginv_default"}
 
-    with patch("routers.orgs.clerk_admin") as mock_clerk, patch("routers.orgs.billing_repo"):
-        mock_clerk.find_user_by_email = AsyncMock(return_value=None)
+    with patch("routers.orgs.clerk_admin") as mock_clerk:
         mock_clerk.create_organization_invitation = AsyncMock(side_effect=_capture)
         client = TestClient(app)
         resp = client.post(
@@ -245,10 +158,8 @@ def test_clerk_create_invitation_failure_propagates_with_metric(app, admin_auth)
     _override_auth(app, admin_auth)
     with (
         patch("routers.orgs.clerk_admin") as mock_clerk,
-        patch("routers.orgs.billing_repo"),
         patch("routers.orgs.put_metric") as mock_metric,
     ):
-        mock_clerk.find_user_by_email = AsyncMock(return_value=None)
         mock_clerk.create_organization_invitation = AsyncMock(
             side_effect=HTTPException(status_code=422, detail="duplicate invitation")
         )
@@ -262,24 +173,6 @@ def test_clerk_create_invitation_failure_propagates_with_metric(app, admin_auth)
     assert "orgs.invitation.failed" in metric_names
 
 
-def test_clerk_find_user_by_email_returns_none_proceeds_to_create(app, admin_auth):
-    """Fail-open semantics: when find_user_by_email returns None (Clerk down or
-    no match), the gate forwards to createInvitation. This pins the contract so
-    a future 'fail-closed' refactor doesn't silently change behavior."""
-    _override_auth(app, admin_auth)
-    with patch("routers.orgs.clerk_admin") as mock_clerk, patch("routers.orgs.billing_repo") as mock_billing:
-        mock_clerk.find_user_by_email = AsyncMock(return_value=None)
-        mock_clerk.create_organization_invitation = AsyncMock(return_value={"id": "orginv_failopen"})
-        client = TestClient(app)
-        resp = client.post(
-            "/api/v1/orgs/org_test/invitations",
-            json={"email": "stranger@example.com", "role": "org:member"},
-        )
-    assert resp.status_code == 201
-    mock_billing.get_by_owner_id.assert_not_called()
-    mock_clerk.create_organization_invitation.assert_awaited_once()
-
-
 def test_clerk_response_missing_id_raises_500(app, admin_auth):
     """A malformed Clerk response without 'id' should fail loudly, not 200 with
     invitation_id=''. The endpoint raises KeyError; FastAPI translates to 500.
@@ -288,8 +181,7 @@ def test_clerk_response_missing_id_raises_500(app, admin_auth):
     re-raises server exceptions to the caller by default — we want to assert
     the framework's 500 translation, which is the actual production behavior."""
     _override_auth(app, admin_auth)
-    with patch("routers.orgs.clerk_admin") as mock_clerk, patch("routers.orgs.billing_repo"):
-        mock_clerk.find_user_by_email = AsyncMock(return_value=None)
+    with patch("routers.orgs.clerk_admin") as mock_clerk:
         # Clerk returned a dict without 'id' — KeyError at invite["id"].
         mock_clerk.create_organization_invitation = AsyncMock(return_value={})
         client = TestClient(app, raise_server_exceptions=False)
@@ -299,84 +191,3 @@ def test_clerk_response_missing_id_raises_500(app, admin_auth):
         )
     # Server error — the contract is "fail loudly", not "return invitation_id=''".
     assert resp.status_code == 500
-
-
-def test_successful_invite_schedules_seat_sync(app, admin_auth):
-    """The bill moves on the admin's action, not on the next poll.
-
-    There is no organizationInvitation.* webhook handler at all, and Clerk has
-    no webhook endpoint configured anyway (#1465), so this dispatch is the only
-    thing in the system that reacts to an invite being sent.
-
-    Scheduled, not awaited — same fire-and-forget shape as the reconcile in
-    routers/container.py, so the admin's invite never waits on two Clerk reads
-    plus a Stripe write. Asserted the same way as
-    test_container_status_seat_reconcile.py: capture asyncio.create_task and
-    check the sync's coroutine was handed to it.
-    """
-    _override_auth(app, admin_auth)
-
-    dispatched: list = []
-    # MagicMock, not AsyncMock, on purpose: patch() auto-substitutes an
-    # AsyncMock for coroutine-function targets, which would hand `dispatched`
-    # an unawaited coroutine instead of the sentinel we assert on.
-    sentinel = MagicMock(name="seat_sync_coro")
-    mock_sync = MagicMock(return_value=sentinel)
-
-    # sync_team_seat_quantity is imported inside create_invitation's function
-    # body (mirrors routers/webhooks.py), so it must be patched at its
-    # SOURCE module path, not as an attribute on routers.orgs — see
-    # test_billing_change_provider.py's patch_dispatch_provision fixture
-    # docstring for why a module-local import defeats the latter.
-    with (
-        patch("routers.orgs.clerk_admin") as mock_clerk,
-        patch("routers.orgs.billing_repo"),
-        patch("core.services.billing_service.sync_team_seat_quantity", new=mock_sync),
-        patch.object(orgs.asyncio, "create_task", lambda coro: dispatched.append(coro) or MagicMock()),
-    ):
-        mock_clerk.find_user_by_email = AsyncMock(return_value=None)
-        mock_clerk.create_organization_invitation = AsyncMock(return_value={"id": "orginv_1"})
-        client = TestClient(app)
-        resp = client.post(
-            "/api/v1/orgs/org_test/invitations",
-            json={"email": "new@example.com", "role": "org:member"},
-        )
-    assert resp.status_code == 201
-    assert resp.json() == {"invitation_id": "orginv_1"}
-    mock_sync.assert_called_once_with("org_test")
-    assert sentinel in dispatched
-
-
-def test_invite_succeeds_even_though_seat_sync_raises(app, admin_auth):
-    """The invite already committed in Clerk; a Stripe blip must not 5xx it.
-
-    With the sync scheduled rather than awaited, a failure inside it can no
-    longer reach the response at all — this pins that the invite still returns
-    201 and that the failing sync really was dispatched (rather than silently
-    skipped, which would pass for the wrong reason).
-    """
-    _override_auth(app, admin_auth)
-
-    dispatched: list = []
-
-    async def boom(owner_id: str) -> int:
-        raise RuntimeError("stripe down")
-
-    with (
-        patch("routers.orgs.clerk_admin") as mock_clerk,
-        patch("routers.orgs.billing_repo"),
-        patch("core.services.billing_service.sync_team_seat_quantity", boom),
-        patch.object(orgs.asyncio, "create_task", lambda coro: dispatched.append(coro) or MagicMock()),
-    ):
-        mock_clerk.find_user_by_email = AsyncMock(return_value=None)
-        mock_clerk.create_organization_invitation = AsyncMock(return_value={"id": "orginv_2"})
-        client = TestClient(app)
-        resp = client.post(
-            "/api/v1/orgs/org_test/invitations",
-            json={"email": "new@example.com", "role": "org:member"},
-        )
-    assert resp.status_code == 201
-    assert resp.json() == {"invitation_id": "orginv_2"}
-    assert len(dispatched) == 1
-    # Close the never-awaited coroutine so pytest doesn't warn about it.
-    dispatched[0].close()

@@ -72,13 +72,7 @@ def build_owner_facts(
     if status == "trial_local":
         plan = "Free tier (no card): Bedrock Claude Sonnet only, $3/day cap, container sleeps when idle"
     elif status in ("active", "trialing"):
-        if account.get("subscription_item_id"):
-            # Teams per-seat subscription (set_team_subscription stamps the
-            # item id + seat count) — a distinct pricing path, not the flat fee.
-            seats = account.get("seat_count")
-            plan = f"Teams (per-seat subscription, {seats} seats)" if seats else "Teams (per-seat subscription)"
-        else:
-            plan = "Starter ($50/mo flat fee)"
+        plan = "Ultra ($150/mo)" if account.get("plan") == "ultra_pro" else "Workspace ($50/mo)"
     elif status:
         # canceled / past_due / unpaid / incomplete — do NOT tell agents the
         # owner is on a paid plan when the subscription has lapsed.
@@ -86,7 +80,7 @@ def build_owner_facts(
     elif account.get("stripe_subscription_id"):
         # Legacy rows whose status hasn't been backfilled yet — treated as
         # subscribed by provision_gate.is_subscription_active.
-        plan = "Starter ($50/mo flat fee)"
+        plan = "Ultra ($150/mo)" if account.get("plan") == "ultra_pro" else "Workspace ($50/mo)"
     else:
         plan = "No billing account yet"
 

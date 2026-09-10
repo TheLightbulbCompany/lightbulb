@@ -29,7 +29,7 @@ _REAL_COMPLETE_EVENT_PROCESSING = _webhook_dedup.complete_event_processing
 
 @pytest.fixture(autouse=True)
 def lifecycle_io(monkeypatch):
-    """Isolate canonical revocation, lifecycle storage, and seat billing."""
+    """Isolate canonical revocation and lifecycle storage."""
     revoke = AsyncMock()
     lifecycle = {}
 
@@ -38,7 +38,6 @@ def lifecycle_io(monkeypatch):
         return "membership_claim_test"
 
     monkeypatch.setattr("core.services.messaging.revoke_human_membership", revoke)
-    monkeypatch.setattr("core.services.billing_service.sync_team_seat_quantity", AsyncMock())
     monkeypatch.setattr(_webhook_dedup, "begin_event_processing", AsyncMock(return_value="claim_test"))
     monkeypatch.setattr(_webhook_dedup, "complete_event_processing", AsyncMock())
     monkeypatch.setattr(_webhook_dedup, "begin_membership_lifecycle", AsyncMock(side_effect=begin_membership))
@@ -143,36 +142,28 @@ async def test_membership_delete_revokes_canonical_rooms_before_paperclip(lifecy
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("supersede_after", ["paperclip-archived", "seat-synced"])
-async def test_newer_admission_stops_old_delete_during_paperclip_and_seat_cleanup(
+async def test_newer_admission_stops_old_delete_during_paperclip_cleanup(
     monkeypatch,
-    supersede_after,
 ):
-    from core.services import billing_service
     from routers import webhooks
 
     events = []
     provisioning = AsyncMock()
     provisioning.archive_member.side_effect = lambda **kwargs: events.append("paperclip-archived")
-    sync = AsyncMock(side_effect=lambda org_id: events.append("seat-synced"))
 
     async def renew(org_id, user_id, claim_id):
-        if supersede_after in events:
+        if "paperclip-archived" in events:
             raise _webhook_dedup.MembershipLifecycleSuperseded("newer create owns lifecycle")
 
     monkeypatch.setattr(webhooks, "_renew_member_lifecycle", AsyncMock(side_effect=renew))
     monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=provisioning))
     monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
-    monkeypatch.setattr(billing_service, "sync_team_seat_quantity", sync)
 
     with pytest.raises(_webhook_dedup.MembershipLifecycleSuperseded):
         await webhooks._handle_organization_membership_deleted(
             {"organization": {"id": "org_acme"}, "user_id": "member"},
             lifecycle_claim_id="delete-claim",
         )
-
-    if supersede_after == "paperclip-archived":
-        assert "seat-synced" not in events
 
 
 # ----------------------------------------------------------------------
@@ -208,14 +199,13 @@ async def test_organization_created_does_not_provision():
 
 
 # ----------------------------------------------------------------------
-# organizationMembership.created -> log + dual-tenancy invariant probe
+# organizationMembership.created -> membership lifecycle only
 # ----------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_membership_created_does_not_provision():
-    """The membership webhook is record-keeping + dual-tenancy invariant
-    probe only. Should NOT call provision_member,
+    """The membership webhook is record-keeping only. Should NOT call provision_member,
     build_paperclip_provisioning, or _enqueue_paperclip_retry. The new
     member's paperclip-membership row will be added by the first
     /container/status poll on their session via ensure_user_ready."""
@@ -224,10 +214,7 @@ async def test_membership_created_does_not_provision():
     with (
         patch("routers.webhooks.build_paperclip_provisioning") as mock_factory,
         patch("routers.webhooks._enqueue_paperclip_retry", new=AsyncMock()) as mock_retry,
-        patch(
-            "routers.webhooks.billing_repo.get_by_owner_id",
-            new=AsyncMock(return_value=None),  # no personal billing row -> invariant clean
-        ) as mock_billing,
+        patch("routers.webhooks.billing_repo.get_by_owner_id", new=AsyncMock()) as mock_billing,
     ):
         await _handle_organization_membership_created(
             {
@@ -241,8 +228,7 @@ async def test_membership_created_does_not_provision():
 
     mock_factory.assert_not_called()
     mock_retry.assert_not_awaited()
-    # Invariant probe still runs.
-    mock_billing.assert_awaited()
+    mock_billing.assert_not_awaited()
 
 
 # ----------------------------------------------------------------------

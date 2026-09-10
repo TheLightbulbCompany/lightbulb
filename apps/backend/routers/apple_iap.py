@@ -158,7 +158,7 @@ async def create_mobile_portal(auth: AuthContext = Depends(get_current_user)):
     return_url on a billing endpoint is an open redirect.
 
     Unlike the checkout endpoints there is no org-OWNER fence: this manages
-    whatever subscription the owner already has, including a Teams per-seat one,
+    whatever subscription the owner already has, including a Workspace or Ultra one,
     and changes no plan shape — so an org admin is a legitimate caller.
     An org MEMBER is not. `resolve_owner_id` returns the ORG's billing row in
     org context, so without the admin check any member could open a portal

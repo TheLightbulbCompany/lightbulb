@@ -113,7 +113,7 @@ class TestComputeStatusLifecycleScenarios:
 
     @pytest.mark.asyncio
     async def test_provider_selection_required_org_active_no_provider(self):
-        """Orgs have NO free tier — an org with an active per-seat
+        """Orgs have NO free tier — an org with an active workspace
         subscription but no provider_choice sits here, distinct from
         personal's trial_local path."""
         account = _account(subscription_status="active", provider_choice=None)

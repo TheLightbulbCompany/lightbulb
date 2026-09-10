@@ -154,20 +154,8 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
     env: {
       STRIPE_WORKSPACE_PRICE_ID_DEV: "${{ secrets.STRIPE_WORKSPACE_PRICE_ID_DEV }}",
       STRIPE_WORKSPACE_PRICE_ID_PROD: "${{ secrets.STRIPE_WORKSPACE_PRICE_ID_PROD }}",
-      // Stripe per-seat Teams Price IDs — same synth-time bake + per-env
-      // live/test split as the flat price above. Empty string is tolerated
-      // (the backend surfaces "STRIPE_TEAM_SEAT_PRICE_ID not configured" at
-      // the team-checkout call site) but org admins cannot subscribe until
-      // both secrets are populated.
-      STRIPE_TEAM_SEAT_PRICE_ID_DEV: "${{ secrets.STRIPE_TEAM_SEAT_PRICE_ID_DEV }}",
-      STRIPE_TEAM_SEAT_PRICE_ID_PROD: "${{ secrets.STRIPE_TEAM_SEAT_PRICE_ID_PROD }}",
-      // Stripe Teams BASE Price IDs — the $50/mo flat component charged
-      // alongside the per-seat item. Same synth-time bake + per-env live/test
-      // split as the seat price above.
-      STRIPE_TEAM_BASE_PRICE_ID_DEV: "${{ secrets.STRIPE_TEAM_BASE_PRICE_ID_DEV }}",
-      STRIPE_TEAM_BASE_PRICE_ID_PROD: "${{ secrets.STRIPE_TEAM_BASE_PRICE_ID_PROD }}",
       // Stripe Ultra Pro Price IDs — same synth-time bake + per-env live/test
-      // split as the flat/team prices above. Empty string is tolerated (the
+      // split as the Workspace price above. Empty string is tolerated (the
       // backend surfaces "STRIPE_ULTRA_PRICE_ID not configured" at the
       // ultra-checkout call site) but the Ultra tier cannot be purchased until
       // both secrets are populated.

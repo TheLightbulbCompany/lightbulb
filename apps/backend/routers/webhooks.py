@@ -361,7 +361,7 @@ async def _handle_organization_membership_created(
     *,
     lifecycle_claim_id: str | None = None,
 ) -> None:
-    """Record membership and keep seat billing synchronized.
+    """Record a membership lifecycle event.
 
     Room admission remains explicit; the member receives an opaque user stream
     when they first request messaging live-config or are added to a room.
@@ -380,38 +380,13 @@ async def _handle_organization_membership_created(
             bool(email),
         )
         return
-    try:
-        await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
-        personal_account = await billing_repo.get_by_owner_id(user_id)
-        await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
-        if personal_account and personal_account.get("subscription_status") in {"active", "trialing"}:
-            logger.error(
-                "tenancy_invariant.violated user=%s org=%s personal_status=%s",
-                user_id,
-                org_id,
-                personal_account.get("subscription_status"),
-            )
-            put_metric("tenancy_invariant.violation", dimensions={"path": "membership_created"})
-    except MembershipLifecycleSuperseded:
-        raise
-    except Exception:
-        logger.exception("tenancy invariant probe failed for user=%s org=%s", user_id, org_id)
+    await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
     logger.info(
         "membership.created: org=%s member=%s owner=%s recorded",
         org_id,
         user_id,
         owner_user_id,
     )
-    try:
-        from core.services.billing_service import sync_team_seat_quantity
-
-        await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
-        await sync_team_seat_quantity(org_id)
-        await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
-    except MembershipLifecycleSuperseded:
-        raise
-    except Exception:
-        logger.exception("seat sync on membership.created failed for org=%s", org_id)
 
 
 async def _handle_organization_membership_deleted(
@@ -436,7 +411,7 @@ async def _handle_organization_membership_deleted(
         await revoke_human_membership(org_id, user_id)
         await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
     except Exception as exc:
-        # Paperclip/seat cleanup still gets its turn, but the event is not marked
+        # Paperclip cleanup still gets its turn, but the event is not marked
         # complete until canonical revocation succeeds on a retry.
         revocation_error = exc
 
@@ -482,29 +457,18 @@ async def _handle_organization_membership_deleted(
     finally:
         await close_paperclip_provisioning(provisioning)
 
-    try:
-        from core.services.billing_service import sync_team_seat_quantity
-
-        await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
-        await sync_team_seat_quantity(org_id)
-        await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
-    except MembershipLifecycleSuperseded:
-        raise
-    except Exception:
-        logger.exception("seat sync on membership.deleted failed for org=%s", org_id)
-
     if revocation_error is not None:
         raise revocation_error
 
 
 async def _handle_organization_deleted(data: dict) -> None:
-    """Cancel the org's Stripe subscription so seat billing stops, then
+    """Cancel the org's Stripe subscription, then
     disable every Paperclip member row attached to the deleted org.
 
-    The org's per-seat subscription is billed on the org's own
+    The org's workspace subscription is billed on the org's own
     ``billing_accounts`` row (owner_id == org_id), which nothing else
     tears down when the Clerk org itself is deleted -- left alone it
-    would keep charging N seats forever. We cancel it via the same
+    would keep charging the workspace forever. We cancel it via the same
     Stripe path the admin "cancel subscription" action uses
     (``billing_service.cancel_subscription_for_owner``): cancelling at
     Stripe (not just clearing the DDB row) fires the inbound

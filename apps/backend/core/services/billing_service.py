@@ -144,17 +144,11 @@ class BillingService:
         return session.url
 
     async def cancel_subscription(self, billing_account: dict) -> None:
-        # clear_seat_fields=True: cancellation must also wipe
-        # subscription_item_id + seat_count, not just the subscription
-        # id/status -- otherwise a stale subscription_item_id survives
-        # cancellation and is_seat_subscription (routers/billing.py) keeps
-        # reporting a per-seat subscription that no longer exists.
         await billing_repo.set_subscription(
             owner_id=billing_account["owner_id"],
             subscription_id=None,
             status="canceled",
             trial_end=None,
-            clear_seat_fields=True,
         )
 
 
@@ -335,12 +329,8 @@ async def create_workspace_checkout(*, owner_id: str, clerk_user_id: str, plan: 
 def subscription_item_on_price(items: list[dict], price_id: str) -> dict:
     """The subscription line item carrying ``price_id``, or ``{}`` if none does.
 
-    THE single way to answer "which item is priced X?". A Teams subscription
-    carries two items (flat base + per-seat) and Stripe does not guarantee
-    their order, so any positional read is a latent billing bug — picking the
-    base item as the seat item makes sync_team_seat_quantity drive the base
-    quantity. Empty ``price_id`` yields ``{}`` so an unconfigured price can
-    never match an item by accident.
+    Empty ``price_id`` yields ``{}`` so an unconfigured price can never match
+    an item by accident.
     """
     if not price_id:
         return {}
@@ -616,74 +606,6 @@ async def create_mobile_web_checkout(*, owner_id: str) -> stripe.checkout.Sessio
         raise BillingServiceError("could not start checkout — try again")
 
     return session
-
-
-async def sync_team_seat_quantity(owner_id: str) -> int:
-    """Set the team subscription's seat quantity to the live billable seat
-    count (accepted members PLUS pending invitations — "no free members").
-
-    The SINGLE writer of seat quantity — called from the membership webhooks,
-    the reconcile safety-net, and post-checkout. Absolute set (no delta math),
-    idempotent. Returns the resulting seat count.
-
-    No-ops (returns the stored seat_count, or 0) when:
-      - there's no active subscription, or
-      - there's no ``subscription_item_id`` (grandfathered non-seat sub, or a
-        team sub whose creation webhook hasn't landed yet), or
-      - the live count already equals the stored count.
-
-    Stripe errors are logged and swallowed (returns the stored count) so a
-    caller in a webhook path still 200s; the reconcile net heals the drift.
-    """
-    from core.services import clerk_admin
-    from core.services.provision_gate import is_subscription_active
-
-    account = await billing_repo.get_by_owner_id(owner_id)
-    if not account or not is_subscription_active(account):
-        return 0
-
-    item_id = account.get("subscription_item_id")
-    if not item_id:
-        # Grandfathered / not-yet-webhooked — never touch a non-seat sub.
-        return int(account.get("seat_count") or 0)
-
-    current = int(account.get("seat_count") or 0)
-    # Returns 0 when the count isn't known for certain, which the guard below
-    # treats as "don't act" — an uncertain count must never move the Stripe
-    # quantity. See get_organization_seat_count.
-    member_count = await clerk_admin.get_organization_seat_count(owner_id)
-    if member_count <= 0 or member_count == current:
-        # 0 = Clerk read failed/stubbed; don't zero a real subscription.
-        return current
-
-    try:
-        with timing("stripe.api.latency", {"op": "subscription_item.modify"}):
-            stripe.SubscriptionItem.modify(
-                item_id,
-                quantity=member_count,
-                proration_behavior="create_prorations",
-            )
-    except Exception:
-        logger.exception("sync_team_seat_quantity: Stripe modify failed for owner %s", owner_id)
-        return current
-
-    await billing_repo.set_team_subscription(
-        owner_id=owner_id,
-        subscription_id=account.get("stripe_subscription_id"),
-        subscription_item_id=item_id,
-        status=account.get("subscription_status"),
-        seat_count=member_count,
-    )
-
-    # Keep the agent-facing facts file's seat count current on the
-    # membership-change path — without this, agents keep quoting the old
-    # count until an unrelated webhook/reprovision rewrites the file. The
-    # just-written count rides as an override. Internally best-effort.
-    from core.services.owner_facts import write_owner_facts
-
-    await write_owner_facts(owner_id, account_overrides={"seat_count": member_count})
-
-    return member_count
 
 
 async def create_credit_top_up_checkout(

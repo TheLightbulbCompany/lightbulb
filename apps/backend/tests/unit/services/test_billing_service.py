@@ -103,42 +103,7 @@ class TestBillingServiceCancelSubscription:
             subscription_id=None,
             status="canceled",
             trial_end=None,
-            clear_seat_fields=True,
         )
-
-    @pytest.mark.asyncio
-    async def test_cancel_subscription_clears_stale_seat_fields(self, dynamodb_billing_table):
-        """Regression: cancelling an org's per-seat subscription must clear
-        subscription_item_id + seat_count on the billing row, not just the
-        subscription id/status. A stale subscription_item_id left behind
-        makes ``is_seat_subscription`` (routers/billing.py) report True for
-        an org that is no longer on a per-seat Stripe subscription --
-        re-enabling fabricated "N x $20" seat pricing after e.g. the org is
-        re-comped onto a flat price (whose webhook never touches
-        subscription_item_id)."""
-        from core.repositories import billing_repo
-
-        await billing_repo.create_if_not_exists("org_stale_seats", "cus_stale", owner_type="org")
-        await billing_repo.set_team_subscription(
-            "org_stale_seats",
-            subscription_id="sub_seat_1",
-            subscription_item_id="si_seat_1",
-            status="active",
-            seat_count=7,
-        )
-        billing_row = await billing_repo.get_by_owner_id("org_stale_seats")
-        assert billing_row["subscription_item_id"] == "si_seat_1"
-        assert billing_row["seat_count"] == 7
-
-        await BillingService().cancel_subscription(billing_row)
-
-        after = await billing_repo.get_by_owner_id("org_stale_seats")
-        assert after["subscription_status"] == "canceled"
-        assert after["stripe_subscription_id"] is None
-        assert after.get("subscription_item_id") is None
-        assert after.get("seat_count") is None
-        # Mirrors routers/billing.py's is_seat_subscription predicate.
-        assert bool(after.get("subscription_item_id")) is False
 
 
 @pytest.mark.asyncio
@@ -394,41 +359,6 @@ async def test_change_provider_refreshes_owner_facts(monkeypatch):
         "user_x",
         account_overrides={"provider_choice": "bedrock_claude", "byo_provider": None},
     )
-
-
-@pytest.mark.asyncio
-async def test_sync_team_seat_quantity_refreshes_owner_facts(monkeypatch):
-    """The membership-change path is the seat-count writer — it must refresh
-    the facts file with the new count as an override."""
-    # Pin the key OFF: this test stubs get_organization_member_count only, but
-    # the seat count now also reads pending invitations. Without this the
-    # unstubbed read escapes to api.clerk.com on any machine that exports
-    # CLERK_SECRET_KEY. CI happens not to set it; a laptop often does.
-    monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", None)
-    monkeypatch.setattr(
-        billing_service.billing_repo,
-        "get_by_owner_id",
-        AsyncMock(
-            return_value={
-                "owner_id": "org_x",
-                "subscription_status": "active",
-                "stripe_subscription_id": "sub_1",
-                "subscription_item_id": "si_1",
-                "seat_count": 2,
-            }
-        ),
-    )
-    monkeypatch.setattr("core.services.provision_gate.is_subscription_active", lambda a: True)
-    monkeypatch.setattr("core.services.clerk_admin.get_organization_member_count", AsyncMock(return_value=5))
-    monkeypatch.setattr(billing_service.billing_repo, "set_team_subscription", AsyncMock())
-    monkeypatch.setattr(billing_service.stripe.SubscriptionItem, "modify", MagicMock())
-    facts_mock = AsyncMock()
-    monkeypatch.setattr("core.services.owner_facts.write_owner_facts", facts_mock)
-
-    count = await billing_service.sync_team_seat_quantity("org_x")
-
-    assert count == 5
-    facts_mock.assert_awaited_once_with("org_x", account_overrides={"seat_count": 5})
 
 
 class TestCreditTopUpProvisionsOnDemand:

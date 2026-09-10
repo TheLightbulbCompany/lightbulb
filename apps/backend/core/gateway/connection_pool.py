@@ -301,6 +301,11 @@ class GatewayConnection:
         # process-local like the gateway connection itself.
         self._terminal_run_ids: Dict[str, str] = {}
         self._live_publish_lock = asyncio.Lock()
+        # Lightbulb room session keys this connection has asked the gateway to
+        # stream (`sessions.messages.subscribe`). See
+        # `subscribe_room_session` for why a room run is invisible without it.
+        # Re-sent by `connect()`, so a reconnect keeps streaming.
+        self._room_session_subs: set[str] = set()
         # Last-forwarded run-active value per webchat session_key. Deduplicates
         # `sessions.changed` bursts so only transitions produce a `run_active`
         # frame. SEPARATE from `_active_runs` (which is the parked-vs-dead
@@ -820,6 +825,8 @@ class GatewayConnection:
 
         self._reader_task = asyncio.create_task(self._reader_loop())
         await self._subscribe_session_events()
+        for room_session_key in list(self._room_session_subs):
+            await self._send_room_session_subscribe(room_session_key)
         put_metric("gateway.connection", dimensions={"event": "connect"})
         self._emit_status_change("HEALTHY", "Gateway connected")
         # Durable liveness signal (R4 kill) -- covers both a fresh connect()
@@ -957,6 +964,52 @@ class GatewayConnection:
             await self._ws.send(json.dumps(frame))
         except Exception:
             logger.warning("sessions.subscribe send failed user=%s", self.user_id, exc_info=True)
+
+    async def subscribe_room_session(self, session_key: str) -> None:
+        """Ask the gateway to stream a Lightbulb room session to this connection.
+
+        Channel-initiated runs are registered with ``isControlUiVisible: false``
+        — the fork derives it from the message provider, and only the internal
+        ``webchat`` channel counts as visible (agent-9.3
+        src/auto-reply/reply/agent-runner-execution.ts:172-187,
+        src/utils/message-channel-constants.ts). Every broadcast that gate
+        protects is then skipped for our room runs: tool events
+        (src/gateway/server-chat.ts:1619), assistant/item text (:1699) and the
+        whole chat terminal (:746). So the backend saw NOTHING for a room run —
+        no ``agent`` events, no ``chat`` final — and ``_publish_room_frame``
+        never fired even though ``mark_run_active`` had opened the window.
+
+        The one door a hidden run leaves open is ``sessionMessageSubscribers``:
+        a client that called ``sessions.messages.subscribe`` for the session key
+        gets the tool branch (:1641), the hidden text mirror (:1698) and the
+        chat terminal (:742) delivered to it by connection id. One RPC per room
+        session, `operator.read`-scoped, which we already hold.
+
+        Idempotent per connection and fire-and-forget for the same reason
+        ``_subscribe_session_events`` is: the ack carries nothing we need.
+        """
+        if not session_key or session_key in self._room_session_subs:
+            return
+        self._room_session_subs.add(session_key)
+        await self._send_room_session_subscribe(session_key)
+
+    async def _send_room_session_subscribe(self, session_key: str) -> None:
+        if self._ws is None:
+            return
+        frame = {
+            "type": "req",
+            "id": str(uuid.uuid4()),
+            "method": "sessions.messages.subscribe",
+            "params": {"key": session_key},
+        }
+        try:
+            await self._ws.send(json.dumps(frame))
+        except Exception:
+            logger.warning(
+                "sessions.messages.subscribe send failed user=%s",
+                self.user_id,
+                exc_info=True,
+            )
 
     async def send_rpc(self, req_id: str, method: str, params: dict) -> None:
         """Send {type: req} on the gateway WebSocket."""
@@ -2508,6 +2561,18 @@ class GatewayConnectionPool:
         if conn is None:
             return
         conn.mark_run_active(session_key, agent_id, member_id=member_id, event_kind=event_kind)
+
+    async def subscribe_room_session(self, user_id: str, session_key: str) -> None:
+        """Stream a room session's run events to the owner's connection.
+
+        No-ops without a connection, like ``mark_run_active``. See
+        ``GatewayConnection.subscribe_room_session`` for why a room run emits
+        nothing to us until this lands.
+        """
+        conn = self._connections.get(user_id)
+        if conn is None:
+            return
+        await conn.subscribe_room_session(session_key)
 
     def clear_active_run(self, user_id: str, session_key: str) -> None:
         """Tear down the active-run window opened by ``mark_run_active``.

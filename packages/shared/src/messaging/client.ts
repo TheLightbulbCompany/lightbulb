@@ -12,6 +12,7 @@ import type {
   ReadCursorResponse,
   RoomDetail,
   RoomListResponse,
+  RunStatusResponse,
   SteerRunRequest,
   SteerRunResponse,
   TypingRequest,
@@ -34,6 +35,7 @@ export interface MessagingClient {
   setTyping(request: TypingRequest): Promise<void>;
   abortRun(runId: string): Promise<AbortRunResponse>;
   steerRun(runId: string, request: SteerRunRequest): Promise<SteerRunResponse>;
+  getRunStatus(runId: string): Promise<RunStatusResponse>;
 }
 
 export function createMessagingClient(api: ApiMethods): MessagingClient {
@@ -57,5 +59,6 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     },
     abortRun: (runId) => api.post(`/messaging/runs/${encodeURIComponent(runId)}/abort`, {}) as Promise<AbortRunResponse>,
     steerRun: (runId, request) => api.post(`/messaging/runs/${encodeURIComponent(runId)}/steer`, request) as Promise<SteerRunResponse>,
+    getRunStatus: (runId) => api.get(`/messaging/runs/${encodeURIComponent(runId)}`) as Promise<RunStatusResponse>,
   };
 }

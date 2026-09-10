@@ -136,6 +136,11 @@ export interface AbortRunResponse {
   state: "aborting" | "already-terminal";
 }
 
+export interface RunStatusResponse {
+  runId: string;
+  state: "running" | "terminal";
+}
+
 export interface SteerRunRequest {
   text: string;
 }

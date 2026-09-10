@@ -97,6 +97,8 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
   const requests = useRef(new Map<string, CreateMessageRequest>());
   const [typing, setTyping] = useState(new Map<string, TypingMember>());
   const [runs, setRuns] = useState(new Map<string, LiveRoomRun>());
+  const runsRef = useRef(runs);
+  runsRef.current = runs;
   const generation = useRef(0);
   const requestedAfter = useRef<number | null>(null);
   const reconciliation = useRef<Promise<void> | null>(null);
@@ -207,10 +209,36 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
     return reconciliation.current;
   }, [activeRoomId, accessRemoved, messaging]);
 
+  // `room.run.frame` (carrying the terminal `run_ended`) is EPHEMERAL over the
+  // live channel, unlike `room.message.created` -- it has no `afterSeq` gap
+  // recovery. A client that reconnects or rotates its delivery key mid-run can
+  // miss that one frame and be stuck showing "Working" forever with a
+  // Steer/Stop that no longer does anything useful. Ride the same
+  // reconnect/rotation signal `reconcile` already uses to re-check any run
+  // still marked "running" against the server's own truth.
+  const reconcileRuns = useCallback(() => {
+    const inFlight = [...runsRef.current.values()].filter((run) => run.state === "running");
+    for (const run of inFlight) {
+      void messaging.getRunStatus(run.runId).then((status) => {
+        if (status.state !== "terminal") return;
+        setRuns((current) => {
+          const key = `${run.roomId}:${run.agentId}:${run.runId}`;
+          const existing = current.get(key);
+          if (!existing || existing.state !== "running") return current;
+          return new Map(current).set(key, { ...existing, state: "completed" });
+        });
+      }).catch(() => {
+        // Best-effort: a later reconnect (or a fresh frame proving the run is
+        // still alive) gets another chance.
+      });
+    }
+  }, [messaging]);
+
   useEffect(() => {
     if (!subscriptionPath || !liveChannels.includes(subscriptionPath)) return;
     void reconcile(lastSequence(messagesRef.current));
-  }, [subscriptionPath, activeRoom?.roomRevision, liveChannels, connectionRevision, reconcile]);
+    reconcileRuns();
+  }, [subscriptionPath, activeRoom?.roomRevision, liveChannels, connectionRevision, reconcile, reconcileRuns]);
 
   useEffect(() => onEvent((event) => {
     if (event.type === "room.access.removed" && event.payload.roomId === activeRoomId) {

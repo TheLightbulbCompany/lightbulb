@@ -2,7 +2,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SWRConfig } from "swr";
 import type { ReactNode } from "react";
-import type { CanonicalRoomMessage, LiveEvent, RoomDetail, RoomSummary } from "@lightbulb/shared";
+import type { CanonicalRoomMessage, LiveEvent, RoomDetail, RoomSummary, RunStatusResponse } from "@lightbulb/shared";
 
 const room: RoomDetail = {
   roomId: "11111111-1111-4111-8111-111111111111",
@@ -50,6 +50,7 @@ const messaging = {
   markRead: vi.fn(async () => ({ roomId: room.roomId, lastReadSeq: 1 })),
   setTyping: vi.fn(async () => undefined),
   createRoom: vi.fn(), updateRoom: vi.fn(), upsertMember: vi.fn(), removeMember: vi.fn(), abortRun: vi.fn(), steerRun: vi.fn(), getLiveConfig: vi.fn(),
+  getRunStatus: vi.fn(async (): Promise<RunStatusResponse> => ({ runId: "run-1", state: "running" })),
 };
 const releaseActiveRoomSubscription = vi.fn();
 const live = {
@@ -199,5 +200,40 @@ describe("useRooms canonical reconciliation", () => {
     expect(live.liveConnected).toBe(false);
     expect(messaging.sendMessage).toHaveBeenCalledWith(room.roomId, request);
     expect(result.current.messages.at(-1)).toMatchObject({ text: request.text, mentions: request.mentions });
+  });
+
+  it("clears a run stuck on 'running' by reconciling against the server on reconnect", async () => {
+    // `room.run.frame` (carrying the terminal `run_ended`) is ephemeral -- a
+    // frame dropped across a reconnect leaves `runs` stuck at "running"
+    // forever with no other signal. On the next reconnect, useRooms must
+    // check any still-"running" run against GET /messaging/runs/{runId} and
+    // clear it once the server reports it terminal.
+    const { result, rerender } = renderHook(() => useRooms(), { wrapper });
+    await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(room.roomId));
+
+    live.liveConnected = true;
+    live.liveChannels = [`/rooms/${room.roomId}/${room.deliveryKey}`];
+    rerender();
+    await waitFor(() => expect(result.current.messages.map((message) => message.messageSeq)).toEqual([1]));
+
+    const runId = "run-stuck-1";
+    const agentId = room.members[1].id;
+    act(() => {
+      for (const handler of handlers) handler({
+        schemaVersion: 1, eventId: "frame-1", type: "room.run.frame", occurredAt: "2026-09-10T00:01:00Z",
+        payload: { roomId: room.roomId, agentId, runId, frame: { type: "tool_start", tool: "search", runId, agentId } },
+      });
+    });
+    await waitFor(() => expect(result.current.runs).toEqual([expect.objectContaining({ runId, state: "running" })]));
+
+    // The abort actually landed server-side, but the terminal frame never
+    // reached this client -- simulate the reconnect that should trigger
+    // reconciliation.
+    messaging.getRunStatus.mockResolvedValueOnce({ runId, state: "terminal" });
+    live.connectionRevision = 2;
+    rerender();
+
+    await waitFor(() => expect(messaging.getRunStatus).toHaveBeenCalledWith(runId));
+    await waitFor(() => expect(result.current.runs).toEqual([expect.objectContaining({ runId, state: "completed" })]));
   });
 });

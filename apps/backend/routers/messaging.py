@@ -32,6 +32,7 @@ from core.services.messaging import (
     ReadCursorResponse,
     RoomDetail,
     RoomListResponse,
+    RunStatusResponse,
     SteerRunRequest,
     SteerRunResponse,
     TypingRequest,
@@ -218,6 +219,29 @@ async def _resolved_active_run(auth: AuthContext, run_id: str) -> tuple[str, str
     if state.get("terminal"):
         return owner_id, parsed["room_id"], parsed["agent_id"], state, ""
     return owner_id, parsed["room_id"], parsed["agent_id"], state, session_key
+
+
+@router.get("/messaging/runs/{run_id}", response_model=RunStatusResponse)
+async def get_run_status(run_id: str, auth: AuthContext = Depends(get_current_user)):
+    """Read-only reconciliation for a run the client already knows about.
+
+    ``room.run.frame`` is ephemeral (see the architecture spec) -- a client
+    that reconnects or rotates its delivery key mid-run can miss the
+    terminal ``run_ended`` frame and be left showing "Working" forever.
+    Reuses the exact same ``pool.resolve_run`` truth as abort/steer, with no
+    side effect, so the frontend can poll it on reconnect. A run this
+    connection has no memory of at all (evicted from the terminal-id cache,
+    or from a since-reconnected container link) is reported terminal rather
+    than 404 -- from the client's point of view "unknown" and "ended" call
+    for the same action: stop showing it as running.
+    """
+    try:
+        _, _, _, _, session_key = await _resolved_active_run(auth, run_id)
+    except ApiProblem as exc:
+        if exc.error.code != "RUN_NOT_FOUND":
+            raise
+        return RunStatusResponse(run_id=run_id, state="terminal")
+    return RunStatusResponse(run_id=run_id, state="running" if session_key else "terminal")
 
 
 @router.post("/messaging/runs/{run_id}/abort", response_model=AbortRunResponse)

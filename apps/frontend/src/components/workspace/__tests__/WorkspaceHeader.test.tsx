@@ -3,6 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 
 const setPaletteOpen = vi.fn();
+const openPanel = vi.fn();
+const activateMessagesPanel = vi.fn();
+let activePanelId = "browser";
 
 vi.mock("@/components/teams/command-palette/CommandPaletteProvider", () => ({
   useCommandPalette: () => ({ open: false, setOpen: setPaletteOpen, toggle: vi.fn() }),
@@ -29,20 +32,39 @@ vi.mock("@clerk/nextjs", () => {
   return { UserButton };
 });
 
-vi.mock("../workspaceController", () => ({ openPanel: vi.fn() }));
+vi.mock("../workspaceController", () => ({ openPanel: (...args: unknown[]) => openPanel(...args), activateMessagesPanel: () => activateMessagesPanel(), useWorkspaceState: () => ({ activePanelId }) }));
 
 import { WorkspaceHeader } from "../WorkspaceHeader";
 
 describe("WorkspaceHeader", () => {
+  it.each([["Home", "teams-dashboard"], ["Activity", "teams-inbox"], ["Tasks", "teams-issues"], ["Browser", "browser"]])("opens %s and marks the active destination", (label, panel) => {
+    activePanelId = panel;
+    render(<WorkspaceHeader />);
+    const button = screen.getByRole("button", { name: label });
+    expect(button).toHaveAttribute("aria-current", "page");
+    fireEvent.click(button);
+    expect(openPanel).toHaveBeenCalledWith(panel, {}, { pushUrl: true });
+  });
+  it("returns to Messages and keeps settings accessible", () => {
+    render(<WorkspaceHeader />);
+    fireEvent.click(screen.getByRole("button", { name: "Messages" }));
+    expect(activateMessagesPanel).toHaveBeenCalled();
+    expect(screen.getByRole("link", { name: "Settings" })).toHaveAttribute("href", "/settings");
+  });
+  it("disables panel navigation until provisioning completes", () => {
+    render(<WorkspaceHeader chatReady={false} />);
+    expect(screen.getByRole("button", { name: "Messages" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Browser" })).toBeDisabled();
+  });
   it("opens the existing command palette from a visible search control", () => {
     render(<WorkspaceHeader />);
 
     fireEvent.click(screen.getByRole("button", { name: /Search agents, issues, and projects/ }));
 
     expect(setPaletteOpen).toHaveBeenCalledWith(true);
-    expect(screen.getByText("⌘/Ctrl K")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Search agents/ })).toHaveAttribute("title", "Search (⌘/Ctrl K)");
     expect(screen.getByRole("button", { name: "Browse workspace files" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Watch your agents' browser" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Browser" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Get help" })).toBeInTheDocument();
     expect(screen.getByLabelText("Profile")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Reset workspace layout" })).not.toBeInTheDocument();

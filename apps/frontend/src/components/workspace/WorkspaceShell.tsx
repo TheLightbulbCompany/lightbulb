@@ -132,6 +132,7 @@ export function WorkspaceShell(): React.ReactElement {
 }
 
 function AuthenticatedWorkspace({ scopeId }: { scopeId: string }): React.ReactElement {
+  const { activePanelId } = useWorkspaceState();
   useBrowserToolAutoOpen();
   const { agents, defaultId, isSettled: agentsSettled } = useAgents();
   const defaultIdRef = useRef<string | undefined>(defaultId);
@@ -439,13 +440,13 @@ function AuthenticatedWorkspace({ scopeId }: { scopeId: string }): React.ReactEl
         <DesktopMessagingProvider>
           <CommandPaletteProvider>
             <DesktopPermissionsGate />
-            <div className="workspace-shell">
+            <div className="workspace-shell" data-messages-active={activePanelId === MESSAGES_PANEL_ID}>
+              <WorkspaceHeader chatReady={chatReady} />
               <WorkspaceSidebar
                 chatReady={chatReady}
                 onRecoveryReprovision={() => setRecoveryTriggered(true)}
               />
               <div className="workspace-main">
-                <WorkspaceHeader />
                 <div className="workspace-content">
                   <TrialBanner />
                   <OutOfCreditsBanner />

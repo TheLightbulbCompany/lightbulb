@@ -68,26 +68,16 @@ afterEach(() => vi.useRealTimers());
 describe("WorkspaceSidebar", () => {
   it("renders message-first navigation and preserves marketplace and account exits", () => {
     render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
-    const nav = screen.getByRole("navigation", { name: "Workspace" });
-    expect(within(nav).getAllByRole("button").map((button) => button.textContent)).toEqual(["Home", "Activity", "Tasks", "Browser"]);
     expect(screen.getAllByRole("navigation", { name: "Conversations" })).toHaveLength(1);
     expect(screen.queryByText("New session")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "New agent" })).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Settings" })).toHaveAttribute("href", "/settings");
     expect(screen.getByText("Ada Lovelace")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Workspace tools"));
     expect(screen.getByText("Check for updates")).toBeInTheDocument();
     expect(screen.getByText("Local tools available")).toBeInTheDocument();
     expect(screen.getByText("Marketplace")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Browse" }));
     expect(openMarketplace).toHaveBeenCalledWith({ view: "browse" });
-  });
-  it.each([["Home", "teams-dashboard"], ["Activity", "teams-inbox"], ["Tasks", "teams-issues"], ["Browser", "browser"]])("opens %s and marks the active destination", (label, panel) => {
-    activePanelId = panel;
-    render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
-    const button = screen.getByRole("button", { name: label });
-    expect(button).toHaveAttribute("aria-current", "page");
-    fireEvent.click(button);
-    expect(openPanel).toHaveBeenCalledWith(panel, {}, { pushUrl: true });
   });
   it.each(["dm", "channel", "group-dm", "human", "New conversation"])("opens %s without issuing another agent selection", (label) => {
     render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
@@ -112,7 +102,7 @@ describe("WorkspaceSidebar", () => {
   it("disables destinations and withholds conversations while provisioning", () => {
     render(<WorkspaceSidebar chatReady={false} onRecoveryReprovision={vi.fn()} />);
     fireEvent.click(screen.getByText("More"));
-    for (const name of ["Home", "Activity", "Tasks", "Browser", "Agents", "Money"]) {
+    for (const name of ["Agents", "Money"]) {
       const button = screen.getByRole("button", { name });
       expect(button).toBeDisabled();
       fireEvent.click(button);
@@ -126,6 +116,7 @@ describe("WorkspaceSidebar", () => {
     billingAccount = { subscription_status: "trial_local" };
     const recover = vi.fn();
     render(<WorkspaceSidebar chatReady onRecoveryReprovision={recover} />);
+    fireEvent.click(screen.getByText("Workspace tools"));
     fireEvent.click(screen.getByRole("button", { name: "Recover workspace" }));
     expect(recover).toHaveBeenCalledOnce();
   });

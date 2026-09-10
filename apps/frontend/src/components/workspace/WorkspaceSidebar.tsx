@@ -6,8 +6,7 @@ import "./workspace.css";
 
 import { useEffect, useState } from "react";
 import { useUser } from "@clerk/nextjs";
-import { Bell, Chrome, Home, ListTodo, Settings, UsersRound } from "lucide-react";
-import Link from "next/link";
+import { UsersRound } from "lucide-react";
 
 import { GallerySection } from "@/components/chat/GallerySection";
 import { HealthIndicator } from "@/components/chat/HealthIndicator";
@@ -24,12 +23,6 @@ import { NodeStatusPill } from "@/components/desktop/NodeStatusPill";
 import { emitStep } from "@/components/getstarted/getStartedEvents";
 import { activateMessagesPanel, openPanel, useWorkspaceState } from "./workspaceController";
 
-const PRIMARY_NAV = [
-  { panel: "teams-dashboard", label: "Home", Icon: Home },
-  { panel: "teams-inbox", label: "Activity", Icon: Bell },
-  { panel: "teams-issues", label: "Tasks", Icon: ListTodo },
-  { panel: "browser", label: "Browser", Icon: Chrome },
-] as const;
 
 interface WorkspaceSidebarProps {
   onRecoveryReprovision: () => void;
@@ -75,34 +68,11 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
       <div className="sidebar-header">
         <div className="sidebar-logo">
           <Logo size="sm" href={null} />
-          <span className="nav-badge">Public Beta</span>
         </div>
-        <Link href="/settings" className="sidebar-settings-link" aria-label="Settings">
-          <Settings size={18} aria-hidden="true" />
-        </Link>
       </div>
 
-      {(isSubscribed || subscriptionStatus === "trial_local") && (
-        <HealthIndicator onRecoveryReprovision={onRecoveryReprovision} />
-      )}
-      <NodeStatusPill />
 
       <div className="sidebar-scroll">
-        <nav className="workspace-primary-nav" aria-label="Workspace">
-          {PRIMARY_NAV.map(({ panel, label, Icon }) => (
-            <button
-              key={panel}
-              type="button"
-              aria-current={activePanelId === panel ? "page" : undefined}
-              disabled={!chatReady}
-              title={chatReady ? undefined : "Available once your workspace is ready"}
-              onClick={() => openPanel(panel, {}, { pushUrl: true })}
-            >
-              <Icon size={16} aria-hidden="true" />
-              <span>{label}</span>
-            </button>
-          ))}
-        </nav>
         {chatReady ? (
           <MessagingDirectory onOpenRoom={() => activateMessagesPanel()} />
         ) : (
@@ -130,7 +100,7 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
         </details>
       </div>
 
-      <GallerySection />
+
       <div className="sidebar-footer">
         <div className="user-row">
           <div className="user-avatar">{userInitials}</div>
@@ -142,7 +112,15 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
           )}
         </div>
         <FreeTierNote />
-        <DesktopUpdater version="0.1" />
+        <details className="workspace-status">
+          <summary>Workspace tools</summary>
+          <GallerySection />
+          {(isSubscribed || subscriptionStatus === "trial_local") && (
+            <HealthIndicator onRecoveryReprovision={onRecoveryReprovision} />
+          )}
+          <NodeStatusPill />
+          <DesktopUpdater version="0.1" />
+        </details>
       </div>
     </div>
   );

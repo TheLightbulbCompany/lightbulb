@@ -12,11 +12,15 @@ export async function onboardWorkspace(
     { timeout: 30_000 },
   );
   const nameInput = page.getByRole('textbox', { name: /name/i });
+  const createWorkspace = page
+    .getByRole('button', { name: /^create a workspace$/i })
+    .and(page.locator('button:enabled'));
+  await nameInput.or(createWorkspace).waitFor({
+    state: 'visible',
+    timeout: 30_000,
+  });
   if (!(await nameInput.isVisible())) {
-    await page
-      .getByRole('button', { name: /^create a workspace$/i })
-      .and(page.locator('button:enabled'))
-      .click();
+    await createWorkspace.click();
     await nameInput.waitFor({ state: 'visible', timeout: 30_000 });
   }
   await nameInput.fill(orgName);

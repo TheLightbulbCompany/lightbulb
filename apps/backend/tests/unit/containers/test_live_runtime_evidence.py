@@ -32,9 +32,10 @@ def ecs_client():
 
 @pytest.fixture
 def manager(ecs_client):
-    with patch("core.containers.ecs_manager.settings") as settings, patch(
-        "core.containers.ecs_manager.boto3"
-    ) as boto3_mock:
+    with (
+        patch("core.containers.ecs_manager.settings") as settings,
+        patch("core.containers.ecs_manager.boto3") as boto3_mock,
+    ):
         settings.AWS_REGION = "us-east-1"
         settings.ENVIRONMENT = "prod"
         boto3_mock.client.side_effect = lambda service, **kwargs: ecs_client if service == "ecs" else MagicMock()
@@ -98,9 +99,7 @@ def _arrange(ecs_client, monkeypatch, *, row=None, task_definition=None, task=No
 
 
 @pytest.mark.asyncio
-async def test_live_runtime_evidence_binds_one_running_task_to_the_pinned_release(
-    manager, ecs_client, monkeypatch
-):
+async def test_live_runtime_evidence_binds_one_running_task_to_the_pinned_release(manager, ecs_client, monkeypatch):
     get_container, update_container = _arrange(ecs_client, monkeypatch)
 
     evidence = await manager.live_runtime_evidence(_OWNER_ID)
@@ -152,9 +151,7 @@ async def test_live_runtime_evidence_rejects_any_mismatched_observation(manager,
     elif mismatch == "service":
         task["group"] = "service:someone-else"
     elif mismatch == "tag":
-        task_definition["taskDefinition"]["containerDefinitions"][0]["image"] = _IMAGE.replace(
-            "449894a", "old0000"
-        )
+        task_definition["taskDefinition"]["containerDefinitions"][0]["image"] = _IMAGE.replace("449894a", "old0000")
     elif mismatch == "container_image":
         task["containers"][0]["image"] = _IMAGE.replace("449894a", "old0000")
     elif mismatch == "runtime_digest":

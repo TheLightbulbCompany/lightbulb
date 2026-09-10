@@ -2,9 +2,11 @@
  * E2E user lifecycle helper.
  *
  * Tests call `createE2EUser(page)` in beforeAll, drive the UI flow, then
- * call `cleanupUser(user)` in afterAll. Cleanup orchestrates Stripe -> backend
- * -> Clerk in that order, then re-queries Stripe + Clerk to hard-fail if
- * anything was left behind. This keeps the dev environment clean across runs.
+ * call `cleanupUser(user)` in afterAll. For a workspace user, cleanup
+ * orchestrates Stripe -> backend -> Clerk in that order, then re-queries
+ * Stripe + Clerk to hard-fail if anything was left behind. Fresh no-workspace
+ * users need only Clerk cleanup. This keeps the dev environment clean across
+ * runs.
  *
  * NOTE: the bare `e2eUser` Playwright fixture below is intentionally a trap
  * (it always throws). The pattern is for specs to call `createE2EUser`
@@ -15,7 +17,13 @@
 
 import { test as base, type Page } from '@playwright/test';
 import crypto from 'crypto';
-import { createUser, deleteUser, deleteOrg, findUserByEmail } from './clerk-admin';
+import {
+  createUser,
+  deleteUser,
+  deleteOrg,
+  findUserByEmail,
+  listUserOrganizationIds,
+} from './clerk-admin';
 import {
   cancelSubsAndDeleteCustomer,
   findCustomerByEmail,
@@ -68,9 +76,6 @@ export async function cleanupUser(
   const cleanupWorkspace = options.cleanupWorkspace ?? true;
   const stripeKey = process.env.STRIPE_SECRET_KEY;
   const clerkKey = process.env.CLERK_SECRET_KEY;
-  if (cleanupWorkspace && !stripeKey) {
-    throw new Error('STRIPE_SECRET_KEY required for cleanupUser');
-  }
   if (!clerkKey) throw new Error('CLERK_SECRET_KEY required for cleanupUser');
 
   // Each step is run independently and its failure is collected; we only
@@ -81,15 +86,43 @@ export async function cleanupUser(
   // last and contributes to the failure list.
   const failures: string[] = [];
 
+  // An onboarding failure can happen after Clerk creates the workspace but
+  // before onboardWorkspace records its ID. Discover memberships before
+  // treating a missing in-memory ID as a no-workspace user. More than one is
+  // unsafe to guess: report it while still deleting the isolated test user.
+  let workspaceId = user.orgId;
+  if (cleanupWorkspace && !workspaceId) {
+    try {
+      const organizationIds = await listUserOrganizationIds({
+        secretKey: clerkKey,
+        userId: user.clerkUserId,
+      });
+      if (organizationIds.length === 1) {
+        [workspaceId] = organizationIds;
+        user.orgId = workspaceId;
+      } else if (organizationIds.length > 1) {
+        failures.push(
+          `workspace discovery: multiple memberships (${organizationIds.join(', ')})`,
+        );
+      }
+    } catch (err) {
+      failures.push(`workspace discovery: ${err}`);
+    }
+  }
+  const shouldCleanupWorkspace = cleanupWorkspace && Boolean(workspaceId);
+  if (shouldCleanupWorkspace && !stripeKey) {
+    throw new Error('STRIPE_SECRET_KEY required for cleanupUser');
+  }
+
   // 1. Stripe — cancels active subs then deletes the customer. Idempotent.
   // Pass ownerId so we catch customers whose email field is null (the
   // Clerk JWT template doesn't always include the email claim, so
   // backend's create_customer_for_owner can produce email=null records
   // that the email-based search would miss). The backend always tags the
   // customer with metadata.owner_id, so that lookup is the canonical one.
-  // owner_id == clerkUserId in personal context, == orgId in org context.
-  const stripeOwnerId = user.orgId ?? user.clerkUserId;
-  if (cleanupWorkspace) {
+  // Only read under shouldCleanupWorkspace, which requires workspaceId.
+  const stripeOwnerId = workspaceId!;
+  if (shouldCleanupWorkspace) {
     try {
       await cancelSubsAndDeleteCustomer(stripeKey!, user.email, stripeOwnerId);
     } catch (err) {
@@ -98,14 +131,14 @@ export async function cleanupUser(
   }
 
   // 2. Backend — DELETE /debug/user-data wipes DDB rows + EFS workspace +
-  //    ECS service for this clerk user. Only 404 is treated as success
+  //    ECS service for this active workspace. Only 404 is treated as success
   //    (idempotent). Every other error is recorded but does NOT abort
   //    Clerk cleanup below.
   //
   //    Navigate the page back to the app first so Clerk is loaded and
   //    AuthedFetch.token() can mint a JWT — without this, a spec that
   //    failed on Stripe Checkout would 401 here.
-  if (cleanupWorkspace) {
+  if (shouldCleanupWorkspace) {
     try {
       const baseUrl = process.env.BASE_URL ?? user.page.url();
       await user.page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
@@ -121,6 +154,27 @@ export async function cleanupUser(
         },
         { timeout: 30_000 },
       );
+      await user.page.evaluate(async (organizationId) => {
+        const w = window as Window & {
+          Clerk?: {
+            setActive?: (options: { organization: string }) => Promise<void>;
+          };
+        };
+        if (!w.Clerk?.setActive) {
+          throw new Error('Clerk.setActive unavailable during workspace cleanup');
+        }
+        await w.Clerk.setActive({ organization: organizationId });
+      }, stripeOwnerId);
+      await user.page.waitForFunction(
+        (organizationId) => {
+          const w = window as Window & {
+            Clerk?: { organization?: { id?: string } };
+          };
+          return w.Clerk?.organization?.id === organizationId;
+        },
+        stripeOwnerId,
+        { timeout: 30_000 },
+      );
       await user.api.delete('/debug/user-data');
     } catch (err) {
       if (err instanceof AuthedFetchError && err.status === 404) {
@@ -134,8 +188,8 @@ export async function cleanupUser(
   // 3. Clerk — runs even if backend cleanup failed. Org first (if any),
   //    then the user. Both helpers treat 404 as success.
   try {
-    if (cleanupWorkspace && user.orgId) {
-      await deleteOrg({ secretKey: clerkKey, orgId: user.orgId });
+    if (shouldCleanupWorkspace) {
+      await deleteOrg({ secretKey: clerkKey, orgId: stripeOwnerId });
     }
     await deleteUser({ secretKey: clerkKey, userId: user.clerkUserId });
   } catch (err) {
@@ -146,17 +200,20 @@ export async function cleanupUser(
   //    side. 5s is enough in practice; a tighter poll would just add flakes.
   await new Promise((r) => setTimeout(r, 5000));
 
-  // 5. Hard-fail verification on external systems. Check by both email
-  // and owner_id — same defensive split as the cleanup call above.
-  if (cleanupWorkspace) {
+  // 5. Hard-fail verification on external systems. An E2E email identifies a
+  //    leaked customer even when Clerk confirms no workspace; owner_id is only
+  //    available after resolving a workspace.
+  if (stripeKey) {
     try {
       const stripeRemaining = await findCustomerByEmail(stripeKey!, user.email);
       if (stripeRemaining) {
         failures.push(`stripe leak: customer ${stripeRemaining.id} (by-email) not deleted`);
       }
-      const ownerRemaining = await findCustomersByOwnerId(stripeKey!, stripeOwnerId);
-      for (const c of ownerRemaining) {
-        failures.push(`stripe leak: customer ${c.id} (by-owner_id) not deleted`);
+      if (shouldCleanupWorkspace) {
+        const ownerRemaining = await findCustomersByOwnerId(stripeKey, stripeOwnerId);
+        for (const c of ownerRemaining) {
+          failures.push(`stripe leak: customer ${c.id} (by-owner_id) not deleted`);
+        }
       }
     } catch (err) {
       failures.push(`stripe verify: ${err}`);

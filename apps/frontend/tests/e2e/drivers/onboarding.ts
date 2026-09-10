@@ -14,13 +14,16 @@ export async function onboardWorkspace(
   const nameInput = page.getByRole('textbox', { name: /name/i });
   if (!(await nameInput.isVisible())) {
     await page
-      .getByRole('button', { name: /create (a )?workspace/i })
-      .first()
+      .getByRole('button', { name: /^create a workspace$/i })
+      .and(page.locator('button:enabled'))
       .click();
     await nameInput.waitFor({ state: 'visible', timeout: 30_000 });
   }
   await nameInput.fill(orgName);
-  await page.getByRole('button', { name: /create|next/i }).first().click();
+  await page
+    .getByRole('button', { name: /^(continue|create workspace)$/i })
+    .and(page.locator('button:enabled'))
+    .click();
 
   // Wait for Clerk to register the new org BEFORE waiting for any URL —
   // the org is the load-bearing teardown handle. Hand it to the caller

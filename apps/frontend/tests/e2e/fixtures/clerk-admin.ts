@@ -15,6 +15,10 @@ type ClerkUser = {
   last_name?: string | null;
 };
 
+type ClerkOrganizationMembership = {
+  organization?: { id?: string };
+};
+
 export async function createUser(opts: {
   secretKey: string;
   email: string;
@@ -73,6 +77,40 @@ export async function findUserByEmail(opts: {
     );
     if (match) return match;
     if (page.length < limit) return null; // last page, no match
+    offset += limit;
+  }
+}
+
+/** Return every Clerk organization membership for one E2E user. */
+export async function listUserOrganizationIds(opts: {
+  secretKey: string;
+  userId: string;
+}): Promise<string[]> {
+  const limit = 500;
+  let offset = 0;
+  const organizationIds: string[] = [];
+  while (true) {
+    const res = await fetch(
+      `${CLERK_API}/users/${opts.userId}/organization_memberships?limit=${limit}&offset=${offset}`,
+      { headers: { Authorization: `Bearer ${opts.secretKey}` } },
+    );
+    if (!res.ok) {
+      throw new Error(
+        `Clerk listUserOrganizationIds ${res.status}: ${await res.text()}`,
+      );
+    }
+    const page = (await res.json()) as { data?: ClerkOrganizationMembership[] };
+    if (!Array.isArray(page.data)) {
+      throw new Error('Clerk listUserOrganizationIds returned an invalid membership page');
+    }
+    for (const membership of page.data) {
+      const organizationId = membership.organization?.id;
+      if (!organizationId) {
+        throw new Error('Clerk listUserOrganizationIds returned a membership without an organization ID');
+      }
+      organizationIds.push(organizationId);
+    }
+    if (page.data.length < limit) return organizationIds;
     offset += limit;
   }
 }

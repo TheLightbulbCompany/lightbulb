@@ -2,33 +2,42 @@ import { expect, it, vi } from "vitest";
 import type { Page } from "@playwright/test";
 import { acceptWorkspaceInvitation, onboardWorkspace } from "../onboarding";
 
-function pageFixture(failRedirect = false, taskNeedsCreateAction = false) {
+function pageFixture(
+  failRedirect = false,
+  taskNeedsCreateAction = false,
+  submitLabel = "Create workspace",
+) {
   const fill = vi.fn().mockResolvedValue(undefined);
   const submit = vi.fn().mockResolvedValue(undefined);
   const openCreate = vi.fn().mockResolvedValue(undefined);
+  const getByRole = vi.fn((role: string, options: { name: string | RegExp }) => {
+    if (role === "textbox" && options.name instanceof RegExp && options.name.test("Name")) {
+      return {
+        fill,
+        isVisible: vi.fn().mockResolvedValue(!taskNeedsCreateAction),
+        waitFor: vi.fn().mockResolvedValue(undefined),
+      };
+    }
+    if (role === "button" && options.name instanceof RegExp) {
+      const click = options.name.source === "^create a workspace$"
+        ? openCreate
+        : options.name.test(submitLabel)
+          ? submit
+          : undefined;
+      if (!click) throw new Error("Unexpected onboarding action: " + options.name);
+      return { and: vi.fn(() => ({ click })) };
+    }
+    throw new Error("Removed onboarding control: " + String(options.name));
+  });
   const page = {
     goto: vi.fn().mockResolvedValue(undefined),
-    getByRole: (role: string, options: { name: string | RegExp }) => {
-      if (role === "textbox" && options.name instanceof RegExp && options.name.test("Name")) {
-        return {
-          fill,
-          isVisible: vi.fn().mockResolvedValue(!taskNeedsCreateAction),
-          waitFor: vi.fn().mockResolvedValue(undefined),
-        };
-      }
-      if (role === "button" && options.name instanceof RegExp) {
-        const click = options.name.source === "create (a )?workspace"
-          ? openCreate
-          : submit;
-        return { first: () => ({ click }) };
-      }
-      throw new Error("Removed onboarding control: " + String(options.name));
-    },
+    getByRole,
     waitForURL: vi.fn().mockImplementation(async (url: RegExp) => {
       if (failRedirect && url.test("/chat")) throw new Error("Redirect failed");
     }),
     waitForFunction: vi.fn().mockResolvedValue(undefined),
     evaluate: vi.fn().mockResolvedValue("org_created"),
+    locator: vi.fn(() => ({})),
   };
   return { page: page as unknown as Page, fill, openCreate, submit };
 }
@@ -51,6 +60,26 @@ it("opens Clerk's native create-workspace form when the session task shows its a
   expect(openCreate).toHaveBeenCalledOnce();
   expect(fill).toHaveBeenCalledWith("Test workspace");
   expect(submit).toHaveBeenCalledOnce();
+  expect(page.locator).toHaveBeenCalledWith("button:enabled");
+  expect(page.getByRole).toHaveBeenCalledWith("button", {
+    name: /^create a workspace$/i,
+  });
+  expect(page.getByRole).toHaveBeenCalledWith("button", {
+    name: /^(continue|create workspace)$/i,
+  });
+});
+
+it("submits Clerk's native task form through its enabled Continue action", async () => {
+  const { page, fill, openCreate, submit } = pageFixture(false, true, "Continue");
+
+  await onboardWorkspace(page, "Test workspace", vi.fn());
+
+  expect(openCreate).toHaveBeenCalledOnce();
+  expect(fill).toHaveBeenCalledWith("Test workspace");
+  expect(submit).toHaveBeenCalledOnce();
+  expect(page.getByRole).toHaveBeenCalledWith("button", {
+    name: /^(continue|create workspace)$/i,
+  });
 });
 
 it("records the cleanup handle even if the final redirect fails", async () => {

@@ -95,10 +95,11 @@ it("enriches room participants with roster activity while keeping the full creat
   expect(directory.participants.map((member) => member.id)).toEqual(["colleague", "agent-friday", "agent-atlas"]);
 });
 
-it("surfaces directory hydration failures through the existing retry control", () => {
+it("surfaces directory hydration failures through the existing retry control while retaining available rooms", () => {
   state.directoryError = new Error("Directory hydration failed");
   compose();
   expect(directory.state).toBe("error");
+  expect(directory.rooms[0]).toMatchObject({ roomId: room.roomId, participants: [expect.objectContaining({ displayName: "Friday" })] });
   act(() => directory.onRetry?.());
   expect(state.refreshRooms).toHaveBeenCalledOnce();
 });

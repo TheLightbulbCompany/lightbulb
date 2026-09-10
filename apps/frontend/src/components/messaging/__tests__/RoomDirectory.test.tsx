@@ -32,3 +32,25 @@ it("identifies agents without handles in People and agents", () => {
   expect(screen.getByText("Agent")).toBeInTheDocument();
   expect(screen.getAllByText("Person")).toHaveLength(1);
 });
+
+it("keeps available rooms visible with a detail recovery notice", () => {
+  const onRetry = vi.fn();
+  render(<RoomDirectory ownerScopeId="org" state="error" rooms={[
+    base,
+    { ...base, roomId: "friday-dm", kind: "dm", name: null, participants: [friday] },
+  ]} participants={[]} onSelectRoom={vi.fn()} onRetry={onRetry} />);
+
+  expect(screen.getByRole("button", { name: /Launch/ })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /Friday/ })).toBeInTheDocument();
+  expect(screen.getByRole("alert")).toHaveTextContent("Some conversation details could not be loaded.");
+  fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+  expect(onRetry).toHaveBeenCalledOnce();
+});
+
+it("keeps an empty directory error blocking", () => {
+  render(<RoomDirectory ownerScopeId="org" state="error" rooms={[]} participants={[]} onSelectRoom={vi.fn()} onRetry={vi.fn()} />);
+
+  expect(screen.getByRole("status")).toHaveTextContent("Conversations could not be loaded.");
+  expect(screen.queryByRole("button", { name: /Launch/ })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+});

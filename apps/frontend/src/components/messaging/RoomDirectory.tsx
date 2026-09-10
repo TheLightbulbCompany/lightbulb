@@ -57,8 +57,9 @@ function DirectoryContent({
     const needle = query.toLocaleLowerCase();
     return participant.displayName.toLocaleLowerCase().includes(needle) || participant.mentionHandle?.includes(needle);
   });
+  const partialError = state === "error" && rooms.length > 0;
 
-  if (state !== "ready") return <nav className="room-directory" aria-label="Conversations">
+  if (state !== "ready" && !partialError) return <nav className="room-directory" aria-label="Conversations">
     <h2 className="font-semibold">Conversations</h2>
     <p role="status">{state === "loading" ? "Loading conversations…" : state === "access-removed" ? "Access removed" : "Conversations could not be loaded."}</p>
     {state === "loading" && <div aria-hidden="true" className="room-skeleton"><span /><span /><span /></div>}
@@ -94,6 +95,7 @@ function DirectoryContent({
       {onCreate && <Button variant="ghost" size="icon" aria-label="New conversation" disabled={creationBusy}
         onClick={() => { setCreating(true); setSelected(new Map()); setQuery(""); setKind("channel"); }}><Plus aria-hidden="true" /></Button>}
     </div>
+    {partialError && <div role="alert" className="px-2 text-sm text-err">Some conversation details could not be loaded. {onRetry && <Button variant="outline" onClick={onRetry}>Try again</Button>}</div>}
     {(["Channels", "Direct messages"] as const).map((group) => {
       const entries = rooms.filter((room) => group === "Channels" ? room.kind === "channel" : room.kind !== "channel");
       return <section key={group} aria-label={group}>

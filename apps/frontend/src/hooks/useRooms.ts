@@ -13,6 +13,7 @@ import {
   type MessagePage,
   type PatchRoomRequest,
   type RoomMember,
+  type RoomDetail,
   type UpsertRoomMemberRequest,
 } from "@lightbulb/shared";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
@@ -51,6 +52,7 @@ export function mergeCanonicalMessages(
 
 const lastSequence = (messages: readonly CanonicalRoomMessage[]) => messages.at(-1)?.messageSeq ?? 0;
 const NO_ROOMS: never[] = [];
+const EMPTY_ROOM_DETAILS: ReadonlyMap<string, RoomDetail> = new Map();
 
 export function useRooms(initialAgentId?: string | null, subscribeToRoom = true) {
   const { isLoaded, userId, orgId } = useAuth();
@@ -73,8 +75,25 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
   const roomsData = roomsResponse.data;
   const mutateRooms = roomsResponse.mutate;
   const rooms = roomsData?.rooms ?? NO_ROOMS;
+  const directRoomSignature = rooms
+    .filter((room) => room.kind !== "channel")
+    .map((room) => `${room.roomId}:${room.roomRevision}`)
+    .join("|");
+  const loadDirectoryRoomDetails = useCallback(async (): Promise<Map<string, RoomDetail>> => {
+    const details = await Promise.all(
+      rooms.filter((room) => room.kind !== "channel").map((room) => messaging.getRoom(room.roomId)),
+    );
+    return new Map(details.map((detail) => [detail.roomId, detail]));
+  }, [messaging, rooms]);
+  const directoryDetailsResponse = useSWR(
+    scope && roomsData ? ["messaging-room-directory", scope, directRoomSignature] : null,
+    loadDirectoryRoomDetails,
+    { revalidateOnFocus: false, shouldRetryOnError: false },
+  );
+  const directoryRoomDetails: ReadonlyMap<string, RoomDetail> = directoryDetailsResponse.data ?? EMPTY_ROOM_DETAILS;
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const initialDmRequest = useRef<{ agentId: string; clientRoomId: string } | null>(null);
+  const handledInitialAgent = useRef<string | null>(null);
   const [accessRemoved, setAccessRemoved] = useState(false);
   const [deliveryOverride, setDeliveryOverride] = useState<{ roomId: string; deliveryKey: string; roomRevision: number } | null>(null);
   const detailResponse = useSWR(
@@ -102,45 +121,6 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
   const generation = useRef(0);
   const requestedAfter = useRef<number | null>(null);
   const reconciliation = useRef<Promise<void> | null>(null);
-
-  useEffect(() => {
-    if (!roomsData || activeRoomId) return;
-    let cancelled = false;
-    if (!initialAgentId) {
-      if (rooms.length > 0) setActiveRoomId(rooms[0].roomId);
-      return;
-    }
-    void Promise.all(rooms
-      .filter((room) => room.kind === "dm")
-      .map((room) => messaging.getRoom(room.roomId).catch(() => null)))
-      .then(async (details) => {
-        const dm = details.find((detail) => detail?.members.some(
-          (member) => member.kind === "agent" && member.id === initialAgentId,
-        ));
-        if (dm) return dm;
-        const creation = initialDmRequest.current?.agentId === initialAgentId
-          ? initialDmRequest.current
-          : { agentId: initialAgentId, clientRoomId: crypto.randomUUID() };
-        initialDmRequest.current = creation;
-        return messaging.createRoom({
-          clientRoomId: creation.clientRoomId,
-          kind: "dm",
-          name: null,
-          members: [{ kind: "agent", id: initialAgentId, role: "member", listenMode: "active" }],
-        });
-      })
-      .then((dm) => {
-        if (cancelled) return;
-        setActiveRoomId(dm.roomId);
-        void mutateRooms();
-      })
-      .catch(() => {
-        if (!cancelled && rooms.length > 0) setActiveRoomId(rooms[0].roomId);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [roomsData, rooms, activeRoomId, initialAgentId, messaging, mutateRooms]);
 
   useEffect(() => {
     generation.current += 1;
@@ -360,6 +340,47 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
     return created;
   }, [messaging, mutateRooms]);
 
+  const selectAgentDm = useCallback(async (agentId: string): Promise<void> => {
+    const details = directoryDetailsResponse.data ?? await loadDirectoryRoomDetails();
+    const existing = [...details.values()].find(
+      (detail) => detail.kind === "dm" && detail.members.some(
+        (member) => member.kind === "agent" && member.id === agentId,
+      ),
+    );
+    if (existing) {
+      setActiveRoomId(existing.roomId);
+      return;
+    }
+    const request = initialDmRequest.current?.agentId === agentId
+      ? initialDmRequest.current
+      : { agentId, clientRoomId: crypto.randomUUID() };
+    initialDmRequest.current = request;
+    const created = await createRoom({
+      clientRoomId: request.clientRoomId,
+      kind: "dm",
+      name: null,
+      members: [{ kind: "agent", id: agentId, role: "member", listenMode: "active" }],
+    });
+    setActiveRoomId(created.roomId);
+  }, [createRoom, directoryDetailsResponse.data, loadDirectoryRoomDetails]);
+
+  useEffect(() => {
+    if (!roomsData) return;
+    if (!initialAgentId) {
+      handledInitialAgent.current = null;
+      if (!activeRoomId && rooms.length > 0) setActiveRoomId(rooms[0].roomId);
+      return;
+    }
+    const requestKey = `${scope}:${initialAgentId}`;
+    if (handledInitialAgent.current === requestKey) return;
+    handledInitialAgent.current = requestKey;
+    void selectAgentDm(initialAgentId).catch(() => {
+      if (handledInitialAgent.current === requestKey && rooms.length > 0) {
+        setActiveRoomId(rooms[0].roomId);
+      }
+    });
+  }, [activeRoomId, initialAgentId, rooms, roomsData, scope, selectAgentDm]);
+
   const updateRoom = useCallback(async (request: PatchRoomRequest) => {
     if (!activeRoomId) throw new Error("No room selected.");
     const updated = await messaging.updateRoom(activeRoomId, request);
@@ -413,6 +434,8 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
     liveConnected,
     httpReady,
     selectRoom,
+    selectAgentDm,
+    directoryRoomDetails,
     refreshRooms: () => mutateRooms(),
     refreshRoom: () => mutateRoom(),
     createRoom,

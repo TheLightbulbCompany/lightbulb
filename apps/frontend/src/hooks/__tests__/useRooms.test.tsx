@@ -103,6 +103,54 @@ beforeEach(() => {
 });
 
 describe("useRooms canonical reconciliation", () => {
+  it("hydrates direct-message members and retargets an existing DM", async () => {
+    const fridayDm = {
+      ...room,
+      roomId: "11111111-1111-4111-8111-111111111112",
+      kind: "dm" as const,
+      name: null,
+      members: [room.members[0], { ...room.members[1], id: "agent-friday", displayName: "Friday" }],
+    };
+    const atlasDm = {
+      ...fridayDm,
+      roomId: "11111111-1111-4111-8111-111111111113",
+      members: [room.members[0], { ...room.members[1], id: "agent-atlas", displayName: "Atlas" }],
+    };
+    messaging.listRooms.mockResolvedValue({ rooms: [fridayDm, atlasDm] });
+    messaging.getRoom.mockImplementation(async (roomId: string) =>
+      roomId === atlasDm.roomId ? atlasDm : fridayDm,
+    );
+
+    const { result } = renderHook(() => useRooms("agent-friday"), { wrapper });
+    await waitFor(() => expect(result.current.directoryRoomDetails.size).toBe(2));
+    await act(async () => result.current.selectAgentDm("agent-atlas"));
+
+    expect(result.current.activeRoomId).toBe(atlasDm.roomId);
+    expect(messaging.createRoom).not.toHaveBeenCalled();
+  });
+
+  it("creates one canonical DM when the requested agent has none", async () => {
+    const created = {
+      ...room,
+      roomId: "11111111-1111-4111-8111-111111111114",
+      kind: "dm" as const,
+      name: null,
+      members: [room.members[0], { ...room.members[1], id: "agent-new", displayName: "New agent" }],
+    };
+    messaging.createRoom.mockResolvedValue(created);
+    const { result } = renderHook(() => useRooms(), { wrapper });
+    await waitFor(() => expect(result.current.activeRoomId).toBe(room.roomId));
+
+    await act(async () => result.current.selectAgentDm("agent-new"));
+
+    expect(messaging.createRoom).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "dm",
+      name: null,
+      members: [{ kind: "agent", id: "agent-new", role: "member", listenMode: "active" }],
+    }));
+    expect(result.current.activeRoomId).toBe(created.roomId);
+  });
+
   it("subscribes before history, merges gaps in sequence, rotates keys, and evicts access immediately", async () => {
     const { result, rerender } = renderHook(() => useRooms(), { wrapper });
     await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(room.roomId));

@@ -1,0 +1,265 @@
+"""Workspace-only Stripe subscription checkout contract."""
+
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from botocore.exceptions import ClientError
+
+from core.services import billing_service
+from core.services.billing_service import BillingService
+
+
+@pytest.fixture(autouse=True)
+def checkout_slot(monkeypatch):
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "try_claim_checkout_slot",
+        AsyncMock(return_value="claim"),
+    )
+    monkeypatch.setattr(billing_service.billing_repo, "release_checkout_slot", AsyncMock())
+    monkeypatch.setattr(billing_service.billing_repo, "set_pending_checkout", AsyncMock())
+    monkeypatch.setattr(
+        billing_service.stripe.Subscription,
+        "list",
+        MagicMock(return_value=MagicMock(auto_paging_iter=lambda: iter([]))),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("plan", "price_id"),
+    [("workspace", "price_workspace"), ("ultra", "price_ultra")],
+)
+async def test_workspace_checkout_has_one_recurring_item_and_manual_promotion_codes(monkeypatch, plan, price_id):
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
+    monkeypatch.setattr(billing_service.settings, "STRIPE_ULTRA_PRICE_ID", "price_ultra")
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "org_1", "stripe_customer_id": "cus_1"}),
+    )
+    session = MagicMock(id="cs_1", url="https://checkout.test/cs_1")
+    create = MagicMock(return_value=session)
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "create", create)
+
+    result = await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan=plan)
+
+    assert result is session
+    kwargs = create.call_args.kwargs
+    assert kwargs["line_items"] == [{"price": price_id, "quantity": 1}]
+    assert kwargs["allow_promotion_codes"] is True
+    assert kwargs["payment_method_collection"] == "always"
+    assert kwargs["metadata"] == {
+        "owner_id": "org_1",
+        "clerk_user_id": "user_1",
+        "plan": plan,
+        "purpose": "workspace_subscription_v1",
+    }
+    assert "automatic_tax" not in kwargs
+    assert "customer_update" not in kwargs
+    assert "discounts" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_workspace_checkout_swaps_an_active_subscription_item_in_place(monkeypatch):
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
+    monkeypatch.setattr(billing_service.settings, "STRIPE_ULTRA_PRICE_ID", "price_ultra")
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(
+            return_value={
+                "owner_id": "org_1",
+                "stripe_customer_id": "cus_1",
+                "stripe_subscription_id": "sub_1",
+                "subscription_status": "active",
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        billing_service.stripe.Subscription,
+        "retrieve",
+        MagicMock(
+            return_value={
+                "metadata": {"owner_id": "org_1"},
+                "status": "active",
+                "items": {"data": [{"id": "si_1", "price": {"id": "price_workspace"}}]},
+            }
+        ),
+    )
+    modify = MagicMock()
+    monkeypatch.setattr(billing_service.stripe.Subscription, "modify", modify)
+
+    result = await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="ultra")
+
+    assert result == {"updated": True}
+    modify.assert_called_once_with(
+        "sub_1",
+        items=[{"id": "si_1", "price": "price_ultra"}],
+        proration_behavior="create_prorations",
+        idempotency_key="workspace-plan-change-org_1-si_1-price_ultra",
+    )
+
+
+@pytest.mark.asyncio
+async def test_workspace_checkout_rejects_a_legacy_multi_item_subscription(monkeypatch):
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
+    monkeypatch.setattr(billing_service.settings, "STRIPE_ULTRA_PRICE_ID", "price_ultra")
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(
+            return_value={
+                "owner_id": "org_1",
+                "stripe_customer_id": "cus_1",
+                "stripe_subscription_id": "sub_legacy_team",
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        billing_service.stripe.Subscription,
+        "retrieve",
+        MagicMock(
+            return_value={
+                "id": "sub_legacy_team",
+                "metadata": {"owner_id": "org_1"},
+                "status": "active",
+                "items": {
+                    "data": [
+                        {"id": "si_base", "price": {"id": "price_workspace"}},
+                        {"id": "si_seat", "price": {"id": "price_seat"}},
+                    ]
+                },
+            }
+        ),
+    )
+    modify = MagicMock()
+    monkeypatch.setattr(billing_service.stripe.Subscription, "modify", modify)
+
+    with pytest.raises(billing_service.BillingServiceError, match="can't be changed automatically"):
+        await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="ultra")
+
+    modify.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_workspace_checkout_does_not_create_a_second_subscription_while_webhook_is_in_flight(monkeypatch):
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
+    monkeypatch.setattr(billing_service.settings, "STRIPE_ULTRA_PRICE_ID", "price_ultra")
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "org_1", "stripe_customer_id": "cus_1"}),
+    )
+    subscription = {
+        "id": "sub_webhook",
+        "status": "active",
+        "metadata": {"owner_id": "org_1"},
+        "items": {"data": [{"id": "si_1", "price": {"id": "price_workspace"}}]},
+    }
+    monkeypatch.setattr(
+        billing_service.stripe.Subscription,
+        "list",
+        MagicMock(return_value=MagicMock(auto_paging_iter=lambda: iter([subscription]))),
+    )
+    create = MagicMock()
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "create", create)
+    modify = MagicMock()
+    monkeypatch.setattr(billing_service.stripe.Subscription, "modify", modify)
+
+    result = await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="ultra")
+
+    assert result == {"updated": True}
+    assert modify.call_args.args[0] == "sub_webhook"
+    create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_workspace_checkout_reuses_its_open_pending_session(monkeypatch):
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
+    pending = MagicMock(
+        status="open",
+        url="https://checkout.test/pending",
+        get=lambda name, default=None: {
+            "status": "open",
+            "metadata": {"purpose": "workspace_subscription_v1", "plan": "workspace", "owner_id": "org_1"},
+        }.get(name, default),
+    )
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(
+            return_value={
+                "owner_id": "org_1",
+                "stripe_customer_id": "cus_1",
+                "pending_checkout_session_id": "cs_pending",
+            }
+        ),
+    )
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "retrieve", MagicMock(return_value=pending))
+    create = MagicMock()
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "create", create)
+
+    result = await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="workspace")
+
+    assert result is pending
+    create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_workspace_customer_does_not_reuse_another_workspaces_email_customer(monkeypatch):
+    service = BillingService()
+    monkeypatch.setattr(billing_service.billing_repo, "get_by_owner_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "create_if_not_exists",
+        AsyncMock(return_value={"owner_id": "org_2", "stripe_customer_id": "cus_org_2"}),
+    )
+    create = MagicMock(return_value=MagicMock(id="cus_org_2"))
+    monkeypatch.setattr(billing_service.stripe.Customer, "create", create)
+    list_customers = MagicMock()
+    monkeypatch.setattr(billing_service.stripe.Customer, "list", list_customers)
+
+    account = await service.create_customer_for_owner(owner_id="org_2", owner_type="org", email="owner@example.com")
+
+    list_customers.assert_not_called()
+    create.assert_called_once_with(
+        email="owner@example.com",
+        metadata={"owner_id": "org_2", "owner_type": "org"},
+        idempotency_key="workspace-customer:v1:org_2",
+    )
+    assert account["stripe_customer_id"] == "cus_org_2"
+
+
+@pytest.mark.asyncio
+async def test_workspace_customer_backfill_race_keeps_the_existing_row_winner(monkeypatch):
+    service = BillingService()
+    existing = {"owner_id": "org_2", "subscription_status": "trial_local"}
+    winner = {"owner_id": "org_2", "stripe_customer_id": "cus_winner"}
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(side_effect=[existing, winner]),
+    )
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "set_stripe_customer_id",
+        AsyncMock(
+            side_effect=ClientError(
+                {"Error": {"Code": "ConditionalCheckFailedException", "Message": "already claimed"}},
+                "UpdateItem",
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        billing_service.stripe.Customer,
+        "create",
+        MagicMock(return_value=MagicMock(id="cus_loser")),
+    )
+    delete = MagicMock()
+    monkeypatch.setattr(billing_service.stripe.Customer, "delete", delete)
+
+    account = await service.create_customer_for_owner(owner_id="org_2", owner_type="org", email="owner@example.com")
+
+    assert account == winner
+    delete.assert_called_once_with("cus_loser", idempotency_key="delete_customer:cus_loser")

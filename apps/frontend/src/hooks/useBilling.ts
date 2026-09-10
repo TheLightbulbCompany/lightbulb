@@ -4,7 +4,6 @@ import { useCallback } from "react";
 import useSWR from "swr";
 import { useAuth } from "@clerk/nextjs";
 import { useApi, ApiError } from "@/lib/api";
-import type { ProviderChoiceId } from "@/lib/providerCards";
 
 // =============================================================================
 // Flat-fee billing hook. Backend response shapes match
@@ -103,58 +102,10 @@ export function useBilling() {
     window.location.href = portal_url;
   }, [api]);
 
-  const startTeamCheckout = useCallback(async () => {
-    const { checkout_url } = (await api.post("/billing/team-checkout", {})) as {
+  const startCheckout = useCallback(async (plan: "workspace" | "ultra") => {
+    const res = (await api.post("/billing/checkout", { plan })) as {
       checkout_url?: string;
-    };
-    if (!checkout_url) throw new Error("No checkout_url returned");
-    window.location.href = checkout_url;
-  }, [api]);
-
-  // Flat-fee subscribe for a free-tier (trial_local) owner. POST
-  // /billing/trial-checkout is the flat $50/mo checkout despite the legacy
-  // path name (billed immediately, no Stripe trial) — the same route the
-  // ProviderPicker cards hit at signup.
-  //
-  // The provider is a REQUIRED argument. It used to be hardcoded to
-  // `bedrock_claude` on the reasoning that the free tier already runs
-  // Bedrock-managed Claude, so conversion should keep that path. Two things
-  // were wrong with that. The owner never got to choose — the other two
-  // provider paths cost us nothing in inference, and nobody was ever offered
-  // them at the one moment they are deciding to pay. And Checkout's
-  // success_url carries `?provider=<id>` into the wizard's provider step, so
-  // a hardcoded choice made server-side rather than picked client-side ALSO
-  // skipped CreditsStep — leaving converted owners on Bedrock-managed
-  // inference with a zero credit balance they were never asked to fund.
-  // `creditsCents` is the starter Claude-credit amount bundled into the same
-  // Checkout as a one-time line item — bedrock_claude only, since the other
-  // two providers spend no Isol8 credits. Omitted => the server default. The
-  // server re-validates and re-scopes it; this is a UI convenience, never the
-  // authority on what gets charged.
-  const startTrialCheckout = useCallback(async (
-    providerChoice: ProviderChoiceId,
-    creditsCents?: number,
-  ) => {
-    const { checkout_url } = (await api.post("/billing/trial-checkout", {
-      provider_choice: providerChoice,
-      ...(creditsCents != null ? { credits_cents: creditsCents } : {}),
-    })) as { checkout_url?: string };
-    if (!checkout_url) throw new Error("No checkout_url returned");
-    window.location.href = checkout_url;
-  }, [api]);
-
-  // Upgrade the owner to the Ultra Pro tier via POST /billing/ultra-checkout.
-  // Two response shapes (see routers/billing.py create_ultra_checkout):
-  //   - {checkout_url}   → free-tier / no live sub: a fresh Ultra Checkout
-  //                        session; redirect the browser to Stripe.
-  //   - {upgraded: true} → owner already on the flat sub: an in-place item
-  //                        swap (one subscription, prorated), no redirect —
-  //                        refresh the billing row so the card flips to the
-  //                        Ultra badge once the webhook records the tier.
-  const upgradeToUltra = useCallback(async () => {
-    const res = (await api.post("/billing/ultra-checkout", {})) as {
-      checkout_url?: string;
-      upgraded?: boolean;
+      updated?: boolean;
     };
     if (res.checkout_url) {
       window.location.href = res.checkout_url;
@@ -182,9 +133,7 @@ export function useBilling() {
     error,
     isSubscribed,
     openPortal,
-    startTeamCheckout,
-    startTrialCheckout,
-    upgradeToUltra,
+    startCheckout,
     fetchUsage,
     refresh,
   };

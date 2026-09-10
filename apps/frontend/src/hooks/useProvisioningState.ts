@@ -206,9 +206,9 @@ export function useProvisioningState(
     case "needs-signup":
       // "Owner has never started signup": gate would fire signup_required
       // for an admin, but /container/status converts that to 404 so the
-      // chat surface renders the ProviderPicker (which calls
-      // POST /billing/trial-checkout — the only way to create the first
-      // billing row) instead of trapping the admin in a Subscribe-loop UI.
+      // chat surface renders the ProviderPicker (whose workspace CTA calls
+      // POST /billing/checkout) instead of trapping the admin in a
+      // Subscribe-loop UI.
       return { phase: "needs-signup", container: null, blocked: null, refresh, error: networkError, isLoading };
     case "blocked":
       return {

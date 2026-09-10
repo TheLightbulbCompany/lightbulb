@@ -117,8 +117,8 @@ let billingMockAccount: {
 // Spy for the /billing/account re-fetch the stepper fires when a container is
 // provisioning but billing hasn't caught up to the just-created trial_local.
 let billingMockRefresh = vi.fn();
-// Spy for the Teams-billing checkout CTA (team_billing_required blocked test).
-const billingMockStartTeamCheckout = vi.fn();
+// Spy for the workspace-billing checkout CTA.
+const billingMockStartCheckout = vi.fn();
 vi.mock("@/hooks/useBilling", () => ({
   // Default: provider_choice set, an onboarded owner (the cold-start tests
   // need to get PAST the ProviderPicker gate, which requires isSubscribed AND
@@ -128,7 +128,7 @@ vi.mock("@/hooks/useBilling", () => ({
     isSubscribed: billingMockIsSubscribed,
     account: billingMockAccount,
     refresh: billingMockRefresh,
-    startTeamCheckout: billingMockStartTeamCheckout,
+    startCheckout: billingMockStartCheckout,
   }),
 }));
 
@@ -174,7 +174,7 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     billingMockIsSubscribed = true;
     billingMockAccount = { provider_choice: "bedrock_claude" };
     billingMockRefresh = vi.fn();
-    billingMockStartTeamCheckout.mockClear();
+    billingMockStartCheckout.mockClear();
     clerkMockUser = null;
     clerkMockIsLoaded = true;
   });
@@ -408,7 +408,7 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     await act(async () => {
       screen.getByRole("button", { name: /subscribe workspace/i }).click();
     });
-    expect(billingMockStartTeamCheckout).toHaveBeenCalled();
+    expect(billingMockStartCheckout).toHaveBeenCalledWith("workspace");
 
     // The card must carry its own chrome: `.settings-*` classes live in a
     // route-scoped stylesheet /chat never loads, so relying on them here is
@@ -466,9 +466,7 @@ describe("ProvisioningStepper blocked-state rendering", () => {
       // the same text, so the paywall showed the sentence twice — at the exact
       // moment someone is deciding to pay.
       expect(screen.getAllByText(/You've used today's free allowance/)).toHaveLength(1);
-      expect(
-        screen.getByText(/Pick how you want to power your agents/),
-      ).toBeInTheDocument();
+      expect(screen.getByText(/Choose your inference provider after checkout/)).toBeInTheDocument();
 
       // And emphatically NOT the send-them-to-settings card.
       expect(
@@ -529,9 +527,7 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     );
 
     // ProviderPicker headline + card titles confirm the picker rendered.
-    expect(
-      screen.getByText(/ways to power it/i),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /One workspace plan/i })).toBeInTheDocument();
     expect(
       screen.getByRole("heading", { name: /Sign in with ChatGPT/i }),
     ).toBeInTheDocument();
@@ -564,7 +560,7 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     );
 
     // Picker headline must be absent — the live container bypasses it.
-    expect(screen.queryByText(/ways to power it/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/One workspace plan/i)).not.toBeInTheDocument();
     // Billing was re-fetched so the trial state can catch up.
     expect(billingMockRefresh).toHaveBeenCalled();
   });
@@ -655,7 +651,7 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     );
 
     // Must NOT render the ProviderPicker.
-    expect(screen.queryByText(/ways to power it/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/One workspace plan/i)).not.toBeInTheDocument();
     expect(
       screen.queryByRole("heading", { name: /Sign in with ChatGPT/i }),
     ).not.toBeInTheDocument();
@@ -1329,7 +1325,7 @@ describe("ProvisioningStepper per-container onboarding gate", () => {
     billingMockIsSubscribed = true;
     billingMockAccount = { provider_choice: "bedrock_claude" };
     billingMockRefresh = vi.fn();
-    billingMockStartTeamCheckout.mockClear();
+    billingMockStartCheckout.mockClear();
     clerkMockUser = { id: "user_1", unsafeMetadata: {} };
     clerkMockIsLoaded = true;
     clerkMockOrganization = null;

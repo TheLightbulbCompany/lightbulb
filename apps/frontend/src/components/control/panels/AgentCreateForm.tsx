@@ -28,7 +28,7 @@ export function AgentCreateForm({ existingNames, onCreated, onCancel }: AgentCre
   const [upgrading, setUpgrading] = useState(false);
   const [upgradeError, setUpgradeError] = useState<string | null>(null);
   const callRpc = useRuntimeRpcMutation();
-  const { upgradeToUltra } = useBilling();
+  const { startCheckout } = useBilling();
 
   // Mirrors UltraUpgradeRow in app/settings/page.tsx. Swallowing a failure
   // matters more here than there: this button is the ONLY way past the wall the
@@ -40,13 +40,13 @@ export function AgentCreateForm({ existingNames, onCreated, onCancel }: AgentCre
     try {
       // The fresh-checkout path redirects away and never returns; the in-place
       // swap resolves here. Clear the spinner either way.
-      await upgradeToUltra();
+      await startCheckout("ultra");
     } catch {
       setUpgradeError("Couldn't start the upgrade. Please try again.");
     } finally {
       setUpgrading(false);
     }
-  }, [upgradeToUltra]);
+  }, [startCheckout]);
 
   const normalizedId = normalizeAgentId(name);
   const clientError = validateAgentName(name, existingNames);

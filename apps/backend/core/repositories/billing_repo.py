@@ -646,11 +646,9 @@ async def set_stripe_customer_id(
     this when it finds a row that exists but has no ``stripe_customer_id`` —
     without this backfill, ``create_flat_fee_checkout`` always sees a
     Stripe-customer-less account and raises, and every free-tier user hits
-    an HTTP 400 on Upgrade. Same existing-row condition as the other
-    billing-row setters (``set_metronome_ids``, ``set_metronome_customer_id``,
-    ``set_credits_auto_charge``) — an unconditional update would upsert a
-    phantom ``{owner_id, stripe_customer_id}`` row for a caller that got the
-    owner_id wrong, silently orphaning it from the rest of the billing state.
+    an HTTP 400 on Upgrade. The conditional claim also requires the field to
+    be absent: two first checkouts can race on the same ``trial_local`` row,
+    but only one may attach a customer.
     """
     table = _get_table()
     await run_in_thread(
@@ -661,7 +659,7 @@ async def set_stripe_customer_id(
             ":c": stripe_customer_id,
             ":t": utc_now_iso(),
         },
-        ConditionExpression="attribute_exists(owner_id)",
+        ConditionExpression="attribute_exists(owner_id) AND attribute_not_exists(stripe_customer_id)",
     )
 
 

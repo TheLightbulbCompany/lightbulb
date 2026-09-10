@@ -8,6 +8,7 @@ import time
 from typing import Literal
 
 import stripe
+from botocore.exceptions import ClientError
 
 from core.config import settings
 from core.observability.metrics import put_metric, timing
@@ -53,10 +54,10 @@ MAX_STARTER_CREDITS_CENTS = 100_000  # $1,000 — matches _TOP_UP_MAX_CENTS
 
 
 # Bumped whenever the Checkout Session request body shape changes — see
-# _checkout_idempotency_key. v2 = top-level `metadata` + the optional credits
-# line item + conditional allow_promotion_codes. v3 = the launch winner
-# `discounts` pre-apply (which also drops allow_promotion_codes when present).
-_CHECKOUT_BODY_VERSION = 3
+# _checkout_idempotency_key. v4 is the workspace-only Checkout: one recurring
+# price, manual promotion-code entry, and no automatic tax until finance has
+# completed the Stripe Tax readiness checks.
+_CHECKOUT_BODY_VERSION = 4
 
 
 def normalize_starter_credits(credits_cents: int | None) -> int | None:
@@ -90,79 +91,45 @@ class BillingService:
     async def create_customer_for_owner(
         self, owner_id: str, owner_type: str = "personal", email: str | None = None
     ) -> dict:
-        """Resolve a Stripe customer for ``owner_id``, keyed by ``email``.
+        """Resolve a Stripe customer for one workspace billing row only.
 
-        Email is the system-of-record idempotency key for Stripe-side identity:
-        a single human (one verified email in Clerk) maps to a single Stripe
-        Customer, regardless of how many billing entities they own (personal
-        account, multiple orgs as admin, etc.). DDB ``billing-accounts`` rows
-        are still per-owner_id, so multiple rows can share one
-        ``stripe_customer_id``.
-
-        Resolution order:
-          1. Existing DDB row for this owner_id WITH a ``stripe_customer_id``
-             → return it (no Stripe call).
-          1b. Existing DDB row WITHOUT a ``stripe_customer_id`` — the
-              card-less ``trial_local`` row (``create_trial_local_if_absent``
-              deliberately writes no ``stripe_*`` fields) is the only row
-              that reaches this today — falls through to steps 2-3 below to
-              mint/reuse a customer, then BACKFILLS it onto the existing row
-              via ``billing_repo.set_stripe_customer_id`` rather than
-              attempting a fresh ``create_if_not_exists`` (which would raise
-              ``AlreadyExistsError`` against a row that's already there).
-              Without this, ``create_flat_fee_checkout`` always sees no
-              Stripe customer and raises — every free-tier user hits an
-              HTTP 400 on Upgrade.
-          2. ``stripe.Customer.list(email=...)`` → reuse the most recent match.
-             ``list`` is exact-match and immediately consistent (unlike
-             ``search``, which has indexing lag).
-          3. No match → ``stripe.Customer.create``.
-
-        Webhook handlers must resolve owner via subscription metadata
-        (``owner_id``) since the GSI on ``stripe_customer_id`` is no longer
-        unique. See ``handle_stripe_webhook`` in ``routers/billing.py``.
+        A human can administer multiple workspaces, so their email is display
+        data on a newly-created customer, never a cross-workspace deduplication
+        key. Reuse is permitted only when this workspace row already stores a
+        Stripe customer id.
         """
         existing = await billing_repo.get_by_owner_id(owner_id)
         if existing and existing.get("stripe_customer_id"):
             return existing
 
-        # Normalize so a single human typing/signing in with mixed case
-        # ("User@Example.com" vs "user@example.com") still maps to one
-        # Stripe customer. Stripe's Customer.list email filter is exact
-        # match, so without normalization we'd silently create duplicates.
         normalized_email = email.strip().lower() if email else None
-
-        customer_id: str | None = None
-        created_locally = False
-        if normalized_email:
-            with timing("stripe.api.latency", {"op": "customers.list"}):
-                matches = stripe.Customer.list(email=normalized_email, limit=1)
-            if matches and matches.data:
-                customer_id = matches.data[0].id
-                put_metric("stripe.customer.email_dedup", dimensions={"result": "reuse"})
-                logger.info(
-                    "Reusing Stripe customer %s for owner_id=%s (email=%s)",
-                    customer_id,
-                    owner_id,
-                    normalized_email,
-                )
-
-        if customer_id is None:
-            with timing("stripe.api.latency", {"op": "customers.create"}):
-                customer = stripe.Customer.create(
-                    email=normalized_email,
-                    metadata={"owner_id": owner_id, "owner_type": owner_type},
-                )
-            customer_id = customer.id
-            created_locally = True
-            put_metric("stripe.customer.email_dedup", dimensions={"result": "create"})
+        with timing("stripe.api.latency", {"op": "customers.create"}):
+            customer = stripe.Customer.create(
+                email=normalized_email,
+                metadata={"owner_id": owner_id, "owner_type": owner_type},
+                idempotency_key=f"workspace-customer:v1:{owner_id}",
+            )
+        customer_id = customer.id
 
         if existing:
             # Backfill path (1b above) — the row already exists (trial_local
             # today), so persist onto it instead of racing a fresh
             # create_if_not_exists, which would raise AlreadyExistsError
             # against a row that's already there.
-            await billing_repo.set_stripe_customer_id(owner_id, stripe_customer_id=customer_id)
+            try:
+                await billing_repo.set_stripe_customer_id(owner_id, stripe_customer_id=customer_id)
+            except ClientError as e:
+                if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                    raise
+                winner = await billing_repo.get_by_owner_id(owner_id)
+                if not winner or not winner.get("stripe_customer_id"):
+                    raise
+                with timing("stripe.api.latency", {"op": "customers.delete"}):
+                    stripe.Customer.delete(
+                        customer_id,
+                        idempotency_key=f"delete_customer:{customer_id}",
+                    )
+                return winner
             existing["stripe_customer_id"] = customer_id
             return existing
 
@@ -173,18 +140,10 @@ class BillingService:
                 owner_type=owner_type,
             )
         except billing_repo.AlreadyExistsError:
-            # Lost the DDB race for this owner_id. If we took the create
-            # path, two concurrent callers may have both missed the
-            # email-list lookup and each minted a fresh Stripe customer —
-            # the loser's customer is now orphaned (no DDB row points at
-            # it). Delete it so the email→customer invariant holds.
+            # Lost the DDB race for this workspace. Delete the Stripe customer
+            # created by this request and return the workspace winner.
             winner = await billing_repo.get_by_owner_id(owner_id)
-            if (
-                created_locally
-                and winner
-                and winner.get("stripe_customer_id")
-                and winner["stripe_customer_id"] != customer_id
-            ):
+            if winner and winner.get("stripe_customer_id") and winner["stripe_customer_id"] != customer_id:
                 logger.info(
                     "Lost DDB race for owner_id=%s; deleting orphan Stripe customer %s (winner=%s)",
                     owner_id,
@@ -197,9 +156,7 @@ class BillingService:
                             customer_id,
                             idempotency_key=f"delete_customer:{customer_id}",
                         )
-                    put_metric("stripe.customer.orphan_delete", dimensions={"result": "ok"})
                 except Exception:
-                    put_metric("stripe.customer.orphan_delete", dimensions={"result": "error"})
                     logger.warning("Failed to delete orphan Stripe customer %s", customer_id)
             return winner
 
@@ -243,6 +200,130 @@ class BillingService:
             trial_end=None,
             clear_seat_fields=True,
         )
+
+
+async def create_workspace_checkout(
+    *, owner_id: str, clerk_user_id: str, plan: Literal["workspace", "ultra"]
+) -> dict | stripe.checkout.Session:
+    """Create or change the single recurring subscription for a workspace."""
+    price_id = settings.STRIPE_WORKSPACE_PRICE_ID if plan == "workspace" else settings.STRIPE_ULTRA_PRICE_ID
+    if not price_id:
+        raise BillingServiceError(f"STRIPE_{plan.upper()}_PRICE_ID not configured")
+
+    from core.services.provision_gate import LIVE_SUBSCRIPTION_STATUSES
+
+    account = await billing_repo.get_by_owner_id(owner_id)
+    if not account or not account.get("stripe_customer_id"):
+        raise BillingServiceError(f"No Stripe customer for owner_id={owner_id}")
+
+    subscription = None
+    sub_id = account.get("stripe_subscription_id")
+    if sub_id:
+        try:
+            with timing("stripe.api.latency", {"op": "subscription.retrieve"}):
+                candidate = stripe.Subscription.retrieve(sub_id)
+        except stripe.error.InvalidRequestError as e:
+            if getattr(e, "code", None) != "resource_missing":
+                raise
+        else:
+            stored_owner_id = (candidate.get("metadata") or {}).get("owner_id")
+            if candidate.get("status") in LIVE_SUBSCRIPTION_STATUSES:
+                if stored_owner_id and stored_owner_id != owner_id:
+                    raise BillingServiceError("Stored subscription belongs to a different workspace")
+                subscription = candidate
+
+    if subscription is None:
+        with timing("stripe.api.latency", {"op": "subscription.list"}):
+            subscriptions = stripe.Subscription.list(customer=account["stripe_customer_id"], status="all", limit=100)
+        for candidate in subscriptions.auto_paging_iter():
+            if (
+                candidate.get("status") in LIVE_SUBSCRIPTION_STATUSES
+                and (candidate.get("metadata") or {}).get("owner_id") == owner_id
+            ):
+                subscription = candidate
+                break
+
+    if subscription is not None:
+        sub_id = subscription.get("id") or sub_id
+        items = subscription["items"]["data"]
+        if len(items) != 1:
+            raise BillingServiceError("This subscription's plan can't be changed automatically")
+        item = items[0]
+        if (item.get("price") or {}).get("id") == price_id:
+            return {"updated": False}
+        with timing("stripe.api.latency", {"op": "subscription.modify"}):
+            stripe.Subscription.modify(
+                sub_id,
+                items=[{"id": item["id"], "price": price_id}],
+                proration_behavior="create_prorations",
+                idempotency_key=f"workspace-plan-change-{owner_id}-{item['id']}-{price_id}",
+            )
+        return {"updated": True}
+
+    pending_id = account.get("pending_checkout_session_id")
+    if pending_id:
+        try:
+            with timing("stripe.api.latency", {"op": "checkout.session.retrieve"}):
+                pending = stripe.checkout.Session.retrieve(pending_id)
+        except stripe.error.InvalidRequestError:
+            pending = None
+        if pending is not None:
+            if pending.get("status") == "complete":
+                raise BillingServiceError("already_subscribed:checkout_completed")
+            if pending.get("status") == "open":
+                metadata = pending.get("metadata") or {}
+                if (
+                    metadata.get("purpose") == "workspace_subscription_v1"
+                    and metadata.get("plan") == plan
+                    and metadata.get("owner_id") == owner_id
+                ):
+                    return pending
+                try:
+                    with timing("stripe.api.latency", {"op": "checkout.session.expire"}):
+                        stripe.checkout.Session.expire(pending_id)
+                except stripe.error.InvalidRequestError:
+                    with timing("stripe.api.latency", {"op": "checkout.session.retrieve"}):
+                        recheck = stripe.checkout.Session.retrieve(pending_id)
+                    if recheck.get("status") != "expired":
+                        raise BillingServiceError("already_subscribed:checkout_completed")
+
+    claim_token = await billing_repo.try_claim_checkout_slot(owner_id)
+    if not claim_token:
+        raise BillingServiceError("checkout_in_progress")
+
+    metadata = {
+        "owner_id": owner_id,
+        "clerk_user_id": clerk_user_id,
+        "plan": plan,
+        "purpose": "workspace_subscription_v1",
+    }
+    try:
+        session = await _build_subscription_checkout(
+            owner_id=owner_id,
+            line_items=[{"price": price_id, "quantity": 1}],
+            metadata=metadata,
+            success_url=f"{settings.FRONTEND_URL}/settings?panel=billing&checkout=success",
+            cancel_url=f"{settings.FRONTEND_URL}/settings?panel=billing&checkout=cancel",
+            idempotency_key=_checkout_idempotency_key("workspace_checkout", owner_id, plan),
+        )
+    except Exception:
+        await billing_repo.release_checkout_slot(owner_id, token=claim_token)
+        raise
+    try:
+        await billing_repo.set_pending_checkout(owner_id, session_id=session.id, provider_choice=None)
+    except Exception:
+        logger.exception("Failed to record pending workspace checkout for owner %s", owner_id)
+        try:
+            with timing("stripe.api.latency", {"op": "checkout.session.expire"}):
+                stripe.checkout.Session.expire(session.id)
+        except Exception:
+            logger.exception("Failed to expire unrecorded workspace checkout %s", session.id)
+        try:
+            await billing_repo.release_checkout_slot(owner_id, token=claim_token)
+        except Exception:
+            logger.exception("Failed to release workspace checkout slot for owner %s", owner_id)
+        raise BillingServiceError("checkout_unavailable")
+    return session
 
 
 async def create_flat_fee_checkout(
@@ -477,45 +558,14 @@ async def _build_subscription_checkout(
 ) -> stripe.checkout.Session:
     """Single builder for subscription-mode Stripe Checkout sessions.
 
-    Owns the session kwargs, the automatic_tax / customer_update block, and
-    the subscription_data metadata assembly so neither the flat (personal)
-    nor the team path copies them. Callers pass a list so the team path can
-    charge a flat base alongside the per-seat item. Single-element lists are
-    the norm; price-id existence guards stay in each caller because the
-    config key differs.
+    Owns the subscription metadata assembly. Workspace subscriptions use a
+    single recurring item and expose manually-entered promotion codes. Stripe
+    Tax is intentionally omitted until the operational readiness checklist is
+    completed and finance approves enabling it.
     """
     account = await billing_repo.get_by_owner_id(owner_id)
     if not account or not account.get("stripe_customer_id"):
         raise BillingServiceError(f"No Stripe customer for owner_id={owner_id}")
-
-    # Launch competition: an unpaid WINNER's checkout gets the free-month
-    # coupon pre-applied server-side (no code to type) — but ONLY on a
-    # session selling the flat (Starter) plan: the coupon is product-
-    # restricted to it (free month = Starter month), so an Ultra session
-    # gets no discount rather than a Stripe applicability error. Lazy
-    # import — the launch modules import nothing from here. Never raises
-    # (returns None on any failure).
-    discounts = None
-    if any(item.get("price") == settings.STRIPE_WORKSPACE_PRICE_ID for item in line_items):
-        from core.services.launch_close import winner_checkout_discount
-
-        discounts = await winner_checkout_discount(owner_id)
-    if discounts:
-        # The marker rides BOTH metadata targets (session + subscription) so
-        # handle_checkout_session can stamp the sheet row the moment the
-        # coupon is consumed — without it a forced close rerun would attach
-        # a second free month to the subscription this checkout mints.
-        metadata = {**metadata, "launch_winner_coupon": "true"}
-        # Winner state rides the IDEMPOTENCY KEY too, because it changes the
-        # request BODY (`discounts`, and `allow_promotion_codes` dropped
-        # below). An owner who opened an undiscounted session and was then
-        # flagged a winner inside the same 5-minute bucket would otherwise
-        # retry the same key with a different body — Stripe rejects that
-        # instead of replaying it, so the discounted session simply fails
-        # until the bucket rolls (and the same in reverse, once the coupon is
-        # consumed). Suffixed ONLY when discounted, so every non-winner key
-        # stays byte-identical to what it has always been.
-        idempotency_key = f"{idempotency_key}:win"
 
     subscription_data: dict = {"metadata": metadata}
 
@@ -526,8 +576,7 @@ async def _build_subscription_checkout(
         success_url=success_url,
         cancel_url=cancel_url,
         allow_promotion_codes=allow_promotion_codes,
-        automatic_tax={"enabled": True},
-        customer_update={"address": "auto"},
+        payment_method_collection="always",
         # The SAME dict on BOTH, because Stripe puts them on different objects
         # and two different webhooks read them:
         #   subscription_data.metadata → the created Subscription, which is
@@ -555,12 +604,6 @@ async def _build_subscription_checkout(
         # Omitted entirely for web callers so their session shape — and
         # therefore their idempotency body-compare — is untouched.
         kwargs["origin_context"] = origin_context
-    if discounts:
-        kwargs["discounts"] = discounts
-        # Stripe refuses a session that sets both `discounts` and
-        # `allow_promotion_codes` — and the coupon is 100% off, so there is
-        # nothing left for a promo code to do.
-        kwargs.pop("allow_promotion_codes", None)
     with timing("stripe.api.latency", {"op": "checkout.session.create"}):
         session = stripe.checkout.Session.create(**kwargs)
     return session

@@ -65,8 +65,7 @@ export async function linkApplePurchase(
 /**
  * Ask the server for an app-to-web Stripe Checkout URL.
  *
- * Returns a session built with `origin_context: "mobile_app"` — Stripe's
- * app-optimized page, with Apple Pay on by default.
+ * Uses the same workspace subscription endpoint as the web client.
  *
  * The caller MUST open it with `Linking.openURL`, never a WebView. Apple's
  * wording is the binding source, quoted from our own 0.1.0 (17) rejection:
@@ -81,6 +80,6 @@ export async function linkApplePurchase(
 export async function createWebCheckout(
   post: (path: string, body: unknown) => Promise<unknown>,
 ): Promise<string | null> {
-  const body = (await post("/billing/apple/web-checkout", {})) as { url?: string };
-  return typeof body?.url === "string" ? body.url : null;
+  const body = (await post("/billing/checkout", { plan: "workspace" })) as { checkout_url?: string };
+  return typeof body?.checkout_url === "string" ? body.checkout_url : null;
 }

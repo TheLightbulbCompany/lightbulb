@@ -4,11 +4,9 @@
  * Used by:
  *   - `components/landing/PricingThreeCard.tsx` — renders cards with
  *     anchor links to /sign-up?provider=…
- *   - `components/chat/ProvisioningStepper.tsx#ProviderPicker` — renders
- *     cards with click handlers that POST /billing/trial-checkout and
- *     redirect to Stripe Checkout (billed immediately — no Stripe trial).
- *     All three cards show for personal and org owners alike; for orgs
- *     the subscribing admin's ChatGPT account backs the whole workspace.
+ *   - `components/chat/ProvisioningStepper.tsx#ProviderPicker` — renders an
+ *     informational provider comparison beside one workspace subscription
+ *     CTA. Provider choice is made after entitlement.
  *
  * Previously: three near-identical card arrays lived inline across these
  * two surfaces. The landing copy is the canonical version; the

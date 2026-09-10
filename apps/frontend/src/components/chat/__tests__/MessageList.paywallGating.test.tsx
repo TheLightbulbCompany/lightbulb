@@ -13,7 +13,7 @@ import type { RenderGroup } from "@/hooks/internal/types";
 // the scenario it exists for.
 
 vi.mock("@/hooks/useBilling", () => ({
-  useBilling: () => ({ startTrialCheckout: vi.fn() }),
+  useBilling: () => ({ startCheckout: vi.fn() }),
 }));
 vi.mock("@clerk/nextjs", () => ({
   useOrganization: () => ({ organization: null, isLoaded: true }),

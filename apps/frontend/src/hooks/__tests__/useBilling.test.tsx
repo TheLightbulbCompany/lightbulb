@@ -79,7 +79,7 @@ describe("useBilling", () => {
     expect(result.current.account).toBeUndefined();
   });
 
-  it("startTeamCheckout POSTs /billing/team-checkout and redirects", async () => {
+  it("startCheckout POSTs /billing/checkout and redirects", async () => {
     const orig = window.location;
     // jsdom: make location.href assignable for the assertion.
     Object.defineProperty(window, "location", { value: { href: "" }, writable: true });
@@ -95,9 +95,9 @@ describe("useBilling", () => {
       ),
     );
     const { result } = renderHook(() => useBilling(), { wrapper });
-    await result.current.startTeamCheckout();
+    await result.current.startCheckout("workspace");
     const call = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.find((c) =>
-      String(c[0]).includes("/billing/team-checkout"),
+      String(c[0]).includes("/billing/checkout"),
     );
     expect(call).toBeTruthy();
     expect(window.location.href).toBe("https://checkout/team");
@@ -112,7 +112,7 @@ describe("useBilling", () => {
   // a NON-Bedrock choice is the point: a reintroduced hardcode still passes a
   // bedrock_claude-only assertion.
   it.each(["chatgpt_oauth", "byo_key", "bedrock_claude"] as const)(
-    "startTrialCheckout POSTs /billing/trial-checkout with the caller's provider (%s) and redirects",
+    "startCheckout POSTs the workspace plan without a provider (%s) and redirects",
     async (choice) => {
       const orig = window.location;
       Object.defineProperty(window, "location", { value: { href: "" }, writable: true });
@@ -125,20 +125,18 @@ describe("useBilling", () => {
         ),
       );
       const { result } = renderHook(() => useBilling(), { wrapper });
-      await result.current.startTrialCheckout(choice);
+      await result.current.startCheckout("workspace");
       const call = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.find((c) =>
-        String(c[0]).includes("/billing/trial-checkout"),
+        String(c[0]).includes("/billing/checkout"),
       );
       expect(call).toBeTruthy();
-      expect(JSON.parse((call![1] as RequestInit).body as string)).toEqual({
-        provider_choice: choice,
-      });
+      expect(JSON.parse((call![1] as RequestInit).body as string)).toEqual({ plan: "workspace" });
       expect(window.location.href).toBe("https://checkout/flat");
       Object.defineProperty(window, "location", { value: orig, writable: true });
     },
   );
 
-  it("upgradeToUltra POSTs /billing/ultra-checkout and redirects when a checkout_url is returned", async () => {
+  it("startCheckout POSTs the Ultra plan and redirects when a checkout_url is returned", async () => {
     // Fresh-checkout path (free-tier / no live sub): the endpoint returns a
     // Checkout URL and the hook must redirect the browser to Stripe.
     const orig = window.location;
@@ -152,24 +150,24 @@ describe("useBilling", () => {
       ),
     );
     const { result } = renderHook(() => useBilling(), { wrapper });
-    await result.current.upgradeToUltra();
+    await result.current.startCheckout("ultra");
     const call = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.find((c) =>
-      String(c[0]).includes("/billing/ultra-checkout"),
+      String(c[0]).includes("/billing/checkout"),
     );
     expect(call).toBeTruthy();
     expect(window.location.href).toBe("https://checkout/ultra");
     Object.defineProperty(window, "location", { value: orig, writable: true });
   });
 
-  it("upgradeToUltra does NOT redirect on the in-place {upgraded:true} swap", async () => {
+  it("startCheckout does NOT redirect on the in-place {updated:true} swap", async () => {
     // In-place item-swap path (owner already on the flat sub): the endpoint
     // returns {upgraded:true} with no checkout_url, so the hook must refresh
     // the billing row instead of redirecting.
     const orig = window.location;
     Object.defineProperty(window, "location", { value: { href: "" }, writable: true });
     global.fetch = vi.fn().mockImplementation((url: string) => {
-      const body = String(url).includes("/billing/ultra-checkout")
-        ? { upgraded: true }
+      const body = String(url).includes("/billing/checkout")
+        ? { updated: true }
         : { is_subscribed: true, plan: "ultra_pro" };
       return Promise.resolve(
         new Response(JSON.stringify(body), {
@@ -179,9 +177,9 @@ describe("useBilling", () => {
       );
     });
     const { result } = renderHook(() => useBilling(), { wrapper });
-    await result.current.upgradeToUltra();
+    await result.current.startCheckout("ultra");
     const post = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.find((c) =>
-      String(c[0]).includes("/billing/ultra-checkout"),
+      String(c[0]).includes("/billing/checkout"),
     );
     expect(post).toBeTruthy();
     // No redirect on the in-place path — the card flips to the Ultra badge

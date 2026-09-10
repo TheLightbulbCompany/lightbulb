@@ -10,7 +10,7 @@ export function useCheckoutReturn(): { showSubscriptionSuccess: boolean } {
   const { refresh: refreshBilling, isSubscribed } = useBilling();
 
   // Stripe Checkout returns either ?subscription=success (legacy) or
-  // ?checkout=success (new trial-checkout flow). Both should trigger the
+  // ?checkout=success (workspace checkout). Both should trigger the
   // billing-refresh + URL-cleanup effect.
   //
   // Two separate state slices keyed off the same URL param so the banner

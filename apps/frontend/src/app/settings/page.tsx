@@ -238,16 +238,16 @@ function ProfilePanel() {
 
 // Ultra Pro control for a subscribed owner. When the owner is
 // already on ultra_pro it collapses to an "Ultra Pro" active badge; otherwise
-// it renders the upgrade button that calls useBilling().upgradeToUltra (which
+// it renders the upgrade button that calls useBilling().startCheckout("ultra") (which
 // redirects to a fresh Checkout, or refreshes in place on the item-swap path).
 function UltraUpgradeRow({
   plan,
   ultraPriceUsd,
-  upgradeToUltra,
+  startCheckout,
 }: {
   plan: "standard" | "ultra_pro" | undefined;
   ultraPriceUsd?: number;
-  upgradeToUltra: () => Promise<void>;
+  startCheckout: (plan: "workspace" | "ultra") => Promise<void>;
 }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -257,7 +257,7 @@ function UltraUpgradeRow({
     setError(null);
     setLoading(true);
     try {
-      await upgradeToUltra();
+      await startCheckout("ultra");
       // The fresh-checkout path redirects away and never returns here; the
       // in-place swap resolves and the refreshed account re-renders this row
       // as the Ultra badge — clear the spinner either way.
@@ -266,7 +266,7 @@ function UltraUpgradeRow({
       setError("Couldn't start the upgrade. Please try again.");
       setLoading(false);
     }
-  }, [upgradeToUltra]);
+  }, [startCheckout]);
 
   if (plan === "ultra_pro") {
     return (
@@ -304,8 +304,7 @@ function BillingPanel() {
     error: accountError,
     isSubscribed,
     openPortal,
-    startTeamCheckout,
-    upgradeToUltra,
+    startCheckout,
   } = useBilling();
   const { membership } = useOrganization();
 
@@ -418,7 +417,7 @@ function BillingPanel() {
             workspacePriceUsd={account?.workspace_price_usd}
           ownerRole={orgRole}
           isSubscribed={isSubscribed}
-          onSubscribe={startTeamCheckout}
+          onSubscribe={() => startCheckout("workspace")}
           onManage={handlePortal}
         />
       </div>
@@ -463,7 +462,7 @@ function BillingPanel() {
           <UltraUpgradeRow
             plan={account?.plan}
             ultraPriceUsd={account?.ultra_price_usd}
-            upgradeToUltra={upgradeToUltra}
+            startCheckout={startCheckout}
           />
         </div>
       </div>
@@ -551,7 +550,7 @@ function BillingPanel() {
           <UltraUpgradeRow
             plan={account?.plan}
             ultraPriceUsd={account?.ultra_price_usd}
-            upgradeToUltra={upgradeToUltra}
+            startCheckout={startCheckout}
           />
         )}
       </div>

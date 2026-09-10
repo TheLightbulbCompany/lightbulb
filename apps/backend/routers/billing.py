@@ -304,8 +304,54 @@ async def create_portal(
 
 
 # ---------------------------------------------------------------------------
-# Trial signup — single endpoint that backs the ProviderPicker cards.
+# Workspace subscription checkout.
 # ---------------------------------------------------------------------------
+
+
+class CheckoutRequest(BaseModel):
+    plan: Literal["workspace", "ultra"]
+
+
+@router.post(
+    "/checkout",
+    summary="Start or change a workspace subscription",
+    operation_id="create_workspace_checkout",
+)
+async def create_workspace_checkout(
+    body: CheckoutRequest,
+    auth: AuthContext = Depends(get_current_user),
+):
+    """The only subscription Checkout entry point for an active workspace."""
+    require_org_admin(auth)
+    owner_id = resolve_owner_id(auth)
+    account = await _get_billing_account(auth)
+    if not account or not account.get("stripe_customer_id"):
+        try:
+            await BillingService().create_customer_for_owner(
+                owner_id=owner_id,
+                owner_type="org",
+                email=auth.email,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("workspace checkout customer creation failed owner_id=%s: %s", owner_id, e)
+            raise HTTPException(status_code=502, detail="Could not reach billing provider") from e
+
+    from core.services.billing_service import BillingServiceError, create_workspace_checkout as create_checkout
+
+    try:
+        result = await create_checkout(owner_id=owner_id, clerk_user_id=auth.user_id, plan=body.plan)
+    except BillingServiceError as e:
+        if str(e) == "checkout_in_progress":
+            raise HTTPException(status_code=409, detail="checkout_in_progress") from e
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    if isinstance(result, dict):
+        return result
+    return {"checkout_url": result.url}
+
+
+# Retired checkout handlers remain temporarily as unregistered compatibility
+# code for the webhook/provider cleanup. They are deliberately not API routes.
 
 # Hard cap on credit-purchase amounts — a safety rail: without an upper
 # bound, a compromised session could lock in an unreasonable
@@ -352,20 +398,6 @@ class TrialCheckoutRequest(BaseModel):
     )
 
 
-@router.post(
-    "/trial-checkout",
-    summary="Subscribe via Stripe Checkout (billed immediately)",
-    description=(
-        "Creates a Stripe Checkout session in subscription mode on the flat "
-        "monthly price. The card is charged for the first month at checkout — "
-        "there is no Stripe trial; no-card evaluation happens on the trial_local "
-        "free tier before this flow. The chosen provider_choice is threaded into "
-        "subscription metadata so the webhook handler can persist it on the user row. "
-        "Returns the Checkout URL — frontend redirects the browser to it. "
-        "(Route path kept as /trial-checkout for frontend compatibility.)"
-    ),
-    operation_id="create_trial_checkout",
-)
 async def create_trial_checkout(
     body: TrialCheckoutRequest,
     auth: AuthContext = Depends(get_current_user),
@@ -652,17 +684,6 @@ async def create_trial_checkout(
     return {"checkout_url": session.url}
 
 
-@router.post(
-    "/team-checkout",
-    summary="Start a per-seat Teams subscription via Stripe Checkout",
-    description=(
-        "Org admins only. Creates a subscription-mode Checkout on the per-seat "
-        "price with quantity = live org member count and NO trial. Returns the "
-        "Checkout URL — frontend redirects the browser to it. 409 if the org "
-        "already has any subscription; 403 for non-admin members."
-    ),
-    operation_id="create_team_checkout",
-)
 async def create_team_checkout(
     auth: AuthContext = Depends(get_current_user),
 ):
@@ -729,23 +750,6 @@ async def create_team_checkout(
     return {"checkout_url": session.url}
 
 
-@router.post(
-    "/ultra-checkout",
-    summary="Upgrade to the Ultra Pro tier",
-    description=(
-        "Upgrades the owner to the Ultra Pro tier ($150/mo). An owner already "
-        "on the flat subscription is upgraded IN PLACE — the existing "
-        "subscription item's price is swapped to the Ultra price (one "
-        'subscription, prorated) — and the endpoint returns {"upgraded": true}; '
-        "for a per-seat team subscription, only the base item is swapped and "
-        "the seat item is left untouched. An owner with no live subscription "
-        "(free tier / never subscribed) gets a fresh Ultra Checkout session and "
-        'the endpoint returns its {"checkout_url"}. The durable tier write + '
-        "container resize happen in the subscription webhook, not here. "
-        "Org-context callers must be admins."
-    ),
-    operation_id="create_ultra_checkout",
-)
 async def create_ultra_checkout(
     auth: AuthContext = Depends(get_current_user),
 ):

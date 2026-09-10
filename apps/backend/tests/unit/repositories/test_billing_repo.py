@@ -400,6 +400,23 @@ async def test_set_stripe_customer_id_requires_existing_row(dynamodb_table):
     assert await billing_repo.get_by_owner_id("ghost_owner") is None
 
 
+@pytest.mark.asyncio
+async def test_set_stripe_customer_id_is_a_first_writer_wins_claim(dynamodb_table):
+    """A concurrent first checkout cannot overwrite the workspace customer."""
+    from botocore.exceptions import ClientError
+
+    from core.repositories import billing_repo
+
+    await billing_repo.create_trial_local_if_absent("workspace_claim", "org")
+    await billing_repo.set_stripe_customer_id("workspace_claim", stripe_customer_id="cus_winner")
+
+    with pytest.raises(ClientError):
+        await billing_repo.set_stripe_customer_id("workspace_claim", stripe_customer_id="cus_loser")
+
+    account = await billing_repo.get_by_owner_id("workspace_claim")
+    assert account["stripe_customer_id"] == "cus_winner"
+
+
 # ---------------------------------------------------------------------------
 # Nightly CEO arm claim / opt-out conditional writes (issue #1273)
 # ---------------------------------------------------------------------------

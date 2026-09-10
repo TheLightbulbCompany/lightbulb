@@ -4,7 +4,7 @@ import React from "react";
 
 // Covers the settings BillingPanel Ultra Pro upgrade CTA (settings/page.tsx):
 // a subscribed owner on the standard plan sees an "Upgrade to Ultra Pro —
-// $150/mo" button that calls useBilling().upgradeToUltra on click; an owner
+// $150/mo" button that calls useBilling().startCheckout("ultra") on click; an owner
 // already on ultra_pro sees an "Ultra Pro" active badge and no upgrade button.
 // Workspace owners use the same CTA. Harness mirrors ./BillingPanel.billing.test.tsx.
 
@@ -38,7 +38,7 @@ const billing = vi.hoisted(() => ({
   account: null as Record<string, unknown> | null,
   isLoading: false,
   isSubscribed: false,
-  upgradeToUltra: vi.fn().mockResolvedValue(undefined),
+  startCheckout: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@/hooks/useBilling", () => ({
@@ -48,8 +48,7 @@ vi.mock("@/hooks/useBilling", () => ({
     error: null,
     isSubscribed: billing.isSubscribed,
     openPortal: vi.fn(),
-    startTeamCheckout: vi.fn(),
-    upgradeToUltra: billing.upgradeToUltra,
+    startCheckout: billing.startCheckout,
     refresh: vi.fn(),
   }),
 }));
@@ -61,10 +60,10 @@ describe("BillingPanel — Ultra Pro upgrade CTA", () => {
     nav.panel = "billing";
     clerk.membership = null;
     billing.isLoading = false;
-    billing.upgradeToUltra = vi.fn().mockResolvedValue(undefined);
+    billing.startCheckout = vi.fn().mockResolvedValue(undefined);
   });
 
-  it("standard subscribed personal owner sees the upgrade button; clicking calls upgradeToUltra", async () => {
+  it("standard subscribed workspace owner sees the upgrade button; clicking starts the ultra checkout", async () => {
     billing.isSubscribed = true;
     billing.account = {
       is_subscribed: true,
@@ -92,7 +91,7 @@ describe("BillingPanel — Ultra Pro upgrade CTA", () => {
     await act(async () => {
       fireEvent.click(btn);
     });
-    expect(billing.upgradeToUltra).toHaveBeenCalledTimes(1);
+    expect(billing.startCheckout).toHaveBeenCalledWith("ultra");
   });
 
   it("ultra_pro owner sees the Ultra Pro badge and no upgrade button", () => {

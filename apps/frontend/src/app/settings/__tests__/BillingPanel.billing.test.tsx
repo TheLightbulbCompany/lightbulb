@@ -44,7 +44,7 @@ const billing = vi.hoisted(() => ({
   account: null as Record<string, unknown> | null,
   isLoading: false,
   isSubscribed: false,
-  startTrialCheckout: vi.fn().mockResolvedValue(undefined),
+  startCheckout: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@/hooks/useBilling", () => ({
@@ -54,9 +54,7 @@ vi.mock("@/hooks/useBilling", () => ({
     error: null,
     isSubscribed: billing.isSubscribed,
     openPortal: vi.fn(),
-    startTeamCheckout: vi.fn(),
-    startTrialCheckout: billing.startTrialCheckout,
-    upgradeToUltra: vi.fn(),
+    startCheckout: billing.startCheckout,
   }),
 }));
 
@@ -241,7 +239,7 @@ describe("BillingPanel — personal free tier (trial_local)", () => {
     nav.panel = "billing";
     clerk.membership = null; // personal context
     billing.isLoading = false;
-    billing.startTrialCheckout = vi.fn().mockResolvedValue(undefined);
+    billing.startCheckout = vi.fn().mockResolvedValue(undefined);
   });
 
   it("trial_local renders the Free tier card with a Subscribe CTA and no Manage Payment", async () => {
@@ -270,44 +268,12 @@ describe("BillingPanel — personal free tier (trial_local)", () => {
     expect(screen.queryByText(/trial_local/i)).not.toBeInTheDocument();
     expect(screen.queryByText("Active subscription")).not.toBeInTheDocument();
 
-    // No portal button — a trial_local row has no Stripe customer, so the
-    // portal would fail. The shared ProviderPicker renders instead: one card
-    // per provider path, each wired to the flat-fee checkout with its own
-    // provider, and each showing that path's REAL price.
-    //
-    // This surface used to hand-roll three pill buttons over
-    // PROVIDER_SWITCH_CARDS — the array documented as the post-purchase
-    // variant that deliberately carries no pricing. Rendered pre-purchase it
-    // stripped the prices off the one screen whose job is to show them, and
-    // hid that the Bedrock path costs $70 today rather than $50.
+    // No portal button — a trial_local row has no Stripe customer. A personal
+    // context cannot start the workspace-only checkout; it must select a
+    // workspace first.
     expect(screen.queryByRole("button", { name: /manage payment/i })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /sign in with chatgpt/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /bring your own api key/i })).toBeInTheDocument();
-    // The per-path price is the disclosure, and it must survive on this
-    // surface: Bedrock takes $70 at checkout, the other two take $50.
-    expect(screen.getByText(/\$70 at checkout/i)).toBeInTheDocument();
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: /powered by claude/i }));
-    });
-    // The clicked provider must reach the hook — asserting the ARGUMENT is the
-    // point, since a reintroduced hardcode still satisfies a bare call count.
-    // The second argument is the starter-credit amount bundled into the same
-    // Checkout ($20 default, in cents); dropping it would silently fall back to
-    // the server default and make the "$70 at checkout" line above a lie
-    // whenever the owner picked a different amount.
-    expect(billing.startTrialCheckout).toHaveBeenCalledTimes(1);
-    expect(billing.startTrialCheckout).toHaveBeenCalledWith("bedrock_claude", 2000);
-
-    // Once a checkout is in flight every path disables — the browser is
-    // leaving for Stripe, and two completable sessions means two charged
-    // subscriptions (the backend refuses the second, but the UI must not
-    // invite it).
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: /sign in with chatgpt/i }));
-    });
-    expect(billing.startTrialCheckout).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole("button", { name: /sign in with chatgpt/i })).toBeDisabled();
+    expect(screen.getByText(/Create or select a workspace to subscribe/i)).toBeInTheDocument();
+    expect(billing.startCheckout).not.toHaveBeenCalled();
   });
 
   it("non-expired trial_local with a future trial_end keeps the unchanged Free-tier copy", () => {
@@ -335,10 +301,10 @@ describe("BillingPanel — personal free tier (trial_local)", () => {
     expect(screen.getByText(/\$3\/day of included usage/)).toBeInTheDocument();
     // The expired framing must NOT appear while the window is open.
     expect(screen.queryByText(/free tier ended/i)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /powered by claude/i })).toBeInTheDocument();
+    expect(screen.getByText(/Create or select a workspace to subscribe/i)).toBeInTheDocument();
   });
 
-  it("EXPIRED trial_local swaps the $3/day promise for a paused state but keeps the Subscribe CTA", () => {
+  it("EXPIRED trial_local swaps the $3/day promise for a paused workspace-required state", () => {
     // trial_end is the OVERALL free-tier window expiry (created + 3 days).
     // Once it's in the past, the backend blocks usage outright WITHOUT
     // flipping subscription_status off trial_local — so the card must stop
@@ -371,14 +337,9 @@ describe("BillingPanel — personal free tier (trial_local)", () => {
     expect(screen.queryByText("Active subscription")).not.toBeInTheDocument();
     expect(screen.queryByText(/trial_local/i)).not.toBeInTheDocument();
 
-    // The Subscribe CTA remains the path forward (no Manage Payment — no
-    // Stripe customer exists for a trial_local row).
+    // A personal context cannot start workspace checkout (and has no portal).
     expect(screen.queryByRole("button", { name: /manage payment/i })).not.toBeInTheDocument();
-    // All three paths stay on offer after expiry — an owner whose window ran
-    // out is exactly who should get the full choice, not a silent default.
-    expect(screen.getByRole("button", { name: /powered by claude/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /sign in with chatgpt/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /bring your own api key/i })).toBeInTheDocument();
+    expect(screen.getByText(/Create or select a workspace to subscribe/i)).toBeInTheDocument();
   });
 
   it("active personal subscription keeps the unchanged paid card", () => {

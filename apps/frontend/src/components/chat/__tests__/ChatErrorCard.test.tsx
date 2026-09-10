@@ -4,7 +4,7 @@ import * as React from "react";
 import { render, screen } from "@testing-library/react";
 
 const billing = vi.hoisted(() => ({
-  startTrialCheckout: vi.fn(),
+  startCheckout: vi.fn(),
   account: { workspace_price_usd: 50, ultra_price_usd: 150 },
 }));
 

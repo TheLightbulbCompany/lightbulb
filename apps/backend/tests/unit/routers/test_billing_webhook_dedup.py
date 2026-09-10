@@ -20,6 +20,7 @@ def dedup_table_and_settings(monkeypatch):
             BillingMode="PAY_PER_REQUEST",
         )
         monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", "test-webhook-event-dedup")
+        monkeypatch.setattr("core.config.settings.STRIPE_WORKSPACE_PRICE_ID", "price_workspace_test")
         yield
 
 
@@ -30,7 +31,24 @@ async def test_replayed_stripe_webhook_processed_once(dedup_table_and_settings, 
     fake_event = {
         "id": "evt_replay_test_1",
         "type": "customer.subscription.updated",
-        "data": {"object": {"customer": "cus_x", "id": "sub_x", "status": "active"}},
+        "data": {
+            "object": {
+                "customer": "cus_x",
+                "id": "sub_x",
+                "status": "active",
+                "items": {
+                    "data": [
+                        {
+                            "id": "si_workspace",
+                            "price": {
+                                "id": "price_workspace_test",
+                                "recurring": {"interval": "month"},
+                            },
+                        }
+                    ]
+                },
+            }
+        },
     }
 
     # Bypass Stripe signature verification — we're testing dedup, not auth.

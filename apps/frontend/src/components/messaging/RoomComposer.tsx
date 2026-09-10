@@ -171,9 +171,9 @@ function ComposerAttempt({
 
   return <form className="room-composer" aria-label={`${label} composer`} aria-busy={pending || retryPending}
     onSubmit={(event) => { event.preventDefault(); submit(); }}>
-    <label className="font-semibold text-sm" htmlFor={fieldId}>{label}</label>
+    <label className="sr-only" htmlFor={fieldId}>{label}</label>
     <Textarea ref={field} id={fieldId} value={text} disabled={!editable} rows={3} aria-invalid={!!error}
-      aria-describedby={`${fieldId}-help ${fieldId}-status`} placeholder="Write a message…"
+      aria-describedby={`${fieldId}-help ${fieldId}-status`} placeholder={label === "Reply to thread" ? "Reply to thread…" : "Message the conversation · @ to mention"}
       onChange={(event) => { onTextChange(event.target.value); onTypingChange?.(!!event.target.value.trim()); }}
       onBlur={() => onTypingChange?.(false)} onCompositionStart={() => { composing.current = true; }}
       onCompositionEnd={() => { composing.current = false; }}
@@ -189,8 +189,8 @@ function ComposerAttempt({
     }).join(", ")}</p>}
     <div className="room-composer-actions">
       <Button type="button" variant="ghost" aria-label="Choose mentions" aria-expanded={pickerOpen}
-        aria-controls={`${fieldId}-targets`} disabled={!editable} onClick={() => setPickerOpen(!pickerOpen)}><AtSign aria-hidden="true" />Mention</Button>
-      <Button type="submit" disabled={!canSend} aria-label="Send message"><Send aria-hidden="true" />Send</Button>
+        aria-controls={`${fieldId}-targets`} disabled={!editable} onClick={() => setPickerOpen(!pickerOpen)}><AtSign aria-hidden="true" /><span className="sr-only">Mention</span></Button>
+      <Button type="submit" className="room-send" disabled={!canSend} aria-label="Send message"><Send aria-hidden="true" /><span className="sr-only">Send</span></Button>
     </div>
     {pickerOpen && <fieldset id={`${fieldId}-targets`} className="room-picker" disabled={!editable}>
       <legend className="font-semibold">Room members</legend>
@@ -209,7 +209,7 @@ function ComposerAttempt({
         {visibleMembers.length === 0 && <p className="text-sm text-muted-foreground">No matching room members.</p>}
       </div>
     </fieldset>}
-    <p id={`${fieldId}-help`} className={error ? "text-sm text-err" : "text-sm text-muted-foreground"}>{error || "Enter to send · Shift+Enter for a new line."}</p>
+    <p id={`${fieldId}-help`} className={error ? "text-sm text-err" : "room-composer-help text-sm text-muted-foreground"}>{error || "Enter to send · Shift+Enter for a new line."}</p>
     <p id={`${fieldId}-status`} role="status" className={uncertain ? "text-sm text-warn" : effectiveState === "rejected" ? "text-sm text-err" : "text-sm text-muted-foreground"}>{status}</p>
     {uncertain && onReconcile && <Button type="button" variant="outline" disabled={disabled} onClick={() => onReconcile(clientMessageId)}>Check message status</Button>}
     {!uncertain && effectiveState === "rejected" && onRetry && <Button type="button" variant="outline" disabled={disabled || !!error || !text.trim() || retryPending} onClick={() => submit(true)}>Retry message</Button>}

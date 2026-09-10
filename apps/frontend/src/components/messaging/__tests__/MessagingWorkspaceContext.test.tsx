@@ -89,6 +89,12 @@ it("feeds the directory and conversation from one selected-room owner", () => {
   view.unmount();
 });
 
+it("routes message authors through the existing participant DM action", async () => {
+  compose();
+  await act(async () => panel.onSelectParticipant?.(panel.participants[1]));
+  expect(state.selectDm).toHaveBeenCalledWith(panel.participants[1]);
+});
+
 it("renders OpenClaw string tool progress without crashing", () => {
   state.runs = [{
     roomId: room.roomId,
@@ -108,7 +114,7 @@ it("renders OpenClaw string tool progress without crashing", () => {
 
   compose();
 
-  expect(panel.runs[0].tools[0].progressText).toBe("streamed output");
+  expect(panel.runs?.[0]?.tools[0]?.progressText).toBe("streamed output");
 });
 
 it("enriches room participants with roster activity while keeping the full creation picker", () => {

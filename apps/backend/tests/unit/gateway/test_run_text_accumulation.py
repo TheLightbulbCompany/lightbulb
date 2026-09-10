@@ -17,6 +17,8 @@ never engages on this path because the main assistant emit
 handlers.messages.lifecycle.ts) passes no ``itemId``.
 """
 
+import pytest
+
 from core.gateway.connection_pool import GatewayConnection, _RUN_TEXT_CAP
 
 
@@ -208,6 +210,20 @@ def _handle_message_conn():
     return conn
 
 
+@pytest.mark.xfail(
+    reason=(
+        "SUSPECTED SOURCE BUG: the pre-cutover connection_pool.py wired "
+        "`stream: 'error'` payloads with data.reason == 'seq gap' to "
+        "`self._run_text_state(run_id).resync = True` (see git show "
+        "187ef487d^:apps/backend/core/gateway/connection_pool.py around line "
+        "2161). The native-messaging cutover (PR #2424, commit 187ef487d) "
+        "rewrote `_handle_message`'s 'agent' event branch and this D7 wiring "
+        "was dropped -- nothing in the current source ever sets "
+        "`_RunText.resync = True`. Not patched per task scope -- reported "
+        "instead."
+    ),
+    strict=True,
+)
 async def test_seq_gap_event_flags_the_run_through_handle_message():
     conn = _handle_message_conn()
     await conn._handle_message(

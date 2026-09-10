@@ -80,6 +80,20 @@ it("focuses a thread and restores its trigger and collapsed preference on Escape
   expect(screen.getByRole("button", { name: "Show room details" })).toHaveAttribute("aria-expanded", "false");
 });
 
+it("lets wide room details change agent listen mode without giving humans a control", async () => {
+  const user = userEvent.setup();
+  const onListenModeChange = vi.fn();
+  render(<RoomPanel {...props} onListenModeChange={onListenModeChange} />);
+  const details = within(screen.getByRole("complementary", { name: "Room details" }));
+  const mode = details.getByRole("combobox", { name: "Listen mode for Friday" });
+  expect(mode).toHaveValue("mentions");
+  expect(within(mode).getAllByRole("option").map((option) => option.textContent)).toEqual(["Active", "Mentions only", "Observe"]);
+  expect(details.getAllByRole("combobox")).toHaveLength(1);
+  expect(details.queryByRole("combobox", { name: "Listen mode for Owner" })).not.toBeInTheDocument();
+  await user.selectOptions(mode, "observe");
+  expect(onListenModeChange).toHaveBeenCalledWith("friday", "observe");
+});
+
 it.each(["thread", "context"] as const)("replaces the narrow conversation only while selected %s is open", async (kind) => {
   const user = userEvent.setup();
   const onLinkToWork = vi.fn();

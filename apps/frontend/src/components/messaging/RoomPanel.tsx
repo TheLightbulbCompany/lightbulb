@@ -291,6 +291,11 @@ function RoomContent({
             <ParticipantAvatar participant={participant} size="sm" />
             <span className="truncate flex-1" title={participant.displayName}>{participant.displayName}</span>
             <span className="text-sm text-muted-foreground">{participant.kind === "agent" ? "Agent" : "Person"}</span>
+            {participant.kind === "agent" && onListenModeChange && <>
+              <label className="sr-only" htmlFor={`${id}-context-${participant.id}-mode`}>Listen mode for {participant.displayName}</label>
+              <select id={`${id}-context-${participant.id}-mode`} className="room-listen-mode" value={participant.listenMode ?? "mentions"}
+                onChange={(event) => onListenModeChange(participant.id, event.target.value as ListenMode)}><option value="active">Active</option><option value="mentions">Mentions only</option><option value="observe">Observe</option></select>
+            </>}
           </li>)}</ul>
         </section>
         <section aria-labelledby={`${id}-context-runs`}>

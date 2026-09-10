@@ -848,14 +848,23 @@ async def _validate_message_links(
             raise ApiProblem("MESSAGE_NOT_FOUND", "Referenced message not found in this room.")
 
 
-def select_dispatch_targets(members: list[dict], mentions: list[dict], source_agent_id: str | None) -> list[dict]:
+def select_dispatch_targets(
+    members: list[dict],
+    mentions: list[dict],
+    source_agent_id: str | None,
+    *,
+    room_kind: str | None = None,
+) -> list[dict]:
     mentioned = {ref["id"] for ref in mentions if ref.get("kind") == "agent"}
     targets: dict[str, EventKind] = {}
     for member in sorted(members, key=lambda row: (row.get("kind", ""), row.get("id", ""))):
         if member.get("kind") != "agent" or member.get("id") == source_agent_id:
             continue
         agent_id = member["id"]
-        if agent_id in mentioned:
+        # A DM is addressed by construction: without this, an unmentioned DM is
+        # an ambient room_event, which OpenClaw runs message-tool-only and the
+        # agent's plain reply is muted (observed on dev 2026-09-10).
+        if agent_id in mentioned or room_kind == "dm":
             targets[agent_id] = "user_request"
         elif member.get("listenMode") == "active":
             targets.setdefault(agent_id, "room_event")
@@ -880,7 +889,7 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
         str(request.thread_root_message_id) if request.thread_root_message_id else None,
     )
     members = await messaging_repo.list_members(room_id)
-    targets = select_dispatch_targets(members, mentions, None)
+    targets = select_dispatch_targets(members, mentions, None, room_kind=meta.get("kind"))
     req_hash = messaging_repo.request_hash(
         request.text,
         mentions,
@@ -945,7 +954,7 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
     )
     members = await messaging_repo.list_members(room_id)
     mentions = parse_agent_mentions(request.text, members)
-    targets = select_dispatch_targets(members, mentions, agent_id)
+    targets = select_dispatch_targets(members, mentions, agent_id, room_kind=meta.get("kind"))
     req_hash = messaging_repo.request_hash(
         room_id,
         agent_id,

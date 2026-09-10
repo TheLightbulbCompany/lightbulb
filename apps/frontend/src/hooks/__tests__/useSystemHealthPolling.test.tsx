@@ -57,8 +57,8 @@ vi.mock("@/hooks/useProvisioningState", () => ({
   }),
 }));
 
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpc: (
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpc: (
     _method: string | null,
     _params: unknown,
     config: { refreshInterval?: unknown },

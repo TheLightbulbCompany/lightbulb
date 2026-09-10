@@ -12,7 +12,7 @@
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
-import type { ChatIncomingMessage } from "@/hooks/useGateway";
+import type { ChatIncomingMessage } from "@lightbulb/shared";
 
 // ---------------------------------------------------------------------------
 // Shared analytics mock (hoisted)
@@ -30,9 +30,9 @@ vi.mock("@/lib/analytics", () => ({
 const rpcMutationMock = vi.fn().mockResolvedValue({});
 const rpcMock = vi.fn(() => ({ data: { agents: [] }, error: null, isLoading: false, mutate: vi.fn() }));
 
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpc: () => rpcMock(),
-  useGatewayRpcMutation: () => rpcMutationMock,
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpc: () => rpcMock(),
+  useRuntimeRpcMutation: () => rpcMutationMock,
 }));
 
 vi.mock("posthog-js/react", () => ({
@@ -67,7 +67,7 @@ describe("instrumentation: useAgents", () => {
     });
     const call = captureMock.mock.calls.find((c) => c[0] === "agent_deleted");
     expect(call).toBeTruthy();
-    expect(call?.[1]).toMatchObject({ agent_id: "agent-123" });
+    expect(call?.[1]).toMatchObject({ agentId: "agent-123" });
   });
 });
 
@@ -126,7 +126,7 @@ describe("instrumentation: useAgentChat", () => {
     const sentCall = captureMock.mock.calls.find((c) => c[0] === "chat_message_sent");
     expect(sentCall).toBeTruthy();
     expect(sentCall?.[1]).toMatchObject({
-      agent_id: "agent-X",
+      agentId: "agent-X",
       message_length: "hello world".length,
     });
 
@@ -142,7 +142,7 @@ describe("instrumentation: useAgentChat", () => {
       chatHandlers.forEach((h) =>
         h({
           type: "chunk",
-          agent_id: "agent-X",
+          agentId: "agent-X",
           runId: clientRunId,
           content: "hi back",
         } as ChatIncomingMessage),
@@ -152,7 +152,7 @@ describe("instrumentation: useAgentChat", () => {
       chatHandlers.forEach((h) =>
         h({
           type: "done",
-          agent_id: "agent-X",
+          agentId: "agent-X",
           runId: clientRunId,
         } as ChatIncomingMessage),
       );
@@ -161,7 +161,7 @@ describe("instrumentation: useAgentChat", () => {
     const completedCall = captureMock.mock.calls.find((c) => c[0] === "chat_completed");
     expect(completedCall).toBeTruthy();
     expect(completedCall?.[1]).toMatchObject({
-      agent_id: "agent-X",
+      agentId: "agent-X",
       assistant_message_length: "hi back".length,
     });
     expect(typeof completedCall?.[1].duration_ms).toBe("number");
@@ -180,7 +180,7 @@ describe("instrumentation: useAgentChat", () => {
       chatHandlers.forEach((h) =>
         h({
           type: "chunk",
-          agent_id: "agent-Z",
+          agentId: "agent-Z",
           runId: "run-err",
           content: "partial",
         } as ChatIncomingMessage),
@@ -194,7 +194,7 @@ describe("instrumentation: useAgentChat", () => {
       chatHandlers.forEach((h) =>
         h({
           type: "error",
-          agent_id: "agent-Z",
+          agentId: "agent-Z",
           runId: "run-err",
           message: "model died",
         } as ChatIncomingMessage),
@@ -222,7 +222,7 @@ describe("instrumentation: useAgentChat", () => {
       chatHandlers.forEach((h) =>
         h({
           type: "error",
-          agent_id: "agent-Z",
+          agentId: "agent-Z",
           runId: "run-early",
           message: "early failure",
         } as ChatIncomingMessage),
@@ -236,7 +236,7 @@ describe("instrumentation: useAgentChat", () => {
       chatHandlers.forEach((h) =>
         h({
           type: "done",
-          agent_id: "agent-Z",
+          agentId: "agent-Z",
           runId: "run-stale",
         } as ChatIncomingMessage),
       );
@@ -259,7 +259,7 @@ describe("instrumentation: useAgentChat", () => {
 
     const call = captureMock.mock.calls.find((c) => c[0] === "chat_aborted");
     expect(call).toBeTruthy();
-    expect(call?.[1]).toMatchObject({ agent_id: "agent-Y" });
+    expect(call?.[1]).toMatchObject({ agentId: "agent-Y" });
     expect(typeof call?.[1].elapsed_ms).toBe("number");
   });
 });

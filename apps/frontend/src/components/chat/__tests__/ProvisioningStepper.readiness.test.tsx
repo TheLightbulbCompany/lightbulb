@@ -27,8 +27,8 @@ vi.mock("@/hooks/useGateway", () => ({
 // The gateway health RPC answers (the container really is up) — the state that
 // resolves the cold-start card to its LAST step, which is where the founder's
 // workspace sat.
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpc: () => ({ data: { ok: true }, error: null }),
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpc: () => ({ data: { ok: true }, error: null }),
 }));
 
 vi.mock("@/hooks/useBilling", () => ({

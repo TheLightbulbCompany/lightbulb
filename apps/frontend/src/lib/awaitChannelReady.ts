@@ -28,7 +28,7 @@ export type ChannelReadyOutcome =
   | { status: "cancelled" };
 
 export type AwaitChannelReadyOptions = {
-  /** Gateway RPC caller (the wizard passes useGatewayRpcMutation's callRpc). */
+  /** Gateway RPC caller (the wizard passes useRuntimeRpcMutation's callRpc). */
   callRpc: (method: string, params?: Record<string, unknown>) => Promise<unknown>;
   provider: string;
   accountId: string;

@@ -11,7 +11,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import type { ChatIncomingMessage } from "@/hooks/useGateway";
+import type { ChatIncomingMessage } from "@lightbulb/shared";
 import { useAgentChat } from "@/hooks/useAgentChat";
 import type { ChatRenderItem, HistoryMessage } from "@/hooks/internal/types";
 
@@ -22,23 +22,28 @@ const sendReq = vi.fn().mockResolvedValue({});
 const sendChat = vi.fn();
 const send = vi.fn();
 
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({
+vi.mock("@/hooks/useAgentRoomTransport", () => ({
+  useAgentRoomTransport: (agentId: string | null) => ({
     isConnected: true,
-    nodeConnected: false,
-    error: null,
-    reconnectAttempt: 0,
-    send,
-    sendReq,
-    sendChat,
-    onEvent: () => () => {},
-    onChatMessage: (h: (msg: ChatIncomingMessage) => void) => {
-      chatHandlers.push(h);
+    onChatMessage: (handler: (message: ChatIncomingMessage) => void) => {
+      chatHandlers.push(handler);
       return () => {
-        chatHandlers = chatHandlers.filter((x) => x !== h);
+        chatHandlers = chatHandlers.filter((candidate) => candidate !== handler);
       };
     },
-    reconnect: vi.fn(),
+    sendRoomMessage: async (message: string, clientMessageId: string) =>
+      sendChat(agentId, message, clientMessageId, undefined),
+    abortRun: async (runId: string) => {
+      const accepted = send({ type: "agent_abort", agentId: agentId, runId });
+      if (accepted === false) throw new Error("Stop not sent");
+      return {};
+    },
+    steerRun: async (runId: string, text: string) => {
+      const accepted = send({ type: "agent_steer", agentId: agentId, runId, text });
+      if (accepted === false) throw new Error("Steer not sent");
+      return {};
+    },
+    rpc: sendReq,
   }),
 }));
 
@@ -92,13 +97,13 @@ describe("useAgentChat — stream paint throttle + append deltas", () => {
     const { result } = renderHook(() => useAgentChat(AGENT, "main"));
 
     act(() => {
-      emit({ type: "chunk", content: "He", agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
+      emit({ type: "chunk", content: "He", agentId: AGENT, runId: RUN } as ChatIncomingMessage);
     });
     // Run boundary → immediate paint, no 80ms of invisible first text.
     expect(streamText(result.current.renderItems)).toBe("He");
 
     act(() => {
-      emit({ type: "chunk", content: "Hello", agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
+      emit({ type: "chunk", content: "Hello", agentId: AGENT, runId: RUN } as ChatIncomingMessage);
     });
     // Same run → paint deferred to the throttle window.
     expect(streamText(result.current.renderItems)).toBe("He");
@@ -113,9 +118,9 @@ describe("useAgentChat — stream paint throttle + append deltas", () => {
     const { result } = renderHook(() => useAgentChat(AGENT, "main"));
 
     act(() => {
-      emit({ type: "chunk", content: "He", agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
-      emit({ type: "chunk", content: "llo", append: true, agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
-      emit({ type: "chunk", content: " world", append: true, agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
+      emit({ type: "chunk", content: "He", agentId: AGENT, runId: RUN } as ChatIncomingMessage);
+      emit({ type: "chunk", content: "llo", append: true, agentId: AGENT, runId: RUN } as ChatIncomingMessage);
+      emit({ type: "chunk", content: " world", append: true, agentId: AGENT, runId: RUN } as ChatIncomingMessage);
       vi.advanceTimersByTime(STREAM_PAINT_THROTTLE_MS);
     });
     expect(streamText(result.current.renderItems)).toBe("Hello world");
@@ -125,8 +130,8 @@ describe("useAgentChat — stream paint throttle + append deltas", () => {
     const { result } = renderHook(() => useAgentChat(AGENT, "main"));
 
     act(() => {
-      emit({ type: "chunk", content: "garbled", agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
-      emit({ type: "chunk", content: "Corrected full text", agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
+      emit({ type: "chunk", content: "garbled", agentId: AGENT, runId: RUN } as ChatIncomingMessage);
+      emit({ type: "chunk", content: "Corrected full text", agentId: AGENT, runId: RUN } as ChatIncomingMessage);
       vi.advanceTimersByTime(STREAM_PAINT_THROTTLE_MS);
     });
     expect(streamText(result.current.renderItems)).toBe("Corrected full text");
@@ -136,10 +141,10 @@ describe("useAgentChat — stream paint throttle + append deltas", () => {
     const { result } = renderHook(() => useAgentChat(AGENT, "main"));
 
     act(() => {
-      emit({ type: "chunk", content: "Answer", agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
-      emit({ type: "chunk", content: " part two", append: true, agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
+      emit({ type: "chunk", content: "Answer", agentId: AGENT, runId: RUN } as ChatIncomingMessage);
+      emit({ type: "chunk", content: " part two", append: true, agentId: AGENT, runId: RUN } as ChatIncomingMessage);
       // done arrives BEFORE the throttle window elapses.
-      emit({ type: "done", agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
+      emit({ type: "done", agentId: AGENT, runId: RUN } as ChatIncomingMessage);
     });
 
     const folded = result.current.renderItems.find(
@@ -160,8 +165,8 @@ describe("useAgentChat — stream paint throttle + append deltas", () => {
     const { result } = renderHook(() => useAgentChat(AGENT, "main"));
 
     act(() => {
-      emit({ type: "thinking", content: "Let me ", agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
-      emit({ type: "thinking", content: "think", append: true, agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
+      emit({ type: "thinking", content: "Let me ", agentId: AGENT, runId: RUN } as ChatIncomingMessage);
+      emit({ type: "thinking", content: "think", append: true, agentId: AGENT, runId: RUN } as ChatIncomingMessage);
       vi.advanceTimersByTime(STREAM_PAINT_THROTTLE_MS);
     });
     expect(thinkingText(result.current.renderItems)).toBe("Let me think");

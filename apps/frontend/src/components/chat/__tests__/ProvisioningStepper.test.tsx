@@ -147,8 +147,8 @@ vi.mock("@/hooks/useBilling", () => ({
 // Configurable so cold-start tests can flip the gateway `health` RPC
 // between unanswered (null) and answered.
 let gatewayHealthData: Record<string, unknown> | null = null;
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpc: () => ({ data: gatewayHealthData, error: null }),
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpc: () => ({ data: gatewayHealthData, error: null }),
 }));
 
 vi.mock("@/lib/analytics", () => ({

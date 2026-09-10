@@ -4,7 +4,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { ChatInput } from "@/components/chat/ChatInput";
 
 // ChatInput now derives its command list from useSlashCommands, which reaches
-// the gateway via useGatewayRpc -> useGateway. Mock the hook so the component
+// the gateway via useRuntimeRpc -> useGateway. Mock the hook so the component
 // renders without a GatewayProvider and the menu has a deterministic source.
 vi.mock("@/hooks/useSlashCommands", () => ({
   useSlashCommands: (): {

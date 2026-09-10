@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useMemo, useEffect } from "react";
 import { Loader2, RefreshCw, Save, AlertCircle, ToggleLeft, ToggleRight } from "lucide-react";
-import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { useRuntimeRpc, useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { notifyApiError } from "@/lib/notify";
@@ -90,10 +90,10 @@ function isToolAllowed(
 
 export function AgentToolsTab({ agentId }: { agentId: string }) {
   const { data: catalogData, error: catalogError, isLoading: catalogLoading, mutate: mutateCatalog } =
-    useGatewayRpc<ToolsCatalogResponse>("tools.catalog", { agentId, includePlugins: true });
+    useRuntimeRpc<ToolsCatalogResponse>("tools.catalog", { agentId, includePlugins: true });
   const { data: configSnapshot, mutate: mutateConfig } =
-    useGatewayRpc<ConfigSnapshot>("config.get");
-  const callRpc = useGatewayRpcMutation();
+    useRuntimeRpc<ConfigSnapshot>("config.get");
+  const callRpc = useRuntimeRpcMutation();
 
   const [localProfile, setLocalProfile] = useState<string | null>(null);
   const [localAlsoAllow, setLocalAlsoAllow] = useState<string[]>([]);

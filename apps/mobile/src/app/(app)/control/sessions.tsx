@@ -13,15 +13,15 @@ import {
 import {
   agentDisplayName,
   useAgents,
-  useGatewayRpc,
-  useGatewayRpcMutation,
+  useRuntimeRpc,
+  useRuntimeRpcMutation,
   type Agent,
 } from "@lightbulb/shared";
 
 import { usePulse } from "../../../components/chat/usePulse";
 import { colors, fonts, radii, spacing, type } from "../../../config/theme";
-import { relativeTime } from "../../../lib/agentSessions";
-import { useGateway } from "../../../providers/gateway";
+import { relativeTime } from "../../../lib/relativeTime";
+import { useLiveEvents } from "../../../providers/live-events";
 import { LogoMark } from "../../../components/LogoMark";
 
 // ---------------------------------------------------------------------------
@@ -147,15 +147,15 @@ function SkeletonRows() {
 // ---------------------------------------------------------------------------
 
 export default function SessionsPanel() {
-  const gateway = useGateway();
-  const callRpc = useGatewayRpcMutation(gateway);
+  const live = useLiveEvents();
+  const callRpc = useRuntimeRpcMutation(live);
 
-  const { data, error, isLoading, mutate } = useGatewayRpc<unknown>(
-    gateway,
+  const { data, error, isLoading, mutate } = useRuntimeRpc<unknown>(
+    live,
     "sessions.list",
     SESSIONS_LIST_PARAMS,
   );
-  const { agents } = useAgents(gateway);
+  const { agents } = useAgents(live);
 
   const agentNames = useMemo(() => {
     const map = new Map<string, string>();
@@ -211,7 +211,6 @@ export default function SessionsPanel() {
     [callRpc, mutate],
   );
 
-  const connectionDown = !gateway.isConnected && gateway.error != null;
   const showEmpty = sessions.length === 0 && !isLoading && data != null;
 
   const renderItem = useCallback(
@@ -288,12 +287,6 @@ export default function SessionsPanel() {
         >
           <Text style={styles.retryText}>Retry</Text>
         </Pressable>
-      </View>
-    );
-  } else if (!data && connectionDown) {
-    body = (
-      <View style={styles.centerGrow}>
-        <Text style={styles.dim}>{gateway.error}</Text>
       </View>
     );
   } else {

@@ -8,16 +8,13 @@ import {
   type AgentModelRef,
 } from "@lightbulb/shared";
 import { capture } from "@/lib/analytics";
-import { useGateway } from "@/hooks/useGateway";
+import { useLiveEvents } from "@/hooks/useLiveEvents";
 
-// Agent types + pure helpers moved to @lightbulb/shared (Phase 1 extraction);
-// re-exported so feature code keeps importing them from here. The hook body
-// followed them once mobile needed the same roster hardening (the empty-roster
-// latch + the become-reachable revalidation) — this wrapper binds the web
-// gateway context and PostHog so feature code keeps its no-arg signature.
+// Agent types + pure helpers live in @lightbulb/shared. This wrapper binds the
+// web runtime source and PostHog so feature code keeps its no-arg signature.
 export { agentDisplayName, getAgentModelString };
 export type { Agent, AgentModelRef };
 
 export function useAgents() {
-  return useAgentsShared(useGateway(), { capture });
+  return useAgentsShared(useLiveEvents(), { capture });
 }

@@ -68,7 +68,7 @@ vi.mock("@/components/chat/InlineTeamsPanel", async (importOriginal) => ({
 
 vi.mock("@/hooks/useGateway", () => ({
   GatewayProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  // Shape-faithful: MobileChatShell → useAgents → useGatewayRpc destructures
+  // Shape-faithful: MobileChatShell → useAgents → useRuntimeRpc destructures
   // these and calls onEvent in a passive effect.
   useGateway: () => ({
     sendReq: vi.fn().mockResolvedValue({}),

@@ -4,10 +4,10 @@ import { Suspense, useCallback, useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import { useSearchParams } from "next/navigation";
 import { ChatLayout } from "@/components/chat/ChatLayout";
-import { AgentChatWindow } from "@/components/chat/AgentChatWindow";
+import { MessagingWorkspace } from "@/components/messaging/MessagingWorkspace";
 import { useAgents } from "@/hooks/useAgents";
 import { ControlPanelRouter } from "@/components/control/ControlPanelRouter";
-import { GatewayProvider } from "@/hooks/useGateway";
+import { LiveEventsProvider } from "@/hooks/useLiveEvents";
 import { ExecApprovalsProvider } from "@/hooks/useExecApprovals";
 import { QuestionsProvider } from "@/hooks/useQuestions";
 import { MarketplaceDrawerProvider } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
@@ -71,7 +71,7 @@ function ChatPageInner() {
   const isDesktop = useIsDesktop();
   return (
     <MarketplaceDrawerProvider>
-      <GatewayProvider>
+      <LiveEventsProvider>
         <ExecApprovalsProvider>
           <QuestionsProvider>
             {isDesktop ? <WorkspaceShell /> : <MobileChatShell />}
@@ -87,7 +87,7 @@ function ChatPageInner() {
             inside MobileChatShell, colocated with the state that feeds it).
             Both stay inside GatewayProvider. */}
         {isDesktop ? <RunNotifications mode="desktop" /> : null}
-      </GatewayProvider>
+      </LiveEventsProvider>
     </MarketplaceDrawerProvider>
   );
 }
@@ -351,10 +351,10 @@ function MobileChatShell() {
         onOpenFile={handleOpenFile}
         onCloseFileViewer={handleCloseFileViewer}
       >
-        {/* Keep AgentChatWindow mounted but hidden so chat state
-            (messages, scroll position, streaming) survives view switches */}
+        {/* Keep the room workspace mounted but hidden so its canonical state
+            and draft survive in-shell panel switches. */}
         <div className={activeView === "chat" ? "flex flex-col h-full min-h-0" : "hidden"}>
-          <AgentChatWindow key={effectiveAgentId} agentId={effectiveAgentId} onOpenFile={handleOpenFile} />
+          <MessagingWorkspace initialAgentId={effectiveAgentId} />
         </div>
         {activeView === "control" && (
           <div className="flex flex-col h-full min-h-0">

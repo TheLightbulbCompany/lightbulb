@@ -10,7 +10,7 @@ import { ProvisionGate } from "../../components/provision/ProvisionGate";
 import { PushRegistration } from "../../components/push/PushRegistration";
 import { colors, fonts } from "../../config/theme";
 import { getCurrentChat } from "../../lib/activeAgent";
-import { GatewayProvider } from "../../providers/gateway";
+import { LiveEventsProvider } from "../../providers/live-events";
 
 // Feather glyphs for each top-level tab, mirroring the web sidebar sections.
 function tabIcon(name: ComponentProps<typeof Feather>["name"]) {
@@ -21,15 +21,15 @@ function tabIcon(name: ComponentProps<typeof Feather>["name"]) {
 
 // Tab shell mirroring the web sidebar's top-level sections, gated on Clerk
 // auth (the mobile equivalent of the web's middleware route protection).
-// GatewayProvider sits inside the auth gate so the socket only exists for
-// signed-in users.
+// LiveEventsProvider sits inside the auth gate so AppSync subscriptions only
+// exist for signed-in users.
 export default function AppLayout() {
   const { isSignedIn, isLoaded } = useAuth();
   if (!isLoaded) return null;
   if (!isSignedIn) return <Redirect href="/(auth)/sign-in" />;
 
   return (
-    <GatewayProvider>
+    <LiveEventsProvider>
       {/* getCurrentChat reads the chat screen's focused agent + session
           (activeAgent.ts) so the notification handler suppresses the banner for
           a reply the user is actively watching stream in. */}
@@ -106,6 +106,6 @@ export default function AppLayout() {
           </FirstRunGate>
         </ProvisionGate>
       </AiConsentGate>
-    </GatewayProvider>
+    </LiveEventsProvider>
   );
 }

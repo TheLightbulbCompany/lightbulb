@@ -17,38 +17,37 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import type { ChatIncomingMessage } from "@/hooks/useGateway";
+import type { ChatIncomingMessage } from "@lightbulb/shared";
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 
 let chatHandlers: Array<(msg: ChatIncomingMessage) => void> = [];
-let eventHandlers: Array<(name: string, data: unknown) => void> = [];
 const sendReq = vi.fn<(method: string, params?: unknown) => Promise<unknown>>();
 const sendChat = vi.fn();
 const send = vi.fn();
 
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({
+vi.mock("@/hooks/useAgentRoomTransport", () => ({
+  useAgentRoomTransport: (agentId: string | null) => ({
     isConnected: true,
-    nodeConnected: false,
-    error: null,
-    reconnectAttempt: 0,
-    send,
-    sendReq,
-    sendChat,
-    onEvent: (h: (name: string, data: unknown) => void) => {
-      eventHandlers.push(h);
+    onChatMessage: (handler: (message: ChatIncomingMessage) => void) => {
+      chatHandlers.push(handler);
       return () => {
-        eventHandlers = eventHandlers.filter((x) => x !== h);
+        chatHandlers = chatHandlers.filter((candidate) => candidate !== handler);
       };
     },
-    onChatMessage: (h: (msg: ChatIncomingMessage) => void) => {
-      chatHandlers.push(h);
-      return () => {
-        chatHandlers = chatHandlers.filter((x) => x !== h);
-      };
+    sendRoomMessage: async (message: string, clientMessageId: string) =>
+      sendChat(agentId, message, clientMessageId, undefined),
+    abortRun: async (runId: string) => {
+      const accepted = send({ type: "agent_abort", agentId: agentId, runId });
+      if (accepted === false) throw new Error("Stop not sent");
+      return {};
     },
-    reconnect: vi.fn(),
+    steerRun: async (runId: string, text: string) => {
+      const accepted = send({ type: "agent_steer", agentId: agentId, runId, text });
+      if (accepted === false) throw new Error("Steer not sent");
+      return {};
+    },
+    rpc: sendReq,
   }),
 }));
 
@@ -76,7 +75,6 @@ function historyFetchCount(): number {
 describe("useAgentChat — T7 slash handling", () => {
   beforeEach(() => {
     chatHandlers = [];
-    eventHandlers = [];
     sendReq.mockReset().mockResolvedValue({});
     sendChat.mockReset();
     send.mockReset().mockReturnValue(true);
@@ -96,13 +94,13 @@ describe("useAgentChat — T7 slash handling", () => {
     act(() =>
       dispatch({
         type: "chunk",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: runA,
         content: "hi there",
       } as ChatIncomingMessage),
     );
     act(() =>
-      dispatch({ type: "done", agent_id: "agent-X", runId: runA } as ChatIncomingMessage),
+      dispatch({ type: "done", agentId: "agent-X", runId: runA } as ChatIncomingMessage),
     );
     expect(messageCount(result)).toBeGreaterThan(0);
 
@@ -130,7 +128,7 @@ describe("useAgentChat — T7 slash handling", () => {
     act(() =>
       dispatch({
         type: "chunk",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: runA,
         content: "starting task A",
       } as ChatIncomingMessage),
@@ -145,7 +143,7 @@ describe("useAgentChat — T7 slash handling", () => {
     expect(send).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledWith({
       type: "agent_abort",
-      agent_id: "agent-X",
+      agentId: "agent-X",
       runId: runA,
     });
     // ...then resent only the remainder as a fresh primary send.
@@ -185,7 +183,7 @@ describe("useAgentChat — T7 slash handling", () => {
     act(() =>
       dispatch({
         type: "chunk",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: runA,
         content: "starting task A",
       } as ChatIncomingMessage),
@@ -201,7 +199,7 @@ describe("useAgentChat — T7 slash handling", () => {
     expect(send).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledWith({
       type: "agent_abort",
-      agent_id: "agent-X",
+      agentId: "agent-X",
       runId: runA,
     });
     // ...still sending /reset to the server as a fresh primary send,

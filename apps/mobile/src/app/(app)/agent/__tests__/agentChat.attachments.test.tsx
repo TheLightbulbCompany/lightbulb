@@ -31,16 +31,64 @@ jest.mock("expo-crypto", () => ({
     `00000000-0000-4000-8000-${String(++mockUuidN).padStart(12, "0")}`,
 }));
 
-const mockSendChat = jest.fn();
-jest.mock("../../../../providers/gateway", () => ({
-  useGateway: () => ({
-    isConnected: true,
-    error: null,
-    onChatMessage: () => () => {},
-    sendReq: jest.fn(async () => ({})),
-    sendChat: mockSendChat,
-    send: jest.fn(() => true),
-  }),
+const mockSendMessage = jest.fn(async (_roomId: string, request: { clientMessageId: string; text: string }) => ({
+  messageId: request.clientMessageId,
+  roomId: "room_a",
+  messageSeq: 1,
+  roomRevision: 1,
+  author: { kind: "human", id: "user_a", displayName: "You" },
+  text: request.text,
+  mentions: [],
+  replyToMessageId: null,
+  threadRootMessageId: null,
+  createdAt: "2026-09-09T00:00:00.000Z",
+  runId: null,
+}));
+const mockRoom = {
+  roomId: "room_a",
+  name: null,
+  kind: "dm",
+  roomRevision: 1,
+  lastMessageSeq: 0,
+  lastMessageAt: null,
+  unreadCount: 0,
+  updatedAt: "2026-09-09T00:00:00.000Z",
+  deliveryKey: "delivery_a",
+  members: [{
+    kind: "agent",
+    id: "agent_a",
+    displayName: "Friday",
+    mentionHandle: "friday",
+    role: "member",
+    listenMode: "active",
+    joinedAt: "2026-09-09T00:00:00.000Z",
+    joinedSeq: 0,
+  }],
+  lastReadSeq: 0,
+  createdAt: "2026-09-09T00:00:00.000Z",
+};
+const mockMessaging = {
+  listRooms: jest.fn(async () => ({ rooms: [mockRoom] })),
+  getRoom: jest.fn(async () => mockRoom),
+  listMessages: jest.fn(async () => ({ messages: [], nextAfterSeq: null })),
+  markRead: jest.fn(async (_roomId: string, request: { lastReadSeq: number }) => request),
+  sendMessage: mockSendMessage,
+  abortRun: jest.fn(),
+};
+const mockLiveEvents = {
+  httpReady: true,
+  liveConnected: true,
+  liveChannels: ["/rooms/room_a/delivery_a"],
+  liveError: null,
+  connectionRevision: 1,
+  messaging: mockMessaging,
+  runtime: { rpc: jest.fn() },
+  setActiveRoomSubscription: jest.fn(),
+  onChatMessage: () => () => {},
+  onEvent: () => () => {},
+};
+jest.mock("../../../../providers/live-events", () => ({
+  useLiveEvents: () => mockLiveEvents,
 }));
 
 // createApiClient override intercepts the upload rail (attachments.ts builds
@@ -48,7 +96,7 @@ jest.mock("../../../../providers/gateway", () => ({
 const mockUpload = jest.fn();
 jest.mock("@lightbulb/shared", () => ({
   ...jest.requireActual("@lightbulb/shared"),
-  useGatewayRpc: () => ({ data: null, error: null, isLoading: false }),
+  useRuntimeRpc: () => ({ data: null, error: null, isLoading: false }),
   createApiClient: () => ({ upload: mockUpload }),
 }));
 
@@ -92,7 +140,7 @@ async function addLibraryChip(
 describe("AgentChat attachments", () => {
   beforeEach(() => {
     jest.restoreAllMocks();
-    mockSendChat.mockClear();
+    mockSendMessage.mockClear();
     mockUpload.mockReset();
     mockLaunchLibrary.mockReset();
     mockGetDocument.mockReset();
@@ -164,12 +212,12 @@ describe("AgentChat attachments", () => {
       "/container/files?agent_id=agent_a",
       expect.anything(),
     );
-    expect(mockSendChat).toHaveBeenCalledTimes(1);
+    expect(mockSendMessage).toHaveBeenCalledTimes(1);
     expect(mockUpload.mock.invocationCallOrder[0]).toBeLessThan(
-      mockSendChat.mock.invocationCallOrder[0],
+      mockSendMessage.mock.invocationCallOrder[0],
     );
     // Message-reference contract, verbatim from web AgentChatWindow.
-    expect(mockSendChat.mock.calls[0][1]).toBe(
+    expect(mockSendMessage.mock.calls[0][1].text).toBe(
       "[The user uploaded files to your workspace. You can read them at these paths:\n" +
         "- photo.png → .openclaw/workspaces/agent_a/uploads/photo.png]\n\n" +
         "look at this",
@@ -192,7 +240,7 @@ describe("AgentChat attachments", () => {
     expect(
       await screen.findByText("File upload failed: EFS unavailable"),
     ).toBeTruthy();
-    expect(mockSendChat).not.toHaveBeenCalled();
+    expect(mockSendMessage).not.toHaveBeenCalled();
     // Draft survives for a retry: chip + text both still staged.
     expect(screen.getByLabelText("Remove photo.png")).toBeTruthy();
     expect(screen.getByDisplayValue("look at this")).toBeTruthy();

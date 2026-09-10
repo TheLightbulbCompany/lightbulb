@@ -5,8 +5,8 @@ import type { ModelEntry } from "@/lib/models";
 const callRpc = vi.fn<(method: string, params?: Record<string, unknown>) => Promise<unknown>>(
   async () => ({}),
 );
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpcMutation: () => callRpc,
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpcMutation: () => callRpc,
 }));
 vi.mock("@clerk/nextjs", () => ({
   useUser: (): { user: { id: string } | null } => ({ user: { id: "user_1" } }),

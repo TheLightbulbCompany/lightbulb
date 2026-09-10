@@ -25,7 +25,7 @@ export function buildMissionControlLayout(api: DockviewApi): void {
   api.addPanel({
     id: chatId,
     component: "chat",
-    title: "Chat",
+    title: "Messages",
     params: { agentId: DEFAULT_AGENT_SENTINEL },
     renderer: "always",
   });

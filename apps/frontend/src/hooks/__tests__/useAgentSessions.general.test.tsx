@@ -3,12 +3,12 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { SWRConfig } from "swr";
 
 // Task 5 moved useAgentSessions' fetch onto a paging useSWR fetcher built on
-// useGatewayRpcMutation — useGatewayRpc itself is no longer called by the
+// useRuntimeRpcMutation — useRuntimeRpc itself is no longer called by the
 // hook, so callRpc is the whole surface to stub.
 const callRpc = vi.fn().mockResolvedValue({});
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpc: vi.fn(),
-  useGatewayRpcMutation: (): typeof callRpc => callRpc,
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpc: vi.fn(),
+  useRuntimeRpcMutation: (): typeof callRpc => callRpc,
 }));
 
 interface SessionRow { key: string; updatedAt?: number }

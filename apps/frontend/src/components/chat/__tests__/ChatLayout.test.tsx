@@ -64,7 +64,7 @@ vi.mock("@/hooks/useGateway", () => ({
   useGateway: () => ({
     nodeConnected: false,
     // ChatLayout reads nodeConnected directly and calls
-    // useGatewayRpc("config.get"), whose shared implementation destructures
+    // useRuntimeRpc("config.get"), whose shared implementation destructures
     // sendReq and subscribes to onEvent for cache invalidation — the mock
     // has to satisfy all three. (ExecApprovalsProvider no longer mounts
     // here; it was hoisted to the /chat page shell.)

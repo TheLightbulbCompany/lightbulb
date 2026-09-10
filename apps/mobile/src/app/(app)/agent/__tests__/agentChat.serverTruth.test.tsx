@@ -1,78 +1,79 @@
 import { act, render, screen } from "@testing-library/react-native";
 
-// Server-truth run state + friendly-error handling (web useAgentChat parity):
-//  - `run_active` marks/releases busy independent of any locally-started run,
-//    so a run started from web/cron/another device can't read as idle.
-//  - frames for an externally-started run are ADOPTED and rendered.
-//  - `agent_busy` is a benign no-op; `container_waking` renders calm plain
-//    text (not an error card) while still releasing the busy gate.
-
 jest.mock("expo-router", () => ({
-  router: {
-    push: jest.fn(),
-    back: jest.fn(),
-    canGoBack: () => false,
-    replace: jest.fn(),
-    setParams: jest.fn(),
-  },
+  router: { push: jest.fn(), back: jest.fn(), canGoBack: () => false, replace: jest.fn(), setParams: jest.fn() },
   Stack: { Screen: () => null },
   useFocusEffect: jest.fn(),
   useLocalSearchParams: () => ({ agentId: "agent_a", name: "Friday" }),
 }));
 
 jest.mock("@clerk/clerk-expo", () => ({
-  useUser: () => ({ user: null }),
-  useAuth: () => ({ getToken: jest.fn(async () => "token") }),
+  useAuth: () => ({ userId: "user_a", getToken: jest.fn(async () => "token") }),
 }));
 
-let mockUuidCounter = 0;
 jest.mock("expo-crypto", () => ({
-  randomUUID: () => `00000000-0000-4000-8000-${String(++mockUuidCounter).padStart(12, "0")}`,
+  randomUUID: () => "00000000-0000-4000-8000-000000000000",
 }));
 
-type ChatHandler = (msg: Record<string, unknown>) => void;
-let mockChatHandler: ChatHandler | null = null;
-
-jest.mock("../../../../providers/gateway", () => ({
-  useGateway: () => ({
-    isConnected: true,
-    error: null,
-    onChatMessage: (handler: ChatHandler) => {
-      mockChatHandler = handler;
-      return () => {
-        mockChatHandler = null;
-      };
+const mockRoom = {
+  roomId: "room_a", name: null, kind: "dm", roomRevision: 1,
+  lastMessageSeq: 0, lastMessageAt: null, unreadCount: 0,
+  updatedAt: "2026-09-09T00:00:00.000Z", deliveryKey: "delivery_a",
+  members: [{ kind: "agent", id: "agent_a", displayName: "Friday", mentionHandle: "friday", role: "member", listenMode: "active", joinedAt: "2026-09-09T00:00:00.000Z", joinedSeq: 0 }],
+  lastReadSeq: 0, createdAt: "2026-09-09T00:00:00.000Z",
+};
+type LiveHandler = (event: Record<string, unknown>) => void;
+let mockLiveHandler: LiveHandler | null = null;
+const mockMessaging = {
+  listRooms: jest.fn(async () => ({ rooms: [mockRoom] })),
+  getRoom: jest.fn(async () => mockRoom),
+  listMessages: jest.fn(async () => ({ messages: [], nextAfterSeq: null })),
+  markRead: jest.fn(),
+  sendMessage: jest.fn(),
+  abortRun: jest.fn(),
+};
+jest.mock("../../../../providers/live-events", () => ({
+  useLiveEvents: () => ({
+    httpReady: true,
+    liveConnected: true,
+    liveChannels: ["/rooms/room_a/delivery_a"],
+    liveError: null,
+    connectionRevision: 1,
+    messaging: mockMessaging,
+    setActiveRoomSubscription: jest.fn(),
+    onEvent: (handler: LiveHandler) => {
+      mockLiveHandler = handler;
+      return () => { mockLiveHandler = null; };
     },
-    sendReq: jest.fn(async () => ({})),
-    sendChat: jest.fn(),
-    send: jest.fn(() => true),
   }),
 }));
 
 jest.mock("@lightbulb/shared", () => ({
   ...jest.requireActual("@lightbulb/shared"),
-  useGatewayRpc: () => ({ data: null, error: null, isLoading: false }),
+  useRuntimeRpc: () => ({ data: null, error: null, isLoading: false }),
 }));
 
 import AgentChat from "../[agentId]";
 
-// NOTE: this RNTL version's act() is async under the hood — an un-awaited
-// act starts a scope the next statement races, silently dropping the state
-// update (see ByoKeyScreen.test.tsx). Always `await frame(...)`.
 function frame(msg: Record<string, unknown>) {
+  const runId = typeof msg.runId === "string" ? msg.runId : "active-run";
+  const payloadFrame = { agentId: "agent_a", ...msg };
   return act(async () => {
-    mockChatHandler?.({ agent_id: "agent_a", ...msg });
+    mockLiveHandler?.({
+      type: "room.run.frame",
+      payload: { roomId: "room_a", agentId: "agent_a", runId, frame: payloadFrame },
+    });
   });
 }
 
 describe("AgentChat server-truth run state", () => {
   beforeEach(() => {
-    mockChatHandler = null;
+    mockLiveHandler = null;
   });
 
-  it("run_active marks busy (Stop shown) and releases on active:false", async () => {
-    await render(<AgentChat />);
-    expect(screen.getByLabelText("Send")).toBeTruthy();
+  it("run_active marks busy and releases on active:false", async () => {
+    render(<AgentChat />);
+    expect(await screen.findByLabelText("Send")).toBeTruthy();
 
     await frame({ type: "run_active", active: true });
     expect(screen.getByLabelText("Stop")).toBeTruthy();
@@ -81,8 +82,9 @@ describe("AgentChat server-truth run state", () => {
     expect(screen.getByLabelText("Send")).toBeTruthy();
   });
 
-  it("adopts an externally-started run: renders its frames and holds busy", async () => {
-    await render(<AgentChat />);
+  it("adopts an externally-started run and ignores late terminal frames", async () => {
+    render(<AgentChat />);
+    await screen.findByLabelText("Send");
 
     await frame({ type: "chunk", runId: "ext-run", content: "hello from web", append: true });
     expect(screen.getByText("hello from web")).toBeTruthy();
@@ -91,34 +93,26 @@ describe("AgentChat server-truth run state", () => {
     await frame({ type: "run_ended", runId: "ext-run", outcome: "done" });
     expect(screen.getByLabelText("Send")).toBeTruthy();
 
-    // A stray late frame for the ended run must NOT re-arm the busy gate.
     await frame({ type: "chunk", runId: "ext-run", content: "late straggler", append: true });
     expect(screen.getByLabelText("Send")).toBeTruthy();
     expect(screen.queryByText("late straggler")).toBeNull();
   });
 
-  it("agent_busy is a benign no-op (no card, busy untouched)", async () => {
-    await render(<AgentChat />);
+  it("agent_busy is a benign no-op", async () => {
+    render(<AgentChat />);
+    await screen.findByLabelText("Send");
     await frame({ type: "run_active", active: true });
-
     await frame({ type: "error", code: "agent_busy", message: "Agent is busy" });
     expect(screen.queryByText("Agent is busy")).toBeNull();
     expect(screen.getByLabelText("Stop")).toBeTruthy();
   });
 
   it("container_waking renders calm text and releases busy", async () => {
-    await render(<AgentChat />);
+    render(<AgentChat />);
+    await screen.findByLabelText("Send");
     await frame({ type: "run_active", active: true });
-
-    await frame({
-      type: "error",
-      code: "container_waking",
-      message: "Waking your agent — this can take a minute.",
-    });
-    expect(
-      screen.getByText("Waking your agent — this can take a minute."),
-    ).toBeTruthy();
-    // Calm terminal: gate released, composer back to Send.
+    await frame({ type: "error", code: "container_waking", message: "Waking your agent — this can take a minute." });
+    expect(screen.getByText("Waking your agent — this can take a minute.")).toBeTruthy();
     expect(screen.getByLabelText("Send")).toBeTruthy();
   });
 });

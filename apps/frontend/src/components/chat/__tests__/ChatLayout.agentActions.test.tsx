@@ -63,9 +63,9 @@ vi.mock("@/hooks/useGateway", () => ({
     sendReq: () => Promise.resolve(),
   }),
 }));
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpc: () => ({ data: { config: {} } }),
-  useGatewayRpcMutation: () => vi.fn(),
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpc: () => ({ data: { config: {} } }),
+  useRuntimeRpcMutation: () => vi.fn(),
 }));
 
 // Active agent in the gateway roster (drives ``currentAgentId``). Mutable so

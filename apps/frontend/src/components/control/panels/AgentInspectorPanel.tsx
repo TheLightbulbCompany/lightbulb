@@ -10,7 +10,7 @@ import { RoutinesPanel } from "@/components/teams/panels/RoutinesPanel";
 import { AgentOrgControls } from "@/components/teams/agents/AgentOrgControls";
 import { useBilling } from "@/hooks/useBilling";
 import { useAgents } from "@/hooks/useAgents";
-import { useGatewayRpc } from "@/hooks/useGatewayRpc";
+import { useRuntimeRpc } from "@/hooks/useRuntimeRpc";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { cn } from "@/lib/utils";
 import type { CompanyAgent } from "@/components/teams/shared/types";

@@ -20,13 +20,13 @@ import {
   createApiClient,
   fetchJsonWithStatus,
   useAgents,
-  useGatewayRpc,
+  useRuntimeRpc,
 } from "@lightbulb/shared";
 
 import { usePulse } from "../../../components/chat/usePulse";
 import { colors, fonts, radii, spacing, type } from "../../../config/theme";
 import { makeAdapter } from "../../../lib/adapter";
-import { useGateway } from "../../../providers/gateway";
+import { useLiveEvents } from "../../../providers/live-events";
 
 // ---------------------------------------------------------------------------
 // Contract shapes (w3-control-contract §1 Overview)
@@ -106,8 +106,6 @@ interface DerivedStatus {
 
 function deriveStatus(
   container: ContainerState,
-  gatewayConnected: boolean,
-  gatewayError: string | null,
   health: HealthPayload | undefined,
 ): DerivedStatus {
   if (container.code === "needs_signup") {
@@ -127,13 +125,11 @@ function deriveStatus(
   if (status === "stopped" || status === "error") {
     return { tone: "down", label: "Container down", detail: container.substatus ?? null };
   }
-  // running (or unknown-but-present): the socket + health decide liveness
-  if (!gatewayConnected) {
-    return gatewayError
-      ? { tone: "down", label: "Gateway down", detail: gatewayError }
-      : { tone: "starting", label: "Connecting…", detail: null };
+  // running (or unknown-but-present): the runtime health response decides liveness.
+  if (!health) {
+    return { tone: "starting", label: "Checking agent runtime…", detail: null };
   }
-  if (health && health.ok === false) {
+  if (health.ok === false) {
     return { tone: "down", label: "Gateway degraded", detail: "Agent runtime not ready" };
   }
   const uptime =
@@ -296,13 +292,13 @@ function StatusCardSkeleton() {
 // ---------------------------------------------------------------------------
 
 export default function Overview() {
-  const gateway = useGateway();
+  const live = useLiveEvents();
   const { state, retry } = useOverviewRest();
 
-  // Live counts over the same RPCs the web Overview polls.
-  const { agents, isSettled: agentsSettled } = useAgents(gateway);
-  const { data: healthRaw } = useGatewayRpc<unknown>(
-    gateway,
+  // Runtime counts use canonical HTTP RPC and AppSync invalidations.
+  const { agents, isSettled: agentsSettled } = useAgents(live);
+  const { data: healthRaw } = useRuntimeRpc<unknown>(
+    live,
     "health",
     undefined,
     { refreshInterval: 10_000 },
@@ -345,12 +341,7 @@ export default function Overview() {
       </View>
     );
   } else {
-    const status = deriveStatus(
-      state.container,
-      gateway.isConnected,
-      gateway.error,
-      health,
-    );
+    const status = deriveStatus(state.container, health);
     const billing = state.billing;
     body = (
       <>
@@ -378,9 +369,7 @@ export default function Overview() {
           <Tile
             label="AGENTS"
             value={agentCount != null ? String(agentCount) : "—"}
-            loading={
-              agentCount == null && !agentsSettled && gateway.isConnected
-            }
+            loading={agentCount == null && !agentsSettled}
           />
           <Tile
             label="SESSIONS"

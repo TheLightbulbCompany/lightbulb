@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Loader2, RefreshCw, Moon, Sun, Sparkles } from "lucide-react";
-import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { useRuntimeRpc, useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 import { useConfigPatch } from "@/hooks/useConfigPatch";
 import { type Agent, agentDisplayName, useAgents } from "@/hooks/useAgents";
 import { Button } from "@/components/ui/button";
@@ -29,7 +29,7 @@ export function DreamsPanel() {
   const agents = roster as Agent[];
   const params = agentId ? { agentId } : {};
 
-  const { data, error, isLoading, mutate } = useGatewayRpc<MemoryStatusResponse>(
+  const { data, error, isLoading, mutate } = useRuntimeRpc<MemoryStatusResponse>(
     "doctor.memory.status",
     params,
   );
@@ -214,7 +214,7 @@ function Stat({ label, value }: { label: string; value: number }) {
 }
 
 function DiaryTab({ params }: { params: Record<string, unknown> }) {
-  const { data, error, isLoading, mutate } = useGatewayRpc<DreamDiaryResponse>(
+  const { data, error, isLoading, mutate } = useRuntimeRpc<DreamDiaryResponse>(
     "doctor.memory.dreamDiary",
     params,
   );
@@ -260,7 +260,7 @@ function AdvancedTab({
   params: Record<string, unknown>;
   onAfterAction: () => void;
 }) {
-  const callRpc = useGatewayRpcMutation();
+  const callRpc = useRuntimeRpcMutation();
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
 

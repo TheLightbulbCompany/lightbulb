@@ -1,7 +1,7 @@
 "use client";
 
 import { useUser } from "@clerk/nextjs";
-import { useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 import { buildChatSessionKey } from "@lightbulb/shared";
 import { buildModelRef, type ModelEntry } from "@/lib/models";
 
@@ -34,7 +34,7 @@ export function useSessionModelControls(
   isStreaming: boolean,
 ): SessionModelControls {
   const { user } = useUser();
-  const callRpc = useGatewayRpcMutation();
+  const callRpc = useRuntimeRpcMutation();
 
   // Plain functions: the project's React Compiler auto-memoizes hook returns, and
   // a manual useCallback whose body can throw (keyOf) can't be preserved by the

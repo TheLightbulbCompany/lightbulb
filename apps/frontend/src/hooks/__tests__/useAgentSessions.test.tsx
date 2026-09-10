@@ -2,19 +2,19 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
 import { SWRConfig } from "swr";
 
-// Task 5 moved useAgentSessions' fetch from a single-shot useGatewayRpc call
-// onto a paging useSWR fetcher built on useGatewayRpcMutation, so the whole
+// Task 5 moved useAgentSessions' fetch from a single-shot useRuntimeRpc call
+// onto a paging useSWR fetcher built on useRuntimeRpcMutation, so the whole
 // gateway surface these tests need to stub is callRpc (sessions.list for the
-// fetch, sessions.patch/sessions.delete for the mutations) — useGatewayRpc
+// fetch, sessions.patch/sessions.delete for the mutations) — useRuntimeRpc
 // itself is no longer called by the hook.
 const callRpc = vi.fn().mockResolvedValue({});
 const notifyApiError = vi.fn();
 vi.mock("@/lib/notify", () => ({
   notifyApiError: (...args: unknown[]): unknown => notifyApiError(...args),
 }));
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpc: vi.fn(),
-  useGatewayRpcMutation: (): typeof callRpc => callRpc,
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpc: vi.fn(),
+  useRuntimeRpcMutation: (): typeof callRpc => callRpc,
 }));
 
 interface SessionRow {

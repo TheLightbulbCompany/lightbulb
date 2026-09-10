@@ -36,8 +36,8 @@ vi.mock("@/hooks/useGateway", () => ({
 vi.mock("@/hooks/useProvisioningState", () => ({
   useProvisioningState: () => ({ container, phase: "normal", blocked: null, refresh: vi.fn() }),
 }));
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpc: () => ({ data: { ok: true }, error: null }),
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpc: () => ({ data: { ok: true }, error: null }),
 }));
 vi.mock("@/lib/api", () => ({ useApi: () => ({ post: vi.fn().mockResolvedValue(null) }) }));
 

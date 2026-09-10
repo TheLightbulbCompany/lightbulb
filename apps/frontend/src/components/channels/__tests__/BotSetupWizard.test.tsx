@@ -14,8 +14,8 @@ vi.mock("@/lib/api", () => ({
   }),
 }));
 
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpcMutation: () => vi.fn().mockResolvedValue({
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpcMutation: () => vi.fn().mockResolvedValue({
     channelAccounts: { telegram: [{ connected: true }] },
   }),
 }));

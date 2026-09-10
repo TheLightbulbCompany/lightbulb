@@ -14,38 +14,37 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import type { ChatIncomingMessage } from "@/hooks/useGateway";
+import type { ChatIncomingMessage } from "@lightbulb/shared";
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 
 let chatHandlers: Array<(msg: ChatIncomingMessage) => void> = [];
-let eventHandlers: Array<(name: string, data: unknown) => void> = [];
 const sendReq = vi.fn().mockResolvedValue({});
 const sendChat = vi.fn();
 const send = vi.fn();
 
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({
+vi.mock("@/hooks/useAgentRoomTransport", () => ({
+  useAgentRoomTransport: (agentId: string | null) => ({
     isConnected: true,
-    nodeConnected: false,
-    error: null,
-    reconnectAttempt: 0,
-    send,
-    sendReq,
-    sendChat,
-    onEvent: (h: (name: string, data: unknown) => void) => {
-      eventHandlers.push(h);
+    onChatMessage: (handler: (message: ChatIncomingMessage) => void) => {
+      chatHandlers.push(handler);
       return () => {
-        eventHandlers = eventHandlers.filter((x) => x !== h);
+        chatHandlers = chatHandlers.filter((candidate) => candidate !== handler);
       };
     },
-    onChatMessage: (h: (msg: ChatIncomingMessage) => void) => {
-      chatHandlers.push(h);
-      return () => {
-        chatHandlers = chatHandlers.filter((x) => x !== h);
-      };
+    sendRoomMessage: async (message: string, clientMessageId: string) =>
+      sendChat(agentId, message, clientMessageId, undefined),
+    abortRun: async (runId: string) => {
+      const accepted = send({ type: "agent_abort", agentId: agentId, runId });
+      if (accepted === false) throw new Error("Stop not sent");
+      return {};
     },
-    reconnect: vi.fn(),
+    steerRun: async (runId: string, text: string) => {
+      const accepted = send({ type: "agent_steer", agentId: agentId, runId, text });
+      if (accepted === false) throw new Error("Steer not sent");
+      return {};
+    },
+    rpc: sendReq,
   }),
 }));
 
@@ -66,14 +65,13 @@ function phase(p: string, runId = "r1"): ChatIncomingMessage {
     title: p,
     detail: { phase: p },
     runId,
-    agent_id: "agentA",
+    agentId: "agentA",
   } as ChatIncomingMessage;
 }
 
 describe("useAgentChat — run telemetry", () => {
   beforeEach(() => {
     chatHandlers = [];
-    eventHandlers = [];
     sendReq.mockReset().mockResolvedValue({});
     sendChat.mockReset();
     send.mockReset().mockReturnValue(true);
@@ -95,7 +93,7 @@ describe("useAgentChat — run telemetry", () => {
     expect(result.current.runPhase).toBe("starting_model");
 
     act(() => {
-      dispatch({ type: "done", runId: "r1", agent_id: "agentA" } as ChatIncomingMessage);
+      dispatch({ type: "done", runId: "r1", agentId: "agentA" } as ChatIncomingMessage);
     });
     expect(result.current.runPhase).toBeNull();
   });
@@ -121,7 +119,7 @@ describe("useAgentChat — run telemetry", () => {
         title: "start",
         detail: { phase: "start" },
         runId: "r1",
-        agent_id: "agentA",
+        agentId: "agentA",
       } as ChatIncomingMessage);
     });
     expect(result.current.runPhase).toBe("compacting");
@@ -134,7 +132,7 @@ describe("useAgentChat — run telemetry", () => {
         title: "end",
         detail: { phase: "end", completed: true },
         runId: "r1",
-        agent_id: "agentA",
+        agentId: "agentA",
       } as ChatIncomingMessage);
     });
     expect(result.current.runPhase).toBeNull();
@@ -151,7 +149,7 @@ describe("useAgentChat — run telemetry", () => {
         title: "end",
         detail: { phase: "end", completed: false, willRetry: true },
         runId: "r1",
-        agent_id: "agentA",
+        agentId: "agentA",
       } as ChatIncomingMessage);
     });
     expect(result.current.runPhase).toBe("compaction_failed");
@@ -193,7 +191,7 @@ describe("useAgentChat — run telemetry", () => {
       await result.current.sendMessage("go");
     });
     act(() => {
-      dispatch({ type: "done", runId: "r1", agent_id: "agentA" } as ChatIncomingMessage);
+      dispatch({ type: "done", runId: "r1", agentId: "agentA" } as ChatIncomingMessage);
     });
     expect(result.current.lastTurnRecap).not.toBeNull();
     expect(result.current.lastTurnRecap!.runtimeMs).toBeGreaterThanOrEqual(0);
@@ -215,7 +213,7 @@ describe("useAgentChat — run telemetry", () => {
         type: "error",
         message: "boom",
         runId: "r1",
-        agent_id: "agentA",
+        agentId: "agentA",
       } as ChatIncomingMessage);
     });
     expect(result.current.lastTurnRecap).toBeNull();
@@ -252,7 +250,7 @@ describe("useAgentChat — run telemetry", () => {
       await result.current.sendMessage("first");
     });
     act(() => {
-      dispatch({ type: "done", runId: "r1", agent_id: "agentA" } as ChatIncomingMessage);
+      dispatch({ type: "done", runId: "r1", agentId: "agentA" } as ChatIncomingMessage);
     });
     expect(result.current.lastTurnRecap).not.toBeNull();
 

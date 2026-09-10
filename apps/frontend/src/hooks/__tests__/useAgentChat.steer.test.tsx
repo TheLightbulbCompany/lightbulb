@@ -2,16 +2,13 @@
  * F-STEER: inject a queued message into the live run.
  *
  * steerMessage(id) only acts when a run is active (clientRunIdRef set). It
- * sends {type:"agent_steer", agent_id, text, runId} for that queued item via
- * the gateway send primitive, then removes the item from the normal queue
- * (it's now injected into the live run). No-op if no active run. Mirrors
- * upstream OpenClaw web UI's steerQueuedChatMessage
- * (upstream ui/src/ui/app-chat.ts).
+ * sends the queued text through the canonical HTTP steer endpoint, then
+ * removes the item after the request succeeds. No-op if no run is active.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import type { ChatIncomingMessage } from "@/hooks/useGateway";
+import type { ChatIncomingMessage } from "@lightbulb/shared";
 import { notifyApiError } from "@/lib/notify";
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
@@ -23,33 +20,32 @@ vi.mock("@/lib/notify", () => ({
 }));
 
 let chatHandlers: Array<(msg: ChatIncomingMessage) => void> = [];
-let eventHandlers: Array<(name: string, data: unknown) => void> = [];
 const sendReq = vi.fn().mockResolvedValue({});
 const sendChat = vi.fn();
 const send = vi.fn();
 
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({
+vi.mock("@/hooks/useAgentRoomTransport", () => ({
+  useAgentRoomTransport: (agentId: string | null) => ({
     isConnected: true,
-    nodeConnected: false,
-    error: null,
-    reconnectAttempt: 0,
-    send,
-    sendReq,
-    sendChat,
-    onEvent: (h: (name: string, data: unknown) => void) => {
-      eventHandlers.push(h);
+    onChatMessage: (handler: (message: ChatIncomingMessage) => void) => {
+      chatHandlers.push(handler);
       return () => {
-        eventHandlers = eventHandlers.filter((x) => x !== h);
+        chatHandlers = chatHandlers.filter((candidate) => candidate !== handler);
       };
     },
-    onChatMessage: (h: (msg: ChatIncomingMessage) => void) => {
-      chatHandlers.push(h);
-      return () => {
-        chatHandlers = chatHandlers.filter((x) => x !== h);
-      };
+    sendRoomMessage: async (message: string, clientMessageId: string) =>
+      sendChat(agentId, message, clientMessageId, undefined),
+    abortRun: async (runId: string) => {
+      const accepted = send({ type: "agent_abort", agentId: agentId, runId });
+      if (accepted === false) throw new Error("Stop not sent");
+      return {};
     },
-    reconnect: vi.fn(),
+    steerRun: async (runId: string, text: string) => {
+      const accepted = send({ type: "agent_steer", agentId: agentId, runId, text });
+      if (accepted === false) throw new Error("Steer not sent");
+      return {};
+    },
+    rpc: sendReq,
   }),
 }));
 
@@ -64,7 +60,6 @@ function dispatch(msg: ChatIncomingMessage) {
 describe("useAgentChat — F-STEER", () => {
   beforeEach(() => {
     chatHandlers = [];
-    eventHandlers = [];
     sendReq.mockReset().mockResolvedValue({});
     sendChat.mockReset();
     send.mockReset().mockReturnValue(true);
@@ -80,7 +75,7 @@ describe("useAgentChat — F-STEER", () => {
     });
     const runA = lastClientRunId();
     act(() =>
-      dispatch({ type: "chunk", agent_id: "agent-X", runId: runA, content: "x" } as ChatIncomingMessage),
+      dispatch({ type: "chunk", agentId: "agent-X", runId: runA, content: "x" } as ChatIncomingMessage),
     );
     await act(async () => {
       await result.current.sendMessage("steer me");
@@ -88,13 +83,14 @@ describe("useAgentChat — F-STEER", () => {
     expect(result.current.queuedMessages).toHaveLength(1);
     const id = result.current.queuedMessages[0].id;
 
-    act(() => {
+    await act(async () => {
       result.current.steerMessage(id);
+      await Promise.resolve();
     });
 
     expect(send).toHaveBeenCalledWith({
       type: "agent_steer",
-      agent_id: "agent-X",
+      agentId: "agent-X",
       text: "steer me",
       runId: runA,
     });
@@ -112,7 +108,7 @@ describe("useAgentChat — F-STEER", () => {
     });
     const runA = lastClientRunId();
     act(() =>
-      dispatch({ type: "chunk", agent_id: "agent-X", runId: runA, content: "x" } as ChatIncomingMessage),
+      dispatch({ type: "chunk", agentId: "agent-X", runId: runA, content: "x" } as ChatIncomingMessage),
     );
     await act(async () => {
       await result.current.sendMessage("queued");
@@ -121,7 +117,7 @@ describe("useAgentChat — F-STEER", () => {
 
     // The run ends — clientRunIdRef clears (and the item drains as runB).
     act(() =>
-      dispatch({ type: "run_ended", agent_id: "agent-X", runId: runA, outcome: "done" } as ChatIncomingMessage),
+      dispatch({ type: "run_ended", agentId: "agent-X", runId: runA, outcome: "done" } as ChatIncomingMessage),
     );
     // The queued item has already drained — steering a now-absent id is a no-op.
     act(() => {
@@ -139,7 +135,7 @@ describe("useAgentChat — F-STEER", () => {
     });
     const runA = lastClientRunId();
     act(() =>
-      dispatch({ type: "chunk", agent_id: "agent-X", runId: runA, content: "x" } as ChatIncomingMessage),
+      dispatch({ type: "chunk", agentId: "agent-X", runId: runA, content: "x" } as ChatIncomingMessage),
     );
     await act(async () => {
       await result.current.sendMessage("queued");
@@ -165,14 +161,14 @@ describe("useAgentChat — F-STEER", () => {
     });
     const r1 = lastClientRunId();
     act(() =>
-      dispatch({ type: "chunk", agent_id: "agent-X", runId: r1, content: "working" } as ChatIncomingMessage),
+      dispatch({ type: "chunk", agentId: "agent-X", runId: r1, content: "working" } as ChatIncomingMessage),
     );
     expect(result.current.isStreaming).toBe(true);
 
     act(() =>
       dispatch({
         type: "error",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         code: "steer_failed",
         message: "Failed to steer: boom",
       } as ChatIncomingMessage),
@@ -201,7 +197,7 @@ describe("useAgentChat — F-STEER", () => {
     // queued follow-up drains (proving the run was still the active one after
     // the steer_failed notice — clientRunIdRef was never cleared by it).
     act(() =>
-      dispatch({ type: "done", agent_id: "agent-X", runId: r1 } as ChatIncomingMessage),
+      dispatch({ type: "done", agentId: "agent-X", runId: r1 } as ChatIncomingMessage),
     );
     expect(sendChat).toHaveBeenCalledTimes(2);
     expect(sendChat.mock.calls[1]?.[1]).toBe("follow-up");

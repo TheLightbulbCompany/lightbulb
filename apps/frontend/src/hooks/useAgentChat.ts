@@ -20,10 +20,7 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
-import {
-  useGateway,
-  type ChatIncomingMessage,
-} from "@/hooks/useGateway";
+import { useAgentRoomTransport } from "@/hooks/useAgentRoomTransport";
 import { useExecApprovalsContextOptional } from "@/hooks/useExecApprovals";
 import { useActiveSession } from "@/hooks/useActiveSession";
 import { capture } from "@/lib/analytics";
@@ -36,7 +33,7 @@ import type {
   ChatRenderItem,
   RenderGroup,
 } from "./internal/types";
-import { accumulateStreamText, GatewayRpcError } from "@lightbulb/shared";
+import { accumulateStreamText, RuntimeRpcError, type ChatIncomingMessage } from "@lightbulb/shared";
 import { projectChatHistoryMessages } from "./internal/chatHistoryFilters";
 import { buildChatItems } from "./internal/buildChatItems";
 import { groupBySide } from "./internal/groupBySide";
@@ -139,19 +136,6 @@ export interface QueuedMessage {
   createdAt: number;
   sendState?: "sending" | "waiting-reconnect" | "failed";
   sendError?: string;
-}
-
-/**
- * An ephemeral `/btw` (detached side-channel) answer. Held in transient state
- * only — NEVER pushed into `_messageCache` or `chatMessages`, so it vanishes on
- * refresh, mirroring OpenClaw's "Not saved to chat history" side card. `id` is
- * the side run's runId (deduped) when present, else a minted fallback.
- */
-interface BtwSideResult {
-  id: string;
-  question: string;
-  text: string;
-  isError?: boolean;
 }
 
 export interface UseAgentChatReturn {
@@ -264,7 +248,6 @@ const HISTORY_WAKE_DEADLINE_MS = 10 * 60_000;
 // The health probe gets a short timeout of its own — its only job is
 // distinguishing "container down" from "container up, store lagging", and a
 // 30s hang per round would triple the cadence.
-const HISTORY_PROBE_TIMEOUT_MS = 5_000;
 // Sessions whose last chat.history response was trimmed by the backend to fit
 // the WS frame limit (payload carried `truncated: true`) — the transcript
 // starts mid-conversation and the UI says so.
@@ -471,7 +454,14 @@ export function useAgentChat(
   agentId: string | null,
   sessionName: string,
 ): UseAgentChatReturn {
-  const { isConnected, sendChat, send, onChatMessage, sendReq } = useGateway();
+  const {
+    isConnected,
+    onChatMessage,
+    sendRoomMessage,
+    abortRun,
+    steerRun,
+    rpc: sendReq,
+  } = useAgentRoomTransport(agentId);
 
   const { activeSessionId, newSession, selectSession } =
     useActiveSession(agentId);
@@ -646,16 +636,6 @@ export function useAgentChat(
   // point; don't re-derive busy-ness from raw session fields here.
   const [containerRunActive, setContainerRunActive] = useState(false);
 
-  // Ephemeral `/btw` side-result cards. Transient by design: never written to
-  // _messageCache or chatMessages, so they don't survive a refresh and are not
-  // part of the persisted transcript — matching OpenClaw's "Not saved to chat
-  // history" side card. Reset when the agent/session (cacheKey) changes so a
-  // previous session's asides don't bleed into another.
-  const [btwResults, setBtwResults] = useState<BtwSideResult[]>([]);
-  useEffect(() => {
-    setBtwResults([]);
-  }, [cacheKey]);
-
   const [historyLoadState, setHistoryLoadState] = useState<"idle" | "loading" | "done">("idle");
   const isLoadingHistory = historyLoadState === "loading";
   // Bumped to force the history-fetch effect below to re-run after a
@@ -693,16 +673,6 @@ export function useAgentChat(
   // an aborted run.
   const cancelledRunIdsRef = useRef<Set<string>>(new Set());
 
-  // Side-channel /btw run ids. A /btw (or /side) aside runs CONCURRENTLY with
-  // the primary turn on the same sessionKey + agent_id, but as a separate run
-  // with its OWN runId. We mint that runId on send (passed as clientRunId so it
-  // becomes the backend idempotencyKey → the runId every side event carries)
-  // and record it here so the event handler can keep the side run's
-  // stream/terminal events OFF the primary turn's live state. Mirrors upstream:
-  // sendDetachedChatMessage generates the runId (controllers/chat.ts) and the
-  // client tracks it (TUI noteLocalBtwRunId / isLocalBtwRunId). Bounded set.
-  const sideRunIdsRef = useRef<Set<string>>(new Set());
-
   // agentId mirror for callback access without stale closures.
   const agentIdRef = useRef(agentId);
 
@@ -713,12 +683,6 @@ export function useAgentChat(
   // intermediate `done` would reopen ChatInput and let a user-typed
   // follow-up race with the post-approval resume.
   const clientRunIdRef = useRef<string | null>(null);
-
-  // Deferred abort intent. cancelMessage() while disconnected stores the
-  // target {agentId, runId} here; the reconnect rising-edge effect below
-  // replays it exactly once. Mirrors upstream app-chat.ts's host.pendingAbort
-  // (upstream ui/src/ui/app-chat.ts).
-  const pendingAbortRef = useRef<{ agentId: string; runId: string | null } | null>(null);
 
   // Approval queue snapshot — used to keep the busy gate armed while an
   // exec-approval card is still pending for this agent. Mirrored to a ref
@@ -835,16 +799,13 @@ export function useAgentChat(
       const text = item.text.trim();
       if (!text) return;
 
-      send({
-        type: "agent_steer",
-        agent_id: agentIdRef.current,
-        text,
-        runId: activeRunId,
-        ...(activeSessionIdRef.current ? { session_id: activeSessionIdRef.current } : {}),
+      void steerRun(activeRunId, text).then(() => {
+        setQueuedMessages((prev) => prev.filter((message) => message.id !== id));
+      }).catch((error) => {
+        notifyApiError(error, "Couldn't steer the active run", { dedupeKey: "chat-steer" });
       });
-      setQueuedMessages((prev) => prev.filter((m) => m.id !== id));
     },
-    [isConnected, send],
+    [isConnected, steerRun],
   );
 
   useEffect(() => {
@@ -1142,7 +1103,7 @@ export function useAgentChat(
                   phase !== "confirm" &&
                   (wakeStartedAt === null || Date.now() - wakeStartedAt < HISTORY_WAKE_DEADLINE_MS)
                 ) {
-                  sendReq("health", undefined, HISTORY_PROBE_TIMEOUT_MS)
+                  sendReq("health")
                     .then(() => {
                       if (!isStillCurrent()) {
                         loadedKeys.delete(cacheKey); // let a revisit refetch
@@ -1226,11 +1187,11 @@ export function useAgentChat(
           // cached transcript keeps rendering untouched during the silent retry).
           //
           // A NON-retryable RPC response — "No container provisioned", an
-          // ownership rejection, INVALID_REQUEST (GatewayRpcError, retryable
+          // ownership rejection, INVALID_REQUEST (RuntimeRpcError, retryable
           // false) — will never succeed, so terminate it exactly as before
           // rather than hold the loading shell (input disabled) for the whole
           // wake window.
-          const nonRetryable = err instanceof GatewayRpcError && !err.retryable;
+          const nonRetryable = err instanceof RuntimeRpcError && !err.retryable;
           if (!nonRetryable) {
             if (wakeStartedAt === null) wakeStartedAt = Date.now();
             if (Date.now() - wakeStartedAt < HISTORY_WAKE_DEADLINE_MS) {
@@ -1293,7 +1254,6 @@ export function useAgentChat(
     setChatToolMessages([]);
     toolStreamByIdRef.current.clear();
     toolStreamOrderRef.current = [];
-    setBtwResults([]);
     setIsStreaming(false);
     // Run telemetry is per-turn, and the turn belongs to the session it was
     // sent in — a recap left over from the previous session would read as a
@@ -1530,8 +1490,8 @@ export function useAgentChat(
       // Drop messages for a different agent (heartbeat / update_available
       // are broadcast; errors are allowed through for safety).
       const isUntaggedBroadcast = msg.type === "heartbeat" || msg.type === "update_available";
-      const isUntaggedError = msg.type === "error" && msg.agent_id === undefined;
-      if (!isUntaggedBroadcast && !isUntaggedError && msg.agent_id !== agentIdRef.current) {
+      const isUntaggedError = msg.type === "error" && msg.agentId === undefined;
+      if (!isUntaggedBroadcast && !isUntaggedError && msg.agentId !== agentIdRef.current) {
         return;
       }
 
@@ -1546,7 +1506,7 @@ export function useAgentChat(
       // frame and NEVER tags 3-part General frames. Broadcasts
       // (heartbeat/update_available) carry no session_id and untagged errors
       // were already allowed through above.
-      const frameSessionId = "session_id" in msg ? (msg.session_id ?? null) : null;
+      const frameSessionId = "sessionId" in msg ? (msg.sessionId ?? null) : null;
       if (
         !isUntaggedBroadcast &&
         !isUntaggedError &&
@@ -1567,64 +1527,6 @@ export function useAgentChat(
             historyLoadedRef.current.delete(staleKey);
             _historyPaging.delete(staleKey);
           }
-        }
-        return;
-      }
-
-      // `/btw` side-channel ANSWER. OpenClaw renders these on a distinct channel
-      // it surfaces as a side card "Not saved to chat history"; the backend maps
-      // chat.side_result → this `btw_result` frame. Hold it in transient
-      // btwResults state (never folded into chatMessages / _messageCache) and
-      // render it as an ephemeral side card. This MUST run BEFORE the side-run
-      // segregation below: a btw_result carries the side run's runId (tracked in
-      // sideRunIdsRef), so the segregation's blanket drop would otherwise swallow
-      // it. It never touches the primary turn's live state or busy gate — it is
-      // purely additive. Dedupe by runId so a re-delivered frame can't double-add.
-      if (msg.type === "btw_result") {
-        const id = msg.runId ?? `btw-${crypto.randomUUID()}`;
-        setBtwResults((prev) =>
-          prev.some((b) => b.id === id)
-            ? prev
-            : [
-                ...prev,
-                {
-                  id,
-                  question: msg.question,
-                  text: msg.text,
-                  ...(msg.isError ? { isError: true } : {}),
-                },
-              ],
-        );
-        return;
-      }
-
-      // Segregate side-channel /btw runs. A /btw aside runs concurrently with
-      // the primary turn but as a SEPARATE run carrying its own (frontend-
-      // minted) runId. Its stream/terminal events MUST NOT touch the primary
-      // turn's live state — otherwise a side chunk would hijack the live
-      // stream and a side `done`/`error` would fold+clear the still-running
-      // primary turn. Upstream solves this by gating apply on the active run
-      // (controllers/chat.ts handleChatEvent activeRunMatches) and routing btw
-      // output to a separate side-result card; Isol8 has no side-result surface
-      // yet, so we drop side events here (the primary run is unaffected). This
-      // MUST run before the resume-adoption transfer below so a side runId is
-      // never mistaken for the primary run's post-approval continuation.
-      // Clean up the id ONLY on `run_ended` — the side run's terminal sequence
-      // is the done/error frame FOLLOWED BY a synthesized run_ended (backend
-      // forwards both, run_ended last). Deleting on the first terminal (done)
-      // would let the trailing run_ended fall through to the normal path, where
-      // — with no primary run active — it could be adopted and drain the queue
-      // even though only a detached side note ended. run_ended is the last
-      // event for the run, so keeping the id until then drops the whole
-      // sequence. (If run_ended is somehow lost, the bounded FIFO set evicts
-      // the id eventually.) "runId" in msg narrows away heartbeat/update_available.
-      if (
-        "runId" in msg &&
-        typeof msg.runId === "string" &&
-        sideRunIdsRef.current.has(msg.runId)
-      ) {
-        if (msg.type === "run_ended") {
-          sideRunIdsRef.current.delete(msg.runId);
         }
         return;
       }
@@ -1722,7 +1624,6 @@ export function useAgentChat(
         clientRunIdRef.current === null &&
         "runId" in msg &&
         typeof msg.runId === "string" &&
-        !sideRunIdsRef.current.has(msg.runId) &&
         !drainedRunIdsRef.current.has(msg.runId)
       ) {
         clientRunIdRef.current = msg.runId;
@@ -2353,7 +2254,7 @@ export function useAgentChat(
 
       try {
         console.info(`[chat] dispatch runId=${newClientRunId} fromQueue=${!!opts?.queueItem}`);
-        sendChat(agentId, message, newClientRunId, activeSessionIdRef.current ?? undefined);
+        await sendRoomMessage(message, newClientRunId);
         return true;
       } catch (err) {
         console.warn(
@@ -2401,7 +2302,7 @@ export function useAgentChat(
         return false;
       }
     },
-    [sendChat, isConnected, setIsStreaming, setChatMessages],
+    [sendRoomMessage, isConnected, setIsStreaming, setChatMessages],
   );
 
   // Approval-pause release / resume signaling.
@@ -2571,45 +2472,8 @@ export function useAgentChat(
       // its trimmed older messages and the banner must stay.
       if (key) _needsBootstrap.delete(key);
 
-      // Side-channel `/btw` (or `/side`): a detached, non-blocking aside that
-      // runs alongside the main turn rather than queuing behind it. Send it
-      // IMMEDIATELY — even while a run is active — and do NOT touch
-      // clientRunIdRef / isStreaming (a side run is detached, it has no claim
-      // on the primary run's busy gate). The FULL original text including the
-      // `/btw` prefix goes on the wire: the container detects the prefix and
-      // runs it as a non-blocking side run server-side.
-      //
-      // We MINT the side run's runId here (sent as clientRunId → backend
-      // idempotencyKey → the runId every side event carries) and record it in
-      // sideRunIdsRef so the event handler segregates the side run's
-      // stream/terminal events from the primary turn. Mirrors upstream
-      // sendDetachedChatMessage, which generates the runId client-side
-      // (controllers/chat.ts) and the client tracks it (TUI noteLocalBtwRunId).
-      // The eventual side `run_ended` is dropped by that segregation, so it can
-      // never drain the primary queue.
-      //
-      // Known limitation: a `/btw` typed while DISCONNECTED does not match here
-      // (no live socket to mint+track a side run against), so it falls through
-      // to the waiting-reconnect queue below and replays as an ordinary send on
-      // reconnect — losing its detached framing client-side (the container still
-      // detects the `/btw` prefix server-side and runs it as a side run). This
-      // is accepted while `/btw` lacks a dedicated side-result surface: detached
-      // answers aren't rendered in the web UI yet regardless, and the trigger
-      // (compose a `/btw` precisely during a transient disconnect) is narrow.
-      if (/^\/(btw|side)(?::|\s|$)/i.test(trimmed) && isConnected && agentIdRef.current) {
-        const sideRunId = crypto.randomUUID();
-        addCappedRunId(sideRunIdsRef.current, sideRunId);
-        send({
-          type: "agent_chat",
-          agent_id: agentIdRef.current,
-          message: trimmed,
-          side: true,
-          clientRunId: sideRunId,
-          ...(activeSessionIdRef.current ? { session_id: activeSessionIdRef.current } : {}),
-        });
-        return;
-      }
-
+      // `/btw` and `/side` are ordinary attributed room messages. The native
+      // room transport has one durable transcript and no detached side channel.
       // `/clear` and `/redirect` are control-ui-only in OpenClaw — there is no
       // server handler for either, so we implement them locally (before the
       // disconnected / busy gates below, which don't apply to a local-only
@@ -2678,7 +2542,7 @@ export function useAgentChat(
 
       await dispatchNow(trimmed);
     },
-    [isConnected, sessionName, dispatchNow, send, invalidateHistoryAndRefetch],
+    [isConnected, sessionName, dispatchNow, invalidateHistoryAndRefetch],
   );
 
   // ---- Cancel / stop agent ----
@@ -2702,36 +2566,13 @@ export function useAgentChat(
     });
 
     const activeRunId = clientRunIdRef.current;
-
-    // Disconnected: queue the abort intent and replay it on the next
-    // reconnect rising edge (see the pending-abort replay effect below).
-    // Mirrors upstream app-chat.ts.
-    if (!isConnected) {
-      pendingAbortRef.current = {
-        agentId: agentIdRef.current,
-        runId: activeRunId,
-      };
-      return;
+    if (!activeRunId) return;
+    try {
+      await abortRun(activeRunId);
+    } catch (error) {
+      notifyApiError(error, "Couldn't stop the active run", { dedupeKey: "chat-abort" });
     }
-
-    // `send` returns false when the socket isn't actually open — the
-    // stale-isConnected race where the WS closed but React hasn't re-rendered
-    // isConnected=false yet. Because cancel is server-reconciled (we wait for a
-    // terminal rather than tearing down locally), a silently-dropped abort here
-    // would hang the chat. Park the intent so the reconnect replay fires it.
-    const delivered = send({
-      type: "agent_abort",
-      agent_id: agentIdRef.current,
-      ...(activeRunId ? { runId: activeRunId } : {}),
-      ...(activeSessionIdRef.current ? { session_id: activeSessionIdRef.current } : {}),
-    });
-    if (!delivered) {
-      pendingAbortRef.current = {
-        agentId: agentIdRef.current,
-        runId: activeRunId,
-      };
-    }
-  }, [isStreaming, isConnected, send]);
+  }, [isStreaming, abortRun]);
 
   // Keep cancelMessageRef pointed at the latest cancelMessage so sendMessage's
   // /redirect path invokes the current closure (fresh isStreaming/isConnected).
@@ -2739,32 +2580,15 @@ export function useAgentChat(
     cancelMessageRef.current = cancelMessage;
   }, [cancelMessage]);
 
-  // ---- Reconnect rising-edge: replay deferred abort + waiting sends ----
+  // ---- HTTP availability rising-edge: replay waiting sends ----
   //
-  // On the disconnected→connected transition:
-  //   1. Fire a deferred abort parked by cancelMessage() (pendingAbortRef),
-  //      exactly once. Mirrors app-chat.ts's host.pendingAbort handling.
-  //   2. Replay any queued sends marked `waiting-reconnect` — strip the
-  //      flag so they become plain queued sends, then resume the normal
-  //      drain (drainQueue dispatches the head; each dispatched send's
-  //      server run-ended re-invokes the drain for the next). Mirrors
-  //      retryReconnectableQueuedChatSends (chat-queue.ts).
+  // AppSync reconnects never gate writes. If authentication itself was
+  // unavailable, replay parked sends once authenticated HTTP returns.
   const prevConnectedRef = useRef(isConnected);
   useEffect(() => {
     const rose = !prevConnectedRef.current && isConnected;
     prevConnectedRef.current = isConnected;
     if (!rose) return;
-
-    const pending = pendingAbortRef.current;
-    if (pending) {
-      pendingAbortRef.current = null;
-      send({
-        type: "agent_abort",
-        agent_id: pending.agentId,
-        ...(pending.runId ? { runId: pending.runId } : {}),
-        ...(activeSessionIdRef.current ? { session_id: activeSessionIdRef.current } : {}),
-      });
-    }
 
     const waiting = queuedMessagesRef.current.filter(
       (m) => m.sendState === "waiting-reconnect",
@@ -2794,7 +2618,7 @@ export function useAgentChat(
         void dispatchNow(cleaned.text, { queueItem: cleaned });
       }
     }
-  }, [isConnected, send, dispatchNow]);
+  }, [isConnected, dispatchNow]);
 
   // ---- Drop stale server-truth busy on disconnect ----
   //
@@ -2831,8 +2655,6 @@ export function useAgentChat(
     chatStreamThinkingRunIdRef.current = null;
     setChatStreamSegments([]);
     setChatToolMessages([]);
-    // Ephemeral /btw side cards are part of the local view — wipe them too.
-    setBtwResults([]);
     // So is the run telemetry: "Done in 4m 12s" under an emptied transcript
     // describes a turn the user just erased.
     setRunPhase(null);
@@ -2881,7 +2703,7 @@ export function useAgentChat(
 
   // Compute render output from state. memo for stability.
   const renderItems = useMemo<ChatRenderItem[]>(() => {
-    const items = buildChatItems({
+    return buildChatItems({
       chatMessages,
       chatStream,
       chatStreamRunId: chatStreamRunIdRef.current,
@@ -2891,20 +2713,7 @@ export function useAgentChat(
       chatToolMessages,
       sessionKey: buildChatSessionKey(agentId ?? "", sessionName, activeSessionId),
     });
-    // Append ephemeral `/btw` side-result cards at the tail. They live in
-    // transient state only (never in chatMessages / _messageCache), so they
-    // disappear on refresh — matching OpenClaw's "Not saved to chat history".
-    for (const b of btwResults) {
-      items.push({
-        kind: "btw",
-        key: `btw:${b.id}`,
-        question: b.question,
-        text: b.text,
-        ...(b.isError ? { isError: true } : {}),
-      });
-    }
-    return items;
-  }, [chatMessages, chatStream, chatStreamThinking, chatStreamSegments, chatToolMessages, agentId, sessionName, activeSessionId, btwResults]);
+  }, [chatMessages, chatStream, chatStreamThinking, chatStreamSegments, chatToolMessages, agentId, sessionName, activeSessionId]);
 
   const renderGroups = useMemo<RenderGroup[]>(() => groupBySide(renderItems), [renderItems]);
 

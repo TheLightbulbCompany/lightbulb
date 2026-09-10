@@ -42,7 +42,7 @@ vi.mock("@/lib/modelDisplay", () => ({
   displayModelName: () => null,
 }));
 
-vi.mock("@/hooks/useGatewayRpc", () => ({ useGatewayRpc: () => ({ data: undefined }) }));
+vi.mock("@/hooks/useRuntimeRpc", () => ({ useRuntimeRpc: () => ({ data: undefined }) }));
 // `useRosterEntries` subscribes to the chat-frame fan-out for live `run_active`
 // frames. `emitChatMessage` lets a test push one and assert the row lights up.
 let emitChatMessage: (msg: Record<string, unknown>) => void = () => {};

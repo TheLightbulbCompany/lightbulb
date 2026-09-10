@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { Loader2, RefreshCw, Package } from "lucide-react";
-import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { useRuntimeRpc, useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 import { capture } from "@/lib/analytics";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -43,8 +43,8 @@ function inferKind(id: string): PluginKind {
 export function PluginsTab() {
   const canManage = useIsWorkspaceAdmin();
 
-  const { data: snapshot, error, isLoading, mutate } = useGatewayRpc<ConfigSnapshot>("config.get");
-  const callRpc = useGatewayRpcMutation();
+  const { data: snapshot, error, isLoading, mutate } = useRuntimeRpc<ConfigSnapshot>("config.get");
+  const callRpc = useRuntimeRpcMutation();
   const [busyId, setBusyId] = useState<string | null>(null);
   const [toggleError, setToggleError] = useState<string | null>(null);
 
@@ -56,7 +56,7 @@ export function PluginsTab() {
   // fetch (method=null) until an agent exists — tool counts are pure enrichment,
   // not load-bearing, so it's fine for them to populate a beat later.
   const defaultAgentId = config?.agents?.list?.[0]?.id;
-  const { data: catalog } = useGatewayRpc<ToolsCatalogResponse>(
+  const { data: catalog } = useRuntimeRpc<ToolsCatalogResponse>(
     defaultAgentId ? "tools.catalog" : null,
     { agentId: defaultAgentId, includePlugins: true },
   );

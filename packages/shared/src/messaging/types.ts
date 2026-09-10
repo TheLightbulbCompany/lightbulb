@@ -1,0 +1,154 @@
+export type RoomKind = "channel" | "dm" | "group-dm";
+export type MemberKind = "human" | "agent";
+export type MemberRole = "owner" | "admin" | "member";
+export type ListenMode = "active" | "mentions" | "observe";
+
+export interface MemberRef {
+  kind: MemberKind;
+  id: string;
+}
+
+export type ApiErrorCode =
+  | "INVALID_REQUEST"
+  | "ROOM_FORBIDDEN"
+  | "ROOM_NOT_FOUND"
+  | "MEMBER_NOT_FOUND"
+  | "MESSAGE_NOT_FOUND"
+  | "RUN_NOT_FOUND"
+  | "OPERATION_NOT_FOUND"
+  | "IDEMPOTENCY_CONFLICT"
+  | "MEMBER_LIMIT"
+  | "RUN_NOT_ACTIVE"
+  | "RATE_LIMITED"
+  | "RUNTIME_UNAVAILABLE"
+  | "INTERNAL_ERROR";
+
+export interface MessagingApiError {
+  code: ApiErrorCode;
+  message: string;
+  retryable: boolean;
+  reconcileFromSeq?: number;
+  retryAfter?: number;
+  details?: Record<string, unknown>;
+}
+
+export interface RoomMember extends MemberRef {
+  displayName: string;
+  mentionHandle: string | null;
+  role: MemberRole;
+  listenMode: ListenMode | null;
+  joinedAt: string;
+  joinedSeq: number;
+}
+
+export interface RoomSummary {
+  roomId: string;
+  name: string | null;
+  kind: RoomKind;
+  roomRevision: number;
+  lastMessageSeq: number;
+  lastMessageAt: string | null;
+  unreadCount: number;
+  updatedAt: string;
+}
+
+export interface RoomDetail extends RoomSummary {
+  deliveryKey: string;
+  members: RoomMember[];
+  lastReadSeq: number;
+  createdAt: string;
+}
+
+export interface RoomListResponse {
+  rooms: RoomSummary[];
+}
+
+export interface CreateRoomRequest {
+  clientRoomId: string;
+  name: string | null;
+  kind: RoomKind;
+  members: Array<{
+    kind: MemberKind;
+    id: string;
+    role: "admin" | "member";
+    listenMode: ListenMode | null;
+  }>;
+}
+
+export interface PatchRoomRequest {
+  name: string | null;
+}
+
+export interface UpsertRoomMemberRequest {
+  kind: MemberKind;
+  id: string;
+  role: "admin" | "member";
+  listenMode: ListenMode | null;
+}
+
+export interface CanonicalRoomMessage {
+  messageId: string;
+  roomId: string;
+  messageSeq: number;
+  roomRevision: number;
+  author: {
+    kind: "human" | "agent" | "system";
+    id: string;
+    displayName: string;
+  };
+  text: string;
+  mentions: MemberRef[];
+  replyToMessageId: string | null;
+  threadRootMessageId: string | null;
+  createdAt: string;
+  runId: string | null;
+}
+
+export interface CreateMessageRequest {
+  clientMessageId: string;
+  text: string;
+  mentions: MemberRef[];
+  replyToMessageId: string | null;
+  threadRootMessageId: string | null;
+}
+
+export interface MessagePage {
+  messages: CanonicalRoomMessage[];
+  nextAfterSeq: number | null;
+}
+
+export interface ReadCursorRequest {
+  lastReadSeq: number;
+}
+
+export interface ReadCursorResponse {
+  roomId: string;
+  lastReadSeq: number;
+}
+
+export interface TypingRequest {
+  roomId: string;
+  isTyping: boolean;
+}
+
+export interface AbortRunResponse {
+  runId: string;
+  state: "aborting" | "already-terminal";
+}
+
+export interface SteerRunRequest {
+  text: string;
+}
+
+export interface SteerRunResponse {
+  runId: string;
+  state: "accepted";
+}
+
+export interface LiveConfig {
+  schemaVersion: 1;
+  httpEndpoint: string;
+  realtimeEndpoint: string;
+  region: string;
+  userChannelKey: string;
+}

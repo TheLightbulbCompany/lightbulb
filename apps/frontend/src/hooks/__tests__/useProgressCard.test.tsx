@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
+import type { LiveEvent } from "@lightbulb/shared";
 
 interface RpcResult<T> {
   data: T | undefined;
@@ -16,25 +17,32 @@ const rpc = <T,>(over: Partial<RpcResult<T>>): RpcResult<T> => ({
   ...over,
 });
 
-type EventHandler = (event: string, data: unknown) => void;
+type EventHandler = (event: LiveEvent) => void;
 const eventHandlers: Set<EventHandler> = new Set();
 
-function emit(event: string, payload: unknown) {
-  for (const h of eventHandlers) h(event, payload);
+function emit(type: LiveEvent["type"], payload: unknown) {
+  const event = {
+    schemaVersion: 1,
+    eventId: `event-${type}`,
+    type,
+    occurredAt: "2026-09-09T00:00:00.000Z",
+    payload,
+  } as LiveEvent;
+  for (const handler of eventHandlers) handler(event);
 }
 
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({
-    onEvent: (h: EventHandler) => {
-      eventHandlers.add(h);
-      return () => eventHandlers.delete(h);
+vi.mock("@/hooks/useLiveEvents", () => ({
+  useLiveEvents: () => ({
+    onEvent: (handler: EventHandler) => {
+      eventHandlers.add(handler);
+      return () => eventHandlers.delete(handler);
     },
   }),
 }));
 
 const mockRpc = vi.fn();
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpc: (method: string | null, params?: Record<string, unknown>) =>
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpc: (method: string | null, params?: Record<string, unknown>) =>
     mockRpc(method, params) as RpcResult<unknown>,
 }));
 
@@ -76,19 +84,19 @@ describe("useProgressCard", () => {
     expect(result.current.card).toBeNull();
   });
 
-  it("revalidates on a matching progressCard.changed event", () => {
+  it("revalidates on a matching runtime.progress.changed event", () => {
     const mutate = vi.fn(async () => undefined);
     mockRpc.mockReturnValue(rpc({ data: { card: CARD }, mutate }));
     renderHook(() => useProgressCard("agent:agent_a:user_1"));
 
-    act(() => emit("progressCard.changed", { sessionKey: "agent:agent_a:user_1", revision: 4 }));
+    act(() => emit("runtime.progress.changed", { sessionKey: "agent:agent_a:user_1", revision: 4 }));
 
     expect(mutate).toHaveBeenCalledTimes(1);
   });
 
   it("revalidates when the event key differs only in case — the real prod shape", () => {
     // OpenClaw lowercases the whole session key, so the container's
-    // progressCard.changed carries `agent:<id>:user_3h3v…` while ours holds
+    // runtime.progress.changed carries `agent:<id>:user_3h3v…` while ours holds
     // the mixed-case Clerk id `user_3H3v…`. Case-sensitive matching meant the
     // card never updated live on prod (progressCard.get itself accepts either
     // casing). Same rule as the backend's _user_owns_session_key.
@@ -96,17 +104,17 @@ describe("useProgressCard", () => {
     mockRpc.mockReturnValue(rpc({ data: { card: CARD }, mutate }));
     renderHook(() => useProgressCard("agent:agent_a:user_3H3vAbC"));
 
-    act(() => emit("progressCard.changed", { sessionKey: "agent:agent_a:user_3h3vabc", revision: 4 }));
+    act(() => emit("runtime.progress.changed", { sessionKey: "agent:agent_a:user_3h3vabc", revision: 4 }));
 
     expect(mutate).toHaveBeenCalledTimes(1);
   });
 
-  it("ignores a progressCard.changed event for a different sessionKey", () => {
+  it("ignores a runtime.progress.changed event for a different sessionKey", () => {
     const mutate = vi.fn(async () => undefined);
     mockRpc.mockReturnValue(rpc({ data: { card: CARD }, mutate }));
     renderHook(() => useProgressCard("agent:agent_a:user_1"));
 
-    act(() => emit("progressCard.changed", { sessionKey: "agent:agent_b:user_1", revision: 1 }));
+    act(() => emit("runtime.progress.changed", { sessionKey: "agent:agent_b:user_1", revision: 1 }));
 
     expect(mutate).not.toHaveBeenCalled();
   });
@@ -116,7 +124,7 @@ describe("useProgressCard", () => {
     mockRpc.mockReturnValue(rpc({ data: { card: CARD }, mutate }));
     renderHook(() => useProgressCard("agent:agent_a:user_1"));
 
-    act(() => emit("status_change", { sessionKey: "agent:agent_a:user_1" }));
+    act(() => emit("runtime.resource.invalidated", { resource: "agents" }));
 
     expect(mutate).not.toHaveBeenCalled();
   });

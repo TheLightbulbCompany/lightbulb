@@ -39,8 +39,8 @@ vi.mock("@/hooks/useProvisioningState", () => ({
   }),
 }));
 
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpc: () => ({ data: { ok: true }, error: null }),
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpc: () => ({ data: { ok: true }, error: null }),
 }));
 
 vi.mock("@/lib/api", () => ({

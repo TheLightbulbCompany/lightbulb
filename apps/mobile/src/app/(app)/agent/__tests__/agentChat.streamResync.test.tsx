@@ -1,48 +1,61 @@
 import { act, fireEvent, render, screen } from "@testing-library/react-native";
 
-// expo-router isn't in the jest transform allowlist; stub what AgentChat uses.
 jest.mock("expo-router", () => ({
-  router: {
-    push: jest.fn(),
-    back: jest.fn(),
-    canGoBack: () => false,
-    replace: jest.fn(),
-    setParams: jest.fn(),
-  },
+  router: { push: jest.fn(), back: jest.fn(), canGoBack: () => false, replace: jest.fn(), setParams: jest.fn() },
   Stack: { Screen: () => null },
   useFocusEffect: jest.fn(),
   useLocalSearchParams: () => ({ agentId: "agent_a", name: "Friday" }),
 }));
 
-// user: null keeps history hydration + first-run kickoff inert.
 jest.mock("@clerk/clerk-expo", () => ({
-  useUser: () => ({ user: null }),
-  useAuth: () => ({ getToken: jest.fn(async () => "token") }),
+  useAuth: () => ({ userId: "user_a", getToken: jest.fn(async () => "token") }),
 }));
 
 jest.mock("expo-crypto", () => ({
   randomUUID: () => "00000000-0000-4000-8000-000000000000",
 }));
 
-const mockSendChat = jest.fn();
-let chatHandler: ((msg: unknown) => void) | null = null;
-jest.mock("../../../../providers/gateway", () => ({
-  useGateway: () => ({
-    isConnected: true,
-    error: null,
-    onChatMessage: (h: (msg: unknown) => void) => {
-      chatHandler = h;
+const mockRoom = {
+  roomId: "room_a", name: null, kind: "dm", roomRevision: 1,
+  lastMessageSeq: 0, lastMessageAt: null, unreadCount: 0,
+  updatedAt: "2026-09-09T00:00:00.000Z", deliveryKey: "delivery_a",
+  members: [{ kind: "agent", id: "agent_a", displayName: "Friday", mentionHandle: "friday", role: "member", listenMode: "active", joinedAt: "2026-09-09T00:00:00.000Z", joinedSeq: 0 }],
+  lastReadSeq: 0, createdAt: "2026-09-09T00:00:00.000Z",
+};
+const mockSendMessage = jest.fn(async (_roomId: string, request: { clientMessageId: string; text: string }) => ({
+  messageId: request.clientMessageId, roomId: "room_a", messageSeq: 1, roomRevision: 1,
+  author: { kind: "human", id: "user_a", displayName: "You" }, text: request.text,
+  mentions: [], replyToMessageId: null, threadRootMessageId: null,
+  createdAt: "2026-09-09T00:00:00.000Z", runId: "run_1",
+}));
+let liveHandler: ((event: unknown) => void) | null = null;
+const mockMessaging = {
+  listRooms: jest.fn(async () => ({ rooms: [mockRoom] })),
+  getRoom: jest.fn(async () => mockRoom),
+  listMessages: jest.fn(async () => ({ messages: [], nextAfterSeq: null })),
+  markRead: jest.fn(),
+  sendMessage: mockSendMessage,
+  abortRun: jest.fn(),
+};
+jest.mock("../../../../providers/live-events", () => ({
+  useLiveEvents: () => ({
+    httpReady: true,
+    liveConnected: true,
+    liveChannels: ["/rooms/room_a/delivery_a"],
+    liveError: null,
+    connectionRevision: 1,
+    messaging: mockMessaging,
+    setActiveRoomSubscription: jest.fn(),
+    onEvent: (handler: (event: unknown) => void) => {
+      liveHandler = handler;
       return () => {};
     },
-    sendReq: jest.fn(async () => ({})),
-    sendChat: mockSendChat,
-    send: jest.fn(() => true),
   }),
 }));
 
 jest.mock("@lightbulb/shared", () => ({
   ...jest.requireActual("@lightbulb/shared"),
-  useGatewayRpc: () => ({ data: null, error: null, isLoading: false }),
+  useRuntimeRpc: () => ({ data: null, error: null, isLoading: false }),
 }));
 
 import AgentChat from "../[agentId]";
@@ -51,47 +64,44 @@ async function startRun(): Promise<string> {
   fireEvent.changeText(screen.getByPlaceholderText("Ask anything"), "go");
   await screen.findByDisplayValue("go");
   fireEvent.press(screen.getByLabelText("Send"));
-  expect(mockSendChat).toHaveBeenCalled();
-  return mockSendChat.mock.calls[0][2] as string; // clientRunId
+  await screen.findByText("go");
+  expect(mockSendMessage).toHaveBeenCalled();
+  return "run_1";
 }
 
-function frame(runId: string, msg: Record<string, unknown>) {
+function frame(runId: string, value: Record<string, unknown>) {
+  const payloadFrame = { agentId: "agent_a", runId, ...value };
   act(() => {
-    chatHandler?.({ agent_id: "agent_a", runId, ...msg });
+    liveHandler?.({
+      type: "room.run.frame",
+      payload: { roomId: "room_a", agentId: "agent_a", runId, frame: payloadFrame },
+    });
   });
 }
 
 describe("AgentChat stream resync across tool splits", () => {
   beforeEach(() => {
-    mockSendChat.mockClear();
-    chatHandler = null;
+    mockSendMessage.mockClear();
+    liveHandler = null;
   });
 
   it("keeps the live segment intact when a segment-scoped resync arrives", async () => {
-    await render(<AgentChat />);
+    render(<AgentChat />);
     const runId = await startRun();
 
-    // Segment 0 streams, then a tool call freezes it at offset 10.
     frame(runId, { type: "chunk", content: "Part one. ", append: true });
     frame(runId, { type: "tool_start", tool: "exec", toolCallId: "t1" });
     frame(runId, { type: "chunk", content: "Part two begins", append: true });
-
-    // Non-append resync. Upstream resets its text accumulator at every
-    // assistant message_start (i.e. after every tool call), so this frame
-    // carries ONLY the current segment's text — NOT the run-cumulative
-    // buffer. Treating it as run-cumulative chopped the live bubble at the
-    // committed offset ("disappearing sentences").
     frame(runId, { type: "chunk", content: "Part two begins and continues." });
 
     expect(await screen.findByText(/Part two begins and continues\./)).toBeTruthy();
     expect(screen.getByText(/Part one\./)).toBeTruthy();
   });
 
-  it("still accepts a plain full-text resync when no tool has split the run", async () => {
-    await render(<AgentChat />);
+  it("accepts a full-text resync when no tool split the run", async () => {
+    render(<AgentChat />);
     const runId = await startRun();
     frame(runId, { type: "chunk", content: "Hello wor", append: true });
-    // First-frame-per-connection style resync, no committed prefix.
     frame(runId, { type: "chunk", content: "Hello world." });
     expect(await screen.findByText(/Hello world\./)).toBeTruthy();
   });

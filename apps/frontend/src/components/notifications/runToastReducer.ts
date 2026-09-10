@@ -1,4 +1,4 @@
-import type { ChatIncomingMessage } from "@/hooks/useGateway";
+import type { ChatIncomingMessage } from "@lightbulb/shared";
 
 /**
  * Pure frame→toast-action logic for RunNotifications. The component owns
@@ -85,31 +85,33 @@ const CHAT_START_TYPES = new Set<ChatIncomingMessage["type"]>([
   "agent_activity",
 ]);
 
+export interface RunFrameIdentity {
+  runId: string;
+  agentId: string;
+}
+
 export function reduceChatFrame(
   state: RunToastState,
   msg: ChatIncomingMessage,
   ctx: RunToastContext,
+  identity?: RunFrameIdentity,
 ): RunToastAction[] {
   if (msg.type === "run_ended") {
-    const tracked = state.chatRuns.get(msg.runId);
-    state.chatRuns.delete(msg.runId);
-    const agentId = tracked?.agentId ?? msg.agent_id;
+    const runId = identity?.runId ?? msg.runId;
+    const tracked = state.chatRuns.get(runId);
+    state.chatRuns.delete(runId);
+    const agentId = tracked?.agentId ?? identity?.agentId ?? msg.agentId;
     if (!agentId) return [];
     if (msg.outcome === "aborted") {
-      return tracked?.toastShown ? [{ kind: "dismiss", key: msg.runId }] : [];
+      return tracked?.toastShown ? [{ kind: "dismiss", key: runId }] : [];
     }
-    // `??` falls through when a tracked run's session is null (General); the
-    // run_ended frame for that same run also normalizes to null, so the
-    // resolved session is identical. The fallback only matters for a
-    // never-tracked run (reconnect gap).
-    const sessionId =
-      tracked?.sessionId ?? ("session_id" in msg ? (msg.session_id ?? null) : null);
+    const sessionId = tracked?.sessionId ?? msg.sessionId ?? null;
     const show = tracked?.toastShown || !chatSuppressed(agentId, sessionId, ctx);
     if (!show) return [];
     return [
       {
         kind: msg.outcome === "done" ? "success" : "failure",
-        key: msg.runId,
+        key: runId,
         agentId,
         source: "chat",
       },
@@ -117,13 +119,12 @@ export function reduceChatFrame(
   }
 
   if (!CHAT_START_TYPES.has(msg.type)) return [];
-  const runId = "runId" in msg ? msg.runId : undefined;
-  const agentId = "agent_id" in msg ? msg.agent_id : undefined;
+  const runId = identity?.runId ?? ("runId" in msg ? msg.runId : undefined);
+  const agentId = identity?.agentId ?? ("agentId" in msg ? msg.agentId : undefined);
   if (!runId || !agentId) return [];
   if (state.chatRuns.has(runId)) return [];
 
-  // Captured once at run-start — a run's session doesn't change mid-run.
-  const sessionId = "session_id" in msg ? (msg.session_id ?? null) : null;
+  const sessionId = "sessionId" in msg ? (msg.sessionId ?? null) : null;
   const toastShown = !chatSuppressed(agentId, sessionId, ctx);
   state.chatRuns.set(runId, { agentId, sessionId, toastShown });
   evictOldest(state.chatRuns);

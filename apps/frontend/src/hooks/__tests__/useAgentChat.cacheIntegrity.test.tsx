@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
-import type { ChatIncomingMessage } from "@/hooks/useGateway";
+import type { ChatIncomingMessage } from "@lightbulb/shared";
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("@/lib/notify", () => ({
@@ -15,34 +15,28 @@ const sendReq = vi.fn();
 const sendChat = vi.fn();
 const send = vi.fn();
 
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: (): {
-    isConnected: boolean;
-    nodeConnected: boolean;
-    error: null;
-    reconnectAttempt: number;
-    send: typeof send;
-    sendReq: typeof sendReq;
-    sendChat: typeof sendChat;
-    onEvent: (h: (n: string, d: unknown) => void) => () => void;
-    onChatMessage: (h: (m: ChatIncomingMessage) => void) => () => void;
-    reconnect: () => void;
-  } => ({
+vi.mock("@/hooks/useAgentRoomTransport", () => ({
+  useAgentRoomTransport: (agentId: string | null) => ({
     isConnected: true,
-    nodeConnected: false,
-    error: null,
-    reconnectAttempt: 0,
-    send,
-    sendReq,
-    sendChat,
-    onEvent: () => () => {},
-    onChatMessage: (h) => {
-      chatHandlers.push(h);
+    onChatMessage: (handler: (message: ChatIncomingMessage) => void) => {
+      chatHandlers.push(handler);
       return () => {
-        chatHandlers = chatHandlers.filter((x) => x !== h);
+        chatHandlers = chatHandlers.filter((candidate) => candidate !== handler);
       };
     },
-    reconnect: vi.fn(),
+    sendRoomMessage: async (message: string, clientMessageId: string) =>
+      sendChat(agentId, message, clientMessageId, undefined),
+    abortRun: async (runId: string) => {
+      const accepted = send({ type: "agent_abort", agentId: agentId, runId });
+      if (accepted === false) throw new Error("Stop not sent");
+      return {};
+    },
+    steerRun: async (runId: string, text: string) => {
+      const accepted = send({ type: "agent_steer", agentId: agentId, runId, text });
+      if (accepted === false) throw new Error("Steer not sent");
+      return {};
+    },
+    rpc: sendReq,
   }),
 }));
 
@@ -208,7 +202,7 @@ describe("useAgentChat — per-session cache integrity on session switch", () =>
     act(() => {
       // Backend never tags General frames — an untagged done while a named
       // session is active is exactly the dropped-frame path.
-      chatHandlers.forEach((h) => h({ type: "done", agent_id: "agent-X", runId: "r-bg" }));
+      chatHandlers.forEach((h) => h({ type: "done", agentId: "agent-X", runId: "r-bg" }));
     });
 
     // Switching back must refetch (the cached copy predates the reply).

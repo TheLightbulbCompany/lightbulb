@@ -2,19 +2,38 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { useExecApprovals } from "../useExecApprovals";
 
-// Capture event handlers registered by the hook so tests can simulate
-// exec.approval.requested events arriving from the gateway.
+import type { LiveEvent } from "@lightbulb/shared";
+
+// Capture canonical private-event handlers so tests can inject approvals.
 type EventHandler = (event: string, data: unknown) => void;
 const eventHandlers: Set<EventHandler> = new Set();
 let sendReqMock: ReturnType<typeof vi.fn> = vi.fn();
+const runtime = {
+  resolveApproval: (
+    id: string,
+    request: { decision: string; kind: "exec" | "plugin" },
+  ) => sendReqMock(
+    request.kind === "plugin" ? "plugin.approval.resolve" : "exec.approval.resolve",
+    { id, decision: request.decision },
+  ),
+};
 
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({
-    onEvent: (h: EventHandler) => {
-      eventHandlers.add(h);
-      return () => eventHandlers.delete(h);
+vi.mock("@/hooks/useLiveEvents", () => ({
+  useLiveEvents: () => ({
+    runtime,
+    onEvent: (handler: (event: LiveEvent) => void) => {
+      const wrapper: EventHandler = (eventName, payload) => handler({
+        schemaVersion: 1,
+        eventId: `event-${eventName}`,
+        type: eventName.endsWith(".resolved")
+          ? "runtime.approval.resolved"
+          : "runtime.approval.requested",
+        occurredAt: "2026-09-09T00:00:00.000Z",
+        payload,
+      } as LiveEvent);
+      eventHandlers.add(wrapper);
+      return () => eventHandlers.delete(wrapper);
     },
-    sendReq: (...args: unknown[]) => sendReqMock(...args),
   }),
 }));
 

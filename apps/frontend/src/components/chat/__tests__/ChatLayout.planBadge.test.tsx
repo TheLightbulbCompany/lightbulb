@@ -59,9 +59,9 @@ vi.mock("@/hooks/useGateway", () => ({
     sendReq: () => Promise.resolve(),
   }),
 }));
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpc: () => ({ data: { config: {} } }),
-  useGatewayRpcMutation: () => vi.fn(),
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpc: () => ({ data: { config: {} } }),
+  useRuntimeRpcMutation: () => vi.fn(),
 }));
 
 vi.mock("@/hooks/useAgents", () => ({

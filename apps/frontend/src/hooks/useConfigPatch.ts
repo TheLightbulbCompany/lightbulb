@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback } from "react";
-import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { useRuntimeRpc, useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 
 type ConfigGetSnapshot = {
   config?: unknown;
@@ -29,8 +29,8 @@ export type ConfigPatchResult = {
  * rejected instead of clobbering.
  */
 export function useConfigPatch() {
-  const { data: snapshot, mutate } = useGatewayRpc<ConfigGetSnapshot>("config.get");
-  const callRpc = useGatewayRpcMutation();
+  const { data: snapshot, mutate } = useRuntimeRpc<ConfigGetSnapshot>("config.get");
+  const callRpc = useRuntimeRpcMutation();
   const baseHash = snapshot?.hash;
 
   const patchConfig = useCallback(

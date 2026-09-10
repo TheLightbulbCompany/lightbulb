@@ -1,21 +1,26 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
 import { useQuestions } from "../useQuestions";
-import type { QuestionRecord } from "@lightbulb/shared";
+import type { LiveEvent, QuestionRecord } from "@lightbulb/shared";
 
-type EventHandler = (event: string, data: unknown) => void;
+type EventHandler = (event: LiveEvent) => void;
 const eventHandlers: Set<EventHandler> = new Set();
 let sendReqMock: ReturnType<typeof vi.fn> = vi.fn();
-let isConnected = true;
+let connectionRevision = 1;
+const runtime = {
+  rpc: (...args: unknown[]) => sendReqMock(...args).then((value: unknown) => ({ kind: "result", value })),
+  resolveQuestion: (id: string, params: Record<string, unknown>) =>
+    sendReqMock("question.resolve", { id, ...params }),
+};
 
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({
-    isConnected,
-    onEvent: (h: EventHandler) => {
-      eventHandlers.add(h);
-      return () => eventHandlers.delete(h);
+vi.mock("@/hooks/useLiveEvents", () => ({
+  useLiveEvents: () => ({
+    connectionRevision,
+    runtime,
+    onEvent: (handler: EventHandler) => {
+      eventHandlers.add(handler);
+      return () => eventHandlers.delete(handler);
     },
-    sendReq: (...args: unknown[]) => sendReqMock(...args),
   }),
 }));
 
@@ -43,8 +48,17 @@ function record(over: Partial<QuestionRecord> = {}): QuestionRecord {
   };
 }
 
-function emit(event: string, payload: unknown) {
-  for (const h of eventHandlers) h(event, payload);
+function emit(event: "question.requested" | "question.resolved", payload: unknown) {
+  const liveEvent = {
+    schemaVersion: 1,
+    eventId: `event-${event}`,
+    type: event === "question.requested"
+      ? "runtime.question.requested"
+      : "runtime.question.resolved",
+    occurredAt: "2026-09-09T00:00:00.000Z",
+    payload,
+  } as LiveEvent;
+  for (const handler of eventHandlers) handler(liveEvent);
 }
 
 /** The reload-recovery effect fires question.list on every mount, so tests
@@ -60,7 +74,7 @@ function resolveRejects(error: Error) {
 describe("useQuestions", () => {
   beforeEach(() => {
     eventHandlers.clear();
-    isConnected = true;
+    connectionRevision = 1;
     // Default: question.list returns nothing so the seeding effect is inert.
     sendReqMock = vi.fn().mockResolvedValue({ questions: [] });
   });
@@ -250,11 +264,15 @@ describe("useQuestions", () => {
     expect(result.current.questions[0].id).toBe("q_seed");
   });
 
-  it("does not seed while the socket is closed", async () => {
-    isConnected = false;
-    renderHook(() => useQuestions());
-    await act(async () => {});
-    expect(sendReqMock).not.toHaveBeenCalled();
+  it("reconciles pending questions when the AppSync connection revision advances", async () => {
+    const view = renderHook(() => useQuestions());
+    await waitFor(() => expect(sendReqMock).toHaveBeenCalledWith("question.list", {}));
+    sendReqMock.mockClear();
+
+    connectionRevision = 2;
+    view.rerender();
+
+    await waitFor(() => expect(sendReqMock).toHaveBeenCalledWith("question.list", {}));
   });
 
   it("a question.list failure is swallowed (parked/asleep container)", async () => {

@@ -3,9 +3,9 @@ import { render, screen } from "@testing-library/react";
 import React from "react";
 import { OverviewPanel } from "../OverviewPanel";
 
-// useGatewayRpc serves health and skills.status keyed by method.
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpc: (method: string) => {
+// useRuntimeRpc serves health and skills.status keyed by method.
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpc: (method: string) => {
     if (method === "health") {
       return {
         data: { ok: true, ts: Date.now(), sessions: { count: 0 }, agents: [] },

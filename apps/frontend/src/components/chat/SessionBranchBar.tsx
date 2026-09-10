@@ -16,7 +16,7 @@
 
 import { useEffect } from "react";
 import { cn } from "@/lib/utils";
-import { useGatewayRpc } from "@/hooks/useGatewayRpc";
+import { useRuntimeRpc } from "@/hooks/useRuntimeRpc";
 
 /** One transcript DAG tip. Mirrors the fork's SessionBranchSchema. */
 export interface SessionBranch {
@@ -41,11 +41,11 @@ export function SessionBranchBar({
   /** A run is live; the container refuses a branch switch mid-run. */
   disabled?: boolean;
 }) {
-  const { data, mutate } = useGatewayRpc<{ branches?: SessionBranch[] }>(
+  const { data, mutate } = useRuntimeRpc<{ branches?: SessionBranch[] }>(
     sessionKey ? "sessions.branches.list" : null,
     sessionKey ? { sessionKey } : undefined,
     // A container that doesn't answer this method must not be re-asked 100
-    // times at 3s (useGatewayRpc's cold-start ladder). The branch list is
+    // times at 3s (useRuntimeRpc's cold-start ladder). The branch list is
     // decoration; one attempt plus the refresh token below is enough.
     { shouldRetryOnError: false },
   );

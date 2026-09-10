@@ -10,7 +10,7 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import type { ChatIncomingMessage } from "@/hooks/useGateway";
+import type { ChatIncomingMessage } from "@lightbulb/shared";
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 
@@ -18,23 +18,24 @@ let chatHandlers: Array<(msg: ChatIncomingMessage) => void> = [];
 const sendReq = vi.fn().mockResolvedValue({});
 const sendChat = vi.fn();
 
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({
+vi.mock("@/hooks/useAgentRoomTransport", () => ({
+  useAgentRoomTransport: (agentId: string | null) => ({
     isConnected: true,
-    nodeConnected: false,
-    error: null,
-    reconnectAttempt: 0,
-    send: vi.fn(),
-    sendReq,
-    sendChat,
-    onEvent: () => () => {},
-    onChatMessage: (h: (msg: ChatIncomingMessage) => void) => {
-      chatHandlers.push(h);
+    onChatMessage: (handler: (message: ChatIncomingMessage) => void) => {
+      chatHandlers.push(handler);
       return () => {
-        chatHandlers = chatHandlers.filter((x) => x !== h);
+        chatHandlers = chatHandlers.filter((candidate) => candidate !== handler);
       };
     },
-    reconnect: vi.fn(),
+    sendRoomMessage: async (message: string, clientMessageId: string) =>
+      sendChat(agentId, message, clientMessageId, undefined),
+    abortRun: async (runId: string) => {
+      return {};
+    },
+    steerRun: async (runId: string, text: string) => {
+      return {};
+    },
+    rpc: sendReq,
   }),
 }));
 
@@ -63,7 +64,7 @@ describe("useAgentChat — editable queues", () => {
     });
     const runA = lastClientRunId();
     act(() =>
-      dispatch({ type: "chunk", agent_id: "agent-X", runId: runA, content: "x" } as ChatIncomingMessage),
+      dispatch({ type: "chunk", agentId: "agent-X", runId: runA, content: "x" } as ChatIncomingMessage),
     );
     await act(async () => {
       await result.current.sendMessage("q1");
@@ -91,7 +92,7 @@ describe("useAgentChat — editable queues", () => {
     });
     const runA = lastClientRunId();
     act(() =>
-      dispatch({ type: "chunk", agent_id: "agent-X", runId: runA, content: "x" } as ChatIncomingMessage),
+      dispatch({ type: "chunk", agentId: "agent-X", runId: runA, content: "x" } as ChatIncomingMessage),
     );
     await act(async () => {
       await result.current.sendMessage("q1");
@@ -114,7 +115,7 @@ describe("useAgentChat — editable queues", () => {
     });
     const runA = lastClientRunId();
     act(() =>
-      dispatch({ type: "chunk", agent_id: "agent-X", runId: runA, content: "x" } as ChatIncomingMessage),
+      dispatch({ type: "chunk", agentId: "agent-X", runId: runA, content: "x" } as ChatIncomingMessage),
     );
     await act(async () => {
       await result.current.sendMessage("q1");
@@ -132,7 +133,7 @@ describe("useAgentChat — editable queues", () => {
     // Drain: the run ending must now send q2 first, matching the new order —
     // display order and send order are the same array.
     act(() =>
-      dispatch({ type: "run_ended", agent_id: "agent-X", runId: runA, outcome: "done" } as ChatIncomingMessage),
+      dispatch({ type: "run_ended", agentId: "agent-X", runId: runA, outcome: "done" } as ChatIncomingMessage),
     );
     expect(sendChat.mock.calls[1]?.[1]).toBe("q2");
     expect(result.current.queuedMessages.map((m) => m.text)).toEqual(["q1"]);
@@ -147,7 +148,7 @@ describe("useAgentChat — editable queues", () => {
     });
     const runA = lastClientRunId();
     act(() =>
-      dispatch({ type: "chunk", agent_id: "agent-X", runId: runA, content: "x" } as ChatIncomingMessage),
+      dispatch({ type: "chunk", agentId: "agent-X", runId: runA, content: "x" } as ChatIncomingMessage),
     );
     await act(async () => {
       await result.current.sendMessage("q1");
@@ -180,7 +181,7 @@ describe("useAgentChat — editable queues", () => {
     act(() =>
       dispatch({
         type: "chunk",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: runA,
         content: "working",
       } as ChatIncomingMessage),

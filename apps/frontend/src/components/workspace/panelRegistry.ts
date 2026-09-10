@@ -194,7 +194,7 @@ export function describePanel(
     return {
       panelId: chatPanelId(agentId),
       component: "chat",
-      title: "Chat",
+      title: "Messages",
       params: { agentId },
       renderer: "always",
     };

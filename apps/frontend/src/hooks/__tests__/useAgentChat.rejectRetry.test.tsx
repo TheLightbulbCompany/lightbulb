@@ -19,11 +19,11 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import type { ChatIncomingMessage } from "@/hooks/useGateway";
-// NOTE: GatewayRpcError is imported DYNAMICALLY inside each test that needs it.
+import type { ChatIncomingMessage } from "@lightbulb/shared";
+// NOTE: RuntimeRpcError is imported DYNAMICALLY inside each test that needs it.
 // beforeEach calls vi.resetModules(), and the hook is imported after that, so a
 // top-level static import would be a DIFFERENT class instance than the hook's
-// fresh one — `err instanceof GatewayRpcError` would silently be false. The
+// fresh one — `err instanceof RuntimeRpcError` would silently be false. The
 // dynamic import shares the hook's post-reset module registry.
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
@@ -40,23 +40,28 @@ const sendChat = vi.fn();
 const send = vi.fn();
 let mockConnected = true;
 
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({
+vi.mock("@/hooks/useAgentRoomTransport", () => ({
+  useAgentRoomTransport: (agentId: string | null) => ({
     isConnected: mockConnected,
-    nodeConnected: false,
-    error: null,
-    reconnectAttempt: 0,
-    send,
-    sendReq,
-    sendChat,
-    onEvent: () => () => {},
-    onChatMessage: (h: (m: ChatIncomingMessage) => void) => {
-      chatHandlers.push(h);
+    onChatMessage: (handler: (message: ChatIncomingMessage) => void) => {
+      chatHandlers.push(handler);
       return () => {
-        chatHandlers = chatHandlers.filter((x) => x !== h);
+        chatHandlers = chatHandlers.filter((candidate) => candidate !== handler);
       };
     },
-    reconnect: vi.fn(),
+    sendRoomMessage: async (message: string, clientMessageId: string) =>
+      sendChat(agentId, message, clientMessageId, undefined),
+    abortRun: async (runId: string) => {
+      const accepted = send({ type: "agent_abort", agentId: agentId, runId });
+      if (accepted === false) throw new Error("Stop not sent");
+      return {};
+    },
+    steerRun: async (runId: string, text: string) => {
+      const accepted = send({ type: "agent_steer", agentId: agentId, runId, text });
+      if (accepted === false) throw new Error("Steer not sent");
+      return {};
+    },
+    rpc: sendReq,
   }),
 }));
 
@@ -110,7 +115,7 @@ describe("useAgentChat — a rejected chat.history is retried, never blanked to 
         reads += 1;
         // First read's response is LOST to a transport drop — the socket
         // parked/superseded/closed mid-flight (a plain Error, not a
-        // GatewayRpcError): the primary refresh-churn case. The wake retry
+        // RuntimeRpcError): the primary refresh-churn case. The wake retry
         // lands on a live socket + ready container and returns the transcript.
         if (reads === 1) {
           return Promise.reject(new Error("WebSocket closed"));
@@ -143,18 +148,19 @@ describe("useAgentChat — a rejected chat.history is retried, never blanked to 
     expect(historyCalls()).toBe(2);
   });
 
-  it("a RETRYABLE GatewayRpcError (container starting up, retryable:true) keeps the skeleton and retries, then recovers", async () => {
-    const { GatewayRpcError } = await import("@lightbulb/shared");
+  it("a RETRYABLE RuntimeRpcError (container starting up, retryable:true) keeps the skeleton and retries, then recovers", async () => {
+    const { RuntimeRpcError } = await import("@lightbulb/shared");
     let reads = 0;
     sendReq.mockImplementation((method: string, params?: Record<string, unknown>) => {
       if (method === "chat.history" && params?.sessionKey === GENERAL_KEY) {
         reads += 1;
         if (reads === 1) {
           return Promise.reject(
-            new GatewayRpcError({
+            new RuntimeRpcError({
+              status: 503,
               message: "Container is starting up. Try again in a moment.",
               retryable: true,
-              retryAfterMs: 3000,
+              retryAfter: 3,
             }),
           );
         }
@@ -177,14 +183,14 @@ describe("useAgentChat — a rejected chat.history is retried, never blanked to 
     expect(result.current.isLoadingHistory).toBe(false);
   });
 
-  it("a NON-retryable GatewayRpcError (No container provisioned) terminates immediately — no retry, does not hold the loading shell", async () => {
-    const { GatewayRpcError } = await import("@lightbulb/shared");
+  it("a NON-retryable RuntimeRpcError (No container provisioned) terminates immediately — no retry, does not hold the loading shell", async () => {
+    const { RuntimeRpcError } = await import("@lightbulb/shared");
     let reads = 0;
     sendReq.mockImplementation((method: string, params?: Record<string, unknown>) => {
       if (method === "chat.history" && params?.sessionKey === GENERAL_KEY) {
         reads += 1;
         // Deterministic failure: it can never succeed on retry.
-        return Promise.reject(new GatewayRpcError({ message: "No container provisioned." }));
+        return Promise.reject(new RuntimeRpcError({ status: 404, message: "No container provisioned." }));
       }
       return Promise.resolve({ messages: [] });
     });

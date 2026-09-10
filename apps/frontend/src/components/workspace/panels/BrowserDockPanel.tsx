@@ -30,14 +30,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Chrome, RotateCcw } from "lucide-react";
 
 import { BACKEND_URL } from "@/lib/api";
-import { useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 import { browserViewWsUrl } from "./browserViewUrl";
 
 type ViewState = "connecting" | "connected" | "disconnected";
 
 export function BrowserDockPanel(_props: IDockviewPanelProps): React.ReactElement {
   const { getToken } = useAuth();
-  const callRpc = useGatewayRpcMutation();
+  const callRpc = useRuntimeRpcMutation();
   const mountRef = useRef<HTMLDivElement | null>(null);
   const [state, setState] = useState<ViewState>("connecting");
   // Bumping this re-runs the connect effect — the Retry button, and nothing

@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import useSWR, { useSWRConfig } from "swr";
-import { useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 import { notifyApiError } from "@/lib/notify";
 
 // Mirror of the backend guard (websocket_chat.py _SESSION_ID_RE): a strict
@@ -253,7 +253,7 @@ export function useAgentSessions(
   setArchived: (key: string, next: boolean) => Promise<boolean>;
   setPinned: (key: string, next: boolean) => Promise<void>;
 } {
-  const callRpc = useGatewayRpcMutation();
+  const callRpc = useRuntimeRpcMutation();
   const { mutate: globalMutate } = useSWRConfig();
 
   // ONE scoped call, keyed by user AND agent. `agentId` is a first-class

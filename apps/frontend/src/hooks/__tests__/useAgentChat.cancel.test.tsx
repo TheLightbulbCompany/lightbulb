@@ -8,46 +8,42 @@
  * (upstream ui/src/ui/app-chat.ts): server-reconcile drives
  * done, not a local edge.
  *
- * When disconnected, the abort is stored as a pending intent and replayed
- * on the next reconnect (isConnected rising edge) — mirror app-chat.ts.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import type { ChatIncomingMessage } from "@/hooks/useGateway";
+import type { ChatIncomingMessage } from "@lightbulb/shared";
 import { resolveMessageBlocks } from "@/hooks/internal/toolBlockExtract";
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 
 let chatHandlers: Array<(msg: ChatIncomingMessage) => void> = [];
-let eventHandlers: Array<(name: string, data: unknown) => void> = [];
 const sendReq = vi.fn().mockResolvedValue({});
 const sendChat = vi.fn();
 const send = vi.fn();
-let isConnected = true;
 
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({
-    isConnected,
-    nodeConnected: false,
-    error: null,
-    reconnectAttempt: 0,
-    send,
-    sendReq,
-    sendChat,
-    onEvent: (h: (name: string, data: unknown) => void) => {
-      eventHandlers.push(h);
+vi.mock("@/hooks/useAgentRoomTransport", () => ({
+  useAgentRoomTransport: (agentId: string | null) => ({
+    isConnected: true,
+    onChatMessage: (handler: (message: ChatIncomingMessage) => void) => {
+      chatHandlers.push(handler);
       return () => {
-        eventHandlers = eventHandlers.filter((x) => x !== h);
+        chatHandlers = chatHandlers.filter((candidate) => candidate !== handler);
       };
     },
-    onChatMessage: (h: (msg: ChatIncomingMessage) => void) => {
-      chatHandlers.push(h);
-      return () => {
-        chatHandlers = chatHandlers.filter((x) => x !== h);
-      };
+    sendRoomMessage: async (message: string, clientMessageId: string) =>
+      sendChat(agentId, message, clientMessageId, undefined),
+    abortRun: async (runId: string) => {
+      const accepted = send({ type: "agent_abort", agentId: agentId, runId });
+      if (accepted === false) throw new Error("Stop not sent");
+      return {};
     },
-    reconnect: vi.fn(),
+    steerRun: async (runId: string, text: string) => {
+      const accepted = send({ type: "agent_steer", agentId: agentId, runId, text });
+      if (accepted === false) throw new Error("Steer not sent");
+      return {};
+    },
+    rpc: sendReq,
   }),
 }));
 
@@ -62,11 +58,9 @@ function dispatch(msg: ChatIncomingMessage) {
 describe("useAgentChat — F-CANCEL targeted server-reconciled abort", () => {
   beforeEach(() => {
     chatHandlers = [];
-    eventHandlers = [];
     sendReq.mockReset().mockResolvedValue({});
     sendChat.mockReset();
     send.mockReset().mockReturnValue(true);
-    isConnected = true;
     vi.resetModules();
   });
 
@@ -79,7 +73,7 @@ describe("useAgentChat — F-CANCEL targeted server-reconciled abort", () => {
     });
     const runA = lastClientRunId();
     act(() =>
-      dispatch({ type: "chunk", agent_id: "agent-X", runId: runA, content: "live" } as ChatIncomingMessage),
+      dispatch({ type: "chunk", agentId: "agent-X", runId: runA, content: "live" } as ChatIncomingMessage),
     );
     expect(result.current.isStreaming).toBe(true);
 
@@ -89,7 +83,7 @@ describe("useAgentChat — F-CANCEL targeted server-reconciled abort", () => {
 
     expect(send).toHaveBeenCalledWith({
       type: "agent_abort",
-      agent_id: "agent-X",
+      agentId: "agent-X",
       runId: runA,
     });
   });
@@ -103,7 +97,7 @@ describe("useAgentChat — F-CANCEL targeted server-reconciled abort", () => {
     });
     const runA = lastClientRunId();
     act(() =>
-      dispatch({ type: "chunk", agent_id: "agent-X", runId: runA, content: "live" } as ChatIncomingMessage),
+      dispatch({ type: "chunk", agentId: "agent-X", runId: runA, content: "live" } as ChatIncomingMessage),
     );
     expect(result.current.isStreaming).toBe(true);
 
@@ -118,7 +112,7 @@ describe("useAgentChat — F-CANCEL targeted server-reconciled abort", () => {
     act(() =>
       dispatch({
         type: "error",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: runA,
         message: "Agent run was cancelled",
       } as ChatIncomingMessage),
@@ -126,7 +120,7 @@ describe("useAgentChat — F-CANCEL targeted server-reconciled abort", () => {
     act(() =>
       dispatch({
         type: "run_ended",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: runA,
         outcome: "aborted",
       } as ChatIncomingMessage),
@@ -147,7 +141,7 @@ describe("useAgentChat — F-CANCEL targeted server-reconciled abort", () => {
     });
     const runA = lastClientRunId();
     act(() =>
-      dispatch({ type: "chunk", agent_id: "agent-X", runId: runA, content: "live" } as ChatIncomingMessage),
+      dispatch({ type: "chunk", agentId: "agent-X", runId: runA, content: "live" } as ChatIncomingMessage),
     );
 
     await act(async () => {
@@ -156,7 +150,7 @@ describe("useAgentChat — F-CANCEL targeted server-reconciled abort", () => {
     act(() =>
       dispatch({
         type: "error",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: runA,
         message: "Agent run was cancelled",
       } as ChatIncomingMessage),
@@ -176,48 +170,5 @@ describe("useAgentChat — F-CANCEL targeted server-reconciled abort", () => {
     expect(text).toBe("Agent run was cancelled");
     expect(text.startsWith("Error: ")).toBe(false);
     expect(msg.errorCode).toBeUndefined();
-  });
-
-  it("when disconnected, stores the pending abort and replays it on reconnect", async () => {
-    const { useAgentChat } = await import("@/hooks/useAgentChat");
-    const { result, rerender } = renderHook(() =>
-      useAgentChat("agent-X", "session-1"),
-    );
-
-    await act(async () => {
-      await result.current.sendMessage("first");
-    });
-    const runA = lastClientRunId();
-    act(() =>
-      dispatch({ type: "chunk", agent_id: "agent-X", runId: runA, content: "live" } as ChatIncomingMessage),
-    );
-
-    // Connection drops.
-    isConnected = false;
-    rerender();
-
-    await act(async () => {
-      await result.current.cancelMessage();
-    });
-    // No abort sent while disconnected.
-    expect(send).not.toHaveBeenCalled();
-
-    // Reconnect (rising edge) → the stored abort replays exactly once.
-    isConnected = true;
-    rerender();
-
-    expect(send).toHaveBeenCalledWith({
-      type: "agent_abort",
-      agent_id: "agent-X",
-      runId: runA,
-    });
-    expect(send).toHaveBeenCalledTimes(1);
-
-    // A second reconnect cycle must not re-fire it.
-    isConnected = false;
-    rerender();
-    isConnected = true;
-    rerender();
-    expect(send).toHaveBeenCalledTimes(1);
   });
 });

@@ -33,8 +33,8 @@ vi.mock("@/hooks/useAgents", async (importOriginal) => {
   };
 });
 
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpc: (method: string | null) => {
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpc: (method: string | null) => {
     // NO "agents.list" branch on purpose: the roster must come from the
     // useAgents mock above, so reverting the component to a raw agents.list
     // call FAILS here instead of passing on this fixture.
@@ -46,7 +46,7 @@ vi.mock("@/hooks/useGatewayRpc", () => ({
     }
     return { data: undefined, error: undefined, isLoading: false, mutate: vi.fn() };
   },
-  useGatewayRpcMutation: () => rpcMock,
+  useRuntimeRpcMutation: () => rpcMock,
 }));
 
 describe("DreamsPanel", () => {

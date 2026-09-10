@@ -54,7 +54,8 @@ helpers:
 - FIFO queue: `lightbulb-{env}-openclaw-work.fifo`
 - FIFO DLQ: `lightbulb-{env}-openclaw-work-dlq.fifo`
 - Pipe failure queue: `lightbulb-{env}-openclaw-work-pipe-failures`
-- projector failure bucket: `lightbulb-{env}-messaging-projector-failures-<account>-<region>`
+- projector failure bucket: `lightbulb-{env}-messaging-projector-fail-<account>-<region>`
+  (the shortest spelling that keeps env/account/region and fits S3's 63-character limit)
 - work Pipe: `lightbulb-{env}-openclaw-work`
 - Lambda: `lightbulb-{env}-messaging-projector`
 - AppSync Event API: `lightbulb-{env}-messaging-events`
@@ -78,9 +79,9 @@ configuration. Version 2.267.0 exposes `addDynamoDbDataSource`,
 `subscribeHandlerConfig`, and `publishHandlerConfig` and was published before the
 repository's seven-day dependency-age boundary.
 
-- [ ] In `apps/infra/package.json`, change only `aws-cdk-lib` from `2.190.0` to
-  exact `2.267.0`. Keep `aws-cdk` CLI `2.1013.0`; CDK CLI compatibility does not
-  require a second upgrade.
+- [ ] In `apps/infra/package.json`, change `aws-cdk-lib` from `2.190.0` to
+  exact `2.267.0` and `aws-cdk` CLI from `2.1013.0` to exact `2.1141.0`, the
+  minimum CLI that supports the cloud-assembly schema emitted by that library.
 - [ ] Update `apps/infra/package-lock.json` with `npm install
   --package-lock-only --ignore-scripts`, then update only the `apps/infra`
   importer and required CDK graph in the root `pnpm-lock.yaml`. Infra deploy uses

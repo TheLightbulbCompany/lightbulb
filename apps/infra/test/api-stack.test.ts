@@ -11,6 +11,28 @@ import { synthApiStack } from "./helpers";
 // Hoist a single ApiStack synthesis and reuse across tests.
 const API_TEMPLATE = synthApiStack();
 
+function statementsForRole(template: Template, roleLogicalId: string): any[] {
+  const resources = [
+    ...Object.values(template.findResources("AWS::IAM::Policy")),
+    ...Object.values(template.findResources("AWS::IAM::ManagedPolicy")),
+  ] as any[];
+  return resources.flatMap((resource) => {
+    const roles = resource.Properties?.Roles ?? [];
+    const attached = roles.some(
+      (role: any) => role?.Ref === roleLogicalId,
+    );
+    return attached
+      ? (resource.Properties?.PolicyDocument?.Statement ?? [])
+      : [];
+  });
+}
+
+function actions(statement: any): string[] {
+  return Array.isArray(statement.Action)
+    ? statement.Action
+    : [statement.Action].filter(Boolean);
+}
+
 describe("ApiStack — ws-connections owner-keyed fan-out", () => {
   const template: Template = API_TEMPLATE;
 
@@ -34,31 +56,35 @@ describe("ApiStack — ws-connections owner-keyed fan-out", () => {
   });
 });
 
-describe("ApiStack — WS authorizer Clerk azp (SEC-8) wiring", () => {
-  // The WS authorizer is the second door for Clerk tokens; without this env
-  // the azp check silently no-ops (empty allowlist = off). Mode pins the
-  // audit rollout default.
-  test.each([
-    [
-      "dev",
-      `https://dev.${ROOT_DOMAIN},https://admin.dev.${ROOT_DOMAIN},https://dev.company.${ROOT_DOMAIN},http://localhost:3000`,
-    ],
-    [
-      "prod",
-      `https://${ROOT_DOMAIN},https://www.${ROOT_DOMAIN},https://admin.${ROOT_DOMAIN},https://company.${ROOT_DOMAIN}`,
-    ],
-  ] as const)("%s authorizer gets azp allowlist in audit mode", (envName, parties) => {
-    const template = envName === "dev" ? API_TEMPLATE : synthApiStack("prod");
-    template.hasResourceProperties("AWS::Lambda::Function", {
-      FunctionName: `lightbulb-${envName}-ws-authorizer`,
-      Environment: {
-        Variables: Match.objectLike({
-          CLERK_AUTHORIZED_PARTIES: parties,
-          CLERK_AZP_MODE: "audit",
-        }),
-      },
-    });
-  });
+describe("ApiStack — machine-only WebSocket authorizer", () => {
+  test.each(["dev", "prod"] as const)(
+    "%s authorizer has no Clerk browser configuration",
+    (envName) => {
+      const template = envName === "dev" ? API_TEMPLATE : synthApiStack("prod");
+      const functions = Object.values(
+        template.findResources("AWS::Lambda::Function"),
+      ) as any[];
+      const authorizer = functions.find(
+        (resource) =>
+          resource.Properties?.FunctionName ===
+          `lightbulb-${envName}-ws-authorizer`,
+      );
+      expect(authorizer).toBeDefined();
+      const variables = authorizer.Properties?.Environment?.Variables ?? {};
+      expect(variables.CONTAINERS_TABLE).toBeDefined();
+      expect(
+        Object.keys(variables).filter((key) => key.startsWith("CLERK_")),
+      ).toEqual([]);
+      const roleId = authorizer.Properties.Role["Fn::GetAtt"][0];
+      const tableRead = statementsForRole(template, roleId).find(
+        (statement) => statement.Sid === "ContainersTableRead",
+      );
+      expect(tableRead).toBeDefined();
+      expect(actions(tableRead!)).toEqual(["dynamodb:GetItem"]);
+      expect(JSON.stringify(tableRead!.Resource)).not.toContain("/index/");
+      expect(JSON.stringify(tableRead!.Resource)).not.toContain('"*"');
+    },
+  );
 });
 
 
@@ -140,6 +166,7 @@ describe("ApiStack — browser-view CloudFront door", () => {
         hostedZoneId: "Z0TEST",
         zoneName: ROOT_DOMAIN,
       }),
+      clerkIssuerSecretName: `lightbulb/${environment}/clerk_issuer`,
       paperclipServiceTokenKeySecretName: `isol8/${environment}/paperclip_service_token_key`,
       paperclipKmsKeyArn: `arn:aws:kms:us-east-1:877352799272:key/test-key`,
       wsInternalSecretSecretName: `isol8/${environment}/ws_internal_secret`,
@@ -205,23 +232,450 @@ describe("ApiStack — Slack events route has its own throttle bucket", () => {
   });
 });
 
-describe("ApiStack — messaging AppSync Events (OIDC subscribe / IAM publish)", () => {
-  // The Event API's per-namespace onSubscribe handler is the membership
-  // check for every browser subscription; it is only expressible once the
-  // CDK release exposes DynamoDB-backed handler configs (2.267.0). Before
-  // the pin/resource work this fails because the resource is absent.
-  test("rooms namespace has a DynamoDB-backed onSubscribe handler", () => {
-    API_TEMPLATE.hasResourceProperties("AWS::AppSync::DataSource", {
-      Type: "AMAZON_DYNAMODB",
-    });
-    API_TEMPLATE.hasResourceProperties("AWS::AppSync::ChannelNamespace", {
-      Name: "rooms",
-      HandlerConfigs: Match.objectLike({
-        OnSubscribe: Match.objectLike({
-          Behavior: "CODE",
-          Integration: Match.objectLike({ DataSourceName: Match.anyValue() }),
+describe("ApiStack — canonical messaging storage and work delivery", () => {
+  test("messaging table has the frozen keys, stream, TTL, GSI, PITR, on-demand billing, and CMK", () => {
+    API_TEMPLATE.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "lightbulb-dev-messaging",
+      BillingMode: "PAY_PER_REQUEST",
+      KeySchema: [
+        { AttributeName: "pk", KeyType: "HASH" },
+        { AttributeName: "sk", KeyType: "RANGE" },
+      ],
+      StreamSpecification: { StreamViewType: "NEW_IMAGE" },
+      TimeToLiveSpecification: { AttributeName: "expiresAt", Enabled: true },
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true },
+      SSESpecification: Match.objectLike({
+        SSEEnabled: true,
+        SSEType: "KMS",
+        KMSMasterKeyId: Match.anyValue(),
+      }),
+      GlobalSecondaryIndexes: Match.arrayWith([
+        Match.objectLike({
+          IndexName: "by-member",
+          KeySchema: [
+            { AttributeName: "memberKey", KeyType: "HASH" },
+            { AttributeName: "memberSort", KeyType: "RANGE" },
+          ],
+          Projection: { ProjectionType: "ALL" },
         }),
+      ]),
+    });
+  });
+
+  test("production retains the canonical table and projector failure bucket", () => {
+    const prod = synthApiStack("prod");
+    const retained = [
+      ...Object.values(prod.findResources("AWS::DynamoDB::Table")),
+      ...Object.values(prod.findResources("AWS::S3::Bucket")),
+    ].filter((resource: any) =>
+      [
+        "lightbulb-prod-messaging",
+        "lightbulb-prod-messaging-projector-fail-877352799272-us-east-1",
+      ].includes(resource.Properties?.TableName ?? resource.Properties?.BucketName),
+    ) as any[];
+    expect(retained).toHaveLength(2);
+    expect(retained.every((resource) => resource.DeletionPolicy === "Retain")).toBe(true);
+  });
+
+  test("creates one application FIFO plus its FIFO DLQ and one standard Pipe DLQ", () => {
+    const queues = Object.values(API_TEMPLATE.findResources("AWS::SQS::Queue")) as any[];
+    const byName = Object.fromEntries(
+      queues.map((queue) => [queue.Properties.QueueName, queue.Properties]),
+    );
+    expect(Object.keys(byName).sort()).toEqual([
+      "lightbulb-dev-openclaw-work-dlq.fifo",
+      "lightbulb-dev-openclaw-work-pipe-failures",
+      "lightbulb-dev-openclaw-work.fifo",
+    ]);
+    expect(byName["lightbulb-dev-openclaw-work.fifo"]).toEqual(
+      expect.objectContaining({
+        FifoQueue: true,
+        ContentBasedDeduplication: false,
+        MessageRetentionPeriod: 604800,
+        VisibilityTimeout: 300,
+        ReceiveMessageWaitTimeSeconds: 20,
+        KmsMasterKeyId: expect.anything(),
+        RedrivePolicy: expect.objectContaining({ maxReceiveCount: 8 }),
+      }),
+    );
+    expect(byName["lightbulb-dev-openclaw-work-dlq.fifo"]).toEqual(
+      expect.objectContaining({
+        FifoQueue: true,
+        MessageRetentionPeriod: 1209600,
+        KmsMasterKeyId: expect.anything(),
+      }),
+    );
+    expect(byName["lightbulb-dev-openclaw-work-pipe-failures"]).toEqual(
+      expect.objectContaining({
+        MessageRetentionPeriod: 1209600,
+        KmsMasterKeyId: expect.anything(),
+      }),
+    );
+    expect(byName["lightbulb-dev-openclaw-work-pipe-failures"].FifoQueue).toBeUndefined();
+  });
+
+  test("projector failure bucket is private, CMK encrypted, and expires failures", () => {
+    API_TEMPLATE.hasResourceProperties("AWS::S3::Bucket", {
+      BucketName:
+        "lightbulb-dev-messaging-projector-fail-877352799272-us-east-1",
+      PublicAccessBlockConfiguration: {
+        BlockPublicAcls: true,
+        BlockPublicPolicy: true,
+        IgnorePublicAcls: true,
+        RestrictPublicBuckets: true,
+      },
+      BucketEncryption: Match.objectLike({
+        ServerSideEncryptionConfiguration: Match.arrayWith([
+          Match.objectLike({
+            ServerSideEncryptionByDefault: Match.objectLike({
+              SSEAlgorithm: "aws:kms",
+              KMSMasterKeyID: Match.anyValue(),
+            }),
+          }),
+        ]),
+      }),
+      LifecycleConfiguration: Match.objectLike({
+        Rules: Match.arrayWith([
+          Match.objectLike({ ExpirationInDays: 30, Status: "Enabled" }),
+        ]),
       }),
     });
+  });
+
+  test("direct Pipe filters only WORK inserts and sends the AttributeValue pointer to FIFO", () => {
+    API_TEMPLATE.resourceCountIs("AWS::Pipes::Pipe", 1);
+    API_TEMPLATE.hasResourceProperties("AWS::Pipes::Pipe", {
+      Name: "lightbulb-dev-openclaw-work",
+      DesiredState: "RUNNING",
+      SourceParameters: {
+        FilterCriteria: {
+          Filters: [
+            {
+              Pattern: JSON.stringify({
+                eventName: ["INSERT"],
+                dynamodb: {
+                  NewImage: { sk: { S: [{ prefix: "WORK#" }] } },
+                },
+              }),
+            },
+          ],
+        },
+        DynamoDBStreamParameters: Match.objectLike({
+          BatchSize: 10,
+          MaximumBatchingWindowInSeconds: 0,
+          StartingPosition: "TRIM_HORIZON",
+          OnPartialBatchItemFailure: "AUTOMATIC_BISECT",
+          MaximumRecordAgeInSeconds: 82800,
+          MaximumRetryAttempts: 185,
+          DeadLetterConfig: { Arn: Match.anyValue() },
+        }),
+      },
+      TargetParameters: {
+        InputTemplate: "<$.dynamodb.NewImage.payload.M>",
+        SqsQueueParameters: {
+          MessageGroupId: "$.dynamodb.NewImage.messageGroupId.S",
+          MessageDeduplicationId:
+            "$.dynamodb.NewImage.messageDeduplicationId.S",
+        },
+      },
+    });
+  });
+
+  test("Pipe role is the sole work-queue producer and has only stream/send/KMS actions", () => {
+    const roleEntry = Object.entries(
+      API_TEMPLATE.findResources("AWS::IAM::Role"),
+    ).find(([, role]: [string, any]) =>
+      role.Properties?.RoleName === "lightbulb-dev-openclaw-work-pipe",
+    );
+    expect(roleEntry).toBeDefined();
+    const roleId = roleEntry![0];
+    const statements = statementsForRole(API_TEMPLATE, roleId);
+    const granted = new Set(statements.flatMap(actions));
+    expect(granted).toEqual(
+      new Set([
+        "dynamodb:DescribeStream",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:ListStreams",
+        "sqs:SendMessage",
+        "kms:Decrypt",
+        "kms:GenerateDataKey",
+      ]),
+    );
+    expect(granted.has("sqs:ReceiveMessage")).toBe(false);
+    expect(granted.has("sqs:DeleteMessage")).toBe(false);
+    const wildcardStatements = statements.filter((statement) =>
+      JSON.stringify(statement.Resource).includes('"*"'),
+    );
+    expect(wildcardStatements).toHaveLength(1);
+    expect(actions(wildcardStatements[0])).toEqual(["dynamodb:ListStreams"]);
+
+    const queues = API_TEMPLATE.findResources("AWS::SQS::Queue");
+    const workQueueId = Object.entries(queues).find(
+      ([, queue]: [string, any]) =>
+        queue.Properties.QueueName === "lightbulb-dev-openclaw-work.fifo",
+    )![0];
+    const pipeFailureQueueId = Object.entries(queues).find(
+      ([, queue]: [string, any]) =>
+        queue.Properties.QueueName ===
+        "lightbulb-dev-openclaw-work-pipe-failures",
+    )![0];
+    const sendStatement = statements.find((statement) =>
+      actions(statement).includes("sqs:SendMessage"),
+    );
+    expect(sendStatement).toBeDefined();
+    expect(sendStatement!.Resource).toHaveLength(2);
+    expect(JSON.stringify(sendStatement!.Resource)).toContain(workQueueId);
+    expect(JSON.stringify(sendStatement!.Resource)).toContain(pipeFailureQueueId);
+    const policies = [
+      ...Object.values(API_TEMPLATE.findResources("AWS::IAM::Policy")),
+      ...Object.values(API_TEMPLATE.findResources("AWS::IAM::ManagedPolicy")),
+    ] as any[];
+    for (const policy of policies) {
+      const sendsToWork = (policy.Properties?.PolicyDocument?.Statement ?? []).some(
+        (statement: any) =>
+          actions(statement).includes("sqs:SendMessage") &&
+          JSON.stringify(statement.Resource).includes(workQueueId),
+      );
+      if (sendsToWork) {
+        expect(policy.Properties.Roles).toEqual([{ Ref: roleId }]);
+      }
+    }
+  });
+
+  test("messaging stream has exactly the projector and direct Pipe consumers", () => {
+    API_TEMPLATE.resourceCountIs("AWS::Lambda::EventSourceMapping", 1);
+    API_TEMPLATE.resourceCountIs("AWS::Pipes::Pipe", 1);
+    API_TEMPLATE.hasResourceProperties("AWS::Lambda::EventSourceMapping", {
+      BatchSize: 10,
+      MaximumBatchingWindowInSeconds: 0,
+      StartingPosition: "TRIM_HORIZON",
+      BisectBatchOnFunctionError: true,
+      FunctionResponseTypes: ["ReportBatchItemFailures"],
+      MaximumRecordAgeInSeconds: 82800,
+      MaximumRetryAttempts: 3,
+      MetricsConfig: { Metrics: ["EventCount"] },
+      DestinationConfig: { OnFailure: { Destination: Match.anyValue() } },
+    });
+  });
+});
+
+describe("ApiStack — messaging AppSync Events (OIDC subscribe / IAM publish)", () => {
+  test("Event API has only Clerk OIDC and IAM with the frozen defaults", () => {
+    API_TEMPLATE.resourceCountIs("AWS::AppSync::Api", 1);
+    API_TEMPLATE.resourceCountIs("AWS::AppSync::ApiKey", 0);
+    API_TEMPLATE.hasResourceProperties("AWS::AppSync::Api", {
+      Name: "lightbulb-dev-messaging-events",
+      EventConfig: Match.objectLike({
+        AuthProviders: Match.arrayWith([
+          Match.objectLike({
+            AuthType: "OPENID_CONNECT",
+            OpenIDConnectConfig: Match.objectLike({
+              ClientId: "^lightbulb-appsync$",
+              Issuer: Match.anyValue(),
+            }),
+          }),
+          { AuthType: "AWS_IAM" },
+        ]),
+        ConnectionAuthModes: [{ AuthType: "OPENID_CONNECT" }],
+        DefaultPublishAuthModes: [{ AuthType: "AWS_IAM" }],
+        DefaultSubscribeAuthModes: [{ AuthType: "OPENID_CONNECT" }],
+        LogConfig: Match.objectLike({ LogLevel: "ERROR" }),
+      }),
+    });
+  });
+
+  test("one read-only DynamoDB data source backs both strong namespace handlers", () => {
+    API_TEMPLATE.resourceCountIs("AWS::AppSync::DataSource", 1);
+    API_TEMPLATE.hasResourceProperties("AWS::AppSync::DataSource", {
+      Type: "AMAZON_DYNAMODB",
+      DynamoDBConfig: Match.objectLike({
+        AwsRegion: "us-east-1",
+      }),
+      ServiceRoleArn: Match.anyValue(),
+    });
+    const dataSource = Object.values(
+      API_TEMPLATE.findResources("AWS::AppSync::DataSource"),
+    )[0] as any;
+    const dataSourceRole = dataSource.Properties.ServiceRoleArn["Fn::GetAtt"][0];
+    const dataSourceActions = new Set(
+      statementsForRole(API_TEMPLATE, dataSourceRole).flatMap(actions),
+    );
+    expect(dataSourceActions.has("dynamodb:GetItem")).toBe(true);
+    expect(dataSourceActions.has("dynamodb:BatchGetItem")).toBe(true);
+    for (const forbidden of [
+      "dynamodb:PutItem",
+      "dynamodb:UpdateItem",
+      "dynamodb:DeleteItem",
+      "dynamodb:BatchWriteItem",
+      "dynamodb:TransactWriteItems",
+    ]) {
+      expect(dataSourceActions.has(forbidden)).toBe(false);
+    }
+    for (const name of ["rooms", "users"]) {
+      API_TEMPLATE.hasResourceProperties("AWS::AppSync::ChannelNamespace", {
+        Name: name,
+        PublishAuthModes: [{ AuthType: "AWS_IAM" }],
+        SubscribeAuthModes: [{ AuthType: "OPENID_CONNECT" }],
+        HandlerConfigs: {
+          OnPublish: Match.objectLike({
+            Behavior: "CODE",
+            Integration: Match.objectLike({ DataSourceName: Match.anyValue() }),
+          }),
+          OnSubscribe: Match.objectLike({
+            Behavior: "CODE",
+            Integration: Match.objectLike({ DataSourceName: Match.anyValue() }),
+          }),
+        },
+      });
+    }
+    const namespaces = Object.values(
+      API_TEMPLATE.findResources("AWS::AppSync::ChannelNamespace"),
+    ) as any[];
+    const code = JSON.stringify(namespaces.map((resource) => resource.Properties.CodeHandlers));
+    expect(code).toContain("BatchGetItem");
+    expect(code).toContain("consistentRead");
+    expect(code).toContain("MEMBER#human#");
+    expect(code).toContain("STREAM#");
+    expect(code).toContain("deliveryKey");
+    expect(code).toContain("util.unauthorized");
+  });
+
+  test("outputs both endpoints, API ID, and API ARN without channel keys", () => {
+    const outputs = API_TEMPLATE.toJSON().Outputs as Record<string, any>;
+    const rendered = JSON.stringify(outputs);
+    expect(rendered).toContain("AppSync Events HTTP publish endpoint");
+    expect(rendered).toContain("AppSync Events realtime subscription endpoint");
+    expect(rendered).toContain("AppSync messaging Event API ID");
+    expect(rendered).toContain("AppSync messaging Event API ARN");
+    expect(rendered).not.toContain("deliveryKey");
+    expect(rendered).not.toContain("channelKey");
+  });
+});
+
+describe("ApiStack — messaging projector permissions and alarms", () => {
+  test("projector is Python 3.13, bounded, partial-batch configured, and has no SQS access", () => {
+    API_TEMPLATE.hasResourceProperties("AWS::Lambda::Function", {
+      FunctionName: "lightbulb-dev-messaging-projector",
+      Runtime: "python3.13",
+      Timeout: 30,
+      MemorySize: 512,
+      Environment: {
+        Variables: Match.objectLike({
+          MESSAGING_TABLE: Match.anyValue(),
+          APPSYNC_EVENTS_HTTP_ENDPOINT: Match.anyValue(),
+          APPSYNC_EVENTS_REGION: "us-east-1",
+        }),
+      },
+    });
+    const projector = Object.values(
+      API_TEMPLATE.findResources("AWS::Lambda::Function"),
+    ).find(
+      (resource: any) =>
+        resource.Properties?.FunctionName ===
+        "lightbulb-dev-messaging-projector",
+    ) as any;
+    const roleId = projector.Properties.Role["Fn::GetAtt"][0];
+    const statements = statementsForRole(API_TEMPLATE, roleId);
+    const granted = new Set(statements.flatMap(actions));
+    expect(granted.has("dynamodb:GetItem")).toBe(true);
+    expect(granted.has("s3:PutObject")).toBe(true);
+    expect(granted.has("kms:Decrypt")).toBe(true);
+    expect([...granted].some((action) => action.startsWith("kms:GenerateDataKey"))).toBe(true);
+    expect(granted.has("appsync:EventPublish")).toBe(true);
+    expect([...granted].filter((action) => action.startsWith("sqs:"))).toEqual([]);
+    const publishResources = statements
+      .filter((statement) => actions(statement).includes("appsync:EventPublish"))
+      .flatMap((statement) =>
+        Array.isArray(statement.Resource)
+          ? statement.Resource
+          : [statement.Resource],
+      );
+    expect(JSON.stringify(publishResources)).toContain("channelNamespace/rooms");
+    expect(JSON.stringify(publishResources)).toContain("channelNamespace/users");
+  });
+
+  test("Pipe state monitor polls the one Pipe every minute", () => {
+    API_TEMPLATE.hasResourceProperties("AWS::Lambda::Function", {
+      FunctionName: "lightbulb-dev-openclaw-work-pipe-state",
+      Runtime: "python3.13",
+      Timeout: 10,
+      Environment: {
+        Variables: Match.objectLike({
+          PIPE_NAME: "lightbulb-dev-openclaw-work",
+        }),
+      },
+      Code: Match.objectLike({
+        ZipFile: Match.stringLikeRegexp("describe_pipe"),
+      }),
+    });
+    API_TEMPLATE.hasResourceProperties("AWS::Events::Rule", {
+      ScheduleExpression: "rate(1 minute)",
+      State: "ENABLED",
+      Targets: Match.arrayWith([
+        Match.objectLike({ Arn: Match.anyValue() }),
+      ]),
+    });
+
+    const monitor = Object.values(
+      API_TEMPLATE.findResources("AWS::Lambda::Function"),
+    ).find(
+      (resource: any) =>
+        resource.Properties?.FunctionName ===
+        "lightbulb-dev-openclaw-work-pipe-state",
+    ) as any;
+    const roleId = monitor.Properties.Role["Fn::GetAtt"][0];
+    const statements = statementsForRole(API_TEMPLATE, roleId);
+    const describe = statements.find((statement) =>
+      actions(statement).includes("pipes:DescribePipe"),
+    );
+    expect(describe).toBeDefined();
+    expect(JSON.stringify(describe.Resource)).toContain("OpenClawWorkPipe");
+  });
+
+  test("delivery alarms page the existing environment topic", () => {
+    const alarms = Object.values(
+      API_TEMPLATE.findResources("AWS::CloudWatch::Alarm"),
+    ) as any[];
+    const names = alarms.map((alarm) => alarm.Properties.AlarmName);
+    expect(names).toEqual(
+      expect.arrayContaining([
+        "lightbulb-dev-openclaw-work-dlq-visible",
+        "lightbulb-dev-openclaw-work-oldest-age",
+        "lightbulb-dev-openclaw-work-pipe-dlq-visible",
+        "lightbulb-dev-openclaw-work-pipe-failures",
+        "lightbulb-dev-openclaw-work-pipe-stopped",
+        "lightbulb-dev-messaging-projector-errors",
+        "lightbulb-dev-messaging-projector-failures-stored",
+        "lightbulb-dev-messaging-projector-s3-failures",
+        "lightbulb-dev-messaging-projector-iterator-age",
+      ]),
+    );
+    for (const alarm of alarms.filter((item) => names.includes(item.Properties.AlarmName))) {
+      expect(alarm.Properties.AlarmActions).toEqual([
+        expect.stringContaining("lightbulb-dev-alerts-page"),
+      ]);
+    }
+    const oldest = alarms.find(
+      (alarm) => alarm.Properties.AlarmName === "lightbulb-dev-openclaw-work-oldest-age",
+    );
+    const iterator = alarms.find(
+      (alarm) => alarm.Properties.AlarmName === "lightbulb-dev-messaging-projector-iterator-age",
+    );
+    const stopped = alarms.find(
+      (alarm) => alarm.Properties.AlarmName === "lightbulb-dev-openclaw-work-pipe-stopped",
+    );
+    expect(oldest.Properties.Threshold).toBe(300);
+    expect(iterator.Properties.Threshold).toBe(300000);
+    expect(stopped.Properties).toEqual(
+      expect.objectContaining({
+        Namespace: "LightbulbAI/Messaging",
+        MetricName: "PipeNotRunning",
+        Period: 300,
+        Threshold: 1,
+        EvaluationPeriods: 1,
+        TreatMissingData: "breaching",
+      }),
+    );
   });
 });

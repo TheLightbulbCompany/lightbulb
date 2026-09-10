@@ -104,10 +104,9 @@ describe("BedrockGateStack", () => {
   });
 
   test("GUARD: public URL invoke needs BOTH permission statements (Oct 2025 Lambda change)", () => {
-    // With only the InvokeFunctionUrl statement addFunctionUrl auto-creates,
-    // every request 403s at the front door (live-verified on first deploy).
-    // The second statement must be InvokedViaFunctionUrl-conditioned so the
-    // public grant stays URL-only — it must NOT open direct API invoke.
+    // Current CDK must synthesize both public statements. The InvokeFunction
+    // statement stays URL-only through the InvokedViaFunctionUrl condition; an
+    // unconditioned grant would expose the direct API invoke path.
     const perms = Object.values(
       template.findResources("AWS::Lambda::Permission"),
     ).map((p: any) => p.Properties);

@@ -99,6 +99,13 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     connectionsTableName: `${tablePrefix(environment)}ws-connections`,
     wsApiId: "test-ws-api-id",
     wsStage: "prod",
+    messagingTableName: `lightbulb-${environment}-messaging`,
+    openClawWorkQueueUrl: `https://sqs.us-east-1.amazonaws.com/877352799272/lightbulb-${environment}-openclaw-work.fifo`,
+    openClawWorkQueueArn: `arn:aws:sqs:us-east-1:877352799272:lightbulb-${environment}-openclaw-work.fifo`,
+    appsyncEventsHttpEndpoint: `https://events-${environment}.appsync-api.us-east-1.amazonaws.com/event`,
+    appsyncEventsRealtimeEndpoint: `wss://events-${environment}.appsync-realtime-api.us-east-1.amazonaws.com/event/realtime`,
+    appsyncEventsApiArn: `arn:aws:appsync:us-east-1:877352799272:apis/events-${environment}`,
+    appsyncEventsRegion: "us-east-1",
     agentMailConfigurationSet: "isol8-test-agent-mail",
     stripeProjectsCatalog: environment === "prod" ? "prod" : "testing",
   });
@@ -1006,5 +1013,112 @@ describe("ServiceStack — agent-mail outbound wiring", () => {
     expect(statement.Resource).not.toContain(
       "arn:aws:ses:us-east-1:877352799272:tenant/*",
     );
+  });
+});
+
+describe("ServiceStack — messaging environment and least privilege", () => {
+  test("backend receives the exact messaging environment contract", () => {
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "lightbulb-dev-backend",
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: "backend",
+          Environment: Match.arrayWith([
+            { Name: "MESSAGING_TABLE", Value: "lightbulb-dev-messaging" },
+            {
+              Name: "OPENCLAW_WORK_QUEUE_URL",
+              Value:
+                "https://sqs.us-east-1.amazonaws.com/877352799272/lightbulb-dev-openclaw-work.fifo",
+            },
+            {
+              Name: "APPSYNC_EVENTS_HTTP_ENDPOINT",
+              Value:
+                "https://events-dev.appsync-api.us-east-1.amazonaws.com/event",
+            },
+            {
+              Name: "APPSYNC_EVENTS_REALTIME_ENDPOINT",
+              Value:
+                "wss://events-dev.appsync-realtime-api.us-east-1.amazonaws.com/event/realtime",
+            },
+            { Name: "APPSYNC_EVENTS_REGION", Value: "us-east-1" },
+          ]),
+        }),
+      ]),
+    });
+  });
+
+  test("backend consumes only the work FIFO and publishes only to messaging namespaces", () => {
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::IAM::ManagedPolicy", {
+      ManagedPolicyName: "lightbulb-dev-backend-messaging",
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          {
+            Sid: "ConsumeOpenClawWork",
+            Effect: "Allow",
+            Action: [
+              "sqs:ReceiveMessage",
+              "sqs:DeleteMessage",
+              "sqs:ChangeMessageVisibility",
+              "sqs:GetQueueAttributes",
+            ],
+            Resource:
+              "arn:aws:sqs:us-east-1:877352799272:lightbulb-dev-openclaw-work.fifo",
+          },
+          {
+            Sid: "PublishMessagingEvents",
+            Effect: "Allow",
+            Action: "appsync:EventPublish",
+            Resource: [
+              "arn:aws:appsync:us-east-1:877352799272:apis/events-dev/channelNamespace/rooms",
+              "arn:aws:appsync:us-east-1:877352799272:apis/events-dev/channelNamespace/users",
+            ],
+          },
+        ]),
+      },
+    });
+    const policies = JSON.stringify({
+      ...SERVICE_TEMPLATE_DEV.findResources("AWS::IAM::Policy"),
+      ...SERVICE_TEMPLATE_DEV.findResources("AWS::IAM::ManagedPolicy"),
+    });
+    expect(policies).not.toContain("appsync:EventSubscribe");
+    expect(policies).not.toContain("dynamodb:DescribeStream");
+  });
+
+  test("owned-table policy supports transactions without stream permissions", () => {
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Sid: "DynamoDbOwnedTables",
+            Action: Match.arrayWith(["dynamodb:TransactWriteItems"]),
+          }),
+        ]),
+      }),
+    });
+  });
+
+  test("machine WebSocket environment and ManageConnections permission remain", () => {
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "lightbulb-dev-backend",
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Environment: Match.arrayWith([
+            Match.objectLike({ Name: "WS_MANAGEMENT_API_URL" }),
+            Match.objectLike({ Name: "WS_GATEWAY_URL" }),
+            Match.objectLike({ Name: "WS_CONNECTIONS_TABLE" }),
+          ]),
+        }),
+      ]),
+    });
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Sid: "WebSocketManageConnections",
+            Action: "execute-api:ManageConnections",
+          }),
+        ]),
+      }),
+    });
   });
 });

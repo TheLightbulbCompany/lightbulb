@@ -77,6 +77,7 @@ def test_org_owner_allows_as_member(mock_row):
         "userId": "usr_alice",
         "orgId": "org_x",
         "authKind": "device",
+        "deviceId": "dev1",
     }
 
 
@@ -153,7 +154,7 @@ def test_missing_iat_denied(mock_row):
 
 
 def test_non_eddsa_token_is_not_treated_as_device(mock_row):
-    """HS256/RS256 tokens must fall through to the service-token / Clerk paths."""
+    """HS256/RS256 tokens must not be mistaken for paired devices."""
     hs = jwt.encode({"sub": "u", "kind": "paperclip_service"}, "secret", algorithm="HS256")
     assert authz._try_device_token(hs) is None
 

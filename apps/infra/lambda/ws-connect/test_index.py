@@ -1,4 +1,4 @@
-"""Tests for $connect Lambda forwarding semantics."""
+"""Focused tests for machine-only WebSocket $connect admission."""
 
 import os
 import sys
@@ -9,15 +9,11 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def lambda_env(monkeypatch):
-    """Stub env + boto3 before index module imports."""
     monkeypatch.setenv("CONNECTIONS_TABLE", "test-conns")
     monkeypatch.setenv("ALB_DNS_NAME", "alb.test.local")
-    # Force a fresh import per test so the module-level boto3 client picks up
-    # the patched mock.
     fake_dynamo = MagicMock()
     with patch("boto3.resource", return_value=fake_dynamo):
         sys.modules.pop("index", None)
-        # Ensure the lambda dir is importable
         here = os.path.dirname(os.path.abspath(__file__))
         if here not in sys.path:
             sys.path.insert(0, here)
@@ -28,184 +24,146 @@ def lambda_env(monkeypatch):
 
 
 def _make_event(
-    *, qs=None, headers=None, connection_id="abc123", user_id="user_alice", org_id=None
+    *,
+    client_id="node-host",
+    auth_kind="device",
+    device_id="device-verified",
+    user_id="user_alice",
+    org_id="",
 ):
+    authorizer = {
+        "userId": user_id,
+        "orgId": org_id,
+        "authKind": auth_kind,
+    }
+    if device_id is not None:
+        authorizer["deviceId"] = device_id
     return {
         "requestContext": {
-            "connectionId": connection_id,
+            "connectionId": "abc123",
             "connectedAt": 1700000000000,
-            "authorizer": {"userId": user_id, "orgId": org_id or ""} if user_id else {},
+            "authorizer": authorizer,
         },
-        "queryStringParameters": qs or {},
-        "headers": headers or {},
+        "queryStringParameters": (
+            {"token": "redacted", "clientId": client_id} if client_id is not None else {"token": "redacted"}
+        ),
     }
 
 
 def _capture_headers():
-    """Return (captured_dict, fake_urlopen) — capture headers sent to backend."""
     captured = {}
 
     def fake_urlopen(req, timeout=None):
-        # urllib.request.Request stores headers in a dict with title-cased keys
-        captured["headers"] = dict(req.header_items())
-        # Normalize back to lower-case for assertions
-        captured["headers_lc"] = {k.lower(): v for k, v in captured["headers"].items()}
+        del timeout
+        captured["headers"] = {key.lower(): value for key, value in req.header_items()}
         return MagicMock()
 
     return captured, fake_urlopen
 
 
-def test_handler_forwards_client_id_header_when_query_param_set():
-    """When ?clientId=node-host is in URL, lambda must forward x-client-id header."""
+def _run(event):
     import index
 
     captured, fake_urlopen = _capture_headers()
     with patch("index.urllib.request.urlopen", side_effect=fake_urlopen):
-        result = index.handler(
-            _make_event(qs={"token": "j", "clientId": "node-host"}), None
-        )
+        result = index.handler(event, None)
+    return index, result, captured
+
+
+@pytest.mark.parametrize("client_id", ["node-host", "openclaw-macos"])
+def test_paired_device_admits_only_node_clients_with_verified_provenance(client_id):
+    index, result, captured = _run(_make_event(client_id=client_id))
     assert result == {"statusCode": 200}
-    assert captured["headers_lc"].get("x-client-id") == "node-host"
-
-
-def test_handler_forwards_openclaw_macos_client_id():
-    import index
-
-    captured, fake_urlopen = _capture_headers()
-    with patch("index.urllib.request.urlopen", side_effect=fake_urlopen):
-        index.handler(
-            _make_event(qs={"token": "j", "clientId": "openclaw-macos"}), None
-        )
-    assert captured["headers_lc"].get("x-client-id") == "openclaw-macos"
-
-
-def test_handler_omits_x_client_id_when_no_query_param():
-    """No clientId in URL → no x-client-id header sent."""
-    import index
-
-    captured, fake_urlopen = _capture_headers()
-    with patch("index.urllib.request.urlopen", side_effect=fake_urlopen):
-        index.handler(_make_event(qs={"token": "j"}), None)
-    assert "x-client-id" not in captured["headers_lc"]
-
-
-def test_handler_omits_x_client_id_when_no_query_string_at_all():
-    """queryStringParameters=None (API GW shape when no params) → no header."""
-    import index
-
-    captured, fake_urlopen = _capture_headers()
-    with patch("index.urllib.request.urlopen", side_effect=fake_urlopen):
-        event = _make_event()
-        event["queryStringParameters"] = None
-        index.handler(event, None)
-    assert "x-client-id" not in captured["headers_lc"]
-
-
-def _put_item_for(qs=None, **event_kwargs):
-    """Run the handler and return the Item dict written to DynamoDB put_item."""
-    import index
-
-    _, fake_urlopen = _capture_headers()
-    with patch("index.urllib.request.urlopen", side_effect=fake_urlopen):
-        index.handler(_make_event(qs=qs, **event_kwargs), None)
-    # index.table is fake_dynamo.Table(...) — a MagicMock; inspect its put_item call.
     item = index.table.put_item.call_args.kwargs["Item"]
-    return item
+    assert item["connectionType"] == "node"
+    assert item["authKind"] == "device"
+    assert item["deviceId"] == "device-verified"
+    assert item["clientId"] == client_id
+    assert captured["headers"]["x-auth-kind"] == "device"
+    assert captured["headers"]["x-verified-device-id"] == "device-verified"
+    assert captured["headers"]["x-client-id"] == client_id
 
 
-def test_connect_writes_connection_type_node():
-    assert _put_item_for(qs={"clientId": "node-host"})["connectionType"] == "node"
-
-
-def test_native_room_uses_verified_context_not_external_headers():
-    import index
-
-    event = _make_event(
-        qs={"clientId": "lightbulb-company-room", "verifiedIssuer": "forged"},
-        org_id="org_team",
-        headers={
-            "x-openclaw-scopes": "operator.admin",
-            "x-user-id": "forged",
-            "x-verified-issuer": "forged",
-        },
+def test_signed_paperclip_service_admits_only_operator_client():
+    index, result, captured = _run(
+        _make_event(
+            client_id="paperclip-operator",
+            auth_kind="paperclip_service",
+            device_id=None,
+        )
     )
-    event["requestContext"]["authorizer"].update(
-        authKind="clerk_user",
-        verifiedIssuer="https://verified.test",
-        verifiedSubject="user_alice",
+    assert result == {"statusCode": 200}
+    item = index.table.put_item.call_args.kwargs["Item"]
+    assert item["connectionType"] == "operator"
+    assert item["authKind"] == "paperclip_service"
+    assert "deviceId" not in item
+    assert captured["headers"]["x-auth-kind"] == "paperclip_service"
+    assert captured["headers"]["x-client-id"] == "paperclip-operator"
+    assert "x-verified-device-id" not in captured["headers"]
+
+
+@pytest.mark.parametrize(
+    ("auth_kind", "client_id", "device_id"),
+    [
+        ("clerk_user", None, None),
+        ("clerk_user", "lightbulb-company-room", None),
+        ("clerk_user", "some-browser", None),
+        ("device", "paperclip-operator", "device-verified"),
+        ("paperclip_service", "node-host", None),
+        ("paperclip_service", "openclaw-macos", None),
+        ("paperclip_service", "paperclip-operator", "unverified-device"),
+        ("device", None, "device-verified"),
+        ("device", "node-host", None),
+        ("", "node-host", "device-verified"),
+        ("unknown", "paperclip-operator", None),
+    ],
+)
+def test_browser_unknown_missing_and_cross_kind_combinations_fail_before_write(auth_kind, client_id, device_id):
+    index, result, captured = _run(
+        _make_event(
+            auth_kind=auth_kind,
+            client_id=client_id,
+            device_id=device_id,
+        )
     )
-    event["requestContext"]["identity"] = {"sourceIp": "198.51.100.10"}
-    captured, fake_urlopen = _capture_headers()
-    with patch("index.urllib.request.urlopen", side_effect=fake_urlopen):
-        assert index.handler(event, None)["statusCode"] == 200
-    stored = index.table.put_item.call_args.kwargs["Item"]
-    assert stored["connectionType"] == "native_human"
-    assert stored["verifiedIssuer"] == "https://verified.test"
-    assert stored["verifiedSubject"] == "user_alice"
-    assert stored["sourceIp"] == "198.51.100.10"
-    assert "x-openclaw-scopes" not in captured["headers_lc"]
-    assert captured["headers_lc"]["x-user-id"] == "user_alice"
-
-
-@pytest.mark.parametrize("auth_kind", ["", "device", "service"])
-def test_native_room_rejects_unverified_and_nonhuman_auth(auth_kind):
-    import index
-
-    event = _make_event(qs={"clientId": "lightbulb-company-room"}, org_id="org_team")
-    event["requestContext"]["authorizer"].update(
-        authKind=auth_kind,
-        verifiedIssuer="https://verified.test",
-        verifiedSubject="user_alice",
-    )
-    assert index.handler(event, None)["statusCode"] == 403
+    assert result == {"statusCode": 403}
     index.table.put_item.assert_not_called()
+    assert captured == {}
 
 
-def test_native_room_backend_refusal_does_not_leave_connection_admitted():
-    import index
-
-    event = _make_event(qs={"clientId": "lightbulb-company-room"}, org_id="org_team")
-    event["requestContext"]["authorizer"].update(
-        authKind="clerk_user",
-        verifiedIssuer="https://verified.test",
-        verifiedSubject="user_alice",
-    )
-    with patch(
-        "index.urllib.request.urlopen",
-        side_effect=RuntimeError("qualification unavailable"),
-    ):
-        assert index.handler(event, None)["statusCode"] == 403
-    index.table.delete_item.assert_called_once_with(Key={"connectionId": "abc123"})
-    assert _put_item_for(qs={"clientId": "openclaw-macos"})["connectionType"] == "node"
-
-
-def test_connect_writes_connection_type_operator():
-    assert (
-        _put_item_for(qs={"clientId": "paperclip-operator"})["connectionType"]
-        == "operator"
-    )
+def test_no_admitted_row_can_be_chat_or_native_human():
+    admitted = [
+        _make_event(client_id="node-host"),
+        _make_event(client_id="openclaw-macos"),
+        _make_event(
+            client_id="paperclip-operator",
+            auth_kind="paperclip_service",
+            device_id=None,
+        ),
+    ]
+    connection_types = []
+    for event in admitted:
+        index, result, _ = _run(event)
+        assert result == {"statusCode": 200}
+        connection_types.append(index.table.put_item.call_args.kwargs["Item"]["connectionType"])
+    assert set(connection_types) == {"node", "operator"}
+    assert "chat" not in connection_types
+    assert "native_human" not in connection_types
 
 
-def test_connect_defaults_connection_type_chat():
-    # Browser chat (no clientId) and any unknown clientId both default to "chat".
-    assert _put_item_for(qs={})["connectionType"] == "chat"
-    assert _put_item_for(qs={"clientId": "some-browser"})["connectionType"] == "chat"
-
-
-def test_connect_writes_owner_id_personal_and_org():
-    # personal: ownerId == userId
-    assert _put_item_for(user_id="u_solo", org_id="")["ownerId"] == "u_solo"
-    # org: ownerId == orgId
-    assert _put_item_for(user_id="u_member", org_id="org_z")["ownerId"] == "org_z"
+def test_owner_id_remains_org_or_personal_owner():
+    index, _, _ = _run(_make_event(user_id="u_solo"))
+    assert index.table.put_item.call_args.kwargs["Item"]["ownerId"] == "u_solo"
+    index, _, _ = _run(_make_event(user_id="u_member", org_id="org_team"))
+    assert index.table.put_item.call_args.kwargs["Item"]["ownerId"] == "org_team"
 
 
 def test_attaches_ws_internal_header_when_secret_configured(monkeypatch):
-    """With WS_INTERNAL_SECRET_SECRET_ARN set, the Lambda fetches the secret and
-    attaches it as x-lightbulb-ws-internal so the backend can authenticate the caller."""
     import index
 
     monkeypatch.setenv(
-        "WS_INTERNAL_SECRET_SECRET_ARN", "arn:aws:secretsmanager:us-east-1:0:secret:ws"
+        "WS_INTERNAL_SECRET_SECRET_ARN",
+        "arn:aws:secretsmanager:us-east-1:0:secret:ws",
     )
     fake_sm = MagicMock()
     fake_sm.get_secret_value.return_value = {"SecretString": "s3cr3t-value"}
@@ -214,15 +172,17 @@ def test_attaches_ws_internal_header_when_secret_configured(monkeypatch):
         patch("index.boto3.client", return_value=fake_sm),
         patch("index.urllib.request.urlopen", side_effect=fake_urlopen),
     ):
-        index.handler(_make_event(qs={"token": "j"}), None)
-    assert captured["headers_lc"].get("x-lightbulb-ws-internal") == "s3cr3t-value"
+        assert index.handler(_make_event(), None) == {"statusCode": 200}
+    assert captured["headers"]["x-lightbulb-ws-internal"] == "s3cr3t-value"
 
 
-def test_omits_ws_internal_header_when_unconfigured():
-    """No WS_INTERNAL_SECRET_SECRET_ARN → no header (backend then runs unenforced)."""
+def test_machine_row_remains_for_disconnect_cleanup_if_backend_notification_fails():
     import index
 
-    captured, fake_urlopen = _capture_headers()
-    with patch("index.urllib.request.urlopen", side_effect=fake_urlopen):
-        index.handler(_make_event(qs={"token": "j"}), None)
-    assert "x-lightbulb-ws-internal" not in captured["headers_lc"]
+    with patch(
+        "index.urllib.request.urlopen",
+        side_effect=RuntimeError("backend unavailable"),
+    ):
+        assert index.handler(_make_event(), None) == {"statusCode": 200}
+    assert index.table.put_item.called
+    index.table.delete_item.assert_not_called()

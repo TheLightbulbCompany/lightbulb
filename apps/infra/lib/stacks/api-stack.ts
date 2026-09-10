@@ -747,8 +747,13 @@ export class ApiStack extends cdk.Stack {
         },
       },
       target: workQueue.queueArn,
+      // No inputTemplate: an object placeholder such as
+      // `<$.dynamodb.NewImage.payload.M>` is rendered by the Pipes input
+      // transformer as Java-map text (`{kind={S=…}}`), not JSON — every work
+      // item then failed the worker's json.loads (dev, 2026-09-10). Without a
+      // template the target receives the raw stream record as JSON and the
+      // worker unwraps `dynamodb.NewImage.payload.M` itself.
       targetParameters: {
-        inputTemplate: "<$.dynamodb.NewImage.payload.M>",
         sqsQueueParameters: {
           messageGroupId: "$.dynamodb.NewImage.messageGroupId.S",
           messageDeduplicationId:

@@ -236,9 +236,10 @@ Commit as `infra: project canonical messages to live events`.
   delivery cursors, and operation terminal states are idempotent; do not use
   `LATEST`, which can miss records while stream polling becomes consistent.
 - [ ] Store the native worker pointer under each outbox row's DynamoDB `payload`
-  map. Use input template `<$.dynamodb.NewImage.payload.M>` so SQS receives only
-  the small AttributeValue-encoded pointer map, not the complete stream record;
-  the backend worker deserializes it to exactly one of the two frozen schemas.
+  map. Use no input template: an object placeholder such as
+  `<$.dynamodb.NewImage.payload.M>` renders as Java-map text, not JSON. SQS
+  receives the raw stream record and the backend worker deserializes its
+  `dynamodb.NewImage.payload.M` to exactly one of the two frozen schemas.
   Configure FIFO `MessageGroupId` and `MessageDeduplicationId` with dynamic JSON
   paths `$.dynamodb.NewImage.messageGroupId.S` and
   `$.dynamodb.NewImage.messageDeduplicationId.S`; do not derive them in the Pipe
@@ -256,7 +257,7 @@ Commit as `infra: project canonical messages to live events`.
   relay between the stream and FIFO queue.
 - [ ] Add a fail-closed replay script that takes the two explicit queue URLs and
   one Pipe-DLQ message ID, verifies the embedded source event is one `WORK#`
-  insert, deserializes only its `payload.M`, sends it with the stored FIFO IDs,
+  insert, re-sends the record as the body with the stored FIFO IDs,
   and deletes the DLQ message only after successful enqueue. It never prints the
   pointer or source event. Test malformed/non-work events and send-before-delete.
 

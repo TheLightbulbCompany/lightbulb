@@ -40,8 +40,12 @@ class WorkRetry(RuntimeError):
 
 
 def deserialize_pointer(body: str) -> dict[str, Any]:
+    # The Pipe forwards the raw DynamoDB stream record (no input template — an
+    # object placeholder renders as Java-map text, not JSON); the outbox
+    # pointer is the AttributeValue map at NewImage.payload.M.
     try:
-        encoded = json.loads(body)
+        record = json.loads(body)
+        encoded = record["dynamodb"]["NewImage"]["payload"]["M"]
         if not isinstance(encoded, dict):
             raise ValueError
         value = {key: _DESERIALIZER.deserialize(item) for key, item in encoded.items()}

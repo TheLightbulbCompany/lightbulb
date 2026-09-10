@@ -83,7 +83,8 @@ class WorkPipeReplayTests(unittest.TestCase):
         actions = [name for name, _ in sqs.calls]
         self.assertLess(actions.index("send"), actions.index("delete"))
         sent = next(kwargs for name, kwargs in sqs.calls if name == "send")
-        self.assertEqual(json.loads(sent["MessageBody"]), event["dynamodb"]["NewImage"]["payload"]["M"])
+        # The worker expects the raw stream record, exactly as the Pipe sends it.
+        self.assertEqual(json.loads(sent["MessageBody"]), event)
         self.assertEqual(sent["MessageGroupId"], "a" * 64)
         self.assertEqual(sent["MessageDeduplicationId"], "b" * 64)
 

@@ -161,6 +161,68 @@ describe("useRooms canonical reconciliation", () => {
     expect(messaging.createRoom).not.toHaveBeenCalled();
   });
 
+  it("keeps partial directory identities visible and retries failed hydration", async () => {
+    const fridayDm = {
+      ...room,
+      roomId: "11111111-1111-4111-8111-111111111117",
+      kind: "dm" as const,
+      name: null,
+      members: [room.members[0], { ...room.members[1], id: "agent-friday" }],
+    };
+    const atlasDm = {
+      ...fridayDm,
+      roomId: "11111111-1111-4111-8111-111111111118",
+      members: [room.members[0], { ...room.members[1], id: "agent-atlas", displayName: "Atlas" }],
+    };
+    let atlasAttempts = 0;
+    messaging.listRooms.mockResolvedValue({ rooms: [room, fridayDm, atlasDm] });
+    messaging.getRoom.mockImplementation(async (roomId: string) => {
+      if (roomId === room.roomId) return room;
+      if (roomId === fridayDm.roomId) return fridayDm;
+      atlasAttempts += 1;
+      if (atlasAttempts === 1) throw new Error("Atlas is temporarily unavailable");
+      return atlasDm;
+    });
+
+    const { result } = renderHook(() => useRooms(), { wrapper });
+    await waitFor(() => expect(result.current.directoryError).toBeInstanceOf(Error));
+    expect(result.current.directoryLoading).toBe(false);
+    expect(result.current.directoryRoomDetails.get(fridayDm.roomId)).toEqual(fridayDm);
+
+    await act(async () => { await result.current.refreshRooms(); });
+
+    await waitFor(() => expect(result.current.directoryError).toBeUndefined());
+    expect(result.current.directoryRoomDetails.size).toBe(2);
+    expect(atlasAttempts).toBeGreaterThanOrEqual(2);
+  });
+
+  it("does not create a DM when incomplete hydration cannot rule out an existing agent", async () => {
+    const fridayDm = {
+      ...room,
+      roomId: "11111111-1111-4111-8111-111111111119",
+      kind: "dm" as const,
+      name: null,
+      members: [room.members[0], { ...room.members[1], id: "agent-friday" }],
+    };
+    const atlasDm = {
+      ...fridayDm,
+      roomId: "11111111-1111-4111-8111-111111111120",
+      members: [room.members[0], { ...room.members[1], id: "agent-atlas", displayName: "Atlas" }],
+    };
+    messaging.listRooms.mockResolvedValue({ rooms: [room, fridayDm, atlasDm] });
+    messaging.getRoom.mockImplementation(async (roomId: string) => {
+      if (roomId === room.roomId) return room;
+      if (roomId === fridayDm.roomId) return fridayDm;
+      throw new Error("Atlas is temporarily unavailable");
+    });
+    const { result } = renderHook(() => useRooms(), { wrapper });
+    await waitFor(() => expect(result.current.directoryError).toBeInstanceOf(Error));
+
+    await expect(result.current.selectAgentDm("agent-atlas")).rejects.toThrow("Atlas is temporarily unavailable");
+
+    expect(messaging.createRoom).not.toHaveBeenCalled();
+  });
+
   it("creates one canonical DM when the requested agent has none", async () => {
     const created = {
       ...room,
@@ -210,6 +272,20 @@ describe("useRooms canonical reconciliation", () => {
     });
 
     expect(result.current.activeRoomId).toBe(room.roomId);
+  });
+
+  it("does not let a rejected initial DM selection override a newer room selection", async () => {
+    const otherChannel = { ...room, roomId: "11111111-1111-4111-8111-111111111121", name: "General" };
+    let rejectCreate!: (error: Error) => void;
+    messaging.listRooms.mockResolvedValue({ rooms: [room, otherChannel] });
+    messaging.createRoom.mockImplementation(() => new Promise<RoomDetail>((_, reject) => { rejectCreate = reject; }));
+    const { result } = renderHook(() => useRooms("agent-new"), { wrapper });
+    await waitFor(() => expect(messaging.createRoom).toHaveBeenCalledOnce());
+
+    act(() => result.current.selectRoom(otherChannel.roomId));
+    await act(async () => { rejectCreate(new Error("Creation failed")); });
+
+    expect(result.current.activeRoomId).toBe(otherChannel.roomId);
   });
 
   it("subscribes before history, merges gaps in sequence, rotates keys, and evicts access immediately", async () => {

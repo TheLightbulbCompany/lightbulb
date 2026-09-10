@@ -244,7 +244,7 @@ export function MessagingWorkspaceProvider({
     await rooms.upsertMember({ kind: "agent", id: agentId, role: "member", listenMode });
   }
 
-  const directoryState = rooms.roomsLoading ? "loading" : rooms.roomsError ? "error" : rooms.accessRemoved ? "access-removed" : "ready";
+  const directoryState = rooms.roomsLoading || rooms.directoryLoading ? "loading" : rooms.roomsError || rooms.directoryError ? "error" : rooms.accessRemoved ? "access-removed" : "ready";
   const roomState = rooms.roomLoading ? "loading" : rooms.accessRemoved ? "access-removed" : rooms.roomError ? "unavailable" : rooms.liveConnected ? "ready" : "reconnecting";
   const pending = rooms.optimisticMessages.filter((message) => message.clientMessageId === clientMessageId || message.clientMessageId === threadClientMessageId);
 

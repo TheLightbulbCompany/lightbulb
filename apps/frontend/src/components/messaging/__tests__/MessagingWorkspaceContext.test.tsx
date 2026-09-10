@@ -43,6 +43,7 @@ const room: RoomDetail = {
 };
 const state = {
   rooms: [room], roomsError: undefined, roomsLoading: false,
+  directoryError: undefined as Error | undefined, directoryLoading: false,
   activeRoomId: room.roomId as string | null, activeRoom: room,
   roomError: undefined, roomLoading: false, accessRemoved: false,
   messages: [], optimisticMessages: [], typingMembers: [], runs: [],
@@ -56,6 +57,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   state.activeRoomId = room.roomId;
   state.activeRoom = room;
+  state.directoryError = undefined;
+  state.directoryLoading = false;
   renderComposer = false;
   _resetFocusComposerRequestForTests();
   mocks.rooms.mockReturnValue(state);
@@ -90,6 +93,14 @@ it("enriches room participants with roster activity while keeping the full creat
   expect(panel.participants[0]).not.toHaveProperty("agentActivity");
   expect(panel.participants[0]).not.toHaveProperty("agentState");
   expect(directory.participants.map((member) => member.id)).toEqual(["colleague", "agent-friday", "agent-atlas"]);
+});
+
+it("surfaces directory hydration failures through the existing retry control", () => {
+  state.directoryError = new Error("Directory hydration failed");
+  compose();
+  expect(directory.state).toBe("error");
+  act(() => directory.onRetry?.());
+  expect(state.refreshRooms).toHaveBeenCalledOnce();
 });
 
 it("opens the selected hydrated room and opens creation without selecting a room", async () => {

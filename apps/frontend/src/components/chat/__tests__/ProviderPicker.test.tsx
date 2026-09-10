@@ -20,7 +20,10 @@ vi.mock("@/lib/api", () => ({
 // which is how the two surfaces drifted apart in the first place.
 const startTrialCheckout = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 vi.mock("@/hooks/useBilling", () => ({
-  useBilling: () => ({ startTrialCheckout }),
+  useBilling: () => ({
+    startTrialCheckout,
+    account: { workspace_price_usd: 50, ultra_price_usd: 150 },
+  }),
 }));
 
 describe("ProviderPicker", () => {

@@ -256,7 +256,7 @@ async def create_flat_fee_checkout(
     """Create a Stripe Checkout session on the single flat-fee price.
 
     Used by the flat-fee onboarding wizard (frontend cards 1, 2, 3 — all three
-    pay the same monthly fee against ``STRIPE_FLAT_PRICE_ID``). The card is
+    pay the same monthly fee against ``STRIPE_WORKSPACE_PRICE_ID``). The card is
     charged for the first month at checkout — there is no Stripe trial;
     no-card evaluation happens on the ``trial_local`` free tier before the
     user ever reaches this flow.
@@ -284,8 +284,8 @@ async def create_flat_fee_checkout(
         (e.g. ``allow_promotion_codes`` flipping on) naturally
         bypasses the cached response within the same bucket.
     """
-    if not settings.STRIPE_FLAT_PRICE_ID:
-        raise BillingServiceError("STRIPE_FLAT_PRICE_ID not configured")
+    if not settings.STRIPE_WORKSPACE_PRICE_ID:
+        raise BillingServiceError("STRIPE_WORKSPACE_PRICE_ID not configured")
 
     # Serialize session creation per owner. Concurrent requests with
     # different provider choices carry different idempotency keys, so
@@ -333,7 +333,7 @@ async def create_flat_fee_checkout(
     # change posts {provider_choice: "bedrock_claude"} alone — defaulting there
     # would charge $70 against a UI that displayed $50. Such a caller gets the
     # pre-existing behaviour instead: $50 now, credits later via CreditsStep.
-    line_items: list[dict] = [{"price": settings.STRIPE_FLAT_PRICE_ID, "quantity": 1}]
+    line_items: list[dict] = [{"price": settings.STRIPE_WORKSPACE_PRICE_ID, "quantity": 1}]
     starter_cents = normalize_starter_credits(credits_cents) if provider_choice == "bedrock_claude" else None
     if starter_cents is not None:
         line_items.append(
@@ -496,7 +496,7 @@ async def _build_subscription_checkout(
     # import — the launch modules import nothing from here. Never raises
     # (returns None on any failure).
     discounts = None
-    if any(item.get("price") == settings.STRIPE_FLAT_PRICE_ID for item in line_items):
+    if any(item.get("price") == settings.STRIPE_WORKSPACE_PRICE_ID for item in line_items):
         from core.services.launch_close import winner_checkout_discount
 
         discounts = await winner_checkout_discount(owner_id)
@@ -686,8 +686,8 @@ async def create_mobile_web_checkout(*, owner_id: str) -> stripe.checkout.Sessio
     The caller is responsible for the entitlement check. Returns the Session so
     the router can hand back ``session.url``.
     """
-    if not settings.STRIPE_FLAT_PRICE_ID:
-        raise BillingServiceError("STRIPE_FLAT_PRICE_ID not configured")
+    if not settings.STRIPE_WORKSPACE_PRICE_ID:
+        raise BillingServiceError("STRIPE_WORKSPACE_PRICE_ID not configured")
 
     existing = await _open_pending_checkout(owner_id)
     if existing is not None:
@@ -702,7 +702,7 @@ async def create_mobile_web_checkout(*, owner_id: str) -> stripe.checkout.Sessio
     try:
         session = await _build_subscription_checkout(
             owner_id=owner_id,
-            line_items=[{"price": settings.STRIPE_FLAT_PRICE_ID, "quantity": 1}],
+            line_items=[{"price": settings.STRIPE_WORKSPACE_PRICE_ID, "quantity": 1}],
             metadata={"owner_id": owner_id, "purpose": "mobile_web_checkout"},
             # A universal link, so iOS hands control back to the app on success
             # and falls through to the web page when the app is not installed.

@@ -372,7 +372,7 @@ class TestBillingServiceCreateCustomer:
         # Now the actual checkout path: it re-reads the billing row via
         # billing_repo.get_by_owner_id, which now returns the backfilled
         # stripe_customer_id — so it must succeed, not raise BillingServiceError.
-        monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat_test")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_flat_test")
         fake_session = MagicMock(url="https://checkout/trial", id="cs_trial")
         monkeypatch.setattr(billing_service.stripe.checkout.Session, "create", MagicMock(return_value=fake_session))
 
@@ -471,7 +471,7 @@ class TestCreateFlatFeeCheckout:
 
     @pytest.mark.asyncio
     async def test_create_flat_fee_checkout_uses_flat_price_and_tax(self, monkeypatch):
-        monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat_test")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_flat_test")
         fake_session = MagicMock(url="https://checkout/x", id="cs_test")
         with (
             patch.object(billing_service.stripe.checkout.Session, "create", return_value=fake_session) as mock_create,
@@ -513,7 +513,7 @@ class TestCreateFlatFeeCheckout:
     async def test_create_flat_fee_checkout_records_pending_session(self, monkeypatch):
         """The pending-checkout marker is the single-open-session guard's
         data source — every session create must record it."""
-        monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat_test")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_flat_test")
         fake_session = MagicMock(url="https://checkout/x", id="cs_recorded")
         with (
             patch.object(billing_service.stripe.checkout.Session, "create", return_value=fake_session),
@@ -534,13 +534,13 @@ class TestCreateFlatFeeCheckout:
 
     @pytest.mark.asyncio
     async def test_create_flat_fee_checkout_raises_without_flat_price_id(self, monkeypatch):
-        monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "")
-        with pytest.raises(BillingServiceError, match="STRIPE_FLAT_PRICE_ID not configured"):
+        monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "")
+        with pytest.raises(BillingServiceError, match="STRIPE_WORKSPACE_PRICE_ID not configured"):
             await billing_service.create_flat_fee_checkout(owner_id="u_1")
 
     @pytest.mark.asyncio
     async def test_create_flat_fee_checkout_raises_without_stripe_customer(self, monkeypatch):
-        monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat_test")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_flat_test")
         with patch.object(
             billing_service.billing_repo,
             "get_by_owner_id",
@@ -557,7 +557,7 @@ class TestBuildSubscriptionCheckoutSharedSpine:
 
     @pytest.mark.asyncio
     async def test_flat_checkout_delegates_to_shared_builder(self, monkeypatch):
-        monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat_test")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_flat_test")
         seen = {}
 
         async def _fake_builder(**kwargs):
@@ -610,7 +610,7 @@ class TestBuildSubscriptionCheckoutSharedSpine:
         alone — defaulting to $20 there would charge $70 against a UI showing
         $50. Those callers keep the old behaviour: $50 now, credits later.
         """
-        monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat_test")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_flat_test")
         seen = {}
 
         async def _fake_builder(**kwargs):
@@ -639,7 +639,7 @@ class TestBuildSubscriptionCheckoutSharedSpine:
         less (or none) of the money. The standalone top-up can allow coupons
         because that session contains only credits the owner chose.
         """
-        monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat_test")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_flat_test")
         seen = {}
 
         async def _fake_builder(**kwargs):
@@ -674,7 +674,7 @@ class TestBuildSubscriptionCheckoutSharedSpine:
         Asserting the ABSENCE is the point: the credits line item is priced
         inline, so a mis-scoped conditional silently overcharges by $20 with
         no config change to notice."""
-        monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat_test")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_flat_test")
         seen = {}
 
         async def _fake_builder(**kwargs):
@@ -709,7 +709,7 @@ class TestBuildSubscriptionCheckoutSharedSpine:
         importable — a caller that skips the router must not be able to mint a
         $0 line item (Stripe rejects it, checkout dies) or a $1M one.
         """
-        monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat_test")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_flat_test")
         seen = {}
 
         async def _fake_builder(**kwargs):
@@ -738,7 +738,7 @@ class TestBuildSubscriptionCheckoutSharedSpine:
         the amount in it, an owner who picks $20, backs out, and picks $100
         inside that window reuses one key with two different bodies — Stripe
         rejects the mismatch and the larger purchase just fails."""
-        monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat_test")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_flat_test")
         keys = []
 
         async def _fake_builder(**kwargs):
@@ -776,7 +776,7 @@ class TestBuildSubscriptionCheckoutSharedSpine:
         and the balance was never funded. This test exists at the SDK boundary
         precisely because that is the only place the bug was visible.
         """
-        monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat_test")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_flat_test")
         captured = {}
 
         def _fake_create(**kwargs):
@@ -1158,7 +1158,7 @@ class TestCheckoutSlotClaim:
 
     @pytest.mark.asyncio
     async def test_claim_denied_raises_checkout_in_progress(self, monkeypatch):
-        monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat_test")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_flat_test")
         with (
             patch.object(
                 billing_service.billing_repo,
@@ -1177,7 +1177,7 @@ class TestCheckoutSlotClaim:
         claim TTL lapses, yet stays completable for ~31 minutes. On marker
         failure the session (whose URL the user never saw) must be expired,
         the slot released, and the request failed."""
-        monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat_test")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_flat_test")
         fake_session = MagicMock(url="https://checkout/x", id="cs_unrecorded")
         with (
             patch.object(billing_service.stripe.checkout.Session, "create", return_value=fake_session),
@@ -1209,7 +1209,7 @@ class TestCheckoutSlotClaim:
     async def test_build_failure_releases_slot(self, monkeypatch):
         """A failed session create must free the claim so the user's retry
         doesn't wait out the 90s TTL."""
-        monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat_test")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_flat_test")
         with (
             patch.object(
                 billing_service.billing_repo,
@@ -1365,7 +1365,7 @@ class TestLaunchWinnerIdempotencyKey:
                 "get_by_owner_id",
                 new=AsyncMock(return_value={"stripe_customer_id": "cus_1"}),
             ),
-            patch.object(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat"),
+            patch.object(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_flat"),
             patch(
                 "core.services.launch_close.winner_checkout_discount",
                 new=AsyncMock(return_value=[{"coupon": "coup_1"}] if winner else None),

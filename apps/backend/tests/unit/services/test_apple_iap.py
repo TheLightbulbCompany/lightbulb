@@ -429,7 +429,7 @@ async def test_mobile_web_checkout_uses_the_app_optimized_origin_context(monkeyp
     on a phone. Losing it silently degrades the whole point of the link-out."""
     from core.services import billing_service
 
-    monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat")
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_flat")
     captured = {}
 
     async def _fake_build(**kwargs):
@@ -459,7 +459,7 @@ async def test_mobile_web_checkout_requires_a_configured_price(monkeypatch):
     from core.services import billing_service
     from core.services.billing_service import BillingServiceError
 
-    monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "")
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "")
     with pytest.raises(BillingServiceError):
         await billing_service.create_mobile_web_checkout(owner_id="user_1")
 
@@ -636,7 +636,7 @@ async def test_mobile_web_checkout_refuses_a_second_concurrent_session(monkeypat
     """
     from core.services import billing_service
 
-    monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat")
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_flat")
     _no_pending_session(monkeypatch)
     # Slot already held by an in-flight checkout.
     monkeypatch.setattr(billing_service.billing_repo, "try_claim_checkout_slot", AsyncMock(return_value=None))
@@ -655,7 +655,7 @@ async def test_mobile_web_checkout_frees_the_slot_when_session_creation_fails(mo
     from core.services import billing_service
 
     _no_pending_session(monkeypatch)
-    monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat")
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_flat")
     monkeypatch.setattr(billing_service.billing_repo, "try_claim_checkout_slot", AsyncMock(return_value="tok"))
     release = AsyncMock()
     monkeypatch.setattr(billing_service.billing_repo, "release_checkout_slot", release)
@@ -782,7 +782,7 @@ async def test_mobile_web_checkout_returns_the_already_open_session(monkeypatch)
     and two charged subscriptions is this read."""
     from core.services import billing_service
 
-    monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat")
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_flat")
     monkeypatch.setattr(
         billing_service.billing_repo,
         "get_by_owner_id",
@@ -817,7 +817,7 @@ async def test_mobile_web_checkout_refuses_when_the_pending_session_is_already_p
     "not subscribed". Minting another session here is the double-charge."""
     from core.services import billing_service
 
-    monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat")
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_flat")
     monkeypatch.setattr(
         billing_service.billing_repo,
         "get_by_owner_id",
@@ -843,7 +843,7 @@ async def test_mobile_web_checkout_mints_fresh_past_a_dead_marker(monkeypatch):
     self-heal rather than wedge the owner out of ever checking out again."""
     from core.services import billing_service
 
-    monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat")
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_flat")
     monkeypatch.setattr(
         billing_service.billing_repo,
         "get_by_owner_id",
@@ -876,7 +876,7 @@ async def test_mobile_web_checkout_mints_fresh_when_the_marker_cannot_be_retriev
     """
     from core.services import billing_service
 
-    monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat")
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_flat")
     monkeypatch.setattr(
         billing_service.billing_repo,
         "get_by_owner_id",
@@ -1137,7 +1137,7 @@ async def test_the_mobile_flow_never_reuses_another_flows_session(monkeypatch):
     a $50 flat-plan button charges them for line items the app never quoted."""
     from core.services import billing_service
 
-    monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat")
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_flat")
     monkeypatch.setattr(
         billing_service.billing_repo,
         "get_by_owner_id",
@@ -1178,7 +1178,7 @@ async def test_a_foreign_session_that_completes_mid_expire_stops_the_flow(monkey
     would leave the owner charged twice."""
     from core.services import billing_service
 
-    monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat")
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_flat")
     monkeypatch.setattr(
         billing_service.billing_repo,
         "get_by_owner_id",

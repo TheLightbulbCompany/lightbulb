@@ -50,6 +50,8 @@ describe("useBilling", () => {
           trial_end: null,
           provider_choice: "bedrock_managed",
           byo_provider: null,
+          workspace_price_usd: 50,
+          ultra_price_usd: 150,
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
@@ -57,6 +59,8 @@ describe("useBilling", () => {
     const { result } = renderHook(() => useBilling(), { wrapper });
     await waitFor(() => expect(result.current.account).not.toBeNull());
     expect(result.current.account?.is_subscribed).toBe(true);
+    expect(result.current.account?.workspace_price_usd).toBe(50);
+    expect(result.current.account?.ultra_price_usd).toBe(150);
     expect(result.current.isSubscribed).toBe(true);
   });
 

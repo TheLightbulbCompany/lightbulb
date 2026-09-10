@@ -1388,12 +1388,12 @@ export class ServiceStack extends cdk.Stack {
       // Stripe live mode, dev in test mode, and they MUST NOT cross-pollinate
       // (a test-mode Price would silently create test subscriptions in prod).
       // Read per-env from the runner's secrets at synth time.
-      STRIPE_FLAT_PRICE_ID:
+      STRIPE_WORKSPACE_PRICE_ID:
         env === "prod"
-          ? (process.env.STRIPE_FLAT_PRICE_ID_PROD ?? "")
-          : (process.env.STRIPE_FLAT_PRICE_ID_DEV ?? ""),
+          ? (process.env.STRIPE_WORKSPACE_PRICE_ID_PROD ?? "")
+          : (process.env.STRIPE_WORKSPACE_PRICE_ID_DEV ?? ""),
       // Stripe per-seat Teams Price ID — same env-specific live/test split
-      // as STRIPE_FLAT_PRICE_ID above (a test-mode Price would silently
+      // as STRIPE_WORKSPACE_PRICE_ID above (a test-mode Price would silently
       // create test subscriptions in prod). Read per-env from the runner's
       // secrets at synth time. Consumed by billing_service.create_team_seat_checkout.
       STRIPE_TEAM_SEAT_PRICE_ID:
@@ -1402,14 +1402,14 @@ export class ServiceStack extends cdk.Stack {
           : (process.env.STRIPE_TEAM_SEAT_PRICE_ID_DEV ?? ""),
       // Stripe Teams BASE Price ID — the $50/mo flat component charged
       // alongside the per-seat item. Same env-specific live/test split as
-      // STRIPE_FLAT_PRICE_ID above. Read per-env from the runner's secrets at
+      // STRIPE_WORKSPACE_PRICE_ID above. Read per-env from the runner's secrets at
       // synth time.
       STRIPE_TEAM_BASE_PRICE_ID:
         env === "prod"
           ? (process.env.STRIPE_TEAM_BASE_PRICE_ID_PROD ?? "")
           : (process.env.STRIPE_TEAM_BASE_PRICE_ID_DEV ?? ""),
       // Stripe Ultra Pro Price ID — same env-specific live/test split as
-      // STRIPE_FLAT_PRICE_ID above (a test-mode Price would silently create
+      // STRIPE_WORKSPACE_PRICE_ID above (a test-mode Price would silently create
       // test subscriptions in prod). Read per-env from the runner's secrets
       // at synth time. Consumed by the Ultra-tier checkout call site.
       STRIPE_ULTRA_PRICE_ID:
@@ -1454,7 +1454,7 @@ export class ServiceStack extends cdk.Stack {
       // NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY — publishable by design (Clerk
       // serves it in HTML), so plain env var is appropriate (not a
       // Secrets Manager secret). Same per-env runner-secret pattern as
-      // STRIPE_FLAT_PRICE_ID. Dev fallback hardcoded so local synths
+      // STRIPE_WORKSPACE_PRICE_ID. Dev fallback hardcoded so local synths
       // and developer cdk-synth-from-laptop work out of the box.
       CLERK_PUBLISHABLE_KEY:
         env === "prod"

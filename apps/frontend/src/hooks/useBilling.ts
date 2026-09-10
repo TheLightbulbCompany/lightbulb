@@ -32,19 +32,10 @@ export interface BillingAccount {
   // defaults a plan-less row to "standard"; optional here so pre-plan
   // response shapes (and test fixtures) don't have to carry it.
   plan?: "standard" | "ultra_pro";
-  // Teams per-seat billing (org owners only; null for personal). seat_count is
-  // the live org member count; team_seat_price_usd is echoed from backend
-  // config so the paywall never hardcodes the per-seat price.
-  seat_count: number | null;
-  team_seat_price_usd: number | null;
-  // Flat monthly base charged alongside the per-seat item. null for personal
-  // owners.
-  team_base_price_usd?: number | null;
-  // True only for org owners on a REAL per-seat Stripe subscription (one
-  // that recorded a subscription_item_id via the webhook). False for
-  // personal owners and for flat/comped/grandfathered org subs — those
-  // must not render seat-priced "N x $price" billing math.
-  is_seat_subscription: boolean;
+  // Workspace prices are server-owned so every client shows the deployed
+  // catalog instead of a stale price baked into a release.
+  workspace_price_usd: number;
+  ultra_price_usd: number;
 }
 
 export interface MemberUsage {

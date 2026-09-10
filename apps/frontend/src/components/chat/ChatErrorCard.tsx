@@ -228,10 +228,10 @@ export function isTrialPaywallCode(code: string | undefined | null): boolean {
 }
 
 export function ChatErrorCard({ message, code, interactive = true }: ChatErrorCardProps) {
-  // ProviderPicker posts /billing/trial-checkout, which an org admin must NOT
-  // use — orgs pay per-seat via startTeamCheckout. An org should never carry a
-  // trial_local row today, but ProvisioningStepper's own picker branch guards
-  // this too, with a comment saying to enforce it where the consequence is.
+  // ProviderPicker posts the legacy /billing/trial-checkout route, which an
+  // org admin must not use. Task 2 replaces it atomically with the workspace
+  // checkout route. An org should never carry a trial_local row today, but
+  // ProvisioningStepper's own picker branch guards this too.
   // This is a new consequence site. Org context falls through to the linked
   // card below, whose /settings target renders TeamBillingCard correctly.
   // `isLoaded` matters, not just `organization`: Clerk reports

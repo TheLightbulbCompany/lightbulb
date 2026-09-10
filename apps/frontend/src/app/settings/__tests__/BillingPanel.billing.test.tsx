@@ -2,12 +2,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
 import React from "react";
 
-// Covers the settings BillingPanel org-context branch (settings/page.tsx):
-// a subscribed org on a flat/comped sub (is_seat_subscription: false) must
-// NOT see the per-seat "N seats × $price" paywall math fabricated from a
-// nonexistent Stripe subscription item — it should fall through to the
-// plain "Lightbulb plan / Active" card with the spend line instead. A real
-// per-seat sub (is_seat_subscription: true) still gets TeamBillingCard.
+// Covers the settings BillingPanel workspace branch (settings/page.tsx):
+// subscribed workspaces render one plan card, while unsubscribed workspaces
+// get the workspace-billing CTA. There is no membership-priced branch.
 //
 // Mocking harness copied from ../page.nav.test.tsx: mock next/navigation's
 // useSearchParams (deep-link into ?panel=billing), @clerk/nextjs's
@@ -65,14 +62,14 @@ vi.mock("@/hooks/useBilling", () => ({
 
 import SettingsPage from "../page";
 
-describe("BillingPanel — org context seat-vs-flat branch", () => {
+describe("BillingPanel — workspace billing", () => {
   beforeEach(() => {
     nav.panel = "billing";
     clerk.membership = { role: "org:admin" };
     billing.isLoading = false;
   });
 
-  it("flat/comped org (subscribed, is_seat_subscription: false) shows the plain plan card, not fabricated per-seat math", () => {
+  it("a subscribed workspace shows the plain plan card, not membership pricing", () => {
     billing.isSubscribed = true;
     billing.account = {
       is_subscribed: true,
@@ -82,9 +79,8 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
       trial_end: null,
       provider_choice: null,
       byo_provider: null,
-      seat_count: 7,
-      team_seat_price_usd: 20,
-      is_seat_subscription: false,
+      workspace_price_usd: 50,
+      ultra_price_usd: 150,
     };
 
     render(<SettingsPage />);
@@ -120,9 +116,8 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
       trial_end: null,
       provider_choice: null,
       byo_provider: null,
-      seat_count: 7,
-      team_seat_price_usd: 20,
-      is_seat_subscription: false,
+      workspace_price_usd: 50,
+      ultra_price_usd: 150,
     };
 
     render(<SettingsPage />);
@@ -132,7 +127,7 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
     expect(screen.queryByText("past_due")).not.toBeInTheDocument();
   });
 
-  it("real seat-sub org (is_seat_subscription: true, subscribed) renders TeamBillingCard", () => {
+  it("a subscribed workspace renders the plan card without membership pricing", () => {
     billing.isSubscribed = true;
     billing.account = {
       is_subscribed: true,
@@ -142,16 +137,15 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
       trial_end: null,
       provider_choice: null,
       byo_provider: null,
-      seat_count: 4,
-      team_seat_price_usd: 20,
-      is_seat_subscription: true,
+      workspace_price_usd: 50,
+      ultra_price_usd: 150,
     };
 
     render(<SettingsPage />);
 
-    expect(screen.getByRole("button", { name: /manage billing/i })).toBeInTheDocument();
-    expect(screen.getByText(/4 seats/i)).toBeInTheDocument();
-    expect(screen.queryByText("Lightbulb plan")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /manage payment/i })).toBeInTheDocument();
+    expect(screen.getByText("Lightbulb plan")).toBeInTheDocument();
+    expect(screen.queryByText(/seats?/i)).not.toBeInTheDocument();
   });
 
   it("unsubscribed org renders TeamBillingCard with the subscribe CTA", () => {
@@ -160,11 +154,11 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
 
     render(<SettingsPage />);
 
-    expect(screen.getByRole("button", { name: /subscribe your team/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /subscribe workspace/i })).toBeInTheDocument();
     expect(screen.queryByText("Lightbulb plan")).not.toBeInTheDocument();
   });
 
-  it("non-admin member of a flat/comped subscribed org sees no spend and no Manage/CTA button (security fix)", () => {
+  it("a non-admin member of a subscribed workspace sees no billing controls", () => {
     clerk.membership = { role: "org:member" };
     billing.isSubscribed = true;
     billing.account = {
@@ -175,9 +169,8 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
       trial_end: null,
       provider_choice: null,
       byo_provider: null,
-      seat_count: 7,
-      team_seat_price_usd: 20,
-      is_seat_subscription: false,
+      workspace_price_usd: 50,
+      ultra_price_usd: 150,
     };
 
     render(<SettingsPage />);
@@ -194,7 +187,7 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
     expect(screen.getByText(/billing restricted/i)).toBeInTheDocument();
   });
 
-  it("non-admin member of a real seat-sub org also sees no spend and no Manage/CTA button", () => {
+  it("a non-admin member sees the same restriction regardless of workspace membership", () => {
     clerk.membership = { role: "org:member" };
     billing.isSubscribed = true;
     billing.account = {
@@ -205,9 +198,8 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
       trial_end: null,
       provider_choice: null,
       byo_provider: null,
-      seat_count: 4,
-      team_seat_price_usd: 20,
-      is_seat_subscription: true,
+      workspace_price_usd: 50,
+      ultra_price_usd: 150,
     };
 
     render(<SettingsPage />);
@@ -218,7 +210,7 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
     expect(screen.getByText(/billing restricted/i)).toBeInTheDocument();
   });
 
-  it("admin of a real seat-sub org sees TeamBillingCard without a spend line", () => {
+  it("admin of a subscribed workspace sees the plan card without a spend line", () => {
     clerk.membership = { role: "org:admin" };
     billing.isSubscribed = true;
     billing.account = {
@@ -229,16 +221,15 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
       trial_end: null,
       provider_choice: null,
       byo_provider: null,
-      seat_count: 4,
-      team_seat_price_usd: 20,
-      is_seat_subscription: true,
+      workspace_price_usd: 50,
+      ultra_price_usd: 150,
     };
 
     render(<SettingsPage />);
 
-    // TeamBillingCard (Manage) is present.
-    expect(screen.getByRole("button", { name: /manage billing/i })).toBeInTheDocument();
-    expect(screen.getByText(/4 seats/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /manage payment/i })).toBeInTheDocument();
+    expect(screen.getByText("Lightbulb plan")).toBeInTheDocument();
+    expect(screen.queryByText(/seats?/i)).not.toBeInTheDocument();
 
     // The spend line was removed from the settings billing card.
     expect(screen.queryByText(/Current period spend/i)).not.toBeInTheDocument();
@@ -265,9 +256,8 @@ describe("BillingPanel — personal free tier (trial_local)", () => {
       trial_end: null,
       provider_choice: null,
       byo_provider: null,
-      seat_count: null,
-      team_seat_price_usd: null,
-      is_seat_subscription: false,
+      workspace_price_usd: 50,
+      ultra_price_usd: 150,
     };
 
     render(<SettingsPage />);
@@ -334,9 +324,8 @@ describe("BillingPanel — personal free tier (trial_local)", () => {
       trial_end: Math.floor(Date.now() / 1000) + 86_400,
       provider_choice: null,
       byo_provider: null,
-      seat_count: null,
-      team_seat_price_usd: null,
-      is_seat_subscription: false,
+      workspace_price_usd: 50,
+      ultra_price_usd: 150,
     };
 
     render(<SettingsPage />);
@@ -365,9 +354,8 @@ describe("BillingPanel — personal free tier (trial_local)", () => {
       trial_end: Math.floor(Date.now() / 1000) - 86_400,
       provider_choice: null,
       byo_provider: null,
-      seat_count: null,
-      team_seat_price_usd: null,
-      is_seat_subscription: false,
+      workspace_price_usd: 50,
+      ultra_price_usd: 150,
     };
 
     render(<SettingsPage />);
@@ -403,9 +391,8 @@ describe("BillingPanel — personal free tier (trial_local)", () => {
       trial_end: null,
       provider_choice: "bedrock_claude",
       byo_provider: null,
-      seat_count: null,
-      team_seat_price_usd: null,
-      is_seat_subscription: false,
+      workspace_price_usd: 50,
+      ultra_price_usd: 150,
     };
 
     render(<SettingsPage />);

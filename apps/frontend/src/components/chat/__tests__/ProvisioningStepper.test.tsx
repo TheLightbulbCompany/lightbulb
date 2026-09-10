@@ -110,8 +110,7 @@ let billingMockIsSubscribed = true;
 let billingMockAccount: {
   provider_choice: string | null;
   subscription_status?: string | null;
-  seat_count?: number | null;
-  team_seat_price_usd?: number | null;
+  workspace_price_usd?: number;
 } | null = {
   provider_choice: "bedrock_claude",
 };
@@ -376,7 +375,7 @@ describe("ProvisioningStepper blocked-state rendering", () => {
   });
 
   it("renders TeamBillingCard (not the generic blocked card) for team_billing_required", async () => {
-    billingMockAccount = { provider_choice: null, seat_count: 4, team_seat_price_usd: 20 };
+    billingMockAccount = { provider_choice: null, workspace_price_usd: 50 };
     useProvMock.mockReturnValue({
       phase: "blocked",
       container: null,
@@ -402,12 +401,12 @@ describe("ProvisioningStepper blocked-state rendering", () => {
       </ProvisioningStepper>,
     );
 
-    // The per-seat card, not the generic gate copy.
-    expect(screen.getByText(/4 seats/i)).toBeInTheDocument();
+    // The workspace card, not the generic gate copy.
+    expect(screen.getByText(/unlimited members/i)).toBeInTheDocument();
     expect(screen.queryByText(/Subscribe to start your team's containers/)).not.toBeInTheDocument();
 
     await act(async () => {
-      screen.getByRole("button", { name: /subscribe your team/i }).click();
+      screen.getByRole("button", { name: /subscribe workspace/i }).click();
     });
     expect(billingMockStartTeamCheckout).toHaveBeenCalled();
 
@@ -479,7 +478,7 @@ describe("ProvisioningStepper blocked-state rendering", () => {
   );
 
   it("hides the team CTA for a member when the gate says the action is admin_only", () => {
-    billingMockAccount = { provider_choice: null, seat_count: 4, team_seat_price_usd: 20 };
+    billingMockAccount = { provider_choice: null, workspace_price_usd: 50 };
     useProvMock.mockReturnValue({
       phase: "blocked",
       container: null,
@@ -505,8 +504,8 @@ describe("ProvisioningStepper blocked-state rendering", () => {
       </ProvisioningStepper>,
     );
 
-    expect(screen.queryByRole("button", { name: /subscribe your team/i })).toBeNull();
-    expect(screen.getByText(/ask your org admin/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /subscribe workspace/i })).toBeNull();
+    expect(screen.getByText(/ask your workspace admin/i)).toBeInTheDocument();
   });
 
   it("renders the ProviderPicker when phase=needs-signup", () => {

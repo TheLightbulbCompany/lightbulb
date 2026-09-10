@@ -1101,10 +1101,9 @@ export function ProvisioningStepper({
     );
   }
 
-  // Teams billing paywall: the gate returns team_billing_required for an org
-  // owner (or member) with no billing row. Render the real per-seat checkout
-  // card instead of the generic blocked card. TeamBillingCard is admin-gated
-  // internally — a member sees "ask your org admin" with no CTA — and takes
+  // Workspace billing paywall: the gate returns team_billing_required for an
+  // owner (or member) with no billing row. The card is admin-gated
+  // internally — a member sees "ask your workspace admin" with no CTA — and takes
   // the gate's own `action.admin_only` rather than assuming it.
   //
   // The wrapper mirrors the generic blocked card below (logo centerpiece +
@@ -1119,9 +1118,7 @@ export function ProvisioningStepper({
             <Logo size="lg" href={null} />
           </div>
           <TeamBillingCard
-            seatCount={account?.seat_count ?? null}
-            seatPriceUsd={account?.team_seat_price_usd ?? null}
-            basePriceUsd={account?.team_base_price_usd ?? null}
+            workspacePriceUsd={account?.workspace_price_usd}
             ownerRole={blocked.owner_role}
             adminOnly={blocked.action.admin_only}
             isSubscribed={false}
@@ -2156,9 +2153,6 @@ function StepperDisplay({
  * signup-vs-conversion split is the conversion funnel.
  */
 
-/** The flat monthly subscription, in dollars — the same on all three paths. */
-const FLAT_PRICE_USD = 50;
-
 // Shared with CreditsStep via lib/creditAmounts — the two purchase surfaces
 // had drifted to different preset ladders for the same balance.
 const MIN_STARTER_CREDITS_CENTS = MIN_CREDITS_CENTS;
@@ -2290,7 +2284,8 @@ export function ProviderPicker({
   // panel. It used to be duplicated inline here — two copies of the same POST
   // + redirect, which is how the two surfaces drifted into offering different
   // copy for the same three paths in the first place.
-  const { startTrialCheckout } = useBilling();
+  const { startTrialCheckout, account } = useBilling();
+  const workspacePriceUsd = account?.workspace_price_usd;
   const [loading, setLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Starter Claude credits for the bedrock_claude path. Sent with that card's
@@ -2380,8 +2375,10 @@ export function ProviderPicker({
                     charges. The other two are a flat $50 and keep the static
                     subtitle. */}
                 <p className="text-sm text-[var(--midnight-muted)]">
-                  {card.id === "bedrock_claude"
-                    ? `${formatUsdCents(FLAT_PRICE_USD * 100 + creditsCents)} at checkout, then $${FLAT_PRICE_USD} / month`
+                  {card.id === "bedrock_claude" && workspacePriceUsd !== undefined
+                    ? `${formatUsdCents(workspacePriceUsd * 100 + creditsCents)} at checkout, then $${workspacePriceUsd} / month`
+                    : card.id === "bedrock_claude"
+                      ? "Loading workspace price…"
                     : card.subtitle}
                 </p>
                 <p className="text-xs text-[var(--midnight)] font-medium">

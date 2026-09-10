@@ -3,6 +3,15 @@ import { describe, it, expect, vi } from "vitest";
 import * as React from "react";
 import { render, screen } from "@testing-library/react";
 
+const billing = vi.hoisted(() => ({
+  startTrialCheckout: vi.fn(),
+  account: { workspace_price_usd: 50, ultra_price_usd: 150 },
+}));
+
+vi.mock("@/hooks/useBilling", () => ({
+  useBilling: () => billing,
+}));
+
 import { ChatErrorCard } from "../ChatErrorCard";
 
 describe("ChatErrorCard", () => {

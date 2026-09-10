@@ -48,10 +48,10 @@ jest.mock(
 );
 
 /** Authenticated-client stub; /billing/account carries the web price. */
-function makeApi(flatPriceUsd: number | null = 50) {
+function makeApi(workspacePriceUsd: number | null = 50) {
   return {
     get: jest.fn(async () =>
-      flatPriceUsd == null ? {} : { flat_price_usd: flatPriceUsd },
+      workspacePriceUsd == null ? {} : { workspace_price_usd: workspacePriceUsd },
     ),
     post: jest.fn(async () => ({})),
   };

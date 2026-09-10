@@ -121,30 +121,6 @@ async def get_billing_account(
     # platform-use semantics untouched.
     is_subscribed = is_paid_subscription(account)
 
-    # Teams per-seat billing. seat_count echoes the LIVE billable seat count
-    # (members + pending invitations) for org owners — not the stored Stripe
-    # quantity — so the paywall can price "N × $20" correctly even before the
-    # first subscription exists. Falls back to the stored seat_count if Clerk
-    # is unavailable (returns 0). Post-subscribe, stored and live counts
-    # converge via sync_team_seat_quantity. Personal owners keep both fields
-    # None.
-    seat_count: int | None = None
-    team_seat_price_usd: int | None = None
-    team_base_price_usd: int | None = None
-    # is_seat_subscription discriminates a REAL per-seat Stripe subscription
-    # (subscription_item_id set by the webhook — see
-    # stripe_webhook_handlers.py) from a flat/comped/grandfathered org sub
-    # that has no per-seat Stripe item. Only the former should ever render
-    # "N seats x $price" billing math on the frontend.
-    is_seat_subscription = False
-    if is_org_owner_id(owner_id):
-        live = await clerk_admin.get_organization_seat_count(owner_id)
-        stored = int(account.get("seat_count") or 0) if account else 0
-        seat_count = live if live > 0 else (stored or None)
-        team_seat_price_usd = settings.TEAM_SEAT_PRICE_USD
-        team_base_price_usd = settings.TEAM_BASE_PRICE_USD
-        is_seat_subscription = bool(account and account.get("subscription_item_id"))
-
     return BillingAccountResponse(
         is_subscribed=is_subscribed,
         current_spend=current_spend,
@@ -154,12 +130,9 @@ async def get_billing_account(
         provider_choice=account.get("provider_choice") if account else None,
         byo_provider=account.get("byo_provider") if account else None,
         plan=(account.get("plan") or "standard") if account else "standard",
-        seat_count=seat_count,
-        team_seat_price_usd=team_seat_price_usd,
-        team_base_price_usd=team_base_price_usd,
-        flat_price_usd=settings.FLAT_PRICE_USD,
+        workspace_price_usd=settings.WORKSPACE_PRICE_USD,
+        ultra_price_usd=settings.ULTRA_PRICE_USD,
         subscription_source=(account.get("subscription_source") if account else None),
-        is_seat_subscription=is_seat_subscription,
     )
 
 

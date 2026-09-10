@@ -236,23 +236,17 @@ function ProfilePanel() {
 // Billing Panel
 // =============================================================================
 
-// Keep in lockstep with STRIPE_ULTRA_PRICE_ID's unit amount in Stripe. The
-// billing account response carries only `plan`, not the price, so the display
-// price is a labeled constant here rather than echoed from the server.
-const ULTRA_PRICE_USD = 150;
-
-// Ultra Pro control for a non-per-seat subscribed owner. When the owner is
+// Ultra Pro control for a subscribed owner. When the owner is
 // already on ultra_pro it collapses to an "Ultra Pro" active badge; otherwise
 // it renders the upgrade button that calls useBilling().upgradeToUltra (which
 // redirects to a fresh Checkout, or refreshes in place on the item-swap path).
-// Never rendered on the per-seat TeamBillingCard — Ultra-for-teams exists at
-// the billing layer, but the org upgrade CTA hasn't been built on the
-// frontend yet.
 function UltraUpgradeRow({
   plan,
+  ultraPriceUsd,
   upgradeToUltra,
 }: {
   plan: "standard" | "ultra_pro" | undefined;
+  ultraPriceUsd?: number;
   upgradeToUltra: () => Promise<void>;
 }) {
   const [loading, setLoading] = useState(false);
@@ -292,7 +286,7 @@ function UltraUpgradeRow({
     <div style={{ marginTop: 14 }}>
       <button type="button" className="settings-btn-save" onClick={handleUpgrade} disabled={loading}>
         {loading && <span className="settings-spinner" style={{ width: 14, height: 14, borderWidth: 2, marginRight: 6, display: "inline-block", verticalAlign: "middle" }} />}
-        Upgrade to Ultra Pro — ${ULTRA_PRICE_USD}/mo
+        {ultraPriceUsd === undefined ? "Upgrade to Ultra Pro" : `Upgrade to Ultra Pro — $${ultraPriceUsd}/mo`}
       </button>
       {error && (
         <div className="settings-alert settings-alert-error" style={{ marginTop: 8 }}>
@@ -379,26 +373,10 @@ function BillingPanel() {
   // @/lib/planLabel so the mapping can't drift between surfaces.
   const statusChipLabel = planLabel(subscriptionStatus, { expired: isTrialExpired });
 
-  // Org context: Teams billing is per-seat, not the flat $50/mo personal
-  // plan, so org admins get TeamBillingCard instead of the personal card
-  // below — but ONLY when the org is either unsubscribed (the paywall case)
-  // or actually on a real per-seat Stripe subscription
-  // (account.is_seat_subscription). A subscribed org on a flat/comped/
-  // grandfathered sub (no subscription_item_id) has no per-seat Stripe item
-  // to price, so showing "N seats × $price" there is fabricated — it falls
-  // through to the normal subscribed billing view below instead.
-  //
-  // Org-level spend is admin-only, full stop — a non-admin member is routed
-  // to a standalone "Billing restricted" card before any of the
-  // subscription-shape branches below run, so it never sees spend figures
-  // or a Manage/Subscribe control regardless of seat-vs-flat shape.
-  // TeamBillingCard has its own internal member-vs-admin gate (used by the
-  // /chat blocked-screen caller), but we don't reuse it for the member case
-  // here because its seat-math line ("N seats × $price") would be fabricated
-  // for a flat/comped org.
+  // Workspace billing is admin-only. Members do not see subscription controls
+  // or workspace spend; an unsubscribed admin gets the shared workspace card.
   const isOrgContext = Boolean(membership);
   const orgRole: "admin" | "member" = membership?.role === "org:admin" ? "admin" : "member";
-  const isSeatSubscription = Boolean(account?.is_seat_subscription);
 
   if (isOrgContext && orgRole === "member") {
     return (
@@ -418,7 +396,7 @@ function BillingPanel() {
   // Below this point, isOrgContext (when true) implies orgRole === "admin" —
   // the member case returned above.
 
-  if (isOrgContext && (!isSubscribed || isSeatSubscription)) {
+  if (isOrgContext && !isSubscribed) {
     return (
       <div className="settings-panel" id="panel-billing" role="tabpanel">
         <h1 className="settings-page-title">Billing</h1>
@@ -432,9 +410,7 @@ function BillingPanel() {
         )}
 
         <TeamBillingCard
-          seatCount={account?.seat_count ?? null}
-          seatPriceUsd={account?.team_seat_price_usd ?? null}
-          basePriceUsd={account?.team_base_price_usd ?? null}
+            workspacePriceUsd={account?.workspace_price_usd}
           ownerRole={orgRole}
           isSubscribed={isSubscribed}
           onSubscribe={startTeamCheckout}
@@ -445,10 +421,8 @@ function BillingPanel() {
   }
 
   if (isOrgContext) {
-    // Subscribed org, NOT a per-seat sub (flat/comped/grandfathered) — the
-    // normal subscribed billing view, same shape as the personal card
-    // below, restoring the current/lifetime spend line org admins
-    // previously saw pre-org-context-rewrite. No per-seat pricing math.
+    // A subscribed workspace uses the normal plan card, with no membership
+    // pricing math.
     // orgRole is guaranteed "admin" here (member case returned above).
     return (
       <div className="settings-panel" id="panel-billing" role="tabpanel">
@@ -481,11 +455,11 @@ function BillingPanel() {
               Manage Payment
             </button>
           </div>
-          {/* A flat/comped org sub (no per-seat item) can still upgrade to
-              Ultra — only the per-seat TeamBillingCard path omits the CTA,
-              and that's a frontend gap, not a backend limit (Ultra now
-              supports per-seat subs too). */}
-          <UltraUpgradeRow plan={account?.plan} upgradeToUltra={upgradeToUltra} />
+          <UltraUpgradeRow
+            plan={account?.plan}
+            ultraPriceUsd={account?.ultra_price_usd}
+            upgradeToUltra={upgradeToUltra}
+          />
         </div>
       </div>
     );
@@ -570,7 +544,11 @@ function BillingPanel() {
             an unsubscribed / Sign-up / free-tier owner must pick the base plan
             first. */}
         {isSubscribed && (
-          <UltraUpgradeRow plan={account?.plan} upgradeToUltra={upgradeToUltra} />
+          <UltraUpgradeRow
+            plan={account?.plan}
+            ultraPriceUsd={account?.ultra_price_usd}
+            upgradeToUltra={upgradeToUltra}
+          />
         )}
       </div>
     </div>
@@ -823,4 +801,3 @@ function SettingsPageInner() {
     </>
   );
 }
-

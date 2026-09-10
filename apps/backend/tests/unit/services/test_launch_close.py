@@ -152,7 +152,7 @@ class _Harness:
                 side_effect=lambda **kw: self._send("not_selected", **kw),
             ),
             patch("core.services.launch_close.run_in_thread", AsyncMock(side_effect=self._stripe)),
-            patch("core.services.launch_close.settings.STRIPE_FLAT_PRICE_ID", "price_flat"),
+            patch("core.services.launch_close.settings.STRIPE_WORKSPACE_PRICE_ID", "price_flat"),
             # Appended LAST on purpose: `self.mint`/`self.list_all_mock`
             # below index into this list positionally.
             patch("core.services.launch_close.launch_phase.email_copy", side_effect=lambda: self.email_copy),
@@ -745,7 +745,7 @@ async def _attach(retrieved_sub):
 
     with (
         patch("core.services.launch_close.run_in_thread", AsyncMock(side_effect=_stripe)),
-        patch("core.services.launch_close.settings.STRIPE_FLAT_PRICE_ID", "price_flat"),
+        patch("core.services.launch_close.settings.STRIPE_WORKSPACE_PRICE_ID", "price_flat"),
     ):
         done = await launch_close._attach_coupon({"stripe_subscription_id": "sub_1"}, "coup_1")
     return done, [c for c in calls if c[0] == "modify"]
@@ -854,7 +854,7 @@ async def _build_checkout_captured(discount, *, price="price_flat", line_items=N
     lookup = AsyncMock(return_value=discount)
     with (
         patch.object(billing_service.stripe.checkout.Session, "create", fake_create),
-        patch.object(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat"),
+        patch.object(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_flat"),
         patch.object(
             billing_service.billing_repo,
             "get_by_owner_id",

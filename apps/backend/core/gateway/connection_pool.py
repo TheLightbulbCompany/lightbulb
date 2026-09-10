@@ -577,7 +577,10 @@ class GatewayConnection:
                 existing["agent_id"] = agent_id
             if member_id:
                 existing["member_id"] = member_id
-            if event_kind:
+            if event_kind and existing.get("event_kind") is None:
+                # First kind wins for the life of the run — an ambient
+                # room_event re-mark must not flip an in-flight addressed
+                # run's suppression state (see `_publish_room_frame`).
                 existing["event_kind"] = event_kind
             return
         self._active_runs[key] = {
@@ -1403,14 +1406,18 @@ class GatewayConnection:
 
     async def _publish_user_event(self, event_type: str, payload: Any, session_key: str = "") -> None:
         user_id = self._private_audience(session_key)
-        if user_id is None:
-            return
-        from core.services.live_events import get_live_event_publisher
+        from core.services.live_events import get_live_event_publisher, publish_owner_users
         from core.services.messaging import make_live_event
 
         event = make_live_event(event_type, payload)
         try:
-            await get_live_event_publisher().publish_user(self.owner_id, user_id, event)
+            if user_id is not None:
+                await get_live_event_publisher().publish_user(self.owner_id, user_id, event)
+            else:
+                # No addressable member (org owner, container-originated event
+                # with no dispatching human) — fan out to every active member
+                # stream instead of silently dropping the event.
+                await publish_owner_users(self.owner_id, event)
         except Exception:
             logger.warning(
                 "private runtime event publish failed owner=%s event_type=%s",

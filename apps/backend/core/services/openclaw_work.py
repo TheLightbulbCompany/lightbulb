@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 _INGRESS_MAX_BYTES = 1_048_576
 _HISTORY_LIMIT = 50
 _VISIBILITY_SECONDS = 300
+_RETRY_VISIBILITY_SECONDS = 10
 _VISIBILITY_REFRESH_SECONDS = 120
 _OPERATION_LEASE_SECONDS = 300
 _MAX_CONCURRENT_GROUPS = 8
@@ -154,7 +155,7 @@ class OpenClawWorkWorker:
                     self._sqs.receive_message,
                     QueueUrl=queue_url,
                     MaxNumberOfMessages=10,
-                    WaitTimeSeconds=20,
+                    WaitTimeSeconds=5,
                     VisibilityTimeout=_VISIBILITY_SECONDS,
                     AttributeNames=["MessageGroupId"],
                 )
@@ -205,6 +206,17 @@ class OpenClawWorkWorker:
             put_metric("messaging.worker.message", dimensions={"kind": pointer["kind"], "outcome": "ok"})
         except asyncio.CancelledError:
             raise
+        except WorkRetry as exc:
+            put_metric(
+                "messaging.worker.message",
+                dimensions={"kind": "unknown", "outcome": "retry", "error": type(exc).__name__},
+            )
+            # Never log the SQS body or canonical message text.
+            logger.warning("OpenClaw work item will retry (%s)", type(exc).__name__)
+            # WorkRetry means "try again soon" (waking container, lease race,
+            # ...) — release the message early instead of holding the full
+            # 300s visibility, or the rest of the FIFO group queues behind it.
+            await self._return_visibility(message, timeout=_RETRY_VISIBILITY_SECONDS)
         except Exception as exc:
             put_metric(
                 "messaging.worker.message",
@@ -237,18 +249,18 @@ class OpenClawWorkWorker:
         except asyncio.CancelledError:
             raise
 
-    async def _return_visibility(self, message: dict) -> None:
+    async def _return_visibility(self, message: dict, timeout: int = 0) -> None:
         try:
             await asyncio.shield(
                 asyncio.to_thread(
                     self._sqs.change_message_visibility,
                     QueueUrl=settings.OPENCLAW_WORK_QUEUE_URL,
                     ReceiptHandle=message["ReceiptHandle"],
-                    VisibilityTimeout=0,
+                    VisibilityTimeout=timeout,
                 )
             )
         except Exception:
-            logger.warning("Could not return FIFO visibility during shutdown", exc_info=True)
+            logger.warning("Could not change FIFO visibility", exc_info=True)
 
     async def _room_dispatch(self, pointer: dict[str, Any]) -> None:
         room_id = pointer["roomId"]

@@ -167,7 +167,7 @@ test.describe('E2E: Workspace invitation and trial happy path', () => {
     await page.getByRole('textbox', { name: 'Message', exact: true }).fill('Workspace UI smoke');
     await page.getByRole('button', { name: 'Send message', exact: true }).click();
     const sent = messages.getByRole('article', { name: /^Message from / })
-      .filter({ hasText: 'Workspace UI smoke' }).last();
+      .filter({ hasText: 'Workspace UI smoke' }).first();
     const reply = sent.getByRole('button', { name: 'Reply', exact: true });
     await reply.click({ timeout: 30_000 });
     const thread = page.getByRole('complementary', { name: 'Thread', exact: true });

@@ -403,7 +403,7 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
       clientRoomId,
       kind: "dm",
       name: null,
-      members: [{ ...participant, role: "member", listenMode: participant.kind === "agent" ? "active" : null }],
+      members: [{ kind: participant.kind, id: participant.id, role: "member", listenMode: participant.kind === "agent" ? "active" : null }],
     }, requestId);
     dmRequests.current.delete(key);
     return requestId === selectionRequest.current ? created.roomId : null;

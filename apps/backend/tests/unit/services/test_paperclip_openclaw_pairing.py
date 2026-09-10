@@ -21,6 +21,16 @@ from core.services.paperclip_openclaw_pairing import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _noop_lightbulb_channel_registration(monkeypatch):
+    """pair_with_openclaw lazily imports
+    core.services.config_patcher.register_lightbulb_agent_account and writes
+    to a real openclaw.json on EFS. None of the tests below provision one, so
+    default it to a no-op here; test_pair_registers_lightbulb_channel_account
+    overrides this to assert the real call."""
+    monkeypatch.setattr("core.services.config_patcher.register_lightbulb_agent_account", AsyncMock())
+
+
 def _gw_agent(
     agent_id,
     *,
@@ -631,6 +641,28 @@ async def test_pair_calls_agents_create_with_uuid_then_update_for_display_name()
     assert update_call.kwargs["method"] == "agents.update"
     assert update_call.kwargs["params"]["agentId"] == pc_uuid
     assert update_call.kwargs["params"]["name"] == "Code Reviewer"
+
+
+@pytest.mark.asyncio
+async def test_pair_registers_lightbulb_channel_account(monkeypatch):
+    """pair_with_openclaw is the single chokepoint every agent-creation path
+    routes through, so it — not each individual caller — registers the new
+    agent's Lightbulb channel account + binding on success."""
+    pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+    pool = MagicMock()
+    pool.send_rpc = AsyncMock(return_value={"ok": True, "agentId": pc_uuid})
+    register_mock = AsyncMock()
+    monkeypatch.setattr("core.services.config_patcher.register_lightbulb_agent_account", register_mock)
+
+    await pair_with_openclaw(
+        owner_id="user_abc",
+        paperclip_agent={"id": pc_uuid, "name": "Code Reviewer"},
+        gateway_pool=pool,
+        ip="10.0.0.5",
+        token="gw_token",
+    )
+
+    register_mock.assert_awaited_once_with("user_abc", pc_uuid)
 
 
 @pytest.mark.asyncio

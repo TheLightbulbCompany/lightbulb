@@ -412,14 +412,8 @@ async def _create_agent(owner_id: str, user_id: str, params: dict[str, Any], ip:
         ip=ip,
         token=token,
     )
-    # The OpenClaw agent entry now exists (pair_with_openclaw above), but
-    # build_openclaw_config_dict's channels.lightbulb.accounts/bindings only
-    # get derived when the whole config is rewritten — never for an agent
-    # hired after provision. Without this, the new agent has no inbound route
-    # on the lightbulb channel and every room message to it 404s forever.
-    from core.services.config_patcher import register_lightbulb_agent_account
-
-    await register_lightbulb_agent_account(owner_id, paperclip_agent["id"])
+    # pair_with_openclaw above also registers the agent's Lightbulb channel
+    # account + binding — see its docstring.
     await ensure_operator_device_paired(
         owner_id=owner_id,
         paperclip_agent=paperclip_agent,

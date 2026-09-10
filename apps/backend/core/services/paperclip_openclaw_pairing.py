@@ -924,6 +924,20 @@ async def pair_with_openclaw(
     is the caller's responsibility — this helper assumes the gateway
     pool can reach the owner's container.
 
+    On success, also registers the agent's Lightbulb channel account +
+    binding (``config_patcher.register_lightbulb_agent_account``) — this is
+    the single chokepoint every agent-creation path (chat, Teams, catalog
+    deploy, company deploy) routes through, so none of them can forget it.
+    ``build_openclaw_config_dict`` only derives
+    ``channels.lightbulb.accounts``/``bindings`` when the whole config is
+    (re)written (provision, reapply, image update); an agent hired
+    afterwards never goes through that path, so without this the new agent
+    has no inbound route on the ``lightbulb`` channel and every room
+    message to it 404s forever. Best-effort is NOT appropriate here — a
+    failure propagates like any other pairing failure, so the caller's
+    existing retry/rollback posture (deferred pairing, deploy rollback)
+    covers it too.
+
     Note: ``gateway_pool.send_rpc`` takes a ``user_id`` kwarg by name,
     but the gateway pool is keyed by container owner. Always pass the
     owner_id there.
@@ -988,6 +1002,9 @@ async def pair_with_openclaw(
                         token=token,
                         timeout=_PAIR_RPC_TIMEOUT_S,
                     )
+                    from core.services.config_patcher import register_lightbulb_agent_account
+
+                    await register_lightbulb_agent_account(owner_id, pc_uuid)
                     return
                 except RuntimeError as e:
                     # "agent not found" right after a successful create is the

@@ -168,6 +168,10 @@ async def typing(request: TypingRequest, auth: AuthContext = Depends(get_current
                 retry_after=max(0.01, math.ceil((1.0 - elapsed) * 100) / 100),
             )
         _typing_last[key] = now
+        # Evict entries outside the rate-limit window so this map tracks only
+        # recently-active (user, room) pairs instead of growing forever.
+        for stale_key in [k for k, ts in _typing_last.items() if now - ts > 1.0]:
+            del _typing_last[stale_key]
     expires = service.utc_now().timestamp() + (3 if request.is_typing else 0)
     event = make_live_event(
         "room.typing.changed",

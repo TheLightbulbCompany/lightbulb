@@ -97,3 +97,55 @@ def test_clear_active_run_retains_authorizing_session_for_terminal_idempotency()
 )
 def test_is_session_run_active_matches_upstream_rule(payload, expected):
     assert _is_session_run_active(payload) is expected
+
+
+def test_mark_run_active_first_event_kind_wins_over_ambient_remark():
+    conn = GatewayConnection.__new__(GatewayConnection)
+    conn._active_runs = {}
+    conn.mark_run_active(SESSION_KEY, agent_id=AGENT_ID, event_kind="user_request")
+    conn.mark_run_active(SESSION_KEY, agent_id=AGENT_ID, event_kind="room_event")
+
+    assert conn._active_runs[SESSION_KEY.lower()]["event_kind"] == "user_request"
+
+
+@pytest.mark.asyncio
+async def test_publish_user_event_org_owner_without_member_fans_out_to_all_users(monkeypatch):
+    conn = GatewayConnection.__new__(GatewayConnection)
+    conn._active_runs = {}
+    conn.owner_id = "org_abc123"
+    calls = []
+
+    async def fake_publish_owner_users(owner_id, event):
+        calls.append((owner_id, event))
+
+    monkeypatch.setattr("core.services.live_events.publish_owner_users", fake_publish_owner_users)
+
+    await conn._publish_user_event("runtime.approval.requested", {"foo": "bar"})
+
+    assert len(calls) == 1
+    assert calls[0][0] == "org_abc123"
+    assert calls[0][1]["type"] == "runtime.approval.requested"
+
+
+@pytest.mark.asyncio
+async def test_publish_user_event_user_owner_uses_single_user_path(monkeypatch):
+    conn = GatewayConnection.__new__(GatewayConnection)
+    conn._active_runs = {}
+    conn.owner_id = "user_abc123"
+    single_calls = []
+    fanout_calls = []
+
+    class FakePublisher:
+        async def publish_user(self, owner_id, user_id, event):
+            single_calls.append((owner_id, user_id, event))
+
+    async def fake_publish_owner_users(owner_id, event):
+        fanout_calls.append((owner_id, event))
+
+    monkeypatch.setattr("core.services.live_events.get_live_event_publisher", lambda: FakePublisher())
+    monkeypatch.setattr("core.services.live_events.publish_owner_users", fake_publish_owner_users)
+
+    await conn._publish_user_event("runtime.approval.requested", {"foo": "bar"})
+
+    assert single_calls == [("user_abc123", "user_abc123", single_calls[0][2])]
+    assert fanout_calls == []

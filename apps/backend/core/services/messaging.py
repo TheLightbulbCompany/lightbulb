@@ -141,7 +141,10 @@ class CreateRoomRequest(ContractModel):
     client_room_id: uuid.UUID
     name: str | None
     kind: RoomKind
-    members: list[CreateRoomMember] = Field(max_length=31)
+    # Absolute payload sanity cap only — the real member-count limit is
+    # `messaging_repo.MAX_ROOM_MEMBERS`, enforced below as a 409 MEMBER_LIMIT
+    # so callers get a reachable, meaningful error instead of a Pydantic 400.
+    members: list[CreateRoomMember] = Field(max_length=256)
 
     @field_validator("name")
     @classmethod
@@ -260,7 +263,7 @@ class SteerRunResponse(ContractModel):
     state: Literal["accepted"] = "accepted"
 
 
-class RuntimeError(ContractModel):
+class RuntimeErrorDto(ContractModel):
     code: str
     message: str
     retryable: bool
@@ -308,7 +311,7 @@ class RuntimeOperation(ContractModel):
     created_at: datetime
     updated_at: datetime
     result: Any | None
-    error: RuntimeError | None
+    error: RuntimeErrorDto | None
 
 
 class LiveConfig(ContractModel):
@@ -973,7 +976,10 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
 
 
 async def get_agent_receipt(owner_id: str, event_id: str) -> AgentMessageReceiptResponse:
-    validate_event_id(event_id)
+    try:
+        validate_event_id(event_id)
+    except ValueError as exc:
+        raise ApiProblem("INVALID_REQUEST", str(exc)) from exc
     receipt = await messaging_repo.get_agent_idempotency(owner_id, event_id)
     if receipt is None:
         raise ApiProblem("MESSAGE_NOT_FOUND", "Agent message receipt not found.")

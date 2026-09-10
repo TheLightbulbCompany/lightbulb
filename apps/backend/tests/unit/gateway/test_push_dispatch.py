@@ -27,22 +27,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from core.gateway.connection_pool import GatewayConnection
 
-# SUSPECTED SOURCE BUG (see PR #2424 / commit 187ef487d "cut over multiplayer
-# messaging"): `_handle_message`'s `event_name == "chat"` branch does
-# `if room is None: return` BEFORE `_dispatch_push_notification` /
-# `_clear_active_run` run. `room` only parses for the new
-# `agent:<uuid>:lightbulb:channel:<room-uuid>` key shape, so the org-webchat
-# session keys these tests drive (`agent:a1:user_mixedcase`, still documented
-# as valid by `_parse_session_key`) never reach the push/clear side effects
-# any more. Not patched per task scope -- reported instead.
-_ROOM_GATE_BUG = (
-    "connection_pool._handle_message gates _dispatch_push_notification / "
-    "_clear_active_run behind `if room is None: return`, so a non-room "
-    "session key never fires them -- suspected regression from the "
-    "native-messaging cutover (PR #2424), not a stale test. Not patched per "
-    "task scope."
-)
-
 
 def _make_conn(owner_id="user_owner"):
     # Construct without running __init__'s socket setup: build a bare instance
@@ -78,6 +62,7 @@ def _make_terminal_conn(owner_id="org_1"):
     conn._recipients_cache = None
     conn._recipients_cache_ts = 0.0
     conn._active_runs = {}
+    conn._terminal_run_ids = {}
     conn._analytics_tasks = set()
     conn._run_state = {}
     conn._side_run_ids = {}
@@ -228,7 +213,6 @@ def test_mark_run_active_member_id_defaults_none():
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason=_ROOM_GATE_BUG, strict=True)
 async def test_carry_canonical_member_through_terminal():
     """End-to-end: mark_run_active with a CANONICAL dispatch key + canonical
     member, drive the terminal with the LOWERCASED echoed key, and assert the
@@ -261,7 +245,6 @@ async def test_carry_canonical_member_through_terminal():
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason=_ROOM_GATE_BUG, strict=True)
 async def test_push_dispatched_before_active_run_cleared():
     """Race guard: _dispatch_push_notification must run BEFORE _clear_active_run.
 
@@ -286,9 +269,9 @@ async def test_push_dispatched_before_active_run_cleared():
         order.append("dispatch")
         return real_dispatch(*a, **k)
 
-    def rec_clear(key):
+    def rec_clear(*a, **k):
         order.append("clear")
-        return real_clear(key)
+        return real_clear(*a, **k)
 
     with (
         patch("core.services.push_service.send_push_to_user", AsyncMock()),
@@ -305,7 +288,6 @@ async def test_push_dispatched_before_active_run_cleared():
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason=_ROOM_GATE_BUG, strict=True)
 async def test_terminal_error_state_pushes_failure():
     """An error terminal pushes a failure notice (a run failing while the user
     is away deserves notice as much as one finishing)."""

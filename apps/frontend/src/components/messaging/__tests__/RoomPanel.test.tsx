@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
 import { RoomPanel, type RoomPanelProps } from "../RoomPanel";
-import type { RoomMessage, RoomParticipant } from "../types";
+import type { RoomMessage, RoomParticipant, RoomRunView } from "../types";
 
 const owner: RoomParticipant = { kind: "human", id: "owner", displayName: "Owner", mentionHandle: null, role: "owner", listenMode: null, joinedAt: "2026-09-10T00:00:00Z", joinedSeq: 0 };
 const friday: RoomParticipant = { ...owner, kind: "agent", id: "friday", displayName: "Friday", role: "member", agentActivity: "running" };
@@ -38,4 +39,63 @@ it.each(["system", "human"] as const)("keeps unmatched %s authors neutral", (kin
   const article = screen.getByRole("article", { name: "Message from Announcement" });
   expect(within(article).getByRole("img", { name: "Announcement" }).parentElement).not.toHaveAttribute("data-agent-state");
   expect(within(article).queryByText(/^Agent /)).not.toBeInTheDocument();
+});
+
+it("shows canonical members and only running work in collapsible room details", async () => {
+  const user = userEvent.setup();
+  const run: RoomRunView = { roomId: "room", agentId: "friday", runId: "active", state: "running", text: "", thinking: "", tools: [] };
+  const { rerender } = render(<RoomPanel {...props} runs={[run, ...(["completed", "failed", "aborted"] as const).map((state) => ({ ...run, runId: state, state }))]} />);
+  const details = screen.getByRole("complementary", { name: "Room details" });
+  expect(within(details).getByText("Friday")).toBeInTheDocument();
+  expect(within(details).getByText("Owner")).toBeInTheDocument();
+  expect(within(details).getByText("Agent")).toBeInTheDocument();
+  expect(within(details).getByText("Person")).toBeInTheDocument();
+  expect(within(details).getAllByText("Friday is working")).toHaveLength(1);
+  const toggle = screen.getByRole("button", { name: "Hide room details" });
+  expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await user.click(toggle);
+  expect(screen.queryByRole("complementary", { name: "Room details" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Show room details" })).toHaveFocus();
+  expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await user.click(toggle);
+  expect(toggle).toHaveFocus();
+  rerender(<RoomPanel {...props} runs={[{ ...run, state: "completed" }]} />);
+  expect(within(screen.getByRole("complementary", { name: "Room details" })).getByText("No active runs.")).toBeInTheDocument();
+});
+
+it("focuses a thread and restores its trigger and collapsed preference on Escape", async () => {
+  const user = userEvent.setup();
+  const onSelectThread = vi.fn();
+  render(<RoomPanel {...props} onSelectThread={onSelectThread} />);
+  await user.click(screen.getByRole("button", { name: "Hide room details" }));
+  const reply = screen.getByRole("button", { name: "Reply" });
+  await user.click(reply);
+  expect(onSelectThread).toHaveBeenLastCalledWith("message");
+  expect(screen.getByRole("heading", { name: "Thread" })).toHaveFocus();
+  expect(screen.getByRole("region", { name: "Messages" })).toBeVisible();
+  fireEvent.keyDown(screen.getByRole("complementary", { name: "Thread" }), { key: "Escape" });
+  expect(onSelectThread).toHaveBeenLastCalledWith(null);
+  expect(reply).toHaveFocus();
+  expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Show room details" })).toHaveAttribute("aria-expanded", "false");
+});
+
+it.each(["thread", "context"] as const)("replaces the narrow conversation only while selected %s is open", async (kind) => {
+  const user = userEvent.setup();
+  const onLinkToWork = vi.fn();
+  render(<RoomPanel {...props} narrow onLinkToWork={onLinkToWork}
+    messages={[{ ...message, contextIds: ["approval"] }]}
+    contexts={[{ id: "approval", roomId: "room", kind: "approval", title: "Review proposal", content: "Proposal details" }]} />);
+  const history = screen.getByRole("region", { name: "Messages" });
+  expect(history).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Link to work" }));
+  expect(onLinkToWork).toHaveBeenCalledOnce();
+  const trigger = screen.getByRole("button", { name: kind === "thread" ? "Reply" : "Review proposal" });
+  await user.click(trigger);
+  expect(history).not.toBeVisible();
+  expect(screen.getByRole("heading", { name: kind === "thread" ? "Thread" : "Review proposal" })).toHaveFocus();
+  if (kind === "context") expect(screen.getByText("Proposal details")).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Back to conversation" }));
+  expect(history).toBeVisible();
+  expect(trigger).toHaveFocus();
 });

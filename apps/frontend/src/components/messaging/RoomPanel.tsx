@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
 import { safeHref } from "@/components/teams/shared/lib/safeHref";
+import { cn } from "@/lib/utils";
 import { RoomComposer, type RoomComposerProps } from "./RoomComposer";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import { roomDisplayName } from "./types";
@@ -155,6 +156,7 @@ function RoomContent({
 }: RoomPanelProps) {
   const id = useId();
   const [membersOpen, setMembersOpen] = useState(false);
+  const [contextCollapsed, setContextCollapsed] = useState(false);
   const [selection, setSelection] = useState<{ kind: "thread" | "context"; id: string } | null>(null);
   const trigger = useRef<HTMLButtonElement | null>(null);
   const detailHeading = useRef<HTMLHeadingElement>(null);
@@ -167,6 +169,8 @@ function RoomContent({
   const parentMessage = selection?.kind === "thread" ? messages.find((message) => message.messageId === selection.id) : undefined;
   const selectedContext = selection?.kind === "context" ? contexts.find((context) => context.id === selection.id) : undefined;
   const showDetail = !!(parentMessage || selectedContext);
+  const showContext = showDetail || !contextCollapsed;
+  const activeRuns = runs.filter((run) => run.state === "running");
   const viewer = participants.find((participant) => participant.kind === "human" && participant.id === currentUserId);
 
   useEffect(() => {
@@ -215,7 +219,7 @@ function RoomContent({
   const RoomIcon = visibleRoom?.kind === "channel" ? Hash : visibleRoom?.kind === "group-dm" ? Users : MessageCircle;
   const counterparts = participants.filter((participant) => participant.kind !== "human" || participant.id !== currentUserId);
   const roomName = roomDisplayName(visibleRoom, counterparts);
-  return <section className={`room-panel ${showDetail && !isNarrow ? "room-with-context" : ""}`} aria-label={roomName}>
+  return <section className={cn("room-panel", showContext && "room-has-context", showDetail ? "room-has-detail" : "room-has-default-context")} aria-label={roomName}>
     <div className="room-conversation" hidden={showDetail && isNarrow}>
       <header className="room-header">
         <div className="room-title">{visibleRoom?.kind === "dm" && counterparts.length === 1
@@ -224,7 +228,9 @@ function RoomContent({
         {visibleRoom && <p className="text-sm text-muted-foreground">{visibleRoom.kind === "channel" ? "Channel" : visibleRoom.kind === "dm" ? "Direct message" : "Group message"}</p>}
         <div className="room-audience">
           {onLinkToWork && <Button type="button" variant="ghost" onClick={onLinkToWork}><Link2 aria-hidden="true" />Link to work</Button>}
-          <Button ref={memberTrigger} type="button" variant="ghost" aria-label="View members" aria-expanded={membersOpen} aria-controls={`${id}-members`}
+          {!showDetail && <Button type="button" variant="ghost" className="room-details-toggle" aria-expanded={!contextCollapsed}
+            onClick={() => setContextCollapsed(!contextCollapsed)}>{contextCollapsed ? "Show room details" : "Hide room details"}</Button>}
+          <Button ref={memberTrigger} type="button" variant="ghost" className="room-members-trigger" aria-label="View members" aria-expanded={membersOpen} aria-controls={`${id}-members`}
             onClick={() => setMembersOpen(!membersOpen)}><Users aria-hidden="true" />Members</Button>
         </div>
       </header>
@@ -276,6 +282,24 @@ function RoomContent({
       <p className="room-typing text-sm text-muted-foreground" role="status">{typingMembers.length > 0 ? `${typingMembers.slice(0, 3).map((member) => member.displayName).join(", ")}${typingMembers.length > 3 ? " and others" : ""} ${typingMembers.length === 1 ? "is" : "are"} typing…` : ""}</p>
       <RoomComposer {...composer} disabled={!actionable || composer.disabled} />
     </div>
+    {showContext && !showDetail && <aside className="room-context" aria-label="Room details">
+      <header className="room-context-header"><h3 className="font-serif text-lg">Room details</h3></header>
+      <div className="room-context-body">
+        <section aria-labelledby={`${id}-context-members`}>
+          <h4 id={`${id}-context-members`} className="font-semibold">Members</h4>
+          <ul>{participants.map((participant) => <li key={`${participant.kind}:${participant.id}`} className="room-member">
+            <ParticipantAvatar participant={participant} size="sm" />
+            <span className="truncate flex-1" title={participant.displayName}>{participant.displayName}</span>
+            <span className="text-sm text-muted-foreground">{participant.kind === "agent" ? "Agent" : "Person"}</span>
+          </li>)}</ul>
+        </section>
+        <section aria-labelledby={`${id}-context-runs`}>
+          <h4 id={`${id}-context-runs`} className="font-semibold">Active work</h4>
+          {activeRuns.length === 0 ? <p className="text-sm text-muted-foreground">No active runs.</p>
+            : activeRuns.map((run) => <p key={run.runId} className="room-wrap">{participants.find((participant) => participant.kind === "agent" && participant.id === run.agentId)?.displayName ?? "Agent"} is working</p>)}
+        </section>
+      </div>
+    </aside>}
     {showDetail && <aside className="room-context" aria-label={parentMessage ? "Thread" : selectedContext!.title} onKeyDown={(event) => { if (event.key === "Escape") closeDetail(); }}>
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>
         <h3 ref={detailHeading} tabIndex={-1} className="font-serif text-lg room-wrap">{parentMessage ? "Thread" : selectedContext!.title}</h3></header>

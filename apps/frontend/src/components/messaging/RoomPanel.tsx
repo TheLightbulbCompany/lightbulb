@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { ArrowLeft, Check, Circle, CircleAlert, Hash, Link2, MessageCircle, Users } from "lucide-react";
 import type { Components } from "react-markdown";
 import type { ListenMode } from "@lightbulb/shared";
@@ -72,6 +72,7 @@ const roomMarkdown: Partial<Components> = {
 };
 
 const narrowQuery = "(max-width: 859px)";
+const overlayQuery = "(min-width: 860px) and (max-width: 1179px)";
 function subscribeNarrow(callback: () => void) {
   const media = window.matchMedia(narrowQuery);
   media.addEventListener("change", callback);
@@ -178,10 +179,21 @@ function RoomContent({
     else trigger.current?.focus({ preventScroll: true });
   }, [selection]);
 
-  function closeDetail() {
+  const closeDetail = useCallback(() => {
     if (selection?.kind === "thread") onSelectThread?.(null);
     setSelection(null);
-  }
+  }, [onSelectThread, selection?.kind]);
+
+  const closeOverlay = useCallback(() => {
+    if (showDetail && !isNarrow && window.matchMedia(overlayQuery).matches) closeDetail();
+  }, [closeDetail, isNarrow, showDetail]);
+
+  useEffect(() => {
+    if (!showDetail) return;
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") closeOverlay(); };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [closeOverlay, showDetail]);
 
   function openDetail(kind: "thread" | "context", targetId: string, button: HTMLButtonElement, fromThread = false) {
     if (!fromThread) trigger.current = button;
@@ -220,7 +232,7 @@ function RoomContent({
   const counterparts = participants.filter((participant) => participant.kind !== "human" || participant.id !== currentUserId);
   const roomName = roomDisplayName(visibleRoom, counterparts);
   return <section className={cn("room-panel", showContext && "room-has-context", showDetail ? "room-has-detail" : "room-has-default-context")} aria-label={roomName}>
-    <div className="room-conversation" hidden={showDetail && isNarrow}>
+    <div className="room-conversation" hidden={showDetail && isNarrow} onClickCapture={closeOverlay} onFocusCapture={closeOverlay}>
       <header className="room-header">
         <div className="room-title">{visibleRoom?.kind === "dm" && counterparts.length === 1
           ? <ParticipantAvatar participant={counterparts[0]} size="sm" />
@@ -305,7 +317,7 @@ function RoomContent({
         </section>
       </div>
     </aside>}
-    {showDetail && <aside className="room-context" aria-label={parentMessage ? "Thread" : selectedContext!.title} onKeyDown={(event) => { if (event.key === "Escape") closeDetail(); }}>
+    {showDetail && <aside className="room-context" aria-label={parentMessage ? "Thread" : selectedContext!.title} onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>
         <h3 ref={detailHeading} tabIndex={-1} className="font-serif text-lg room-wrap">{parentMessage ? "Thread" : selectedContext!.title}</h3></header>
       <div className="room-context-body">{parentMessage ? <>{renderMessage(parentMessage, true)}

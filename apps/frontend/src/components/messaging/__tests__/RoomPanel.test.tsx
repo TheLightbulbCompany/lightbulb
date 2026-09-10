@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
 import { RoomPanel, type RoomPanelProps } from "../RoomPanel";
@@ -112,4 +112,51 @@ it.each(["thread", "context"] as const)("replaces the narrow conversation only w
   await user.click(screen.getByRole("button", { name: "Back to conversation" }));
   expect(history).toBeVisible();
   expect(trigger).toHaveFocus();
+});
+
+it.each([860, 1100, 1179, 1180])("dismisses detail on conversation return only in the medium range at %ipx", async (width) => {
+  vi.spyOn(window, "matchMedia").mockImplementation((query) => ({
+    matches: query === "(min-width: 860px) and (max-width: 1179px)" && width < 1180,
+    media: query, addEventListener: vi.fn(), removeEventListener: vi.fn(),
+  } as unknown as MediaQueryList));
+  const user = userEvent.setup();
+  render(<RoomPanel {...props} />);
+  const history = screen.getByRole("region", { name: "Messages" });
+  const reply = screen.getByRole("button", { name: "Reply" });
+  for (const returnBy of ["click", "focus"] as const) {
+    await user.click(reply);
+    expect(screen.getByRole("heading", { name: "Thread" })).toHaveFocus();
+    if (returnBy === "click") await user.click(screen.getByRole("heading", { name: "Friday" }));
+    else act(() => history.focus());
+    if (width < 1180) {
+      expect(screen.queryByRole("complementary", { name: "Thread" })).not.toBeInTheDocument();
+      expect(reply).toHaveFocus();
+    } else {
+      expect(screen.getByRole("complementary", { name: "Thread" })).toBeInTheDocument();
+      if (returnBy === "focus") expect(history).toHaveFocus();
+    }
+  }
+});
+
+it("dismisses a medium overlay on Escape from outside the room and restores its trigger", async () => {
+  vi.spyOn(window, "matchMedia").mockImplementation((query) => ({
+    matches: query === "(min-width: 860px) and (max-width: 1179px)",
+    media: query, addEventListener: vi.fn(), removeEventListener: vi.fn(),
+  } as unknown as MediaQueryList));
+  const user = userEvent.setup();
+  const onSelectThread = vi.fn();
+  const { unmount } = render(<><button>Outside room</button><RoomPanel {...props} onSelectThread={onSelectThread} /></>);
+  const reply = screen.getByRole("button", { name: "Reply" });
+  await user.click(reply);
+  await user.click(screen.getByRole("button", { name: "Outside room" }));
+  expect(screen.getByRole("complementary", { name: "Thread" })).toBeInTheDocument();
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("complementary", { name: "Thread" })).not.toBeInTheDocument();
+  expect(reply).toHaveFocus();
+  expect(onSelectThread).toHaveBeenLastCalledWith(null);
+  await user.click(reply);
+  onSelectThread.mockClear();
+  unmount();
+  await user.keyboard("{Escape}");
+  expect(onSelectThread).not.toHaveBeenCalled();
 });

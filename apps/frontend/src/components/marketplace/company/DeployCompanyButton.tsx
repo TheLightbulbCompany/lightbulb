@@ -93,7 +93,7 @@ export function DeployCompanyButton({ listing }: { listing: Listing }) {
           role="alert"
         >
           {error}{" "}
-          {/Ultra Pro/i.test(error) ? (
+          {/Ultra/i.test(error) ? (
             <Link href="/settings" className="font-bold underline hover:opacity-80">
               Upgrade in Settings
             </Link>

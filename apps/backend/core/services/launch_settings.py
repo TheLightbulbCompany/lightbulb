@@ -331,8 +331,8 @@ async def record_close_state(
 async def create_stripe_coupon(auth: AuthContext, *, force: bool = False) -> dict:
     """Mint the launch free-month coupon: 100% off, ``duration="once"``,
     redeemable through ``COUPON_REDEEM_BY``, and RESTRICTED to the flat
-    (Starter) subscription product via ``applies_to.products`` — the free
-    month is a Starter month, never a discount on the bundled starter-credits
+    (Workspace) subscription product via ``applies_to.products`` — the free
+    month is a Workspace month, never a discount on the bundled starter-credits
     line item (a 100%-off coupon on the whole session would zero up to
     $1,000 of credits the webhook still grants in full). The product id is
     resolved from ``STRIPE_WORKSPACE_PRICE_ID`` at mint time. There are NO

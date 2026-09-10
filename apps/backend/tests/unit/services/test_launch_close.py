@@ -412,7 +412,7 @@ async def test_a_paying_ultra_winner_is_skipped_and_gets_the_unpaid_email():
     """A product-restricted coupon on a non-flat sub discounts $0 without
     erroring — so an Ultra paying winner must NOT be stamped, counted as
     attached, or told "next invoice is $0". Skipped visibly; the unpaid
-    variant ("first month of Starter is free at checkout") is literally
+    variant ("first month of Workspace is free at checkout") is literally
     accurate for them."""
     rows = [_row("a@x.com", 1)]
     billing = {"user_a": dict(PAYING, stripe_subscription_id="sub_ultra")}
@@ -897,7 +897,7 @@ async def test_bundled_credits_checkout_keeps_the_discount_and_the_credits_line(
     coupon pre-applied, and the credits line passed through untouched — the
     coupon's applies_to product restriction (minted in launch_settings) is
     what keeps the discount off the credits line at Stripe, so the credits
-    are always paid while the Starter month is free."""
+    are always paid while the Workspace month is free."""
     credits_line = {
         "price_data": {
             "currency": "usd",
@@ -916,9 +916,9 @@ async def test_bundled_credits_checkout_keeps_the_discount_and_the_credits_line(
 
 
 async def test_ultra_checkout_gets_no_discount_even_for_a_winner():
-    """The coupon is product-restricted to Starter — an Ultra session gets no
+    """The coupon is product-restricted to Workspace — an Ultra session gets no
     discount at all (the lookup is never even consulted), rather than a
-    Stripe applicability error. Free month = Starter month."""
+    Stripe applicability error. Free month = Workspace month."""
     captured, lookup = await _build_checkout_captured([{"coupon": "coup_1"}], price="price_ultra")
     assert "discounts" not in captured
     assert captured["allow_promotion_codes"] is True

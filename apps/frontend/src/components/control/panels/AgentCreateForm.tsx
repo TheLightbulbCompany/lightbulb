@@ -152,7 +152,7 @@ export function AgentCreateForm({ existingNames, onCreated, onCancel }: AgentCre
                 Starting upgrade…
               </>
             ) : (
-              "Upgrade to Ultra Pro"
+              "Upgrade to Ultra"
             )}
           </Button>
           {upgradeError && <p className="text-xs text-err">{upgradeError}</p>}

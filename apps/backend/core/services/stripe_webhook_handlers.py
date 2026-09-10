@@ -109,7 +109,7 @@ _CONVERSION_PREREQUISITE_GATES = frozenset({"oauth_required", "byo_provider_requ
 # credits, stamping the launch winner's coupon as consumed).
 #   - "paid"               : card cleared synchronously.
 #   - "no_payment_required": $0 due — a 100%-off coupon, which is exactly the
-#                            shape of the launch winner's free Starter month —
+#                            shape of the launch winner's free Workspace month —
 #                            still a completed purchase.
 # Anything else ("unpaid") is a delayed method (ACH etc.): Stripe fires
 # checkout.session.completed immediately and async_payment_succeeded (or

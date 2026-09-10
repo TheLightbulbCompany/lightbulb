@@ -1699,7 +1699,7 @@ class TestSubscriptionActivationDelegatesToLaunchReferral:
         assert await self._stamped_for("unpaid") is False
 
     async def test_the_free_month_zero_dollar_session_still_stamps(self):
-        """The winner's own session is the $0 shape: 100% off Starter means
+        """The winner's own session is the $0 shape: 100% off Workspace means
         `no_payment_required`, not `paid`. A `== "paid"` check would have
         skipped the exact case this stamp exists for."""
         assert await self._stamped_for("no_payment_required") is True

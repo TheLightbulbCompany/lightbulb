@@ -236,8 +236,8 @@ function ProfilePanel() {
 // Billing Panel
 // =============================================================================
 
-// Ultra Pro control for a subscribed owner. When the owner is
-// already on ultra_pro it collapses to an "Ultra Pro" active badge; otherwise
+// Ultra control for a subscribed owner. When the owner is
+// already on ultra_pro it collapses to an "Ultra" active badge; otherwise
 // it renders the upgrade button that calls useBilling().startCheckout("ultra") (which
 // redirects to a fresh Checkout, or refreshes in place on the item-swap path).
 function UltraUpgradeRow({
@@ -273,7 +273,7 @@ function UltraUpgradeRow({
       <div style={{ marginTop: 14 }}>
         <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600, color: "var(--midnight)", background: "color-mix(in srgb, var(--midnight) 8%, transparent)", padding: "3px 10px", borderRadius: 999 }}>
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-          Ultra Pro
+          Ultra
         </span>
         <div className="settings-card-desc" style={{ marginTop: 6 }}>
           Larger marketplace companies unlocked.
@@ -286,7 +286,7 @@ function UltraUpgradeRow({
     <div style={{ marginTop: 14 }}>
       <button type="button" className="settings-btn-save" onClick={handleUpgrade} disabled={loading}>
         {loading && <span className="settings-spinner" style={{ width: 14, height: 14, borderWidth: 2, marginRight: 6, display: "inline-block", verticalAlign: "middle" }} />}
-        {ultraPriceUsd === undefined ? "Upgrade to Ultra Pro" : `Upgrade to Ultra Pro — $${ultraPriceUsd}/mo`}
+        {ultraPriceUsd === undefined ? "Upgrade to Ultra" : `Upgrade to Ultra — $${ultraPriceUsd}/mo`}
       </button>
       {error && (
         <div className="settings-alert settings-alert-error" style={{ marginTop: 8 }}>

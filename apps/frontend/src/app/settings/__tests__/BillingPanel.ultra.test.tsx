@@ -2,10 +2,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
 import React from "react";
 
-// Covers the settings BillingPanel Ultra Pro upgrade CTA (settings/page.tsx):
-// a subscribed owner on the standard plan sees an "Upgrade to Ultra Pro —
+// Covers the settings BillingPanel Ultra upgrade CTA (settings/page.tsx):
+// a subscribed owner on the standard plan sees an "Upgrade to Ultra —
 // $150/mo" button that calls useBilling().startCheckout("ultra") on click; an owner
-// already on ultra_pro sees an "Ultra Pro" active badge and no upgrade button.
+// already on ultra_pro sees an "Ultra" active badge and no upgrade button.
 // Workspace owners use the same CTA. Harness mirrors ./BillingPanel.billing.test.tsx.
 
 const nav = vi.hoisted(() => ({ panel: "billing" as string | null }));
@@ -55,7 +55,7 @@ vi.mock("@/hooks/useBilling", () => ({
 
 import SettingsPage from "../page";
 
-describe("BillingPanel — Ultra Pro upgrade CTA", () => {
+describe("BillingPanel — Ultra upgrade CTA", () => {
   beforeEach(() => {
     nav.panel = "billing";
     clerk.membership = null;
@@ -80,7 +80,7 @@ describe("BillingPanel — Ultra Pro upgrade CTA", () => {
 
     render(<SettingsPage />);
 
-    const btn = screen.getByRole("button", { name: /upgrade to ultra pro/i });
+    const btn = screen.getByRole("button", { name: /upgrade to ultra/i });
     expect(btn).toBeInTheDocument();
     expect(btn).toHaveTextContent("$150");
 
@@ -94,7 +94,7 @@ describe("BillingPanel — Ultra Pro upgrade CTA", () => {
     expect(billing.startCheckout).toHaveBeenCalledWith("ultra");
   });
 
-  it("ultra_pro owner sees the Ultra Pro badge and no upgrade button", () => {
+  it("ultra_pro owner sees the Ultra badge and no upgrade button", () => {
     billing.isSubscribed = true;
     billing.account = {
       is_subscribed: true,
@@ -111,9 +111,9 @@ describe("BillingPanel — Ultra Pro upgrade CTA", () => {
 
     render(<SettingsPage />);
 
-    expect(screen.getByText("Ultra Pro")).toBeInTheDocument();
+    expect(screen.getByText("Ultra")).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: /upgrade to ultra pro/i }),
+      screen.queryByRole("button", { name: /upgrade to ultra/i }),
     ).not.toBeInTheDocument();
   });
 
@@ -135,6 +135,6 @@ describe("BillingPanel — Ultra Pro upgrade CTA", () => {
 
     render(<SettingsPage />);
 
-    expect(screen.getByRole("button", { name: /upgrade to ultra pro/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /upgrade to ultra/i })).toBeInTheDocument();
   });
 });

@@ -29,9 +29,9 @@ describe("CompanyCard", () => {
     expect(screen.getByText(/one-click deploy/i)).toBeInTheDocument();
   });
 
-  it("shows the Ultra Pro badge for large companies", () => {
+  it("shows the Ultra badge for large companies", () => {
     render(<CompanyCard listing={companyListing(49, "ultra_pro")} />);
-    expect(screen.getByText(/requires ultra pro/i)).toBeInTheDocument();
+    expect(screen.getByText(/requires ultra/i)).toBeInTheDocument();
   });
 });
 

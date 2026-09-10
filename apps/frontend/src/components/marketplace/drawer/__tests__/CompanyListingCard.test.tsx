@@ -59,14 +59,14 @@ describe("<CompanyListingCard>", () => {
     expect(screen.queryByRole("button", { name: /deploy company/i })).toBeNull();
   });
 
-  it("Requires Ultra Pro error renders the settings upgrade link", async () => {
-    vi.mocked(deployCompany).mockRejectedValueOnce(new Error("Requires Ultra Pro"));
+  it("Requires Ultra error renders the settings upgrade link", async () => {
+    vi.mocked(deployCompany).mockRejectedValueOnce(new Error("Requires Ultra"));
     render(<CompanyListingCard listing={companyListing("ultra_pro")} />);
 
     fireEvent.click(screen.getByRole("button", { name: /deploy company/i }));
 
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent(/requires ultra pro/i);
+    expect(alert).toHaveTextContent(/requires ultra/i);
     expect(screen.getByRole("link", { name: /upgrade in settings/i })).toHaveAttribute(
       "href",
       "/settings",

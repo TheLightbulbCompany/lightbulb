@@ -157,7 +157,7 @@ async def test_submission_stores_the_row_and_emails_the_founders(store):
     # the standing rule about what a winning team's free month covers.
     for body in (kwargs["html"], kwargs["text"]):
         assert "$30.00" in body  # $10 per entrant + 4 × $5 per seat
-        assert "container only" in body
+        assert "Workspace plan" in body
 
 
 @patch("core.services.launch_sheet_email.email_service.send_email", AsyncMock(return_value="msg_1"))

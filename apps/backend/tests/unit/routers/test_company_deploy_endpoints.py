@@ -297,7 +297,7 @@ def test_admin_deploy_ultra_pro_company_409(
     mock_billing, mock_get_published, mock_boto, mock_run, mock_create_task, admin_client
 ):
     """A NON-ultra_pro admin deploying a >10-agent (ultra_pro) company is
-    rejected 409 'Requires Ultra Pro' — the plan gate lives inside the
+    rejected 409 'Requires Ultra' — the plan gate lives inside the
     admin-gated branch, before any S3/dispatch work."""
     mock_billing.return_value = None  # no billing row -> not ultra_pro
     mock_get_published.return_value = _company_listing(agent_count=15, min_plan="ultra_pro")
@@ -305,7 +305,7 @@ def test_admin_deploy_ultra_pro_company_409(
     resp = admin_client.post("/api/v1/marketplace/listings/gstack/deploy")
 
     assert resp.status_code == 409, resp.text
-    assert "ultra pro" in resp.json()["detail"].lower()
+    assert "requires ultra" in resp.json()["detail"].lower()
     mock_boto.assert_not_called()
     mock_run.assert_not_called()
     mock_create_task.assert_not_called()

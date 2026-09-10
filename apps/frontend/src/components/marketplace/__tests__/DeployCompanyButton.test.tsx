@@ -91,14 +91,14 @@ describe("<DeployCompanyButton>", () => {
     expect(deployCompany).not.toHaveBeenCalled();
   });
 
-  it("Requires Ultra Pro 409: shows the error with an Upgrade in Settings link, not a retry", async () => {
-    vi.mocked(deployCompany).mockRejectedValueOnce(new Error("Requires Ultra Pro"));
+  it("Requires Ultra 409: shows the error with an Upgrade in Settings link, not a retry", async () => {
+    vi.mocked(deployCompany).mockRejectedValueOnce(new Error("Requires Ultra"));
     render(<DeployCompanyButton listing={companyListing("ultra_pro")} />);
 
     fireEvent.click(screen.getByRole("button", { name: /deploy company/i }));
 
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent(/requires ultra pro/i);
+    expect(alert).toHaveTextContent(/requires ultra/i);
     expect(screen.getByRole("link", { name: /upgrade in settings/i })).toHaveAttribute(
       "href",
       "/settings",

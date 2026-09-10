@@ -388,7 +388,7 @@ describe("ProvisioningStepper blocked-state rendering", () => {
       blocked: {
         code: "team_billing_required",
         title: "Subscribe to start your team's containers",
-        message: "Your organization needs a Teams subscription.",
+        message: "Your workspace needs an active subscription.",
         action: {
           kind: "link",
           label: "Subscribe",

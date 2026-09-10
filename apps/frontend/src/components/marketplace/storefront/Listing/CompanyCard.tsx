@@ -24,7 +24,7 @@ export function CompanyCard({ listing }: { listing: Listing }) {
         <h3 className="font-editorial-serif text-xl text-[var(--midnight)]">{company.name}</h3>
         {locked ? (
           <span className="rounded-full bg-[var(--cream-deep)] px-2.5 py-1 font-mono text-2xs font-semibold uppercase tracking-caps text-[var(--midnight)]">
-            Requires Ultra Pro
+            Requires Ultra
           </span>
         ) : (
           <span className="rounded-full border border-[var(--edge)] px-2.5 py-1 font-mono text-2xs font-semibold uppercase tracking-caps text-[var(--midnight-muted)]">

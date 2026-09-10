@@ -49,7 +49,7 @@ export interface ContainerActionsPanelProps {
  * actions use the user_id as the typed-confirm phrase (CEO S5).
  *
  * Note on Resize: post-flat-fee (2026-04 pivot) every user runs a
- * plan-sized box (standard 1 vCPU / 4 GB; Ultra Pro 2 vCPU / 8 GB), so resize
+ * plan-sized box (standard 1 vCPU / 4 GB; Ultra 2 vCPU / 8 GB), so resize
  * is now a "re-apply standard sizing" recovery action — it forces the ECS
  * service to roll its task definition with the canonical per-user resource
  * profile. The backend's resize endpoint accepts and ignores the legacy `tier` argument.

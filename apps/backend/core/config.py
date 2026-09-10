@@ -307,7 +307,7 @@ class Settings(BaseSettings):
     STRIPE_SECRET_KEY: str = ""
     STRIPE_WEBHOOK_SECRET: str = ""
     STRIPE_WORKSPACE_PRICE_ID: str = ""
-    # Stripe price for the Ultra Pro tier (large marketplace companies exceeding
+    # Stripe price for the Ultra tier (large marketplace companies exceeding
     # the flat tier's agent budget). Empty default so the app boots without it;
     # CDK-wired in dev/prod. This is the billing source of truth for "$150".
     STRIPE_ULTRA_PRICE_ID: str = ""

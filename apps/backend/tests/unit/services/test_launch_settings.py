@@ -283,7 +283,7 @@ async def test_create_stripe_coupon_mints_100_off_once_with_redeem_by():
     kwargs = coupon_create.call_args.kwargs
     assert kwargs["percent_off"] == 100 and kwargs["duration"] == "once"
     assert kwargs["redeem_by"] == int(ls.COUPON_REDEEM_BY.timestamp())
-    # Product-restricted: the free month discounts the Starter subscription
+    # Product-restricted: the free month discounts the Workspace subscription
     # line ONLY — never the bundled starter-credits line item.
     assert kwargs["applies_to"] == {"products": ["prod_flat"]}
     assert kwargs["idempotency_key"] == f"launch-coupon:{ls.settings.ENVIRONMENT}:prod_flat:1"

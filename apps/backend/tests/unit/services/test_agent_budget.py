@@ -42,7 +42,7 @@ async def test_at_the_limit_refuses_the_next_create(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         await enforce_agent_budget("owner")
     assert exc.value.status_code == 409
-    assert "Ultra Pro" in str(exc.value.detail)
+    assert "Ultra" in str(exc.value.detail)
 
 
 @pytest.mark.asyncio

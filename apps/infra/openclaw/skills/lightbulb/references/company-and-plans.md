@@ -92,11 +92,11 @@ window for both, so warn the owner before kicking off multi-hour work.
 
 ```json
 {
-  "plan": "Starter ($50/mo flat fee)",
+  "plan": "Workspace ($50/mo)",
   "subscription_status": "active",
   "provider": "Bedrock (Claude, Lightbulb-managed credits)",
   "provider_choice": "bedrock_claude",
-  "owner_kind": "personal",
+  "owner_kind": "org",
   "generated_at": "…"
 }
 ```

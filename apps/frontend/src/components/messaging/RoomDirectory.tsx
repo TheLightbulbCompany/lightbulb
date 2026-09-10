@@ -5,7 +5,7 @@ import { Hash, MessageCircle, Plus, Users } from "lucide-react";
 import type { ListenMode, RoomKind } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Identity } from "@/components/teams/shared/components/Identity";
-import { roomKindLabel, type DirectoryParticipant, type ParticipantSelection, type RoomSummary } from "./types";
+import { roomKindLabel, type DirectoryParticipant, type ParticipantSelection, type DirectoryRoom } from "./types";
 import "./messaging.css";
 
 export interface ConversationCreation {
@@ -16,7 +16,7 @@ export interface ConversationCreation {
 
 export interface RoomDirectoryProps {
   ownerScopeId: string;
-  rooms: readonly RoomSummary[];
+  rooms: readonly DirectoryRoom[];
   participants: readonly DirectoryParticipant[];
   state: "loading" | "ready" | "error" | "access-removed";
   currentRoomId?: string;

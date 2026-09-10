@@ -1,4 +1,5 @@
 import type { ToolCall } from "@/components/chat/ToolActivityTrace";
+import type { RosterState } from "@/components/agents/AgentRoster";
 import type { ReactNode } from "react";
 import type {
   CanonicalRoomMessage,
@@ -16,8 +17,9 @@ export const roomKindLabel = {
   "group-dm": "Group message",
 } as const;
 
-export type RoomParticipant = RoomMember & { agentState?: WorkState };
-export type DirectoryParticipant = Pick<RoomMember, "kind" | "id" | "displayName" | "mentionHandle">;
+export type RoomParticipant = RoomMember & { agentState?: WorkState; agentActivity?: RosterState };
+export type DirectoryParticipant = Pick<RoomMember, "kind" | "id" | "displayName" | "mentionHandle"> & { agentActivity?: RosterState };
+export type DirectoryRoom = CanonicalRoomSummary & { participants: readonly DirectoryParticipant[] };
 export type RoomSummary = CanonicalRoomSummary;
 export type RoomMessage = CanonicalRoomMessage & {
   contextIds?: readonly string[];

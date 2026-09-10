@@ -38,7 +38,7 @@ const firstMessage: CanonicalRoomMessage = {
 const handlers = new Set<(event: LiveEvent) => void>();
 const messaging = {
   listRooms: vi.fn(async () => ({ rooms: [room as RoomSummary] })),
-  getRoom: vi.fn(async () => room),
+  getRoom: vi.fn<(roomId: string) => Promise<RoomDetail>>(async () => room),
   listMessages: vi.fn(async () => ({ messages: [firstMessage], nextAfterSeq: null })),
   sendMessage: vi.fn(async (_roomId: string, request: { clientMessageId: string; text: string; mentions: unknown[]; replyToMessageId: string | null; threadRootMessageId: string | null }) => ({
     ...firstMessage,

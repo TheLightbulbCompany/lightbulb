@@ -160,6 +160,8 @@ class BillingService:
 
 async def create_workspace_checkout(*, owner_id: str, clerk_user_id: str, plan: Literal["workspace", "ultra"]) -> dict:
     """Create or change the single recurring subscription for a workspace."""
+    checkout_bucket = int(time.time() // 300)
+    checkout_expires_at = (checkout_bucket * 300) + 36 * 60
     price_id = settings.STRIPE_WORKSPACE_PRICE_ID if plan == "workspace" else settings.STRIPE_ULTRA_PRICE_ID
     if not price_id:
         raise BillingServiceError(f"STRIPE_{plan.upper()}_PRICE_ID not configured")
@@ -305,7 +307,10 @@ async def create_workspace_checkout(*, owner_id: str, clerk_user_id: str, plan: 
             metadata=metadata,
             success_url=f"{settings.FRONTEND_URL}/settings?panel=billing&checkout=success",
             cancel_url=f"{settings.FRONTEND_URL}/settings?panel=billing&checkout=cancel",
-            idempotency_key=_checkout_idempotency_key("workspace_checkout", owner_id, f"{plan}:{clerk_user_id}"),
+            idempotency_key=(
+                f"workspace_checkout:v{_CHECKOUT_BODY_VERSION}:{owner_id}:{plan}:{clerk_user_id}:{checkout_bucket}"
+            ),
+            expires_at=checkout_expires_at,
         )
     except Exception:
         await billing_repo.release_checkout_slot(owner_id, token=claim_token)
@@ -377,6 +382,7 @@ async def _build_subscription_checkout(
     success_url: str,
     cancel_url: str,
     idempotency_key: str,
+    expires_at: int | None = None,
     allow_promotion_codes: bool = True,
     origin_context: str | None = None,
 ) -> stripe.checkout.Session:
@@ -422,7 +428,7 @@ async def _build_subscription_checkout(
         # — load-bearing for the single-open-session guard in /trial-checkout.
         # This matches _checkout_idempotency_key's five-minute bucket. Six
         # buckets plus one minute gives Stripe at least 31 minutes.
-        expires_at=(int(time.time() // 300) * 300) + 36 * 60,
+        expires_at=expires_at if expires_at is not None else (int(time.time() // 300) * 300) + 36 * 60,
     )
     if origin_context:
         # "mobile_app" switches Checkout to the UI built for app-to-web

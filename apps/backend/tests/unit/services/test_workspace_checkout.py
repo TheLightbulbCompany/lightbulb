@@ -299,16 +299,25 @@ async def test_workspace_checkout_rejects_pending_marker_with_conflicting_legacy
 @pytest.mark.asyncio
 async def test_workspace_checkout_retries_within_a_bucket_send_identical_stripe_kwargs(monkeypatch):
     monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
-    monkeypatch.setattr(billing_service.time, "time", lambda: 1_800_000_001)
+    clock = {"now": 1_800_000_001}
+    monkeypatch.setattr(billing_service.time, "time", lambda: clock["now"])
+
+    async def get_account(_owner_id):
+        # The DDB await crosses a five-minute boundary after the key/expiry
+        # were captured. The builder must not sample that later clock value.
+        clock["now"] = 1_800_000_301
+        return {"owner_id": "org_1", "stripe_customer_id": "cus_1"}
+
     monkeypatch.setattr(
         billing_service.billing_repo,
         "get_by_owner_id",
-        AsyncMock(return_value={"owner_id": "org_1", "stripe_customer_id": "cus_1"}),
+        get_account,
     )
     create = MagicMock(side_effect=[{"id": "cs_1", "url": "url_1"}, {"id": "cs_2", "url": "url_2"}])
     monkeypatch.setattr(billing_service.stripe.checkout.Session, "create", create)
 
     await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="workspace")
+    clock["now"] = 1_800_000_001
     await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="workspace")
 
     assert create.call_args_list[0].kwargs == create.call_args_list[1].kwargs

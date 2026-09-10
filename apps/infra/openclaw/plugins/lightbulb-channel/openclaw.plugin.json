@@ -1,0 +1,47 @@
+{
+  "id": "lightbulb",
+  "name": "Lightbulb Channel",
+  "description": "Native OpenClaw channel for canonical Lightbulb multiplayer rooms.",
+  "version": "0.1.0",
+  "activation": {
+    "onStartup": false
+  },
+  "channels": [
+    "lightbulb"
+  ],
+  "channelConfigs": {
+    "lightbulb": {
+      "label": "Lightbulb",
+      "description": "Per-agent accounts for canonical Lightbulb room ingress and outbound delivery.",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "accounts": {
+            "type": "object",
+            "propertyNames": {
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+            },
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  }
+}

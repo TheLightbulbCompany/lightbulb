@@ -15,6 +15,7 @@ function pageFixture(
       return {
         fill,
         isVisible: vi.fn().mockResolvedValue(!taskNeedsCreateAction),
+        or: vi.fn(() => ({ waitFor: vi.fn().mockResolvedValue(undefined) })),
         waitFor: vi.fn().mockResolvedValue(undefined),
       };
     }
@@ -50,6 +51,44 @@ it("creates a workspace directly without the retired chooser or invitation skip"
   expect(openCreate).not.toHaveBeenCalled();
   expect(submit).toHaveBeenCalledOnce();
   expect(record).toHaveBeenCalledWith("org_created");
+});
+
+it("waits for a delayed direct Clerk form instead of clicking its disabled submit", async () => {
+  const fill = vi.fn().mockResolvedValue(undefined);
+  const submit = vi.fn().mockResolvedValue(undefined);
+  const openCreate = vi.fn().mockRejectedValue(new Error("Direct form submit is disabled"));
+  let inputVisible = false;
+  const nameInput = {
+    fill,
+    isVisible: vi.fn(() => Promise.resolve(inputVisible)),
+    waitFor: vi.fn().mockResolvedValue(undefined),
+    or: vi.fn(() => ({
+      waitFor: vi.fn().mockImplementation(() => {
+        inputVisible = true;
+      }),
+    })),
+  };
+  const page = {
+    goto: vi.fn().mockResolvedValue(undefined),
+    getByRole: vi.fn((role: string, options: { name: string | RegExp }) => {
+      if (role === "textbox") return nameInput;
+      if (role === "button" && options.name instanceof RegExp) {
+        const click = options.name.source === "^create a workspace$" ? openCreate : submit;
+        return { and: vi.fn(() => ({ click })) };
+      }
+      throw new Error("Unexpected onboarding control: " + String(options.name));
+    }),
+    waitForURL: vi.fn().mockResolvedValue(undefined),
+    waitForFunction: vi.fn().mockResolvedValue(undefined),
+    evaluate: vi.fn().mockResolvedValue("org_created"),
+    locator: vi.fn(() => ({})),
+  } as unknown as Page;
+
+  await expect(onboardWorkspace(page, "Test workspace", vi.fn())).resolves.toEqual({
+    orgId: "org_created",
+  });
+  expect(fill).toHaveBeenCalledWith("Test workspace");
+  expect(submit).toHaveBeenCalledOnce();
 });
 
 it("opens Clerk's native create-workspace form when the session task shows its action", async () => {

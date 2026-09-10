@@ -276,7 +276,8 @@ describe("useRooms canonical reconciliation", () => {
     const { result } = renderHook(() => useRooms(), { wrapper });
     await waitFor(() => expect(result.current.activeRoomId).toBe(room.roomId));
 
-    await act(async () => result.current.selectDm({ kind: "human", id: "user-new" }));
+    const participant = { kind: "human" as const, id: "user-new", displayName: "New person", mentionHandle: null };
+    await act(async () => result.current.selectDm(participant));
 
     expect(messaging.createRoom).toHaveBeenCalledWith(expect.objectContaining({
       kind: "dm",

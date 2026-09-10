@@ -39,6 +39,7 @@ export type PendingTopUp = {
   workspace_id: string;
   request_id: string;
   amount_cents: number;
+  state: "pending" | "requested";
 };
 
 const pendingTopUpKey = (userId: string, workspaceId: string) =>
@@ -54,7 +55,8 @@ function readPendingTopUp(userId: string, workspaceId: string): PendingTopUp | n
       intent.user_id !== userId ||
       intent.workspace_id !== workspaceId ||
       typeof intent.request_id !== "string" ||
-      typeof intent.amount_cents !== "number"
+      typeof intent.amount_cents !== "number" ||
+      (intent.state !== "pending" && intent.state !== "requested")
     ) {
       window.localStorage.removeItem(pendingTopUpKey(userId, workspaceId));
       return null;
@@ -87,6 +89,7 @@ export function useCredits() {
       workspace_id: orgId,
       request_id: crypto.randomUUID(),
       amount_cents: amountCents,
+      state: "pending" as const,
     };
     if (!persisted) {
       window.localStorage.setItem(pendingTopUpKey(userId, orgId), JSON.stringify(intent));
@@ -98,7 +101,13 @@ export function useCredits() {
       request_id: intent.request_id,
     }) as TopUpResult;
     if (result.status === "requested") {
-      window.localStorage.removeItem(pendingTopUpKey(userId, orgId));
+      // A request acknowledgement means Metronome accepted the gated commit;
+      // collection is still asynchronous. Keep the exact locked intent across
+      // reloads so the next UI cannot authorize a second purchase.
+      window.localStorage.setItem(
+        pendingTopUpKey(userId, orgId),
+        JSON.stringify({ ...intent, state: "requested" }),
+      );
       refreshPendingTopUp((version) => version + 1);
     }
     return result;

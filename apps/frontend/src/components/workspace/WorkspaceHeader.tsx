@@ -4,6 +4,7 @@ import "./workspace.css";
 import { UserButton } from "@clerk/nextjs";
 import { Bell, Chrome, FolderOpen, HelpCircle, Home, ListTodo, MessageSquare, Search, Settings } from "lucide-react";
 import Link from "next/link";
+import { capture } from "@/lib/analytics";
 import { useSupport } from "@/components/support/SupportProvider";
 import { useCommandPalette } from "@/components/teams/command-palette/CommandPaletteProvider";
 import { activateMessagesPanel, openPanel, useWorkspaceState } from "./workspaceController";
@@ -31,7 +32,12 @@ export function WorkspaceHeader({ chatReady = true }: { chatReady?: boolean }): 
       {DESTINATIONS.map(({ panel, label, Icon }) => (
         <button key={panel} type="button" aria-label={label} title={label} disabled={!chatReady}
           aria-current={activePanelId === panel ? "page" : undefined}
-          onClick={() => panel === MESSAGES_PANEL_ID ? activateMessagesPanel() : openPanel(panel, {}, { pushUrl: true })}>
+          onClick={() => {
+            if (panel === "file-viewer") capture("file_browser_opened");
+            if (panel === "browser") capture("browser_view_opened");
+            if (panel === MESSAGES_PANEL_ID) activateMessagesPanel();
+            else openPanel(panel, {}, { pushUrl: true });
+          }}>
           <Icon size={20} aria-hidden="true" />
           {label !== "Browse workspace files" && <span>{label}</span>}
         </button>

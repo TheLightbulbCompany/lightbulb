@@ -5,7 +5,8 @@ import { Hash, MessageCircle, Plus, Users } from "lucide-react";
 import type { ListenMode, RoomKind } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Identity } from "@/components/teams/shared/components/Identity";
-import { roomKindLabel, type DirectoryParticipant, type ParticipantSelection, type DirectoryRoom } from "./types";
+import { ParticipantAvatar } from "./ParticipantAvatar";
+import { roomDisplayName, roomKindLabel, type DirectoryParticipant, type ParticipantSelection, type DirectoryRoom } from "./types";
 import "./messaging.css";
 
 export interface ConversationCreation {
@@ -100,10 +101,12 @@ function DirectoryContent({
         {entries.length === 0 && <p className="text-sm text-muted-foreground px-2">{group === "Channels" ? "Create a channel for shared work." : "Start a conversation with people or agents."}</p>}
         <ul>{entries.map((room) => {
           const Icon = room.kind === "channel" ? Hash : room.kind === "group-dm" ? Users : MessageCircle;
-          const label = room.name ?? (room.kind === "dm" ? "Direct message" : "Group message");
+          const label = roomDisplayName(room, room.participants);
           return <li key={room.roomId}><button type="button" className={`room-directory-entry ${room.unreadCount > 0 ? "font-semibold" : ""}`}
             aria-current={room.roomId === currentRoomId ? "page" : undefined} onClick={() => onSelectRoom(room.roomId)}>
-            <Icon size={16} aria-hidden="true" />
+            {room.kind === "dm" && room.participants.length === 1
+              ? <ParticipantAvatar participant={room.participants[0]} size="sm" />
+              : <Icon size={16} aria-hidden="true" />}
             <span className="min-w-0 flex-1"><span className="block truncate" title={label}>{label}</span><span className="sr-only">{roomKindLabel[room.kind]}</span></span>
             {room.unreadCount > 0 && <span className="room-count" aria-label={`${room.unreadCount} unread messages`}>{room.unreadCount}</span>}
           </button></li>;
@@ -144,7 +147,7 @@ function DirectoryContent({
             {creating && <input aria-label={`Select ${participant.displayName}`} type="checkbox" checked={!!selection} disabled={creationBusy || (!selection && selected.size >= 31)} onChange={(event) => toggleParticipant(participant, event.target.checked)} />}
             <Identity name={participant.displayName} avatarOnly size="sm" />
             <span className="min-w-0 flex-1"><span className="block truncate" title={participant.displayName}>{participant.displayName}</span>
-              <span className="text-sm text-muted-foreground">{participant.kind === "agent" && participant.mentionHandle ? `@${participant.mentionHandle}` : "Person"}</span></span>
+              <span className="text-sm text-muted-foreground">{participant.kind === "agent" ? participant.mentionHandle ? `@${participant.mentionHandle}` : "Agent" : "Person"}</span></span>
             {creating && selection?.kind === "agent" && <label className="sr-only" htmlFor={`${id}-${participant.id}-listen`}>Listen mode for {participant.displayName}</label>}
             {creating && selection?.kind === "agent" && <select id={`${id}-${participant.id}-listen`} className="room-listen-mode" value={selection.listenMode ?? "mentions"}
               onChange={(event) => setListenMode(participant, event.target.value as ListenMode)}>

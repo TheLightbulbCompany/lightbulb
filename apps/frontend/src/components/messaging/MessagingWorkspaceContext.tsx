@@ -133,7 +133,7 @@ export function MessagingWorkspaceProvider({
   }, [setRoomTyping]);
 
   const participants: RoomParticipant[] = useMemo(() => rooms.activeRoom?.members.map((member) => member.kind === "agent"
-    ? { ...member, agentState: "unknown" as const, agentActivity: activityByAgentId.get(member.id) }
+    ? { ...member, agentActivity: activityByAgentId.get(member.id) }
     : member) ?? [], [rooms.activeRoom, activityByAgentId]);
   const directoryRooms: DirectoryRoom[] = useMemo(() => rooms.rooms.map((room) => ({
     ...room,

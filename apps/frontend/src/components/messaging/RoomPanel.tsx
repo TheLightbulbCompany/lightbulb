@@ -10,6 +10,8 @@ import { Identity } from "@/components/teams/shared/components/Identity";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
 import { safeHref } from "@/components/teams/shared/lib/safeHref";
 import { RoomComposer, type RoomComposerProps } from "./RoomComposer";
+import { ParticipantAvatar } from "./ParticipantAvatar";
+import { roomDisplayName } from "./types";
 import type {
   PendingRoomMessage,
   RoomContext,
@@ -185,10 +187,11 @@ function RoomContent({
   }
 
   function renderMessage(message: RoomMessage, inThread = false) {
-    const name = message.author.displayName || "Unknown author";
+    const participant = participants.find((member) => member.kind === message.author.kind && member.id === message.author.id);
+    const name = participant?.displayName || message.author.displayName || "Unknown author";
     const timestamp = !Number.isNaN(Date.parse(message.createdAt)) ? message.createdAt : undefined;
     return <article key={message.messageId} className="room-message" aria-label={`Message from ${name}`}>
-      <Identity name={name} avatarOnly size="default" />
+      {participant ? <ParticipantAvatar participant={participant} /> : <Identity name={name} avatarOnly size="default" />}
       <div className="room-message-content">
         <div className="room-message-byline"><span className="font-semibold truncate" title={name}>{name}</span>
           {message.author.kind === "agent" && <span className="text-sm text-muted-foreground">Agent</span>}
@@ -210,11 +213,14 @@ function RoomContent({
   }
 
   const RoomIcon = visibleRoom?.kind === "channel" ? Hash : visibleRoom?.kind === "group-dm" ? Users : MessageCircle;
-  const roomName = visibleRoom?.name ?? (visibleRoom?.kind === "dm" ? "Direct message" : "Group message");
+  const counterparts = participants.filter((participant) => participant.kind !== "human" || participant.id !== currentUserId);
+  const roomName = roomDisplayName(visibleRoom, counterparts);
   return <section className={`room-panel ${showDetail && !isNarrow ? "room-with-context" : ""}`} aria-label={roomName}>
     <div className="room-conversation" hidden={showDetail && isNarrow}>
       <header className="room-header">
-        <div className="room-title"><RoomIcon size={20} aria-hidden="true" /><h2 className="font-serif text-lg truncate" title={roomName}>{roomName}</h2></div>
+        <div className="room-title">{visibleRoom?.kind === "dm" && counterparts.length === 1
+          ? <ParticipantAvatar participant={counterparts[0]} size="sm" />
+          : <RoomIcon size={20} aria-hidden="true" />}<h2 className="font-serif text-lg truncate" title={roomName}>{roomName}</h2></div>
         {visibleRoom && <p className="text-sm text-muted-foreground">{visibleRoom.kind === "channel" ? "Channel" : visibleRoom.kind === "dm" ? "Direct message" : "Group message"}</p>}
         <div className="room-audience">
           {onLinkToWork && <Button type="button" variant="ghost" onClick={onLinkToWork}><Link2 aria-hidden="true" />Link to work</Button>}
@@ -225,12 +231,12 @@ function RoomContent({
       {membersOpen && <section id={`${id}-members`} aria-label="Room members" className="room-members"
         onKeyDown={(event) => { if (event.key === "Escape") { setMembersOpen(false); memberTrigger.current?.focus(); } }}>
         <h3 className="font-semibold">Room members</h3><ul>{participants.map((participant) => <li key={`${participant.kind}:${participant.id}`} className="room-member">
-          <Identity name={participant.displayName} avatarOnly size="sm" /><span className="truncate flex-1" title={participant.displayName}>{participant.displayName}</span>
+          <ParticipantAvatar participant={participant} size="sm" /><span className="truncate flex-1" title={participant.displayName}>{participant.displayName}</span>
           {participant.kind === "agent" ? <><span className="text-sm text-muted-foreground">{participant.mentionHandle ? `@${participant.mentionHandle}` : "Agent"}</span>
             {onListenModeChange && <label className="sr-only" htmlFor={`${id}-${participant.id}-mode`}>Listen mode for {participant.displayName}</label>}
             {onListenModeChange && <select id={`${id}-${participant.id}-mode`} className="room-listen-mode" value={participant.listenMode ?? "mentions"}
               onChange={(event) => onListenModeChange(participant.id, event.target.value as ListenMode)}><option value="active">Active</option><option value="mentions">Mentions only</option><option value="observe">Observe</option></select>}
-            <WorkStatus state={participant.agentState ?? "unknown"} /></> : <span className="text-sm text-muted-foreground">Person</span>}
+            </> : <span className="text-sm text-muted-foreground">Person</span>}
         </li>)}</ul>
       </section>}
       {(state === "reconnecting" || !liveConnected) && <div className="room-state"><p role="status" aria-label="Room status">Reconnecting live updates. You can keep sending messages.</p>

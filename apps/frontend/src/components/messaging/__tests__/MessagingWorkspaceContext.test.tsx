@@ -85,7 +85,8 @@ it("feeds the directory and conversation from one selected-room owner", () => {
 it("enriches room participants with roster activity while keeping the full creation picker", () => {
   compose();
   expect(directory.rooms[0].participants).toEqual([expect.objectContaining({ id: "agent-friday", agentActivity: "running" })]);
-  expect(panel.participants[1]).toMatchObject({ id: "agent-friday", agentActivity: "running", agentState: "unknown" });
+  expect(panel.participants[1]).toMatchObject({ id: "agent-friday", agentActivity: "running" });
+  expect(panel.participants[1]).not.toHaveProperty("agentState");
   expect(panel.participants[0]).not.toHaveProperty("agentActivity");
   expect(panel.participants[0]).not.toHaveProperty("agentState");
   expect(directory.participants.map((member) => member.id)).toEqual(["colleague", "agent-friday", "agent-atlas"]);

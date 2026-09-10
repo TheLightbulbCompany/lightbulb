@@ -3,15 +3,15 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import React from "react";
 import { PluginsTab } from "../PluginsTab";
 
-// useGatewayRpc is called twice — discriminate by method.
+// useRuntimeRpc is called twice — discriminate by method.
 const mockConfig = vi.fn();
 const mockCatalog = vi.fn();
 const mockMutate = vi.fn();
 const mockCallRpc = vi.fn();
 const mockMembership = vi.fn();
 
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpc: (method: string | null) => {
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpc: (method: string | null) => {
     if (method === "config.get") {
       return { data: mockConfig(), error: undefined, isLoading: false, mutate: mockMutate };
     }
@@ -20,7 +20,7 @@ vi.mock("@/hooks/useGatewayRpc", () => ({
     }
     return { data: undefined, error: undefined, isLoading: false, mutate: vi.fn() };
   },
-  useGatewayRpcMutation: () => mockCallRpc,
+  useRuntimeRpcMutation: () => mockCallRpc,
 }));
 vi.mock("@clerk/nextjs", () => ({ useOrganization: () => ({ membership: mockMembership() }) }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));

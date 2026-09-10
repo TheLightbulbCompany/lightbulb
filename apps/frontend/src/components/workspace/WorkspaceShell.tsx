@@ -99,11 +99,22 @@ function DockUnmountSentinel({ onUnmount }: { onUnmount: () => void }): null {
 }
 
 export function WorkspaceShell(): React.ReactElement {
-  const onboardingPhase = useOnboardingGate(); // exactly ONE mount (router side effects)
-  useBrowserToolAutoOpen(); // desktop-only by mount site; surfaces the Browser panel on agent browser use
+  const onboardingPhase = useOnboardingGate();
   const { userId, isSignedIn } = useAuth();
   const { organization } = useOrganization();
-  const scopeId = organization?.id ?? userId ?? "anon"; // gate below makes "anon" unreachable
+  if (onboardingPhase !== "ready" || !isSignedIn || !userId) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
+        <div style={{ color: "var(--midnight-muted)", fontSize: 14 }}>Loading…</div>
+      </div>
+    );
+  }
+  const scopeId = organization?.id ?? userId;
+  return <AuthenticatedWorkspace key={`${userId}:${scopeId}`} scopeId={scopeId} />;
+}
+
+function AuthenticatedWorkspace({ scopeId }: { scopeId: string }): React.ReactElement {
+  useBrowserToolAutoOpen();
   const { agents, defaultId, isSettled: agentsSettled } = useAgents();
   const defaultIdRef = useRef<string | undefined>(defaultId);
   const agentsSettledRef = useRef(agentsSettled);
@@ -137,7 +148,7 @@ export function WorkspaceShell(): React.ReactElement {
   const lastAppliedRef = useRef<string | null>(null);
   const [recoveryTriggered, setRecoveryTriggered] = useState(false);
 
-  useUserSyncOnce(Boolean(isSignedIn) && onboardingPhase === "ready");
+  useUserSyncOnce(true);
   const { showSubscriptionSuccess } = useCheckoutReturn();
   // `chatReady` + the four completion signals (chat/hire/channel/task) are
   // derived in the shared shell hook — see its doc comment for the
@@ -388,14 +399,6 @@ export function WorkspaceShell(): React.ReactElement {
     }),
     [],
   );
-
-  if (onboardingPhase !== "ready") {
-    return (
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
-        <div style={{ color: "var(--midnight-muted)", fontSize: 14 }}>Loading…</div>
-      </div>
-    );
-  }
 
   // Shared by both stepper branches: same element → the dock never remounts
   // when recoveryTriggered flips (prop-switch ternary, NO key).

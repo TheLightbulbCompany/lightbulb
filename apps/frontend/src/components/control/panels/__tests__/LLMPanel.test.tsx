@@ -63,14 +63,14 @@ vi.mock("@/hooks/useChatGPTOAuth", () => ({
 const mockAuthStatusData = vi.fn();
 const mockRpcMutation = vi.fn();
 const mockReadMutate = vi.fn();
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpc: () => ({
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpc: () => ({
     data: mockAuthStatusData(),
     error: undefined,
     isLoading: false,
     mutate: mockReadMutate,
   }),
-  useGatewayRpcMutation: () => mockRpcMutation,
+  useRuntimeRpcMutation: () => mockRpcMutation,
 }));
 
 // next/navigation isn't available in jsdom by default. useSearchParams

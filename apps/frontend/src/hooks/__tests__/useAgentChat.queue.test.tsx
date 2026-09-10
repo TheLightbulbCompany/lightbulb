@@ -15,37 +15,32 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import type { ChatIncomingMessage } from "@/hooks/useGateway";
+import type { ChatIncomingMessage } from "@lightbulb/shared";
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 
 let chatHandlers: Array<(msg: ChatIncomingMessage) => void> = [];
-let eventHandlers: Array<(name: string, data: unknown) => void> = [];
 const sendReq = vi.fn().mockResolvedValue({});
 const sendChat = vi.fn();
 
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({
+vi.mock("@/hooks/useAgentRoomTransport", () => ({
+  useAgentRoomTransport: (agentId: string | null) => ({
     isConnected: true,
-    nodeConnected: false,
-    error: null,
-    reconnectAttempt: 0,
-    send: vi.fn(),
-    sendReq,
-    sendChat,
-    onEvent: (h: (name: string, data: unknown) => void) => {
-      eventHandlers.push(h);
+    onChatMessage: (handler: (message: ChatIncomingMessage) => void) => {
+      chatHandlers.push(handler);
       return () => {
-        eventHandlers = eventHandlers.filter((x) => x !== h);
+        chatHandlers = chatHandlers.filter((candidate) => candidate !== handler);
       };
     },
-    onChatMessage: (h: (msg: ChatIncomingMessage) => void) => {
-      chatHandlers.push(h);
-      return () => {
-        chatHandlers = chatHandlers.filter((x) => x !== h);
-      };
+    sendRoomMessage: async (message: string, clientMessageId: string) =>
+      sendChat(agentId, message, clientMessageId, undefined),
+    abortRun: async (runId: string) => {
+      return {};
     },
-    reconnect: vi.fn(),
+    steerRun: async (runId: string, text: string) => {
+      return {};
+    },
+    rpc: sendReq,
   }),
 }));
 
@@ -64,7 +59,6 @@ function dispatch(msg: ChatIncomingMessage) {
 describe("useAgentChat — server-signal queue drain", () => {
   beforeEach(() => {
     chatHandlers = [];
-    eventHandlers = [];
     sendReq.mockReset().mockResolvedValue({});
     sendChat.mockReset();
     vi.resetModules();
@@ -84,7 +78,7 @@ describe("useAgentChat — server-signal queue drain", () => {
     act(() =>
       dispatch({
         type: "chunk",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: runA,
         content: "working...",
       } as ChatIncomingMessage),
@@ -114,7 +108,7 @@ describe("useAgentChat — server-signal queue drain", () => {
     act(() =>
       dispatch({
         type: "chunk",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: runA,
         content: "working...",
       } as ChatIncomingMessage),
@@ -128,7 +122,7 @@ describe("useAgentChat — server-signal queue drain", () => {
     act(() =>
       dispatch({
         type: "error",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: "unrelated-run",
         message: "boom",
       } as ChatIncomingMessage),
@@ -148,7 +142,7 @@ describe("useAgentChat — server-signal queue drain", () => {
     act(() =>
       dispatch({
         type: "chunk",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: runA,
         content: "working...",
       } as ChatIncomingMessage),
@@ -161,12 +155,12 @@ describe("useAgentChat — server-signal queue drain", () => {
     // True terminal: backend forwards `done` then the authoritative
     // `run_ended`. Both carry runA.
     act(() =>
-      dispatch({ type: "done", agent_id: "agent-X", runId: runA } as ChatIncomingMessage),
+      dispatch({ type: "done", agentId: "agent-X", runId: runA } as ChatIncomingMessage),
     );
     act(() =>
       dispatch({
         type: "run_ended",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: runA,
         outcome: "done",
       } as ChatIncomingMessage),
@@ -187,21 +181,21 @@ describe("useAgentChat — server-signal queue drain", () => {
     });
     const runA = lastClientRunId();
     act(() =>
-      dispatch({ type: "chunk", agent_id: "agent-X", runId: runA, content: "x" } as ChatIncomingMessage),
+      dispatch({ type: "chunk", agentId: "agent-X", runId: runA, content: "x" } as ChatIncomingMessage),
     );
     await act(async () => {
       await result.current.sendMessage("follow-up");
     });
 
     act(() =>
-      dispatch({ type: "run_ended", agent_id: "agent-X", runId: runA, outcome: "done" } as ChatIncomingMessage),
+      dispatch({ type: "run_ended", agentId: "agent-X", runId: runA, outcome: "done" } as ChatIncomingMessage),
     );
     expect(sendChat).toHaveBeenCalledTimes(2);
 
     // A duplicate run_ended for runA must be ignored — the follow-up has
     // already become its own active run; re-draining would steal/dup it.
     act(() =>
-      dispatch({ type: "run_ended", agent_id: "agent-X", runId: runA, outcome: "done" } as ChatIncomingMessage),
+      dispatch({ type: "run_ended", agentId: "agent-X", runId: runA, outcome: "done" } as ChatIncomingMessage),
     );
     expect(sendChat).toHaveBeenCalledTimes(2);
   });
@@ -215,7 +209,7 @@ describe("useAgentChat — server-signal queue drain", () => {
     });
     const runA = lastClientRunId();
     act(() =>
-      dispatch({ type: "chunk", agent_id: "agent-X", runId: runA, content: "x" } as ChatIncomingMessage),
+      dispatch({ type: "chunk", agentId: "agent-X", runId: runA, content: "x" } as ChatIncomingMessage),
     );
     await act(async () => {
       await result.current.sendMessage("follow-up");
@@ -224,7 +218,7 @@ describe("useAgentChat — server-signal queue drain", () => {
 
     // Session-less terminal: only `done`, NO trailing run_ended.
     act(() =>
-      dispatch({ type: "done", agent_id: "agent-X", runId: runA } as ChatIncomingMessage),
+      dispatch({ type: "done", agentId: "agent-X", runId: runA } as ChatIncomingMessage),
     );
 
     expect(sendChat).toHaveBeenCalledTimes(2);
@@ -241,7 +235,7 @@ describe("useAgentChat — server-signal queue drain", () => {
     });
     const runA = lastClientRunId();
     act(() =>
-      dispatch({ type: "chunk", agent_id: "agent-X", runId: runA, content: "x" } as ChatIncomingMessage),
+      dispatch({ type: "chunk", agentId: "agent-X", runId: runA, content: "x" } as ChatIncomingMessage),
     );
     await act(async () => {
       await result.current.sendMessage("follow-up");
@@ -249,10 +243,10 @@ describe("useAgentChat — server-signal queue drain", () => {
 
     // Normal terminal sequence: done THEN run_ended for the same run.
     act(() =>
-      dispatch({ type: "done", agent_id: "agent-X", runId: runA } as ChatIncomingMessage),
+      dispatch({ type: "done", agentId: "agent-X", runId: runA } as ChatIncomingMessage),
     );
     act(() =>
-      dispatch({ type: "run_ended", agent_id: "agent-X", runId: runA, outcome: "done" } as ChatIncomingMessage),
+      dispatch({ type: "run_ended", agentId: "agent-X", runId: runA, outcome: "done" } as ChatIncomingMessage),
     );
 
     // The `done` drained one; the trailing run_ended must be a no-op for
@@ -270,7 +264,7 @@ describe("useAgentChat — server-signal queue drain", () => {
     });
     const runA = lastClientRunId();
     act(() =>
-      dispatch({ type: "chunk", agent_id: "agent-X", runId: runA, content: "x" } as ChatIncomingMessage),
+      dispatch({ type: "chunk", agentId: "agent-X", runId: runA, content: "x" } as ChatIncomingMessage),
     );
     await act(async () => {
       await result.current.sendMessage("q1");
@@ -282,7 +276,7 @@ describe("useAgentChat — server-signal queue drain", () => {
 
     // End runA → drain q1 (becomes runB).
     act(() =>
-      dispatch({ type: "run_ended", agent_id: "agent-X", runId: runA, outcome: "done" } as ChatIncomingMessage),
+      dispatch({ type: "run_ended", agentId: "agent-X", runId: runA, outcome: "done" } as ChatIncomingMessage),
     );
     expect(sendChat).toHaveBeenCalledTimes(2);
     expect(sendChat.mock.calls[1]?.[1]).toBe("q1");
@@ -291,7 +285,7 @@ describe("useAgentChat — server-signal queue drain", () => {
     // End runB → drain q2 (becomes runC).
     const runB = lastClientRunId();
     act(() =>
-      dispatch({ type: "run_ended", agent_id: "agent-X", runId: runB, outcome: "done" } as ChatIncomingMessage),
+      dispatch({ type: "run_ended", agentId: "agent-X", runId: runB, outcome: "done" } as ChatIncomingMessage),
     );
     expect(sendChat).toHaveBeenCalledTimes(3);
     expect(sendChat.mock.calls[2]?.[1]).toBe("q2");
@@ -309,7 +303,7 @@ describe("useAgentChat — server-signal queue drain", () => {
     act(() =>
       dispatch({
         type: "chunk",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: runA,
         content: "live text",
       } as ChatIncomingMessage),
@@ -320,7 +314,7 @@ describe("useAgentChat — server-signal queue drain", () => {
     act(() =>
       dispatch({
         type: "error",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         code: "agent_busy",
         message: "Agent is still working on your previous message.",
       } as ChatIncomingMessage),
@@ -345,10 +339,10 @@ describe("useAgentChat — server-signal queue drain", () => {
     // The live run still ends cleanly on its own terminal sequence
     // (backend forwards `done` then the authoritative `run_ended`).
     act(() =>
-      dispatch({ type: "done", agent_id: "agent-X", runId: runA } as ChatIncomingMessage),
+      dispatch({ type: "done", agentId: "agent-X", runId: runA } as ChatIncomingMessage),
     );
     act(() =>
-      dispatch({ type: "run_ended", agent_id: "agent-X", runId: runA, outcome: "done" } as ChatIncomingMessage),
+      dispatch({ type: "run_ended", agentId: "agent-X", runId: runA, outcome: "done" } as ChatIncomingMessage),
     );
     expect(result.current.isStreaming).toBe(false);
   });

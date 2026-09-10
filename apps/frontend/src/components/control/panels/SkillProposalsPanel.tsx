@@ -3,7 +3,7 @@
 
 import { useState } from "react";
 import { Loader2, RefreshCw, FileCheck, Check, X } from "lucide-react";
-import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { useRuntimeRpc, useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 import { Button } from "@/components/ui/button";
 import {
   type SkillProposalManifest,
@@ -12,7 +12,7 @@ import {
 
 export function SkillProposalsPanel() {
   const { data, error, isLoading, mutate } =
-    useGatewayRpc<SkillProposalManifest>("skills.proposals.list");
+    useRuntimeRpc<SkillProposalManifest>("skills.proposals.list");
   const [selected, setSelected] = useState<string | null>(null);
 
   if (isLoading && !data) {
@@ -77,11 +77,11 @@ export function SkillProposalsPanel() {
 }
 
 function ProposalDetail({ proposalId, onResolved }: { proposalId: string; onResolved: () => void }) {
-  const { data, error, isLoading } = useGatewayRpc<SkillProposalReadResult>(
+  const { data, error, isLoading } = useRuntimeRpc<SkillProposalReadResult>(
     "skills.proposals.inspect",
     { proposalId },
   );
-  const callRpc = useGatewayRpcMutation();
+  const callRpc = useRuntimeRpcMutation();
   const [busy, setBusy] = useState<"apply" | "reject" | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
 

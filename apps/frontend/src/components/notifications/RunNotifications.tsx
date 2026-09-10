@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { useGateway } from "@/hooks/useGateway";
-import { useActiveSession, getActiveSessionId } from "@/hooks/useActiveSession";
+import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { useAgents, agentDisplayName, type Agent } from "@/hooks/useAgents";
 import { useWorkspaceState } from "@/components/workspace/workspaceController";
 import { capture } from "@/lib/analytics";
@@ -16,11 +15,6 @@ import {
 import { nativeNotify } from "@/lib/desktopNotify";
 import { pushSearchParams } from "@/lib/shellNav";
 import {
-  acquireTeamsEvents,
-  releaseTeamsEvents,
-  resubscribeTeamsEvents,
-} from "@/lib/teamsSubscription";
-import {
   createRunToastState,
   reduceChatFrame,
   reduceTeamsRunEvent,
@@ -31,9 +25,8 @@ import {
 
 /**
  * Global bottom-right run notifications. Renders nothing; consumes the
- * unfiltered chat-frame stream (background webchat runs already reach this
- * browser and are dropped by useAgentChat's demux) plus teams.heartbeat.run.*
- * events, and drives one live toast per run keyed by runId.
+ * active-room chat-frame stream plus paperclip events, and drives one live
+ * toast per run keyed by runId.
  *
  * Every handler is wrapped so a notification bug can never break chat.
  */
@@ -56,18 +49,8 @@ function agentName(agentId: string, agents: Agent[]): string {
   return agent ? agentDisplayName(agent) : "Agent";
 }
 
-// Desktop watched-key set: for each visible chat panel's agent, the bare
-// (agent-level) key AND the `${agentId}:${session}` key for the session that
-// panel is showing. getActiveSessionId is a non-hook module read (the session
-// per agent can't be resolved with a hook in a loop); null == General maps to
-// the trailing-colon key, matching chatSuppressed's `?? ""` normalization.
 function buildDesktopWatchedKeys(visibleChatAgentIds: string[]): Set<string> {
-  const keys = new Set<string>();
-  for (const agentId of visibleChatAgentIds) {
-    keys.add(agentId);
-    keys.add(`${agentId}:${getActiveSessionId(agentId) ?? ""}`);
-  }
-  return keys;
+  return new Set(visibleChatAgentIds);
 }
 
 function viewAgentAction(agentId: string): { label: string; onClick: () => void } {
@@ -170,14 +153,8 @@ function executeAction(action: RunToastAction, agents: Agent[]): void {
 }
 
 export function RunNotifications(props: RunNotificationsProps): null {
-  const { isConnected, send, onEvent, onChatMessage } = useGateway();
+  const { onEvent, onChatMessage } = useLiveEvents();
   const { agents } = useAgents();
-  // Both hooks run unconditionally every render (rules-of-hooks) regardless of
-  // mode. In desktop mode `useActiveSession(null)` is inert (returns null); in
-  // mobile mode `useWorkspaceState()` returns the empty snapshot (no dockview
-  // attached) and is simply unused.
-  const mobileAgentId = props.mode === "mobile" ? props.selectedAgentId : null;
-  const { activeSessionId } = useActiveSession(mobileAgentId);
   const workspace = useWorkspaceState();
 
   const stateRef = useRef(createRunToastState());
@@ -187,21 +164,19 @@ export function RunNotifications(props: RunNotificationsProps): null {
   });
   const agentsRef = useRef<Agent[]>([]);
 
-  // Keep the latest props/agents available to the async gateway callbacks
+  // Keep the latest props/agents available to the async live-event callbacks
   // below without making them effect dependencies (that would tear down and
   // resubscribe the chat/event listeners on every keystroke-adjacent
   // re-render). Writing refs during render is disallowed (react-hooks/refs),
   // so the sync happens in an unconditional effect instead — it still lands
-  // before any queued gateway callback runs.
+  // before any queued live-event callback runs.
   useEffect(() => {
     ctxRef.current =
       props.mode === "mobile"
         ? {
-            // Compound-only, per-session (byte-equivalent to the old logic):
-            // one key when chat is the active view and an agent is selected.
             watchedChatKeys:
               props.activeView === "chat" && props.selectedAgentId
-                ? new Set([`${props.selectedAgentId}:${activeSessionId ?? ""}`])
+                ? new Set([props.selectedAgentId])
                 : new Set(),
             teamsPanelActive:
               props.activeView === "control" && props.activePanel.startsWith("teams-"),
@@ -218,33 +193,36 @@ export function RunNotifications(props: RunNotificationsProps): null {
     agentsRef.current = agents;
   });
 
-  // Ordering contract (see teamsSubscription): acquire/release MUST be
-  // declared before the resubscribe effect so the refcount is ≥ 1 when the
-  // mount-while-connected resubscribe fires.
   useEffect(() => {
-    acquireTeamsEvents();
-    return () => releaseTeamsEvents(send);
-  }, [send]);
-
-  useEffect(() => {
-    if (isConnected) resubscribeTeamsEvents(send);
-  }, [isConnected, send]);
-
-  useEffect(() => {
-    const unsubChat = onChatMessage((msg) => {
+    const unsubChat = onChatMessage((msg, event) => {
       try {
-        for (const action of reduceChatFrame(stateRef.current, msg, ctxRef.current)) {
+        for (const action of reduceChatFrame(
+          stateRef.current,
+          msg,
+          ctxRef.current,
+          { runId: event.payload.runId, agentId: event.payload.agentId },
+        )) {
           executeAction(action, agentsRef.current);
         }
       } catch {
         // Never let a notification bug interfere with chat delivery.
       }
     });
-    const unsubEvent = onEvent((event, payload) => {
+    const unsubEvent = onEvent((event) => {
+      if (event.type !== "paperclip.event") return;
       try {
         const actions = [
-          ...reduceTeamsRunEvent(stateRef.current, event, payload, ctxRef.current),
-          ...reduceTeamsActivityEvent(event, payload, ctxRef.current),
+          ...reduceTeamsRunEvent(
+            stateRef.current,
+            event.payload.eventName,
+            event.payload.payload,
+            ctxRef.current,
+          ),
+          ...reduceTeamsActivityEvent(
+            event.payload.eventName,
+            event.payload.payload,
+            ctxRef.current,
+          ),
         ];
         for (const action of actions) {
           executeAction(action, agentsRef.current);

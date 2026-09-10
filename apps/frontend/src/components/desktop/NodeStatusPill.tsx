@@ -1,6 +1,6 @@
 "use client";
 
-import { useGateway } from "@/hooks/useGateway";
+import { useLiveEvents } from "@/hooks/useLiveEvents";
 
 /**
  * Desktop-node ("local tools") status pill, rendered in both sidebars.
@@ -14,7 +14,7 @@ import { useGateway } from "@/hooks/useGateway";
  *   nothing, as before
  */
 export function NodeStatusPill() {
-  const { nodeConnected, nodeStatus } = useGateway();
+  const { nodeConnected, nodeStatus } = useLiveEvents();
   const failing = !nodeConnected && nodeStatus === "error";
   if (!nodeConnected && !failing) return null;
   const color = nodeConnected ? "var(--ok)" : "var(--warn)";

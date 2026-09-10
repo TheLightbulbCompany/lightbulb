@@ -10,8 +10,8 @@ interface RpcResult<T> {
 }
 
 const mockRpc = vi.fn();
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpc: (method: string | null, params?: Record<string, unknown>) =>
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpc: (method: string | null, params?: Record<string, unknown>) =>
     mockRpc(method, params) as RpcResult<unknown>,
 }));
 

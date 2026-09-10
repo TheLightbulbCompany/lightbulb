@@ -11,14 +11,14 @@ jest.mock("expo-router", () => ({
   Stack: { Screen: () => null },
 }));
 
-const mockSendReq = jest.fn(async () => ({}));
-jest.mock("../../../../providers/gateway", () => ({
-  useGateway: () => ({
-    isConnected: true,
-    error: null,
-    sendReq: mockSendReq,
+jest.mock("../../../../providers/live-events", () => ({
+  useLiveEvents: () => ({
+    httpReady: true,
+    liveConnected: true,
+    connectionRevision: 1,
+    rpc: jest.fn(),
+    getOperation: jest.fn(),
     onEvent: () => () => {},
-    isParked: false,
   }),
 }));
 
@@ -49,7 +49,7 @@ let mockAgents = makeRoster();
 jest.mock("@lightbulb/shared", () => ({
   ...jest.requireActual("@lightbulb/shared"),
   useAgents: () => mockAgents,
-  useGatewayRpcMutation: () => jest.fn(),
+  useRuntimeRpcMutation: () => jest.fn(),
 }));
 
 import AgentsPanel from "../agents";

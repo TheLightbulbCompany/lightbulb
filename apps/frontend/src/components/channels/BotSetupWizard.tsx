@@ -14,7 +14,7 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
-import { useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 import { awaitChannelReady } from "@/lib/awaitChannelReady";
 import { SLACK_APP_MANIFEST } from "@/lib/slackManifest";
 import { emitStep } from "@/components/getstarted/getStartedEvents";
@@ -207,7 +207,7 @@ export function BotSetupWizard({
   onCancel,
 }: BotSetupWizardProps) {
   const api = useApi();
-  const callRpc = useGatewayRpcMutation();
+  const callRpc = useRuntimeRpcMutation();
 
   // In link-only mode the bot is already set up and we just need a pairing
   // code from the member. Skip straight to the pair step.

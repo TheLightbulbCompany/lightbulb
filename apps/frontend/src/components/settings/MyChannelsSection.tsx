@@ -17,21 +17,11 @@ import {
 import { useApi } from "@/lib/api";
 import { type Provider, PROVIDERS, PROVIDER_LABELS, formatBotHandle } from "@/lib/channels";
 import { BotSetupWizard } from "@/components/channels/BotSetupWizard";
-import { GatewayProvider } from "@/hooks/useGateway";
 import { useBilling } from "@/hooks/useBilling";
 import { useChannelLinks } from "@/hooks/useChannelLinks";
 
 export function MyChannelsSection() {
-  // The bot setup wizard pokes the user's container gateway over WS (to
-  // poll channels.status during the enable→token→pair dance). The settings
-  // route isn't wrapped in a GatewayProvider like /chat is, so we mount a
-  // scoped provider here. useGateway lazily opens its socket, so if the
-  // user never opens the wizard there's no extra connection.
-  return (
-    <GatewayProvider>
-      <MyChannelsSectionInner />
-    </GatewayProvider>
-  );
+  return <MyChannelsSectionInner />;
 }
 
 function MyChannelsSectionInner() {

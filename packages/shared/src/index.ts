@@ -1,17 +1,13 @@
 /**
- * @lightbulb/shared — framework-neutral core for Isol8 clients.
+ * @lightbulb/shared — framework-neutral core for Lightbulb clients.
  *
- * Contents: adapter contract, API client core, the gateway WebSocket
- * protocol machine, and the platform-parameterized data hooks. useAgentChat
- * deliberately stays web-side for now (2k lines, deeply coupled to the web
- * chat-history/timeline model) — mobile builds its lean chat on the gateway
- * primitives until parity demands the full extraction. See
- * docs/superpowers/plans/2026-07-05-mobile-app-expo-ios.md.
+ * Contents: adapter contract, API client core, the AppSync live-event client,
+ * and platform-parameterized data hooks.
  */
 export type { PlatformAdapter } from "./adapter";
 
-export { useGatewayRpc, useGatewayRpcMutation } from "./hooks/useGatewayRpc";
-export type { GatewayRpcSource, RpcResult } from "./hooks/useGatewayRpc";
+export { useRuntimeRpc, useRuntimeRpcMutation } from "./hooks/useRuntimeRpc";
+export type { RuntimeRpcSource, RpcResult } from "./hooks/useRuntimeRpc";
 export {
   agentDisplayName,
   getAgentModelString,
@@ -19,7 +15,7 @@ export {
 export { useAgents } from "./hooks/useAgents";
 export type {
   AgentsAnalyticsEvent,
-  AgentsGatewaySource,
+  AgentsRuntimeSource,
   UseAgentsOptions,
 } from "./hooks/useAgents";
 export type {
@@ -60,7 +56,6 @@ export type {
 } from "./hooks/useOnboardingStatus";
 
 export { ApiError } from "./api/error";
-export { deriveWebSocketUrl } from "./api/url";
 export {
   REQUEST_ID_HEADER,
   createApiClient,
@@ -75,20 +70,29 @@ export type {
   UploadedFile,
 } from "./api/client";
 
-export { useGatewayConnection } from "./gateway/useGatewayConnection";
-export { accumulateStreamText } from "./gateway/streamText";
+export { accumulateStreamText } from "./live/streamText";
 export {
-  GatewayRpcError,
-  isRetryableRpcError,
-  rpcRetryDelayMs,
-} from "./gateway/error";
+  AppSyncEventsClient,
+  APPSYNC_EVENT_WS_PROTOCOL,
+  base64Url,
+  buildSubprotocols,
+  reconnectDelayMs,
+} from "./live/appsyncEvents";
 export type {
-  GatewayConnectionOptions,
-  GatewayConnectionValue,
-} from "./gateway/useGatewayConnection";
+  AppSyncEventsClientOptions,
+  LiveErrorKind,
+  LiveStatus,
+} from "./live/appsyncEvents";
+export { useLiveEvents } from "./live/useLiveEvents";
+export type { UseLiveEventsOptions, UseLiveEventsResult } from "./live/useLiveEvents";
+export { parseLiveEvent } from "./live/types";
 export type {
   ChatIncomingMessage,
-  GatewayEvent,
+  LiveEvent,
+  LiveEventOf,
+  LiveEventType,
+  PaperclipEvent,
+  PaperclipEventName,
   Question,
   QuestionAnswers,
   QuestionOption,
@@ -96,8 +100,54 @@ export type {
   QuestionResolvedEvent,
   QuestionSecretStoreBinding,
   QuestionStatus,
+  RoomRunFrame,
   ToolResultBlock,
-} from "./gateway/types";
+} from "./live/types";
+export { createMessagingClient } from "./messaging/client";
+export type { MessagingClient } from "./messaging/client";
+export type {
+  AbortRunResponse,
+  ApiErrorCode,
+  CanonicalRoomMessage,
+  CreateMessageRequest,
+  CreateRoomRequest,
+  ListenMode,
+  LiveConfig,
+  MemberKind,
+  MemberRef,
+  MemberRole,
+  MessagePage,
+  MessagingApiError,
+  PatchRoomRequest,
+  ReadCursorRequest,
+  ReadCursorResponse,
+  RoomDetail,
+  RoomKind,
+  RoomListResponse,
+  RoomMember,
+  RoomSummary,
+  SteerRunRequest,
+  SteerRunResponse,
+  TypingRequest,
+  UpsertRoomMemberRequest,
+} from "./messaging/types";
+export {
+  createRuntimeClient,
+  isRetryableRuntimeError,
+  RuntimeRpcError,
+  runtimeRetryDelayMs,
+} from "./runtime/client";
+export type { RuntimeClient } from "./runtime/client";
+export type {
+  RuntimeApiError,
+  RuntimeApprovalDecision,
+  RuntimeApprovalResolveRequest,
+  RuntimeError,
+  RuntimeOperation,
+  RuntimeQuestionResolveRequest,
+  RuntimeRpcOutcome,
+  RuntimeRpcRequest,
+} from "./runtime/types";
 
 export {
   extractResultText,

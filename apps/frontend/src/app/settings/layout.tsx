@@ -10,9 +10,8 @@ export default function SettingsLayout({
 }: {
   children: React.ReactNode
 }) {
-  // This file is a server component, so the client-side GatewayProvider wrap
-  // lives in SettingsGatewayGate ("use client"). The provider gives the
-  // gateway-bound config panels (Skills, Skill Proposals, Channel Status, MCP
-  // servers, the LLM health dot) the same WS the chat surface uses.
+  // This file is a server component, so the client-side LiveEventsProvider
+  // wrap lives in SettingsGatewayGate ("use client"). Runtime panels share its
+  // canonical HTTP client and private AppSync invalidation channel.
   return <SettingsGatewayGate>{children}</SettingsGatewayGate>;
 }

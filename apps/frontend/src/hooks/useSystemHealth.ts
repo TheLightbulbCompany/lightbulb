@@ -1,47 +1,22 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
-import { useGateway } from "@/hooks/useGateway";
-import { useGatewayRpc } from "@/hooks/useGatewayRpc";
+import { useCallback, useRef, useState } from "react";
+import { useLiveEvents } from "@/hooks/useLiveEvents";
+import { useRuntimeRpc } from "@/hooks/useRuntimeRpc";
 import { useProvisioningState } from "@/hooks/useProvisioningState";
 import { useApi } from "@/lib/api";
 
 export type HealthState =
   | "HEALTHY"
-  // Wake-gated trial box, deliberately asleep (phase="parked"). Healthy,
-  // one intent away from running — calm neutral, never a recovery CTA.
   | "PARKED"
-  // Container is starting / cold-starting. Yellow.
   | "STARTING"
-  // Frontend WS to API Gateway is reconnecting (transient). Yellow.
   | "RECOVERING"
-  // OpenClaw is mid-LLM-turn but the backend WS to it has hiccupped.
-  // The agent is presumed alive (active runs in flight + recent events).
-  // This is the new state introduced when the backend was teaching
-  // /container/status to keep reporting phase=ready while parked — it
-  // surfaces calmly to the user instead of the red GATEWAY_DOWN alarm.
-  // Yellow.
   | "GATEWAY_BUSY"
-  // Backend has given up on the gateway (no active runs or watchdog
-  // escalation fired). Red.
   | "GATEWAY_DOWN_DEAD"
   | "CONTAINER_DOWN";
 
 interface HealthData {
   ok?: boolean;
-}
-
-export interface SystemHealth {
-  state: HealthState;
-  reason: string;
-  /** Whether a recovery action is available */
-  canRecover: boolean;
-  /** Label for the recovery button */
-  actionLabel: string | null;
-  /** Call to trigger recovery */
-  recover: () => Promise<RecoverResponse | null>;
-  /** Whether recovery is in progress */
-  isRecovering: boolean;
 }
 
 interface RecoverResponse {
@@ -50,118 +25,31 @@ interface RecoverResponse {
   reason: string;
 }
 
-const MAX_RECONNECT = 10;
+export interface SystemHealth {
+  state: HealthState;
+  reason: string;
+  canRecover: boolean;
+  actionLabel: string | null;
+  recover: () => Promise<RecoverResponse | null>;
+  isRecovering: boolean;
+}
 
-// Poll cadence for the gateway health RPC backstop read behind the health
-// dot. Not the PRIMARY degradation signal: the backend pushes `status_change`
-// over the WS (handled below), and `isConnected` / `reconnectAttempt` flip
-// client-side the instant the socket drops — both are immediate and cost
-// nothing. Polling only covers a degradation that produced neither.
-//
-// `/container/status` itself is no longer polled by this hook (spec PR-9,
-// CLIENT-HOOK) — `useProvisioningState` now delegates to the ONE shared
-// `useOnboardingStatus` bounded loop, so every consumer (this hook,
-// ProvisioningStepper, OverviewPanel) rides the same single cadence for
-// free instead of each running its own SWR poll against the same key.
 const HEALTH_POLL_STEADY = 60_000;
 const HEALTH_POLL_DEGRADED = 5_000;
 
 export function useSystemHealth(): SystemHealth {
-  const { isConnected, reconnectAttempt, onEvent, isParked } = useGateway();
-
+  const { liveConnected } = useLiveEvents();
   const [isRecovering, setIsRecovering] = useState(false);
   const isRecoveringRef = useRef(false);
-  const [pushState, setPushState] = useState<{ state: string; reason: string } | null>(null);
-  const pushTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const api = useApi();
-
-  // Gateway health RPC — only when WS connected. A rejection is retried at a
-  // fixed 3s by useGatewayRpc's onErrorRetry; the specific "No container"
-  // rejection is swallowed to `undefined` data with NO error by
-  // useGatewayRpc's 404-equivalent path — so a vanished container shows up
-  // as `health === undefined`, caught in the state ladder below.
-  const { data: health } = useGatewayRpc<HealthData>(
-    isConnected ? "health" : null,
-    undefined,
-    {
-      refreshInterval: (latest: HealthData | undefined) =>
-        latest?.ok === false ? HEALTH_POLL_DEGRADED : HEALTH_POLL_STEADY,
-    },
-  );
-
+  const { data: health } = useRuntimeRpc<HealthData>("health", undefined, {
+    refreshInterval: (latest: HealthData | undefined) => latest?.ok === false ? HEALTH_POLL_DEGRADED : HEALTH_POLL_STEADY,
+  });
   const { container } = useProvisioningState();
 
-  // Listen for push status_change events via WS.
-  // Backend sends event name "status_change" with payload {state, reason}.
-  // Map the backend's state strings to the frontend HealthState union:
-  //   HEALTHY              -> HEALTHY
-  //   GATEWAY_DOWN_LLM_BUSY -> GATEWAY_BUSY  (yellow — agent thinking)
-  //   GATEWAY_DOWN_DEAD     -> GATEWAY_DOWN_DEAD (red — operator action needed)
-  // Unknown states fall back to HEALTHY so a forwards-compatible backend
-  // doesn't accidentally flip the dot red on a new event we don't recognize.
-  useEffect(() => {
-    const unsub = onEvent((eventName: string, data: unknown) => {
-      if (eventName === "status_change" && data) {
-        const payload = data as { state?: string; reason?: string };
-        const backendState = payload.state;
-        let mapped: HealthState;
-        if (backendState === "GATEWAY_DOWN_LLM_BUSY") {
-          mapped = "GATEWAY_BUSY";
-        } else if (backendState === "GATEWAY_DOWN_DEAD") {
-          mapped = "GATEWAY_DOWN_DEAD";
-        } else if (backendState === "HEALTHY") {
-          mapped = "HEALTHY";
-        } else {
-          mapped = "HEALTHY";
-        }
-        setPushState({
-          state: mapped,
-          reason: payload.reason ?? "",
-        });
-        // Clear push state after 15s (let polling take over).
-        // Exception: GATEWAY_BUSY can legitimately last several minutes
-        // (long Bedrock turn). Use a longer expiry so the yellow dot
-        // doesn't flip back to healthy mid-turn just because the timer
-        // ran out — the next inbound chat-terminal event or fresh
-        // status_change will clear it cleanly.
-        if (pushTimerRef.current) clearTimeout(pushTimerRef.current);
-        const expiry = mapped === "GATEWAY_BUSY" ? 360_000 : 15_000;
-        pushTimerRef.current = setTimeout(() => setPushState(null), expiry);
-      }
-    });
-    return () => {
-      unsub();
-      if (pushTimerRef.current) clearTimeout(pushTimerRef.current);
-    };
-  }, [onEvent]);
-
-  // Derive state (first match wins)
   let state: HealthState;
   let reason: string;
-
-  // Push events take priority for immediate transitions
-  if (pushState) {
-    state = pushState.state as HealthState;
-    reason = pushState.reason;
-  } else if (
-    (isParked || container?.lifecycle === "parked") &&
-    // PRECEDENCE: the composed contract's `lifecycle` wins over the client's
-    // park flag. `parked: true` rides alongside `lifecycle: "provisioning"`
-    // whenever a parked box is being (re)provisioned, and `isParked` leads the
-    // backend by ~3min — so without this guard the pill said "Agents asleep"
-    // for 35s+ over a container that was actively coming up, contradicting the
-    // provisioning UI on the same screen. Falling through hands the state to
-    // the `container_status === "provisioning"` branch below, which reads its
-    // copy off the same contract (`container_substatus`).
-    container?.lifecycle !== "provisioning"
-  ) {
-    // Client-driven park (isParked) OR backend-reflected park (lifecycle).
-    // isParked leads by ~3min: between the client closing its socket and
-    // the backend's disconnect-armed teardown flipping the row to
-    // stopped/parked, isConnected is false with reconnectAttempt=0, which
-    // would otherwise fall through to GATEWAY_DOWN_DEAD (red, "Restart
-    // Gateway") over a deliberately-asleep box. Checked before every
-    // !isConnected branch so the alarm never flashes during an idle park.
+  if (container?.lifecycle === "parked") {
     state = "PARKED";
     reason = "Agents asleep — they wake when you interact";
   } else if (!container) {
@@ -174,45 +62,34 @@ export function useSystemHealth(): SystemHealth {
       : "Container provisioning — waiting for ECS task";
   } else if (container.container_status === "stopped" || container.container_status === "error") {
     state = "CONTAINER_DOWN";
-    reason = container.last_error
-      ?? `Container is ${container.container_status}`;
-  } else if (!isConnected && reconnectAttempt > 0 && reconnectAttempt < MAX_RECONNECT) {
+    reason = container.last_error ?? `Container is ${container.container_status}`;
+  } else if (health && !health.ok) {
+    state = "GATEWAY_DOWN_DEAD";
+    reason = "Runtime health check failing";
+  } else if (!liveConnected) {
     state = "RECOVERING";
-    reason = `Reconnecting... attempt ${reconnectAttempt} of ${MAX_RECONNECT}`;
-  } else if (!isConnected && container.container_status === "running") {
-    state = "GATEWAY_DOWN_DEAD";
-    reason = "Gateway not responding";
-  } else if (isConnected && health && !health.ok) {
-    state = "GATEWAY_DOWN_DEAD";
-    reason = "Gateway health check failing";
+    reason = "Reconnecting live updates";
   } else {
     state = "HEALTHY";
     reason = "Connected";
   }
 
-  // Recovery action — only offered for DEAD / CONTAINER_DOWN. GATEWAY_BUSY
-  // is presumed transient; surfacing a "Restart" CTA there would invite
-  // users to kill a perfectly-healthy mid-turn agent.
-  const canRecover =
-    state === "GATEWAY_DOWN_DEAD" || state === "CONTAINER_DOWN";
-  const actionLabel =
-    state === "CONTAINER_DOWN"
-      ? "Restart Agent"
-      : state === "GATEWAY_DOWN_DEAD"
-        ? "Restart Gateway"
-        : null;
+  const canRecover = state === "GATEWAY_DOWN_DEAD" || state === "CONTAINER_DOWN";
+  const actionLabel = state === "CONTAINER_DOWN"
+    ? "Restart Agent"
+    : state === "GATEWAY_DOWN_DEAD"
+      ? "Restart Gateway"
+      : null;
 
   const recover = useCallback(async (): Promise<RecoverResponse | null> => {
     if (isRecoveringRef.current) return null;
     isRecoveringRef.current = true;
     setIsRecovering(true);
     try {
-      const resp = await api.post("/container/recover", {});
-      return resp as RecoverResponse;
+      return await api.post("/container/recover", {}) as RecoverResponse;
     } catch {
       return null;
     } finally {
-      // Keep recovering state for 5s to debounce spam clicks
       setTimeout(() => {
         isRecoveringRef.current = false;
         setIsRecovering(false);
@@ -220,12 +97,5 @@ export function useSystemHealth(): SystemHealth {
     }
   }, [api]);
 
-  return {
-    state,
-    reason,
-    canRecover,
-    actionLabel,
-    recover,
-    isRecovering,
-  };
+  return { state, reason, canRecover, actionLabel, recover, isRecovering };
 }

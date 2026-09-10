@@ -16,7 +16,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { ApiError, createApiClient, useGatewayRpc } from "@lightbulb/shared";
+import { ApiError, createApiClient, useRuntimeRpc } from "@lightbulb/shared";
 
 import { usePulse } from "../../../components/chat/usePulse";
 import { WEB_ORIGIN } from "../../../config/domain";
@@ -30,7 +30,7 @@ import {
   type DotColor,
   type ProviderChoice,
 } from "../../../lib/providerAuthStatus";
-import { useGateway } from "../../../providers/gateway";
+import { useLiveEvents } from "../../../providers/live-events";
 
 // Provider/model/credit management is a multi-step, purchase-adjacent surface
 // (OAuth sign-in, BYO key entry, Stripe top-up). Per D1 the mobile app renders
@@ -310,21 +310,19 @@ function SkeletonCards() {
 // ---------------------------------------------------------------------------
 
 export default function LlmPanel() {
-  const gateway = useGateway();
+  const live = useLiveEvents();
   const { organization, membership } = useOrganization();
   const orgRestricted =
     organization != null && membership != null && membership.role !== "org:admin";
   const { state, retry } = useLlmBilling(orgRestricted);
 
-  // Provider auth dot — live over the gateway (§7 refresh-on-focus is left to
-  // SWR revalidation; a full RPC refresh with {refresh:true} is a web nicety
-  // that a read-only mobile view can forgo).
-  const { data: authStatus } = useGatewayRpc<AuthStatusResult>(
-    gateway,
+  // Provider auth dot — refreshed from canonical runtime invalidation events.
+  const { data: authStatus } = useRuntimeRpc<AuthStatusResult>(
+    live,
     "models.authStatus",
   );
-  // Model catalog + owner default, from the gateway config snapshot.
-  const { data: configSnapshot } = useGatewayRpc<unknown>(gateway, "config.get");
+  // Model catalog + owner default, from the runtime config snapshot.
+  const { data: configSnapshot } = useRuntimeRpc<unknown>(live, "config.get");
   const config = useMemo(() => extractConfig(configSnapshot), [configSnapshot]);
   const groups = useMemo(() => listGroupedModels(config), [config]);
   const defaultRef = useMemo(() => readDefaultModelRef(config), [config]);
@@ -435,15 +433,7 @@ export default function LlmPanel() {
 
   // Model catalog card -------------------------------------------------------
   let catalogCard: ReactNode;
-  if (!gateway.isConnected && gateway.error != null && groups.length === 0) {
-    // Gateway down and nothing cached — surface it rather than an empty list.
-    catalogCard = (
-      <Card>
-        <Text style={styles.overline}>MODEL CATALOG</Text>
-        <Text style={styles.captionText}>{gateway.error}</Text>
-      </Card>
-    );
-  } else if (configSnapshot === undefined && groups.length === 0) {
+  if (configSnapshot === undefined && groups.length === 0) {
     catalogCard = (
       <Card>
         <Text style={styles.overline}>MODEL CATALOG</Text>

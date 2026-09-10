@@ -8,12 +8,12 @@ import {
   Text,
   View,
 } from "react-native";
-import { useGatewayRpc } from "@lightbulb/shared";
+import { useRuntimeRpc } from "@lightbulb/shared";
 
 import { usePulse } from "../../../components/chat/usePulse";
 import { colors, fonts, radii, spacing, type } from "../../../config/theme";
-import { relativeTime } from "../../../lib/agentSessions";
-import { useGateway } from "../../../providers/gateway";
+import { relativeTime } from "../../../lib/relativeTime";
+import { useLiveEvents } from "../../../providers/live-events";
 import { LogoMark } from "../../../components/LogoMark";
 
 // ---------------------------------------------------------------------------
@@ -135,9 +135,9 @@ function AccountCard({ account }: { account: AccountSnapshot }) {
 // ---------------------------------------------------------------------------
 
 export default function ChannelsPanel() {
-  const gateway = useGateway();
-  const { data, error, isLoading, mutate } = useGatewayRpc<ChannelsStatus>(
-    gateway,
+  const live = useLiveEvents();
+  const { data, error, isLoading, mutate } = useRuntimeRpc<ChannelsStatus>(
+    live,
     "channels.status",
     { probe: true },
   );
@@ -154,8 +154,6 @@ export default function ChannelsPanel() {
 
   const order = useMemo(() => data?.channelOrder ?? [], [data]);
 
-  const connectionDown = !gateway.isConnected && gateway.error != null;
-
   let inner: ReactElement;
   if (error) {
     inner = (
@@ -171,12 +169,6 @@ export default function ChannelsPanel() {
         >
           <Text style={styles.errorRetryText}>Retry</Text>
         </Pressable>
-      </View>
-    );
-  } else if (!data && connectionDown) {
-    inner = (
-      <View style={styles.centerGrow}>
-        <Text style={styles.dim}>{gateway.error}</Text>
       </View>
     );
   } else if (isLoading && !data) {

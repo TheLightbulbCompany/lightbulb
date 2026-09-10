@@ -26,19 +26,24 @@ jest.mock("expo-crypto", () => ({
   randomUUID: () => "00000000-0000-4000-8000-000000000000",
 }));
 
-jest.mock("../../../../providers/gateway", () => ({
-  useGateway: () => ({
-    isConnected: true,
-    error: null,
+jest.mock("../../../../providers/live-events", () => ({
+  useLiveEvents: () => ({
+    httpReady: false,
+    liveConnected: false,
+    liveChannels: [],
+    liveError: null,
+    connectionRevision: 0,
+    messaging: {},
+    runtime: {},
+    claimActiveRoomSubscription: jest.fn(() => () => {}),
     onChatMessage: () => () => {},
-    sendReq: jest.fn(async () => ({})),
-    sendChat: jest.fn(),
+    onEvent: () => () => {},
   }),
 }));
 
 jest.mock("@lightbulb/shared", () => ({
   ...jest.requireActual("@lightbulb/shared"),
-  useGatewayRpc: () => ({ data: null, error: null, isLoading: false }),
+  useRuntimeRpc: () => ({ data: null, error: null, isLoading: false }),
 }));
 
 import AgentChat from "../[agentId]";

@@ -20,15 +20,15 @@ vi.mock("@clerk/nextjs", () => ({
   useUser: () => ({ user: { id: "u1", unsafeMetadata: {} }, isLoaded: true }),
 }));
 
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({ isConnected: true, onEvent: () => () => {} }),
+vi.mock("@/hooks/useLiveEvents", () => ({
+  useLiveEvents: () => ({ isConnected: true, onEvent: () => () => {} }),
 }));
 
 // The gateway health RPC answers (the container really is up) — the state that
 // resolves the cold-start card to its LAST step, which is where the founder's
 // workspace sat.
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpc: () => ({ data: { ok: true }, error: null }),
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpc: () => ({ data: { ok: true }, error: null }),
 }));
 
 vi.mock("@/hooks/useBilling", () => ({

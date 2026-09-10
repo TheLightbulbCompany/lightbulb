@@ -25,14 +25,14 @@ vi.mock("@/hooks/useAgents", async (importOriginal) => {
   };
 });
 
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpc: () => ({
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpc: () => ({
     data: { agents: [{ id: "a1", name: "Alpha" }, { id: "a2", name: "Beta" }], defaultId: "a1" },
     error: undefined,
     isLoading: false,
     mutate: vi.fn(),
   }),
-  useGatewayRpcMutation: () => vi.fn(),
+  useRuntimeRpcMutation: () => vi.fn(),
 }));
 vi.mock("@/hooks/useBilling", () => ({ useBilling: () => ({ isSubscribed: true }) }));
 // Child tabs hit RPC of their own — stub them to surface which agent is selected.

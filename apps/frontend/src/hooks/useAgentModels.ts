@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { useGatewayRpc } from "@/hooks/useGatewayRpc";
+import { useRuntimeRpc } from "@/hooks/useRuntimeRpc";
 import type { ModelEntry } from "@/lib/models";
 
 interface ModelsListResponse {
@@ -46,11 +46,11 @@ export function useAgentModels(agentId: string | null): UseAgentModelsResult {
   // `configured` view waits for discovery and re-adds the agent's pinned
   // model so it never vanishes from the picker. Discovery itself is enabled
   // by agents.defaults.modelPolicy.allow (backend config.model_policy_block).
-  const { data, error, isLoading } = useGatewayRpc<ModelsListResponse | ModelEntry[]>(
+  const { data, error, isLoading } = useRuntimeRpc<ModelsListResponse | ModelEntry[]>(
     agentId ? "models.list" : null,
     agentId ? { view: "configured", agentId } : undefined,
   );
-  const { data: cfg } = useGatewayRpc<ConfigGet>("config.get");
+  const { data: cfg } = useRuntimeRpc<ConfigGet>("config.get");
 
   return useMemo(() => {
     const raw: ModelEntry[] = Array.isArray(data)

@@ -18,11 +18,8 @@ import { renderHook } from "@testing-library/react";
 
 import { useSystemHealth } from "../useSystemHealth";
 
-const gateway = {
-  isConnected: true,
-  reconnectAttempt: 0,
-  isParked: false,
-  onEvent: () => () => {},
+const live = {
+  liveConnected: true,
 };
 
 // Captured hook config so the test can assert the cadence actually passed
@@ -35,16 +32,10 @@ const rpcResult: { data: { ok?: boolean } | undefined; error: Error | undefined 
   error: undefined,
 };
 
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({
-    ...gateway,
+vi.mock("@/hooks/useLiveEvents", () => ({
+  useLiveEvents: () => ({
+    ...live,
     nodeConnected: false,
-    error: null,
-    send: vi.fn(),
-    sendReq: vi.fn().mockResolvedValue(null),
-    sendChat: vi.fn(),
-    onChatMessage: () => () => {},
-    reconnect: vi.fn(),
   }),
 }));
 
@@ -57,8 +48,8 @@ vi.mock("@/hooks/useProvisioningState", () => ({
   }),
 }));
 
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpc: (
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpc: (
     _method: string | null,
     _params: unknown,
     config: { refreshInterval?: unknown },
@@ -81,9 +72,7 @@ function healthInterval(latest: { ok?: boolean } | undefined): number {
 
 describe("useSystemHealth health-RPC poll cadence", () => {
   beforeEach(() => {
-    gateway.isConnected = true;
-    gateway.reconnectAttempt = 0;
-    gateway.isParked = false;
+    live.liveConnected = true;
     rpcResult.data = { ok: true };
     rpcResult.error = undefined;
     rpcConfig = undefined;

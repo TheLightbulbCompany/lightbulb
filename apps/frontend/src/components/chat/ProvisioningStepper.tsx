@@ -21,8 +21,7 @@ import { useLandingBriefReplay } from "@/hooks/useLandingBriefReplay";
 import { useBilling } from "@/hooks/useBilling";
 import { useCredits, isCreditsBlocked } from "@/hooks/useCredits";
 import { useProvisioningState, type BlockedPayload } from "@/hooks/useProvisioningState";
-import { useGateway } from "@/hooks/useGateway";
-import { useGatewayRpc } from "@/hooks/useGatewayRpc";
+import { useRuntimeRpc } from "@/hooks/useRuntimeRpc";
 import { nextOnboardingCompletion } from "@/components/chat/onboardingAnalytics";
 import { replaceSearchParams } from "@/lib/shellNav";
 import { SUPPORT_MAILTO } from "@/lib/domain";
@@ -308,19 +307,8 @@ export function ProvisioningStepper({
     refresh,
   } = useProvisioningState();
 
-  // Instant-ready: the backend's connection pool pushes
-  // status_change("HEALTHY") over the WebSocket at the exact moment the
-  // container handshake completes. Revalidate /container/status right then
-  // so the stepper flips to ready in one round trip instead of waiting out
-  // the remainder of the shared bounded loop's cadence.
-  const { onEvent } = useGateway();
-  useEffect(() => {
-    return onEvent((event, payload) => {
-      if (event !== "status_change") return;
-      if ((payload as { state?: string } | null)?.state !== "HEALTHY") return;
-      refresh();
-    });
-  }, [onEvent, refresh]);
+  // Private runtime health/onboarding events invalidate this shared status key
+  // in LiveEventsProvider, so the stepper observes readiness through HTTP.
 
   // The trial_local row is created as a side effect of /container/status, not
   // by /billing/account — and useBilling does not revalidate on focus or an
@@ -392,7 +380,7 @@ export function ProvisioningStepper({
     (isSubscribed || isTrialLocal) && derived?.phase !== "ready" && derived?.phase !== "parked";
 
   // Poll gateway health every 3s once container looks ready
-  const { data: gatewayHealth } = useGatewayRpc<Record<string, unknown>>(
+  const { data: gatewayHealth } = useRuntimeRpc<Record<string, unknown>>(
     shouldPollContainer && containerReady ? "health" : null,
     undefined,
     { refreshInterval: 3000, dedupingInterval: 2000 },

@@ -16,7 +16,7 @@ import { TrialBanner } from "@/components/chat/TrialBanner";
 import { OutOfCreditsBanner } from "@/components/chat/OutOfCreditsBanner";
 import { LaunchJoinBanner } from "@/components/chat/LaunchJoinBanner";
 import { LaunchJoinModal } from "@/components/chat/LaunchJoinModal";
-import { useGatewayRpc } from "@/hooks/useGatewayRpc";
+import { useRuntimeRpc } from "@/hooks/useRuntimeRpc";
 import { useAgents, type Agent } from "@/hooks/useAgents";
 import { useBilling } from "@/hooks/useBilling";
 import { useOnboardingGate } from "@/hooks/useOnboardingGate";
@@ -98,7 +98,7 @@ export function ChatLayout({
   // Models catalog for the sidebar agent rows: resolves Bedrock
   // application-inference-profile ARNs to display names ("Claude Opus 4.6")
   // — the raw ARN's last segment is an opaque random suffix.
-  const { data: configSnapshot } = useGatewayRpc<{ config?: unknown }>("config.get");
+  const { data: configSnapshot } = useRuntimeRpc<{ config?: unknown }>("config.get");
   // Per-agent runtime state for the roster (Teams roster status ∪ live gateway
   // runs). Shares the `/teams/agents` SWR key the pause/resume control below
   // already reads, so this adds no request on this shell.

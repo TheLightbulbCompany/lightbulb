@@ -18,7 +18,7 @@ import {
   Wrench,
   FileText,
 } from "lucide-react";
-import { useGatewayRpc } from "@/hooks/useGatewayRpc";
+import { useRuntimeRpc } from "@/hooks/useRuntimeRpc";
 import { useSystemHealth } from "@/hooks/useSystemHealth";
 import { useProvisioningState } from "@/hooks/useProvisioningState";
 import { useBilling } from "@/hooks/useBilling";
@@ -139,7 +139,7 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
     error: healthError,
     isLoading: healthLoading,
     mutate: refreshHealth,
-  } = useGatewayRpc<HealthResponse>("health", undefined, { refreshInterval: 10000 });
+  } = useRuntimeRpc<HealthResponse>("health", undefined, { refreshInterval: 10000 });
 
   const { container, isLoading: statusLoading, error: statusError } = useProvisioningState();
   const { account } = useBilling();
@@ -155,7 +155,7 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
   // Skills count comes from the same RPC SkillsTab uses; pass no agentId
   // to get the global skills inventory. Response can be either an array or
   // {skills: [...]} depending on OpenClaw version (see SkillsTab.tsx).
-  const { data: skillsRaw } = useGatewayRpc<SkillStatus | SkillEntry[]>(
+  const { data: skillsRaw } = useRuntimeRpc<SkillStatus | SkillEntry[]>(
     "skills.status",
   );
 

@@ -2,12 +2,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
 import { SWRConfig } from "swr";
 
-// useAgentSessions reaches the gateway only through useGatewayRpcMutation, so
+// useAgentSessions reaches the gateway only through useRuntimeRpcMutation, so
 // callRpc is the whole surface to stub.
 const callRpc = vi.fn().mockResolvedValue({});
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpc: vi.fn(),
-  useGatewayRpcMutation: (): typeof callRpc => callRpc,
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpc: vi.fn(),
+  useRuntimeRpcMutation: (): typeof callRpc => callRpc,
 }));
 vi.mock("@/lib/notify", () => ({ notifyApiError: vi.fn() }));
 

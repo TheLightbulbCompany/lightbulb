@@ -42,7 +42,7 @@ vi.mock("@/lib/modelDisplay", () => ({
   displayModelName: () => null,
 }));
 
-vi.mock("@/hooks/useGatewayRpc", () => ({ useGatewayRpc: () => ({ data: undefined }) }));
+vi.mock("@/hooks/useRuntimeRpc", () => ({ useRuntimeRpc: () => ({ data: undefined }) }));
 // `useRosterEntries` subscribes to the chat-frame fan-out for live `run_active`
 // frames. `emitChatMessage` lets a test push one and assert the row lights up.
 let emitChatMessage: (msg: Record<string, unknown>) => void = () => {};
@@ -50,9 +50,9 @@ let onChatMessage = (h: (m: Record<string, unknown>) => void) => {
   emitChatMessage = h;
   return () => {};
 };
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({
-    isConnected: true,
+vi.mock("@/hooks/useLiveEvents", () => ({
+  useLiveEvents: () => ({
+    liveConnected: true,
     nodeConnected: false,
     onChatMessage,
   }),
@@ -303,13 +303,13 @@ describe("WorkspaceSidebar", () => {
     render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
     expect(screen.getByText("One").closest(".agent-item")?.getAttribute("data-state")).toBe("idle");
 
-    act(() => emitChatMessage({ type: "run_active", active: true, agent_id: "a1" }));
+    act(() => emitChatMessage({ type: "run_active", active: true, agentId: "a1" }));
     expect(screen.getByText("One").closest(".agent-item")?.getAttribute("data-state")).toBe(
       "running",
     );
 
     // `run_ended` clears it even if the matching `run_active: false` never lands.
-    act(() => emitChatMessage({ type: "run_ended", agent_id: "a1" }));
+    act(() => emitChatMessage({ type: "run_ended", runId: "run-1", outcome: "done", agentId: "a1" }));
     expect(screen.getByText("One").closest(".agent-item")?.getAttribute("data-state")).toBe("idle");
   });
 

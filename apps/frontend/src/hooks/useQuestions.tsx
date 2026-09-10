@@ -31,8 +31,8 @@
 import * as React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
-import type { QuestionRecord } from "@lightbulb/shared";
-import { useGateway } from "@/hooks/useGateway";
+import type { QuestionRecord, RuntimeQuestionResolveRequest } from "@lightbulb/shared";
+import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { isSessionKeyForUser } from "@/lib/sessionKey";
 
 export type QuestionAnswerValues = Record<string, string[]>;
@@ -70,7 +70,7 @@ function parseRecord(payload: unknown): QuestionRecord | null {
 }
 
 export function useQuestions(): UseQuestionsReturn {
-  const { onEvent, sendReq, isConnected } = useGateway();
+  const { onEvent, runtime, connectionRevision } = useLiveEvents();
   const { userId } = useAuth();
   const userIdRef = useRef(userId);
   useEffect(() => {
@@ -95,9 +95,9 @@ export function useQuestions(): UseQuestionsReturn {
 
   // question.requested / question.resolved.
   useEffect(() => {
-    return onEvent((eventName, data) => {
-      if (eventName === "question.requested") {
-        const record = parseRecord(data);
+    return onEvent((event) => {
+      if (event.type === "runtime.question.requested") {
+        const record = parseRecord(event.payload);
         if (!record) return;
         // Multi-tenancy: the backend broadcasts this event to every frontend
         // of the owner, so scope it to this member's own web chat here.
@@ -106,46 +106,40 @@ export function useQuestions(): UseQuestionsReturn {
         enqueue([record]);
         return;
       }
-      if (eventName === "question.resolved") {
-        const id = (data as { id?: unknown } | null)?.id;
-        if (typeof id === "string") remove(id);
+      if (event.type === "runtime.question.resolved") {
+        remove(event.payload.id);
       }
     });
   }, [onEvent, enqueue, remove]);
 
-  // Reload / reconnect recovery: a question requested while this tab was gone
-  // is still pending on the container and still blocking the run.
+  // Reload on mount and after each AppSync reconnect. The runtime stays
+  // authoritative for questions that arrived while this client was offline.
   useEffect(() => {
-    if (!isConnected) return;
     let cancelled = false;
     void (async () => {
       try {
-        const result = (await sendReq("question.list", {})) as {
-          questions?: unknown[];
-        } | null;
-        if (cancelled || !result || !Array.isArray(result.questions)) return;
+        const outcome = await runtime.rpc<{ questions?: unknown[] }>("question.list", {});
+        if (cancelled || outcome.kind !== "result" || !Array.isArray(outcome.value?.questions)) return;
         enqueue(
-          result.questions
+          outcome.value.questions
             .map(parseRecord)
-            .filter((r): r is QuestionRecord => r !== null)
-            .filter((r) => isSessionKeyForUser(r.sessionKey, userIdRef.current)),
+            .filter((record): record is QuestionRecord => record !== null)
+            .filter((record) => isSessionKeyForUser(record.sessionKey, userIdRef.current)),
         );
       } catch {
-        // Parked/asleep container, or an older image without the method.
-        // question.list isn't one of the four wake-gated methods, so this is
-        // a normal outcome rather than a failure worth surfacing.
+        // A sleeping/unavailable runtime is normal; the next reconnect retries.
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [isConnected, sendReq, enqueue]);
+  }, [connectionRevision, runtime, enqueue]);
 
   const resolve = useCallback(
-    async (id: string, params: Record<string, unknown>): Promise<void> => {
+    async (id: string, params: RuntimeQuestionResolveRequest): Promise<void> => {
       setError(null);
       try {
-        await sendReq("question.resolve", { id, ...params });
+        await runtime.resolveQuestion(id, params);
         remove(id);
       } catch (e) {
         const msg = e instanceof Error ? e.message : "Failed to send answer";
@@ -166,7 +160,7 @@ export function useQuestions(): UseQuestionsReturn {
         throw e;
       }
     },
-    [sendReq, remove],
+    [runtime, remove],
   );
 
   const answer = useCallback(

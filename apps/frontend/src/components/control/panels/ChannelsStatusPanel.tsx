@@ -1,7 +1,7 @@
 "use client";
 
 import { Loader2, RefreshCw, Radio, AlertTriangle } from "lucide-react";
-import { useGatewayRpc } from "@/hooks/useGatewayRpc";
+import { useRuntimeRpc } from "@/hooks/useRuntimeRpc";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
@@ -53,7 +53,7 @@ function AccountCard({ account }: { account: ChannelAccountSnapshot }) {
 export function ChannelsStatusPanel() {
   // probe:true forces a live connectivity probe on the container rather than
   // returning the cached snapshot — the panel exists to show fresh health.
-  const { data, error, isLoading, mutate } = useGatewayRpc<ChannelsStatusSnapshot>(
+  const { data, error, isLoading, mutate } = useRuntimeRpc<ChannelsStatusSnapshot>(
     "channels.status",
     { probe: true },
   );

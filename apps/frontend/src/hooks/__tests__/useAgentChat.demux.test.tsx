@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import type { ChatIncomingMessage } from "@/hooks/useGateway";
+import type { ChatIncomingMessage } from "@lightbulb/shared";
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("@/lib/notify", () => ({
@@ -15,34 +15,28 @@ const sendReq = vi.fn().mockResolvedValue({ messages: [] });
 const sendChat = vi.fn();
 const send = vi.fn();
 
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: (): {
-    isConnected: boolean;
-    nodeConnected: boolean;
-    error: null;
-    reconnectAttempt: number;
-    send: typeof send;
-    sendReq: typeof sendReq;
-    sendChat: typeof sendChat;
-    onEvent: (h: (n: string, d: unknown) => void) => () => void;
-    onChatMessage: (h: (m: ChatIncomingMessage) => void) => () => void;
-    reconnect: () => void;
-  } => ({
+vi.mock("@/hooks/useAgentRoomTransport", () => ({
+  useAgentRoomTransport: (agentId: string | null) => ({
     isConnected: true,
-    nodeConnected: false,
-    error: null,
-    reconnectAttempt: 0,
-    send,
-    sendReq,
-    sendChat,
-    onEvent: () => () => {},
-    onChatMessage: (h) => {
-      chatHandlers.push(h);
+    onChatMessage: (handler: (message: ChatIncomingMessage) => void) => {
+      chatHandlers.push(handler);
       return () => {
-        chatHandlers = chatHandlers.filter((x) => x !== h);
+        chatHandlers = chatHandlers.filter((candidate) => candidate !== handler);
       };
     },
-    reconnect: vi.fn(),
+    sendRoomMessage: async (message: string, clientMessageId: string) =>
+      sendChat(agentId, message, clientMessageId, undefined),
+    abortRun: async (runId: string) => {
+      const accepted = send({ type: "agent_abort", agentId: agentId, runId });
+      if (accepted === false) throw new Error("Stop not sent");
+      return {};
+    },
+    steerRun: async (runId: string, text: string) => {
+      const accepted = send({ type: "agent_steer", agentId: agentId, runId, text });
+      if (accepted === false) throw new Error("Steer not sent");
+      return {};
+    },
+    rpc: sendReq,
   }),
 }));
 
@@ -78,10 +72,10 @@ describe("useAgentChat — event demux by session_id", () => {
     act(() =>
       dispatch({
         type: "chunk",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId,
         content: "leak",
-        session_id: "99999999-9999-4999-8999-999999999999",
+        sessionId: "99999999-9999-4999-8999-999999999999",
       } as ChatIncomingMessage),
     );
     expect(result.current.isStreaming).toBe(false);
@@ -90,10 +84,10 @@ describe("useAgentChat — event demux by session_id", () => {
     act(() =>
       dispatch({
         type: "chunk",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId,
         content: "mine",
-        session_id: sid,
+        sessionId: sid,
       } as ChatIncomingMessage),
     );
     expect(result.current.isStreaming).toBe(true);
@@ -113,7 +107,7 @@ describe("useAgentChat — event demux by session_id", () => {
     act(() =>
       dispatch({
         type: "chunk",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId,
         content: "general-leak",
       } as ChatIncomingMessage),
@@ -131,17 +125,17 @@ describe("useAgentChat — event demux by session_id", () => {
     act(() =>
       dispatch({
         type: "chunk",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId,
         content: "other",
-        session_id: "11111111-1111-4111-8111-111111111111",
+        sessionId: "11111111-1111-4111-8111-111111111111",
       } as ChatIncomingMessage),
     );
     expect(result.current.isStreaming).toBe(false);
 
     // Legacy frame (no session_id) belongs to General → accepted.
     act(() =>
-      dispatch({ type: "chunk", agent_id: "agent-X", runId, content: "general" } as ChatIncomingMessage),
+      dispatch({ type: "chunk", agentId: "agent-X", runId, content: "general" } as ChatIncomingMessage),
     );
     expect(result.current.isStreaming).toBe(true);
   });

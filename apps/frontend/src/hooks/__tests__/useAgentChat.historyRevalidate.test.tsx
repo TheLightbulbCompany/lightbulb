@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
-import type { ChatIncomingMessage } from "@/hooks/useGateway";
+import type { ChatIncomingMessage } from "@lightbulb/shared";
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("@/lib/notify", () => ({
@@ -18,34 +18,28 @@ const send = vi.fn();
 // drive a second history-effect run and prove the in-flight dedupe latch.
 let mockIsConnected = true;
 
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: (): {
-    isConnected: boolean;
-    nodeConnected: boolean;
-    error: null;
-    reconnectAttempt: number;
-    send: typeof send;
-    sendReq: typeof sendReq;
-    sendChat: typeof sendChat;
-    onEvent: (h: (n: string, d: unknown) => void) => () => void;
-    onChatMessage: (h: (m: ChatIncomingMessage) => void) => () => void;
-    reconnect: () => void;
-  } => ({
+vi.mock("@/hooks/useAgentRoomTransport", () => ({
+  useAgentRoomTransport: (agentId: string | null) => ({
     isConnected: mockIsConnected,
-    nodeConnected: false,
-    error: null,
-    reconnectAttempt: 0,
-    send,
-    sendReq,
-    sendChat,
-    onEvent: () => () => {},
-    onChatMessage: (h) => {
-      chatHandlers.push(h);
+    onChatMessage: (handler: (message: ChatIncomingMessage) => void) => {
+      chatHandlers.push(handler);
       return () => {
-        chatHandlers = chatHandlers.filter((x) => x !== h);
+        chatHandlers = chatHandlers.filter((candidate) => candidate !== handler);
       };
     },
-    reconnect: vi.fn(),
+    sendRoomMessage: async (message: string, clientMessageId: string) =>
+      sendChat(agentId, message, clientMessageId, undefined),
+    abortRun: async (runId: string) => {
+      const accepted = send({ type: "agent_abort", agentId: agentId, runId });
+      if (accepted === false) throw new Error("Stop not sent");
+      return {};
+    },
+    steerRun: async (runId: string, text: string) => {
+      const accepted = send({ type: "agent_steer", agentId: agentId, runId, text });
+      if (accepted === false) throw new Error("Steer not sent");
+      return {};
+    },
+    rpc: sendReq,
   }),
 }));
 

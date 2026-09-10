@@ -19,7 +19,7 @@ import {
   agentDisplayName,
   getAgentModelString,
   useAgents,
-  useGatewayRpcMutation,
+  useRuntimeRpcMutation,
   type Agent,
 } from "@lightbulb/shared";
 
@@ -27,7 +27,7 @@ import { AgentMonogram, AgentStatusDot } from "../../../components/control/Agent
 import { usePulse } from "../../../components/chat/usePulse";
 import { colors, fonts, radii, spacing, type } from "../../../config/theme";
 import { deriveWorkspace, validateAgentName } from "../../../lib/agentCatalog";
-import { useGateway } from "../../../providers/gateway";
+import { useLiveEvents } from "../../../providers/live-events";
 import { useContainerStatusContext } from "../../../lib/containerStatusContext";
 import { isContainerComingUp } from "../../../lib/rosterPresentation";
 import { LogoMark } from "../../../components/LogoMark";
@@ -55,27 +55,22 @@ function SkeletonRows({ warming }: { warming?: boolean }) {
 }
 
 // ---------------------------------------------------------------------------
-// Create-agent modal (spec §4 form). Name required; emoji optional (rides as
-// params.paperclip.icon). agents.create runs a long serial chain server-side
-// (Paperclip + 2 container RPCs + device pairing) that routinely exceeds the
-// generic 30s budget while still succeeding — so a 90s timeout, and the
-// caller always revalidates agents.list afterward (create is NON-idempotent:
-// a re-click mints a SECOND agent, so submit latches while in flight).
+// Create-agent modal (spec §4 form). Name required; emoji optional. Creation
+// uses the shared operation-aware mutation and latches because a second submit
+// would create a second agent.
 // ---------------------------------------------------------------------------
 
 function CreateAgentModal({
   visible,
   existingNames,
   onClose,
-  onCreated,
+  onCreate,
 }: {
   visible: boolean;
   existingNames: string[];
   onClose: () => void;
-  onCreated: () => Promise<void>;
+  onCreate: (params: { name: string; workspace: string; emoji?: string }) => Promise<void>;
 }) {
-  const gateway = useGateway();
-  const callRpc = useGatewayRpcMutation(gateway);
   const [name, setName] = useState("");
   const [emoji, setEmoji] = useState("");
   const [creating, setCreating] = useState(false);
@@ -111,48 +106,20 @@ function CreateAgentModal({
     setCreating(true);
     setError(null);
     const trimmedEmoji = emoji.trim();
-    const paperclip: Record<string, string> = { role: "general" };
-    if (trimmedEmoji) paperclip.icon = trimmedEmoji;
-    let created = false;
-    let createError: unknown = null;
     try {
-      await callRpc(
-        "agents.create",
-        {
-          name: name.trim(),
-          // Explicit workspace: agents.create does NOT inherit
-          // agents.defaults.workspace — pass the same path the default
-          // resolves to at runtime so the agent lands on EFS.
-          workspace: deriveWorkspace(name),
-          reasoningDefault: "stream",
-          params: { paperclip },
-        },
-        90_000,
-      );
-      created = true;
-    } catch (err) {
-      createError = err;
-    }
-    // Even a create that blows past 90s may still succeed server-side —
-    // always revalidate so the agent surfaces (and the user does not
-    // re-click). A failing refetch must never leave the modal wedged, so
-    // the latch is released regardless of its outcome.
-    try {
-      await onCreated();
-    } catch {
-      // best-effort refetch; the list revalidates again on next focus
-    }
-    if (created) {
+      await onCreate({
+        name: name.trim(),
+        workspace: deriveWorkspace(name),
+        ...(trimmedEmoji ? { emoji: trimmedEmoji } : {}),
+      });
       reset();
       onClose();
-    } else {
-      setError(
-        createError instanceof Error ? createError.message : String(createError),
-      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
       creatingRef.current = false;
       setCreating(false);
     }
-  }, [canCreate, callRpc, name, emoji, onCreated, onClose, reset]);
+  }, [canCreate, name, emoji, onCreate, onClose, reset]);
 
   return (
     <Modal
@@ -251,16 +218,12 @@ function CreateAgentModal({
 // ---------------------------------------------------------------------------
 
 export default function AgentsPanel() {
-  const gateway = useGateway();
-  const callRpc = useGatewayRpcMutation(gateway);
-  // Roster read goes through the SHARED useAgents hook — same hook the web
-  // sidebar uses, carrying the onboarding empty-roster latch fix and
-  // revalidation on container-reachable. The mutations below stay local: this
-  // screen's agents.create sends `reasoningDefault` + nested
-  // `params.paperclip`, which the shared createAgent does not, and create is
-  // non-idempotent so the payload must not change under it.
-  const { agents, defaultId, error, isLoading, isSettled, refresh } =
-    useAgents(gateway);
+  const live = useLiveEvents();
+  const callRpc = useRuntimeRpcMutation(live);
+  // Roster reads and creation use the shared operation-aware hook. Deletion
+  // stays local because this screen owns its confirmation flow.
+  const { agents, defaultId, error, isLoading, isSettled, refresh, createAgent } =
+    useAgents(live);
   const existingNames = useMemo(
     () => agents.map((a) => agentDisplayName(a)),
     [agents],
@@ -269,7 +232,6 @@ export default function AgentsPanel() {
   const [createOpen, setCreateOpen] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  const connectionDown = !gateway.isConnected && gateway.error != null;
   // Same source of truth as the roster tab — and it has to be the SAME, not
   // merely similar: the server's container status decides whether a missing
   // roster is a wake or a failure (see isContainerComingUp).
@@ -381,12 +343,6 @@ export default function AgentsPanel() {
   // revalidation failure is a worse answer than showing both.
   if (hardError && !isSettled) {
     body = renderErrorCard(hardError.message);
-  } else if (!isSettled && connectionDown) {
-    body = (
-      <View style={styles.centerGrow}>
-        <Text style={styles.dim}>{gateway.error}</Text>
-      </View>
-    );
   } else {
     body = (
       <FlatList
@@ -448,9 +404,7 @@ export default function AgentsPanel() {
         visible={createOpen}
         existingNames={existingNames}
         onClose={() => setCreateOpen(false)}
-        onCreated={async () => {
-          await refresh();
-        }}
+        onCreate={createAgent}
       />
     </View>
   );

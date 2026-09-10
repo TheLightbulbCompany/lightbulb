@@ -11,40 +11,39 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import type { ChatIncomingMessage } from "@/hooks/useGateway";
+import type { ChatIncomingMessage } from "@lightbulb/shared";
 import type { ExecApprovalRequest } from "@/hooks/useExecApprovals";
 import { resolveMessageBlocks } from "@/hooks/internal/toolBlockExtract";
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 
 let chatHandlers: Array<(msg: ChatIncomingMessage) => void> = [];
-let eventHandlers: Array<(name: string, data: unknown) => void> = [];
 const sendReq = vi.fn().mockResolvedValue({});
 const sendChat = vi.fn();
 const send = vi.fn();
 
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({
+vi.mock("@/hooks/useAgentRoomTransport", () => ({
+  useAgentRoomTransport: (agentId: string | null) => ({
     isConnected: true,
-    nodeConnected: false,
-    error: null,
-    reconnectAttempt: 0,
-    send,
-    sendReq,
-    sendChat,
-    onEvent: (h: (name: string, data: unknown) => void) => {
-      eventHandlers.push(h);
+    onChatMessage: (handler: (message: ChatIncomingMessage) => void) => {
+      chatHandlers.push(handler);
       return () => {
-        eventHandlers = eventHandlers.filter((x) => x !== h);
+        chatHandlers = chatHandlers.filter((candidate) => candidate !== handler);
       };
     },
-    onChatMessage: (h: (msg: ChatIncomingMessage) => void) => {
-      chatHandlers.push(h);
-      return () => {
-        chatHandlers = chatHandlers.filter((x) => x !== h);
-      };
+    sendRoomMessage: async (message: string, clientMessageId: string) =>
+      sendChat(agentId, message, clientMessageId, undefined),
+    abortRun: async (runId: string) => {
+      const accepted = send({ type: "agent_abort", agentId: agentId, runId });
+      if (accepted === false) throw new Error("Stop not sent");
+      return {};
     },
-    reconnect: vi.fn(),
+    steerRun: async (runId: string, text: string) => {
+      const accepted = send({ type: "agent_steer", agentId: agentId, runId, text });
+      if (accepted === false) throw new Error("Steer not sent");
+      return {};
+    },
+    rpc: sendReq,
   }),
 }));
 
@@ -98,7 +97,6 @@ function dispatch(msg: ChatIncomingMessage) {
 describe("useAgentChat — tombstoned terminals", () => {
   beforeEach(() => {
     chatHandlers = [];
-    eventHandlers = [];
     sendReq.mockReset().mockResolvedValue({});
     sendChat.mockReset();
     send.mockReset().mockReturnValue(true);
@@ -138,7 +136,7 @@ describe("useAgentChat — tombstoned terminals", () => {
     act(() =>
       dispatch({
         type: "chunk",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: runB,
         content: "hello from runB",
       } as ChatIncomingMessage),
@@ -148,7 +146,7 @@ describe("useAgentChat — tombstoned terminals", () => {
     act(() =>
       dispatch({
         type: "done",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: runA,
       } as ChatIncomingMessage),
     );
@@ -183,7 +181,7 @@ describe("useAgentChat — tombstoned terminals", () => {
     act(() =>
       dispatch({
         type: "chunk",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: runB,
         content: "hello from runB",
       } as ChatIncomingMessage),
@@ -192,7 +190,7 @@ describe("useAgentChat — tombstoned terminals", () => {
     act(() =>
       dispatch({
         type: "error",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: runA,
         message: "Agent run was cancelled",
       } as ChatIncomingMessage),
@@ -210,7 +208,6 @@ describe("useAgentChat — tombstoned terminals", () => {
 describe("useAgentChat — approval-pause busy gate", () => {
   beforeEach(() => {
     chatHandlers = [];
-    eventHandlers = [];
     sendReq.mockReset().mockResolvedValue({});
     sendChat.mockReset();
     send.mockReset().mockReturnValue(true);
@@ -247,7 +244,7 @@ describe("useAgentChat — approval-pause busy gate", () => {
     act(() =>
       dispatch({
         type: "done",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: run1,
       } as ChatIncomingMessage),
     );
@@ -273,7 +270,7 @@ describe("useAgentChat — approval-pause busy gate", () => {
     });
     const run1 = lastClientRunId();
     act(() =>
-      dispatch({ type: "done", agent_id: "agent-X", runId: run1 } as ChatIncomingMessage),
+      dispatch({ type: "done", agentId: "agent-X", runId: run1 } as ChatIncomingMessage),
     );
     await act(async () => {
       await result.current.sendMessage("follow-up");
@@ -305,7 +302,7 @@ describe("useAgentChat — approval-pause busy gate", () => {
     });
     const r1 = lastClientRunId();
     act(() =>
-      dispatch({ type: "done", agent_id: "agent-X", runId: r1 } as ChatIncomingMessage),
+      dispatch({ type: "done", agentId: "agent-X", runId: r1 } as ChatIncomingMessage),
     );
 
     await act(async () => {
@@ -320,7 +317,7 @@ describe("useAgentChat — approval-pause busy gate", () => {
     approvalQueue = [fakeApproval("agent-X", "ap-bad")];
     const r2 = lastClientRunId();
     act(() =>
-      dispatch({ type: "done", agent_id: "agent-X", runId: r2 } as ChatIncomingMessage),
+      dispatch({ type: "done", agentId: "agent-X", runId: r2 } as ChatIncomingMessage),
     );
     await act(async () => {
       notifyRemoval("ap-bad", "terminal_error");
@@ -347,7 +344,7 @@ describe("useAgentChat — approval-pause busy gate", () => {
     });
     const r1 = lastClientRunId();
     act(() =>
-      dispatch({ type: "done", agent_id: "agent-X", runId: r1 } as ChatIncomingMessage),
+      dispatch({ type: "done", agentId: "agent-X", runId: r1 } as ChatIncomingMessage),
     );
 
     // Server-side resolve: queue drains with reason="resolved". The
@@ -369,7 +366,7 @@ describe("useAgentChat — approval-pause busy gate", () => {
     act(() =>
       dispatch({
         type: "chunk",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: r2,
         content: "continuation",
       } as ChatIncomingMessage),
@@ -377,7 +374,7 @@ describe("useAgentChat — approval-pause busy gate", () => {
     // Terminal done arrives on the fresh runId — gate releases, queued
     // follow-up flushes.
     act(() =>
-      dispatch({ type: "done", agent_id: "agent-X", runId: r2 } as ChatIncomingMessage),
+      dispatch({ type: "done", agentId: "agent-X", runId: r2 } as ChatIncomingMessage),
     );
 
     expect(sendChat).toHaveBeenCalledTimes(2);
@@ -404,14 +401,14 @@ describe("useAgentChat — approval-pause busy gate", () => {
     act(() =>
       dispatch({
         type: "tool_start",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: r1,
         tool: "exec",
         toolCallId: "tc-output",
       } as ChatIncomingMessage),
     );
     act(() =>
-      dispatch({ type: "done", agent_id: "agent-X", runId: r1 } as ChatIncomingMessage),
+      dispatch({ type: "done", agentId: "agent-X", runId: r1 } as ChatIncomingMessage),
     );
     await act(async () => {
       notifyRemoval("ap-output", "resolved");
@@ -422,7 +419,7 @@ describe("useAgentChat — approval-pause busy gate", () => {
     act(() =>
       dispatch({
         type: "tool_end",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: r2,
         tool: "exec",
         toolCallId: "tc-output",
@@ -471,7 +468,7 @@ describe("useAgentChat — approval-pause busy gate", () => {
     });
     const r1 = lastClientRunId();
     act(() =>
-      dispatch({ type: "done", agent_id: "agent-X", runId: r1 } as ChatIncomingMessage),
+      dispatch({ type: "done", agentId: "agent-X", runId: r1 } as ChatIncomingMessage),
     );
     await act(async () => {
       notifyRemoval("ap-cancel", "resolved");
@@ -484,7 +481,7 @@ describe("useAgentChat — approval-pause busy gate", () => {
       await result.current.cancelMessage();
     });
     expect(send).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "agent_abort", agent_id: "agent-X" }),
+      expect.objectContaining({ type: "agent_abort", agentId: "agent-X" }),
     );
 
     // A follow-up typed before the server terminal must QUEUE, not dispatch.
@@ -498,7 +495,7 @@ describe("useAgentChat — approval-pause busy gate", () => {
     act(() =>
       dispatch({
         type: "run_ended",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: r1,
         outcome: "aborted",
       } as ChatIncomingMessage),
@@ -529,14 +526,14 @@ describe("useAgentChat — approval-pause busy gate", () => {
     act(() =>
       dispatch({
         type: "tool_start",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: r1,
         tool: "exec",
         toolCallId: "tc-1",
       } as ChatIncomingMessage),
     );
     act(() =>
-      dispatch({ type: "done", agent_id: "agent-X", runId: r1 } as ChatIncomingMessage),
+      dispatch({ type: "done", agentId: "agent-X", runId: r1 } as ChatIncomingMessage),
     );
     // Resolve the approval. In real usage useExecApprovals' setQueue
     // re-renders the hook, syncing approvalQueueRef. The mock just
@@ -553,7 +550,7 @@ describe("useAgentChat — approval-pause busy gate", () => {
     act(() =>
       dispatch({
         type: "tool_end",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: r2,
         tool: "exec",
         toolCallId: "tc-1",
@@ -561,7 +558,7 @@ describe("useAgentChat — approval-pause busy gate", () => {
       } as ChatIncomingMessage),
     );
     act(() =>
-      dispatch({ type: "done", agent_id: "agent-X", runId: r2 } as ChatIncomingMessage),
+      dispatch({ type: "done", agentId: "agent-X", runId: r2 } as ChatIncomingMessage),
     );
 
     // Gate released via the transfer + matching done.
@@ -592,7 +589,7 @@ describe("useAgentChat — approval-pause busy gate", () => {
     });
     const r1 = lastClientRunId();
     act(() =>
-      dispatch({ type: "done", agent_id: "agent-X", runId: r1 } as ChatIncomingMessage),
+      dispatch({ type: "done", agentId: "agent-X", runId: r1 } as ChatIncomingMessage),
     );
 
     // Dismiss one of two siblings.
@@ -634,7 +631,7 @@ describe("useAgentChat — approval-pause busy gate", () => {
     });
     const r1 = lastClientRunId();
     act(() =>
-      dispatch({ type: "done", agent_id: "agent-X", runId: r1 } as ChatIncomingMessage),
+      dispatch({ type: "done", agentId: "agent-X", runId: r1 } as ChatIncomingMessage),
     );
     // Sanity: the approval-pause held the gate so isStreaming stayed on.
     expect(result.current.isStreaming).toBe(true);
@@ -659,7 +656,7 @@ describe("useAgentChat — approval-pause busy gate", () => {
     const run1 = lastClientRunId();
 
     act(() =>
-      dispatch({ type: "done", agent_id: "agent-X", runId: run1 } as ChatIncomingMessage),
+      dispatch({ type: "done", agentId: "agent-X", runId: run1 } as ChatIncomingMessage),
     );
 
     await act(async () => {
@@ -673,7 +670,6 @@ describe("useAgentChat — approval-pause busy gate", () => {
 describe("useAgentChat — multi-tab observation (runId adoption + agent_busy rollback)", () => {
   beforeEach(() => {
     chatHandlers = [];
-    eventHandlers = [];
     sendReq.mockReset().mockResolvedValue({});
     sendChat.mockReset();
     send.mockReset().mockReturnValue(true);
@@ -693,7 +689,7 @@ describe("useAgentChat — multi-tab observation (runId adoption + agent_busy ro
     act(() =>
       dispatch({
         type: "chunk",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: "foreign-run",
         content: "working",
       } as ChatIncomingMessage),
@@ -710,7 +706,7 @@ describe("useAgentChat — multi-tab observation (runId adoption + agent_busy ro
 
     // The observed run ends → gate releases → the queued send drains.
     act(() =>
-      dispatch({ type: "done", agent_id: "agent-X", runId: "foreign-run" } as ChatIncomingMessage),
+      dispatch({ type: "done", agentId: "agent-X", runId: "foreign-run" } as ChatIncomingMessage),
     );
     expect(sendChat).toHaveBeenCalledTimes(1);
     expect(sendChat.mock.calls[0]?.[1]).toBe("mine");
@@ -730,14 +726,14 @@ describe("useAgentChat — multi-tab observation (runId adoption + agent_busy ro
     });
     const r1 = lastClientRunId();
     act(() =>
-      dispatch({ type: "chunk", agent_id: "agent-X", runId: r1, content: "live" } as ChatIncomingMessage),
+      dispatch({ type: "chunk", agentId: "agent-X", runId: r1, content: "live" } as ChatIncomingMessage),
     );
     expect(result.current.isStreaming).toBe(true);
 
     act(() =>
       dispatch({
         type: "error",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         code: "agent_busy",
         message: "busy",
       } as ChatIncomingMessage),
@@ -762,7 +758,7 @@ describe("useAgentChat — multi-tab observation (runId adoption + agent_busy ro
     });
     const r1 = lastClientRunId();
     act(() =>
-      dispatch({ type: "chunk", agent_id: "agent-X", runId: r1, content: "x" } as ChatIncomingMessage),
+      dispatch({ type: "chunk", agentId: "agent-X", runId: r1, content: "x" } as ChatIncomingMessage),
     );
     await act(async () => {
       await result.current.sendMessage("follow-up");
@@ -773,7 +769,7 @@ describe("useAgentChat — multi-tab observation (runId adoption + agent_busy ro
     act(() =>
       dispatch({
         type: "error",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         message: "No container provisioned. Please subscribe to start chatting.",
       } as ChatIncomingMessage),
     );

@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 
 import { capture } from "@/lib/analytics";
 import { normalizeAgentId, validateAgentName } from "@/lib/agentIdentity";
-import { useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 import { useBilling } from "@/hooks/useBilling";
 import { AgentPaperclipFields } from "@/components/control/agents/AgentPaperclipFields";
 import type { PaperclipMeta } from "@/lib/paperclipMeta";
@@ -27,7 +27,7 @@ export function AgentCreateForm({ existingNames, onCreated, onCancel }: AgentCre
   const [creating, setCreating] = useState(false);
   const [upgrading, setUpgrading] = useState(false);
   const [upgradeError, setUpgradeError] = useState<string | null>(null);
-  const callRpc = useGatewayRpcMutation();
+  const callRpc = useRuntimeRpcMutation();
   const { upgradeToUltra } = useBilling();
 
   // Mirrors UltraUpgradeRow in app/settings/page.tsx. Swallowing a failure
@@ -81,17 +81,12 @@ export function AgentCreateForm({ existingNames, onCreated, onCancel }: AgentCre
           reasoningDefault: "stream",
           params: { paperclip: paperclipBlock },
         },
-        // The server-side create chain (Paperclip + container RPCs + device
-        // pairing) routinely exceeds the generic 30s budget while still
-        // succeeding; 90s stops a successful create from surfacing as a
-        // timeout. Mirrors useAgents.createAgent.
-        90_000,
       );
       capture("agent_created", { agent_name: name.trim(), paperclip_role: meta.role });
       onCreated();
     } catch (err) {
       // The backend answers an over-budget create with a structured gateway
-      // error; GatewayRpcError keeps `code` rather than flattening it into the
+      // error; RuntimeRpcError keeps `code` rather than flattening it into the
       // message, so match on the code and let the message stay the human
       // sentence the backend wrote.
       setAtAgentLimit((err as { code?: string } | null)?.code === "agent_budget_exceeded");

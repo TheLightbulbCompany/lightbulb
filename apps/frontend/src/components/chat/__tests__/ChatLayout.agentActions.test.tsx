@@ -54,18 +54,18 @@ let onChatMessage = (h: (m: Record<string, unknown>) => void) => {
   emitChatMessage = h;
   return () => {};
 };
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({
-    isConnected: true,
+vi.mock("@/hooks/useLiveEvents", () => ({
+  useLiveEvents: () => ({
+    liveConnected: true,
     nodeConnected: false,
     onEvent: () => () => {},
     onChatMessage,
     sendReq: () => Promise.resolve(),
   }),
 }));
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpc: () => ({ data: { config: {} } }),
-  useGatewayRpcMutation: () => vi.fn(),
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpc: () => ({ data: { config: {} } }),
+  useRuntimeRpcMutation: () => vi.fn(),
 }));
 
 // Active agent in the gateway roster (drives ``currentAgentId``). Mutable so
@@ -306,7 +306,7 @@ describe("ChatLayout — mobile roster", () => {
     expect(stateOf("Friday")).toBe("idle");
 
     act(() =>
-      emitChatMessage({ type: "run_active", active: true, agent_id: "agent_1", session_id: "s1" }),
+      emitChatMessage({ type: "run_active", active: true, agentId: "agent_1", sessionId: "s1" }),
     );
     expect(stateOf("Friday")).toBe("running");
   });

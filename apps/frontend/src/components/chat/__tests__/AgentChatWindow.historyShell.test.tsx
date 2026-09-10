@@ -28,8 +28,8 @@ vi.mock("@clerk/nextjs", () => ({
   useOrganization: () => ({ organization: null, membership: null, isLoaded: true }),
 }));
 
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({
+vi.mock("@/hooks/useLiveEvents", () => ({
+  useLiveEvents: () => ({
     isConnected: true,
     onChatMessage: () => () => {},
     onEvent: () => () => {},

@@ -20,8 +20,8 @@ import {
   agentDisplayName,
   getAgentModelString,
   useAgents,
-  useGatewayRpc,
-  useGatewayRpcMutation,
+  useRuntimeRpc,
+  useRuntimeRpcMutation,
   type Agent,
 } from "@lightbulb/shared";
 
@@ -34,7 +34,7 @@ import {
   displayModelName,
   type CatalogModel,
 } from "../../../lib/agentCatalog";
-import { useGateway } from "../../../providers/gateway";
+import { useLiveEvents } from "../../../providers/live-events";
 
 // ---------------------------------------------------------------------------
 // config.get snapshot — the model catalog + per-agent config entry (tools /
@@ -260,12 +260,12 @@ export default function AgentDetail() {
     agentId: string;
     name?: string;
   }>();
-  const gateway = useGateway();
-  const callRpc = useGatewayRpcMutation(gateway);
+  const live = useLiveEvents();
+  const callRpc = useRuntimeRpcMutation(live);
 
-  const { agents: roster, defaultId, refresh: mutateAgents } = useAgents(gateway);
-  const { data: configSnapshot, mutate: mutateConfig } = useGatewayRpc<unknown>(
-    gateway,
+  const { agents: roster, defaultId, refresh: mutateAgents } = useAgents(live);
+  const { data: configSnapshot, mutate: mutateConfig } = useRuntimeRpc<unknown>(
+    live,
     "config.get",
   );
 

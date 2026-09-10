@@ -19,11 +19,11 @@ import { AgentToolsTab } from "./AgentToolsTab";
 import { AgentChannelsSection } from "./AgentChannelsSection";
 import { AgentEmailSection } from "./AgentEmailSection";
 import { useBilling } from "@/hooks/useBilling";
-import { useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 import { useAgents } from "@/hooks/useAgents";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { AgentEntry, AgentsListResponse } from "./agents-types";
+import type { AgentEntry } from "./agents-types";
 
 type AgentTab = "overview" | "tools" | "channels" | "email";
 
@@ -42,7 +42,7 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
   // empty-roster latch fix and become-reachable revalidation.
   const { agents: rosterAgents, defaultId: rosterDefaultId, error, isLoading, refresh: mutate } =
     useAgents();
-  const callRpc = useGatewayRpcMutation();
+  const callRpc = useRuntimeRpcMutation();
   // Channels require an active subscription (or trial). Pre-signup users
   // shouldn't see the Channels tab.
   const { isSubscribed } = useBilling();

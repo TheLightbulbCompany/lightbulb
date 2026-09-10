@@ -4,9 +4,9 @@ import { SWRConfig } from "swr";
 
 const callRpc = vi.fn().mockResolvedValue({});
 vi.mock("@/lib/notify", () => ({ notifyApiError: vi.fn() }));
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpc: vi.fn(),
-  useGatewayRpcMutation: (): typeof callRpc => callRpc,
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpc: vi.fn(),
+  useRuntimeRpcMutation: (): typeof callRpc => callRpc,
 }));
 
 import { ArchivedSessions } from "../ArchivedSessions";

@@ -27,7 +27,7 @@ import Link from "next/link";
 import { capture } from "@/lib/analytics";
 import { GallerySection } from "@/components/chat/GallerySection";
 import { HealthIndicator } from "@/components/chat/HealthIndicator";
-import { useGatewayRpc } from "@/hooks/useGatewayRpc";
+import { useRuntimeRpc } from "@/hooks/useRuntimeRpc";
 import { useAgents, type Agent } from "@/hooks/useAgents";
 import { useBilling } from "@/hooks/useBilling";
 import { CompanyNav } from "@/components/chat/CompanyNav";
@@ -65,7 +65,7 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
   const { account, isSubscribed } = useBilling();
   // Models catalog for the sidebar agent rows: resolves Bedrock
   // application-inference-profile ARNs to display names ("Claude Opus 4.6").
-  const { data: configSnapshot } = useGatewayRpc<{ config?: unknown }>("config.get");
+  const { data: configSnapshot } = useRuntimeRpc<{ config?: unknown }>("config.get");
   // Per-agent runtime state (Teams roster status ∪ live gateway runs). This
   // shell sits inside `TeamsEventsProvider` (see WorkspaceShell), which
   // revalidates `/teams/agents` on `teams.agent.status`, so the rows stay live

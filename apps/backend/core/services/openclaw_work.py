@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import time
+import traceback
 import uuid
 from decimal import Decimal
 from typing import Any
@@ -222,8 +223,16 @@ class OpenClawWorkWorker:
                 "messaging.worker.message",
                 dimensions={"kind": "unknown", "outcome": "retry", "error": type(exc).__name__},
             )
-            # Never log the SQS body or canonical message text.
-            logger.warning("OpenClaw work item will retry (%s)", type(exc).__name__)
+            # Never log the SQS body or canonical message text: exception
+            # messages (pydantic's especially) echo input values, so log only
+            # the type chain and the frames — file/line/function, no locals.
+            cause = exc.__cause__ or exc.__context__
+            logger.warning(
+                "OpenClaw work item will retry (%s%s)\n%s",
+                type(exc).__name__,
+                f" from {type(cause).__name__}" if cause is not None else "",
+                "".join(traceback.format_tb(exc.__traceback__)),
+            )
         finally:
             extender.cancel()
             try:

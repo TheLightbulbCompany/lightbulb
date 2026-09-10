@@ -6,34 +6,15 @@ import { CREDIT_PRESETS_CENTS, MIN_CREDITS_CENTS } from "@/lib/creditAmounts";
 
 type Props = {
   onComplete: () => void;
-  /**
-   * The Checkout that just completed already bought these credits as a
-   * one-time line item, so the grant is travelling through the webhook right
-   * now. Render a waiting state instead of the purchase form: the skip effect
-   * below only fires once the balance READS spendable, and at the moment the
-   * browser returns from Stripe it does not — which put a live "pay again"
-   * form in front of someone who had just paid to avoid exactly that.
-   */
-  awaitingBundledGrant?: boolean;
 };
 
-// Shared ladder — see lib/creditAmounts. This used to be a separate array
-// offering $10 where the bundled picker offered $5.
+// Shared top-up ladder — see lib/creditAmounts.
 const PRESET_AMOUNTS_CENTS = CREDIT_PRESETS_CENTS;
 
 // Grace window for the one-click `requested` latch before it un-sticks itself
 // with a retryable error. Comfortably longer than the "usually under a minute"
 // happy path so a normally-collecting charge advances the wizard first.
 const REQUESTED_TIMEOUT_MS = 90_000;
-
-// Same backstop, same reason, for the bundled-grant wait. The money is ALREADY
-// collected by the subscription Checkout at this point, so a grant that never
-// lands (a persistent Metronome failure rather than a transient ordering race)
-// would otherwise park the owner on a spinner forever with no indication that
-// anything is wrong and no route to support. Stripe's redelivery + the
-// reconciling meter make a permanent stall unlikely, which is why this
-// surfaces a message rather than retrying harder.
-const BUNDLED_GRANT_TIMEOUT_MS = 90_000;
 
 // Onboarding design system — mirrors the stepper branch this step renders
 // inside (cream page, forest CTAs, Lora headings, DM Sans body). Fonts ride
@@ -62,7 +43,7 @@ const TEXT_INPUT =
  * Metronome commit charges the saved card with no redirect; credits release
  * when the payment collects and the same balance poll advances the wizard.
  */
-export function CreditsStep({ onComplete, awaitingBundledGrant = false }: Props) {
+export function CreditsStep({ onComplete }: Props) {
   const {
     balance,
     autoChargeEnabled,
@@ -76,7 +57,6 @@ export function CreditsStep({ onComplete, awaitingBundledGrant = false }: Props)
   const [requested, setRequested] = useState(false);
   const [optIn, setOptIn] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [bundledGrantSlow, setBundledGrantSlow] = useState(false);
   const advancedRef = useRef(false);
   const searchParams = useSearchParams();
   // Returning from a cancelled Checkout: surface it instead of a blank form.
@@ -169,43 +149,6 @@ export function CreditsStep({ onComplete, awaitingBundledGrant = false }: Props)
       setSubmitting(false);
     }
   };
-
-  // Bundled-grant backstop — parity with the one-click latch above.
-  useEffect(() => {
-    if (!awaitingBundledGrant) return;
-    const t = setTimeout(() => {
-      if (advancedRef.current) return;
-      setBundledGrantSlow(true);
-    }, BUNDLED_GRANT_TIMEOUT_MS);
-    return () => clearTimeout(t);
-  }, [awaitingBundledGrant]);
-
-  // Already paid for in the subscription Checkout — wait for the grant, never
-  // offer a second purchase. The balance poll above still runs, so this
-  // advances on its own; the refresh button is only for impatience.
-  if (awaitingBundledGrant) {
-    return (
-      <div className="flex flex-col gap-4 py-8 max-w-md mx-auto text-center" style={SANS_FONT}>
-        <h3 className="text-title font-normal text-[var(--midnight)]" style={SERIF_FONT}>
-          Adding your Claude credits
-        </h3>
-        <p className="text-sm text-[var(--midnight-muted)]">
-          Your payment went through. The credits are being added to your
-          balance — this usually takes a few seconds and continues on its own.
-        </p>
-        {bundledGrantSlow && (
-          <p className="text-sm text-[var(--err)]">
-            This is taking longer than expected. Your payment was received and
-            the credits will still land — if this doesn&apos;t clear shortly,
-            contact support and we&apos;ll finish it for you.
-          </p>
-        )}
-        <button onClick={() => void refresh()} className={PRIMARY_BUTTON} style={SANS_FONT}>
-          Check again
-        </button>
-      </div>
-    );
-  }
 
   return (
     <div className="flex flex-col gap-4 py-8 max-w-md mx-auto" style={SANS_FONT}>

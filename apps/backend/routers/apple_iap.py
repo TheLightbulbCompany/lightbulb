@@ -87,15 +87,14 @@ async def link_apple_purchase(
 async def create_web_checkout(auth: AuthContext = Depends(get_current_user)):
     owner_id = resolve_owner_id(auth)
     # Same fence as link_purchase, for the same reason: this session is built on
-    # STRIPE_FLAT_PRICE_ID, the PERSONAL plan. An org billed through it would
-    # get a single flat subscription where the rest of the system expects base +
-    # per-seat — no subscription_item_id, so is_seat_subscription reads false
-    # and sync_team_seat_quantity has nothing to drive. Checked BEFORE the
-    # customer is minted so a wrong caller leaves no Stripe residue behind.
+    # STRIPE_WORKSPACE_PRICE_ID. Legacy organization checkout is still handled
+    # by the legacy web path until Task 2 replaces that route atomically.
+    # Checked BEFORE the customer is minted so a wrong caller leaves no Stripe
+    # residue behind.
     if is_org_owner_id(owner_id):
         raise HTTPException(
             status_code=403,
-            detail="Team workspaces are billed per seat — subscribe from the web app.",
+            detail="Workspace subscriptions must be started from the web app.",
         )
 
     # Mint or reuse the Stripe customer first. The caller is by definition

@@ -37,7 +37,7 @@ vi.mock("@/hooks/useBilling", () => ({
     isSubscribed: true,
     account: { provider_choice: "bedrock_claude" },
     refresh: vi.fn(),
-    startTeamCheckout: vi.fn(),
+    startCheckout: vi.fn(),
   }),
 }));
 

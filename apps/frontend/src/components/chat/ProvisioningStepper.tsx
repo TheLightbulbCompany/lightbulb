@@ -30,14 +30,7 @@ import { ByoKeyStep } from "@/components/chat/ByoKeyStep";
 import { CreditsStep } from "@/components/chat/CreditsStep";
 import { TeamBillingCard } from "@/components/chat/TeamBillingCard";
 import { Logo, LogoMark } from "@/components/Logo";
-import { PROVIDER_CARDS, type ProviderChoiceId } from "@/lib/providerCards";
-import {
-  CREDIT_PRESETS_CENTS,
-  DEFAULT_CREDITS_CENTS,
-  MAX_CREDITS_CENTS,
-  MIN_CREDITS_CENTS,
-  formatUsdCents,
-} from "@/lib/creditAmounts";
+import { PROVIDER_CARDS } from "@/lib/providerCards";
 // Provisioning copy + timing live in @lightbulb/shared so the web and mobile
 // steppers stay in lockstep. Aliased to this file's historical local names so
 // every usage site below is unchanged.
@@ -225,14 +218,11 @@ export function ProvisioningStepper({
     isLoading: billingLoading,
     isSubscribed,
     refresh: refreshBilling,
-    startTeamCheckout,
+    startCheckout,
   } = useBilling();
-  // Free-tier discriminator: trial_local accounts are NOT is_subscribed
-  // (is_subscribed is the PAID predicate; the free tier grants platform use
-  // without a subscription) and never set provider_choice — there is no
-  // provider to pick for the free tier. Used below to keep these users off
-  // the payment short-circuit, the poll gate, and — the actually-broken
-  // case — the ProviderPicker fallback.
+  // A workspace trial_local account is not paid and has no provider choice.
+  // Keep it out of the pre-entitlement picker while its workspace is already
+  // provisioning; provider setup happens only after workspace billing.
   const isTrialLocal = account?.subscription_status === "trial_local";
   // Set when we first enter the container/gateway phase — _not_ at component
   // mount. Time spent on the pre-provision steps (provider choice, billing
@@ -460,8 +450,7 @@ export function ProvisioningStepper({
     // Pre-signup user lands in payment phase to pick a provider path.
     // Recovery flow skips billing — the user already has a subscription. A
     // provisioning container (200 from /container/status) means the backend
-    // already gated this user in — a fresh personal signup gets an
-    // auto-created trial_local there — so don't force payment while the
+    // already gated this workspace in — so don't force payment while the
     // container is coming up, even if billing hasn't caught up to the trial.
     if (trigger !== "recovery" && !isSubscribed && !isTrialLocal && !container) return "payment";
 
@@ -984,9 +973,9 @@ export function ProvisioningStepper({
 
   // Needs-signup: backend signals via 404 that the owner has never
   // started signup (gate would fire `signup_required` for an admin).
-  // Render the ProviderPicker by intent here — the picker's
-  // POST /billing/trial-checkout is the only path that creates the
-  // first billing row. Placed before billing/onboarded fall-through so
+  // Render the ProviderPicker by intent here. Its workspace-admin CTA posts
+  // the unified checkout endpoint; personal contexts are directed to select a
+  // workspace. Placed before billing/onboarded fall-through so
   // we don't depend on the post-billing-load render order to surface
   // the picker for fresh users.
   if (gatePhase === "needs-signup") {
@@ -998,10 +987,8 @@ export function ProvisioningStepper({
   //
   // provider_choice is NOT persisted via /users/sync — that endpoint accepts
   // the field and ignores it. billing_accounts (owner-keyed) is the source of
-  // truth, and it has exactly two writers: the ProviderPicker's "Subscribe"
-  // step (POST /billing/trial-checkout, at signup) and POST /billing/provider
-  // (post-signup switches — how ByoKeyStep commits its sub-provider, since
-  // trial-checkout submits `byo_key` with no byo_provider).
+  // truth. Checkout deliberately does not write it; POST /billing/provider
+  // owns the post-entitlement selection (including ByoKeyStep's sub-provider).
   if (phase === "provider" && providerChoice !== null) {
     const handleProviderComplete = async () => {
       capture("onboarding_provider_completed", {
@@ -1023,18 +1010,7 @@ export function ProvisioningStepper({
             <ByoKeyStep onComplete={handleProviderComplete} />
           )}
           {providerChoice === "bedrock_claude" && (
-            // `?credits=bundled` on the Checkout success_url means the balance
-            // was already paid for in that same session and the grant is in
-            // flight through the webhook. CreditsStep otherwise only skips once
-            // the balance READS spendable, which it does not at the instant the
-            // browser gets back from Stripe — so the owner who paid precisely
-            // to avoid a second step was shown a live second purchase form, and
-            // could pay twice. The awaiting state keeps the same balance poll,
-            // so it advances by itself the moment the credits land.
-            <CreditsStep
-              onComplete={handleProviderComplete}
-              awaitingBundledGrant={searchParams.get("credits") === "bundled"}
-            />
+            <CreditsStep onComplete={handleProviderComplete} />
           )}
         </div>
       </div>
@@ -1101,10 +1077,9 @@ export function ProvisioningStepper({
     );
   }
 
-  // Teams billing paywall: the gate returns team_billing_required for an org
-  // owner (or member) with no billing row. Render the real per-seat checkout
-  // card instead of the generic blocked card. TeamBillingCard is admin-gated
-  // internally — a member sees "ask your org admin" with no CTA — and takes
+  // Workspace billing paywall: the gate returns team_billing_required for an
+  // owner (or member) with no billing row. The card is admin-gated
+  // internally — a member sees "ask your workspace admin" with no CTA — and takes
   // the gate's own `action.admin_only` rather than assuming it.
   //
   // The wrapper mirrors the generic blocked card below (logo centerpiece +
@@ -1119,13 +1094,11 @@ export function ProvisioningStepper({
             <Logo size="lg" href={null} />
           </div>
           <TeamBillingCard
-            seatCount={account?.seat_count ?? null}
-            seatPriceUsd={account?.team_seat_price_usd ?? null}
-            basePriceUsd={account?.team_base_price_usd ?? null}
+            workspacePriceUsd={account?.workspace_price_usd}
             ownerRole={blocked.owner_role}
             adminOnly={blocked.action.admin_only}
             isSubscribed={false}
-            onSubscribe={startTeamCheckout}
+            onSubscribe={() => startCheckout("workspace")}
           />
           <div className="mt-6 flex items-center gap-2">
             <Button
@@ -1145,57 +1118,6 @@ export function ProvisioningStepper({
           </div>
         </div>
       </div>
-    );
-  }
-
-  // Free-tier conversion: a trial owner who hit the daily cap or ran out the
-  // window. Render the provider picker RIGHT HERE instead of the generic
-  // blocked card, whose action is a link out to /settings?panel=billing.
-  //
-  // That link was the whole problem. It landed on a lone Subscribe button
-  // wired to a HARDCODED `provider_choice: "bedrock_claude"`, so a converting
-  // owner never saw the three-way choice and — because they never carried a
-  // `?provider=` back from Checkout — never reached CreditsStep either. They
-  // came out the far side on Bedrock-managed inference having chosen nothing
-  // and bought nothing. Picking here threads the choice through Checkout's
-  // success_url (`?checkout=success&provider=<id>`), which is exactly what
-  // drives the provider step above — CreditsStep for bedrock_claude, so buying
-  // credits is part of converting rather than a thing to discover later.
-  //
-  // Same shape as the team_billing_required interception above: keep the gate's
-  // canvas, swap the card in the middle.
-  //
-  // `!isOrg` is checked explicitly rather than left to the backend. These two
-  // codes can only come from a `trial_local` row, which is personal-only, so
-  // an org cannot reach here today — but that is an invariant of a different
-  // layer, and this picker posts to /billing/trial-checkout, which an org
-  // admin must NOT use (orgs pay per-seat via startTeamCheckout). If the
-  // free tier ever opens to orgs, the silent failure would be an org admin
-  // buying a personal flat subscription. Enforce it where the consequence is.
-  if (
-    gatePhase === "blocked" &&
-    blocked &&
-    providerChoice === null &&
-    !isOrg &&
-    (blocked.code === "trial_daily_cap" || blocked.code === "trial_expired")
-  ) {
-    return (
-      // `isOrg={false}` literally, not the narrowed `isOrg`: the guard above
-      // has already excluded orgs, and TS narrows `organization` to `never`
-      // here — so there is no org name to pass and no org copy to render.
-      <ProviderPicker
-        isOrg={false}
-        source="trial_conversion"
-        // The gate's own `message` is the heading, not a prefix to the
-        // subheading. Concatenating it under a heading derived from the same
-        // text rendered the sentence twice ("You've used today's free
-        // allowance." above "You've used today's free allowance — resets
-        // tomorrow…") — a duplicated-copy bug on the paywall, at the exact
-        // moment someone is deciding to pay. Backend owns the what-happened
-        // half (it knows cap vs expiry); this owns the what-now half.
-        heading={blocked.message}
-        subheading="Pick how you want to power your agents — $50/month covers your always-on infrastructure."
-      />
     );
   }
 
@@ -1378,18 +1300,12 @@ export function ProvisioningStepper({
   //      `account.provider_choice` is set but `isSubscribed` is false.
   //      They MUST see the picker again to restart checkout.
   //
-  //   3. trial_local (free-tier) owner: is_subscribed is FALSE (it's the
-  //      PAID predicate — the free tier is usable but not subscribed) and
-  //      provider_choice is never set — there's no provider to pick on the
-  //      free tier. The `isTrialLocal` guard keeps these users off the
-  //      picker so they flow straight into container/gateway/ready instead
-  //      of being shown a payment step they don't need.
+  //   3. A trial_local workspace: it is not paid and has no provider choice.
+  //      The `isTrialLocal` guard keeps an already-provisioning workspace off
+  //      the picker while the billing state catches up.
   //   4. A provisioning container (200 from /container/status) means the
-  //      backend already gated this user in. For a fresh personal signup the
-  //      trial_local row is created there, and /billing/account may not have
-  //      caught up yet — so a live container bypasses the picker too, closing
-  //      the cross-fetch race where a real trial user briefly reads as
-  //      non-trial.
+  //      backend already gated this workspace in. /billing/account may not
+  //      have caught up yet, so a live container bypasses the picker too.
   const ownerOnboarded = isSubscribed && Boolean(account?.provider_choice);
   if (!ownerOnboarded && !isTrialLocal && !container) {
     return <ProviderPicker isOrg={isOrg} orgName={organization?.name} />;
@@ -2137,134 +2053,11 @@ function StepperDisplay({
 }
 
 /**
- * The three-way provider choice + Stripe Checkout hand-off.
+ * The provider comparison shown before subscription.
  *
- * Two surfaces render it, and they are the ONLY two paths that create a
- * billing row via POST /billing/trial-checkout:
- *   - fresh signup (`gatePhase === "needs-signup"`), and
- *   - free-tier conversion, when a trial owner hits the cap or the window.
- *
- * The conversion surface passes `heading`/`subheading` to say why the picker
- * appeared; everything below the copy is identical, deliberately. A converting
- * owner used to be sent to /settings, where a single Subscribe button posted a
- * HARDCODED `provider_choice: "bedrock_claude"` — so they never chose a
- * provider and never reached CreditsStep, landing on Bedrock-managed inference
- * with no credits and no prompt to buy any. Routing both surfaces through this
- * one picker is what keeps "picked a provider" and "paid" inseparable.
- *
- * `source` on the analytics event distinguishes them; keep it accurate, the
- * signup-vs-conversion split is the conversion funnel.
+ * Checkout creates one workspace subscription; it deliberately does not
+ * persist a provider choice. Provider setup is a post-entitlement step.
  */
-
-/** The flat monthly subscription, in dollars — the same on all three paths. */
-const FLAT_PRICE_USD = 50;
-
-// Shared with CreditsStep via lib/creditAmounts — the two purchase surfaces
-// had drifted to different preset ladders for the same balance.
-const MIN_STARTER_CREDITS_CENTS = MIN_CREDITS_CENTS;
-const MAX_STARTER_CREDITS_CENTS = MAX_CREDITS_CENTS;
-const DEFAULT_STARTER_CREDITS_CENTS = DEFAULT_CREDITS_CENTS;
-const STARTER_CREDIT_PRESETS_CENTS = CREDIT_PRESETS_CENTS;
-
-
-/**
- * Amount chooser for the bedrock_claude starter credits.
- *
- * Presets plus a free-entry box, matching CreditsStep's control so the two
- * places an owner buys credits behave the same way. Deliberately NOT extracted
- * from CreditsStep: that component's control is welded to its own submit +
- * one-click-opt-in flow, and the shared piece would be four presets and an
- * input.
- *
- * Blur-commit on the custom field, not change-commit: clamping mid-keystroke
- * turns "" into $5 and "1" into $5 while someone is typing "100", which fights
- * the user for the whole entry. The raw string is held locally and only
- * reconciled to a legal amount on blur.
- */
-function StarterCreditsPicker({
-  valueCents,
-  onChange,
-  disabled,
-}: {
-  valueCents: number;
-  onChange: (cents: number) => void;
-  disabled: boolean;
-}) {
-  const [draft, setDraft] = useState<string>(String(valueCents / 100));
-
-  const commit = useCallback(
-    (raw: string) => {
-      // Empty/blank restores the previous amount rather than committing a
-      // number. `Number("")` is 0, not NaN, so the finite-check below lets it
-      // through and the clamp silently rewrites a cleared box to the $5 floor
-      // — someone who picked $100 and select-all-deleted to retype would buy
-      // $5. `<input type="number">` also reports "" for a partially-invalid
-      // entry, so this is the ordinary typing path, not an edge case.
-      if (raw.trim() === "") {
-        setDraft(String(valueCents / 100));
-        return;
-      }
-      const dollars = Number(raw);
-      if (!Number.isFinite(dollars)) {
-        setDraft(String(valueCents / 100));
-        return;
-      }
-      // Whole dollars only. The presets are whole, the input steps by 5, and
-      // rounding at the source is what keeps the quoted total exact — cents
-      // would put binary float error into the price string the customer is
-      // asked to agree to ($60.230000000000004).
-      const clamped = Math.min(
-        Math.max(Math.round(dollars) * 100, MIN_STARTER_CREDITS_CENTS),
-        MAX_STARTER_CREDITS_CENTS,
-      );
-      onChange(clamped);
-      setDraft(String(clamped / 100));
-    },
-    [onChange, valueCents],
-  );
-
-  return (
-    <div className="space-y-2">
-      <div className="flex flex-wrap gap-1.5">
-        {STARTER_CREDIT_PRESETS_CENTS.map((c) => (
-          <button
-            key={c}
-            type="button"
-            disabled={disabled}
-            aria-pressed={valueCents === c}
-            onClick={() => {
-              onChange(c);
-              setDraft(String(c / 100));
-            }}
-            className={
-              "rounded-full border px-2.5 py-1 text-xs transition-colors disabled:opacity-50 " +
-              (valueCents === c
-                ? "border-[var(--midnight)] bg-[var(--cream-deep)] text-[var(--midnight)] font-medium"
-                : "border-[var(--edge)] bg-cream text-[var(--midnight)] hover:bg-[var(--cream-deep)]")
-            }
-          >
-            ${c / 100}
-          </button>
-        ))}
-      </div>
-      <label className="flex items-center gap-1.5 text-xs text-[var(--midnight-muted)]">
-        <span>Custom $</span>
-        <input
-          type="number"
-          min={MIN_STARTER_CREDITS_CENTS / 100}
-          max={MAX_STARTER_CREDITS_CENTS / 100}
-          step={5}
-          value={draft}
-          disabled={disabled}
-          aria-label="Starter Claude credits in dollars"
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={(e) => commit(e.target.value)}
-          className="w-20 rounded-md border border-[var(--edge)] bg-cream-deep px-2 py-1 text-xs text-[var(--midnight)] disabled:opacity-50"
-        />
-      </label>
-    </div>
-  );
-}
 
 export function ProviderPicker({
   isOrg,
@@ -2290,49 +2083,41 @@ export function ProviderPicker({
   // panel. It used to be duplicated inline here — two copies of the same POST
   // + redirect, which is how the two surfaces drifted into offering different
   // copy for the same three paths in the first place.
-  const { startTrialCheckout } = useBilling();
-  const [loading, setLoading] = useState<string | null>(null);
+  const { startCheckout, account } = useBilling();
+  const workspacePriceUsd = account?.workspace_price_usd;
+  const workspacePriceDescription =
+    workspacePriceUsd === undefined
+      ? "We'll show your workspace subscription price shortly."
+      : `The $${workspacePriceUsd}/month workspace subscription covers your always-on agent infrastructure.`;
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Starter Claude credits for the bedrock_claude path. Sent with that card's
-  // Checkout only; the server re-scopes it to bedrock anyway, since the other
-  // two providers spend no Isol8 credits.
-  const [creditsCents, setCreditsCents] = useState<number>(DEFAULT_STARTER_CREDITS_CENTS);
-
-  const handlePick = useCallback(async (id: ProviderChoiceId) => {
-    setLoading(id);
+  const startWorkspaceCheckout = useCallback(async () => {
+    setLoading(true);
     setError(null);
     capture("subscription_checkout_started", {
-      provider_choice: id,
       owner_type: isOrg ? "org" : "personal",
       source,
-      ...(id === "bedrock_claude" ? { credits_cents: creditsCents } : {}),
     });
     try {
-      // Redirects to Stripe Checkout on success, so the browser leaves this
-      // page and `loading` only ever clears on the failure path below. After
-      // Checkout returns, the wizard re-mounts on
-      // /chat?checkout=success&provider=<id>; the subscription.updated webhook
-      // persists provider_choice to the user row, the wizard sees
-      // subscription_status === "trialing", and advances into the provider
-      // phase. Without that round-trip the user is stuck in the payment phase.
-      await startTrialCheckout(id, id === "bedrock_claude" ? creditsCents : undefined);
+      // Checkout does not carry a provider choice. The provider controls are
+      // reached after entitlement, through the existing provider flow.
+      await startCheckout("workspace");
     } catch (err) {
       capture("subscription_checkout_failed", {
-        provider_choice: id,
         owner_type: isOrg ? "org" : "personal",
         source,
         error: err instanceof Error ? err.message : "unknown",
       });
-      setLoading(null);
-      // Fixed copy, not err.message. startTrialCheckout propagates ApiError
+      setLoading(false);
+      // Fixed copy, not err.message. startCheckout propagates ApiError
       // carrying the backend `detail`, so surfacing it verbatim put strings
       // like "No Stripe customer for owner_id=user_2xK…" and the literal
       // "checkout_in_progress" in front of a customer at the paywall. The
       // real error still reaches the console and the capture() above.
-      console.error("trial checkout failed", err);
+      console.error("workspace checkout failed", err);
       setError("Couldn't start checkout. Please try again.");
     }
-  }, [startTrialCheckout, isOrg, source, creditsCents]);
+  }, [startCheckout, isOrg, source]);
 
   return (
     // `@container` (not a viewport breakpoint) because this now renders inside
@@ -2349,13 +2134,13 @@ export function ProviderPicker({
             <LogoMark className="brand-mark--hero mb-4" />
           )}
           <h2 className="text-2xl font-semibold tracking-display text-[var(--midnight)] font-editorial-serif">
-            {heading ?? "One price. Three ways to power it."}
+            {heading ?? "One workspace plan"}
           </h2>
           <p className={"text-[var(--midnight-muted)] text-sm max-w-md " + (embedded ? "" : "mx-auto")}>
             {subheading ??
               (isOrg
-                ? `Pick how ${orgName} wants to pay for inference. The $50/month covers the always-on agent infrastructure.`
-                : "Pick how you want to pay for inference. The $50/month covers your always-on agent infrastructure.")}
+                ? `${workspacePriceDescription} Choose your inference provider after checkout.`
+                : `${workspacePriceDescription} Choose your inference provider after checkout.`)}
           </p>
         </div>
 
@@ -2374,20 +2159,16 @@ export function ProviderPicker({
             >
               <div className="space-y-1">
                 <h3 className="font-medium text-[var(--midnight)]">{card.title}</h3>
-                {/* Bedrock's total moves with the chosen credit amount, so its
-                    price line is computed rather than the static card copy —
-                    the number the customer reads here is the number Checkout
-                    charges. The other two are a flat $50 and keep the static
-                    subtitle. */}
                 <p className="text-sm text-[var(--midnight-muted)]">
-                  {card.id === "bedrock_claude"
-                    ? `${formatUsdCents(FLAT_PRICE_USD * 100 + creditsCents)} at checkout, then $${FLAT_PRICE_USD} / month`
-                    : card.subtitle}
+                  {workspacePriceUsd === undefined
+                    ? "Loading workspace price…"
+                    : `$${workspacePriceUsd} / month`}
                 </p>
                 <p className="text-xs text-[var(--midnight)] font-medium">
-                  {card.id === "bedrock_claude"
-                    ? `Includes ${formatUsdCents(creditsCents)} Claude credits — no second step`
-                    : card.trialNote}
+                  {card.subtitle}
+                </p>
+                <p className="text-xs text-[var(--midnight-muted)]">
+                  {card.trialNote}
                 </p>
                 {isOrg && card.id === "chatgpt_oauth" && (
                   <p className="text-xs text-[var(--midnight-muted)]">
@@ -2396,13 +2177,6 @@ export function ProviderPicker({
                   </p>
                 )}
               </div>
-              {card.id === "bedrock_claude" && (
-                <StarterCreditsPicker
-                  valueCents={creditsCents}
-                  onChange={setCreditsCents}
-                  disabled={loading !== null}
-                />
-              )}
               <ul className="text-sm text-[var(--midnight-soft)] space-y-2 flex-1">
                 {card.bullets.map((b) => (
                   <li key={b} className="flex items-start gap-2">
@@ -2411,26 +2185,23 @@ export function ProviderPicker({
                   </li>
                 ))}
               </ul>
-              <Button
-                className={
-                  card.highlighted
-                    ? "w-full rounded-full bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] text-cream"
-                    : "w-full rounded-full border-[var(--edge)] text-[var(--midnight)] hover:bg-[var(--cream-deep)]"
-                }
-                variant={card.highlighted ? "default" : "outline"}
-                // All three CTAs read "Get started", so the visible label alone
-                // gives a screen-reader user three identical buttons and no way
-                // to tell which plan each buys — the <h3> above is not part of
-                // the button's accessible name. Naming it after the card fixes
-                // that (and is what the tests query by).
-                aria-label={`${card.cta} — ${card.title}`}
-                onClick={() => handlePick(card.id)}
-                disabled={loading !== null}
-              >
-                {loading === card.id ? <Loader2 className="h-4 w-4 animate-spin" /> : card.cta}
-              </Button>
             </div>
           ))}
+        </div>
+        <div className={embedded ? "" : "mx-auto max-w-sm"}>
+          {isOrg ? (
+            <Button
+              className="w-full rounded-full bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] text-cream"
+              onClick={startWorkspaceCheckout}
+              disabled={loading}
+            >
+              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Subscribe to workspace plan"}
+            </Button>
+          ) : (
+            <p className="text-sm text-[var(--midnight-muted)]">
+              Create or select a workspace to subscribe.
+            </p>
+          )}
         </div>
       </div>
     </div>

@@ -183,7 +183,7 @@ export function PaywallScreen({
     void api
       .get("/billing/account")
       .then((body) => {
-        const price = (body as { flat_price_usd?: number })?.flat_price_usd;
+        const price = (body as { workspace_price_usd?: number })?.workspace_price_usd;
         if (!cancelled && typeof price === "number") setWebPriceUsd(price);
       })
       .catch(() => {});

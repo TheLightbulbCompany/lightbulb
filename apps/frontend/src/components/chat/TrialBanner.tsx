@@ -28,6 +28,7 @@ function getServerNow(): number {
 type BillingAccount = {
   subscription_status?: string;
   trial_end?: number; // Unix seconds
+  workspace_price_usd?: number;
 };
 
 // LEGACY: checkout no longer creates Stripe trials (billed immediately since
@@ -75,6 +76,10 @@ export function TrialBanner() {
   const chargeDate = new Date(data.trial_end * 1000).toLocaleDateString(undefined, {
     timeZone: "UTC",
   });
+  const workspaceRate =
+    data.workspace_price_usd === undefined
+      ? "your workspace rate"
+      : `$${data.workspace_price_usd}/mo`;
 
   return (
     <div className="bg-cream border-b border-info px-4 py-2 text-ui text-info flex items-center justify-between">
@@ -83,7 +88,7 @@ export function TrialBanner() {
         <strong>
           {daysLeft === 0 ? "today" : `${daysLeft} day${daysLeft === 1 ? "" : "s"}`}
         </strong>
-        {daysLeft === 0 ? "" : ` (${chargeDate})`}, then $50/mo.
+        {daysLeft === 0 ? "" : ` (${chargeDate})`}, then {workspaceRate}.
       </span>
       <Link href="/settings?panel=billing" className="underline">
         Manage

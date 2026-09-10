@@ -54,9 +54,7 @@ vi.mock("@/hooks/useBilling", () => ({
     error: null,
     isSubscribed: false,
     openPortal: vi.fn(),
-    startTeamCheckout: vi.fn(),
-    startTrialCheckout: vi.fn(),
-    upgradeToUltra: vi.fn(),
+    startCheckout: vi.fn(),
   }),
 }));
 

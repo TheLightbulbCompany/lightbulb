@@ -351,6 +351,15 @@ describe("LLMPanel", () => {
     expect(screen.getByTestId("change-provider-modal-open")).toBeInTheDocument();
   });
 
+  it("keeps the provider_required change-provider handoff available for an active workspace with no provider", () => {
+    mockSWRData.mockReturnValue({ provider_choice: null });
+    render(<LLMPanel initialAction="change-provider" />);
+    expect(screen.getByTestId("change-provider-modal-open")).toBeInTheDocument();
+    // The null-provider picker commit path is covered immediately above by
+    // the Bedrock POST assertion; this handoff must never redirect to Checkout.
+    expect(mockApiPost).not.toHaveBeenCalled();
+  });
+
   it("re-opens the modal when initialAction goes null→change-provider on a mounted panel", () => {
     mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
     const { rerender } = render(<LLMPanel initialAction={null} />);

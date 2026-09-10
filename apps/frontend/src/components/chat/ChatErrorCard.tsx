@@ -2,10 +2,8 @@
 
 import Link from "next/link";
 import { AlertTriangle } from "lucide-react";
-import { useOrganization } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { handleShellLinkClick } from "@/lib/shellNav";
-import { ProviderPicker } from "@/components/chat/ProvisioningStepper";
 
 /**
  * Typed error card rendered when an agent run terminates with an error.
@@ -61,18 +59,6 @@ export interface ChatErrorCardProps {
   message: string;
   /** Optional typed code from OpenClaw's errorKind. */
   code?: string;
-  /**
-   * Whether this card may render the live conversion paywall. MessageList
-   * passes true only for the NEWEST trial-coded card in the transcript —
-   * not the newest bubble. The distinction is load-bearing: a mid-run cap
-   * emits the reclassified trial_daily_cap error and then OpenClaw's raw
-   * "all models rate-limited" frame ~20ms later (verified in prod logs,
-   * 17:58:44.187 vs .208), so "newest bubble" demoted the paywall to the
-   * settings link in exactly the scenario it was built for. Repeated capped
-   * turns still produce one live picker, never a stack. Defaults to true so
-   * single-card callers and tests keep the interactive behaviour.
-   */
-  interactive?: boolean;
 }
 
 interface ErrorPresentation {
@@ -189,102 +175,7 @@ function describeError(code: string | undefined, message: string): ErrorPresenta
   }
 }
 
-/**
- * The two free-tier codes convert IN PLACE instead of linking out.
- *
- * These used to render as a red error card whose action cross-routed to
- * /settings?panel=billing. Two things were wrong with that. First, running
- * out of free usage is not a malfunction — it is the moment the product
- * worked — and a red alert box frames the one success signal you get as a
- * failure. Second, /settings was the ONLY paywall a mid-session owner ever
- * reached: `useOnboardingStatus` polls "0/off once ready", so nothing
- * re-asks the gate after the shell settles, `gatePhase` never flips to
- * blocked, and ProvisioningStepper's own picker branch stays unreachable
- * for the entire session. The good screen existed and no one could get to it.
- *
- * Rendering the picker here — rather than flipping the gate so the stepper
- * takes over — is deliberate. ProvisioningStepper WRAPS {dock}
- * (WorkspaceShell.tsx), so a blocked gate swaps the whole Dockview workspace
- * for the paywall: panels, layout, open detail views and scroll positions
- * all unmount mid-session. That teardown already has a name in this codebase
- * (`DockUnmountSentinel`, "the recovery regression"). Doing it deliberately
- * at the exact moment someone is deciding whether to pay is the worst
- * possible time for it.
- */
-const TRIAL_PAYWALL_HEADINGS: Readonly<Record<string, string>> = {
-  trial_daily_cap: "You've used today's free usage",
-  trial_expired: "Your free trial has ended",
-};
-
-/**
- * Whether this error code renders the in-place conversion paywall. Exported
- * for MessageList, which must decide WHICH card in the transcript gets the
- * live picker — the two must agree on what counts as a paywall code, or the
- * card MessageList blesses and the card that can actually render a picker
- * drift apart.
- */
-export function isTrialPaywallCode(code: string | undefined | null): boolean {
-  return Boolean(code) && Object.hasOwn(TRIAL_PAYWALL_HEADINGS, code as string);
-}
-
-export function ChatErrorCard({ message, code, interactive = true }: ChatErrorCardProps) {
-  // ProviderPicker posts /billing/trial-checkout, which an org admin must NOT
-  // use — orgs pay per-seat via startTeamCheckout. An org should never carry a
-  // trial_local row today, but ProvisioningStepper's own picker branch guards
-  // this too, with a comment saying to enforce it where the consequence is.
-  // This is a new consequence site. Org context falls through to the linked
-  // card below, whose /settings target renders TeamBillingCard correctly.
-  // `isLoaded` matters, not just `organization`: Clerk reports
-  // `organization: null` while it is still loading, so keying on the value
-  // alone treats "don't know yet" as "no org" and would render the personal
-  // picker for one paint — the path an org admin must not take. Withhold the
-  // paywall until Clerk has actually answered; the linked card below is the
-  // safe thing to show in the meantime.
-  const { organization, isLoaded } = useOrganization();
-  // Object.hasOwn, not a bare index: `code` is server-supplied, and indexing a
-  // plain object literal with it resolves inherited Object.prototype members
-  // ("constructor", "toString") to truthy non-string values that sail through
-  // the gate below — rendering a purchase form for a code that is not a trial
-  // code at all.
-  const paywallHeading =
-    isLoaded && !organization && code && Object.hasOwn(TRIAL_PAYWALL_HEADINGS, code)
-      ? TRIAL_PAYWALL_HEADINGS[code]
-      : undefined;
-  // `interactive` is false for every error bubble except the newest, so a
-  // transcript with several capped turns shows ONE live paywall instead of N.
-  // Each ProviderPicker owns its own credit-amount and loading state, so
-  // stacked copies let an owner set $100 on the visible card, scroll up, and
-  // buy an older card's $20 — charged an amount the screen never quoted — and
-  // their CTAs do not disable one another.
-  if (paywallHeading && interactive) {
-    return (
-      // Deliberately NOT role="alert" (implicit aria-live="assertive" +
-      // aria-atomic="true"). That was right for the static error this branch
-      // replaced and wrong for a live-updating purchase form: the price text is
-      // derived from the chosen amount and lives inside the container, so every
-      // preset click re-announced the whole pricing table as an assertive
-      // interruption, cutting off the screen-reader user mid-interaction.
-      <section
-        aria-label={paywallHeading}
-        data-testid="chat-error-card"
-        data-error-code={code ?? "none"}
-        className="my-2 rounded-lg border border-[var(--edge)] bg-cream px-4 py-4"
-      >
-        <ProviderPicker
-          embedded
-          isOrg={false}
-          source="trial_conversion_inline"
-          heading={paywallHeading}
-          subheading={
-            code === "trial_daily_cap"
-              ? "Your agents are paused until midnight UTC. Subscribe to lift the cap and keep them running."
-              : "Your agents are paused. Subscribe to start them again."
-          }
-        />
-      </section>
-    );
-  }
-
+export function ChatErrorCard({ message, code }: ChatErrorCardProps) {
   const { title, description, action } = describeError(code, message);
 
   return (

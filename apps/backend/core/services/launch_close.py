@@ -89,7 +89,7 @@ async def _attach_coupon(billing: dict, coupon: str) -> str:
     from core.services.billing_service import subscription_item_on_price
 
     items = (sub.get("items") or {}).get("data") or []
-    if not subscription_item_on_price(items, settings.STRIPE_FLAT_PRICE_ID):
+    if not subscription_item_on_price(items, settings.STRIPE_WORKSPACE_PRICE_ID):
         return "nonflat"
     existing = list(sub.get("discounts") or [])
     if not existing and sub.get("discount"):
@@ -120,7 +120,7 @@ async def _ensure_restricted_coupon(auth: AuthContext) -> str:
     if coupon:
         try:
             stored = await run_in_thread(stripe.Coupon.retrieve, coupon, expand=["applies_to"])
-            price = await run_in_thread(stripe.Price.retrieve, settings.STRIPE_FLAT_PRICE_ID)
+            price = await run_in_thread(stripe.Price.retrieve, settings.STRIPE_WORKSPACE_PRICE_ID)
         except stripe.StripeError as e:
             logger.error("launch_close: coupon verification failed for %s: %s", coupon, e)
             raise launch_settings.StripeMintError() from None

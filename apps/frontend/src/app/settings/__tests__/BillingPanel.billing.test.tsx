@@ -2,12 +2,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
 import React from "react";
 
-// Covers the settings BillingPanel org-context branch (settings/page.tsx):
-// a subscribed org on a flat/comped sub (is_seat_subscription: false) must
-// NOT see the per-seat "N seats × $price" paywall math fabricated from a
-// nonexistent Stripe subscription item — it should fall through to the
-// plain "Lightbulb plan / Active" card with the spend line instead. A real
-// per-seat sub (is_seat_subscription: true) still gets TeamBillingCard.
+// Covers the settings BillingPanel workspace branch (settings/page.tsx):
+// subscribed workspaces render one plan card, while unsubscribed workspaces
+// get the workspace-billing CTA. There is no membership-priced branch.
 //
 // Mocking harness copied from ../page.nav.test.tsx: mock next/navigation's
 // useSearchParams (deep-link into ?panel=billing), @clerk/nextjs's
@@ -17,9 +14,9 @@ import React from "react";
 // mocked in this file, matching how billing-route.test.tsx also stays
 // minimal for its own surface.
 
-const nav = vi.hoisted(() => ({ panel: "billing" as string | null }));
+const nav = vi.hoisted(() => ({ panel: "billing" as string | null, checkout: null as string | null }));
 vi.mock("next/navigation", () => ({
-  useSearchParams: () => new URLSearchParams(nav.panel ? { panel: nav.panel } : {}),
+  useSearchParams: () => new URLSearchParams({ ...(nav.panel ? { panel: nav.panel } : {}), ...(nav.checkout ? { checkout: nav.checkout } : {}) }),
   // The page forwards a ?panel= naming an href-only nav row (Connections) to
   // that route; no test here uses one, so a no-op replace suffices.
   useRouter: () => ({ replace: vi.fn() }),
@@ -47,7 +44,8 @@ const billing = vi.hoisted(() => ({
   account: null as Record<string, unknown> | null,
   isLoading: false,
   isSubscribed: false,
-  startTrialCheckout: vi.fn().mockResolvedValue(undefined),
+  startCheckout: vi.fn().mockResolvedValue(undefined),
+  refresh: vi.fn(),
 }));
 
 vi.mock("@/hooks/useBilling", () => ({
@@ -57,22 +55,31 @@ vi.mock("@/hooks/useBilling", () => ({
     error: null,
     isSubscribed: billing.isSubscribed,
     openPortal: vi.fn(),
-    startTeamCheckout: vi.fn(),
-    startTrialCheckout: billing.startTrialCheckout,
-    upgradeToUltra: vi.fn(),
+    startCheckout: billing.startCheckout,
+    refresh: billing.refresh,
   }),
 }));
 
 import SettingsPage from "../page";
 
-describe("BillingPanel — org context seat-vs-flat branch", () => {
+describe("BillingPanel — workspace billing", () => {
   beforeEach(() => {
     nav.panel = "billing";
+    nav.checkout = null;
     clerk.membership = { role: "org:admin" };
     billing.isLoading = false;
+    billing.refresh.mockClear();
   });
 
-  it("flat/comped org (subscribed, is_seat_subscription: false) shows the plain plan card, not fabricated per-seat math", () => {
+  it("refreshes billing immediately when Settings is the Checkout success target", () => {
+    nav.checkout = "success";
+    billing.isSubscribed = false;
+    billing.account = { subscription_status: "trial_local", workspace_price_usd: 50 };
+    render(<SettingsPage />);
+    expect(billing.refresh).toHaveBeenCalled();
+  });
+
+  it("a subscribed workspace shows the plain plan card, not membership pricing", () => {
     billing.isSubscribed = true;
     billing.account = {
       is_subscribed: true,
@@ -82,9 +89,8 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
       trial_end: null,
       provider_choice: null,
       byo_provider: null,
-      seat_count: 7,
-      team_seat_price_usd: 20,
-      is_seat_subscription: false,
+      workspace_price_usd: 50,
+      ultra_price_usd: 150,
     };
 
     render(<SettingsPage />);
@@ -120,9 +126,8 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
       trial_end: null,
       provider_choice: null,
       byo_provider: null,
-      seat_count: 7,
-      team_seat_price_usd: 20,
-      is_seat_subscription: false,
+      workspace_price_usd: 50,
+      ultra_price_usd: 150,
     };
 
     render(<SettingsPage />);
@@ -132,7 +137,7 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
     expect(screen.queryByText("past_due")).not.toBeInTheDocument();
   });
 
-  it("real seat-sub org (is_seat_subscription: true, subscribed) renders TeamBillingCard", () => {
+  it("a subscribed workspace renders the plan card without membership pricing", () => {
     billing.isSubscribed = true;
     billing.account = {
       is_subscribed: true,
@@ -142,16 +147,15 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
       trial_end: null,
       provider_choice: null,
       byo_provider: null,
-      seat_count: 4,
-      team_seat_price_usd: 20,
-      is_seat_subscription: true,
+      workspace_price_usd: 50,
+      ultra_price_usd: 150,
     };
 
     render(<SettingsPage />);
 
-    expect(screen.getByRole("button", { name: /manage billing/i })).toBeInTheDocument();
-    expect(screen.getByText(/4 seats/i)).toBeInTheDocument();
-    expect(screen.queryByText("Lightbulb plan")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /manage payment/i })).toBeInTheDocument();
+    expect(screen.getByText("Lightbulb plan")).toBeInTheDocument();
+    expect(screen.queryByText(/seats?/i)).not.toBeInTheDocument();
   });
 
   it("unsubscribed org renders TeamBillingCard with the subscribe CTA", () => {
@@ -160,11 +164,11 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
 
     render(<SettingsPage />);
 
-    expect(screen.getByRole("button", { name: /subscribe your team/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /subscribe workspace/i })).toBeInTheDocument();
     expect(screen.queryByText("Lightbulb plan")).not.toBeInTheDocument();
   });
 
-  it("non-admin member of a flat/comped subscribed org sees no spend and no Manage/CTA button (security fix)", () => {
+  it("a non-admin member of a subscribed workspace sees no billing controls", () => {
     clerk.membership = { role: "org:member" };
     billing.isSubscribed = true;
     billing.account = {
@@ -175,9 +179,8 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
       trial_end: null,
       provider_choice: null,
       byo_provider: null,
-      seat_count: 7,
-      team_seat_price_usd: 20,
-      is_seat_subscription: false,
+      workspace_price_usd: 50,
+      ultra_price_usd: 150,
     };
 
     render(<SettingsPage />);
@@ -194,7 +197,7 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
     expect(screen.getByText(/billing restricted/i)).toBeInTheDocument();
   });
 
-  it("non-admin member of a real seat-sub org also sees no spend and no Manage/CTA button", () => {
+  it("a non-admin member sees the same restriction regardless of workspace membership", () => {
     clerk.membership = { role: "org:member" };
     billing.isSubscribed = true;
     billing.account = {
@@ -205,9 +208,8 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
       trial_end: null,
       provider_choice: null,
       byo_provider: null,
-      seat_count: 4,
-      team_seat_price_usd: 20,
-      is_seat_subscription: true,
+      workspace_price_usd: 50,
+      ultra_price_usd: 150,
     };
 
     render(<SettingsPage />);
@@ -218,7 +220,7 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
     expect(screen.getByText(/billing restricted/i)).toBeInTheDocument();
   });
 
-  it("admin of a real seat-sub org sees TeamBillingCard without a spend line", () => {
+  it("admin of a subscribed workspace sees the plan card without a spend line", () => {
     clerk.membership = { role: "org:admin" };
     billing.isSubscribed = true;
     billing.account = {
@@ -229,33 +231,30 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
       trial_end: null,
       provider_choice: null,
       byo_provider: null,
-      seat_count: 4,
-      team_seat_price_usd: 20,
-      is_seat_subscription: true,
+      workspace_price_usd: 50,
+      ultra_price_usd: 150,
     };
 
     render(<SettingsPage />);
 
-    // TeamBillingCard (Manage) is present.
-    expect(screen.getByRole("button", { name: /manage billing/i })).toBeInTheDocument();
-    expect(screen.getByText(/4 seats/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /manage payment/i })).toBeInTheDocument();
+    expect(screen.getByText("Lightbulb plan")).toBeInTheDocument();
+    expect(screen.queryByText(/seats?/i)).not.toBeInTheDocument();
 
     // The spend line was removed from the settings billing card.
     expect(screen.queryByText(/Current period spend/i)).not.toBeInTheDocument();
   });
 });
 
-describe("BillingPanel — personal free tier (trial_local)", () => {
+describe("BillingPanel — org trial_local conversion", () => {
   beforeEach(() => {
     nav.panel = "billing";
-    clerk.membership = null; // personal context
+    clerk.membership = { role: "org:admin" };
     billing.isLoading = false;
-    billing.startTrialCheckout = vi.fn().mockResolvedValue(undefined);
+    billing.startCheckout = vi.fn().mockResolvedValue(undefined);
   });
 
-  it("trial_local renders the Free tier card with a Subscribe CTA and no Manage Payment", async () => {
-    // is_subscribed is the PAID predicate — false for the no-card free
-    // tier even though the platform is usable.
+  it("shows the single workspace conversion card and separate inference costs", () => {
     billing.isSubscribed = false;
     billing.account = {
       is_subscribed: false,
@@ -265,154 +264,17 @@ describe("BillingPanel — personal free tier (trial_local)", () => {
       trial_end: null,
       provider_choice: null,
       byo_provider: null,
-      seat_count: null,
-      team_seat_price_usd: null,
-      is_seat_subscription: false,
+      workspace_price_usd: 50,
+      ultra_price_usd: 150,
     };
 
     render(<SettingsPage />);
 
-    // Free-tier framing: mapped title + chip, never the raw enum, and
-    // never the paid "Active subscription" copy.
-    expect(screen.getByText("Lightbulb — Free tier")).toBeInTheDocument();
-    expect(screen.getByText("Free tier")).toBeInTheDocument();
-    expect(screen.getByText(/\$3\/day of included usage/)).toBeInTheDocument();
-    expect(screen.queryByText(/trial_local/i)).not.toBeInTheDocument();
-    expect(screen.queryByText("Active subscription")).not.toBeInTheDocument();
-
-    // No portal button — a trial_local row has no Stripe customer, so the
-    // portal would fail. The shared ProviderPicker renders instead: one card
-    // per provider path, each wired to the flat-fee checkout with its own
-    // provider, and each showing that path's REAL price.
-    //
-    // This surface used to hand-roll three pill buttons over
-    // PROVIDER_SWITCH_CARDS — the array documented as the post-purchase
-    // variant that deliberately carries no pricing. Rendered pre-purchase it
-    // stripped the prices off the one screen whose job is to show them, and
-    // hid that the Bedrock path costs $70 today rather than $50.
-    expect(screen.queryByRole("button", { name: /manage payment/i })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /sign in with chatgpt/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /bring your own api key/i })).toBeInTheDocument();
-    // The per-path price is the disclosure, and it must survive on this
-    // surface: Bedrock takes $70 at checkout, the other two take $50.
-    expect(screen.getByText(/\$70 at checkout/i)).toBeInTheDocument();
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: /powered by claude/i }));
-    });
-    // The clicked provider must reach the hook — asserting the ARGUMENT is the
-    // point, since a reintroduced hardcode still satisfies a bare call count.
-    // The second argument is the starter-credit amount bundled into the same
-    // Checkout ($20 default, in cents); dropping it would silently fall back to
-    // the server default and make the "$70 at checkout" line above a lie
-    // whenever the owner picked a different amount.
-    expect(billing.startTrialCheckout).toHaveBeenCalledTimes(1);
-    expect(billing.startTrialCheckout).toHaveBeenCalledWith("bedrock_claude", 2000);
-
-    // Once a checkout is in flight every path disables — the browser is
-    // leaving for Stripe, and two completable sessions means two charged
-    // subscriptions (the backend refuses the second, but the UI must not
-    // invite it).
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: /sign in with chatgpt/i }));
-    });
-    expect(billing.startTrialCheckout).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole("button", { name: /sign in with chatgpt/i })).toBeDisabled();
-  });
-
-  it("non-expired trial_local with a future trial_end keeps the unchanged Free-tier copy", () => {
-    // A trial_local whose 3-day window is still open (trial_end in the
-    // future) must render exactly the same Free-tier framing as before —
-    // the expired-state swap must not trip early.
-    billing.isSubscribed = false;
-    billing.account = {
-      is_subscribed: false,
-      current_spend: 0.5,
-      lifetime_spend: 0.5,
-      subscription_status: "trial_local",
-      // ~1 day in the future (epoch seconds, matching the backend stamp).
-      trial_end: Math.floor(Date.now() / 1000) + 86_400,
-      provider_choice: null,
-      byo_provider: null,
-      seat_count: null,
-      team_seat_price_usd: null,
-      is_seat_subscription: false,
-    };
-
-    render(<SettingsPage />);
-
-    expect(screen.getByText("Lightbulb — Free tier")).toBeInTheDocument();
-    expect(screen.getByText("Free tier")).toBeInTheDocument();
-    expect(screen.getByText(/\$3\/day of included usage/)).toBeInTheDocument();
-    // The expired framing must NOT appear while the window is open.
-    expect(screen.queryByText(/free tier ended/i)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /powered by claude/i })).toBeInTheDocument();
-  });
-
-  it("EXPIRED trial_local swaps the $3/day promise for a paused state but keeps the Subscribe CTA", () => {
-    // trial_end is the OVERALL free-tier window expiry (created + 3 days).
-    // Once it's in the past, the backend blocks usage outright WITHOUT
-    // flipping subscription_status off trial_local — so the card must stop
-    // promising "$3/day of included usage" and show the paused state, while
-    // still offering Subscribe as the path forward.
-    billing.isSubscribed = false;
-    billing.account = {
-      is_subscribed: false,
-      current_spend: 3,
-      lifetime_spend: 3,
-      subscription_status: "trial_local",
-      // ~1 day in the past (epoch seconds).
-      trial_end: Math.floor(Date.now() / 1000) - 86_400,
-      provider_choice: null,
-      byo_provider: null,
-      seat_count: null,
-      team_seat_price_usd: null,
-      is_seat_subscription: false,
-    };
-
-    render(<SettingsPage />);
-
-    // Expired framing: chip + description reflect that the free tier ended
-    // and usage is paused. The chip is the exact "Free tier ended" string.
-    expect(screen.getByText("Free tier ended")).toBeInTheDocument();
-    expect(screen.getByText(/free tier ended.*agents are paused/i)).toBeInTheDocument();
-
-    // The misleading "$3/day of included usage" promise is gone.
-    expect(screen.queryByText(/\$3\/day of included usage/)).not.toBeInTheDocument();
-    // Still not the paid "Active subscription" copy, and the raw enum never renders.
-    expect(screen.queryByText("Active subscription")).not.toBeInTheDocument();
-    expect(screen.queryByText(/trial_local/i)).not.toBeInTheDocument();
-
-    // The Subscribe CTA remains the path forward (no Manage Payment — no
-    // Stripe customer exists for a trial_local row).
-    expect(screen.queryByRole("button", { name: /manage payment/i })).not.toBeInTheDocument();
-    // All three paths stay on offer after expiry — an owner whose window ran
-    // out is exactly who should get the full choice, not a silent default.
-    expect(screen.getByRole("button", { name: /powered by claude/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /sign in with chatgpt/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /bring your own api key/i })).toBeInTheDocument();
-  });
-
-  it("active personal subscription keeps the unchanged paid card", () => {
-    billing.isSubscribed = true;
-    billing.account = {
-      is_subscribed: true,
-      current_spend: 12.5,
-      lifetime_spend: 40,
-      subscription_status: "active",
-      trial_end: null,
-      provider_choice: "bedrock_claude",
-      byo_provider: null,
-      seat_count: null,
-      team_seat_price_usd: null,
-      is_seat_subscription: false,
-    };
-
-    render(<SettingsPage />);
-
-    expect(screen.getByText("Lightbulb — $50 / month")).toBeInTheDocument();
-    expect(screen.getByText("Active subscription")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /manage payment/i })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /subscribe — \$50\/mo/i })).not.toBeInTheDocument();
+    expect(screen.getByTestId("team-billing-card")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /subscribe workspace/i })).toBeInTheDocument();
+    expect(screen.getByText(/separate ChatGPT subscription/i)).toBeInTheDocument();
+    expect(screen.getByText(/provider bills inference separately/i)).toBeInTheDocument();
+    expect(screen.getByText(/managed Claude inference uses prepaid workspace credits/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Create or select a workspace/i)).not.toBeInTheDocument();
   });
 });

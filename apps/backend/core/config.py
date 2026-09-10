@@ -306,7 +306,7 @@ class Settings(BaseSettings):
     # Billing / Stripe
     STRIPE_SECRET_KEY: str = ""
     STRIPE_WEBHOOK_SECRET: str = ""
-    STRIPE_FLAT_PRICE_ID: str = ""
+    STRIPE_WORKSPACE_PRICE_ID: str = ""
     # Per-seat Stripe price for the Teams (org) subscription. Empty default so
     # the app boots without it; CDK-wired in dev/prod. Quantity = org member
     # count, no trial. This is the billing source of truth for "$20/seat".
@@ -328,12 +328,13 @@ class Settings(BaseSettings):
     # hardcoding the number in the UI. Kept in lockstep with
     # STRIPE_TEAM_BASE_PRICE_ID's unit amount in Stripe.
     TEAM_BASE_PRICE_USD: int = 50
-    # Display dollars for the personal flat plan, echoed to clients via
-    # /billing/account. Kept in lockstep with STRIPE_FLAT_PRICE_ID's unit
+    # Display dollars for the Workspace plan, echoed to clients via
+    # /billing/account. Kept in lockstep with STRIPE_WORKSPACE_PRICE_ID's unit
     # amount in Stripe. The iOS paywall renders the web price from this, and
     # App Review requires a displayed external price to be accurate, so a
     # divergence here is a compliance bug rather than a cosmetic one.
-    FLAT_PRICE_USD: int = 50
+    WORKSPACE_PRICE_USD: int = 50
+    ULTRA_PRICE_USD: int = 150
 
     # Apple In-App Purchase (App Store guideline 3.1.3(b) — the plan must also
     # be buyable inside the iOS app). ALL default empty, and the feature is off

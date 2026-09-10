@@ -149,11 +149,11 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
     ],
     // Stripe flat-fee Price IDs are baked into the per-env ECS task env at
     // synth time by service-stack.ts. Empty string is tolerated (the backend
-    // surfaces "STRIPE_FLAT_PRICE_ID not configured" at the trial-checkout
+    // surfaces "STRIPE_WORKSPACE_PRICE_ID not configured" at the trial-checkout
     // call site) but onboarding will fail until both secrets are populated.
     env: {
-      STRIPE_FLAT_PRICE_ID_DEV: "${{ secrets.STRIPE_FLAT_PRICE_ID_DEV }}",
-      STRIPE_FLAT_PRICE_ID_PROD: "${{ secrets.STRIPE_FLAT_PRICE_ID_PROD }}",
+      STRIPE_WORKSPACE_PRICE_ID_DEV: "${{ secrets.STRIPE_WORKSPACE_PRICE_ID_DEV }}",
+      STRIPE_WORKSPACE_PRICE_ID_PROD: "${{ secrets.STRIPE_WORKSPACE_PRICE_ID_PROD }}",
       // Stripe per-seat Teams Price IDs — same synth-time bake + per-env
       // live/test split as the flat price above. Empty string is tolerated
       // (the backend surfaces "STRIPE_TEAM_SEAT_PRICE_ID not configured" at

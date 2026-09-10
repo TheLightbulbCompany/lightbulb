@@ -10,12 +10,15 @@ from moto import mock_aws
 
 from core.services.webhook_dedup import (
     MembershipLifecycleInProgress,
+    TopUpIntentConflict,
     WebhookProcessingInProgress,
     WebhookDedupResult,
     begin_membership_lifecycle,
     begin_event_processing,
+    complete_top_up_intent,
     complete_membership_lifecycle,
     complete_event_processing,
+    get_or_create_top_up_intent,
     get_membership_lifecycle,
     record_event_or_skip,
     record_permanent_marker,
@@ -180,6 +183,40 @@ async def test_permanent_marker_has_no_ttl_and_is_idempotent(dedup_table, monkey
     )
     assert item["state"] == "completed"
     assert "ttl" not in item
+
+
+@pytest.mark.asyncio
+async def test_top_up_intent_pins_money_binding_and_rejects_a_changed_workspace_link(dedup_table, monkeypatch):
+    """A retry must keep the original Metronome body, but must not replay it
+    after the workspace's Stripe/Metronome binding changes."""
+    monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", dedup_table)
+    binding = {
+        "amount_cents": 2500,
+        "effective_at": "2026-09-10T00:00:00.000Z",
+        "metronome_customer_id": "metro_1",
+        "metronome_contract_id": "contract_1",
+        "stripe_customer_id": "cus_1",
+        "product_id": "prod_1",
+        "credit_type_id": "credit_1",
+        "description": "isol8 top-up owner=org_1 amount_cents=2500",
+        "idempotency_key": "topup:org_1:11111111-1111-4111-8111-111111111111",
+    }
+
+    created = await get_or_create_top_up_intent("org_1", "11111111-1111-4111-8111-111111111111", binding)
+    replay = await get_or_create_top_up_intent("org_1", "11111111-1111-4111-8111-111111111111", binding)
+
+    assert created["state"] == replay["state"] == "pending"
+    assert {key: replay[key] for key in binding} == binding
+    await complete_top_up_intent(replay["event_id"])
+    completed = await get_or_create_top_up_intent("org_1", "11111111-1111-4111-8111-111111111111", binding)
+    assert completed["state"] == "completed"
+
+    with pytest.raises(TopUpIntentConflict, match="binding changed"):
+        await get_or_create_top_up_intent(
+            "org_1",
+            "11111111-1111-4111-8111-111111111111",
+            {**binding, "stripe_customer_id": "cus_replaced"},
+        )
 
 
 @pytest.mark.asyncio

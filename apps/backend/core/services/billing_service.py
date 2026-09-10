@@ -3,7 +3,6 @@
 import asyncio
 import hashlib
 import logging
-import os
 import time
 from typing import Literal
 
@@ -403,13 +402,9 @@ async def _build_subscription_checkout(
         #     what customer.subscription.* carries (handle_subscription_state).
         #   metadata                   → the Session itself, which is what
         #     checkout.session.completed carries (handle_checkout_session).
-        # Only subscription_data was set here, so any Session-reading handler
-        # saw {}. That was invisible until the bedrock_claude Checkout started
-        # bundling starter credits: the one-time line item was charged and
-        # `credits_cents` never reached the grant, so the customer paid for a
-        # balance that was never funded. The standalone top-up path never hit
-        # this because it calls Session.create directly with top-level
-        # metadata — which is exactly why it worked and this did not.
+        # Keep Checkout and Subscription metadata aligned: Stripe emits them
+        # on different webhook objects, and launch-coupon settlement reads the
+        # session while subscription lifecycle reads the subscription.
         metadata=metadata,
         subscription_data=subscription_data,
         idempotency_key=idempotency_key,
@@ -605,145 +600,6 @@ async def create_mobile_web_checkout(*, owner_id: str) -> stripe.checkout.Sessio
         await billing_repo.release_checkout_slot(owner_id, token=claim_token)
         raise BillingServiceError("could not start checkout — try again")
 
-    return session
-
-
-async def create_credit_top_up_checkout(
-    *,
-    owner_id: str,
-    amount_cents: int,
-    enable_auto_charge: bool = False,
-) -> stripe.checkout.Session:
-    """Create a Stripe Checkout session for a one-shot Claude-credit top-up.
-
-    EXPLICIT payment is the default credits-purchase path: the customer
-    sees the amount and their card on a Stripe-hosted page and actively
-    confirms — no implicit card-on-file charge. The credits grant happens
-    asynchronously when Stripe fires ``checkout.session.completed`` with
-    metadata ``{"purpose": "credit_top_up", ...}``: the webhook creates an
-    UNGATED Metronome commit (the money is already collected here, so
-    Metronome must never invoice it a second time — see
-    metronome_funding.grant_prepaid_credits).
-
-    ``enable_auto_charge`` is the customer's opt-in to one-click top-ups:
-    it sets ``payment_intent_data.setup_future_usage="off_session"`` —
-    Stripe's documented consent artifact for charging the saved card
-    off-session later — and rides the session metadata so the webhook
-    flips the billing row's ``credits_auto_charge`` flag only after this
-    consenting payment actually succeeds. Without it the session saves
-    nothing and later top-ups keep routing through Checkout.
-
-    Conventions match the workspace subscription Checkout:
-      - ``allow_promotion_codes`` (internal 100%-off coupons),
-        ``automatic_tax``, ``customer_update.address=auto``.
-      - ``idempotency_key`` includes a per-request nonce: legitimate repeat
-        top-ups for the same amount must produce distinct sessions, so
-        bucketing on owner_id+amount would silently collapse a second
-        purchase onto the first.
-
-    ``owner_id`` is the org_id in org context, the user_id in personal
-    context — the credits pool at the owner level.
-    """
-    if amount_cents < 500:
-        raise BillingServiceError("Minimum top-up is $5 (500 cents)")
-
-    account = await billing_repo.get_by_owner_id(owner_id)
-    if not account or not account.get("stripe_customer_id"):
-        raise BillingServiceError(f"No Stripe customer for owner_id={owner_id}")
-
-    # Take money ONLY when the completion webhook can actually grant: mirror
-    # grant_prepaid_credits' prerequisites (Metronome customer + contract on
-    # the billing row, credits product configured) BEFORE creating a payable
-    # session. Without this, a not-yet-provisioned owner pays on Stripe and
-    # the grant then 500s/retries until provisioning lands — collected money
-    # in limbo.
-    if not settings.METRONOME_CREDITS_PRODUCT_ID:
-        raise BillingServiceError("Credits are not configured for this environment")
-
-    # Provision on demand rather than assuming something else already did.
-    # This block used to just assert the ids were present, on the reasoning
-    # that "provisioning re-runs on every status poll" — which is FALSE for a
-    # personal owner with a running container: ``ensure_user_ready`` (the only
-    # other caller of ensure_metronome_customer) is re-dispatched on a running
-    # box only for org context or a failed Teams seat. A trial→paid converted
-    # owner therefore sat permanently un-provisioned and got "try again in a
-    # moment" forever — on the exact screen the credits gate sends them to.
-    # Ensuring here makes buying credits self-healing, so a missed webhook
-    # provision can never strand a paying customer with no way to pay us.
-    # Idempotent and a no-op once the ids are on the row.
-    if not account.get("metronome_customer_id") or not account.get("metronome_contract_id"):
-        from core.billing.metronome_provisioning import ensure_metronome_customer
-
-        provisioning_failed = False
-        try:
-            await ensure_metronome_customer(owner_id=owner_id)
-        except Exception:
-            provisioning_failed = True
-            put_metric("metronome.provision.error", dimensions={"source": "credit_top_up"})
-            logger.exception("On-demand Metronome provisioning failed for owner %s", owner_id)
-        # Strongly consistent: we just wrote these ids and are about to decide
-        # whether to take the customer's money on the strength of them.
-        account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or account
-        if provisioning_failed and (
-            not account.get("metronome_customer_id") or not account.get("metronome_contract_id")
-        ):
-            # Do NOT tell the buyer "try again in a moment" here. Provisioning
-            # raised, so retrying hits the same failure every time — the old
-            # message sent them into an infinite retry loop with nothing
-            # surfaced to them or to support saying it could never work. The
-            # transient wording below is reserved for the case where
-            # provisioning ran WITHOUT raising and the ids still aren't
-            # visible, which a moment genuinely can fix.
-            raise BillingServiceError(
-                "We couldn't finish setting up billing for this account. "
-                f"Please contact {settings.EMAIL_SUPPORT_ADDRESS} — retrying won't clear this."
-            )
-    if not account.get("metronome_customer_id") or not account.get("metronome_contract_id"):
-        raise BillingServiceError("Credits aren't ready for this account yet — try again in a moment")
-
-    # Per-request nonce — see docstring. Hashed to keep the key short.
-    nonce = hashlib.sha1(os.urandom(16)).hexdigest()[:12]
-
-    payment_intent_data: dict = {
-        "metadata": {
-            "purpose": "credit_top_up",
-            "owner_id": owner_id,
-        },
-    }
-    if enable_auto_charge:
-        payment_intent_data["setup_future_usage"] = "off_session"
-
-    with timing("stripe.api.latency", {"op": "checkout.session.create"}):
-        session = stripe.checkout.Session.create(
-            customer=account["stripe_customer_id"],
-            mode="payment",
-            line_items=[
-                {
-                    "price_data": {
-                        "currency": "usd",
-                        "unit_amount": amount_cents,
-                        "product_data": {
-                            "name": "Claude credits",
-                            "description": "Prepaid Claude inference balance.",
-                        },
-                    },
-                    "quantity": 1,
-                }
-            ],
-            success_url=f"{settings.FRONTEND_URL}/chat?credits=success",
-            cancel_url=f"{settings.FRONTEND_URL}/chat?credits=cancel",
-            allow_promotion_codes=True,
-            automatic_tax={"enabled": True},
-            customer_update={"address": "auto"},
-            payment_intent_data=payment_intent_data,
-            metadata={
-                "purpose": "credit_top_up",
-                "owner_id": owner_id,
-                "amount_cents": str(amount_cents),
-                "auto_charge_opt_in": "true" if enable_auto_charge else "false",
-            },
-            idempotency_key=f"credit_checkout:{owner_id}:{nonce}",
-        )
     return session
 
 

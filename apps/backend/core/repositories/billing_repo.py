@@ -769,29 +769,6 @@ async def release_checkout_slot(owner_id: str, *, token: str) -> None:
         raise
 
 
-async def set_credits_auto_charge(owner_id: str, *, enabled: bool) -> None:
-    """Persist the owner's one-click top-up consent.
-
-    True is set ONLY by the checkout webhook when the owner ticked the
-    opt-in box on a real Stripe Checkout — that checkout carries the
-    ``setup_future_usage=off_session`` consent artifact Stripe requires
-    for later card-on-file charges, so the flag must never be flipped on
-    through any path that lacks it (the settings surface may only turn it
-    OFF). Same existing-row condition as the other billing-row setters.
-    """
-    table = _get_table()
-    await run_in_thread(
-        table.update_item,
-        Key={"owner_id": owner_id},
-        UpdateExpression="SET credits_auto_charge = :e, updated_at = :t",
-        ExpressionAttributeValues={
-            ":e": enabled,
-            ":t": utc_now_iso(),
-        },
-        ConditionExpression="attribute_exists(owner_id)",
-    )
-
-
 async def set_plan(owner_id: str, *, plan: str, now_iso: str) -> None:
     """Persist the owner's pricing tier on the billing row.
 
@@ -800,7 +777,7 @@ async def set_plan(owner_id: str, *, plan: str, now_iso: str) -> None:
     attribute is absent on rows created before the field existed — the billing
     response defaults a missing value to ``"standard"``, so a backfill isn't
     required. Same existing-row condition as the other billing-row setters
-    (``set_credits_auto_charge`` et al.): an unconditional update would upsert a
+    (like other billing-row setters): an unconditional update would upsert a
     phantom ``{owner_id, plan}`` row with no stripe_customer_id.
     """
     table = _get_table()

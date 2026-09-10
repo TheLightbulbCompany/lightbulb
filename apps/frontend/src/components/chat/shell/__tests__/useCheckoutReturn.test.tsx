@@ -18,41 +18,11 @@ vi.mock("@/lib/shellNav", () => ({ replaceSearchParams }));
 
 import { useCheckoutReturn } from "../useCheckoutReturn";
 
-describe("useCheckoutReturn — credits param", () => {
+describe("useCheckoutReturn", () => {
   beforeEach(() => {
     replaceSearchParams.mockClear();
     billing.refresh.mockClear();
     billing.isSubscribed = true;
-  });
-
-  it("strips obsolete credits=bundled markers without changing the provider step", () => {
-    nav.search = "provider=bedrock_claude&credits=bundled";
-    renderHook(() => useCheckoutReturn());
-    const params = replaceSearchParams.mock.calls.at(-1)![0] as URLSearchParams;
-    expect(params.get("credits")).toBeNull();
-    expect(params.get("provider")).toBe("bedrock_claude");
-  });
-
-  it("still strips the real return markers", () => {
-    for (const value of ["success", "cancel"]) {
-      replaceSearchParams.mockClear();
-      nav.search = `provider=bedrock_claude&credits=${value}`;
-      renderHook(() => useCheckoutReturn());
-      expect(replaceSearchParams).toHaveBeenCalled();
-      const params = replaceSearchParams.mock.calls.at(-1)![0] as URLSearchParams;
-      expect(params.get("credits")).toBeNull();
-      // ?provider= must survive — the wizard needs it to pick the provider step.
-      expect(params.get("provider")).toBe("bedrock_claude");
-    }
-  });
-
-  it("strips checkout=success and obsolete bundled markers together", () => {
-    nav.search = "checkout=success&provider=bedrock_claude&credits=bundled";
-    renderHook(() => useCheckoutReturn());
-    const params = replaceSearchParams.mock.calls.at(-1)![0] as URLSearchParams;
-    expect(params.get("checkout")).toBeNull();
-    expect(params.get("provider")).toBe("bedrock_claude");
-    expect(params.get("credits")).toBeNull();
   });
 
   it("refreshes immediately and stops bounded polling once the webhook makes billing active", () => {

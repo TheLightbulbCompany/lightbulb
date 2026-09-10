@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from typing import Literal
+from uuid import UUID
 
 import httpx
 import stripe
@@ -433,31 +434,12 @@ class TopUpRequest(BaseModel):
         le=_TOP_UP_MAX_CENTS,
         description="Min $5 (500 cents), max $1,000 (100000 cents).",
     )
-    request_id: str | None = Field(
-        default=None,
-        max_length=64,
-        description=(
-            "Client-generated idempotency token — one per user intent, "
-            "stable across retries. Feeds Metronome's Idempotency-Key so a "
-            "retried POST replays the original commit instead of charging "
-            "twice."
-        ),
-    )
-
-
-class TopUpCheckoutRequest(BaseModel):
-    amount_cents: int = Field(
+    request_id: UUID = Field(
         ...,
-        ge=500,
-        le=_TOP_UP_MAX_CENTS,
-        description="Min $5 (500 cents), max $1,000 (100000 cents).",
-    )
-    enable_auto_charge: bool = Field(
-        default=False,
         description=(
-            "Opt in to one-click top-ups: the Checkout saves the card for "
-            "off-session use (setup_future_usage) and, on successful "
-            "payment, future top-ups may charge it without a redirect."
+            "Client-generated UUID — one per user intent and stable across "
+            "retries. A retry replays the original Metronome commit instead "
+            "of charging twice."
         ),
     )
 
@@ -525,66 +507,11 @@ async def get_credits_balance(ctx: AuthContext = Depends(get_current_user)):
         from core.services.metronome_gate import apply_fresh_balance
 
         await apply_fresh_balance(owner_id, balance_uc)
-    account = await billing_repo.get_by_owner_id(owner_id) or {}
     return {
         "balance_microcents": balance_uc,
         "balance_dollars": f"{balance_uc / 1_000_000:.2f}" if balance_uc is not None else None,
-        # Drives the frontend's top-up fork: opted-in owners get one-click
-        # (card on file), everyone else routes through Stripe Checkout.
-        "auto_charge_enabled": bool(account.get("credits_auto_charge")),
         "is_exhausted": _is_exhausted(balance_uc),
     }
-
-
-@router.post(
-    "/credits/top_up_checkout",
-    summary="Start a credit top-up via Stripe Checkout (the default purchase path)",
-    description=(
-        "Creates a Stripe-hosted Checkout session for the requested amount — "
-        "the customer sees and confirms the payment explicitly. On completion "
-        "the webhook grants the credits as an UNGATED Metronome commit "
-        "(instant release, no second invoice). With enable_auto_charge the "
-        "session also captures off-session card consent and, once paid, "
-        "enables one-click top-ups for this owner."
-    ),
-    operation_id="credits_top_up_checkout",
-)
-async def top_up_credits_checkout(
-    body: TopUpCheckoutRequest,
-    ctx: AuthContext = Depends(get_current_user),
-):
-    from core.services.billing_service import BillingServiceError, create_credit_top_up_checkout
-
-    owner_id = resolve_owner_id(ctx)
-    try:
-        session = await create_credit_top_up_checkout(
-            owner_id=owner_id,
-            amount_cents=body.amount_cents,
-            enable_auto_charge=body.enable_auto_charge,
-        )
-    except BillingServiceError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except stripe.error.StripeError as e:
-        logger.exception("Credit checkout session create failed for owner %s", owner_id)
-        raise HTTPException(status_code=502, detail="billing provider error") from e
-    return {"checkout_url": session.url}
-
-
-@router.post(
-    "/credits/auto_charge/disable",
-    summary="Disable one-click top-ups",
-    description=(
-        "Turns off the owner's one-click top-up consent. Re-enabling "
-        "requires a fresh Checkout with the opt-in box ticked — that "
-        "checkout is where the off-session card consent is captured, so "
-        "there is deliberately NO enable endpoint."
-    ),
-    operation_id="credits_auto_charge_disable",
-)
-async def disable_credits_auto_charge(ctx: AuthContext = Depends(get_current_user)):
-    owner_id = resolve_owner_id(ctx)
-    await billing_repo.set_credits_auto_charge(owner_id, enabled=False)
-    return {"auto_charge_enabled": False}
 
 
 @router.post(
@@ -608,30 +535,10 @@ async def top_up_credits(
     from core.billing.metronome_client import MetronomeError
     from core.billing.metronome_funding import FundingError, request_top_up
 
+    require_org_admin(ctx)
     owner_id = resolve_owner_id(ctx)
-
-    # One-click top-ups charge the saved card with no confirmation step, so
-    # they require the owner's standing consent — granted only via a prior
-    # Checkout where they ticked the opt-in box (which carried Stripe's
-    # setup_future_usage=off_session consent). Everyone else routes through
-    # POST /credits/top_up_checkout. 409 (not 400): the request is
-    # well-formed, the owner's state just doesn't allow this path.
-    account = await billing_repo.get_by_owner_id(owner_id) or {}
-    if not account.get("credits_auto_charge"):
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "auto_charge_not_enabled",
-                "message": "One-click top-ups are not enabled — use the checkout flow.",
-            },
-        )
-
-    # Namespace the client token with the owner id: the raw request_id is
-    # attacker-chosen, and an un-namespaced key would let one user replay or
-    # collide another user's in-flight commit at Metronome.
-    idempotency_key = f"topup-{owner_id}-{body.request_id}" if body.request_id else None
     try:
-        await request_top_up(owner_id, body.amount_cents, idempotency_key=idempotency_key)
+        await request_top_up(owner_id, body.amount_cents, request_id=str(body.request_id))
     except FundingError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except (MetronomeError, httpx.HTTPError) as e:

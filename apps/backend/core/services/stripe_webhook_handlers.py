@@ -104,9 +104,8 @@ _PAID_SUBSCRIPTION_STATUSES = ("trialing", "active")
 # trial shape over it.
 _CONVERSION_PREREQUISITE_GATES = frozenset({"oauth_required", "byo_provider_required"})
 
-# A Checkout Session Stripe has actually SETTLED — the precondition for every
-# irreversible thing handle_checkout_session does off a session (granting
-# credits, stamping the launch winner's coupon as consumed).
+# A Checkout Session Stripe has actually SETTLED — the precondition for
+# stamping the launch winner's coupon as consumed.
 #   - "paid"               : card cleared synchronously.
 #   - "no_payment_required": $0 due — a 100%-off coupon, which is exactly the
 #                            shape of the launch winner's free Workspace month —
@@ -292,11 +291,9 @@ def dispatch_metronome_provisioning(owner_id: str) -> None:
     off ``trial_local`` — which silently skips the transition branches
     entirely (the same hazard the conversion branch documents).
 
-    Failure is covered twice over, so dropping it is survivable:
-    ``create_credit_top_up_checkout`` re-ensures before taking money (so "buy
-    credits" self-heals), and ``is_owner_blocked`` fails CLOSED for a
-    bedrock_claude owner with no customer (so a stranded owner is blocked
-    rather than silently spending our Bedrock budget).
+    ``is_owner_blocked`` fails CLOSED for a bedrock_claude owner with no
+    customer, so a provisioning failure blocks spend rather than silently
+    spending our Bedrock budget.
     """
     # Hold a strong reference until the task finishes. asyncio keeps only a
     # WEAK reference to a running task, so a bare fire-and-forget
@@ -1311,30 +1308,15 @@ async def handle_invoice_payment_failed(event: dict[str, Any], billing_service: 
 
 
 async def handle_checkout_session(event: dict[str, Any], billing_service: BillingService) -> Response | None:
-    """`checkout.session.completed` + `checkout.session.async_payment_succeeded`.
+    """Handle the Checkout events still owned outside subscription lifecycle.
 
-    Subscription STATE always comes from the ``customer.subscription.*``
-    handlers above — this handler never touches it. What it owns is funding
-    credits, for the two session shapes that carry them: the standalone
-    top-up Checkout (``purpose=credit_top_up``) and the ``bedrock_claude``
-    subscription Checkout, which bundles starter credits as a one-time line
-    item (``credits_cents``). For both:
-
-      1. Grant the paid-for credits as an UNGATED Metronome commit —
-         the money is already collected by THIS checkout, so the grant
-         must never generate a second Metronome→Stripe invoice
-         (grant_prepaid_credits is access-schedule-only, live-verified
-         to release instantly with zero invoices).
-      2. Flip the billing row's ``credits_auto_charge`` flag when the
-         customer opted in — the session that just succeeded carries the
-         ``setup_future_usage=off_session`` consent, so success here is
-         the only legitimate place the flag turns on.
-      3. Run the restore-only gate refresh so a revoked owner is re-armed
-         the moment the credits land (same hook as the one-click path).
+    Subscription state is handled exclusively by ``customer.subscription.*``.
+    Customer credit purchases use Metronome payment-gated commits directly;
+    there is no Stripe Checkout credit-settlement or bundled-credit branch.
     """
     session = event["data"]["object"]
     session_metadata = session.get("metadata") or {}
-    # Launch competition: a SETTLED session that carried the winner free-month
+    # Launch competition: a settled session that carried the winner free-month
     # discount just CONSUMED the coupon — stamp the sheet row so a forced
     # close rerun cannot attach a second free month to the subscription this
     # checkout minted. Before the credit-funding early return below, because
@@ -1352,112 +1334,6 @@ async def handle_checkout_session(event: dict[str, Any], billing_service: Billin
         from core.services.launch_close import mark_winner_coupon_consumed
 
         await mark_winner_coupon_consumed(session_metadata["owner_id"])
-    # Two session shapes fund credits here:
-    #   - purpose=credit_top_up      → the standalone top-up Checkout
-    #                                  (mode=payment), amount in `amount_cents`
-    #   - credits_cents on a flat    → the bedrock_claude SUBSCRIPTION Checkout
-    #     subscription Checkout        (mode=subscription), which carries the
-    #                                  starter credits as a one-time line item
-    #                                  beside the recurring price
-    # The subscription half of that second shape is still owned by the
-    # customer.subscription.* handlers — this only grants the credits. Without
-    # this branch the one-time line item would be CHARGED and never granted,
-    # which is worse than the two-checkout flow it replaces.
-    credits_cents_str = session_metadata.get("amount_cents") or session_metadata.get("credits_cents")
-    is_credit_funding = session_metadata.get("purpose") == "credit_top_up" or bool(
-        session_metadata.get("credits_cents")
-    )
-    if not is_credit_funding:
-        return Response(status_code=200)
-
-    # Only grant when Stripe has actually collected payment — a failed ACH
-    # must never leave free credits behind (see _SETTLED_PAYMENT_STATUSES).
-    payment_status = session.get("payment_status")
-    if payment_status not in _SETTLED_PAYMENT_STATUSES:
-        put_metric("credit.top_up.deferred", dimensions={"payment_status": payment_status or "unknown"})
-        logger.info(
-            "Credit top-up deferred for session %s — payment_status=%s",
-            session.get("id"),
-            payment_status,
-        )
-        return Response(status_code=200)
-
-    metadata = session_metadata
-    owner_id = metadata.get("owner_id")
-    amount_cents_str = credits_cents_str
-    if not owner_id or not amount_cents_str:
-        logger.error("Credit top-up checkout.session missing metadata: %s", session.get("id"))
-        return Response(status_code=200)
-
-    # Make the ledger exist BEFORE granting, rather than assuming a prior
-    # webhook already built it.
-    #
-    # The standalone top-up can assume it: create_credit_top_up_checkout
-    # refuses to take the money at all unless metronome_customer_id and
-    # metronome_contract_id are already on the row. The bundled path cannot
-    # make that check — a converting owner is still `trial_local` at checkout
-    # time, which is deliberately excluded from LEDGER_ELIGIBLE_STATUSES, so
-    # there is no ledger to verify yet.
-    #
-    # The ledger is created by handle_subscription_state's entering_live
-    # branch as a best-effort background task, and Stripe delivers
-    # checkout.session.completed and customer.subscription.created unordered.
-    # Granting on the assumption that task has landed means the common
-    # interleaving raises FundingError, 500s, and leaves the owner charged and
-    # still blocked on `credits_required` until a redelivery happens to arrive
-    # after provisioning — the "paid for a container that won't boot" outcome
-    # this whole flow exists to remove. If provisioning had failed outright,
-    # every redelivery would fail identically and Stripe would give up with
-    # the money collected.
-    #
-    # ensure_metronome_customer is idempotent on the persisted ids, so this is
-    # a no-op for the top-up path and for redeliveries. It returns None while
-    # the row is not yet ledger-eligible; raising then is correct — Stripe
-    # redelivers, and the retry re-attempts provisioning instead of waiting on
-    # someone else's background task.
-    from core.billing.metronome_provisioning import ensure_metronome_customer
-
-    if not await ensure_metronome_customer(owner_id=owner_id):
-        put_metric("credit.grant.ledger_not_ready", dimensions={"source": "checkout"})
-        logger.warning(
-            "Credit grant deferred for owner %s session %s — Metronome ledger not ready yet; "
-            "raising so Stripe redelivers.",
-            owner_id,
-            session.get("id"),
-        )
-        raise RuntimeError(f"Metronome ledger not ready for owner {owner_id}")
-
-    # Grant the REQUESTED amount, not what Stripe charged — a 100%-off
-    # internal coupon charges nothing but still funds the full balance
-    # (the coupon is us absorbing the cost). Bundled sessions disable
-    # promotion codes outright, so this only applies to standalone top-ups.
-    from core.billing.metronome_funding import grant_prepaid_credits_and_refresh_gate
-
-    # Session id as the Metronome Idempotency-Key: one completed Checkout
-    # grants exactly once, however many times Stripe redelivers (or fires
-    # completed + async_payment_succeeded back-to-back). A grant failure
-    # re-raises so the webhook 500s and Stripe redelivers — paid-for
-    # credits must never be silently dropped. The helper follows the grant
-    # with the restore-only fast-gate refresh (best-effort, positive-balance
-    # only, so a Metronome read lag can never re-revoke the owner who just
-    # paid).
-    await grant_prepaid_credits_and_refresh_gate(
-        owner_id,
-        int(amount_cents_str),
-        idempotency_key=f"checkout-{session['id']}",
-    )
-
-    if metadata.get("auto_charge_opt_in") == "true":
-        try:
-            await billing_repo.set_credits_auto_charge(owner_id, enabled=True)
-            put_metric("billing.auto_charge.enabled")
-        except Exception:
-            # The credits themselves landed; consent can be re-granted on a
-            # later checkout. Don't fail the webhook into redelivery (the
-            # grant above would replay harmlessly, but the noise is real).
-            logger.exception("Failed to persist auto-charge opt-in for owner %s", owner_id)
-
-    put_metric("credit.top_up.granted", dimensions={"source": "checkout"})
     return Response(status_code=200)
 
 

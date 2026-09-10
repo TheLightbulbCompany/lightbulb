@@ -35,7 +35,7 @@ async def request_top_up(
     owner_id: str,
     amount_cents: int,
     *,
-    idempotency_key: str | None = None,
+    request_id: str,
     client: MetronomeClient | None = None,
 ) -> None:
     """Create a payment-gated prepaid commit for ``amount_cents``.
@@ -46,12 +46,9 @@ async def request_top_up(
     lifecycle switch is off — the caller (the top-up endpoint) surfaces
     that to the user instead of silently dropping a purchase request.
 
-    ``idempotency_key`` is the double-charge guard: it rides to Metronome
-    as the native Idempotency-Key header, so a replayed request returns
-    the original commit instead of creating (and charging) a second one.
-    Vendor-side idempotency replaces the old time-windowed dedup row —
-    a windowed key had a boundary hole (two clicks straddling the window
-    edge both passed), unacceptable for an unconditional card charge.
+    ``request_id`` is a caller UUID identifying one purchase intent. Its
+    workspace-scoped permanent record pins the Metronome request body and
+    native Idempotency-Key, including the first request's UTC midnight.
 
     settings.METRONOME_CREDITS_PRODUCT_ID must reference a Metronome
     product carrying a ``stripe_product_id`` custom field (console setup,
@@ -66,7 +63,15 @@ async def request_top_up(
     if amount_cents <= 0:
         raise FundingError(f"amount_cents must be positive, got {amount_cents}")
 
-    account = await billing_repo.get_by_owner_id(owner_id) or {}
+    account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}
+    if account.get("subscription_status") != "active" or account.get("plan", "standard") not in {
+        "standard",
+        "ultra_pro",
+    }:
+        raise FundingError("An active Workspace or Ultra subscription is required")
+    stripe_customer_id = account.get("stripe_customer_id")
+    if not stripe_customer_id:
+        raise FundingError(f"Stripe customer not provisioned for owner_id={owner_id}")
     metronome_customer_id = account.get("metronome_customer_id")
     metronome_contract_id = account.get("metronome_contract_id")
     if not metronome_customer_id:
@@ -74,42 +79,26 @@ async def request_top_up(
     if not metronome_contract_id:
         raise FundingError(f"Metronome contract not provisioned for owner_id={owner_id}")
 
-    # Fallback for callers that don't carry a client-generated token: a
-    # deterministic owner+amount+minute key. NOTE this retains the window-
-    # boundary hole (two submits straddling the minute edge get distinct
-    # keys, so both charge) — real clients pass a per-intent UUID through
-    # ``idempotency_key`` and only get here when one is genuinely absent.
-    key = idempotency_key or f"topup-{owner_id}-{amount_cents}-{int(time.time() // 60)}"
-
-    # The commit body itself (v2 contract-edit add_commits shape, gate
-    # included) is owned by the client layer; this module supplies the money
-    # in CENTS (Metronome's USD credit type — see
-    # core/billing/metronome_units.py) — which feeds BOTH the access and
-    # invoice schedules 1:1 (credits unlocked == cents invoiced) — and an
-    # audit description. The description carries NO timestamp: Metronome's
-    # idempotent replay requires the retried body to be identical (same key
-    # + different body → 409), and Metronome stamps the commit's creation
-    # time itself.
-    description = f"isol8 top-up owner={owner_id} amount_cents={amount_cents}"
-
     if client is None:
         async with httpx.AsyncClient(base_url=settings.METRONOME_BASE_URL) as http:
-            await _create_gated_commit(
+            await _request_top_up(
                 metronome_client.for_settings(http),
-                customer_id=metronome_customer_id,
-                contract_id=metronome_contract_id,
+                owner_id=owner_id,
+                request_id=request_id,
                 amount_cents=amount_cents,
-                description=description,
-                idempotency_key=key,
+                stripe_customer_id=stripe_customer_id,
+                metronome_customer_id=metronome_customer_id,
+                metronome_contract_id=metronome_contract_id,
             )
     else:
-        await _create_gated_commit(
+        await _request_top_up(
             client,
-            customer_id=metronome_customer_id,
-            contract_id=metronome_contract_id,
+            owner_id=owner_id,
+            request_id=request_id,
             amount_cents=amount_cents,
-            description=description,
-            idempotency_key=key,
+            stripe_customer_id=stripe_customer_id,
+            metronome_customer_id=metronome_customer_id,
+            metronome_contract_id=metronome_contract_id,
         )
 
     logger.info(
@@ -127,6 +116,7 @@ async def _create_gated_commit(
     amount_cents: int,
     description: str,
     idempotency_key: str,
+    effective_at: str,
 ) -> None:
     await client.create_gated_prepaid_commit(
         customer_id=customer_id,
@@ -136,7 +126,84 @@ async def _create_gated_commit(
         amount_cents=amount_cents,
         description=description,
         idempotency_key=idempotency_key,
+        effective_at=effective_at,
     )
+
+
+def _is_active_stripe_link(link: object, stripe_customer_id: str) -> bool:
+    if not isinstance(link, dict) or link.get("billing_provider") != "stripe" or link.get("archived_at") is not None:
+        return False
+    configuration = link.get("configuration")
+    return (
+        isinstance(configuration, dict)
+        and configuration.get("stripe_customer_id") == stripe_customer_id
+        and configuration.get("stripe_collection_method") == "charge_automatically"
+    )
+
+
+async def _verify_workspace_stripe_link(
+    client: MetronomeClient,
+    *,
+    stripe_customer_id: str,
+    metronome_customer_id: str,
+    metronome_contract_id: str,
+) -> None:
+    root_links = await client.get_customer_billing_provider_configurations(customer_id=metronome_customer_id)
+    if not isinstance(root_links, list) or not any(
+        _is_active_stripe_link(link, stripe_customer_id) for link in root_links
+    ):
+        raise FundingError("Metronome Stripe billing link is unavailable for this workspace")
+    contract = await client.get_contract(customer_id=metronome_customer_id, contract_id=metronome_contract_id)
+    if (
+        not isinstance(contract, dict)
+        or contract.get("customer_id") != metronome_customer_id
+        or not _is_active_stripe_link(contract.get("customer_billing_provider_configuration"), stripe_customer_id)
+    ):
+        raise FundingError("Metronome Stripe billing link is unavailable for this workspace")
+
+
+async def _request_top_up(
+    client: MetronomeClient,
+    *,
+    owner_id: str,
+    request_id: str,
+    amount_cents: int,
+    stripe_customer_id: str,
+    metronome_customer_id: str,
+    metronome_contract_id: str,
+) -> None:
+    from core.services.webhook_dedup import complete_top_up_intent, get_or_create_top_up_intent
+
+    await _verify_workspace_stripe_link(
+        client,
+        stripe_customer_id=stripe_customer_id,
+        metronome_customer_id=metronome_customer_id,
+        metronome_contract_id=metronome_contract_id,
+    )
+    binding = {
+        "amount_cents": amount_cents,
+        "effective_at": time.strftime("%Y-%m-%dT00:00:00.000Z", time.gmtime()),
+        "metronome_customer_id": metronome_customer_id,
+        "metronome_contract_id": metronome_contract_id,
+        "stripe_customer_id": stripe_customer_id,
+        "product_id": settings.METRONOME_CREDITS_PRODUCT_ID,
+        "credit_type_id": settings.METRONOME_USD_CENTS_CREDIT_TYPE_ID,
+        "description": f"isol8 top-up owner={owner_id} amount_cents={amount_cents}",
+        "idempotency_key": f"topup:v1:{owner_id}:{request_id}",
+    }
+    intent = await get_or_create_top_up_intent(owner_id, request_id, binding)
+    if intent["state"] == "completed":
+        return
+    await _create_gated_commit(
+        client,
+        customer_id=intent["metronome_customer_id"],
+        contract_id=intent["metronome_contract_id"],
+        amount_cents=intent["amount_cents"],
+        description=intent["description"],
+        idempotency_key=intent["idempotency_key"],
+        effective_at=intent["effective_at"],
+    )
+    await complete_top_up_intent(intent["event_id"])
 
 
 async def grant_prepaid_credits(
@@ -146,26 +213,11 @@ async def grant_prepaid_credits(
     idempotency_key: str,
     client: MetronomeClient | None = None,
 ) -> None:
-    """Grant ``amount_cents`` of prepaid credits for a payment collected
-    OUTSIDE Metronome (our own Stripe Checkout).
+    """Grant audited promotional/admin credits without collecting payment.
 
-    Creates an UNGATED prepaid commit — access schedule only, no
-    invoice_schedule and no payment gate — which is the API form of
-    Metronome's documented "Do not invoice" option for externally-collected
-    payments. Live-verified (sandbox, 2026-06-12): the commit releases the
-    credits IMMEDIATELY (balance reflects in the same read) and generates
-    ZERO Metronome invoices, so the customer is never double-billed for
-    money our Checkout already took.
-
-    ``idempotency_key`` is REQUIRED (no fallback): the only caller is the
-    checkout webhook, which keys on the Stripe Checkout session id — one
-    completed session grants exactly once, however many times Stripe
-    redelivers the event.
-
-    Same provisioning guards as :func:`request_top_up` — a FundingError
-    here means the owner's Metronome lifecycle isn't set up, which the
-    webhook surfaces as a metric + retryable failure rather than silently
-    swallowing paid-for credits.
+    This intentionally ungated helper remains for controlled grants (for
+    example launch referral rewards). Customer purchases must use
+    :func:`request_top_up`, which creates a Stripe payment-gated commit.
     """
     if not settings.METRONOME_CREDITS_PRODUCT_ID:
         raise FundingError("Metronome credits product is not configured for this environment")
@@ -205,7 +257,7 @@ async def grant_prepaid_credits(
         )
 
     logger.info(
-        "Granted checkout-paid Metronome credits for owner %s: %d cents",
+        "Granted promotional Metronome credits for owner %s: %d cents",
         owner_id,
         amount_cents,
     )
@@ -220,9 +272,8 @@ async def grant_prepaid_credits_and_refresh_gate(
     """THE two-ledger grant sequence: ``grant_prepaid_credits`` (Metronome,
     the source of record), then the restore-only fast-gate refresh so a
     blocked/revoked owner is re-armed the moment the credits land instead of
-    waiting out the gate's staleness window. Shared by the checkout webhook
-    (``handle_checkout_session``) and the launch referral milestones
-    (``launch_referral``).
+    waiting out the gate's staleness window. Used by audited promotional
+    grant paths such as launch referral milestones.
 
     Grant errors PROPAGATE — each caller decides what a failed grant means
     (the webhook 500s into Stripe redelivery; the milestone path stamps

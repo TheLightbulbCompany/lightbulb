@@ -214,6 +214,19 @@ class MetronomeClient:
             },
         )
 
+    async def get_customer_billing_provider_configurations(self, *, customer_id: str) -> list[dict]:
+        """Read the active root billing-provider links for one customer."""
+        body = await self._post("/v1/getCustomerBillingProviderConfigurations", {"customer_id": customer_id})
+        return body.get("data") or []
+
+    async def get_contract(self, *, customer_id: str, contract_id: str) -> dict:
+        """Read the contract and its effective Stripe billing-provider link."""
+        body = await self._post(
+            f"{self._v2_base_url}/contracts/get",
+            {"customer_id": customer_id, "contract_id": contract_id},
+        )
+        return body.get("data") or {}
+
     async def create_prepaid_commit(
         self,
         *,
@@ -289,6 +302,7 @@ class MetronomeClient:
         amount_cents: int,
         description: str,
         idempotency_key: str,
+        effective_at: str,
     ) -> None:
         """POST /v2/contracts/edit — add a STRIPE payment-gated prepaid
         commit. Metronome invoices the customer's linked Stripe card
@@ -306,14 +320,12 @@ class MetronomeClient:
 
         A gated commit must carry BOTH schedules: invoice_schedule is WHEN
         MONEY IS COLLECTED (the Stripe invoice), access_schedule is when the
-        credits unlock. Both use today's UTC midnight — never now() — so a
-        retried request carries a byte-identical body and replays instead of
-        409ing within the idempotency-key retention window; midnight is
-        already in the past, so nothing is delayed. amount_cents feeds both
+        credits unlock. ``effective_at`` is pinned by the caller's durable
+        idempotency record rather than sampled here, so a retry across UTC
+        midnight carries a byte-identical body. amount_cents feeds both
         schedules 1:1 (credits unlocked == cents invoiced), in CENTS
         (Metronome's USD credit type — see core/billing/metronome_units.py).
         """
-        midnight = time.strftime("%Y-%m-%dT00:00:00.000Z", time.gmtime())
         payload = {
             "customer_id": customer_id,
             "contract_id": contract_id,
@@ -328,14 +340,14 @@ class MetronomeClient:
                         "schedule_items": [
                             {
                                 "amount": amount_cents,
-                                "starting_at": midnight,
+                                "starting_at": effective_at,
                                 "ending_before": _NO_EXPIRY,
                             }
                         ],
                     },
                     "invoice_schedule": {
                         "credit_type_id": credit_type_id,
-                        "schedule_items": [{"amount": amount_cents, "timestamp": midnight}],
+                        "schedule_items": [{"amount": amount_cents, "timestamp": effective_at}],
                     },
                     "payment_gate_config": {"payment_gate_type": "STRIPE"},
                 }

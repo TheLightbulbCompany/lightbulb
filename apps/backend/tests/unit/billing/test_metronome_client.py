@@ -288,6 +288,7 @@ async def test_create_gated_prepaid_commit_v2_body_shape():
         amount_cents=2573,
         description="isol8 top-up owner=org_abc amount_cents=2573",
         idempotency_key="topup-org_abc-uuid-2",
+        effective_at="2026-09-10T00:00:00.000Z",
     )
 
     args, kwargs = fake.post.call_args
@@ -316,11 +317,33 @@ async def test_create_gated_prepaid_commit_v2_body_shape():
     assert invoice_item["amount"] == 2573
     # UTC midnight everywhere, never now(): the body must be byte-identical
     # on a retried request or Metronome 409s instead of replaying.
-    assert access_item["starting_at"].endswith("T00:00:00.000Z")
+    assert access_item["starting_at"] == "2026-09-10T00:00:00.000Z"
     assert access_item["ending_before"] == "9999-12-31T00:00:00.000Z"
-    assert invoice_item["timestamp"].endswith("T00:00:00.000Z")
+    assert invoice_item["timestamp"] == "2026-09-10T00:00:00.000Z"
     assert set(access_item) == {"amount", "starting_at", "ending_before"}
     assert set(invoice_item) == {"amount", "timestamp"}
+
+
+@pytest.mark.asyncio
+async def test_reads_workspace_billing_provider_and_contract_links():
+    client, fake = _client_with(_resp(200, {"data": [{"billing_provider": "stripe"}]}))
+    assert await client.get_customer_billing_provider_configurations(customer_id="metro_1") == [
+        {"billing_provider": "stripe"}
+    ]
+    fake.post.assert_awaited_once_with(
+        "/v1/getCustomerBillingProviderConfigurations",
+        json={"customer_id": "metro_1"},
+        headers={"Authorization": "Bearer tok_sandbox", "Content-Type": "application/json"},
+    )
+
+    fake.post.reset_mock()
+    fake.post.return_value = _resp(200, {"data": {"customer_id": "metro_1"}})
+    assert await client.get_contract(customer_id="metro_1", contract_id="contract_1") == {"customer_id": "metro_1"}
+    fake.post.assert_awaited_once_with(
+        "https://api.metronome.com/v2/contracts/get",
+        json={"customer_id": "metro_1", "contract_id": "contract_1"},
+        headers={"Authorization": "Bearer tok_sandbox", "Content-Type": "application/json"},
+    )
 
 
 @pytest.mark.asyncio

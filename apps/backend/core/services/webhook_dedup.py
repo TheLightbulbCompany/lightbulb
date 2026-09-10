@@ -67,6 +67,10 @@ class MembershipLifecycleSuperseded(RuntimeError):
     """This worker no longer owns the member lifecycle it was processing."""
 
 
+class TopUpIntentConflict(RuntimeError):
+    """A caller reused a top-up idempotency token with different money inputs."""
+
+
 def membership_lifecycle_key(owner_id: str, alias: str) -> str:
     """Stable central key for one org/member lifecycle, independent of containers."""
     if not isinstance(owner_id, str) or not owner_id or not isinstance(alias, str) or not alias:
@@ -142,6 +146,91 @@ async def record_permanent_marker(event_id: str, *, source: str) -> None:
 
 async def _read_event(event_id: str) -> dict:
     return (await run_in_thread(_table().get_item, Key={"event_id": event_id}, ConsistentRead=True)).get("Item", {})
+
+
+def top_up_intent_key(owner_id: str, request_id: str) -> str:
+    """Permanent idempotency identity for one workspace credit purchase."""
+    if not isinstance(owner_id, str) or not owner_id or not isinstance(request_id, str) or not request_id:
+        raise ValueError("workspace and request_id are required")
+    return f"metronome-top-up:{owner_id}:{request_id}"
+
+
+async def get_or_create_top_up_intent(owner_id: str, request_id: str, binding: dict) -> dict:
+    """Atomically pin the complete payment-gated Metronome request body.
+
+    The normal webhook dedup rows expire, but money idempotency must survive
+    both vendor retention and a UTC-day boundary. This uses the same table's
+    existing permanent-marker pattern, keyed by workspace plus the caller UUID.
+    """
+    required = {
+        "amount_cents",
+        "effective_at",
+        "metronome_customer_id",
+        "metronome_contract_id",
+        "stripe_customer_id",
+        "product_id",
+        "credit_type_id",
+        "description",
+        "idempotency_key",
+    }
+    if set(binding) != required:
+        raise ValueError("top-up intent binding is incomplete")
+    key = top_up_intent_key(owner_id, request_id)
+    item = {
+        "event_id": key,
+        "kind": "metronome-top-up",
+        "state": "pending",
+        "owner_id": owner_id,
+        "request_id": request_id,
+        "recorded_at": int(time.time()),
+        **binding,
+    }
+    try:
+        await run_in_thread(
+            _table().put_item,
+            Item=item,
+            ConditionExpression="attribute_not_exists(event_id)",
+        )
+        return item
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+    existing = await _read_event(key)
+    if not existing or existing.get("kind") != "metronome-top-up":
+        raise TopUpIntentConflict("top-up intent identity is unavailable")
+    if existing.get("owner_id") != owner_id or existing.get("request_id") != request_id:
+        raise TopUpIntentConflict("top-up intent binding changed")
+    # ``effective_at`` is generated only on the original request and pinned
+    # forever. A retry after UTC midnight supplies a different candidate but
+    # must replay the original body, not be rejected as a changed purchase.
+    if any(existing.get(field) != value for field, value in binding.items() if field != "effective_at"):
+        raise TopUpIntentConflict("top-up intent binding changed")
+    if existing.get("state") not in {"pending", "completed"}:
+        raise TopUpIntentConflict("top-up intent state is unavailable")
+    return existing
+
+
+async def complete_top_up_intent(event_id: str) -> None:
+    """Mark a pinned top-up body complete after Metronome accepts it."""
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"event_id": event_id},
+            UpdateExpression="SET #state = :completed, completed_at = if_not_exists(completed_at, :now)",
+            ConditionExpression="#kind = :kind AND (#state = :pending OR #state = :completed)",
+            ExpressionAttributeNames={"#kind": "kind", "#state": "state"},
+            ExpressionAttributeValues={
+                ":kind": "metronome-top-up",
+                ":pending": "pending",
+                ":completed": "completed",
+                ":now": int(time.time()),
+            },
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        raise TopUpIntentConflict("top-up intent state is unavailable") from exc
 
 
 async def begin_event_processing(

@@ -11,19 +11,16 @@ describe("CreditsSection", () => {
     mockUseCredits.mockReset();
     mockUseCredits.mockReturnValue({
       balance: { balance_microcents: 3_952_000_000, balance_dollars: "39.52" },
-      autoChargeEnabled: false,
       refresh: vi.fn(),
       startTopUp: vi.fn(),
-      startTopUpCheckout: vi.fn(),
-      disableAutoCharge: vi.fn(),
     });
   });
 
-  it("renders the balance and the checkout CTA without a page heading", () => {
+  it("renders the balance and payment-gated top-up CTA without a page heading", () => {
     render(<CreditsSection />);
     expect(screen.getByText("$39.52")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /continue to payment — \$20/i }),
+      screen.getByRole("button", { name: /add \$20/i }),
     ).toBeInTheDocument();
     // No standalone page <h2> — the section embeds inside Model & Credits.
     expect(screen.queryByRole("heading", { name: /claude credits/i })).toBeNull();

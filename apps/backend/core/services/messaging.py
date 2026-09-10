@@ -860,6 +860,10 @@ def select_dispatch_targets(
     for member in sorted(members, key=lambda row: (row.get("kind", ""), row.get("id", ""))):
         if member.get("kind") != "agent" or member.get("id") == source_agent_id:
             continue
+        # An observe member never runs — not on ambient traffic, not when
+        # mentioned, not in a DM. It only sees history on its next turn.
+        if member.get("listenMode") == "observe":
+            continue
         agent_id = member["id"]
         # A DM is addressed by construction: without this, an unmentioned DM is
         # an ambient room_event, which OpenClaw runs message-tool-only and the

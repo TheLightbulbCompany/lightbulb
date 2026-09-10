@@ -24,6 +24,15 @@ def test_channel_mention_addresses_only_the_mentioned_agent():
     ]
 
 
+def test_observe_member_never_runs_even_when_mentioned_or_in_a_dm():
+    observer = {**GAUGE, "listenMode": "observe"}
+    mentions = [{"kind": "agent", "id": observer["id"]}]
+    assert select_dispatch_targets([FRIDAY, observer, HUMAN], mentions, None, room_kind="channel") == [
+        {"agentId": FRIDAY["id"], "eventKind": "room_event"},
+    ]
+    assert select_dispatch_targets([observer, HUMAN], [], None, room_kind="dm") == []
+
+
 def test_source_agent_never_receives_its_own_dm():
     targets = select_dispatch_targets([FRIDAY, HUMAN], [], FRIDAY["id"], room_kind="dm")
     assert targets == []

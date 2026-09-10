@@ -226,9 +226,18 @@ export function openChatPanel(agentId: string): void {
   if (descriptor) addOrFocus(descriptor);
 }
 
-export function activateMessagesPanel(agentId?: string): void {
-  const descriptor = describePanel("chat", { agent: agentId ?? DEFAULT_AGENT_SENTINEL });
-  if (descriptor) addOrFocus({ ...descriptor, params: agentId ? { agentId } : {} });
+export function activateMessagesPanel(): void {
+  const descriptor = describePanel("chat", { agent: DEFAULT_AGENT_SENTINEL });
+  if (descriptor) addOrFocus({ ...descriptor, params: { agentSelection: "resolved" } });
+}
+
+// Metadata from the canonical room is not another agent-selection command.
+// This marker is transient: layout sanitization persists only the agentId.
+export function syncMessagesPanelAgent(agentId?: string): void {
+  const panel = _api?.getPanel(MESSAGES_PANEL_ID);
+  if (!panel || (panel.params?.agentId === agentId && panel.params?.agentSelection === "resolved")) return;
+  panel.api.updateParameters({ agentId, agentSelection: "resolved" });
+  recomputeSnapshot();
 }
 
 // Hand the default agent a drafted message: open (or focus) its chat and seed

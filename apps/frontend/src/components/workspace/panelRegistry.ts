@@ -325,7 +325,7 @@ export function durableParamsFor(panelId: string): string[] {
 // param (an agent filter, an inspector tab) survives an unfiltered navigation
 // — breaking the mobile invariant that plain panel nav drops stale state.
 export function clearablePanelParamKeys(panelId: string): string[] {
-  if (panelId === MESSAGES_PANEL_ID) return ["agentId"];
+  if (panelId === MESSAGES_PANEL_ID) return ["agentId", "agentSelection"];
   if (panelId === "teams-agents") return ["view"];
   if (panelId === "teams-issues") return ["agent", "groupBy"];
   if (panelId === "teams-inbox") return ["section"];

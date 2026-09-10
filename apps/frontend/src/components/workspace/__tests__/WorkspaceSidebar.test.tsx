@@ -89,10 +89,10 @@ describe("WorkspaceSidebar", () => {
     fireEvent.click(button);
     expect(openPanel).toHaveBeenCalledWith(panel, {}, { pushUrl: true });
   });
-  it.each([["dm", "agent-1"], ["channel", undefined], ["group-dm", undefined], ["human", undefined], ["New conversation", undefined]])("opens %s with the correct Messages target", (label, agentId) => {
+  it.each(["dm", "channel", "group-dm", "human", "New conversation"])("opens %s without issuing another agent selection", (label) => {
     render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: label }));
-    expect(activateMessagesPanel).toHaveBeenCalledWith(agentId);
+    expect(activateMessagesPanel).toHaveBeenCalledWith();
   });
   it("keeps secondary destinations in native More and respects capability filters", () => {
     const view = render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);

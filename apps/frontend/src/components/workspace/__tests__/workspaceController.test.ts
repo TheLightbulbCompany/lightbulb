@@ -7,6 +7,7 @@ import {
   openChatPanelWithDraft,
   closeSubjectDeleted,
   activateMessagesPanel,
+  syncMessagesPanelAgent,
   isShellOperationInProgress,
   refreshWorkspaceSnapshot,
   _resetControllerForTests,
@@ -209,12 +210,31 @@ describe("workspaceController", () => {
     activateMessagesPanel();
     expect(api.addPanel).toHaveBeenCalledTimes(1);
     expect(api.getPanel(MESSAGES_PANEL_ID)?.api.updateParameters)
-      .toHaveBeenLastCalledWith({ agentId: undefined });
-    expect(api.getPanel(MESSAGES_PANEL_ID)?.params).toEqual({});
+      .toHaveBeenLastCalledWith({ agentId: undefined, agentSelection: "resolved" });
+    expect(api.getPanel(MESSAGES_PANEL_ID)?.params).toEqual({ agentSelection: "resolved" });
     expect(_snapshotForTests().focusedChatAgentId).toBeNull();
     expect(_snapshotForTests().visibleChatAgentIds).toEqual([]);
-    activateMessagesPanel("other-agent");
+    syncMessagesPanelAgent("other-agent");
     expect(_snapshotForTests().focusedChatAgentId).toBe("other-agent");
+  });
+
+  it("syncs resolved metadata without focus and clears it for an explicit same-agent command", () => {
+    const api = makeFakeApi();
+    attachDockviewApi(api, () => undefined);
+    openChatPanel("a-1");
+    openPanel("browser");
+    syncMessagesPanelAgent("a-2");
+    const panel = api.getPanel(MESSAGES_PANEL_ID)!;
+    expect(panel.params).toEqual({ agentId: "a-2", agentSelection: "resolved" });
+    expect(_snapshotForTests().activePanelId).toBe("browser");
+    const snapshot = _snapshotForTests();
+    vi.mocked(panel.api.updateParameters).mockClear();
+    syncMessagesPanelAgent("a-2");
+    expect(panel.api.updateParameters).not.toHaveBeenCalled();
+    expect(_snapshotForTests()).toBe(snapshot);
+    openChatPanel("a-2");
+    expect(panel.params).toEqual({ agentId: "a-2" });
+    expect(_snapshotForTests().focusedChatAgentId).toBe("a-2");
   });
 
   it("publishes parameter retargeting even when setActive emits no event", () => {
@@ -394,7 +414,7 @@ describe("workspaceController", () => {
     const api = makeFakeApi();
     attachDockviewApi(api, () => undefined);
     activateMessagesPanel();
-    expect(api.getPanel(MESSAGES_PANEL_ID)?.params).toEqual({});
+    expect(api.getPanel(MESSAGES_PANEL_ID)?.params).toEqual({ agentSelection: "resolved" });
     expect(_snapshotForTests().focusedChatAgentId).toBeNull();
   });
 });

@@ -104,12 +104,7 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
           ))}
         </nav>
         {chatReady ? (
-          <MessagingDirectory onOpenRoom={(room) => {
-            const agent = room?.kind === "dm"
-              ? room.participants.find((participant) => participant.kind === "agent")
-              : undefined;
-            activateMessagesPanel(agent?.id);
-          }} />
+          <MessagingDirectory onOpenRoom={() => activateMessagesPanel()} />
         ) : (
           <p role="status" className="workspace-conversations-disabled">
             Conversations are available when your workspace is ready.

@@ -7,9 +7,11 @@ import { useMessagingWorkspace } from "@/components/messaging/MessagingWorkspace
 import { useAgents } from "@/hooks/useAgents";
 import { useDockPanelParams } from "./useDockPanelParams";
 import { DEFAULT_AGENT_SENTINEL } from "../panelRegistry";
+import { syncMessagesPanelAgent } from "../workspaceController";
 
 interface ChatPanelParams {
   agentId?: string;
+  agentSelection?: "resolved";
 }
 
 /**
@@ -19,9 +21,9 @@ interface ChatPanelParams {
 export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.ReactElement {
   const params = useDockPanelParams(props);
   const { defaultId } = useAgents();
-  const { selectAgentDm } = useMessagingWorkspace();
+  const { selectAgentDm, roomProps } = useMessagingWorkspace();
   const lastRequested = useRef<string | null>(null);
-  const requested = params.agentId === DEFAULT_AGENT_SENTINEL
+  const requested = params.agentSelection === "resolved" ? null : params.agentId === DEFAULT_AGENT_SENTINEL
     ? defaultId ?? null
     : params.agentId ?? null;
 
@@ -36,6 +38,15 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
       if (lastRequested.current === requested) lastRequested.current = null;
     });
   }, [requested, selectAgentDm]);
+
+  const roomId = roomProps?.roomId;
+  const roomAgentId = roomProps?.composer.focusAgentId;
+  const waitingForDefault = params.agentSelection !== "resolved"
+    && params.agentId === DEFAULT_AGENT_SENTINEL && !defaultId;
+  useEffect(() => {
+    // The initial fallback room must not consume a still-unresolved deep link.
+    if (roomId && !waitingForDefault) syncMessagesPanelAgent(roomAgentId);
+  }, [roomId, roomAgentId, params.agentId, params.agentSelection, waitingForDefault]);
 
   return <MessagingConversation />;
 }

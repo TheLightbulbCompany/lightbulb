@@ -149,7 +149,7 @@ describe("panelRegistry", () => {
     expect(clearablePanelParamKeys("control:agents")).toEqual(["agentId", "initialTab"]);
     expect(clearablePanelParamKeys("teams-dashboard")).toEqual([]);
     expect(clearablePanelParamKeys("chat:a-1")).toEqual([]);
-    expect(clearablePanelParamKeys(MESSAGES_PANEL_ID)).toEqual(["agentId"]);
+    expect(clearablePanelParamKeys(MESSAGES_PANEL_ID)).toEqual(["agentId", "agentSelection"]);
   });
 
   it("rejects prototype-chain keys — Object.prototype members are not panels", () => {

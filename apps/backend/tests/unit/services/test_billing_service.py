@@ -6,11 +6,9 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from core.config import settings
 from core.services import billing_service
 from core.services.billing_service import (
     BillingService,
-    BillingServiceError,
 )
 
 
@@ -359,122 +357,6 @@ async def test_change_provider_refreshes_owner_facts(monkeypatch):
         "user_x",
         account_overrides={"provider_choice": "bedrock_claude", "byo_provider": None},
     )
-
-
-class TestCreditTopUpProvisionsOnDemand:
-    """`create_credit_top_up_checkout` must PROVISION the owner's Metronome
-    ledger, not merely assert someone else already did.
-
-    It used to just check the ids were on the billing row and raise "try again
-    in a moment" otherwise, on the stated reasoning that "provisioning re-runs
-    on every status poll". That is false for a personal owner with a running
-    container: `ensure_metronome_customer`'s only other call site is
-    `ensure_user_ready`, which `routers/container.py` re-dispatches on a running
-    box solely for org context or a failed Teams seat. A trial->paid converted
-    owner therefore sat un-provisioned forever and got "try again in a moment"
-    on every attempt — on the exact screen the credits gate sends them to, so
-    the one action that would fix their account was the one action they could
-    not complete.
-    """
-
-    @pytest.fixture
-    def _account(self):
-        return {
-            "owner_id": "user_x",
-            "stripe_customer_id": "cus_x",
-        }
-
-    @pytest.mark.asyncio
-    async def test_provisions_then_proceeds_when_ids_are_missing(self, _account, monkeypatch):
-        monkeypatch.setattr(billing_service.settings, "METRONOME_CREDITS_PRODUCT_ID", "prod_x")
-        provisioned = {
-            **_account,
-            "metronome_customer_id": "mc-1",
-            "metronome_contract_id": "ct-1",
-        }
-        # First read: un-provisioned. Second read (after ensuring): provisioned.
-        reads = [dict(_account), provisioned]
-        ensure = AsyncMock(return_value="mc-1")
-        with (
-            patch.object(billing_service.billing_repo, "get_by_owner_id", new=AsyncMock(side_effect=reads)),
-            patch("core.billing.metronome_provisioning.ensure_metronome_customer", new=ensure),
-            patch("stripe.checkout.Session.create", return_value=MagicMock(url="https://checkout/credits")),
-        ):
-            session = await billing_service.create_credit_top_up_checkout(owner_id="user_x", amount_cents=2000)
-
-        ensure.assert_awaited_once_with(owner_id="user_x")
-        assert session.url == "https://checkout/credits"
-
-    @pytest.mark.asyncio
-    async def test_still_refuses_to_take_money_when_provisioning_fails(self, _account, monkeypatch):
-        """The money guard survives: if provisioning can't complete, no payable
-        session is created. Collecting first and failing the grant afterwards
-        strands the customer's money — the original reason this check exists."""
-        monkeypatch.setattr(billing_service.settings, "METRONOME_CREDITS_PRODUCT_ID", "prod_x")
-        create = MagicMock()
-        with (
-            patch.object(billing_service.billing_repo, "get_by_owner_id", new=AsyncMock(return_value=dict(_account))),
-            patch(
-                "core.billing.metronome_provisioning.ensure_metronome_customer",
-                new=AsyncMock(side_effect=RuntimeError("metronome down")),
-            ),
-            patch("stripe.checkout.Session.create", new=create),
-        ):
-            with pytest.raises(BillingServiceError, match="contact support"):
-                await billing_service.create_credit_top_up_checkout(owner_id="user_x", amount_cents=2000)
-
-        create.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_permanent_failure_is_not_reported_as_transient(self, _account, monkeypatch):
-        """A provisioning call that RAISED will raise again on every retry, so
-        "try again in a moment" sends the buyer into an infinite loop with
-        nothing surfaced to them or support saying it can never work. The
-        transient wording is reserved for the non-raising case."""
-        monkeypatch.setattr(billing_service.settings, "METRONOME_CREDITS_PRODUCT_ID", "prod_x")
-        with (
-            patch.object(billing_service.billing_repo, "get_by_owner_id", new=AsyncMock(return_value=dict(_account))),
-            patch(
-                "core.billing.metronome_provisioning.ensure_metronome_customer",
-                new=AsyncMock(side_effect=RuntimeError("metronome down")),
-            ),
-        ):
-            with pytest.raises(BillingServiceError) as exc:
-                await billing_service.create_credit_top_up_checkout(owner_id="user_x", amount_cents=2000)
-        assert "try again in a moment" not in str(exc.value)
-        # Derived, not a literal: the message is built from
-        # settings.EMAIL_SUPPORT_ADDRESS, which moves with the mail domain.
-        # Hardcoding it here is what made this test fail the mail migration
-        # rather than follow it.
-        assert settings.EMAIL_SUPPORT_ADDRESS in str(exc.value)
-
-    @pytest.mark.asyncio
-    async def test_silent_no_op_still_reports_transient(self, _account, monkeypatch):
-        """Provisioning returned without raising but the ids still aren't
-        visible — a moment genuinely can fix that, so keep the retry wording."""
-        monkeypatch.setattr(billing_service.settings, "METRONOME_CREDITS_PRODUCT_ID", "prod_x")
-        with (
-            patch.object(billing_service.billing_repo, "get_by_owner_id", new=AsyncMock(return_value=dict(_account))),
-            patch("core.billing.metronome_provisioning.ensure_metronome_customer", new=AsyncMock(return_value=None)),
-        ):
-            with pytest.raises(BillingServiceError, match="try again in a moment"):
-                await billing_service.create_credit_top_up_checkout(owner_id="user_x", amount_cents=2000)
-
-    @pytest.mark.asyncio
-    async def test_no_op_when_already_provisioned(self, _account, monkeypatch):
-        """Idempotent and cheap on the common path — an already-provisioned
-        owner must not pay for a Metronome round trip per top-up."""
-        monkeypatch.setattr(billing_service.settings, "METRONOME_CREDITS_PRODUCT_ID", "prod_x")
-        account = {**_account, "metronome_customer_id": "mc-1", "metronome_contract_id": "ct-1"}
-        ensure = AsyncMock()
-        with (
-            patch.object(billing_service.billing_repo, "get_by_owner_id", new=AsyncMock(return_value=account)),
-            patch("core.billing.metronome_provisioning.ensure_metronome_customer", new=ensure),
-            patch("stripe.checkout.Session.create", return_value=MagicMock(url="https://checkout/credits")),
-        ):
-            await billing_service.create_credit_top_up_checkout(owner_id="user_x", amount_cents=2000)
-
-        ensure.assert_not_awaited()
 
 
 class TestLaunchWinnerIdempotencyKey:

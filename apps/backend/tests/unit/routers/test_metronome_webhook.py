@@ -388,7 +388,12 @@ def _payment_gate_body(event_type="payment_gate.payment_status", **props):
         {
             "id": "evt-pg-1",
             "type": event_type,
-            "properties": {"customer_id": METRONOME_CUSTOMER_ID, **props},
+            "properties": {
+                "customer_id": METRONOME_CUSTOMER_ID,
+                "contract_id": "contract_1",
+                "invoice_id": "invoice_1",
+                **props,
+            },
         }
     ).encode("utf-8")
 
@@ -401,6 +406,12 @@ def _post_payment_gate(client, body):
         ),
         patch("routers.metronome_webhook.put_metric") as put_metric,
         patch("routers.metronome_webhook.MetronomeFastGate") as gate_cls,
+        patch(
+            "routers.metronome_webhook.billing_repo.get_by_metronome_customer_id",
+            new=AsyncMock(return_value={"owner_id": OWNER_ID}),
+        ),
+        patch("routers.metronome_webhook.webhook_dedup.settle_active_top_up", new=AsyncMock(return_value=False)),
+        patch("routers.metronome_webhook.webhook_dedup.set_active_top_up_status", new=AsyncMock(return_value=False)),
     ):
         gate = gate_cls.return_value
         gate.set_balance = AsyncMock()
@@ -442,6 +453,46 @@ def test_payment_gate_pending_action_alerts(client):
     )
     assert resp.status_code == 200
     assert _payment_gate_metric_dims(put_metric) == {"status": "action_required"}
+
+
+def test_payment_gate_terminal_status_settles_matching_active_top_up(client):
+    settle = AsyncMock(return_value=True)
+    with (
+        patch(
+            "routers.metronome_webhook.webhook_dedup.record_event_or_skip",
+            new=AsyncMock(return_value=WebhookDedupResult.RECORDED),
+        ),
+        patch(
+            "routers.metronome_webhook.billing_repo.get_by_metronome_customer_id",
+            new=AsyncMock(return_value={"owner_id": OWNER_ID}),
+        ),
+        patch("routers.metronome_webhook.webhook_dedup.settle_active_top_up", new=settle),
+        patch("routers.metronome_webhook.put_metric"),
+    ):
+        response = _post(client, _payment_gate_body(payment_status="paid"))
+
+    assert response.status_code == 200
+    settle.assert_awaited_once_with(OWNER_ID, METRONOME_CUSTOMER_ID, "contract_1", "paid", invoice_id="invoice_1")
+
+
+def test_payment_gate_customer_or_contract_mismatch_does_not_settle(client):
+    settle = AsyncMock(return_value=False)
+    with (
+        patch(
+            "routers.metronome_webhook.webhook_dedup.record_event_or_skip",
+            new=AsyncMock(return_value=WebhookDedupResult.RECORDED),
+        ),
+        patch(
+            "routers.metronome_webhook.billing_repo.get_by_metronome_customer_id",
+            new=AsyncMock(return_value={"owner_id": OWNER_ID}),
+        ),
+        patch("routers.metronome_webhook.webhook_dedup.settle_active_top_up", new=settle),
+        patch("routers.metronome_webhook.put_metric"),
+    ):
+        response = _post(client, _payment_gate_body(payment_status="failed", contract_id="contract_other"))
+
+    assert response.status_code == 200
+    settle.assert_awaited_once_with(OWNER_ID, METRONOME_CUSTOMER_ID, "contract_other", "failed", invoice_id="invoice_1")
 
 
 def test_unhandled_event_type_is_counted_not_silent(client):

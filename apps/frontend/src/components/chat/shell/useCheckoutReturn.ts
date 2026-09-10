@@ -42,24 +42,6 @@ export function useCheckoutReturn(): { showSubscriptionSuccess: boolean } {
     return () => clearTimeout(dismissTimer);
   }, [showSubscriptionSuccess, refreshBilling, searchParams]);
 
-  // Post-credit-checkout return. Stripe sends users back with a `credits`
-  // marker when an explicit top-up finishes. It is always transient: credits
-  // are refreshed by useCredits, and subscriptions never bundle a credit
-  // grant into this URL contract.
-  const creditsParam = searchParams.get("credits");
-  useEffect(() => {
-    if (creditsParam === null) return;
-    const params = new URLSearchParams(searchParams.toString());
-    params.delete("credits");
-    // Both cleanup effects see the same immutable searchParams snapshot. If a
-    // stale combined URL contains checkout + credits, this effect must remove
-    // the checkout markers too rather than restoring one after the checkout
-    // effect already removed it.
-    params.delete("checkout");
-    params.delete("subscription");
-    replaceSearchParams(params);
-  }, [creditsParam, searchParams]);
-
   // Race against Stripe webhook delivery: the user returns from Checkout
   // before customer.subscription.created lands at our webhook endpoint
   // (typically <2s, but variable). Without polling, the wizard would

@@ -305,8 +305,7 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
 
     # (e) The coupon: ensure a PRODUCT-RESTRICTED one exists (mint if
     # missing; force a re-mint over a stale coupon that predates the
-    # applies_to restriction — an unrestricted 100%-off coupon would also
-    # zero the bundled starter-credits line item at checkout), then attach to
+    # applies_to restriction), then attach to
     # every PAYING winner's subscription. Attach failures are logged and
     # counted, never fatal — rerun with force to converge.
     coupon = await _ensure_restricted_coupon(auth)

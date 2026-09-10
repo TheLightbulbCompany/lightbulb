@@ -100,7 +100,7 @@ export const AGENTS_VIEWS: ReadonlySet<string> = new Set(["list", "chart"]);
 export const ONE_SHOT_PARAMS = ["new", "newIssue", "action"] as const;
 
 // Billing-return params: not commands. useCheckoutReturn owns their strips.
-export const NON_COMMAND_PARAMS = ["checkout", "subscription", "credits", "provider"] as const;
+export const NON_COMMAND_PARAMS = ["checkout", "subscription", "provider"] as const;
 
 const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
   dashboard: "Home",

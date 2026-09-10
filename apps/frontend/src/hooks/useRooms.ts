@@ -94,6 +94,7 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const initialDmRequest = useRef<{ agentId: string; clientRoomId: string } | null>(null);
   const handledInitialAgent = useRef<string | null>(null);
+  const selectionRequest = useRef(0);
   const [accessRemoved, setAccessRemoved] = useState(false);
   const [deliveryOverride, setDeliveryOverride] = useState<{ roomId: string; deliveryKey: string; roomRevision: number } | null>(null);
   const detailResponse = useSWR(
@@ -330,18 +331,22 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
   }, [reconcile, sendMessage]);
 
   const selectRoom = useCallback((roomId: string) => {
+    selectionRequest.current += 1;
     setActiveRoomId(roomId);
   }, []);
 
   const createRoom = useCallback(async (request: CreateRoomRequest) => {
+    const requestId = ++selectionRequest.current;
     const created = await messaging.createRoom(request);
     await mutateRooms();
-    setActiveRoomId(created.roomId);
+    if (requestId === selectionRequest.current) setActiveRoomId(created.roomId);
     return created;
   }, [messaging, mutateRooms]);
 
   const selectAgentDm = useCallback(async (agentId: string): Promise<void> => {
+    const requestId = ++selectionRequest.current;
     const details = directoryDetailsResponse.data ?? await loadDirectoryRoomDetails();
+    if (requestId !== selectionRequest.current) return;
     const existing = [...details.values()].find(
       (detail) => detail.kind === "dm" && detail.members.some(
         (member) => member.kind === "agent" && member.id === agentId,
@@ -355,13 +360,12 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
       ? initialDmRequest.current
       : { agentId, clientRoomId: crypto.randomUUID() };
     initialDmRequest.current = request;
-    const created = await createRoom({
+    await createRoom({
       clientRoomId: request.clientRoomId,
       kind: "dm",
       name: null,
       members: [{ kind: "agent", id: agentId, role: "member", listenMode: "active" }],
     });
-    setActiveRoomId(created.roomId);
   }, [createRoom, directoryDetailsResponse.data, loadDirectoryRoomDetails]);
 
   useEffect(() => {

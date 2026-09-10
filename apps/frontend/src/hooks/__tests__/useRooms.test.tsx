@@ -151,6 +151,35 @@ describe("useRooms canonical reconciliation", () => {
     expect(result.current.activeRoomId).toBe(created.roomId);
   });
 
+  it("does not let a stale DM lookup override a newer room selection", async () => {
+    const fridayDm = {
+      ...room,
+      roomId: "11111111-1111-4111-8111-111111111115",
+      kind: "dm" as const,
+      name: null,
+      members: [room.members[0], { ...room.members[1], id: "agent-friday", displayName: "Friday" }],
+    };
+    const resolveFridayDetails: Array<(detail: RoomDetail) => void> = [];
+    messaging.listRooms.mockResolvedValue({ rooms: [room, fridayDm] });
+    messaging.getRoom.mockImplementation(async (roomId: string) => {
+      if (roomId === room.roomId) return room;
+      return new Promise<RoomDetail>((resolve) => resolveFridayDetails.push(resolve));
+    });
+
+    const { result } = renderHook(() => useRooms(), { wrapper });
+    await waitFor(() => expect(result.current.activeRoomId).toBe(room.roomId));
+
+    const selectingFriday = result.current.selectAgentDm("agent-friday");
+    await waitFor(() => expect(resolveFridayDetails).toHaveLength(2));
+    act(() => result.current.selectRoom(room.roomId));
+    await act(async () => {
+      for (const resolve of resolveFridayDetails) resolve(fridayDm);
+      await selectingFriday;
+    });
+
+    expect(result.current.activeRoomId).toBe(room.roomId);
+  });
+
   it("subscribes before history, merges gaps in sequence, rotates keys, and evicts access immediately", async () => {
     const { result, rerender } = renderHook(() => useRooms(), { wrapper });
     await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(room.roomId));

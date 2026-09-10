@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import type { DockviewApi } from "dockview-react";
 import { buildMissionControlLayout } from "../buildDefaultLayout";
+import { DEFAULT_AGENT_SENTINEL, MESSAGES_PANEL_ID } from "../panelRegistry";
 
 describe("buildMissionControlLayout", () => {
   it("opens chat, browser and inbox as ONE tab group — chat active last", () => {
@@ -18,8 +19,8 @@ describe("buildMissionControlLayout", () => {
 
     buildMissionControlLayout(api);
 
-    expect(calls.map((c) => c.id)).toEqual(["chat:__default__", "browser", "teams-inbox"]);
-    expect(calls[0]).toMatchObject({ component: "chat", renderer: "always" });
+    expect(calls.map((c) => c.id)).toEqual([MESSAGES_PANEL_ID, "browser", "teams-inbox"]);
+    expect(calls[0]).toMatchObject({ component: "chat", renderer: "always", params: { agentId: DEFAULT_AGENT_SENTINEL } });
     // Browser id/component must match describePanel's singleton so a later
     // ?panel=browser (or the tool auto-open) focuses this panel, not a twin.
     expect(calls[1]).toMatchObject({ component: "browser", params: {} });
@@ -40,6 +41,6 @@ describe("buildMissionControlLayout", () => {
     expect(calls[2]).not.toHaveProperty("renderer");
 
     // Chat ends focused (spec: default layout focuses the conversation)
-    expect(calls[0].id).toBe("chat:__default__");
+    expect(api.getPanel).toHaveBeenCalledWith(MESSAGES_PANEL_ID);
   });
 });

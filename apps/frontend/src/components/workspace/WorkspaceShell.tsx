@@ -191,7 +191,6 @@ function AuthenticatedWorkspace({ scopeId }: { scopeId: string }): React.ReactEl
     const wasOpen = isCommandTargetOpen(
       command,
       snapshot.openPanelIds,
-      () => defaultIdRef.current,
     );
     if (command.descriptor.component === "chat") {
       openChatPanel(command.descriptor.params.agentId);
@@ -276,16 +275,13 @@ function AuthenticatedWorkspace({ scopeId }: { scopeId: string }): React.ReactEl
       runReconciler(window.location.search);
 
       // Clear-on-close: closing the URL-named panel canonicalizes the URL in
-      // place (replace, never push) so refresh can't resurrect it. Sentinel-
-      // unified: closing chat:__default__ while the URL names the concrete
-      // default agent (and vice versa) still clears.
+      // place (replace, never push) so refresh can't resurrect it.
       disposablesRef.current.push(
         api.onDidRemovePanel((panel) => {
           if (isShellOperationInProgress()) return;
           const cleared = clearClosedPanelFromUrl(
             window.location.search,
             panel.id,
-            () => defaultIdRef.current,
           );
           if (cleared !== null) replaceSearchParams(new URLSearchParams(cleared));
         }),

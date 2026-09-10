@@ -6,6 +6,7 @@ import {
   durableParamsFor,
   clearablePanelParamKeys,
   DEFAULT_AGENT_SENTINEL,
+  MESSAGES_PANEL_ID,
   PANEL_COMPONENT_KEYS,
 } from "../panelRegistry";
 
@@ -54,6 +55,12 @@ describe("panelRegistry", () => {
   it("builds deterministic chat panel ids", () => {
     expect(chatPanelId("agent-123")).toBe("chat:agent-123");
     expect(chatPanelId(DEFAULT_AGENT_SENTINEL)).toBe("chat:__default__");
+  });
+
+  it("targets one Messages panel while carrying the requested agent", () => {
+    expect(describePanel("chat", { agent: "agent-a" })?.panelId).toBe(MESSAGES_PANEL_ID);
+    expect(describePanel("chat", { agent: "agent-b" })?.panelId).toBe(MESSAGES_PANEL_ID);
+    expect(describePanel("chat", { agentId: "agent-b" })?.params).toEqual({ agentId: "agent-b" });
   });
 
   it("describes teams list panels as singletons", () => {
@@ -113,7 +120,7 @@ describe("panelRegistry", () => {
   it("describes chat panels with renderer always", () => {
     const d = describePanel("chat", { agent: "a-9" });
     expect(d).toEqual({
-      panelId: "chat:a-9",
+      panelId: MESSAGES_PANEL_ID,
       component: "chat",
       title: "Messages",
       params: { agentId: "a-9" },
@@ -142,6 +149,7 @@ describe("panelRegistry", () => {
     expect(clearablePanelParamKeys("control:agents")).toEqual(["agentId", "initialTab"]);
     expect(clearablePanelParamKeys("teams-dashboard")).toEqual([]);
     expect(clearablePanelParamKeys("chat:a-1")).toEqual([]);
+    expect(clearablePanelParamKeys(MESSAGES_PANEL_ID)).toEqual(["agentId"]);
   });
 
   it("rejects prototype-chain keys — Object.prototype members are not panels", () => {

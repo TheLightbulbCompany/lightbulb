@@ -47,7 +47,7 @@ import { SessionList } from "@/components/chat/SessionList";
 import { useActiveSession } from "@/hooks/useActiveSession";
 import { useAgentSessions, type AgentSession } from "@/hooks/useAgentSessions";
 import { useSellerPublishedAgents } from "@/components/chat/shell/useSellerPublishedAgents";
-import { openChatPanel, openPanel, closeChatPanelIfOpen, useWorkspaceState } from "./workspaceController";
+import { openChatPanel, openPanel, useWorkspaceState } from "./workspaceController";
 
 interface WorkspaceSidebarProps {
   onRecoveryReprovision: () => void; // wires HealthIndicator → shell's recovery state
@@ -319,8 +319,6 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
           if (!deleteTarget) return;
           const deletedId = deleteTarget.id;
           await deleteAgent(deletedId);
-          // Delta 8: if this agent's chat panel is open in the dock, close it.
-          closeChatPanelIfOpen(deletedId);
           setDeleteTarget(null);
         }}
       />

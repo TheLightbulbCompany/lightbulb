@@ -23,7 +23,7 @@ import {
   openPanel,
   _resetControllerForTests,
 } from "../workspaceController";
-import { RETIRED_PANEL_ALIASES, describePanel } from "../panelRegistry";
+import { MESSAGES_PANEL_ID, RETIRED_PANEL_ALIASES, describePanel } from "../panelRegistry";
 import { TeamsPanelRouter } from "@/components/teams/TeamsPanelRouter";
 
 // Minimal fake DockviewApi (trimmed copy of workspaceController.test.ts's) —
@@ -46,7 +46,12 @@ function makeFakeApi() {
       setTitle: vi.fn((t: string) => {
         this.title = t;
       }),
-      updateParameters: vi.fn(),
+      updateParameters: vi.fn((next: Record<string, string | undefined>) => {
+        for (const [key, value] of Object.entries(next)) {
+          if (value === undefined) delete this.params[key];
+          else this.params[key] = value;
+        }
+      }),
     };
     constructor(
       public id: string,
@@ -121,10 +126,8 @@ describe("deriveReconcilerAction — lastApplied latch", () => {
 
 describe("deriveReconcilerAction — chat commands defer until the roster settles", () => {
   it("returns null (no latch, no strip) for a chat command while agents are unsettled", () => {
-    // Cold load: /chat?agent=<concrete-default-id> while agents.list is in
-    // flight. Executing now would fail openChatPanel's sentinel unification
-    // and add a duplicate panel beside chat:__default__ — so the decision is
-    // deferred entirely: nothing latched, nothing executed.
+    // Preserve the existing cold-load gate: nothing latched or executed while
+    // agents.list is in flight.
     expect(deriveReconcilerAction("?agent=friday-id", null, false)).toBeNull();
     expect(deriveReconcilerAction("?panel=chat&agent=friday-id", null, false)).toBeNull();
   });
@@ -133,7 +136,8 @@ describe("deriveReconcilerAction — chat commands defer until the roster settle
     // The shell re-runs the reconciler when isSettled flips true; because the
     // deferral latched nothing, the same search now produces the command.
     const d = deriveReconcilerAction("?agent=friday-id", null, true);
-    expect(d?.command?.descriptor.panelId).toBe("chat:friday-id");
+    expect(d?.command?.descriptor.panelId).toBe(MESSAGES_PANEL_ID);
+    expect(d?.command?.descriptor.params).toEqual({ agentId: "friday-id" });
   });
 
   it("non-chat commands execute regardless of roster settlement", () => {
@@ -209,15 +213,14 @@ describe("deriveReconcilerAction — billing returns are not commands", () => {
 describe("isCommandTargetOpen (analytics newness check)", () => {
   it("detects an already-open panel by id", () => {
     const cmd = deriveReconcilerAction("?panel=teams-inbox", null)!.command!;
-    expect(isCommandTargetOpen(cmd, ["teams-inbox"], () => undefined)).toBe(true);
-    expect(isCommandTargetOpen(cmd, ["teams-issues"], () => undefined)).toBe(false);
+    expect(isCommandTargetOpen(cmd, ["teams-inbox"])).toBe(true);
+    expect(isCommandTargetOpen(cmd, ["teams-issues"])).toBe(false);
   });
 
-  it("unifies the chat sentinel with the concrete default agent", () => {
-    const cmd = deriveReconcilerAction("?agent=friday-id", null)!.command!;
-    expect(isCommandTargetOpen(cmd, ["chat:__default__"], () => "friday-id")).toBe(true);
-    expect(isCommandTargetOpen(cmd, ["chat:__default__"], () => "other-id")).toBe(false);
-    expect(isCommandTargetOpen(cmd, ["chat:friday-id"], () => undefined)).toBe(true);
+  it.each(["friday-id", "other-agent", "__default__"])("finds the %s chat command in Messages", (agentId) => {
+    const cmd = deriveReconcilerAction(`?agent=${agentId}`, null)!.command!;
+    expect(isCommandTargetOpen(cmd, [MESSAGES_PANEL_ID])).toBe(true);
+    expect(isCommandTargetOpen(cmd, ["browser"])).toBe(false);
   });
 });
 

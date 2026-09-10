@@ -9,6 +9,7 @@ import {
   ONE_SHOT_PARAMS,
   RETIRED_PANEL_ALIASES,
   DEFAULT_AGENT_SENTINEL,
+  MESSAGES_PANEL_ID,
   describePanel,
 } from "./panelRegistry";
 
@@ -88,6 +89,18 @@ function migrateRetiredPanelId(
 
 type GridNode = SerializedDockview["grid"]["root"];
 
+function activeViewInGroup(node: GridNode, groupId: string | undefined): string | undefined {
+  if (node.type === "branch") {
+    for (const child of node.data as GridNode[]) {
+      const active = activeViewInGroup(child, groupId);
+      if (active) return active;
+    }
+    return undefined;
+  }
+  const leaf = node.data as unknown as { id?: string; activeView?: string };
+  return groupId === undefined || leaf.id === groupId ? leaf.activeView : undefined;
+}
+
 // Panel ids also live in the grid tree (each leaf group's `views` + optional
 // `activeView`), independent of the flat `panels` map — a rename or drop in
 // `panels` must be mirrored there or dockview restores a group referencing a
@@ -161,9 +174,8 @@ function canonicalPanelTitle(
   const p: Record<string, string> = {};
   switch (component) {
     case "chat": {
-      if (typeof params?.agentId !== "string") return null;
       key = "chat";
-      p.agent = params.agentId;
+      p.agent = typeof params?.agentId === "string" ? params.agentId : DEFAULT_AGENT_SENTINEL;
       break;
     }
     case "teams": {
@@ -197,16 +209,9 @@ function canonicalPanelTitle(
 // components map: the deserializer defaults a missing contentComponent to
 // the literal string 'unknown'.
 //
-// `knownAgentIds` (optional) prunes chat panels for agents that no longer
-// exist — a reprovision/wipe leaves the layout pointing at dead ids, which
-// restore as a tab the user has to close by hand (ChatPanel's "This agent no
-// longer exists."). PASS IT ONLY FROM A CALLER HOLDING A SETTLED ROSTER: an
-// empty or omitted list means "roster unknown", never "the user has no
-// agents", because pruning against an in-flight roster would delete every
-// chat panel on every restore. The non-empty check is the guard — a settled
-// roster that is genuinely empty is indistinguishable from a loading one here
-// and is treated as unknown (worst case the dead panel survives one more
-// load, which is exactly today's behaviour).
+// A settled, non-empty roster can identify a stale agent target; reset that
+// target to the default while keeping Messages and all valid auxiliary panels.
+// An omitted or empty roster is unknown, so preserve the requested agent.
 export function sanitizeLayout(
   raw: SerializedDockview,
   knownAgentIds?: readonly string[],
@@ -216,6 +221,11 @@ export function sanitizeLayout(
   const panels: SerializedDockview["panels"] = {};
   const renamed: Record<string, string> = {};
   const dropped = new Set<string>();
+  const chatIds = Object.keys(rawPanels).filter((id) => rawPanels[id].contentComponent === "chat");
+  const activeView = activeViewInGroup(raw.grid.root, raw.activeGroup);
+  const chatWinner = activeView && chatIds.includes(activeView)
+    ? activeView
+    : chatIds.includes(MESSAGES_PANEL_ID) ? MESSAGES_PANEL_ID : chatIds[0];
   // Targets already produced by this migration pass (by an original panel
   // id or by an earlier retired-panel rename). Two retired panels can alias
   // to the same target (e.g. teams-skills and teams-costs both -> the same
@@ -228,19 +238,9 @@ export function sanitizeLayout(
       state.contentComponent && PANEL_COMPONENT_KEYS.has(state.contentComponent)
         ? state.contentComponent
         : "missing";
-    // Dead-agent chat panel: drop it (the existing `dropped` machinery mirrors
-    // the removal into the grid tree and collapses whatever it empties). The
-    // sentinel id resolves at render time, so it is never stale.
-    if (component === "chat" && knownAgents) {
-      const agentId = (state.params as { agentId?: unknown } | undefined)?.agentId;
-      if (
-        typeof agentId === "string"
-        && agentId !== DEFAULT_AGENT_SENTINEL
-        && !knownAgents.has(agentId)
-      ) {
-        dropped.add(id);
-        continue;
-      }
+    if (component === "chat" && id !== chatWinner) {
+      dropped.add(id);
+      continue;
     }
 
     let params = state.params;
@@ -251,6 +251,18 @@ export function sanitizeLayout(
     }
 
     let finalId = id;
+    if (component === "chat") {
+      finalId = MESSAGES_PANEL_ID;
+      if (id !== finalId) renamed[id] = finalId;
+      // Legacy IDs can recover an omitted agent param. A parameterless live
+      // Messages panel means a channel/human/group room, so keep it unbound.
+      let agentId = typeof params?.agentId === "string" ? params.agentId
+        : id !== MESSAGES_PANEL_ID && id.startsWith("chat:") ? id.slice("chat:".length) : undefined;
+      if (agentId && knownAgents && agentId !== DEFAULT_AGENT_SENTINEL && !knownAgents.has(agentId)) {
+        agentId = DEFAULT_AGENT_SENTINEL;
+      }
+      params = agentId ? { agentId } : {};
+    }
     const migration = migrateRetiredPanelId(id);
     if (migration) {
       if (Object.hasOwn(rawPanels, migration.id) || claimedTargets.has(migration.id)) {
@@ -296,8 +308,7 @@ export function sanitizeLayout(
   if (Object.keys(renamed).length || dropped.size) {
     // The root prunes away only if literally every panel got dropped —
     // impossible from a duplicate-target drop (the alias target survives
-    // elsewhere), but reachable from agent pruning (a layout that is nothing
-    // but chats for deleted agents). Keep the original root rather than crash;
+    // elsewhere). Keep the original root rather than crash on invalid data;
     // readLayout turns the resulting empty-panels layout into a null read, so
     // the shell builds Mission Control instead of restoring a grid whose views
     // no longer exist.

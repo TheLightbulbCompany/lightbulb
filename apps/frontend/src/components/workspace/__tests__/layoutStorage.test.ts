@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterAll } from "vitest";
 import { installStoragePolyfill } from "@/test-utils/storagePolyfill";
 import type { SerializedDockview } from "dockview-react";
+import { DEFAULT_AGENT_SENTINEL, MESSAGES_PANEL_ID } from "../panelRegistry";
 import {
   layoutStorageKey,
   readLayout,
@@ -323,11 +324,6 @@ describe("layoutStorage", () => {
     expect(clean.activeGroup).toBe("group-2");
   });
 
-  // --- dead-agent chat panels ------------------------------------------
-  // A wipe/reprovision leaves the persisted layout pointing at agent ids that
-  // no longer exist. Pruning them is roster-gated: an in-flight roster must
-  // NEVER be read as "these agents are gone".
-
   function chatLayout(): SerializedDockview {
     return {
       grid: {
@@ -335,8 +331,8 @@ describe("layoutStorage", () => {
           type: "branch",
           size: 800,
           data: [
-            { type: "leaf", size: 400, data: { id: "g1", views: ["chat:dead"], activeView: "chat:dead" } },
-            { type: "leaf", size: 400, data: { id: "g2", views: ["chat:live"], activeView: "chat:live" } },
+            { type: "leaf", size: 400, data: { id: "g1", views: ["chat:friday"], activeView: "chat:friday" } },
+            { type: "leaf", size: 400, data: { id: "g2", views: ["chat:atlas", "browser"], activeView: "chat:atlas" } },
           ],
         },
         height: 600,
@@ -344,30 +340,76 @@ describe("layoutStorage", () => {
         orientation: "HORIZONTAL" as SerializedDockview["grid"]["orientation"],
       },
       panels: {
-        "chat:dead": { id: "chat:dead", contentComponent: "chat", params: { agentId: "dead" } },
-        "chat:live": { id: "chat:live", contentComponent: "chat", params: { agentId: "live" } },
+        "chat:friday": { id: "chat:friday", contentComponent: "chat", params: { agentId: "friday" } },
+        "chat:atlas": { id: "chat:atlas", contentComponent: "chat", title: "Atlas", params: { agentId: "atlas" } },
+        browser: { id: "browser", contentComponent: "browser", params: {} },
       },
-      activeGroup: "g1",
+      activeGroup: "g2",
     } as unknown as SerializedDockview;
   }
 
-  it("sanitizer prunes chat panels whose agent is absent from a loaded roster", () => {
-    const clean = sanitizeLayout(chatLayout(), ["live"]);
-
-    expect(Object.keys(clean.panels)).toEqual(["chat:live"]);
-    // Grid mirrors the drop: g1 is gone and the branch collapsed to g2.
+  it("migrates the active legacy chat into Messages and keeps auxiliary panels", () => {
+    const clean = sanitizeLayout(chatLayout(), ["friday", "atlas"]);
+    expect(Object.keys(clean.panels).sort()).toEqual([MESSAGES_PANEL_ID, "browser"].sort());
+    expect(clean.panels[MESSAGES_PANEL_ID]).toMatchObject({
+      id: MESSAGES_PANEL_ID, params: { agentId: "atlas" }, title: "Messages",
+    });
+    expect(clean.panels.browser).toEqual(chatLayout().panels.browser);
     expect(clean.grid.root.type).toBe("leaf");
-    expect((clean.grid.root as unknown as { data: { id: string } }).data.id).toBe("g2");
+    expect(clean.grid.root.data).toMatchObject({
+      id: "g2", views: [MESSAGES_PANEL_ID, "browser"], activeView: MESSAGES_PANEL_ID,
+    });
     expect(clean.activeGroup).toBe("g2");
+    expect(sanitizeLayout(clean, ["friday", "atlas"])).toEqual(clean);
   });
 
-  it("sanitizer never prunes on an unknown roster (undefined or empty)", () => {
-    // THE trap: the roster is empty for the whole first paint. Pruning on it
-    // would nuke every chat panel on every reload.
+  it("falls back to the sentinel when the winning agent is absent from a settled roster", () => {
+    const clean = sanitizeLayout(chatLayout(), ["friday"]);
+    expect(clean.panels[MESSAGES_PANEL_ID].params).toEqual({ agentId: DEFAULT_AGENT_SENTINEL });
+    expect(clean.panels.browser).toBeDefined();
+  });
+
+  it("preserves the winner while the roster is unknown or empty", () => {
     for (const roster of [undefined, []]) {
       const clean = sanitizeLayout(chatLayout(), roster);
-      expect(Object.keys(clean.panels).sort()).toEqual(["chat:dead", "chat:live"]);
+      expect(clean.panels[MESSAGES_PANEL_ID].params).toEqual({ agentId: "atlas" });
     }
+  });
+
+  it("prefers existing Messages when an auxiliary panel is active", () => {
+    const dirty = leafLayout(["chat:friday", MESSAGES_PANEL_ID, "browser"], "browser", {
+      "chat:friday": chatLayout().panels["chat:friday"],
+      browser: chatLayout().panels.browser,
+      [MESSAGES_PANEL_ID]: { id: MESSAGES_PANEL_ID, contentComponent: "chat", params: { agentId: "saved-agent" } },
+    });
+    const clean = sanitizeLayout(dirty);
+    expect(clean.panels[MESSAGES_PANEL_ID].params).toEqual({ agentId: "saved-agent" });
+    expect(clean.grid.root.data).toMatchObject({ views: [MESSAGES_PANEL_ID, "browser"], activeView: "browser" });
+  });
+
+  it("prefers the active legacy chat even when Messages already exists", () => {
+    const dirty = leafLayout([MESSAGES_PANEL_ID, "chat:atlas"], "chat:atlas", {
+      [MESSAGES_PANEL_ID]: { id: MESSAGES_PANEL_ID, contentComponent: "chat", params: { agentId: "friday" } },
+      "chat:atlas": chatLayout().panels["chat:atlas"],
+    });
+    const clean = sanitizeLayout(dirty);
+    expect(clean.panels[MESSAGES_PANEL_ID].params).toEqual({ agentId: "atlas" });
+    expect(clean.grid.root.data).toMatchObject({ views: [MESSAGES_PANEL_ID], activeView: MESSAGES_PANEL_ID });
+  });
+
+  it("uses the first legacy chat ID when no selected chat or parameter is recoverable", () => {
+    const dirty = leafLayout(["chat:friday", "browser"], "browser", {
+      "chat:friday": { id: "chat:friday", contentComponent: "chat" },
+      browser: chatLayout().panels.browser,
+    });
+    expect(sanitizeLayout(dirty).panels[MESSAGES_PANEL_ID].params).toEqual({ agentId: "friday" });
+  });
+
+  it("preserves a generic Messages selection across persistence", () => {
+    const dirty = leafLayout([MESSAGES_PANEL_ID], MESSAGES_PANEL_ID, {
+      [MESSAGES_PANEL_ID]: { id: MESSAGES_PANEL_ID, contentComponent: "chat", title: "Messages", params: {} },
+    });
+    expect(sanitizeLayout(dirty, ["friday"])).toEqual(dirty);
   });
 
   it("sanitizer keeps the default-agent sentinel panel (it resolves at render time)", () => {
@@ -382,13 +424,11 @@ describe("layoutStorage", () => {
     expect(clean.panels["chat:__default__"]).toBeDefined();
   });
 
-  it("readLayout forwards the roster and reads back null when nothing survives", () => {
+  it("readLayout forwards the roster without dropping Messages", () => {
     writeLayout("u1", chatLayout());
-    expect(Object.keys(readLayout("u1")?.panels ?? {}).sort()).toEqual(["chat:dead", "chat:live"]);
-    expect(Object.keys(readLayout("u1", ["live"])?.panels ?? {})).toEqual(["chat:live"]);
-    // Every panel pruned -> "no saved layout", so the shell builds the default
-    // instead of restoring a grid whose views are all gone.
-    expect(readLayout("u1", ["someone-else"])).toBeNull();
+    expect(readLayout("u1")?.panels[MESSAGES_PANEL_ID].params).toEqual({ agentId: "atlas" });
+    expect(readLayout("u1", ["someone-else"])?.panels[MESSAGES_PANEL_ID].params)
+      .toEqual({ agentId: DEFAULT_AGENT_SENTINEL });
   });
 
   it("clearLayout removes only its own key", () => {

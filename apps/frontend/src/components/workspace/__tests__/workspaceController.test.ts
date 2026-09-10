@@ -6,12 +6,13 @@ import {
   openChatPanel,
   openChatPanelWithDraft,
   closeSubjectDeleted,
-  closeChatPanelIfOpen,
+  activateMessagesPanel,
   isShellOperationInProgress,
   refreshWorkspaceSnapshot,
   _resetControllerForTests,
   _snapshotForTests,
 } from "../workspaceController";
+import { MESSAGES_PANEL_ID } from "../panelRegistry";
 
 vi.mock("@/lib/shellNav", () => ({
   pushSearchParams: vi.fn(),
@@ -44,7 +45,12 @@ function makeFakeApi() {
       setTitle: vi.fn((t: string) => {
         this.title = t;
       }),
-      updateParameters: vi.fn(),
+      updateParameters: vi.fn((next: Record<string, string | undefined>) => {
+        for (const [key, value] of Object.entries(next)) {
+          if (value === undefined) delete this.params[key];
+          else this.params[key] = value;
+        }
+      }),
       close: vi.fn(() => {
         panels.delete(this.id);
         if (active === this) active = undefined;
@@ -80,8 +86,8 @@ function makeFakeApi() {
       removed.push(h);
       return { dispose: () => removed.splice(removed.indexOf(h), 1) };
     },
-    onDidAddPanel: (_h: Handler<FakePanel>) => ({ dispose: vi.fn() }),
-    onDidLayoutChange: (_h: Handler<void>) => ({ dispose: vi.fn() }),
+    onDidAddPanel: () => ({ dispose: vi.fn() }),
+    onDidLayoutChange: () => ({ dispose: vi.fn() }),
     panels: [] as IDockviewPanel[],
     groups: [] as unknown[],
   };
@@ -184,16 +190,41 @@ describe("workspaceController", () => {
     expect(arg.get("detailId")).toBe("ADM-1");
   });
 
-  it("openChatPanel unifies sentinel and concrete ids", () => {
+  it("retargets one Messages panel for every agent open", () => {
     const api = makeFakeApi();
     attachDockviewApi(api, () => "friday-id");
-    openPanel("chat", { agent: "__default__" }); // sentinel panel exists (default layout)
-    expect(api.getPanel("chat:__default__")).toBeDefined();
-    openChatPanel("friday-id"); // concrete id that RESOLVES to the sentinel → focus it, no new panel
+    openPanel("chat", { agent: "__default__" });
+    openChatPanel("friday-id");
+    openChatPanel("other-agent");
     expect(api.addPanel).toHaveBeenCalledTimes(1);
-    openChatPanel("other-agent"); // different agent → new panel
-    expect(api.addPanel).toHaveBeenCalledTimes(2);
-    expect(api.getPanel("chat:other-agent")).toBeDefined();
+    expect(api.getPanel(MESSAGES_PANEL_ID)?.params).toEqual({ agentId: "other-agent" });
+    expect(_snapshotForTests().focusedChatAgentId).toBe("other-agent");
+    expect(_snapshotForTests().visibleChatAgentIds).toEqual(["other-agent"]);
+  });
+
+  it("clears the agent target when a generic room activates Messages", () => {
+    const api = makeFakeApi();
+    attachDockviewApi(api, () => "friday-id");
+    openChatPanel("friday-id");
+    activateMessagesPanel();
+    expect(api.addPanel).toHaveBeenCalledTimes(1);
+    expect(api.getPanel(MESSAGES_PANEL_ID)?.api.updateParameters)
+      .toHaveBeenLastCalledWith({ agentId: undefined });
+    expect(api.getPanel(MESSAGES_PANEL_ID)?.params).toEqual({});
+    expect(_snapshotForTests().focusedChatAgentId).toBeNull();
+    expect(_snapshotForTests().visibleChatAgentIds).toEqual([]);
+    activateMessagesPanel("other-agent");
+    expect(_snapshotForTests().focusedChatAgentId).toBe("other-agent");
+  });
+
+  it("publishes parameter retargeting even when setActive emits no event", () => {
+    const api = makeFakeApi();
+    attachDockviewApi(api, () => undefined);
+    openChatPanel("a-1");
+    vi.mocked(api.getPanel(MESSAGES_PANEL_ID)!.api.setActive).mockImplementation(() => {});
+    openChatPanel("a-2");
+    expect(_snapshotForTests().focusedChatAgentId).toBe("a-2");
+    expect(_snapshotForTests().lastFocusedChatAgentId).toBe("a-2");
   });
 
   it("chat panels are added with renderer always", () => {
@@ -207,7 +238,7 @@ describe("workspaceController", () => {
     const api = makeFakeApi();
     attachDockviewApi(api, () => "a-1");
     expect(openChatPanelWithDraft("file the inbox")).toBe(true);
-    expect(api.addPanel).toHaveBeenCalledWith(expect.objectContaining({ id: "chat:a-1" }));
+    expect(api.addPanel).toHaveBeenCalledWith(expect.objectContaining({ id: MESSAGES_PANEL_ID, params: { agentId: "a-1" } }));
     expect(consumeFocusComposerRequest("a-1")).toEqual({ draft: "file the inbox" });
   });
 
@@ -269,12 +300,9 @@ describe("workspaceController", () => {
     expect(_snapshotForTests().visibleChatAgentIds).toEqual(["a-1"]);
   });
 
-  it("dedupes visibleChatAgentIds when a sentinel and its concrete panel are both visible", () => {
-    // A restored layout can hold the sentinel chat panel (chat:__default__,
-    // resolving to friday-id) and the concrete chat:friday-id panel in separate
-    // groups. Both resolve to the same agent — the snapshot must list it once.
-    const sentinel = { id: "chat:__default__" };
-    const concrete = { id: "chat:friday-id" };
+  it("reads only the singleton's parameter for visible agent snapshots", () => {
+    const sentinel = { id: MESSAGES_PANEL_ID, params: { agentId: "other-agent" } };
+    const concrete = { id: "chat:friday-id", params: { agentId: "friday-id" } };
     const api = {
       activePanel: concrete,
       panels: [sentinel, concrete],
@@ -286,7 +314,8 @@ describe("workspaceController", () => {
       onDidLayoutChange: () => ({ dispose: vi.fn() }),
     } as unknown as DockviewApi;
     attachDockviewApi(api, () => "friday-id");
-    expect(_snapshotForTests().visibleChatAgentIds).toEqual(["friday-id"]);
+    expect(_snapshotForTests().visibleChatAgentIds).toEqual(["other-agent"]);
+    expect(_snapshotForTests().focusedChatAgentId).toBeNull();
   });
 
   it("refreshWorkspaceSnapshot re-resolves the sentinel when the roster arrives late", () => {
@@ -361,25 +390,11 @@ describe("workspaceController", () => {
     expect(_snapshotForTests().teamsPanelVisible).toBe(true);
   });
 
-  it("closeChatPanelIfOpen closes an open chat panel under the shell-op guard", () => {
+  it("can open Messages with no agent selected", () => {
     const api = makeFakeApi();
     attachDockviewApi(api, () => undefined);
-    openChatPanel("a-1");
-    expect(api.getPanel("chat:a-1")).toBeDefined();
-    let suppressedDuringClose = false;
-    api.onDidRemovePanel(() => {
-      suppressedDuringClose = isShellOperationInProgress();
-    });
-    closeChatPanelIfOpen("a-1");
-    expect(api.getPanel("chat:a-1")).toBeUndefined();
-    expect(suppressedDuringClose).toBe(true);
-    expect(isShellOperationInProgress()).toBe(false);
-  });
-
-  it("closeChatPanelIfOpen is a no-op when the panel isn't open", () => {
-    const api = makeFakeApi();
-    attachDockviewApi(api, () => undefined);
-    expect(() => closeChatPanelIfOpen("never-opened")).not.toThrow();
-    expect(api.removePanel).not.toHaveBeenCalled();
+    activateMessagesPanel();
+    expect(api.getPanel(MESSAGES_PANEL_ID)?.params).toEqual({});
+    expect(_snapshotForTests().focusedChatAgentId).toBeNull();
   });
 });

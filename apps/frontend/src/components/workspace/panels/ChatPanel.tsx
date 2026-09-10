@@ -1,39 +1,41 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useRef } from "react";
 import type { IDockviewPanelProps } from "dockview-react";
-import { MessagingWorkspace } from "@/components/messaging/MessagingWorkspace";
-import { useAgents, agentDisplayName } from "@/hooks/useAgents";
-import { useWorkspaceState } from "../workspaceController";
+import { MessagingConversation } from "@/components/messaging/MessagingWorkspace";
+import { useMessagingWorkspace } from "@/components/messaging/MessagingWorkspaceContext";
+import { useAgents } from "@/hooks/useAgents";
+import { useDockPanelParams } from "./useDockPanelParams";
 import { DEFAULT_AGENT_SENTINEL } from "../panelRegistry";
 
 interface ChatPanelParams {
-  agentId: string;
+  agentId?: string;
 }
 
 /**
- * The historical chat panel ID remains a durable dock/deep-link identifier, but
- * its content is now the canonical Lightbulb room surface. An agent deep link
- * selects that agent's DM; the room directory remains available beside it.
+ * Agent parameters are one-shot selection intents for the shared conversation.
+ * Room changes must not snap back to the last agent requested by a deep link.
  */
 export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.ReactElement {
-  const { agents, defaultId } = useAgents();
-  const { activePanelId } = useWorkspaceState();
-  const requested = props.params.agentId;
-  const initialAgentId = requested === DEFAULT_AGENT_SENTINEL ? defaultId ?? null : requested;
-  const title = useMemo(() => {
-    const agent = agents.find((candidate) => candidate.id === initialAgentId);
-    return agent ? agentDisplayName(agent) : "Messages";
-  }, [agents, initialAgentId]);
+  const params = useDockPanelParams(props);
+  const { defaultId } = useAgents();
+  const { selectAgentDm } = useMessagingWorkspace();
+  const lastRequested = useRef<string | null>(null);
+  const requested = params.agentId === DEFAULT_AGENT_SENTINEL
+    ? defaultId ?? null
+    : params.agentId ?? null;
 
   useEffect(() => {
-    if (props.api.title !== title) props.api.setTitle(title);
-  }, [props.api, title]);
+    if (!requested) {
+      lastRequested.current = null;
+      return;
+    }
+    if (lastRequested.current === requested) return;
+    lastRequested.current = requested;
+    void selectAgentDm(requested).catch(() => {
+      if (lastRequested.current === requested) lastRequested.current = null;
+    });
+  }, [requested, selectAgentDm]);
 
-  return (
-    <MessagingWorkspace
-      initialAgentId={initialAgentId}
-      subscribeToRoom={activePanelId === props.api.id}
-    />
-  );
+  return <MessagingConversation />;
 }

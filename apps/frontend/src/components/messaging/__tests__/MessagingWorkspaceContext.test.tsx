@@ -127,6 +127,31 @@ it("enriches room participants with roster activity while keeping the full creat
   expect(directory.participants.map((member) => member.id)).toEqual(["colleague", "agent-friday", "agent-atlas"]);
 });
 
+it("offers channel admins only non-members and projects explicit member wire fields", async () => {
+  state.activeRoom = { ...room, kind: "channel" };
+  state.upsertMember.mockResolvedValue({ ...state.activeRoom, members: [...state.activeRoom.members] });
+  compose();
+  expect(panel.addMemberCandidates?.map((member) => member.id)).toEqual(["colleague", "agent-atlas"]);
+
+  await act(async () => panel.onAddMember?.({ kind: "agent", id: "agent-atlas" }));
+
+  expect(state.upsertMember).toHaveBeenCalledWith({
+    kind: "agent", id: "agent-atlas", role: "member", listenMode: "mentions",
+  });
+});
+
+it.each(["dm", "group-dm"] as const)("does not expose member adds for a %s", (kind) => {
+  state.activeRoom = { ...room, kind };
+  compose();
+  expect(panel.onAddMember).toBeUndefined();
+});
+
+it("does not expose member adds to a channel member without admin permission", () => {
+  state.activeRoom = { ...room, kind: "channel", members: room.members.map((member) => member.id === "owner" ? { ...member, role: "member" } : member) };
+  compose();
+  expect(panel.onAddMember).toBeUndefined();
+});
+
 it("surfaces directory hydration failures through the existing retry control while retaining available rooms", () => {
   state.directoryError = new Error("Directory hydration failed");
   compose();

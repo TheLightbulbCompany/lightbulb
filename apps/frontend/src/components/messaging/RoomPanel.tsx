@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { ArrowLeft, Check, Circle, CircleAlert, FileText, Hash, Link2, MessageCircle, Users } from "lucide-react";
 import type { Components } from "react-markdown";
-import type { ListenMode } from "@lightbulb/shared";
+import type { ListenMode, MemberRef } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
 import { Button } from "@/components/ui/button";
 import { Identity } from "@/components/teams/shared/components/Identity";
@@ -15,6 +15,7 @@ import { ParticipantAvatar } from "./ParticipantAvatar";
 import { roomDisplayName } from "./types";
 import type {
   PendingRoomMessage,
+  DirectoryParticipant,
   RoomContext,
   RoomMessage,
   RoomParticipant,
@@ -45,6 +46,8 @@ export interface RoomPanelProps {
   onSelectParticipant?: (participant: RoomParticipant) => void | Promise<void>;
   onRetry?: () => void;
   onListenModeChange?: (agentId: string, mode: ListenMode) => void;
+  addMemberCandidates?: readonly DirectoryParticipant[];
+  onAddMember?: (member: MemberRef) => Promise<void>;
   onAbortRun?: (runId: string) => void;
   onSteerRun?: (runId: string, text: string) => void;
   onLinkToWork?: () => void;
@@ -152,6 +155,8 @@ function RoomContent({
   onSelectParticipant,
   onRetry,
   onListenModeChange,
+  addMemberCandidates = [],
+  onAddMember,
   onAbortRun,
   onSteerRun,
   onLinkToWork,
@@ -159,6 +164,10 @@ function RoomContent({
 }: RoomPanelProps) {
   const id = useId();
   const [membersOpen, setMembersOpen] = useState(false);
+  const [memberPickerOpen, setMemberPickerOpen] = useState(false);
+  const [addingMembers, setAddingMembers] = useState(false);
+  const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
+  const [memberError, setMemberError] = useState<string>();
   const [contextCollapsed, setContextCollapsed] = useState(true);
   const [selection, setSelection] = useState<{ kind: "thread" | "context"; id: string } | null>(null);
   const trigger = useRef<HTMLButtonElement | null>(null);
@@ -178,6 +187,24 @@ function RoomContent({
   const showContext = showDetail || !contextCollapsed;
   const activeRuns = runs.filter((run) => run.state === "running");
   const viewer = participants.find((participant) => participant.kind === "human" && participant.id === currentUserId);
+  const canAddMembers = visibleRoom?.kind === "channel" && !!onAddMember;
+
+  async function addSelectedMembers() {
+    if (!onAddMember || selectedMembers.length === 0) return;
+    setAddingMembers(true);
+    setMemberError(undefined);
+    try {
+      for (const key of selectedMembers) {
+        const member = addMemberCandidates.find((candidate) => `${candidate.kind}:${candidate.id}` === key);
+        if (member) await onAddMember({ kind: member.kind, id: member.id });
+      }
+      setSelectedMembers([]);
+    } catch (error) {
+      setMemberError(error instanceof Error ? error.message : "Members could not be added.");
+    } finally {
+      setAddingMembers(false);
+    }
+  }
 
   useEffect(() => {
     if (selection) detailHeading.current?.focus({ preventScroll: true });
@@ -315,7 +342,9 @@ function RoomContent({
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={() => setContextCollapsed(true)}><ArrowLeft aria-hidden="true" /></Button><h3 ref={contextHeading} tabIndex={-1} className="font-semibold">Room details</h3></header>
       <div className="room-context-body">
         <section aria-labelledby={`${id}-context-members`}>
-          <h4 id={`${id}-context-members`} className="font-semibold">Members</h4>
+          <div className="room-members-heading"><h4 id={`${id}-context-members`} className="font-semibold">Members</h4>
+            {canAddMembers && <Button type="button" variant="outline" aria-expanded={memberPickerOpen} onClick={() => setMemberPickerOpen(!memberPickerOpen)}>Add members</Button>}
+          </div>
           <ul>{participants.map((participant) => <li key={`${participant.kind}:${participant.id}`} className="room-member">
             <ParticipantAvatar participant={participant} size="sm" />
             <span className="truncate flex-1" title={participant.displayName}>{participant.displayName}</span>
@@ -326,6 +355,19 @@ function RoomContent({
                 onChange={(event) => onListenModeChange(participant.id, event.target.value as ListenMode)}><option value="active">Active</option><option value="mentions">Mentions only</option><option value="observe">Observe</option></select>
             </>}
           </li>)}</ul>
+          {canAddMembers && memberPickerOpen && <div className="room-member-picker">
+            {addMemberCandidates.length === 0 ? <p className="text-sm text-muted-foreground">Everyone in your workspace is already here.</p>
+              : <><fieldset disabled={addingMembers}><legend className="sr-only">Choose members to add</legend>
+                {addMemberCandidates.map((candidate) => {
+                  const key = `${candidate.kind}:${candidate.id}`;
+                  return <label key={key} className="room-member-choice"><input type="checkbox" aria-label={candidate.displayName} checked={selectedMembers.includes(key)}
+                    onChange={(event) => setSelectedMembers((current) => event.target.checked ? [...current, key] : current.filter((item) => item !== key))} />
+                    <ParticipantAvatar participant={candidate} size="sm" /><span>{candidate.displayName}</span><span className="text-sm text-muted-foreground">{candidate.kind === "agent" ? "Agent" : "Person"}</span></label>;
+                })}
+              </fieldset>
+              <Button type="button" disabled={selectedMembers.length === 0 || addingMembers} onClick={() => void addSelectedMembers()}>{addingMembers ? "Adding…" : "Add selected"}</Button></>}
+            {memberError && <p role="alert" className="text-sm text-err">{memberError}</p>}
+          </div>}
         </section>
         <section aria-labelledby={`${id}-context-runs`}>
           <h4 id={`${id}-context-runs`} className="font-semibold">Active work</h4>

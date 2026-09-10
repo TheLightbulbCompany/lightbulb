@@ -103,6 +103,16 @@ beforeEach(() => {
 });
 
 describe("useRooms canonical reconciliation", () => {
+  it("replaces active room state with the member upsert response", async () => {
+    const updated = { ...room, roomRevision: 2, members: [...room.members, { ...room.members[1], id: "agent-atlas", displayName: "Atlas" }] };
+    messaging.upsertMember.mockResolvedValue(updated);
+    const { result } = renderHook(() => useRooms(), { wrapper });
+    await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(room.roomId));
+
+    await act(async () => result.current.upsertMember({ kind: "agent", id: "agent-atlas", role: "member", listenMode: "mentions" }));
+
+    expect(result.current.activeRoom).toEqual(updated);
+  });
   it("waits for the room list before selecting an existing agent DM", async () => {
     const fridayDm = {
       ...room,

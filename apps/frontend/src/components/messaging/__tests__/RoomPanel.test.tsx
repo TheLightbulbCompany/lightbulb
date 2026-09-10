@@ -124,6 +124,55 @@ it("lets wide room details change agent listen mode without giving humans a cont
   expect(onListenModeChange).toHaveBeenCalledWith("friday", "observe");
 });
 
+it("adds only eligible non-members to an existing channel", async () => {
+  const user = userEvent.setup();
+  const onAddMember = vi.fn(async () => undefined);
+  render(<RoomPanel {...props}
+    room={{ ...props.room!, kind: "channel", name: "Launch" }}
+    addMemberCandidates={[
+      { kind: "human", id: "colleague", displayName: "Colleague", mentionHandle: null },
+      { kind: "agent", id: "atlas", displayName: "Atlas", mentionHandle: null },
+    ]}
+    onAddMember={onAddMember} />);
+
+  await user.click(screen.getByRole("button", { name: "Show room details" }));
+  await user.click(screen.getByRole("button", { name: "Add members" }));
+  expect(screen.getByRole("checkbox", { name: "Colleague" })).toBeInTheDocument();
+  expect(screen.getByRole("checkbox", { name: "Atlas" })).toBeInTheDocument();
+  expect(screen.queryByRole("checkbox", { name: "Owner" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("checkbox", { name: "Friday" })).not.toBeInTheDocument();
+
+  await user.click(screen.getByRole("checkbox", { name: "Atlas" }));
+  await user.click(screen.getByRole("button", { name: "Add selected" }));
+  expect(onAddMember).toHaveBeenCalledWith({ kind: "agent", id: "atlas" });
+});
+
+it("shows member-add progress and a useful retryable error", async () => {
+  const user = userEvent.setup();
+  let reject!: (error: Error) => void;
+  const onAddMember = vi.fn(() => new Promise<void>((_, fail) => { reject = fail; }));
+  render(<RoomPanel {...props}
+    room={{ ...props.room!, kind: "channel", name: "Launch" }}
+    addMemberCandidates={[{ kind: "human", id: "colleague", displayName: "Colleague", mentionHandle: null }]}
+    onAddMember={onAddMember} />);
+  await user.click(screen.getByRole("button", { name: "Show room details" }));
+  await user.click(screen.getByRole("button", { name: "Add members" }));
+  await user.click(screen.getByRole("checkbox", { name: "Colleague" }));
+  await user.click(screen.getByRole("button", { name: "Add selected" }));
+  expect(screen.getByRole("button", { name: "Adding…" })).toBeDisabled();
+  await act(async () => reject(new Error("You do not have permission to add members.")));
+  expect(screen.getByRole("alert")).toHaveTextContent("You do not have permission to add members.");
+  expect(screen.getByRole("button", { name: "Add selected" })).toBeEnabled();
+});
+
+it.each(["dm", "group-dm"] as const)("does not offer member adds in a %s", async (kind) => {
+  render(<RoomPanel {...props} room={{ ...props.room!, kind }}
+    addMemberCandidates={[{ kind: "agent", id: "atlas", displayName: "Atlas", mentionHandle: null }]}
+    onAddMember={vi.fn()} />);
+  await userEvent.click(screen.getByRole("button", { name: "Show room details" }));
+  expect(screen.queryByRole("button", { name: "Add members" })).not.toBeInTheDocument();
+});
+
 it.each(["thread", "context"] as const)("replaces the narrow conversation only while selected %s is open", async (kind) => {
   const user = userEvent.setup();
   const onLinkToWork = vi.fn();

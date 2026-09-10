@@ -52,8 +52,8 @@ vi.mock("@/hooks/useTeamsApi", () => ({
     del: vi.fn(),
   }),
 }));
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({
+vi.mock("@/hooks/useLiveEvents", () => ({
+  useLiveEvents: () => ({
     nodeConnected: false,
     onEvent: () => () => {},
     onChatMessage: () => () => {},

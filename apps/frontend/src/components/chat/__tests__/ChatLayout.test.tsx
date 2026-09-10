@@ -60,8 +60,8 @@ vi.mock("@/hooks/useTeamsApi", () => ({
     del: vi.fn(),
   }),
 }));
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({
+vi.mock("@/hooks/useLiveEvents", () => ({
+  useLiveEvents: () => ({
     nodeConnected: false,
     // ChatLayout reads nodeConnected directly and calls
     // useRuntimeRpc("config.get"), whose shared implementation destructures

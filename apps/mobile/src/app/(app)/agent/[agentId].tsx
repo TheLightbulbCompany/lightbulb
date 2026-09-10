@@ -283,7 +283,7 @@ function AgentChat() {
   useEffect(() => {
     if (!subscriptionPath || !liveChannels.includes(subscriptionPath)) return;
     void reconcile(lastSequence(messagesRef.current));
-  }, [subscriptionPath, liveChannels, connectionRevision, reconcile]);
+  }, [subscriptionPath, liveChannels, connectionRevision, historyNonce, reconcile]);
 
   useEffect(() => {
     if (!room) return;

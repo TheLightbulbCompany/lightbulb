@@ -8,16 +8,16 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 
 let emitChatMessage: (msg: Record<string, unknown>) => void = () => {};
-let gatewayConnected = true;
+let liveConnected = true;
 let onChatMessage = (handler: (msg: Record<string, unknown>) => void) => {
   emitChatMessage = handler;
   return () => {
     if (emitChatMessage === handler) emitChatMessage = () => {};
   };
 };
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({
-    isConnected: gatewayConnected,
+vi.mock("@/hooks/useLiveEvents", () => ({
+  useLiveEvents: () => ({
+    liveConnected,
     onChatMessage,
   }),
 }));
@@ -50,7 +50,7 @@ const agent = (id: string, name: string): Agent => ({ id, name });
 beforeEach(() => {
   teamsAgents = [];
   lastSwrOpts = undefined;
-  gatewayConnected = true;
+  liveConnected = true;
   emitChatMessage = () => {};
   onChatMessage = (handler) => {
     emitChatMessage = handler;
@@ -101,15 +101,21 @@ describe("useRosterEntries", () => {
     expect(result.current[0].state).toBe("idle");
   });
 
-  it("lights an idle agent from a live gateway run, and clears on run_ended", () => {
+  it("lights an idle agent from a live run, and clears on run_ended", () => {
     teamsAgents = [{ id: "a", status: "idle" }];
     const { result } = renderHook(() => useRosterEntries([agent("a", "Ada")]));
     expect(result.current[0].state).toBe("idle");
 
-    act(() => emitChatMessage({ type: "run_active", active: true, agent_id: "a", session_id: "s1" }));
+    act(() => emitChatMessage({ type: "run_active", active: true, agentId: "a", sessionId: "s1" }));
     expect(result.current[0].state).toBe("running");
 
-    act(() => emitChatMessage({ type: "run_ended", agent_id: "a", session_id: "s1" }));
+    act(() => emitChatMessage({
+      type: "run_ended",
+      runId: "run-1",
+      outcome: "done",
+      agentId: "a",
+      sessionId: "s1",
+    }));
     expect(result.current[0].state).toBe("idle");
   });
 
@@ -117,24 +123,24 @@ describe("useRosterEntries", () => {
     teamsAgents = [{ id: "a", status: "idle" }];
     const first = renderHook(() => useRosterEntries([agent("a", "Ada")]));
 
-    act(() => emitChatMessage({ type: "run_active", active: true, agent_id: "a", session_id: "s1" }));
+    act(() => emitChatMessage({ type: "run_active", active: true, agentId: "a", sessionId: "s1" }));
     expect(first.result.current[0].state).toBe("running");
 
     const late = renderHook(() => useRosterEntries([agent("a", "Ada")]));
     expect(late.result.current[0].state).toBe("running");
   });
 
-  it("clears cached live runs across a gateway disconnect", () => {
+  it("clears cached live runs across a delivery disconnect", () => {
     teamsAgents = [{ id: "a", status: "idle" }];
     const mounted = renderHook(() => useRosterEntries([agent("a", "Ada")]));
-    act(() => emitChatMessage({ type: "run_active", active: true, agent_id: "a", session_id: "s1" }));
+    act(() => emitChatMessage({ type: "run_active", active: true, agentId: "a", sessionId: "s1" }));
     expect(mounted.result.current[0].state).toBe("running");
 
-    gatewayConnected = false;
+    liveConnected = false;
     mounted.rerender();
     expect(mounted.result.current[0].state).toBe("idle");
 
-    gatewayConnected = true;
+    liveConnected = true;
     mounted.rerender();
     expect(mounted.result.current[0].state).toBe("idle");
   });
@@ -143,10 +149,10 @@ describe("useRosterEntries", () => {
     teamsAgents = [{ id: "a", status: "idle" }];
     const mounted = renderHook(() => useRosterEntries([agent("a", "Ada")]));
 
-    gatewayConnected = false;
+    liveConnected = false;
     mounted.rerender();
-    act(() => emitChatMessage({ type: "run_active", active: true, agent_id: "a", session_id: "s1" }));
-    gatewayConnected = true;
+    act(() => emitChatMessage({ type: "run_active", active: true, agentId: "a", sessionId: "s1" }));
+    liveConnected = true;
     mounted.rerender();
 
     expect(mounted.result.current[0].state).toBe("running");
@@ -154,23 +160,23 @@ describe("useRosterEntries", () => {
 
   it("keeps an agent lit while ANY of its sessions is still running", () => {
     // A flat per-agent boolean cleared the rail when either of two concurrent
-    // sessions finished. `run_active` carries session_id, so key on it.
+    // sessions finished. `run_active` carries sessionId, so key on it.
     teamsAgents = [{ id: "a", status: "idle" }];
     const { result } = renderHook(() => useRosterEntries([agent("a", "Ada")]));
 
-    act(() => emitChatMessage({ type: "run_active", active: true, agent_id: "a", session_id: "s1" }));
-    act(() => emitChatMessage({ type: "run_active", active: true, agent_id: "a", session_id: "s2" }));
-    act(() => emitChatMessage({ type: "run_active", active: false, agent_id: "a", session_id: "s1" }));
+    act(() => emitChatMessage({ type: "run_active", active: true, agentId: "a", sessionId: "s1" }));
+    act(() => emitChatMessage({ type: "run_active", active: true, agentId: "a", sessionId: "s2" }));
+    act(() => emitChatMessage({ type: "run_active", active: false, agentId: "a", sessionId: "s1" }));
     expect(result.current[0].state).toBe("running");
 
-    act(() => emitChatMessage({ type: "run_active", active: false, agent_id: "a", session_id: "s2" }));
+    act(() => emitChatMessage({ type: "run_active", active: false, agentId: "a", sessionId: "s2" }));
     expect(result.current[0].state).toBe("idle");
   });
 
   it("never lets a live run override a state that wants a human", () => {
     teamsAgents = [{ id: "a", status: "error" }];
     const { result } = renderHook(() => useRosterEntries([agent("a", "Ada")]));
-    act(() => emitChatMessage({ type: "run_active", active: true, agent_id: "a", session_id: "s1" }));
+    act(() => emitChatMessage({ type: "run_active", active: true, agentId: "a", sessionId: "s1" }));
     expect(result.current[0].state).toBe("attention");
   });
 

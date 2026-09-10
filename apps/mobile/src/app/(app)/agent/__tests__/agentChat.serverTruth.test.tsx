@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react-native";
+import { act, cleanup, render, screen } from "@testing-library/react-native";
 
 jest.mock("expo-router", () => ({
   router: { push: jest.fn(), back: jest.fn(), canGoBack: () => false, replace: jest.fn(), setParams: jest.fn() },
@@ -28,23 +28,28 @@ const mockMessaging = {
   listRooms: jest.fn(async () => ({ rooms: [mockRoom] })),
   getRoom: jest.fn(async () => mockRoom),
   listMessages: jest.fn(async () => ({ messages: [], nextAfterSeq: null })),
-  markRead: jest.fn(),
+  markRead: jest.fn(async () => ({ roomId: "room_a", lastReadSeq: 0 })),
   sendMessage: jest.fn(),
   abortRun: jest.fn(),
+};
+const mockLiveChannels = ["/rooms/room_a/delivery_a"];
+const mockSetActiveRoomSubscription = jest.fn();
+const mockOnEvent = (handler: LiveHandler) => {
+  mockLiveHandler = handler;
+  return () => {
+    if (mockLiveHandler === handler) mockLiveHandler = null;
+  };
 };
 jest.mock("../../../../providers/live-events", () => ({
   useLiveEvents: () => ({
     httpReady: true,
     liveConnected: true,
-    liveChannels: ["/rooms/room_a/delivery_a"],
+    liveChannels: mockLiveChannels,
     liveError: null,
     connectionRevision: 1,
     messaging: mockMessaging,
-    setActiveRoomSubscription: jest.fn(),
-    onEvent: (handler: LiveHandler) => {
-      mockLiveHandler = handler;
-      return () => { mockLiveHandler = null; };
-    },
+    setActiveRoomSubscription: mockSetActiveRoomSubscription,
+    onEvent: mockOnEvent,
   }),
 }));
 
@@ -69,10 +74,15 @@ function frame(msg: Record<string, unknown>) {
 describe("AgentChat server-truth run state", () => {
   beforeEach(() => {
     mockLiveHandler = null;
+    mockSetActiveRoomSubscription.mockClear();
+  });
+
+  afterEach(async () => {
+    await cleanup();
   });
 
   it("run_active marks busy and releases on active:false", async () => {
-    render(<AgentChat />);
+    await render(<AgentChat />);
     expect(await screen.findByLabelText("Send")).toBeTruthy();
 
     await frame({ type: "run_active", active: true });
@@ -83,7 +93,7 @@ describe("AgentChat server-truth run state", () => {
   });
 
   it("adopts an externally-started run and ignores late terminal frames", async () => {
-    render(<AgentChat />);
+    await render(<AgentChat />);
     await screen.findByLabelText("Send");
 
     await frame({ type: "chunk", runId: "ext-run", content: "hello from web", append: true });
@@ -99,16 +109,17 @@ describe("AgentChat server-truth run state", () => {
   });
 
   it("agent_busy is a benign no-op", async () => {
-    render(<AgentChat />);
+    await render(<AgentChat />);
     await screen.findByLabelText("Send");
     await frame({ type: "run_active", active: true });
     await frame({ type: "error", code: "agent_busy", message: "Agent is busy" });
     expect(screen.queryByText("Agent is busy")).toBeNull();
     expect(screen.getByLabelText("Stop")).toBeTruthy();
+    await frame({ type: "run_ended", runId: "active-run", outcome: "error" });
   });
 
   it("container_waking renders calm text and releases busy", async () => {
-    render(<AgentChat />);
+    await render(<AgentChat />);
     await screen.findByLabelText("Send");
     await frame({ type: "run_active", active: true });
     await frame({ type: "error", code: "container_waking", message: "Waking your agent — this can take a minute." });

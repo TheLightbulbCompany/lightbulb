@@ -20,8 +20,8 @@ vi.mock("@clerk/nextjs", () => ({
   useUser: () => ({ user: { id: "u1", unsafeMetadata: {} }, isLoaded: true }),
 }));
 
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({ isConnected: true, onEvent: () => () => {} }),
+vi.mock("@/hooks/useLiveEvents", () => ({
+  useLiveEvents: () => ({ isConnected: true, onEvent: () => () => {} }),
 }));
 
 // The gateway health RPC answers (the container really is up) — the state that

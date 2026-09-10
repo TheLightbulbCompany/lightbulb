@@ -27,12 +27,19 @@ vi.mock("@/lib/analytics", () => ({
 // useAgents: agent_created + agent_deleted
 // ---------------------------------------------------------------------------
 
-const rpcMutationMock = vi.fn().mockResolvedValue({});
-const rpcMock = vi.fn(() => ({ data: { agents: [] }, error: null, isLoading: false, mutate: vi.fn() }));
+const agentsRpcMock = vi.fn(async (method: string) => ({
+  kind: "result" as const,
+  value: method === "agents.list" ? { agents: [], defaultId: undefined } : {},
+}));
+const agentsRuntimeSource = {
+  rpc: agentsRpcMock,
+  getOperation: vi.fn(),
+  onEvent: vi.fn(() => () => {}),
+  connectionRevision: 0,
+};
 
-vi.mock("@/hooks/useRuntimeRpc", () => ({
-  useRuntimeRpc: () => rpcMock(),
-  useRuntimeRpcMutation: () => rpcMutationMock,
+vi.mock("@/hooks/useLiveEvents", () => ({
+  useLiveEvents: () => agentsRuntimeSource,
 }));
 
 vi.mock("posthog-js/react", () => ({
@@ -43,7 +50,7 @@ vi.mock("posthog-js/react", () => ({
 describe("instrumentation: useAgents", () => {
   beforeEach(() => {
     captureMock.mockReset();
-    rpcMutationMock.mockReset().mockResolvedValue({});
+    agentsRpcMock.mockClear();
   });
 
   it("fires agent_created after successful agents.create RPC", async () => {
@@ -67,7 +74,7 @@ describe("instrumentation: useAgents", () => {
     });
     const call = captureMock.mock.calls.find((c) => c[0] === "agent_deleted");
     expect(call).toBeTruthy();
-    expect(call?.[1]).toMatchObject({ agentId: "agent-123" });
+    expect(call?.[1]).toMatchObject({ agent_id: "agent-123" });
   });
 });
 
@@ -76,32 +83,28 @@ describe("instrumentation: useAgents", () => {
 // ---------------------------------------------------------------------------
 
 let chatHandlers: Array<(msg: ChatIncomingMessage) => void> = [];
-let eventHandlers: Array<(name: string, data: unknown) => void> = [];
-const sendReq = vi.fn().mockResolvedValue({});
-const sendChat = vi.fn();
+const sendReq = vi.fn(async (method: string) =>
+  method === "chat.history"
+    ? { messages: [{ role: "user", content: [{ type: "text", text: "existing" }] }] }
+    : {},
+);
+const sendRoomMessage = vi.fn();
+const abortRun = vi.fn();
 
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({
+vi.mock("@/hooks/useAgentRoomTransport", () => ({
+  useAgentRoomTransport: () => ({
     isConnected: true,
-    nodeConnected: false,
-    error: null,
-    reconnectAttempt: 0,
-    send: vi.fn(),
-    sendReq,
-    sendChat,
-    onEvent: (h: (name: string, data: unknown) => void) => {
-      eventHandlers.push(h);
+    liveConnected: true,
+    onChatMessage: (handler: (msg: ChatIncomingMessage) => void) => {
+      chatHandlers.push(handler);
       return () => {
-        eventHandlers = eventHandlers.filter((x) => x !== h);
+        chatHandlers = chatHandlers.filter((candidate) => candidate !== handler);
       };
     },
-    onChatMessage: (h: (msg: ChatIncomingMessage) => void) => {
-      chatHandlers.push(h);
-      return () => {
-        chatHandlers = chatHandlers.filter((x) => x !== h);
-      };
-    },
-    reconnect: vi.fn(),
+    sendRoomMessage,
+    abortRun,
+    steerRun: vi.fn(),
+    rpc: sendReq,
   }),
 }));
 
@@ -109,9 +112,9 @@ describe("instrumentation: useAgentChat", () => {
   beforeEach(() => {
     captureMock.mockReset();
     chatHandlers = [];
-    eventHandlers = [];
-    sendReq.mockReset().mockResolvedValue({});
-    sendChat.mockReset();
+    sendReq.mockClear();
+    sendRoomMessage.mockReset().mockResolvedValue({});
+    abortRun.mockReset().mockResolvedValue(undefined);
     vi.resetModules();
   });
 
@@ -126,15 +129,14 @@ describe("instrumentation: useAgentChat", () => {
     const sentCall = captureMock.mock.calls.find((c) => c[0] === "chat_message_sent");
     expect(sentCall).toBeTruthy();
     expect(sentCall?.[1]).toMatchObject({
-      agentId: "agent-X",
+      agent_id: "agent-X",
       message_length: "hello world".length,
     });
 
-    // useAgentChat mints a clientRunId per sendMessage and gates the busy
-    // state on it. The `done` handler only clears the busy gate (and
-    // therefore emits chat_completed) when the incoming runId matches the
-    // active clientRunId. We grab it from the sendChat mock — third arg.
-    const clientRunId = sendChat.mock.calls[0]?.[2] as string;
+    // useAgentChat preserves the canonical clientMessageId for retries and gates
+    // the busy state on it. The `done` handler only clears the busy gate (and
+    // therefore emits chat_completed) when the incoming runId matches that id.
+    const clientRunId = sendRoomMessage.mock.calls[0]?.[1] as string;
     expect(typeof clientRunId).toBe("string");
 
     // Simulate the stream: a chunk to open the bubble, then `done`.
@@ -161,7 +163,7 @@ describe("instrumentation: useAgentChat", () => {
     const completedCall = captureMock.mock.calls.find((c) => c[0] === "chat_completed");
     expect(completedCall).toBeTruthy();
     expect(completedCall?.[1]).toMatchObject({
-      agentId: "agent-X",
+      agent_id: "agent-X",
       assistant_message_length: "hi back".length,
     });
     expect(typeof completedCall?.[1].duration_ms).toBe("number");
@@ -259,7 +261,7 @@ describe("instrumentation: useAgentChat", () => {
 
     const call = captureMock.mock.calls.find((c) => c[0] === "chat_aborted");
     expect(call).toBeTruthy();
-    expect(call?.[1]).toMatchObject({ agentId: "agent-Y" });
+    expect(call?.[1]).toMatchObject({ agent_id: "agent-Y" });
     expect(typeof call?.[1].elapsed_ms).toBe("number");
   });
 });

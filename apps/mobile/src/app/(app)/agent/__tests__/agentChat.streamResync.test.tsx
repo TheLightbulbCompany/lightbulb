@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react-native";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react-native";
 
 jest.mock("expo-router", () => ({
   router: { push: jest.fn(), back: jest.fn(), canGoBack: () => false, replace: jest.fn(), setParams: jest.fn() },
@@ -33,23 +33,28 @@ const mockMessaging = {
   listRooms: jest.fn(async () => ({ rooms: [mockRoom] })),
   getRoom: jest.fn(async () => mockRoom),
   listMessages: jest.fn(async () => ({ messages: [], nextAfterSeq: null })),
-  markRead: jest.fn(),
+  markRead: jest.fn(async () => ({ roomId: "room_a", lastReadSeq: 1 })),
   sendMessage: mockSendMessage,
   abortRun: jest.fn(),
+};
+const mockLiveChannels = ["/rooms/room_a/delivery_a"];
+const mockSetActiveRoomSubscription = jest.fn();
+const mockOnEvent = (handler: (event: unknown) => void) => {
+  liveHandler = handler;
+  return () => {
+    if (liveHandler === handler) liveHandler = null;
+  };
 };
 jest.mock("../../../../providers/live-events", () => ({
   useLiveEvents: () => ({
     httpReady: true,
     liveConnected: true,
-    liveChannels: ["/rooms/room_a/delivery_a"],
+    liveChannels: mockLiveChannels,
     liveError: null,
     connectionRevision: 1,
     messaging: mockMessaging,
-    setActiveRoomSubscription: jest.fn(),
-    onEvent: (handler: (event: unknown) => void) => {
-      liveHandler = handler;
-      return () => {};
-    },
+    setActiveRoomSubscription: mockSetActiveRoomSubscription,
+    onEvent: mockOnEvent,
   }),
 }));
 
@@ -61,7 +66,7 @@ jest.mock("@lightbulb/shared", () => ({
 import AgentChat from "../[agentId]";
 
 async function startRun(): Promise<string> {
-  fireEvent.changeText(screen.getByPlaceholderText("Ask anything"), "go");
+  fireEvent.changeText(await screen.findByPlaceholderText("Ask anything"), "go");
   await screen.findByDisplayValue("go");
   fireEvent.press(screen.getByLabelText("Send"));
   await screen.findByText("go");
@@ -69,9 +74,9 @@ async function startRun(): Promise<string> {
   return "run_1";
 }
 
-function frame(runId: string, value: Record<string, unknown>) {
+async function frame(runId: string, value: Record<string, unknown>) {
   const payloadFrame = { agentId: "agent_a", runId, ...value };
-  act(() => {
+  await act(async () => {
     liveHandler?.({
       type: "room.run.frame",
       payload: { roomId: "room_a", agentId: "agent_a", runId, frame: payloadFrame },
@@ -79,30 +84,51 @@ function frame(runId: string, value: Record<string, unknown>) {
   });
 }
 
+async function finishRun(runId: string) {
+  await act(async () => {
+    liveHandler?.({
+      type: "room.run.frame",
+      payload: {
+        roomId: "room_a",
+        agentId: "agent_a",
+        runId,
+        frame: { type: "run_ended", agentId: "agent_a", runId, outcome: "done" },
+      },
+    });
+  });
+}
+
 describe("AgentChat stream resync across tool splits", () => {
   beforeEach(() => {
     mockSendMessage.mockClear();
+    mockSetActiveRoomSubscription.mockClear();
     liveHandler = null;
   });
 
+  afterEach(async () => {
+    await cleanup();
+  });
+
   it("keeps the live segment intact when a segment-scoped resync arrives", async () => {
-    render(<AgentChat />);
+    await render(<AgentChat />);
     const runId = await startRun();
 
-    frame(runId, { type: "chunk", content: "Part one. ", append: true });
-    frame(runId, { type: "tool_start", tool: "exec", toolCallId: "t1" });
-    frame(runId, { type: "chunk", content: "Part two begins", append: true });
-    frame(runId, { type: "chunk", content: "Part two begins and continues." });
+    await frame(runId, { type: "chunk", content: "Part one. ", append: true });
+    await frame(runId, { type: "tool_start", tool: "exec", toolCallId: "t1" });
+    await frame(runId, { type: "chunk", content: "Part two begins", append: true });
+    await frame(runId, { type: "chunk", content: "Part two begins and continues." });
 
     expect(await screen.findByText(/Part two begins and continues\./)).toBeTruthy();
     expect(screen.getByText(/Part one\./)).toBeTruthy();
+    await finishRun(runId);
   });
 
   it("accepts a full-text resync when no tool split the run", async () => {
-    render(<AgentChat />);
+    await render(<AgentChat />);
     const runId = await startRun();
-    frame(runId, { type: "chunk", content: "Hello wor", append: true });
-    frame(runId, { type: "chunk", content: "Hello world." });
+    await frame(runId, { type: "chunk", content: "Hello wor", append: true });
+    await frame(runId, { type: "chunk", content: "Hello world." });
     expect(await screen.findByText(/Hello world\./)).toBeTruthy();
+    await finishRun(runId);
   });
 });

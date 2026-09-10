@@ -20,8 +20,8 @@ vi.mock("@clerk/nextjs", () => ({
   useUser: () => ({ isSignedIn: true, isLoaded: true, user: { id: "user_1" } }),
 }));
 
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({
+vi.mock("@/hooks/useLiveEvents", () => ({
+  useLiveEvents: () => ({
     isConnected: true,
     onChatMessage: () => () => {},
     onEvent: () => () => {},

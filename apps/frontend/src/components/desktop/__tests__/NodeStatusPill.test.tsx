@@ -6,7 +6,7 @@ import React from "react";
 import { NodeStatusPill } from "../NodeStatusPill";
 
 const gatewayState = { nodeConnected: false, nodeStatus: "disconnected" };
-vi.mock("@/hooks/useGateway", () => ({ useGateway: () => gatewayState }));
+vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => gatewayState }));
 
 describe("NodeStatusPill", () => {
   it("renders nothing when there is no desktop node", () => {

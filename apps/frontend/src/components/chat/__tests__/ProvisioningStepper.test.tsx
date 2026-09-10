@@ -16,21 +16,10 @@ vi.mock("swr", async (importOriginal) => {
   };
 });
 
-// Gateway event bus stub — lets tests push status_change events the way
-// the backend's connection pool does over the WebSocket.
-let gwEventHandlers: Array<(event: string, payload: unknown) => void> = [];
-function emitGatewayEvent(event: string, payload: unknown) {
-  for (const h of [...gwEventHandlers]) h(event, payload);
-}
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({
-    isConnected: true,
-    onEvent: (h: (event: string, payload: unknown) => void) => {
-      gwEventHandlers.push(h);
-      return () => {
-        gwEventHandlers = gwEventHandlers.filter((x) => x !== h);
-      };
-    },
+vi.mock("@/hooks/useLiveEvents", () => ({
+  useLiveEvents: () => ({
+    liveConnected: true,
+    onEvent: () => () => {},
   }),
 }));
 
@@ -275,35 +264,6 @@ describe("ProvisioningStepper blocked-state rendering", () => {
       screen.getByText("Putting the finishing touches on your agent..."),
     ).toBeInTheDocument();
     gatewayHealthData = null;
-  });
-
-  it("revalidates container status immediately on a gateway status_change HEALTHY push", () => {
-    // The backend pushes status_change("HEALTHY") at the exact moment the
-    // pool's container handshake completes. Consuming it kills the 0-3s
-    // stepper lag after the container is actually ready.
-    const refresh = vi.fn();
-    useProvMock.mockReturnValue({
-      phase: "normal",
-      container: { container_status: "running", runtime_phase: "starting" },
-      blocked: null,
-      refreshInterval: 3000,
-      refresh,
-    });
-
-    render(
-      <ProvisioningStepper>
-        <div>children</div>
-      </ProvisioningStepper>,
-    );
-
-    expect(refresh).not.toHaveBeenCalled();
-    act(() => emitGatewayEvent("status_change", { state: "HEALTHY", reason: "Gateway connected" }));
-    expect(refresh).toHaveBeenCalledTimes(1);
-
-    // Unrelated events must not trigger refreshes.
-    act(() => emitGatewayEvent("status_change", { state: "GATEWAY_DOWN_DEAD", reason: "lost" }));
-    act(() => emitGatewayEvent("heartbeat", {}));
-    expect(refresh).toHaveBeenCalledTimes(1);
   });
 
   it("renders title + message + action button when admin and not admin_only", () => {

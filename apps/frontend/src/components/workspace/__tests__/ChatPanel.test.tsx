@@ -1,74 +1,26 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { act, render, screen, fireEvent } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { render, screen } from "@testing-library/react";
 
 import { DEFAULT_AGENT_SENTINEL } from "../panelRegistry";
 
-// --- Mocks -------------------------------------------------------------------
-// useAgents is fully stubbed so each test drives roster/settled state directly.
-// ChatPanel imports BOTH useAgents and agentDisplayName from this module, so the
-// mock must export both.
 interface FakeAgent {
   id: string;
   name?: string;
-  identity?: { name?: string };
 }
-let agentsState: { agents: FakeAgent[]; defaultId: string | undefined; isSettled: boolean };
+
+let agentsState: {
+  agents: FakeAgent[];
+  defaultId: string | undefined;
+};
+
 vi.mock("@/hooks/useAgents", () => ({
   useAgents: () => agentsState,
-  agentDisplayName: (a: FakeAgent) => a.identity?.name || a.name || a.id,
+  agentDisplayName: (agent: FakeAgent) => agent.name ?? agent.id,
 }));
-
-// The GLOBAL /teams/agents roster read (pause/resume state).
-let teamsAgentsData:
-  | { agents?: { id: string; status?: string | null }[] }
-  | undefined;
-vi.mock("@/hooks/useTeamsApi", () => ({
-  useTeamsApi: () => ({ read: () => ({ data: teamsAgentsData }) }),
-}));
-
-let gatewayState = { isConnected: true, nodeConnected: false, nodeStatus: "disconnected" };
-type GatewayListener = (message: {
-  type: string;
-  active?: boolean;
-  agent_id?: string;
-  session_id?: string;
-}) => void;
-let gatewayListener: GatewayListener | null = null;
-let onChatMessage = vi.fn((listener: GatewayListener) => {
-  gatewayListener = listener;
-  return () => {};
-});
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({ ...gatewayState, onChatMessage }),
-}));
-
-const pause = vi.fn(async () => {});
-const resume = vi.fn(async () => {});
-vi.mock("@/components/teams/agents/hooks/useAgentMutations", () => ({
-  useAgentMutations: () => ({ pause, resume }),
-}));
-
-const openPanel = vi.fn();
-vi.mock("../workspaceController", () => ({
-  openPanel: (...args: unknown[]) => openPanel(...args),
-}));
-
-// Stub the heavy chat window down to a probe that exposes the agentId it was
-// handed plus a button that exercises the onOpenFile bridge.
-vi.mock("@/components/chat/AgentChatWindow", () => ({
-  AgentChatWindow: ({
-    agentId,
-    onOpenFile,
-  }: {
-    agentId: string | null;
-    onOpenFile?: (path: string) => void;
-  }) => (
-    <div data-testid="agent-chat" data-agent-id={agentId ?? ""}>
-      <button data-testid="open-file" onClick={() => onOpenFile?.("dir/file.txt")}>
-        open
-      </button>
-    </div>
+vi.mock("@/components/messaging/MessagingWorkspace", () => ({
+  MessagingWorkspace: ({ initialAgentId }: { initialAgentId: string | null }) => (
+    <div data-testid="messaging-workspace" data-agent-id={initialAgentId ?? ""} />
   ),
 }));
 
@@ -77,240 +29,56 @@ import { ChatPanel } from "../panels/ChatPanel";
 type ChatPanelProps = React.ComponentProps<typeof ChatPanel>;
 
 function makeProps(agentId: string): ChatPanelProps {
-  const api: Record<string, unknown> = { title: "Chat", close: vi.fn() };
-  api.setTitle = vi.fn((t: string) => {
-    api.title = t;
+  const api: Record<string, unknown> = { title: "Messages" };
+  api.setTitle = vi.fn((title: string) => {
+    api.title = title;
   });
   return { params: { agentId }, api } as unknown as ChatPanelProps;
 }
 
 beforeEach(() => {
-  agentsState = { agents: [], defaultId: undefined, isSettled: true };
-  teamsAgentsData = undefined;
-  gatewayState = { isConnected: true, nodeConnected: false, nodeStatus: "disconnected" };
-  gatewayListener = null;
-  onChatMessage = vi.fn((listener: GatewayListener) => {
-    gatewayListener = listener;
-    return () => {};
-  });
-  openPanel.mockClear();
-  pause.mockClear();
-  resume.mockClear();
+  agentsState = { agents: [], defaultId: undefined };
 });
 
 describe("ChatPanel", () => {
-  it("resolves the default sentinel to the concrete default agent", () => {
+  it("resolves the default sentinel to the default agent's canonical DM", () => {
     agentsState = {
       agents: [{ id: "agent-ceo", name: "Friday" }],
       defaultId: "agent-ceo",
-      isSettled: true,
     };
     const props = makeProps(DEFAULT_AGENT_SENTINEL);
+
     render(<ChatPanel {...props} />);
 
-    // The resolved concrete id is handed to the chat window...
-    expect(screen.getByTestId("agent-chat").getAttribute("data-agent-id")).toBe(
+    expect(screen.getByTestId("messaging-workspace")).toHaveAttribute(
+      "data-agent-id",
       "agent-ceo",
     );
-    // ...and the tab title / header reflect the resolved agent name.
-    expect(props.api.setTitle).toHaveBeenCalledWith("Friday");
-    expect(
-      screen.getByRole("heading", { name: "Private with Friday" }),
-    ).toBeTruthy();
-  });
-
-  it("does NOT show agent-gone while the roster is still settling", () => {
-    // isSettled false ⇒ membership check must not fire even for an unknown id.
-    agentsState = { agents: [], defaultId: undefined, isSettled: false };
-    const props = makeProps("ghost");
-    render(<ChatPanel {...props} />);
-
-    expect(screen.queryByText(/no longer exists/i)).toBeNull();
-    const win = screen.getByTestId("agent-chat");
-    expect(win.getAttribute("data-agent-id")).toBe("ghost");
-    expect(screen.getByRole("heading", { name: "Private conversation" })).toBeInTheDocument();
-    expect(screen.queryByLabelText("Conversation context")).toBeNull();
-  });
-
-  it("holds a neutral 'Chat' title while the roster is unsettled, then re-resolves to the agent name", () => {
-    // Onboarding window: the roster is latched empty/unsettled, so a raw
-    // agent UUID must never surface as the tab title.
-    agentsState = { agents: [], defaultId: undefined, isSettled: false };
-    const props = makeProps("64ac920b-1111-2222-3333-444455556666");
-    const { rerender } = render(<ChatPanel {...props} />);
-
-    expect(props.api.setTitle).not.toHaveBeenCalledWith(
-      "64ac920b-1111-2222-3333-444455556666",
-    );
-    expect(props.api.title).toBe("Chat");
-
-    // Roster arrives — the title memo is reactive and re-resolves.
-    agentsState = {
-      agents: [{ id: "64ac920b-1111-2222-3333-444455556666", identity: { name: "Friday" } }],
-      defaultId: "64ac920b-1111-2222-3333-444455556666",
-      isSettled: true,
-    };
-    rerender(<ChatPanel {...props} />);
     expect(props.api.setTitle).toHaveBeenCalledWith("Friday");
   });
 
-  it("shows agent-gone ONLY once settled with an unknown id, and closes on click", () => {
-    agentsState = {
-      agents: [{ id: "real", name: "Real" }],
-      defaultId: "real",
-      isSettled: true,
-    };
-    const props = makeProps("ghost");
+  it("keeps an explicit agent deep link while the roster catches up", () => {
+    const props = makeProps("agent-late");
+
     render(<ChatPanel {...props} />);
 
-    expect(screen.getByText(/no longer exists/i)).toBeTruthy();
-    // The chat window is not mounted in the gone state.
-    expect(screen.queryByTestId("agent-chat")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: /close panel/i }));
-    expect(props.api.close).toHaveBeenCalledTimes(1);
-  });
-
-  it("action cluster opens inspector + tasks via openPanel with pushUrl", () => {
-    agentsState = {
-      agents: [{ id: "agent-ceo", name: "Friday" }],
-      defaultId: "agent-ceo",
-      isSettled: true,
-    };
-    const props = makeProps("agent-ceo");
-    render(<ChatPanel {...props} />);
-
-    fireEvent.click(screen.getByTitle("Inspect agent"));
-    expect(openPanel).toHaveBeenCalledWith(
-      "agent-inspector",
-      { agent: "agent-ceo" },
-      { pushUrl: true },
+    expect(screen.getByTestId("messaging-workspace")).toHaveAttribute(
+      "data-agent-id",
+      "agent-late",
     );
-
-    fireEvent.click(screen.getByTitle("Agent tasks"));
-    expect(openPanel).toHaveBeenCalledWith(
-      "teams-issues",
-      { agent: "agent-ceo" },
-      { pushUrl: true },
-    );
+    expect(props.api.setTitle).not.toHaveBeenCalled();
   });
 
-  it("reflects paused status from the global roster read", () => {
+  it("updates the panel title when the agent roster arrives", () => {
+    const props = makeProps("agent-late");
+    const view = render(<ChatPanel {...props} />);
     agentsState = {
-      agents: [{ id: "agent-ceo", name: "Friday" }],
-      defaultId: "agent-ceo",
-      isSettled: true,
+      agents: [{ id: "agent-late", name: "Atlas" }],
+      defaultId: "agent-late",
     };
-    teamsAgentsData = { agents: [{ id: "agent-ceo", status: "paused" }] };
-    const props = makeProps("agent-ceo");
-    render(<ChatPanel {...props} />);
 
-    // Paused ⇒ the toggle offers "Resume".
-    expect(screen.getByTitle("Resume agent")).toBeTruthy();
-    expect(screen.queryByTitle("Pause agent")).toBeNull();
-  });
+    view.rerender(<ChatPanel {...props} />);
 
-  it("frames the existing member-scoped chat as a private room with real work links", () => {
-    agentsState = {
-      agents: [{ id: "agent-ceo", name: "Friday" }],
-      defaultId: "agent-ceo",
-      isSettled: true,
-    };
-    const props = makeProps("agent-ceo");
-    render(<ChatPanel {...props} />);
-
-    expect(
-      screen.getByRole("heading", { name: "Private with Friday" }),
-    ).toBeInTheDocument();
-    expect(screen.getAllByText("Private")).toHaveLength(2);
-    expect(
-      screen.getByText(/isolated to your signed-in profile/i),
-    ).toBeInTheDocument();
-    expect(screen.getByText("Friday · Status unavailable")).toBeInTheDocument();
-    expect(screen.getByText("Agent activity")).toBeInTheDocument();
-    expect(screen.queryByText("Desktop node")).not.toBeInTheDocument();
-    expect(screen.queryByText("Lightbulb cloud")).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "Open Friday's tasks" }));
-    expect(openPanel).toHaveBeenCalledWith(
-      "teams-issues",
-      { agent: "agent-ceo" },
-      { pushUrl: true },
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Browse Library" }));
-    expect(openPanel).toHaveBeenCalledWith(
-      "teams-artifacts",
-      {},
-      { pushUrl: true },
-    );
-  });
-
-  it("labels agent activity and global node connectivity without claiming placement", () => {
-    agentsState = {
-      agents: [{ id: "agent-ceo", name: "Friday" }],
-      defaultId: "agent-ceo",
-      isSettled: true,
-    };
-    teamsAgentsData = { agents: [{ id: "agent-ceo", status: "running" }] };
-    gatewayState = { isConnected: true, nodeConnected: true, nodeStatus: "connected" };
-
-    render(<ChatPanel {...makeProps("agent-ceo")} />);
-
-    expect(screen.getByText("Working")).toBeInTheDocument();
-    expect(screen.getByText("Desktop node")).toBeInTheDocument();
-    expect(screen.getByText("Global connection status")).toBeInTheDocument();
-    expect(screen.getByText("Connected")).toBeInTheDocument();
-    expect(screen.queryByText("Local tools available")).not.toBeInTheDocument();
-  });
-
-  it.each([
-    ["covered", "Covered"],
-    ["stalled", "Stalled"],
-  ])("preserves the known %s agent status", (status, label) => {
-    agentsState = {
-      agents: [{ id: "agent-ceo", name: "Friday" }],
-      defaultId: "agent-ceo",
-      isSettled: true,
-    };
-    teamsAgentsData = { agents: [{ id: "agent-ceo", status }] };
-
-    render(<ChatPanel {...makeProps("agent-ceo")} />);
-
-    expect(screen.getByText(`Friday · ${label}`)).toBeInTheDocument();
-  });
-
-  it("includes an active private webchat run in the agent status", () => {
-    agentsState = {
-      agents: [{ id: "agent-ceo", name: "Friday" }],
-      defaultId: "agent-ceo",
-      isSettled: true,
-    };
-    teamsAgentsData = { agents: [{ id: "agent-ceo", status: "idle" }] };
-
-    render(<ChatPanel {...makeProps("agent-ceo")} />);
-    expect(screen.getByText("Friday · Ready")).toBeInTheDocument();
-
-    act(() => {
-      gatewayListener?.({
-        type: "run_active",
-        active: true,
-        agent_id: "agent-ceo",
-        session_id: "private-session",
-      });
-    });
-
-    expect(screen.getByText("Friday · Working")).toBeInTheDocument();
-  });
-
-  it("surfaces an unrecognized durable agent status", () => {
-    agentsState = {
-      agents: [{ id: "agent-ceo", name: "Friday" }],
-      defaultId: "agent-ceo",
-      isSettled: true,
-    };
-    teamsAgentsData = { agents: [{ id: "agent-ceo", status: "rebalancing" }] };
-
-    render(<ChatPanel {...makeProps("agent-ceo")} />);
-
-    expect(screen.getByText("Friday · Rebalancing")).toBeInTheDocument();
+    expect(props.api.setTitle).toHaveBeenCalledWith("Atlas");
   });
 });

@@ -491,7 +491,7 @@ class TestContainerStatus:
         body = response.json()
         assert body["container_status"] == "provisioning"
         assert body["runtime_phase"] == "provisioning"
-        assert mock_create_task.call_count == 2
+        assert mock_create_task.call_count == 1
 
 
 class TestContainerStatusGate:

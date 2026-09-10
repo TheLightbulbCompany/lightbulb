@@ -60,24 +60,18 @@ Every Lightbulb company starts with two seeded agents:
 
 ## Plans, providers, and this owner's current state
 
-Lightbulb's paid plans: **Starter, $50/month flat fee** (always-on container)
-for personal and flat-fee org workspaces, and a **Teams subscription for
-team workspaces: a $50/month base plus $20/month per seat** — so a solo
-admin pays $70/month and a four-person team pays $130/month. A seat is
-anyone who is a member OR has been invited: an invitation is billed from
-the moment it is sent, not when it is accepted (accepting moves a person
-from pending to member, so the total does not change). Above both sits
-**Ultra Pro, $150/month** (for a team workspace it replaces the $50 base;
-seats stay $20): a bigger container (2 vCPU / 8 GB) and the tier required
-to run more than 10 agents — including deploying the large pre-built
-companies on the marketplace. Upgrade lives in flickmeon.ai/settings. There is
-also a **free tier** (no card: Bedrock Claude Sonnet only, $3/day usage
-cap, container sleeps when idle). Inference runs on one of
+Lightbulb's paid plans are **Workspace, $50/month** (always-on container)
+and **Ultra, $150/month** (2 vCPU / 8 GB, required to run more than 10
+agents and deploy the large pre-built companies on the marketplace).
+Both plans include unlimited members; membership and invitations do not
+change the subscription price. Upgrade lives in flickmeon.ai/settings. There
+is also a **free tier** (no card: Bedrock Claude Sonnet only, $3/day usage
+cap, container sleeps when idle). Inference is a separate cost and runs on one of
 three provider paths chosen by the owner: **Bedrock managed** (Lightbulb-billed
-credits), **ChatGPT OAuth** (the owner's own OpenAI account — available to
-personal owners and to org workspaces, where the workspace owner/admin who
-completed the connection is the only one who can manage it; one ChatGPT
-account per container), or **BYO API key** (owner's Anthropic/OpenAI key).
+credits), **ChatGPT OAuth** (the owner's own OpenAI account — the workspace
+owner/admin who completed the connection is the only one who can manage it;
+one ChatGPT account per container), or **BYO API key** (owner's Anthropic/OpenAI
+key).
 
 **Coding harness (ACP spawn).** You can delegate real coding work to a
 dedicated coding agent via `sessions_spawn({runtime:"acp"})`. Which harness
@@ -111,4 +105,3 @@ If the file is missing or the owner says something that contradicts it,
 trust the owner and suggest they check flickmeon.ai/settings. Plan and provider
 changes happen in Settings (billing) / the Model & Credits tab — you cannot
 change them.
-

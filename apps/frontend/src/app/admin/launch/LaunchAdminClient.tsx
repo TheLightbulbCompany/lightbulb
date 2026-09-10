@@ -347,8 +347,8 @@ export function TeamEntriesCard({
         Teams raise their hand here and the founders enter them by hand — nothing is automatic. Only a counted entry
         contributes to the pot: {formatMoney(data.pot_per_entrant_cents, "usd")} +{" "}
         {formatMoney(data.pot_per_seat_cents, "usd")} per seat, {formatMoney(data.teams.contribution_cents, "usd")}{" "}
-        counted so far. If a team wins, their free month covers the container only ($50 Teams base) — per-seat charges
-        still bill.
+        counted so far. If a team wins, their free month covers the $50 Workspace plan. Ultra is $150/month; both
+        plans include unlimited members and inference costs are separate.
       </p>
       {error ? <ErrorBanner error={error} /> : null}
       <Table

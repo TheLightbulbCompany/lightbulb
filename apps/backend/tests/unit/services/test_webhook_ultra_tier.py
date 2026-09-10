@@ -44,7 +44,7 @@ def _account(plan="standard"):
     }
 
 
-async def _drive(event, *, account, agents=None):
+async def _drive(event, *, account, agents=None, set_plan_side_effect=None):
     manager = MagicMock()
     manager.resize_user_container = AsyncMock()
     with (
@@ -58,7 +58,7 @@ async def _drive(event, *, account, agents=None):
     ):
         repo.get_by_owner_id = AsyncMock(return_value=account)
         repo.set_subscription = AsyncMock()
-        repo.set_plan = AsyncMock()
+        repo.set_plan = AsyncMock(side_effect=set_plan_side_effect)
         mock_stripe.Customer.retrieve.return_value = {"invoice_settings": {"default_payment_method": "pm"}}
         await handlers.handle_subscription_state(event, MagicMock())
         return repo, manager
@@ -101,11 +101,37 @@ async def test_workspace_downgrade_resizes_small_company_down():
 
 @pytest.mark.asyncio
 async def test_workspace_downgrade_defers_for_oversized_company():
-    repo, manager = await _drive(
-        _event(), account=_account(plan="ultra_pro"), agents=[{"id": str(i)} for i in range(11)]
-    )
+    with patch.object(handlers, "put_metric") as put_metric:
+        repo, manager = await _drive(
+            _event(), account=_account(plan="ultra_pro"), agents=[{"id": str(i)} for i in range(11)]
+        )
 
     assert repo.set_plan.await_args.kwargs["plan"] == "standard"
+    manager.resize_user_container.assert_not_awaited()
+    put_metric.assert_any_call("ultra.downgrade_deferred_oversized", 1)
+
+
+@pytest.mark.asyncio
+async def test_workspace_downgrade_defers_when_paperclip_count_is_unavailable():
+    """A zero Paperclip count is unknown, never evidence of a safe downsize."""
+    with patch.object(handlers, "put_metric") as put_metric:
+        repo, manager = await _drive(_event(), account=_account(plan="ultra_pro"), agents=[])
+
+    assert repo.set_plan.await_args.kwargs["plan"] == "standard"
+    manager.resize_user_container.assert_not_awaited()
+    put_metric.assert_any_call("ultra.downgrade_deferred_unknown_count", 1)
+
+
+@pytest.mark.asyncio
+async def test_set_plan_failure_skips_ultra_resize():
+    """Never resize when Stripe's plan cannot be durably reflected locally."""
+    repo, manager = await _drive(
+        _event(price_id="price_ultra"),
+        account=_account(),
+        set_plan_side_effect=RuntimeError("DynamoDB unavailable"),
+    )
+
+    repo.set_plan.assert_awaited_once()
     manager.resize_user_container.assert_not_awaited()
 
 

@@ -356,11 +356,10 @@ async def send_test(variant: str, *, to_email: str, copy: dict | None, values: d
 # best-effort, never raises.
 
 # The standing rule the founders would otherwise have to rederive at close:
-# a winning TEAM's free month covers the container line only.
+# a winning team's free month covers the Workspace subscription.
 TEAM_FREE_MONTH_NOTE = (
-    "If this team wins, their free month covers the container only "
-    "($50 Teams base) — per-seat charges still bill normally, so a "
-    "five-seat winner costs us the same $50 an individual winner does."
+    "If this team wins, their free month covers the $50 Workspace plan. "
+    "Ultra is $150/month; both plans include unlimited members and inference costs are separate."
 )
 
 

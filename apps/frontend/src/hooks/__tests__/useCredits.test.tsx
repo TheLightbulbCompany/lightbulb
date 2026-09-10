@@ -98,6 +98,33 @@ describe("useCredits", () => {
     expect(JSON.parse(calls[1][1].body)).toEqual(first);
   });
 
+  it.each(["paid", "failed"] as const)("unlocks a matching %s payment so a new top-up gets a new UUID", async (status) => {
+    let balanceCalls = 0;
+    const fetchMock = vi.fn((url: RequestInfo | URL) => {
+      if (String(url).includes("top_up")) return Promise.resolve(new Response(JSON.stringify({ status: "requested", amount_cents: 2000 }), { status: 200 }));
+      balanceCalls += 1;
+      const requestId = JSON.parse(localStorage.getItem("lightbulb:credits-top-up:user_terminal:org_terminal") ?? "{}");
+      return Promise.resolve(new Response(JSON.stringify({
+        balance_microcents: 0,
+        balance_dollars: "0.00",
+        active_top_up: balanceCalls > 1 ? { request_id: requestId.request_id, status } : null,
+      }), { status: 200 }));
+    });
+    global.fetch = fetchMock;
+    orgId = "org_terminal";
+    userId = "user_terminal";
+    const mounted = renderHook(() => useCredits(), { wrapper });
+    await act(async () => { await mounted.result.current.startTopUp(2000); });
+    const oldId = mounted.result.current.pendingTopUp?.request_id;
+    await act(async () => { await mounted.result.current.refresh(); });
+
+    expect(mounted.result.current.pendingTopUp).toBeNull();
+    expect(mounted.result.current.topUpOutcome).toBe(status);
+    await act(async () => { await mounted.result.current.startTopUp(2000); });
+    const calls = fetchMock.mock.calls.filter(([url]) => String(url).includes("top_up"));
+    expect(JSON.parse(calls[1][1].body).request_id).not.toBe(oldId);
+  });
+
   it("does not read a workspace balance until Clerk user and workspace auth are ready", () => {
     orgId = null;
     const fetchMock = vi.fn();

@@ -186,6 +186,9 @@ async def test_request_description_is_deterministic(provisioned_billing_row):
     fake = _fake_client()
     await request_top_up("org_abc", 2573, request_id="44444444-4444-4444-8444-444444444444", client=fake)
     first = fake.create_gated_prepaid_commit.call_args.kwargs["description"]
+    from core.services.webhook_dedup import settle_active_top_up
+
+    await settle_active_top_up("org_abc", "cust-uuid-1", "contract-1", "paid")
     await request_top_up("org_abc", 2573, request_id="55555555-5555-4555-8555-555555555555", client=fake)
     second = fake.create_gated_prepaid_commit.call_args.kwargs["description"]
     assert first == second == "isol8 top-up owner=org_abc amount_cents=2573"

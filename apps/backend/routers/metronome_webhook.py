@@ -62,7 +62,8 @@ _LOW_BALANCE_EVENT_TYPES = frozenset(
 # minimum bar is OBSERVABILITY — these must not vanish into a silent 200 like
 # every other unmodeled type. The exact spelling is unverifiable until a real
 # delivery fires (same caveat as the low-balance set), so match plausible
-# spellings; we deliberately do not act on the payload fields yet.
+# spellings; the matching customer/contract is then reconciled against the
+# permanent active top-up pointer.
 _PAYMENT_GATE_EVENT_TYPES = frozenset(
     {
         "payment_gate.payment_status",
@@ -149,19 +150,47 @@ async def _process_event(event: dict, event_id: str) -> Response:
         props = event.get("properties") or {}
         payment_status = props.get("payment_status")
         put_metric("metronome.webhook.payment_gate", dimensions={"status": payment_status or "action_required"})
+        customer_id = props.get("customer_id")
+        contract_id = props.get("contract_id")
+        if not isinstance(customer_id, str) or not isinstance(contract_id, str):
+            logger.warning("Metronome payment-gate event %s has no customer/contract binding", event_id)
+            return Response(status_code=200)
+        account = await billing_repo.get_by_metronome_customer_id(customer_id)
+        if account is None:
+            put_metric("metronome.webhook", dimensions={"result": "unknown_customer"})
+            logger.warning("Metronome payment-gate event %s has unknown customer %s", event_id, customer_id)
+            return Response(status_code=200)
+        owner_id = account["owner_id"]
         if payment_status == "paid":
+            settled = await webhook_dedup.settle_active_top_up(owner_id, customer_id, contract_id, "paid")
             logger.info(
-                "Metronome payment-gate paid (id=%s, customer=%s)",
+                "Metronome payment-gate paid (id=%s, customer=%s, matched=%s)",
                 event_id,
-                props.get("customer_id"),
+                customer_id,
+                settled,
+            )
+        elif payment_status == "failed":
+            settled = await webhook_dedup.settle_active_top_up(owner_id, customer_id, contract_id, "failed")
+            logger.warning(
+                "Metronome payment-gate failed (id=%s, customer=%s, matched=%s)",
+                event_id,
+                customer_id,
+                settled,
             )
         else:
+            matched = await webhook_dedup.set_active_top_up_status(
+                owner_id,
+                customer_id,
+                contract_id,
+                "action_required",
+            )
             logger.warning(
-                "Metronome payment-gate %s (id=%s, customer=%s, status=%s) — gated top-up payment needs attention",
+                "Metronome payment-gate %s (id=%s, customer=%s, status=%s, matched=%s) — gated top-up payment needs attention",
                 event_type,
                 event_id,
-                props.get("customer_id"),
+                customer_id,
                 payment_status,
+                matched,
             )
         return Response(status_code=200)
 

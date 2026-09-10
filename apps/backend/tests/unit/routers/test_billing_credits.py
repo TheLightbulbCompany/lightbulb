@@ -22,6 +22,10 @@ async def test_get_balance_returns_only_metronome_balance(async_client):
             new=AsyncMock(return_value=12_340_000),
         ),
         patch("core.services.metronome_gate.apply_fresh_balance", new=AsyncMock()),
+        patch(
+            "core.services.webhook_dedup.get_active_top_up",
+            new=AsyncMock(return_value={"request_id": REQUEST_ID, "amount_cents": 2000, "status": "requested"}),
+        ),
     ):
         response = await async_client.get("/api/v1/billing/credits/balance")
 
@@ -30,6 +34,7 @@ async def test_get_balance_returns_only_metronome_balance(async_client):
         "balance_microcents": 12_340_000,
         "balance_dollars": "12.34",
         "is_exhausted": False,
+        "active_top_up": {"request_id": REQUEST_ID, "amount_cents": 2000, "status": "requested"},
     }
 
 

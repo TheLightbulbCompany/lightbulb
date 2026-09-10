@@ -10,7 +10,7 @@ const QUICK_PICKS_CENTS = [1000, 2000, 5000, 10000];
 
 /** Workspace-managed AI credits, purchased through a Metronome-gated commit. */
 export function CreditsSection() {
-  const { balance, refresh, startTopUp, canManageCredits, pendingTopUp } = useCredits();
+  const { balance, refresh, startTopUp, canManageCredits, pendingTopUp, topUpOutcome } = useCredits();
   const [amount, setAmount] = useState(2000);
   const [submitting, setSubmitting] = useState(false);
   const [requested, setRequested] = useState<number | null>(null);
@@ -21,7 +21,10 @@ export function CreditsSection() {
     if (pendingTopUp) {
       setAmount(pendingTopUp.amount_cents);
       setLockedAmount(pendingTopUp.amount_cents);
-      setRequested(pendingTopUp.state === "requested" ? pendingTopUp.amount_cents : null);
+      setRequested(pendingTopUp.state !== "pending" ? pendingTopUp.amount_cents : null);
+    } else {
+      setLockedAmount(null);
+      setRequested(null);
     }
   }, [pendingTopUp]);
 
@@ -59,6 +62,7 @@ export function CreditsSection() {
         {canManageCredits && <>
         <div className="flex flex-wrap gap-2">{QUICK_PICKS_CENTS.map((cents) => <button key={cents} disabled={lockedAmount !== null} onClick={() => setAmount(cents)} className={"rounded-md border px-3 py-1.5 text-sm transition-colors " + (amount === cents ? "border-[var(--midnight)] bg-[var(--cream-deep)] text-[var(--midnight)]" : "border-[var(--edge)] text-[var(--midnight)] hover:bg-[var(--cream-deep)]")}>${cents / 100}</button>)}</div>
         {error && <p className="text-sm text-err">{error}</p>}
+        {topUpOutcome === "failed" && <p className="text-sm text-err">Payment failed. Choose an amount to try again.</p>}
         {requested !== null && <p className="text-sm text-ok">Top-up of ${requested / 100} requested — credits can take a few minutes to land.</p>}
         <button onClick={topUp} disabled={submitting || requested !== null || amount < 500} className="rounded-full bg-[var(--midnight)] hover:opacity-90 text-cream px-4 py-2 text-sm disabled:opacity-50">
           {submitting ? "Loading…" : requested !== null ? "Top-up requested" : `Add $${amount / 100}`}

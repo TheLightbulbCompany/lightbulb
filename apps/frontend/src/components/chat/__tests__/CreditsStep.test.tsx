@@ -7,18 +7,20 @@ const startTopUp = vi.fn();
 const refresh = vi.fn();
 const canManageCredits = vi.fn();
 const pendingTopUp = vi.fn();
+const topUpOutcome = vi.fn();
 vi.mock("@/hooks/useCredits", () => ({
-  useCredits: () => ({ balance: balance(), startTopUp, refresh, canManageCredits: canManageCredits(), pendingTopUp: pendingTopUp() }),
+  useCredits: () => ({ balance: balance(), startTopUp, refresh, canManageCredits: canManageCredits(), pendingTopUp: pendingTopUp(), topUpOutcome: topUpOutcome() }),
   isCreditsExhausted: (value: { is_exhausted?: boolean; balance_microcents: number | null }) =>
     value.is_exhausted ?? (value.balance_microcents !== null && value.balance_microcents <= 0),
 }));
 
 describe("CreditsStep", () => {
   beforeEach(() => {
-    balance.mockReset(); startTopUp.mockReset(); refresh.mockReset(); canManageCredits.mockReset(); pendingTopUp.mockReset();
+    balance.mockReset(); startTopUp.mockReset(); refresh.mockReset(); canManageCredits.mockReset(); pendingTopUp.mockReset(); topUpOutcome.mockReset();
     balance.mockReturnValue({ balance_microcents: 0, balance_dollars: "0.00" });
     canManageCredits.mockReturnValue(true);
     pendingTopUp.mockReturnValue(null);
+    topUpOutcome.mockReturnValue(null);
   });
 
   it("pins the selected amount and disables controls after an uncertain request", async () => {
@@ -57,5 +59,18 @@ describe("CreditsStep", () => {
     render(<CreditsStep onComplete={vi.fn()} />);
     expect(await screen.findByRole("button", { name: "Payment requested" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "$50" })).toBeDisabled();
+  });
+
+  it("keeps a payment action-required top-up locked", async () => {
+    pendingTopUp.mockReturnValue({ amount_cents: 2000, state: "action_required" });
+    render(<CreditsStep onComplete={vi.fn()} />);
+    expect(await screen.findByRole("button", { name: "Payment requested" })).toBeDisabled();
+  });
+
+  it("shows a settled payment failure after unlocking the persisted intent", () => {
+    topUpOutcome.mockReturnValue("failed");
+    render(<CreditsStep onComplete={vi.fn()} />);
+    expect(screen.getByText("Payment failed. Choose an amount to try again.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^add \$20$/i })).not.toBeDisabled();
   });
 });

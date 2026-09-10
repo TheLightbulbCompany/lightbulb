@@ -155,6 +155,97 @@ def top_up_intent_key(owner_id: str, request_id: str) -> str:
     return f"metronome-top-up:{owner_id}:{request_id}"
 
 
+def active_top_up_key(owner_id: str) -> str:
+    """Permanent one-per-workspace pointer for a nonterminal top-up."""
+    if not isinstance(owner_id, str) or not owner_id:
+        raise ValueError("workspace is required")
+    return f"metronome-top-up-active:{owner_id}"
+
+
+_TOP_UP_TERMINAL_STATUSES = frozenset({"paid", "failed"})
+
+
+async def get_active_top_up(owner_id: str) -> dict | None:
+    """Return the workspace's durable top-up pointer, including terminal state."""
+    item = await _read_event(active_top_up_key(owner_id))
+    if not item:
+        return None
+    if item.get("kind") != "metronome-top-up-active" or item.get("owner_id") != owner_id:
+        raise TopUpIntentConflict("active top-up identity is unavailable")
+    return item
+
+
+async def _claim_active_top_up(owner_id: str, intent: dict) -> None:
+    """Point a workspace at one pending intent; replace terminal pointers only."""
+    key = active_top_up_key(owner_id)
+    fields = {
+        "kind": "metronome-top-up-active",
+        "owner_id": owner_id,
+        "intent_event_id": intent["event_id"],
+        "request_id": intent["request_id"],
+        "status": "pending",
+        "amount_cents": intent["amount_cents"],
+        "metronome_customer_id": intent["metronome_customer_id"],
+        "metronome_contract_id": intent["metronome_contract_id"],
+    }
+    try:
+        await run_in_thread(
+            _table().put_item,
+            Item={"event_id": key, "recorded_at": int(time.time()), **fields},
+            ConditionExpression="attribute_not_exists(event_id)",
+        )
+        return
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+    existing = await get_active_top_up(owner_id)
+    if existing is None:
+        raise TopUpIntentConflict("active top-up identity is unavailable")
+    if existing.get("intent_event_id") == intent["event_id"]:
+        return
+    if existing.get("status") not in _TOP_UP_TERMINAL_STATUSES:
+        raise TopUpIntentConflict("another top-up is active for this workspace")
+
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"event_id": key},
+            UpdateExpression=(
+                "SET #intent = :intent, #request = :request, #status = :pending, "
+                "amount_cents = :amount, metronome_customer_id = :customer, "
+                "metronome_contract_id = :contract, recorded_at = :now"
+            ),
+            ConditionExpression=("#kind = :kind AND #intent = :previous AND (#status = :paid OR #status = :failed)"),
+            ExpressionAttributeNames={
+                "#kind": "kind",
+                "#intent": "intent_event_id",
+                "#request": "request_id",
+                "#status": "status",
+            },
+            ExpressionAttributeValues={
+                ":kind": "metronome-top-up-active",
+                ":previous": existing["intent_event_id"],
+                ":intent": intent["event_id"],
+                ":request": intent["request_id"],
+                ":pending": "pending",
+                ":paid": "paid",
+                ":failed": "failed",
+                ":amount": intent["amount_cents"],
+                ":customer": intent["metronome_customer_id"],
+                ":contract": intent["metronome_contract_id"],
+                ":now": int(time.time()),
+            },
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        latest = await get_active_top_up(owner_id)
+        if latest and latest.get("intent_event_id") == intent["event_id"]:
+            return
+        raise TopUpIntentConflict("another top-up is active for this workspace") from exc
+
+
 async def get_or_create_top_up_intent(owner_id: str, request_id: str, binding: dict) -> dict:
     """Atomically pin the complete payment-gated Metronome request body.
 
@@ -191,6 +282,7 @@ async def get_or_create_top_up_intent(owner_id: str, request_id: str, binding: d
             Item=item,
             ConditionExpression="attribute_not_exists(event_id)",
         )
+        await _claim_active_top_up(owner_id, item)
         return item
     except ClientError as exc:
         if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
@@ -206,8 +298,9 @@ async def get_or_create_top_up_intent(owner_id: str, request_id: str, binding: d
     # must replay the original body, not be rejected as a changed purchase.
     if any(existing.get(field) != value for field, value in binding.items() if field != "effective_at"):
         raise TopUpIntentConflict("top-up intent binding changed")
-    if existing.get("state") not in {"pending", "completed"}:
+    if existing.get("state") not in {"pending", "completed", "paid", "failed"}:
         raise TopUpIntentConflict("top-up intent state is unavailable")
+    await _claim_active_top_up(owner_id, existing)
     return existing
 
 
@@ -231,6 +324,104 @@ async def complete_top_up_intent(event_id: str) -> None:
         if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
         raise TopUpIntentConflict("top-up intent state is unavailable") from exc
+
+
+async def set_active_top_up_status(
+    owner_id: str,
+    metronome_customer_id: str,
+    metronome_contract_id: str,
+    status: str,
+) -> bool:
+    """Advance a matching active pointer without terminally settling it."""
+    if status not in {"requested", "action_required"}:
+        raise ValueError("invalid active top-up status")
+    active = await get_active_top_up(owner_id)
+    if (
+        active is None
+        or active.get("metronome_customer_id") != metronome_customer_id
+        or active.get("metronome_contract_id") != metronome_contract_id
+    ):
+        return False
+    if active.get("status") in _TOP_UP_TERMINAL_STATUSES:
+        return False
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"event_id": active_top_up_key(owner_id)},
+            UpdateExpression="SET #status = :status, updated_at = :now",
+            ConditionExpression="#kind = :kind AND #intent = :intent AND #status = :current",
+            ExpressionAttributeNames={"#status": "status", "#kind": "kind", "#intent": "intent_event_id"},
+            ExpressionAttributeValues={
+                ":status": status,
+                ":current": active["status"],
+                ":now": int(time.time()),
+                ":kind": "metronome-top-up-active",
+                ":intent": active["intent_event_id"],
+            },
+        )
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return False
+
+
+async def settle_active_top_up(
+    owner_id: str,
+    metronome_customer_id: str,
+    metronome_contract_id: str,
+    status: str,
+) -> bool:
+    """Terminally settle the matching pointer and its immutable audit intent."""
+    if status not in _TOP_UP_TERMINAL_STATUSES:
+        raise ValueError("invalid terminal top-up status")
+    active = await get_active_top_up(owner_id)
+    if (
+        active is None
+        or active.get("metronome_customer_id") != metronome_customer_id
+        or active.get("metronome_contract_id") != metronome_contract_id
+    ):
+        return False
+    current = active.get("status")
+    if current in _TOP_UP_TERMINAL_STATUSES and current != status:
+        return False
+    if current not in _TOP_UP_TERMINAL_STATUSES:
+        try:
+            await run_in_thread(
+                _table().update_item,
+                Key={"event_id": active_top_up_key(owner_id)},
+                UpdateExpression="SET #status = :status, settled_at = if_not_exists(settled_at, :now)",
+                ConditionExpression="#kind = :kind AND #intent = :intent AND #status = :current",
+                ExpressionAttributeNames={"#status": "status", "#kind": "kind", "#intent": "intent_event_id"},
+                ExpressionAttributeValues={
+                    ":status": status,
+                    ":current": current,
+                    ":now": int(time.time()),
+                    ":kind": "metronome-top-up-active",
+                    ":intent": active["intent_event_id"],
+                },
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+            latest = await get_active_top_up(owner_id)
+            if not latest or latest.get("status") != status:
+                return False
+
+    await run_in_thread(
+        _table().update_item,
+        Key={"event_id": active["intent_event_id"]},
+        UpdateExpression="SET #state = :status, settled_at = if_not_exists(settled_at, :now)",
+        ConditionExpression="#kind = :kind AND owner_id = :owner",
+        ExpressionAttributeNames={"#state": "state", "#kind": "kind"},
+        ExpressionAttributeValues={
+            ":status": status,
+            ":now": int(time.time()),
+            ":kind": "metronome-top-up",
+            ":owner": owner_id,
+        },
+    )
+    return True
 
 
 async def begin_event_processing(

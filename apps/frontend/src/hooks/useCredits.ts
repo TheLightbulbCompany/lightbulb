@@ -11,6 +11,11 @@ export type CreditsBalance = {
   balance_dollars: string | null;
   /** Server-computed bedrock-gate predicate. */
   is_exhausted?: boolean;
+  active_top_up?: {
+    request_id: string;
+    amount_cents: number;
+    status: "pending" | "requested" | "action_required" | "paid" | "failed";
+  } | null;
 };
 
 export function isCreditsExhausted(balance: CreditsBalance | null | undefined): boolean {
@@ -39,7 +44,7 @@ export type PendingTopUp = {
   workspace_id: string;
   request_id: string;
   amount_cents: number;
-  state: "pending" | "requested";
+  state: "pending" | "requested" | "action_required";
 };
 
 const pendingTopUpKey = (userId: string, workspaceId: string) =>
@@ -56,7 +61,7 @@ function readPendingTopUp(userId: string, workspaceId: string): PendingTopUp | n
       intent.workspace_id !== workspaceId ||
       typeof intent.request_id !== "string" ||
       typeof intent.amount_cents !== "number" ||
-      (intent.state !== "pending" && intent.state !== "requested")
+      (intent.state !== "pending" && intent.state !== "requested" && intent.state !== "action_required")
     ) {
       window.localStorage.removeItem(pendingTopUpKey(userId, workspaceId));
       return null;
@@ -73,11 +78,30 @@ export function useCredits() {
   const { orgId, userId, isLoaded, isSignedIn, orgRole } = useAuth();
   const ready = Boolean(isLoaded && isSignedIn && userId && orgId);
   const [, refreshPendingTopUp] = useState(0);
+  const [topUpOutcome, setTopUpOutcome] = useState<"paid" | "failed" | null>(null);
   const pendingTopUp = ready && userId && orgId ? readPendingTopUp(userId, orgId) : null;
 
   const { data, error, isLoading, mutate } = useSWR<CreditsBalance>(
     ready && userId && orgId ? ["/billing/credits/balance", userId, orgId] : null,
-    ([path]: [string, string, string]) => api.get(path) as Promise<CreditsBalance>,
+    async ([path]: [string, string, string]) => {
+      const balance = await api.get(path) as CreditsBalance;
+      const persisted = userId && orgId ? readPendingTopUp(userId, orgId) : null;
+      const active = balance.active_top_up;
+      if (persisted && active && active.request_id === persisted.request_id) {
+        if (active.status === "paid" || active.status === "failed") {
+          window.localStorage.removeItem(pendingTopUpKey(userId!, orgId!));
+          setTopUpOutcome(active.status);
+          refreshPendingTopUp((version) => version + 1);
+        } else if (active.status !== persisted.state) {
+          window.localStorage.setItem(
+            pendingTopUpKey(userId!, orgId!),
+            JSON.stringify({ ...persisted, state: active.status }),
+          );
+          refreshPendingTopUp((version) => version + 1);
+        }
+      }
+      return balance;
+    },
     { refreshInterval: 30_000, dedupingInterval: 30_000 },
   );
 
@@ -92,6 +116,7 @@ export function useCredits() {
       state: "pending" as const,
     };
     if (!persisted) {
+      setTopUpOutcome(null);
       window.localStorage.setItem(pendingTopUpKey(userId, orgId), JSON.stringify(intent));
       refreshPendingTopUp((version) => version + 1);
     }
@@ -120,6 +145,7 @@ export function useCredits() {
     refresh: mutate,
     startTopUp,
     pendingTopUp,
+    topUpOutcome,
     canManageCredits: ready && orgRole === "org:admin",
   };
 }

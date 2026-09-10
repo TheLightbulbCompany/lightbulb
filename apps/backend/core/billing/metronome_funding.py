@@ -172,7 +172,11 @@ async def _request_top_up(
     metronome_customer_id: str,
     metronome_contract_id: str,
 ) -> None:
-    from core.services.webhook_dedup import complete_top_up_intent, get_or_create_top_up_intent
+    from core.services.webhook_dedup import (
+        complete_top_up_intent,
+        get_or_create_top_up_intent,
+        set_active_top_up_status,
+    )
 
     binding = {
         "amount_cents": amount_cents,
@@ -189,6 +193,14 @@ async def _request_top_up(
     }
     intent = await get_or_create_top_up_intent(owner_id, request_id, binding)
     if intent["state"] == "completed":
+        await set_active_top_up_status(
+            owner_id,
+            intent["metronome_customer_id"],
+            intent["metronome_contract_id"],
+            "requested",
+        )
+        return
+    if intent["state"] in {"paid", "failed"}:
         return
     await _verify_workspace_stripe_link(
         client,
@@ -206,6 +218,12 @@ async def _request_top_up(
         effective_at=intent["effective_at"],
     )
     await complete_top_up_intent(intent["event_id"])
+    await set_active_top_up_status(
+        owner_id,
+        intent["metronome_customer_id"],
+        intent["metronome_contract_id"],
+        "requested",
+    )
 
 
 async def grant_prepaid_credits(

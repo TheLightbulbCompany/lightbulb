@@ -19,9 +19,11 @@ from core.services.webhook_dedup import (
     complete_membership_lifecycle,
     complete_event_processing,
     get_or_create_top_up_intent,
+    get_active_top_up,
     get_membership_lifecycle,
     record_event_or_skip,
     record_permanent_marker,
+    settle_active_top_up,
 )
 
 
@@ -217,6 +219,57 @@ async def test_top_up_intent_pins_money_binding_and_rejects_a_changed_workspace_
             "11111111-1111-4111-8111-111111111111",
             {**binding, "stripe_customer_id": "cus_replaced"},
         )
+
+
+@pytest.mark.asyncio
+async def test_active_top_up_allows_same_request_and_replaces_only_after_terminal_settlement(dedup_table, monkeypatch):
+    monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", dedup_table)
+    first_request = "12111111-1111-4111-8111-111111111111"
+    second_request = "13111111-1111-4111-8111-111111111111"
+    binding = {
+        "amount_cents": 2500,
+        "effective_at": "2026-09-10T00:00:00.000Z",
+        "metronome_customer_id": "metro_1",
+        "metronome_contract_id": "contract_1",
+        "stripe_customer_id": "cus_1",
+        "product_id": "prod_1",
+        "credit_type_id": "credit_1",
+        "description": "isol8 top-up owner=org_1 amount_cents=2500",
+        "idempotency_key": first_request,
+    }
+    first = await get_or_create_top_up_intent("org_1", first_request, binding)
+    assert (await get_or_create_top_up_intent("org_1", first_request, binding))["event_id"] == first["event_id"]
+
+    with pytest.raises(TopUpIntentConflict, match="active"):
+        await get_or_create_top_up_intent("org_1", second_request, {**binding, "idempotency_key": second_request})
+
+    assert await settle_active_top_up("org_1", "metro_1", "contract_1", "paid") is True
+    assert (await get_active_top_up("org_1"))["status"] == "paid"
+    assert (await get_or_create_top_up_intent("org_1", first_request, binding))["state"] == "paid"
+    second = await get_or_create_top_up_intent("org_1", second_request, {**binding, "idempotency_key": second_request})
+    assert second["request_id"] == second_request
+
+
+@pytest.mark.asyncio
+async def test_active_top_up_rejects_customer_or_contract_mismatch_and_records_failure(dedup_table, monkeypatch):
+    monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", dedup_table)
+    request_id = "14111111-1111-4111-8111-111111111111"
+    binding = {
+        "amount_cents": 2500,
+        "effective_at": "2026-09-10T00:00:00.000Z",
+        "metronome_customer_id": "metro_1",
+        "metronome_contract_id": "contract_1",
+        "stripe_customer_id": "cus_1",
+        "product_id": "prod_1",
+        "credit_type_id": "credit_1",
+        "description": "isol8 top-up owner=org_1 amount_cents=2500",
+        "idempotency_key": request_id,
+    }
+    await get_or_create_top_up_intent("org_1", request_id, binding)
+    assert await settle_active_top_up("org_1", "metro_other", "contract_1", "failed") is False
+    assert await settle_active_top_up("org_1", "metro_1", "contract_other", "failed") is False
+    assert await settle_active_top_up("org_1", "metro_1", "contract_1", "failed") is True
+    assert (await get_active_top_up("org_1"))["status"] == "failed"
 
 
 @pytest.mark.asyncio

@@ -832,9 +832,17 @@ def test_bedrock_trial_disables_heartbeat():
 
 
 def test_bedrock_trial_skips_channel_account_reinjection():
+    """Third-party channel accounts (telegram) are never reinjected on trial —
+    only the always-on native ``lightbulb`` channel (the in-app multiplayer
+    surface, unconditional on every provider path) is present."""
     cfg = _trial_cfg(channel_accounts=_CHANNEL_ACCOUNTS)
-    assert cfg["channels"] == {}
-    assert "bindings" not in cfg
+    assert cfg["channels"] == {"lightbulb": {"enabled": True, "accounts": {"main": {"enabled": True}}}}
+    assert cfg["bindings"] == [
+        {
+            "agentId": "main",
+            "match": {"channel": "lightbulb", "accountId": "main", "peer": {"kind": "channel", "id": "*"}},
+        }
+    ]
 
 
 def test_bedrock_trial_emits_no_acp_block():
@@ -864,8 +872,14 @@ def test_paid_bedrock_keeps_cron_heartbeat_channels_and_acp():
     }
     assert cfg["channels"]["telegram"]["enabled"] is True
     assert cfg["channels"]["telegram"]["accounts"] == _CHANNEL_ACCOUNTS["telegram"]
+    # The native lightbulb-channel binding is seeded first (unconditional on
+    # every provider path), then the reinjected telegram route is appended.
     assert cfg["bindings"] == [
-        {"type": "route", "agentId": "acct_1", "match": {"channel": "telegram", "accountId": "acct_1"}}
+        {
+            "agentId": "acct_1",
+            "match": {"channel": "lightbulb", "accountId": "acct_1", "peer": {"kind": "channel", "id": "*"}},
+        },
+        {"type": "route", "agentId": "acct_1", "match": {"channel": "telegram", "accountId": "acct_1"}},
     ]
     assert cfg["acp"]["allowedAgents"] == ["claude"]
 

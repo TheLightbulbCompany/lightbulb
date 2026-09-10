@@ -44,7 +44,9 @@ now only Branch A's handoff, and must stay silent on these happy paths):
     owner's provider change must not 500 after committing the choice.
 """
 
+import asyncio
 import os
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import boto3
@@ -87,6 +89,11 @@ def _billing_row():
         "stripe_subscription_id": "sub_1",
         "provider_choice": "bedrock_claude",
     }
+
+
+@asynccontextmanager
+async def _noop_owner_lifecycle_guard(owner_id: str):
+    yield
 
 
 def _real_manager() -> EcsManager:
@@ -145,6 +152,7 @@ def cold_change_env(containers_table):
     real_manager = _real_manager()
     created: list = []
     row = _billing_row()
+    _real_create_task = asyncio.create_task  # captured before the patch below shadows it
 
     async def _commit_choice(
         owner_id, *, provider_choice, byo_provider, connector_user_id=None, requires_reprovision=True
@@ -175,6 +183,12 @@ def cold_change_env(containers_table):
         ),
         patch("core.services.owner_facts.write_owner_facts", new=AsyncMock()),
         patch.object(billing_service, "put_metric", new=MagicMock()),
+        # stop_user_service is now @serialize_owner_lifecycle: it takes a
+        # cross-process file lock under settings.EFS_MOUNT_PATH before running.
+        # There is no EFS mount in the unit-test sandbox (real os.makedirs
+        # there raises), so the guard is stubbed to a no-op — same spirit as
+        # every other real-I/O collaborator this fixture stubs out.
+        patch("core.services.owner_lifecycle.owner_lifecycle_guard", new=_noop_owner_lifecycle_guard),
         # change_provider's cold path now lazily imports get_ecs_manager from
         # core.containers, awaits .stop_user_service, and dispatches
         # .drain_then_dispatch_provision(owner_id) as a task — hand it a
@@ -187,11 +201,18 @@ def cold_change_env(containers_table):
         # ecs_manager dispatches dispatch_provision (created[1]). Both
         # modules do `import asyncio` at module scope — the SAME module
         # object — so one patch of asyncio.create_task covers both call
-        # sites.
+        # sites. Only those two named coroutines are intercepted; anything
+        # else (e.g. a stray create_task from an un-stubbed collaborator)
+        # falls through to the real create_task instead of silently vanishing
+        # into `created` and corrupting its assertions.
         patch.object(
             ecs_manager_module.asyncio,
             "create_task",
-            new=lambda coro: created.append(coro) or MagicMock(),
+            new=lambda coro: (
+                (created.append(coro), MagicMock())[1]
+                if coro.cr_code.co_name in ("drain_then_dispatch_provision", "dispatch_provision")
+                else _real_create_task(coro)
+            ),
         ),
         # The SFN dispatch boundary: start_execution is reached ONLY if the
         # single-flight claim is won against the real moto row. Kept because

@@ -425,8 +425,12 @@ class TestChannelProgressDrafts:
         assert "streaming" not in cfg["channels"]["discord"]
 
     def test_trial_still_gets_no_channels(self):
+        """No third-party channel (telegram) reinjection on trial — only the
+        always-on native ``lightbulb`` channel, unconditional on every
+        provider path, is present."""
         cfg = _cfg("bedrock_trial", channel_accounts=self._ACCOUNTS)
-        assert cfg["channels"] == {}
+        assert cfg["channels"] == {"lightbulb": {"enabled": True, "accounts": {"main": {"enabled": True}}}}
+        assert "telegram" not in cfg["channels"]
 
 
 class TestDebugCommandProdGate:

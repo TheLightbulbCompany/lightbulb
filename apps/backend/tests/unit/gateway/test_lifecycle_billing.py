@@ -8,23 +8,6 @@ import pytest
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
-# SUSPECTED SOURCE BUG (see PR #2424 / commit 187ef487d "cut over multiplayer
-# messaging"): `_handle_message`'s `event_name == "chat"` branch does
-# `if room is None: return` BEFORE running any terminal side-effects (trial
-# first-response scheduling, push dispatch, run-completion callbacks, e2e
-# latency metrics, `_clear_active_run`). `room` only parses for the new
-# `agent:<uuid>:lightbulb:channel:<room-uuid>` key shape, so a plain webchat
-# session key (`agent:main:main`, still documented as valid by
-# `_parse_session_key`) never reaches those side effects any more. Not
-# patched per task scope -- reported instead.
-_ROOM_GATE_BUG = (
-    "connection_pool._handle_message gates chat-terminal side effects "
-    "(trial first-response, push, run-completion callbacks, latency) behind "
-    "`if room is None: return`, so non-room session keys never fire them -- "
-    "suspected regression from the native-messaging cutover (PR #2424), not "
-    "a stale test. Not patched per task scope."
-)
-
 
 @pytest.fixture
 def conn():
@@ -50,6 +33,7 @@ def conn():
     # __init__ in real usage; tests that use __new__ to bypass init have to
     # populate them by hand.
     c._active_runs = {}
+    c._terminal_run_ids = {}
     c._run_state = {}
     c._side_run_ids = {}
     c._run_text = {}
@@ -193,7 +177,6 @@ async def test_group_session_key_bills_under_owner_not_literal_channel(conn):
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason=_ROOM_GATE_BUG, strict=True)
 async def test_chat_final_no_longer_calls_billing(conn):
     """chat.final still fires UI signals but not billing (lifecycle is the new trigger)."""
     payload = {
@@ -212,8 +195,8 @@ async def test_chat_final_no_longer_calls_billing(conn):
         await asyncio.sleep(0)
 
     mock_fetch.assert_not_awaited()
-    # But UI signal IS forwarded ({"type": "done"})
-    any_done = any(isinstance(c[0][0], dict) and c[0][0].get("type") == "done" for c in mock_forward.call_args_list)
+    # But UI signal IS forwarded ({"type": "done"}) -- _publish_room_frame(session_key, frame)
+    any_done = any(isinstance(c[0][1], dict) and c[0][1].get("type") == "done" for c in mock_forward.call_args_list)
     assert any_done
 
 
@@ -226,7 +209,6 @@ def _final(text: str | None):
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason=_ROOM_GATE_BUG, strict=True)
 async def test_chat_final_with_text_schedules_trial_first_response(conn):
     sched = MagicMock(return_value=None)
     with (

@@ -1932,8 +1932,15 @@ class GatewayConnection:
             return
 
         if event_name == "chat":
-            if room is None:
-                return
+            # NOTE: no `if room is None: return` here. Completion tracking,
+            # push notifications, active-run cleanup, and the e2e-latency
+            # metrics must fire for every terminal chat run, not just
+            # canonical-room ones (bootstrap_dispatcher's first-contact nudge
+            # and plain webchat both dispatch on non-room session keys).
+            # `_publish_room_frame` already no-ops internally for a
+            # non-room session key, so the room-channel publish stays
+            # correctly gated without an explicit check here.
+            agent_id = parsed_key.get("agent_id")
             state = payload.get("state")
             if state not in {"final", "error", "aborted"} or not run_id:
                 return
@@ -1960,17 +1967,17 @@ class GatewayConnection:
                 if thinking:
                     await self._publish_room_frame(
                         session_key,
-                        {"type": "thinking", "content": thinking, "agent_id": room["agent_id"], "runId": run_id},
+                        {"type": "thinking", "content": thinking, "agent_id": agent_id, "runId": run_id},
                     )
                 text = self._extract_assistant_text(payload)
                 if text:
                     await self._publish_room_frame(
                         session_key,
-                        {"type": "chunk", "content": text, "agent_id": room["agent_id"], "runId": run_id},
+                        {"type": "chunk", "content": text, "agent_id": agent_id, "runId": run_id},
                     )
                 await self._publish_room_frame(
                     session_key,
-                    {"type": "done", "agent_id": room["agent_id"], "runId": run_id},
+                    {"type": "done", "agent_id": agent_id, "runId": run_id},
                 )
             elif state == "error":
                 message = payload.get("errorMessage") or payload.get("error") or "Agent run failed"
@@ -1983,7 +1990,7 @@ class GatewayConnection:
                     if money is not None:
                         upstream_message = str(message)
                         error_kind, message = money
-                frame = {"type": "error", "message": str(message), "agent_id": room["agent_id"], "runId": run_id}
+                frame = {"type": "error", "message": str(message), "agent_id": agent_id, "runId": run_id}
                 if error_kind:
                     frame["code"] = error_kind
                 if upstream_message:
@@ -1995,7 +2002,7 @@ class GatewayConnection:
                     {
                         "type": "error",
                         "message": "Agent run was cancelled",
-                        "agent_id": room["agent_id"],
+                        "agent_id": agent_id,
                         "runId": run_id,
                     },
                 )
@@ -2008,11 +2015,11 @@ class GatewayConnection:
                         "type": "run_ended",
                         "runId": run_id,
                         "outcome": "done" if state == "final" else state,
-                        "agent_id": room["agent_id"],
+                        "agent_id": agent_id,
                     },
                 )
                 if state in {"final", "error"} and not run_is_side:
-                    self._dispatch_push_notification(payload, carried_member, room["agent_id"], state)
+                    self._dispatch_push_notification(payload, carried_member, agent_id, state)
                 if not run_is_side:
                     self._clear_active_run(session_key, run_id)
             if primary_started_at is not None:

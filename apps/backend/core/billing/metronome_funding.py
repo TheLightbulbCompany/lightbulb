@@ -174,12 +174,6 @@ async def _request_top_up(
 ) -> None:
     from core.services.webhook_dedup import complete_top_up_intent, get_or_create_top_up_intent
 
-    await _verify_workspace_stripe_link(
-        client,
-        stripe_customer_id=stripe_customer_id,
-        metronome_customer_id=metronome_customer_id,
-        metronome_contract_id=metronome_contract_id,
-    )
     binding = {
         "amount_cents": amount_cents,
         "effective_at": time.strftime("%Y-%m-%dT00:00:00.000Z", time.gmtime()),
@@ -189,11 +183,19 @@ async def _request_top_up(
         "product_id": settings.METRONOME_CREDITS_PRODUCT_ID,
         "credit_type_id": settings.METRONOME_USD_CENTS_CREDIT_TYPE_ID,
         "description": f"isol8 top-up owner={owner_id} amount_cents={amount_cents}",
-        "idempotency_key": f"topup:v1:{owner_id}:{request_id}",
+        # Metronome's native idempotency identity is the UUID supplied by the
+        # caller. DDB scopes that UUID to this workspace before we call it.
+        "idempotency_key": request_id,
     }
     intent = await get_or_create_top_up_intent(owner_id, request_id, binding)
     if intent["state"] == "completed":
         return
+    await _verify_workspace_stripe_link(
+        client,
+        stripe_customer_id=intent["stripe_customer_id"],
+        metronome_customer_id=intent["metronome_customer_id"],
+        metronome_contract_id=intent["metronome_contract_id"],
+    )
     await _create_gated_commit(
         client,
         customer_id=intent["metronome_customer_id"],

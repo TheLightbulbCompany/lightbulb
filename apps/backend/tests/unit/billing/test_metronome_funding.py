@@ -128,15 +128,31 @@ async def test_request_creates_payment_gated_commit_in_cents(provisioned_billing
 
 @pytest.mark.asyncio
 async def test_request_passes_caller_idempotency_key_through(provisioned_billing_row):
-    """The endpoint's owner-namespaced key must reach the client verbatim —
-    it is what makes a retried POST replay the original commit at Metronome
-    instead of charging the card a second time."""
+    """The caller UUID is Metronome's native idempotency key verbatim."""
     fake = _fake_client()
     request_id = "22222222-2222-4222-8222-222222222222"
     await request_top_up("org_abc", 2500, request_id=request_id, client=fake)
 
     _, kwargs = fake.create_gated_prepaid_commit.call_args
-    assert kwargs["idempotency_key"] == f"topup:v1:org_abc:{request_id}"
+    assert kwargs["idempotency_key"] == request_id
+
+
+@pytest.mark.asyncio
+async def test_completed_retry_returns_before_any_metronome_read_or_write(provisioned_billing_row):
+    """A completed permanent intent remains available during provider outages."""
+    fake = _fake_client()
+    request_id = "21212121-2121-4212-8212-212121212121"
+    await request_top_up("org_abc", 2500, request_id=request_id, client=fake)
+
+    fake.get_customer_billing_provider_configurations.reset_mock()
+    fake.get_contract.reset_mock()
+    fake.create_gated_prepaid_commit.reset_mock()
+
+    await request_top_up("org_abc", 2500, request_id=request_id, client=fake)
+
+    fake.get_customer_billing_provider_configurations.assert_not_awaited()
+    fake.get_contract.assert_not_awaited()
+    fake.create_gated_prepaid_commit.assert_not_awaited()
 
 
 @pytest.mark.asyncio

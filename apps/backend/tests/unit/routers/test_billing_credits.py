@@ -4,6 +4,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from core.services.webhook_dedup import TopUpIntentConflict
+
 
 REQUEST_ID = "7e22fb41-07e3-4f9d-920c-68ce9a7710b7"
 
@@ -58,6 +60,21 @@ async def test_workspace_member_cannot_purchase_credits(async_client_org_member)
 
     assert response.status_code == 403
     request_top_up.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reused_top_up_uuid_with_different_binding_is_a_controlled_conflict(async_client):
+    with patch(
+        "core.billing.metronome_funding.request_top_up",
+        new=AsyncMock(side_effect=TopUpIntentConflict("top-up intent binding changed")),
+    ):
+        response = await async_client.post(
+            "/api/v1/billing/credits/top_up",
+            json={"amount_cents": 2000, "request_id": REQUEST_ID},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "top-up intent binding changed"
 
 
 @pytest.mark.asyncio

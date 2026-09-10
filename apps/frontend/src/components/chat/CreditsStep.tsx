@@ -16,7 +16,7 @@ const TEXT_INPUT =
 
 /** Bedrock onboarding: one workspace top-up request, collected by Metronome. */
 export function CreditsStep({ onComplete }: Props) {
-  const { balance, refresh, startTopUp } = useCredits();
+  const { balance, refresh, startTopUp, canManageCredits, pendingTopUp } = useCredits();
   const [amount, setAmount] = useState(2000);
   const [submitting, setSubmitting] = useState(false);
   const [requested, setRequested] = useState(false);
@@ -33,6 +33,13 @@ export function CreditsStep({ onComplete }: Props) {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    if (pendingTopUp) {
+      setAmount(pendingTopUp.amount_cents);
+      setLockedAmount(pendingTopUp.amount_cents);
+    }
+  }, [pendingTopUp]);
 
   const requestTopUp = async () => {
     const intentAmount = lockedAmount ?? amount;
@@ -59,6 +66,8 @@ export function CreditsStep({ onComplete }: Props) {
       <p className="text-sm text-[var(--midnight-muted)]">
         Prepay for managed AI inference. Metronome invoices your workspace&apos;s saved payment method.
       </p>
+      {!canManageCredits && <p className="text-sm text-[var(--midnight-muted)]">Only workspace admins can add credits.</p>}
+      {canManageCredits && <>
       <div className="grid grid-cols-4 gap-2">
         {CREDIT_PRESETS_CENTS.map((cents) => (
           <button key={cents} type="button" disabled={lockedAmount !== null} onClick={() => setAmount(cents)} style={SANS_FONT}
@@ -74,6 +83,7 @@ export function CreditsStep({ onComplete }: Props) {
       <button onClick={requestTopUp} disabled={submitting || requested || amount < MIN_CREDITS_CENTS} className={PRIMARY_BUTTON} style={SANS_FONT}>
         {submitting ? "Loading…" : requested ? "Payment requested" : `Add $${amount / 100}`}
       </button>
+      </>}
     </div>
   );
 }

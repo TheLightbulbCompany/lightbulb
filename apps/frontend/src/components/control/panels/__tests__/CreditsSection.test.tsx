@@ -13,6 +13,8 @@ describe("CreditsSection", () => {
       balance: { balance_microcents: 3_952_000_000, balance_dollars: "39.52" },
       refresh: vi.fn(),
       startTopUp: vi.fn(),
+      canManageCredits: true,
+      pendingTopUp: null,
     });
   });
 
@@ -24,5 +26,19 @@ describe("CreditsSection", () => {
     ).toBeInTheDocument();
     // No standalone page <h2> — the section embeds inside Model & Credits.
     expect(screen.queryByRole("heading", { name: /claude credits/i })).toBeNull();
+  });
+
+  it("keeps the balance visible but makes top-ups read-only for members", () => {
+    mockUseCredits.mockReturnValue({
+      balance: { balance_microcents: 3_952_000_000, balance_dollars: "39.52" },
+      refresh: vi.fn(),
+      startTopUp: vi.fn(),
+      canManageCredits: false,
+      pendingTopUp: null,
+    });
+    render(<CreditsSection />);
+    expect(screen.getByText("$39.52")).toBeInTheDocument();
+    expect(screen.getByText("Only workspace admins can add credits.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /add \$20/i })).toBeNull();
   });
 });

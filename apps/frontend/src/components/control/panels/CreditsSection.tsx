@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { RefreshCw, Wallet } from "lucide-react";
 import { useCredits } from "@/hooks/useCredits";
 
@@ -10,12 +10,19 @@ const QUICK_PICKS_CENTS = [1000, 2000, 5000, 10000];
 
 /** Workspace-managed AI credits, purchased through a Metronome-gated commit. */
 export function CreditsSection() {
-  const { balance, refresh, startTopUp } = useCredits();
+  const { balance, refresh, startTopUp, canManageCredits, pendingTopUp } = useCredits();
   const [amount, setAmount] = useState(2000);
   const [submitting, setSubmitting] = useState(false);
   const [requested, setRequested] = useState<number | null>(null);
   const [lockedAmount, setLockedAmount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (pendingTopUp) {
+      setAmount(pendingTopUp.amount_cents);
+      setLockedAmount(pendingTopUp.amount_cents);
+    }
+  }, [pendingTopUp]);
 
   const topUp = async () => {
     const intentAmount = lockedAmount ?? amount;
@@ -47,12 +54,15 @@ export function CreditsSection() {
       </div>
       <div className={CARD}>
         <span className={EYEBROW}>ADD CREDITS</span>
+        {!canManageCredits && <p className="text-sm text-[var(--midnight-muted)]">Only workspace admins can add credits.</p>}
+        {canManageCredits && <>
         <div className="flex flex-wrap gap-2">{QUICK_PICKS_CENTS.map((cents) => <button key={cents} disabled={lockedAmount !== null} onClick={() => setAmount(cents)} className={"rounded-md border px-3 py-1.5 text-sm transition-colors " + (amount === cents ? "border-[var(--midnight)] bg-[var(--cream-deep)] text-[var(--midnight)]" : "border-[var(--edge)] text-[var(--midnight)] hover:bg-[var(--cream-deep)]")}>${cents / 100}</button>)}</div>
         {error && <p className="text-sm text-err">{error}</p>}
         {requested !== null && <p className="text-sm text-ok">Top-up of ${requested / 100} requested — credits can take a few minutes to land.</p>}
         <button onClick={topUp} disabled={submitting || requested !== null || amount < 500} className="rounded-full bg-[var(--midnight)] hover:opacity-90 text-cream px-4 py-2 text-sm disabled:opacity-50">
           {submitting ? "Loading…" : requested !== null ? "Top-up requested" : `Add $${amount / 100}`}
         </button>
+        </>}
         <p className="text-xs text-[var(--midnight-muted)]">Metronome charges the workspace&apos;s saved payment method and releases credits after collection.</p>
       </div>
     </div>

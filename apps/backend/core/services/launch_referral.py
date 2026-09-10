@@ -11,7 +11,7 @@ stamps ``closed_at``); ``referred_by`` matters for nothing else.
 Milestones, stamped on the REFERRER's row (``milestone_5_credits`` /
 ``milestone_20_credits``: "granted" | "pending_grant"): 5 counted referrals →
 $50 of Bedrock credits, 20 → $200 more ($250 total). A grant replicates the
-checkout webhook's two-ledger sequence — ``grant_prepaid_credits`` (Metronome,
+promotional-grant two-ledger sequence — ``grant_prepaid_credits`` (Metronome,
 idempotent on a stable key) then the restore-only fast-gate refresh
 (``read_net_balance_microcents`` + ``apply_fresh_balance``). A referrer with
 no Metronome ledger yet (trial-only, or an unclaimed row) is stamped

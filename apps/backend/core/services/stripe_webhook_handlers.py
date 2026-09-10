@@ -1319,7 +1319,7 @@ async def handle_checkout_session(event: dict[str, Any], billing_service: Billin
     # Launch competition: a settled session that carried the winner free-month
     # discount just CONSUMED the coupon — stamp the sheet row so a forced
     # close rerun cannot attach a second free month to the subscription this
-    # checkout minted. Before the credit-funding early return below, because
+    # checkout minted. This check happens before the handler returns because
     # most winner checkouts carry no credits at all. The settled check is
     # load-bearing, not defensive: a delayed-payment session fires
     # checkout.session.completed while the payment can still FAIL, and

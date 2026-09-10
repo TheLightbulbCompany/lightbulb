@@ -5,16 +5,18 @@ import { CreditsStep } from "../CreditsStep";
 const balance = vi.fn();
 const startTopUp = vi.fn();
 const refresh = vi.fn();
+const canManageCredits = vi.fn();
 vi.mock("@/hooks/useCredits", () => ({
-  useCredits: () => ({ balance: balance(), startTopUp, refresh }),
+  useCredits: () => ({ balance: balance(), startTopUp, refresh, canManageCredits: canManageCredits(), pendingTopUp: null }),
   isCreditsExhausted: (value: { is_exhausted?: boolean; balance_microcents: number | null }) =>
     value.is_exhausted ?? (value.balance_microcents !== null && value.balance_microcents <= 0),
 }));
 
 describe("CreditsStep", () => {
   beforeEach(() => {
-    balance.mockReset(); startTopUp.mockReset(); refresh.mockReset();
+    balance.mockReset(); startTopUp.mockReset(); refresh.mockReset(); canManageCredits.mockReset();
     balance.mockReturnValue({ balance_microcents: 0, balance_dollars: "0.00" });
+    canManageCredits.mockReturnValue(true);
   });
 
   it("pins the selected amount and disables controls after an uncertain request", async () => {
@@ -39,5 +41,12 @@ describe("CreditsStep", () => {
     expect(screen.getByRole("button", { name: "$50" })).toBeDisabled();
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: /^add \$20$/i })); });
     expect(startTopUp).toHaveBeenLastCalledWith(2000);
+  });
+
+  it("is read-only for a non-admin workspace member", () => {
+    canManageCredits.mockReturnValue(false);
+    render(<CreditsStep onComplete={vi.fn()} />);
+    expect(screen.getByText("Only workspace admins can add credits.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^add \$/i })).toBeNull();
   });
 });

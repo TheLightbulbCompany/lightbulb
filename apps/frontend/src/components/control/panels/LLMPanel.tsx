@@ -312,7 +312,7 @@ function BedrockBlock({
       <div className={ACTION_CARD}>
         <span className={EYEBROW}>Provider</span>
         <p className="text-sm text-[var(--midnight)]">
-          Credits and auto-reload are managed below.
+          Workspace credits are managed below.
         </p>
         <button
           onClick={onChangeProvider}

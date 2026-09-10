@@ -534,11 +534,14 @@ async def top_up_credits(
 
     from core.billing.metronome_client import MetronomeError
     from core.billing.metronome_funding import FundingError, request_top_up
+    from core.services.webhook_dedup import TopUpIntentConflict
 
     require_org_admin(ctx)
     owner_id = resolve_owner_id(ctx)
     try:
         await request_top_up(owner_id, body.amount_cents, request_id=str(body.request_id))
+    except TopUpIntentConflict as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except FundingError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except (MetronomeError, httpx.HTTPError) as e:

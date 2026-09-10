@@ -665,11 +665,17 @@ async def resolve_owner_account(subscription_event_data: dict) -> dict | None:
          ``stripe_subscription_id == event.id``.
     """
     metadata = subscription_event_data.get("metadata") or {}
-    owner_id = metadata.get("workspace_id") or metadata.get("owner_id")
+    workspace_id = metadata.get("workspace_id")
+    owner_id = workspace_id or metadata.get("owner_id")
     if owner_id:
         account = await billing_repo.get_by_owner_id(owner_id)
-        if account:
+        if account and account.get("stripe_customer_id") == subscription_event_data.get("customer"):
             return account
+        # workspace_id is an explicit canonical binding. A missing/mismatched
+        # row must not fall through to a shared-customer guess.
+        if workspace_id:
+            put_metric("stripe.webhook.owner_resolve", dimensions={"path": "workspace_metadata_miss"})
+            return None
         put_metric("stripe.webhook.owner_resolve", dimensions={"path": "metadata_miss"})
 
     customer_id = subscription_event_data.get("customer")
@@ -760,7 +766,7 @@ def _subscriber_distinct_id(account: dict, event_data: dict) -> str | None:
     merge onto the same person the frontend ``identify()``s. Personal owners:
     ``owner_id`` IS the Clerk user id. Org owners: ``owner_id`` is the org id,
     so prefer the subscribing human's ``clerk_user_id`` threaded through
-    checkout metadata (``create_flat_fee_checkout`` sets it)."""
+    checkout metadata (the subscription checkout sets it)."""
     metadata = event_data.get("metadata") or {}
     return metadata.get("clerk_user_id") or account.get("owner_id")
 
@@ -1012,7 +1018,7 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
                 account["owner_id"],
                 provider_choice=metadata_provider,
                 byo_provider=metadata_byo if metadata_provider == "byo_key" else None,
-                # create_flat_fee_checkout threads the subscribing human's
+                # Legacy subscription Checkout threaded the subscribing human's
                 # Clerk id through subscription metadata; for chatgpt_oauth
                 # that human is the workspace owner / initial connector.
                 # None just leaves any synchronously-written connector

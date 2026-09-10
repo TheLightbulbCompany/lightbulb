@@ -392,7 +392,7 @@ async def test_partial_payload_with_only_the_seat_item_misreads_as_a_downgrade()
 
     Why this is accepted rather than fixed: Stripe sends all subscription
     items on every event (up to the expand limit of 10; teams have 2), and
-    create_ultra_upgrade (Task 1) refuses to create a seat-only subscription
+    the unified checkout refuses to change a seat-only subscription
     -- a live team sub always carries both items together. So this shape is
     believed unreachable in production. This test exists so that if it ever
     IS reached, the behaviour it triggers is a deliberate, documented

@@ -644,7 +644,7 @@ async def set_stripe_customer_id(
     ``stripe_*`` fields so a brand-new signup can chat before any Stripe
     customer exists). ``billing_service.create_customer_for_owner`` calls
     this when it finds a row that exists but has no ``stripe_customer_id`` —
-    without this backfill, ``create_flat_fee_checkout`` always sees a
+    without this backfill, workspace Checkout always sees a
     Stripe-customer-less account and raises, and every free-tier user hits
     an HTTP 400 on Upgrade. The conditional claim also requires the field to
     be absent: two first checkouts can race on the same ``trial_local`` row,
@@ -671,7 +671,7 @@ async def set_pending_checkout(
 ) -> None:
     """Record the owner's OPEN Stripe Checkout session (at most one).
 
-    Written by ``create_flat_fee_checkout`` right after session creation and
+    Written by workspace Checkout right after session creation and
     read by the ``/trial-checkout`` router so a second upgrade click returns
     the SAME hosted session instead of minting a parallel one — completing
     two open sessions would create two charged subscriptions. Never cleared:

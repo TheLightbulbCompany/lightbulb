@@ -208,7 +208,7 @@ async def test_webhook_backup_write_threads_connector(mock_repo):
     """The provider_choice backup write threads the subscribing human's Clerk
     id (from subscription metadata) as connector_user_id for chatgpt_oauth.
 
-    create_flat_fee_checkout stamps clerk_user_id into subscription metadata;
+    legacy subscription Checkout stamped clerk_user_id into subscription metadata;
     for chatgpt_oauth that human is the workspace owner / initial connector.
     Non-oauth providers pass None so the backup never strips a synchronously
     written connector.

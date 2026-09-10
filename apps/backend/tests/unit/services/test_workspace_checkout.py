@@ -86,7 +86,7 @@ async def test_workspace_checkout_swaps_an_active_subscription_item_in_place(mon
             return_value={
                 "id": "sub_1",
                 "customer": "cus_1",
-                "metadata": {"workspace_id": "org_1", "owner_id": "org_1", "checkout_revision": "0"},
+                "metadata": {"workspace_id": "org_1", "owner_id": "org_1", "workspace_plan_revision": "0"},
                 "status": "active",
                 "items": {"data": [{"id": "si_1", "price": {"id": "price_workspace"}}]},
             }
@@ -101,11 +101,7 @@ async def test_workspace_checkout_swaps_an_active_subscription_item_in_place(mon
     assert modify.call_args.args == ("sub_1",)
     assert modify.call_args.kwargs["items"] == [{"id": "si_1", "price": "price_ultra"}]
     assert modify.call_args.kwargs["proration_behavior"] == "create_prorations"
-    assert modify.call_args.kwargs["metadata"] == {
-        "workspace_id": "org_1",
-        "owner_id": "org_1",
-        "checkout_revision": "1",
-    }
+    assert modify.call_args.kwargs["metadata"] == {"workspace_plan_revision": "1"}
     assert modify.call_args.kwargs["idempotency_key"].startswith("workspace-plan-change:v2:")
 
 
@@ -164,7 +160,7 @@ async def test_workspace_checkout_does_not_create_a_second_subscription_while_we
         "id": "sub_webhook",
         "customer": "cus_1",
         "status": "active",
-        "metadata": {"workspace_id": "org_1", "owner_id": "org_1", "checkout_revision": "0"},
+        "metadata": {"workspace_id": "org_1", "owner_id": "org_1", "workspace_plan_revision": "0"},
         "items": {"data": [{"id": "si_1", "price": {"id": "price_workspace"}}]},
     }
     monkeypatch.setattr(
@@ -213,6 +209,66 @@ async def test_workspace_checkout_reuses_its_open_pending_session(monkeypatch):
 
     assert result == {"checkout_url": "https://checkout.test/pending"}
     create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_workspace_checkout_claim_denied_never_builds_a_session(monkeypatch):
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "org_1", "stripe_customer_id": "cus_1"}),
+    )
+    monkeypatch.setattr(billing_service.billing_repo, "try_claim_checkout_slot", AsyncMock(return_value=None))
+    create = MagicMock()
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "create", create)
+
+    with pytest.raises(billing_service.BillingServiceError, match="checkout_in_progress"):
+        await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="workspace")
+
+    create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_workspace_checkout_marker_failure_expires_unreturned_session(monkeypatch):
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "org_1", "stripe_customer_id": "cus_1"}),
+    )
+    monkeypatch.setattr(
+        billing_service.stripe.checkout.Session, "create", MagicMock(return_value={"id": "cs_1", "url": "url"})
+    )
+    expire = MagicMock()
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "expire", expire)
+    monkeypatch.setattr(
+        billing_service.billing_repo, "set_pending_checkout", AsyncMock(side_effect=RuntimeError("ddb"))
+    )
+
+    with pytest.raises(billing_service.BillingServiceError, match="checkout_unavailable"):
+        await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="workspace")
+
+    expire.assert_called_once_with("cs_1")
+    billing_service.billing_repo.release_checkout_slot.assert_awaited_once_with("org_1", token="claim")
+
+
+@pytest.mark.asyncio
+async def test_workspace_checkout_build_failure_releases_claim(monkeypatch):
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "org_1", "stripe_customer_id": "cus_1"}),
+    )
+    monkeypatch.setattr(
+        billing_service.stripe.checkout.Session, "create", MagicMock(side_effect=RuntimeError("stripe down"))
+    )
+
+    with pytest.raises(RuntimeError, match="stripe down"):
+        await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="workspace")
+
+    billing_service.billing_repo.release_checkout_slot.assert_awaited_once_with("org_1", token="claim")
 
 
 @pytest.mark.asyncio

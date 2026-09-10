@@ -55,9 +55,8 @@ Both are chosen at sign-up. Change your plan in [Settings](/settings) and your p
 | Plan | Price | What you get |
 |---|---|---|
 | Free | $0, no card | Claude Sonnet via Lightbulb, a $3/day usage cap, and a 3-day window. The workspace sleeps when idle and wakes when you open it. |
-| Starter | $50/mo | An always-on workspace: channels, automations, and routines run while you're away. |
-| Teams | $50/mo + $20/seat | Starter for an organization. An invited teammate counts as a seat from the moment the invite is sent. |
-| Ultra Pro | $150/mo (+ $20/seat for organizations) | A larger workspace (2 vCPU / 8 GB), required for more than 10 agents and for the large pre-built companies on the marketplace. |
+| Workspace | $50/mo | An always-on workspace: channels, automations, and routines run while you're away. Includes unlimited members; inference costs are separate. |
+| Ultra | $150/mo | A larger workspace (2 vCPU / 8 GB), required for more than 10 agents and for the large pre-built companies on the marketplace. Includes unlimited members; inference costs are separate. |
 
 Inference runs on one of three provider paths: **Lightbulb-managed Claude credits**, your own **ChatGPT** account, or a **bring-your-own** Anthropic or OpenAI API key. Coding work is delegated to a matching harness — Claude Code with credits or an Anthropic key, Codex with an OpenAI key, OpenCode with ChatGPT (after a one-time **Connect coding harness** in Model & Credits). The free tier has no coding harness.
 

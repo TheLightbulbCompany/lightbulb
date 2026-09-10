@@ -388,7 +388,7 @@ describe("ProvisioningStepper blocked-state rendering", () => {
       blocked: {
         code: "team_billing_required",
         title: "Subscribe to start your team's containers",
-        message: "Your organization needs a Teams subscription.",
+        message: "Your workspace needs an active subscription.",
         action: {
           kind: "link",
           label: "Subscribe",
@@ -436,8 +436,8 @@ describe("ProvisioningStepper blocked-state rendering", () => {
       container: null,
       blocked: {
         code: "team_billing_required",
-        title: "Set up Teams billing",
-        message: "Your team needs an active per-seat subscription to start.",
+        title: "Set up workspace billing",
+        message: "Your workspace needs an active Stripe subscription to start.",
         action: {
           kind: "link",
           label: "Set up billing",

@@ -75,7 +75,7 @@ async def test_winner_unpaid_email_copy():
     with patch.object(em.email_service, "send_email", AsyncMock(return_value="msg_3")) as send:
         assert await em.send_winner_unpaid_email(to_email="a@x.com", first_name=None) == "msg_3"
     kw = send.await_args.kwargs
-    assert "Your first month of Starter is free — applied automatically at checkout." in kw["text"]
+    assert "Your first month of Workspace is free — applied automatically at checkout." in kw["text"]
 
 
 async def test_still_competing_email_copy():

@@ -56,11 +56,9 @@ async def test_no_billing_account_returns_signup_required():
 @pytest.mark.asyncio
 async def test_no_billing_org_owner_returns_team_billing_required():
     """An org owner (owner_id starts with 'org_') with no billing row gets a
-    DISTINCT team_billing_required code, not the personal signup_required. The
-    free tier is personal-only, so a team never falls into a card-less
-    trial_local — an org with no billing needs per-seat Teams billing, and the
-    frontend keys the Teams paywall off this code rather than the personal
-    provider picker."""
+    DISTINCT team_billing_required code, not generic signup_required. An org
+    with no billing needs a Workspace Stripe subscription, and the frontend
+    keys its workspace-billing CTA off this stable compatibility code."""
     with (
         patch("core.services.provision_gate.billing_repo") as repo,
         patch("core.services.trial_cap.billing_repo", repo),

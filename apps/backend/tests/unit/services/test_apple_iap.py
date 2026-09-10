@@ -485,7 +485,7 @@ def test_web_checkout_omits_origin_context_for_web_callers():
 
 @pytest.mark.asyncio
 async def test_link_purchase_refuses_org_owners():
-    """The Apple product is the PERSONAL flat plan; orgs pay base + per-seat.
+    """The Apple product is personal-only; workspace subscriptions use Stripe.
 
     An org reaching link_purchase has already been charged by Apple, and the
     write would fail anyway — a team_billing_required org has no billing row by
@@ -496,7 +496,7 @@ async def test_link_purchase_refuses_org_owners():
         patch.object(apple_iap, "_verifier") as verifier,
         patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock()) as set_sub,
     ):
-        with pytest.raises(AppleIapError, match="per seat"):
+        with pytest.raises(AppleIapError, match="Stripe"):
             await apple_iap.link_purchase(owner_id="org_abc", signed_transaction="jws")
 
     verifier.assert_not_called()

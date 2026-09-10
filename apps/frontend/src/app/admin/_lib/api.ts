@@ -787,7 +787,7 @@ export interface LaunchCloseResult {
   final_pot_cents?: number | null;
   coupons_attached?: number;
   coupon_failures?: number;
-  /** Paying winners NOT on the Starter plan — the product-restricted coupon
+  /** Paying winners NOT on the Workspace plan — the product-restricted coupon
    * would discount $0, so they were skipped and got the unpaid email. */
   coupon_skipped_nonflat?: number;
   /** Total close emails sent across all three cohorts. */

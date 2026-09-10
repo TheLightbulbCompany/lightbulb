@@ -70,7 +70,7 @@ SPOT_CAPACITY_STRATEGY = [{"capacityProvider": "FARGATE_SPOT", "weight": 1}]
 ON_DEMAND_CAPACITY_STRATEGY = [{"capacityProvider": "FARGATE", "weight": 1}]
 SPOT_PLACEMENT_FALLBACK_S = 300.0
 
-# Ultra Pro tier box (large marketplace companies exceeding the flat tier's
+# Ultra tier box (large marketplace companies exceeding the flat tier's
 # agent budget). 2 vCPU / 8 GB — same constant home as PER_USER_* so the
 # resize/register paths and the webhook tier logic pull sizes from one place.
 ULTRA_CPU = "2048"
@@ -875,7 +875,7 @@ class EcsManager:
                 primary container.
             new_cpu / new_memory: Optional task size. The provision/reprovision
                 callers pass the owner's plan-derived size (``_size_for_owner``)
-                so an Ultra Pro owner's box stays 2 vCPU / 8 GB across every
+                so an Ultra owner's box stays 2 vCPU / 8 GB across every
                 re-register. ``None`` falls back to the standard PER_USER_* box.
 
         Returns:
@@ -1295,7 +1295,7 @@ class EcsManager:
             # per-user env vars, and the per-user OPENCLAW_HOOK_TOKEN (so the
             # OpenClaw gateway can verify inbound webhook calls) before the
             # service is created so the first task pulls them. Size by the
-            # owner's plan so an Ultra Pro owner's first task def is the large
+            # owner's plan so an Ultra owner's first task def is the large
             # box, not the standard one.
             new_cpu, new_memory = await self._size_for_owner(user_id)
             task_def_arn = self._register_task_definition(
@@ -2302,7 +2302,7 @@ class EcsManager:
 
         Sizes by the owner's plan (``_size_for_owner``) rather than a flat
         hardcode: for a standard owner that IS the 1 vCPU / 4 GB box, but an
-        Ultra Pro owner must land on their 2 vCPU / 8 GB box — re-applying the
+        Ultra owner must land on their 2 vCPU / 8 GB box — re-applying the
         standard size here would silently undo the upgrade webhook's resize,
         the exact revert the plan-derived provision sizing exists to prevent.
         """
@@ -3446,7 +3446,7 @@ class EcsManager:
                         )
                         # Size by plan on the restart path too — this is the
                         # branch a full reprovision (stop -> dispatch_provision)
-                        # lands on, so without it an Ultra Pro reprovision would
+                        # lands on, so without it an Ultra reprovision would
                         # silently revert the container to the standard box.
                         restart_cpu, restart_memory = await self._size_for_owner(user_id)
                         new_task_def_arn = await asyncio.to_thread(

@@ -149,27 +149,15 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
     ],
     // Stripe flat-fee Price IDs are baked into the per-env ECS task env at
     // synth time by service-stack.ts. Empty string is tolerated (the backend
-    // surfaces "STRIPE_WORKSPACE_PRICE_ID not configured" at the trial-checkout
-    // call site) but onboarding will fail until both secrets are populated.
+    // surfaces "STRIPE_WORKSPACE_PRICE_ID not configured" at the billing
+    // checkout endpoint) but onboarding will fail until both secrets are populated.
     env: {
       STRIPE_WORKSPACE_PRICE_ID_DEV: "${{ secrets.STRIPE_WORKSPACE_PRICE_ID_DEV }}",
       STRIPE_WORKSPACE_PRICE_ID_PROD: "${{ secrets.STRIPE_WORKSPACE_PRICE_ID_PROD }}",
-      // Stripe per-seat Teams Price IDs — same synth-time bake + per-env
-      // live/test split as the flat price above. Empty string is tolerated
-      // (the backend surfaces "STRIPE_TEAM_SEAT_PRICE_ID not configured" at
-      // the team-checkout call site) but org admins cannot subscribe until
-      // both secrets are populated.
-      STRIPE_TEAM_SEAT_PRICE_ID_DEV: "${{ secrets.STRIPE_TEAM_SEAT_PRICE_ID_DEV }}",
-      STRIPE_TEAM_SEAT_PRICE_ID_PROD: "${{ secrets.STRIPE_TEAM_SEAT_PRICE_ID_PROD }}",
-      // Stripe Teams BASE Price IDs — the $50/mo flat component charged
-      // alongside the per-seat item. Same synth-time bake + per-env live/test
-      // split as the seat price above.
-      STRIPE_TEAM_BASE_PRICE_ID_DEV: "${{ secrets.STRIPE_TEAM_BASE_PRICE_ID_DEV }}",
-      STRIPE_TEAM_BASE_PRICE_ID_PROD: "${{ secrets.STRIPE_TEAM_BASE_PRICE_ID_PROD }}",
-      // Stripe Ultra Pro Price IDs — same synth-time bake + per-env live/test
-      // split as the flat/team prices above. Empty string is tolerated (the
-      // backend surfaces "STRIPE_ULTRA_PRICE_ID not configured" at the
-      // ultra-checkout call site) but the Ultra tier cannot be purchased until
+      // Stripe Ultra Price IDs — same synth-time bake + per-env live/test
+      // split as the Workspace price above. Empty string is tolerated (the
+      // backend surfaces "STRIPE_ULTRA_PRICE_ID not configured" at the billing
+      // checkout endpoint) but the Ultra tier cannot be purchased until
       // both secrets are populated.
       STRIPE_ULTRA_PRICE_ID_DEV: "${{ secrets.STRIPE_ULTRA_PRICE_ID_DEV }}",
       STRIPE_ULTRA_PRICE_ID_PROD: "${{ secrets.STRIPE_ULTRA_PRICE_ID_PROD }}",

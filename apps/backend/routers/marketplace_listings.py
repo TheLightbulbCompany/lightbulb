@@ -836,7 +836,7 @@ async def deploy_listing(
         if needs_ultra:
             account = await billing_repo.get_by_owner_id(owner_id)
             if (account or {}).get("plan") != "ultra_pro":
-                raise HTTPException(status_code=409, detail="Requires Ultra Pro")
+                raise HTTPException(status_code=409, detail="Requires Ultra")
 
             # Size reconcile BEFORE dispatch. The Ultra upgrade webhook's
             # up-resize (standard -> 2 vCPU / 8 GB) is best-effort/swallowed;
@@ -862,7 +862,7 @@ async def deploy_listing(
                 await ecs.resize_user_container(owner_id, new_cpu=desired_cpu, new_memory=desired_memory)
                 raise HTTPException(
                     status_code=409,
-                    detail=("Your container is resizing to Ultra Pro — please retry the deploy in about a minute."),
+                    detail=("Your container is resizing to Ultra — please retry the deploy in about a minute."),
                 )
 
         s3_prefix = listing.get("s3_prefix")

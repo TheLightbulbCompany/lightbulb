@@ -10,7 +10,7 @@ import time
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
-from core.auth import AuthContext, get_current_user, is_org_owner_id, resolve_owner_id
+from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
 from core.containers import get_ecs_manager, get_gateway_pool
 from core.gateway.connection_pool import GatewayReconnectThrottled
@@ -245,16 +245,6 @@ async def container_status(
     ),
 ):
     owner_id = resolve_owner_id(auth)
-    # Opportunistic seat reconcile for org owners: converges the Stripe seat
-    # quantity to the live member count without a cron, closing any missed
-    # membership-webhook gap. Fire-and-forget — the reconciler self-guards to
-    # a single DDB read for non-team orgs, and must never add latency or 500
-    # the status poll.
-    if is_org_owner_id(owner_id):
-        from core.services.billing_service import sync_team_seat_quantity
-
-        asyncio.create_task(sync_team_seat_quantity(owner_id))
-
     # Drain a funnel answer submitted before the workspace could take it, BEFORE
     # any of this endpoint's early returns. It used to sit at the bottom, which
     # quietly excluded whole cohorts from ever fulfilling: a parked trial (returns

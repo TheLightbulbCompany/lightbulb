@@ -45,7 +45,7 @@ The marketplace also carries **whole pre-built companies**
 (flickmeon.ai/marketplace/companies): one click deploys every agent in the
 package into the roster (reporting into the existing CEO), with its
 routines landing PAUSED for the owner to enable. Companies over 10 agents
-require the Ultra Pro plan; one install runs at a time, so a company deploy
+require the Ultra plan; one install runs at a time, so a company deploy
 and an agent hire can't overlap; and a workspace holds ONE deployed company
 package — a second company deploy is refused until the workspace is wiped.
 
@@ -85,7 +85,7 @@ published). Key rules:
   re-enter them), memory logs, cron jobs and plugins come along, and can opt in
   to conversation history (auth tokens stripped; applies when the workspace
   next starts on an updated platform image).
-  More than 10 agents in total needs Ultra Pro. Channels, credentials, the
+  More than 10 agents in total needs Ultra. Channels, credentials, the
   browser profile and global state never import. Plugins with dependencies need
   `openclaw plugins install <name@version>` run here in the container — offer to run it once the owner confirms.
 - **"Can I bring my local Claude Code context?"** → Yes: run

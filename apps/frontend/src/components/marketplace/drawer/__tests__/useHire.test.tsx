@@ -225,7 +225,7 @@ describe("useHire — reliability", () => {
   });
 
   it("keeps the retry message for a 409 that is NOT a structured shape it knows", async () => {
-    // e.g. Requires Ultra Pro — unknown 409s must not be relabelled as
+    // e.g. Requires Ultra — unknown 409s must not be relabelled as
     // "installing" or auto-retried.
     mockDeploy.mockRejectedValue(
       new ApiError(409, { detail: { error: "requires_ultra" } }, "conflict"),

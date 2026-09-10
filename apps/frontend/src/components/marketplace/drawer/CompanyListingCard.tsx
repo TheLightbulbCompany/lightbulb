@@ -14,7 +14,7 @@ import type { Listing } from "@/lib/marketplace/types";
  * Same deploy mechanics as the storefront's DeployCompanyButton (fire-and-
  * forget POST → 202 → agents land in the Teams roster; routines arrive
  * PAUSED), restyled to the drawer's card idiom. Plan gating stays
- * server-side: the "Requires Ultra Pro" 409 renders an upgrade link and the
+ * server-side: the "Requires Ultra" 409 renders an upgrade link and the
  * pod-not-running 503 tells the owner to wake their agents (in-workspace
  * that just means using the app — the status poll wakes a sleeping pod).
  */
@@ -50,7 +50,7 @@ export function CompanyListingCard({ listing }: { listing: Listing }) {
     >
       {company.min_plan === "ultra_pro" && (
         <span className="absolute top-3 right-3.5 text-2xs tracking-caps text-[var(--midnight)] font-bold">
-          ULTRA PRO
+          ULTRA
         </span>
       )}
       <Link
@@ -84,7 +84,7 @@ export function CompanyListingCard({ listing }: { listing: Listing }) {
       {error && (
         <p className="text-xs text-[var(--err)]" role="alert">
           {error}{" "}
-          {/Ultra Pro/i.test(error) && (
+          {/Ultra/i.test(error) && (
             <Link href="/settings" className="font-bold underline hover:opacity-80">
               Upgrade in Settings
             </Link>

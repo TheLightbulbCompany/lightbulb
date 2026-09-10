@@ -167,7 +167,7 @@ def test_ultra_pro_owner_undersized_box_resizes_and_409(
 def test_standard_owner_ultra_company_409(
     mock_billing, mock_get_published, mock_boto, mock_run, mock_create_task, admin_client
 ):
-    """standard owner + Ultra listing -> still 409 'Requires Ultra Pro', before
+    """standard owner + Ultra listing -> still 409 'Requires Ultra', before
     any S3/dispatch work."""
     mock_billing.return_value = {"owner_id": "user_admin", "plan": "standard"}
     mock_get_published.return_value = _ultra_company_listing()
@@ -175,7 +175,7 @@ def test_standard_owner_ultra_company_409(
     resp = admin_client.post("/api/v1/marketplace/listings/bigco/deploy")
 
     assert resp.status_code == 409, resp.text
-    assert "ultra pro" in resp.json()["detail"].lower()
+    assert "requires ultra" in resp.json()["detail"].lower()
     mock_boto.assert_not_called()
     mock_run.assert_not_called()
     mock_create_task.assert_not_called()
@@ -216,7 +216,7 @@ def test_company_deploy_budgets_the_sum_not_just_the_package(
     resp = admin_client.post("/api/v1/marketplace/listings/smallco/deploy")
 
     assert resp.status_code == 409, resp.text
-    assert "Ultra Pro" in resp.json()["detail"]
+    assert "Ultra" in resp.json()["detail"]
     mock_create_task.assert_not_called()
 
 
@@ -314,7 +314,7 @@ def test_already_installed_retry_is_not_refused_at_the_limit(
 
     A deploy whose response was lost leaves the owner installed but retrying.
     The budget gate must sit BELOW the already-installed short-circuit, or that
-    retry is answered with "upgrade to Ultra Pro" for an agent they already have
+    retry is answered with "upgrade to Ultra" for an agent they already have
     and that this call would not create. Moving the gate back above the
     short-circuit reintroduces the bug and fails here.
     """

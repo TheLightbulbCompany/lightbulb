@@ -950,7 +950,6 @@ async def set_subscription(
     subscription_id: str | None,
     status: str,
     trial_end: int | None = None,
-    clear_seat_fields: bool = False,
 ) -> dict | None:
     """Persist Stripe subscription identity + status onto the billing account.
 
@@ -960,16 +959,6 @@ async def set_subscription(
     optional ``trial_end`` epoch so the rest of the system can read state
     without re-querying Stripe.
 
-    ``clear_seat_fields`` (default False, opt-in only) also removes
-    ``subscription_item_id`` + ``seat_count`` from the row. Cancellation
-    passes this so a stale ``subscription_item_id`` doesn't linger and make
-    ``is_seat_subscription`` (routers/billing.py) keep reporting a per-seat
-    subscription for an org that no longer has one -- e.g. after it's
-    re-comped onto a flat price, whose webhook never touches
-    ``subscription_item_id``. The created/updated webhook path
-    (``handle_subscription_state``) leaves this False since it calls
-    ``set_team_subscription`` separately/afterward to (re)populate seat
-    fields for live per-seat subs.
     """
 
     def _mutate(existing: dict) -> None:
@@ -987,38 +976,6 @@ async def set_subscription(
             existing["trial_end"] = trial_end
         else:
             existing.pop("trial_end", None)
-        if clear_seat_fields:
-            existing.pop("subscription_item_id", None)
-            existing.pop("seat_count", None)
-
-    return await _put_with_apple_cas(owner_id, _mutate)
-
-
-async def set_team_subscription(
-    owner_id: str,
-    *,
-    subscription_id: str | None,
-    subscription_item_id: str,
-    status: str,
-    seat_count: int,
-) -> dict | None:
-    """Persist Teams per-seat subscription identity + seat count.
-
-    Mirrors ``set_subscription``'s read-then-put: reads the existing row and
-    re-puts it with the seat fields added. Returns None (no write) when no
-    billing row exists, so a stray team webhook can never upsert a phantom
-    ``{owner_id, ...}`` row with no stripe_customer_id.
-    """
-
-    def _mutate(existing: dict) -> None:
-        existing["stripe_subscription_id"] = subscription_id
-        # Same derivation as set_subscription — this is a Stripe writer too, and
-        # writing the shared field directly would make it last-writer-wins
-        # against Apple for any org that also has an IAP subscription.
-        existing["stripe_subscription_status"] = status
-        _apply_effective_status(existing, prefer="stripe")
-        existing["subscription_item_id"] = subscription_item_id
-        existing["seat_count"] = seat_count
 
     return await _put_with_apple_cas(owner_id, _mutate)
 

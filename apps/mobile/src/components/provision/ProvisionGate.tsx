@@ -358,13 +358,11 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
     // plan is purchasable INSIDE the app — superseding the CTA-free 3.1.3(f)
     // one below, and it is why the paywall carries both StoreKit and the web
     // link (3.1.1(a) permits both on the U.S. storefront).
-    // PERSONAL owners only. The paywall sells the personal flat plan — one
-    // Apple product, one Stripe flat price — and an org pays a different shape
-    // entirely (base + per-seat, quantity driven by Clerk membership). Routing
-    // an org here would take real money through StoreKit for a plan that
-    // cannot be recorded: a team_billing_required org has no billing row by
-    // construction, so the link call fails permanently and the customer is
-    // left charged with no way forward.
+    // PERSONAL owners only. The StoreKit paywall is a personal Apple purchase;
+    // organization workspaces buy their Workspace or Ultra Stripe subscription
+    // from web billing. Routing an org here would take real money through
+    // StoreKit for a plan that cannot be recorded, so the backend refuses it
+    // before a customer can be charged without an entitlement.
     //
     // Gated on OWNER TYPE, not on the gate code. Excluding team_billing_required
     // alone would not do it — payment_past_due, subscription_required,

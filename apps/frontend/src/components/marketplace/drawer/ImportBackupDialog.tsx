@@ -15,7 +15,7 @@ function errMessage(e: unknown): string {
   const err = e as Error & { body?: { detail?: unknown } };
   const d = err?.body?.detail;
   if (typeof d === "string" && d) return d;
-  if (d && typeof d === "object" && (d as { error?: string }).error === "ultra_required") return "This import needs Ultra Pro.";
+  if (d && typeof d === "object" && (d as { error?: string }).error === "ultra_required") return "This import needs Ultra.";
   return err?.message || "Import failed";
 }
 
@@ -294,7 +294,7 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
             {needsUltra && (
               <p role="alert" className="rounded-xl border border-[var(--warn)] p-3 text-[var(--warn)]">
                 You have {preview.existing_agents} agents; importing {agents.size} more brings you to {preview.existing_agents + agents.size}. The standard
-                plan runs up to {preview.standard_max_agents} agents per workspace. <Link href="/settings" className="underline">Upgrade to Ultra Pro</Link> in Settings, or pick fewer agents.
+                plan runs up to {preview.standard_max_agents} agents per workspace. <Link href="/settings" className="underline">Upgrade to Ultra</Link> in Settings, or pick fewer agents.
               </p>
             )}
 

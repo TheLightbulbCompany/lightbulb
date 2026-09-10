@@ -187,7 +187,7 @@ describe("LaunchAdminClient", () => {
     expect(screen.getByText(/emails 40 sent \(30 winner \/ 6 competing \/ 4 not selected\)/)).toBeInTheDocument();
     // Clean close: no retry affordance, no skipped warning.
     expect(screen.queryByRole("button", { name: /retry \(force\)/i })).not.toBeInTheDocument();
-    expect(screen.queryByText(/not on the Starter plan/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/not on the Workspace plan/)).not.toBeInTheDocument();
   });
 
   it("coupon/email failures in the persisted result surface a Retry (force) that re-POSTs with force:true", async () => {
@@ -202,14 +202,14 @@ describe("LaunchAdminClient", () => {
     expect(closeLaunchSheet).toHaveBeenLastCalledWith(true);
   });
 
-  it("skipped non-Starter paying winners get a visible warning", () => {
+  it("skipped non-Workspace paying winners get a visible warning", () => {
     render(
       <LaunchAdminClient
         data={{ ...data, closed: true, close_result: { ...closeResult, coupon_skipped_nonflat: 3 } }}
       />,
     );
-    expect(screen.getByText(/3 paying winner\(s\) are not on the Starter plan/)).toBeInTheDocument();
-    expect(screen.getByText(/3 skipped \(non-Starter\)/)).toBeInTheDocument();
+    expect(screen.getByText(/3 paying winner\(s\) are not on the Workspace plan/)).toBeInTheDocument();
+    expect(screen.getByText(/3 skipped \(non-Workspace\)/)).toBeInTheDocument();
   });
 
   it("a failed background run surfaces its error", () => {

@@ -25,7 +25,7 @@ def _close_request_background_tasks(request):
     create_task = asyncio.create_task
 
     def dispatch(coro):
-        if "async_client" in request.fixturenames or coro.__qualname__ == "sync_team_seat_quantity":
+        if "async_client" in request.fixturenames:
             coro.close()
             return MagicMock()
         return create_task(coro)
@@ -491,7 +491,7 @@ class TestContainerStatus:
         body = response.json()
         assert body["container_status"] == "provisioning"
         assert body["runtime_phase"] == "provisioning"
-        assert mock_create_task.call_count == 2
+        assert mock_create_task.call_count == 1
 
 
 class TestContainerStatusGate:
@@ -574,10 +574,7 @@ class TestContainerStatusGate:
         assert result["container_status"] == "provisioning"
         assert result["runtime_phase"] == "provisioning"
         assert result["container_substatus"] == "ensure_user_ready"
-        assert [c.__qualname__ for c in captured] == [
-            "sync_team_seat_quantity",
-            "_noop_ensure_user_ready",
-        ]
+        assert [c.__qualname__ for c in captured] == ["_noop_ensure_user_ready"]
 
     @pytest.mark.asyncio
     async def test_no_container_preserves_onboarded_during_recreation(self):
@@ -798,8 +795,8 @@ class TestContainerStatusGate:
 
         fake_gate = Gate(
             code="team_billing_required",
-            title="Set up Teams billing",
-            message="Your team needs an active per-seat subscription to start.",
+            title="Set up workspace billing",
+            message="Your workspace needs an active subscription to start.",
             action_label="Set up billing",
             action_href="/settings/billing",
             action_admin_only=True,
@@ -815,11 +812,6 @@ class TestContainerStatusGate:
                 new_callable=AsyncMock,
                 return_value=fake_gate,
             ),
-            # Org owner_id also fires the fire-and-forget seat reconcile
-            # (Task 8) before the gate check; stub it so this unit test
-            # doesn't spawn a real background task hitting live DDB/Stripe
-            # code.
-            patch("core.services.billing_service.sync_team_seat_quantity", new_callable=AsyncMock),
         ):
             with pytest.raises(HTTPException) as exc:
                 await container_status(auth=_org_admin_auth())
@@ -905,11 +897,6 @@ class TestContainerStatusGate:
                 new_callable=AsyncMock,
                 return_value=fake_gate,
             ),
-            # Org owner_id also fires the fire-and-forget seat reconcile
-            # (Task 8) before the gate check; stub it so this unit test
-            # doesn't spawn a real background task hitting live DDB/Stripe
-            # code.
-            patch("core.services.billing_service.sync_team_seat_quantity", new_callable=AsyncMock),
         ):
             with pytest.raises(HTTPException) as exc:
                 await container_status(auth=mock_auth)
@@ -966,9 +953,7 @@ class TestContainerStatusEnsureUserReadyDispatch:
             result = await container_status(_workspace_auth())
         assert result["container_status"] == "provisioning"
         assert result["runtime_phase"] == "provisioning"
-        assert captured == ["sync_team_seat_quantity", "_noop_ensure_user_ready"], (
-            f"expected seat sync + ensure_user_ready dispatched, got {captured}"
-        )
+        assert captured == ["_noop_ensure_user_ready"], f"expected ensure_user_ready dispatched, got {captured}"
 
     @pytest.mark.asyncio
     async def test_status_drains_a_pending_brief(self):
@@ -1104,10 +1089,7 @@ class TestContainerStatusEnsureUserReadyDispatch:
         assert result["container_status"] == "provisioning"
         assert result["runtime_phase"] == "provisioning"
         # Org-context owner_id (org_xyz) also triggers the fire-and-forget
-        # seat reconcile (Task 8), dispatched before ensure_user_ready.
-        assert captured == ["sync_team_seat_quantity", "_noop_ensure_user_ready"], (
-            f"expected seat sync + ensure_user_ready dispatched, got {captured}"
-        )
+        assert captured == ["_noop_ensure_user_ready"], f"expected ensure_user_ready dispatched, got {captured}"
 
     @pytest.mark.asyncio
     async def test_status_no_container_org_member_dispatches_ensure_user_ready_returns_202(self):
@@ -1145,9 +1127,7 @@ class TestContainerStatusEnsureUserReadyDispatch:
         assert exc_info.value.status_code == 202
         # Org-context owner_id also triggers the fire-and-forget seat
         # reconcile (Task 8), dispatched before ensure_user_ready.
-        assert captured == ["sync_team_seat_quantity", "_noop_ensure_user_ready"], (
-            f"expected seat sync + ensure_user_ready dispatched, got {captured}"
-        )
+        assert captured == ["_noop_ensure_user_ready"], f"expected ensure_user_ready dispatched, got {captured}"
 
     @pytest.mark.asyncio
     async def test_status_no_container_gate_blocks_returns_402_unchanged(self):
@@ -1216,8 +1196,8 @@ class TestContainerStatusOrgMemberDispatchOnExisting:
         assert result["container_status"] == "running"
         # Org-context owner_id also triggers the fire-and-forget seat
         # reconcile (Task 8), dispatched before ensure_user_ready.
-        assert captured == ["sync_team_seat_quantity", "_noop_ensure_user_ready"], (
-            f"expected seat sync + ensure_user_ready dispatched for org member on container-exists path, got {captured}"
+        assert captured == ["_noop_ensure_user_ready"], (
+            f"expected ensure_user_ready dispatched for org member on container-exists path, got {captured}"
         )
 
     @pytest.mark.asyncio
@@ -1257,8 +1237,8 @@ class TestContainerStatusOrgMemberDispatchOnExisting:
 
         # Org-context owner_id also triggers the fire-and-forget seat
         # reconcile (Task 8), dispatched before ensure_user_ready.
-        assert captured == ["sync_team_seat_quantity", "_noop_ensure_user_ready"], (
-            f"org admin on container-exists path must dispatch seat sync + ensure_user_ready, got {captured}"
+        assert captured == ["_noop_ensure_user_ready"], (
+            f"org admin on container-exists path must dispatch ensure_user_ready, got {captured}"
         )
 
 
@@ -1374,10 +1354,7 @@ class TestContainerStatusTrialConversion:
 
         def capture_task(coro):
             name = coro.__qualname__
-            if captured is not None and name not in {
-                "sync_team_seat_quantity",
-                "ensure_user_ready",
-            }:
+            if captured is not None and name != "ensure_user_ready":
                 captured.append(name)
             coro.close()
             return MagicMock()
@@ -1607,7 +1584,7 @@ class TestContainerStatusTrialBedrockRestore:
 
         def capture_task(coro):
             name = coro.__qualname__
-            if name not in {"sync_team_seat_quantity", "ensure_user_ready"}:
+            if name != "ensure_user_ready":
                 captured.append(name)
             coro.close()
             return MagicMock()
@@ -1817,7 +1794,7 @@ class TestContainerStatusHonestError:
 
         def capture_task(coro):
             name = coro.__qualname__
-            if name not in {"sync_team_seat_quantity", "ensure_user_ready"}:
+            if name != "ensure_user_ready":
                 captured.append(name)
             coro.close()
             return MagicMock()
@@ -2046,7 +2023,7 @@ class TestContainerStatusTeamsStatus:
         # funnel_state=="submitted", which this seed stub is not, so only the
         # failed-seed ensure_user_ready re-dispatch is scheduled here.
         assert result["teams_state"] == "failed"
-        assert captured == ["sync_team_seat_quantity", "_noop_ensure_user_ready"], (
+        assert captured == ["_noop_ensure_user_ready"], (
             f"a workspace with a failed seed must dispatch both reconciliations, got {captured}"
         )
 
@@ -2079,7 +2056,7 @@ class TestContainerStatusTeamsStatus:
             result = await container_status(_workspace_auth())
 
         assert result["teams_state"] == "active"
-        assert captured == ["sync_team_seat_quantity", "_noop_ensure_user_ready"]
+        assert captured == ["_noop_ensure_user_ready"]
 
     @pytest.mark.asyncio
     async def test_workspace_running_container_with_missing_ledger_dispatches_reconciliation(self):
@@ -2122,7 +2099,7 @@ class TestContainerStatusTeamsStatus:
             result = await container_status(_workspace_auth())
 
         assert result["teams_state"] == "active", "isolate the ledger condition -- Teams is healthy here"
-        assert captured == ["sync_team_seat_quantity", "_noop_ensure_user_ready"]
+        assert captured == ["_noop_ensure_user_ready"]
 
     @pytest.mark.asyncio
     async def test_workspace_running_container_with_ledger_dispatches_membership_reconciliation(self):
@@ -2166,7 +2143,7 @@ class TestContainerStatusTeamsStatus:
             result = await container_status(_workspace_auth())
 
         assert result["teams_state"] == "active"
-        assert captured == ["sync_team_seat_quantity", "_noop_ensure_user_ready"]
+        assert captured == ["_noop_ensure_user_ready"]
 
     @pytest.mark.asyncio
     async def test_ready_poll_reads_paperclip_companies_exactly_once(self):

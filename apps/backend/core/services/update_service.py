@@ -649,7 +649,7 @@ async def _apply_claimed_update(update: dict, claim_id: str) -> bool:
                 # An image-only roll carries NO size — queue_image_update /
                 # queue_fleet_image_update write {"new_image": X} only. Passing the
                 # resulting None/None straight through would default the re-register
-                # to the standard PER_USER_* box and silently shrink an Ultra Pro
+                # to the standard PER_USER_* box and silently shrink an Ultra
                 # owner's container on every routine image bump / fleet-force-apply
                 # — the exact revert plan-derived sizing exists to prevent. Fill the
                 # gap from the owner's plan ONLY when the change specifies neither

@@ -59,7 +59,7 @@ from core.services.company_package import COMPANY_STANDARD_PLAN_MAX_AGENTS
 logger = logging.getLogger(__name__)
 
 AGENT_BUDGET_EXCEEDED_DETAIL = (
-    f"This workspace is at its {COMPANY_STANDARD_PLAN_MAX_AGENTS}-agent limit. Upgrade to Ultra Pro to add more agents."
+    f"This workspace is at its {COMPANY_STANDARD_PLAN_MAX_AGENTS}-agent limit. Upgrade to Ultra to add more agents."
 )
 
 
@@ -118,7 +118,7 @@ async def enforce_agent_budget(owner_id: str) -> None:
     older callers and its focused contract tests.
 
     409 (not 402) matches the existing over-budget refusal in
-    ``routers/marketplace_listings`` — "Requires Ultra Pro" — so clients see one
+    ``routers/marketplace_listings`` — "Requires Ultra" — so clients see one
     shape for "this needs a bigger plan" rather than two.
     """
     if await is_at_agent_budget(owner_id):

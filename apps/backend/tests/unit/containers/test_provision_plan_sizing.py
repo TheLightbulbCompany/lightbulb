@@ -1,7 +1,7 @@
 """Durable Ultra sizing: the provision/reprovision path sizes the per-user task
 def by the owner's billing plan.
 
-The upgrade webhook resizes a running Ultra Pro container to 2 vCPU / 8 GB, but
+The upgrade webhook resizes a running Ultra container to 2 vCPU / 8 GB, but
 the provision path re-registers the task def from the CDK base on every
 image-roll, provider switch, restart, and admin reprovision. If that path
 hardcoded the standard 1 vCPU / 4 GB, any of those events would silently undo

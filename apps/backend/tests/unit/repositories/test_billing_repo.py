@@ -123,105 +123,6 @@ async def test_set_subscription_nonexistent(dynamodb_table):
 
 
 @pytest.mark.asyncio
-async def test_set_subscription_clear_seat_fields_removes_stale_seat_data(dynamodb_table):
-    """Regression: cancelling a per-seat org subscription must also clear
-    subscription_item_id + seat_count, not just the subscription id/status —
-    otherwise is_seat_subscription (routers/billing.py) stays True forever."""
-    from core.repositories import billing_repo
-
-    await billing_repo.create_if_not_exists("org_seat_cancel", "cus_seat_cancel", owner_type="org")
-    await billing_repo.set_team_subscription(
-        "org_seat_cancel",
-        subscription_id="sub_seat",
-        subscription_item_id="si_seat",
-        status="active",
-        seat_count=4,
-    )
-
-    result = await billing_repo.set_subscription(
-        owner_id="org_seat_cancel",
-        subscription_id=None,
-        status="canceled",
-        trial_end=None,
-        clear_seat_fields=True,
-    )
-    assert result is not None
-    assert result["subscription_status"] == "canceled"
-    assert result["stripe_subscription_id"] is None
-    assert "subscription_item_id" not in result
-    assert "seat_count" not in result
-
-    stored = await billing_repo.get_by_owner_id("org_seat_cancel")
-    assert "subscription_item_id" not in stored
-    assert "seat_count" not in stored
-
-
-@pytest.mark.asyncio
-async def test_set_subscription_without_clear_seat_fields_preserves_seat_data(dynamodb_table):
-    """Default behavior (clear_seat_fields=False) — used by the
-    created/updated webhook path — must NOT touch seat fields, since that
-    path relies on set_team_subscription running separately/afterward."""
-    from core.repositories import billing_repo
-
-    await billing_repo.create_if_not_exists("org_seat_keep", "cus_seat_keep", owner_type="org")
-    await billing_repo.set_team_subscription(
-        "org_seat_keep",
-        subscription_id="sub_seat",
-        subscription_item_id="si_seat",
-        status="active",
-        seat_count=3,
-    )
-
-    result = await billing_repo.set_subscription(
-        owner_id="org_seat_keep",
-        subscription_id="sub_seat",
-        status="active",
-        trial_end=None,
-    )
-    assert result["subscription_item_id"] == "si_seat"
-    assert result["seat_count"] == 3
-
-
-@pytest.mark.asyncio
-async def test_set_team_subscription_writes_item_id_and_seats(dynamodb_table):
-    from core.repositories import billing_repo
-
-    await billing_repo.create_if_not_exists("org_seat", "cus_seat", owner_type="org")
-    result = await billing_repo.set_team_subscription(
-        "org_seat",
-        subscription_id="sub_seat",
-        subscription_item_id="si_seat",
-        status="active",
-        seat_count=5,
-    )
-    assert result is not None
-    assert result["stripe_subscription_id"] == "sub_seat"
-    assert result["subscription_item_id"] == "si_seat"
-    assert result["subscription_status"] == "active"
-    assert result["seat_count"] == 5
-
-    stored = await billing_repo.get_by_owner_id("org_seat")
-    assert stored["subscription_item_id"] == "si_seat"
-    assert stored["seat_count"] == 5
-
-
-@pytest.mark.asyncio
-async def test_set_team_subscription_noops_without_row(dynamodb_table):
-    from core.repositories import billing_repo
-
-    # Never upsert a phantom row for an owner with no billing account.
-    result = await billing_repo.set_team_subscription(
-        "org_missing",
-        subscription_id="sub_x",
-        subscription_item_id="si_x",
-        status="active",
-        seat_count=2,
-    )
-    assert result is None
-    assert await billing_repo.get_by_owner_id("org_missing") is None
-
-
-@pytest.mark.asyncio
 async def test_delete(dynamodb_table):
     from core.repositories import billing_repo
 
@@ -1018,25 +919,6 @@ async def test_a_lapsed_apple_purchase_does_not_hand_back_the_free_tier(dynamodb
 
     row = await billing_repo.get_by_owner_id("user_lapsed")
     assert row["subscription_status"] == "canceled"
-
-
-@pytest.mark.asyncio
-async def test_team_seat_writes_go_through_the_same_derivation(dynamodb_table):
-    """set_team_subscription is a Stripe writer too — writing the shared field
-    directly would make it last-writer-wins against Apple."""
-    from core.repositories import billing_repo
-
-    await billing_repo.create_if_not_exists("org_1", "cus_org")
-    await billing_repo.set_apple_subscription(
-        "org_1", original_transaction_id="2000000000000014", status="active", expires_at=None
-    )
-    await billing_repo.set_team_subscription(
-        "org_1", subscription_id=None, subscription_item_id="si_1", status="canceled", seat_count=3
-    )
-
-    row = await billing_repo.get_by_owner_id("org_1")
-    assert row["stripe_subscription_status"] == "canceled"
-    assert row["subscription_status"] == "active"
 
 
 # ---------------------------------------------------------------------------

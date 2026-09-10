@@ -73,7 +73,7 @@ async def _attach_coupon(billing: dict, coupon: str) -> str:
         already there); the caller stamps the row.
       - ``"no_sub"`` — no ``stripe_subscription_id`` on the billing row
         (Apple-rail/legacy shape); a visible failure, retried on force.
-      - ``"nonflat"`` — the subscription does not carry the flat (Starter)
+      - ``"nonflat"`` — the subscription does not carry the Workspace
         price, so the product-restricted coupon would apply NOTHING (Stripe
         attaches it without erroring and discounts $0). Skipped: the winner
         keeps the unpaid-style entitlement instead of a lie.
@@ -333,13 +333,13 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
             # A paying winner NOT on the flat plan (Ultra): the restricted
             # coupon would discount $0 — attaching + stamping would be a
             # lie ("next invoice is $0"). Skip; they keep the winner flag,
-            # get the unpaid-variant email below, and a future Starter
+            # get the unpaid-variant email below, and a future Workspace
             # checkout pre-applies the discount.
             coupon_skipped_nonflat += 1
             nonflat_winners.add(r["email"])
             logger.info(
                 "launch_close: paying winner %s is not on the flat plan — coupon not attached "
-                "(free month = Starter month)",
+                "(free month = Workspace month)",
                 r.get("user_id"),
             )
         else:  # "no_sub"
@@ -384,7 +384,7 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
         if r["email"] in winner_emails:
             # Paid variant only when the coupon actually lands on their sub —
             # a nonflat paying winner gets the unpaid variant, whose copy
-            # ("first month of Starter is free, applied automatically at
+            # ("first month of Workspace is free, applied automatically at
             # checkout") is literally accurate for them.
             is_paid_variant = r["email"] in paying and r["email"] not in nonflat_winners
             send = send_winner_paid_email if is_paid_variant else send_winner_unpaid_email

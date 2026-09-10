@@ -25,6 +25,7 @@ def dedup_table_and_settings(monkeypatch):
             BillingMode="PAY_PER_REQUEST",
         )
         monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", "test-webhook-event-dedup")
+        monkeypatch.setattr("core.config.settings.STRIPE_WORKSPACE_PRICE_ID", "price_workspace_test")
         yield
 
 
@@ -320,6 +321,17 @@ class TestStripeWebhook:
                     "customer": "cus_update_x",
                     "status": "trialing",
                     "trial_end": 1700000000,
+                    "items": {
+                        "data": [
+                            {
+                                "id": "si_workspace",
+                                "price": {
+                                    "id": "price_workspace_test",
+                                    "recurring": {"interval": "month"},
+                                },
+                            }
+                        ]
+                    },
                 }
             },
         }
@@ -375,6 +387,17 @@ class TestStripeWebhook:
                     "metadata": {
                         "provider_choice": "bedrock_claude",
                         "clerk_user_id": "user_clerk_x",
+                    },
+                    "items": {
+                        "data": [
+                            {
+                                "id": "si_workspace",
+                                "price": {
+                                    "id": "price_workspace_test",
+                                    "recurring": {"interval": "month"},
+                                },
+                            }
+                        ]
                     },
                 }
             },
@@ -452,6 +475,17 @@ class TestStripeWebhook:
                     "customer": "cus_shared",
                     "status": "active",
                     "metadata": {"owner_id": "org_xyz"},
+                    "items": {
+                        "data": [
+                            {
+                                "id": "si_workspace",
+                                "price": {
+                                    "id": "price_workspace_test",
+                                    "recurring": {"interval": "month"},
+                                },
+                            }
+                        ]
+                    },
                 }
             },
         }
@@ -494,6 +528,17 @@ class TestStripeWebhook:
                     "id": "sub_legacy_org",
                     "customer": "cus_shared",
                     "status": "active",
+                    "items": {
+                        "data": [
+                            {
+                                "id": "si_workspace",
+                                "price": {
+                                    "id": "price_workspace_test",
+                                    "recurring": {"interval": "month"},
+                                },
+                            }
+                        ]
+                    },
                 }
             },
         }

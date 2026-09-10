@@ -92,7 +92,7 @@ describe("ImportBackupDialog", () => {
     render(<ImportBackupDialog open onOpenChange={() => {}} onImported={() => {}} />);
     pickFile();
     await screen.findByText("Quill");
-    expect(screen.getByText(/Ultra Pro/)).toBeInTheDocument();
+    expect(screen.getByText(/Ultra/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /add to my team/i })).toBeDisabled();
     fireEvent.click(screen.getByLabelText("Work Bot")); // 9 + 1 = 10 → OK
     expect(screen.getByRole("button", { name: /add to my team/i })).toBeEnabled();

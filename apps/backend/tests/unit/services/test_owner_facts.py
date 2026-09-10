@@ -36,7 +36,7 @@ def test_build_owner_facts_legacy_row_without_status_counts_as_subscribed():
     facts = owner_facts.build_owner_facts(
         "user_abc", {"stripe_subscription_id": "sub_1", "provider_choice": "bedrock_claude"}
     )
-    assert facts["plan"].startswith("Starter")
+    assert facts["plan"] == "Workspace ($50/mo)"
 
 
 def test_build_owner_facts_paid_byo_org():
@@ -49,7 +49,7 @@ def test_build_owner_facts_paid_byo_org():
         },
     )
     assert facts["owner_kind"] == "org"
-    assert facts["plan"].startswith("Starter")
+    assert facts["plan"] == "Workspace ($50/mo)"
     assert facts["provider"] == "BYO Anthropic key"
 
 
@@ -84,7 +84,7 @@ async def test_write_owner_facts_writes_json(monkeypatch):
     assert written["path"] == "lightbulb-facts.json"
     facts = json.loads(written["content"])
     assert facts["provider_choice"] == "bedrock_claude"
-    assert facts["plan"] == "Starter ($50/mo flat fee)"
+    assert facts["plan"] == "Workspace ($50/mo)"
     # The pre-rename file is removed, not left behind: a stale facts file would
     # hand an agent frozen plan/provider state. The write is wrapped in a
     # best-effort try/except, so without a delete_file on this stub the call
@@ -143,21 +143,17 @@ def test_provider_label_for_each_choice(provider_choice, byo_provider, expected_
     assert expected_substring in label
 
 
-def test_build_owner_facts_team_seat_subscription_is_not_labeled_flat_fee():
-    # set_team_subscription stamps subscription_item_id + seat_count — a
-    # per-seat Teams plan must not be reported as the $50 flat fee.
+def test_build_owner_facts_uses_ultra_plan_label():
+    """The agent-visible label follows the workspace plan."""
     facts = owner_facts.build_owner_facts(
         "org_team",
         {
             "subscription_status": "active",
-            "subscription_item_id": "si_1",
-            "seat_count": 4,
+            "plan": "ultra_pro",
             "provider_choice": "bedrock_claude",
         },
     )
-    assert "per-seat" in facts["plan"]
-    assert "4 seats" in facts["plan"]
-    assert "flat fee" not in facts["plan"]
+    assert facts["plan"] == "Ultra ($150/mo)"
 
 
 def _facts_env(monkeypatch, owner_facts, rows, written):

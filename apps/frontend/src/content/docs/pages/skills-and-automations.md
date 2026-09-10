@@ -32,7 +32,7 @@ Open **Company → Automations**, or ask Friday to set the loop up.
 
 ## What needs a paid plan
 
-Anything always-on — channels, webhooks, routines, and autonomous runs — requires a Starter, Teams, or Ultra Pro workspace. A free-tier workspace sleeps when idle: it can chat, but it can't run while you're away.
+Anything always-on — channels, webhooks, routines, and autonomous runs — requires a Workspace or Ultra subscription. A free-tier workspace sleeps when idle: it can chat, but it can't run while you're away.
 
 ## Budgets
 

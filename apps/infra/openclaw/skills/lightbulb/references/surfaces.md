@@ -53,7 +53,7 @@ cannot join; the sheet is personal-account only.
 
 The sheet closes **September 30 at 12:00 PM ET**, and the competition runs
 **October 1 – December 1**. The first 200 positions on the sheet at close get
-**their first month of Starter ($50) free**, applied automatically — at
+**their first month of Workspace ($50) free**, applied automatically — at
 checkout if they subscribe afterwards, or to the next invoice if they already
 pay. There is no code to type and you never hand one out. After close, anyone
 on the sheet who is neither a winner nor paying is dropped from the

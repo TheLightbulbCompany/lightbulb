@@ -36,7 +36,7 @@ from core.observability.metrics import put_metric, timing
 from core.observability.product_analytics import capture_product_event
 from core.repositories import billing_repo, container_repo
 from core.services import webhook_dedup
-from core.services.billing_service import BillingService, subscription_item_on_price
+from core.services.billing_service import BillingService
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +109,7 @@ _CONVERSION_PREREQUISITE_GATES = frozenset({"oauth_required", "byo_provider_requ
 # credits, stamping the launch winner's coupon as consumed).
 #   - "paid"               : card cleared synchronously.
 #   - "no_payment_required": $0 due — a 100%-off coupon, which is exactly the
-#                            shape of the launch winner's free Starter month —
+#                            shape of the launch winner's free Workspace month —
 #                            still a completed purchase.
 # Anything else ("unpaid") is a delayed method (ACH etc.): Stripe fires
 # checkout.session.completed immediately and async_payment_succeeded (or
@@ -825,7 +825,7 @@ async def _apply_ultra_resize(owner_id: str, *, old_plan: str, new_plan: str) ->
     """Resize the owner's container to match a tier TRANSITION.
 
     No-op unless the tier actually flipped — every ordinary ``.updated`` (renewal,
-    payment-method change, seat sync) must not bounce the container.
+    payment-method change) must not bounce the container.
 
     - Upgrade (→ ultra_pro): grow to the Ultra box.
     - Downgrade (ultra_pro → standard): shrink to the flat box ONLY when the
@@ -902,6 +902,37 @@ async def _apply_ultra_resize(owner_id: str, *, old_plan: str, new_plan: str) ->
         logger.exception("Ultra tier resize failed for owner %s", owner_id)
 
 
+def _workspace_plan_from_subscription_items(event_data: dict[str, Any]) -> str | None:
+    """Return the configured Workspace/Ultra plan for one recurring item only.
+
+    A workspace subscription has exactly one recurring Stripe item.  Never
+    persist a subscription event whose item shape cannot prove that invariant:
+    accepting an unknown or multi-item payload can mask an unsupported
+    recurring charge.
+    """
+    items = (event_data.get("items") or {}).get("data") or []
+    if len(items) != 1:
+        reason = "missing_or_multiple_items"
+    else:
+        price = (items[0] or {}).get("price") or {}
+        price_id = price.get("id")
+        if not isinstance(price.get("recurring"), dict):
+            reason = "non_recurring_item"
+        elif price_id == settings.STRIPE_WORKSPACE_PRICE_ID and price_id:
+            return "standard"
+        elif price_id == settings.STRIPE_ULTRA_PRICE_ID and price_id:
+            return "ultra_pro"
+        else:
+            reason = "unknown_price"
+    put_metric("stripe.subscription.invalid_shape", dimensions={"reason": reason})
+    logger.warning(
+        "Ignoring subscription %s: expected one configured recurring Workspace or Ultra item (%s)",
+        event_data.get("id"),
+        reason,
+    )
+    return None
+
+
 async def handle_subscription_state(event: dict[str, Any], billing_service: BillingService) -> Response | None:
     """`customer.subscription.created` + `customer.subscription.updated`.
 
@@ -970,6 +1001,9 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
             old_status,
         )
         return None
+    new_plan = _workspace_plan_from_subscription_items(event_data)
+    if new_plan is None:
+        return None
     await billing_repo.set_subscription(
         owner_id=account["owner_id"],
         subscription_id=event_data["id"],
@@ -986,7 +1020,7 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     # surfaced as `incomplete` (skipped entirely by the guard above), it is
     # the follow-up .updated(active) that performs the deferred writes.
     #
-    # Events on an already-established subscription (renewals, seat syncs,
+    # Events on an already-established subscription (renewals,
     # payment-method changes, and past_due/unpaid/paused recoveries) must
     # NEVER persist it: subscription metadata is a snapshot of the provider
     # chosen at checkout and is never updated by change_provider, so on those
@@ -1083,97 +1117,15 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
         # anything at all.
         dispatch_company_stripe_request(account["owner_id"])
 
-    # Teams per-seat subscriptions additionally record the subscription item
-    # id + seat quantity so sync_team_seat_quantity has an item to modify.
-    # Detect by explicit metadata purpose OR by the seat price id. Personal
-    # flat subs skip this entirely.
-    items = (event_data.get("items") or {}).get("data") or []
-    # A Teams subscription carries TWO items (flat base + per-seat) and Stripe
-    # does not guarantee their order. Select the seat item BY PRICE ID: storing
-    # the base item's id here would make sync_team_seat_quantity drive the base
-    # quantity, billing a 4-seat org $50x4 + $20 instead of $50 + $20x4.
-    # NOTHING in this handler reads items by position — see is_ultra below.
-    seat_item = subscription_item_on_price(items, settings.STRIPE_TEAM_SEAT_PRICE_ID)
-    # bool(seat_item) is a strict superset of the old "first item is the seat
-    # price" fallback, and cannot over-detect: nothing but a real per-seat line
-    # item ever carries STRIPE_TEAM_SEAT_PRICE_ID.
-    is_team_seat = metadata.get("purpose") == "team_seat" or bool(seat_item)
-    team_seat_persisted = False
-    if is_team_seat and seat_item:
-        try:
-            await billing_repo.set_team_subscription(
-                owner_id=account["owner_id"],
-                subscription_id=event_data["id"],
-                subscription_item_id=seat_item.get("id"),
-                status=new_status,
-                seat_count=int(seat_item.get("quantity") or 0),
-            )
-            team_seat_persisted = True
-        except Exception:
-            logger.exception("Failed to record team seat state for owner %s", account["owner_id"])
-    elif is_team_seat and not seat_item:
-        # Reached only via metadata.purpose == "team_seat" (bool(seat_item)
-        # can't be True here without seat_item also being truthy) but no item
-        # on the subscription matches STRIPE_TEAM_SEAT_PRICE_ID -- either the
-        # env var is unset in this deploy or the Stripe seat price was rotated
-        # to a new id. Non-destructive (existing stored subscription_item_id/
-        # seat_count are left alone), but must not be silent: a rotation would
-        # otherwise freeze seat counts on every subsequent webhook with no
-        # visible signal.
-        logger.warning(
-            "Team-seat subscription %s (owner %s) detected via metadata but no "
-            "item matches STRIPE_TEAM_SEAT_PRICE_ID=%r -- seat state not refreshed "
-            "(price unset or rotated?)",
-            event_data.get("id"),
-            account["owner_id"],
-            settings.STRIPE_TEAM_SEAT_PRICE_ID,
-        )
-
-    # Ultra Pro tier: derive the tier FROM THE PRICE on the subscription item —
-    # a direct sibling of the team-seat detection above, and NEVER from
-    # subscription.metadata (a checkout-time snapshot that goes stale; the same
-    # clobber the entering_live provider guard defends against). Persist the
-    # plan and resize the container only on the tier transition.
-    # Scanned by price, not read off items[0]: an Ultra sub is single-item
-    # TODAY, but the moment one grows a second line item (a metered-overage
-    # item, a Stripe-side add-on or coupon) an Ultra owner whose ultra price
-    # lands at index >= 1 would fall to "standard" here and get their
-    # container resized DOWN — silently. Same rule as the seat item above.
-    is_ultra = bool(subscription_item_on_price(items, settings.STRIPE_ULTRA_PRICE_ID))
-    if items:
-        # Only act when the payload actually carries the subscription item. A
-        # partial `.updated` can arrive with an empty items.data; treating that
-        # absence as "not ultra" would wrongly downgrade + shrink an Ultra owner.
-        #
-        # Team subs are INCLUDED: tier and headcount are independent axes. A
-        # team's tier rides its BASE item (the ultra price once upgraded) while
-        # its seat item is untouched, so this branch and the seat-persistence
-        # branch above operate on different items — and the seat write MUST
-        # run first. set_team_subscription is a full read-then-put_item
-        # rewrite of the row (it has no per-field UpdateExpression), so it
-        # would clobber a `plan` written by this branch back to whatever it
-        # read at the top of the handler; set_plan's scoped update_item has no
-        # such blast radius. Swapping the order would silently revert every
-        # tier write on an Ultra team's seat-change events.
-        old_plan = account.get("plan") or "standard"
-        new_plan = "ultra_pro" if is_ultra else "standard"
-        plan_persisted = False
-        try:
-            await billing_repo.set_plan(account["owner_id"], plan=new_plan, now_iso=utc_now_iso())
-            plan_persisted = True
-        except Exception:
-            logger.exception("Failed to persist plan for owner %s", account["owner_id"])
-        # Resize ONLY when the durable plan write committed. If set_plan raised
-        # (transient DDB) but we resized anyway, the container size would change
-        # without the plan persisted — plan and size diverge, and a later
-        # flat-price event would read the OLD plan and mis-decide the resize.
-        # Skipping the resize keeps them from ever splitting in the
-        # size-without-plan direction. Resize decisions still key off the row's
-        # PRIOR plan vs the price-derived one, so it fires only on a real
-        # transition even though the persist is idempotent. Best-effort inside
-        # (a resize failure never 500s the webhook).
-        if plan_persisted:
-            await _apply_ultra_resize(account["owner_id"], old_plan=old_plan, new_plan=new_plan)
+    old_plan = account.get("plan") or "standard"
+    plan_persisted = False
+    try:
+        await billing_repo.set_plan(account["owner_id"], plan=new_plan, now_iso=utc_now_iso())
+        plan_persisted = True
+    except Exception:
+        logger.exception("Failed to persist plan for owner %s", account["owner_id"])
+    if plan_persisted:
+        await _apply_ultra_resize(account["owner_id"], old_plan=old_plan, new_plan=new_plan)
 
     if old_status == "trial_local" and new_status in ("trialing", "active"):
         # Trial→paid conversion: the running container is still the locked-down
@@ -1261,12 +1213,8 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
         # produce a facts file asserting a provider the row never got.
         facts_overrides["provider_choice"] = metadata_provider
         facts_overrides["byo_provider"] = metadata_byo if metadata_provider == "byo_key" else None
-    if team_seat_persisted:
-        # Same shape for the seat fields: on a brand-new Teams seat sub the
-        # eventually-consistent row re-read can miss the just-committed
-        # subscription_item_id/seat_count and mislabel the plan as flat-fee.
-        facts_overrides["subscription_item_id"] = seat_item.get("id")
-        facts_overrides["seat_count"] = int(seat_item.get("quantity") or 0)
+    if plan_persisted:
+        facts_overrides["plan"] = new_plan
     await write_owner_facts(account["owner_id"], account_overrides=facts_overrides)
 
     # Customer-analytics bridge (the EMF put_metric above is the operational

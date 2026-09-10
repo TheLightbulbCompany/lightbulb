@@ -818,8 +818,10 @@ records whose sort key begins `WORK#`, and sends them to
 The backend transaction stores a DynamoDB `payload` map plus the final
 `messageGroupId` and `messageDeduplicationId` on each outbox item because Pipes
 dynamic parameters can reference source JSON paths but not values produced by
-input transformation. The Pipe sends only `NewImage.payload.M`; the worker uses
-the SDK `TypeDeserializer` and obtains exactly one of:
+input transformation. The Pipe has no input template (an object placeholder
+renders as Java-map text, not JSON) and forwards the raw stream record; the
+worker reads `dynamodb.NewImage.payload.M`, uses the SDK `TypeDeserializer`,
+and obtains exactly one of:
 
 ```json
 {"kind":"room_dispatch","roomId":"...","agentId":"...","throughSeq":42}

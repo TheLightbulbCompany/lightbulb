@@ -342,7 +342,7 @@ describe("ApiStack — canonical messaging storage and work delivery", () => {
     });
   });
 
-  test("direct Pipe filters only WORK inserts and sends the AttributeValue pointer to FIFO", () => {
+  test("direct Pipe filters only WORK inserts and sends the raw stream record to FIFO", () => {
     API_TEMPLATE.resourceCountIs("AWS::Pipes::Pipe", 1);
     API_TEMPLATE.hasResourceProperties("AWS::Pipes::Pipe", {
       Name: "lightbulb-dev-openclaw-work",
@@ -371,7 +371,8 @@ describe("ApiStack — canonical messaging storage and work delivery", () => {
         }),
       },
       TargetParameters: {
-        InputTemplate: "<$.dynamodb.NewImage.payload.M>",
+        // An object placeholder renders as Java-map text, not JSON.
+        InputTemplate: Match.absent(),
         SqsQueueParameters: {
           MessageGroupId: "$.dynamodb.NewImage.messageGroupId.S",
           MessageDeduplicationId:

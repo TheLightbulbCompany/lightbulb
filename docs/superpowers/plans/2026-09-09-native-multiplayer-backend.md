@@ -416,10 +416,11 @@ Create `apps/backend/core/services/openclaw_work.py` and
   {"kind":"runtime_operation","ownerId":"...","operationId":"..."}
   ```
 
-  EventBridge Pipes places the outbox `payload.M` in the SQS body. Deserialize
-  that DynamoDB AttributeValue map with boto3 `TypeDeserializer`, then validate
-  exactly one schema; do not accept a complete stream record or arbitrary RPC
-  parameters.
+  EventBridge Pipes places the raw stream record in the SQS body (no input
+  template — an object placeholder renders as Java-map text). Read
+  `dynamodb.NewImage.payload.M`, deserialize that DynamoDB AttributeValue map
+  with boto3 `TypeDeserializer`, then validate exactly one schema; do not
+  accept a bare pointer map or arbitrary RPC parameters.
 
 - [ ] For room dispatch, read the per-agent delivery cursor, query canonical
   messages through `throughSeq`, skip non-targeted messages while advancing, and

@@ -92,7 +92,9 @@ def validate_work_event(document: object) -> tuple[dict, str, str]:
         _uuid(pointer["operationId"], "operationId")
     else:
         raise ValueError("unknown work pointer")
-    return payload, group_id, dedup_id
+    # The Pipe forwards the raw stream record (no input template), so the
+    # replay must re-send the same record — the worker unwraps payload.M.
+    return event, group_id, dedup_id
 
 
 def _release(sqs, queue_url: str, receipt_handles: list[str]) -> None:
@@ -150,10 +152,10 @@ def replay_message(
     selected_receipt = message.get("ReceiptHandle")
     deleted = False
     try:
-        payload, group_id, dedup_id = validate_work_event(json.loads(message.get("Body", "")))
+        event, group_id, dedup_id = validate_work_event(json.loads(message.get("Body", "")))
         response = sqs.send_message(
             QueueUrl=work_queue_url,
-            MessageBody=json.dumps(payload, separators=(",", ":"), sort_keys=True),
+            MessageBody=json.dumps(event, separators=(",", ":"), sort_keys=True),
             MessageGroupId=group_id,
             MessageDeduplicationId=dedup_id,
         )

@@ -19,6 +19,12 @@ from core.services import stripe_webhook_handlers as handlers  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
+def workspace_price_configured(monkeypatch):
+    """Positive subscription events use the configured Workspace price."""
+    monkeypatch.setattr("core.config.settings.STRIPE_WORKSPACE_PRICE_ID", "price_workspace_test")
+
+
+@pytest.fixture(autouse=True)
 def facts_mock(monkeypatch):
     """handle_subscription_state refreshes the owner-facts file after the
     status persist. Mock it for every test here (it would otherwise reach
@@ -37,6 +43,14 @@ def _subscription_event(**overrides) -> dict:
         "trial_end": 1700000000,
         "metadata": {"owner_id": "org_x"},
         "default_payment_method": "pm_x",
+        "items": {
+            "data": [
+                {
+                    "id": "si_workspace",
+                    "price": {"id": "price_workspace_test", "recurring": {"interval": "month"}},
+                }
+            ]
+        },
     }
     event_data.update(overrides)
     return {"id": "evt_x", "type": "customer.subscription.created", "data": {"object": event_data}}
@@ -50,9 +64,7 @@ def mock_repo():
         )
         repo.set_subscription = AsyncMock()
         repo.set_provider_choice = AsyncMock()
-        # Any test that populates event_data["items"] reaches the tier branch
-        # (see the TestTeamSeatWebhook comment below for why this must be a
-        # real AsyncMock rather than a bare MagicMock).
+        # Every valid event reaches the plan branch, so this must be async.
         repo.set_plan = AsyncMock()
         yield repo
 
@@ -1389,7 +1401,7 @@ async def test_facts_skip_provider_override_when_backup_write_fails(mock_repo, f
         await handlers.handle_subscription_state(event, MagicMock())
 
     overrides = facts_mock.await_args.kwargs["account_overrides"]
-    assert overrides == {"subscription_status": "active"}
+    assert overrides == {"subscription_status": "active", "plan": "standard"}
 
 
 @pytest.mark.asyncio

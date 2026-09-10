@@ -134,10 +134,11 @@ const SLACK_THROTTLE: Record<string, { burstLimit: number; rateLimit: number }> 
 const roomsHandlerCode = (tableName: string) => `
 import { util } from '@aws-appsync/utils';
 const TABLE = '${tableName}';
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+// String pattern via util.matches: APPSYNC_JS has no regex literals.
+const UUID = '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$';
 function pathParts(ctx) {
   const parts = ctx.info.channel.path.split('/');
-  if (parts.length !== 4 || parts[0] !== '' || parts[1] !== 'rooms' || !UUID.test(parts[2]) || !UUID.test(parts[3])) {
+  if (parts.length !== 4 || parts[0] !== '' || parts[1] !== 'rooms' || !util.matches(UUID, parts[2]) || !util.matches(UUID, parts[3])) {
     util.unauthorized();
   }
   return [parts[2], parts[3]];
@@ -195,10 +196,11 @@ export const onPublish = {
 const usersHandlerCode = (tableName: string) => `
 import { util } from '@aws-appsync/utils';
 const TABLE = '${tableName}';
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+// String pattern via util.matches: APPSYNC_JS has no regex literals.
+const UUID = '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$';
 function channelKey(ctx) {
   const parts = ctx.info.channel.path.split('/');
-  if (parts.length !== 3 || parts[0] !== '' || parts[1] !== 'users' || !UUID.test(parts[2])) {
+  if (parts.length !== 3 || parts[0] !== '' || parts[1] !== 'users' || !util.matches(UUID, parts[2])) {
     util.unauthorized();
   }
   return parts[2];

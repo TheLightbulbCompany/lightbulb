@@ -562,6 +562,10 @@ describe("ApiStack — messaging AppSync Events (OIDC subscribe / IAM publish)",
     expect(code).toContain("STREAM#");
     expect(code).toContain("deliveryKey");
     expect(code).toContain("util.unauthorized");
+    // APPSYNC_JS rejects regex literals at CreateChannelNamespace time
+    // (@aws-appsync/no-regex); UUID segments must go through util.matches.
+    expect(code).toContain("util.matches(UUID,");
+    expect(code).not.toContain("= /^");
   });
 
   test("outputs both endpoints, API ID, and API ARN without channel keys", () => {

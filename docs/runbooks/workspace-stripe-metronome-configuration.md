@@ -26,7 +26,7 @@ do not, although both still require an entitled workspace after trial.
 
 New Apple purchase and restore paths are retired. The mobile application still
 has full product access, but its App Store purchase gates and Settings expose no
-outbound billing or purchase CTA. A user without a workspace can enter web
+outbound purchase CTA. A user without a workspace can enter web
 workspace onboarding, and an existing Stripe subscriber can manage that existing
 subscription in the Stripe portal; new web billing remains outside the iOS
 purchase UI. Historical Apple verification, webhook reconciliation, entitlement

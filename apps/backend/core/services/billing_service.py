@@ -38,7 +38,7 @@ stripe.api_key = settings.STRIPE_SECRET_KEY
 
 # Bump whenever the shared Checkout body changes; Stripe idempotency compares
 # the complete request body for a reused key.
-_CHECKOUT_BODY_VERSION = 5
+_CHECKOUT_BODY_VERSION = 6
 
 
 class BillingServiceError(Exception):
@@ -278,6 +278,7 @@ async def create_workspace_checkout(*, owner_id: str, clerk_user_id: str, plan: 
                     metadata.get("purpose") == "workspace_subscription_v2"
                     and metadata.get("plan") == plan
                     and metadata.get("workspace_id") == owner_id
+                    and metadata.get("owner_id") in {None, owner_id}
                     and pending.get("customer") == account["stripe_customer_id"]
                     and pending.get("mode") == "subscription"
                 ):
@@ -304,7 +305,7 @@ async def create_workspace_checkout(*, owner_id: str, clerk_user_id: str, plan: 
             metadata=metadata,
             success_url=f"{settings.FRONTEND_URL}/settings?panel=billing&checkout=success",
             cancel_url=f"{settings.FRONTEND_URL}/settings?panel=billing&checkout=cancel",
-            idempotency_key=_checkout_idempotency_key("workspace_checkout", owner_id, plan),
+            idempotency_key=_checkout_idempotency_key("workspace_checkout", owner_id, f"{plan}:{clerk_user_id}"),
         )
     except Exception:
         await billing_repo.release_checkout_slot(owner_id, token=claim_token)
@@ -419,7 +420,9 @@ async def _build_subscription_checkout(
         # Stripe's minimum is 30 minutes; the default is 24 hours. A short
         # expiry bounds how long an abandoned session can linger completable
         # — load-bearing for the single-open-session guard in /trial-checkout.
-        expires_at=int(time.time()) + 31 * 60,
+        # This matches _checkout_idempotency_key's five-minute bucket. Six
+        # buckets plus one minute gives Stripe at least 31 minutes.
+        expires_at=(int(time.time() // 300) * 300) + 36 * 60,
     )
     if origin_context:
         # "mobile_app" switches Checkout to the UI built for app-to-web

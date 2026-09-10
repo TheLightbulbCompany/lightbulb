@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock  # noqa: E402
 import pytest  # noqa: E402
 
 from core.auth import AuthContext  # noqa: E402
+from core.services import clerk_admin  # noqa: E402
 from routers import billing  # noqa: E402
 
 
@@ -23,7 +24,7 @@ async def test_account_for_workspace_owner_has_workspace_prices_without_seats(mo
         billing, "get_usage_summary", AsyncMock(return_value={"total_spend": 0.0, "lifetime_spend": 0.0})
     )
     clerk_seat_count = AsyncMock(side_effect=AssertionError("account route must not read Clerk seats"))
-    monkeypatch.setattr(billing.clerk_admin, "get_organization_seat_count", clerk_seat_count)
+    monkeypatch.setattr(clerk_admin, "get_organization_seat_count", clerk_seat_count)
 
     resp = await billing.get_billing_account(auth=AuthContext(user_id="u", org_id="org_1", org_role="org:admin"))
     payload = resp.model_dump()

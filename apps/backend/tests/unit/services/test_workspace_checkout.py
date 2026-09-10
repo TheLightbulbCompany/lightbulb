@@ -261,6 +261,60 @@ async def test_workspace_checkout_reuses_its_open_pending_session(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_workspace_checkout_rejects_pending_marker_with_conflicting_legacy_owner(monkeypatch):
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(
+            return_value={
+                "owner_id": "org_1",
+                "stripe_customer_id": "cus_1",
+                "pending_checkout_session_id": "cs_pending",
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        billing_service.stripe.checkout.Session,
+        "retrieve",
+        MagicMock(
+            return_value={
+                "status": "open",
+                "customer": "cus_1",
+                "mode": "subscription",
+                "metadata": {
+                    "purpose": "workspace_subscription_v2",
+                    "plan": "workspace",
+                    "workspace_id": "org_1",
+                    "owner_id": "org_other",
+                },
+            }
+        ),
+    )
+
+    with pytest.raises(billing_service.BillingServiceError, match="pending_checkout_invalid"):
+        await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="workspace")
+
+
+@pytest.mark.asyncio
+async def test_workspace_checkout_retries_within_a_bucket_send_identical_stripe_kwargs(monkeypatch):
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
+    monkeypatch.setattr(billing_service.time, "time", lambda: 1_800_000_001)
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "org_1", "stripe_customer_id": "cus_1"}),
+    )
+    create = MagicMock(side_effect=[{"id": "cs_1", "url": "url_1"}, {"id": "cs_2", "url": "url_2"}])
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "create", create)
+
+    await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="workspace")
+    await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="workspace")
+
+    assert create.call_args_list[0].kwargs == create.call_args_list[1].kwargs
+
+
+@pytest.mark.asyncio
 async def test_workspace_checkout_claim_denied_never_builds_a_session(monkeypatch):
     monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
     monkeypatch.setattr(

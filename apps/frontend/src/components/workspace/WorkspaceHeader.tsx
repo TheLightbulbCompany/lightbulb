@@ -1,83 +1,51 @@
 "use client";
 
-// Desktop global utilities: files, browser, search, support, and profile.
 import "./workspace.css";
-
 import { UserButton } from "@clerk/nextjs";
-import { Chrome, FolderOpen, HelpCircle, CreditCard, Search } from "lucide-react";
-
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Bell, Chrome, FolderOpen, HelpCircle, Home, ListTodo, MessageSquare, Search, Settings } from "lucide-react";
+import Link from "next/link";
 import { capture } from "@/lib/analytics";
 import { useSupport } from "@/components/support/SupportProvider";
 import { useCommandPalette } from "@/components/teams/command-palette/CommandPaletteProvider";
-import { openPanel } from "./workspaceController";
+import { activateMessagesPanel, openPanel, useWorkspaceState } from "./workspaceController";
+import { MESSAGES_PANEL_ID } from "./panelRegistry";
 
-export function WorkspaceHeader(): React.ReactElement {
+const DESTINATIONS = [
+  { panel: MESSAGES_PANEL_ID, label: "Messages", Icon: MessageSquare },
+  { panel: "teams-dashboard", label: "Home", Icon: Home },
+  { panel: "teams-inbox", label: "Activity", Icon: Bell },
+  { panel: "teams-issues", label: "Tasks", Icon: ListTodo },
+  { panel: "browser", label: "Browser", Icon: Chrome },
+  { panel: "file-viewer", label: "Browse workspace files", Icon: FolderOpen },
+] as const;
+
+/** The global rail stays available when Messages hides the dock tabs. */
+export function WorkspaceHeader({ chatReady = true }: { chatReady?: boolean }): React.ReactElement {
   const { openSupport } = useSupport();
-  const { setOpen: setCommandPaletteOpen } = useCommandPalette();
-
+  const { setOpen } = useCommandPalette();
+  const { activePanelId } = useWorkspaceState();
   return (
-    // Every button below keeps its aria-label — the tooltip is the hover
-    // affordance, never the accessible name.
-    <div className="workspace-header">
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            onClick={() => { capture("file_browser_opened"); openPanel("file-viewer"); }}
-            className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--midnight-muted)] transition-colors duration-(--dur-fast) ease-out hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)]"
-            aria-label="Browse workspace files"
-          >
-            <FolderOpen size={16} />
-          </button>
-        </TooltipTrigger>
-        <TooltipContent>Browse workspace files</TooltipContent>
-      </Tooltip>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            onClick={() => { capture("browser_view_opened"); openPanel("browser"); }}
-            className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--midnight-muted)] transition-colors duration-(--dur-fast) ease-out hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)]"
-            aria-label="Watch your agents' browser"
-          >
-            <Chrome size={16} />
-          </button>
-        </TooltipTrigger>
-        <TooltipContent>Watch your agents&rsquo; browser</TooltipContent>
-      </Tooltip>
-      <div className="workspace-header__spacer" />
-      <button
-        type="button"
-        className="workspace-search"
-        onClick={() => setCommandPaletteOpen(true)}
-      >
-        <Search size={15} aria-hidden="true" />
-        <span>Search agents, issues, and projects</span>
-        <kbd>⌘/Ctrl K</kbd>
+    <nav className="workspace-rail" aria-label="Workspace">
+      <button type="button" className="workspace-rail__search" aria-label="Search agents, issues, and projects" title="Search (⌘/Ctrl K)" onClick={() => setOpen(true)}>
+        <Search size={20} aria-hidden="true" />
       </button>
-      <div className="workspace-header__spacer" />
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            onClick={() => openSupport()}
-            className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--midnight-muted)] transition-colors duration-(--dur-fast) ease-out hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)] mr-1"
-            aria-label="Get help"
-          >
-            <HelpCircle size={16} />
-          </button>
-        </TooltipTrigger>
-        <TooltipContent>Get help / report a problem</TooltipContent>
-      </Tooltip>
-      <UserButton
-        appearance={{
-          elements: {
-            avatarBox: "h-8 w-8",
-          },
-        }}
-      >
-        <UserButton.MenuItems>
-          <UserButton.Link label="Settings" labelIcon={<CreditCard size={16} />} href="/settings" />
-        </UserButton.MenuItems>
-      </UserButton>
-    </div>
+      {DESTINATIONS.map(({ panel, label, Icon }) => (
+        <button key={panel} type="button" aria-label={label} title={label} disabled={!chatReady}
+          aria-current={activePanelId === panel ? "page" : undefined}
+          onClick={() => {
+            if (panel === "file-viewer") capture("file_browser_opened");
+            if (panel === "browser") capture("browser_view_opened");
+            if (panel === MESSAGES_PANEL_ID) activateMessagesPanel();
+            else openPanel(panel, {}, { pushUrl: true });
+          }}>
+          <Icon size={20} aria-hidden="true" />
+          {label !== "Browse workspace files" && <span>{label}</span>}
+        </button>
+      ))}
+      <div className="workspace-rail__spacer" />
+      <button type="button" onClick={() => openSupport()} aria-label="Get help" title="Get help"><HelpCircle size={20} aria-hidden="true" /></button>
+      <Link href="/settings" aria-label="Settings" title="Settings"><Settings size={20} aria-hidden="true" /></Link>
+      <UserButton appearance={{ elements: { avatarBox: "h-8 w-8" } }} />
+    </nav>
   );
 }

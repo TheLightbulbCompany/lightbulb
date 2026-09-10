@@ -7,10 +7,6 @@ import {
   acceptWorkspaceInvitation,
   onboardWorkspace,
 } from './drivers/onboarding';
-import {
-  waitForChatReady,
-  sendMessageAndWaitForResponse,
-} from './drivers/chat';
 import { containerHealthy } from './assertions/container';
 
 async function organizationIdForNextStatusRequest(
@@ -154,10 +150,30 @@ test.describe('E2E: Workspace invitation and trial happy path', () => {
     );
     expect([...statusOwners]).toEqual([inviter.orgId]);
 
-    await waitForChatReady(inviter.page);
-    await sendMessageAndWaitForResponse(
-      inviter.page,
-      'Say "hello" and nothing else.',
-    );
+    const page = inviter.page;
+    const workspace = page.getByRole('navigation', { name: 'Workspace', exact: true });
+    await expect(workspace).toBeVisible();
+    for (const name of ['Home', 'Activity', 'Tasks', 'Browser']) {
+      await expect(workspace.getByRole('button', { name, exact: true })).toBeVisible();
+    }
+    const conversations = page.getByRole('navigation', { name: 'Conversations' });
+    await expect(conversations).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText('New session', { exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Reset workspace layout' })).toHaveCount(0);
+
+    await conversations.locator('.room-directory-entry').first().click({ timeout: 30_000 });
+    const messages = page.getByRole('region', { name: 'Messages', exact: true });
+    await expect(messages).toBeVisible();
+    await page.getByRole('textbox', { name: 'Message', exact: true }).fill('Workspace UI smoke');
+    await page.getByRole('button', { name: 'Send message', exact: true }).click();
+    const sent = messages.getByRole('article', { name: /^Message from / })
+      .filter({ hasText: 'Workspace UI smoke' }).last();
+    const reply = sent.getByRole('button', { name: 'Reply', exact: true });
+    await reply.click({ timeout: 30_000 });
+    const thread = page.getByRole('complementary', { name: 'Thread', exact: true });
+    await expect(thread).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(thread).toHaveCount(0);
+    await expect(reply).toBeFocused();
   });
 });

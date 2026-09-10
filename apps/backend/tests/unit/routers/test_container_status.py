@@ -169,7 +169,7 @@ def _stub_trial_armer(request):
     if request.node.name == "test_workspace_trial_clock_starts_only_at_first_canonical_ready_poll":
         yield
     else:
-        with patch("routers.container.billing_repo.arm_trial_if_unset", AsyncMock(return_value=None)):
+        with patch("routers.container.arm_workspace_trial_if_unset", AsyncMock(return_value=None)):
             yield
 
 
@@ -283,7 +283,7 @@ async def test_ready_paid_workspace_does_not_try_to_arm_a_trial():
             patch("core.services.connection_service.is_gateway_connected", AsyncMock(return_value=True)),
             patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
             patch(
-                "routers.container.billing_repo.arm_trial_if_unset",
+                "routers.container.arm_workspace_trial_if_unset",
                 AsyncMock(side_effect=AssertionError("paid workspaces must not hit the trial armer")),
             ),
         ):

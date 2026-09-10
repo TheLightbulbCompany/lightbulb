@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useCredits, isCreditsExhausted } from "@/hooks/useCredits";
 import { CREDIT_PRESETS_CENTS, MIN_CREDITS_CENTS } from "@/lib/creditAmounts";
 
@@ -16,13 +16,25 @@ const TEXT_INPUT =
 
 /** Bedrock onboarding: one workspace top-up request, collected by Metronome. */
 export function CreditsStep({ onComplete }: Props) {
-  const { balance, refresh, startTopUp, canManageCredits, pendingTopUp, topUpOutcome } = useCredits();
+  const { scopeKey, balance, refresh, startTopUp, canManageCredits, pendingTopUp, topUpOutcome } = useCredits();
   const [amount, setAmount] = useState(2000);
   const [submitting, setSubmitting] = useState(false);
   const [requested, setRequested] = useState(false);
   const [lockedAmount, setLockedAmount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const advancedRef = useRef(false);
+  const scopeGeneration = useRef(0);
+
+  useLayoutEffect(() => {
+    scopeGeneration.current += 1;
+    setAmount(2000);
+    setSubmitting(false);
+    setRequested(false);
+    setLockedAmount(null);
+    setError(null);
+    advancedRef.current = false;
+    return () => { scopeGeneration.current += 1; };
+  }, [scopeKey]);
 
   useEffect(() => {
     if (advancedRef.current || !balance || isCreditsExhausted(balance)) return;
@@ -43,24 +55,28 @@ export function CreditsStep({ onComplete }: Props) {
       setLockedAmount(null);
       setRequested(false);
     }
-  }, [pendingTopUp]);
+  }, [pendingTopUp, scopeKey]);
 
   const requestTopUp = async () => {
+    const requestScope = scopeGeneration.current;
     const intentAmount = lockedAmount ?? amount;
     if (lockedAmount === null) setLockedAmount(intentAmount);
     setSubmitting(true);
     setError(null);
     try {
       const result = await startTopUp(intentAmount);
+      if (requestScope !== scopeGeneration.current) return;
       if (result.status !== "requested") throw new Error("Top-up was not accepted");
       // Keep the original amount and UUID intent pinned while collection is
       // uncertain. A retry must be the same money request, never a new charge.
       setRequested(true);
       void refresh();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Failed to request top-up");
+      if (requestScope === scopeGeneration.current) {
+        setError(cause instanceof Error ? cause.message : "Failed to request top-up");
+      }
     } finally {
-      setSubmitting(false);
+      if (requestScope === scopeGeneration.current) setSubmitting(false);
     }
   };
 

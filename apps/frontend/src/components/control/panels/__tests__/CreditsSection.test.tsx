@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 
 import { CreditsSection } from "../CreditsSection";
 
@@ -40,6 +40,42 @@ describe("CreditsSection", () => {
     expect(screen.getByText("$39.52")).toBeInTheDocument();
     expect(screen.getByText("Only workspace admins can add credits.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /add \$20/i })).toBeNull();
+  });
+
+  it.each(["success", "failure"])("ignores a late %s POST from the previous workspace", async (outcome) => {
+    let finishA!: () => void;
+    const startTopUp = vi.fn().mockImplementationOnce(() => new Promise((resolve, reject) => {
+      finishA = () => outcome === "success" ? resolve({ status: "requested" }) : reject(new Error("A payment error"));
+    })).mockImplementationOnce(() => new Promise(() => {}));
+    const credits = { ...mockUseCredits(), scopeKey: "user_A:org_A", startTopUp };
+    mockUseCredits.mockReturnValue(credits);
+    const mounted = render(<CreditsSection />);
+    fireEvent.click(screen.getByRole("button", { name: "$50" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add $50" }));
+    expect(screen.getByRole("button", { name: "Loading…" })).toBeDisabled();
+
+    mockUseCredits.mockReturnValue({ ...credits, scopeKey: "user_B:org_B" });
+    mounted.rerender(<CreditsSection />);
+    expect(screen.getByRole("button", { name: "Add $20" })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: "$50" })).not.toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Add $20" }));
+    await act(async () => { finishA(); });
+    expect(screen.getByRole("button", { name: "Loading…" })).toBeDisabled();
+    expect(screen.queryByText("A payment error")).toBeNull();
+    expect(screen.queryByText(/Top-up of \$/)).toBeNull();
+    expect(credits.refresh).not.toHaveBeenCalled();
+  });
+
+  it("resets a previous workspace's payment error", async () => {
+    const credits = { ...mockUseCredits(), scopeKey: "user_A:org_A", startTopUp: vi.fn().mockRejectedValue(new Error("A payment error")) };
+    mockUseCredits.mockReturnValue(credits);
+    const mounted = render(<CreditsSection />);
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Add $20" })); });
+    expect(screen.getByText("A payment error")).toBeInTheDocument();
+    mockUseCredits.mockReturnValue({ ...credits, scopeKey: "user_A:org_B" });
+    mounted.rerender(<CreditsSection />);
+    expect(screen.queryByText("A payment error")).toBeNull();
+    expect(screen.getByRole("button", { name: "$50" })).not.toBeDisabled();
   });
 
   it.each(["pending", "requested", "action_required"])("shows a persisted %s top-up as locked after a reload", async (state) => {

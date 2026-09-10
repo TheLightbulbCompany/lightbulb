@@ -145,6 +145,7 @@ export function useCredits() {
   };
 
   return {
+    scopeKey: authKey,
     balance: data,
     isLoading,
     error,

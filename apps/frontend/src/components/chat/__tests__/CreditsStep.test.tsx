@@ -8,14 +8,16 @@ const refresh = vi.fn();
 const canManageCredits = vi.fn();
 const pendingTopUp = vi.fn();
 const topUpOutcome = vi.fn();
+let scopeKey = "user_A:org_A";
 vi.mock("@/hooks/useCredits", () => ({
-  useCredits: () => ({ balance: balance(), startTopUp, refresh, canManageCredits: canManageCredits(), pendingTopUp: pendingTopUp(), topUpOutcome: topUpOutcome() }),
+  useCredits: () => ({ scopeKey, balance: balance(), startTopUp, refresh, canManageCredits: canManageCredits(), pendingTopUp: pendingTopUp(), topUpOutcome: topUpOutcome() }),
   isCreditsExhausted: (value: { is_exhausted?: boolean; balance_microcents: number | null }) =>
     value.is_exhausted ?? (value.balance_microcents !== null && value.balance_microcents <= 0),
 }));
 
 describe("CreditsStep", () => {
   beforeEach(() => {
+    scopeKey = "user_A:org_A";
     balance.mockReset(); startTopUp.mockReset(); refresh.mockReset(); canManageCredits.mockReset(); pendingTopUp.mockReset(); topUpOutcome.mockReset();
     balance.mockReturnValue({ balance_microcents: 0, balance_dollars: "0.00" });
     canManageCredits.mockReturnValue(true);
@@ -52,6 +54,43 @@ describe("CreditsStep", () => {
     render(<CreditsStep onComplete={vi.fn()} />);
     expect(screen.getByText("Only workspace admins can add credits.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^add \$/i })).toBeNull();
+  });
+
+  it.each(["success", "failure"])("ignores a late %s POST from the previous workspace", async (outcome) => {
+    let finishA!: () => void;
+    startTopUp.mockImplementationOnce(() => new Promise((resolve, reject) => {
+      finishA = () => outcome === "success" ? resolve({ status: "requested" }) : reject(new Error("A payment error"));
+    })).mockImplementationOnce(() => new Promise(() => {}));
+    const onComplete = vi.fn();
+    const mounted = render(<CreditsStep onComplete={onComplete} />);
+    fireEvent.click(screen.getByRole("button", { name: "$50" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add $50" }));
+    expect(screen.getByRole("button", { name: "Loading…" })).toBeDisabled();
+
+    scopeKey = "user_B:org_B";
+    mounted.rerender(<CreditsStep onComplete={onComplete} />);
+    expect(screen.getByRole("button", { name: "Add $20" })).not.toBeDisabled();
+    expect(screen.getByRole("spinbutton")).not.toBeDisabled();
+    // B starts its own request before A responds; A's finally must not end B's loading state.
+    fireEvent.click(screen.getByRole("button", { name: "Add $20" }));
+    refresh.mockClear();
+    await act(async () => { finishA(); });
+    expect(screen.getByRole("button", { name: "Loading…" })).toBeDisabled();
+    expect(screen.queryByText("A payment error")).toBeNull();
+    expect(screen.queryByText(/Payment requested\./)).toBeNull();
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("resets a previous workspace's payment error", async () => {
+    startTopUp.mockRejectedValue(new Error("A payment error"));
+    const onComplete = vi.fn();
+    const mounted = render(<CreditsStep onComplete={onComplete} />);
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Add $20" })); });
+    expect(screen.getByText("A payment error")).toBeInTheDocument();
+    scopeKey = "user_A:org_B";
+    mounted.rerender(<CreditsStep onComplete={onComplete} />);
+    expect(screen.queryByText("A payment error")).toBeNull();
+    expect(screen.getByRole("button", { name: "$50" })).not.toBeDisabled();
   });
 
   it.each(["pending", "requested", "action_required"])("shows a persisted %s top-up as locked after a reload", async (state) => {

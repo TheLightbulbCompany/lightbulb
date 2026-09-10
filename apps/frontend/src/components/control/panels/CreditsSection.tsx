@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { RefreshCw, Wallet } from "lucide-react";
 import { useCredits } from "@/hooks/useCredits";
 
@@ -10,12 +10,23 @@ const QUICK_PICKS_CENTS = [1000, 2000, 5000, 10000];
 
 /** Workspace-managed AI credits, purchased through a Metronome-gated commit. */
 export function CreditsSection() {
-  const { balance, refresh, startTopUp, canManageCredits, pendingTopUp, topUpOutcome } = useCredits();
+  const { scopeKey, balance, refresh, startTopUp, canManageCredits, pendingTopUp, topUpOutcome } = useCredits();
   const [amount, setAmount] = useState(2000);
   const [submitting, setSubmitting] = useState(false);
   const [requested, setRequested] = useState<number | null>(null);
   const [lockedAmount, setLockedAmount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const scopeGeneration = useRef(0);
+
+  useLayoutEffect(() => {
+    scopeGeneration.current += 1;
+    setAmount(2000);
+    setSubmitting(false);
+    setRequested(null);
+    setLockedAmount(null);
+    setError(null);
+    return () => { scopeGeneration.current += 1; };
+  }, [scopeKey]);
 
   useEffect(() => {
     if (pendingTopUp) {
@@ -26,24 +37,28 @@ export function CreditsSection() {
       setLockedAmount(null);
       setRequested(null);
     }
-  }, [pendingTopUp]);
+  }, [pendingTopUp, scopeKey]);
 
   const topUp = async () => {
+    const requestScope = scopeGeneration.current;
     const intentAmount = lockedAmount ?? amount;
     if (lockedAmount === null) setLockedAmount(intentAmount);
     setSubmitting(true);
     setError(null);
     try {
       const result = await startTopUp(intentAmount);
+      if (requestScope !== scopeGeneration.current) return;
       if (result.status !== "requested") throw new Error("Top-up was not accepted");
       // Preserve both the amount and useCredits' UUID through uncertain
       // collection; a second click cannot create a different charge.
       setRequested(intentAmount);
       void refresh();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Couldn't start top-up");
+      if (requestScope === scopeGeneration.current) {
+        setError(cause instanceof Error ? cause.message : "Couldn't start top-up");
+      }
     } finally {
-      setSubmitting(false);
+      if (requestScope === scopeGeneration.current) setSubmitting(false);
     }
   };
 

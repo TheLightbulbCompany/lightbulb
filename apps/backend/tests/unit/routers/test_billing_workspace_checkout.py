@@ -1,6 +1,6 @@
 """POST /billing/checkout workspace-only authorization and response contract."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -28,8 +28,7 @@ async def test_org_admin_can_start_workspace_checkout(plan, monkeypatch):
         "_get_billing_account",
         AsyncMock(return_value={"owner_id": "org_1", "stripe_customer_id": "cus_1"}),
     )
-    session = MagicMock(url="https://checkout.test/cs_1")
-    create = AsyncMock(return_value=session)
+    create = AsyncMock(return_value={"checkout_url": "https://checkout.test/cs_1"})
     with patch("core.services.billing_service.create_workspace_checkout", new=create):
         result = await billing.create_workspace_checkout(billing.CheckoutRequest(plan=plan), auth=_admin())
 

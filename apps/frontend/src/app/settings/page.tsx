@@ -11,6 +11,7 @@ import { planLabel } from "@/lib/planLabel";
 import { useAuth, useUser, UserButton, useOrganization, useClerk } from "@clerk/nextjs";
 import { useApi, ApiError } from "@/lib/api";
 import { useBilling } from "@/hooks/useBilling";
+import { useCheckoutReturn } from "@/components/chat/shell/useCheckoutReturn";
 import { ProviderPicker } from "@/components/chat/ProvisioningStepper";
 import { MyChannelsSection } from "@/components/settings/MyChannelsSection";
 import { WebhooksPanel } from "@/components/settings/WebhooksPanel";
@@ -298,6 +299,9 @@ function UltraUpgradeRow({
 }
 
 function BillingPanel() {
+  // Settings is a direct Checkout success target, so it owns the existing
+  // webhook-refresh/URL-cleanup seam as well as the chat shell does.
+  useCheckoutReturn();
   const {
     account,
     isLoading,

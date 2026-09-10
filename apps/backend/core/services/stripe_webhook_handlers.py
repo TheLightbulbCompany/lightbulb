@@ -658,14 +658,14 @@ async def resolve_owner_account(subscription_event_data: dict) -> dict | None:
     so the GSI on ``stripe_customer_id`` is no longer 1:1.
 
     Resolution order:
-      1. ``subscription.metadata.owner_id`` — set at checkout time, pins
-         each subscription to a single billing row. Always prefer this.
+      1. ``subscription.metadata.workspace_id`` — canonical workspace binding
+         set by unified Checkout. ``owner_id`` remains a legacy fallback.
       2. ``stripe_customer_id`` GSI → if exactly one match, use it
          (legacy 1:1 case). If multiple, filter by
          ``stripe_subscription_id == event.id``.
     """
     metadata = subscription_event_data.get("metadata") or {}
-    owner_id = metadata.get("owner_id")
+    owner_id = metadata.get("workspace_id") or metadata.get("owner_id")
     if owner_id:
         account = await billing_repo.get_by_owner_id(owner_id)
         if account:

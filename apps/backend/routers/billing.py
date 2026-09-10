@@ -345,9 +345,7 @@ async def create_workspace_checkout(
             raise HTTPException(status_code=409, detail="checkout_in_progress") from e
         raise HTTPException(status_code=400, detail=str(e)) from e
 
-    if isinstance(result, dict):
-        return result
-    return {"checkout_url": result.url}
+    return result
 
 
 # Retired checkout handlers remain temporarily as unregistered compatibility
@@ -801,8 +799,7 @@ async def create_ultra_checkout(
 
 
 class ChangeProviderRequest(BaseModel):
-    # Same Literal as TrialCheckoutRequest. 422 on unknown values before
-    # any DDB read or container side-effect.
+    # Pydantic validates choices before any DDB read or container side-effect.
     provider_choice: Literal["chatgpt_oauth", "byo_key", "bedrock_claude"] = Field(
         ...,
         description="chatgpt_oauth | byo_key | bedrock_claude",

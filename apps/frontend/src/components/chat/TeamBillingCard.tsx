@@ -56,8 +56,10 @@ export function TeamBillingCard({
       try {
         await fn();
       } catch (err) {
-        setBusy(false);
         setError(err instanceof Error ? err.message : "Something went wrong. Please try again.");
+      } finally {
+        // A same-plan response stays on this page; never strand its CTA busy.
+        setBusy(false);
       }
     },
     [],

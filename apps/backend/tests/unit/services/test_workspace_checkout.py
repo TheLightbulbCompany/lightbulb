@@ -38,22 +38,25 @@ async def test_workspace_checkout_has_one_recurring_item_and_manual_promotion_co
         "get_by_owner_id",
         AsyncMock(return_value={"owner_id": "org_1", "stripe_customer_id": "cus_1"}),
     )
-    session = MagicMock(id="cs_1", url="https://checkout.test/cs_1")
+    # Stripe objects are mapping-shaped; don't let a MagicMock hide accidental
+    # attribute-only response handling at this public boundary.
+    session = {"id": "cs_1", "url": "https://checkout.test/cs_1"}
     create = MagicMock(return_value=session)
     monkeypatch.setattr(billing_service.stripe.checkout.Session, "create", create)
 
     result = await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan=plan)
 
-    assert result is session
+    assert result == {"checkout_url": "https://checkout.test/cs_1"}
     kwargs = create.call_args.kwargs
     assert kwargs["line_items"] == [{"price": price_id, "quantity": 1}]
     assert kwargs["allow_promotion_codes"] is True
     assert kwargs["payment_method_collection"] == "always"
     assert kwargs["metadata"] == {
+        "workspace_id": "org_1",
         "owner_id": "org_1",
         "clerk_user_id": "user_1",
         "plan": plan,
-        "purpose": "workspace_subscription_v1",
+        "purpose": "workspace_subscription_v2",
     }
     assert "automatic_tax" not in kwargs
     assert "customer_update" not in kwargs
@@ -81,7 +84,9 @@ async def test_workspace_checkout_swaps_an_active_subscription_item_in_place(mon
         "retrieve",
         MagicMock(
             return_value={
-                "metadata": {"owner_id": "org_1"},
+                "id": "sub_1",
+                "customer": "cus_1",
+                "metadata": {"workspace_id": "org_1", "owner_id": "org_1", "checkout_revision": "0"},
                 "status": "active",
                 "items": {"data": [{"id": "si_1", "price": {"id": "price_workspace"}}]},
             }
@@ -93,12 +98,15 @@ async def test_workspace_checkout_swaps_an_active_subscription_item_in_place(mon
     result = await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="ultra")
 
     assert result == {"updated": True}
-    modify.assert_called_once_with(
-        "sub_1",
-        items=[{"id": "si_1", "price": "price_ultra"}],
-        proration_behavior="create_prorations",
-        idempotency_key="workspace-plan-change-org_1-si_1-price_ultra",
-    )
+    assert modify.call_args.args == ("sub_1",)
+    assert modify.call_args.kwargs["items"] == [{"id": "si_1", "price": "price_ultra"}]
+    assert modify.call_args.kwargs["proration_behavior"] == "create_prorations"
+    assert modify.call_args.kwargs["metadata"] == {
+        "workspace_id": "org_1",
+        "owner_id": "org_1",
+        "checkout_revision": "1",
+    }
+    assert modify.call_args.kwargs["idempotency_key"].startswith("workspace-plan-change:v2:")
 
 
 @pytest.mark.asyncio
@@ -122,7 +130,8 @@ async def test_workspace_checkout_rejects_a_legacy_multi_item_subscription(monke
         MagicMock(
             return_value={
                 "id": "sub_legacy_team",
-                "metadata": {"owner_id": "org_1"},
+                "customer": "cus_1",
+                "metadata": {"workspace_id": "org_1", "owner_id": "org_1"},
                 "status": "active",
                 "items": {
                     "data": [
@@ -153,8 +162,9 @@ async def test_workspace_checkout_does_not_create_a_second_subscription_while_we
     )
     subscription = {
         "id": "sub_webhook",
+        "customer": "cus_1",
         "status": "active",
-        "metadata": {"owner_id": "org_1"},
+        "metadata": {"workspace_id": "org_1", "owner_id": "org_1", "checkout_revision": "0"},
         "items": {"data": [{"id": "si_1", "price": {"id": "price_workspace"}}]},
     }
     monkeypatch.setattr(
@@ -177,14 +187,13 @@ async def test_workspace_checkout_does_not_create_a_second_subscription_while_we
 @pytest.mark.asyncio
 async def test_workspace_checkout_reuses_its_open_pending_session(monkeypatch):
     monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
-    pending = MagicMock(
-        status="open",
-        url="https://checkout.test/pending",
-        get=lambda name, default=None: {
-            "status": "open",
-            "metadata": {"purpose": "workspace_subscription_v1", "plan": "workspace", "owner_id": "org_1"},
-        }.get(name, default),
-    )
+    pending = {
+        "status": "open",
+        "url": "https://checkout.test/pending",
+        "metadata": {"purpose": "workspace_subscription_v2", "plan": "workspace", "workspace_id": "org_1"},
+        "customer": "cus_1",
+        "mode": "subscription",
+    }
     monkeypatch.setattr(
         billing_service.billing_repo,
         "get_by_owner_id",
@@ -202,7 +211,7 @@ async def test_workspace_checkout_reuses_its_open_pending_session(monkeypatch):
 
     result = await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="workspace")
 
-    assert result is pending
+    assert result == {"checkout_url": "https://checkout.test/pending"}
     create.assert_not_called()
 
 
@@ -224,9 +233,8 @@ async def test_workspace_customer_does_not_reuse_another_workspaces_email_custom
 
     list_customers.assert_not_called()
     create.assert_called_once_with(
-        email="owner@example.com",
-        metadata={"owner_id": "org_2", "owner_type": "org"},
-        idempotency_key="workspace-customer:v1:org_2",
+        metadata={"workspace_id": "org_2", "owner_id": "org_2", "owner_type": "org"},
+        idempotency_key="workspace-customer:v2:org_2",
     )
     assert account["stripe_customer_id"] == "cus_org_2"
 

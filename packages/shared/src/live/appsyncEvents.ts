@@ -277,8 +277,11 @@ export class AppSyncEventsClient {
         if (!this.acked) return;
         const channel = typeof msg.id === "string" ? this.channelById.get(msg.id) : undefined;
         const sub = channel ? this.subs.get(channel) : undefined;
-        if (!channel || !sub?.live || sub.id !== msg.id || !Array.isArray(msg.event)) return;
-        for (const item of msg.event) this.deliver(item, gen);
+        if (!channel || !sub?.live || sub.id !== msg.id) return;
+        // AppSync Events delivers one stringified event per data frame
+        // (`event: "<json>"`); an array is tolerated for batched delivery.
+        const items = typeof msg.event === "string" ? [msg.event] : Array.isArray(msg.event) ? msg.event : [];
+        for (const item of items) this.deliver(item, gen);
         return;
       }
       case "connection_error":

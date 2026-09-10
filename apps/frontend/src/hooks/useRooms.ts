@@ -352,9 +352,20 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
     await Promise.all([mutateRoom(), mutateRooms()]);
   }, [activeRoomId, messaging, mutateRoom, mutateRooms]);
 
-  const setRoomTyping = useCallback((isTyping: boolean) => activeRoomId
-    ? messaging.setTyping({ roomId: activeRoomId, isTyping })
-    : Promise.resolve(), [activeRoomId, messaging]);
+  const typingSentAt = useRef(0);
+  const setRoomTyping = useCallback((isTyping: boolean) => {
+    if (!activeRoomId) return Promise.resolve();
+    // The backend accepts one typing signal per second per room and answers
+    // 429 otherwise; keystrokes arrive faster than that, so coalesce here and
+    // treat a stray 429 as the no-op it is rather than an unhandled error.
+    const now = Date.now();
+    if (isTyping && now - typingSentAt.current < 1000) return Promise.resolve();
+    typingSentAt.current = now;
+    return messaging.setTyping({ roomId: activeRoomId, isTyping }).catch((error: unknown) => {
+      if (error instanceof ApiError && error.status === 429) return;
+      throw error;
+    });
+  }, [activeRoomId, messaging]);
   const abortRun = useCallback((runId: string) => messaging.abortRun(runId), [messaging]);
   const steerRun = useCallback((runId: string, text: string) => messaging.steerRun(runId, { text }), [messaging]);
 

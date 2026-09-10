@@ -72,6 +72,19 @@ def _slice_with_agent(**overrides):
     return out
 
 
+@pytest.fixture(autouse=True)
+def _noop_lightbulb_channel_registration(monkeypatch):
+    """deploy_from_artifact/unwind_partial_deploy each lazily import
+    core.services.config_patcher.register_lightbulb_agent_account /
+    deregister_lightbulb_agent_account (not constructor-injected, like the
+    rest of this file's mocked collaborators) and write to a real
+    openclaw.json on EFS. These tests never provision one, so default both
+    to no-ops here; test_deploy_registers_lightbulb_channel_account below
+    overrides this to assert the real call."""
+    monkeypatch.setattr("core.services.config_patcher.register_lightbulb_agent_account", AsyncMock())
+    monkeypatch.setattr("core.services.config_patcher.deregister_lightbulb_agent_account", AsyncMock())
+
+
 @pytest.mark.asyncio
 async def test_deploy_calls_pair_before_aux_merge():
     """Agent entry must register via the gateway BEFORE the aux file merge —
@@ -99,6 +112,30 @@ async def test_deploy_calls_pair_before_aux_merge():
     )
 
     assert order == ["extract", "sidecar", "pair", "aux", "complete"], order
+
+
+@pytest.mark.asyncio
+async def test_deploy_registers_lightbulb_channel_account(monkeypatch):
+    """The deployed agent must get a Lightbulb channel account + binding —
+    build_openclaw_config_dict only derives channels.lightbulb.accounts/
+    bindings when the whole config is rewritten (provision/reprovision),
+    never for a hire deployed afterwards."""
+    svc, _ws, _aux, _pair, _gw = _make_service()
+    register_mock = AsyncMock()
+    monkeypatch.setattr("core.services.config_patcher.register_lightbulb_agent_account", register_mock)
+
+    await svc.deploy_from_artifact(
+        owner_id="user_buyer",
+        slug="demo",
+        manifest={"name": "Demo", "version": 1},
+        slice_=_slice_with_agent(),
+        tar_bytes=b"<gz>",
+        container_ip="10.0.0.1",
+        container_token="tok",
+        new_agent_id="agent_abc",
+    )
+
+    register_mock.assert_awaited_once_with("user_buyer", "agent_abc")
 
 
 @pytest.mark.asyncio

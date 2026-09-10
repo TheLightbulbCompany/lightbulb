@@ -412,6 +412,14 @@ async def _create_agent(owner_id: str, user_id: str, params: dict[str, Any], ip:
         ip=ip,
         token=token,
     )
+    # The OpenClaw agent entry now exists (pair_with_openclaw above), but
+    # build_openclaw_config_dict's channels.lightbulb.accounts/bindings only
+    # get derived when the whole config is rewritten — never for an agent
+    # hired after provision. Without this, the new agent has no inbound route
+    # on the lightbulb channel and every room message to it 404s forever.
+    from core.services.config_patcher import register_lightbulb_agent_account
+
+    await register_lightbulb_agent_account(owner_id, paperclip_agent["id"])
     await ensure_operator_device_paired(
         owner_id=owner_id,
         paperclip_agent=paperclip_agent,
@@ -527,6 +535,14 @@ async def _cleanup_deleted_agent(owner_id: str, agent_id: str) -> None:
         await delete_paperclip_for_chat(owner_id=owner_id, agent_id=agent_id)
     except Exception:
         logger.warning("post-delete Paperclip cleanup failed owner=%s agent=%s", owner_id, agent_id, exc_info=True)
+    try:
+        from core.services.config_patcher import deregister_lightbulb_agent_account
+
+        await deregister_lightbulb_agent_account(owner_id, agent_id)
+    except Exception:
+        logger.warning(
+            "post-delete lightbulb channel account cleanup failed owner=%s agent=%s", owner_id, agent_id, exc_info=True
+        )
 
 
 async def execute_control(

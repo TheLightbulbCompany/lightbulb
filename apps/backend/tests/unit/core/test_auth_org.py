@@ -11,9 +11,12 @@ from core.auth import AuthContext, resolve_owner_id, get_owner_type, require_org
 
 
 class TestResolveOwnerId:
-    def test_personal_context_returns_user_id(self):
+    def test_personal_context_requires_workspace(self):
         auth = AuthContext(user_id="user_123")
-        assert resolve_owner_id(auth) == "user_123"
+        with pytest.raises(HTTPException) as exc_info:
+            resolve_owner_id(auth)
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail["code"] == "workspace_required"
 
     def test_org_context_returns_org_id(self):
         auth = AuthContext(user_id="user_123", org_id="org_456", org_role="org:admin")
@@ -25,9 +28,12 @@ class TestResolveOwnerId:
 
 
 class TestGetOwnerType:
-    def test_personal_returns_personal(self):
+    def test_personal_context_requires_workspace(self):
         auth = AuthContext(user_id="user_123")
-        assert get_owner_type(auth) == "personal"
+        with pytest.raises(HTTPException) as exc_info:
+            get_owner_type(auth)
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail["code"] == "workspace_required"
 
     def test_org_returns_org(self):
         auth = AuthContext(user_id="user_123", org_id="org_456", org_role="org:admin")
@@ -35,10 +41,12 @@ class TestGetOwnerType:
 
 
 class TestRequireOrgAdmin:
-    def test_personal_context_passes(self):
+    def test_personal_context_requires_workspace(self):
         auth = AuthContext(user_id="user_123")
-        result = require_org_admin(auth)
-        assert result == auth
+        with pytest.raises(HTTPException) as exc_info:
+            require_org_admin(auth)
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail["code"] == "workspace_required"
 
     def test_org_admin_passes(self):
         auth = AuthContext(user_id="user_123", org_id="org_456", org_role="org:admin")

@@ -14,6 +14,21 @@ from core.services.stripe_webhook_handlers import CONVERSION_GUARD_SECONDS
 from routers.container import _resolve_cold_start_phase
 
 
+@pytest.fixture
+def mock_auth_context(mock_org_admin_context):
+    """Container requests default to an active organization workspace."""
+    return mock_org_admin_context
+
+
+@pytest.fixture(autouse=True)
+def _close_request_background_tasks(request):
+    if "async_client" not in request.fixturenames:
+        yield
+        return
+    with patch("routers.container.asyncio.create_task", side_effect=lambda coro: coro.close() or MagicMock()):
+        yield
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -375,7 +390,7 @@ class TestContainerStatus:
         body = response.json()
         assert body["container_status"] == "provisioning"
         assert body["runtime_phase"] == "provisioning"
-        mock_create_task.assert_called_once()
+        assert mock_create_task.call_count == 2
 
 
 class TestContainerStatusGate:
@@ -674,48 +689,14 @@ class TestContainerStatusGate:
         assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_personal_no_billing_creates_trial_before_gate(self):
-        """Regression (the core Phase-A flow): the no-container path MUST create
-        the personal trial_local default BEFORE evaluate_provision_gate. Order
-        matters — if the gate runs first it sees no billing row, returns
-        signup_required, and /status 404s before the trial is ever created,
-        trapping a brand-new personal signup on the ProviderPicker instead of
-        provisioning the trial container. With the trial created first, the gate clears and
-        /status returns 200 provisioning."""
+    async def test_personal_context_requires_workspace_before_provisioning(self):
         from routers.container import container_status
 
-        order: list[str] = []
+        with pytest.raises(HTTPException) as exc_info:
+            await container_status(_personal_auth(), flow="flow-abc")
 
-        seen_flow: list[str | None] = []
-
-        async def rec_trial(auth, owner_id, *, signup_flow_id=None):
-            order.append("trial")
-            seen_flow.append(signup_flow_id)
-
-        async def rec_gate(**kwargs):
-            order.append("gate")
-            return None  # trial row now exists → gate clears
-
-        fake_ecs = MagicMock(
-            resolve_running_container=AsyncMock(return_value=(None, None)),
-            get_service_status=AsyncMock(return_value=None),
-        )
-        with (
-            patch("routers.container.ensure_personal_trial_default", new=AsyncMock(side_effect=rec_trial)),
-            patch("routers.container.evaluate_provision_gate", new=AsyncMock(side_effect=rec_gate)),
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
-            patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
-            patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close()),
-        ):
-            result = await container_status(_personal_auth(), flow="flow-abc")
-
-        assert order == ["trial", "gate"], f"trial must be created before the gate, got {order}"
-        # The client's signup_flow_id must reach the one function that emits
-        # the server-side trial events, or the funnel cannot be joined back
-        # to the anonymous half of the journey.
-        assert seen_flow == ["flow-abc"]
-        assert result["container_status"] == "provisioning"
-        assert result["runtime_phase"] == "provisioning"
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail["code"] == "workspace_required"
 
     @pytest.mark.asyncio
     async def test_org_admin_no_billing_returns_team_billing_required_402(self):
@@ -906,6 +887,7 @@ class TestContainerStatusEnsureUserReadyDispatch:
                 "routers.container.asyncio.create_task",
                 side_effect=capture_task,
             ),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
         ):
             result = await container_status(_personal_auth())
         assert result["container_status"] == "provisioning"
@@ -941,6 +923,7 @@ class TestContainerStatusEnsureUserReadyDispatch:
             patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
             patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
             patch("routers.container.asyncio.create_task", side_effect=capture_task),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
         ):
             await container_status(_personal_auth("user_abc", "max@acme.com"))
 
@@ -1007,6 +990,7 @@ class TestContainerStatusEnsureUserReadyDispatch:
             patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
             patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=_paperclip_repo_stub()),
             patch("routers.container.asyncio.create_task", side_effect=capture_task),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
         ):
             await container_status(_personal_auth("user_abc", "max@acme.com"))
 
@@ -1106,6 +1090,7 @@ class TestContainerStatusEnsureUserReadyDispatch:
         with (
             patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=fake_gate)),
             patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
         ):
             with pytest.raises(HTTPException) as exc_info:
                 await container_status(_personal_auth())
@@ -1190,6 +1175,7 @@ class TestContainerStatusOrgMemberDispatchOnExisting:
             patch("routers.container.get_ecs_manager", return_value=fake_ecs),
             patch("routers.container.asyncio.create_task", side_effect=capture_task),
             patch("routers.container._safe_phase", return_value="ready"),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
         ):
             await container_status(_personal_auth())
 
@@ -1376,6 +1362,7 @@ class TestContainerStatusTrialConversion:
                 ),
             ),
             patch("routers.container.asyncio.create_task", side_effect=capture_task),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
         )
 
     @staticmethod
@@ -1580,6 +1567,7 @@ class TestContainerStatusTrialBedrockRestore:
             patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
             patch("routers.container._safe_phase", return_value="provisioning"),
             patch("routers.container.asyncio.create_task", side_effect=capture_task),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
         ):
             result = await container_status(_personal_auth())
 
@@ -1613,6 +1601,7 @@ class TestContainerStatusTrialBedrockRestore:
             ),
             patch("core.billing.bedrock_aip.restore_owner_bedrock", new=AsyncMock()) as restore,
             patch("routers.container._safe_phase", return_value="ready"),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
         ):
             result = await container_status(_personal_auth())
 
@@ -1650,6 +1639,7 @@ class TestContainerStatusTrialBedrockRestore:
             patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
             patch("routers.container._safe_phase", return_value="provisioning"),
             patch("routers.container.asyncio.create_task", side_effect=capture_task),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
         ):
             result = await container_status(_personal_auth())  # must not raise
 
@@ -1694,6 +1684,7 @@ class TestContainerProvisionStartGuards:
                 new=AsyncMock(return_value=self._stopped_row()),
             ),
             patch("routers.container.get_ecs_manager", return_value=ecs),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
         ):
             with pytest.raises(HTTPException) as exc:
                 await container_provision(_personal_auth())
@@ -1718,6 +1709,7 @@ class TestContainerProvisionStartGuards:
                 new=AsyncMock(return_value=self._stopped_row()),
             ),
             patch("routers.container.get_ecs_manager", return_value=ecs),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
         ):
             result = await container_provision(_personal_auth())
 
@@ -1738,6 +1730,7 @@ class TestContainerProvisionStartGuards:
                 new=AsyncMock(return_value=self._stopped_row()),
             ),
             patch("routers.container.get_ecs_manager", return_value=ecs),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
         ):
             result = await container_provision(_personal_auth())
 

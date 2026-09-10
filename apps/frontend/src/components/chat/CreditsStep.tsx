@@ -16,7 +16,7 @@ const TEXT_INPUT =
 
 /** Bedrock onboarding: one workspace top-up request, collected by Metronome. */
 export function CreditsStep({ onComplete }: Props) {
-  const { scopeKey, balance, refresh, startTopUp, canManageCredits, pendingTopUp, topUpOutcome } = useCredits();
+  const { scopeKey, balance, refresh, startTopUp, openBilling, canManageCredits, pendingTopUp, topUpOutcome } = useCredits();
   const [amount, setAmount] = useState(2000);
   const [submitting, setSubmitting] = useState(false);
   const [requested, setRequested] = useState(false);
@@ -50,7 +50,7 @@ export function CreditsStep({ onComplete }: Props) {
     if (pendingTopUp) {
       setAmount(pendingTopUp.amount_cents);
       setLockedAmount(pendingTopUp.amount_cents);
-      setRequested(true);
+      setRequested(pendingTopUp.state !== "pending");
     } else {
       setLockedAmount(null);
       setRequested(false);
@@ -100,9 +100,12 @@ export function CreditsStep({ onComplete }: Props) {
         onChange={(event) => setAmount(Math.round(Number(event.target.value) * 100))} style={SANS_FONT} className={TEXT_INPUT} />
       {error && <p className="text-sm text-[var(--err)]">{error}</p>}
       {topUpOutcome === "failed" && <p className="text-sm text-[var(--err)]">Payment failed. Choose an amount to try again.</p>}
-      {requested && <p className="text-sm text-[var(--midnight-muted)]">Payment requested. This step advances once credits land.</p>}
+      {pendingTopUp?.state === "action_required"
+        ? <p className="text-sm text-[var(--err)]">Payment needs attention. Update your payment method in billing.</p>
+        : requested && <p className="text-sm text-[var(--midnight-muted)]">Payment requested. This step advances once credits land.</p>}
+      {pendingTopUp?.state === "action_required" && <button type="button" onClick={() => void openBilling()} className="text-sm font-medium underline text-[var(--midnight)]">Open billing</button>}
       <button onClick={requestTopUp} disabled={submitting || requested || amount < MIN_CREDITS_CENTS} className={PRIMARY_BUTTON} style={SANS_FONT}>
-        {submitting ? "Loading…" : requested ? "Payment requested" : `Add $${amount / 100}`}
+        {submitting ? "Loading…" : requested ? "Payment requested" : `${lockedAmount !== null ? "Retry" : "Add"} $${amount / 100}`}
       </button>
       </>}
     </div>

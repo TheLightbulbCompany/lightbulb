@@ -175,6 +175,21 @@ async def get_active_top_up(owner_id: str) -> dict | None:
     return item
 
 
+async def get_top_up_intent(owner_id: str, request_id: str) -> dict | None:
+    """Return one permanent intent, scoped by its workspace and request UUID."""
+    item = await _read_event(top_up_intent_key(owner_id, request_id))
+    if not item:
+        return None
+    if (
+        item.get("kind") != "metronome-top-up"
+        or item.get("owner_id") != owner_id
+        or item.get("request_id") != request_id
+        or item.get("state") not in {"pending", "completed", "paid", "failed"}
+    ):
+        raise TopUpIntentConflict("top-up intent identity is unavailable")
+    return item
+
+
 async def _claim_active_top_up(owner_id: str, intent: dict) -> None:
     """Point a workspace at one pending intent; replace terminal pointers only."""
     key = active_top_up_key(owner_id)
@@ -328,6 +343,30 @@ async def complete_top_up_intent(event_id: str) -> None:
         if existing.get("kind") == "metronome-top-up" and existing.get("state") in _TOP_UP_TERMINAL_STATUSES:
             return
         raise TopUpIntentConflict("top-up intent state is unavailable") from exc
+
+
+async def record_top_up_provider_attempt(event_id: str) -> int:
+    """Atomically retain the first instant a provider write could occur."""
+    now = int(time.time())
+    try:
+        response = await run_in_thread(
+            _table().update_item,
+            Key={"event_id": event_id},
+            UpdateExpression="SET provider_attempted_at = if_not_exists(provider_attempted_at, :now)",
+            ConditionExpression="#kind = :kind AND #state = :pending",
+            ExpressionAttributeNames={"#kind": "kind", "#state": "state"},
+            ExpressionAttributeValues={
+                ":kind": "metronome-top-up",
+                ":pending": "pending",
+                ":now": now,
+            },
+            ReturnValues="ALL_NEW",
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        raise TopUpIntentConflict("top-up intent state is unavailable") from exc
+    return int(response["Attributes"]["provider_attempted_at"])
 
 
 async def set_active_top_up_status(

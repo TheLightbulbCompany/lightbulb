@@ -179,6 +179,52 @@ async def test_pending_retry_across_midnight_reuses_the_pinned_metronome_body(pr
 
 
 @pytest.mark.asyncio
+async def test_transport_loss_retries_same_provider_write_inside_safety_window(provisioned_billing_row, monkeypatch):
+    fake = _fake_client()
+    fake.create_gated_prepaid_commit = AsyncMock(side_effect=[RuntimeError("response lost"), None])
+    request_id = "34333333-3333-4333-8333-333333333333"
+    monkeypatch.setattr("core.services.webhook_dedup.time.time", lambda: 1_000)
+    monkeypatch.setattr("core.billing.metronome_funding.time.time", lambda: 1_000)
+
+    with pytest.raises(RuntimeError, match="response lost"):
+        await request_top_up("org_abc", 2500, request_id=request_id, client=fake)
+    monkeypatch.setattr("core.services.webhook_dedup.time.time", lambda: 1_000 + 22 * 60 * 60)
+    monkeypatch.setattr("core.billing.metronome_funding.time.time", lambda: 1_000 + 22 * 60 * 60)
+    await request_top_up("org_abc", 2500, request_id=request_id, client=fake)
+
+    assert fake.create_gated_prepaid_commit.await_count == 2
+    first, second = (call.kwargs for call in fake.create_gated_prepaid_commit.await_args_list)
+    assert second == first
+
+
+@pytest.mark.asyncio
+async def test_transport_loss_after_retry_window_requires_reconciliation_without_provider_call(
+    provisioned_billing_row, monkeypatch
+):
+    from core.services.webhook_dedup import TopUpIntentConflict, get_active_top_up
+
+    fake = _fake_client()
+    fake.create_gated_prepaid_commit = AsyncMock(side_effect=RuntimeError("response lost"))
+    request_id = "35333333-3333-4333-8333-333333333333"
+    monkeypatch.setattr("core.services.webhook_dedup.time.time", lambda: 1_000)
+    monkeypatch.setattr("core.billing.metronome_funding.time.time", lambda: 1_000)
+    with pytest.raises(RuntimeError, match="response lost"):
+        await request_top_up("org_abc", 2500, request_id=request_id, client=fake)
+
+    fake.get_customer_billing_provider_configurations.reset_mock()
+    fake.get_contract.reset_mock()
+    monkeypatch.setattr("core.services.webhook_dedup.time.time", lambda: 1_000 + 23 * 60 * 60)
+    monkeypatch.setattr("core.billing.metronome_funding.time.time", lambda: 1_000 + 23 * 60 * 60)
+    with pytest.raises(TopUpIntentConflict, match="reconciliation"):
+        await request_top_up("org_abc", 2500, request_id=request_id, client=fake)
+
+    assert fake.create_gated_prepaid_commit.await_count == 1
+    fake.get_customer_billing_provider_configurations.assert_not_awaited()
+    fake.get_contract.assert_not_awaited()
+    assert (await get_active_top_up("org_abc"))["status"] == "action_required"
+
+
+@pytest.mark.asyncio
 async def test_request_description_is_deterministic(provisioned_billing_row):
     """No timestamp in the description: Metronome's idempotent replay
     requires the retried body to be byte-identical (same key + different

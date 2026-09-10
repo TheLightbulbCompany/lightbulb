@@ -491,12 +491,15 @@ async def _metronome_balance_microcents(owner_id: str) -> int | None:
         "customer yet)."
     ),
 )
-async def get_credits_balance(ctx: AuthContext = Depends(get_current_user)):
+async def get_credits_balance(
+    request_id: UUID | None = None,
+    ctx: AuthContext = Depends(get_current_user),
+):
     # Credits pool at the owner level (org_id for org context, user_id for
     # personal). Keying on ctx.user_id meant org members couldn't see the
     # admin-funded balance and got blocked at chat with out_of_credits.
     owner_id = resolve_owner_id(ctx)
-    from core.services.webhook_dedup import get_active_top_up
+    from core.services.webhook_dedup import get_active_top_up, get_top_up_intent
 
     balance_uc = await _metronome_balance_microcents(owner_id)
     if balance_uc is not None:
@@ -509,6 +512,23 @@ async def get_credits_balance(ctx: AuthContext = Depends(get_current_user)):
         from core.services.metronome_gate import apply_fresh_balance
 
         await apply_fresh_balance(owner_id, balance_uc)
+    active = await get_active_top_up(owner_id)
+    if request_id is not None:
+        intent = await get_top_up_intent(owner_id, str(request_id))
+        if intent:
+            active = {
+                "request_id": intent["request_id"],
+                "amount_cents": intent["amount_cents"],
+                "status": (
+                    active["status"]
+                    if active and active.get("intent_event_id") == intent["event_id"]
+                    else "requested"
+                    if intent["state"] == "completed"
+                    else intent["state"]
+                ),
+            }
+        else:
+            active = None
     return {
         "balance_microcents": balance_uc,
         "balance_dollars": f"{balance_uc / 1_000_000:.2f}" if balance_uc is not None else None,
@@ -519,7 +539,7 @@ async def get_credits_balance(ctx: AuthContext = Depends(get_current_user)):
                 "amount_cents": active["amount_cents"],
                 "status": active["status"],
             }
-            if (active := await get_active_top_up(owner_id))
+            if active
             else None
         ),
     }

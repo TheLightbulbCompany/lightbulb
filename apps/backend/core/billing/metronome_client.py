@@ -216,7 +216,7 @@ class MetronomeClient:
 
     async def get_customer_billing_provider_configurations(self, *, customer_id: str) -> list[dict]:
         """Read the active root billing-provider links for one customer."""
-        body = await self._post("/v1/getCustomerBillingProviderConfigurations", {"customer_id": customer_id})
+        body = await self._post("/getCustomerBillingProviderConfigurations", {"customer_id": customer_id})
         return body.get("data") or []
 
     async def get_contract(self, *, customer_id: str, contract_id: str) -> dict:

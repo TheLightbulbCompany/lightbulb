@@ -39,6 +39,8 @@ export type TopUpResult = {
   amount_cents: number;
 };
 
+type PortalResponse = { portal_url: string };
+
 export type PendingTopUp = {
   user_id: string;
   workspace_id: string;
@@ -84,9 +86,12 @@ export function useCredits() {
   const [outcome, setTopUpOutcome] = useState<{ authKey: string; status: "paid" | "failed" } | null>(null);
   const topUpOutcome = outcome?.authKey === authKey ? outcome.status : null;
   const pendingTopUp = ready && userId && orgId ? readPendingTopUp(userId, orgId) : null;
+  const balancePath = pendingTopUp
+    ? `/billing/credits/balance?request_id=${encodeURIComponent(pendingTopUp.request_id)}`
+    : "/billing/credits/balance";
 
   const { data, error, isLoading, mutate } = useSWR<CreditsBalance>(
-    ready && userId && orgId ? ["/billing/credits/balance", userId, orgId] : null,
+    ready && userId && orgId ? [balancePath, userId, orgId] : null,
     async ([path, fetchUserId, fetchOrgId]: [string, string, string]) => {
       const fetchAuthKey = pendingTopUpKey(fetchUserId, fetchOrgId);
       const balance = await api.get(path) as CreditsBalance;
@@ -144,6 +149,11 @@ export function useCredits() {
     return result;
   };
 
+  const openBilling = async () => {
+    const { portal_url } = await api.post("/billing/portal", {}) as PortalResponse;
+    window.location.href = portal_url;
+  };
+
   return {
     scopeKey: authKey,
     balance: data,
@@ -151,6 +161,7 @@ export function useCredits() {
     error,
     refresh: mutate,
     startTopUp,
+    openBilling,
     pendingTopUp,
     topUpOutcome,
     canManageCredits: ready && orgRole === "org:admin",

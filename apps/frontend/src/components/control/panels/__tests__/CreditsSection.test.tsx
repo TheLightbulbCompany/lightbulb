@@ -13,6 +13,7 @@ describe("CreditsSection", () => {
       balance: { balance_microcents: 3_952_000_000, balance_dollars: "39.52" },
       refresh: vi.fn(),
       startTopUp: vi.fn(),
+      openBilling: vi.fn(),
       canManageCredits: true,
       pendingTopUp: null,
     });
@@ -33,13 +34,15 @@ describe("CreditsSection", () => {
       balance: { balance_microcents: 3_952_000_000, balance_dollars: "39.52" },
       refresh: vi.fn(),
       startTopUp: vi.fn(),
+      openBilling: vi.fn(),
       canManageCredits: false,
-      pendingTopUp: null,
+      pendingTopUp: { amount_cents: 2000, state: "action_required" },
     });
     render(<CreditsSection />);
     expect(screen.getByText("$39.52")).toBeInTheDocument();
     expect(screen.getByText("Only workspace admins can add credits.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /add \$20/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open billing" })).toBeNull();
   });
 
   it.each(["success", "failure"])("ignores a late %s POST from the previous workspace", async (outcome) => {
@@ -78,11 +81,12 @@ describe("CreditsSection", () => {
     expect(screen.getByRole("button", { name: "$50" })).not.toBeDisabled();
   });
 
-  it.each(["pending", "requested", "action_required"])("shows a persisted %s top-up as locked after a reload", async (state) => {
+  it.each(["requested", "action_required"])("shows a persisted %s top-up as locked after a reload", async (state) => {
     mockUseCredits.mockReturnValue({
       balance: { balance_microcents: 3_952_000_000, balance_dollars: "39.52" },
       refresh: vi.fn(),
       startTopUp: vi.fn(),
+      openBilling: vi.fn(),
       canManageCredits: true,
       pendingTopUp: { amount_cents: 2000, state },
     });
@@ -91,15 +95,38 @@ describe("CreditsSection", () => {
     expect(screen.getByRole("button", { name: "$50" })).toBeDisabled();
   });
 
+  it("allows only the exact pending request to be retried", async () => {
+    const startTopUp = vi.fn().mockResolvedValue({ status: "requested", amount_cents: 2000 });
+    mockUseCredits.mockReturnValue({
+      balance: { balance_microcents: 0, balance_dollars: "0.00" },
+      refresh: vi.fn(),
+      startTopUp,
+      openBilling: vi.fn(),
+      canManageCredits: true,
+      pendingTopUp: { amount_cents: 2000, state: "pending" },
+    });
+    render(<CreditsSection />);
+    const retry = await screen.findByRole("button", { name: "Retry $20" });
+    expect(retry).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: "$50" })).toBeDisabled();
+    await act(async () => { fireEvent.click(retry); });
+    expect(startTopUp).toHaveBeenCalledWith(2000);
+  });
+
   it("keeps a payment action-required top-up locked", async () => {
+    const openBilling = vi.fn();
     mockUseCredits.mockReturnValue({
       balance: { balance_microcents: 3_952_000_000, balance_dollars: "39.52" },
       refresh: vi.fn(),
       startTopUp: vi.fn(),
+      openBilling,
       canManageCredits: true,
       pendingTopUp: { amount_cents: 2000, state: "action_required" },
     });
     render(<CreditsSection />);
     expect(await screen.findByRole("button", { name: "Top-up requested" })).toBeDisabled();
+    expect(screen.getByText("Payment needs attention. Update your payment method in billing.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open billing" }));
+    expect(openBilling).toHaveBeenCalledOnce();
   });
 });

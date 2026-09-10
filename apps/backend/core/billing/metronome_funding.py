@@ -26,6 +26,11 @@ from core.repositories import billing_repo
 
 logger = logging.getLogger(__name__)
 
+# Metronome retains REST Idempotency-Key results for at least 24 hours. Stop
+# automated replays one hour early so clock/network skew cannot cross that
+# guarantee and turn the same key into a second provider write.
+_METRONOME_RETRY_WINDOW_SECONDS = 23 * 60 * 60
+
 
 class FundingError(Exception):
     pass
@@ -173,8 +178,10 @@ async def _request_top_up(
     metronome_contract_id: str,
 ) -> None:
     from core.services.webhook_dedup import (
+        TopUpIntentConflict,
         complete_top_up_intent,
         get_or_create_top_up_intent,
+        record_top_up_provider_attempt,
         set_active_top_up_status,
     )
 
@@ -203,12 +210,32 @@ async def _request_top_up(
         return
     if intent["state"] in {"paid", "failed"}:
         return
+    attempted_at = intent.get("provider_attempted_at")
+    if attempted_at is not None and time.time() - int(attempted_at) >= _METRONOME_RETRY_WINDOW_SECONDS:
+        await set_active_top_up_status(
+            owner_id,
+            intent["metronome_customer_id"],
+            intent["metronome_contract_id"],
+            "action_required",
+            intent_event_id=intent["event_id"],
+        )
+        raise TopUpIntentConflict("top-up requires billing reconciliation")
     await _verify_workspace_stripe_link(
         client,
         stripe_customer_id=intent["stripe_customer_id"],
         metronome_customer_id=intent["metronome_customer_id"],
         metronome_contract_id=intent["metronome_contract_id"],
     )
+    attempted_at = await record_top_up_provider_attempt(intent["event_id"])
+    if time.time() - attempted_at >= _METRONOME_RETRY_WINDOW_SECONDS:
+        await set_active_top_up_status(
+            owner_id,
+            intent["metronome_customer_id"],
+            intent["metronome_contract_id"],
+            "action_required",
+            intent_event_id=intent["event_id"],
+        )
+        raise TopUpIntentConflict("top-up requires billing reconciliation")
     await _create_gated_commit(
         client,
         customer_id=intent["metronome_customer_id"],

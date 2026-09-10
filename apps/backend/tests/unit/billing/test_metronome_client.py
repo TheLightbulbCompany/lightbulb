@@ -5,6 +5,7 @@ test_posthog_admin.py), so we patch the AsyncClient surface directly and
 assert on the captured call args.
 """
 
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -326,24 +327,34 @@ async def test_create_gated_prepaid_commit_v2_body_shape():
 
 @pytest.mark.asyncio
 async def test_reads_workspace_billing_provider_and_contract_links():
-    client, fake = _client_with(_resp(200, {"data": [{"billing_provider": "stripe"}]}))
-    assert await client.get_customer_billing_provider_configurations(customer_id="metro_1") == [
-        {"billing_provider": "stripe"}
-    ]
-    fake.post.assert_awaited_once_with(
-        "/v1/getCustomerBillingProviderConfigurations",
-        json={"customer_id": "metro_1"},
-        headers={"Authorization": "Bearer tok_sandbox", "Content-Type": "application/json"},
-    )
+    requests: list[httpx.Request] = []
 
-    fake.post.reset_mock()
-    fake.post.return_value = _resp(200, {"data": {"customer_id": "metro_1"}})
-    assert await client.get_contract(customer_id="metro_1", contract_id="contract_1") == {"customer_id": "metro_1"}
-    fake.post.assert_awaited_once_with(
-        "https://api.metronome.com/v2/contracts/get",
-        json={"customer_id": "metro_1", "contract_id": "contract_1"},
-        headers={"Authorization": "Bearer tok_sandbox", "Content-Type": "application/json"},
-    )
+    async def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        body = (
+            {"data": [{"billing_provider": "stripe"}]}
+            if request.url.path.endswith("getCustomerBillingProviderConfigurations")
+            else {"data": {"customer_id": "metro_1"}}
+        )
+        return httpx.Response(200, json=body, request=request)
+
+    async with httpx.AsyncClient(
+        base_url="https://api.metronome.com/v1",
+        transport=httpx.MockTransport(respond),
+    ) as http:
+        client = MetronomeClient(
+            api_key="tok_sandbox",
+            base_url="https://api.metronome.com/v1",
+            http_client=http,
+        )
+        assert await client.get_customer_billing_provider_configurations(customer_id="metro_1") == [
+            {"billing_provider": "stripe"}
+        ]
+        assert await client.get_contract(customer_id="metro_1", contract_id="contract_1") == {"customer_id": "metro_1"}
+
+    assert requests[0].url == httpx.URL("https://api.metronome.com/v1/getCustomerBillingProviderConfigurations")
+    assert json.loads(requests[0].content) == {"customer_id": "metro_1"}
+    assert requests[1].url == httpx.URL("https://api.metronome.com/v2/contracts/get")
 
 
 @pytest.mark.asyncio

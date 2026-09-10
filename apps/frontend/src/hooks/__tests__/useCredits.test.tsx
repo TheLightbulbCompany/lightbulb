@@ -98,6 +98,60 @@ describe("useCredits", () => {
     expect(JSON.parse(calls[1][1].body)).toEqual(first);
   });
 
+  it("requests balance reconciliation for the browser's persisted UUID", async () => {
+    const requestId = "7e22fb41-07e3-4f9d-920c-68ce9a7710b7";
+    localStorage.setItem(
+      "lightbulb:credits-top-up:user_1:org_1",
+      JSON.stringify({
+        user_id: "user_1",
+        workspace_id: "org_1",
+        request_id: requestId,
+        amount_cents: 2000,
+        state: "requested",
+      }),
+    );
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ balance_microcents: 0, balance_dollars: "0.00" })),
+    );
+    global.fetch = fetchMock;
+
+    renderHook(() => useCredits(), { wrapper });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      `/billing/credits/balance?request_id=${requestId}`,
+    );
+  });
+
+  it("opens the existing billing portal for payment recovery", async () => {
+    const original = window.location;
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      writable: true,
+      value: { href: "" } as Location,
+    });
+    const fetchMock = vi.fn((url: RequestInfo | URL) => Promise.resolve(new Response(
+      String(url).includes("/billing/portal")
+        ? JSON.stringify({ portal_url: "https://billing.stripe.test/session" })
+        : JSON.stringify({ balance_microcents: 0, balance_dollars: "0.00" }),
+      { status: 200 },
+    )));
+    global.fetch = fetchMock;
+
+    try {
+      const mounted = renderHook(() => useCredits(), { wrapper });
+      await act(async () => { await mounted.result.current.openBilling(); });
+      expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/billing/portal"))).toBe(true);
+      expect(window.location.href).toBe("https://billing.stripe.test/session");
+    } finally {
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        writable: true,
+        value: original,
+      });
+    }
+  });
+
   it.each(["paid", "failed"] as const)("unlocks a matching %s payment so a new top-up gets a new UUID", async (status) => {
     let balanceCalls = 0;
     const fetchMock = vi.fn((url: RequestInfo | URL) => {

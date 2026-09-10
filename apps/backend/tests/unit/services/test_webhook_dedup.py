@@ -223,6 +223,34 @@ async def test_top_up_intent_pins_money_binding_and_rejects_a_changed_workspace_
 
 
 @pytest.mark.asyncio
+async def test_top_up_provider_attempt_timestamp_is_first_writer_wins(dedup_table, monkeypatch):
+    """Concurrent/replayed requests share the first possible provider-write time."""
+    from core.services import webhook_dedup
+
+    monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", dedup_table)
+    request_id = "10111111-1111-4111-8111-111111111111"
+    binding = {
+        "amount_cents": 2500,
+        "effective_at": "2026-09-10T00:00:00.000Z",
+        "metronome_customer_id": "metro_1",
+        "metronome_contract_id": "contract_1",
+        "stripe_customer_id": "cus_1",
+        "product_id": "prod_1",
+        "credit_type_id": "credit_1",
+        "description": "isol8 top-up owner=org_1 amount_cents=2500",
+        "idempotency_key": request_id,
+    }
+    intent = await get_or_create_top_up_intent("org_1", request_id, binding)
+
+    with patch("core.services.webhook_dedup.time.time", return_value=100):
+        first = await webhook_dedup.record_top_up_provider_attempt(intent["event_id"])
+    with patch("core.services.webhook_dedup.time.time", return_value=200):
+        replay = await webhook_dedup.record_top_up_provider_attempt(intent["event_id"])
+
+    assert first == replay == 100
+
+
+@pytest.mark.asyncio
 async def test_active_top_up_allows_same_request_and_replaces_only_after_terminal_settlement(dedup_table, monkeypatch):
     monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", dedup_table)
     first_request = "12111111-1111-4111-8111-111111111111"

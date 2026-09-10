@@ -8,9 +8,10 @@ const refresh = vi.fn();
 const canManageCredits = vi.fn();
 const pendingTopUp = vi.fn();
 const topUpOutcome = vi.fn();
+const openBilling = vi.fn();
 let scopeKey = "user_A:org_A";
 vi.mock("@/hooks/useCredits", () => ({
-  useCredits: () => ({ scopeKey, balance: balance(), startTopUp, refresh, canManageCredits: canManageCredits(), pendingTopUp: pendingTopUp(), topUpOutcome: topUpOutcome() }),
+  useCredits: () => ({ scopeKey, balance: balance(), startTopUp, refresh, openBilling, canManageCredits: canManageCredits(), pendingTopUp: pendingTopUp(), topUpOutcome: topUpOutcome() }),
   isCreditsExhausted: (value: { is_exhausted?: boolean; balance_microcents: number | null }) =>
     value.is_exhausted ?? (value.balance_microcents !== null && value.balance_microcents <= 0),
 }));
@@ -18,7 +19,7 @@ vi.mock("@/hooks/useCredits", () => ({
 describe("CreditsStep", () => {
   beforeEach(() => {
     scopeKey = "user_A:org_A";
-    balance.mockReset(); startTopUp.mockReset(); refresh.mockReset(); canManageCredits.mockReset(); pendingTopUp.mockReset(); topUpOutcome.mockReset();
+    balance.mockReset(); startTopUp.mockReset(); refresh.mockReset(); openBilling.mockReset(); canManageCredits.mockReset(); pendingTopUp.mockReset(); topUpOutcome.mockReset();
     balance.mockReturnValue({ balance_microcents: 0, balance_dollars: "0.00" });
     canManageCredits.mockReturnValue(true);
     pendingTopUp.mockReturnValue(null);
@@ -41,19 +42,21 @@ describe("CreditsStep", () => {
     render(<CreditsStep onComplete={vi.fn()} />);
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: /^add \$20$/i })); });
     await waitFor(() => expect(screen.getByText("billing unavailable")).toBeInTheDocument());
-    expect(screen.getByRole("button", { name: /^add \$20$/i })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: /^retry \$20$/i })).not.toBeDisabled();
     // A failed response can still mean the server accepted the POST. Keep the
     // amount locked so the stable UUID can only replay the original intent.
     expect(screen.getByRole("button", { name: "$50" })).toBeDisabled();
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: /^add \$20$/i })); });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: /^retry \$20$/i })); });
     expect(startTopUp).toHaveBeenLastCalledWith(2000);
   });
 
   it("is read-only for a non-admin workspace member", () => {
     canManageCredits.mockReturnValue(false);
+    pendingTopUp.mockReturnValue({ amount_cents: 2000, state: "action_required" });
     render(<CreditsStep onComplete={vi.fn()} />);
     expect(screen.getByText("Only workspace admins can add credits.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^add \$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open billing" })).toBeNull();
   });
 
   it.each(["success", "failure"])("ignores a late %s POST from the previous workspace", async (outcome) => {
@@ -93,17 +96,31 @@ describe("CreditsStep", () => {
     expect(screen.getByRole("button", { name: "$50" })).not.toBeDisabled();
   });
 
-  it.each(["pending", "requested", "action_required"])("shows a persisted %s top-up as locked after a reload", async (state) => {
+  it.each(["requested", "action_required"])("shows a persisted %s top-up as locked after a reload", async (state) => {
     pendingTopUp.mockReturnValue({ amount_cents: 2000, state });
     render(<CreditsStep onComplete={vi.fn()} />);
     expect(await screen.findByRole("button", { name: "Payment requested" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "$50" })).toBeDisabled();
   });
 
+  it("allows only the exact pending request to be retried", async () => {
+    pendingTopUp.mockReturnValue({ amount_cents: 2000, state: "pending" });
+    startTopUp.mockResolvedValue({ status: "requested", amount_cents: 2000 });
+    render(<CreditsStep onComplete={vi.fn()} />);
+    const retry = await screen.findByRole("button", { name: "Retry $20" });
+    expect(retry).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: "$50" })).toBeDisabled();
+    await act(async () => { fireEvent.click(retry); });
+    expect(startTopUp).toHaveBeenCalledWith(2000);
+  });
+
   it("keeps a payment action-required top-up locked", async () => {
     pendingTopUp.mockReturnValue({ amount_cents: 2000, state: "action_required" });
     render(<CreditsStep onComplete={vi.fn()} />);
     expect(await screen.findByRole("button", { name: "Payment requested" })).toBeDisabled();
+    expect(screen.getByText("Payment needs attention. Update your payment method in billing.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open billing" }));
+    expect(openBilling).toHaveBeenCalledOnce();
   });
 
   it("shows a settled payment failure after unlocking the persisted intent", () => {

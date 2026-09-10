@@ -164,7 +164,10 @@ Commit as `infra: add canonical messaging storage and work queue`.
   channel remains active.
 - [ ] Use UUID-format path validation because AppSync limits path segments to
   alphanumeric/dash and 50 characters. Do not place raw Clerk IDs in paths.
-- [ ] Enable error-level AppSync logs without payload/identity logging.
+- [ ] Leave AppSync Event API logs disabled. Unlike GraphQL `LogConfig`, Event
+  `EventLogConfig` has no verbose-content exclusion, and `ERROR` still records
+  failed handler request/response mappings. Use AppSync metrics and the existing
+  delivery alarms so credentials, identities, and message bodies never reach logs.
 - [ ] Output HTTP endpoint, realtime endpoint, API ID, and API ARN for deployment
   evidence. Never output a token or room/user channel key.
 - [ ] Add synth assertions for auth providers, connect/publish/subscribe auth

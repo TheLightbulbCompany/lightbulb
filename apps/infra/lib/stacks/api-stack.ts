@@ -586,6 +586,8 @@ export class ApiStack extends cdk.Stack {
       "ClerkIssuerForAppSync",
       props.clerkIssuerSecretName,
     );
+    // Event APIs cannot exclude verbose request/response content. Omit LogConfig
+    // entirely so authorization headers, identities, and messages never reach logs.
     const eventApi = new appsync.EventApi(this, "MessagingEventApi", {
       apiName: `${resourcePrefix(env)}messaging-events`,
       authorizationConfig: {
@@ -603,16 +605,7 @@ export class ApiStack extends cdk.Stack {
         defaultPublishAuthModeTypes: [appsync.AppSyncAuthorizationType.IAM],
         defaultSubscribeAuthModeTypes: [appsync.AppSyncAuthorizationType.OIDC],
       },
-      logConfig: {
-        fieldLogLevel: appsync.AppSyncFieldLogLevel.ERROR,
-        retention: logs.RetentionDays.ONE_MONTH,
-      },
     });
-    // EventApi drops this supported property in CDK 2.267.0; set it on the L1.
-    (eventApi.node.defaultChild as appsync.CfnApi).addPropertyOverride(
-      "EventConfig.LogConfig.ExcludeVerboseContent",
-      true,
-    );
     const messagingDataSource = new appsync.AppSyncDynamoDbDataSource(
       this,
       "MessagingEventDataSource",

@@ -500,12 +500,12 @@ describe("ApiStack — messaging AppSync Events (OIDC subscribe / IAM publish)",
         ConnectionAuthModes: [{ AuthType: "OPENID_CONNECT" }],
         DefaultPublishAuthModes: [{ AuthType: "AWS_IAM" }],
         DefaultSubscribeAuthModes: [{ AuthType: "OPENID_CONNECT" }],
-        LogConfig: Match.objectLike({
-          LogLevel: "ERROR",
-          ExcludeVerboseContent: true,
-        }),
       }),
     });
+    const eventApi = Object.values(
+      API_TEMPLATE.findResources("AWS::AppSync::Api"),
+    )[0] as any;
+    expect(eventApi.Properties.EventConfig).not.toHaveProperty("LogConfig");
   });
 
   test("one read-only DynamoDB data source backs both strong namespace handlers", () => {

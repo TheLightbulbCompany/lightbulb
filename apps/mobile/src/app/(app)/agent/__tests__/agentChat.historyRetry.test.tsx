@@ -54,7 +54,7 @@ const mockMessaging = {
   abortRun: jest.fn(),
 };
 const mockLiveChannels = ["/rooms/room_a/delivery_a"];
-const mockSetActiveRoomSubscription = jest.fn();
+const mockClaimActiveRoomSubscription = jest.fn(() => () => {});
 const mockOnEvent = () => () => {};
 jest.mock("../../../../providers/live-events", () => ({
   useLiveEvents: () => ({
@@ -64,7 +64,7 @@ jest.mock("../../../../providers/live-events", () => ({
     liveError: null,
     connectionRevision: 1,
     messaging: mockMessaging,
-    setActiveRoomSubscription: mockSetActiveRoomSubscription,
+    claimActiveRoomSubscription: mockClaimActiveRoomSubscription,
     onEvent: mockOnEvent,
   }),
 }));
@@ -93,7 +93,7 @@ const canonicalMessage = {
 describe("AgentChat canonical history retry", () => {
   beforeEach(() => {
     mockListMessages.mockReset();
-    mockSetActiveRoomSubscription.mockClear();
+    mockClaimActiveRoomSubscription.mockClear();
   });
 
   afterEach(async () => {

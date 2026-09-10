@@ -7,18 +7,21 @@ let mockParams: Record<string, string | undefined> = {
   agentId: "agent_a",
   name: "Friday",
 };
-jest.mock("expo-router", () => ({
-  router: {
-    push: jest.fn(),
-    back: jest.fn(),
-    canGoBack: () => false,
-    replace: jest.fn(),
-    setParams: jest.fn(),
-  },
-  Stack: { Screen: () => null },
-  useFocusEffect: jest.fn(),
-  useLocalSearchParams: () => mockParams,
-}));
+jest.mock("expo-router", () => {
+  const { useEffect } = jest.requireActual("react");
+  return {
+    router: {
+      push: jest.fn(),
+      back: jest.fn(),
+      canGoBack: () => false,
+      replace: jest.fn(),
+      setParams: jest.fn(),
+    },
+    Stack: { Screen: () => null },
+    useFocusEffect: (callback: () => void | (() => void)) => useEffect(callback, [callback]),
+    useLocalSearchParams: () => mockParams,
+  };
+});
 
 // user: null keeps history hydration inert — which is exactly the trap this
 // suite pins: nothing else may be relied on to clear a stale conversation.
@@ -79,7 +82,21 @@ const mockChannels = {
   agent_a: ["/rooms/room_agent_a/delivery_agent_a"],
   agent_b: ["/rooms/room_agent_b/delivery_agent_b"],
 };
-const mockSetActiveRoomSubscription = jest.fn();
+let mockActiveRoomSubscription: { roomId: string; deliveryKey: string } | null = null;
+let mockActiveRoomClaim: symbol | null = null;
+const mockRoomReleases: Array<() => void> = [];
+const mockClaimActiveRoomSubscription = jest.fn((room: { roomId: string; deliveryKey: string }) => {
+  const claim = Symbol();
+  mockActiveRoomClaim = claim;
+  mockActiveRoomSubscription = room;
+  const release = () => {
+    if (mockActiveRoomClaim !== claim) return;
+    mockActiveRoomClaim = null;
+    mockActiveRoomSubscription = null;
+  };
+  mockRoomReleases.push(release);
+  return release;
+});
 const mockOnEvent = () => () => {};
 jest.mock("../../../../providers/live-events", () => ({
   useLiveEvents: () => ({
@@ -90,7 +107,7 @@ jest.mock("../../../../providers/live-events", () => ({
     connectionRevision: 1,
     messaging: mockMessaging,
     runtime: { rpc: jest.fn() },
-    setActiveRoomSubscription: mockSetActiveRoomSubscription,
+    claimActiveRoomSubscription: mockClaimActiveRoomSubscription,
     onEvent: mockOnEvent,
   }),
 }));
@@ -116,7 +133,10 @@ describe("AgentChat agent switching", () => {
   beforeEach(() => {
     mockParams = { agentId: "agent_a", name: "Friday" };
     mockSendMessage.mockClear();
-    mockSetActiveRoomSubscription.mockClear();
+    mockClaimActiveRoomSubscription.mockClear();
+    mockActiveRoomSubscription = null;
+    mockActiveRoomClaim = null;
+    mockRoomReleases.length = 0;
   });
 
   afterEach(async () => {
@@ -130,7 +150,7 @@ describe("AgentChat agent switching", () => {
     // Navigate the persisted screen to Atlas — new params, same component.
     mockParams = { agentId: "agent_b", name: "Atlas" };
     await view.rerender(<AgentChat />);
-    await waitFor(() => expect(mockSetActiveRoomSubscription).toHaveBeenCalledWith({
+    await waitFor(() => expect(mockClaimActiveRoomSubscription).toHaveBeenCalledWith({
       roomId: "room_agent_b",
       deliveryKey: "delivery_agent_b",
     }));
@@ -141,5 +161,34 @@ describe("AgentChat agent switching", () => {
     // switchSession's same-session early return and cleared nothing.
     expect(screen.queryByText("friday question")).toBeNull();
     expect(screen.getByText(/Start a conversation/)).toBeTruthy();
+  });
+
+  it("reclaims the focused room after navigation and ignores stale releases", async () => {
+    const view = await render(<AgentChat />);
+    await waitFor(() => expect(mockClaimActiveRoomSubscription).toHaveBeenCalledWith({
+      roomId: "room_agent_a",
+      deliveryKey: "delivery_agent_a",
+    }));
+    const releaseAgentA = mockRoomReleases.at(-1)!;
+
+    mockParams = { agentId: "agent_b", name: "Atlas" };
+    await view.rerender(<AgentChat />);
+    await waitFor(() => expect(mockActiveRoomSubscription).toEqual({
+      roomId: "room_agent_b",
+      deliveryKey: "delivery_agent_b",
+    }));
+
+    releaseAgentA();
+    expect(mockActiveRoomSubscription).toEqual({
+      roomId: "room_agent_b",
+      deliveryKey: "delivery_agent_b",
+    });
+
+    mockParams = { agentId: "agent_a", name: "Friday" };
+    await view.rerender(<AgentChat />);
+    await waitFor(() => expect(mockActiveRoomSubscription).toEqual({
+      roomId: "room_agent_a",
+      deliveryKey: "delivery_agent_a",
+    }));
   });
 });

@@ -35,7 +35,7 @@ jest.mock("../../../../providers/live-events", () => ({
     connectionRevision: 0,
     messaging: {},
     runtime: {},
-    setActiveRoomSubscription: jest.fn(),
+    claimActiveRoomSubscription: jest.fn(() => () => {}),
     onChatMessage: () => () => {},
     onEvent: () => () => {},
   }),

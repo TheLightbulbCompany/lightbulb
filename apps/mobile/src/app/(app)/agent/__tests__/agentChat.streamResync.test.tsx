@@ -38,7 +38,7 @@ const mockMessaging = {
   abortRun: jest.fn(),
 };
 const mockLiveChannels = ["/rooms/room_a/delivery_a"];
-const mockSetActiveRoomSubscription = jest.fn();
+const mockClaimActiveRoomSubscription = jest.fn(() => () => {});
 const mockOnEvent = (handler: (event: unknown) => void) => {
   liveHandler = handler;
   return () => {
@@ -53,7 +53,7 @@ jest.mock("../../../../providers/live-events", () => ({
     liveError: null,
     connectionRevision: 1,
     messaging: mockMessaging,
-    setActiveRoomSubscription: mockSetActiveRoomSubscription,
+    claimActiveRoomSubscription: mockClaimActiveRoomSubscription,
     onEvent: mockOnEvent,
   }),
 }));
@@ -101,7 +101,7 @@ async function finishRun(runId: string) {
 describe("AgentChat stream resync across tool splits", () => {
   beforeEach(() => {
     mockSendMessage.mockClear();
-    mockSetActiveRoomSubscription.mockClear();
+    mockClaimActiveRoomSubscription.mockClear();
     liveHandler = null;
   });
 

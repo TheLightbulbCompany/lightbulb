@@ -112,7 +112,7 @@ function AgentChat() {
     liveChannels,
     connectionRevision,
     messaging,
-    setActiveRoomSubscription,
+    claimActiveRoomSubscription,
     onEvent,
   } = live;
   const { userId, getToken } = useAuth();
@@ -233,14 +233,17 @@ function AgentChat() {
     reconciliation.current = null;
   }, [room?.roomId]);
 
-  useEffect(() => {
-    if (!room) {
-      setActiveRoomSubscription(null);
-      return;
-    }
-    setActiveRoomSubscription({ roomId: room.roomId, deliveryKey: room.deliveryKey });
-    return () => setActiveRoomSubscription(null);
-  }, [room?.roomId, room?.deliveryKey, setActiveRoomSubscription]);
+  const subscriptionRoomId = room?.roomId;
+  const subscriptionDeliveryKey = room?.deliveryKey;
+  useFocusEffect(
+    useCallback(() => {
+      if (!subscriptionRoomId || !subscriptionDeliveryKey) return;
+      return claimActiveRoomSubscription({
+        roomId: subscriptionRoomId,
+        deliveryKey: subscriptionDeliveryKey,
+      });
+    }, [subscriptionRoomId, subscriptionDeliveryKey, claimActiveRoomSubscription]),
+  );
 
   const reconcile = useCallback((afterSeq: number) => {
     if (!room) return Promise.resolve();

@@ -1,11 +1,14 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 
-jest.mock("expo-router", () => ({
-  router: { push: jest.fn(), back: jest.fn(), canGoBack: () => false, replace: jest.fn(), setParams: jest.fn() },
-  Stack: { Screen: () => null },
-  useFocusEffect: jest.fn(),
-  useLocalSearchParams: () => ({ agentId: "agent_a", name: "Friday" }),
-}));
+jest.mock("expo-router", () => {
+  const { useEffect } = jest.requireActual("react");
+  return {
+    router: { push: jest.fn(), back: jest.fn(), canGoBack: () => false, replace: jest.fn(), setParams: jest.fn() },
+    Stack: { Screen: () => null },
+    useFocusEffect: (callback: () => void | (() => void)) => useEffect(callback, [callback]),
+    useLocalSearchParams: () => ({ agentId: "agent_a", name: "Friday" }),
+  };
+});
 
 jest.mock("@clerk/clerk-expo", () => ({
   useAuth: () => ({ userId: "user_a", getToken: jest.fn(async () => "token") }),
@@ -39,7 +42,7 @@ const mockMessaging = {
 };
 const mockConnectedChannels = ["/rooms/room_a/delivery_a"];
 const mockDisconnectedChannels: string[] = [];
-const mockSetActiveRoomSubscription = jest.fn();
+const mockClaimActiveRoomSubscription = jest.fn(() => () => {});
 const mockOnEvent = (handler: (event: unknown) => void) => {
   mockLiveHandler = handler;
   return () => {};
@@ -52,7 +55,7 @@ jest.mock("../../../../providers/live-events", () => ({
     liveError: null,
     connectionRevision: mockLiveConnected ? 1 : 0,
     messaging: mockMessaging,
-    setActiveRoomSubscription: mockSetActiveRoomSubscription,
+    claimActiveRoomSubscription: mockClaimActiveRoomSubscription,
     onEvent: mockOnEvent,
   }),
 }));
@@ -72,7 +75,7 @@ async function settleUpdates() {
 }
 
 async function startRun() {
-  await waitFor(() => expect(mockSetActiveRoomSubscription).toHaveBeenCalledWith({
+  await waitFor(() => expect(mockClaimActiveRoomSubscription).toHaveBeenCalledWith({
     roomId: "room_a",
     deliveryKey: "delivery_a",
   }));
@@ -121,7 +124,7 @@ describe("AgentChat stop run", () => {
     mockAbortRun.mockReset().mockResolvedValue({ runId: "run_1", state: "aborting" });
     mockLiveConnected = true;
     mockLiveHandler = null;
-    mockSetActiveRoomSubscription.mockClear();
+    mockClaimActiveRoomSubscription.mockClear();
   });
 
   afterEach(async () => {

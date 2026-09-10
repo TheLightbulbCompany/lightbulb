@@ -33,7 +33,7 @@ const mockMessaging = {
   abortRun: jest.fn(),
 };
 const mockLiveChannels = ["/rooms/room_a/delivery_a"];
-const mockSetActiveRoomSubscription = jest.fn();
+const mockClaimActiveRoomSubscription = jest.fn(() => () => {});
 const mockOnEvent = (handler: LiveHandler) => {
   mockLiveHandler = handler;
   return () => {
@@ -48,7 +48,7 @@ jest.mock("../../../../providers/live-events", () => ({
     liveError: null,
     connectionRevision: 1,
     messaging: mockMessaging,
-    setActiveRoomSubscription: mockSetActiveRoomSubscription,
+    claimActiveRoomSubscription: mockClaimActiveRoomSubscription,
     onEvent: mockOnEvent,
   }),
 }));
@@ -74,7 +74,7 @@ function frame(msg: Record<string, unknown>) {
 describe("AgentChat server-truth run state", () => {
   beforeEach(() => {
     mockLiveHandler = null;
-    mockSetActiveRoomSubscription.mockClear();
+    mockClaimActiveRoomSubscription.mockClear();
   });
 
   afterEach(async () => {

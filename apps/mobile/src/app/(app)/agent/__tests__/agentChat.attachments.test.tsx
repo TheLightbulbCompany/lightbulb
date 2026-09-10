@@ -83,7 +83,7 @@ const mockLiveEvents = {
   connectionRevision: 1,
   messaging: mockMessaging,
   runtime: { rpc: jest.fn() },
-  setActiveRoomSubscription: jest.fn(),
+  claimActiveRoomSubscription: jest.fn(() => () => {}),
   onChatMessage: () => () => {},
   onEvent: () => () => {},
 };

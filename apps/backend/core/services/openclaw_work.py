@@ -366,6 +366,12 @@ class OpenClawWorkWorker:
             response = await self._post(url, body, token)
             if response.status_code != 202:
                 raise WorkRetry(f"plugin refused ingress ({response.status_code})")
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            # The plugin dedupes ingress by eventId (effect-once), so a timed-out
+            # or dropped POST is safe to retry soon; holding the full 300s
+            # visibility stalls the whole FIFO group (prod, 2026-09-10 18:15Z).
+            pool.clear_active_run(owner_id, session_key)
+            raise WorkRetry(f"plugin ingress {type(exc).__name__}") from exc
         except Exception:
             pool.clear_active_run(owner_id, session_key)
             raise

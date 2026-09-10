@@ -51,13 +51,14 @@ const messaging = {
   setTyping: vi.fn(async () => undefined),
   createRoom: vi.fn(), updateRoom: vi.fn(), upsertMember: vi.fn(), removeMember: vi.fn(), abortRun: vi.fn(), steerRun: vi.fn(), getLiveConfig: vi.fn(),
 };
+const releaseActiveRoomSubscription = vi.fn();
 const live = {
   httpReady: true,
   liveConnected: false,
   liveChannels: [] as string[],
   connectionRevision: 1,
   messaging,
-  setActiveRoomSubscription: vi.fn(),
+  claimActiveRoomSubscription: vi.fn(() => releaseActiveRoomSubscription),
   onEvent: (handler: (event: LiveEvent) => void) => {
     handlers.add(handler);
     return () => handlers.delete(handler);
@@ -90,7 +91,8 @@ beforeEach(() => {
   live.liveConnected = false;
   live.liveChannels = [];
   live.connectionRevision = 1;
-  live.setActiveRoomSubscription.mockClear();
+  live.claimActiveRoomSubscription.mockClear();
+  releaseActiveRoomSubscription.mockClear();
   for (const method of Object.values(messaging)) {
     if (typeof method === "function" && "mockClear" in method) (method as ReturnType<typeof vi.fn>).mockClear();
   }
@@ -103,7 +105,7 @@ describe("useRooms canonical reconciliation", () => {
   it("subscribes before history, merges gaps in sequence, rotates keys, and evicts access immediately", async () => {
     const { result, rerender } = renderHook(() => useRooms(), { wrapper });
     await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(room.roomId));
-    expect(live.setActiveRoomSubscription).toHaveBeenCalledWith({ roomId: room.roomId, deliveryKey: room.deliveryKey });
+    expect(live.claimActiveRoomSubscription).toHaveBeenCalledWith({ roomId: room.roomId, deliveryKey: room.deliveryKey });
     expect(messaging.listMessages).not.toHaveBeenCalled();
 
     live.liveConnected = true;
@@ -131,7 +133,8 @@ describe("useRooms canonical reconciliation", () => {
     act(() => {
       for (const handler of handlers) handler(rotated);
     });
-    expect(live.setActiveRoomSubscription).toHaveBeenLastCalledWith({ roomId: room.roomId, deliveryKey: rotated.payload.deliveryKey });
+    expect(live.claimActiveRoomSubscription).toHaveBeenLastCalledWith({ roomId: room.roomId, deliveryKey: rotated.payload.deliveryKey });
+    releaseActiveRoomSubscription.mockClear();
 
     act(() => {
       for (const handler of handlers) handler({
@@ -141,7 +144,25 @@ describe("useRooms canonical reconciliation", () => {
     });
     expect(result.current.accessRemoved).toBe(true);
     expect(result.current.messages).toEqual([]);
-    expect(live.setActiveRoomSubscription).toHaveBeenLastCalledWith(null);
+    expect(releaseActiveRoomSubscription).toHaveBeenCalledOnce();
+  });
+
+  it("claims live delivery only while its room workspace is active", async () => {
+    const { result, rerender } = renderHook(
+      ({ subscribeToRoom }) => useRooms(undefined, subscribeToRoom),
+      { wrapper, initialProps: { subscribeToRoom: false } },
+    );
+    await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(room.roomId));
+    expect(live.claimActiveRoomSubscription).not.toHaveBeenCalled();
+
+    rerender({ subscribeToRoom: true });
+    await waitFor(() => expect(live.claimActiveRoomSubscription).toHaveBeenCalledWith({
+      roomId: room.roomId,
+      deliveryKey: room.deliveryKey,
+    }));
+
+    rerender({ subscribeToRoom: false });
+    expect(releaseActiveRoomSubscription).toHaveBeenCalledOnce();
   });
 
   it("sends over HTTP while live updates reconnect and keeps the canonical mention UUID", async () => {

@@ -16,7 +16,7 @@ export function useAgentRoomTransport(agentId: string | null) {
     liveConnected,
     messaging,
     runtime,
-    setActiveRoomSubscription,
+    claimActiveRoomSubscription,
     onChatMessage: subscribeChatMessage,
   } = useLiveEvents();
   const [roomState, setRoomState] = useState<{ agentId: string; room: RoomDetail } | null>(null);
@@ -70,9 +70,8 @@ export function useAgentRoomTransport(agentId: string | null) {
 
   useEffect(() => {
     if (!room) return;
-    setActiveRoomSubscription({ roomId: room.roomId, deliveryKey: room.deliveryKey });
-    return () => setActiveRoomSubscription(null);
-  }, [room, setActiveRoomSubscription]);
+    return claimActiveRoomSubscription({ roomId: room.roomId, deliveryKey: room.deliveryKey });
+  }, [room, claimActiveRoomSubscription]);
 
   const onChatMessage = useCallback((handler: (frame: ChatIncomingMessage) => void) => subscribeChatMessage((frame, event) => {
     if (event.payload.agentId !== agentId || event.payload.roomId !== roomRef.current?.roomId) return;

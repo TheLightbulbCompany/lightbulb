@@ -67,9 +67,15 @@ function runView(run: LiveRoomRun): RoomRunView {
   return { ...run, tools: [...tools.values()] };
 }
 
-export function MessagingWorkspace({ initialAgentId }: { initialAgentId?: string | null }) {
+export function MessagingWorkspace({
+  initialAgentId,
+  subscribeToRoom = true,
+}: {
+  initialAgentId?: string | null;
+  subscribeToRoom?: boolean;
+}) {
   const { userId, orgId } = useAuth();
-  const rooms = useRooms(initialAgentId);
+  const rooms = useRooms(initialAgentId, subscribeToRoom);
   const setRoomTyping = rooms.setTyping;
   const sendRoomMessage = rooms.sendMessage;
   const teams = useTeamsApi();

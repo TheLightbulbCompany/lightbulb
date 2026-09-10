@@ -52,12 +52,12 @@ export function mergeCanonicalMessages(
 const lastSequence = (messages: readonly CanonicalRoomMessage[]) => messages.at(-1)?.messageSeq ?? 0;
 const NO_ROOMS: never[] = [];
 
-export function useRooms(initialAgentId?: string | null) {
+export function useRooms(initialAgentId?: string | null, subscribeToRoom = true) {
   const { isLoaded, userId, orgId } = useAuth();
   const live = useLiveEvents();
   const {
     messaging,
-    setActiveRoomSubscription,
+    claimActiveRoomSubscription,
     onEvent,
     liveChannels,
     connectionRevision,
@@ -161,8 +161,7 @@ export function useRooms(initialAgentId?: string | null) {
     setAccessRemoved(true);
     messagesRef.current = [];
     setMessages([]);
-    setActiveRoomSubscription(null);
-  }, [roomError, setActiveRoomSubscription]);
+  }, [roomError]);
 
   const subscription = activeRoom && deliveryOverride?.roomId === activeRoom.roomId && deliveryOverride.roomRevision >= activeRoom.roomRevision
     ? { roomId: activeRoom.roomId, deliveryKey: deliveryOverride.deliveryKey }
@@ -172,13 +171,12 @@ export function useRooms(initialAgentId?: string | null) {
   const subscriptionDeliveryKey = subscription?.deliveryKey ?? null;
 
   useEffect(() => {
-    setActiveRoomSubscription(
-      accessRemoved || !subscriptionRoomId || !subscriptionDeliveryKey
-        ? null
-        : { roomId: subscriptionRoomId, deliveryKey: subscriptionDeliveryKey },
-    );
-    return () => setActiveRoomSubscription(null);
-  }, [setActiveRoomSubscription, subscriptionRoomId, subscriptionDeliveryKey, accessRemoved]);
+    if (!subscribeToRoom || accessRemoved || !subscriptionRoomId || !subscriptionDeliveryKey) return;
+    return claimActiveRoomSubscription({
+      roomId: subscriptionRoomId,
+      deliveryKey: subscriptionDeliveryKey,
+    });
+  }, [claimActiveRoomSubscription, subscriptionRoomId, subscriptionDeliveryKey, accessRemoved, subscribeToRoom]);
 
   const reconcile = useCallback((afterSeq: number) => {
     if (!activeRoomId || accessRemoved) return Promise.resolve();
@@ -220,13 +218,11 @@ export function useRooms(initialAgentId?: string | null) {
       messagesRef.current = [];
       setMessages([]);
       setOptimistic([]);
-      setActiveRoomSubscription(null);
       void mutateRooms();
       return;
     }
     if (event.type === "room.subscription.rotated" && event.payload.roomId === activeRoomId) {
       setDeliveryOverride(event.payload);
-      setActiveRoomSubscription({ roomId: event.payload.roomId, deliveryKey: event.payload.deliveryKey });
       void mutateRoom();
       return;
     }
@@ -273,7 +269,7 @@ export function useRooms(initialAgentId?: string | null) {
         return new Map(current).set(key, next);
       });
     }
-  }), [activeRoomId, onEvent, setActiveRoomSubscription, mutateRoom, mutateRooms, reconcile]);
+  }), [activeRoomId, onEvent, mutateRoom, mutateRooms, reconcile]);
 
   useEffect(() => {
     if (typing.size === 0) return;

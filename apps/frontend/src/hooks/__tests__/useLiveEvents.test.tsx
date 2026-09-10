@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const auth = {
@@ -27,18 +27,25 @@ vi.mock("@/lib/desktopPermissions", () => ({
 }));
 vi.mock("@/lib/desktopPermissionsSubscribe", () => ({ subscribeDesktopPermissions: () => () => {} }));
 
-const shared = vi.hoisted(() => ({ liveConnected: false, connectionRevision: 1 }));
+const shared = vi.hoisted(() => ({
+  liveConnected: false,
+  connectionRevision: 1,
+  roomChannel: null as string | null,
+}));
 vi.mock("@lightbulb/shared", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@lightbulb/shared")>();
   return {
     ...actual,
-    useLiveEvents: () => ({
-      liveConnected: shared.liveConnected,
-      lastEventAt: null,
-      connectionRevision: shared.connectionRevision,
-      liveChannels: [],
-      lastError: null,
-    }),
+    useLiveEvents: ({ roomChannel }: { roomChannel: string | null }) => {
+      shared.roomChannel = roomChannel;
+      return {
+        liveConnected: shared.liveConnected,
+        lastEventAt: null,
+        connectionRevision: shared.connectionRevision,
+        liveChannels: [],
+        lastError: null,
+      };
+    },
   };
 });
 
@@ -49,6 +56,23 @@ function Probe() {
   return <div>{live.httpReady ? "http-ready" : "http-off"}:{live.liveConnected ? "live" : "reconnecting"}:{live.nodeStatus}</div>;
 }
 
+let releaseFirstRoom: (() => void) | null = null;
+let releaseSecondRoom: (() => void) | null = null;
+
+function RoomClaimProbe() {
+  const live = useLiveEvents();
+  return <>
+    <button onClick={() => {
+      releaseFirstRoom = live.claimActiveRoomSubscription({ roomId: "room-a", deliveryKey: "key-a" });
+    }}>claim first</button>
+    <button onClick={() => {
+      releaseSecondRoom = live.claimActiveRoomSubscription({ roomId: "room-b", deliveryKey: "key-b" });
+    }}>claim second</button>
+    <button onClick={() => releaseFirstRoom?.()}>release first</button>
+    <button onClick={() => releaseSecondRoom?.()}>release second</button>
+  </>;
+}
+
 beforeEach(() => {
   get.mockClear();
   auth.getToken.mockClear();
@@ -56,6 +80,9 @@ beforeEach(() => {
   auth.orgId = "org-a";
   shared.liveConnected = false;
   shared.connectionRevision = 1;
+  shared.roomChannel = null;
+  releaseFirstRoom = null;
+  releaseSecondRoom = null;
   localStorage.setItem("lightbulb.desktop.permissions.v1", JSON.stringify({ permissions: ["screen"] }));
 });
 
@@ -64,6 +91,20 @@ describe("LiveEventsProvider", () => {
     render(<LiveEventsProvider><Probe /></LiveEventsProvider>);
     expect(screen.getByText(/http-ready:reconnecting/)).toBeInTheDocument();
     await waitFor(() => expect(get).toHaveBeenCalledWith("/messaging/live-config"));
+  });
+
+  it("ignores a stale room release after a newer panel claims live delivery", async () => {
+    render(<LiveEventsProvider><RoomClaimProbe /></LiveEventsProvider>);
+
+    fireEvent.click(screen.getByRole("button", { name: "claim first" }));
+    await waitFor(() => expect(shared.roomChannel).toBe("/rooms/room-a/key-a"));
+    fireEvent.click(screen.getByRole("button", { name: "claim second" }));
+    await waitFor(() => expect(shared.roomChannel).toBe("/rooms/room-b/key-b"));
+
+    fireEvent.click(screen.getByRole("button", { name: "release first" }));
+    expect(shared.roomChannel).toBe("/rooms/room-b/key-b");
+    fireEvent.click(screen.getByRole("button", { name: "release second" }));
+    await waitFor(() => expect(shared.roomChannel).toBeNull());
   });
 
   it("pushes Tauri auth while AppSync is disconnected and again on native node status", async () => {

@@ -9,6 +9,7 @@ interface FakeAgent {
   name?: string;
 }
 
+let activePanelId: string | null;
 let agentsState: {
   agents: FakeAgent[];
   defaultId: string | undefined;
@@ -18,9 +19,22 @@ vi.mock("@/hooks/useAgents", () => ({
   useAgents: () => agentsState,
   agentDisplayName: (agent: FakeAgent) => agent.name ?? agent.id,
 }));
+vi.mock("../workspaceController", () => ({
+  useWorkspaceState: () => ({ activePanelId }),
+}));
 vi.mock("@/components/messaging/MessagingWorkspace", () => ({
-  MessagingWorkspace: ({ initialAgentId }: { initialAgentId: string | null }) => (
-    <div data-testid="messaging-workspace" data-agent-id={initialAgentId ?? ""} />
+  MessagingWorkspace: ({
+    initialAgentId,
+    subscribeToRoom,
+  }: {
+    initialAgentId: string | null;
+    subscribeToRoom: boolean;
+  }) => (
+    <div
+      data-testid="messaging-workspace"
+      data-agent-id={initialAgentId ?? ""}
+      data-subscribed={subscribeToRoom}
+    />
   ),
 }));
 
@@ -29,7 +43,10 @@ import { ChatPanel } from "../panels/ChatPanel";
 type ChatPanelProps = React.ComponentProps<typeof ChatPanel>;
 
 function makeProps(agentId: string): ChatPanelProps {
-  const api: Record<string, unknown> = { title: "Messages" };
+  const api: Record<string, unknown> = {
+    id: `chat:${agentId}`,
+    title: "Messages",
+  };
   api.setTitle = vi.fn((title: string) => {
     api.title = title;
   });
@@ -37,6 +54,7 @@ function makeProps(agentId: string): ChatPanelProps {
 }
 
 beforeEach(() => {
+  activePanelId = null;
   agentsState = { agents: [], defaultId: undefined };
 });
 
@@ -67,6 +85,29 @@ describe("ChatPanel", () => {
       "agent-late",
     );
     expect(props.api.setTitle).not.toHaveBeenCalled();
+  });
+
+  it("gives the one live room subscription to the globally active chat tab", () => {
+    const friday = makeProps("agent-friday");
+    const atlas = makeProps("agent-atlas");
+    activePanelId = "chat:agent-friday";
+    const panels = () => (
+      <>
+        <ChatPanel {...friday} />
+        <ChatPanel {...atlas} />
+      </>
+    );
+    const view = render(panels());
+
+    let workspaces = screen.getAllByTestId("messaging-workspace");
+    expect(workspaces[0]).toHaveAttribute("data-subscribed", "true");
+    expect(workspaces[1]).toHaveAttribute("data-subscribed", "false");
+
+    activePanelId = "chat:agent-atlas";
+    view.rerender(panels());
+    workspaces = screen.getAllByTestId("messaging-workspace");
+    expect(workspaces[0]).toHaveAttribute("data-subscribed", "false");
+    expect(workspaces[1]).toHaveAttribute("data-subscribed", "true");
   });
 
   it("updates the panel title when the agent roster arrives", () => {

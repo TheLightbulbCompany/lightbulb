@@ -40,7 +40,7 @@ export interface LiveEventsContextValue extends RuntimeRpcSource {
   nodeStatus: string;
   messaging: ReturnType<typeof createMessagingClient>;
   runtime: ReturnType<typeof createRuntimeClient>;
-  setActiveRoomSubscription(room: ActiveRoomSubscription | null): void;
+  claimActiveRoomSubscription(room: ActiveRoomSubscription): () => void;
   onChatMessage(handler: (frame: ChatIncomingMessage, event: LiveEventOf<"room.run.frame">) => void): () => void;
 }
 
@@ -63,6 +63,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     ownerScope: string | null;
     room: ActiveRoomSubscription | null;
   } | null>(null);
+  const activeRoomClaim = useRef<symbol | null>(null);
   const activeRoom = ownerScope && activeRoomState?.ownerScope === ownerScope
     ? activeRoomState.room
     : null;
@@ -101,14 +102,21 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     chatHandlers.current.add(handler);
     return () => chatHandlers.current.delete(handler);
   }, []);
-  const setActiveRoomSubscription = useCallback((room: ActiveRoomSubscription | null) => {
+  const claimActiveRoomSubscription = useCallback((room: ActiveRoomSubscription) => {
+    const claim = Symbol();
+    activeRoomClaim.current = claim;
     setActiveRoomState((current) =>
       current?.ownerScope === ownerScope &&
-      current?.room?.roomId === room?.roomId &&
-      current?.room?.deliveryKey === room?.deliveryKey
+      current.room?.roomId === room.roomId &&
+      current.room.deliveryKey === room.deliveryKey
         ? current
         : { ownerScope, room },
     );
+    return () => {
+      if (activeRoomClaim.current !== claim) return;
+      activeRoomClaim.current = null;
+      setActiveRoomState({ ownerScope, room: null });
+    };
   }, [ownerScope]);
 
   useEffect(() => subscribeDesktopPermissions(() => {
@@ -164,7 +172,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     nodeStatus,
     messaging,
     runtime: runtimeClient,
-    setActiveRoomSubscription,
+    claimActiveRoomSubscription,
     onChatMessage,
     rpc: runtimeClient.rpc,
     getOperation: runtimeClient.getOperation,
@@ -180,7 +188,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     configError,
     nodeStatus,
     messaging,
-    setActiveRoomSubscription,
+    claimActiveRoomSubscription,
     onChatMessage,
     runtimeClient,
     onEvent,

@@ -25,9 +25,8 @@ import {
 
 /**
  * Global bottom-right run notifications. Renders nothing; consumes the
- * unfiltered chat-frame stream (background webchat runs already reach this
- * browser and are dropped by useAgentChat's demux) plus teams.heartbeat.run.*
- * events, and drives one live toast per run keyed by runId.
+ * active-room chat-frame stream plus paperclip events, and drives one live
+ * toast per run keyed by runId.
  *
  * Every handler is wrapped so a notification bug can never break chat.
  */
@@ -165,12 +164,12 @@ export function RunNotifications(props: RunNotificationsProps): null {
   });
   const agentsRef = useRef<Agent[]>([]);
 
-  // Keep the latest props/agents available to the async gateway callbacks
+  // Keep the latest props/agents available to the async live-event callbacks
   // below without making them effect dependencies (that would tear down and
   // resubscribe the chat/event listeners on every keystroke-adjacent
   // re-render). Writing refs during render is disallowed (react-hooks/refs),
   // so the sync happens in an unconditional effect instead — it still lands
-  // before any queued gateway callback runs.
+  // before any queued live-event callback runs.
   useEffect(() => {
     ctxRef.current =
       props.mode === "mobile"

@@ -4,9 +4,9 @@ import { Text } from "react-native";
 const mockRefetch = jest.fn();
 const mockUseContainerStatus = jest.fn();
 
-// `organization` decides whether this poller's container is an org (billed
-// per seat) or personal. The paywall sells the personal plan only, so the
-// org case must never reach it — see the isOrgOwner guard in ProvisionGate.
+// `organization` decides whether this poller's container is a workspace or a
+// personal Apple purchase. Workspace subscriptions use Stripe web billing, so
+// the org case must never reach this StoreKit paywall — see isOrgOwner.
 let mockOrganization: { id: string } | null = null;
 let mockOrgLoaded = true;
 
@@ -636,11 +636,10 @@ describe("ProvisionGate first-run failure affordance (non-blocking)", () => {
   });
 });
 
-// PR-review finding: the paywall sells the PERSONAL flat plan — one Apple
-// product, one Stripe flat price. An org pays base + per-seat. Routing an org
-// into it takes real money through StoreKit for a plan that cannot be
-// recorded: a team_billing_required org has no billing row by construction, so
-// the link call fails permanently and the customer is left charged.
+// PR-review finding: the paywall is a PERSONAL Apple purchase. Workspace
+// subscriptions use Stripe web billing. Routing an org into it takes real
+// money through StoreKit for a plan that cannot be recorded, so the backend
+// must reject it before the customer is charged without an entitlement.
 //
 // Gated on OWNER TYPE, not gate code — payment_past_due, subscription_required,
 // credits_required and signup_required all fire for orgs too, so a code
@@ -649,8 +648,8 @@ describe("ProvisionGate paywall routing is personal-owner only", () => {
   const purchaseGate = {
     kind: "blocked" as const,
     code: "team_billing_required",
-    title: "Set up Teams billing",
-    message: "Your team needs an active per-seat subscription to start.",
+    title: "Set up workspace billing",
+    message: "Your workspace needs an active Stripe subscription to start.",
     href: "/settings/billing",
     actionLabel: "Set up billing",
     adminOnly: true,

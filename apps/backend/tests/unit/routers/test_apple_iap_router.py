@@ -119,7 +119,7 @@ async def test_org_context_resolves_to_the_org_and_is_refused_by_the_checkout_fe
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
         r = await c.post("/api/v1/billing/apple/web-checkout", json={})
     assert r.status_code == 403, r.text
-    assert "per seat" in r.text
+    assert "Workspace subscriptions" in r.text
 
 
 @pytest.mark.asyncio

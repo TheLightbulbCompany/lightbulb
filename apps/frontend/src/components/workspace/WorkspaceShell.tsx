@@ -472,13 +472,9 @@ function AuthenticatedWorkspace({ scopeId }: { scopeId: string }): React.ReactEl
                       // bail rather than opening a chat panel for "".
                       const target = defaultIdRef.current;
                       if (!target) return;
-                      // Record the focus intent BEFORE opening: when openChatPanel
-                      // ADDS a new dock panel, its ChatInput hasn't mounted (or
-                      // registered its window listener) yet — the CustomEvent below
-                      // would be lost, so the freshly-mounted composer consumes
-                      // this pending request instead. The already-mounted case is
-                      // covered by the event; its listener also consumes the slot
-                      // so the two paths can't double-fire.
+                      // Record the focus intent before opening. openChatPanel
+                      // defers delivery until ChatPanel renders the selected DM,
+                      // so this event cannot focus a same-agent composer too soon.
                       requestFocusComposer(target);
                       openChatPanel(target);
                       window.dispatchEvent(

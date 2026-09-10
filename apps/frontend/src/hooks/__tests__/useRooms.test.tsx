@@ -118,7 +118,7 @@ describe("useRooms canonical reconciliation", () => {
     messaging.createRoom.mockResolvedValue({ ...fridayDm, roomId: "unwanted-duplicate" });
     const { result } = renderHook(() => useRooms(), { wrapper });
 
-    let selectingFriday!: Promise<void>;
+    let selectingFriday!: Promise<string | null>;
     await act(async () => { selectingFriday = result.current.selectAgentDm("agent-friday"); });
 
     expect(result.current.roomsLoading).toBe(true);

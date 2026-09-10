@@ -7,7 +7,7 @@ import type { RoomDetail } from "@lightbulb/shared";
 import { MessagingWorkspaceProvider, useMessagingWorkspace } from "@/components/messaging/MessagingWorkspaceContext";
 import { WorkspaceSidebar } from "../WorkspaceSidebar";
 import { ChatPanel } from "../panels/ChatPanel";
-import { attachDockviewApi, getWorkspaceSnapshot, openChatPanel, openPanel } from "../workspaceController";
+import { attachDockviewApi, getWorkspaceSnapshot, openChatPanel, openChatPanelWithDraft, openPanel } from "../workspaceController";
 import { MESSAGES_PANEL_ID } from "../panelRegistry";
 import { layoutStorageKey, readLayout, writeLayout } from "../layoutStorage";
 
@@ -29,9 +29,6 @@ vi.mock("@/components/chat/HealthIndicator", () => ({ HealthIndicator: () => nul
 vi.mock("@/components/desktop/NodeStatusPill", () => ({ NodeStatusPill: () => null }));
 vi.mock("@/components/desktop/DesktopUpdater", () => ({ DesktopUpdater: () => null }));
 vi.mock("@/components/Logo", () => ({ Logo: () => null }));
-// Transcript rendering is covered separately; keep the real room owner and all navigation seams.
-vi.mock("@/components/messaging/RoomPanel", () => ({ RoomPanel: () => null }));
-
 function dm(roomId: string, agentId: string, name: string): RoomDetail {
   const joined = { joinedAt: "2026-09-10T00:00:00Z", joinedSeq: 0, mentionHandle: null };
   return {
@@ -140,6 +137,18 @@ describe("Messages room/controller boundary", () => {
     act(() => openChatPanel("agent-a"));
     await waitFor(() => expect(screen.getByLabelText("Selected room")).toHaveTextContent("a-first"));
     expect(api.panels.filter((panel) => panel.id === MESSAGES_PANEL_ID)).toHaveLength(1);
+  });
+
+  it("hands a draft to the selected same-agent DM after navigation settles", async () => {
+    renderWorkspace();
+    await waitFor(() => expect(screen.getByLabelText("Selected room")).toHaveTextContent("a-first"));
+    fireEvent.click(await screen.findByRole("button", { name: /Exact Alpha/ }));
+    await waitFor(() => expect(screen.getByLabelText("Selected room")).toHaveTextContent("a-exact"));
+
+    act(() => expect(openChatPanelWithDraft("file the inbox")).toBe(true));
+
+    await waitFor(() => expect(screen.getByLabelText("Selected room")).toHaveTextContent("a-first"));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("file the inbox"));
   });
 
   it("synchronizes a newly created DM after late detail hydration for workspace consumers", async () => {

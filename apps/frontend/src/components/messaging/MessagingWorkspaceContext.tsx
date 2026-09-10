@@ -72,7 +72,7 @@ export interface MessagingWorkspaceValue {
   activeRoomId: string | null;
   directoryProps: RoomDirectoryProps;
   roomProps: RoomPanelProps | null;
-  selectAgentDm: (agentId: string) => Promise<void>;
+  selectAgentDm: (agentId: string) => Promise<string | null>;
 }
 
 const MessagingWorkspaceContext = createContext<MessagingWorkspaceValue | null>(null);

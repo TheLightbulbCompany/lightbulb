@@ -363,7 +363,7 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
     return created;
   }, [messaging, mutateRooms]);
 
-  const selectAgentDm = useCallback(async (agentId: string): Promise<void> => {
+  const selectAgentDm = useCallback(async (agentId: string): Promise<string | null> => {
     const requestId = ++selectionRequest.current;
     let details = directoryDetailsResponse.data ?? getCachedDirectoryRoomDetails();
     let hydrationError = directoryDetailsResponse.error;
@@ -375,7 +375,7 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
         hydrationError = error;
       }
     }
-    if (requestId !== selectionRequest.current) return;
+    if (requestId !== selectionRequest.current) return null;
     const existing = [...details.values()].find(
       (detail) => detail.kind === "dm" && detail.members.some(
         (member) => member.kind === "agent" && member.id === agentId,
@@ -383,19 +383,20 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
     );
     if (existing) {
       setActiveRoomId(existing.roomId);
-      return;
+      return existing.roomId;
     }
     if (hydrationError) throw hydrationError;
     const request = initialDmRequest.current?.agentId === agentId
       ? initialDmRequest.current
       : { agentId, clientRoomId: crypto.randomUUID() };
     initialDmRequest.current = request;
-    await createRoom({
+    const created = await createRoom({
       clientRoomId: request.clientRoomId,
       kind: "dm",
       name: null,
       members: [{ kind: "agent", id: agentId, role: "member", listenMode: "active" }],
     }, requestId);
+    return requestId === selectionRequest.current ? created.roomId : null;
   }, [createRoom, directoryDetailsResponse.data, directoryDetailsResponse.error, getCachedDirectoryRoomDetails, loadDirectoryRoomDetails]);
 
   useEffect(() => {

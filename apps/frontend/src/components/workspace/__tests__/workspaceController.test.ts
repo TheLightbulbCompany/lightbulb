@@ -22,6 +22,7 @@ vi.mock("@/lib/shellNav", () => ({
 import { pushSearchParams, replaceSearchParams } from "@/lib/shellNav";
 import {
   consumeFocusComposerRequest,
+  releaseFocusComposerRequest,
   _resetFocusComposerRequestForTests,
 } from "@/lib/focusComposerRequest";
 
@@ -254,11 +255,13 @@ describe("workspaceController", () => {
     expect(api.addPanel).toHaveBeenCalledWith(expect.objectContaining({ renderer: "always" }));
   });
 
-  it("openChatPanelWithDraft opens the default agent's chat and parks the draft", () => {
+  it("openChatPanelWithDraft defers the draft until room navigation settles", () => {
     const api = makeFakeApi();
     attachDockviewApi(api, () => "a-1");
     expect(openChatPanelWithDraft("file the inbox")).toBe(true);
     expect(api.addPanel).toHaveBeenCalledWith(expect.objectContaining({ id: MESSAGES_PANEL_ID, params: { agentId: "a-1" } }));
+    expect(consumeFocusComposerRequest("a-1")).toBeNull();
+    expect(releaseFocusComposerRequest("a-1")).toBe(true);
     expect(consumeFocusComposerRequest("a-1")).toEqual({ draft: "file the inbox" });
   });
 

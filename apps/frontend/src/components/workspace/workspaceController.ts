@@ -11,7 +11,7 @@ import { useSyncExternalStore } from "react";
 // — there is no plain `IDisposable` export, unlike the brief's import list.
 import type { DockviewApi, IDockviewPanel, DockviewIDisposable as IDisposable } from "dockview-react";
 import { pushSearchParams, replaceSearchParams } from "@/lib/shellNav";
-import { requestFocusComposer } from "@/lib/focusComposerRequest";
+import { deferFocusComposerRequest, requestFocusComposer } from "@/lib/focusComposerRequest";
 import {
   describePanel,
   MESSAGES_PANEL_ID,
@@ -223,7 +223,10 @@ export function openPanel(
 // Every agent shortcut retargets the same Messages panel.
 export function openChatPanel(agentId: string): void {
   const descriptor = describePanel("chat", { agent: agentId });
-  if (descriptor) addOrFocus(descriptor);
+  if (descriptor && _api) {
+    deferFocusComposerRequest(agentId);
+    addOrFocus(descriptor);
+  }
 }
 
 export function activateMessagesPanel(): void {
@@ -240,11 +243,9 @@ export function syncMessagesPanelAgent(agentId?: string): void {
   recomputeSnapshot();
 }
 
-// Hand the default agent a drafted message: open (or focus) its chat and seed
-// the composer. Same record-then-open-then-event sequence as the Get Started
-// chat action in WorkspaceShell — the slot covers a freshly ADDED panel whose
-// ChatInput hasn't mounted, the event covers an already-mounted one; ChatInput
-// consumes the slot on both paths so nothing double-fires. False when no
+// Hand the default agent a drafted message. openChatPanel defers the slot so
+// this immediate event cannot seed a same-agent composer in the wrong room;
+// ChatPanel releases it once the selected DM is rendered. False when no
 // default agent resolves (pre-provision) so callers can stay silent.
 export function openChatPanelWithDraft(draft: string): boolean {
   const target = _resolveDefaultAgentId();

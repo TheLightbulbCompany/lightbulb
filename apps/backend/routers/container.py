@@ -26,7 +26,7 @@ from core.services.bootstrap_dispatcher import maybe_dispatch_bootstrap
 from core.services.onboarding_brief import reconcile_pending_brief
 from core.services.management_api_client import ManagementApiClientError
 from core.observability.metrics import put_metric, timing
-from core.repositories import billing_repo, container_repo
+from core.repositories import container_repo
 from core.services.provision_dispatch import dispatch_provision
 from core.services.provision_gate import (
     evaluate_provision_gate,
@@ -35,7 +35,7 @@ from core.services.provision_gate import (
     trial_expired_gate,
 )
 from core.services.stripe_webhook_handlers import CONVERTING_SUBSTATUS, maybe_resume_stuck_conversion
-from core.services.user_provision import ensure_workspace_trial_default, ensure_user_ready
+from core.services.user_provision import arm_workspace_trial_if_unset, ensure_workspace_trial_default, ensure_user_ready
 
 logger = logging.getLogger(__name__)
 
@@ -415,7 +415,7 @@ async def container_status(
     # without threading it every ~3s ready poll fleet-wide would pay it twice.
     contract = await readiness_state.compute_status(owner_id, container=container, onboarding=onboarding)
     if contract["runtime_phase"] == "ready" and contract["provider"]["subscription_status"] == "trial_local":
-        await billing_repo.arm_trial_if_unset(owner_id)
+        await arm_workspace_trial_if_unset(owner_id)
 
     # Auto-retry: if container is in a failed/stuck state AND the owner can
     # currently afford to provision, trigger re-provisioning in the

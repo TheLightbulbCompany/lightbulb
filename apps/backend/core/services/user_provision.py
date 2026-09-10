@@ -120,6 +120,11 @@ async def ensure_workspace_trial_default(
         )
 
 
+async def arm_workspace_trial_if_unset(workspace_id: str) -> None:
+    """Start a ready workspace's unarmed local trial exactly once."""
+    await billing_repo.arm_trial_if_unset(workspace_id)
+
+
 async def ensure_user_ready(auth: AuthContext) -> None:
     """Single canonical readiness entry point. Idempotent.
 

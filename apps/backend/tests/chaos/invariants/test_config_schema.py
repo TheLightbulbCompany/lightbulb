@@ -159,7 +159,9 @@ def _emit_image_qualification_configs(output_dir: Path) -> None:
             _IMAGE_QUALIFICATION_ID,
             include_mcp=False,
         )
-        assert config["channels"] == {}, "qualification fixtures must not enable channels"
+        assert set(config["channels"]) == {"lightbulb"}, (
+            "qualification fixtures must enable only the native Lightbulb channel"
+        )
         assert config["acp"]["enabled"] is True, "qualification fixtures must use the production ACP default"
         (output_dir / filename).write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
 

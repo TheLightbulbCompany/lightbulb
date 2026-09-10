@@ -1,18 +1,17 @@
 /* Dockable workspace shell grid.
  *
- * A fixed 280px sidebar spanning full height, with a flex-column main area on
+ * A fixed 248px sidebar spanning full height, with a flex-column main area on
  * the right (header row, then banners + stepper + dock fill):
  *
  *     +-----------+------------------+
  *     |           |     header       |   <- 56px row
  *     |  sidebar  +------------------+
- *     |  (280px)  | content          |
+ *     |  (248px)  | content          |
  *     |           |  banners         |
  *     |           |  dock (flex fill)|
  *     +-----------+------------------+
  *
- * The sidebar itself reuses ChatLayout.css's `.cream-sidebar` block (roster,
- * `.create-pill`, `.agent-item`, `.session-list`, footer …) verbatim — those
+ * The sidebar reuses ChatLayout.css's identity, health, and footer blocks — those
  * classes aren't grid-coupled and are safe to share. What is NOT reused is
  * `.app-shell` / `.main-area`: those are coupled to the old file-viewer slide
  * transition (grid-template-columns morph) which the dock replaces.
@@ -22,7 +21,7 @@
  */
 .workspace-shell {
   display: grid;
-  grid-template-columns: 280px 1fr;
+  grid-template-columns: 248px minmax(0, 1fr);
   grid-template-areas: "sidebar main";
   height: 100vh;
   /* clip, not hidden: a hidden box is still programmatically scrollable, so
@@ -34,6 +33,75 @@
 
 .workspace-shell > .cream-sidebar {
   grid-area: sidebar;
+  min-width: 0;
+}
+
+.workspace-shell .workspace-primary-nav,
+.workspace-shell .workspace-more-nav {
+  padding: 8px 12px;
+}
+
+.workspace-shell .workspace-primary-nav,
+.workspace-shell .workspace-more-nav nav {
+  display: grid;
+  gap: 2px;
+}
+
+.workspace-shell .workspace-primary-nav button,
+.workspace-shell .workspace-more-nav button,
+.workspace-shell .workspace-more-nav summary {
+  min-height: 36px;
+  border-radius: 4px;
+  padding: 6px 8px;
+  color: var(--midnight-soft);
+  font-size: var(--text-ui);
+  cursor: pointer;
+}
+
+.workspace-shell .workspace-primary-nav button,
+.workspace-shell .workspace-more-nav button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+}
+
+.workspace-shell .workspace-primary-nav button:enabled:hover,
+.workspace-shell .workspace-primary-nav button[aria-current="page"],
+.workspace-shell .workspace-more-nav button:enabled:hover,
+.workspace-shell .workspace-more-nav button[aria-current="page"],
+.workspace-shell .workspace-more-nav summary:hover {
+  background: var(--cream-deeper);
+  color: var(--midnight);
+}
+
+.workspace-shell .workspace-primary-nav button:disabled,
+.workspace-shell .workspace-more-nav button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.workspace-shell .workspace-primary-nav button:focus-visible,
+.workspace-shell .workspace-more-nav button:focus-visible,
+.workspace-shell .workspace-more-nav summary:focus-visible {
+  outline: 2px solid var(--midnight);
+  outline-offset: 2px;
+}
+
+/* The sidebar owns the scroll; the shared mobile directory keeps its layout. */
+.workspace-shell .sidebar-scroll > .room-directory {
+  height: auto;
+  overflow: visible;
+  border-right: 0;
+  gap: 16px;
+  padding: 8px 12px;
+}
+
+.workspace-shell .workspace-conversations-disabled {
+  padding: 8px 20px;
+  color: var(--midnight-muted);
+  font-size: var(--text-ui);
 }
 
 .workspace-main {
@@ -129,214 +197,6 @@
   background: var(--cream);
 }
 
-/* ── Team room ──────────────────────────────────────────────────────────
- * Chat stays the coordination surface; durable work and execution state sit
- * beside it as objects. Today's transport is still member-private, so this
- * frame labels the audience explicitly instead of painting fake presence. */
-.team-room {
-  container-type: inline-size;
-  display: flex;
-  flex-direction: column;
-  background: var(--cream);
-}
-
-.team-room__header {
-  min-height: 72px;
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 8px 12px 8px 16px;
-  border-bottom: 1px solid var(--edge);
-}
-
-.team-room__overline,
-.team-room__section-label {
-  display: block;
-  color: var(--midnight-muted);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.12em;
-  line-height: 16px;
-  text-transform: uppercase;
-}
-
-.team-room__heading-row {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 8px;
-}
-
-.team-room__heading {
-  overflow: hidden;
-  color: var(--midnight);
-  font-size: 18px;
-  font-weight: 500;
-  line-height: 24px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.team-room__audience {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  gap: 4px;
-  border: 1px solid var(--edge);
-  border-radius: 999px;
-  padding: 1px 7px;
-  color: var(--midnight-soft);
-  font-size: 11px;
-  line-height: 18px;
-}
-
-.team-room__status {
-  overflow: hidden;
-  color: var(--midnight-muted);
-  font-size: 12px;
-  line-height: 16px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.team-room__actions {
-  display: flex;
-  flex: 1;
-  justify-content: flex-end;
-  gap: 4px;
-}
-
-.team-room__icon-button {
-  display: flex;
-  width: 32px;
-  height: 32px;
-  align-items: center;
-  justify-content: center;
-  border-radius: 6px;
-  color: var(--midnight-muted);
-  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
-}
-
-.team-room__icon-button:hover {
-  background: var(--cream-deep);
-  color: var(--midnight);
-}
-
-.team-room__icon-button:disabled {
-  opacity: 0.5;
-}
-
-.team-room__icon-button:focus-visible,
-.team-room__work-links button:focus-visible {
-  outline: 2px solid var(--midnight);
-  outline-offset: 2px;
-}
-
-.team-room__body {
-  display: grid;
-  min-width: 0;
-  min-height: 0;
-  flex: 1;
-  grid-template-columns: minmax(0, 1fr) 300px;
-}
-
-.team-room__conversation {
-  min-width: 0;
-  min-height: 0;
-}
-
-.team-room__context {
-  min-height: 0;
-  overflow-y: auto;
-  border-left: 1px solid var(--edge);
-  background: var(--cream-deep);
-}
-
-.team-room__section {
-  padding: 20px;
-  border-bottom: 1px solid var(--edge);
-  color: var(--midnight-muted);
-  font-size: 13px;
-  line-height: 18px;
-}
-
-.team-room__section:last-child {
-  border-bottom: 0;
-}
-
-.team-room__section > p {
-  margin-top: 8px;
-}
-
-.team-room__context-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 8px;
-  color: var(--midnight);
-}
-
-.team-room__work-links {
-  display: grid;
-  gap: 4px;
-  margin-top: 12px;
-}
-
-.team-room__work-links button {
-  display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) 14px;
-  align-items: center;
-  gap: 8px;
-  min-height: 36px;
-  border: 1px solid var(--edge);
-  border-radius: 6px;
-  padding: 6px 8px;
-  background: var(--cream);
-  color: var(--midnight-soft);
-  text-align: left;
-  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
-}
-
-.team-room__work-links button:hover {
-  background: var(--cream-deeper);
-  color: var(--midnight);
-}
-
-.team-room__execution-row {
-  display: grid;
-  grid-template-columns: 20px minmax(0, 1fr) auto;
-  align-items: start;
-  gap: 8px;
-  margin-top: 12px;
-  color: var(--midnight-muted);
-}
-
-.team-room__execution-row strong,
-.team-room__execution-row span {
-  display: block;
-}
-
-.team-room__execution-row strong {
-  color: var(--midnight);
-  font-weight: 600;
-}
-
-.team-room__execution-row b {
-  font-size: 11px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-@container (max-width: 860px) {
-  .team-room__body {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .team-room__context {
-    display: none;
-  }
-}
 
 /* ── Panel-content scroll model ──────────────────────────────────────────
  *

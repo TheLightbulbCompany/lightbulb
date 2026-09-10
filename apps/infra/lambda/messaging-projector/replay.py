@@ -24,7 +24,12 @@ def parse_s3_uri(uri: str) -> tuple[str, str]:
 def records_from_failure(document: object) -> list[dict]:
     if not isinstance(document, dict):
         raise ValueError("failure object must be a JSON object")
-    payload = document.get("requestPayload", document)
+    payload = document.get("payload", document.get("requestPayload", document))
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise ValueError("failure object payload is not valid JSON") from exc
     records = payload.get("Records") if isinstance(payload, dict) else None
     if not isinstance(records, list) or not records:
         raise ValueError("failure object contains no DynamoDB records")

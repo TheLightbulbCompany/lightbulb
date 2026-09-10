@@ -197,7 +197,9 @@ def _try_device_token(token: str) -> Optional[dict]:
         if not device_id or not owner_id:
             return None
 
-        resp = _get_containers_table().get_item(Key={"owner_id": owner_id})
+        resp = _get_containers_table().get_item(
+            Key={"owner_id": owner_id}, ConsistentRead=True
+        )
         item = resp.get("Item")
         if not item:
             return None

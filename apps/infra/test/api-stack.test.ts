@@ -381,6 +381,26 @@ describe("ApiStack — canonical messaging storage and work delivery", () => {
     });
   });
 
+  test("direct Pipe waits for its role policy", () => {
+    const roles = API_TEMPLATE.findResources("AWS::IAM::Role");
+    const roleId = Object.entries(roles).find(
+      ([, role]: [string, any]) =>
+        role.Properties?.RoleName === "lightbulb-dev-openclaw-work-pipe",
+    )![0];
+    const policies = API_TEMPLATE.findResources("AWS::IAM::Policy");
+    const policyId = Object.entries(policies).find(
+      ([, policy]: [string, any]) =>
+        policy.Properties?.Roles?.some((role: any) => role.Ref === roleId),
+    )![0];
+    const pipe = Object.values(
+      API_TEMPLATE.findResources("AWS::Pipes::Pipe"),
+    )[0] as any;
+    const dependencies = Array.isArray(pipe.DependsOn)
+      ? pipe.DependsOn
+      : [pipe.DependsOn];
+    expect(dependencies).toContain(policyId);
+  });
+
   test("Pipe role is the sole work-queue producer and has only stream/send/KMS actions", () => {
     const roleEntry = Object.entries(
       API_TEMPLATE.findResources("AWS::IAM::Role"),
@@ -480,7 +500,10 @@ describe("ApiStack — messaging AppSync Events (OIDC subscribe / IAM publish)",
         ConnectionAuthModes: [{ AuthType: "OPENID_CONNECT" }],
         DefaultPublishAuthModes: [{ AuthType: "AWS_IAM" }],
         DefaultSubscribeAuthModes: [{ AuthType: "OPENID_CONNECT" }],
-        LogConfig: Match.objectLike({ LogLevel: "ERROR" }),
+        LogConfig: Match.objectLike({
+          LogLevel: "ERROR",
+          ExcludeVerboseContent: true,
+        }),
       }),
     });
   });

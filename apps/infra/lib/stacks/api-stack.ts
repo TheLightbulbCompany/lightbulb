@@ -608,6 +608,11 @@ export class ApiStack extends cdk.Stack {
         retention: logs.RetentionDays.ONE_MONTH,
       },
     });
+    // EventApi drops this supported property in CDK 2.267.0; set it on the L1.
+    (eventApi.node.defaultChild as appsync.CfnApi).addPropertyOverride(
+      "EventConfig.LogConfig.ExcludeVerboseContent",
+      true,
+    );
     const messagingDataSource = new appsync.AppSyncDynamoDbDataSource(
       this,
       "MessagingEventDataSource",
@@ -756,6 +761,11 @@ export class ApiStack extends cdk.Stack {
         },
       },
     });
+    // CloudFormation can otherwise create the Pipe after the role but before its
+    // separately synthesized inline policy, and Pipes rejects the unready role.
+    workPipe.addResourceDependency(
+      pipeRole.node.findChild("DefaultPolicy").node.defaultChild as iam.CfnPolicy,
+    );
 
     // Pipes has execution metrics but no state metric. Poll DescribePipe and emit
     // the one missing signal through EMF; missing monitor data also fails closed.

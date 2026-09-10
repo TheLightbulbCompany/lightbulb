@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import io
 import json
 import unittest
 from unittest.mock import MagicMock, patch
@@ -247,6 +246,26 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(results, [{"recordId": "321", "status": "success"}])
         self.assertFalse(failed)
         self.assertFalse(hasattr(s3, "delete_object") and s3.delete_object.called)
+
+    def test_replay_reads_lambda_s3_failure_envelope(self):
+        record = stream_record(message_item(), "322")
+        document = {
+            "version": "1.0",
+            "timestamp": "2026-09-10T00:00:00.000Z",
+            "requestContext": {
+                "requestId": "request-id",
+                "functionArn": "arn:aws:lambda:us-east-1:123456789012:function:projector",
+                "condition": "RetryAttemptsExhausted",
+                "approximateInvokeCount": 4,
+            },
+            "responseContext": {
+                "statusCode": 200,
+                "executedVersion": "$LATEST",
+                "functionError": "Unhandled",
+            },
+            "payload": json.dumps({"Records": [record]}),
+        }
+        self.assertEqual(replay.records_from_failure(document), [record])
 
     def test_replay_reports_failure_without_exposing_record(self):
         record = stream_record(message_item(), "654")

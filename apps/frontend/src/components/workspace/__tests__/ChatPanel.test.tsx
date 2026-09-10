@@ -2,6 +2,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render } from "@testing-library/react";
 import { DEFAULT_AGENT_SENTINEL, MESSAGES_PANEL_ID } from "../panelRegistry";
+import {
+  _resetFocusComposerRequestForTests,
+  deferFocusComposerRequest,
+  releaseFocusComposerRequest,
+  requestFocusComposer,
+} from "@/lib/focusComposerRequest";
 
 let defaultId: string | undefined;
 let selectAgentDm = vi.fn<(id: string) => Promise<void>>();
@@ -35,6 +41,7 @@ function makeProps(agentId?: string) {
 }
 
 beforeEach(() => {
+  _resetFocusComposerRequestForTests();
   defaultId = undefined;
   selectAgentDm = vi.fn().mockResolvedValue(undefined);
 });
@@ -87,6 +94,17 @@ describe("ChatPanel", () => {
     act(() => props.api.updateParameters({ agentId: undefined }));
     act(() => props.api.updateParameters({ agentId: "agent-friday" }));
     expect(selectAgentDm).toHaveBeenCalledTimes(2);
+  });
+
+  it("discards a deferred focus request when room selection fails", async () => {
+    selectAgentDm.mockRejectedValueOnce(new Error("Unavailable"));
+    requestFocusComposer("agent-friday", "Do not replay later");
+    deferFocusComposerRequest("agent-friday");
+    render(<ChatPanel {...makeProps("agent-friday")} />);
+
+    await act(async () => {});
+
+    expect(releaseFocusComposerRequest("agent-friday")).toBe(false);
   });
 
   it("does not replay a newer selection after an older request fails", async () => {

@@ -31,23 +31,24 @@ export function deferFocusComposerRequest(agentId: string): void {
 
 export function releaseFocusComposerRequest(agentId: string): boolean {
   if (!_pending || _pending.agentId !== agentId) return false;
-  if (Date.now() - _pending.requestedAt > PENDING_TTL_MS) {
-    _pending = null;
-    return false;
-  }
+  _pending.requestedAt = Date.now();
   _pending.deferred = false;
   return true;
+}
+
+export function cancelFocusComposerRequest(agentId: string): void {
+  if (_pending?.agentId === agentId) _pending = null;
 }
 
 /** Consume the pending request for this agent. Non-null exactly once per
  *  request, and only for the requested agent within the expiry window. */
 export function consumeFocusComposerRequest(agentId: string): FocusComposerRequest | null {
   if (!_pending) return null;
+  if (_pending.deferred) return null;
   if (Date.now() - _pending.requestedAt > PENDING_TTL_MS) {
     _pending = null;
     return null;
   }
-  if (_pending.deferred) return null;
   if (_pending.agentId !== agentId) return null;
   const { draft } = _pending;
   _pending = null;

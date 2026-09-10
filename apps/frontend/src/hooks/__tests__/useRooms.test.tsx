@@ -387,6 +387,36 @@ describe("useRooms canonical reconciliation", () => {
     expect(result.current.messages.at(-1)).toMatchObject({ text: request.text, mentions: request.mentions });
   });
 
+  it("does not merge a late send response into a newly selected room", async () => {
+    const otherRoom = { ...room, roomId: "11111111-1111-4111-8111-111111111122", name: "General" };
+    let resolveSend!: (message: CanonicalRoomMessage) => void;
+    messaging.listRooms.mockResolvedValue({ rooms: [room, otherRoom] });
+    messaging.getRoom.mockImplementation(async (roomId: string) => roomId === otherRoom.roomId ? otherRoom : room);
+    messaging.sendMessage.mockImplementationOnce(() => new Promise((resolve) => { resolveSend = resolve; }));
+    const { result } = renderHook(() => useRooms(), { wrapper });
+    await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(room.roomId));
+    const request = {
+      clientMessageId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab",
+      text: "Room A only",
+      mentions: [],
+      replyToMessageId: null,
+      threadRootMessageId: null,
+    };
+
+    let sending!: Promise<CanonicalRoomMessage>;
+    act(() => { sending = result.current.sendMessage(request); });
+    act(() => result.current.selectRoom(otherRoom.roomId));
+    await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(otherRoom.roomId));
+    await act(async () => {
+      resolveSend({ ...firstMessage, messageId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", messageSeq: 2, text: request.text });
+      await sending;
+    });
+
+    expect(result.current.messages).toEqual([]);
+    expect(result.current.optimisticMessages).toEqual([]);
+    expect(result.current.sendState(request.clientMessageId)).toBe("idle");
+  });
+
   it("clears a run stuck on 'running' by reconciling against the server on reconnect", async () => {
     // `room.run.frame` (carrying the terminal `run_ended`) is ephemeral -- a
     // frame dropped across a reconnect leaves `runs` stuck at "running"

@@ -8,7 +8,7 @@ import { useAgents } from "@/hooks/useAgents";
 import { useDockPanelParams } from "./useDockPanelParams";
 import { DEFAULT_AGENT_SENTINEL } from "../panelRegistry";
 import { syncMessagesPanelAgent } from "../workspaceController";
-import { releaseFocusComposerRequest } from "@/lib/focusComposerRequest";
+import { cancelFocusComposerRequest, releaseFocusComposerRequest } from "@/lib/focusComposerRequest";
 
 interface ChatPanelParams {
   agentId?: string;
@@ -40,9 +40,14 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
     lastRequested.current = requested;
     const request = ++navigationRequest.current;
     void selectAgentDm(requested).then((roomId) => {
-      if (roomId && navigationRequest.current === request) setFocusDestination({ agentId: requested, roomId });
+      if (navigationRequest.current !== request) return;
+      if (roomId) setFocusDestination({ agentId: requested, roomId });
+      else cancelFocusComposerRequest(requested);
     }).catch(() => {
-      if (lastRequested.current === requested) lastRequested.current = null;
+      if (navigationRequest.current === request) {
+        cancelFocusComposerRequest(requested);
+        lastRequested.current = null;
+      }
     });
   }, [requested, selectAgentDm]);
 

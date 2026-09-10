@@ -323,13 +323,19 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
 
   const sendMessage = useCallback(async (request: CreateMessageRequest) => {
     if (!activeRoomId) throw new Error("No room selected.");
+    const roomId = activeRoomId;
+    const sendGeneration = generation.current;
     requests.current.set(request.clientMessageId, request);
     setAttempts((current) => new Map(current).set(request.clientMessageId, "sending"));
     setOptimistic((current) => current.some((message) => message.clientMessageId === request.clientMessageId)
       ? current
-      : [...current, { ...request, roomId: activeRoomId, createdAt: new Date().toISOString() }]);
+      : [...current, { ...request, roomId, createdAt: new Date().toISOString() }]);
     try {
-      const canonical = await messaging.sendMessage(activeRoomId, request);
+      const canonical = await messaging.sendMessage(roomId, request);
+      if (generation.current !== sendGeneration) {
+        void mutateRooms();
+        return canonical;
+      }
       const merged = mergeCanonicalMessages(messagesRef.current, [canonical]);
       messagesRef.current = merged;
       setMessages(merged);
@@ -338,8 +344,10 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
       void mutateRooms();
       return canonical;
     } catch (error) {
-      setOptimistic((current) => current.filter((message) => message.clientMessageId !== request.clientMessageId));
-      setAttempts((current) => new Map(current).set(request.clientMessageId, error instanceof ApiError ? "rejected" : "uncertain"));
+      if (generation.current === sendGeneration) {
+        setOptimistic((current) => current.filter((message) => message.clientMessageId !== request.clientMessageId));
+        setAttempts((current) => new Map(current).set(request.clientMessageId, error instanceof ApiError ? "rejected" : "uncertain"));
+      }
       throw error;
     }
   }, [activeRoomId, messaging, mutateRooms]);

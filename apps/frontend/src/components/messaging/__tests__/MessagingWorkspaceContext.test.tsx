@@ -59,6 +59,7 @@ beforeEach(() => {
   state.activeRoom = room;
   state.directoryError = undefined;
   state.directoryLoading = false;
+  state.accessRemoved = false;
   renderComposer = false;
   _resetFocusComposerRequestForTests();
   mocks.rooms.mockReturnValue(state);
@@ -102,6 +103,15 @@ it("surfaces directory hydration failures through the existing retry control whi
   expect(directory.rooms[0]).toMatchObject({ roomId: room.roomId, participants: [expect.objectContaining({ displayName: "Friday" })] });
   act(() => directory.onRetry?.());
   expect(state.refreshRooms).toHaveBeenCalledOnce();
+});
+
+it("keeps the directory usable when only the active room loses access", () => {
+  state.accessRemoved = true;
+  compose();
+  expect(directory.state).toBe("ready");
+  expect(panel.state).toBe("access-removed");
+  act(() => directory.onSelectRoom("room-1"));
+  expect(state.selectRoom).toHaveBeenCalledWith("room-1");
 });
 
 it("opens the selected hydrated room and opens creation without selecting a room", async () => {
@@ -168,4 +178,32 @@ it("clears the old room's drafts, mentions, and attempt IDs on room change", () 
   expect(panel.threadComposer!.composer.text).toBe("");
   expect(panel.threadComposer!.composer.selectedMentions).toEqual([]);
   expect(panel.threadComposer!.composer.clientMessageId).not.toBe(oldThreadId);
+});
+
+it("does not clear the new room's draft when the old room's send finishes", async () => {
+  let resolveSend!: () => void;
+  state.sendMessage.mockImplementationOnce(() => new Promise<void>((resolve) => { resolveSend = resolve; }));
+  const view = compose();
+  const request = {
+    clientMessageId: panel.composer.clientMessageId,
+    text: "Send from A",
+    mentions: [],
+    replyToMessageId: null,
+    threadRootMessageId: null,
+  };
+  let sending!: Promise<void>;
+  act(() => { sending = Promise.resolve(panel.composer.onSubmit(request)); });
+
+  state.activeRoomId = "room-2";
+  state.activeRoom = { ...room, roomId: "room-2" };
+  view.rerender(<MessagingWorkspaceProvider initialAgentId="agent-friday" subscribeToRoom>
+    <MessagingDirectory /><MessagingConversation />
+  </MessagingWorkspaceProvider>);
+  act(() => panel.composer.onTextChange("Keep this draft in B"));
+  await act(async () => {
+    resolveSend();
+    await sending;
+  });
+
+  expect(panel.composer.text).toBe("Keep this draft in B");
 });

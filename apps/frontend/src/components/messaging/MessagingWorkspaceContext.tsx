@@ -109,6 +109,10 @@ export function MessagingWorkspaceProvider({
   const [threadDraft, setThreadDraft] = useState("");
   const [threadMentions, setThreadMentions] = useState<MemberRef[]>([]);
   const [threadClientMessageId, setThreadClientMessageId] = useState(() => crypto.randomUUID());
+  const clientMessageIdRef = useRef(clientMessageId);
+  const threadClientMessageIdRef = useRef(threadClientMessageId);
+  clientMessageIdRef.current = clientMessageId;
+  threadClientMessageIdRef.current = threadClientMessageId;
   const [creationBusy, setCreationBusy] = useState(false);
   const [creationError, setCreationError] = useState<string>();
   const [draftRoomId, setDraftRoomId] = useState(rooms.activeRoomId);
@@ -179,10 +183,12 @@ export function MessagingWorkspaceProvider({
   const send = useCallback(async (request: CreateMessageRequest, thread = false) => {
     await sendRoomMessage(request);
     if (thread) {
+      if (threadClientMessageIdRef.current !== request.clientMessageId) return;
       setThreadDraft("");
       setThreadMentions([]);
       setThreadClientMessageId(crypto.randomUUID());
     } else {
+      if (clientMessageIdRef.current !== request.clientMessageId) return;
       setDraft("");
       setMentions([]);
       setClientMessageId(crypto.randomUUID());
@@ -244,7 +250,7 @@ export function MessagingWorkspaceProvider({
     await rooms.upsertMember({ kind: "agent", id: agentId, role: "member", listenMode });
   }
 
-  const directoryState = rooms.roomsLoading || rooms.directoryLoading ? "loading" : rooms.roomsError || rooms.directoryError ? "error" : rooms.accessRemoved ? "access-removed" : "ready";
+  const directoryState = rooms.roomsLoading || rooms.directoryLoading ? "loading" : rooms.roomsError || rooms.directoryError ? "error" : "ready";
   const roomState = rooms.roomLoading ? "loading" : rooms.accessRemoved ? "access-removed" : rooms.roomError ? "unavailable" : rooms.liveConnected ? "ready" : "reconnecting";
   const pending = rooms.optimisticMessages.filter((message) => message.clientMessageId === clientMessageId || message.clientMessageId === threadClientMessageId);
 

@@ -1453,8 +1453,8 @@ export class ServiceStack extends cdk.Stack {
       // the binary and the App Store listing), and the actual trust anchor is
       // the certificate directory below.
       APPLE_IAP_BUNDLE_ID: "company.thelightbulb.mobile",
-      // Must match the product created in App Store Connect EXACTLY, and the
-      // SKU the app requests (EXPO_PUBLIC_APPLE_IAP_PRODUCT_ID in eas.json). A
+      // Retained as the allowlist for historical server notifications until
+      // App Store Connect proves no subscription can still be live. A
       // transaction naming anything else is refused rather than granted.
       APPLE_IAP_PRODUCT_ID: "company.thelightbulb.mobile.plan.monthly",
       // Numeric App Store app id — the same ascAppId eas.json submits against.

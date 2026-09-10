@@ -2,10 +2,9 @@
 
 Two routes with deliberately different auth models:
 
-- ``POST /billing/apple/link`` is called by the signed-in app right after
-  StoreKit reports a purchase. Clerk-authenticated; the owner comes from the
-  token, NEVER from the body, so one user cannot link a purchase onto another
-  account by editing the request.
+- ``POST /billing/apple/link`` is a Clerk-authenticated tombstone for retired
+  mobile purchase clients. It always returns 410 Gone and never verifies or
+  records the submitted transaction.
 
 - ``POST /webhooks/apple-iap`` is called by Apple, which cannot present a Clerk
   token. Its authentication IS the JWS signature on the payload — verified
@@ -23,7 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from core.auth import AuthContext, get_current_user, is_org_owner_id, require_org_admin, resolve_owner_id
 from core.repositories import billing_repo
-from core.services.apple_iap import AppleIapError, AppleIapNotConfigured, apply_notification, link_purchase
+from core.services import apple_iap as apple_iap_service
 from core.services.billing_service import BillingService, BillingServiceError, create_mobile_web_checkout
 from core.services.provision_gate import is_trial_blocked
 
@@ -34,45 +33,13 @@ router = APIRouter()
 
 @router.post(
     "/billing/apple/link",
-    summary="Link a completed Apple IAP purchase to the signed-in owner",
-    description=(
-        "Verifies a StoreKit 2 signed transaction against Apple's root CA and, "
-        "on success, records the subscription on the caller's billing account. "
-        "Idempotent — replaying the same transaction is safe."
-    ),
+    summary="Retired Apple IAP purchase-link endpoint",
+    description="Always returns 410 Gone. New StoreKit purchases are no longer accepted.",
 )
 async def link_apple_purchase(
-    payload: dict,
-    auth: AuthContext = Depends(get_current_user),
+    _auth: AuthContext = Depends(get_current_user),
 ):
-    # AuthContext carries user_id / org_id, NOT owner_id — the container and
-    # workspace owner is DERIVED (org_id in org context, else user_id), which is
-    # what resolve_owner_id does. Reaching for `auth.owner_id` raises
-    # AttributeError and 500s the endpoint before verification even starts;
-    # every authenticated Apple billing route had that bug.
-    owner_id = resolve_owner_id(auth)
-    signed_transaction = (payload or {}).get("signed_transaction")
-    if not isinstance(signed_transaction, str) or not signed_transaction:
-        raise HTTPException(status_code=400, detail="signed_transaction is required")
-
-    try:
-        subscription = await link_purchase(
-            owner_id=owner_id,
-            signed_transaction=signed_transaction,
-        )
-    except AppleIapNotConfigured as e:
-        # The Paid Apps Agreement isn't active / certs aren't wired. A 503 says
-        # "not now", which the app can render honestly, rather than a 500.
-        raise HTTPException(status_code=503, detail=str(e)) from e
-    except AppleIapError as e:
-        logger.warning("apple_iap.link_rejected owner_id=%s: %s", owner_id, e)
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-    return {
-        "status": subscription.status,
-        "product_id": subscription.product_id,
-        "expires_at": subscription.expires_at_ms,
-    }
+    raise HTTPException(status_code=410, detail="Apple in-app purchases are no longer available")
 
 
 @router.post(
@@ -214,10 +181,10 @@ async def apple_notifications(request: Request):
     # key on are only trustworthy once the payload is verified. See that
     # function for why reading them from the envelope would be exploitable.
     try:
-        result = await apply_notification(signed_payload)
-    except AppleIapNotConfigured as e:
+        result = await apple_iap_service.apply_notification(signed_payload)
+    except apple_iap_service.AppleIapNotConfigured as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
-    except AppleIapError as e:
+    except apple_iap_service.AppleIapError as e:
         # 400 makes Apple retry. A verification failure here is either an
         # attack (retrying costs us nothing) or a misconfiguration on our side
         # that we want retried once fixed — losing a renewal silently would

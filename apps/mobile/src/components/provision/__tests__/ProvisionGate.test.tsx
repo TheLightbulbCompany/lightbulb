@@ -4,27 +4,10 @@ import { Text } from "react-native";
 const mockRefetch = jest.fn();
 const mockUseContainerStatus = jest.fn();
 
-// `organization` decides whether this poller's container is a workspace or a
-// personal Apple purchase. Workspace subscriptions use Stripe web billing, so
-// the org case must never reach this StoreKit paywall — see isOrgOwner.
+// `organization` decides whether this poller's container is personal or an
+// organization workspace. Org billing stays on the existing admin handoff.
 let mockOrganization: { id: string } | null = null;
 let mockOrgLoaded = true;
-
-// IAP forced ON so the paywall branch is genuinely reachable. Without this the
-// org tests below would pass merely because the feature is off — proving
-// nothing about the guard they exist to pin.
-let mockIapAvailable = false;
-
-jest.mock("../../../lib/appleIap", () => ({
-  // Getter, not a literal: the 3.1.3(f) fallback tests need IAP OFF while the
-  // org-fence tests need it ON, and the guard is only meaningful when on.
-  get APPLE_IAP_AVAILABLE() {
-    return mockIapAvailable;
-  },
-  APPLE_SUBSCRIPTION_SKU: "company.thelightbulb.mobile.plan.monthly",
-  linkApplePurchase: jest.fn(),
-  createWebCheckout: jest.fn(),
-}));
 
 jest.mock("../../billing/PaywallScreen", () => ({
   PaywallScreen: () => {
@@ -86,7 +69,6 @@ describe("ProvisionGate provider sign-in routing", () => {
     mockUseContainerStatus.mockReset();
     mockOrganization = null;
     mockOrgLoaded = true;
-    mockIapAvailable = false;
   });
 
   it("renders ChatGPTConnectScreen for blocked.code === oauth_required, wired to refetch", async () => {
@@ -351,7 +333,6 @@ describe("ProvisionGate container-status context", () => {
     mockUseContainerStatus.mockReset();
     mockOrganization = null;
     mockOrgLoaded = true;
-    mockIapAvailable = false;
   });
 
   it("provides the polled ready status (with onboarded) to descendants", async () => {
@@ -428,7 +409,6 @@ describe("ProvisionGate container-error interstitial", () => {
     mockUseContainerStatus.mockReset();
     mockOrganization = null;
     mockOrgLoaded = true;
-    mockIapAvailable = false;
   });
 
   it("renders a blocking 'Setup failed' interstitial with Retry + Sign out for status.kind === 'error'", async () => {
@@ -496,7 +476,6 @@ describe("ProvisionGate teams-degraded affordance (non-blocking)", () => {
     mockUseContainerStatus.mockReset();
     mockOrganization = null;
     mockOrgLoaded = true;
-    mockIapAvailable = false;
   });
 
   it("renders the Teams affordance OVER the live children (chat not blocked) when ready + teams_status failed", async () => {
@@ -560,7 +539,6 @@ describe("ProvisionGate first-run failure affordance (non-blocking)", () => {
     mockUseContainerStatus.mockReset();
     mockOrganization = null;
     mockOrgLoaded = true;
-    mockIapAvailable = false;
   });
 
   const renderReady = async (extra: Record<string, unknown>) => {
@@ -636,14 +614,8 @@ describe("ProvisionGate first-run failure affordance (non-blocking)", () => {
   });
 });
 
-// PR-review finding: the paywall is a PERSONAL Apple purchase. Workspace
-// subscriptions use Stripe web billing. Routing an org into it takes real
-// money through StoreKit for a plan that cannot be recorded, so the backend
-// must reject it before the customer is charged without an entitlement.
-//
-// Gated on OWNER TYPE, not gate code — payment_past_due, subscription_required,
-// credits_required and signup_required all fire for orgs too, so a code
-// allowlist would leak every one of them.
+// Personal owners get the U.S.-storefront handoff to Workspace web Checkout.
+// Organization workspaces keep the existing admin-aware web settings handoff.
 describe("ProvisionGate paywall routing is personal-owner only", () => {
   const purchaseGate = {
     kind: "blocked" as const,
@@ -661,7 +633,6 @@ describe("ProvisionGate paywall routing is personal-owner only", () => {
     ["subscription_required"],
     ["credits_required"],
   ])("never shows the personal paywall to an org owner on a %s gate", async (code) => {
-    mockIapAvailable = true;
     mockOrganization = { id: "org_abc" };
     mockUseContainerStatus.mockReturnValue({
       status: { ...purchaseGate, code },
@@ -679,7 +650,6 @@ describe("ProvisionGate paywall routing is personal-owner only", () => {
 
   it("still shows the paywall to a personal owner", async () => {
     mockOrganization = null;
-    mockIapAvailable = true;
     mockUseContainerStatus.mockReturnValue({
       status: { ...purchaseGate, code: "trial_daily_cap", adminOnly: false },
       refetch: mockRefetch,
@@ -691,17 +661,16 @@ describe("ProvisionGate paywall routing is personal-owner only", () => {
       </ProvisionGate>,
     );
 
-    // Same gate, same feature flag — only the owner type differs. This is the
-    // control that proves the org cases above are blocked BY THE GUARD.
+    // Same gate — only the owner type differs. This is the control that proves
+    // the org cases above are blocked by the owner guard.
     expect(screen.getByText("MOCK_PAYWALL")).toBeTruthy();
   });
 
 // While Clerk is still resolving, `organization` is null — indistinguishable
 // from a personal owner. If /container/status resolves a purchase gate first,
-// an org admin would see the personal paywall and could complete a REAL charge
-// the backend then refuses to link. Unknown must read as not-personal.
+// an org admin would briefly see the personal checkout screen. Unknown must
+// read as not-personal.
 it("does not show the paywall while Clerk has not resolved the owner type", async () => {
-  mockIapAvailable = true;
   mockOrgLoaded = false;
   mockOrganization = null;
   mockUseContainerStatus.mockReturnValue({

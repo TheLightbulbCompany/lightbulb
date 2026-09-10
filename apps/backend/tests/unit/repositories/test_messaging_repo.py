@@ -238,7 +238,8 @@ async def test_gsi_is_discovery_only_and_base_membership_is_strong(table):
     assert [f["meta"]["roomId"] for f in found] == [room_id]
     assert await repo.list_rooms_for_member("org_other", "human", USER_A) == []
     # A stale GSI entry can never pass the base read.
-    await repo.remove_member(room_id=room_id, owner_id=OWNER, kind="human", member_id=USER_A)
+    meta = await repo.get_room(room_id)
+    await repo.remove_member(meta=meta, kind="human", member_id=USER_A, new_delivery_key="k2")
     assert await repo.get_member(room_id, "human", USER_A) is None
 
 
@@ -262,7 +263,11 @@ async def test_human_removal_rotates_key_and_writes_live_rows_transactionally(ta
         },
     ]
     new_meta = await repo.remove_member(
-        room_id=room_id, owner_id=OWNER, kind="human", member_id=USER_B, live_events=live
+        meta=meta,
+        kind="human",
+        member_id=USER_B,
+        new_delivery_key="00000000-0000-4000-8000-000000000099",
+        live_events=live,
     )
     assert new_meta["deliveryKey"] != old and new_meta["revision"] == 2
     assert (await repo.get_room(room_id))["deliveryKey"] == new_meta["deliveryKey"]
@@ -273,8 +278,11 @@ async def test_human_removal_rotates_key_and_writes_live_rows_transactionally(ta
     assert f"MEMBER#human#{USER_B}" not in rows
     # A second removal of the same member fails closed (nothing to delete) and the key stays.
     with pytest.raises(Exception):
-        await repo.remove_member(room_id=room_id, owner_id=OWNER, kind="human", member_id=USER_B)
+        await repo.remove_member(meta=new_meta, kind="human", member_id=USER_B, new_delivery_key="again")
     assert (await repo.get_room(room_id))["deliveryKey"] == new_meta["deliveryKey"]
+    # A stale META (old revision) is refused, so a notice built for the wrong revision never lands.
+    with pytest.raises(Exception):
+        await repo.remove_member(meta=meta, kind="agent", member_id=FRIDAY)
 
 
 @pytest.mark.asyncio
@@ -293,7 +301,7 @@ async def test_agent_added_later_starts_its_cursor_at_current_seq(table):
     assert (await repo.get_room(room_id))["revision"] == 2
     # Agent removal drops its cursor and does NOT rotate the room key.
     before = (await repo.get_room(room_id))["deliveryKey"]
-    await repo.remove_member(room_id=room_id, owner_id=OWNER, kind="agent", member_id=GAUGE)
+    await repo.remove_member(meta=await repo.get_room(room_id), kind="agent", member_id=GAUGE)
     assert await repo.get_agent_delivery(room_id, GAUGE) is None
     assert (await repo.get_room(room_id))["deliveryKey"] == before
 

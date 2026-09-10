@@ -137,7 +137,11 @@ async def _run(
         patch("core.containers.get_ecs_manager", return_value=ecs),
         patch("core.containers.get_gateway_pool", return_value=pool),
         patch("core.containers.config.read_openclaw_config_from_efs", new=AsyncMock(return_value=config)),
-        patch("routers.websocket_chat.build_chat_session_key", return_value="agent:friday-uuid:member_1"),
+        patch.object(
+            bootstrap_dispatcher,
+            "_bootstrap_session_key",
+            return_value="agent:friday-uuid:member_1",
+        ),
         patch.object(bootstrap_dispatcher, "_gateway_is_ready", new=AsyncMock(return_value=gateway_ready)),
     ):
         if pass_onboarding:
@@ -983,7 +987,7 @@ async def test_kickoff_message_leads_with_the_users_brief_when_present():
 @pytest.mark.asyncio
 async def test_session_key_built_with_submitting_member_not_row_pk():
     onboarding = _onboarding(user_id="creator_1", onboarding_submitted_by="member_not_creator")
-    with patch("routers.websocket_chat.build_chat_session_key") as build_key:
+    with patch.object(bootstrap_dispatcher, "_bootstrap_session_key") as build_key:
         build_key.return_value = "agent:friday-uuid:member_not_creator"
         repo = _fake_repo(onboarding=onboarding)
         ecs = _fake_ecs_manager()
@@ -996,7 +1000,7 @@ async def test_session_key_built_with_submitting_member_not_row_pk():
             patch.object(bootstrap_dispatcher, "_gateway_is_ready", new=AsyncMock(return_value=True)),
         ):
             await bootstrap_dispatcher.maybe_dispatch_bootstrap("user_owner", onboarding=onboarding)
-    build_key.assert_called_once_with("friday-uuid", "member_not_creator", None)
+    build_key.assert_called_once_with("friday-uuid", "member_not_creator")
 
 
 @pytest.mark.asyncio

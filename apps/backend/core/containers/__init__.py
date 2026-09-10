@@ -11,7 +11,6 @@ import logging
 from typing import Optional
 
 from core.gateway.connection_pool import GatewayConnectionPool
-from core.services.management_api_client import ManagementApiClient
 
 from core.containers.ecs_manager import EcsManager, EcsManagerError
 from core.containers.workspace import Workspace, WorkspaceError, get_workspace
@@ -34,9 +33,7 @@ def get_gateway_pool() -> GatewayConnectionPool:
     """Get the gateway connection pool singleton (GatewayConnectionPool)."""
     global _gateway_pool
     if _gateway_pool is None:
-        _gateway_pool = GatewayConnectionPool(
-            management_api=ManagementApiClient(),
-        )
+        _gateway_pool = GatewayConnectionPool()
     return _gateway_pool
 
 

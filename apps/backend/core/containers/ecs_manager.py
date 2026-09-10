@@ -4416,12 +4416,6 @@ class EcsManager:
         if deployed_tag is None:
             deployed_tag = await self._deployed_image_tag(owner_id)
 
-        # Durable human broker bindings are backend-owned. Reprovision must
-        # reproduce them from the container row, never from browser input.
-        from core.services.human_broker_provisioning import provisioned_trusted_broker_profiles
-
-        trusted_broker_profiles = await provisioned_trusted_broker_profiles(owner_id)
-
         config_path = Path(settings.EFS_MOUNT_PATH) / owner_id / "openclaw.json"
         await write_openclaw_config(
             config_path=config_path,
@@ -4438,16 +4432,7 @@ class EcsManager:
             channel_accounts=channel_accounts,
             channel_bindings=channel_bindings,
             deployed_tag=deployed_tag,
-            trusted_broker_profiles=trusted_broker_profiles,
         )
-
-        # The full config is assembled before its file lock is acquired. A
-        # human provision/revoke can therefore publish a newer binding while
-        # this snapshot waits. Re-read under the shared config writer after
-        # the full replacement so the newer durable state always wins.
-        from core.services.human_broker_provisioning import reconcile_trusted_broker_profiles
-
-        await reconcile_trusted_broker_profiles(owner_id)
 
         # Seed Friday's IDENTITY/SOUL/USER/BOOTSTRAP files on EFS so they're
         # present before the container boots. Best-effort — failure here
@@ -4688,26 +4673,19 @@ class EcsManager:
             )
 
         from core.services.desktop_pair import EfsWorkspaceAdapter
-        from core.services.human_broker_provisioning import (
-            provisioned_human_pair_entries,
-            reconcile_provisioned_human_pairs,
-        )
 
-        human_entries = await provisioned_human_pair_entries(user_id, gateway_token)
         device_ids = [
             node_identity["device_id"],
             operator_entry["deviceId"],
             *(entry["deviceId"] for entry in paperclip_entries),
-            *(entry["deviceId"] for entry in human_entries),
         ]
         if len(device_ids) != len(set(device_ids)):
-            raise RuntimeError("human/device trust identities collide")
+            raise RuntimeError("managed device trust identities collide")
 
         desired_entries = [
             _build_node_paired_entry(node_identity["device_id"], node_identity["public_key_b64"]),
             operator_entry,
             *paperclip_entries,
-            *human_entries,
         ]
         old_operator_id = (existing_container or {}).get("operator_device_id")
 
@@ -4724,7 +4702,7 @@ class EcsManager:
                 if current is not None and (
                     not isinstance(current, dict) or current.get("publicKey") != entry["publicKey"]
                 ):
-                    raise RuntimeError("human/device trust identities collide")
+                    raise RuntimeError("managed device trust identities collide")
                 wanted = {**current, **entry} if isinstance(current, dict) else entry
                 if isinstance(current, dict) and entry.get("role") == "node":
                     # A stable node key keeps its gateway-issued role token.
@@ -4742,7 +4720,3 @@ class EcsManager:
             gateway_ws_url=settings.WS_GATEWAY_URL,
         )
         await adapter.mutate_paired_json(_merge_managed_devices)
-        # The managed-entry snapshot was loaded before the file lock. Re-read
-        # human state after the merge so a concurrent revoke/rotate cannot be
-        # resurrected by this provision-time reconciliation.
-        await reconcile_provisioned_human_pairs(user_id, gateway_token)

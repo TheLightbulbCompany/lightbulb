@@ -26,6 +26,7 @@ Only ``WORK#`` and ``LIVE#`` rows carry ``expiresAt`` (7 days). Every read here 
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import time
 import uuid
@@ -151,9 +152,7 @@ def deterministic_room_id(owner_id: str, user_id: str, client_room_id: str) -> s
 
 
 def request_hash(*parts: Any) -> str:
-    """SHA-256 over the canonical request fields (JSON-ish, order-preserving)."""
-    import json
-
+    """SHA-256 over canonical JSON request fields."""
     return _sha256(json.dumps(list(parts), sort_keys=True, separators=(",", ":"), default=str))
 
 
@@ -162,13 +161,24 @@ def _expires_at() -> int:
 
 
 def _plain(value: Any) -> Any:
-    """Decimal -> int for everything we store (we only ever store integers)."""
+    """Convert DynamoDB ``Decimal`` values back to ordinary JSON numbers."""
     if isinstance(value, Decimal):
-        return int(value)
+        return int(value) if value == value.to_integral_value() else float(value)
     if isinstance(value, dict):
         return {k: _plain(v) for k, v in value.items()}
     if isinstance(value, list):
         return [_plain(v) for v in value]
+    return value
+
+
+def _ddb_safe(value: Any) -> Any:
+    """Convert JSON-compatible floats before passing values to DynamoDB."""
+    if isinstance(value, float):
+        return Decimal(str(value))
+    if isinstance(value, dict):
+        return {k: _ddb_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_ddb_safe(v) for v in value]
     return value
 
 
@@ -265,6 +275,18 @@ async def get_message(room_id: str, seq: int) -> dict | None:
     return await _get(room_pk(room_id), msg_sk(seq))
 
 
+async def get_message_by_id(room_id: str, message_id: str) -> dict | None:
+    """Strongly find a message by canonical ID inside one room.
+
+    ponytail: founder rooms are small; add a message-id index only after a
+    measured room makes this partition scan material.
+    """
+    for row in await _query(room_pk(room_id), begins_with="MSG#"):
+        if row.get("messageId") == message_id:
+            return row
+    return None
+
+
 async def get_agent_delivery(room_id: str, agent_id: str) -> dict | None:
     return await _get(room_pk(room_id), delivery_sk(agent_id))
 
@@ -303,6 +325,8 @@ async def list_messages_between(room_id: str, from_seq: int, through_seq: int) -
 
 async def list_messages_before(room_id: str, before_seq: int, limit: int) -> list[dict]:
     """The ``limit`` newest rows with ``seq < before_seq``, returned oldest→newest."""
+    if before_seq <= 1 or limit <= 0:
+        return []
     rows = await _query(room_pk(room_id), between=(msg_sk(1), msg_sk(before_seq - 1)), ascending=False, limit=limit)
     return list(reversed(rows))
 
@@ -710,24 +734,30 @@ def _live_item(
 
 
 async def remove_member(
-    *, room_id: str, owner_id: str, kind: str, member_id: str, live_events: list[dict] | None = None
+    *,
+    meta: dict,
+    kind: str,
+    member_id: str,
+    new_delivery_key: str | None = None,
+    live_events: list[dict] | None = None,
 ) -> dict:
-    """Delete one membership; bump revision. A HUMAN removal also rotates
-    ``deliveryKey`` and writes the supplied ``LIVE`` rows (``{userId,
-    channelKey, event}`` per affected human — built by the service from the
-    frozen registry) in the same transaction. An agent removal drops its
-    delivery cursor. Returns the new META (with the rotated key)."""
-    meta = await get_room(room_id)
-    if meta is None:
-        raise RoomNotFound(room_id)
+    """Delete one membership; bump revision, conditioned on the ``meta`` the
+    caller strongly read (so the notices it built for ``revision + 1`` are the
+    ones that land). A HUMAN removal must supply ``new_delivery_key`` (the
+    rotation) and the ``LIVE`` rows (``{userId, channelKey, event}`` per
+    affected human) to write in the same transaction. An agent removal drops
+    its delivery cursor. Returns the new META."""
+    room_id = meta["roomId"]
+    owner_id = meta["ownerId"]
+    if kind == "human" and not new_delivery_key:
+        raise MessagingRepoError("human removal requires a rotated delivery key")
     now = utc_now_iso()
     table_name = _table().name
     revision = int(meta["revision"]) + 1
-    new_key = str(uuid.uuid4()) if kind == "human" else meta["deliveryKey"]
     update = "SET revision = :rev, updatedAt = :now" + (", deliveryKey = :key" if kind == "human" else "")
     values: dict = {":rev": revision, ":expected": revision - 1, ":now": now}
     if kind == "human":
-        values[":key"] = new_key
+        values[":key"] = new_delivery_key
     items: list[dict] = [
         {
             "Update": {
@@ -753,7 +783,7 @@ async def remove_member(
     for live in live_events or []:
         items.append(_live_item(table_name, room_id, owner_id, live["userId"], live.get("channelKey"), live["event"]))
     await _transact(items)
-    return {**meta, "revision": revision, "updatedAt": now, "deliveryKey": new_key}
+    return {**meta, "revision": revision, "updatedAt": now, "deliveryKey": new_delivery_key or meta["deliveryKey"]}
 
 
 async def patch_room_name(room_id: str, name: str | None) -> dict:
@@ -982,7 +1012,7 @@ async def create_operation(
         "ownerId": owner_id,
         "requesterUserId": requester_user_id,
         "method": method,
-        "params": params,
+        "params": _ddb_safe(params),
         "state": "queued",
         "result": None,
         "error": None,
@@ -1044,6 +1074,29 @@ async def claim_operation(owner_id: str, operation_id: str, *, lease_token: str,
         raise
 
 
+async def release_operation(owner_id: str, operation_id: str, *, lease_token: str) -> bool:
+    """Return a transiently blocked operation to ``queued`` for SQS retry."""
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"pk": owner_pk(owner_id), "sk": operation_sk(operation_id)},
+            UpdateExpression="SET #state = :queued, updatedAt = :now REMOVE leaseToken, leaseUntil",
+            ConditionExpression="#state = :running AND leaseToken = :token",
+            ExpressionAttributeNames={"#state": "state"},
+            ExpressionAttributeValues={
+                ":queued": "queued",
+                ":running": "running",
+                ":token": lease_token,
+                ":now": utc_now_iso(),
+            },
+        )
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+
+
 async def complete_operation(
     owner_id: str, operation_id: str, *, lease_token: str, state: str, result: Any, error: dict | None
 ) -> dict | None:
@@ -1057,8 +1110,8 @@ async def complete_operation(
             ExpressionAttributeNames={"#state": "state", "#result": "result", "#error": "error"},
             ExpressionAttributeValues={
                 ":state": state,
-                ":result": result,
-                ":error": error,
+                ":result": _ddb_safe(result),
+                ":error": _ddb_safe(error),
                 ":now": utc_now_iso(),
                 ":running": "running",
                 ":token": lease_token,

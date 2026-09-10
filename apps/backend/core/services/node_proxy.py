@@ -56,6 +56,23 @@ _patched_sessions: dict[str, str] = {}
 _LEGACY_DESKTOP_SUFFIXES = (" | Lightbulb Desktop", " | Lightbulb AI Desktop", " | Isol8 Desktop")
 
 
+async def _publish_node_invalidation(owner_id: str, user_id: str) -> None:
+    from core.services.live_events import get_live_event_publisher
+    from core.services.messaging import make_live_event
+
+    try:
+        await get_live_event_publisher().publish_user(
+            owner_id,
+            user_id,
+            make_live_event(
+                "runtime.resource.invalidated",
+                {"resource": "health", "resourceId": "desktop-node"},
+            ),
+        )
+    except Exception:
+        logger.warning("desktop-node invalidation publish failed", exc_info=True)
+
+
 def get_user_cli_node(user_id: str) -> dict | None:
     """Return the CLI subprocess node info for user, or None if not connected.
 
@@ -299,13 +316,7 @@ async def handle_node_connect(
 
         await patch_openclaw_config(owner_id, {"tools": {"deny": list(TOOL_DENY_BASE)}})
 
-    # Per-user broadcast
-    pool = get_gateway_pool()
-    await pool.broadcast_to_member(
-        owner_id,
-        user_id,
-        {"type": "node_status", "status": "connected"},
-    )
+    await _publish_node_invalidation(owner_id, user_id)
 
     logger.info(
         "Node proxy established: user=%s owner=%s conn=%s nodeId=%s",
@@ -344,8 +355,8 @@ async def handle_node_message(connection_id: str, message: dict) -> None:
 
 async def handle_node_disconnect(
     connection_id: str,
-    owner_id: str,
-    user_id: str,
+    owner_id: str | None = None,
+    user_id: str | None = None,
 ) -> None:
     """Close the upstream connection and update per-user tracking.
 
@@ -361,6 +372,8 @@ async def handle_node_disconnect(
     # Safe because _node_upstreams.pop is atomic.
     if upstream is None:
         return
+    owner_id = owner_id or upstream.owner_id
+    user_id = user_id or upstream.user_id
     # Best-effort close: if the upstream errors here (e.g. broken pipe
     # mid-shutdown) we still need to fall through to per-user state
     # teardown so chat stops binding to the dead nodeId. Without this
@@ -449,12 +462,7 @@ async def handle_node_disconnect(
     # active node — otherwise the UI flickers to disconnected even though the
     # new socket is live.
     if is_owning_close:
-        pool = get_gateway_pool()
-        await pool.broadcast_to_member(
-            owner_id,
-            user_id,
-            {"type": "node_status", "status": "disconnected"},
-        )
+        await _publish_node_invalidation(owner_id, user_id)
 
     logger.info(
         "Node proxy closed: user=%s conn=%s owning=%s",

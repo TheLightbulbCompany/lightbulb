@@ -43,7 +43,7 @@ for them (see the inline notes at those call sites):
   spec #8  -> folded into "ecs_service" (bedrock_aip.reap_owner_bedrock_resources)
   spec #9  -> "metronome"             (MetronomeClient.archive_customer)
   spec #10 -> "stripe"                (billing_service.delete_stripe_customer)
-  spec #11 -> "usage_counters" / "room_read_cursors" / "paperclip_row" /
+  spec #11 -> "usage_counters" / "messaging" / "paperclip_row" /
               "billing_row" / "user_row"
               (containers row + channel-links already folded into
               "ecs_service" — see note below; "paperclip_row" also carries the
@@ -100,8 +100,8 @@ from core.repositories import (
     company_slug_repo,
     container_repo,
     integrations_repo,
+    messaging_repo,
     provisioning_workflow_repo,
-    room_read_cursor_repo,
     slack_installs_repo,
     usage_repo,
     user_repo,
@@ -545,12 +545,13 @@ async def preview_wipe(owner_id: str) -> WipeReport:
             detail="all usage-counter rows for owner",
         )
     )
+    room_ids = await messaging_repo.list_owner_room_ids(owner_id)
     steps.append(
         WipeStep(
-            system="room_read_cursors",
-            action="delete_all_for_owner",
+            system="messaging",
+            action="delete_owner_rooms_and_streams",
             status="would_delete",
-            detail="all native-room read cursor rows for owner",
+            detail=(f"{len(room_ids)} owned room partition(s), then owner catalog and private user-stream mappings"),
         )
     )
 
@@ -912,10 +913,24 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
     await _step(steps, system="usage_counters", action="delete_all_for_owner", fn=_s9a)
 
     async def _s9a2() -> str:
-        count = await room_read_cursor_repo.delete_all_for_owner(owner_id)
-        return f"deleted {count} row(s)"
+        room_ids = await messaging_repo.list_owner_room_ids(owner_id)
+        deleted = 0
+        # Keep the owner catalog until every room partition is gone. A partial
+        # failure can then retry from the same complete room-id inventory.
+        for room_id in room_ids:
+            meta = await messaging_repo.get_room(room_id)
+            if meta is not None and meta.get("ownerId") != owner_id:
+                raise RuntimeError("messaging owner catalog referenced a room owned elsewhere")
+            deleted += await messaging_repo.delete_room_partition(room_id)
+        deleted += await messaging_repo.delete_owner_partition(owner_id)
+        return f"deleted {len(room_ids)} room partition(s) and {deleted} messaging row(s)"
 
-    await _step(steps, system="room_read_cursors", action="delete_all_for_owner", fn=_s9a2)
+    await _step(
+        steps,
+        system="messaging",
+        action="delete_owner_rooms_and_streams",
+        fn=_s9a2,
+    )
 
     # Both of this owner's items in paperclip-companies, not just the company
     # row: the funnel answer lives in the SAME table under the prefixed key

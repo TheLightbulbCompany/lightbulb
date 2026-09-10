@@ -4,7 +4,7 @@ import os
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
-from unittest.mock import AsyncMock, MagicMock, patch  # noqa: E402
+from unittest.mock import AsyncMock, patch  # noqa: E402
 
 import pytest  # noqa: E402
 
@@ -27,18 +27,8 @@ async def test_membership_created_calls_seat_sync(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_membership_deleted_calls_seat_sync(monkeypatch):
-    from core.gateway.connection_pool import GatewayConnectionPool
-
-    # Exercise the real revoker/pool without unrelated external WS storage.
-    service = MagicMock()
-    service.query_by_owner = AsyncMock(return_value=[])
-    service.pending_member_revocations = AsyncMock(return_value=set())
-    pool = GatewayConnectionPool(MagicMock(), service)
-    monkeypatch.setattr("core.containers.get_gateway_pool", lambda: pool)
-    monkeypatch.setattr(
-        "core.services.human_broker_provisioning.container_repo.get_by_owner_id",
-        AsyncMock(return_value={"human_broker_devices": {}}),
-    )
+    revoke = AsyncMock()
+    monkeypatch.setattr("core.services.messaging.revoke_human_membership", revoke)
     monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=AsyncMock()))
     sync = AsyncMock(return_value=2)
     with patch("core.services.billing_service.sync_team_seat_quantity", new=sync):
@@ -48,9 +38,8 @@ async def test_membership_deleted_calls_seat_sync(monkeypatch):
                 "public_user_data": {"user_id": "user_gone"},
             }
         )
+    revoke.assert_awaited_once_with("org_1", "user_gone")
     sync.assert_awaited_once_with("org_1")
-    service.query_by_owner.assert_awaited_once_with("org_1")
-    service.pending_member_revocations.assert_awaited_once_with("org_1", "user_gone")
 
 
 @pytest.mark.asyncio

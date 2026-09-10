@@ -18,7 +18,7 @@ export function useOnboardingGate(): OnboardingGatePhase {
     !userMemberships?.isLoading && !userInvitations?.isLoading;
   const count = userMemberships?.data?.length ?? 0;
   const invited = (userInvitations?.data?.length ?? 0) > 0;
-  const redirect = loaded && isSignedIn && (invited || (!organization && count === 0));
+  const redirect = loaded && isSignedIn && !organization && (invited || count === 0);
   const soleOrgId = loaded && isSignedIn && !invited && !organization && count === 1
     ? userMemberships?.data?.[0]?.organization.id : undefined;
 

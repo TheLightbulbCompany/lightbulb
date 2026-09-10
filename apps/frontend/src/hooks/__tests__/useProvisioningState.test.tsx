@@ -179,6 +179,31 @@ describe("useProvisioningState", () => {
 
 
   describe("workspace JWT barrier", () => {
+    it("forces one fresh scope verification then uses cached org tokens for steady polling", async () => {
+      vi.useFakeTimers();
+      const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+        runtime_phase: "starting", lifecycle: "starting", chat_available: false,
+      }), { status: 200 }));
+      global.fetch = fetchMock;
+      const { rerender } = renderHook(() => useProvisioningState(), { wrapper });
+      await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(6100); });
+      expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(auth.getToken.mock.calls.filter(([options]) => options.skipCache)).toEqual([
+        [{ organizationId: "org_123", skipCache: true }],
+      ]);
+      expect(auth.getToken).toHaveBeenLastCalledWith({ organizationId: "org_123" });
+      auth.orgId = "org_new"; auth.uiOrgId = "org_new";
+      auth.getToken.mockResolvedValue(token("org_new"));
+      rerender();
+      await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(6100); });
+      expect(auth.getToken.mock.calls.filter(([options]) => options.skipCache)).toEqual([
+        [{ organizationId: "org_123", skipCache: true }],
+        [{ organizationId: "org_new", skipCache: true }],
+      ]);
+      expect(auth.getToken).toHaveBeenLastCalledWith({ organizationId: "org_new" });
+    });
     it("isolates an already-started HTTP response from a new workspace and keeps the new poll running", async () => {
       vi.useFakeTimers();
       let resolveA!: (response: Response) => void;

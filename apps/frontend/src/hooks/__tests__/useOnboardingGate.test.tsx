@@ -44,12 +44,19 @@ describe("workspace onboarding gate", () => {
     expect(clerk.replace).toHaveBeenCalledWith("/onboarding");
     expect(clerk.update).not.toHaveBeenCalled();
   });
-  it.each([false, true])("pending invitations win even with an existing active workspace: %s", (active) => {
+  it("pending invitations beat membership activation when no workspace is active", () => {
     clerk.invitations = [{ id: "inv_1" }];
     clerk.memberships = [{ organization: { id: "org_old" } }];
-    if (active) { clerk.organization = { id: "org_old" }; clerk.orgId = "org_old"; }
     expect(renderHook(useOnboardingGate).result.current).toBe("redirecting");
     expect(clerk.replace).toHaveBeenCalledWith("/onboarding");
+    expect(clerk.setActive).not.toHaveBeenCalled();
+  });
+  it("keeps an active workspace ready despite a pending invitation", () => {
+    clerk.invitations = [{ id: "inv_1" }];
+    clerk.memberships = [{ organization: { id: "org_old" } }];
+    clerk.organization = { id: "org_old" }; clerk.orgId = "org_old";
+    expect(renderHook(useOnboardingGate).result.current).toBe("ready");
+    expect(clerk.replace).not.toHaveBeenCalled();
     expect(clerk.setActive).not.toHaveBeenCalled();
   });
   it("activates a sole membership and holds until both Clerk contexts agree", () => {

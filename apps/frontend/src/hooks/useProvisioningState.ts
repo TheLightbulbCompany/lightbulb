@@ -120,6 +120,7 @@ export function useProvisioningState(
   }), [enabled, isSignedIn, orgLoaded, orgId, uiOrgId, userId, sessionId]);
   const [verifiedScope, setVerifiedScope] = useState<typeof scope | null>(null);
   const activeScope = useRef<typeof scope | null>(null);
+  const freshlyRequestedScope = useRef<typeof scope | null>(null);
 
   // Invalidate in-flight token requests as soon as the committed auth scope changes.
   useLayoutEffect(() => {
@@ -127,11 +128,14 @@ export function useProvisioningState(
     return () => { activeScope.current = null; };
   }, [scope]);
 
-  const getWorkspaceToken = useCallback(async () => {
+  const getWorkspaceToken = useCallback(async (skipCache = false) => {
     if (activeScope.current !== scope || !scope.eligible || !scope.orgId) return null;
     let token: string | null = null;
     try {
-      const candidate = await getToken({ organizationId: scope.orgId, skipCache: true });
+      const candidate = await getToken({
+        organizationId: scope.orgId,
+        ...(skipCache ? { skipCache: true } : {}),
+      });
       if (candidate) {
         // Enablement check only; the backend verifies the JWT signature/claims.
         const payload = JSON.parse(atob(candidate.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
@@ -150,7 +154,11 @@ export function useProvisioningState(
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
     async function verify() {
-      const token = await getWorkspaceToken();
+      // Force fresh once at the scope boundary, not for propagation retries
+      // or steady status polls. Every returned token still has its org checked.
+      const forceFresh = freshlyRequestedScope.current !== scope;
+      freshlyRequestedScope.current = scope;
+      const token = await getWorkspaceToken(forceFresh);
       if (!cancelled && !token) timer = setTimeout(verify, 500);
     }
     void verify();

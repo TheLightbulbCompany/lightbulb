@@ -51,7 +51,7 @@ vi.mock("@/components/chat/ChatLayout", () => ({
     return <div>{children}</div>;
   },
 }));
-vi.mock("@/components/chat/AgentChatWindow", () => ({ AgentChatWindow: () => null }));
+vi.mock("@/components/messaging/MessagingWorkspace", () => ({ MessagingWorkspace: () => null }));
 vi.mock("@/components/notifications/RunNotifications", () => ({ RunNotifications: () => null }));
 // Echo the params the shell derives from the URL; keep the real key helpers.
 vi.mock("@/components/chat/InlineTeamsPanel", async (importOriginal) => ({
@@ -66,17 +66,17 @@ vi.mock("@/components/chat/InlineTeamsPanel", async (importOriginal) => ({
   ),
 }));
 
-vi.mock("@/hooks/useGateway", () => ({
-  GatewayProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  // Shape-faithful: MobileChatShell → useAgents → useRuntimeRpc destructures
-  // these and calls onEvent in a passive effect.
-  useGateway: () => ({
-    sendReq: vi.fn().mockResolvedValue({}),
-    onEvent: () => () => {},
-    onChatMessage: () => () => {},
-    isParked: false,
-    isConnected: false,
-  }),
+// This fixture covers URL ownership, not network lifecycle. Stub the current
+// boundaries: retired Gateway/AgentChatWindow mocks left real SWR requests
+// running after jsdom teardown when the native messaging shell replaced them.
+vi.mock("@/hooks/useLiveEvents", () => ({
+  LiveEventsProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+vi.mock("@/hooks/useAgents", () => ({
+  useAgents: () => ({ agents: [], defaultId: null, isLoading: false, isSettled: true }),
+}));
+vi.mock("@/hooks/useQuestions", () => ({
+  QuestionsProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 vi.mock("@/hooks/useExecApprovals", () => ({
   ExecApprovalsProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -96,6 +96,14 @@ import { TeamsPanelRouter } from "@/components/teams/TeamsPanelRouter";
 describe("/chat — a retired ?panel=teams-org-chart lands on the Agents chart view", () => {
   beforeEach(() => {
     window.history.replaceState(null, "", "/chat?panel=teams-org-chart");
+  });
+
+  it("does not leave real network requests running behind the URL-only fixture", async () => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(JSON.stringify({}), { status: 200 }));
+    await act(async () => { render(<ChatPage />); });
+    expect(window.location.search).toBe("?panel=teams-org-chart");
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("leaves the retired key in the address bar, and lands mobile on the chart", () => {

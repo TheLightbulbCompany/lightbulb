@@ -595,9 +595,25 @@ async def test_wipe_deletes_room_partitions_owner_rows_and_streams_only_for_that
     await _post(room_id)
     key = await repo.ensure_user_stream(OWNER, USER_A)
     other_key = await repo.ensure_user_stream("org_other", USER_B)
+    for scope in (OWNER, OWNER + "_other"):
+        for pk, sk in [
+            (f"LOCALUSER#{scope}#user_A", "DEVICE#mac"),
+            (f"LOCALSESSION#{scope}#session", "META"),
+            (f"LOCALSESSION#{scope}#session", "EVENT#00000000000000000001"),
+        ]:
+            table.put_item(Item={"pk": pk, "sk": sk})
     assert await repo.list_owner_room_ids(OWNER) == [room_id]
     assert await repo.delete_room_partition(room_id) > 0
-    assert await repo.delete_owner_partition(OWNER) > 0
+    original_scan = table.scan
+    # Real filtered pages (including empty pages with continuation keys).
+    with (
+        patch.object(repo, "_table", return_value=table),
+        patch.object(table, "scan", side_effect=lambda **kwargs: original_scan(**{**kwargs, "Limit": 1})),
+    ):
+        assert await repo.delete_owner_partition(OWNER) > 0
     assert await repo.get_room(room_id) is None and await repo.get_stream(key) is None
     assert await repo.get_stream(other_key) is not None
+    remaining = [r for r in table.scan()["Items"] if r["pk"].startswith("LOCAL")]
+    assert len(remaining) == 3 and all(f"#{OWNER}_other#" in r["pk"] for r in remaining)
+    assert await repo.delete_owner_partition(OWNER) == 0
     assert await repo.delete_room_partition(room_id) == 0  # idempotent retry

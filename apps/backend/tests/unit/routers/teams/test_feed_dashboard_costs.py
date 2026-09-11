@@ -37,7 +37,7 @@ def client(teams_ctx, monkeypatch):
         return teams_ctx
 
     async def fake_auth():
-        return AuthContext(user_id="o1")
+        return AuthContext(user_id="u1", org_id="o1", org_role="org:admin")
 
     app.dependency_overrides[agents_mod._ctx] = fake_ctx
     app.dependency_overrides[get_current_user] = fake_auth

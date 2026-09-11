@@ -9,11 +9,15 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
+import type { RoomResourceSource } from "@/hooks/useRoomResources";
+import { RoomResources } from "./RoomResources";
+import { roomMarkdown as publicMarkdown } from "./roomMarkdown";
 import { hasBlockingShortcutDialog } from "@/components/teams/shared/lib/keyboardShortcuts";
 import { safeHref } from "@/components/teams/shared/lib/safeHref";
 import { cn } from "@/lib/utils";
 import { roomUrlTransform } from "./markdown";
-import { copyText, messagePermalink } from "./messageLinks";
+import { copyText, messagePermalink, parseSessionPermalink } from "./messageLinks";
+import { openSessionPanel } from "@/components/workspace/workspaceController";
 import { RoomComposer, type RoomComposerProps } from "./RoomComposer";
 import { linkifyMentions, parseMentionHref } from "./mentions";
 import { readRecentEmoji } from "./EmojiPicker";
@@ -37,6 +41,7 @@ import type {
 import "./messaging.css";
 
 export interface RoomPanelProps {
+  targetSession?: { sessionId: string; nonce: number } | null;
   ownerScopeId: string;
   currentUserId: string;
   roomId: string;
@@ -73,6 +78,7 @@ export interface RoomPanelProps {
   onLinkToWork?: () => void;
   onDownloadAttachment?: (roomId: string, attachmentId: string) => Promise<Blob>;
   narrow?: boolean;
+  resourceSource?: RoomResourceSource;
 }
 
 const DEFAULT_QUICK_REACTIONS = ["👍", "✅", "🎉", "👀"];
@@ -104,14 +110,19 @@ function WorkStatus({ state }: { state: WorkState }) {
 }
 
 const roomMarkdown: Partial<Components> = {
+  ...publicMarkdown,
   a: ({ href, children }) => {
     const mention = href ? parseMentionHref(href) : null;
     if (mention) return <span className="room-mention" data-kind={mention.kind}>{children}</span>;
     const safe = safeHref(href);
+    const session = safe && typeof window !== "undefined" ? parseSessionPermalink(safe) : null;
+    if (session) return <a href={safe!} className="text-info underline underline-offset-4" onClick={event => {
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      event.preventDefault();
+      openSessionPanel(session.roomId, session.sessionId);
+    }}>{children}</a>;
     return safe ? <a href={safe} target="_blank" rel="noopener noreferrer" className="text-info underline underline-offset-4">{children}</a> : <span>{children}</span>;
   },
-  img: ({ alt }) => <span className="text-muted-foreground">{alt || "Image omitted"}</span>,
-  blockquote: ({ children }) => <blockquote className="border-l border-border pl-3 my-2 text-muted-foreground">{children}</blockquote>,
 };
 
 const narrowQuery = "(max-width: 859px)";
@@ -125,7 +136,7 @@ const getNarrow = () => window.matchMedia(narrowQuery).matches;
 const getServerNarrow = () => false;
 
 export function RoomPanel(props: RoomPanelProps) {
-  return <RoomBoundary key={JSON.stringify([props.ownerScopeId, props.roomId])} {...props} />;
+  return <RoomBoundary key={JSON.stringify([props.ownerScopeId, props.currentUserId, props.roomId])} {...props} />;
 }
 
 type Attempt = { observed: RoomComposerProps["sendState"]; state: RoomComposerProps["sendState"]; revision: number };
@@ -176,11 +187,13 @@ function RoomBoundary(props: RoomPanelProps) {
 }
 
 function RoomContent({
+  ownerScopeId,
   roomId,
   currentUserId,
   room,
   readSeqAtOpen,
   targetMessageId,
+  targetSession,
   state,
   httpReady,
   liveConnected,
@@ -211,6 +224,7 @@ function RoomContent({
   onLinkToWork,
   onDownloadAttachment,
   narrow,
+  resourceSource,
 }: RoomPanelProps) {
   const id = useId();
   // token increments on every selection (even of the same result) so RoomTimeline
@@ -247,16 +261,38 @@ function RoomContent({
   const managementCancel = useRef<HTMLButtonElement>(null);
   const [contextCollapsed, setContextCollapsed] = useState(true);
   const [editTarget, setEditTarget] = useState<string | null>(null);
-  const [localSelection, setSelection] = useState<{ kind: "thread"; id: string } | null>(null);
+  const [localSelection, setSelection] = useState<{ kind: "thread" | "resources"; id: string } | null>(null);
+  const [consumedSession, setConsumedSession] = useState<number | null>(null);
+  const targetSessionNonce = targetSession?.nonce;
+  useEffect(() => {
+    if (targetSessionNonce === undefined) return;
+    onSelectThread?.(null);
+    setSearchTarget(null);
+    setSelection({ kind: "resources", id: "resources" });
+    // Only a new explicit navigation may reopen resources.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [targetSessionNonce]);
   const selection = useMemo(() => selectedThreadId === undefined ? localSelection
     : selectedThreadId ? { kind: "thread" as const, id: selectedThreadId }
-      : null, [selectedThreadId, localSelection]);
+      : localSelection?.kind !== "thread" ? localSelection : null, [selectedThreadId, localSelection]);
   const trigger = useRef<HTMLButtonElement | null>(null);
   const detailHeading = useRef<HTMLHeadingElement>(null);
   const contextHeading = useRef<HTMLHeadingElement>(null);
   const contextTrigger = useRef<HTMLButtonElement>(null);
   const contextWasOpen = useRef(false);
   const memberTrigger = useRef<HTMLButtonElement>(null);
+  const [previousMessageTarget, setPreviousMessageTarget] = useState(targetMessageId);
+  if (targetMessageId !== previousMessageTarget) {
+    setPreviousMessageTarget(targetMessageId);
+    if (targetMessageId && selection?.kind === "resources") {
+      // Reconcile before children process the target: a hidden timeline must
+      // not consume it, and closing must not restore an obsolete trigger.
+      trigger.current = null;
+      contextWasOpen.current = false;
+      setSelection(null);
+      setContextCollapsed(true);
+    }
+  }
   const historyRef = useRef<HTMLDivElement>(null);
   const viewportNarrow = useSyncExternalStore(subscribeNarrow, getNarrow, getServerNarrow);
   const isNarrow = narrow ?? viewportNarrow;
@@ -270,7 +306,8 @@ function RoomContent({
   // for RoomTimeline -- a thread-scoped result is handled by the effect below.
   const activeSearchTarget = searchTarget && !searchTarget.threadRootMessageId && !selection ? searchTarget : null;
   const parentMessage = selection?.kind === "thread" ? messages.find((message) => message.messageId === selection.id) : undefined;
-  const showDetail = !!parentMessage;
+  const showResources = selection?.kind === "resources" && !!resourceSource;
+  const showDetail = !!(parentMessage || showResources);
   const showContext = showDetail || !contextCollapsed;
   const activeRuns = runs.filter((run) => run.state === "running");
   const viewer = participants.find((participant) => participant.kind === "human" && participant.id === currentUserId);
@@ -352,17 +389,17 @@ function RoomContent({
   }, [closeDetail, isNarrow, showDetail]);
 
   useEffect(() => {
-    if (!showDetail) return;
+    if (!showDetail || showResources) return;
     // An open dialog owns Escape — dismissing the overlay underneath it as
     // well would close two things on one keypress.
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape" && !hasBlockingShortcutDialog()) closeOverlay(); };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [closeOverlay, showDetail]);
+  }, [closeOverlay, showDetail, showResources]);
 
-  function openDetail(kind: "thread", targetId: string, button: HTMLButtonElement, fromThread = false) {
+  function openDetail(kind: "thread" | "resources", targetId: string, button: HTMLButtonElement, fromThread = false) {
     if (!fromThread) trigger.current = button;
-    onSelectThread?.(targetId);
+    onSelectThread?.(kind === "thread" ? targetId : null);
     setSelection({ kind, id: targetId });
   }
 
@@ -470,6 +507,8 @@ function RoomContent({
         <button ref={contextTrigger} type="button" className="room-tab" aria-label={contextCollapsed ? "Show room details" : "Hide room details"} aria-expanded={!contextCollapsed} aria-current={!contextCollapsed && !showDetail ? "page" : undefined}
           onClick={() => { closeDetail(); setContextCollapsed(!contextCollapsed); }}>Context</button>
         {onLinkToWork && <button type="button" className="room-tab" aria-label="Link to work" onClick={onLinkToWork}><Link2 size={14} aria-hidden="true" />Tasks</button>}
+        {resourceSource && <button type="button" className="room-tab" aria-current={showResources ? "page" : undefined}
+          onClick={event => openDetail("resources", "resources", event.currentTarget)}>Devices & sessions</button>}
       </nav>
       {membersOpen && <section id={`${id}-members`} aria-label="Room members" className="room-members"
         onKeyDown={(event) => { if (event.key === "Escape") { setMembersOpen(false); memberTrigger.current?.focus(); } }}>
@@ -550,7 +589,12 @@ function RoomContent({
         </section>
       </div>
     </aside>}
-    {showDetail && <aside className="room-context" aria-label="Thread" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
+    {showResources && <RoomResources key={JSON.stringify([ownerScopeId, currentUserId, roomId, participants.filter(p => p.kind === "human").map(p => p.id).sort()])}
+      roomId={roomId} source={resourceSource!} participants={participants} onClose={closeDetail}
+      target={targetSession?.nonce !== consumedSession ? targetSession : null}
+      onTargetConsumed={() => setConsumedSession(targetSession?.nonce ?? null)}
+      onShare={url => composer.onTextChange(composer.text ? `${composer.text}\n${url}` : url)} />}
+    {showDetail && !showResources && <aside className="room-context" aria-label="Thread" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>
         <h3 ref={detailHeading} tabIndex={-1} className="font-semibold room-wrap">Thread</h3></header>
       <div className="room-context-body">{parentMessage ? <>{renderMessage(parentMessage, true)}

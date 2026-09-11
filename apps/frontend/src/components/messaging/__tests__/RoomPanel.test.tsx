@@ -106,6 +106,37 @@ it("closes channel management if the viewer loses admin permission", async () =>
   expect(onRenameRoom).not.toHaveBeenCalled();
 });
 
+it("reveals and focuses same-room message navigation from a narrow resources pane", async () => {
+  const targetedWhileHidden: boolean[] = [];
+  const scroll = vi.spyOn(HTMLElement.prototype, "scrollIntoView").mockImplementation(function (this: HTMLElement) {
+    if (this.dataset.messageId === "message") targetedWhileHidden.push(!!this.closest(".room-conversation[hidden]"));
+  });
+  const source = { client: { listResources: vi.fn(async () => ({ devices: [], sessions: [], pairedNodes: [] })), listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() }, onEvent: () => () => {}, connectionRevision: 1 };
+  function ControlledRoom({ target }: { target: string | null }) {
+    const [thread, setThread] = useState<string | null>(null);
+    return <RoomPanel {...props} narrow resourceSource={source} selectedThreadId={thread} onSelectThread={setThread} targetMessageId={target} />;
+  }
+  try {
+    const view = render(<ControlledRoom target={null} />);
+    const history = screen.getByRole("region", { name: "Messages" });
+    const resourceTrigger = screen.getByRole("button", { name: "Devices & sessions" });
+    await userEvent.click(resourceTrigger);
+    expect(await screen.findByText(/No paired devices or shared sessions/)).toBeVisible();
+    expect(history).not.toBeVisible();
+    view.rerender(<ControlledRoom target="message" />);
+    expect(history).toBeVisible();
+    const target = screen.getByRole("article", { name: "Message from Friday" }).closest("[data-message-id]");
+    await waitFor(() => expect(target).toHaveFocus());
+    expect(targetedWhileHidden).toEqual([false]);
+    expect(resourceTrigger).not.toHaveFocus();
+    // The target remains in the provider briefly; it is an intent, not a lock
+    // that prevents opening the resource pane again after navigation finished.
+    await userEvent.click(resourceTrigger);
+    expect(await screen.findByText(/No paired devices or shared sessions/)).toBeVisible();
+    expect(history).not.toBeVisible();
+  } finally { scroll.mockRestore(); }
+});
+
 it("navigates search results into controlled threads and focuses main results", async () => {
   const scroll = vi.fn();
   HTMLElement.prototype.scrollIntoView = scroll;
@@ -467,18 +498,20 @@ it.each(["dm", "group-dm"] as const)("does not offer member adds in a %s", async
   expect(screen.queryByRole("button", { name: "Add members" })).not.toBeInTheDocument();
 });
 
-it("replaces the narrow conversation only while a thread is open", async () => {
+it.each(["thread", "resources"] as const)("replaces the narrow conversation only while selected %s is open", async (kind) => {
   const user = userEvent.setup();
   const onLinkToWork = vi.fn();
-  render(<RoomPanel {...props} narrow onLinkToWork={onLinkToWork} />);
+  render(<RoomPanel {...props} narrow onLinkToWork={onLinkToWork}
+    resourceSource={{ client: { listResources: vi.fn(async () => ({ devices: [], sessions: [], pairedNodes: [] })), listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() }, onEvent: () => () => {}, connectionRevision: 1 }}
+    />);
   const history = screen.getByRole("region", { name: "Messages" });
   expect(history).toBeVisible();
   await user.click(screen.getByRole("button", { name: "Link to work" }));
   expect(onLinkToWork).toHaveBeenCalledOnce();
-  const trigger = screen.getByRole("button", { name: "Reply in thread" });
+  const trigger = screen.getByRole("button", { name: kind === "thread" ? "Reply in thread" : "Devices & sessions" });
   await user.click(trigger);
   expect(history).not.toBeVisible();
-  expect(screen.getByRole("heading", { name: "Thread" })).toHaveFocus();
+  expect(screen.getByRole("heading", { name: kind === "thread" ? "Thread" : "Devices & sessions" })).toHaveFocus();
   await user.click(screen.getByRole("button", { name: "Back to conversation" }));
   expect(history).toBeVisible();
   expect(trigger).toHaveFocus();

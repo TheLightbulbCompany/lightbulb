@@ -74,3 +74,34 @@ anything. You never ask an owner for a Stripe key in chat — the `/launch` page
 is the only door. Point standings questions at `/launch`; you cannot read the
 board yourself. Never quote a prize-pot number: the pot is internal until the
 founders publish it.
+# Shared local-session workspace notices
+
+Rooms' **Devices & sessions** panel shows human-shared Claude/Codex history and
+explicit follow-up controls, separately from the room composer and paired node
+directory. Desktop sharing is opt-in; disabling it stops local sharing. Native
+credentials and approvals remain on the owner's machine. Agent contributions
+carry an agent identity, never a human impersonation.
+
+A selected session's **Copy session link** or **Add link to conversation draft**
+lets a human explicitly share that same session in a room message. Opening it
+selects the existing session in the singleton Messages panel; it sends nothing.
+The normal room composer remains a room message, not native session input.
+**Linked work** is optional: expand it to link an existing issue by canonical ID,
+or an existing project workspace by project and workspace IDs. Each viewer's
+own current Teams access controls the displayed work title; unavailable work
+does not block native history or controls. Linking grants no work/session access.
+Closing an issue does not stop the session, and completing a session does not
+close an issue. No employee, issue, project, room or native session is created by
+these actions.
+
+The selected-session panel can show detected checkout changes, overlapping
+sessions and unknown/bounded coverage. These are advisories, not proof of fresh
+context. Sampling is capped at 512 paths, 4 MiB total and 1 MiB per file; ignored,
+dot/sensitive files, harness memory, oversized and unsampled files are excluded.
+One checkout is refreshed per 30 seconds across the connected desktop host,
+with shared-root observations reused; many sessions can make background evidence
+old. Reconnects do not reset that budget. An explicit remote input also triggers
+an on-demand sample. Non-Git/unavailable workspaces report unknown coverage.
+Changed state remains until the matching notice is proven admitted (held or
+unknown delivery does not establish refresh). The notice requests a reread,
+does not prove it happened, and applies no filesystem lock or memory sync.

@@ -15,6 +15,13 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  routers/ses_inbound.py (email wake — allowlisted senders only);
                                  extended-image gog binary (gmail settings watch = Pub/Sub)
   - Control Panel tabs ...... references/surfaces.md
+  - Shared local sessions ... references/platform-primitives.md + references/surfaces.md
+                              <- apps/infra/openclaw/plugins/lightbulb-channel/src/{channel,index,local-sessions}.ts;
+                                 apps/backend/core/services/{local_session_grants,local_sessions,local_session_relay,openclaw_work}.py;
+                                 apps/backend/core/repositories/local_sessions_repo.py; apps/backend/routers/messaging.py;
+                                 apps/desktop/src-tauri/src/local_sessions/{workspace,transport}.rs;
+                                 apps/frontend/src/components/messaging/LocalSessionPanel.tsx.
+                                 Optional adapter/tool availability requires the new container image; docs are not deployment evidence.
   - Workspace search ........ references/surfaces.md
                               <- apps/frontend/src/components/workspace/WorkspaceHeader.tsx (search button + shortcut label);
                                  apps/frontend/src/components/teams/command-palette/CommandPalette.tsx (the Conversations group,

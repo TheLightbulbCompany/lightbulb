@@ -79,6 +79,7 @@ export interface MessagingWorkspaceValue {
   roomProps: RoomPanelProps | null;
   selectAgentDm: (agentId: string) => Promise<string | null>;
   openMessage: (roomId: string, messageId: string | null) => void;
+  openSession: (roomId: string, sessionId: string) => void;
 }
 
 const MessagingWorkspaceContext = createContext<MessagingWorkspaceValue | null>(null);
@@ -386,11 +387,25 @@ export function MessagingWorkspaceProvider({
   // after opening rather than persisting indefinitely once the highlight has
   // had time to land.
   const [target, setTarget] = useState<{ roomId: string; messageId: string | null } | null>(null);
+  const [sessionTarget, setSessionTarget] = useState<{ roomId: string; sessionId: string; nonce: number } | null>(null);
+  const sessionNonce = useRef(0);
   const selectRoom = rooms.selectRoom;
+  const openSession = useCallback((roomId: string, sessionId: string) => {
+    selectRoom(roomId);
+    setThreadId(null);
+    setTarget(null);
+    setSessionTarget({ roomId, sessionId, nonce: ++sessionNonce.current });
+  }, [selectRoom]);
   const openMessage = useCallback((roomId: string, messageId: string | null) => {
+    setSessionTarget(null);
     selectRoom(roomId);
     setTarget({ roomId, messageId });
   }, [selectRoom]);
+  const previousSelectedRoom = useRef(rooms.activeRoomId);
+  useEffect(() => {
+    if (rooms.accessRemoved || (previousSelectedRoom.current !== rooms.activeRoomId && sessionTarget?.roomId !== rooms.activeRoomId)) setSessionTarget(null);
+    previousSelectedRoom.current = rooms.activeRoomId;
+  }, [rooms.activeRoomId, rooms.accessRemoved, sessionTarget]);
   useEffect(() => {
     if (!target?.messageId) return;
     const timer = setTimeout(() => setTarget(null), 3_000);
@@ -429,9 +444,11 @@ export function MessagingWorkspaceProvider({
     room: rooms.activeRoom,
     readSeqAtOpen: readSeqAtOpen.current?.roomId === rooms.activeRoomId ? readSeqAtOpen.current.seq : null,
     targetMessageId: target?.roomId === rooms.activeRoomId ? target.messageId : null,
+    targetSession: sessionTarget?.roomId === rooms.activeRoomId ? sessionTarget : null,
     state: roomState,
     httpReady: rooms.httpReady,
     liveConnected: rooms.liveConnected,
+    resourceSource: subscribeToRoom ? rooms.resourceSource : undefined,
     participants,
     messages: rooms.messages,
     historyLoading: rooms.historyLoading,
@@ -474,6 +491,7 @@ export function MessagingWorkspaceProvider({
     roomProps,
     selectAgentDm: rooms.selectAgentDm,
     openMessage,
+    openSession,
   }}><MessageNotifications activeRoomId={rooms.activeRoomId} threadId={threadId} roomVisible={subscribeToRoom}
     onOpen={(roomId, targetThreadId) => {
       rooms.selectRoom(roomId);

@@ -15,6 +15,8 @@ interface ChatPanelParams {
   agentSelection?: "resolved";
   roomId?: string;
   messageId?: string;
+  sessionId?: string;
+  sessionIntent?: string;
 }
 
 /**
@@ -24,7 +26,7 @@ interface ChatPanelParams {
 export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.ReactElement {
   const params = useDockPanelParams(props);
   const { defaultId } = useAgents();
-  const { selectAgentDm, roomProps, openMessage } = useMessagingWorkspace();
+  const { selectAgentDm, roomProps, openMessage, openSession } = useMessagingWorkspace();
   const lastRequested = useRef<string | null>(null);
   const navigationRequest = useRef(0);
   const [focusDestination, setFocusDestination] = useState<{ agentId: string; roomId: string } | null>(null);
@@ -62,11 +64,13 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
       lastOpenedRoom.current = null;
       return;
     }
-    const key = `${params.roomId}:${params.messageId ?? ""}`;
+    const key = JSON.stringify([params.roomId, params.messageId, params.sessionId, params.sessionIntent]);
     if (lastOpenedRoom.current === key) return;
     lastOpenedRoom.current = key;
-    openMessage(params.roomId, params.messageId ?? null);
-  }, [params.roomId, params.messageId, openMessage]);
+    ++navigationRequest.current; // A pending agent-DM focus must not supersede a room intent.
+    if (params.sessionId) openSession(params.roomId, params.sessionId);
+    else openMessage(params.roomId, params.messageId ?? null);
+  }, [params.roomId, params.messageId, params.sessionId, params.sessionIntent, openMessage, openSession]);
 
   const roomId = roomProps?.roomId;
   const roomAgentId = roomProps?.composer.focusAgentId;

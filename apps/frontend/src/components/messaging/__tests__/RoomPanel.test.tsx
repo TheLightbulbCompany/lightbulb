@@ -106,6 +106,37 @@ it("closes channel management if the viewer loses admin permission", async () =>
   expect(onRenameRoom).not.toHaveBeenCalled();
 });
 
+it("reveals and focuses same-room message navigation from a narrow resources pane", async () => {
+  const targetedWhileHidden: boolean[] = [];
+  const scroll = vi.spyOn(HTMLElement.prototype, "scrollIntoView").mockImplementation(function (this: HTMLElement) {
+    if (this.dataset.messageId === "message") targetedWhileHidden.push(!!this.closest(".room-conversation[hidden]"));
+  });
+  const source = { client: { listResources: vi.fn(async () => ({ devices: [], sessions: [], pairedNodes: [] })), listLocalSessionEvents: vi.fn(), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn() }, onEvent: () => () => {}, connectionRevision: 1 };
+  function ControlledRoom({ target }: { target: string | null }) {
+    const [thread, setThread] = useState<string | null>(null);
+    return <RoomPanel {...props} narrow resourceSource={source} selectedThreadId={thread} onSelectThread={setThread} targetMessageId={target} />;
+  }
+  try {
+    const view = render(<ControlledRoom target={null} />);
+    const history = screen.getByRole("region", { name: "Messages" });
+    const resourceTrigger = screen.getByRole("button", { name: "Devices & sessions" });
+    await userEvent.click(resourceTrigger);
+    expect(await screen.findByText(/No paired devices or shared sessions/)).toBeVisible();
+    expect(history).not.toBeVisible();
+    view.rerender(<ControlledRoom target="message" />);
+    expect(history).toBeVisible();
+    const target = screen.getByRole("article", { name: "Message from Friday" }).closest("[data-message-id]");
+    await waitFor(() => expect(target).toHaveFocus());
+    expect(targetedWhileHidden).toEqual([false]);
+    expect(resourceTrigger).not.toHaveFocus();
+    // The target remains in the provider briefly; it is an intent, not a lock
+    // that prevents opening the resource pane again after navigation finished.
+    await userEvent.click(resourceTrigger);
+    expect(await screen.findByText(/No paired devices or shared sessions/)).toBeVisible();
+    expect(history).not.toBeVisible();
+  } finally { scroll.mockRestore(); }
+});
+
 it("navigates search results into controlled threads and focuses main results", async () => {
   const scroll = vi.fn();
   HTMLElement.prototype.scrollIntoView = scroll;

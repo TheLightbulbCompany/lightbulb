@@ -246,6 +246,18 @@ function RoomContent({
   const contextTrigger = useRef<HTMLButtonElement>(null);
   const contextWasOpen = useRef(false);
   const memberTrigger = useRef<HTMLButtonElement>(null);
+  const [previousMessageTarget, setPreviousMessageTarget] = useState(targetMessageId);
+  if (targetMessageId !== previousMessageTarget) {
+    setPreviousMessageTarget(targetMessageId);
+    if (targetMessageId && selection?.kind === "resources") {
+      // Reconcile before children process the target: a hidden timeline must
+      // not consume it, and closing must not restore an obsolete trigger.
+      trigger.current = null;
+      contextWasOpen.current = false;
+      setSelection(null);
+      setContextCollapsed(true);
+    }
+  }
   const viewportNarrow = useSyncExternalStore(subscribeNarrow, getNarrow, getServerNarrow);
   const isNarrow = narrow ?? viewportNarrow;
   const visibleRoom = room?.roomId === roomId ? room : undefined;

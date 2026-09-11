@@ -354,6 +354,7 @@ class OpenClawWorkWorker:
             member["id"],
             member_id=author.get("id") if author.get("kind") == "human" else None,
             event_kind=event_kind,
+            thread_root_message_id=message.get("threadRootMessageId"),
         )
         members = await messaging_repo.list_members(meta["roomId"])
         body = await build_ingress_body(

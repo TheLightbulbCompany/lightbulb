@@ -64,6 +64,7 @@ export interface RoomRunView {
   roomId: string;
   agentId: string;
   runId: string;
+  threadRootMessageId?: string | null;
   text: string;
   thinking: string;
   state: "running" | "completed" | "failed" | "aborted";

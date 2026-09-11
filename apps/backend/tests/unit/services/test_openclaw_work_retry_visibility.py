@@ -50,6 +50,7 @@ async def test_plugin_ingress_timeout_is_a_short_retry_and_clears_the_active_run
     worker = OpenClawWorkWorker(sqs_client=FakeSqs())
     cleared = []
     subscribed = []
+    marked = []
 
     class FakePool:
         async def ensure_connection(self, *_args):
@@ -58,8 +59,8 @@ async def test_plugin_ingress_timeout_is_a_short_retry_and_clears_the_active_run
         async def subscribe_room_session(self, owner_id, session_key):
             subscribed.append((owner_id, session_key))
 
-        def mark_run_active(self, *_args, **_kwargs):
-            return None
+        def mark_run_active(self, *args, **kwargs):
+            marked.append((args, kwargs))
 
         def clear_active_run(self, owner_id, session_key):
             cleared.append((owner_id, session_key))
@@ -90,7 +91,12 @@ async def test_plugin_ingress_timeout_is_a_short_retry_and_clears_the_active_run
 
     meta = {"ownerId": "owner-1", "roomId": "11111111-1111-4111-8111-111111111111", "kind": "dm", "revision": 1}
     member = {"kind": "agent", "id": "a1"}
-    message = {"messageId": "m1", "messageSeq": 1, "author": {"kind": "human", "id": "u1"}}
+    message = {
+        "messageId": "m1",
+        "messageSeq": 1,
+        "threadRootMessageId": "thread-1",
+        "author": {"kind": "human", "id": "u1"},
+    }
 
     with pytest.raises(WorkRetry, match="plugin ingress ReadTimeout"):
         await worker._dispatch_message(meta, member, message, "user_request")
@@ -100,3 +106,4 @@ async def test_plugin_ingress_timeout_is_a_short_retry_and_clears_the_active_run
     # gateway streams their agent/chat events only to a session-message
     # subscriber. Dispatching without this leaves the room with zero run frames.
     assert subscribed == [("owner-1", session_key)]
+    assert marked[0][1]["thread_root_message_id"] == "thread-1"

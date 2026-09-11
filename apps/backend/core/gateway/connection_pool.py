@@ -552,6 +552,7 @@ class GatewayConnection:
         agent_id: str | None = None,
         member_id: str | None = None,
         event_kind: str | None = None,
+        thread_root_message_id: str | None = None,
     ) -> None:
         """Record an in-flight run for *session_key* (parked-vs-dead signal).
 
@@ -587,6 +588,8 @@ class GatewayConnection:
                 # room_event re-mark must not flip an in-flight addressed
                 # run's suppression state (see `_publish_room_frame`).
                 existing["event_kind"] = event_kind
+            if thread_root_message_id and existing.get("thread_root_message_id") is None:
+                existing["thread_root_message_id"] = thread_root_message_id
             return
         self._active_runs[key] = {
             "started_at": now,
@@ -594,6 +597,7 @@ class GatewayConnection:
             "agent_id": agent_id or "",
             "run_id": None,
             "event_kind": event_kind,
+            "thread_root_message_id": thread_root_message_id,
             # Canonical dispatch member id for the run-completion push audience.
             "member_id": member_id,
             # Set when OpenClaw emits an approval-requested agent event for this
@@ -1435,6 +1439,7 @@ class GatewayConnection:
                 "roomId": parsed["room_id"],
                 "agentId": parsed["agent_id"],
                 "runId": run_id,
+                "threadRootMessageId": (active or {}).get("thread_root_message_id"),
                 "frame": normalized,
             },
             room_id=parsed["room_id"],
@@ -2543,6 +2548,7 @@ class GatewayConnectionPool:
         agent_id: str | None = None,
         member_id: str | None = None,
         event_kind: str | None = None,
+        thread_root_message_id: str | None = None,
     ) -> None:
         """Public entry point for the chat dispatcher.
 
@@ -2560,7 +2566,13 @@ class GatewayConnectionPool:
         conn = self._connections.get(user_id)
         if conn is None:
             return
-        conn.mark_run_active(session_key, agent_id, member_id=member_id, event_kind=event_kind)
+        conn.mark_run_active(
+            session_key,
+            agent_id,
+            member_id=member_id,
+            event_kind=event_kind,
+            thread_root_message_id=thread_root_message_id,
+        )
 
     async def subscribe_room_session(self, user_id: str, session_key: str) -> None:
         """Stream a room session's run events to the owner's connection.

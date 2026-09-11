@@ -30,6 +30,7 @@ export interface LiveRoomRun {
   roomId: string;
   agentId: string;
   runId: string;
+  threadRootMessageId?: string | null;
   text: string;
   thinking: string;
   frames: ChatIncomingMessage[];
@@ -292,6 +293,7 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
           roomId: payload.roomId,
           agentId: payload.agentId,
           runId: payload.runId,
+          threadRootMessageId: payload.threadRootMessageId ?? previous?.threadRootMessageId ?? null,
           text: frame.type === "chunk" ? accumulateStreamText(previous?.text ?? "", frame) : previous?.text ?? "",
           thinking: frame.type === "thinking" ? accumulateStreamText(previous?.thinking ?? "", frame) : previous?.thinking ?? "",
           frames: [...(previous?.frames ?? []), frame],

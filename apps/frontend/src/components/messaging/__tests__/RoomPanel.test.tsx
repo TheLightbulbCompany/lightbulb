@@ -109,6 +109,18 @@ it("focuses a thread and restores its trigger and collapsed preference on Escape
   expect(screen.getByRole("button", { name: "Show room details" })).toHaveAttribute("aria-expanded", "false");
 });
 
+it("keeps a live thread reply out of main chat and renders it inside the thread", async () => {
+  const run: RoomRunView = { roomId: "room", agentId: "friday", runId: "thread-run", threadRootMessageId: message.messageId,
+    state: "running", text: "Thread answer", thinking: "", tools: [] };
+  render(<RoomPanel {...props} runs={[run]} />);
+  expect(within(screen.getByRole("region", { name: "Messages" })).queryByRole("article", { name: "Live run from Friday" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Reply in thread" })).toBeInTheDocument();
+
+  await userEvent.click(screen.getByRole("button", { name: "Reply in thread" }));
+
+  expect(within(screen.getByRole("complementary", { name: "Thread" })).getByRole("article", { name: "Live run from Friday" })).toHaveTextContent("Thread answer");
+});
+
 it("lets wide room details change agent listen mode without giving humans a control", async () => {
   const user = userEvent.setup();
   const onListenModeChange = vi.fn();

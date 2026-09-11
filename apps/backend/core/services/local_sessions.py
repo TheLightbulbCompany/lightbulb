@@ -200,6 +200,7 @@ async def register_session(owner_id: str, user_id: str, device_id: str, registra
 async def authorize_session(auth: AuthContext, room_id: str, session_id: str) -> tuple[dict, dict]:
     """One authorization path for directory hydration, events, commands and receipts."""
     owner = resolve_owner_id(auth)
+    room_id = validate_uuid(room_id, label="room ID")
     await require_room_member(owner, auth.user_id, room_id)
     session_id = validate_uuid(session_id, label="local session ID")
     row = await repo.get_session(owner, session_id)
@@ -212,6 +213,7 @@ async def authorize_session(auth: AuthContext, room_id: str, session_id: str) ->
 
 async def list_resources(auth: AuthContext, room_id: str) -> RoomResources:
     owner = resolve_owner_id(auth)
+    room_id = validate_uuid(room_id, label="room ID")
     await require_room_member(owner, auth.user_id, room_id)
     devices, sessions = [], []
     # ponytail: bounded room membership, per-human directory reads; batch only if measured slow.
@@ -247,10 +249,10 @@ async def list_resources(auth: AuthContext, room_id: str) -> RoomResources:
 async def list_events(
     auth: AuthContext, room_id: str, session_id: str, after_seq: int = 0, limit: int = 50
 ) -> LocalSessionEventPage:
-    await authorize_session(auth, room_id, session_id)
+    session, _ = await authorize_session(auth, room_id, session_id)
     if after_seq < 0 or after_seq >= 10**20 - 1 or not 1 <= limit <= 100:
         raise ApiProblem("INVALID_REQUEST", "Invalid event pagination.")
-    rows, next_seq = await repo.list_events(resolve_owner_id(auth), session_id, after_seq, limit)
+    rows, next_seq = await repo.list_events(session["ownerId"], session["sessionId"], after_seq, limit)
     return LocalSessionEventPage(events=[_public(LocalSessionEvent, row) for row in rows], next_after_seq=next_seq)
 
 
@@ -281,6 +283,8 @@ async def submit_command(
     auth: AuthContext, room_id: str, session_id: str, request: LocalSessionCommand
 ) -> CommandReceipt:
     owner = resolve_owner_id(auth)
+    room_id = validate_uuid(room_id, label="room ID")
+    session_id = validate_uuid(session_id, label="local session ID")
     payload = request.model_dump(by_alias=True)
     req_hash = messaging_repo.request_hash(owner, session_id, room_id, auth.user_id, payload)
     for _ in range(6):
@@ -315,7 +319,8 @@ async def submit_command(
 
 
 async def get_command(auth: AuthContext, room_id: str, session_id: str, request_id: str) -> CommandReceipt:
-    await authorize_session(auth, room_id, session_id)
+    room_id = validate_uuid(room_id, label="room ID")
+    session, _ = await authorize_session(auth, room_id, session_id)
     # Reuse the command identifier contract without accepting payload-owned identity.
     from pydantic import TypeAdapter, ValidationError
 
@@ -323,7 +328,7 @@ async def get_command(auth: AuthContext, room_id: str, session_id: str, request_
         TypeAdapter(OpaqueId).validate_python(request_id)
     except ValidationError as exc:
         raise ApiProblem("INVALID_REQUEST", "Invalid request ID.") from exc
-    row = await repo.get_command(resolve_owner_id(auth), session_id, request_id)
+    row = await repo.get_command(session["ownerId"], session["sessionId"], request_id)
     if row is None or row["roomId"] != room_id:
         raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Command not found in this room.")
     return _public(CommandReceipt, row)

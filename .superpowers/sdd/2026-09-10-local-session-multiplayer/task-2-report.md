@@ -128,3 +128,29 @@ Root checks:
 - Initial local lint found one unused test import and formatting changes in five touched files. Removed/formatted; final checks are clean.
 - An initial near-limit receipt probe at 16,000 characters passed; increasing it to 16,200 exposed the actual old-bound receipt bug. Both the failure and final tightened-bound regression are documented above.
 - No final test failures or warnings. No full application lifespan or live AWS account was used by the new/hermetic tests.
+
+## Fix round 1 — canonical UUID spellings (2026-09-11)
+
+Review base: `8c2c42e798b1f80192ddba87cc9b135e5e40f6b1`.
+
+The independent Important finding was confirmed: `validate_uuid` normalized only the callee's local value, while callers retained uppercase room/session strings for downstream membership queries, request hashes and command partition keys. This permitted two receipts and two allocated sequences for the same request under equivalent session UUID spellings.
+
+Changed only `core/services/local_sessions.py`, its existing service tests, and this report. Room IDs are now canonicalized before directory/membership lookups and receipt provenance comparisons. Command submission canonicalizes both room/session IDs before hashing, lookup or write. Events and status reads use the canonical scope/session identity returned by authorization. No shared UUID helper, messaging-wide behavior or Task 3 functionality changed.
+
+Added one real-Moto regression covering lowercase IDs, uppercase session only, uppercase room only, and both uppercase. It verifies identical resources, events, send/retry/status responses; one command sequence; one receipt in the canonical partition; and canonical stored room/session IDs.
+
+RED/GREEN command (backend directory):
+
+```sh
+uv run --offline pytest tests/unit/services/test_local_sessions.py::test_equivalent_uuid_spellings_share_resources_events_and_one_command_receipt -q --no-cov --tb=short
+```
+
+RED before source change: **1 failed in 0.64s**. The uppercase-session retry returned a different `CommandReceipt` instead of the original. GREEN after source change: **1 passed in 0.65s**.
+
+Broader verification after the fix:
+
+```sh
+uv run --offline pytest tests/unit/services/test_local_sessions.py tests/unit/repositories/test_messaging_repo.py tests/unit/routers/test_desktop_pair_router.py tests/unit/services/test_messaging_service_review_findings.py tests/unit/services/test_desktop_pair.py tests/unit/services/test_desktop_pair_live.py tests/unit/repositories/test_container_repo.py tests/unit/services/test_account_wipe.py tests/unit/routers/test_messaging_run_status.py -q --no-cov --tb=short
+```
+
+**270 passed in 20.48s**, including all 33 local-session cases. `ruff check` and `ruff format --check` on the two changed Python files passed. Root `pnpm --filter @lightbulb/shared test -- src/messaging/client.test.ts` passed all **4** cases; shared typecheck and `git diff --check` passed. No test noise or new concerns in this fix round. Self-review traced every caller and confirmed each normalized value reaches its subsequent query/hash/write; existing room/session authorization remains in place. No external changes or pushes occurred.

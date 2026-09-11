@@ -90,6 +90,43 @@ def command(service, **changes):
 
 
 @pytest.mark.asyncio
+async def test_equivalent_uuid_spellings_share_resources_events_and_one_command_receipt(db):
+    sid = await registered()
+    room = "aabbccdd-1111-4111-8111-aabbccddeeff"
+    table = db[0]
+    table.put_item(Item={"pk": f"ROOM#{room}", "sk": "META", "ownerId": OWNER, "roomId": room})
+    for user in (ALICE.user_id, BOB.user_id):
+        table.put_item(Item={"pk": f"ROOM#{room}", "sk": f"MEMBER#human#{user}", "kind": "human", "id": user})
+    table.put_item(
+        Item={
+            "pk": f"LOCALSESSION#{OWNER}#{sid}",
+            "sk": "EVENT#00000000000000000001",
+            "seq": 1,
+            "kind": "text",
+            "text": "canonical history",
+            "role": "assistant",
+            "truncated": False,
+        }
+    )
+    first = await service.submit_command(BOB, room, sid, command(service))
+    resources = await service.list_resources(BOB, room)
+    events = await service.list_events(BOB, room, sid)
+    assert [session.session_id for session in resources.sessions] == [sid]
+    assert [event.text for event in events.events] == ["canonical history"]
+    for room_spelling, session_spelling in ((room, sid.upper()), (room.upper(), sid), (room.upper(), sid.upper())):
+        assert await service.submit_command(BOB, room_spelling, session_spelling, command(service)) == first
+        assert await service.get_command(BOB, room_spelling, session_spelling, "request-1") == first
+        assert await service.list_resources(BOB, room_spelling) == resources
+        assert await service.list_events(BOB, room_spelling, session_spelling) == events
+    assert await service.get_command(BOB, room, sid, "request-1") == first
+    assert (await repo.get_session(OWNER, sid))["commandSeq"] == 1
+    receipts = [row for row in table.scan()["Items"] if row["sk"].startswith("COMMAND#")]
+    assert len(receipts) == 1
+    assert receipts[0]["pk"] == f"LOCALSESSION#{OWNER}#{sid}"
+    assert receipts[0]["roomId"] == room and receipts[0]["sessionId"] == sid
+
+
+@pytest.mark.asyncio
 async def test_shared_resources_and_canonical_membership_on_every_operation(db):
     sid = await registered()
     resources = await service.list_resources(BOB, ROOM)

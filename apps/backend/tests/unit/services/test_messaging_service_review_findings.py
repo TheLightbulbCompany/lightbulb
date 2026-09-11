@@ -459,3 +459,34 @@ async def test_set_pin_rejects_a_foreign_message_and_maps_the_cap_to_a_problem(m
     with pytest.raises(ApiProblem) as capped:
         await messaging.set_pin(auth, "room-1", "m-1", True)
     assert capped.value.error.code == "PIN_LIMIT"
+
+
+@pytest.mark.asyncio
+async def test_set_pin_publishes_only_when_the_repo_actually_changed_pins(monkeypatch):
+    auth = AuthContext(user_id="member", org_id="org_1")
+    meta = {"roomId": "room-1", "ownerId": "org_1", "kind": "channel", "revision": 2}
+    monkeypatch.setattr(
+        messaging,
+        "require_room_member",
+        AsyncMock(return_value=(meta, {"kind": "human", "id": "member", "role": "member"})),
+    )
+    monkeypatch.setattr(messaging.messaging_repo, "get_message_by_id", AsyncMock(return_value={"messageId": "m-1"}))
+    publish = AsyncMock()
+    monkeypatch.setattr(messaging, "_publish_room_metadata", publish)
+    monkeypatch.setattr(messaging, "_room_detail", AsyncMock(return_value="detail"))
+
+    # Already pinned: the repo returns META unchanged (same revision) -- no live event.
+    monkeypatch.setattr(
+        messaging.messaging_repo, "set_pin", AsyncMock(return_value={**meta, "pinnedMessageIds": ["m-1"]})
+    )
+    assert await messaging.set_pin(auth, "room-1", "m-1", True) == "detail"
+    publish.assert_not_awaited()
+
+    # A new pin: the repo bumps the revision -- publish once.
+    monkeypatch.setattr(
+        messaging.messaging_repo,
+        "set_pin",
+        AsyncMock(return_value={**meta, "pinnedMessageIds": ["m-1", "m-2"], "revision": 3}),
+    )
+    assert await messaging.set_pin(auth, "room-1", "m-2", True) == "detail"
+    publish.assert_awaited_once()

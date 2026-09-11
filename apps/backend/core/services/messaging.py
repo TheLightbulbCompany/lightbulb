@@ -1357,13 +1357,18 @@ async def set_pin(auth: AuthContext, room_id: str, message_id: str, pinned: bool
     meta, member = await require_room_member(owner_id, auth.user_id, room_id)
     if await messaging_repo.get_message_by_id(room_id, message_id) is None:
         raise ApiProblem("MESSAGE_NOT_FOUND", "Message not found in this room.")
+    previous_revision = int(meta["revision"])
     try:
         meta = await messaging_repo.set_pin(room_id, message_id, pinned)
     except messaging_repo.PinLimitExceeded as exc:
         raise ApiProblem("PIN_LIMIT", f"A room can pin at most {MAX_PINNED_MESSAGES} messages.") from exc
     except messaging_repo.RoomNotFound as exc:
         raise ApiProblem("ROOM_NOT_FOUND", "Room not found.") from exc
-    await _publish_room_metadata(meta)
+    # The repo is idempotent (no CAS write, no revision bump) when the requested
+    # pin state already holds -- skip the live event too, so a repeated click
+    # never fans out a no-op `room.metadata.changed`.
+    if int(meta["revision"]) != previous_revision:
+        await _publish_room_metadata(meta)
     return await _room_detail(meta, auth.user_id, member)
 
 

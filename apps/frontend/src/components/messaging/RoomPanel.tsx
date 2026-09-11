@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ArrowLeft, Check, Circle, CircleAlert, Hash, Link2, MessageCircle, Users } from "lucide-react";
-import type { Components } from "react-markdown";
+import { defaultUrlTransform } from "react-markdown";
+import type { Components, UrlTransform } from "react-markdown";
 import type { CreateMessageRequest, ListenMode, MemberRef, UpdateMessageRequest } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
 import { Button } from "@/components/ui/button";
@@ -12,6 +13,7 @@ import { MarkdownView } from "@/components/teams/shared/components/MarkdownView"
 import { safeHref } from "@/components/teams/shared/lib/safeHref";
 import { cn } from "@/lib/utils";
 import { RoomComposer, type RoomComposerProps } from "./RoomComposer";
+import { linkifyMentions, MENTION_SCHEME, parseMentionHref } from "./mentions";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import { ParticipantProfile } from "./ParticipantProfile";
 import { RoomMessageItem } from "./RoomMessageItem";
@@ -84,12 +86,19 @@ function WorkStatus({ state }: { state: WorkState }) {
 
 const roomMarkdown: Partial<Components> = {
   a: ({ href, children }) => {
+    const mention = href ? parseMentionHref(href) : null;
+    if (mention) return <span className="room-mention" data-kind={mention.kind}>{children}</span>;
     const safe = safeHref(href);
     return safe ? <a href={safe} target="_blank" rel="noopener noreferrer" className="text-info underline underline-offset-4">{children}</a> : <span>{children}</span>;
   },
   img: ({ alt }) => <span className="text-muted-foreground">{alt || "Image omitted"}</span>,
   blockquote: ({ children }) => <blockquote className="border-l border-border pl-3 my-2 text-muted-foreground">{children}</blockquote>,
 };
+
+// react-markdown's default urlTransform blanks any href whose scheme it doesn't
+// recognize (http/https/mailto/relative/…), so a `mention:` link never reaches
+// roomMarkdown.a's href at all unless we carve out an exception for it here.
+const roomUrlTransform: UrlTransform = (value) => (value.startsWith(MENTION_SCHEME) ? value : defaultUrlTransform(value));
 
 const narrowQuery = "(max-width: 859px)";
 const overlayQuery = "(min-width: 860px) and (max-width: 1179px)";
@@ -323,10 +332,11 @@ function RoomContent({
 
   function renderMessage(message: RoomMessage, inThread = false, collapsed = false) {
     const participant = participants.find((member) => member.kind === message.author.kind && member.id === message.author.id);
+    const mentionsMe = message.mentions.some((mention) => mention.kind === "human" && mention.id === currentUserId);
     return <RoomMessageItem key={message.messageId} id={`${id}-${inThread ? "thread" : "main"}-${message.messageId}`}
-      message={message} participant={participant} currentUserId={currentUserId} actionable={actionable} inThread={inThread} collapsed={collapsed}
+      message={message} text={linkifyMentions(message.text, message.mentions, participants)} participant={participant} currentUserId={currentUserId} actionable={actionable} inThread={inThread} collapsed={collapsed}
       replyCount={inThread ? 0 : messages.filter((candidate) => candidate.threadRootMessageId === message.messageId).length}
-      highlighted={inThread && searchTarget?.messageId === message.messageId} markdown={roomMarkdown} workStatus={(state) => <WorkStatus state={state} />}
+      highlighted={inThread && searchTarget?.messageId === message.messageId} mentionsViewer={mentionsMe} markdown={roomMarkdown} urlTransform={roomUrlTransform} workStatus={(state) => <WorkStatus state={state} />}
       reactionPending={reactionPending !== null} reactionError={reactionError === message.messageId}
       onToggleReaction={onSetReaction && !message.deletedAt ? (emoji) => void toggleReaction(message, emoji) : undefined}
       onOpenThread={(button) => openDetail("thread", message.messageId, button)}

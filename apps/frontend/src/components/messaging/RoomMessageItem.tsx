@@ -2,7 +2,7 @@
 
 import type { ReactElement, ReactNode } from "react";
 import { MessageCircle, SmilePlus } from "lucide-react";
-import type { Components } from "react-markdown";
+import type { Components, UrlTransform } from "react-markdown";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Identity } from "@/components/teams/shared/components/Identity";
@@ -20,6 +20,7 @@ const reactionEmojis = ["👍", "❤️", "😂", "🎉", "👀", "✅"] as cons
 export interface RoomMessageItemProps {
   id: string;
   message: RoomMessage;
+  text: string;
   participant?: RoomParticipant;
   currentUserId: string;
   actionable: boolean;
@@ -27,7 +28,9 @@ export interface RoomMessageItemProps {
   collapsed: boolean;
   replyCount: number;
   highlighted: boolean;
+  mentionsViewer: boolean;
   markdown: Partial<Components>;
+  urlTransform: UrlTransform;
   workStatus: (state: WorkState) => ReactNode;
   reactionPending: boolean;
   reactionError: boolean;
@@ -39,7 +42,7 @@ export interface RoomMessageItemProps {
   toolbarExtras?: ReactNode;
 }
 
-export function RoomMessageItem({ id, message, participant, currentUserId, actionable, inThread, collapsed, replyCount, highlighted, markdown, workStatus, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, toolbarExtras }: RoomMessageItemProps): ReactElement {
+export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, replyCount, highlighted, mentionsViewer, markdown, urlTransform, workStatus, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, toolbarExtras }: RoomMessageItemProps): ReactElement {
   const name = participant?.displayName || message.author.displayName || "Unknown author";
   const timestamp = !Number.isNaN(Date.parse(message.createdAt)) ? message.createdAt : undefined;
   const time = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
@@ -57,7 +60,7 @@ export function RoomMessageItem({ id, message, participant, currentUserId, actio
       onClick={(event) => onOpenThread(event.currentTarget)}><MessageCircle aria-hidden="true" /></Button>}
     {toolbarExtras}
   </> : undefined;
-  return <article id={id} tabIndex={-1} className={cn("room-message", collapsed && "room-message-collapsed", highlighted && "bg-accent")} aria-label={`Message from ${name}`}>
+  return <article id={id} tabIndex={-1} className={cn("room-message", collapsed && "room-message-collapsed", highlighted && "bg-accent", mentionsViewer && "room-message-mentions-me")} aria-label={`Message from ${name}`}>
     {collapsed
       ? <span className="room-message-gutter" aria-hidden="true">{time}</span>
       : participant ? <ParticipantAvatar participant={participant} /> : <Identity name={name} avatarOnly size="default" />}
@@ -70,7 +73,7 @@ export function RoomMessageItem({ id, message, participant, currentUserId, actio
         {timestamp && <time className="text-sm text-muted-foreground" dateTime={timestamp} title={new Date(timestamp).toLocaleString()}>{time}</time>}
       </div>}
       <RoomMessageContent message={message} currentUserId={currentUserId} actionable={actionable} onUpdate={onUpdateMessage} actions={actions}>
-        <MarkdownView skipHtml components={markdown}>{message.text}</MarkdownView>
+        <MarkdownView skipHtml components={markdown} urlTransform={urlTransform}>{text}</MarkdownView>
       </RoomMessageContent>
       {!message.deletedAt && onToggleReaction && appliedReactions.length > 0 && <div className="flex flex-wrap gap-1 mt-1" aria-label="Message reactions">
         {appliedReactions.map((emoji) => {

@@ -492,6 +492,16 @@ it("keeps every action reachable on a collapsed message", async () => {
   expect(within(collapsed).getByRole("button", { name: "Add reaction" })).toBeInTheDocument();
 });
 
+it("renders @mentions as chips", () => {
+  render(<RoomPanel {...props} participants={[owner, { ...friday, mentionHandle: "friday" }]} messages={[{ ...message, text: "ping @friday" }]} />);
+  expect(screen.getByText("@friday")).toHaveClass("room-mention");
+});
+
+it("marks a message that mentions the viewer for highlighting", () => {
+  render(<RoomPanel {...props} messages={[{ ...message, mentions: [{ kind: "human", id: "owner" }] }]} />);
+  expect(screen.getByRole("article", { name: "Message from Friday" })).toHaveClass("room-message-mentions-me");
+});
+
 it("keeps the New line when a send fails and clears it after a successful send", async () => {
   const onSubmit = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(undefined);
   const reply = { ...message, messageId: "reply", messageSeq: 2, text: "Hi", author: { kind: "human" as const, id: "owner", displayName: "Owner" } };

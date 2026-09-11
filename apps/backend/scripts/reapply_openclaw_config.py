@@ -29,9 +29,9 @@ call the write path.
 
 ``--all-owners`` is the delivery lever for anything that only reaches an
 existing container through the config write path — which includes the seeded
-identity files (``friday_identity.pre_stage_friday_identity`` runs inside
-``write_user_configs``, so a heal migration added to it lands on every owner
-this touches). Merging such a change ships nothing on its own: existing
+identity files (``starter_roster.pre_stage_starter_roster`` runs inside
+``write_user_configs``, so a change to it lands on every owner this
+touches). Merging such a change ships nothing on its own: existing
 owners keep their provision-time files until something re-runs this path.
 It is sequential and continues past a failing owner, reporting a per-owner
 tally at the end and exiting non-zero if any owner errored.

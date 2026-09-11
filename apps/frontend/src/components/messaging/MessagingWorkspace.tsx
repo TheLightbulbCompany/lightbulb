@@ -21,7 +21,7 @@ export function MessagingDirectory({ onOpenRoom }: { onOpenRoom?: (room?: Direct
     }}
     onCreate={(creation) => {
       onOpenRoom?.();
-      directoryProps.onCreate?.(creation);
+      return directoryProps.onCreate?.(creation);
     }}
   />;
 }

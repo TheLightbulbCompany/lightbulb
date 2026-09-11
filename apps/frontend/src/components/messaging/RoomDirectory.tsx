@@ -4,6 +4,7 @@ import { useId, useState } from "react";
 import { Hash, MessageCircle, Plus, Users } from "lucide-react";
 import type { ListenMode, RoomKind } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import { roomDisplayName, roomKindLabel, type DirectoryParticipant, type ParticipantSelection, type DirectoryRoom } from "./types";
@@ -23,7 +24,7 @@ export interface RoomDirectoryProps {
   currentRoomId?: string;
   onSelectRoom: (roomId: string) => void;
   onSelectParticipant: (participant: DirectoryParticipant) => void | Promise<void>;
-  onCreate?: (creation: ConversationCreation) => void;
+  onCreate?: (creation: ConversationCreation) => void | Promise<boolean>;
   creationBusy?: boolean;
   creationError?: string;
   onRetry?: () => void;
@@ -92,10 +93,9 @@ function DirectoryContent({
     });
   }
 
-  return <nav className="room-directory" aria-label="Conversations">
+  return <Dialog open={creating} onOpenChange={(open) => { if (!creationBusy) setCreating(open); }}><nav className="room-directory" aria-label="Conversations">
     <div className="room-directory-heading"><h2 className="font-semibold">Conversations</h2>
-      {onCreate && <Button variant="ghost" size="icon" aria-label="New conversation" disabled={creationBusy}
-        onClick={() => { setCreating(true); setSelected(new Map()); setQuery(""); setKind("channel"); }}><Plus aria-hidden="true" /></Button>}
+      {onCreate && <DialogTrigger asChild><Button variant="ghost" size="icon" aria-label="New conversation" disabled={creationBusy}><Plus aria-hidden="true" /></Button></DialogTrigger>}
     </div>
     {partialError && <div role="alert" className="px-2 text-sm text-err">Some conversation details could not be loaded. {onRetry && <Button variant="outline" onClick={onRetry}>Try again</Button>}</div>}
     {(["Channels", "Direct messages"] as const).map((group) => {
@@ -117,13 +117,33 @@ function DirectoryContent({
         })}</ul>
       </section>;
     })}
-    {creating && <form aria-label="Create conversation" className="room-creation" aria-busy={creationBusy}
-      onSubmit={(event) => {
+    <section aria-label="People and agents">
+      <Button variant="ghost" className="w-full justify-start" aria-expanded={directoryOpen}
+        aria-controls={`${id}-people`} onClick={() => setDirectoryOpen(!directoryOpen)}><Users aria-hidden="true" />People and agents</Button>
+      {directoryOpen && <div id={`${id}-people`} className="room-picker">
+        <label htmlFor={`${id}-directory-search`} className="sr-only">Find people and agents</label>
+        <input id={`${id}-directory-search`} className="room-input" type="search" placeholder="Find a person or agent…" value={query} onChange={(event) => setQuery(event.target.value)} />
+        <div className="room-picker-list">{visibleParticipants.map((participant) => <button type="button" className="room-choice room-choice-button" key={`${participant.kind}:${participant.id}`} disabled={creationBusy} onClick={() => onSelectParticipant(participant)}>
+          <Identity name={participant.displayName} avatarOnly size="sm" />
+          <span className="min-w-0 flex-1"><span className="block truncate">{participant.displayName}</span><span className="text-sm text-muted-foreground">{participant.kind === "agent" ? participant.mentionHandle ? `@${participant.mentionHandle}` : "Agent" : "Person"}</span></span>
+        </button>)}</div>
+        {visibleParticipants.length === 0 && <p className="text-sm text-muted-foreground">No matching people or agents.</p>}
+        {creationError && <p role="alert" className="text-sm text-err">{creationError}</p>}
+      </div>}
+    </section>
+    <DialogContent className="room-creation-dialog" showCloseButton={!creationBusy}>
+    <form aria-label="Create conversation" className="room-creation" aria-busy={creationBusy}
+      onSubmit={async (event) => {
         event.preventDefault();
         if (!canCreate || creationBusy) return;
-        onCreate?.({ kind, name: kind === "channel" ? name.trim() : null, members: [...selected.values()] });
+        const created = await onCreate?.({ kind, name: kind === "channel" ? name.trim() : null, members: [...selected.values()] });
+        if (created) { setCreating(false); setName(""); setSelected(new Map()); setQuery(""); setKind("channel"); }
       }}>
-      <h3 className="font-semibold">New conversation</h3>
+      <div className="room-creation-header">
+        <DialogTitle>{kind === "channel" ? "Create a channel" : "New message"}</DialogTitle>
+        <DialogDescription>Choose the people and agents you want to talk with.</DialogDescription>
+      </div>
+      <div className="room-creation-body">
       <label htmlFor={`${id}-kind`}>Conversation type</label>
       <select id={`${id}-kind`} className="room-input" value={kind} disabled={creationBusy}
         onChange={(event) => { setKind(event.target.value as RoomKind); setSelected(new Map()); }}>
@@ -134,35 +154,34 @@ function DirectoryContent({
       {kind === "channel" && <><label htmlFor={`${id}-name`}>Channel name</label>
         <input id={`${id}-name`} className="room-input" value={name} maxLength={80} disabled={creationBusy} onChange={(event) => setName(event.target.value)} /></>}
       <p className="text-sm text-muted-foreground">Only selected workspace members can read this conversation.</p>
-      <div className="room-composer-actions"><Button type="button" variant="ghost" disabled={creationBusy} onClick={() => setCreating(false)}>Cancel</Button>
-        <Button type="submit" disabled={!canCreate || creationBusy}>{creationBusy ? "Creating…" : "Create conversation"}</Button></div>
-    </form>}
-    <section aria-label="People and agents">
-      <Button variant="ghost" className="w-full justify-start" aria-expanded={directoryOpen || creating}
-        aria-controls={`${id}-people`} onClick={() => setDirectoryOpen(!directoryOpen)}><Users aria-hidden="true" />People and agents</Button>
-      {(directoryOpen || creating) && <div id={`${id}-people`} className="room-picker">
+      <div className="room-picker">
+        <p className="text-sm font-semibold">People and agents · {selected.size} selected</p>
         <label htmlFor={`${id}-search`} className="sr-only">Find people and agents</label>
         <input id={`${id}-search`} className="room-input" type="search" placeholder="Find a person or agent…" value={query} onChange={(event) => setQuery(event.target.value)} />
         <div className="room-picker-list">{visibleParticipants.map((participant) => {
           const key = `${participant.kind}:${participant.id}`;
           const selection = selected.get(key);
           const content = <>
-            {creating && <input aria-label={`Select ${participant.displayName}`} type="checkbox" checked={!!selection} disabled={creationBusy || (!selection && selected.size >= 31)} onChange={(event) => toggleParticipant(participant, event.target.checked)} />}
+            <input aria-label={`Select ${participant.displayName}`} type="checkbox" checked={!!selection} disabled={creationBusy || (!selection && selected.size >= 31)} onChange={(event) => toggleParticipant(participant, event.target.checked)} />
             <Identity name={participant.displayName} avatarOnly size="sm" />
             <span className="min-w-0 flex-1"><span className="block truncate" title={participant.displayName}>{participant.displayName}</span>
               <span className="text-sm text-muted-foreground">{participant.kind === "agent" ? participant.mentionHandle ? `@${participant.mentionHandle}` : "Agent" : "Person"}</span></span>
-            {creating && selection?.kind === "agent" && <label className="sr-only" htmlFor={`${id}-${participant.id}-listen`}>Listen mode for {participant.displayName}</label>}
-            {creating && selection?.kind === "agent" && <select id={`${id}-${participant.id}-listen`} className="room-listen-mode" value={selection.listenMode ?? "mentions"}
+            {selection?.kind === "agent" && <label className="sr-only" htmlFor={`${id}-${participant.id}-listen`}>Listen mode for {participant.displayName}</label>}
+            {selection?.kind === "agent" && <select id={`${id}-${participant.id}-listen`} className="room-listen-mode" value={selection.listenMode ?? "mentions"} disabled={creationBusy}
               onChange={(event) => setListenMode(participant, event.target.value as ListenMode)}>
               <option value="active">Active</option><option value="mentions">Mentions only</option><option value="observe">Observe</option>
             </select>}</>;
-          return creating
-            ? <div className="room-choice" key={key}>{content}</div>
-            : <button type="button" className="room-choice room-choice-button" key={key} disabled={creationBusy} onClick={() => onSelectParticipant(participant)}>{content}</button>;
+          return <div className="room-choice" key={key}>{content}</div>;
         })}</div>
         {visibleParticipants.length === 0 && <p className="text-sm text-muted-foreground">No matching people or agents.</p>}
+      </div>
+      </div>
+      <div className="room-creation-footer">
         {creationError && <p role="alert" className="text-sm text-err">{creationError}</p>}
-      </div>}
-    </section>
-  </nav>;
+        <div className="room-composer-actions"><Button type="button" variant="ghost" disabled={creationBusy} onClick={() => setCreating(false)}>Cancel</Button>
+          <Button type="submit" disabled={!canCreate || creationBusy}>{creationBusy ? "Creating…" : kind === "channel" ? "Create channel" : "Start message"}</Button></div>
+      </div>
+    </form>
+    </DialogContent>
+  </nav></Dialog>;
 }

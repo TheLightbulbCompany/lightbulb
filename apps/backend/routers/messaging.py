@@ -17,6 +17,7 @@ from core.config import settings
 from core.containers import get_ecs_manager, get_gateway_pool
 from core.repositories import container_repo, messaging_repo
 from core.services import messaging as service
+from core.services import local_sessions
 from core.services.live_events import get_live_event_publisher
 from core.services.messaging import (
     AbortRunResponse,
@@ -46,6 +47,52 @@ from core.services.messaging import (
 )
 
 router = APIRouter()
+
+
+@router.get("/messaging/rooms/{room_id}/resources", response_model=local_sessions.RoomResources)
+async def list_room_resources(room_id: str, auth: AuthContext = Depends(get_current_user)):
+    return await local_sessions.list_resources(auth, room_id)
+
+
+@router.get(
+    "/messaging/rooms/{room_id}/local-sessions/{session_id}/events", response_model=local_sessions.LocalSessionEventPage
+)
+async def list_local_session_events(
+    room_id: str,
+    session_id: str,
+    after_seq: Annotated[int, Query(alias="afterSeq", ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    auth: AuthContext = Depends(get_current_user),
+):
+    return await local_sessions.list_events(auth, room_id, session_id, after_seq, limit)
+
+
+@router.post(
+    "/messaging/rooms/{room_id}/local-sessions/{session_id}/commands",
+    response_model=local_sessions.CommandReceipt,
+    status_code=202,
+)
+async def submit_local_session_command(
+    room_id: str,
+    session_id: str,
+    body: local_sessions.LocalSessionCommand,
+    auth: AuthContext = Depends(get_current_user),
+):
+    return await local_sessions.submit_command(auth, room_id, session_id, body)
+
+
+@router.get(
+    "/messaging/rooms/{room_id}/local-sessions/{session_id}/commands/{request_id}",
+    response_model=local_sessions.CommandReceipt,
+)
+async def get_local_session_command(
+    room_id: str,
+    session_id: str,
+    request_id: str,
+    auth: AuthContext = Depends(get_current_user),
+):
+    return await local_sessions.get_command(auth, room_id, session_id, request_id)
+
 
 _typing_last: dict[tuple[str, str], float] = {}
 _typing_lock = asyncio.Lock()

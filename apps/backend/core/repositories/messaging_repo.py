@@ -1348,10 +1348,13 @@ async def delete_room_partition(room_id: str) -> int:
 
 
 async def delete_owner_partition(owner_id: str) -> int:
-    """Delete every ``OWNER#`` row plus the reverse ``STREAM#`` rows it names."""
+    """Delete owner rows, reverse streams and retained local-session history."""
     streams = await _query(owner_pk(owner_id), begins_with="USERSTREAM#")
     count = 0
     for s in streams:
         count += await _delete_partition(stream_pk(s["channelKey"]))
     count += await _delete_partition(owner_pk(owner_id))
+    from core.repositories import local_sessions_repo
+
+    count += await local_sessions_repo.delete_owner(owner_id)
     return count

@@ -19,6 +19,23 @@ const agentId = "22222222-2222-4222-8222-222222222222";
 const messageId = "33333333-3333-4333-8333-333333333333";
 
 describe("messaging HTTP client", () => {
+  it("uses room-scoped local resources and preserves command identity with escaped path segments", async () => {
+    const { client, methods } = setup();
+    const command = { requestId: "request-1", expectedGeneration: "generation-1", kind: "send" as const, text: "continue" };
+    await client.listResources("room/a");
+    await client.listLocalSessionEvents("room/a", "session/b", 3, 20);
+    await client.submitLocalSessionCommand("room/a", "session/b", command);
+    await client.getLocalSessionCommand("room/a", "session/b", "request/c");
+    await client.setLocalSessionEnrollment({ deviceId: "mac-id", cliDeviceId: "cli-id", enabled: false });
+    expect(methods.get.mock.calls).toEqual([
+      ["/messaging/rooms/room%2Fa/resources"],
+      ["/messaging/rooms/room%2Fa/local-sessions/session%2Fb/events?afterSeq=3&limit=20"],
+      ["/messaging/rooms/room%2Fa/local-sessions/session%2Fb/commands/request%2Fc"],
+    ]);
+    expect(methods.post).toHaveBeenCalledWith("/messaging/rooms/room%2Fa/local-sessions/session%2Fb/commands", command);
+    expect(methods.put).toHaveBeenCalledWith("/desktop/local-sessions/enrollment", { deviceId: "mac-id", cliDeviceId: "cli-id", enabled: false });
+  });
+
   it("uses the frozen read endpoints and sequence query", async () => {
     const { client, methods } = setup();
     await client.getLiveConfig();

@@ -15,6 +15,7 @@ import { useCheckoutReturn } from "@/components/chat/shell/useCheckoutReturn";
 import { MyChannelsSection } from "@/components/settings/MyChannelsSection";
 import { WebhooksPanel } from "@/components/settings/WebhooksPanel";
 import { DesktopFileAccess } from "@/components/desktop/DesktopFileAccess";
+import { LocalSessions } from "@/components/desktop/LocalSessions";
 import { LocalMcpServers } from "@/components/desktop/LocalMcpServers";
 import { HandlePicker } from "@/components/marketplace/HandlePicker";
 import { getMySellerProfile, type SellerProfile } from "@/lib/marketplace/api";
@@ -627,7 +628,7 @@ const PANELS: Record<Panel, () => React.ReactElement> = {
   // tab keeps the default full-bleed variant via ControlPanelRouter).
   mcp: () => <IntegrationsPanel variant="settings" />,
   webhooks: WebhooksPanel,
-  desktop: DesktopFileAccess,
+  desktop: () => <><LocalSessions /><DesktopFileAccess /></>,
   // Desktop-app-only: MCP servers running on the user's own Mac, driven by the
   // Tauri local_mcp_* commands. Renders a download prompt in a browser.
   "local-mcp": LocalMcpServers,

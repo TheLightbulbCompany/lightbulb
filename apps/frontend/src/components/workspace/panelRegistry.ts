@@ -210,7 +210,7 @@ export function describePanel(
         panelId: MESSAGES_PANEL_ID,
         component: "chat",
         title: "Messages",
-        params: { roomId: params.room, ...(params.message ? { messageId: params.message } : {}) },
+        params: { roomId: params.room, ...(params.session ? { sessionId: params.session } : params.message ? { messageId: params.message } : {}) },
         renderer: "always",
       };
     }
@@ -320,7 +320,7 @@ export function durableParamsFor(panelId: string): string[] {
   // param or a refresh resurrects the panel the user just closed. "panel" +
   // "agentId" cover the explicit ?panel=chat grammar (describePanel accepts
   // agent OR agentId) so an externally-authored chat link clears fully.
-  if (panelId.startsWith("chat:")) return ["panel", "agent", "agentId", "room", "message"];
+  if (panelId.startsWith("chat:")) return ["panel", "agent", "agentId", "room", "message", "session"];
   if (panelId === "file-viewer") return ["panel", "path", "agent"];
   if (panelId === "agent-inspector") return ["panel", "agent", "inspectorTab"];
   if (panelId === "control:agents") return ["panel", "agent"];
@@ -343,7 +343,7 @@ export function clearablePanelParamKeys(panelId: string): string[] {
   // roomId/messageId included alongside agentId/agentSelection: an agent open
   // must clear a stale room target and vice versa, or the two grammars fight
   // (see openMessagePanel / openChatPanel in workspaceController.ts).
-  if (panelId === MESSAGES_PANEL_ID) return ["agentId", "agentSelection", "roomId", "messageId"];
+  if (panelId === MESSAGES_PANEL_ID) return ["agentId", "agentSelection", "roomId", "messageId", "sessionId", "sessionIntent"];
   if (panelId === "teams-agents") return ["view"];
   if (panelId === "teams-issues") return ["agent", "groupBy"];
   if (panelId === "teams-inbox") return ["section"];

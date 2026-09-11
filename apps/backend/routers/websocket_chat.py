@@ -7,7 +7,7 @@ import hmac
 import logging
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request, Response
 
 from core.config import settings
 from core.containers import get_gateway_pool
@@ -89,6 +89,16 @@ def _assert_machine_connection(
         raise HTTPException(status_code=403, detail="Verified machine identity mismatch")
     owner_id = org_id or user_id
     if auth_kind == "device":
+        if client_id == "lightbulb-local-sessions":
+            if (
+                row.get("connection_type") != "local-session"
+                or row.get("auth_kind") != "device"
+                or row.get("client_id") != client_id
+                or not verified_device_id
+                or row.get("device_id") != verified_device_id
+            ):
+                raise HTTPException(status_code=403, detail="Verified local session identity mismatch")
+            return owner_id, "local-session"
         if (
             client_id not in NODE_HOST_CLIENT_IDS
             or row.get("connection_type") != "node"
@@ -132,7 +142,11 @@ async def ws_connect(
         auth_kind=x_auth_kind,
         verified_device_id=x_verified_device_id,
     )
-    if kind == "node":
+    if kind == "local-session":
+        from core.services.local_session_relay import get_local_session_relay
+
+        await get_local_session_relay().connect(x_connection_id)
+    elif kind == "node":
         background_tasks.add_task(
             _kick_off_node_connect,
             connection_id=x_connection_id,
@@ -232,15 +246,31 @@ async def _admit_operator_wake(*, user_id: str, owner_id: str, body: dict[str, A
 @router.post("/message", status_code=200)
 async def ws_message(
     body: dict[str, Any],
+    request: Request,
     x_connection_id: str | None = Header(None, alias="x-connection-id"),
 ) -> Response:
     if not x_connection_id:
         raise HTTPException(status_code=400, detail="Missing x-connection-id header")
     row = await asyncio.to_thread((await get_connection_service()).get_connection, x_connection_id)
-    if row is None or row.get("connection_type") not in {"node", "operator"}:
+    if row is None or row.get("connection_type") not in {"node", "operator", "local-session"}:
         raise HTTPException(status_code=403, detail="Machine connection required")
     owner_id = row.get("org_id") or row["user_id"]
     user_id = row["user_id"]
+
+    if row["connection_type"] == "local-session":
+        from core.services.local_session_relay import get_local_session_relay
+        from core.services.local_sessions import MAX_ENVELOPE_BYTES
+        from core.services.messaging import ApiProblem
+
+        relay = get_local_session_relay()
+        try:
+            if len(await request.body()) > MAX_ENVELOPE_BYTES:
+                raise ApiProblem("INVALID_REQUEST", "Local session envelope exceeds 16 KiB.")
+            response = await relay.handle_message(x_connection_id, body)
+        except ApiProblem as exc:
+            response = {"type": "local.session.error", "code": exc.error.code}
+        await relay.management.send_message_async(x_connection_id, response)
+        return Response(status_code=200)
 
     if row["connection_type"] == "operator":
         if row.get("auth_kind") != "paperclip_service":

@@ -174,6 +174,7 @@ export type LiveEventType =
   | "room.typing.changed"
   | "room.run.frame"
   | "room.metadata.changed"
+  | "room.resources.changed"
   | "room.subscription.rotated"
   | "room.access.removed"
   | "runtime.operation.changed"
@@ -193,6 +194,7 @@ export const LIVE_EVENT_TYPES: ReadonlySet<string> = new Set<LiveEventType>([
   "room.typing.changed",
   "room.run.frame",
   "room.metadata.changed",
+  "room.resources.changed",
   "room.subscription.rotated",
   "room.access.removed",
   "runtime.operation.changed",
@@ -250,6 +252,7 @@ export type LiveEvent =
   | LiveEventEnvelope<"room.typing.changed", RoomTypingChanged>
   | LiveEventEnvelope<"room.run.frame", RoomRunFrame>
   | LiveEventEnvelope<"room.metadata.changed", RoomMetadataChanged>
+  | LiveEventEnvelope<"room.resources.changed", { roomId: string }>
   | LiveEventEnvelope<"room.subscription.rotated", RoomSubscriptionRotated>
   | LiveEventEnvelope<"room.access.removed", RoomAccessRemoved>
   | LiveEventEnvelope<"runtime.operation.changed", RuntimeOperationChanged>
@@ -342,6 +345,8 @@ function canonicalMessageValid(value: unknown): value is CanonicalRoomMessage {
 function payloadValid(type: LiveEventType, payload: unknown): boolean {
   if (!isObj(payload)) return false;
   switch (type) {
+    case "room.resources.changed":
+      return str(payload.roomId) && Object.keys(payload).length === 1;
     case "room.message.updated":
       return str(payload.roomId) && str(payload.messageId) && Number.isInteger(payload.messageSeq) && (payload.messageSeq as number) > 0;
     case "room.message.created":

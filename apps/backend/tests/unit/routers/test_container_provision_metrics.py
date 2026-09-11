@@ -29,7 +29,7 @@ async def test_cold_start_emits_count_and_latency_on_success():
 
     auth = MagicMock()
     auth.user_id = "user_returning"
-    auth.org_id = None
+    auth.org_id = "org_returning"
 
     fake_ecs = MagicMock()
     fake_ecs.start_user_service = AsyncMock()
@@ -43,6 +43,7 @@ async def test_cold_start_emits_count_and_latency_on_success():
             return_value={"status": "stopped", "service_name": "openclaw-foo"},
         ),
         patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+        patch("routers.container.ensure_workspace_trial_default", new=AsyncMock()),
         patch("routers.container.put_metric") as mock_put_metric,
         patch("routers.container.timing", fake_timing),
     ):
@@ -68,7 +69,7 @@ async def test_cold_start_emits_error_outcome_on_failure():
 
     auth = MagicMock()
     auth.user_id = "user_returning"
-    auth.org_id = None
+    auth.org_id = "org_returning"
 
     fake_ecs = MagicMock()
     fake_ecs.start_user_service = AsyncMock(side_effect=EcsManagerError("ECS down"))
@@ -80,6 +81,7 @@ async def test_cold_start_emits_error_outcome_on_failure():
             return_value={"status": "stopped", "service_name": "openclaw-foo"},
         ),
         patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+        patch("routers.container.ensure_workspace_trial_default", new=AsyncMock()),
         patch("routers.container.put_metric") as mock_put_metric,
         patch("routers.container.timing", _make_timing_mock()),
     ):

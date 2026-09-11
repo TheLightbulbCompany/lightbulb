@@ -30,8 +30,8 @@ def client(teams_ctx, monkeypatch):
         return teams_ctx
 
     async def fake_auth():
-        # Personal owner; resolve_owner_id -> user_id == teams_ctx.owner_id.
-        return AuthContext(user_id="o1")
+        # Dashboard requires the active org workspace, matching the Teams context.
+        return AuthContext(user_id="u1", org_id="o1", org_role="org:admin")
 
     app.dependency_overrides[agents_mod._ctx] = fake_ctx
     app.dependency_overrides[get_current_user] = fake_auth

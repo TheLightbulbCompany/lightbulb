@@ -27,6 +27,16 @@ def rearm_mock():
         yield m
 
 
+@pytest.fixture(autouse=True)
+def workspace_oauth_dependencies():
+    """The shared client is an org admin; keep router tests off real billing."""
+    with (
+        patch("routers.oauth.billing_repo.get_by_owner_id", new=AsyncMock(return_value=None)),
+        patch("routers.oauth.resolve_token_owner", new=AsyncMock(return_value="user_test_123")),
+    ):
+        yield
+
+
 @pytest.fixture
 def oauth_table(monkeypatch):
     """A real (moto) oauth-tokens table so the binding logic runs end-to-end
@@ -126,7 +136,7 @@ async def test_poll_returns_pending_status(async_client):
 async def test_poll_returns_completed_status(async_client):
     with patch(
         "routers.oauth.poll_device_code",
-        new=AsyncMock(return_value=DevicePollResult(account_id="acc_1", bound_owner_id="user_test_123")),
+        new=AsyncMock(return_value=DevicePollResult(account_id="acc_1", bound_owner_id="org_test_456")),
     ):
         resp = await async_client.post("/api/v1/oauth/chatgpt/poll")
     assert resp.status_code == 200
@@ -140,11 +150,11 @@ async def test_poll_completion_rearms_a_deferred_trial_conversion(async_client, 
     re-arm it (best-effort) so the next status poll fires the reprovision."""
     with patch(
         "routers.oauth.poll_device_code",
-        new=AsyncMock(return_value=DevicePollResult(account_id="acc_1", bound_owner_id="user_test_123")),
+        new=AsyncMock(return_value=DevicePollResult(account_id="acc_1", bound_owner_id="org_test_456")),
     ):
         resp = await async_client.post("/api/v1/oauth/chatgpt/poll")
     assert resp.status_code == 200
-    rearm_mock.assert_awaited_once_with("user_test_123")
+    rearm_mock.assert_awaited_once_with("org_test_456")
 
 
 @pytest.mark.asyncio
@@ -152,7 +162,7 @@ async def test_poll_completion_rearm_failure_does_not_fail_the_poll(async_client
     rearm_mock.side_effect = RuntimeError("ddb blip")
     with patch(
         "routers.oauth.poll_device_code",
-        new=AsyncMock(return_value=DevicePollResult(account_id="acc_1", bound_owner_id="user_test_123")),
+        new=AsyncMock(return_value=DevicePollResult(account_id="acc_1", bound_owner_id="org_test_456")),
     ):
         resp = await async_client.post("/api/v1/oauth/chatgpt/poll")
     assert resp.status_code == 200
@@ -213,17 +223,17 @@ async def test_disconnect_skips_harness_bound_to_another_workspace(async_client)
         resp = await async_client.post("/api/v1/oauth/chatgpt/disconnect")
     assert resp.status_code == 200
     mock_probe.assert_awaited_once_with(
-        user_id="user_test_123", bound_to="user_test_123", purpose="harness", consistent=True
+        user_id="user_test_123", bound_to="org_test_456", purpose="harness", consistent=True
     )
     mock_revoke.assert_awaited_once_with(user_id="user_test_123")  # provider only
     mock_delete_oc.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_disconnect_personal_unchanged(async_client):
-    """Personal /disconnect revokes the user's OAuth row, deletes the EFS
-    auth-profiles store keyed on the personal owner (== the Clerk user), and
-    clears provider_choice on the personal billing row.
+async def test_disconnect_workspace_owner_clears_workspace_store(async_client):
+    """Workspace /disconnect revokes the human's OAuth row, deletes the EFS
+    auth-profiles store keyed on the active workspace, and
+    clears provider_choice on the workspace billing row.
 
     The repo-level guarantee (billing_repo.clear_provider_choice no-op on
     missing row) is covered separately. This test pins the integration —
@@ -250,12 +260,12 @@ async def test_disconnect_personal_unchanged(async_client):
     assert mock_revoke.await_count == 2
     assert mock_revoke.await_args_list[0].kwargs == {"user_id": "user_test_123"}
     assert mock_revoke.await_args_list[1].kwargs == {"user_id": "user_test_123", "purpose": "harness"}
-    mock_delete.assert_awaited_once_with(user_id="user_test_123")
+    mock_delete.assert_awaited_once_with(user_id="org_test_456")
     # Unlink runs twice: before the revoke (primary) and after it (the sweep
     # that closes the overlapping-provision re-stage window).
     assert mock_delete_oc.await_count == 2
-    assert all(c.kwargs == {"user_id": "user_test_123"} for c in mock_delete_oc.await_args_list)
-    mock_clear.assert_awaited_once_with("user_test_123")
+    assert all(c.kwargs == {"user_id": "org_test_456"} for c in mock_delete_oc.await_args_list)
+    mock_clear.assert_awaited_once_with("org_test_456")
 
 
 def _override(app, ctx: AuthContext):
@@ -374,11 +384,10 @@ class TestStatus:
         mock_tokens.assert_awaited_once_with(user_id="user_a", bound_to="org_test_456")
 
     @pytest.mark.asyncio
-    async def test_status_personal_with_row_bound_to_org_reports_disconnected(self, async_client, oauth_table):
-        """THE P1 SCENARIO. user_test_123 connected ChatGPT for an org; the row
-        keyed on their Clerk user_id is bound to that org. When the SAME human
-        opens a PERSONAL workspace and hits /status, the personal owner is
-        user_test_123 — but the row belongs to the org, so the probe must
+    async def test_status_workspace_with_row_bound_elsewhere_reports_disconnected(self, async_client, oauth_table):
+        """THE P1 SCENARIO. user_test_123 connected ChatGPT for another org;
+        their token row is bound there. When that human opens this workspace,
+        the row belongs to the other org, so the probe must
         report disconnected. Otherwise the personal gate passes and the same
         ChatGPT account gets staged into a second container.
 
@@ -390,10 +399,10 @@ class TestStatus:
         assert resp.json() == {"connected": False, "account_id": None}
 
     @pytest.mark.asyncio
-    async def test_status_personal_with_own_bound_row_reports_connected(self, async_client, oauth_table):
-        """Control for the P1 test: the row bound to the personal owner's own
-        id reads as connected — the binding only rejects OTHER workspaces."""
-        _seed_active_row(user_id="user_test_123", bound_owner_id="user_test_123")
+    async def test_status_workspace_with_own_bound_row_reports_connected(self, async_client, oauth_table):
+        """Control for the P1 test: this workspace's bound row reads as
+        connected — the binding only rejects OTHER workspaces."""
+        _seed_active_row(user_id="user_test_123", bound_owner_id="org_test_456")
 
         resp = await async_client.get("/api/v1/oauth/chatgpt/status")
         assert resp.status_code == 200
@@ -508,9 +517,9 @@ class TestStartOrgRules:
         mock_request.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_start_allows_personal_context(self, async_client):
-        """Personal user (no org_id) still reaches the device-code request, and
-        the session binds to the user themselves (resolve_owner_id == user_id)."""
+    async def test_start_rejects_missing_workspace(self, async_client, override_auth):
+        """No active workspace must fail before opening a device-code flow."""
+        override_auth(AuthContext(user_id="user_test_123"))
         fake_resp = DeviceCodeResponse(
             user_code="TEST-1234",
             verification_uri="https://chatgpt.com/codex",
@@ -522,8 +531,9 @@ class TestStartOrgRules:
             new=AsyncMock(return_value=fake_resp),
         ) as mock_request:
             resp = await async_client.post("/api/v1/oauth/chatgpt/start")
-        assert resp.status_code == 200
-        mock_request.assert_awaited_once_with(user_id="user_test_123", bound_owner_id="user_test_123")
+        assert resp.status_code == 409
+        assert resp.json()["detail"]["code"] == "workspace_required"
+        mock_request.assert_not_awaited()
 
 
 class TestPollOrgClaim:

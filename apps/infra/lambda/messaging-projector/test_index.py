@@ -162,6 +162,17 @@ class ProjectorTests(unittest.TestCase):
         self.assertEqual(index._ddb_client.calls, [])
 
     @patch("index._publish")
+    def test_local_session_rows_never_become_room_or_private_user_projections(self, publish):
+        for pk, sk in [
+            ("LOCALUSER#org#human", "DEVICE#mac"), ("LOCALUSER#org#human", "SESSION#id"),
+            ("LOCALSESSION#org#id", "META"), ("LOCALSESSION#org#id", "EVENT#00000000000000000001"),
+            ("LOCALSESSION#org#id", "COMMAND#request"),
+        ]:
+            index.process_record(stream_record({"pk": pk, "sk": sk, "text": "private transcript"}))
+        publish.assert_not_called()
+        self.assertEqual(index._ddb_client.calls, [])
+
+    @patch("index._publish")
     def test_room_projection_strong_reads_and_uses_current_delivery_key(self, publish):
         index._ddb_client = FakeDdb({(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID}})
         index.process_record(stream_record(message_item()))

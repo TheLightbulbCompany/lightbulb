@@ -57,7 +57,7 @@ class TestIntegrationsRouter:
 
     @pytest.fixture
     def auth_override(self):
-        auth = AuthContext(user_id="user_integ_test")
+        auth = AuthContext(user_id="human_integ_test", org_id="user_integ_test", org_role="org:admin")
 
         async def _mock():
             return auth

@@ -1,3 +1,4 @@
+import { invocationBinding } from "./local-sessions.js";
 export const CHANNEL_ID = "lightbulb";
 export const PLUGIN_ID = "lightbulb";
 export const ROUTE_PREFIX = "/plugins/lightbulb-channel/inbound/";
@@ -514,7 +515,7 @@ function json(res, status, body) {
     res.end(JSON.stringify(body));
     return true;
 }
-export async function dispatchRoomEvent(deps, event) {
+export async function dispatchRoomEvent(deps, event, invocation) {
     const { sdk, cfg, accountId, channelRuntime } = deps;
     const { room, sender, message, eventKind } = event;
     const { route, buildEnvelope } = sdk.resolveChannelInboundRouteEnvelope({
@@ -587,6 +588,7 @@ export async function dispatchRoomEvent(deps, event) {
             dispatchSessionKey: route.sessionKey,
         },
         reply: {
+            nativeChannelId: room.id,
             to: target,
             originatingTo: target,
             ...(message.replyToMessageId ? { replyToId: message.replyToMessageId } : {}),
@@ -620,6 +622,7 @@ export async function dispatchRoomEvent(deps, event) {
         },
         channelIngress: ingress,
         extra: {
+            ...(invocationBinding(invocation, accountId, room.id, event.eventId) ? { GatewayRunToolBindings: { lightbulbLocalSessions: invocationBinding(invocation, accountId, room.id, event.eventId) } } : {}),
             ChannelStructuredContext: [
                 {
                     label: "Lightbulb room",
@@ -714,13 +717,20 @@ export function createInboundHandler(deps) {
         if (event.sender.kind === "agent" && event.sender.id === accountId) {
             return json(res, 409, { error: "not_admitted", message: "an agent never receives its own message" });
         }
+        // Transport-only credential. Old strict-body plugins ignore it; absent/invalid headers
+        // leave ordinary room dispatch unchanged. Never promote a model/body field to authority.
+        const header = "x-lightbulb-local-session-token";
+        const raw = req.headers?.[header];
+        const count = (req.rawHeaders ?? []).filter((_, i) => i % 2 === 0).filter((name) => name.toLowerCase() === header).length;
+        const invocation = count <= 1 && typeof raw === "string" && raw.length <= 4096 && !raw.includes(",")
+            && invocationBinding(raw, accountId, event.room.id, event.eventId) ? raw : undefined;
         try {
             const outcome = await effectOnce.runOnce({
                 eventId: event.eventId,
                 effect: "dispatch",
                 run: async () => {
                     try {
-                        return await dispatchRoomEvent(deps, event);
+                        return await dispatchRoomEvent(deps, event, invocation);
                     }
                     catch (error) {
                         if (error instanceof IngressRejected && error.status === 409)

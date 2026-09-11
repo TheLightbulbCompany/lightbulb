@@ -57,7 +57,7 @@ def _patches(row, onboarding=ONBOARDED, entry=None, suggested_name=None):
 
 
 async def _me(row, *, sched=None, onboarding=ONBOARDED, auth=None, entry=None, suggested_name=None):
-    auth = auth or AuthContext(user_id="user_1", email="me@x.com")
+    auth = auth or AuthContext(user_id="human_1", org_id="user_1", org_role="org:admin", email="me@x.com")
     p = _patches(row, onboarding, entry, suggested_name)
     with p[0], p[1] as claim, p[2], p[3], p[4], p[5] as entries_get, p[6] as suggested:
         body = await launch_service.me(auth, sched or _sched(+5))

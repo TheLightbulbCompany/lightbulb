@@ -23,7 +23,7 @@ import routers.onboarding as onboarding_mod
 
 
 def _personal_auth():
-    return AuthContext(user_id="user_abc", org_id=None, email="max@acme.com")
+    return AuthContext(user_id="human_abc", org_id="user_abc", org_role="org:admin", email="max@acme.com")
 
 
 def _org_auth():

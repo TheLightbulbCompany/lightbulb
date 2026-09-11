@@ -31,7 +31,7 @@ def admin_client(app):
     """TestClient authenticated as an @isol8.co platform admin (personal ctx)."""
 
     async def _mock():
-        return AuthContext(user_id="user_admin", email="admin@isol8.co")
+        return AuthContext(user_id="human_admin", org_id="user_admin", org_role="org:admin", email="admin@isol8.co")
 
     app.dependency_overrides.clear()
     app.dependency_overrides[get_current_user] = _mock
@@ -212,7 +212,7 @@ def test_seller_deploys_own_priced_company_without_purchase(
     """Sellers don't buy their own listings — the identity bypass from the
     agent path applies to companies too."""
     listing = _company_listing(price_cents=2000)
-    listing["seller_id"] = "user_admin"
+    listing["seller_id"] = "human_admin"
     mock_get_published.return_value = listing
     mock_boto.return_value.get_object.return_value = _tar_body(b"COMPANYTAR")
 

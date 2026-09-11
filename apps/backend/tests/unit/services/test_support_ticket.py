@@ -14,7 +14,7 @@ from schemas.support import SupportTicketRequest
 @pytest.mark.asyncio
 async def test_submit_ticket_enriches_and_sends(monkeypatch):
     monkeypatch.setattr(settings, "POSTHOG_PROJECT_ID", "380894")
-    auth = AuthContext(user_id="user_123", email="ada@example.com")
+    auth = AuthContext(user_id="human_123", org_id="user_123", org_role="org:admin", email="ada@example.com")
     req = SupportTicketRequest(message="it broke", category="Bug report", route="/chat")
 
     with (
@@ -50,7 +50,7 @@ async def test_submit_ticket_enriches_and_sends(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_submit_ticket_escapes_user_message(monkeypatch):
-    auth = AuthContext(user_id="user_1", email="x@y.com")
+    auth = AuthContext(user_id="human_1", org_id="user_1", org_role="org:admin", email="x@y.com")
     req = SupportTicketRequest(message="<script>alert(1)</script>")
 
     with (
@@ -72,7 +72,7 @@ async def test_submit_ticket_escapes_user_message(monkeypatch):
 async def test_submit_ticket_survives_enrichment_failure():
     """A repo/DynamoDB failure during enrichment must not break delivery —
     the ticket still sends, just without that metadata (no 500)."""
-    auth = AuthContext(user_id="user_1", email="x@y.com")
+    auth = AuthContext(user_id="human_1", org_id="user_1", org_role="org:admin", email="x@y.com")
     req = SupportTicketRequest(message="help")
 
     with (
@@ -99,7 +99,7 @@ async def test_submit_ticket_survives_enrichment_failure():
 async def test_undelivered_ticket_is_logged_with_its_content(caplog):
     """The email is the ONLY capture path — no ticket table exists — so a failed
     send must leave support something actionable, not just a user id."""
-    auth = AuthContext(user_id="user_9", email="ada@example.com")
+    auth = AuthContext(user_id="human_9", org_id="user_9", org_role="org:admin", email="ada@example.com")
     req = SupportTicketRequest(message="I'd like to use Instagram.", category="Integration request")
 
     with (
@@ -123,7 +123,7 @@ async def test_undelivered_ticket_is_logged_with_its_content(caplog):
 async def test_undelivered_log_bounds_the_message(caplog):
     """A pasted stack trace can't flood the log group: 8000-char schema max,
     2000-char log bound."""
-    auth = AuthContext(user_id="user_9", email="x@y.com")
+    auth = AuthContext(user_id="human_9", org_id="user_9", org_role="org:admin", email="x@y.com")
     req = SupportTicketRequest(message="A" * 8000, category="Other")
 
     with (

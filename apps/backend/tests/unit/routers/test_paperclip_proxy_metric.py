@@ -55,7 +55,7 @@ class _RaisingClient:
 
 @pytest.mark.asyncio
 async def test_proxy_upstream_unreachable_emits_metric():
-    auth = AuthContext(user_id="user_x", org_id=None, email="u@isol8.co")
+    auth = AuthContext(user_id="human_x", org_id="user_x", org_role="org:admin", email="u@isol8.co")
     # org_id is a required field on PaperclipCompany (paperclip_repo.py) and the
     # proxy reads it to gate the established-session forward path
     # (``company.org_id != resolve_owner_id(auth)``). For this org-less personal

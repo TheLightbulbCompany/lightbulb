@@ -28,7 +28,7 @@ def admin_client(app):
     resolve_owner_id -> user_admin."""
 
     async def _mock():
-        return AuthContext(user_id="user_admin", email="admin@isol8.co")
+        return AuthContext(user_id="human_admin", org_id="user_admin", org_role="org:admin", email="admin@isol8.co")
 
     app.dependency_overrides.clear()
     app.dependency_overrides[get_current_user] = _mock

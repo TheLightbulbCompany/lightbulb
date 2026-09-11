@@ -109,7 +109,9 @@ def test_create_draft_requires_seller_profile(mock_profile, mock_create):
     from core.auth import AuthContext, get_current_user
 
     app.dependency_overrides.clear()
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_caller")
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(
+        user_id="human_caller", org_id="user_caller", org_role="org:admin"
+    )
     try:
         mock_profile.return_value = None
         from fastapi.testclient import TestClient
@@ -1986,7 +1988,7 @@ def authed_client_factory(app):
     created: list[TestClient] = []
 
     def _make(user_id: str, email: str | None = None) -> TestClient:
-        ctx = AuthContext(user_id=user_id, email=email)
+        ctx = AuthContext(user_id=f"human_{user_id}", org_id=user_id, org_role="org:admin", email=email)
 
         async def _override():
             return ctx

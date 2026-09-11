@@ -21,7 +21,9 @@ def client_with_auth():
     from main import app
 
     app.dependency_overrides.clear()
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id=CALLER_ID)
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(
+        user_id="human_caller", org_id=CALLER_ID, org_role="org:admin"
+    )
     try:
         yield TestClient(app)
     finally:

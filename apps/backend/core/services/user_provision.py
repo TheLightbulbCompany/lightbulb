@@ -446,7 +446,7 @@ async def arm_nightly_ceo(owner_id: str, *, trust_cache: bool = True) -> str:
             # there is no orphan/failed-company cost leak: we only ever arm a
             # company provision_org actually finished (status="active").
             row = (
-                await provisioning.find_org_owner(owner_id)
+                await provisioning._repo.resolve_owner_row(owner_id)
                 if is_org_owner_id(owner_id)
                 else await provisioning.get_company_row(owner_id)
             )

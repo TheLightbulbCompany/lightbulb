@@ -283,6 +283,58 @@ async def test_get_provisioning_narrows_and_excludes_secrets():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["failed", "provisioning"])
+async def test_get_provisioning_includes_inactive_authoritative_org_row(status):
+    """Diagnostics retain failure details while the org row is not active."""
+    from core.repositories.paperclip_repo import PaperclipCompany
+    from core.services import admin_service
+
+    now = datetime.now(timezone.utc)
+    paperclip_company = PaperclipCompany(
+        user_id="owner_user",
+        org_id="org_acme",
+        company_id="company_1",
+        paperclip_user_id="pc_user_1",
+        paperclip_password_encrypted="SECRET-PW",
+        service_token_encrypted="SECRET-ST",
+        status=status,
+        created_at=now,
+        updated_at=now,
+        last_error="starter seed incomplete",
+        starter_agent_ids={"ceo": "agent-ceo"},
+    )
+    repo = MagicMock()
+
+    async def resolve_owner_row(owner_id, *, include_inactive=False):
+        return paperclip_company if include_inactive else None
+
+    repo.resolve_owner_row = AsyncMock(side_effect=resolve_owner_row)
+
+    with (
+        patch(
+            "core.services.admin_service.resolve_admin_owner_id",
+            new=AsyncMock(return_value=("org_acme", {"id": "org_acme"})),
+        ),
+        patch(
+            "core.services.admin_service.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.services.admin_service.compute_status",
+            new=AsyncMock(return_value={"lifecycle": "provisioning"}),
+        ),
+        patch("core.services.admin_service._paperclip_repo", return_value=repo),
+        patch("core.services.admin_service.probe_provision_gate", new=AsyncMock(return_value=None)),
+        patch("core.services.admin_service.describe_dispatch_execution", new=AsyncMock(return_value=None)),
+    ):
+        result = await admin_service.get_provisioning("admin_user")
+
+    assert result["paperclip"]["status"] == status
+    assert result["paperclip"]["last_error"] == "starter seed incomplete"
+    assert result["paperclip"]["starter_agent_ids"] == {"ceo": "agent-ceo"}
+
+
+@pytest.mark.asyncio
 async def test_get_provisioning_no_rows_degrades_to_nones():
     """A brand-new owner with no containers row, no paperclip-companies row,
     no gate block, and no SFN execution must still answer 200 with every

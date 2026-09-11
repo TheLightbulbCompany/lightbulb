@@ -24,8 +24,10 @@ vi.mock("@/components/workspace/WorkspaceShell", () => ({
 }));
 vi.mock("@/components/chat/ChatLayout", () => ({
   // Ignore children so the mobile shell's AgentChatWindow / ControlPanelRouter
-  // subtree never mounts (no gateway, no RPC) — the marker is all we assert.
-  ChatLayout: () => <div data-testid="chat-layout" />,
+  // subtree never mounts (no gateway, no RPC), but keep the header status slot.
+  ChatLayout: ({ statusIndicator }: { statusIndicator?: React.ReactNode }) => (
+    <div data-testid="chat-layout">{statusIndicator}</div>
+  ),
 }));
 
 // RunNotifications renders nothing in prod; here it echoes its mode so the test

@@ -340,6 +340,14 @@ function MobileChatShell() {
   return (
     <>
       <ChatLayout
+        statusIndicator={(
+          <RunNotifications
+            mode="mobile"
+            selectedAgentId={selectedAgentId}
+            activeView={activeView}
+            activePanel={activePanel}
+          />
+        )}
         activePanel={activePanel}
         onPanelChange={setActivePanel}
         openAgentIssues={openAgentIssues}
@@ -392,14 +400,6 @@ function MobileChatShell() {
           </div>
         )}
       </ChatLayout>
-      {/* Sibling of ChatLayout, still inside GatewayProvider (MobileChatShell
-          renders under it). Colocated with the selection/view state it reads. */}
-      <RunNotifications
-        mode="mobile"
-        selectedAgentId={selectedAgentId}
-        activeView={activeView}
-        activePanel={activePanel}
-      />
     </>
   );
 }

@@ -358,6 +358,24 @@
   cursor: pointer;
 }
 .workspace-rail > button span { font-size: 9px; font-weight: 600; }
+.workspace-rail .workspace-rail__icon { position: relative; display: inline-flex; }
+.workspace-rail .workspace-rail__activity-badge {
+  position: absolute;
+  top: -6px;
+  right: -10px;
+  display: grid;
+  place-items: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border: 1px solid var(--warn);
+  border-radius: 999px;
+  background: var(--cream-deep);
+  color: var(--warn);
+  font-size: 8px;
+  font-weight: 600;
+  line-height: 1;
+}
 .workspace-rail > button:hover,
 .workspace-rail > a:hover,
 .workspace-rail > button[aria-current="page"] {

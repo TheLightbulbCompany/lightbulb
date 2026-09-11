@@ -133,7 +133,7 @@ export function reduceChatFrame(
     : [];
 }
 
-const TEAMS_WORKING_STATUSES = new Set(["queued", "running", "scheduled_retry"]);
+export const TEAMS_WORKING_STATUSES = new Set(["queued", "running", "scheduled_retry"]);
 // `interrupted` is the terminal status published on a graceful BFF shutdown
 // (spec PR-7) -- without it here a run stuck mid-flight when the BFF
 // restarts falls through to `return []` below and leaves its "working"

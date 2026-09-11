@@ -4,7 +4,7 @@ import { useId, useMemo, useRef, useState, type KeyboardEvent, type ReactElement
 import { SmilePlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { EMOJI_CATEGORIES, searchEmoji, type EmojiEntry } from "./emojiData";
+import { ALL_EMOJI, EMOJI_CATEGORIES, searchEmoji, type EmojiEntry } from "./emojiData";
 import "./emoji-picker.css";
 
 export const RECENT_EMOJI_KEY = "lightbulb.messaging.recentEmoji";
@@ -49,9 +49,7 @@ export function EmojiPicker({ onPick, disabled = false, triggerLabel = "Add reac
           ? [
               {
                 name: "Recent",
-                entries: recent.map(
-                  (emoji) => EMOJI_CATEGORIES.flatMap((category) => category.entries).find((entry) => entry.emoji === emoji) ?? { emoji, name: emoji, keywords: [] }
-                ),
+                entries: recent.map((emoji) => ALL_EMOJI.find((entry) => entry.emoji === emoji) ?? { emoji, name: emoji, keywords: [] }),
               },
             ]
           : []),
@@ -130,6 +128,7 @@ export function EmojiPicker({ onPick, disabled = false, triggerLabel = "Add reac
                   <button
                     key={`${section.name}:${entry.emoji}`}
                     type="button"
+                    tabIndex={-1}
                     data-emoji={entry.emoji}
                     aria-label={entry.name}
                     title={entry.name}

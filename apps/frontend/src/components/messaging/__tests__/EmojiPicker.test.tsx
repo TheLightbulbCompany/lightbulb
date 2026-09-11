@@ -41,3 +41,28 @@ it("opens, searches, picks with keyboard, records recent, and restores focus", a
   expect(trigger).toHaveFocus();
   expect(readRecentEmoji()).toEqual(["👍"]);
 });
+
+it("closes on Escape and returns focus to the trigger", async () => {
+  const user = userEvent.setup();
+  render(<EmojiPicker onPick={vi.fn()} />);
+  const trigger = screen.getByRole("button", { name: "Add reaction" });
+  await user.click(trigger);
+  expect(screen.getByRole("dialog", { name: "Choose an emoji" })).toBeInTheDocument();
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(trigger).toHaveFocus();
+});
+
+it("moves focus between adjacent emoji buttons with ArrowRight and ArrowLeft", async () => {
+  const user = userEvent.setup();
+  render(<EmojiPicker onPick={vi.fn()} />);
+  await user.click(screen.getByRole("button", { name: "Add reaction" }));
+  await user.keyboard("{ArrowDown}");
+  const first = document.activeElement;
+  expect(first).toHaveAttribute("data-emoji");
+  await user.keyboard("{ArrowRight}");
+  expect(document.activeElement).toHaveAttribute("data-emoji");
+  expect(document.activeElement).not.toBe(first);
+  await user.keyboard("{ArrowLeft}");
+  expect(document.activeElement).toBe(first);
+});

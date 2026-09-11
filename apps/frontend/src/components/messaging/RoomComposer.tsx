@@ -404,6 +404,7 @@ function ComposerAttempt({
       onKeyDown={(event) => {
         if (listOpen) {
           if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            if (event.nativeEvent.isComposing || event.keyCode === 229) return;
             event.preventDefault();
             const count = mentionOpen ? options.length : emojiOptions.length;
             setActiveIndex((index) => (index + (event.key === "ArrowDown" ? 1 : count - 1)) % count);

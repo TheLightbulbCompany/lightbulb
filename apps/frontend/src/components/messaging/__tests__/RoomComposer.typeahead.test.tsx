@@ -87,6 +87,15 @@ it("leaves an unmatched token plain and mentions nobody", () => {
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ mentions: [] }));
 });
 
+it("ignores ArrowDown during IME composition so the typeahead selection does not move", () => {
+  render(<Harness />);
+  type("Ask @");
+  const activedescendant = () => field().getAttribute("aria-activedescendant");
+  const before = activedescendant();
+  fireEvent.keyDown(field(), { key: "ArrowDown", isComposing: true });
+  expect(activedescendant()).toBe(before);
+});
+
 it("moves the active option with the arrow keys and wraps", () => {
   render(<Harness />);
   type("Ask @");

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
@@ -489,4 +490,46 @@ it("keeps every action reachable on a collapsed message", async () => {
   const collapsed = screen.getAllByRole("article", { name: "Message from Friday" })[1];
   await user.click(within(collapsed).getByRole("button", { name: "Reply in thread" }));
   expect(within(collapsed).getByRole("button", { name: "Add reaction" })).toBeInTheDocument();
+});
+
+it("keeps the New line when a send fails and clears it after a successful send", async () => {
+  const onSubmit = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(undefined);
+  const reply = { ...message, messageId: "reply", messageSeq: 2, text: "Hi", author: { kind: "human" as const, id: "owner", displayName: "Owner" } };
+
+  function Harness() {
+    const [text, setText] = useState("");
+    const [draftId, setDraftId] = useState(0);
+    return <RoomPanel {...props} readSeqAtOpen={1} messages={[message, reply]}
+      composer={{
+        ...props.composer,
+        text,
+        onTextChange: setText,
+        clientMessageId: `draft-${draftId}`,
+        onSubmit: async (request) => {
+          try {
+            await onSubmit(request);
+          } finally {
+            setText("");
+            setDraftId((value) => value + 1);
+          }
+        },
+      }} />;
+  }
+
+  render(<Harness />);
+  expect(screen.getByRole("separator", { name: "New messages" })).toBeInTheDocument();
+
+  await userEvent.type(screen.getByRole("textbox", { name: "Message" }), "First try");
+  // Synchronous dispatch (no await before the assertion): the send is still in flight,
+  // so a fix that waits for it to resolve must not have flipped sentSinceOpen yet.
+  fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "Enter" });
+  expect(screen.getByRole("separator", { name: "New messages" })).toBeInTheDocument();
+
+  await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).not.toBeDisabled());
+  expect(onSubmit).toHaveBeenCalledTimes(1);
+
+  await userEvent.type(screen.getByRole("textbox", { name: "Message" }), "Second try");
+  fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "Enter" });
+  await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(screen.queryByRole("separator", { name: "New messages" })).not.toBeInTheDocument());
 });

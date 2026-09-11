@@ -43,11 +43,9 @@ from core.services.paperclip_openclaw_pairing import (
     ensure_operator_device_paired,
     get_seeded_agent_ids,
     get_starter_agent_ids,
-    is_seeded_agent,
-    remove_starter_agent_id,
     pair_with_openclaw,
 )
-from core.services.paperclip_agent_lifecycle import delete_agent_everywhere
+from core.services.paperclip_agent_lifecycle import AgentLifecycleConflict, delete_agent_everywhere
 from core.services.paperclip_provisioning import _ws_gateway_url  # noqa: F401 — re-exported for downstream tasks.
 from core.services.paperclip_user_session import get_user_session_cookie
 from core.services.provision_gate import evaluate_provision_gate
@@ -82,8 +80,7 @@ router = APIRouter()
 def _mark_seeded(agent, seeded_ids, sidecar=None, starter_ids=()):
     """Stamp backend-authored seed and origin fields for the browser.
 
-    ``seeded`` is the single source of truth the Teams UI uses to lock
-    Friday/Atlas (hide Delete, show meta read-only). Determined from the
+    ``seeded`` is backend-authored starter provenance. Determined from the
     persisted seeded-agent IDs — never role/name — so a user-created
     agent is never falsely locked. Marketplace identity requires a complete
     server-written deployment sidecar; ambiguous legacy rows become Custom.
@@ -712,21 +709,14 @@ async def patch_agent(
 async def delete_agent(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
     """Delete an agent. Idempotent — 404 from upstream is swallowed.
 
-    Seeded agents (Friday/Atlas) are part of the provisioning contract and
-    must not be deleted. The OpenClaw gateway delete path enforces this in
-    ``websocket_chat._guard_seeded_delete``; guard the REST path too
-    (defense in depth — the UI deletes via the gateway, but this endpoint
-    is still reachable directly).
+    The shared lifecycle preserves a final root CEO while allowing any other
+    agent, including starter specialists, to be removed.
     """
     owner_id = _resolve_owner_id(ctx)
-    if await is_seeded_agent(owner_id=owner_id, agent_id=agent_id):
-        raise HTTPException(status_code=403, detail="Seeded agents (Friday/Atlas) cannot be deleted.")
-    result = await delete_agent_everywhere(
-        owner_id=owner_id,
-        agent_id=agent_id,
-    )
-    await remove_starter_agent_id(owner_id=owner_id, agent_id=agent_id)
-    return result
+    try:
+        return await delete_agent_everywhere(owner_id=owner_id, agent_id=agent_id)
+    except AgentLifecycleConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/agents/{agent_id}/pause")

@@ -350,7 +350,7 @@ export default function AgentDetail() {
 
   // ---- Delete ----
   const confirmDelete = useCallback(() => {
-    if (!agent || isDefault) return;
+    if (!agent) return;
     Alert.alert(
       `Delete ${displayName}?`,
       "This removes the agent and its workspace files. This cannot be undone.",
@@ -373,7 +373,7 @@ export default function AgentDetail() {
         },
       ],
     );
-  }, [agent, isDefault, displayName, callRpc, mutateAgents]);
+  }, [agent, displayName, callRpc, mutateAgents]);
 
   const paperclip = configEntry?.params?.paperclip;
   const tools = configEntry?.tools;
@@ -528,7 +528,7 @@ export default function AgentDetail() {
       </Text>
 
       {/* Danger zone */}
-      {!isDefault && agent ? (
+      {agent ? (
         <Pressable
           style={({ pressed }) => [styles.deleteButton, pressed && styles.pressed]}
           onPress={confirmDelete}
@@ -538,10 +538,6 @@ export default function AgentDetail() {
           <Feather name="trash-2" size={16} color={colors.danger} />
           <Text style={styles.deleteText}>Delete agent</Text>
         </Pressable>
-      ) : isDefault ? (
-        <Text style={styles.footnote}>
-          The default agent is protected and can’t be deleted.
-        </Text>
       ) : null}
 
       <ModelPickerModal

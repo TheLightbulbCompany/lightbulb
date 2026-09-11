@@ -258,8 +258,6 @@ export default function AgentsPanel() {
 
   const confirmDelete = useCallback(
     (agent: Agent) => {
-      // The default agent (Friday) is protected — never deletable in the UI.
-      if (agent.id === defaultId) return;
       const label = agentDisplayName(agent);
       Alert.alert(
         `Delete ${label}?`,
@@ -288,7 +286,7 @@ export default function AgentsPanel() {
         ],
       );
     },
-    [callRpc, defaultId, refresh],
+    [callRpc, refresh],
   );
 
   const renderItem = useCallback(

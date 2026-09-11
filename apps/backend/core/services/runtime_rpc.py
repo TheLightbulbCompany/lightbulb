@@ -28,15 +28,14 @@ from core.services.paperclip_admin_client import (
 )
 from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.paperclip_agent_lifecycle import (
+    AgentLifecycleConflict,
     create_paperclip_for_chat,
-    delete_paperclip_for_chat,
-    delete_runtime_agent_with_lock_retry,
-    prepare_paperclip_agent_delete,
+    delete_agent_everywhere,
+    ensure_root_ceo_survives,
 )
 from core.services.paperclip_meta import read_from_agent_entry
 from core.services.paperclip_openclaw_pairing import (
     ensure_operator_device_paired,
-    is_seeded_agent,
     pair_with_openclaw,
     resolve_company_id_for_owner,
 )
@@ -233,6 +232,19 @@ def _sanitize_agent_create(params: dict[str, Any]) -> dict[str, Any]:
     return clean
 
 
+def _sanitize_agent_update(params: dict[str, Any]) -> dict[str, Any]:
+    clean = dict(params)
+    if "name" in clean:
+        name = clean["name"]
+        if not isinstance(name, str):
+            raise ApiProblem("INVALID_REQUEST", "Agent name must be 1..80 characters.")
+        name = name.strip()
+        if not name or len(name) > 80:
+            raise ApiProblem("INVALID_REQUEST", "Agent name must be 1..80 characters.")
+        clean["name"] = name
+    return clean
+
+
 async def _running_container(owner_id: str) -> tuple[dict, str]:
     manager = get_ecs_manager()
     container, ip = await manager.resolve_running_container(owner_id)
@@ -299,42 +311,35 @@ async def execute_sync(
 ) -> Any:
     """Execute one already-admitted synchronous RPC with all side-effect guards."""
     _guard_method(method, params, user_id)
+    if method == "agents.update":
+        params = _sanitize_agent_update(params)
+    if method == "agents.delete":
+        agent_id = params.get("agentId")
+        if not isinstance(agent_id, str) or not agent_id:
+            raise ApiProblem("INVALID_REQUEST", "Agent ID is required.")
+        try:
+            return await delete_agent_everywhere(owner_id=owner_id, agent_id=agent_id)
+        except AgentLifecycleConflict as exc:
+            raise ApiProblem("AGENT_LIFECYCLE_CONFLICT", str(exc)) from exc
     container, ip = await _running_container(owner_id)
     token = container["gateway_token"]
     if method == "agents.create":
         return await _create_agent(owner_id, user_id, _sanitize_agent_create(params), ip, token)
     if method == "agents.update":
-        params = dict(params)
-        await _mirror_agent_update(owner_id, params)
-    if method == "agents.delete":
-        agent_id = params.get("agentId")
-        if isinstance(agent_id, str) and agent_id:
-            if await is_seeded_agent(owner_id=owner_id, agent_id=agent_id):
-                raise ApiProblem(
-                    "INVALID_REQUEST",
-                    "Friday and Atlas are managed by Lightbulb and cannot be deleted.",
-                )
-            await prepare_paperclip_agent_delete(owner_id=owner_id, agent_id=agent_id)
+        try:
+            await _mirror_agent_update(owner_id, params)
+        except AgentLifecycleConflict as exc:
+            raise ApiProblem("AGENT_LIFECYCLE_CONFLICT", str(exc)) from exc
     try:
         pool = get_gateway_pool()
-        agent_id = params.get("agentId") if method == "agents.delete" else None
-        if isinstance(agent_id, str) and agent_id:
-            result = await delete_runtime_agent_with_lock_retry(
-                gateway=pool,
-                owner_id=owner_id,
-                agent_id=agent_id,
-                ip=ip,
-                token=token,
-            )
-        else:
-            result = await pool.send_rpc(
-                user_id=owner_id,
-                req_id=request_id,
-                method=method,
-                params=params,
-                ip=ip,
-                token=token,
-            )
+        result = await pool.send_rpc(
+            user_id=owner_id,
+            req_id=request_id,
+            method=method,
+            params=params,
+            ip=ip,
+            token=token,
+        )
     except asyncio.CancelledError:
         raise
     except asyncio.TimeoutError as exc:
@@ -361,8 +366,6 @@ async def execute_sync(
         result = _filter_sessions_for_user(result, user_id)
     elif method == "sessions.search":
         result = _filter_search_hits_for_user(result, user_id)
-    if method == "agents.delete" and isinstance(params.get("agentId"), str):
-        await _cleanup_deleted_agent(owner_id, params["agentId"])
     return result
 
 
@@ -427,30 +430,28 @@ async def _create_agent(owner_id: str, user_id: str, params: dict[str, Any], ip:
     return {"agentId": paperclip_agent["id"], "agent": _redact_agent(paperclip_agent)}
 
 
-async def _mirror_paperclip_meta_with_retry(
+async def _mirror_paperclip_update_with_retry(
     *,
     admin: PaperclipAdminClient,
     cookie: str,
     company_id: str,
-    owner_id: str,
     agent_id: str,
-    role: str,
-    title: str | None,
-    capabilities: str | None,
-    icon: str | None,
+    body: dict[str, str],
 ) -> None:
     target = await admin.get_agent(session_cookie=cookie, agent_id=agent_id)
     if target.get("companyId") != company_id:
         return
+    if body.get("role") not in (None, "ceo") and target.get("role") == "ceo" and not target.get("reportsTo"):
+        payload = await admin.list_agents(company_id=company_id, session_cookie=cookie)
+        agents = payload if isinstance(payload, list) else payload.get("agents", [])
+        agents = [agent for agent in agents if isinstance(agent, dict)]
+        ensure_root_ceo_survives(target=target, agents=agents)
     for attempt in range(_PAPERCLIP_MIRROR_MAX_ATTEMPTS):
         try:
-            await admin.update_agent(
+            await admin.patch_agent(
                 session_cookie=cookie,
                 agent_id=agent_id,
-                role=role,
-                title=title,
-                capabilities=capabilities,
-                icon=icon,
+                body=body,
             )
             return
         except (PaperclipApiError, httpx.HTTPError) as exc:
@@ -465,12 +466,22 @@ async def _mirror_paperclip_meta_with_retry(
 async def _mirror_agent_update(owner_id: str, params: dict[str, Any]) -> None:
     inner = params.get("params") or {}
     paperclip = inner.get("paperclip") if isinstance(inner, dict) else None
-    if not isinstance(paperclip, dict):
+    name = params.get("name")
+    if not isinstance(name, str) and not isinstance(paperclip, dict):
         return
-    meta = read_from_agent_entry({"params": inner})
     agent_id = params.get("agentId")
     if not isinstance(agent_id, str) or not agent_id:
         return
+    body: dict[str, str] = {}
+    if isinstance(name, str):
+        body["name"] = name
+    if isinstance(paperclip, dict):
+        meta = read_from_agent_entry({"params": inner})
+        body["role"] = meta.role
+        for key in ("title", "capabilities", "icon"):
+            value = paperclip.get(key)
+            if isinstance(value, str):
+                body[key] = value
     try:
         from core.repositories.paperclip_repo import PaperclipRepo
 
@@ -480,21 +491,19 @@ async def _mirror_agent_update(owner_id: str, params: dict[str, Any]) -> None:
         )
         if company_id:
             async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as client:
-                await _mirror_paperclip_meta_with_retry(
+                await _mirror_paperclip_update_with_retry(
                     admin=PaperclipAdminClient(http_client=client),
                     cookie=await get_admin_session_cookie(client),
                     company_id=company_id,
-                    owner_id=owner_id,
                     agent_id=agent_id,
-                    role=meta.role,
-                    title=paperclip.get("title") if isinstance(paperclip.get("title"), str) else None,
-                    capabilities=(
-                        paperclip.get("capabilities") if isinstance(paperclip.get("capabilities"), str) else None
-                    ),
-                    icon=paperclip.get("icon") if isinstance(paperclip.get("icon"), str) else None,
+                    body=body,
                 )
+    except AgentLifecycleConflict:
+        raise
     except (PaperclipApiError, httpx.HTTPError, RuntimeError):
         logger.warning("Paperclip agent metadata mirror failed owner=%s agent=%s", owner_id, agent_id, exc_info=True)
+    if not isinstance(paperclip, dict):
+        return
     try:
         from core.services.config_patcher import apply_paperclip_meta
 
@@ -509,27 +518,6 @@ async def _mirror_agent_update(owner_id: str, params: dict[str, Any]) -> None:
             "EFS Paperclip agent metadata mirror failed owner=%s agent=%s", owner_id, agent_id, exc_info=True
         )
     params.pop("params", None)
-
-
-async def _cleanup_deleted_agent(owner_id: str, agent_id: str) -> None:
-    try:
-        from core.containers.workspace import cleanup_deleted_agent
-
-        await cleanup_deleted_agent(owner_id, agent_id)
-    except Exception:
-        logger.warning("post-delete EFS cleanup failed owner=%s agent=%s", owner_id, agent_id, exc_info=True)
-    try:
-        await delete_paperclip_for_chat(owner_id=owner_id, agent_id=agent_id)
-    except Exception:
-        logger.warning("post-delete Paperclip cleanup failed owner=%s agent=%s", owner_id, agent_id, exc_info=True)
-    try:
-        from core.services.config_patcher import deregister_lightbulb_agent_account
-
-        await deregister_lightbulb_agent_account(owner_id, agent_id)
-    except Exception:
-        logger.warning(
-            "post-delete lightbulb channel account cleanup failed owner=%s agent=%s", owner_id, agent_id, exc_info=True
-        )
 
 
 async def execute_control(

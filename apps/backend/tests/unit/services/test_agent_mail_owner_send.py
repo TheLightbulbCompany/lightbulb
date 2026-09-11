@@ -27,6 +27,8 @@ def wired(monkeypatch):
         owner_email="owner@example.com",
         company_id="co_1",
         friday_agent_id="agent_friday",
+        live_ceo_agent_id="agent_ceo_live",
+        live_ceo_calls=0,
         minted="friday@acme-robotics.isol8.co",
         ensure_agent_id=None,
         ensure_reason="mint_failed",
@@ -72,6 +74,10 @@ def wired(monkeypatch):
         st.ensure_agent_id = agent_id
         return (st.minted, "ok") if st.minted else (None, st.ensure_reason)
 
+    async def _live_ceo(*, owner_id):
+        st.live_ceo_calls += 1
+        return st.live_ceo_agent_id
+
     async def _facts(owner_id):
         if st.facts_raises:
             raise RuntimeError("efs down")
@@ -98,6 +104,7 @@ def wired(monkeypatch):
     monkeypatch.setattr(mod, "PaperclipRepo", _repo_factory)
     monkeypatch.setattr(mod, "lookup_owner_email", _owner_email)
     monkeypatch.setattr(mod, "ensure_agent_address", _ensure)
+    monkeypatch.setattr(mod, "resolve_apex_ceo_agent_id", _live_ceo, raising=False)
     monkeypatch.setattr(mod, "write_owner_facts", _facts)
     monkeypatch.setattr(mod.ses_email, "send_ses_reply", _send)
 
@@ -328,7 +335,14 @@ async def test_send_to_owner_uses_calling_agent_for_from_address(wired):
 
 
 @pytest.mark.asyncio
-async def test_send_to_owner_defaults_to_friday(wired):
+async def test_send_to_owner_defaults_to_live_root_ceo(wired):
+    await mod.send_to_owner(owner_id="user_1", purpose="routine", subject="s", body_text="b")
+    assert wired.ensure_agent_id == "agent_ceo_live"
+
+
+@pytest.mark.asyncio
+async def test_send_to_owner_falls_back_to_stored_ceo_identity(wired):
+    wired.live_ceo_agent_id = None
     await mod.send_to_owner(owner_id="user_1", purpose="routine", subject="s", body_text="b")
     assert wired.ensure_agent_id == "agent_friday"
 

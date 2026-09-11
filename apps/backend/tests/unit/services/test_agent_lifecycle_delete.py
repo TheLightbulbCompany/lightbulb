@@ -380,10 +380,19 @@ async def test_delete_everywhere_keeps_paperclip_handle_when_sidecar_removal_fai
 
 
 @pytest.mark.asyncio
-async def test_delete_everywhere_fails_closed_for_seed_agent():
-    with patch(
-        "core.services.paperclip_openclaw_pairing.is_seeded_agent",
-        new=AsyncMock(return_value=True),
+async def test_delete_everywhere_allows_starter_specialist():
+    with (
+        patch.object(lifecycle, "prepare_paperclip_agent_delete", new=AsyncMock(return_value={})),
+        patch("core.containers.get_ecs_manager") as get_ecs,
+        patch("core.containers.get_workspace") as get_workspace,
+        patch("core.services.config_patcher.remove_from_openclaw_config_list", new=AsyncMock()),
+        patch("core.services.config_patcher.deregister_lightbulb_agent_account", new=AsyncMock()),
+        patch("core.containers.workspace.cleanup_deleted_agent", new=AsyncMock()),
+        patch.object(lifecycle, "delete_paperclip_for_chat", new=AsyncMock()) as delete_paperclip,
     ):
-        with pytest.raises(PermissionError, match="Seeded agents"):
-            await lifecycle.delete_agent_everywhere(owner_id="owner", agent_id="friday")
+        get_ecs.return_value.resolve_running_container = AsyncMock(return_value=(None, None))
+        get_workspace.return_value.remove_template_sidecar = MagicMock()
+        result = await lifecycle.delete_agent_everywhere(owner_id="owner", agent_id="starter-specialist")
+
+    assert result["deleted"] is True
+    delete_paperclip.assert_awaited_once_with(owner_id="owner", agent_id="starter-specialist")

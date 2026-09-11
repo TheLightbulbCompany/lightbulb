@@ -397,18 +397,19 @@ def test_patch_agent_drops_null_for_non_reports_to_fields(client, monkeypatch):
     assert "title" not in forwarded
 
 
-def test_delete_agent_rejects_seeded(client, monkeypatch):
-    """The REST delete path must refuse seeded agents (Friday/Atlas) — same
-    guard as the OpenClaw gateway path. 403, upstream delete NOT called."""
+def test_delete_agent_maps_final_root_conflict_to_409(client, monkeypatch):
     from routers.teams import agents as agents_mod
+    from core.services.paperclip_agent_lifecycle import AgentLifecycleConflict
 
-    delete_everywhere = AsyncMock(return_value={})
+    delete_everywhere = AsyncMock(
+        side_effect=AgentLifecycleConflict("The final root CEO cannot be deleted or demoted.")
+    )
     monkeypatch.setattr(agents_mod, "delete_agent_everywhere", delete_everywhere)
-    monkeypatch.setattr(agents_mod, "is_seeded_agent", AsyncMock(return_value=True))
 
     r = client.delete("/api/v1/teams/agents/friday_id", headers={"Authorization": "Bearer x"})
-    assert r.status_code == 403
-    delete_everywhere.assert_not_awaited()
+    assert r.status_code == 409
+    assert r.json()["detail"] == "The final root CEO cannot be deleted or demoted."
+    delete_everywhere.assert_awaited_once_with(owner_id="o1", agent_id="friday_id")
 
 
 def test_delete_agent_allows_non_seeded(client, monkeypatch):
@@ -416,14 +417,10 @@ def test_delete_agent_allows_non_seeded(client, monkeypatch):
 
     delete_everywhere = AsyncMock(return_value={"deleted": True})
     monkeypatch.setattr(agents_mod, "delete_agent_everywhere", delete_everywhere)
-    monkeypatch.setattr(agents_mod, "is_seeded_agent", AsyncMock(return_value=False))
-    remove_starter = AsyncMock()
-    monkeypatch.setattr(agents_mod, "remove_starter_agent_id", remove_starter)
 
     r = client.delete("/api/v1/teams/agents/a_user", headers={"Authorization": "Bearer x"})
     assert r.status_code == 200
     delete_everywhere.assert_awaited_once_with(owner_id="o1", agent_id="a_user")
-    remove_starter.assert_awaited_once_with(owner_id="o1", agent_id="a_user")
 
 
 def test_legacy_runs_alias_proxies_heartbeat_run(client, monkeypatch):

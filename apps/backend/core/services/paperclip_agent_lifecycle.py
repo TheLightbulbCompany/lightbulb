@@ -44,6 +44,11 @@ _TERMINAL_ISSUE_STATUSES = {"done", "cancelled"}
 _ISSUE_PAGE_SIZE = 1000
 _AGENT_DELETE_LOCK_RETRY_DELAYS_S: tuple[float, ...] = (0.25, 1.0)
 _OPENCLAW_FILE_LOCK_TIMEOUT_MARKER = "code=file_lock_timeout"
+FINAL_ROOT_CEO_CONFLICT = "The final root CEO cannot be deleted or demoted."
+
+
+class AgentLifecycleConflict(RuntimeError):
+    """A requested mutation would leave the company without a root CEO."""
 
 
 def _rows(payload: Any, key: str) -> list[dict]:
@@ -54,6 +59,17 @@ def _rows(payload: Any, key: str) -> list[dict]:
     else:
         rows = []
     return [row for row in rows if isinstance(row, dict)]
+
+
+def _is_root_ceo(agent: dict) -> bool:
+    return agent.get("role") == "ceo" and not agent.get("reportsTo")
+
+
+def ensure_root_ceo_survives(*, target: dict, agents: list[dict]) -> None:
+    if _is_root_ceo(target) and not any(
+        agent.get("id") != target.get("id") and _is_root_ceo(agent) for agent in agents
+    ):
+        raise AgentLifecycleConflict(FINAL_ROOT_CEO_CONFLICT)
 
 
 async def disarm_owner_nightly_automation(owner_id: str) -> dict[str, int]:
@@ -239,7 +255,7 @@ async def prepare_paperclip_agent_delete(
 
     Paperclip's native agent delete nulls issue assignees and hard-deletes the
     agent's routines.  Reassign non-terminal issues and move every routine to a
-    surviving seed agent first; non-archived routines are archived so they can
+    surviving agent first; non-archived routines are archived so they can
     no longer fire under the replacement. The operation is idempotent.
     """
 
@@ -247,11 +263,6 @@ async def prepare_paperclip_agent_delete(
     company_id = await resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
     if company_id is None:
         return {"replacement_agent_id": None, "issues_reassigned": 0, "routines_archived": 0}
-
-    # Seed identity comes from the persisted provision record, never role/name.
-    from core.services.paperclip_openclaw_pairing import get_seeded_agent_ids
-
-    seeded_ids = await get_seeded_agent_ids(owner_id=owner_id, repo=repo)
 
     http = httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0)
     try:
@@ -262,11 +273,12 @@ async def prepare_paperclip_agent_delete(
             await admin.list_agents(company_id=company_id, session_cookie=cookie),
             "agents",
         )
-        surviving_seeds = [a for a in agents if a.get("id") in seeded_ids and a.get("id") != agent_id]
-        # Friday is the CEO seed. Role is only used to choose between already-
-        # proven seed IDs, never to infer seed provenance.
-        replacement = next((a for a in surviving_seeds if a.get("role") == "ceo"), None)
-        replacement = replacement or next(iter(surviving_seeds), None)
+        target = next((agent for agent in agents if agent.get("id") == agent_id), None)
+        survivors = [agent for agent in agents if agent.get("id") != agent_id]
+        if target is not None:
+            ensure_root_ceo_survives(target=target, agents=agents)
+        replacement = next((agent for agent in survivors if _is_root_ceo(agent)), None)
+        replacement = replacement or next(iter(survivors), None)
         replacement_agent_id = replacement.get("id") if replacement else None
 
         routines = _rows(
@@ -331,7 +343,7 @@ async def prepare_paperclip_agent_delete(
 
 
 async def delete_agent_everywhere(*, owner_id: str, agent_id: str) -> dict[str, Any]:
-    """Delete a non-seed agent across Paperclip, OpenClaw, config, and EFS.
+    """Delete an agent across Paperclip, OpenClaw, config, and EFS.
 
     The OpenClaw step happens before Paperclip removal. If it fails, the
     Paperclip row remains visible and a retry can reconcile the operation. If
@@ -345,10 +357,6 @@ async def delete_agent_everywhere(*, owner_id: str, agent_id: str) -> dict[str, 
         deregister_lightbulb_agent_account,
         remove_from_openclaw_config_list,
     )
-    from core.services.paperclip_openclaw_pairing import is_seeded_agent
-
-    if await is_seeded_agent(owner_id=owner_id, agent_id=agent_id):
-        raise PermissionError("Seeded agents (Friday/Atlas) cannot be deleted.")
 
     preserved = await prepare_paperclip_agent_delete(owner_id=owner_id, agent_id=agent_id)
 
@@ -492,8 +500,8 @@ async def delete_paperclip_for_chat(
     reprovision.
 
     Idempotent: ``PaperclipAdminClient.delete_agent`` swallows 404 from
-    Paperclip (treats already-gone as success), so legacy 'main' agents
-    that never existed in Paperclip and double-deletes are safe.
+    Paperclip (treats already-gone as success), so agents that never existed
+    in Paperclip and double-deletes are safe.
 
     Looks up the Paperclip company under the OWNER (org_id for orgs,
     user_id for personal), mirroring the create path.
@@ -520,6 +528,7 @@ async def delete_paperclip_for_chat(
             session_cookie=admin_cookie,
             agent_id=agent_id,
         )
+        await repo.remove_starter_agent_id(owner_id, agent_id)
     finally:
         await http.aclose()
 

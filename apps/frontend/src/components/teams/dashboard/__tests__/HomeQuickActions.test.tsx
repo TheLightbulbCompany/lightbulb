@@ -8,8 +8,9 @@ const openMarketplace = vi.fn();
 let desktop = true;
 let defaultId: string | undefined = "agent_1";
 let agents = [{ id: "agent_1", name: "Nova" }];
+let isSettled = true;
 vi.mock("@/hooks/useAgents", () => ({
-  useAgents: () => ({ defaultId, agents, isSettled: true }),
+  useAgents: () => ({ defaultId, agents, isSettled }),
 }));
 vi.mock("@/hooks/useIsDesktop", () => ({ useIsDesktop: () => desktop }));
 vi.mock("@/components/workspace/workspaceController", () => ({
@@ -29,6 +30,7 @@ beforeEach(() => {
   desktop = true;
   defaultId = "agent_1";
   agents = [{ id: "agent_1", name: "Nova" }];
+  isSettled = true;
   window.history.pushState(null, "", "/chat?panel=teams-dashboard");
 });
 
@@ -78,6 +80,7 @@ describe("HomeQuickActions — every verb resolves to something real", () => {
     // moment before `defaultId` lands is the smaller failure.
     defaultId = undefined;
     agents = [];
+    isSettled = false;
     render(<HomeQuickActions stripeBound />);
     const link = screen.getByRole("link", { name: "Ask CEO" });
     const ev = new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 });
@@ -87,10 +90,21 @@ describe("HomeQuickActions — every verb resolves to something real", () => {
     expect(requestFocusComposer).not.toHaveBeenCalled();
   });
 
+  it("hides the CEO action when the settled roster has no resolvable CEO", () => {
+    defaultId = undefined;
+    agents = [];
+    render(<HomeQuickActions stripeBound />);
+    expect(screen.queryByRole("link", { name: "Ask CEO" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /New task/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Hire an agent/ })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Add a product/ })).toBeInTheDocument();
+  });
+
   it("still lets a modifier click through when the roster has not resolved", () => {
     // A meta-click is the browser's new-tab gesture; preventing it would break
     // the one thing the real href is there for.
     defaultId = undefined;
+    isSettled = false;
     render(<HomeQuickActions stripeBound />);
     const link = screen.getByRole("link", { name: "Ask CEO" });
     const ev = new MouseEvent("click", {

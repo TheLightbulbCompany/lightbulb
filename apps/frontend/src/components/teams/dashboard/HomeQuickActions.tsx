@@ -35,9 +35,10 @@ function isPlainClick(e: MouseEvent): boolean {
 }
 
 export function HomeQuickActions({ stripeBound }: { stripeBound: boolean }) {
-  const { agents, defaultId } = useAgents();
+  const { agents, defaultId, isSettled } = useAgents();
   const defaultAgent = agents.find((agent) => agent.id === defaultId);
-  const askLabel = `Ask ${defaultAgent?.name || defaultAgent?.identity?.name || "CEO"}`;
+  const ceoName = defaultAgent?.name || defaultAgent?.identity?.name;
+  const askLabel = ceoName ? `Ask ${ceoName}` : isSettled ? null : "Ask CEO";
   const isDesktop = useIsDesktop();
   const { open: openMarketplace } = useMarketplaceDrawer();
 
@@ -49,7 +50,7 @@ export function HomeQuickActions({ stripeBound }: { stripeBound: boolean }) {
   const askCeo = (e: MouseEvent<HTMLAnchorElement>) => {
     // Modifier / middle click: leave it alone, the href opens a real tab.
     if (!isPlainClick(e)) return;
-    // No default agent yet (roster still loading, or an owner with none). The
+    // No default agent yet while the roster is still loading. The
     // href="/chat" would then HARD-navigate — a full SPA reload of the page the
     // owner is already on, losing the dock layout — so a plain click here does
     // nothing rather than something destructive.
@@ -78,13 +79,15 @@ export function HomeQuickActions({ stripeBound }: { stripeBound: boolean }) {
     <section aria-label="Quick actions" className="flex flex-col gap-2">
       <p className="label-caps text-[var(--midnight-muted)]">Quick actions</p>
       <div className="flex flex-wrap gap-2">
-        {/* A real anchor, like its siblings: the href is what native new-tab /
-            middle-click follows, and next/link would only prefetch the route
-            the shell is already on. */}
-        {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
-        <a href="/chat" onClick={askCeo} className={CHIP}>
-          <MessageSquare size={14} strokeWidth={1.75} aria-hidden="true" /> {askLabel}
-        </a>
+        {askLabel && (<>
+          {/* A real anchor, like its siblings: the href is what native new-tab /
+              middle-click follows, and next/link would only prefetch the route
+              the shell is already on. */}
+          {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+          <a href="/chat" onClick={askCeo} className={CHIP}>
+            <MessageSquare size={14} strokeWidth={1.75} aria-hidden="true" /> {askLabel}
+          </a>
+        </>)}
         <a
           href={NEW_TASK_URL}
           onClick={(e) => handleShellLinkClick(e, NEW_TASK_URL)}

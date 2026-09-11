@@ -154,7 +154,7 @@ it("keeps empty reaction and reply rows out of the message and groups its action
   expect(within(article).queryByLabelText("Message reactions")).not.toBeInTheDocument();
   expect(article.querySelector(".room-reply")).toBeNull();
   expect(within(article).queryByText("Reply in thread")).not.toBeInTheDocument();
-  expect(within(article).queryByText("👍")).not.toBeInTheDocument();
+  expect(screen.queryByRole("dialog", { name: "Choose an emoji" })).not.toBeInTheDocument();
 });
 
 it("opens the reaction picker with the keyboard and leaves failures outside the toolbar", async () => {
@@ -166,8 +166,9 @@ it("opens the reaction picker with the keyboard and leaves failures outside the 
   act(() => add.focus());
   expect(add).toHaveFocus();
   await user.keyboard("{Enter}");
-  expect(screen.getAllByRole("menuitem")).toHaveLength(6);
-  await user.click(screen.getByRole("menuitem", { name: "Add 👍 reaction" }));
+  const dialog = screen.getByRole("dialog", { name: "Choose an emoji" });
+  await user.type(within(dialog).getByRole("searchbox", { name: "Search emoji" }), "thumbs up");
+  await user.keyboard("{ArrowDown}{Enter}");
   expect(onSetReaction).toHaveBeenCalledWith("message", "👍", true);
   expect(add).toBeDisabled();
   await act(async () => reject(new Error("Unavailable")));
@@ -191,6 +192,18 @@ it("shows only applied reaction chips and a nonzero reply count below the messag
   expect(within(reactions).getByRole("button", { name: "Remove 👍 reaction, 2" })).toHaveAttribute("aria-pressed", "true");
   expect(within(reactions).getByRole("button", { name: "Add ✅ reaction, 1" })).toBeInTheDocument();
   expect(article.querySelector(".room-reply")).toHaveTextContent("1 reply");
+});
+
+it("shows quick reactions and a picker in the toolbar and renders any applied emoji as a chip", async () => {
+  const user = userEvent.setup();
+  const onSetReaction = vi.fn(async () => {});
+  render(<RoomPanel {...props} messages={[{ ...message, reactions: { "🚀": ["owner"], "🙏": ["someone"] } }]} onSetReaction={onSetReaction} />);
+  expect(screen.getByRole("button", { name: "Remove 🚀 reaction, 1" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("button", { name: "Add 🙏 reaction, 1" })).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "React 👍" }));
+  expect(onSetReaction).toHaveBeenCalledWith("message", "👍", true);
+  await user.click(screen.getByRole("button", { name: "Add reaction" }));
+  expect(screen.getByRole("dialog", { name: "Choose an emoji" })).toBeInTheDocument();
 });
 
 it("shows persisted reactions and removes the viewer's reaction from a thread", async () => {

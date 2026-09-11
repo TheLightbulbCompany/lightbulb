@@ -1368,12 +1368,14 @@ async def test_workspace_trial_drops_invalid_flow_and_preserves_event_dedup(
 def _arm_provisioning(row):
     """A fake PaperclipProvisioning whose company-row lookup returns ``row``.
 
-    Personal owners read via get_company_row(user_id); org owners via
-    find_org_owner(owner_id) — stub both so either branch resolves to ``row``.
+    Personal owners read via get_company_row(user_id); org owners via the
+    repository's authoritative owner resolver.
     """
     fake = MagicMock()
     fake.find_org_owner = AsyncMock(return_value=row)
     fake.get_company_row = AsyncMock(return_value=row)
+    fake._repo = MagicMock()
+    fake._repo.resolve_owner_row = AsyncMock(return_value=row)
     fake._admin = MagicMock()  # ._http is just an attribute access
     return fake
 
@@ -1382,9 +1384,14 @@ def _paid_account(**extra):
     return {"owner_id": "user_p", "subscription_status": "active", **extra}
 
 
-def _company_row(company_id="co1", status="active", friday="friday1", atlas="atlas1"):
+def _company_row(company_id="co1", status="active", friday="friday1", atlas="atlas1", starter_ids=None):
     seeded = [x for x in (friday, atlas) if x is not None] or None
-    return MagicMock(company_id=company_id, status=status, seeded_agent_ids=seeded)
+    return MagicMock(
+        company_id=company_id,
+        status=status,
+        seeded_agent_ids=seeded,
+        starter_agent_ids=starter_ids,
+    )
 
 
 @pytest.mark.asyncio
@@ -1410,6 +1417,23 @@ async def test_arm_paid_seeds_nightly_routine_for_friday():
     assert kwargs["title"] == "Nightly CEO progress"
     assert kwargs["cron"] == "0 8 * * *"
     assert kwargs["timezone"] == "UTC"
+
+
+@pytest.mark.asyncio
+async def test_arm_paid_prefers_starter_ceo_for_nightly_routine():
+    provisioning = _arm_provisioning(_company_row(starter_ids={"ceo": "starter-ceo"}))
+    seed = AsyncMock(return_value="rid-nightly")
+    with (
+        patch("core.services.user_provision.billing_repo.get_by_owner_id", AsyncMock(return_value=_paid_account())),
+        patch("core.services.user_provision.build_paperclip_provisioning", AsyncMock(return_value=provisioning)),
+        patch("core.services.user_provision.close_paperclip_provisioning", AsyncMock()),
+        patch("core.services.user_provision.get_admin_session_cookie", AsyncMock(return_value="admin-cookie")),
+        patch("core.services.user_provision.billing_repo.try_claim_nightly_arm", AsyncMock(return_value=True)),
+        patch("core.services.user_provision.create_enabled_schedule_routine", seed),
+    ):
+        await _maybe_arm_nightly_ceo(_personal_auth("user_p"), "user_p")
+
+    assert seed.await_args.kwargs["agent_id"] == "starter-ceo"
 
 
 @pytest.mark.asyncio
@@ -1583,8 +1607,8 @@ async def test_arm_seed_failure_releases_claim_and_never_raises():
 
 
 @pytest.mark.asyncio
-async def test_arm_org_admin_uses_find_org_owner():
-    """Org context resolves the company via find_org_owner(owner_id)."""
+async def test_arm_org_admin_uses_authoritative_owner_resolver():
+    """Org context resolves the company via the authoritative owner row."""
     provisioning = _arm_provisioning(_company_row(company_id="co_org"))
     seed = AsyncMock(return_value="rid-nightly")
     with (
@@ -1599,7 +1623,8 @@ async def test_arm_org_admin_uses_find_org_owner():
         patch("core.services.user_provision.create_enabled_schedule_routine", seed),
     ):
         await _maybe_arm_nightly_ceo(_org_admin_auth("user_admin", "org_xyz", "a@example.com"), "org_xyz")
-    provisioning.find_org_owner.assert_awaited_once_with("org_xyz")
+    provisioning._repo.resolve_owner_row.assert_awaited_once_with("org_xyz")
+    provisioning.find_org_owner.assert_not_awaited()
     seed.assert_awaited_once()
     assert seed.await_args.kwargs["company_id"] == "co_org"
 
@@ -1665,8 +1690,8 @@ async def test_arm_nightly_ceo_expired_trial_is_not_entitled():
 
 
 @pytest.mark.asyncio
-async def test_arm_nightly_ceo_org_owner_uses_find_org_owner():
-    """org_ prefix → find_org_owner(owner_id), never get_company_row."""
+async def test_arm_nightly_ceo_org_owner_uses_authoritative_owner_resolver():
+    """org_ prefix resolves the authoritative row, never a member row."""
     provisioning = _arm_provisioning(_company_row(company_id="co_org"))
     org_account = AsyncMock(return_value={"owner_id": "org_xyz", "subscription_status": "active"})
     _, patches = _arm_patches(provisioning, **{"billing_repo.get_by_owner_id": org_account})
@@ -1677,8 +1702,35 @@ async def test_arm_nightly_ceo_org_owner_uses_find_org_owner():
     finally:
         for p in patches:
             p.stop()
-    provisioning.find_org_owner.assert_awaited_once_with("org_xyz")
+    provisioning._repo.resolve_owner_row.assert_awaited_once_with("org_xyz")
+    provisioning.find_org_owner.assert_not_awaited()
     provisioning.get_company_row.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_arm_nightly_ceo_org_prefers_newer_authoritative_starter_owner():
+    """An older active member row must not hide the owner's starter CEO."""
+    older_member = _company_row(company_id="co_org", friday="legacy-member-friday")
+    starter_owner = _company_row(
+        company_id="co_org",
+        friday="legacy-owner-friday",
+        starter_ids={"ceo": "starter-owner-ceo"},
+    )
+    provisioning = _arm_provisioning(starter_owner)
+    provisioning.find_org_owner.return_value = older_member
+    org_account = AsyncMock(return_value={"owner_id": "org_xyz", "subscription_status": "active"})
+    mocks, patches = _arm_patches(provisioning, **{"billing_repo.get_by_owner_id": org_account})
+    for p in patches:
+        p.start()
+    try:
+        assert await arm_nightly_ceo("org_xyz") == "armed"
+    finally:
+        for p in patches:
+            p.stop()
+
+    provisioning._repo.resolve_owner_row.assert_awaited_once_with("org_xyz")
+    provisioning.find_org_owner.assert_not_awaited()
+    assert mocks["create_enabled_schedule_routine"].await_args.kwargs["agent_id"] == "starter-owner-ceo"
 
 
 @pytest.mark.asyncio

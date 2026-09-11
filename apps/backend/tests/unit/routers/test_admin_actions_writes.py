@@ -1211,6 +1211,18 @@ class TestAgentDelete:
         delete_everywhere.assert_awaited_once_with(owner_id="u_target", agent_id="agent_42")
 
     @pytest.mark.asyncio
+    async def test_final_root_conflict_is_409(self, async_client, admin_env):
+        from core.services.paperclip_agent_lifecycle import AgentLifecycleConflict
+
+        with patch(
+            "core.services.paperclip_agent_lifecycle.delete_agent_everywhere",
+            new=AsyncMock(side_effect=AgentLifecycleConflict("The final root CEO cannot be deleted or demoted.")),
+        ):
+            res = await async_client.post("/api/v1/admin/users/u_target/agents/root/delete")
+        assert res.status_code == 409
+        assert res.json()["detail"] == "The final root CEO cannot be deleted or demoted."
+
+    @pytest.mark.asyncio
     async def test_403_for_non_admin(self, async_client, non_admin_env):
         res = await async_client.post("/api/v1/admin/users/u_target/agents/agent_42/delete")
         assert res.status_code == 403

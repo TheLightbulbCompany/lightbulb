@@ -392,7 +392,7 @@ async def test_cold_container_rolls_back_rather_than_half_installing(get_listing
 )
 @patch("core.services.paperclip_openclaw_pairing.resolve_company_id_for_owner", new_callable=AsyncMock)
 async def test_ask_parks_the_agent_inert_then_files_the_approval(
-    resolve_company, create_agent, cookie, approval_create_claim
+    resolve_company, create_agent, cookie, approval_create_claim, monkeypatch
 ):
     """Order is load-bearing: the agent must be pending_approval BEFORE the
     approval exists, so it can never be assigned work or woken while the owner
@@ -411,6 +411,15 @@ async def test_ask_parks_the_agent_inert_then_files_the_approval(
         return {"id": "ap_9"}
 
     admin.create_approval = AsyncMock(side_effect=_create_approval)
+    count_agents = AsyncMock(return_value=11)
+    monkeypatch.setattr(
+        "core.services.paperclip_openclaw_pairing.count_paperclip_agents_for_owner",
+        count_agents,
+    )
+    monkeypatch.setattr(
+        "core.repositories.billing_repo.get_by_owner_id",
+        AsyncMock(return_value={"plan": "standard"}),
+    )
 
     with patch("core.services.paperclip_admin_client.PaperclipAdminClient", return_value=admin):
         approval_id = await marketplace_hire.create_hire_approval(owner_id="user_x", issue_id="iss_1", listing=_LISTING)
@@ -423,6 +432,8 @@ async def test_ask_parks_the_agent_inert_then_files_the_approval(
     assert body["type"] == "hire_agent"
     assert body["payload"]["agentId"] == _AGENT_ID
     assert body["issueIds"] == ["iss_1"]
+    assert "idempotency_replay_only" not in create_agent.await_args.kwargs
+    count_agents.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -686,7 +697,6 @@ async def test_concurrent_hire_approval_recommendations_file_exactly_one_approva
         "core.services.paperclip_openclaw_pairing.resolve_company_id_for_owner",
         AsyncMock(return_value="company-1"),
     )
-    monkeypatch.setattr("core.services.agent_budget.is_at_agent_budget", AsyncMock(return_value=False))
     monkeypatch.setattr("core.services.paperclip_agent_lifecycle.create_paperclip_for_marketplace", mint)
     monkeypatch.setattr(
         "core.services.paperclip_admin_session.get_admin_session_cookie", AsyncMock(return_value="cookie")
@@ -1124,68 +1134,3 @@ async def test_rollback_unwinds_the_container_side_too(get_catalog, delete_pc):
 
     assert catalog.unwind_partial_deploy.await_args.kwargs["new_agent_id"] == _AGENT_ID
     delete_pc.assert_awaited_once()
-
-
-# ---------------------------------------------------------------------------
-# create_hire_approval — the plan agent budget
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_exact_cap_replay_only_miss_does_not_mint_or_file(monkeypatch, approval_create_claim):
-    """The fifth agent-creation path.
-
-    ``/recommend`` is container-authenticated, so Friday reaches this headlessly
-    and it mints a REAL Paperclip agent before any human approves anything. An
-    over-budget owner must not get one — and the refusal must not raise, or the
-    whole recommend response fails instead of degrading.
-    """
-    from core.services.paperclip_admin_client import PaperclipAgentCreateReplayMiss
-
-    replay = AsyncMock(
-        side_effect=PaperclipAgentCreateReplayMiss(
-            "POST /agents -> 409",
-            status_code=409,
-            body={"code": "agent_create_idempotency_replay_miss"},
-        )
-    )
-
-    monkeypatch.setattr(
-        "core.services.agent_budget.is_at_agent_budget",
-        AsyncMock(return_value=True),
-    )
-    monkeypatch.setattr(
-        "core.services.paperclip_openclaw_pairing.resolve_company_id_for_owner",
-        AsyncMock(return_value="company-1"),
-    )
-    monkeypatch.setattr("core.services.paperclip_agent_lifecycle.create_paperclip_for_marketplace", replay)
-
-    result = await marketplace_hire.create_hire_approval(owner_id="owner", issue_id="issue-1", listing=_LISTING)
-
-    assert result is None
-    assert replay.await_args.kwargs["idempotency_replay_only"] is True
-
-
-@pytest.mark.asyncio
-async def test_under_budget_owner_proceeds_past_the_gate(monkeypatch, approval_create_claim):
-    """The gate must not be a wall: an owner under budget still reaches the mint."""
-    reached = False
-
-    async def _mint(**_kw):
-        nonlocal reached
-        reached = True
-        raise RuntimeError("stop here — reaching the mint is what this asserts")
-
-    monkeypatch.setattr(
-        "core.services.agent_budget.is_at_agent_budget",
-        AsyncMock(return_value=False),
-    )
-    monkeypatch.setattr(
-        "core.services.paperclip_openclaw_pairing.resolve_company_id_for_owner",
-        AsyncMock(return_value="company-1"),
-    )
-    monkeypatch.setattr("core.services.paperclip_agent_lifecycle.create_paperclip_for_marketplace", _mint)
-
-    with pytest.raises(RuntimeError):
-        await marketplace_hire.create_hire_approval(owner_id="owner", issue_id="issue-1", listing=_LISTING)
-    assert reached is True

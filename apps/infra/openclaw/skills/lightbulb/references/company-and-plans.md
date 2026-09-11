@@ -1,16 +1,14 @@
 # Your company: the org model
 
-Every Lightbulb company starts with two seeded agents:
+Fresh workspaces start with six agents: **CEO**, **Engineering**, **Finance**,
+**Growth**, **Analytics**, and **Customer Operations**. The CEO is the owner's
+single point of contact and delegates work to the five functional specialists.
+Names are user-renamable; stable agent IDs, `role`, and `reportsTo` define the
+org, so never infer identity or policy from a display name.
 
-- **Friday** — the CEO (`role: ceo`). The owner's single point of contact.
-  Friday decomposes goals, delegates to specialists, triages results, and
-  reports back. Friday does not execute specialist work.
-- **Atlas** — the Agent Recruiter (`role: general`, reports to Friday).
-  Atlas builds new specialist agents from a role spec: researches the role,
-  architects the agent, generates its workspace, registers it in the
-  roster. **Atlas is not a general worker** — do not assign it research
-  tasks, prototypes, or domain work. The right input to Atlas is "we need
-  an agent that does X"; the wrong input is "do X".
+**Friday and Atlas are optional marketplace agents**, not starter identities.
+If installed, their listing-specific instructions describe their behavior;
+discover them from the live marketplace rather than assuming they exist.
 
 **How the org works (Paperclip semantics):**
 
@@ -25,9 +23,8 @@ Every Lightbulb company starts with two seeded agents:
   agents in Teams. Keep your own `capabilities` text accurate — it is how
   the rest of the company decides what to send you.
 - Agents can have per-agent monthly budgets set by the owner in Teams.
-- New agents enter the company three ways: the owner creates one in Teams,
-  Atlas builds one from a role spec, or the owner deploys one from the
-  marketplace.
+- New agents enter the company through the owner's governed Teams creation or
+  marketplace deployment flows.
 - Paperclip ships built-in role instruction bundles, but they are **not
   delivered** to Lightbulb agents (the openclaw adapter doesn't support them).
   Your workspace files (SOUL.md, AGENTS.md, …) and bundled skills are your
@@ -61,13 +58,14 @@ Every Lightbulb company starts with two seeded agents:
 ## Plans, providers, and this owner's current state
 
 Lightbulb's paid plans are **Workspace, $50/month** (always-on container)
-and **Ultra, $150/month** (2 vCPU / 8 GB, required to run more than 10
-agents and deploy the large pre-built companies on the marketplace).
-Both plans include unlimited members; membership and invitations do not
-change the subscription price. Upgrade lives in flickmeon.ai/settings. There
-is also a **free tier** (no card: Bedrock Claude Sonnet only, $3/day usage
-cap, container sleeps when idle). Inference is a separate cost and runs on one of
-three provider paths chosen by the owner: **Bedrock managed** (Lightbulb-billed
+and **Ultra, $150/month** (2 vCPU / 8 GB for heavier workloads). Both plans
+allow unlimited agent identities and unlimited members; agent identity count
+is not a plan entitlement, and membership and invitations do not change the
+subscription price. Runtime capacity remains finite. Upgrade lives in
+flickmeon.ai/settings. There is also a **free tier** (no card: Bedrock Claude
+Sonnet only, $3/day usage cap, container sleeps when idle). Inference is a
+separate cost and runs on one of three provider paths chosen by the owner:
+**Bedrock managed** (Lightbulb-billed
 credits), **ChatGPT OAuth** (the owner's own OpenAI account — the workspace
 owner/admin who completed the connection is the only one who can manage it;
 one ChatGPT account per container), or **BYO API key** (owner's Anthropic/OpenAI

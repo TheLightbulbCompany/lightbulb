@@ -96,6 +96,10 @@ async def test_base_image_tag_unreadable_gates_closed(manager, ecs_client):
 
 def _write_user_configs_patches(manager, write_oc_mock):
     return (
+        patch(
+            "core.repositories.paperclip_repo.PaperclipRepo",
+            MagicMock(return_value=MagicMock(resolve_owner_row=AsyncMock(return_value=None))),
+        ),
         patch("core.services.paperclip_openclaw_pairing.fetch_paperclip_agents_for_owner", AsyncMock(return_value=[])),
         patch("core.containers.ecs_manager.write_openclaw_config", write_oc_mock),
         patch("core.services.friday_identity.pre_stage_friday_identity", AsyncMock()),

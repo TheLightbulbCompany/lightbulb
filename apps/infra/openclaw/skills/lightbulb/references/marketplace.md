@@ -25,8 +25,8 @@ recommendation still reads on Telegram and email, where no card renders.
 
 **Cost — this is why you check here first.** Deploying a published marketplace
 agent costs NOTHING in inference; it is a file extract plus a config merge, and
-the agent is ready immediately. Asking Atlas to build one costs a full
-agent-building run against the owner's budget, and takes minutes.
+the agent is ready immediately. Building a custom agent consumes inference and
+takes longer.
 
 **You cannot hire on your own.** Both tools are read-only. The roster changes
 only when the owner clicks Deploy on the card, or approves the hire in Teams.
@@ -41,13 +41,17 @@ hire time). Some listings are paid (one-time purchase via Stripe). You
 cannot deploy a listing yourself — recommend one and point the owner at the
 marketplace.
 
+**Friday and Atlas are optional marketplace agents.** They are curated products
+an owner may deploy, not names or identities guaranteed in a fresh workspace.
+Always inspect the live listing before describing what either product does.
+
 The marketplace also carries **whole pre-built companies**
 (flickmeon.ai/marketplace/companies): one click deploys every agent in the
 package into the roster (reporting into the existing CEO), with its
-routines landing PAUSED for the owner to enable. Companies over 10 agents
-require the Ultra plan; one install runs at a time, so a company deploy
-and an agent hire can't overlap; and a workspace holds ONE deployed company
-package — a second company deploy is refused until the workspace is wiped.
+routines landing PAUSED for the owner to enable. One install runs at a time,
+so a company deploy and an agent hire can't overlap; and a workspace holds ONE
+deployed company package — a second company deploy is refused until the
+workspace is wiped.
 
 A hire also carries the seller's automations, but neither kind arrives
 running: its schedules land as PAUSED routines the owner switches on, and
@@ -62,10 +66,10 @@ to the marketplace via the seller wizard, which snapshots the agent, scans
 it for secrets/PII, and submits it for Lightbulb review (draft → review →
 published). Key rules:
 
-- **Atlas builds agents but never publishes them** — its job ends when the
-  new agent is registered in the roster. Publishing is always the owner's
-  action.
-- **Friday cannot be published.** The platform blocks it.
+- **Publishing is always the owner's action.** An agent may prepare the work,
+  but cannot submit the listing.
+- **The workspace's root CEO cannot be published.** The platform blocks the
+  live owner-orchestrator; that is separate from curated marketplace products.
 - Runtime state (session transcripts, working state) is stripped from
   published snapshots — but persona files **including MEMORY.md ship with
   the export**. The pre-publish safety scan checks them for credentials and
@@ -85,8 +89,8 @@ published). Key rules:
   re-enter them), memory logs, cron jobs and plugins come along, and can opt in
   to conversation history (auth tokens stripped; applies when the workspace
   next starts on an updated platform image).
-  More than 10 agents in total needs Ultra. Channels, credentials, the
-  browser profile and global state never import. Plugins with dependencies need
+  Channels, credentials, the browser profile and global state never import.
+  Plugins with dependencies need
   `openclaw plugins install <name@version>` run here in the container — offer to run it once the owner confirms.
 - **"Can I bring my local Claude Code context?"** → Yes: run
   `cd ~ && tar czf claude-code.tar.gz .claude/CLAUDE.md .claude/projects/*/memory .claude/skills`

@@ -157,9 +157,6 @@ export interface ImportPreview {
   safety_flags: { pattern: string; severity: "high" | "medium" | "low"; file: string; line: number | null; snippet: string }[];
   warnings: string[];
   skipped_big_files: string[];
-  existing_agents: number;
-  standard_max_agents: number;
-  plan: string | null;
   /** Populated only when kind === "claude"; the backup-specific fields above
    * stay at their defaults on that path. */
   claude?: {

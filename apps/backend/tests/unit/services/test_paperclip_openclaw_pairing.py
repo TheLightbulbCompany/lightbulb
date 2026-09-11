@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
+from core.services import paperclip_openclaw_pairing as pairing
 from core.config import settings
 from core.containers.config import build_device_paired_json
 from core.crypto.operator_device import generate_operator_device, private_key_pem
@@ -498,6 +499,17 @@ async def test_resolve_company_id_returns_id_for_active_org_row():
     repo.list_by_org_id = AsyncMock(return_value=[{"status": "active", "company_id": "co_live"}])
 
     assert await resolve_company_id_for_owner(owner_id="org_abc", repo=repo) == "co_live"
+
+
+@pytest.mark.asyncio
+async def test_get_starter_agent_ids_resolves_authoritative_owner_row():
+    repo = MagicMock()
+    repo.resolve_owner_row = AsyncMock(
+        return_value=MagicMock(starter_agent_ids={"ceo": "agent-ceo", "finance": "agent-fin"})
+    )
+
+    assert await pairing.get_starter_agent_ids(owner_id="org_abc", repo=repo) == {"agent-ceo", "agent-fin"}
+    repo.resolve_owner_row.assert_awaited_once_with("org_abc")
 
 
 @pytest.mark.asyncio

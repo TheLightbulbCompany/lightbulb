@@ -305,6 +305,25 @@ def test_org_owner_kickoff_state_comes_from_the_owner_row_regardless_of_scan_ord
         assert by_owner["int_x"]["stage"] == "first_autonomous_success"
 
 
+def test_company_owner_resolution_prefers_starter_identity_row():
+    fx = _fixture()
+    fx["paperclip"] = [row for row in fx["paperclip"] if row.get("company_id") != "c_a"] + [
+        {"user_id": "wrong", "org_id": "wrong_org", "company_id": "c_a", "status": "active"},
+        {
+            "user_id": "owner",
+            "org_id": "ext_a",
+            "company_id": "c_a",
+            "starter_agent_ids": {"ceo": "agent-ceo"},
+            "status": "active",
+            "bootstrap_state": "delivered",
+        },
+    ]
+
+    owners = growth.derive(**fx)["segments"]["external"]["activation"]["owners"]
+    assert {owner["owner_id"] for owner in owners} >= {"ext_a"}
+    assert "wrong_org" not in {owner["owner_id"] for owner in owners}
+
+
 def test_north_star_excludes_nightly_and_headline_four_weeks():
     out = growth.derive(**_fixture())
     ext = out["segments"]["external"]

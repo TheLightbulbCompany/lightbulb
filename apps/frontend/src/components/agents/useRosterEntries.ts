@@ -214,8 +214,7 @@ export function useRosterEntries(agents: Agent[]): RosterEntry[] {
         state:
           durable === "idle" && liveRunAgentIds.has(agent.id) ? ("running" as const) : durable,
         isCeo: row?.role === "ceo",
-        // Friday and Atlas. The BFF stamps this from the persisted seeded-agent
-        // ids, and the backend rejects deleting them outright.
+        // Backend-authored starter provenance; display names are irrelevant.
         isSeeded: row?.seeded === true,
         rawStatus: row?.status,
       };

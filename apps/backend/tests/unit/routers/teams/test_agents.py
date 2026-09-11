@@ -44,6 +44,7 @@ def client(teams_ctx, monkeypatch):
         return teams_ctx
 
     monkeypatch.setattr(agents_mod, "_load_agent_sidecars", AsyncMock(return_value={}))
+    monkeypatch.setattr(agents_mod, "get_starter_agent_ids", AsyncMock(return_value=set()))
     app.dependency_overrides[agents_mod._ctx] = fake_ctx
     try:
         yield TestClient(app)
@@ -87,6 +88,20 @@ def test_list_agents_stamps_seeded_flag(client, monkeypatch):
     assert by_id["friday_id"]["origin"] == "Seed"
     assert by_id["user_id"]["seeded"] is False
     assert by_id["user_id"]["origin"] == "Custom"
+
+
+def test_list_agents_stamps_starter_without_seed_protection(client, monkeypatch):
+    admin = MagicMock()
+    admin.list_agents = AsyncMock(return_value={"agents": [{"id": "agent-ceo"}]})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(agents_mod, "get_seeded_agent_ids", AsyncMock(return_value=set()))
+    monkeypatch.setattr(agents_mod, "get_starter_agent_ids", AsyncMock(return_value={"agent-ceo"}))
+
+    r = client.get("/api/v1/teams/agents", headers={"Authorization": "Bearer test"})
+
+    assert r.json() == {"agents": [{"id": "agent-ceo", "seeded": False, "origin": "Starter"}]}
 
 
 def test_list_agents_stamps_complete_marketplace_provenance(client, monkeypatch):
@@ -142,6 +157,15 @@ def test_create_agent_synthesizes_adapter_config(client, monkeypatch):
         "_gateway_url_for_env",
         lambda: f"wss://ws-dev.{GW_APEX}",
     )
+    count_agents = AsyncMock(return_value=11)
+    monkeypatch.setattr(
+        "core.services.paperclip_openclaw_pairing.count_paperclip_agents_for_owner",
+        count_agents,
+    )
+    monkeypatch.setattr(
+        "core.repositories.billing_repo.get_by_owner_id",
+        AsyncMock(return_value={"plan": "standard"}),
+    )
 
     r = client.post(
         "/api/v1/teams/agents",
@@ -152,6 +176,8 @@ def test_create_agent_synthesizes_adapter_config(client, monkeypatch):
     call = admin.create_agent.await_args
     assert call.kwargs["adapter_type"] == "openclaw_gateway"
     assert call.kwargs["idempotency_key"].startswith("lightbulb-agent-create:v1:teams:")
+    assert "idempotency_replay_only" not in call.kwargs
+    count_agents.assert_not_awaited()
     adapter_cfg = dict(call.kwargs["adapter_config"])
     # devicePrivateKeyPem is a freshly-minted ed25519 key (non-deterministic),
     # so assert it's a valid PEM separately and compare the stable fields.
@@ -355,6 +381,15 @@ def test_patch_agent_drops_null_for_non_reports_to_fields(client, monkeypatch):
     fields (title here) must still be dropped, not forwarded, while a
     concurrent reportsTo value passes through."""
     admin = MagicMock()
+    agent = {
+        "id": "a1",
+        "companyId": "co_abc",
+        "name": "Specialist",
+        "role": "engineer",
+        "reportsTo": None,
+    }
+    admin.get_agent = AsyncMock(return_value=agent)
+    admin.list_agents = AsyncMock(return_value={"agents": [agent]})
     admin.patch_agent = AsyncMock(return_value={"id": "a1"})
     from routers.teams import agents as agents_mod
 
@@ -371,18 +406,80 @@ def test_patch_agent_drops_null_for_non_reports_to_fields(client, monkeypatch):
     assert "title" not in forwarded
 
 
-def test_delete_agent_rejects_seeded(client, monkeypatch):
-    """The REST delete path must refuse seeded agents (Friday/Atlas) — same
-    guard as the OpenClaw gateway path. 403, upstream delete NOT called."""
+def test_patch_agent_rejects_moving_final_root_ceo_under_a_manager(client, monkeypatch):
+    admin = MagicMock()
+    root = {
+        "id": "root",
+        "companyId": "co_abc",
+        "name": "Renamed CEO",
+        "role": "ceo",
+        "reportsTo": None,
+    }
+    admin.get_agent = AsyncMock(return_value=root)
+    admin.list_agents = AsyncMock(return_value={"agents": [root]})
+    admin.patch_agent = AsyncMock(return_value={**root, "reportsTo": "manager"})
     from routers.teams import agents as agents_mod
 
-    delete_everywhere = AsyncMock(return_value={})
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.patch(
+        "/api/v1/teams/agents/root",
+        json={"reportsTo": "manager"},
+        headers={"Authorization": "Bearer x"},
+    )
+
+    assert r.status_code == 409
+    assert r.json()["detail"] == "The final root CEO cannot be deleted or demoted."
+    admin.patch_agent.assert_not_awaited()
+
+
+def test_patch_agent_allows_moving_root_ceo_when_another_root_exists(client, monkeypatch):
+    admin = MagicMock()
+    retiring_root = {
+        "id": "old-root",
+        "companyId": "co_abc",
+        "name": "Ada",
+        "role": "ceo",
+        "reportsTo": None,
+    }
+    surviving_root = {
+        "id": "new-root",
+        "companyId": "co_abc",
+        "name": "Bea",
+        "role": "ceo",
+        "reportsTo": None,
+    }
+    updated = {**retiring_root, "reportsTo": "new-root"}
+    admin.get_agent = AsyncMock(return_value=retiring_root)
+    admin.list_agents = AsyncMock(return_value={"agents": [retiring_root, surviving_root]})
+    admin.patch_agent = AsyncMock(return_value=updated)
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.patch(
+        "/api/v1/teams/agents/old-root",
+        json={"reportsTo": "new-root"},
+        headers={"Authorization": "Bearer x"},
+    )
+
+    assert r.status_code == 200
+    assert r.json()["reportsTo"] == "new-root"
+
+
+def test_delete_agent_maps_final_root_conflict_to_409(client, monkeypatch):
+    from routers.teams import agents as agents_mod
+    from core.services.paperclip_agent_lifecycle import AgentLifecycleConflict
+
+    delete_everywhere = AsyncMock(
+        side_effect=AgentLifecycleConflict("The final root CEO cannot be deleted or demoted.")
+    )
     monkeypatch.setattr(agents_mod, "delete_agent_everywhere", delete_everywhere)
-    monkeypatch.setattr(agents_mod, "is_seeded_agent", AsyncMock(return_value=True))
 
     r = client.delete("/api/v1/teams/agents/friday_id", headers={"Authorization": "Bearer x"})
-    assert r.status_code == 403
-    delete_everywhere.assert_not_awaited()
+    assert r.status_code == 409
+    assert r.json()["detail"] == "The final root CEO cannot be deleted or demoted."
+    delete_everywhere.assert_awaited_once_with(owner_id="o1", agent_id="friday_id")
 
 
 def test_delete_agent_allows_non_seeded(client, monkeypatch):
@@ -390,7 +487,6 @@ def test_delete_agent_allows_non_seeded(client, monkeypatch):
 
     delete_everywhere = AsyncMock(return_value={"deleted": True})
     monkeypatch.setattr(agents_mod, "delete_agent_everywhere", delete_everywhere)
-    monkeypatch.setattr(agents_mod, "is_seeded_agent", AsyncMock(return_value=False))
 
     r = client.delete("/api/v1/teams/agents/a_user", headers={"Authorization": "Bearer x"})
     assert r.status_code == 200

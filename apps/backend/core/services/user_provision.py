@@ -446,7 +446,7 @@ async def arm_nightly_ceo(owner_id: str, *, trust_cache: bool = True) -> str:
             # there is no orphan/failed-company cost leak: we only ever arm a
             # company provision_org actually finished (status="active").
             row = (
-                await provisioning.find_org_owner(owner_id)
+                await provisioning._repo.resolve_owner_row(owner_id)
                 if is_org_owner_id(owner_id)
                 else await provisioning.get_company_row(owner_id)
             )
@@ -456,8 +456,7 @@ async def arm_nightly_ceo(owner_id: str, *, trust_cache: bool = True) -> str:
             cached = account.get("nightly_ceo_armed_company") == company_id
             if cached and trust_cache:
                 return _arm_status("already_armed")  # cheap cache hit
-            # Friday is seeded FIRST (seed order == identity), so it's element 0.
-            friday_id = (row.seeded_agent_ids or [None])[0]
+            friday_id = (row.starter_agent_ids or {}).get("ceo") or (row.seeded_agent_ids or [None])[0]
             if not friday_id:
                 return _arm_status("friday_not_seeded")
             # A cache already naming this company means the claim is ours —

@@ -488,6 +488,7 @@ export interface AdminProvisioning {
     paperclip_user_id?: string | null;
     last_error?: string | null;
     seeded_agent_ids?: string[] | null;
+    starter_agent_ids?: Record<string, string> | null;
     scheduled_purge_at?: string | null;
     onboarding_generation?: string | null;
     funnel_state?: string | null;

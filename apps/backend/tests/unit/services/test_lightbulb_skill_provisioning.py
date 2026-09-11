@@ -112,3 +112,13 @@ def test_the_section_carries_no_stripe_cli_command():
     assert "stripe plugin" not in section.lower()
     for line in section.splitlines():
         assert not line.strip().startswith("stripe "), line
+
+
+def test_the_skill_does_not_describe_agent_count_as_a_plan_entitlement():
+    skill = " ".join(
+        "\n".join(
+            [SKILL.read_text(), *(path.read_text() for path in sorted((SKILL_DIR / "references").glob("*.md")))]
+        ).split()
+    )
+    assert "required to run more than 10 agents" not in skill
+    assert "More than 10 agents in total needs Ultra" not in skill

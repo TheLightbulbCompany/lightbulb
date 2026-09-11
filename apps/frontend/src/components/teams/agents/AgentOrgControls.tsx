@@ -7,15 +7,6 @@ import { EditorialButton } from "@/components/teams/shell";
 import { ReportsToPicker } from "@/components/teams/agents/ReportsToPicker";
 import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
 
-/** Seeded = Isol8 provisioning contract (Friday/Atlas), locked from
- *  deletion/meta-edits. The BFF stamps ``seeded`` from the persisted
- *  seeded-agent IDs (core/services/paperclip_openclaw_pairing.is_seeded_agent),
- *  so a user-created agent using role "ceo" or the name "Atlas" is never
- *  mistaken for one. */
-export function isSeededAgent(a: CompanyAgent): boolean {
-  return a.seeded === true;
-}
-
 /**
  * Org-chart controls for a single agent: the editable reporting line plus the
  * lifecycle actions (pause/resume + two-step delete). Extracted from
@@ -25,8 +16,8 @@ export function isSeededAgent(a: CompanyAgent): boolean {
  *
  * Writes flow through `useAgentMutations`, which only needs Clerk (no Teams
  * provider) — the reports-to/pause/resume paths hit the BFF and the delete
- * path goes through the global GatewayProvider. The seeded guard (Friday/Atlas
- * are undeletable) and the confirm-before-delete gating live here.
+ * path goes through the global GatewayProvider. The backend enforces graph
+ * invariants; this surface only owns confirm-before-delete gating.
  */
 export function AgentOrgControls({
   agent,
@@ -44,7 +35,6 @@ export function AgentOrgControls({
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
-  const seeded = isSeededAgent(agent);
   const paused = agent.status === "paused";
   const errored = agent.status === "error";
   const marketplaceLabel = agent.marketplace
@@ -105,7 +95,7 @@ export function AgentOrgControls({
             Pause
           </EditorialButton>
         )}
-        {!seeded && !confirmDelete ? (
+        {!confirmDelete ? (
           <EditorialButton
             variant="secondary"
             size="sm"
@@ -115,7 +105,7 @@ export function AgentOrgControls({
             Delete
           </EditorialButton>
         ) : null}
-        {!seeded && confirmDelete ? (
+        {confirmDelete ? (
           <>
             <span className="text-sm text-[var(--err)]">Delete {agent.name}?</span>
             <EditorialButton
@@ -142,8 +132,8 @@ export function AgentOrgControls({
         ) : null}
       </section>
 
-      {/* Recovery — get a wedged agent unstuck. Available for seeded agents
-          too (Friday/Atlas can wedge). "Clear error" only shows on an
+      {/* Recovery — get a wedged agent unstuck. Available for starter agents
+          too. "Clear error" only shows on an
           error-status agent (upstream 409s otherwise); "Reset session" clears
           runtime session state, so it's two-step to avoid an accidental wipe.
           Neither dispatches an inference run, so no spend gate applies. */}

@@ -845,7 +845,7 @@ async def set_deployed_company(owner_id: str, *, listing_id: str, name: str) -> 
     and read by the deploy route to enforce ONE company package per workspace:
     a second company deploy — same listing or a different one — is refused
     409, because a whole second org grafted onto the same Friday duplicates
-    role structures and (on the standard plan) blows the agent budget.
+    role structures.
 
     A workspace wipe/reprovision deletes the row, so a fresh slate can deploy
     again — that is the intended semantics, not a leak.

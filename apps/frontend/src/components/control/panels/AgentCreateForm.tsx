@@ -7,7 +7,6 @@ import { Button } from "@/components/ui/button";
 import { capture } from "@/lib/analytics";
 import { normalizeAgentId, validateAgentName } from "@/lib/agentIdentity";
 import { useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
-import { useBilling } from "@/hooks/useBilling";
 import { AgentPaperclipFields } from "@/components/control/agents/AgentPaperclipFields";
 import type { PaperclipMeta } from "@/lib/paperclipMeta";
 
@@ -21,32 +20,8 @@ export function AgentCreateForm({ existingNames, onCreated, onCancel }: AgentCre
   const [name, setName] = useState("");
   const [meta, setMeta] = useState<PaperclipMeta>({ role: "general" });
   const [error, setError] = useState<string | null>(null);
-  // Set only for the plan agent-limit refusal, so the form can offer the
-  // upgrade instead of rendering an error the user can do nothing about.
-  const [atAgentLimit, setAtAgentLimit] = useState(false);
   const [creating, setCreating] = useState(false);
-  const [upgrading, setUpgrading] = useState(false);
-  const [upgradeError, setUpgradeError] = useState<string | null>(null);
   const callRpc = useRuntimeRpcMutation();
-  const { startCheckout } = useBilling();
-
-  // Mirrors UltraUpgradeRow in app/settings/page.tsx. Swallowing a failure
-  // matters more here than there: this button is the ONLY way past the wall the
-  // user just hit, so an inert click with no feedback strands them.
-  const handleUpgrade = useCallback(async () => {
-    capture("billing_ultra_upgrade_clicked", { source: "agent_limit" });
-    setUpgradeError(null);
-    setUpgrading(true);
-    try {
-      // The fresh-checkout path redirects away and never returns; the in-place
-      // swap resolves here. Clear the spinner either way.
-      await startCheckout("ultra");
-    } catch {
-      setUpgradeError("Couldn't start the upgrade. Please try again.");
-    } finally {
-      setUpgrading(false);
-    }
-  }, [startCheckout]);
 
   const normalizedId = normalizeAgentId(name);
   const clientError = validateAgentName(name, existingNames);
@@ -56,7 +31,6 @@ export function AgentCreateForm({ existingNames, onCreated, onCancel }: AgentCre
     if (!canCreate) return;
     setCreating(true);
     setError(null);
-    setAtAgentLimit(false);
     try {
       // Build params.paperclip payload — only include keys with non-empty values
       // so the backend's paperclip_meta.read_from_agent_entry doesn't have to
@@ -85,11 +59,6 @@ export function AgentCreateForm({ existingNames, onCreated, onCancel }: AgentCre
       capture("agent_created", { agent_name: name.trim(), paperclip_role: meta.role });
       onCreated();
     } catch (err) {
-      // The backend answers an over-budget create with a structured gateway
-      // error; RuntimeRpcError keeps `code` rather than flattening it into the
-      // message, so match on the code and let the message stay the human
-      // sentence the backend wrote.
-      setAtAgentLimit((err as { code?: string } | null)?.code === "agent_budget_exceeded");
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setCreating(false);
@@ -117,11 +86,6 @@ export function AgentCreateForm({ existingNames, onCreated, onCancel }: AgentCre
           onChange={(e) => {
             setName(e.target.value);
             setError(null);
-            // Clear the limit state with the error it belongs to. The upgrade
-            // card renders on this flag alone, so leaving it set would keep an
-            // upgrade prompt (above a now-empty message) on screen while the
-            // user types a different name.
-            setAtAgentLimit(false);
           }}
           placeholder="e.g. Research Assistant"
           disabled={creating}
@@ -135,28 +99,8 @@ export function AgentCreateForm({ existingNames, onCreated, onCancel }: AgentCre
 
       <AgentPaperclipFields value={meta} onChange={setMeta} disabled={creating} />
 
-      {(clientError || error) && !atAgentLimit && (
+      {(clientError || error) && (
         <p className="text-xs text-err">{clientError || error}</p>
-      )}
-      {/* The plan agent limit is not a failure the user can retry their way out
-          of, so it gets an action instead of red text. Same reasoning as the
-          marketplace hire's missing_credentials branch: "try again" copy on a
-          wall the user cannot clear just sends them back into it. */}
-      {atAgentLimit && (
-        <div className="rounded-md border border-border bg-cream-deep p-3 space-y-2">
-          <p className="text-xs text-muted-foreground">{error}</p>
-          <Button type="button" size="sm" disabled={upgrading} onClick={handleUpgrade}>
-            {upgrading ? (
-              <>
-                <Loader2 size={12} strokeWidth={1.75} className="mr-2 animate-spin" />
-                Starting upgrade…
-              </>
-            ) : (
-              "Upgrade to Ultra"
-            )}
-          </Button>
-          {upgradeError && <p className="text-xs text-err">{upgradeError}</p>}
-        </div>
       )}
 
       <div className="flex justify-end gap-2">

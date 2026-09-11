@@ -72,9 +72,9 @@ vi.mock("@/components/teams/dashboard/hooks/useLiveRuns", async (importOriginal)
   const mod = await importOriginal<typeof import("@/components/teams/dashboard/hooks/useLiveRuns")>();
   return { ...mod, useLiveRuns: () => ({ runs: [], isLoading: false, isError: false }) };
 });
-// Every Business tile now calls useAskFriday() (via Tile), which in turn
+// Every Business tile now calls useAskCeo() (via Tile), which in turn
 // calls useAgents() — a real hook this file has no gateway context for.
-vi.mock("@/hooks/useAskFriday", () => ({ useAskFriday: () => vi.fn() }));
+vi.mock("@/hooks/useAskCeo", () => ({ useAskCeo: () => vi.fn() }));
 
 
 describe("DashboardPanel", () => {

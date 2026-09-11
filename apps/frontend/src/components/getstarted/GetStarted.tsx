@@ -12,8 +12,8 @@ export interface GetStartedActions { chat: () => void; task: () => void; hire: (
 export function GetStarted({ derived, actions }: { derived: Partial<Record<StepId, boolean>>; actions: GetStartedActions }): React.ReactElement | null {
   const { user } = useUser();
   const firstRun = readFirstRun(user);
-  // First-run users saw Friday do the checklist's steps herself (spec §7) —
-  // "what Friday already did" supersedes "what you must do". Gate BEFORE
+  // First-run users saw their CEO do the checklist's steps (spec §7) —
+  // "what the CEO already did" supersedes "what you must do". Gate BEFORE
   // useGetStarted (below, in GetStartedGuide) so a suppressed user never
   // mounts the hook and thus incurs none of its side effects: auto-open, the
   // get_started_opened capture, or the emitStep("chat") checklist progress

@@ -842,13 +842,13 @@ async def admin_agent_delete(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    from core.services.paperclip_agent_lifecycle import delete_agent_everywhere
+    from core.services.paperclip_agent_lifecycle import AgentLifecycleConflict, delete_agent_everywhere
 
     owner_id, _ = await resolve_admin_owner_id(user_id)
     try:
         return await delete_agent_everywhere(owner_id=owner_id, agent_id=agent_id)
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except AgentLifecycleConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post(

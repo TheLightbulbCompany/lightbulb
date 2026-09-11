@@ -46,7 +46,12 @@ def discover_packages(repo_dir: Path) -> list[Path]:
     return sorted(p.parent for p in repo_dir.glob("*/COMPANY.md") if p.parent.name not in _EXCLUDED)
 
 
-def build_package_tarball(pkg_dir: Path) -> bytes:
+def build_package_tarball(
+    pkg_dir: Path,
+    *,
+    include_root: bool = True,
+    excluded_paths: frozenset[str] = frozenset(),
+) -> bytes:
     """Deterministic tar.gz: sorted members, zeroed mtimes/owners, and a
     zeroed gzip-header timestamp (a plain ``w:gz`` open stamps the current
     time into the header, breaking byte-identity across runs).
@@ -60,7 +65,10 @@ def build_package_tarball(pkg_dir: Path) -> bytes:
             rel = path.relative_to(pkg_dir)
             if any(part in _EXCLUDED for part in rel.parts):
                 continue
-            info = tf.gettarinfo(str(path), arcname=f"{pkg_dir.name}/{rel}")
+            if rel.as_posix() in excluded_paths:
+                continue
+            arcname = f"{pkg_dir.name}/{rel}" if include_root else rel.as_posix()
+            info = tf.gettarinfo(str(path), arcname=arcname)
             info.mtime = 0
             info.uid = info.gid = 0
             info.uname = info.gname = ""

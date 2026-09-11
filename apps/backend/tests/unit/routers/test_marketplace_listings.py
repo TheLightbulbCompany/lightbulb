@@ -459,7 +459,14 @@ def _stub_s3_get_object(
 @patch("routers.marketplace_listings.get_catalog_service")
 @patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
 def test_deploy_free_listing_succeeds(
-    mock_get_published, mock_get_catalog, mock_boto, mock_create_pc, mock_get_ecs, mock_pair, client
+    mock_get_published,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_get_ecs,
+    mock_pair,
+    client,
+    monkeypatch,
 ):
     mock_get_published.return_value = _published_listing(price_cents=0)
     mock_create_pc.return_value = {"id": "agent_abc123", "name": "Demo Agent"}
@@ -485,6 +492,15 @@ def test_deploy_free_listing_succeeds(
         }
     )
     mock_get_catalog.return_value = catalog
+    count_agents = AsyncMock(return_value=11)
+    monkeypatch.setattr(
+        "core.services.paperclip_openclaw_pairing.count_paperclip_agents_for_owner",
+        count_agents,
+    )
+    monkeypatch.setattr(
+        "core.repositories.billing_repo.get_by_owner_id",
+        AsyncMock(return_value={"plan": "standard"}),
+    )
 
     resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
     assert resp.status_code == 200, resp.text
@@ -511,6 +527,8 @@ def test_deploy_free_listing_succeeds(
     pair_kwargs = mock_pair.await_args.kwargs
     assert pair_kwargs["paperclip_agent"] == {"id": "agent_abc123", "name": "Demo Agent"}
     assert pair_kwargs["gateway_token"] == "gw-tok"
+    assert "idempotency_replay_only" not in mock_create_pc.await_args.kwargs
+    count_agents.assert_not_awaited()
 
 
 @patch("routers.marketplace_listings._recreate_routines_for_buyer", new_callable=AsyncMock)

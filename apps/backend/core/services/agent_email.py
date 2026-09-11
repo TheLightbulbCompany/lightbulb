@@ -2,7 +2,7 @@
 
 The address is built from the owner's company slug, which the Company
 Identity work already reserved, as a per-company SUBDOMAIN: each agent gets
-``{agent}@{slug}.{domain}`` — e.g. ``friday@acme-robotics.isol8.co``. The
+``{agent}@{slug}.{domain}`` — e.g. ``research@acme.example``. The
 agent name is the mailbox; the company slug is its own subdomain, not part
 of the local part. No truncation/disambiguation machinery is needed — the
 slug is already bounded (``company_identity.slugify`` caps it at 32 chars,
@@ -18,7 +18,8 @@ reading it back would be nondeterministic. Callers pass the slug they just
 allocated.
 
 Minting is best-effort by contract — ``provision_org`` calls it after
-seeding Friday, and a mail-side failure must never undo a good provision.
+seeding the starter roster, and a mail-side failure must never undo a good
+provision.
 """
 
 import logging
@@ -173,9 +174,7 @@ async def resolve_company_name(company_id: str) -> str | None:
         return None
 
 
-async def resolve_agent_name(*, agent_id: str, friday_agent_id: str | None, company_id: str | None) -> str | None:
-    if friday_agent_id and agent_id == friday_agent_id:
-        return "Friday"
+async def resolve_agent_name(*, agent_id: str, company_id: str | None) -> str | None:
     try:
         admin = shared_admin_client()
         cookie = await get_admin_session_cookie(admin._http)
@@ -244,9 +243,7 @@ async def ensure_agent_address(*, owner_id: str, agent_id: str, owner_email: str
         slug = await allocate_company_slug(owner_id=owner_id, name=company_name)
         if not slug:
             return None, "slug_allocation_failed"
-        agent_name = await resolve_agent_name(
-            agent_id=agent_id, friday_agent_id=onboarding.get("friday_agent_id"), company_id=company_id
-        )
+        agent_name = await resolve_agent_name(agent_id=agent_id, company_id=company_id)
         if not agent_name:
             return None, "agent_name_unavailable"
         address = await mint_agent_email_address(

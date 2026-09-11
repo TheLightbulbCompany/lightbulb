@@ -27,7 +27,7 @@ import {
 import {
   EditorialButton, PanelEmptyState, PanelMasthead, PanelNotice, PanelToolbar,
 } from "@/components/teams/shell";
-import { useAskFriday } from "@/hooks/useAskFriday";
+import { useAskCeo } from "@/hooks/useAskCeo";
 import { useBrainTree, useBrainFile, useBrainMutations } from "@/hooks/useBrainFiles";
 import type { FileInfo } from "@/hooks/useWorkspaceFiles";
 import { notifyApiError } from "@/lib/notify";
@@ -144,14 +144,14 @@ export function BrainPanel({ initialPath, onPathUnavailable }: BrainPanelProps =
   );
 
   // Nothing revalidates on its own — SwrProvider sets revalidateOnFocus:false
-  // app-wide — so watching Friday file a page needs an explicit ask.
+  // app-wide — so watching the CEO file a page needs an explicit ask.
   const confirmDiscardIfDirty = React.useCallback((): boolean => {
     if (!editorDirty) return true;
     return window.confirm("You have unsaved changes. Discard them?");
   }, [editorDirty]);
 
   // Nothing revalidates on its own — SwrProvider sets revalidateOnFocus:false
-  // app-wide — so watching Friday file a page needs an explicit ask. A fresh
+  // app-wide — so watching the CEO file a page needs an explicit ask. A fresh
   // file body re-seeds FileContentViewer, so a dirty draft is asked about
   // first, like every other navigation.
   const handleRefresh = React.useCallback(() => {
@@ -237,8 +237,8 @@ export function BrainPanel({ initialPath, onPathUnavailable }: BrainPanelProps =
   }, [pagePath, deleteBrainFile, refresh]);
 
   // Every ASK exit hands the draft to the CEO agent's composer — desktop dock
-  // or mobile shell, whichever is mounted (see useAskFriday).
-  const ask = useAskFriday();
+  // or mobile shell, whichever is mounted (see useAskCeo).
+  const ask = useAskCeo();
 
   const dropHandlers = {
     onDragOver: (e: React.DragEvent) => {
@@ -372,7 +372,7 @@ export function BrainPanel({ initialPath, onPathUnavailable }: BrainPanelProps =
             icon={BookOpen}
             headline="No pages yet."
             supporting="Your company's brain fills as your agents learn."
-            action={{ label: "Ask Friday", onClick: () => ask(askBrainDraft(query)) }}
+            action={{ label: "Ask CEO", onClick: () => ask(askBrainDraft(query)) }}
           />
           <button
             type="button"
@@ -414,7 +414,7 @@ export function BrainPanel({ initialPath, onPathUnavailable }: BrainPanelProps =
                   onClick={() => ask(askBrainDraft(query))}
                 >
                   <MessageCircleQuestion className="h-3.5 w-3.5" aria-hidden="true" />
-                  Ask Friday
+                  Ask CEO
                 </EditorialButton>
                 <EditorialButton variant="ghost" size="sm" onClick={handleRefresh}>
                   <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
@@ -437,10 +437,10 @@ export function BrainPanel({ initialPath, onPathUnavailable }: BrainPanelProps =
             <PanelNotice
               state="partial"
               headline={`${counts.inbox} ${counts.inbox === 1 ? "file" : "files"} in the inbox awaiting filing.`}
-              supporting="Friday's search can't see the inbox until a file is filed into the brain."
+              supporting="Your CEO's search can't see the inbox until a file is filed into the brain."
               prompt={fileInboxDraft(counts.inbox)}
               action={{
-                label: counts.inbox === 1 ? "Ask Friday to file it" : "Ask Friday to file them",
+                label: counts.inbox === 1 ? "Ask CEO to file it" : "Ask CEO to file them",
                 onClick: () => ask(fileInboxDraft(counts.inbox)),
               }}
             />
@@ -457,12 +457,12 @@ export function BrainPanel({ initialPath, onPathUnavailable }: BrainPanelProps =
               }
               supporting={
                 counts.filed > 0
-                  ? "Those dashboards are compiled from the vault itself — no one has filed anything into it yet. Drop a file here to give Friday something to read."
-                  : "Friday fills the brain as it works. Drop a file here to give it something to read."
+                  ? "Those dashboards are compiled from the vault itself — no one has filed anything into it yet. Drop a file here to give your CEO something to read."
+                  : "Your CEO fills the brain as it works. Drop a file here to give it something to read."
               }
               prompt={EMPTY_VAULT_PROMPT}
               action={{
-                label: "Ask Friday what we know",
+                label: "Ask CEO what we know",
                 onClick: () => ask(EMPTY_VAULT_PROMPT),
               }}
             />
@@ -491,7 +491,7 @@ export function BrainPanel({ initialPath, onPathUnavailable }: BrainPanelProps =
                   onClick={() => ask(askBrainDraft(query))}
                   className="self-start"
                 >
-                  Ask Friday to search the contents
+                  Ask CEO to search the contents
                 </EditorialButton>
               </div>
             ) : view === "inbox" ? (

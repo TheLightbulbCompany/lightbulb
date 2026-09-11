@@ -128,6 +128,8 @@ export function useAgents(runtime: AgentsRuntimeSource, opts?: UseAgentsOptions)
     void mutate();
   }, [runtime, mutate, track]);
 
+  // Names and runtime settings share the same identity-based mutation path;
+  // Paperclip mirroring is an atomic concern of the backend RPC service.
   const updateAgent = useCallback(async (agentId: string, updates: { model?: string; name?: string }) => {
     await runtime.rpc("agents.update", { agentId, ...updates });
     if (updates.model) track("agent_model_changed", { agent_id: agentId, model: updates.model });

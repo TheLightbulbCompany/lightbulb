@@ -308,6 +308,20 @@ async def get_seeded_agent_ids(*, owner_id: str, repo: PaperclipRepo) -> set[str
         return set()
 
 
+async def get_starter_agent_ids(*, owner_id: str, repo: PaperclipRepo) -> set[str]:
+    """Best-effort starter UUIDs from the authoritative owner row."""
+    try:
+        row = await repo.resolve_owner_row(owner_id)
+        return set(row.starter_agent_ids.values()) if row and row.starter_agent_ids else set()
+    except Exception:  # noqa: BLE001 — provenance labeling must not break reads
+        return set()
+
+
+async def remove_starter_agent_id(*, owner_id: str, agent_id: str) -> None:
+    """Forget a starter UUID after its correlated deletion succeeds."""
+    await PaperclipRepo(table_name="paperclip-companies").remove_starter_agent_id(owner_id, agent_id)
+
+
 async def is_seeded_agent(*, owner_id: str, agent_id: str) -> bool:
     """Whether ``agent_id`` is an Isol8-seeded agent (Friday or Atlas).
 

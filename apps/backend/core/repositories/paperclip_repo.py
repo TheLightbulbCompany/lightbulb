@@ -273,6 +273,14 @@ class PaperclipCompany:
     name ``Atlas`` is never mistaken for a seeded one, and renaming a
     seeded agent never drops its protection."""
 
+    starter_agent_ids: Optional[dict[str, str]] = None
+    """Starter role key -> Paperclip agent UUID for fresh workspaces.
+
+    Only the authoritative owner row carries this map. Unlike
+    ``seeded_agent_ids``, it records provenance and reconciliation identity;
+    it does not make an agent undeletable.
+    """
+
     # ------------------------------------------------------------------
     # Onboarding (co-located per the 2026-07-24 architecture decision —
     # NO dedicated table; these fields ride on the SAME owner row as the
@@ -443,6 +451,8 @@ class PaperclipRepo:
             item["scheduled_purge_at"] = company.scheduled_purge_at.isoformat()
         if company.seeded_agent_ids:
             item["seeded_agent_ids"] = company.seeded_agent_ids
+        if company.starter_agent_ids:
+            item["starter_agent_ids"] = company.starter_agent_ids
         if company.onboarding_generation is not None:
             item["onboarding_generation"] = company.onboarding_generation
         if company.funnel_state is not None:
@@ -530,6 +540,7 @@ class PaperclipRepo:
                 datetime.fromisoformat(item["scheduled_purge_at"]) if item.get("scheduled_purge_at") else None
             ),
             seeded_agent_ids=(list(item["seeded_agent_ids"]) if item.get("seeded_agent_ids") else None),
+            starter_agent_ids=(dict(item["starter_agent_ids"]) if item.get("starter_agent_ids") else None),
             onboarding_generation=item.get("onboarding_generation"),
             funnel_state=item.get("funnel_state"),
             funnel_submitted_at=(
@@ -688,11 +699,11 @@ class PaperclipRepo:
             "first_contact_state": getattr(company, "first_contact_state", None) or "not_started",
             "first_contact_attempts": getattr(company, "first_contact_attempts", None) or 0,
             "first_contact_reason": getattr(company, "first_contact_reason", None),
-            # Friday is appended FIRST in provision_org's seed order, before
-            # Atlas, so index 0 is her. Projected here so the owner-send path
-            # resolves her from the SAME single read compute_status already
-            # does, rather than adding a second query.
-            "friday_agent_id": (getattr(company, "seeded_agent_ids", None) or [None])[0],
+            # Fresh workspaces identify the CEO explicitly. Legacy workspaces
+            # keep Friday first in seeded_agent_ids until the old bootstrap is
+            # retired, so both paths stay on this same read.
+            "friday_agent_id": (getattr(company, "starter_agent_ids", None) or {}).get("ceo")
+            or (getattr(company, "seeded_agent_ids", None) or [None])[0],
             "teams_state": getattr(company, "status", None),
             "company_id": getattr(company, "company_id", None),
             "paperclip_user_id": getattr(company, "paperclip_user_id", None),
@@ -1307,12 +1318,14 @@ class PaperclipRepo:
 
         active_items = [it for it in items if it.get("status") == "active"]
         if active_items:
-            chosen = min(active_items, key=_sort_key)
+            marked = [it for it in active_items if it.get("starter_agent_ids") or it.get("seeded_agent_ids")]
+            chosen = min(marked or active_items, key=_sort_key)
         elif include_inactive and items:
             # No active row -- return the provisioner's row (carries
             # seeded_agent_ids) if present, else the oldest, so a failed-seed
             # org still resolves to a row carrying its onboarding/teams truth.
-            chosen = next((it for it in items if it.get("seeded_agent_ids")), None) or min(items, key=_sort_key)
+            marked = [it for it in items if it.get("starter_agent_ids") or it.get("seeded_agent_ids")]
+            chosen = min(marked or items, key=_sort_key)
         else:
             return None
         # Hydrate straight from the GSI query item -- the by-org-id index is
@@ -1360,6 +1373,31 @@ class PaperclipRepo:
         if is_org_owner_id(owner_id):
             return await self.find_owner_row(owner_id, include_inactive=include_inactive)
         return await self.get(owner_id, consistent_read=consistent_read)
+
+    async def remove_starter_agent_id(self, owner_id: str, agent_id: str) -> None:
+        """Remove the matching starter identity from the authoritative row.
+
+        The value condition makes a stale delete harmless if reconciliation
+        has already replaced that role with a new UUID.
+        """
+        company = await self.resolve_owner_row(owner_id, include_inactive=True)
+        if company is None or not company.starter_agent_ids:
+            return
+        starter_key = next((key for key, value in company.starter_agent_ids.items() if value == agent_id), None)
+        if starter_key is None:
+            return
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"user_id": company.user_id},
+                UpdateExpression="REMOVE starter_agent_ids.#starter_key",
+                ConditionExpression="starter_agent_ids.#starter_key = :agent_id",
+                ExpressionAttributeNames={"#starter_key": starter_key},
+                ExpressionAttributeValues={":agent_id": agent_id},
+            )
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            return
 
     async def claim_first_contact(self, user_id: str, *, onboarding_generation: str) -> bool:
         """Conditional ``first_contact_state -> sending``, generation-fenced.

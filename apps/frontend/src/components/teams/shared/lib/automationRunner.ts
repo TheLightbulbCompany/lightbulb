@@ -8,7 +8,7 @@ import type { CompanyAgent } from "@/components/teams/shared/types";
  * the apex CEO is the `role === "ceo"` agent that is ROOTLESS (no `reportsTo`),
  * falling back to the first `ceo` if — impossibly — none are. After a company
  * deploy the package's own CEO also exists, as a division head reporting to
- * Friday, so "first ceo" alone is not safe.
+ * the workspace root CEO, so "first ceo" alone is not safe.
  *
  * Deliberately does NOT consult the `seeded` stamp. `seeded` comes from the
  * BFF's persisted `seeded_agent_ids` (`get_seeded_agent_ids`), which is

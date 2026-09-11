@@ -192,8 +192,13 @@ function ComposerAttempt({
     setImages((current) => current.filter((image) => image.preview !== preview));
   }
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  addImagesRef.current = addImages;
+  // Refs can't be written during render (React may call render without
+  // committing) — keep the ref current after every commit instead, so the
+  // dropTargetRef listener effect below (bound once) always calls the latest
+  // addImages via the ref rather than a stale closure.
+  useEffect(() => {
+    addImagesRef.current = addImages;
+  });
 
   const carriesFiles = (transfer: DataTransfer | null) => !!transfer && [...transfer.types].includes("Files");
 

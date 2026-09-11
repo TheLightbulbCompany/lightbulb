@@ -11,11 +11,13 @@ import {
 
 let defaultId: string | undefined;
 let selectAgentDm = vi.fn<(id: string) => Promise<void>>();
+const openSession = vi.fn();
+const openMessage = vi.fn();
 vi.mock("@/hooks/useAgents", () => ({
   useAgents: () => ({ agents: [], defaultId }),
 }));
 vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
-  useMessagingWorkspace: () => ({ selectAgentDm }),
+  useMessagingWorkspace: () => ({ selectAgentDm, openSession, openMessage }),
 }));
 vi.mock("@/components/messaging/MessagingWorkspace", () => ({
   MessagingConversation: () => null,
@@ -47,6 +49,18 @@ beforeEach(() => {
 });
 
 describe("ChatPanel", () => {
+  it("consumes session intents including explicit repeats without falling into agent selection", () => {
+    const props = makeProps();
+    props.params = { roomId: "r1", sessionId: "s1", sessionIntent: "1" };
+    const view = render(<ChatPanel {...props} />);
+    expect(openSession).toHaveBeenLastCalledWith("r1", "s1");
+    view.rerender(<ChatPanel {...props} />);
+    expect(openSession).toHaveBeenCalledTimes(1);
+    act(() => props.api.updateParameters({ roomId: "r1", sessionId: "s1", sessionIntent: "2" }));
+    expect(openSession).toHaveBeenCalledTimes(2);
+    expect(selectAgentDm).not.toHaveBeenCalled();
+    expect(openMessage).not.toHaveBeenCalled();
+  });
   it("resolves the sentinel when the default roster arrives", () => {
     const props = makeProps(DEFAULT_AGENT_SENTINEL);
     const view = render(<ChatPanel {...props} />);

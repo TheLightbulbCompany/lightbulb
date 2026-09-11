@@ -3,11 +3,12 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SWRConfig } from "swr";
 import type { DockviewApi, SerializedDockview } from "dockview-react";
-import type { RoomDetail } from "@lightbulb/shared";
+import type { RoomDetail, LocalSession, MessagePage } from "@lightbulb/shared";
 import { MessagingWorkspaceProvider, useMessagingWorkspace } from "@/components/messaging/MessagingWorkspaceContext";
 import { WorkspaceSidebar } from "../WorkspaceSidebar";
 import { ChatPanel } from "../panels/ChatPanel";
-import { attachDockviewApi, getWorkspaceSnapshot, openChatPanel, openChatPanelWithDraft, openPanel } from "../workspaceController";
+import { attachDockviewApi, getWorkspaceSnapshot, openChatPanel, openChatPanelWithDraft, openPanel, openSessionPanel, openMessagePanel } from "../workspaceController";
+import { parseCommand } from "../urlChannel";
 import { MESSAGES_PANEL_ID } from "../panelRegistry";
 import { layoutStorageKey, readLayout, writeLayout } from "../layoutStorage";
 
@@ -42,13 +43,23 @@ function dm(roomId: string, agentId: string, name: string): RoomDetail {
   };
 }
 let listed: RoomDetail[];
+const nativeSession: LocalSession = {
+  sessionId: "native-one", deviceId: "mac", humanUserId: "user-a", provider: "codex", providerVersion: "test",
+  generation: "g1", status: "idle", activeTurnId: null, capabilities: { sendMode: "queue", steer: false, interrupt: false },
+  capabilitiesVerified: true, controlUnavailableReason: null, latestEventSeq: 1,
+};
 const messaging = {
   listRooms: vi.fn(async () => ({ rooms: listed })),
   getRoom: vi.fn(async (id: string) => listed.find((room) => room.roomId === id)!),
   createRoom: vi.fn(),
+  listMessages: vi.fn<(roomId: string) => Promise<MessagePage>>(async () => ({ messages: [], nextAfterSeq: null })),
+  listResources: vi.fn(async () => ({ devices: [], sessions: [nativeSession], pairedNodes: [] })),
+  listLocalSessionEvents: vi.fn(async () => ({ events: [{ seq: 1, kind: "text", role: "assistant", text: "Synthetic native investigation history", truncated: false }], nextAfterSeq: null })),
+  submitLocalSessionCommand: vi.fn(),
+  markRead: vi.fn(async () => ({})),
 };
 const live = {
-  httpReady: true, liveConnected: false, liveChannels: [], connectionRevision: 1, messaging,
+  httpReady: true, liveConnected: false, liveChannels: [] as string[], connectionRevision: 1, messaging,
   onEvent: () => () => {}, claimActiveRoomSubscription: () => () => {},
 };
 vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live }));
@@ -96,10 +107,13 @@ function SelectedRoom() {
   return <output aria-label="Selected room">{useMessagingWorkspace().activeRoomId}</output>;
 }
 let detach: () => void;
-function renderWorkspace(agentId = "agent-a") {
+function renderWorkspace(agentId = "agent-a", search?: string) {
   const api = dock();
   detach = attachDockviewApi(api, () => "agent-a");
-  openChatPanel(agentId);
+  if (search) {
+    const command = parseCommand(search)!;
+    openSessionPanel(command.descriptor.params.roomId, command.descriptor.params.sessionId);
+  } else openChatPanel(agentId);
   const panel = api.getPanel(MESSAGES_PANEL_ID)!;
   const props = { api: panel.api, params: { ...panel.params } } as React.ComponentProps<typeof ChatPanel>;
   const tree = () => <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
@@ -116,11 +130,47 @@ beforeEach(() => {
   listed = [dm("a-first", "agent-a", "First Alpha"), dm("a-exact", "agent-a", "Exact Alpha"),
     { ...dm("channel", "agent-a", "General"), kind: "channel" }];
   vi.clearAllMocks();
+  live.liveChannels = [];
   messaging.getRoom.mockImplementation(async (id) => listed.find((room) => room.roomId === id)!);
+  messaging.listMessages.mockResolvedValue({ messages: [], nextAfterSeq: null });
 });
 afterEach(() => { cleanup(); detach?.(); });
 
 describe("Messages room/controller boundary", () => {
+  it("opens an explicitly posted session URL from canonical room Markdown in the same Messages pane", async () => {
+    live.liveChannels = ["/rooms/a-first/key-a-first", "/rooms/a-exact/key-a-exact"];
+    messaging.listMessages.mockImplementation(async roomId => ({ messages: [{
+      messageId: "link-message", roomId, messageSeq: 1, roomRevision: 1,
+      author: { kind: "human", id: "user-a", displayName: "Alice" },
+      text: `[Continue native session](${window.location.origin}/chat?panel=chat&room=a-exact&session=native-one)`,
+      mentions: [], replyToMessageId: null, threadRootMessageId: null, createdAt: "2026-09-10T00:00:00Z", runId: null,
+    }], nextAfterSeq: null }));
+    const { api } = renderWorkspace();
+    fireEvent.click(await screen.findByRole("link", { name: "Continue native session" }));
+    expect(await screen.findByText("Synthetic native investigation history")).toBeInTheDocument();
+    expect(screen.getByLabelText("Selected room")).toHaveTextContent("a-exact");
+    expect(api.panels.filter(panel => panel.id === MESSAGES_PANEL_ID)).toHaveLength(1);
+    expect(messaging.submitLocalSessionCommand).not.toHaveBeenCalled();
+  });
+  it("opens a fresh session URL through registry, singleton, ChatPanel, provider and real resource selection", async () => {
+    const { api } = renderWorkspace("agent-a", "?panel=chat&room=a-exact&session=native-one");
+    expect(await screen.findByText("Synthetic native investigation history")).toBeInTheDocument();
+    expect(screen.getByLabelText("Selected room")).toHaveTextContent("a-exact");
+    expect(messaging.listLocalSessionEvents).toHaveBeenCalledWith("a-exact", "native-one", 0, 50);
+    expect(messaging.submitLocalSessionCommand).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Back to devices & sessions" }));
+    expect(screen.queryByText("Synthetic native investigation history")).not.toBeInTheDocument();
+    act(() => openSessionPanel("a-exact", "native-one"));
+    expect(await screen.findByText("Synthetic native investigation history")).toBeInTheDocument();
+    act(() => openMessagePanel("channel"));
+    await waitFor(() => expect(screen.getByLabelText("Selected room")).toHaveTextContent("channel"));
+    expect(screen.queryByText("Synthetic native investigation history")).not.toBeInTheDocument();
+    act(() => openSessionPanel("a-exact", "native-one"));
+    expect(await screen.findByText("Synthetic native investigation history")).toBeInTheDocument();
+    expect(api.panels.filter(panel => panel.id === MESSAGES_PANEL_ID)).toHaveLength(1);
+    expect(messaging.createRoom).not.toHaveBeenCalled();
+    expect(messaging.submitLocalSessionCommand).not.toHaveBeenCalled();
+  });
   it("keeps the exact clicked DM, while an explicit same-agent shortcut can retarget it", async () => {
     const { api } = renderWorkspace();
     await waitFor(() => expect(screen.getByLabelText("Selected room")).toHaveTextContent("a-first"));

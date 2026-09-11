@@ -32,7 +32,7 @@ class TestFromIntegration:
         assert response.status_code == 200
         assert response.json()["guided"] is True
         mock_seed.assert_awaited_once_with(
-            "user_test_123",
+            "org_test_456",
             "stripe",
             ["invoice.payment_failed"],
             resource=None,
@@ -107,7 +107,7 @@ class TestFromIntegration:
         assert response.status_code == 200
         assert response.json()["resource"] == "acme/site"
         mock_seed.assert_awaited_once_with(
-            "user_test_123",
+            "org_test_456",
             "github",
             ["pull_request"],
             resource="acme/site",
@@ -148,7 +148,7 @@ class TestFromIntegration:
         assert response.status_code == 200
         assert response.json()["instructions"] == "one-time Pub/Sub setup"
         mock_seed.assert_awaited_once_with(
-            "user_test_123",
+            "org_test_456",
             "google",
             ["gmail.message"],
             resource="ada@example.com",
@@ -179,7 +179,7 @@ class TestFromIntegration:
         )
         assert response.status_code == 200
         mock_seed.assert_awaited_once_with(
-            "user_test_123",
+            "org_test_456",
             "stripe",
             ["invoice.payment_failed"],
             resource=None,
@@ -212,7 +212,7 @@ class TestFromIntegration:
         assert response.status_code == 200
         assert response.json()["routine_id"] == "rt_existing"
         mock_seed.assert_awaited_once_with(
-            "user_test_123",
+            "org_test_456",
             "stripe",
             ["charge.refunded"],
             resource=None,
@@ -274,7 +274,7 @@ class TestGithubResources:
         response = await async_client.get("/api/v1/automations/providers/github/resources")
         assert response.status_code == 200
         assert response.json() == mock_repos.return_value
-        mock_repos.assert_awaited_once_with("user_test_123")
+        mock_repos.assert_awaited_once_with("org_test_456")
 
     @pytest.mark.asyncio
     @patch("routers.automations.list_github_repos", new_callable=AsyncMock)
@@ -312,7 +312,7 @@ class TestVercelResources:
         response = await async_client.get("/api/v1/automations/providers/vercel_cli/resources")
         assert response.status_code == 200
         assert response.json() == mock_projects.return_value
-        mock_projects.assert_awaited_once_with("user_test_123")
+        mock_projects.assert_awaited_once_with("org_test_456")
 
     @pytest.mark.asyncio
     @patch("routers.automations.list_vercel_projects", new_callable=AsyncMock)
@@ -350,7 +350,7 @@ class TestSetWebhookSecret:
 
     @pytest.mark.asyncio
     async def test_stores_secret_and_rotates_paperclip_trigger(self, async_client):
-        owner_id = "user_test_123"
+        owner_id = "org_test_456"
         public_id = "pubabc123456"
 
         with (
@@ -380,7 +380,7 @@ class TestSetWebhookSecret:
         """A public_id that doesn't resolve to a webhook trigger in the
         caller's own company (foreign owner, typo, deleted trigger) 404s
         instead of silently reporting success."""
-        owner_id = "user_test_123"
+        owner_id = "org_test_456"
         public_id = "notminepub1234"
 
         with (
@@ -512,7 +512,7 @@ class TestGoogleResources:
         response = await async_client.get("/api/v1/automations/providers/google/resources")
         assert response.status_code == 200
         assert response.json() == mock_accounts.return_value
-        mock_accounts.assert_awaited_once_with("user_test_123")
+        mock_accounts.assert_awaited_once_with("org_test_456")
 
     @pytest.mark.asyncio
     @patch("routers.automations.list_google_accounts", new_callable=AsyncMock)
@@ -534,7 +534,7 @@ class TestMetaResources:
         response = await async_client.get("/api/v1/automations/providers/meta_ads/resources")
         assert response.status_code == 200
         assert response.json() == mock_pages.return_value
-        mock_pages.assert_awaited_once_with("user_test_123")
+        mock_pages.assert_awaited_once_with("org_test_456")
 
     @pytest.mark.asyncio
     @patch("routers.automations.list_instagram_accounts", new_callable=AsyncMock)
@@ -543,7 +543,7 @@ class TestMetaResources:
         response = await async_client.get("/api/v1/automations/providers/instagram/resources")
         assert response.status_code == 200
         assert response.json() == mock_accounts.return_value
-        mock_accounts.assert_awaited_once_with("user_test_123")
+        mock_accounts.assert_awaited_once_with("org_test_456")
 
     @pytest.mark.asyncio
     @patch("routers.automations.list_meta_pages", new_callable=AsyncMock)

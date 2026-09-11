@@ -17,7 +17,7 @@ USER_ID = "user_test_abc"
 
 def _auth(owner_id: str = USER_ID) -> AuthContext:
     """Build a minimal AuthContext for direct handler calls (personal mode)."""
-    return AuthContext(user_id=owner_id)
+    return AuthContext(user_id=f"human_{owner_id}", org_id=owner_id, org_role="org:admin")
 
 
 def _upload(name: str, data: bytes) -> UploadFile:

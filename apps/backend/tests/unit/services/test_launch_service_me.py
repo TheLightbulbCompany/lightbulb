@@ -20,8 +20,8 @@ def _sched(closes_delta_days: int, *, comp_slots: int = 200, closed_at=None) -> 
     )
 
 
-ONBOARDED = {"bootstrap_state": "delivered", "bootstrap_delivered_at": "2026-09-19T00:00:00+00:00"}
-NOT_ONBOARDED = {"bootstrap_state": "sent", "bootstrap_delivered_at": None}
+ONBOARDED = {"funnel_state": "complete"}
+NOT_ONBOARDED = {"funnel_state": "submitted"}
 
 
 def _row(**over):
@@ -57,7 +57,7 @@ def _patches(row, onboarding=ONBOARDED, entry=None, suggested_name=None):
 
 
 async def _me(row, *, sched=None, onboarding=ONBOARDED, auth=None, entry=None, suggested_name=None):
-    auth = auth or AuthContext(user_id="user_1", email="me@x.com")
+    auth = auth or AuthContext(user_id="human_1", org_id="user_1", org_role="org:admin", email="me@x.com")
     p = _patches(row, onboarding, entry, suggested_name)
     with p[0], p[1] as claim, p[2], p[3], p[4], p[5] as entries_get, p[6] as suggested:
         body = await launch_service.me(auth, sched or _sched(+5))
@@ -101,7 +101,7 @@ async def test_me_is_read_only_and_claims_the_row():
         patch("core.services.launch_service.settings.FRONTEND_URL", "https://dev.flickmeon.ai"),
         patch("core.services.launch_service.launch_entries_repo.get", AsyncMock(return_value=None)),
     ):
-        body = await launch_service.me(AuthContext(user_id="user_1", email="me@x.com"), _sched(+5))
+        body = await launch_service.me(AuthContext(user_id="user_1", org_id="org_1", email="me@x.com"), _sched(+5))
     join.assert_not_awaited()
     claim.assert_awaited_once_with("me@x.com", "user_1")
     assert body["joined"] is True and body["position"] == 300
@@ -190,15 +190,15 @@ async def test_me_no_row_at_all():
     suggested.assert_not_awaited()
 
 
-async def test_me_row_without_joined_at_is_not_joined():
+async def test_me_org_row_without_joined_at_skips_suggestion():
     """A row minted by referral attribution is NOT sheet membership — only
     the explicit join stamps joined_at."""
     body, claim, _, suggested = await _me(_row(joined_at=None), suggested_name="Northwind Ceramics")
     claim.assert_awaited_once()  # the claim still runs on any existing row
     assert body["joined"] is False and body["position"] is None
-    # Onboarded + not yet joined -> exactly the case the field exists for.
-    assert body["suggested_display_name"] == "Northwind Ceramics"
-    suggested.assert_awaited_once_with("user_1")
+    # Workspace callers cannot join the personal competition.
+    assert body["suggested_display_name"] is None
+    suggested.assert_not_awaited()
 
 
 async def test_me_suggested_display_name_is_null_and_uncalled_once_joined():

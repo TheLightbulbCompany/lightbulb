@@ -70,7 +70,9 @@ def test_my_purchases_sorts_by_created_at_not_uuid(mock_purchases_table, mock_li
 
     from core.auth import AuthContext, get_current_user
 
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="b1")
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(
+        user_id="human_b1", org_id="b1", org_role="org:admin"
+    )
 
     # UUIDs out-of-order vs. created_at: ensures we're not lucky-sorting.
     mock_purchases_table.return_value.query = MagicMock(
@@ -886,7 +888,9 @@ def test_checkout_already_entitled_409s_before_stripe(mock_stripe_create, client
 
     from core.auth import AuthContext, get_current_user
 
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="b1")
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(
+        user_id="human_b1", org_id="b1", org_role="org:admin"
+    )
     try:
         with (
             patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock) as mock_get,
@@ -1042,7 +1046,9 @@ def test_refund_window_parses_created_at_as_utc_not_local(mock_time, mock_get, m
     old_tz = os.environ.get("TZ")
     os.environ["TZ"] = "America/Los_Angeles"
     _time.tzset()
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="buyer1")
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(
+        user_id="human_buyer1", org_id="buyer1", org_role="org:admin"
+    )
     try:
         now = calendar.timegm(_time.strptime("2026-06-01T00:00:00Z", "%Y-%m-%dT%H:%M:%SZ"))
         mock_time.return_value = now

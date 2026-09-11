@@ -211,7 +211,7 @@ def test_list_addresses_projects_active_rows(client):
     with patch.object(agent_mail.agent_email_repo, "query_by_owner", AsyncMock(return_value=rows)) as q:
         r = client.get("/api/v1/agent-mail/addresses")
     assert r.status_code == 200
-    assert q.call_args.args == ("user_test_123",)
+    assert q.call_args.args == ("org_test_456",)
     assert r.json() == {
         "addresses": [
             {
@@ -245,7 +245,7 @@ def test_patch_address_lowercases_and_mints_when_missing(client):
             json={"verified_senders": ["Bob@X.y", "@ClientCo.com"], "send_to_anyone": True},
         )
     assert r.status_code == 200 and r.json()["send_to_anyone"] is True
-    assert mint.call_args.kwargs["agent_id"] == "agent_f" and mint.call_args.kwargs["owner_id"] == "user_test_123"
+    assert mint.call_args.kwargs["agent_id"] == "agent_f" and mint.call_args.kwargs["owner_id"] == "org_test_456"
     assert upd.call_args.args == ("f@acme.isol8.co",)
     assert upd.call_args.kwargs == {"verified_senders": ["bob@x.y", "@clientco.com"], "send_to_anyone": True}
 

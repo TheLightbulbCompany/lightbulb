@@ -20,7 +20,7 @@ def auth_user(monkeypatch):
     from core.auth import get_current_user
 
     async def _fake_user():
-        return AuthContext(user_id="u_1", org_id=None, email="t@x.co")
+        return AuthContext(user_id="human_1", org_id="u_1", org_role="org:admin", email="t@x.co")
 
     app.dependency_overrides[get_current_user] = _fake_user
     yield

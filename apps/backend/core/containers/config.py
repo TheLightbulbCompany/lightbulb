@@ -675,7 +675,7 @@ def build_provider_block(
     _emit_81_shape = _emits_81_shape(deployed_tag)
     if provider_choice == "chatgpt_oauth":
         # ChatGPT OAuth resolves through OpenClaw's bundled `openai` provider
-        # plugin, whose model catalog (gpt-5.5 / gpt-5.4-mini / …) is baked
+        # plugin, whose model catalog (gpt-5.5 / gpt-5.6-luna / …) is baked
         # into its manifest as a STATIC catalog — so `openai/gpt-5.5` resolves
         # with no explicit provider entry. We deliberately emit NO
         # `models.providers.openai` block: an explicit override (baseUrl +
@@ -1059,15 +1059,15 @@ def heartbeat_model_ref(
     This differs from ``cheap_model_ref`` only on the ``chatgpt_oauth`` path.
     The heartbeat is an ordinary agentTurn (the synthetic "[heartbeat poll]"
     that reads HEARTBEAT.md and replies HEARTBEAT_OK when idle), which the
-    Codex OAuth token CAN serve on the mini tier — unlike compaction, which
+    Codex OAuth token CAN serve on the Luna tier — unlike compaction, which
     the Codex backend runs natively and which rejects an OpenClaw-side model
     override (see ``cheap_model_ref``). So the OAuth heartbeat routes to
-    ``gpt-5.4-mini`` to keep the 30-min per-agent maintenance poll off the
+    ``gpt-5.6-luna`` to keep the 30-min per-agent maintenance poll off the
     premium model, while compaction/memory-flush keep using ``cheap_model``
     (None on OAuth → inherits the chat model so Codex native compaction runs).
     """
     if provider_choice == "chatgpt_oauth":
-        return "openai/gpt-5.4-mini"
+        return "openai/gpt-5.6-luna"
     return cheap_model_ref(provider_choice, byo_provider, aip_arns=aip_arns)
 
 
@@ -2018,7 +2018,7 @@ def build_openclaw_config_dict(
                 # tier — it's pure overhead and doesn't need the premium
                 # default. The heartbeat is an ordinary turn (unlike
                 # compaction), so it uses `heartbeat_model` (cheap tier for
-                # EVERY provider, including chatgpt_oauth → gpt-5.4-mini)
+                # EVERY provider, including chatgpt_oauth → gpt-5.6-luna)
                 # rather than `cheap_model` (which stays None on OAuth for the
                 # Codex native-compaction constraint). `None` only when a
                 # provider has no cheaper tier, in which case the heartbeat
@@ -2049,8 +2049,8 @@ def build_openclaw_config_dict(
                 # (simple-completion-runtime.ts) is utilityModel?.trim() ||
                 # effective PRIMARY — so an unset (or empty-string) value runs
                 # utility calls on the premium default. Reuses the heartbeat
-                # cheap-tier resolution (haiku AIP on paid Bedrock, mini on
-                # OAuth/BYO-openai, haiku on BYO-anthropic). Omitted on trial:
+                # cheap-tier resolution (haiku AIP on paid Bedrock, Luna on
+                # OAuth, mini on BYO-openai, haiku on BYO-anthropic). Omitted on trial:
                 # the single-AIP IAM policy means the primary IS the only
                 # invocable model, and "" would fall through to it anyway.
                 **({"utilityModel": heartbeat_model} if heartbeat_model else {}),

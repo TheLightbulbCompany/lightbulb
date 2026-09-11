@@ -23,7 +23,7 @@ import routers.onboarding as onboarding_mod
 
 
 def _personal_auth():
-    return AuthContext(user_id="user_abc", org_id=None, email="max@acme.com")
+    return AuthContext(user_id="human_abc", org_id="user_abc", org_role="org:admin", email="max@acme.com")
 
 
 def _org_auth():
@@ -78,7 +78,7 @@ def test_submit_records_the_answer_and_returns_staged(client):
         # Friday is the one this submission produced (grow path -> the
         # registrable domain, not the raw URL).
         brief_text="work on acme.com",
-        submitted_by="user_abc",
+        submitted_by="human_abc",
     )
 
 

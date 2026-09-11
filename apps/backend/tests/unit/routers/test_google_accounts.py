@@ -1,8 +1,8 @@
 """Tests for the per-agent Google-account assignment router.
 
 Mirrors the auth-override + async_client idiom from test_connections.py:
-``get_current_user`` is overridden by the ``async_client`` fixture (personal
-mode, owner_id == "user_test_123"); the org fixtures exercise the admin gate.
+``get_current_user`` is overridden by the ``async_client`` fixture (active
+workspace, owner_id == "org_test_456"); the org fixtures exercise the admin gate.
 The repo and the IDENTITY.md seeder are patched with ``AsyncMock`` so the
 awaits resolve without touching DynamoDB or EFS — the assertions are that the
 router reads/writes the right rows and re-seeds the right agent.
@@ -37,8 +37,8 @@ class TestListAccounts:
         assert body["assignments"] == {"agent_1": "bob@example.com"}
 
         # Owner-scoped reads.
-        mock_repo.list_accounts.assert_awaited_once_with("user_test_123")
-        mock_repo.list_assignments.assert_awaited_once_with("user_test_123")
+        mock_repo.list_accounts.assert_awaited_once_with("org_test_456")
+        mock_repo.list_assignments.assert_awaited_once_with("org_test_456")
 
     @pytest.mark.asyncio
     @patch("routers.google_accounts.google_accounts_repo")
@@ -72,10 +72,10 @@ class TestAssignAccount:
         assert response.json() == {"assignments": {"agent_1": "alice@example.com"}}
 
         # Assignment written for the resolved owner.
-        mock_repo.set_assignment.assert_awaited_once_with("user_test_123", "agent_1", "alice@example.com")
+        mock_repo.set_assignment.assert_awaited_once_with("org_test_456", "agent_1", "alice@example.com")
         # IDENTITY.md re-seeded for that agent so the gog-account block reflects
         # the new account immediately.
-        mock_seed.assert_awaited_once_with("user_test_123", "agent_1")
+        mock_seed.assert_awaited_once_with("org_test_456", "agent_1")
 
     @pytest.mark.asyncio
     @patch("routers.google_accounts.seed_agent_google_identity", new_callable=AsyncMock)
@@ -162,10 +162,10 @@ class TestUnassignAgent:
         assert response.status_code == 200
         assert response.json() == {"assignments": {}}
 
-        mock_repo.remove_assignment.assert_awaited_once_with("user_test_123", "agent_1")
+        mock_repo.remove_assignment.assert_awaited_once_with("org_test_456", "agent_1")
         # Re-seed re-resolves the agent: it falls back to the owner default (or
         # None), so the IDENTITY.md block is updated/removed accordingly.
-        mock_seed.assert_awaited_once_with("user_test_123", "agent_1")
+        mock_seed.assert_awaited_once_with("org_test_456", "agent_1")
 
     @pytest.mark.asyncio
     @patch("routers.google_accounts.seed_agent_google_identity", new_callable=AsyncMock)

@@ -14,7 +14,7 @@ import { useSyncExternalStore } from "react";
 export type LampTheme = "dark" | "light";
 export const LAMP_STORAGE_KEY = "lightbulb-theme";
 
-let theme: LampTheme = "dark";
+let theme: LampTheme = "light";
 const listeners = new Set<() => void>();
 let themingTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -64,7 +64,7 @@ export function getTheme(): LampTheme {
 }
 
 export function getServerTheme(): LampTheme {
-  return "dark";
+  return "light";
 }
 
 export function subscribe(cb: () => void): () => void {

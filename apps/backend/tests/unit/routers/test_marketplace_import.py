@@ -27,7 +27,7 @@ KEY = f"imports/{OWNER}/0123456789abcdef0123456789abcdef.tar.gz"
 def _auth() -> AuthContext:
     # If AuthContext's constructor differs, copy the override used in
     # tests/unit/routers/test_marketplace_listings.py.
-    return AuthContext(user_id=OWNER, email="o@example.com", org_id=None, org_role=None)
+    return AuthContext(user_id="human_owner", email="o@example.com", org_id=OWNER, org_role="org:admin")
 
 
 def _archive(agents_list=None, extra=None) -> bytes:

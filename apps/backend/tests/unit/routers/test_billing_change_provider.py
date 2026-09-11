@@ -116,9 +116,9 @@ async def test_change_provider_bedrock_to_byo_key_happy_path(
     assert body["status"] == "ok"
     assert body["provider_choice"] == "byo_key"
     assert body["byo_provider"] == "anthropic"
-    mock_get_secret_arn.assert_awaited_once_with("user_test_123", "anthropic")
+    mock_get_secret_arn.assert_awaited_once_with("org_test_456", "anthropic")
     mock_set_pc.assert_awaited_once_with(
-        "user_test_123",
+        "org_test_456",
         provider_choice="byo_key",
         byo_provider="anthropic",
         # Non-chatgpt switch always passes connector_user_id=None so the repo
@@ -470,7 +470,7 @@ async def test_personal_switch_away_still_revokes(
     assert mock_revoke.await_count == 2
     assert mock_revoke.await_args_list[0].kwargs == {"user_id": "user_test_123"}
     assert mock_revoke.await_args_list[1].kwargs == {"user_id": "user_test_123", "purpose": "harness"}
-    mock_delete_auth.assert_awaited_once_with(user_id="user_test_123")
+    mock_delete_auth.assert_awaited_once_with(user_id="org_test_456")
 
 
 @pytest.mark.asyncio
@@ -777,13 +777,13 @@ async def test_change_provider_bedrock_to_chatgpt_hot_path_no_restart(async_clie
         # bedrock-haiku compaction override and hit the overflow bug.
         assert cheap_model is None
         # The heartbeat is an ordinary agent turn the Codex OAuth token CAN
-        # serve on the mini tier (unlike compaction) — so the hot swap re-pins
+        # serve on the Luna tier (unlike compaction) — so the hot swap re-pins
         # it rather than clearing it with the compaction slots. Same for the
         # utility model (titles etc.). Subagents re-pin to the standard tier
         # so children never inherit a stale bedrock ref; llm-task has no cheap
         # tier on this path (cheap_model is None) and goes enable-only.
-        assert heartbeat_model == "openai/gpt-5.4-mini"
-        assert utility_model == "openai/gpt-5.4-mini"
+        assert heartbeat_model == "openai/gpt-5.6-luna"
+        assert utility_model == "openai/gpt-5.6-luna"
         assert subagent_model == "openai/gpt-5.6-sol"
         assert llm_task_model is None
         # The search pin SURVIVES the swap (mirrors provision-time, which now

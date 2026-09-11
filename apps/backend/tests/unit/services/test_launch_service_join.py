@@ -12,7 +12,7 @@ from core.auth import AuthContext
 from core.services import launch_phase, launch_service
 
 NOW = datetime.now(timezone.utc)
-AUTH = AuthContext(user_id="user_1", email="me@x.com")
+AUTH = AuthContext(user_id="human_1", org_id="user_1", org_role="org:admin", email="me@x.com")
 
 
 def _sched(closes_delta_days: int = 5, *, closed_at=None) -> launch_phase.Schedule:
@@ -122,7 +122,12 @@ async def test_join_refuses_without_an_email():
     with _Harness() as h:
         h.user_get.return_value = None
         with pytest.raises(launch_service.LaunchRefused) as exc:
-            await launch_service.join_sheet(AuthContext(user_id="user_1"), _sched(), display_name="A", public=True)
+            await launch_service.join_sheet(
+                AuthContext(user_id="human_1", org_id="user_1", org_role="org:admin"),
+                _sched(),
+                display_name="A",
+                public=True,
+            )
     assert exc.value.reason == "no_email"
 
 
@@ -130,7 +135,7 @@ async def test_first_join_writes_membership_and_sends_the_email():
     with _Harness() as h:
         body = await launch_service.join_sheet(AUTH, _sched(), display_name="  Acme  ", public=False)
     h.join.assert_awaited_once_with("me@x.com", referred_by=None, source="sheet")
-    h.claim.assert_awaited_once_with("me@x.com", "user_1")
+    h.claim.assert_awaited_once_with("me@x.com", "human_1")
     # ONE atomic write carries membership + the join-time fields.
     h.mark_joined.assert_awaited_once_with("me@x.com", display_name="Acme", public=False)
     h.update_fields.assert_not_awaited()

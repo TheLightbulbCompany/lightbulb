@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from core.auth import AuthContext, get_current_user  # noqa: E402
 
 
-CALLER_ID = "user_caller"
+CALLER_ID = "human_caller"
 
 
 @pytest.fixture
@@ -21,7 +21,9 @@ def client_with_auth():
     from main import app
 
     app.dependency_overrides.clear()
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id=CALLER_ID)
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(
+        user_id="human_caller", org_id=CALLER_ID, org_role="org:admin"
+    )
     try:
         yield TestClient(app)
     finally:

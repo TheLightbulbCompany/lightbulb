@@ -86,6 +86,12 @@ export function useMessagingWorkspace(): MessagingWorkspaceValue {
   return value;
 }
 
+/** Null outside a MessagingWorkspaceProvider — the Teams command palette is
+ *  also mounted in InlineTeamsPanel, where no messaging provider exists. */
+export function useMessagingWorkspaceOptional(): MessagingWorkspaceValue | null {
+  return useContext(MessagingWorkspaceContext);
+}
+
 export function MessagingWorkspaceProvider({
   children,
   initialAgentId,

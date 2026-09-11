@@ -16,7 +16,11 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  extended-image gog binary (gmail settings watch = Pub/Sub)
   - Control Panel tabs ...... references/surfaces.md
   - Workspace search ........ references/surfaces.md
-                              <- apps/frontend/src/components/workspace/WorkspaceHeader.tsx (search button + shortcut label)
+                              <- apps/frontend/src/components/workspace/WorkspaceHeader.tsx (search button + shortcut label);
+                                 apps/frontend/src/components/teams/command-palette/CommandPalette.tsx (the Conversations group,
+                                 rendered first); components/messaging/roomCommands.ts (useRoomCommandResults — rooms then
+                                 people, degrades to [] via useMessagingWorkspaceOptional when no messaging provider is mounted,
+                                 e.g. InlineTeamsPanel.tsx)
   - Message actions ......... references/surfaces.md
                               <- apps/frontend/src/components/messaging/{RoomMessageItem,RoomMessageContent}.tsx (reactions,
                                  reply-in-thread, edit/delete); messageLinks.ts (copy-link permalink format);

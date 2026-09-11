@@ -80,7 +80,7 @@ def test_clear_active_run_retains_authorizing_session_for_terminal_idempotency()
 
 
 @pytest.mark.asyncio
-async def test_timeout_cleanup_keeps_thread_routing_for_continuing_frames(monkeypatch):
+async def test_timeout_cleanup_keeps_thread_routing_through_approval_followup(monkeypatch):
     conn = GatewayConnection.__new__(GatewayConnection)
     conn._active_runs = {}
     conn._room_run_context = {}
@@ -107,10 +107,15 @@ async def test_timeout_cleanup_keeps_thread_routing_for_continuing_frames(monkey
     conn.mark_run_active(SESSION_KEY, agent_id=AGENT_ID, thread_root_message_id="thread-1")
     conn._clear_active_run(SESSION_KEY, preserve_room_context=True)
     assert conn.has_active_runs is False
+    conn._mark_awaiting_approval(SESSION_KEY)
+    assert conn._is_true_terminal(SESSION_KEY, "final") is False
 
-    await conn._publish_room_frame(SESSION_KEY, {"type": "chunk", "content": "still running", "runId": "run-1"})
+    await conn._publish_room_frame(SESSION_KEY, {"type": "chunk", "content": "followup", "runId": "run-2"})
 
     assert published[0]["payload"]["threadRootMessageId"] == "thread-1"
+    assert conn._is_true_terminal(SESSION_KEY, "final") is True
+    conn._clear_active_run(SESSION_KEY, "run-2")
+    assert conn._room_run_context == {}
 
 
 @pytest.mark.parametrize(

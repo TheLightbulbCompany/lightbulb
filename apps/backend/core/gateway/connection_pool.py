@@ -721,6 +721,9 @@ class GatewayConnection:
         run = self._active_runs.get(session_key.lower())
         if run is not None:
             run["awaiting_approval"] = True
+        room_context = getattr(self, "_room_run_context", {}).get(session_key.lower())
+        if room_context is not None:
+            room_context["awaiting_approval"] = True
 
     def _is_true_terminal(self, session_key: str, state: str) -> bool:
         """True iff this chat-terminal event genuinely ends the per-session run.
@@ -750,11 +753,18 @@ class GatewayConnection:
         """
         if state in ("error", "aborted"):
             return True
-        run = self._active_runs.get(session_key.lower())
+        key = session_key.lower()
+        run = self._active_runs.get(key) or getattr(self, "_room_run_context", {}).get(key)
         if run is not None and run.get("awaiting_approval"):
             # Suppress Run A's genuine terminal final so the per-session window
             # survives the approval; the separate follow-up run's final clears it.
             run["awaiting_approval"] = False
+            active = self._active_runs.get(key)
+            if active is not None:
+                active["awaiting_approval"] = False
+            room_context = getattr(self, "_room_run_context", {}).get(key)
+            if room_context is not None:
+                room_context["awaiting_approval"] = False
             return False
         return True
 

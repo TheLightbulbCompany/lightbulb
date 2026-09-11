@@ -88,7 +88,10 @@ def lightbulb_session_key(agent_id: str, room_id: str) -> str:
 
 
 def _public_message(row: dict[str, Any]) -> dict[str, Any]:
-    return canonical_message(row).model_dump(mode="json", by_alias=True)
+    message = canonical_message(row).model_dump(mode="json", by_alias=True)
+    if not message["attachments"]:
+        del message["attachments"]
+    return message
 
 
 async def build_ingress_body(

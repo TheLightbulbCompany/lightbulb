@@ -12,6 +12,7 @@ import { safeHref } from "@/components/teams/shared/lib/safeHref";
 import { cn } from "@/lib/utils";
 import { RoomComposer, type RoomComposerProps } from "./RoomComposer";
 import { ParticipantAvatar } from "./ParticipantAvatar";
+import { RoomImageAttachments } from "./RoomImageAttachments";
 import { roomDisplayName } from "./types";
 import type {
   PendingRoomMessage,
@@ -51,6 +52,7 @@ export interface RoomPanelProps {
   onAbortRun?: (runId: string) => void;
   onSteerRun?: (runId: string, text: string) => void;
   onLinkToWork?: () => void;
+  onDownloadAttachment?: (roomId: string, attachmentId: string) => Promise<Blob>;
   narrow?: boolean;
 }
 
@@ -160,6 +162,7 @@ function RoomContent({
   onAbortRun,
   onSteerRun,
   onLinkToWork,
+  onDownloadAttachment,
   narrow,
 }: RoomPanelProps) {
   const id = useId();
@@ -255,6 +258,7 @@ function RoomContent({
           {timestamp && <time className="text-sm text-muted-foreground" dateTime={timestamp} title={new Date(timestamp).toLocaleString()}>{new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>}
         </div>
         <MarkdownView skipHtml components={roomMarkdown}>{message.text}</MarkdownView>
+        {!!message.attachments?.length && onDownloadAttachment && <RoomImageAttachments roomId={message.roomId} attachments={message.attachments} download={onDownloadAttachment} />}
         {message.run && <div className="room-run"><WorkStatus state={message.run.state} />
           {message.run.details && <details><summary>Run details</summary><pre>{message.run.details.slice(0, 8192)}</pre>{message.run.details.length > 8192 && <p className="text-sm text-muted-foreground">Further details omitted.</p>}</details>}
         </div>}

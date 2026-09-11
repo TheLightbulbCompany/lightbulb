@@ -359,6 +359,11 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
     await reconcile(lastSequence(messagesRef.current));
     return sendMessage(request);
   }, [reconcile, sendMessage]);
+  const uploadAttachment = useCallback((image: File) => {
+    if (!activeRoomId) throw new Error("No room selected.");
+    return messaging.uploadAttachment(activeRoomId, image);
+  }, [activeRoomId, messaging]);
+  const downloadAttachment = useCallback((roomId: string, attachmentId: string) => messaging.downloadAttachment(roomId, attachmentId), [messaging]);
 
   const selectRoom = useCallback((roomId: string) => {
     selectionRequest.current += 1;
@@ -497,6 +502,8 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
     upsertMember,
     removeMember,
     sendMessage,
+    uploadAttachment,
+    downloadAttachment,
     reconcileSend,
     sendState: (clientMessageId: string): SendState => attempts.get(clientMessageId) ?? "idle",
     setTyping: setRoomTyping,

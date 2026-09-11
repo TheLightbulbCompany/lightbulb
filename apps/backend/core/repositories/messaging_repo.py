@@ -527,6 +527,7 @@ async def create_message(
     dispatch_targets: list[dict],
     source_agent_id: str | None,
     client_message_id: str | None,
+    attachments: list[dict] | None = None,
 ) -> dict:
     """Strong-read ``META.lastSeq`` then conditionally transact: bump META, put
     the immutable ``MSG``, put the ``IDEMP`` receipt, put one ``WORK#MESSAGE``
@@ -566,6 +567,7 @@ async def create_message(
             "sourceAgentId": source_agent_id,
             "clientMessageId": client_message_id,
             "requestHash": req_hash,
+            "attachments": attachments or [],
         }
         items: list[dict] = [
             {

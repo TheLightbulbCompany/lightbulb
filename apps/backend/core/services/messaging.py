@@ -12,6 +12,7 @@ import json
 import re
 import unicodedata
 import uuid
+from pathlib import PurePath
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -20,6 +21,8 @@ from pydantic.alias_generators import to_camel
 
 from core.auth import AuthContext, resolve_owner_id
 from core.repositories import container_repo, messaging_repo
+from core.containers import get_workspace
+from core.containers.workspace import WorkspaceError
 
 RoomKind = Literal["channel", "dm", "group-dm"]
 MemberKind = Literal["human", "agent"]
@@ -29,6 +32,8 @@ AuthorKind = Literal["human", "agent", "system"]
 EventKind = Literal["user_request", "room_event"]
 
 MESSAGE_TEXT_MAX_BYTES = 100_000
+IMAGE_MAX_BYTES = 5 * 1024 * 1024
+IMAGE_MAX_COUNT = 4
 ROOM_NAME_MAX_CHARS = 200
 EVENT_ID_MAX_BYTES = 256
 LIVE_SCHEMA_VERSION = 1
@@ -185,6 +190,25 @@ class CanonicalMessage(ContractModel):
     thread_root_message_id: uuid.UUID | None
     created_at: datetime
     run_id: str | None
+    attachments: list["ImageAttachment"] = Field(default_factory=list, max_length=IMAGE_MAX_COUNT)
+
+
+class ImageAttachment(ContractModel):
+    id: uuid.UUID
+    file_name: str = Field(min_length=1, max_length=256)
+    content_type: Literal["image/png", "image/jpeg", "image/webp", "image/gif"]
+    size: int = Field(gt=0, le=IMAGE_MAX_BYTES)
+
+    @field_validator("file_name")
+    @classmethod
+    def validate_file_name(cls, value: str) -> str:
+        if (
+            not value.strip()
+            or len(value.encode("utf-8")) > 255
+            or any(ord(char) < 0x20 or ord(char) == 0x7F or char in "/\\" for char in value)
+        ):
+            raise ValueError("fileName is invalid")
+        return value
 
 
 class CreateMessageRequest(ContractModel):
@@ -193,11 +217,20 @@ class CreateMessageRequest(ContractModel):
     mentions: list[MemberRef] = Field(default_factory=list, max_length=32)
     reply_to_message_id: uuid.UUID | None
     thread_root_message_id: uuid.UUID | None
+    attachment_ids: list[uuid.UUID] = Field(default_factory=list, max_length=IMAGE_MAX_COUNT)
 
     @field_validator("text")
     @classmethod
     def validate_text(cls, value: str) -> str:
-        return validate_message_text(value)
+        if len(value.encode("utf-8")) > MESSAGE_TEXT_MAX_BYTES:
+            raise ValueError(f"text exceeds {MESSAGE_TEXT_MAX_BYTES} UTF-8 bytes")
+        return value
+
+    @model_validator(mode="after")
+    def require_content(self) -> "CreateMessageRequest":
+        if not self.text.strip() and not self.attachment_ids:
+            raise ValueError("message requires text or an attachment")
+        return self
 
 
 class AgentMessageRequest(ContractModel):
@@ -504,7 +537,84 @@ def canonical_message(item: dict[str, Any]) -> CanonicalMessage:
         thread_root_message_id=item.get("threadRootMessageId"),
         created_at=item["createdAt"],
         run_id=item.get("runId"),
+        attachments=item.get("attachments") or [],
     )
+
+
+_IMAGE_SIGNATURES = {
+    "image/png": (b"\x89PNG\r\n\x1a\n", ".png"),
+    "image/jpeg": (b"\xff\xd8\xff", ".jpg"),
+    "image/gif": ((b"GIF87a", b"GIF89a"), ".gif"),
+    "image/webp": (b"RIFF", ".webp"),
+}
+
+
+def validate_image_bytes(content_type: str, data: bytes) -> str:
+    expected = _IMAGE_SIGNATURES.get(content_type)
+    if not expected or not data or len(data) > IMAGE_MAX_BYTES:
+        raise ValueError("image must be PNG, JPEG, WebP, or GIF and at most 5 MiB")
+    signature, suffix = expected
+    signatures = signature if isinstance(signature, tuple) else (signature,)
+    valid = any(data.startswith(value) for value in signatures)
+    if content_type == "image/webp":
+        valid = valid and len(data) >= 12 and data[8:12] == b"WEBP"
+    if not valid:
+        raise ValueError("image bytes do not match the declared content type")
+    return suffix
+
+
+def attachment_dir(room_id: str) -> str:
+    return f"media/messaging/attachments/{uuid.UUID(room_id)}"
+
+
+def store_image_attachment(
+    owner_id: str, room_id: str, file_name: str, content_type: str, data: bytes
+) -> ImageAttachment:
+    suffix = validate_image_bytes(content_type, data)
+    attachment_id = uuid.uuid4()
+    safe_name = "".join(
+        char for char in PurePath(file_name).name if ord(char) >= 0x20 and ord(char) != 0x7F and char not in "/\\"
+    ).strip()
+    safe_name = safe_name.encode("utf-8")[:255].decode("utf-8", "ignore") or f"image{suffix}"
+    attachment = ImageAttachment(id=attachment_id, file_name=safe_name, content_type=content_type, size=len(data))
+    root = attachment_dir(room_id)
+    workspace = get_workspace()
+    expected_root = workspace.user_path(owner_id).resolve() / root
+    try:
+        workspace._resolve_user_file(owner_id, f"{root}/{attachment_id}{suffix}").relative_to(expected_root)
+        workspace._resolve_user_file(owner_id, f"{root}/{attachment_id}.json").relative_to(expected_root)
+    except (ValueError, WorkspaceError) as exc:
+        raise ValueError("attachment path escapes its room") from exc
+    workspace.write_bytes(owner_id, f"{root}/{attachment_id}{suffix}", data)
+    workspace.write_file(owner_id, f"{root}/{attachment_id}.json", attachment.model_dump_json(by_alias=True))
+    return attachment
+
+
+def load_image_attachment(owner_id: str, room_id: str, attachment_id: str) -> tuple[ImageAttachment, bytes]:
+    normalized = str(uuid.UUID(attachment_id))
+    root = attachment_dir(room_id)
+    workspace = get_workspace()
+    try:
+        expected_root = workspace.user_path(owner_id).resolve() / root
+        metadata_path = workspace._resolve_user_file(owner_id, f"{root}/{normalized}.json")
+        metadata_path.relative_to(expected_root)
+        metadata = ImageAttachment.model_validate_json(metadata_path.read_text())
+        if str(metadata.id) != normalized:
+            raise ValueError("attachment metadata mismatch")
+        suffix = _IMAGE_SIGNATURES[metadata.content_type][1]
+        path = workspace._resolve_user_file(owner_id, f"{root}/{normalized}{suffix}")
+        path.relative_to(expected_root)
+        with path.open("rb") as handle:
+            data = handle.read(IMAGE_MAX_BYTES + 1)
+    except (WorkspaceError, OSError, ValueError, KeyError) as exc:
+        raise ApiProblem("MESSAGE_NOT_FOUND", "Image attachment not found.") from exc
+    try:
+        validate_image_bytes(metadata.content_type, data)
+        if len(data) != metadata.size:
+            raise ValueError("attachment size mismatch")
+    except ValueError as exc:
+        raise ApiProblem("MESSAGE_NOT_FOUND", "Image attachment is invalid.") from exc
+    return metadata, data
 
 
 def runtime_operation(item: dict[str, Any]) -> RuntimeOperation:
@@ -910,9 +1020,14 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
     )
     members = await messaging_repo.list_members(room_id)
     targets = select_dispatch_targets(members, mentions, None, room_kind=meta.get("kind"))
+    attachments = [
+        load_image_attachment(owner_id, room_id, str(value))[0].model_dump(mode="json", by_alias=True)
+        for value in request.attachment_ids
+    ]
     req_hash = messaging_repo.request_hash(
         request.text,
         mentions,
+        [str(value) for value in request.attachment_ids],
         str(request.reply_to_message_id) if request.reply_to_message_id else None,
         str(request.thread_root_message_id) if request.thread_root_message_id else None,
     )
@@ -932,6 +1047,7 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
             dispatch_targets=targets,
             source_agent_id=None,
             client_message_id=str(request.client_message_id),
+            attachments=attachments,
         )
     except messaging_repo.IdempotencyConflict as exc:
         raise ApiProblem("IDEMPOTENCY_CONFLICT", "clientMessageId was already used with a different request.") from exc
@@ -998,6 +1114,7 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
             dispatch_targets=targets,
             source_agent_id=agent_id,
             client_message_id=None,
+            attachments=[],
         )
     except messaging_repo.IdempotencyConflict as exc:
         raise ApiProblem("IDEMPOTENCY_CONFLICT", "eventId was already used with a different request.") from exc

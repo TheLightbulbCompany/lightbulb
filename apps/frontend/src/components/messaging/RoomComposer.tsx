@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useId, useRef, useState } from "react";
-import { AtSign, Send } from "lucide-react";
-import type { CreateMessageRequest, MemberRef } from "@lightbulb/shared";
+import { AtSign, ImagePlus, Send, X } from "lucide-react";
+import type { CreateMessageRequest, ImageAttachment, MemberRef } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { consumeFocusComposerRequest } from "@/lib/focusComposerRequest";
@@ -27,6 +27,7 @@ export interface RoomComposerProps {
   disabled?: boolean;
   label?: string;
   onTypingChange?: (typing: boolean) => void;
+  onUploadAttachment?: (image: File) => Promise<ImageAttachment>;
 }
 
 const sameMember = (left: MemberRef, right: MemberRef) => left.kind === right.kind && left.id === right.id;
@@ -53,6 +54,7 @@ function ComposerAttempt({
   disabled = false,
   label = "Message",
   onTypingChange,
+  onUploadAttachment,
 }: RoomComposerProps) {
   const fieldId = useId();
   const field = useRef<HTMLTextAreaElement>(null);
@@ -66,7 +68,12 @@ function ComposerAttempt({
   const composing = useRef(false);
   const locked = useRef(sendState !== "idle");
   const retryLocked = useRef(false);
+  const imageInput = useRef<HTMLInputElement>(null);
+  const previews = useRef(new Set<string>());
+  const [images, setImages] = useState<Array<{ file: File; preview: string; attachment?: ImageAttachment; error?: string }>>([]);
   const evidenceVersion = useRef(0);
+
+  useEffect(() => () => previews.current.forEach((preview) => URL.revokeObjectURL(preview)), []);
 
   useEffect(() => {
     if (!focusAgentId) return;
@@ -113,7 +120,10 @@ function ComposerAttempt({
   const effectiveState = sendState === "idle" ? lastEvidence : sendState;
   const uncertain = effectiveState === "uncertain" || callbackUncertain;
   const pending = effectiveState === "sending" || (effectiveState === "idle" && submitted && !uncertain);
-  const canSend = !disabled && !error && text.trim().length > 0 && !!clientMessageId && effectiveState === "idle" && !submitted && !uncertain;
+  const uploading = images.some((image) => !image.attachment && !image.error);
+  const uploadFailed = images.some((image) => image.error);
+  const hasContent = text.trim().length > 0 || images.some((image) => image.attachment);
+  const canSend = !disabled && !error && !uploading && !uploadFailed && hasContent && !!clientMessageId && effectiveState === "idle" && !submitted && !uncertain;
   const editable = !disabled && !pending && !uncertain && effectiveState !== "persisted" && !retryPending;
   const status = uncertain
     ? "Message status is uncertain. Check before sending again."
@@ -126,12 +136,33 @@ function ComposerAttempt({
           : "";
 
   function request(): CreateMessageRequest {
-    return { clientMessageId, text, mentions, replyToMessageId, threadRootMessageId };
+    return { clientMessageId, text, mentions, replyToMessageId, threadRootMessageId, attachmentIds: images.flatMap((image) => image.attachment ? [image.attachment.id] : []) };
+  }
+
+  function addImages(files: File[]) {
+    if (!onUploadAttachment || !editable) return;
+    const room = Math.max(0, 4 - images.length);
+    for (const file of files.slice(0, room)) {
+      const preview = URL.createObjectURL(file);
+      previews.current.add(preview);
+      setImages((current) => [...current, { file, preview }]);
+      void onUploadAttachment(file).then(
+        (attachment) => setImages((current) => current.map((image) => image.preview === preview ? { ...image, attachment } : image)),
+        (reason) => setImages((current) => current.map((image) => image.preview === preview ? { ...image, error: reason instanceof Error ? reason.message : "Upload failed" } : image)),
+      );
+    }
+  }
+
+  function removeImage(preview: string) {
+    if (!editable) return;
+    URL.revokeObjectURL(preview);
+    previews.current.delete(preview);
+    setImages((current) => current.filter((image) => image.preview !== preview));
   }
 
   function submit(retry = false) {
     if (retry
-      ? disabled || !!error || !text.trim() || !clientMessageId || effectiveState !== "rejected" || !onRetry || retryLocked.current
+      ? disabled || !!error || uploading || uploadFailed || !hasContent || !clientMessageId || effectiveState !== "rejected" || !onRetry || retryLocked.current
       : !canSend || locked.current) return;
     locked.current = true;
     if (retry) {
@@ -175,6 +206,10 @@ function ComposerAttempt({
     <Textarea ref={field} id={fieldId} value={text} disabled={!editable} rows={3} aria-invalid={!!error}
       aria-describedby={`${fieldId}-help ${fieldId}-status`} placeholder={label === "Reply to thread" ? "Reply to thread…" : "Message the conversation · @ to mention"}
       onChange={(event) => { onTextChange(event.target.value); onTypingChange?.(!!event.target.value.trim()); }}
+      onPaste={(event) => {
+        const files = [...event.clipboardData.files].filter((file) => file.type.startsWith("image/"));
+        if (files.length) { event.preventDefault(); addImages(files); }
+      }}
       onBlur={() => onTypingChange?.(false)} onCompositionStart={() => { composing.current = true; }}
       onCompositionEnd={() => { composing.current = false; }}
       onKeyDown={(event) => {
@@ -187,7 +222,15 @@ function ComposerAttempt({
       const member = members.find((candidate) => sameMember(candidate, mention));
       return member ? member.mentionHandle ? `@${member.mentionHandle}` : member.displayName : "Unavailable member";
     }).join(", ")}</p>}
+    {images.length > 0 && <div className="room-image-previews">{images.map((image) => <div key={image.preview} className="room-image-preview">
+      {/* eslint-disable-next-line @next/next/no-img-element */}<img src={image.preview} alt={image.file.name} />
+      <Button type="button" variant="ghost" aria-label={`Remove ${image.file.name}`} disabled={!editable} onClick={() => removeImage(image.preview)}><X aria-hidden="true" /></Button>
+      <span className={image.error ? "text-err" : "text-muted-foreground"}>{image.error ?? (image.attachment ? "Ready" : "Uploading…")}</span>
+    </div>)}</div>}
     <div className="room-composer-actions">
+      {onUploadAttachment && <><input ref={imageInput} className="sr-only" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple
+        onChange={(event) => { addImages([...event.target.files ?? []]); event.target.value = ""; }} />
+        <Button type="button" variant="ghost" aria-label="Add images" disabled={!editable || images.length >= 4} onClick={() => imageInput.current?.click()}><ImagePlus aria-hidden="true" /></Button></>}
       <Button type="button" variant="ghost" aria-label="Choose mentions" aria-expanded={pickerOpen}
         aria-controls={`${fieldId}-targets`} disabled={!editable} onClick={() => setPickerOpen(!pickerOpen)}><AtSign aria-hidden="true" /><span className="sr-only">Mention</span></Button>
       <Button type="submit" className="room-send" disabled={!canSend} aria-label="Send message"><Send aria-hidden="true" /><span className="sr-only">Send</span></Button>
@@ -212,6 +255,6 @@ function ComposerAttempt({
     <p id={`${fieldId}-help`} className={error ? "text-sm text-err" : "room-composer-help text-sm text-muted-foreground"}>{error || "Enter to send · Shift+Enter for a new line."}</p>
     <p id={`${fieldId}-status`} role="status" className={uncertain ? "text-sm text-warn" : effectiveState === "rejected" ? "text-sm text-err" : "text-sm text-muted-foreground"}>{status}</p>
     {uncertain && onReconcile && <Button type="button" variant="outline" disabled={disabled} onClick={() => onReconcile(clientMessageId)}>Check message status</Button>}
-    {!uncertain && effectiveState === "rejected" && onRetry && <Button type="button" variant="outline" disabled={disabled || !!error || !text.trim() || retryPending} onClick={() => submit(true)}>Retry message</Button>}
+    {!uncertain && effectiveState === "rejected" && onRetry && <Button type="button" variant="outline" disabled={disabled || !!error || uploading || (!text.trim() && !images.some((image) => image.attachment)) || retryPending} onClick={() => submit(true)}>Retry message</Button>}
   </form>;
 }

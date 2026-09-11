@@ -102,6 +102,14 @@ export interface CanonicalRoomMessage {
   threadRootMessageId: string | null;
   createdAt: string;
   runId: string | null;
+  attachments?: ImageAttachment[];
+}
+
+export interface ImageAttachment {
+  id: string;
+  fileName: string;
+  contentType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+  size: number;
 }
 
 export interface CreateMessageRequest {
@@ -110,6 +118,7 @@ export interface CreateMessageRequest {
   mentions: MemberRef[];
   replyToMessageId: string | null;
   threadRootMessageId: string | null;
+  attachmentIds?: string[];
 }
 
 export interface MessagePage {

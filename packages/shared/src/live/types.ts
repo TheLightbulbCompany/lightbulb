@@ -315,9 +315,13 @@ function chatFrameValid(value: unknown): value is ChatIncomingMessage {
 function canonicalMessageValid(value: unknown): value is CanonicalRoomMessage {
   if (!isObj(value) || !str(value.messageId) || !str(value.roomId) || !num(value.messageSeq) || !num(value.roomRevision)) return false;
   if (!isObj(value.author) || !authorKind(value.author.kind) || !str(value.author.id) || !str(value.author.displayName)) return false;
-  return text(value.text) && Array.isArray(value.mentions) && value.mentions.every(memberRef) &&
+  return typeof value.text === "string" && Array.isArray(value.mentions) && value.mentions.every(memberRef) &&
     nullableString(value.replyToMessageId) && nullableString(value.threadRootMessageId) &&
-    str(value.createdAt) && nullableString(value.runId);
+    str(value.createdAt) && nullableString(value.runId) && (value.attachments === undefined || (
+      Array.isArray(value.attachments) && value.attachments.length <= 4 && value.attachments.every((item) => isObj(item) &&
+        str(item.id) && text(item.fileName) && ["image/png", "image/jpeg", "image/webp", "image/gif"].includes(String(item.contentType)) &&
+        typeof item.size === "number" && Number.isInteger(item.size) && item.size > 0 && item.size <= 5 * 1024 * 1024)
+    ));
 }
 
 /** Per-type validation for the exact founder-release registry. */

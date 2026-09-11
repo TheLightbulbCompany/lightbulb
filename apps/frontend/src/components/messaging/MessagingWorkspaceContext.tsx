@@ -209,6 +209,7 @@ export function MessagingWorkspaceProvider({
     onReconcile: (id) => rooms.reconcileSend(id),
     disabled: !rooms.httpReady,
     onTypingChange: handleTyping,
+    onUploadAttachment: rooms.uploadAttachment,
   };
 
   const threadComposer: { parentMessageId: string; composer: RoomComposerProps } | undefined = threadId ? {
@@ -228,6 +229,7 @@ export function MessagingWorkspaceProvider({
       threadRootMessageId: threadId,
       disabled: !rooms.httpReady,
       onTypingChange: handleTyping,
+      onUploadAttachment: rooms.uploadAttachment,
     },
   } : undefined;
 
@@ -317,6 +319,7 @@ export function MessagingWorkspaceProvider({
     onAbortRun: (runId) => void rooms.abortRun(runId),
     onSteerRun: (runId, text) => void rooms.steerRun(runId, text),
     onLinkToWork: () => openPanel("teams-issues", {}, { pushUrl: true }),
+    onDownloadAttachment: rooms.downloadAttachment,
   } : null;
 
   return <MessagingWorkspaceContext.Provider value={{

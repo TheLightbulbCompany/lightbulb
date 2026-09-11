@@ -138,7 +138,7 @@ async def _seed_owner_paperclip(owner_id: str) -> int:
     (0 ok / 10 deterministic / 11 transient).
 
     WHY here: GET /container/status used to run provision_org (Better-Auth
-    signup + company + Friday/Atlas) on the poll thread, where load-balanced
+    signup + company + starter roster) on the poll thread, where load-balanced
     poll fan-out double-ran it and double-created the company. The
     executor elects exactly one runner per owner (try_claim_provision), so
     seeding here inherits that single-flight — one runner, one provision_org,
@@ -174,7 +174,7 @@ async def _seed_owner_paperclip(owner_id: str) -> int:
     inside the helper.
 
     After the seed, ``arm_nightly_ceo`` arms the paid nightly-CEO routine on
-    the freshly seeded Friday. It is gated paid-only INSIDE, so a free-trial
+    the freshly seeded CEO. It is gated paid-only INSIDE, so a free-trial
     run is a metered no-op; arming here — not on a UI poll — is what makes it
     deterministic for trial→paid conversions and org first-provisions, both of
     which reach this executor. Its failures classify exactly like the seed's.

@@ -395,11 +395,11 @@ async def container_status(
     # phase so the client can render a "Teams needs attention / retry"
     # affordance instead of a hard block. Never gates.
     #
-    # `onboarding` was fetched once at the top of this handler (for the drain
-    # hook) and is threaded into BOTH compute_status and the bootstrap-dispatch
-    # hook below — it is the same paperclip-companies read compute_status would
-    # otherwise do internally (a by-org-id GSI query for an org owner), so
-    # without threading it every ~3s ready poll fleet-wide would pay it twice.
+    # `onboarding` was fetched once at the top of this handler for the pending
+    # brief drain and is threaded into compute_status. It is the same
+    # paperclip-companies read compute_status would otherwise do internally (a
+    # by-org-id GSI query for an org owner), so without threading it every ~3s
+    # ready poll fleet-wide would pay it twice.
     contract = await readiness_state.compute_status(owner_id, container=container, onboarding=onboarding)
     if contract["runtime_phase"] == "ready" and contract["provider"]["subscription_status"] == "trial_local":
         await arm_workspace_trial_if_unset(owner_id)

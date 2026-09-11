@@ -382,7 +382,7 @@ class DrainOutcome(str, Enum):
 
     NOT_READY = "not_ready"
     """The workspace can't receive a brief yet (no owner row, still
-    provisioning, Friday not seeded). The NORMAL first-run state -- this is
+    provisioning, starter CEO not seeded). The NORMAL first-run state -- this is
     what the whole mechanism exists to wait through, so it must never burn a
     failure attempt."""
 

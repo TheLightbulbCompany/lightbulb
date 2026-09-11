@@ -556,9 +556,9 @@ class PaperclipRepo:
             "first_contact_state": getattr(company, "first_contact_state", None) or "not_started",
             "first_contact_attempts": getattr(company, "first_contact_attempts", None) or 0,
             "first_contact_reason": getattr(company, "first_contact_reason", None),
-            # Fresh workspaces identify the CEO explicitly. Legacy workspaces
-            # keep Friday first in seeded_agent_ids until the old bootstrap is
-            # retired, so both paths stay on this same read.
+            # Fresh workspaces identify the CEO explicitly. Legacy founder
+            # workspaces retain their stable first seeded id as a fallback for
+            # first-contact mail, so both paths stay on this same read.
             "friday_agent_id": (getattr(company, "starter_agent_ids", None) or {}).get("ceo")
             or (getattr(company, "seeded_agent_ids", None) or [None])[0],
             "teams_state": getattr(company, "status", None),

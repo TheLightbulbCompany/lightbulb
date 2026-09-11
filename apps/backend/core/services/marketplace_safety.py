@@ -575,7 +575,8 @@ def manifest_without_snippets(manifest):
 
     This is the read-side half of the fix: published artifacts are immutable,
     so manifests written before the write-side strip landed keep their
-    snippets until ``scripts/scrub_manifest_snippets.py`` rewrites them.
+    snippets until the one-shot scrub script (deleted 2026-09-11; see git
+    history) rewrites them.
     """
     if not isinstance(manifest, dict):
         return manifest

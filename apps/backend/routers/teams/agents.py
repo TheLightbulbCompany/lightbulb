@@ -22,7 +22,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
 from core.containers import get_ecs_manager, get_gateway_pool, get_workspace
-from core.encryption import decrypt  # noqa: F401 — re-exported for tests + downstream tasks.
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import service_token
 from core.services.paperclip_adapter_config import (

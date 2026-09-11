@@ -2,8 +2,9 @@ import type { ToolPillStatus } from "./ToolPill";
 
 /**
  * One rendered timeline entry on the agent chat screen. Extracted from
- * `app/(app)/agent/[agentId].tsx` so the history projection
- * (`lib/chatHistory.ts`) can target the same shape the live stream builds.
+ * `app/(app)/agent/[agentId].tsx` so the history projection (built on
+ * `@lightbulb/shared`'s chat/history module) can target the same shape the
+ * live stream builds.
  */
 export interface ChatItem {
   id: string;

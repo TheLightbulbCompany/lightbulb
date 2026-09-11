@@ -433,6 +433,8 @@ export function MessagingWorkspaceProvider({
     onSelectParticipant: selectParticipant,
     onMarkUnread: rooms.markUnread,
     onSetPrefs: rooms.setRoomPrefs,
+    onSaveSections: rooms.saveSections,
+    onLeaveRoom: rooms.leaveRoom,
     onCreate: createRoom,
     creationBusy,
     creationError,

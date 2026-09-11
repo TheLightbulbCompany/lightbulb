@@ -292,3 +292,123 @@ it("creates a named group chat with a flexible mix of participants", async () =>
     members: expect.arrayContaining([expect.objectContaining({ kind: "human", id: "alice" }), expect.objectContaining({ kind: "agent", id: "atlas" })]),
   })));
 });
+
+/**
+ * jsdom gives every element a 0×0 rect at the origin, and @dnd-kit's keyboard
+ * sorting is pure geometry — with no heights, ArrowDown finds nothing below.
+ * Stack the rendered groups 100px apart so a drag has somewhere to go. The
+ * global afterEach's `vi.restoreAllMocks()` puts the real method back.
+ */
+function stackGroupRects() {
+  const real = Element.prototype.getBoundingClientRect;
+  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+    const index = [...document.querySelectorAll(".room-directory section[aria-label]")].indexOf(this);
+    if (index < 0) return real.call(this);
+    const top = index * 100;
+    return { top, bottom: top + 100, left: 0, right: 200, width: 200, height: 100, x: 0, y: top, toJSON: () => ({}) } as DOMRect;
+  });
+}
+
+const sectionProps = {
+  ownerScopeId: "org", state: "ready" as const, participants: [],
+  onSelectRoom: vi.fn(), onSelectParticipant: vi.fn(), onSetPrefs: vi.fn().mockResolvedValue(undefined),
+  onMarkUnread: vi.fn(), onSaveSections: vi.fn().mockResolvedValue(undefined),
+  onLeaveRoom: vi.fn().mockResolvedValue(undefined),
+};
+
+it("creates a section, renames it, and deletes it from the manage dialog", async () => {
+  const onSaveSections = vi.fn().mockResolvedValue(undefined);
+  render(<RoomDirectory {...sectionProps} onSaveSections={onSaveSections} sections={[{ id: "s-1", name: "Ship" }]}
+    rooms={[{ ...base, roomId: "plain", name: "Plain" }]} />);
+  await userEvent.click(screen.getByRole("button", { name: "Manage sections" }));
+  const dialog = await screen.findByRole("dialog", { name: "Manage sections" });
+  await userEvent.type(within(dialog).getByLabelText("New section name"), "Admin");
+  await userEvent.click(within(dialog).getByRole("button", { name: "Add section" }));
+  expect(onSaveSections).toHaveBeenCalledWith([
+    { id: "s-1", name: "Ship" },
+    { id: expect.any(String), name: "Admin" },
+  ]);
+
+  onSaveSections.mockClear();
+  await userEvent.clear(within(dialog).getByLabelText("Rename Ship"));
+  await userEvent.type(within(dialog).getByLabelText("Rename Ship"), "Shipping");
+  await userEvent.click(within(dialog).getByRole("button", { name: "Save sections" }));
+  expect(onSaveSections).toHaveBeenLastCalledWith([{ id: "s-1", name: "Shipping" }]);
+
+  // Saving closes the dialog, so the delete runs against a freshly opened one.
+  // The mock never updates `sections`, so the row is still named "Ship".
+  onSaveSections.mockClear();
+  await userEvent.click(screen.getByRole("button", { name: "Manage sections" }));
+  const reopened = await screen.findByRole("dialog", { name: "Manage sections" });
+  await userEvent.click(within(reopened).getByRole("button", { name: "Delete Ship" }));
+  const confirm = await within(reopened).findByRole("alert");
+  expect(within(reopened).getByRole("button", { name: "Cancel" })).toHaveFocus();
+  await userEvent.click(within(confirm).getByRole("button", { name: "Delete section" }));
+  expect(onSaveSections).toHaveBeenLastCalledWith([]);
+});
+
+it("moves a room into a section from the row menu", async () => {
+  const onSetPrefs = vi.fn().mockResolvedValue(undefined);
+  render(<RoomDirectory {...sectionProps} onSetPrefs={onSetPrefs} sections={[{ id: "s-1", name: "Ship" }]}
+    rooms={[{ ...base, roomId: "plain", name: "Plain" }]} />);
+  await userEvent.click(screen.getByRole("button", { name: "Conversation actions for Plain" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Move to Ship" }));
+  expect(onSetPrefs).toHaveBeenCalledWith("plain", { sectionId: "s-1" });
+});
+
+it("reorders sections with the keyboard and persists the new order", async () => {
+  stackGroupRects();
+  const onSaveSections = vi.fn().mockResolvedValue(undefined);
+  render(<RoomDirectory {...sectionProps} onSaveSections={onSaveSections}
+    sections={[{ id: "s-1", name: "Ship" }, { id: "s-2", name: "Admin" }]}
+    rooms={[
+      { ...base, roomId: "a", name: "A", sectionId: "s-1" },
+      { ...base, roomId: "b", name: "B", sectionId: "s-2" },
+    ]} />);
+  expect(screen.getAllByRole("heading", { level: 3 }).map((node) => node.textContent)).toEqual(["Ship", "Admin"]);
+  screen.getByRole("button", { name: "Reorder Ship" }).focus();
+  await userEvent.keyboard("{ }{ArrowDown}{ }");
+  await waitFor(() => expect(onSaveSections).toHaveBeenCalledWith([{ id: "s-2", name: "Admin" }, { id: "s-1", name: "Ship" }]));
+});
+
+it("offers Leave on a channel only, and confirms before leaving", async () => {
+  const onLeaveRoom = vi.fn().mockResolvedValue(undefined);
+  render(<RoomDirectory {...sectionProps} onLeaveRoom={onLeaveRoom} sections={[]} rooms={[
+    { ...base, roomId: "chan", name: "Channel" },
+    { ...base, roomId: "dm", kind: "dm", name: "Direct", participants: [alice] },
+  ]} />);
+  await userEvent.click(screen.getByRole("button", { name: "Conversation actions for Direct" }));
+  expect(screen.queryByRole("menuitem", { name: "Leave channel" })).not.toBeInTheDocument();
+  await userEvent.keyboard("{Escape}");
+  await userEvent.click(screen.getByRole("button", { name: "Conversation actions for Channel" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Leave channel" }));
+  const confirm = await screen.findByRole("dialog", { name: "Leave Channel?" });
+  await userEvent.click(within(confirm).getByRole("button", { name: "Leave channel" }));
+  expect(onLeaveRoom).toHaveBeenCalledWith("chan");
+});
+
+it("surfaces a failed section save without losing the edit", async () => {
+  const onSaveSections = vi.fn().mockRejectedValue(new Error("Sections could not be saved."));
+  render(<RoomDirectory {...sectionProps} onSaveSections={onSaveSections} sections={[]} rooms={[]} />);
+  await userEvent.click(screen.getByRole("button", { name: "Manage sections" }));
+  const dialog = await screen.findByRole("dialog", { name: "Manage sections" });
+  await userEvent.type(within(dialog).getByLabelText("New section name"), "Admin");
+  await userEvent.click(within(dialog).getByRole("button", { name: "Add section" }));
+  expect(await within(dialog).findByRole("alert")).toHaveTextContent("Sections could not be saved.");
+  expect(within(dialog).getByLabelText("New section name")).toHaveValue("Admin");
+});
+
+it("reverts an optimistic reorder when the save fails", async () => {
+  stackGroupRects();
+  const onSaveSections = vi.fn().mockRejectedValue(new Error("Sections could not be saved."));
+  render(<RoomDirectory {...sectionProps} onSaveSections={onSaveSections}
+    sections={[{ id: "s-1", name: "Ship" }, { id: "s-2", name: "Admin" }]}
+    rooms={[
+      { ...base, roomId: "a", name: "A", sectionId: "s-1" },
+      { ...base, roomId: "b", name: "B", sectionId: "s-2" },
+    ]} />);
+  screen.getByRole("button", { name: "Reorder Ship" }).focus();
+  await userEvent.keyboard("{ }{ArrowDown}{ }");
+  expect(await screen.findByRole("alert")).toHaveTextContent("Sections could not be saved.");
+  expect(screen.getAllByRole("heading", { level: 3 }).map((node) => node.textContent)).toEqual(["Ship", "Admin"]);
+});

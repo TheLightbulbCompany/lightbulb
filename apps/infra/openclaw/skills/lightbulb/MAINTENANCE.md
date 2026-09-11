@@ -35,6 +35,11 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  gated `!inThread`); messageLinks.ts (copy-link permalink format);
                                  RoomPanel.tsx renderRun (muted "<Agent> finished · no reply" / "stopped" / "run failed"
                                  status line for a silent agent turn)
+  - Conversation list ....... references/surfaces.md
+                              <- apps/frontend/src/components/messaging/RoomDirectory.tsx (group order, Manage sections
+                                 dialog, drag/keyboard section reorder, Leave confirm); RoomDirectoryRow.tsx (the ⋯ menu,
+                                 Move to section); roomSections.ts (groupRooms — Starred · custom · Channels · Direct);
+                                 sidebarPrefs.ts (per-browser collapse + sort)
   - Composer ................ references/surfaces.md
                               <- apps/frontend/src/components/messaging/RoomComposer.tsx (typeaheads, formatting toolbar,
                                  drag-and-drop, up-arrow edit); composerText.ts (caret grammar); mentions.ts

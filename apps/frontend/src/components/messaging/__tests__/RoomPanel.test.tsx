@@ -406,21 +406,18 @@ it.each(["dm", "group-dm"] as const)("does not offer member adds in a %s", async
   expect(screen.queryByRole("button", { name: "Add members" })).not.toBeInTheDocument();
 });
 
-it.each(["thread", "context"] as const)("replaces the narrow conversation only while selected %s is open", async (kind) => {
+it("replaces the narrow conversation only while a thread is open", async () => {
   const user = userEvent.setup();
   const onLinkToWork = vi.fn();
-  render(<RoomPanel {...props} narrow onLinkToWork={onLinkToWork}
-    messages={[{ ...message, contextIds: ["approval"] }]}
-    contexts={[{ id: "approval", roomId: "room", kind: "approval", title: "Review proposal", content: "Proposal details" }]} />);
+  render(<RoomPanel {...props} narrow onLinkToWork={onLinkToWork} />);
   const history = screen.getByRole("region", { name: "Messages" });
   expect(history).toBeVisible();
   await user.click(screen.getByRole("button", { name: "Link to work" }));
   expect(onLinkToWork).toHaveBeenCalledOnce();
-  const trigger = screen.getByRole("button", { name: kind === "thread" ? "Reply in thread" : "Review proposal" });
+  const trigger = screen.getByRole("button", { name: "Reply in thread" });
   await user.click(trigger);
   expect(history).not.toBeVisible();
-  expect(screen.getByRole("heading", { name: kind === "thread" ? "Thread" : "Review proposal" })).toHaveFocus();
-  if (kind === "context") expect(screen.getByText("Proposal details")).toBeVisible();
+  expect(screen.getByRole("heading", { name: "Thread" })).toHaveFocus();
   await user.click(screen.getByRole("button", { name: "Back to conversation" }));
   expect(history).toBeVisible();
   expect(trigger).toHaveFocus();
@@ -471,4 +468,23 @@ it("dismisses a medium overlay on Escape from outside the room and restores its 
   unmount();
   await user.keyboard("{Escape}");
   expect(onSelectThread).not.toHaveBeenCalled();
+});
+
+it("collapses consecutive messages from the same author and reveals the time in the gutter", () => {
+  const second: RoomMessage = { ...message, messageId: "message-2", messageSeq: 2, createdAt: "2026-09-10T00:01:00Z", text: "Again" };
+  render(<RoomPanel {...props} messages={[message, second]} />);
+  const articles = screen.getAllByRole("article", { name: "Message from Friday" });
+  expect(articles).toHaveLength(2);
+  expect(within(articles[0]).getByText("Friday")).toBeInTheDocument();
+  expect(within(articles[1]).queryByText("Friday")).not.toBeInTheDocument();
+  expect(within(articles[1]).getByText(new Date(second.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }))).toBeInTheDocument();
+});
+
+it("keeps every action reachable on a collapsed message", async () => {
+  const user = userEvent.setup();
+  const second: RoomMessage = { ...message, messageId: "message-2", messageSeq: 2, createdAt: "2026-09-10T00:01:00Z", text: "Again" };
+  render(<RoomPanel {...props} messages={[message, second]} onSetReaction={vi.fn(async () => {})} onSelectThread={vi.fn()} />);
+  const collapsed = screen.getAllByRole("article", { name: "Message from Friday" })[1];
+  await user.click(within(collapsed).getByRole("button", { name: "Reply in thread" }));
+  expect(within(collapsed).getByRole("button", { name: "Add reaction" })).toBeInTheDocument();
 });

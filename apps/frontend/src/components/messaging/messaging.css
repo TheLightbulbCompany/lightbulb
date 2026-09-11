@@ -172,6 +172,11 @@
   .room-message-byline { flex-wrap: wrap; gap: 4px 8px; }
 }
 
+.room-message-collapsed { padding-top: 2px; padding-bottom: 2px; }
+.room-message-gutter { flex: none; width: 32px; padding-top: 4px; font-size: .75rem; line-height: 1.5; text-align: right; color: var(--muted-foreground); font-variant-numeric: tabular-nums; opacity: 0; }
+.room-message:hover .room-message-gutter, .room-message:focus-within .room-message-gutter { opacity: 1; }
+@media (hover: none), (pointer: coarse) { .room-message-gutter { opacity: 1; } }
+
 @media (prefers-reduced-motion: reduce) {
   .participant-avatar[data-agent-state="running"] { animation: none; }
   .room-panel *, .room-directory *, .room-creation-dialog { transition: none !important; animation: none !important; }

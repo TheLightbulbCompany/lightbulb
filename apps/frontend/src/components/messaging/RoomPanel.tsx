@@ -1,13 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ArrowLeft, Check, Circle, CircleAlert, FileText, Hash, Link2, MessageCircle, SmilePlus, Users } from "lucide-react";
+import { ArrowLeft, Check, Circle, CircleAlert, Hash, Link2, MessageCircle, Users } from "lucide-react";
 import type { Components } from "react-markdown";
 import type { ListenMode, MemberRef, UpdateMessageRequest } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
 import { safeHref } from "@/components/teams/shared/lib/safeHref";
@@ -15,10 +14,10 @@ import { cn } from "@/lib/utils";
 import { RoomComposer, type RoomComposerProps } from "./RoomComposer";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import { ParticipantProfile } from "./ParticipantProfile";
-import { RoomImageAttachments } from "./RoomImageAttachments";
+import { RoomMessageItem } from "./RoomMessageItem";
 import { RoomMessageSearch } from "./RoomMessageSearch";
-import { RoomMessageContent } from "./RoomMessageContent";
 import { RoomTimeline } from "./RoomTimeline";
+import { buildTimeline } from "./timeline";
 import { roomDisplayName } from "./types";
 import type {
   PendingRoomMessage,
@@ -93,8 +92,6 @@ const roomMarkdown: Partial<Components> = {
   img: ({ alt }) => <span className="text-muted-foreground">{alt || "Image omitted"}</span>,
   blockquote: ({ children }) => <blockquote className="border-l border-border pl-3 my-2 text-muted-foreground">{children}</blockquote>,
 };
-
-const reactionEmojis = ["👍", "❤️", "😂", "🎉", "👀", "✅"] as const;
 
 const narrowQuery = "(max-width: 859px)";
 const overlayQuery = "(min-width: 860px) and (max-width: 1179px)";
@@ -325,71 +322,24 @@ function RoomContent({
     setSelection({ kind, id: targetId });
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- Task 4 wires collapsed rendering through this parameter
-  function renderMessage(message: RoomMessage, inThread = false, _collapsed = false) {
+  function renderMessage(message: RoomMessage, inThread = false, collapsed = false) {
     const participant = participants.find((member) => member.kind === message.author.kind && member.id === message.author.id);
-    const name = participant?.displayName || message.author.displayName || "Unknown author";
-    const timestamp = !Number.isNaN(Date.parse(message.createdAt)) ? message.createdAt : undefined;
-    const replyCount = inThread ? 0 : messages.filter((candidate) => candidate.threadRootMessageId === message.messageId).length;
-    const appliedReactions = reactionEmojis.filter((emoji) => (message.reactions?.[emoji]?.length ?? 0) > 0);
-    async function toggleReaction(emoji: string) {
-      if (!onSetReaction || !actionable || reactionPending !== null) return;
-      setReactionPending(message.messageId);
-      setReactionError(null);
-      try { await onSetReaction(message.messageId, emoji, !message.reactions?.[emoji]?.includes(currentUserId)); }
-      catch { setReactionError(message.messageId); }
-      finally { setReactionPending(null); }
-    }
-    const actions = ((!message.deletedAt && onSetReaction) || !inThread) ? <>
-      {!message.deletedAt && onSetReaction && <DropdownMenu>
-        <DropdownMenuTrigger asChild><Button type="button" variant="ghost" size="icon-sm" aria-label="Add reaction" title="Add reaction" disabled={!actionable || reactionPending !== null}><SmilePlus aria-hidden="true" /></Button></DropdownMenuTrigger>
-        <DropdownMenuContent align="end" aria-label="Choose a reaction" onEscapeKeyDown={(event) => event.stopPropagation()}>
-          {reactionEmojis.map((emoji) => <DropdownMenuItem key={emoji} disabled={!actionable || reactionPending !== null}
-            aria-label={`${message.reactions?.[emoji]?.includes(currentUserId) ? "Remove" : "Add"} ${emoji} reaction`}
-            onSelect={() => void toggleReaction(emoji)}><span aria-hidden="true">{emoji}</span><span>{message.reactions?.[emoji]?.includes(currentUserId) ? "Remove" : "Add"} reaction</span></DropdownMenuItem>)}
-        </DropdownMenuContent>
-      </DropdownMenu>}
-      {!inThread && <Button type="button" variant="ghost" size="icon-sm" aria-label="Reply in thread" title="Reply in thread" disabled={!actionable}
-        onClick={(event) => openDetail("thread", message.messageId, event.currentTarget)}><MessageCircle aria-hidden="true" /></Button>}
-    </> : undefined;
-    return <article key={message.messageId} id={`${id}-${inThread ? "thread" : "main"}-${message.messageId}`} tabIndex={-1}
-      className={cn("room-message", searchTarget?.messageId === message.messageId && "bg-accent")} aria-label={`Message from ${name}`}>
-      {participant ? <ParticipantAvatar participant={participant} /> : <Identity name={name} avatarOnly size="default" />}
-      <div className="room-message-content">
-        <div className="room-message-byline">{participant
-          ? <ParticipantProfile participant={participant} currentUserId={currentUserId} onMessage={onSelectParticipant} disabled={!actionable} />
-          : <span className="font-semibold truncate" title={name}>{name}</span>}
-          {message.author.kind === "agent" && <span className="room-agent-label">Agent</span>}
-          {timestamp && <time className="text-sm text-muted-foreground" dateTime={timestamp} title={new Date(timestamp).toLocaleString()}>{new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>}
-        </div>
-        <RoomMessageContent message={message} currentUserId={currentUserId} actionable={actionable} onUpdate={onUpdateMessage} actions={actions}>
-          <MarkdownView skipHtml components={roomMarkdown}>{message.text}</MarkdownView>
-        </RoomMessageContent>
-        {!message.deletedAt && onSetReaction && appliedReactions.length > 0 && <div className="flex flex-wrap gap-1 mt-1" aria-label="Message reactions">
-          {appliedReactions.map((emoji) => {
-            const users = message.reactions?.[emoji] ?? [];
-            const selected = users.includes(currentUserId);
-            return <Button key={emoji} type="button" size="sm" variant={selected ? "secondary" : "ghost"}
-              aria-label={`${selected ? "Remove" : "Add"} ${emoji} reaction${users.length ? `, ${users.length}` : ""}`} aria-pressed={selected}
-              disabled={!actionable || reactionPending !== null}
-              onClick={() => void toggleReaction(emoji)}>{emoji}<span>{users.length}</span></Button>;
-          })}
-        </div>}
-        {reactionError === message.messageId && <p role="alert" className="text-sm text-err">Could not update reaction. Try again.</p>}
-        {!message.deletedAt && !!message.attachments?.length && onDownloadAttachment && <RoomImageAttachments roomId={message.roomId} attachments={message.attachments} download={onDownloadAttachment} />}
-        {message.run && <div className="room-run"><WorkStatus state={message.run.state} />
-          {message.run.details && <details><summary>Run details</summary><pre>{message.run.details.slice(0, 8192)}</pre>{message.run.details.length > 8192 && <p className="text-sm text-muted-foreground">Further details omitted.</p>}</details>}
-        </div>}
-        {message.contextIds?.map((contextId) => {
-          const context = contexts.find((record) => record.id === contextId);
-          return context && <Button key={contextId} type="button" variant="outline" className="room-work-link" disabled={!actionable}
-            onClick={(event) => openDetail("context", context.id, event.currentTarget, inThread)}><FileText size={16} aria-hidden="true" />{context.title}</Button>;
-        })}
-        {!inThread && replyCount > 0 && <Button type="button" variant="ghost" className="room-reply" disabled={!actionable}
-          aria-label={`Reply in thread, ${replyCount} ${replyCount === 1 ? "reply" : "replies"}`}
-          onClick={(event) => openDetail("thread", message.messageId, event.currentTarget)}>{replyCount} {replyCount === 1 ? "reply" : "replies"}</Button>}
-      </div>
-    </article>;
+    return <RoomMessageItem key={message.messageId} id={`${id}-${inThread ? "thread" : "main"}-${message.messageId}`}
+      message={message} participant={participant} currentUserId={currentUserId} actionable={actionable} inThread={inThread} collapsed={collapsed}
+      replyCount={inThread ? 0 : messages.filter((candidate) => candidate.threadRootMessageId === message.messageId).length}
+      highlighted={inThread && searchTarget?.messageId === message.messageId} markdown={roomMarkdown} workStatus={(state) => <WorkStatus state={state} />}
+      reactionPending={reactionPending !== null} reactionError={reactionError === message.messageId}
+      onToggleReaction={onSetReaction && !message.deletedAt ? (emoji) => void toggleReaction(message, emoji) : undefined}
+      onOpenThread={(button) => openDetail("thread", message.messageId, button)}
+      onSelectParticipant={onSelectParticipant} onUpdateMessage={onUpdateMessage} onDownloadAttachment={onDownloadAttachment} />;
+  }
+  async function toggleReaction(message: RoomMessage, emoji: string) {
+    if (!onSetReaction || !actionable || reactionPending !== null) return;
+    setReactionPending(message.messageId);
+    setReactionError(null);
+    try { await onSetReaction(message.messageId, emoji, !message.reactions?.[emoji]?.includes(currentUserId)); }
+    catch { setReactionError(message.messageId); }
+    finally { setReactionPending(null); }
   }
 
   function renderRun(run: RoomRunView) {
@@ -530,7 +480,7 @@ function RoomContent({
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>
         <h3 ref={detailHeading} tabIndex={-1} className="font-semibold room-wrap">{parentMessage ? "Thread" : selectedContext!.title}</h3></header>
       <div className="room-context-body">{parentMessage ? <>{renderMessage(parentMessage, true)}
-        <div className="room-thread-replies" aria-label="Thread replies">{messages.filter((message) => message.threadRootMessageId === parentMessage.messageId).map((message) => renderMessage(message, true))}
+        <div className="room-thread-replies" aria-label="Thread replies">{buildTimeline(messages.filter((message) => message.threadRootMessageId === parentMessage.messageId), { readSeq: null }).map((item) => item.kind === "message" ? renderMessage(item.message, true, item.collapsed) : null)}
           {runs.filter((run) => run.threadRootMessageId === parentMessage.messageId).map(renderRun)}
         </div>
       </> : <><p className="text-sm text-muted-foreground">{selectedContext!.kind.charAt(0).toUpperCase() + selectedContext!.kind.slice(1)}</p>

@@ -468,6 +468,8 @@ export function MessagingWorkspaceProvider({
     onSetReaction: rooms.setReaction,
     onUpdateMessage: rooms.updateMessage,
     pinnedMessageIds: rooms.activeRoom?.pinnedMessageIds ?? [],
+    onSetPin: rooms.setPin,
+    onMarkUnreadFrom: async (fromSeq: number) => { if (rooms.activeRoomId) await rooms.markUnread(rooms.activeRoomId, fromSeq); },
     onSetPrefs: async (prefs) => { if (rooms.activeRoomId) await rooms.setRoomPrefs(rooms.activeRoomId, prefs); },
     onLeaveRoom: rooms.activeRoom?.kind === "channel" && viewerRole !== "owner"
       ? async () => { if (rooms.activeRoomId) await rooms.leaveRoom(rooms.activeRoomId); } : undefined,

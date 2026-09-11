@@ -7,6 +7,7 @@ import type { CreateMessageRequest, ListenMode, MemberPrefsRequest, MemberRef, U
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
 import type { RoomResourceSource } from "@/hooks/useRoomResources";
@@ -28,6 +29,7 @@ import { RoomMessageItem } from "./RoomMessageItem";
 import { RoomMessageSearch } from "./RoomMessageSearch";
 import { RoomTimeline } from "./RoomTimeline";
 import { buildTimeline } from "./timeline";
+import { useAsyncAction } from "./useAsyncAction";
 import { roomDisplayName } from "./types";
 import type {
   PendingRoomMessage,
@@ -75,6 +77,8 @@ export interface RoomPanelProps {
   onRenameRoom?: (name: string) => Promise<void>;
   onRemoveMember?: (member: MemberRef) => Promise<void>;
   pinnedMessageIds?: readonly string[];
+  onSetPin?: (messageId: string, pinned: boolean) => Promise<void>;
+  onMarkUnreadFrom?: (fromSeq: number) => Promise<void>;
   onSetPrefs?: (prefs: MemberPrefsRequest) => Promise<void>;
   onSetTopic?: (topic: string | null) => Promise<void>;
   onLeaveRoom?: () => Promise<void>;
@@ -225,6 +229,8 @@ function RoomContent({
   onRenameRoom,
   onRemoveMember,
   pinnedMessageIds = [],
+  onSetPin,
+  onMarkUnreadFrom,
   onSetPrefs,
   onSetTopic,
   onLeaveRoom,
@@ -251,6 +257,9 @@ function RoomContent({
   const [copyError, setCopyError] = useState<string | null>(null);
   const [reactionPending, setReactionPending] = useState<string | null>(null);
   const [reactionError, setReactionError] = useState<string | null>(null);
+  // Shared pending/error pair for the per-message menu actions (pin, mark unread) --
+  // only one such action is ever in flight from a given message's menu at a time.
+  const { error: messageActionError, run: runMessageAction } = useAsyncAction();
   // Computed once per mount/reaction-change (not per message render) -- reading
   // localStorage in every RoomMessageItem render was wasted work on a long list.
   const [quickReactions, setQuickReactions] = useState<readonly string[]>(() => {
@@ -420,6 +429,16 @@ function RoomContent({
       onToggleReaction={onSetReaction && !message.deletedAt ? (emoji) => void toggleReaction(message, emoji) : undefined}
       onOpenThread={(button) => openDetail("thread", message.messageId, button)}
       onSelectParticipant={onSelectParticipant} onUpdateMessage={onUpdateMessage} onDownloadAttachment={onDownloadAttachment}
+      menuExtras={!message.deletedAt && (onSetPin || (onMarkUnreadFrom && !inThread)) ? <>
+        {onSetPin && <DropdownMenuItem onSelect={() => void runMessageAction(
+          () => onSetPin(message.messageId, !pinnedMessageIds.includes(message.messageId)),
+          "The pin could not be saved.",
+        )}>{pinnedMessageIds.includes(message.messageId) ? "Unpin from conversation" : "Pin to conversation"}</DropdownMenuItem>}
+        {onMarkUnreadFrom && !inThread && <DropdownMenuItem onSelect={() => void runMessageAction(
+          () => onMarkUnreadFrom(message.messageSeq),
+          "The conversation could not be marked unread.",
+        )}>Mark unread from here</DropdownMenuItem>}
+      </> : undefined}
       toolbarExtras={!message.deletedAt ? <>
         <Button type="button" variant="ghost" size="icon-sm" aria-label="Copy link"
           title={copied === message.messageId ? "Copied" : "Copy link"}
@@ -526,6 +545,7 @@ function RoomContent({
       </div>
       <p className="room-typing text-sm text-muted-foreground" role="status">{typingMembers.length > 0 ? `${typingMembers.slice(0, 3).map((member) => member.displayName).join(", ")}${typingMembers.length > 3 ? " and others" : ""} ${typingMembers.length === 1 ? "is" : "are"} typing…` : ""}</p>
       {copied && <p role="status" aria-label="Link copied" className="sr-only">Link copied</p>}
+      {messageActionError && <p role="alert" className="room-typing text-sm text-err">{messageActionError}</p>}
       <RoomComposer {...composer}
         onSubmit={markSent(composer.onSubmit)}
         onRetry={composer.onRetry ? markSent(composer.onRetry) : undefined}

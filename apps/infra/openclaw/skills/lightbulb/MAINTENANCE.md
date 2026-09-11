@@ -30,7 +30,9 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  e.g. InlineTeamsPanel.tsx)
   - Message actions ......... references/surfaces.md
                               <- apps/frontend/src/components/messaging/{RoomMessageItem,RoomMessageContent}.tsx (reactions,
-                                 reply-in-thread, edit/delete); messageLinks.ts (copy-link permalink format);
+                                 reply-in-thread, edit/delete, the menuExtras-gated "more" menu open to every member);
+                                 RoomPanel.tsx renderMessage (pin/unpin against pinnedMessageIds, mark-unread-from-here
+                                 gated `!inThread`); messageLinks.ts (copy-link permalink format);
                                  RoomPanel.tsx renderRun (muted "<Agent> finished · no reply" / "stopped" / "run failed"
                                  status line for a silent agent turn)
   - Composer ................ references/surfaces.md

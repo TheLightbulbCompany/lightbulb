@@ -2,6 +2,7 @@ import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
 import type { CanonicalRoomMessage } from "@lightbulb/shared";
+import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { RoomMessageContent } from "../RoomMessageContent";
 
 const message: CanonicalRoomMessage = { messageId: "one", roomId: "room", messageSeq: 1, roomRevision: 1,
@@ -49,4 +50,22 @@ it("confirms deletion with Cancel focused, and never renders deleted content", a
 it.each(["human", "agent", "system"] as const)("does not offer edit/delete for another %s author", (kind) => {
   render(<RoomMessageContent message={{ ...message, author: { ...message.author, kind, id: kind === "human" ? "other" : "me" } }} currentUserId="me" actionable onUpdate={vi.fn()}>Original</RoomMessageContent>);
   expect(screen.queryByRole("button", { name: "Message actions" })).not.toBeInTheDocument();
+});
+
+it("opens the more menu for a message the viewer did not write when menuExtras exist", async () => {
+  render(<RoomMessageContent message={{ ...message, author: { kind: "agent", id: "friday", displayName: "Friday" } }}
+    currentUserId="me" actionable onUpdate={vi.fn()}
+    menuExtras={<DropdownMenuItem onSelect={vi.fn()}>Pin to conversation</DropdownMenuItem>}><p>body</p></RoomMessageContent>);
+  await userEvent.click(screen.getByRole("button", { name: "Message actions" }));
+  expect(await screen.findByRole("menuitem", { name: "Pin to conversation" })).toBeInTheDocument();
+  expect(screen.queryByRole("menuitem", { name: "Edit message" })).not.toBeInTheDocument();
+});
+
+it("keeps edit and delete above nothing and extras above them on the viewer's own message", async () => {
+  render(<RoomMessageContent message={message} currentUserId="me" actionable onUpdate={vi.fn()}
+    menuExtras={<DropdownMenuItem onSelect={vi.fn()}>Pin to conversation</DropdownMenuItem>}><p>body</p></RoomMessageContent>);
+  await userEvent.click(screen.getByRole("button", { name: "Message actions" }));
+  expect((await screen.findAllByRole("menuitem")).map((node) => node.textContent)).toEqual([
+    "Pin to conversation", "Edit message", "Delete message",
+  ]);
 });

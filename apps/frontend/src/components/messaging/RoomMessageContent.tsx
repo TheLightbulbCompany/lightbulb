@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 
-export function RoomMessageContent({ message, currentUserId, actionable, onUpdate, startEditing = false, onEditingClosed, actions, children }: {
+export function RoomMessageContent({ message, currentUserId, actionable, onUpdate, startEditing = false, onEditingClosed, actions, menuExtras, children }: {
   message: CanonicalRoomMessage;
   currentUserId: string;
   actionable: boolean;
@@ -20,6 +20,10 @@ export function RoomMessageContent({ message, currentUserId, actionable, onUpdat
   onEditingClosed?: () => void;
   children: ReactNode;
   actions?: ReactNode;
+  // DropdownMenuItems rendered above Edit/Delete. Available to every member (pin,
+  // mark-unread-from-here), so their presence opens the "more" menu even for a
+  // message the viewer did not write.
+  menuExtras?: ReactNode;
 }) {
   const id = useId();
   const [request, setRequest] = useState<UpdateMessageRequest | null>(null);
@@ -69,13 +73,16 @@ export function RoomMessageContent({ message, currentUserId, actionable, onUpdat
       <div className="flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={pending} onClick={() => { setRequest(null); restoreFocus(); onEditingClosed?.(); }}>Cancel edit</Button>
         <Button type="submit" disabled={!actionable || pending || (!request!.text!.trim() && !message.attachments?.length)}>{pending ? "Saving…" : "Save changes"}</Button></div>
     </form> : <>{children}{message.editedAt && <span className="text-sm text-muted-foreground"> (edited)</span>}</>}
-    {!editing && (actions || (ownMessage && onUpdate)) && <div className="room-message-actions" role="group" aria-label="Message actions">
+    {!editing && (actions || menuExtras || (ownMessage && onUpdate)) && <div className="room-message-actions" role="group" aria-label="Message actions">
       {actions}
-      {ownMessage && onUpdate && <DropdownMenu>
+      {(menuExtras || (ownMessage && onUpdate)) && <DropdownMenu>
       <DropdownMenuTrigger asChild><Button ref={trigger} type="button" variant="ghost" size="icon-sm" disabled={!actionable || pending} aria-label="Message actions"><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
       <DropdownMenuContent align="end" onEscapeKeyDown={(event) => event.stopPropagation()} onCloseAutoFocus={(event) => { if (request) event.preventDefault(); }}>
-        <DropdownMenuItem onSelect={() => begin(message.text)}>Edit message</DropdownMenuItem>
-        <DropdownMenuItem variant="destructive" onSelect={() => begin(null)}>Delete message</DropdownMenuItem>
+        {menuExtras}
+        {ownMessage && onUpdate && <>
+          <DropdownMenuItem onSelect={() => begin(message.text)}>Edit message</DropdownMenuItem>
+          <DropdownMenuItem variant="destructive" onSelect={() => begin(null)}>Delete message</DropdownMenuItem>
+        </>}
       </DropdownMenuContent>
     </DropdownMenu>}
     </div>}

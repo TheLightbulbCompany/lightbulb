@@ -653,3 +653,31 @@ it("labels the details tab and shows the pinned count on it", () => {
   expect(screen.getByRole("button", { name: /^Details/ })).toHaveTextContent("2");
   expect(screen.queryByRole("button", { name: "Context" })).not.toBeInTheDocument();
 });
+
+it("pins and unpins a message from its menu", async () => {
+  const onSetPin = vi.fn().mockResolvedValue(undefined);
+  const { rerender } = render(<RoomPanel {...props} onSetPin={onSetPin} messages={[message]} pinnedMessageIds={[]} />);
+  await userEvent.click(screen.getByRole("button", { name: "Message actions" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Pin to conversation" }));
+  expect(onSetPin).toHaveBeenCalledWith(message.messageId, true);
+  rerender(<RoomPanel {...props} onSetPin={onSetPin} messages={[message]} pinnedMessageIds={[message.messageId]} />);
+  await userEvent.click(screen.getByRole("button", { name: "Message actions" }));
+  expect(await screen.findByRole("menuitem", { name: "Unpin from conversation" })).toBeInTheDocument();
+});
+
+it("marks unread from a message using that message's sequence", async () => {
+  const onMarkUnreadFrom = vi.fn().mockResolvedValue(undefined);
+  render(<RoomPanel {...props} onMarkUnreadFrom={onMarkUnreadFrom} messages={[{ ...message, messageSeq: 7 }]} />);
+  await userEvent.click(screen.getByRole("button", { name: "Message actions" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Mark unread from here" }));
+  expect(onMarkUnreadFrom).toHaveBeenCalledWith(7);
+});
+
+it("reports a failed pin without losing the message", async () => {
+  const onSetPin = vi.fn().mockRejectedValue(new Error("A room can pin at most 50 messages."));
+  render(<RoomPanel {...props} onSetPin={onSetPin} messages={[message]} />);
+  await userEvent.click(screen.getByRole("button", { name: "Message actions" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Pin to conversation" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("A room can pin at most 50 messages.");
+  expect(screen.getByText(message.text)).toBeInTheDocument();
+});

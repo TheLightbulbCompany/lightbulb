@@ -161,9 +161,10 @@ import { ChatLayout } from "../ChatLayout";
 const openAgentInspector = vi.fn();
 const openAgentIssues = vi.fn();
 
-function renderShell() {
+function renderShell(statusIndicator?: React.ReactNode) {
   return render(
     <ChatLayout
+      statusIndicator={statusIndicator}
       activePanel="overview"
       onPanelChange={vi.fn()}
       openAgentInspector={openAgentInspector}
@@ -200,6 +201,12 @@ describe("ChatLayout — header agent-action cluster", () => {
     expect(screen.getByLabelText("Open agent inspector")).toBeTruthy();
     expect(screen.getByLabelText("See this agent's work")).toBeTruthy();
     expect(screen.getByLabelText("Pause agent")).toBeTruthy();
+  });
+
+  it("places a run indicator in the header instead of over the composer", () => {
+    renderShell(<button type="button">Team is working</button>);
+    const indicator = screen.getByRole("button", { name: "Team is working" });
+    expect(indicator.parentElement).toContainElement(screen.getByRole("button", { name: "Get help" }));
   });
 
   it("opens the inspector for the active agent", () => {

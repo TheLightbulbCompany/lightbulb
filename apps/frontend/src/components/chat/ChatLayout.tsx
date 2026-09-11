@@ -51,6 +51,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 
 interface ChatLayoutProps {
   children: React.ReactNode;
+  statusIndicator?: React.ReactNode;
   activePanel?: string;
   onPanelChange?: (panel: string) => void;
   openAgentIssues?: (agentId: string) => void;
@@ -71,6 +72,7 @@ function dispatchSelectAgentEvent(agentId: string): void {
 
 export function ChatLayout({
   children,
+  statusIndicator,
   activePanel,
   onPanelChange,
   openAgentIssues,
@@ -505,6 +507,7 @@ export function ChatLayout({
               </div>
             )}
             <div style={{ flex: 1 }} />
+            {statusIndicator}
             <Tooltip>
               <TooltipTrigger asChild>
                 <button

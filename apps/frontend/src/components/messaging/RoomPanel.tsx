@@ -390,13 +390,13 @@ function RoomContent({
         {run.tools.length > 0 && <details><summary>What it did</summary><ToolActivityTrace calls={run.tools} /></details>}
       </div>;
     }
-    const workState = run.state === "running" ? "working" : run.state === "aborted" ? "failed" : run.state;
+    const workState = run.state === "running" ? "working" : run.state === "aborted" ? "paused" : run.state;
     return <article key={`${run.roomId}:${run.agentId}:${run.runId}`} className="room-message room-live-run" aria-label={`Live run from ${agentName}`}>
       <Identity name={agentName} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{agentName}</span><WorkStatus state={workState} /></div>
         {run.thinking && <details><summary>Thinking</summary><p className="room-wrap text-muted-foreground">{run.thinking}</p></details>}
         {run.text && <MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{run.text}</MarkdownView>}
         {run.tools.length > 0 && <ToolActivityTrace calls={run.tools} />}
-        {(onAbortRun || onSteerRun) && <form className="room-run-controls" onSubmit={(event) => {
+        {run.state === "running" && (onAbortRun || onSteerRun) && <form className="room-run-controls" onSubmit={(event) => {
           event.preventDefault();
           if (!onSteerRun) return;
           const input = event.currentTarget.elements.namedItem("steer") as HTMLInputElement | null;

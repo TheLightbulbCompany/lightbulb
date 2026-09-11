@@ -37,14 +37,12 @@ vi.mock("@/lib/notify", () => ({
 }));
 
 import { RunNotifications } from "../RunNotifications";
-import { clearTeamRunActivity } from "../teamRunActivity";
 
 function emit(eventName: string, payload: Record<string, unknown>) {
   live.eventHandler?.({ type: "paperclip.event", payload: { eventName, payload } });
 }
 
 afterEach(() => {
-  act(clearTeamRunActivity);
   vi.clearAllMocks();
 });
 
@@ -65,6 +63,9 @@ describe("RunNotifications inline team-run status", () => {
     const params = live.pushSearchParams.mock.calls[0]?.[0] as URLSearchParams;
     expect(params.get("panel")).toBe("teams-inbox");
     expect(params.get("section")).toBe("recently");
+
+    // Resolve the run so it doesn't leak into the next test's activity count.
+    act(() => emit("teams.heartbeat.run.status", { runId: "run-42", agentId: "agent-1", status: "succeeded" }));
   });
 
   it("removes the inline status and keeps completion feedback", () => {

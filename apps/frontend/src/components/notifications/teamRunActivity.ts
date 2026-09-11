@@ -1,6 +1,7 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
+import { TEAMS_WORKING_STATUSES } from "./runToastReducer";
 
 const activeRunIds = new Set<string>();
 const listeners = new Set<() => void>();
@@ -29,7 +30,7 @@ export function trackTeamRunActivity(eventName: string, payload: unknown): void 
   if (!runId) return;
   const status = eventName === "teams.heartbeat.run.queued" ? "queued" : readString(data.status);
   if (!status) return;
-  setActive(runId, status === "queued" || status === "running" || status === "scheduled_retry");
+  setActive(runId, TEAMS_WORKING_STATUSES.has(status));
 }
 
 function subscribe(listener: () => void): () => void {
@@ -43,11 +44,4 @@ function snapshot(): number {
 
 export function useActiveTeamRunCount(): number {
   return useSyncExternalStore(subscribe, snapshot, () => 0);
-}
-
-/** Clears stale client-only state on sign-out and supports deterministic tests. */
-export function clearTeamRunActivity(): void {
-  if (activeRunIds.size === 0) return;
-  activeRunIds.clear();
-  emit();
 }

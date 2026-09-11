@@ -368,17 +368,13 @@
   min-width: 16px;
   height: 16px;
   padding: 0 4px;
-  border: 2px solid var(--cream-deep);
+  border: 1px solid var(--warn);
   border-radius: 999px;
-  background: var(--warn);
-  color: var(--cream);
+  background: var(--cream-deep);
+  color: var(--warn);
   font-size: 8px;
+  font-weight: 600;
   line-height: 1;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 16%, transparent);
-  animation: workspace-run-pulse 1.8s ease-in-out infinite;
-}
-@keyframes workspace-run-pulse {
-  50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--warn) 4%, transparent); }
 }
 .workspace-rail > button:hover,
 .workspace-rail > a:hover,
@@ -402,7 +398,4 @@
 }
 @media (max-width: 1000px) {
   .workspace-shell { grid-template-columns: 56px 220px minmax(0, 1fr); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .workspace-rail .workspace-rail__activity-badge { animation: none; }
 }

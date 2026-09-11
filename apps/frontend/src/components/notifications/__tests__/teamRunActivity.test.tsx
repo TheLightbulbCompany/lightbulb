@@ -1,13 +1,11 @@
 // @vitest-environment jsdom
 import { act, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
-import { clearTeamRunActivity, trackTeamRunActivity, useActiveTeamRunCount } from "../teamRunActivity";
+import { describe, expect, it } from "vitest";
+import { trackTeamRunActivity, useActiveTeamRunCount } from "../teamRunActivity";
 
 function Count() {
   return <output aria-label="Active team runs">{useActiveTeamRunCount()}</output>;
 }
-
-afterEach(() => act(clearTeamRunActivity));
 
 describe("teamRunActivity", () => {
   it("tracks concurrent runs through terminal status events", () => {

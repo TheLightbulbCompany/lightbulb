@@ -295,3 +295,49 @@ async def test_attachment_download_checks_current_room_membership(monkeypatch):
     with pytest.raises(ApiProblem):
         await get_room_attachment(str(uuid.uuid4()), str(uuid.uuid4()), AuthContext(user_id="user", org_id="owner"))
     assert checked
+
+
+@pytest.mark.asyncio
+async def test_patch_room_me_writes_only_named_prefs_and_notifies_the_caller_only(monkeypatch):
+    auth = AuthContext(user_id="user_owner", org_id="org_1")
+    meta = {"roomId": "room-1", "ownerId": "org_1", "kind": "channel", "revision": 4}
+    member = {"kind": "human", "id": "user_owner", "role": "owner", "joinedSeq": 0}
+    set_prefs = AsyncMock(return_value={**member, "muted": True})
+    detail = AsyncMock(return_value="detail")
+    publish_user = AsyncMock(return_value=True)
+    monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=(meta, member)))
+    monkeypatch.setattr(messaging.messaging_repo, "set_member_prefs", set_prefs)
+    monkeypatch.setattr(messaging, "_room_detail", detail)
+    monkeypatch.setattr(messaging, "get_live_event_publisher", lambda: type("P", (), {"publish_user": publish_user})())
+
+    result = await messaging.patch_room_me(auth, "room-1", messaging.MemberPrefsRequest(muted=True))
+
+    assert result == "detail"
+    set_prefs.assert_awaited_once_with("room-1", "human", "user_owner", {"muted": True})
+    publish_user.assert_awaited_once()
+    owner_arg, user_arg, event = publish_user.await_args.args
+    assert (owner_arg, user_arg) == ("org_1", "user_owner")
+    assert event["type"] == "room.member.updated"
+    assert event["payload"] == {"roomId": "room-1"}
+
+
+@pytest.mark.asyncio
+async def test_patch_room_me_clears_a_section_with_an_explicit_null(monkeypatch):
+    auth = AuthContext(user_id="user_owner", org_id="org_1")
+    meta = {"roomId": "room-1", "ownerId": "org_1", "kind": "channel", "revision": 4}
+    member = {"kind": "human", "id": "user_owner", "role": "owner", "joinedSeq": 0}
+    set_prefs = AsyncMock(return_value=member)
+    monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=(meta, member)))
+    monkeypatch.setattr(messaging.messaging_repo, "set_member_prefs", set_prefs)
+    monkeypatch.setattr(messaging, "_room_detail", AsyncMock(return_value="detail"))
+    monkeypatch.setattr(messaging, "get_live_event_publisher", lambda: type("P", (), {"publish_user": AsyncMock()})())
+
+    await messaging.patch_room_me(auth, "room-1", messaging.MemberPrefsRequest.model_validate({"sectionId": None}))
+    set_prefs.assert_awaited_once_with("room-1", "human", "user_owner", {"sectionId": None})
+
+
+@pytest.mark.asyncio
+async def test_room_member_updated_is_a_recognised_user_live_event():
+    assert "room.member.updated" in messaging.USER_LIVE_EVENT_TYPES
+    assert "room.member.updated" in messaging.LIVE_EVENT_TYPES
+    assert "room.member.updated" not in messaging.ROOM_LIVE_EVENT_TYPES

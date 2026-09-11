@@ -32,6 +32,7 @@ from core.services.messaging import (
     CreateMessageRequest,
     CreateRoomRequest,
     LiveConfig,
+    MemberPrefsRequest,
     MessagePage,
     PatchRoomRequest,
     ReadCursorRequest,
@@ -220,6 +221,15 @@ async def patch_room(
     auth: AuthContext = Depends(get_current_user),
 ):
     return await service.patch_room(auth, room_id, request)
+
+
+@router.patch("/messaging/rooms/{room_id}/me", response_model=RoomDetail)
+async def patch_room_me(
+    room_id: str,
+    request: MemberPrefsRequest,
+    auth: AuthContext = Depends(get_current_user),
+):
+    return await service.patch_room_me(auth, room_id, request)
 
 
 @router.post("/messaging/rooms/{room_id}/members", response_model=RoomDetail)

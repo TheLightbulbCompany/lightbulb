@@ -885,6 +885,39 @@ async def upsert_member(
     return {**meta, "revision": revision, "updatedAt": now}
 
 
+_MEMBER_PREF_FIELDS = ("starred", "muted", "sectionId")
+
+
+async def set_member_prefs(room_id: str, kind: str, member_id: str, updates: dict[str, Any]) -> dict:
+    """Per-user, per-room view preferences on the member row.
+
+    Deliberately does NOT bump ``META.revision``: starring a room is one
+    person's view of it, and a revision bump would invalidate every other
+    member's cached room on every toggle.
+    """
+    named = {k: v for k, v in updates.items() if k in _MEMBER_PREF_FIELDS}
+    if not named:
+        return await get_member(room_id, kind, member_id) or {}
+    names = {f"#{k}": k for k in named}
+    values = {f":{k}": _ddb_safe(v) for k, v in named.items()}
+    expression = "SET " + ", ".join(f"#{k} = :{k}" for k in named)
+    try:
+        response = await run_in_thread(
+            _table().update_item,
+            Key={"pk": room_pk(room_id), "sk": member_sk(kind, member_id)},
+            UpdateExpression=expression,
+            ConditionExpression="attribute_exists(sk)",
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+            ReturnValues="ALL_NEW",
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            raise RoomNotFound(f"{room_id}:{kind}:{member_id}") from exc
+        raise
+    return _plain(response["Attributes"])
+
+
 def _live_item(
     table_name: str, room_id: str, owner_id: str, user_id: str, channel_key: str | None, event: dict
 ) -> dict:

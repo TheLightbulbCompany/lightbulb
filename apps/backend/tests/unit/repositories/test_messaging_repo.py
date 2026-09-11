@@ -617,3 +617,33 @@ async def test_wipe_deletes_room_partitions_owner_rows_and_streams_only_for_that
     assert len(remaining) == 3 and all(f"#{OWNER}_other#" in r["pk"] for r in remaining)
     assert await repo.delete_owner_partition(OWNER) == 0
     assert await repo.delete_room_partition(room_id) == 0  # idempotent retry
+
+
+@pytest.mark.asyncio
+async def test_set_member_prefs_writes_only_named_fields_and_leaves_revision_alone(table):
+    room_id, meta = await _room()
+
+    updated = await repo.set_member_prefs(room_id, "human", USER_A, {"starred": True, "sectionId": "sec-1"})
+    assert updated["starred"] is True
+    assert updated["sectionId"] == "sec-1"
+    assert updated.get("muted") in (None, False)
+
+    only_mute = await repo.set_member_prefs(room_id, "human", USER_A, {"muted": True})
+    assert only_mute["muted"] is True
+    assert only_mute["starred"] is True
+    assert only_mute["sectionId"] == "sec-1"
+
+    cleared = await repo.set_member_prefs(room_id, "human", USER_A, {"sectionId": None})
+    assert cleared["sectionId"] is None
+    assert cleared["starred"] is True
+
+    assert (await repo.get_room(room_id))["revision"] == meta["revision"]
+    listed = await repo.list_rooms_for_member(OWNER, "human", USER_A)
+    assert listed[0]["member"]["starred"] is True
+
+
+@pytest.mark.asyncio
+async def test_set_member_prefs_rejects_a_member_that_is_not_in_the_room(table):
+    room_id, _ = await _room()
+    with pytest.raises(repo.RoomNotFound):
+        await repo.set_member_prefs(room_id, "human", USER_B, {"starred": True})

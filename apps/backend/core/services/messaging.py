@@ -91,6 +91,7 @@ USER_LIVE_EVENT_TYPES = frozenset(
         "runtime.progress.changed",
         "runtime.resource.invalidated",
         "paperclip.event",
+        "room.member.updated",
     }
 )
 LIVE_EVENT_TYPES = ROOM_LIVE_EVENT_TYPES | USER_LIVE_EVENT_TYPES
@@ -134,6 +135,9 @@ class RoomSummary(ContractModel):
     last_message_at: datetime | None
     unread_count: int = Field(ge=0)
     updated_at: datetime
+    starred: bool = False
+    muted: bool = False
+    section_id: str | None = None
 
 
 class RoomDetail(RoomSummary):
@@ -181,6 +185,24 @@ class PatchRoomRequest(ContractModel):
     @classmethod
     def validate_name(cls, value: str | None) -> str | None:
         return validate_room_name(value)
+
+
+class MemberPrefsRequest(ContractModel):
+    starred: bool | None = None
+    muted: bool | None = None
+    section_id: uuid.UUID | None = None
+
+    def named_updates(self) -> dict[str, Any]:
+        """Only the fields the caller actually sent — an omitted field is left
+        alone, an explicit null clears it."""
+        out: dict[str, Any] = {}
+        if "starred" in self.model_fields_set:
+            out["starred"] = bool(self.starred)
+        if "muted" in self.model_fields_set:
+            out["muted"] = bool(self.muted)
+        if "section_id" in self.model_fields_set:
+            out["sectionId"] = str(self.section_id) if self.section_id else None
+        return out
 
 
 class UpsertRoomMemberRequest(ContractModel):
@@ -861,6 +883,9 @@ async def _room_detail(meta: dict, user_id: str, member: dict | None = None) -> 
         last_message_at=meta.get("lastMessageAt"),
         unread_count=max(0, int(meta["lastSeq"]) - floor),
         updated_at=meta["updatedAt"],
+        starred=bool(member.get("starred")),
+        muted=bool(member.get("muted")),
+        section_id=member.get("sectionId"),
         delivery_key=meta["deliveryKey"],
         members=[_room_member(row) for row in with_human_handles(members)],
         last_read_seq=last_read,
@@ -889,6 +914,9 @@ async def list_rooms(auth: AuthContext) -> RoomListResponse:
                 last_message_at=meta.get("lastMessageAt"),
                 unread_count=max(0, int(meta["lastSeq"]) - floor),
                 updated_at=meta["updatedAt"],
+                starred=bool(member.get("starred")),
+                muted=bool(member.get("muted")),
+                section_id=member.get("sectionId"),
             )
         )
     summaries.sort(key=lambda room: room.updated_at, reverse=True)
@@ -1038,6 +1066,33 @@ async def patch_room(auth: AuthContext, room_id: str, request: PatchRoomRequest)
         raise ApiProblem("ROOM_NOT_FOUND", "Room not found.") from exc
     await _publish_room_metadata(meta)
     return await _room_detail(meta, auth.user_id)
+
+
+def get_live_event_publisher():
+    """Module-level indirection so tests can monkeypatch ``messaging.get_live_event_publisher``
+    directly. The real lookup stays a lazy import — ``core.services.live_events`` imports
+    from this module at load time, so a top-level import here would be circular."""
+    from core.services.live_events import get_live_event_publisher as _get_live_event_publisher
+
+    return _get_live_event_publisher()
+
+
+async def patch_room_me(auth: AuthContext, room_id: str, request: MemberPrefsRequest) -> RoomDetail:
+    """The caller's own view preferences for one room. Any member may set them."""
+    owner_id = resolve_owner_id(auth)
+    meta, member = await require_room_member(owner_id, auth.user_id, room_id)
+    updates = request.named_updates()
+    if updates:
+        try:
+            member = await messaging_repo.set_member_prefs(room_id, "human", auth.user_id, updates)
+        except messaging_repo.RoomNotFound as exc:
+            raise ApiProblem("ROOM_FORBIDDEN", "You no longer have access to this room.") from exc
+        await get_live_event_publisher().publish_user(
+            owner_id,
+            auth.user_id,
+            make_live_event("room.member.updated", {"roomId": meta["roomId"]}),
+        )
+    return await _room_detail(meta, auth.user_id, member)
 
 
 async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemberRequest) -> RoomDetail:

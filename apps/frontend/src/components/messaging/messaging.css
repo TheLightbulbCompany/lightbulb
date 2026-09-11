@@ -55,6 +55,8 @@
 .room-typing { min-height: 20px; padding: 0 24px; overflow-wrap: anywhere; }
 .room-composer { position: relative; display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; margin: 0 20px 20px; padding: 12px; border: 1px solid var(--input); border-radius: 10px; background: var(--background); }
 .room-composer:focus-within { border-color: var(--ring); }
+.room-composer[data-dropping] { border-color: var(--ring); border-style: dashed; }
+.room-drop-hint { padding: 0 4px; }
 .room-composer textarea { min-height: 64px; max-height: 200px; resize: vertical; box-shadow: none; border: 0; padding: 2px 4px; border-radius: 0; background: transparent; caret-color: var(--foreground); }
 .room-composer textarea:focus-visible { outline: none; box-shadow: none; }
 .room-composer-help { font-size: .75rem; padding: 0 4px; }
@@ -69,6 +71,8 @@
 .room-input::placeholder { color: var(--muted-foreground); }
 .room-picker { border-top: 1px solid var(--border); padding-top: 12px; min-width: 0; }
 .room-picker-list { max-height: 240px; overflow-y: auto; overscroll-behavior: contain; }
+.room-typeahead { position: absolute; left: 0; right: 0; bottom: calc(100% + 4px); z-index: 4; max-height: 240px; overflow-y: auto; overscroll-behavior: contain; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--popover); }
+.room-typeahead .room-choice-button[data-active] { background: var(--accent); }
 .room-choice { display: flex; align-items: center; gap: 8px; padding: 8px 4px; min-height: 44px; cursor: pointer; }
 .room-choice-button { width: 100%; border-radius: 4px; text-align: left; }
 .room-choice:hover { background: var(--accent); }
@@ -189,6 +193,8 @@
   .room-message-collapsed .room-message-content { padding-right: 140px; }
   .room-message-gutter { opacity: 1; }
 }
+
+.room-format { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding-bottom: 4px; border-bottom: 1px solid var(--border); }
 
 @media (prefers-reduced-motion: reduce) {
   .participant-avatar[data-agent-state="running"] { animation: none; }

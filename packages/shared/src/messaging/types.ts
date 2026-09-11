@@ -261,8 +261,11 @@ export interface LocalSessionEnrollmentRequest {
   deviceId: string;
   cliDeviceId?: string | null;
   enabled: boolean;
+  /** Optional stale-cleanup fence; only valid when disabling. */
+  expectedRevision?: string;
 }
 
 export interface LocalSessionEnrollment extends LocalDevice {
   enabled: boolean;
+  revision: string;
 }

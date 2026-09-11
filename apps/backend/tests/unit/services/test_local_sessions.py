@@ -90,6 +90,28 @@ def command(service, **changes):
 
 
 @pytest.mark.asyncio
+async def test_late_conditional_disable_cannot_overwrite_new_enrollment(db):
+    with pytest.raises(ValidationError):
+        service.EnrollmentRequest(deviceId=MAC, enabled=True, expectedRevision="old")
+    first = await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, enabled=True))
+    disable = service.EnrollmentRequest(deviceId=MAC, enabled=False, expectedRevision=first.revision)
+    # Old cleanup can commit before the next enable; its later retry cannot.
+    await service.set_enrollment(ALICE, disable)
+    newest = await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, enabled=True))
+    with pytest.raises(ApiProblem) as rejected:
+        await service.set_enrollment(ALICE, disable)
+    assert rejected.value.error.code == "LOCAL_SESSION_CONFLICT"
+    retained = await repo.get_enrollment(OWNER, ALICE.user_id, MAC)
+    assert retained["enabled"] and retained["revision"] == newest.revision
+    # Also fence an old request that never committed at all before re-enable.
+    old = service.EnrollmentRequest(deviceId=MAC, enabled=False, expectedRevision=newest.revision)
+    final = await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, enabled=True))
+    with pytest.raises(ApiProblem):
+        await service.set_enrollment(ALICE, old)
+    assert (await repo.get_enrollment(OWNER, ALICE.user_id, MAC))["revision"] == final.revision
+
+
+@pytest.mark.asyncio
 async def test_equivalent_uuid_spellings_share_resources_events_and_one_command_receipt(db):
     sid = await registered()
     room = "aabbccdd-1111-4111-8111-aabbccddeeff"

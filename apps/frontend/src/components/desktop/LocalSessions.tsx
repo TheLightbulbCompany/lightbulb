@@ -1,6 +1,6 @@
 "use client";
 import { useAuth } from "@clerk/nextjs";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 
 type State = { enrollment: { ownerId: string; humanUserId: string; enabled: boolean; paused: boolean } | null; pairedWorkspaceId: string | null; status: string };
@@ -21,6 +21,8 @@ export function LocalSessions() {
   const [consent, setConsent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const operation = useRef(0);
+  useEffect(() => { operation.current += 1; return () => { operation.current += 1; }; }, [userId, orgId]);
   useEffect(() => {
     const invoke = bridge();
     setDesktop(Boolean(invoke));
@@ -34,11 +36,20 @@ export function LocalSessions() {
   async function setEnabled(next: boolean) {
     const invoke = bridge();
     if (!invoke) return;
+    const currentOperation = ++operation.current;
     setBusy(true); setError(null);
     try {
-      // Disable remains available without a fresh JWT; local uploads stop first.
-      const token = await getToken().catch(() => null);
-      await invoke("local_sessions_set", { enabled: next, token, humanUserId: userId ?? null, workspaceId: orgId ?? null });
+      const token = next ? await getToken().catch(() => null) : null;
+      if (operation.current !== currentOperation) return;
+      const revision = await invoke<number>("local_sessions_set", { enabled: next, token, humanUserId: userId ?? null, workspaceId: orgId ?? null });
+      if (!next && userId && orgId) {
+        // Best effort only: a hung token refresh cannot keep local sharing alive.
+        void getToken().then(token => {
+          if (token && operation.current === currentOperation) {
+            return invoke("local_sessions_revoke", { revision, token, humanUserId:userId, workspaceId:orgId });
+          }
+        }).catch(() => {});
+      }
       setState(await invoke<State>("local_sessions_status"));
       setConsent(false);
     } catch (e) {

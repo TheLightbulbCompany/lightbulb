@@ -41,6 +41,8 @@ pub struct Enrollment {
     pub gateway_url: String,
     pub enabled: bool,
     pub paused: bool,
+    #[serde(default)]
+    pub server_revision: Option<String>,
 }
 
 impl Enrollment {
@@ -681,16 +683,43 @@ struct Mirror {
     after_seq: u64,
     queue: Vec<Value>,
     pending: Option<Value>,
+    #[serde(default)]
+    registration: RegistrationState,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct RegistrationState {
+    // Last durable server ACK, not the last locally observed process.
+    acknowledged: Option<String>,
+    // Freezes Mirror.generation + previous_generation before any register send.
+    pending: bool,
+    // At most one latest observation while the frozen transition/history drains.
+    successor: Option<NativeSession>,
 }
 
 impl Mirror {
+    fn registered(&mut self) {
+        self.registration.acknowledged = Some(self.generation.clone());
+        self.registration.pending = false;
+        self.previous_generation = None;
+    }
+    fn advance(&mut self) -> bool {
+        if self.registration.pending || self.pending.is_some() || !self.queue.is_empty() {
+            return false;
+        }
+        let Some(native) = self.registration.successor.take() else {
+            return false;
+        };
+        self.previous_generation = self.registration.acknowledged.clone();
+        self.generation =
+            fingerprint(&serde_json::to_string(&native.process).expect("process serialization"));
+        self.native = native;
+        true
+    }
     fn next_batch(&mut self) -> Result<Option<Value>> {
         if let Some(pending) = &self.pending {
             return Ok(Some(pending.clone()));
         }
-        let Some(session_id) = &self.session_id else {
-            return Ok(None);
-        };
         if self.queue.is_empty() && self.native.restriction.as_deref() != Some("history-gap") {
             if self.native.status != "offline"
                 && !process(self.native.process.pid).is_ok_and(|p| p == self.native.process)
@@ -724,6 +753,9 @@ impl Mirror {
             self.cursor = cursor;
             self.queue = queue;
         }
+        let Some(session_id) = &self.session_id else {
+            return Ok(None);
+        };
         let Some(event) = self.queue.first() else {
             return Ok(None);
         };
@@ -905,6 +937,7 @@ mod tests {
     #[test]
     fn local_sessions_logout_pauses_consent_and_never_moves_workspace() {
         let mut enrollment = Enrollment {
+            server_revision: None,
             owner_id: "org1".into(),
             human_user_id: "alice".into(),
             device_id: "d".into(),
@@ -1020,6 +1053,7 @@ mod tests {
         let transcript = dir.path().join("transcript.jsonl");
         fs::write(&transcript, "{\"type\":\"assistant\",\"sessionId\":\"s\",\"version\":\"2.1.268\",\"uuid\":\"m\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"hello\"}]}}\n").unwrap();
         let mut mirror = Mirror {
+            registration: RegistrationState::default(),
             native: NativeSession {
                 provider: "claude".into(),
                 conversation: "s".into(),

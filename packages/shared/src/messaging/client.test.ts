@@ -26,14 +26,14 @@ describe("messaging HTTP client", () => {
     await client.listLocalSessionEvents("room/a", "session/b", 3, 20);
     await client.submitLocalSessionCommand("room/a", "session/b", command);
     await client.getLocalSessionCommand("room/a", "session/b", "request/c");
-    await client.setLocalSessionEnrollment({ deviceId: "mac-id", cliDeviceId: "cli-id", enabled: false });
+    await client.setLocalSessionEnrollment({ deviceId: "mac-id", cliDeviceId: "cli-id", enabled: false, expectedRevision: "enrollment-revision" });
     expect(methods.get.mock.calls).toEqual([
       ["/messaging/rooms/room%2Fa/resources"],
       ["/messaging/rooms/room%2Fa/local-sessions/session%2Fb/events?afterSeq=3&limit=20"],
       ["/messaging/rooms/room%2Fa/local-sessions/session%2Fb/commands/request%2Fc"],
     ]);
     expect(methods.post).toHaveBeenCalledWith("/messaging/rooms/room%2Fa/local-sessions/session%2Fb/commands", command);
-    expect(methods.put).toHaveBeenCalledWith("/desktop/local-sessions/enrollment", { deviceId: "mac-id", cliDeviceId: "cli-id", enabled: false });
+    expect(methods.put).toHaveBeenCalledWith("/desktop/local-sessions/enrollment", { deviceId: "mac-id", cliDeviceId: "cli-id", enabled: false, expectedRevision: "enrollment-revision" });
   });
 
   it("uses the frozen read endpoints and sequence query", async () => {

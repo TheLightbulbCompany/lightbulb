@@ -41,6 +41,113 @@ pub(super) struct Host {
 }
 
 impl Host {
+    fn begin_registration(&mut self, key: &str) -> Result<Value> {
+        let mirror = self.mirrors.get_mut(key).ok_or("missing local session")?;
+        if !mirror.registration.pending {
+            mirror.registration.pending = true;
+            // Durable before the first send: retry this exact generation/CAS
+            // predecessor until ACK, even when discovery has already found C.
+            private_write(&self.dir.join(format!("{key}.json")), mirror)?;
+        }
+        Ok(registration(mirror))
+    }
+    fn observe(&mut self, update: Vec<NativeSession>) -> Result<Vec<String>> {
+        let mut invalidated = vec![];
+        let mut reconciled = self
+            .mirrors
+            .values()
+            .map(|m| {
+                m.registration
+                    .successor
+                    .as_ref()
+                    .unwrap_or(&m.native)
+                    .clone()
+            })
+            .collect();
+        reconcile_sessions(&mut reconciled, update);
+        for mut native in reconciled {
+            let key = native_key(&native);
+            let before = self
+                .mirrors
+                .get(&key)
+                .map(serde_json::to_value)
+                .transpose()
+                .map_err(|e| e.to_string())?;
+            let generation =
+                fingerprint(&serde_json::to_string(&native.process).map_err(|e| e.to_string())?);
+            if let Some(mirror) = self.mirrors.get_mut(&key) {
+                if mirror.registration.acknowledged.is_none()
+                    && mirror.session_id.is_some()
+                    && !mirror.registration.pending
+                {
+                    mirror.registration.acknowledged = Some(
+                        mirror
+                            .previous_generation
+                            .as_ref()
+                            .unwrap_or(&mirror.generation)
+                            .clone(),
+                    );
+                }
+                if mirror.native.restriction.as_deref() == Some("history-gap") {
+                    native.restriction = Some("history-gap".into());
+                }
+                if mirror.generation != generation {
+                    mirror.registration.successor = Some(native);
+                    mirror.native.status = "offline".into();
+                    if mirror.native.restriction.as_deref() != Some("history-gap") {
+                        mirror.native.restriction = Some("runtime-unverified".into());
+                    }
+                    mirror.advance();
+                } else {
+                    mirror.registration.successor = None;
+                    mirror.native = native;
+                }
+            } else {
+                if self.mirrors.len() >= 512 {
+                    return Err("local session capacity reached".into());
+                }
+                self.mirrors.insert(
+                    key.clone(),
+                    Mirror {
+                        native,
+                        generation,
+                        previous_generation: None,
+                        session_id: None,
+                        cursor: Cursor::default(),
+                        after_seq: 0,
+                        queue: vec![],
+                        pending: None,
+                        registration: RegistrationState::default(),
+                    },
+                );
+            }
+            let mirror = self.mirrors.get_mut(&key).ok_or("missing local session")?;
+            let _ = capture_batch(mirror);
+            let after = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
+            if before.as_ref() != Some(&after) {
+                if before.as_ref().is_none_or(|b| {
+                    b["native"] != after["native"] || b["generation"] != after["generation"]
+                }) {
+                    invalidated.push(key.clone());
+                }
+                private_write(&self.dir.join(format!("{key}.json")), mirror)?;
+            }
+        }
+        Ok(invalidated)
+    }
+    async fn observing_wait<T>(
+        &mut self,
+        updates: &mut tokio::sync::mpsc::Receiver<Vec<NativeSession>>,
+        remote: impl std::future::Future<Output = Result<T>>,
+    ) -> Result<T> {
+        tokio::pin!(remote);
+        loop {
+            tokio::select! {
+                result=&mut remote=>return result,
+                update=updates.recv()=>{self.observe(update.ok_or("discovery stopped")?)?;}
+            }
+        }
+    }
     pub(super) fn restore(dir: PathBuf, home: PathBuf, stop: Arc<AtomicBool>) -> Result<Self> {
         private_dir(&dir)?;
         let mut mirrors = BTreeMap::new();
@@ -60,6 +167,15 @@ impl Host {
                 return Err("local history identity conflict".into());
             }
             mirror.native.status = "offline".into();
+            if mirror.native.restriction.as_deref() != Some("history-gap") {
+                mirror.native.restriction = Some("runtime-unverified".into());
+            }
+            if let Some(successor) = &mut mirror.registration.successor {
+                successor.status = "offline".into();
+                if successor.restriction.as_deref() != Some("history-gap") {
+                    successor.restriction = Some("runtime-unverified".into());
+                }
+            }
             if mirrors.len() >= 512 {
                 return Err("local session capacity reached".into());
             }
@@ -119,17 +235,21 @@ impl Host {
                         tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
                             .max_message_size(Some(16384))
                             .max_frame_size(Some(16384));
-                    let (mut socket, _) = tokio::time::timeout(
-                        Duration::from_secs(10),
-                        tokio_tungstenite::connect_async_with_config(
-                            url.as_str(),
-                            Some(config),
-                            false,
-                        ),
-                    )
-                    .await
-                    .map_err(|_| "relay unavailable")?
-                    .map_err(|_| "relay unavailable or pairing revoked")?;
+                    let (mut socket, _) = self
+                        .observing_wait(&mut rx, async {
+                            tokio::time::timeout(
+                                Duration::from_secs(10),
+                                tokio_tungstenite::connect_async_with_config(
+                                    url.as_str(),
+                                    Some(config),
+                                    false,
+                                ),
+                            )
+                            .await
+                            .map_err(|_| "relay unavailable")?
+                            .map_err(|_| "relay unavailable or pairing revoked".to_string())
+                        })
+                        .await?;
                     if let Ok(mut s) = status.lock() {
                         *s = "connected".into();
                     }
@@ -145,7 +265,16 @@ impl Host {
                     }
                     .into();
                 }
-                tokio::time::sleep(Duration::from_secs(delay)).await;
+                if self
+                    .observing_wait(&mut rx, async {
+                        tokio::time::sleep(Duration::from_secs(delay)).await;
+                        Ok(())
+                    })
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
                 delay = (delay * 2).min(30);
             }
         };
@@ -157,7 +286,7 @@ impl Host {
         updates: &mut tokio::sync::mpsc::Receiver<Vec<NativeSession>>,
     ) -> Result<()> {
         let mut registered = BTreeMap::<String, Instant>::new();
-        let mut pending_rpc: Option<(String, bool, Instant, SystemTime)> = None;
+        let mut pending_rpc: Option<(String, bool, Instant, SystemTime, Value)> = None;
         let mut anchor: Option<ClockAnchor> = None;
         let mut deferred = std::collections::VecDeque::<Command>::new();
         let mut sent_batches = BTreeMap::<String, Instant>::new();
@@ -170,7 +299,7 @@ impl Host {
             }
             if pending_rpc
                 .as_ref()
-                .is_some_and(|(_, _, at, _)| at.elapsed() > Duration::from_secs(10))
+                .is_some_and(|(_, _, at, _, _)| at.elapsed() > Duration::from_secs(10))
             {
                 return Err("session acknowledgment timed out".into());
             }
@@ -194,15 +323,19 @@ impl Host {
                 }
             }
             if pending_rpc.is_none() {
-                if let Some((key, mirror)) = self
+                if let Some(key) = self
                     .mirrors
-                    .iter()
-                    .find(|(key, _)| !registered.contains_key(*key))
+                    .keys()
+                    .find(|key| !registered.contains_key(*key))
+                    .cloned()
                 {
                     let sent = Instant::now();
                     let wall = SystemTime::now();
-                    send(socket, &registration(mirror)).await?;
-                    pending_rpc = Some((key.clone(), true, sent, wall));
+                    let body = self.begin_registration(&key)?;
+                    send(socket, &body).await?;
+                    let metadata = serde_json::to_value(&self.mirrors[&key].native)
+                        .map_err(|e| e.to_string())?;
+                    pending_rpc = Some((key, true, sent, wall, metadata));
                 } else if let Some((key, _)) = registered
                     .iter()
                     .find(|(_, at)| at.elapsed() >= Duration::from_secs(10))
@@ -212,7 +345,13 @@ impl Host {
                     let wall = SystemTime::now();
                     send(socket, &json!({"type":"local.session.heartbeat", "sessionId":mirror.session_id,"generation":mirror.generation,
                         "status":mirror.native.status,"activeTurnId":null,"controlUnavailableReason":mirror.native.restriction})).await?;
-                    pending_rpc = Some((key.clone(), false, sent, wall));
+                    pending_rpc = Some((
+                        key.clone(),
+                        false,
+                        sent,
+                        wall,
+                        serde_json::to_value(&mirror.native).map_err(|e| e.to_string())?,
+                    ));
                 }
             }
             if last_upload.elapsed() >= Duration::from_millis(500) {
@@ -233,26 +372,16 @@ impl Host {
                     {
                         continue;
                     }
-                    let batch = match mirror.next_batch() {
+                    let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
+                    let batch = match capture_batch(mirror) {
                         Ok(batch) => batch,
-                        Err(reason) => {
-                            if process(mirror.native.process.pid).is_err() {
-                                mirror.native.status = "offline".into();
-                            }
-                            mirror.native.restriction = Some(
-                                if reason == "runtime-unverified" {
-                                    "runtime-unverified"
-                                } else {
-                                    "history-gap"
-                                }
-                                .into(),
-                            );
+                        Err(_) => {
                             registered.remove(key);
-                            private_write(&self.dir.join(format!("{key}.json")), mirror)?;
+                            persist_changed(&self.dir, key, mirror, &before)?;
                             continue;
                         }
                     };
-                    private_write(&self.dir.join(format!("{key}.json")), mirror)?;
+                    persist_changed(&self.dir, key, mirror, &before)?;
                     if let Some(batch) = batch {
                         send(socket, &batch).await?;
                         sent_batches.insert(key.clone(), Instant::now());
@@ -266,29 +395,7 @@ impl Host {
                 _ = tick.tick() => {},
                 update = updates.recv() => {
                     let Some(update) = update else {return Err("discovery stopped".into());};
-                    let mut reconciled = self.mirrors.values().map(|m|m.native.clone()).collect();
-                    reconcile_sessions(&mut reconciled,update);
-                    for mut native in reconciled {
-                        let key = native_key(&native);
-                        let generation = fingerprint(&serde_json::to_string(&native.process).map_err(|e|e.to_string())?);
-                        if let Some(mirror) = self.mirrors.get_mut(&key) {
-                            if mirror.native.restriction.as_deref() == Some("history-gap") {native.restriction = Some("history-gap".into());}
-                            if mirror.generation != generation && (mirror.pending.is_some() || !mirror.queue.is_empty()) {
-                                mirror.native.status = "offline".into(); registered.remove(&key); continue;
-                            }
-                            if mirror.generation != generation {
-                                mirror.previous_generation = Some(mirror.generation.clone()); mirror.generation = generation;
-                                registered.remove(&key);
-                            }
-                            if mirror.native.status != native.status || mirror.native.restriction != native.restriction || mirror.native.version != native.version {registered.remove(&key);}
-                            mirror.native = native;
-                        } else {
-                            if self.mirrors.len() >= 512 {return Err("local session capacity reached".into());}
-                            self.mirrors.insert(key.clone(), Mirror {native,generation,previous_generation:None,session_id:None,
-                                cursor:Cursor::default(),after_seq:0,queue:vec![],pending:None});
-                        }
-                        private_write(&self.dir.join(format!("{key}.json")),&self.mirrors[&key])?;
-                    }
+                    for key in self.observe(update)? {registered.remove(&key);}
                 },
                 incoming = socket.next() => {
                     let message = incoming.ok_or("session socket closed")?.map_err(|_| "session socket failed")?;
@@ -301,18 +408,24 @@ impl Host {
                     let body: Value = serde_json::from_str(&text).map_err(|_| "invalid session frame")?;
                     match body["type"].as_str() {
                         Some("local.session.registered" | "local.session.heartbeat.ack") => {
-                            let (key,is_register,sent,wall) = pending_rpc.take().ok_or("unsolicited session acknowledgment")?;
+                            let (key,is_register,sent,wall,metadata) = pending_rpc.take().ok_or("unsolicited session acknowledgment")?;
                             if is_register != (body["type"] == "local.session.registered") {return Err("mismatched session acknowledgment".into());}
                             let mirror = self.mirrors.get_mut(&key).ok_or("unknown local session")?;
+                            let before=serde_json::to_value(&*mirror).map_err(|e|e.to_string())?;
                             if body["generation"] != mirror.generation {return Err("stale generation acknowledgment".into());}
                             let sid = body["sessionId"].as_str().filter(|s|uuid::Uuid::parse_str(s).is_ok()).ok_or("invalid session ID")?;
                             if mirror.session_id.as_ref().is_some_and(|known|known != sid) {return Err("session identity changed".into());}
                             let after = body["afterSeq"].as_u64().ok_or("missing upload cursor")?;
                             if after != mirror.after_seq && !(mirror.pending.is_some() && after == mirror.after_seq + 1) {return Err("upload cursor conflict".into());}
                             mirror.session_id = Some(sid.into());
-                            mirror.previous_generation = None;
-                            private_write(&self.dir.join(format!("{key}.json")),mirror)?;
-                            registered.insert(key,Instant::now());
+                            if is_register {mirror.registered();}
+                            let advanced=mirror.advance();
+                            persist_changed(&self.dir,&key,mirror,&before)?;
+                            // An ACK for live B cannot re-enable B after discovery
+                            // has downgraded it or found C while the RPC was in flight.
+                            if !advanced && metadata == serde_json::to_value(&mirror.native).map_err(|e|e.to_string())? {
+                                registered.insert(key.clone(),Instant::now());
+                            } else {registered.remove(&key);}
                             let rtt = sent.elapsed().as_secs_f64();
                             let server = body["serverTime"].as_u64().ok_or("missing server time")?;
                             deadline_now(server,0.0,rtt,SystemTime::now().duration_since(wall).ok().map(|d|d.as_secs_f64()))
@@ -334,6 +447,7 @@ impl Host {
                         Some("local.session.events.ack") => {
                             let (key,mirror) = self.mirrors.iter_mut().find(|(_,m)|m.session_id.as_deref() == body["sessionId"].as_str()).ok_or("unknown upload acknowledgment")?;
                             mirror.acknowledge(body["batchId"].as_str().ok_or("missing batch ID")?,body["afterSeq"].as_u64().ok_or("missing cursor")?)?;
+                            if mirror.advance() {registered.remove(key);}
                             private_write(&self.dir.join(format!("{key}.json")),mirror)?;
                             sent_batches.remove(key);
                         },
@@ -426,6 +540,7 @@ impl Host {
             return Err("unknown command session".into());
         };
         let eligible = mirror.generation == cmd.expected_generation
+            && mirror.registration.successor.is_none()
             && !self.stop.load(Ordering::SeqCst)
             && anchor
                 .and_then(ClockAnchor::now)
@@ -491,6 +606,28 @@ fn native_key(native: &NativeSession) -> String {
     fingerprint(&json!([native.provider, native.profile, native.conversation]).to_string())
 }
 
+fn capture_batch(mirror: &mut Mirror) -> Result<Option<Value>> {
+    mirror.next_batch().inspect_err(|reason| {
+        if process(mirror.native.process.pid).is_err() {
+            mirror.native.status = "offline".into();
+        }
+        mirror.native.restriction = Some(
+            if reason == "runtime-unverified" {
+                "runtime-unverified"
+            } else {
+                "history-gap"
+            }
+            .into(),
+        );
+    })
+}
+fn persist_changed(dir: &Path, key: &str, mirror: &Mirror, before: &Value) -> Result<()> {
+    if &serde_json::to_value(mirror).map_err(|e| e.to_string())? != before {
+        private_write(&dir.join(format!("{key}.json")), mirror)?;
+    }
+    Ok(())
+}
+
 fn registration(mirror: &Mirror) -> Value {
     let mut body = json!({"type":"local.session.register", "session":{"provider":mirror.native.provider,
         "profileFingerprint":mirror.native.profile,"nativeConversationId":mirror.native.conversation,"generation":mirror.generation,
@@ -517,6 +654,167 @@ async fn send(socket: &mut Socket, body: &Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn local_sessions_generation_outbox_retries_ambiguous_b_before_c_after_restart() {
+        for committed in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let scope = dir.path().join("scope");
+            let mut a = observed_fixture(dir.path());
+            a.transcript = None;
+            a.status = "offline".into();
+            let key = native_key(&a);
+            let mut host = Host::restore(
+                scope.clone(),
+                dir.path().into(),
+                Arc::new(AtomicBool::new(false)),
+            )
+            .unwrap();
+            host.observe(vec![a.clone()]).unwrap();
+            let ag = host.mirrors[&key].generation.clone();
+            host.mirrors.get_mut(&key).unwrap().session_id = Some(uuid::Uuid::new_v4().to_string());
+            let mut b = a.clone();
+            b.process.birth_micros += 1;
+            host.observe(vec![b.clone()]).unwrap();
+            let attempt = host.begin_registration(&key).unwrap();
+            assert_eq!(attempt["previousGeneration"], ag);
+            let mut server_generation = if committed {
+                attempt["session"]["generation"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            } else {
+                ag
+            };
+            let mut c = b;
+            c.process.birth_micros += 1;
+            host.observe(vec![c.clone()]).unwrap();
+            drop(host);
+            let mut restarted =
+                Host::restore(scope, dir.path().into(), Arc::new(AtomicBool::new(false))).unwrap();
+            let retry = restarted.begin_registration(&key).unwrap();
+            assert_eq!(
+                retry["session"]["generation"], attempt["session"]["generation"],
+                "must retry B, not skip to C"
+            );
+            assert!(
+                retry["session"]["generation"] == server_generation
+                    || retry["previousGeneration"] == server_generation,
+                "canonical CAS"
+            );
+            assert_eq!(retry["session"]["status"], "offline");
+            assert_eq!(
+                retry["session"]["controlUnavailableReason"],
+                "runtime-unverified"
+            );
+            server_generation = retry["session"]["generation"].as_str().unwrap().into();
+            // The real ACK path will durably retire B before advancing C.
+            let mirror = restarted.mirrors.get_mut(&key).unwrap();
+            mirror.registered();
+            assert!(mirror.advance());
+            private_write(&restarted.dir.join(format!("{key}.json")), mirror).unwrap();
+            let mut restarted = Host::restore(
+                restarted.dir.clone(),
+                dir.path().into(),
+                Arc::new(AtomicBool::new(false)),
+            )
+            .unwrap();
+            let next = restarted.begin_registration(&key).unwrap();
+            assert_ne!(next["session"]["generation"], server_generation);
+            assert_eq!(next["previousGeneration"], server_generation);
+        }
+    }
+    fn observed_fixture(dir: &Path) -> NativeSession {
+        let transcript = dir.join("native.jsonl");
+        fs::write(&transcript,format!("{}\n",json!({"type":"assistant","sessionId":"s","version":"2.1.268","message":{"role":"assistant","content":[{"type":"text","text":"short-lived public output"}]}}))).unwrap();
+        NativeSession {
+            provider: "claude".into(),
+            conversation: "s".into(),
+            profile: "f".repeat(64),
+            process: process(std::process::id()).unwrap(),
+            transcript: Some(transcript),
+            socket: None,
+            socket_inode: None,
+            version: "2.1.268".into(),
+            restriction: None,
+            status: "unknown".into(),
+        }
+    }
+    #[tokio::test]
+    async fn local_sessions_outage_keeps_multiple_discovery_passes_and_short_lived_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let scope = dir.path().join("scope");
+        let native = observed_fixture(dir.path());
+        let key = native_key(&native);
+        let mut host = Host::restore(
+            scope.clone(),
+            dir.path().into(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (recovered, offline) = tokio::sync::oneshot::channel();
+        let producer = tokio::spawn(async move {
+            tx.send(vec![]).await.unwrap();
+            tx.send(vec![]).await.unwrap();
+            tx.send(vec![native]).await.unwrap();
+            tx.send(vec![]).await.unwrap();
+            // Wait until the exited-session pass is consumed, not just queued.
+            let permit = tx.reserve().await.unwrap();
+            drop(permit);
+            recovered.send(()).unwrap();
+            tx
+        });
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            host.observing_wait(&mut rx, async {
+                offline.await.map_err(|_| "test relay closed")?;
+                Ok(())
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let _sender = producer.await.unwrap();
+        let stored: Mirror = private_read(&scope.join(format!("{key}.json"))).unwrap();
+        assert_eq!(stored.native.status, "offline");
+        assert!(stored.cursor.offset > 0);
+        assert_eq!(stored.queue[0]["text"], "short-lived public output");
+        let mut restarted =
+            Host::restore(scope, dir.path().into(), Arc::new(AtomicBool::new(false))).unwrap();
+        let mirror = restarted.mirrors.get_mut(&key).unwrap();
+        mirror.session_id = Some(uuid::Uuid::new_v4().to_string());
+        assert_eq!(
+            mirror.next_batch().unwrap().unwrap()["events"][0]["text"],
+            "short-lived public output"
+        );
+    }
+    #[test]
+    fn local_sessions_observation_does_not_rewrite_unchanged_idle_or_completed_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let scope = dir.path().join("scope");
+        let native = observed_fixture(dir.path());
+        let key = native_key(&native);
+        let mut host = Host::restore(
+            scope.clone(),
+            dir.path().into(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        host.observe(vec![native.clone()]).unwrap();
+        let path = scope.join(format!("{key}.json"));
+        let inode = fs::metadata(&path).unwrap().ino();
+        for _ in 0..10 {
+            host.observe(vec![native.clone()]).unwrap();
+        }
+        assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
+        host.observe(vec![]).unwrap();
+        let completed = fs::metadata(&path).unwrap().ino();
+        assert_ne!(completed, inode);
+        for _ in 0..10 {
+            host.observe(vec![]).unwrap();
+        }
+        assert_eq!(fs::metadata(path).unwrap().ino(), completed);
+    }
     #[tokio::test]
     #[ignore = "requires explicitly owned disposable native PID/thread; remote boundary is a local mock"]
     async fn local_sessions_owned_native_command_and_public_mirror_through_production_transport() {
@@ -631,6 +929,7 @@ mod tests {
         });
         let dir = tempfile::tempdir().unwrap();
         let mirror = Mirror {
+            registration: RegistrationState::default(),
             native,
             generation,
             previous_generation: None,
@@ -672,6 +971,7 @@ mod tests {
         };
         let key = native_key(&native);
         let mirror = Mirror {
+            registration: RegistrationState::default(),
             native,
             generation: "g1".into(),
             previous_generation: None,
@@ -694,6 +994,7 @@ mod tests {
     #[tokio::test]
     async fn local_sessions_transport_registers_then_uploads_and_persists_ack() {
         let dir = tempfile::tempdir().unwrap();
+        let persisted = dir.path().join("local.json");
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -734,6 +1035,29 @@ mod tests {
             assert_eq!(batch["events"][0]["text"], "public output");
             socket.send(Message::Text(json!({"type":"local.session.events.ack","sessionId":"aaaabbbb-cccc-4ddd-8eee-ffff00001111",
                 "batchId":batch["batchId"],"afterSeq":1}).to_string().into())).await.unwrap();
+            // Wait for actual ACK persistence, then exercise the real 100ms
+            // connected idle loop beyond its expired 500ms upload window.
+            let mut tick = tokio::time::interval(Duration::from_millis(20));
+            tokio::time::timeout(Duration::from_secs(1), async {
+                loop {
+                    tick.tick().await;
+                    let m: Mirror = private_read(&persisted).unwrap();
+                    if m.after_seq == 1 && m.pending.is_none() {
+                        break;
+                    }
+                }
+            })
+            .await
+            .unwrap();
+            let inode = fs::metadata(&persisted).unwrap().ino();
+            for _ in 0..40 {
+                tick.tick().await;
+                assert_eq!(
+                    fs::metadata(&persisted).unwrap().ino(),
+                    inode,
+                    "idle upload loop rewrote durable history"
+                );
+            }
             socket.close(None).await.unwrap();
         });
         let native = NativeSession {
@@ -749,6 +1073,7 @@ mod tests {
             status: "unknown".into(),
         };
         let mirror = Mirror {
+            registration: RegistrationState::default(),
             native,
             generation: "g1".into(),
             previous_generation: None,

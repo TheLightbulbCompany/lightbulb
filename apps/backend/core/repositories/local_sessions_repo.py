@@ -86,7 +86,14 @@ def enrollment_condition(enrollment: dict) -> dict:
     }
 
 
-async def put_enrollment(owner_id: str, user_id: str, device_id: str, cli_device_id: str | None, enabled: bool) -> dict:
+async def put_enrollment(
+    owner_id: str,
+    user_id: str,
+    device_id: str,
+    cli_device_id: str | None,
+    enabled: bool,
+    expected_revision: str | None = None,
+) -> dict:
     row = {
         "pk": user_pk(owner_id, user_id),
         "sk": f"DEVICE#{device_id}",
@@ -97,10 +104,15 @@ async def put_enrollment(owner_id: str, user_id: str, device_id: str, cli_device
         "enabled": enabled,
         "revision": str(uuid.uuid4()),
     }
+    put = {"TableName": store._table().name, "Item": row}
+    if expected_revision is not None:
+        put.update(
+            ConditionExpression="revision = :expected", ExpressionAttributeValues={":expected": expected_revision}
+        )
     await store._transact(
         [
             pairing_condition(owner_id, user_id, device_id, cli_device_id),
-            {"Put": {"TableName": store._table().name, "Item": row}},
+            {"Put": put},
         ]
     )
     return row

@@ -28,6 +28,13 @@ class EnrollmentRequest(ContractModel):
     device_id: DeviceId
     cli_device_id: DeviceId | None = None
     enabled: bool
+    expected_revision: OpaqueId | None = None
+
+    @model_validator(mode="after")
+    def conditional_disable_only(self):
+        if self.enabled and self.expected_revision is not None:
+            raise ValueError("expectedRevision is only valid for disable")
+        return self
 
 
 class LocalDevice(ContractModel):
@@ -38,6 +45,7 @@ class LocalDevice(ContractModel):
 
 class EnrollmentResponse(LocalDevice):
     enabled: bool
+    revision: str
 
 
 class Capabilities(ContractModel):
@@ -158,10 +166,14 @@ async def set_enrollment(auth: AuthContext, request: EnrollmentRequest) -> Enrol
     owner = resolve_owner_id(auth)
     await _paired(owner, auth.user_id, request.device_id, request.cli_device_id)
     try:
-        row = await repo.put_enrollment(owner, auth.user_id, request.device_id, request.cli_device_id, request.enabled)
+        row = await repo.put_enrollment(
+            owner, auth.user_id, request.device_id, request.cli_device_id, request.enabled, request.expected_revision
+        )
     except ClientError as exc:
         if not messaging_repo._is_cancelled(exc):
             raise
+        if request.expected_revision is not None:
+            raise ApiProblem("LOCAL_SESSION_CONFLICT", "Enrollment changed; cleanup is obsolete.") from exc
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Device pairing changed. Try again.") from exc
     return _public(EnrollmentResponse, row)
 

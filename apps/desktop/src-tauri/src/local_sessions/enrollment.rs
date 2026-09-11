@@ -220,7 +220,7 @@ pub async fn local_sessions_set(
     token: Option<String>,
     human_user_id: Option<String>,
     workspace_id: Option<String>,
-) -> Result<()> {
+) -> Result<u64> {
     let revision = state.revision.fetch_add(1, Ordering::SeqCst) + 1;
     state.stop();
     let _guard = state.mutation.lock().await;
@@ -251,14 +251,9 @@ pub async fn local_sessions_set(
         if settings.try_exists().unwrap_or(false) {
             claude::configure_hooks(&settings, &installed, false)?;
         }
-        // Local disable works offline. The remote transport loses authority and liveness;
-        // an available human token additionally revokes the enrollment immediately.
-        if let (Some(previous), Some(token)) = (previous, token) {
-            if workspace_id.as_deref() == Some(&previous.owner_id) {
-                enroll_remote(&token, &previous.device_id, false).await?;
-            }
-        }
-        return Ok(());
+        // No auth/network wait is part of local disable. An optional, separately
+        // revision-checked remote cleanup can follow without extending authority.
+        return Ok(revision);
     }
     let human = human_user_id.ok_or("Sign in before enabling sharing")?;
     if state
@@ -289,6 +284,7 @@ pub async fn local_sessions_set(
         token.as_deref().ok_or("Sign in before enabling sharing")?,
         &pair.device_id_mac,
         true,
+        None,
     )
     .await?;
     if response["humanUserId"] != human
@@ -300,6 +296,11 @@ pub async fn local_sessions_set(
     if state.revision.load(Ordering::SeqCst) != revision {
         return Err("Authentication changed; sharing remains paused".into());
     }
+    let server_revision = response["revision"]
+        .as_str()
+        .filter(|r| uuid::Uuid::parse_str(r).is_ok())
+        .ok_or("Invalid enrollment revision")?
+        .to_owned();
     // Ordinary Codex queue requires no launch configuration. Claude gets only a wake hook.
     if settings.parent().is_some_and(|p| p.is_dir()) {
         if installed != executable {
@@ -309,6 +310,7 @@ pub async fn local_sessions_set(
         private_write(&hook_record, &executable)?;
     }
     let enrollment = Enrollment {
+        server_revision: Some(server_revision),
         owner_id: pair.owner_id,
         human_user_id: human,
         device_id: pair.device_id_mac,
@@ -317,10 +319,57 @@ pub async fn local_sessions_set(
         paused: false,
     };
     private_write(&path, &enrollment)?;
-    state.start(&app, enrollment)
+    state.start(&app, enrollment)?;
+    Ok(revision)
 }
 
-async fn enroll_remote(token: &str, device: &str, enabled: bool) -> Result<Value> {
+#[tauri::command]
+pub async fn local_sessions_revoke(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Controller>,
+    revision: u64,
+    token: String,
+    human_user_id: String,
+    workspace_id: String,
+) -> Result<()> {
+    // Serialize the entire remote request with enable, not merely its initial
+    // revision check. A newer enable cannot race behind an old revoke response.
+    let _guard = state.mutation.lock().await;
+    if state.revision.load(Ordering::SeqCst) != revision {
+        return Ok(());
+    }
+    let enrollment: Enrollment = private_read(&state_dir(&app)?.join("enrollment.json"))?;
+    if enrollment.enabled
+        || enrollment.human_user_id != human_user_id
+        || enrollment.owner_id != workspace_id
+        || state
+            .human
+            .lock()
+            .map_err(|_| "sharing state unavailable")?
+            .as_ref()
+            != Some(&Some(human_user_id))
+    {
+        return Ok(());
+    }
+    // Old consent may predate server revisions. Never fall back to an
+    // unconditional background revoke, including after a timeout/conflict.
+    let Some(expected) = &enrollment.server_revision else {
+        return Ok(());
+    };
+    enroll_remote(&token, &enrollment.device_id, false, Some(expected)).await?;
+    Ok(())
+}
+
+async fn enroll_remote(
+    token: &str,
+    device: &str,
+    enabled: bool,
+    expected_revision: Option<&str>,
+) -> Result<Value> {
+    let mut body = json!({"deviceId":device,"enabled":enabled});
+    if let Some(revision) = expected_revision {
+        body["expectedRevision"] = json!(revision);
+    }
     let response = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::none())
@@ -331,7 +380,7 @@ async fn enroll_remote(token: &str, device: &str, enabled: bool) -> Result<Value
             crate::LIGHTBULB_API_BASE
         ))
         .bearer_auth(token)
-        .json(&json!({"deviceId":device,"enabled":enabled}))
+        .json(&body)
         .send()
         .await
         .map_err(|_| "enrollment unavailable")?;

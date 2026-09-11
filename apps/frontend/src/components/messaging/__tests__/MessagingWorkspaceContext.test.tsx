@@ -162,12 +162,21 @@ it("offers channel admins only non-members and projects explicit member wire fie
   });
 });
 
-it.each(["dm", "group-dm"] as const)("does not expose member adds for a %s", (kind) => {
-  state.activeRoom = { ...room, kind };
+it("does not expose room management for a direct message", () => {
+  state.activeRoom = { ...room, kind: "dm" };
   compose();
   expect(panel.onAddMember).toBeUndefined();
   expect(panel.onRenameRoom).toBeUndefined();
   expect(panel.onRemoveMember).toBeUndefined();
+});
+
+it("exposes only renaming for a group chat owner", async () => {
+  state.activeRoom = { ...room, kind: "group-dm" };
+  compose();
+  expect(panel.onAddMember).toBeUndefined();
+  expect(panel.onRemoveMember).toBeUndefined();
+  await act(async () => panel.onRenameRoom?.("Project room"));
+  expect(state.updateRoom).toHaveBeenCalledWith({ name: "Project room" });
 });
 
 it("does not expose member adds to a channel member without admin permission", () => {

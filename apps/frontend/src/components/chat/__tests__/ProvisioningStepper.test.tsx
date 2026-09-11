@@ -53,7 +53,11 @@ vi.mock("@clerk/nextjs", () => ({
   // Components in the stepper tree (useApi consumers) read useAuth/useUser.
   useAuth: () => ({
     getToken: vi.fn().mockResolvedValue("test-token"),
+    isLoaded: clerkMockIsLoaded,
     isSignedIn: true,
+    userId: "user-test",
+    orgId: clerkMockOrganization?.id ?? "org-test",
+    orgRole: "org:admin",
   }),
   useUser: () => ({ user: clerkMockUser, isLoaded: clerkMockIsLoaded }),
 }));

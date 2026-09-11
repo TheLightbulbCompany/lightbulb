@@ -100,7 +100,7 @@ it("navigates search results into controlled threads and focuses main results", 
   await userEvent.click(within(screen.getByRole("list", { name: "Search results" })).getByRole("button"));
   await waitFor(() => expect(onSelectThread).toHaveBeenLastCalledWith(null));
   view.rerender(<RoomPanel {...props} messages={[message, reply]} selectedThreadId={null} onSelectThread={onSelectThread} historyComplete />);
-  expect(screen.getByRole("article", { name: "Message from Friday" })).toHaveFocus();
+  expect(screen.getByRole("article", { name: "Message from Friday" }).closest("[data-message-id]")).toHaveFocus();
 });
 
 it("names a DM for its counterpart and uses canonical author and member activity", () => {

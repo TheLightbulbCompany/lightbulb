@@ -18,6 +18,7 @@ import { ParticipantProfile } from "./ParticipantProfile";
 import { RoomImageAttachments } from "./RoomImageAttachments";
 import { RoomMessageSearch } from "./RoomMessageSearch";
 import { RoomMessageContent } from "./RoomMessageContent";
+import { RoomTimeline } from "./RoomTimeline";
 import { roomDisplayName } from "./types";
 import type {
   PendingRoomMessage,
@@ -37,6 +38,8 @@ export interface RoomPanelProps {
   currentUserId: string;
   roomId: string;
   room?: RoomSummary;
+  readSeqAtOpen?: number | null;
+  targetMessageId?: string | null;
   state: RoomState;
   httpReady: boolean;
   liveConnected: boolean;
@@ -158,6 +161,8 @@ function RoomContent({
   roomId,
   currentUserId,
   room,
+  readSeqAtOpen,
+  targetMessageId,
   state,
   httpReady,
   liveConnected,
@@ -221,6 +226,10 @@ function RoomContent({
   const visibleRoom = room?.roomId === roomId ? room : undefined;
   const actionable = httpReady && !!visibleRoom;
   const mainMessages = messages.filter((message) => message.threadRootMessageId === null);
+  const newLineSeq = readSeqAtOpen ?? null;
+  const ownSeqs = messages.filter((message) => message.author.kind === "human" && message.author.id === currentUserId).map((message) => message.messageSeq);
+  const ownLastSentSeq = ownSeqs.length ? Math.max(...ownSeqs) : null;
+  const sentSinceOpen = ownLastSentSeq !== null && newLineSeq !== null && ownLastSentSeq > newLineSeq;
   const parentMessage = selection?.kind === "thread" ? messages.find((message) => message.messageId === selection.id) : undefined;
   const selectedContext = selection?.kind === "context" ? contexts.find((context) => context.id === selection.id) : undefined;
   const showDetail = !!(parentMessage || selectedContext);
@@ -279,10 +288,9 @@ function RoomContent({
   }, [selection]);
 
   useEffect(() => {
-    if (!searchTarget) return;
-    const root = searchTarget.threadRootMessageId;
-    if (root ? selection?.kind !== "thread" || selection.id !== root : selection !== null) return;
-    const target = document.getElementById(`${id}-${root ? "thread" : "main"}-${searchTarget.messageId}`);
+    if (!searchTarget?.threadRootMessageId) return;
+    if (selection?.kind !== "thread" || selection.id !== searchTarget.threadRootMessageId) return;
+    const target = document.getElementById(`${id}-thread-${searchTarget.messageId}`);
     target?.scrollIntoView({ block: "center" });
     target?.focus({ preventScroll: true });
   }, [id, searchTarget, selection]);
@@ -316,7 +324,7 @@ function RoomContent({
     setSelection({ kind, id: targetId });
   }
 
-  function renderMessage(message: RoomMessage, inThread = false) {
+  function renderMessage(message: RoomMessage, inThread = false, collapsed = false) {
     const participant = participants.find((member) => member.kind === message.author.kind && member.id === message.author.id);
     const name = participant?.displayName || message.author.displayName || "Unknown author";
     const timestamp = !Number.isNaN(Date.parse(message.createdAt)) ? message.createdAt : undefined;
@@ -449,15 +457,15 @@ function RoomContent({
       </section>}
       {(state === "reconnecting" || !liveConnected) && <div className="room-state"><p role="status" aria-label="Room status">Reconnecting live updates. You can keep sending messages.</p>
         {onRetry && <Button variant="outline" onClick={onRetry}>Check for updates</Button>}</div>}
-      <div role="region" aria-label="Messages" className="room-history" tabIndex={0}>
-        {mainMessages.length === 0 && pendingMessages.length === 0
-          ? <div className="room-empty"><h3 className="font-semibold text-lg">Start the conversation</h3><p className="text-sm text-muted-foreground">Share an update or mention an agent when you want help.</p></div>
-          : <>{mainMessages.map((message) => renderMessage(message))}
-            {pendingMessages.filter((message) => message.threadRootMessageId === null).map((message) => <article key={message.clientMessageId} className="room-message" aria-label={`Pending message from ${viewer?.displayName ?? "You"}`}>
-              <Identity name={viewer?.displayName ?? "You"} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{viewer?.displayName ?? "You"}</span><span className="text-sm text-muted-foreground">Sending…</span></div><MarkdownView skipHtml components={roomMarkdown}>{message.text}</MarkdownView></div>
-            </article>)}</>}
+      <RoomTimeline roomId={roomId} messages={mainMessages} readSeq={sentSinceOpen ? null : newLineSeq} ownLastSentSeq={ownLastSentSeq}
+        targetMessageId={searchTarget && !searchTarget.threadRootMessageId && !selection ? searchTarget.messageId : targetMessageId ?? null}
+        renderMessage={(message, collapsed) => renderMessage(message, false, collapsed)}
+        empty={<div className="room-empty"><h3 className="font-semibold text-lg">Start the conversation</h3><p className="text-sm text-muted-foreground">Share an update or mention an agent when you want help.</p></div>}>
+        {pendingMessages.filter((message) => message.threadRootMessageId === null).map((message) => <article key={message.clientMessageId} className="room-message" aria-label={`Pending message from ${viewer?.displayName ?? "You"}`}>
+          <Identity name={viewer?.displayName ?? "You"} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{viewer?.displayName ?? "You"}</span><span className="text-sm text-muted-foreground">Sending…</span></div><MarkdownView skipHtml components={roomMarkdown}>{message.text}</MarkdownView></div>
+        </article>)}
         {runs.filter((run) => !run.threadRootMessageId).map(renderRun)}
-      </div>
+      </RoomTimeline>
       <p className="room-typing text-sm text-muted-foreground" role="status">{typingMembers.length > 0 ? `${typingMembers.slice(0, 3).map((member) => member.displayName).join(", ")}${typingMembers.length > 3 ? " and others" : ""} ${typingMembers.length === 1 ? "is" : "are"} typing…` : ""}</p>
       <RoomComposer {...composer} disabled={!actionable || composer.disabled} />
     </div>

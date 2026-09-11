@@ -26,6 +26,9 @@ describe("respondHint", () => {
   it("says a live run will be steered", () => {
     expect(respondHint("channel", [friday], [], ["agent-friday"])).toBe("Friday is working — sending now steers that run");
   });
+  it("never offers to steer a run this message will not be dispatched to", () => {
+    expect(respondHint("channel", [gauge], [], ["agent-gauge"])).toBe("Gauge when mentioned");
+  });
   it("is empty when the room has no agents", () => {
     expect(respondHint("channel", [person], [], [])).toBe("");
   });

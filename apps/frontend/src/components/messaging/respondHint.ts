@@ -24,10 +24,13 @@ export function respondHint(
   for (const member of members) {
     if (member.kind !== "agent") continue;
     // observe never runs — not on ambient traffic, not when mentioned, not in a DM.
-    if (member.listenMode === "observe") parts.push(`${member.displayName} observing`);
+    if (member.listenMode === "observe") { parts.push(`${member.displayName} observing`); continue; }
+    // The dispatch decision comes FIRST: an agent this message will not be
+    // dispatched to cannot be steered by it, however busy it looks.
+    const willReply = roomKind === "dm" || mentioned.has(member.id) || member.listenMode === "active";
+    if (!willReply) parts.push(`${member.displayName} when mentioned`);
     else if (runningAgentIds.includes(member.id)) parts.push(`${member.displayName} is working — sending now steers that run`);
-    else if (roomKind === "dm" || mentioned.has(member.id) || member.listenMode === "active") parts.push(`${member.displayName} will reply`);
-    else parts.push(`${member.displayName} when mentioned`);
+    else parts.push(`${member.displayName} will reply`);
   }
   return parts.join(" · ");
 }

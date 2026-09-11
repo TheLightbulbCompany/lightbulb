@@ -6,6 +6,9 @@ import type { CreateMessageRequest, ImageAttachment, MemberRef } from "@lightbul
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { consumeFocusComposerRequest } from "@/lib/focusComposerRequest";
+import { activeTrigger, applyCompletion, type CompletionTrigger } from "./composerText";
+import { resolveTypedMentions } from "./mentions";
+import { ParticipantAvatar } from "./ParticipantAvatar";
 import type { RoomParticipant } from "./types";
 import "./messaging.css";
 
@@ -58,8 +61,8 @@ function ComposerAttempt({
 }: RoomComposerProps) {
   const fieldId = useId();
   const field = useRef<HTMLTextAreaElement>(null);
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [query, setQuery] = useState("");
+  const [trigger, setTrigger] = useState<CompletionTrigger | null>(null);
+  const [activeIndex, setActiveIndex] = useState(0);
   const [submitted, setSubmitted] = useState(sendState !== "idle");
   const [callbackUncertain, setCallbackUncertain] = useState(false);
   const [retryPending, setRetryPending] = useState(false);
@@ -106,7 +109,24 @@ function ComposerAttempt({
   }
 
   const defaultMention = defaultAgentId ? { kind: "agent" as const, id: defaultAgentId } : null;
+  // A DM with exactly one agent puts that agent first — the same signal the
+  // context already uses for focusAgentId.
+  const mentionable = focusAgentId
+    ? [...members.filter((member) => member.id === focusAgentId), ...members.filter((member) => member.id !== focusAgentId)]
+    : members;
+  const options = trigger?.kind === "mention"
+    ? mentionable.filter((member) => {
+        const needle = trigger.query.toLocaleLowerCase();
+        return !needle
+          || member.displayName.toLocaleLowerCase().includes(needle)
+          || (member.mentionHandle ?? "").toLocaleLowerCase().includes(needle);
+      })
+    : [];
+  const mentionOpen = options.length > 0;
   const mentions = [...selectedMentions];
+  for (const ref of resolveTypedMentions(text, members)) {
+    if (!mentions.some((mention) => sameMember(mention, ref))) mentions.push(ref);
+  }
   if (defaultMention && !mentions.some((mention) => sameMember(mention, defaultMention))) mentions.push(defaultMention);
   const authorized = mentions.every((mention) => members.some((member) => sameMember(member, mention)));
   const bytes = new TextEncoder().encode(text).length;
@@ -160,6 +180,28 @@ function ComposerAttempt({
     setImages((current) => current.filter((image) => image.preview !== preview));
   }
 
+  function syncTrigger(value: string, caret: number | null) {
+    if (composing.current) return;
+    setTrigger(activeTrigger(value, caret));
+    setActiveIndex(0);
+  }
+
+  function choose(member: RoomParticipant) {
+    if (!trigger) return;
+    const token = member.kind === "agent" && member.mentionHandle ? `@${member.mentionHandle}` : `@${member.displayName}`;
+    const next = applyCompletion(text, trigger, token);
+    const ref: MemberRef = { kind: member.kind, id: member.id };
+    if (!selectedMentions.some((mention) => sameMember(mention, ref)) && selectedMentions.length < 32) {
+      onMentionsChange([...selectedMentions, ref]);
+    }
+    onTextChange(next.text);
+    setTrigger(null);
+    requestAnimationFrame(() => {
+      field.current?.focus();
+      field.current?.setSelectionRange(next.caret, next.caret);
+    });
+  }
+
   function submit(retry = false) {
     if (retry
       ? disabled || !!error || uploading || uploadFailed || !hasContent || !clientMessageId || effectiveState !== "rejected" || !onRetry || retryLocked.current
@@ -184,35 +226,54 @@ function ComposerAttempt({
     }
   }
 
-  function toggleMention(member: RoomParticipant, checked: boolean) {
-    const ref: MemberRef = { kind: member.kind, id: member.id };
-    onMentionsChange(checked
-      ? [...selectedMentions.filter((mention) => !sameMember(mention, ref)), ref]
-      : selectedMentions.filter((mention) => !sameMember(mention, ref)));
-    if (!checked || member.kind !== "agent" || !member.mentionHandle) return;
-    const token = `@${member.mentionHandle}`;
-    const exists = new RegExp(`(^|\\s)${token}(?=$|\\s|[.,!?;:])`, "i").test(text);
-    if (!exists) onTextChange(`${text}${text && !/\s$/.test(text) ? " " : ""}${token} `);
-  }
-
-  const visibleMembers = members.filter((member) => {
-    const needle = query.toLocaleLowerCase();
-    return member.displayName.toLocaleLowerCase().includes(needle) || member.mentionHandle?.includes(needle);
-  });
-
   return <form className="room-composer" aria-label={`${label} composer`} aria-busy={pending || retryPending}
     onSubmit={(event) => { event.preventDefault(); submit(); }}>
     <label className="sr-only" htmlFor={fieldId}>{label}</label>
+    {mentionOpen && <div id={`${fieldId}-targets`} className="room-typeahead" role="listbox" aria-label="Mention a room member">
+      {options.map((member, index) => <button key={`${member.kind}:${member.id}`} id={`${fieldId}-option-${index}`} type="button" role="option"
+        aria-selected={index === activeIndex} className="room-choice room-choice-button" data-active={index === activeIndex || undefined}
+        onMouseDown={(event) => event.preventDefault()} onMouseEnter={() => setActiveIndex(index)} onClick={() => choose(member)}>
+        <ParticipantAvatar participant={member} size="sm" />
+        <span className="min-w-0 flex-1 text-left"><span className="block truncate" title={member.displayName}>{member.displayName}</span>
+          <span className="text-muted-foreground text-sm">{member.kind === "agent" && member.mentionHandle ? `@${member.mentionHandle}` : "Person"}</span></span>
+      </button>)}
+    </div>}
     <Textarea ref={field} id={fieldId} value={text} disabled={!editable} rows={3} aria-invalid={!!error}
       aria-describedby={`${fieldId}-help ${fieldId}-status`} placeholder={label === "Reply to thread" ? "Reply to thread…" : "Message the conversation · @ to mention"}
-      onChange={(event) => { onTextChange(event.target.value); onTypingChange?.(!!event.target.value.trim()); }}
+      aria-autocomplete="list" aria-expanded={mentionOpen} aria-controls={mentionOpen ? `${fieldId}-targets` : undefined}
+      aria-activedescendant={mentionOpen ? `${fieldId}-option-${activeIndex}` : undefined}
+      onChange={(event) => { onTextChange(event.target.value); onTypingChange?.(!!event.target.value.trim()); syncTrigger(event.target.value, event.target.selectionStart); }}
+      onClick={(event) => syncTrigger(event.currentTarget.value, event.currentTarget.selectionStart)}
+      onKeyUp={(event) => { if (event.key.startsWith("Arrow") || event.key === "Home" || event.key === "End") syncTrigger(event.currentTarget.value, event.currentTarget.selectionStart); }}
       onPaste={(event) => {
         const files = [...event.clipboardData.files].filter((file) => file.type.startsWith("image/"));
         if (files.length) { event.preventDefault(); addImages(files); }
       }}
       onBlur={() => onTypingChange?.(false)} onCompositionStart={() => { composing.current = true; }}
-      onCompositionEnd={() => { composing.current = false; }}
+      onCompositionEnd={(event) => { composing.current = false; syncTrigger(event.currentTarget.value, event.currentTarget.selectionStart); }}
       onKeyDown={(event) => {
+        if (mentionOpen) {
+          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            event.preventDefault();
+            setActiveIndex((index) => (index + (event.key === "ArrowDown" ? 1 : options.length - 1)) % options.length);
+            return;
+          }
+          if (event.key === "Enter" || event.key === "Tab") {
+            if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+            event.preventDefault();
+            choose(options[activeIndex] ?? options[0]);
+            return;
+          }
+          if (event.key === "Escape") {
+            // Esc closes the typeahead FIRST; the thread/overlay listener on
+            // window must not also fire. stopPropagation on the synthetic
+            // event is not enough — React listens at the root, below window.
+            event.preventDefault();
+            event.nativeEvent.stopImmediatePropagation();
+            setTrigger(null);
+            return;
+          }
+        }
         if (event.key === "Enter" && !event.shiftKey && !composing.current && !event.nativeEvent.isComposing && event.keyCode !== 229) {
           event.preventDefault();
           submit();
@@ -231,27 +292,19 @@ function ComposerAttempt({
       {onUploadAttachment && <><input ref={imageInput} className="sr-only" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple
         onChange={(event) => { addImages([...event.target.files ?? []]); event.target.value = ""; }} />
         <Button type="button" variant="ghost" aria-label="Add images" disabled={!editable || images.length >= 4} onClick={() => imageInput.current?.click()}><ImagePlus aria-hidden="true" /></Button></>}
-      <Button type="button" variant="ghost" aria-label="Choose mentions" aria-expanded={pickerOpen}
-        aria-controls={`${fieldId}-targets`} disabled={!editable} onClick={() => setPickerOpen(!pickerOpen)}><AtSign aria-hidden="true" /><span className="sr-only">Mention</span></Button>
+      <Button type="button" variant="ghost" aria-label="Mention someone" aria-expanded={mentionOpen}
+        disabled={!editable} onClick={() => {
+          const caret = field.current?.selectionStart ?? text.length;
+          const needsSpace = caret > 0 && !/\s$/.test(text.slice(0, caret));
+          const next = `${text.slice(0, caret)}${needsSpace ? " " : ""}@${text.slice(caret)}`;
+          const sigil = caret + (needsSpace ? 1 : 0);
+          onTextChange(next);
+          setTrigger({ kind: "mention", start: sigil, end: sigil + 1, query: "" });
+          setActiveIndex(0);
+          requestAnimationFrame(() => { field.current?.focus(); field.current?.setSelectionRange(sigil + 1, sigil + 1); });
+        }}><AtSign aria-hidden="true" /><span className="sr-only">Mention</span></Button>
       <Button type="submit" className="room-send" disabled={!canSend} aria-label="Send message"><Send aria-hidden="true" /><span className="sr-only">Send</span></Button>
     </div>
-    {pickerOpen && <fieldset id={`${fieldId}-targets`} className="room-picker" disabled={!editable}>
-      <legend className="font-semibold">Room members</legend>
-      <label htmlFor={`${fieldId}-search`} className="sr-only">Find room members</label>
-      <input id={`${fieldId}-search`} type="search" className="room-input" value={query} onChange={(event) => setQuery(event.target.value)} />
-      <div className="room-picker-list">
-        {visibleMembers.map((member) => {
-          const checked = mentions.some((mention) => sameMember(mention, member));
-          return <label key={`${member.kind}:${member.id}`} className="room-choice">
-            <input type="checkbox" checked={checked} disabled={member.id === defaultAgentId || (!checked && mentions.length >= 32)}
-              onChange={(event) => toggleMention(member, event.target.checked)} />
-            <span className="min-w-0"><span className="block truncate" title={member.displayName}>{member.displayName}</span>
-              <span className="text-muted-foreground text-sm">{member.kind === "agent" && member.mentionHandle ? `@${member.mentionHandle}` : "Person"}</span></span>
-          </label>;
-        })}
-        {visibleMembers.length === 0 && <p className="text-sm text-muted-foreground">No matching room members.</p>}
-      </div>
-    </fieldset>}
     <p id={`${fieldId}-help`} className={error ? "text-sm text-err" : "room-composer-help text-sm text-muted-foreground"}>{error || "Enter to send · Shift+Enter for a new line."}</p>
     <p id={`${fieldId}-status`} role="status" className={uncertain ? "text-sm text-warn" : effectiveState === "rejected" ? "text-sm text-err" : "text-sm text-muted-foreground"}>{status}</p>
     {uncertain && onReconcile && <Button type="button" variant="outline" disabled={disabled} onClick={() => onReconcile(clientMessageId)}>Check message status</Button>}

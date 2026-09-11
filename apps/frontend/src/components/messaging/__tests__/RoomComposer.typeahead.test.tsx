@@ -1,0 +1,122 @@
+import { useState } from "react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { MemberRef } from "@lightbulb/shared";
+import { RoomComposer, type RoomComposerProps } from "../RoomComposer";
+import type { RoomParticipant } from "../types";
+
+const members: RoomParticipant[] = [
+  { kind: "human", id: "user-aden", displayName: "Aden Kim", mentionHandle: null, role: "member", listenMode: null, joinedAt: "2026-09-10T00:00:00.000Z", joinedSeq: 1 },
+  { kind: "agent", id: "agent-friday", displayName: "Friday", mentionHandle: "friday", role: "member", listenMode: "mentions", joinedAt: "2026-09-10T00:00:00.000Z", joinedSeq: 2 },
+  { kind: "agent", id: "agent-atlas", displayName: "Atlas", mentionHandle: "atlas", role: "member", listenMode: "mentions", joinedAt: "2026-09-10T00:00:00.000Z", joinedSeq: 3 },
+];
+
+function Harness({ onSubmit = vi.fn() }: { onSubmit?: RoomComposerProps["onSubmit"] }) {
+  const [text, setText] = useState("");
+  const [mentions, setMentions] = useState<MemberRef[]>([]);
+  return <RoomComposer text={text} onTextChange={setText} members={members} selectedMentions={mentions}
+    onMentionsChange={setMentions} clientMessageId="11111111-1111-4111-8111-111111111111" sendState="idle" onSubmit={onSubmit} />;
+}
+
+const field = () => screen.getByRole("textbox", { name: "Message" });
+const type = (value: string) => fireEvent.change(field(), { target: { value, selectionStart: value.length } });
+
+beforeEach(() => vi.stubGlobal("URL", { ...URL, createObjectURL: vi.fn(() => "blob:proof"), revokeObjectURL: vi.fn() }));
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+it("opens and filters the mention list from a typed @", () => {
+  render(<Harness />);
+  type("Ask @fri");
+  expect(screen.getByRole("listbox", { name: "Mention a room member" })).toBeInTheDocument();
+  expect(screen.getByRole("option", { name: /Friday/ })).toBeInTheDocument();
+  expect(screen.queryByRole("option", { name: /Atlas/ })).not.toBeInTheDocument();
+});
+
+it("closes the list when nothing matches so prose after an @ is left alone", () => {
+  render(<Harness />);
+  type("Email me @ the office");
+  expect(screen.queryByRole("listbox", { name: "Mention a room member" })).not.toBeInTheDocument();
+});
+
+it("inserts an agent handle with Enter instead of sending", () => {
+  const onSubmit = vi.fn();
+  render(<Harness onSubmit={onSubmit} />);
+  type("Ask @fri");
+  fireEvent.keyDown(field(), { key: "Enter" });
+  expect(field()).toHaveValue("Ask @friday ");
+  expect(onSubmit).not.toHaveBeenCalled();
+});
+
+it("inserts a human as @Display Name and sends the structured mention", () => {
+  const onSubmit = vi.fn();
+  render(<Harness onSubmit={onSubmit} />);
+  type("Hi @Ade");
+  fireEvent.click(screen.getByRole("option", { name: /Aden Kim/ }));
+  expect(field()).toHaveValue("Hi @Aden Kim ");
+  fireEvent.keyDown(field(), { key: "Enter" });
+  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+    text: "Hi @Aden Kim ",
+    mentions: [{ kind: "human", id: "user-aden" }],
+  }));
+});
+
+it("resolves a fully typed handle on send without ever opening the list", () => {
+  const onSubmit = vi.fn();
+  render(<Harness onSubmit={onSubmit} />);
+  type("@friday ship it");
+  expect(screen.queryByRole("listbox", { name: "Mention a room member" })).not.toBeInTheDocument();
+  fireEvent.keyDown(field(), { key: "Enter" });
+  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+    text: "@friday ship it",
+    mentions: [{ kind: "agent", id: "agent-friday" }],
+  }));
+});
+
+it("leaves an unmatched token plain and mentions nobody", () => {
+  const onSubmit = vi.fn();
+  render(<Harness onSubmit={onSubmit} />);
+  type("@nobody ship it");
+  fireEvent.keyDown(field(), { key: "Enter" });
+  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ mentions: [] }));
+});
+
+it("moves the active option with the arrow keys and wraps", () => {
+  render(<Harness />);
+  type("Ask @");
+  const id = () => field().getAttribute("aria-activedescendant");
+  const first = id();
+  fireEvent.keyDown(field(), { key: "ArrowDown" });
+  expect(id()).not.toBe(first);
+  fireEvent.keyDown(field(), { key: "ArrowUp" });
+  expect(id()).toBe(first);
+});
+
+it("inserts with Tab as well as Enter", () => {
+  render(<Harness />);
+  type("Ask @atl");
+  fireEvent.keyDown(field(), { key: "Tab" });
+  expect(field()).toHaveValue("Ask @atlas ");
+});
+
+it("closes with Escape without changing the draft", () => {
+  render(<Harness />);
+  type("Ask @");
+  fireEvent.keyDown(field(), { key: "Escape" });
+  expect(screen.queryByRole("listbox", { name: "Mention a room member" })).not.toBeInTheDocument();
+  expect(field()).toHaveValue("Ask @");
+});
+
+it("opens the same list from the @ button", () => {
+  render(<Harness />);
+  fireEvent.click(screen.getByRole("button", { name: "Mention someone" }));
+  expect(screen.getByRole("listbox", { name: "Mention a room member" })).toBeInTheDocument();
+  expect(field()).toHaveValue("@");
+});
+
+it("still sends on Enter when no list is open", () => {
+  const onSubmit = vi.fn();
+  render(<Harness onSubmit={onSubmit} />);
+  type("Ship it");
+  fireEvent.keyDown(field(), { key: "Enter" });
+  expect(onSubmit).toHaveBeenCalledOnce();
+});

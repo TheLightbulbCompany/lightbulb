@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SWRConfig } from "swr";
 import type { DockviewApi, SerializedDockview } from "dockview-react";
@@ -124,14 +124,14 @@ describe("Messages room/controller boundary", () => {
   it("keeps the exact clicked DM, while an explicit same-agent shortcut can retarget it", async () => {
     const { api } = renderWorkspace();
     await waitFor(() => expect(screen.getByLabelText("Selected room")).toHaveTextContent("a-first"));
-    fireEvent.click(await screen.findByRole("button", { name: /General/ }));
+    fireEvent.click(await within(screen.getByRole("region", { name: "Channels" })).findByTitle("General").then((label) => label.closest("button")!));
     await waitFor(() => expect(screen.getByLabelText("Selected room")).toHaveTextContent("channel"));
     expect(getWorkspaceSnapshot()).toMatchObject({ focusedChatAgentId: null, visibleChatAgentIds: [] });
-    fireEvent.click(await screen.findByRole("button", { name: /Exact Alpha/ }));
+    fireEvent.click(await within(screen.getByRole("region", { name: "Direct messages" })).findByTitle("Exact Alpha").then((label) => label.closest("button")!));
     await act(async () => {});
     expect(screen.getByLabelText("Selected room")).toHaveTextContent("a-exact");
     expect(getWorkspaceSnapshot().focusedChatAgentId).toBe("agent-a");
-    fireEvent.click(screen.getByRole("button", { name: /Exact Alpha/ }));
+    fireEvent.click(within(screen.getByRole("region", { name: "Direct messages" })).getByTitle("Exact Alpha").closest("button")!);
     await act(async () => {});
     expect(screen.getByLabelText("Selected room")).toHaveTextContent("a-exact");
     act(() => openChatPanel("agent-a"));
@@ -142,7 +142,7 @@ describe("Messages room/controller boundary", () => {
   it("hands a draft to the selected same-agent DM after navigation settles", async () => {
     renderWorkspace();
     await waitFor(() => expect(screen.getByLabelText("Selected room")).toHaveTextContent("a-first"));
-    fireEvent.click(await screen.findByRole("button", { name: /Exact Alpha/ }));
+    fireEvent.click(await within(screen.getByRole("region", { name: "Direct messages" })).findByTitle("Exact Alpha").then((label) => label.closest("button")!));
     await waitFor(() => expect(screen.getByLabelText("Selected room")).toHaveTextContent("a-exact"));
 
     act(() => expect(openChatPanelWithDraft("file the inbox")).toBe(true));
@@ -163,7 +163,7 @@ describe("Messages room/controller boundary", () => {
     fireEvent.click(await screen.findByRole("button", { name: "New conversation" }));
     fireEvent.change(screen.getByLabelText("Conversation type"), { target: { value: "dm" } });
     fireEvent.click(screen.getByLabelText("Select Beta"));
-    fireEvent.click(screen.getByRole("button", { name: "Create conversation" }));
+    fireEvent.click(screen.getByRole("button", { name: "Start direct message" }));
     await waitFor(() => expect(screen.getByLabelText("Selected room")).toHaveTextContent("b-new"));
     await act(async () => { hydrate(created); });
     await waitFor(() => expect(getWorkspaceSnapshot()).toMatchObject({

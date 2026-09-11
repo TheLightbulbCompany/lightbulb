@@ -48,8 +48,3 @@ tmp/
 temp/
 .ruff_cache/
 .claude/
-
-# Starter-roster role contracts — re-include after the *.md / .DS_Store /
-# __pycache__ globs above strip them. These ship in the image and are read at
-# provision time.
-!core/services/starter_roster/files/**

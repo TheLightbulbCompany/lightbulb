@@ -92,7 +92,6 @@ const SUPPORT_MAILTO = "mailto:support@thelightbulb.company";
 /** Replaces the step label once the kickoff is known to have failed. The step
  *  labels are all present-progressive ("Putting the finishing touches on your
  *  agent…"), i.e. claims that work is under way. */
-const FAILED_TITLE = "Setup didn’t finish";
 
 /**
  * The three visible steps. Labels match web's STEPS_PAID rows for the same
@@ -195,72 +194,6 @@ function ProvisionRing({ animating = true }: { animating?: boolean }) {
  * over live chat and the reasons run long), but a clamp with no way past it
  * would swallow exactly the detail support needs, which is the failure this
  * whole surface exists to stop.
- */
-export function FirstRunFailedNotice({
-  error,
-  inline = false,
-}: {
-  error?: string | null;
-  inline?: boolean;
-}) {
-  const insets = useSafeAreaInsets();
-  const [expanded, setExpanded] = useState(false);
-  return (
-    <View
-      style={
-        inline
-          ? styles.firstRunInline
-          : [styles.firstRunBanner, { paddingTop: insets.top }]
-      }
-      testID="first-run-failed"
-    >
-      <View style={styles.firstRunRow}>
-        <View style={styles.firstRunCopy}>
-          <Text style={styles.firstRunText}>
-            {inline
-              ? "Your container came up, but the first-run kickoff failed and won’t retry on its own. Contact support and we’ll re-arm it — your brief is saved."
-              : "Friday couldn’t start her first run. Message her here to kick things off, or contact support if she doesn’t answer."}
-          </Text>
-          {error ? (
-            <Pressable
-              onPress={() => setExpanded((v) => !v)}
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityState={{ expanded }}
-              accessibilityLabel={
-                expanded ? "Hide technical details" : "Show technical details"
-              }
-              style={({ pressed }) => [pressed && styles.pressed]}
-            >
-              <Text style={styles.firstRunAction}>
-                {expanded ? "Hide technical details" : "Technical details"}
-              </Text>
-              {expanded ? (
-                <Text style={styles.firstRunDetail}>{error}</Text>
-              ) : null}
-            </Pressable>
-          ) : null}
-          {inline ? (
-            <Pressable
-              onPress={() => void Linking.openURL(SUPPORT_MAILTO)}
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityLabel="Contact support"
-              style={({ pressed }) => [pressed && styles.pressed]}
-            >
-              <Text style={styles.firstRunAction}>Contact support</Text>
-            </Pressable>
-          ) : null}
-        </View>
-      </View>
-    </View>
-  );
-}
-
-/**
- * Rotating "while you wait" prompts. Crossfades on the shared rotation
- * cadence; under reduce-motion it still rotates but swaps instantly, same
- * bargain `usePulse` makes (keep the information, drop the animation).
  */
 function RotatingIdeas() {
   const [idx, setIdx] = useState(0);
@@ -456,8 +389,6 @@ export function ProvisioningStepper({ status, onRetry, children }: Props) {
   //
   // `starting` only: `ready` keeps the gate's banner-over-live-chat rendering,
   // which is the right idiom while there IS chat behind it.
-  const firstRunFailed =
-    status.kind === "starting" && status.bootstrapState === "failed";
 
   // iOS has no live regions (`accessibilityLiveRegion` is documented
   // "@platform android" in ViewAccessibility.d.ts) and iOS is the only
@@ -467,9 +398,9 @@ export function ProvisioningStepper({ status, onRetry, children }: Props) {
   useEffect(() => {
     if (!promoted) return;
     AccessibilityInfo.announceForAccessibility(
-      firstRunFailed ? FAILED_TITLE : STEPS[activeStep].active,
+      STEPS[activeStep].active,
     );
-  }, [promoted, activeStep, firstRunFailed]);
+  }, [promoted, activeStep]);
 
   // The promoted stepper replaces the whole tab shell, so the gate's rule for
   // the Interstitial applies verbatim here: it is the only exit a wrong-account
@@ -514,15 +445,15 @@ export function ProvisioningStepper({ status, onRetry, children }: Props) {
     <View style={[styles.page, { paddingTop: insets.top + spacing.xl }]}>
       <Wordmark />
 
-      <ProvisionRing animating={!firstRunFailed} />
+      <ProvisionRing />
 
       <Text style={styles.title} accessibilityRole="text" testID="provision-title">
-        {firstRunFailed ? FAILED_TITLE : STEPS[activeStep].active}
+        {STEPS[activeStep].active}
       </Text>
 
       {/* "While you wait, try asking your agent to…" is an invitation to keep
           waiting. Once the failure is known there is nothing to wait for. */}
-      {firstRunFailed ? null : <RotatingIdeas />}
+      <RotatingIdeas />
 
       {/* The rail STAYS on a failure: it reports how far setup actually got,
           which is still true and is the one thing support will ask for. */}
@@ -532,13 +463,11 @@ export function ProvisioningStepper({ status, onRetry, children }: Props) {
         {formatProvisionElapsed(elapsedMs)}
       </Text>
 
-      {firstRunFailed ? <FirstRunFailedNotice error={status.bootstrapError} inline /> : null}
-
       {/* Suppressed on a known failure: "taking longer than usual" is a claim
           that it is still going, and the notice above already carries the one
           action left. A Retry here would only re-poll a state the backend has
           already settled. */}
-      {!firstRunFailed && timedOut ? (
+      {timedOut ? (
         <View style={styles.timeout} testID="provision-timeout">
           <Text style={styles.timeoutMsg}>
             {stuck

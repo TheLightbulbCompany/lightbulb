@@ -70,21 +70,21 @@ def _fixture():
             "company_id": "c_a",
             "seeded_agent_ids": ["f"],
             "status": "active",
-            "bootstrap_state": "delivered",
+            "funnel_state": "complete",
         },
         {
             "user_id": "ext_b",
             "company_id": "c_b",
             "seeded_agent_ids": ["f"],
             "status": "active",
-            "bootstrap_state": "failed",
+            "funnel_state": "submitted",
         },
         {
             "user_id": "ext_c",
             "company_id": "c_c",
             "seeded_agent_ids": ["f"],
             "status": "active",
-            "bootstrap_state": "not_started",
+            "funnel_state": "not_started",
         },
         {
             "user_id": "u_int",
@@ -92,7 +92,7 @@ def _fixture():
             "company_id": "c_x",
             "seeded_agent_ids": ["f"],
             "status": "active",
-            "bootstrap_state": "delivered",
+            "funnel_state": "complete",
         },
         {"user_id": "__pending_brief__:zzz"},
     ]
@@ -233,21 +233,21 @@ def test_activation_stages():
     by_owner = {o["owner_id"]: o for o in ext["owners"]}
     assert by_owner["ext_a"]["stage"] == "first_autonomous_success"
     assert by_owner["ext_b"]["stage"] == "container_ready"  # kickoff FAILED, and nightly CEO does not count as armed
-    assert by_owner["ext_b"]["bootstrap_state"] == "failed"
+    assert by_owner["ext_b"]["onboarding_state"] == "submitted"
     assert by_owner["ext_c"]["stage"] == "signed_up"
     assert by_owner["ext_a"]["name"] == "Alpha"
     assert ext["stages"] == {
         "signed_up": 3,
         "subscribed": 2,
         "container_ready": 2,
-        "friday_first_run_delivered": 1,
+        "onboarding_complete": 1,
         "automation_armed": 1,
         "first_autonomous_success": 1,
     }
     assert ext["flags"] == {
         "subscribed": 2,
         "container_ready": 2,
-        "friday_first_run_delivered": 1,
+        "onboarding_complete": 1,
         "automation_armed": 1,
         "first_autonomous_success": 1,
     }
@@ -277,17 +277,17 @@ def test_activation_flags_are_order_independent_of_the_stage_ladder():
     assert ext["flags"]["automation_armed"] == 2
 
 
-def test_org_owner_kickoff_state_comes_from_the_owner_row_regardless_of_scan_order():
+def test_org_owner_onboarding_state_comes_from_the_owner_row_regardless_of_scan_order():
     """A DynamoDB scan has no ordering guarantee: an org member's row (no
-    bootstrap_state) must never beat the owner's row (has bootstrap_state)
-    for that owner's kickoff outcome, no matter which row the scan yields first."""
+    funnel_state) must never beat the owner's row (has funnel_state)
+    for that owner's onboarding outcome, no matter which row the scan yields first."""
     owner_row = {
         "user_id": "u_owner",
         "org_id": "int_x",
         "company_id": "c_x",
         "seeded_agent_ids": ["f"],
         "status": "active",
-        "bootstrap_state": "delivered",
+        "funnel_state": "complete",
     }
     member_row = {
         "user_id": "u_member",
@@ -301,7 +301,7 @@ def test_org_owner_kickoff_state_comes_from_the_owner_row_regardless_of_scan_ord
         fx["paperclip"] = [r for r in fx["paperclip"] if r.get("org_id") != "int_x"] + org_rows
         internal = growth.derive(**fx)["segments"]["internal"]["activation"]
         by_owner = {o["owner_id"]: o for o in internal["owners"]}
-        assert by_owner["int_x"]["bootstrap_state"] == "delivered"
+        assert by_owner["int_x"]["onboarding_state"] == "complete"
         assert by_owner["int_x"]["stage"] == "first_autonomous_success"
 
 
@@ -315,7 +315,7 @@ def test_company_owner_resolution_prefers_starter_identity_row():
             "company_id": "c_a",
             "starter_agent_ids": {"ceo": "agent-ceo"},
             "status": "active",
-            "bootstrap_state": "delivered",
+            "funnel_state": "complete",
         },
     ]
 

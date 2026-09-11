@@ -696,6 +696,12 @@ async def _ensure_paperclip_for_owner(
                 owner_user_id=owner_user_id,
                 owner_email=owner_email,
             )
+            from core.services.messaging import ensure_default_room
+
+            try:
+                await ensure_default_room(owner_id, owner_user_id)
+            except Exception:  # noqa: BLE001 — room creation retries on the next reconcile
+                logger.exception("ensure_user_ready: default room creation failed for owner=%s", owner_id)
         except PaperclipApiError as exc:
             # 409: a CONCURRENT provision_org (the previous ~3s
             # /container/status poll) is mid-flight and hasn't written the

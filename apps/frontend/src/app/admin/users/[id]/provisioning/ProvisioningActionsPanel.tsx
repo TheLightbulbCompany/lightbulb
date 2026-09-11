@@ -7,15 +7,10 @@ import { Card } from "@/components/admin/Card";
 import { ConfirmActionDialog } from "@/components/admin/ConfirmActionDialog";
 import { ErrorBanner } from "@/components/admin/ErrorBanner";
 import { Button } from "@/components/ui/button";
-import {
-  resetBootstrap,
-  retryProvision,
-} from "@/app/admin/_actions/provisioning";
+import { retryProvision } from "@/app/admin/_actions/provisioning";
 
 export interface ProvisioningActionsPanelProps {
   userId: string;
-  /** `paperclip.bootstrap_state` from the provisioning payload; gates the Reset bootstrap button. */
-  bootstrapState: string | null;
   /**
    * `container.status`; `null` for both "no row" and the container-read
    * error sentinel. Not currently read by this component — kept in the
@@ -34,18 +29,10 @@ export interface ProvisioningActionsPanelProps {
  */
 export function ProvisioningActionsPanel({
   userId,
-  bootstrapState,
 }: ProvisioningActionsPanelProps) {
   const router = useRouter();
   const [error, setError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
-
-  // "dispatched" is offered too — that is the stuck-claim case the lever now
-  // recovers. Whether the claim is actually EXPIRED is the server's call (it
-  // has the timestamp and the threshold); a still-in-flight one comes back
-  // 409 into the error banner rather than being guessed at here.
-  const resetBootstrapDisabled =
-    bootstrapState !== "failed" && bootstrapState !== "dispatched";
 
   function clearStatus() {
     setError(null);
@@ -67,12 +54,6 @@ export function ProvisioningActionsPanel({
     clearStatus();
     const result = await retryProvision(userId);
     applyResult("Retry provision", result.ok, result.error);
-  }
-
-  async function handleResetBootstrap() {
-    clearStatus();
-    const result = await resetBootstrap(userId);
-    applyResult("Reset bootstrap", result.ok, result.error);
   }
 
   return (
@@ -98,39 +79,6 @@ export function ProvisioningActionsPanel({
           >
             <Button type="button" variant="default" size="sm">
               Retry provision
-            </Button>
-          </ConfirmActionDialog>
-        </div>
-
-        <div className="space-y-2 rounded-lg border border-border p-3">
-          <h3 className="text-xs font-medium uppercase tracking-caps text-muted-foreground">
-            Reset bootstrap
-          </h3>
-          <p className="text-xs text-muted-foreground">
-            Re-arms a stuck onboarding kickoff: a failed one (attempts
-            exhausted or chat.error), or a &apos;dispatched&apos; one whose
-            claim expired — including the send-attempted-never-acked case,
-            which may double-deliver. The kickoff re-dispatches on the
-            user&apos;s next /container/status poll — delivery needs their
-            chat surface online.
-          </p>
-          <ConfirmActionDialog
-            confirmText={userId}
-            actionLabel="Reset bootstrap"
-            onConfirm={handleResetBootstrap}
-          >
-            <Button
-              type="button"
-              variant="default"
-              size="sm"
-              disabled={resetBootstrapDisabled}
-              title={
-                resetBootstrapDisabled
-                  ? 'Only available when bootstrap_state is "failed" or "dispatched".'
-                  : undefined
-              }
-            >
-              Reset bootstrap
             </Button>
           </ConfirmActionDialog>
         </div>

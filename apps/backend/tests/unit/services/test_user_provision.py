@@ -315,6 +315,7 @@ async def test_ensure_paperclip_for_owner_personal_calls_provision_org():
     """Personal owner → provision_org with owner_id == user_id."""
     fake_provisioning = MagicMock()
     fake_provisioning.provision_org = AsyncMock()
+    ensure_default_room = AsyncMock()
     with (
         patch(
             "core.services.user_provision.build_paperclip_provisioning",
@@ -324,6 +325,7 @@ async def test_ensure_paperclip_for_owner_personal_calls_provision_org():
             "core.services.user_provision.close_paperclip_provisioning",
             new=AsyncMock(),
         ),
+        patch("core.services.messaging.ensure_default_room", ensure_default_room),
     ):
         await _ensure_paperclip_for_owner(
             owner_id="user_p",
@@ -336,6 +338,7 @@ async def test_ensure_paperclip_for_owner_personal_calls_provision_org():
         owner_user_id="user_p",
         owner_email="p@example.com",
     )
+    ensure_default_room.assert_awaited_once_with("user_p", "user_p")
 
 
 @pytest.mark.asyncio

@@ -14,9 +14,3 @@ import { adminPost, type ActionResult } from "./_shared";
 export async function retryProvision(userId: string): Promise<ActionResult> {
   return adminPost(`/admin/users/${encodeURIComponent(userId)}/provisioning/retry`);
 }
-
-export async function resetBootstrap(userId: string): Promise<ActionResult> {
-  return adminPost(
-    `/admin/users/${encodeURIComponent(userId)}/provisioning/reset-bootstrap`,
-  );
-}

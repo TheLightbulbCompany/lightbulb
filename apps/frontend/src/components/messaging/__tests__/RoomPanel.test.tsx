@@ -372,19 +372,28 @@ it("keeps rendering a finished run's text instead of collapsing it", () => {
   expect(screen.queryByText("Friday finished · no reply")).not.toBeInTheDocument();
 });
 
-it("lets wide room details change agent listen mode without giving humans a control", async () => {
+it("lets wide room details change agent response without giving humans a control", async () => {
   const user = userEvent.setup();
   const onListenModeChange = vi.fn();
   render(<RoomPanel {...props} onListenModeChange={onListenModeChange} />);
   await user.click(screen.getByRole("button", { name: "Show room details" }));
   const details = within(screen.getByRole("complementary", { name: "Room details" }));
-  const mode = details.getByRole("combobox", { name: "Listen mode for Friday" });
+  const mode = details.getByRole("combobox", { name: "Response for Friday" });
   expect(mode).toHaveValue("mentions");
-  expect(within(mode).getAllByRole("option").map((option) => option.textContent)).toEqual(["Active", "Mentions only", "Observe"]);
+  expect(within(mode).getAllByRole("option").map((option) => option.textContent)).toEqual(["Automatic", "Mentions only", "Observe"]);
   expect(details.getAllByRole("combobox")).toHaveLength(1);
-  expect(details.queryByRole("combobox", { name: "Listen mode for Owner" })).not.toBeInTheDocument();
+  expect(details.queryByRole("combobox", { name: "Response for Owner" })).not.toBeInTheDocument();
   await user.selectOptions(mode, "observe");
   expect(onListenModeChange).toHaveBeenCalledWith("friday", "observe");
+});
+
+it("shows an agent response as read-only text to ordinary members", async () => {
+  const user = userEvent.setup();
+  render(<RoomPanel {...props} participants={[{ ...owner, role: "member" }, friday]} />);
+  await user.click(screen.getByRole("button", { name: "Show room details" }));
+  const details = within(screen.getByRole("complementary", { name: "Room details" }));
+  expect(details.getByText("Response: Mentions only")).toBeInTheDocument();
+  expect(details.queryByRole("combobox", { name: "Response for Friday" })).not.toBeInTheDocument();
 });
 
 it("adds only eligible non-members to an existing channel", async () => {

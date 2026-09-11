@@ -1,14 +1,7 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { fireEvent, render, screen } from "@testing-library/react-native";
 
 // expo-router isn't in the jest transform allowlist; stub the bits <Chat/> uses.
 jest.mock("expo-router", () => ({ router: { push: jest.fn() } }));
-
-// Per-test Clerk user (factory is lazy — the closure reads this at render
-// time). null = signed-out, keeping the first-run redirect effect inert.
-let mockClerkUser: unknown = null;
-jest.mock("@clerk/clerk-expo", () => ({
-  useUser: () => ({ user: mockClerkUser }),
-}));
 
 // The roster reads through the canonical runtime source.
 jest.mock("../../../providers/live-events", () => ({
@@ -23,9 +16,6 @@ jest.mock("../../../providers/live-events", () => ({
   }),
 }));
 
-// Container status drives the first-run redirect's durable stand-down gate
-// (`onboarded`). null = no ready status yet (the default; first-run users see
-// onboarded=false and get redirected once).
 let mockContainerStatus: unknown = null;
 jest.mock("../../../lib/containerStatusContext", () => ({
   useContainerStatusContext: () => mockContainerStatus,
@@ -66,7 +56,6 @@ const routerPush = jest.requireMock("expo-router").router.push as jest.Mock;
 
 describe("Chat roster", () => {
   beforeEach(() => {
-    mockClerkUser = null;
     routerPush.mockClear();
     mockContainerStatus = null;
     mockAgents = makeRoster();
@@ -85,29 +74,6 @@ describe("Chat roster", () => {
     expect(screen.queryByText("START A NEW TASK WITH…")).toBeNull();
     fireEvent.press(screen.getByText("New task"));
     expect(await screen.findByText("START A NEW TASK WITH…")).toBeTruthy();
-  });
-
-  it("walks a first-run user into the default agent's chat", async () => {
-    mockClerkUser = { unsafeMetadata: { firstRun: { briefSubmitted: true } } };
-    await render(<Chat />);
-    await waitFor(() =>
-      expect(routerPush).toHaveBeenCalledWith({
-        pathname: "/(app)/agent/[agentId]",
-        params: { agentId: "agent_a", name: "Friday" },
-      }),
-    );
-    expect(routerPush).toHaveBeenCalledTimes(1);
-  });
-
-  it("does NOT redirect a returning user who already onboarded", async () => {
-    // briefSubmitted is permanently sticky; the durable `onboarded` fact is
-    // what stands the redirect down once the backend reports funnel complete.
-    // Without this gate the user gets yanked into Friday on every roster mount.
-    mockClerkUser = { unsafeMetadata: { firstRun: { briefSubmitted: true } } };
-    mockContainerStatus = { kind: "ready", onboarded: true };
-    await render(<Chat />);
-    expect(screen.getByText("Friday")).toBeTruthy();
-    expect(routerPush).not.toHaveBeenCalled();
   });
 
   // Whether a missing roster is a wake or a failure is decided by the SERVER's
@@ -205,7 +171,6 @@ describe("Chat roster", () => {
   });
 
   it("opens the agent's canonical room on tap", async () => {
-    mockClerkUser = { id: "user_x" };
     await render(<Chat />);
     fireEvent.press(screen.getByLabelText("Friday"));
     expect(routerPush).toHaveBeenCalledWith({

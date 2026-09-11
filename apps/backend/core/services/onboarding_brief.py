@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 from enum import Enum
 
 from core.containers.workspace import Workspace
+from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event
 
 logger = logging.getLogger(__name__)
@@ -496,6 +497,50 @@ def _claim_age_s(submitted_at) -> float | None:
 _draining: set[str] = set()
 
 
+async def capture_first_workspace_message(owner_id: str, message: dict) -> bool:
+    """Turn the first human message in the canonical room into onboarding intake."""
+    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.services.messaging import _STARTER_KEYS, default_room_id
+
+    author = message.get("author") or {}
+    text = str(message.get("text") or "").strip()
+    if (
+        message.get("roomId") != default_room_id(owner_id)
+        or int(message.get("messageSeq") or 0) != 2
+        or author.get("kind") != "human"
+        or len(text) < 3
+    ):
+        return False
+    if len(text) > 2000:
+        put_metric("OnboardingBriefTooLong")
+        return False
+
+    repo = PaperclipRepo(table_name="paperclip-companies")
+    owner_row = await repo.resolve_owner_row(owner_id, consistent_read=True)
+    starter_ids = getattr(owner_row, "starter_agent_ids", None) if owner_row else None
+    if (
+        getattr(owner_row, "status", None) != "active"
+        or getattr(owner_row, "funnel_state", None) != "not_started"
+        or not isinstance(starter_ids, dict)
+        or set(starter_ids) != set(_STARTER_KEYS)
+    ):
+        return False
+
+    landed = await repo.put_pending_brief(
+        owner_id,
+        path="new",
+        user_input=text,
+        detail=None,
+        brief_text=text,
+        submitted_by=str(author["id"]),
+        source_message_id=str(message["messageId"]),
+    )
+    if not landed:
+        return False
+    await reconcile_pending_brief(owner_id)
+    return True
+
+
 async def reconcile_pending_brief(owner_id: str) -> None:
     """Fulfil a submitted funnel answer, if there is one and the workspace can
     now receive it. Retries itself until it succeeds or gives up.
@@ -673,7 +718,8 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
         # tells the next person which kind it was.
         logger.warning("reconcile_brief: fulfilment read phase failed for %s: %s", owner_id, e, exc_info=True)
         raise
-    friday = next((a for a in agents if a.get("role") == "ceo"), None)
+    ceo_id = (owner_row.starter_agent_ids or {}).get("ceo")
+    friday = next((a for a in agents if a.get("id") == ceo_id), None)
     if friday is None:
         # Paperclip seed hasn't landed Friday yet -- still provisioning.
         return DrainOutcome.NOT_READY
@@ -731,6 +777,13 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
                 email=email or "",
             ),
         )
+        completed = await repo.complete_funnel_submission(
+            owner_row.user_id,
+            onboarding_generation=generation,
+            owner_id=owner_id,
+        )
+        if not completed:
+            raise RuntimeError("onboarding generation changed before completion")
     except BaseException:
         # BaseException, not Exception: asyncio.CancelledError (backend
         # shutdown mid-drain) inherits from BaseException. Skipping the revert
@@ -762,21 +815,7 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
             logger.error("reconcile_brief: failed to revert funnel claim for %s: %s", owner_id, cleanup_err)
         raise
 
-    # The pending item is deliberately NOT deleted here, even though we won the
-    # claim and finished the work. Deleting it now hands the funnel's dismissal
-    # back to a single signal -- the row's own funnel_state -- which for an org
-    # is read through the eventually-consistent by-org-id GSI. A poll landing
-    # in that replication window would see the item gone AND the row still
-    # "not_started", and re-render the committed front door at a user who just
-    # submitted (empty, since the client clears its draft on success).
-    #
-    # Retirement instead happens at one of two later, lag-free points:
-    #   * the completion sweep in bootstrap_dispatcher, when funnel_state goes
-    #     "complete" -- which is also the moment get_onboarding_state stops
-    #     reading this item at all; or
-    #   * _settle_lost_claim, once the seeded ids have outlived the rollback
-    #     window (SETTLED_CLAIM_S), for the case where the kickoff never
-    #     delivers.
+    await repo.delete_pending_brief(owner_id)
 
     # The funnel-conversion event belongs HERE, not at intake: it is the
     # metric that answers "did onboarding work", and an intake-time emission
@@ -788,36 +827,6 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
         properties={"path": path, "no_idea": user_input is None},
     )
 
-    # Same fire-and-forget hand-off the endpoint used to make: if the runtime
-    # is already up, Friday's kickoff goes now; if it is still cold, the next
-    # /container/status poll dispatches it (bootstrap_dispatcher's own guards
-    # make a redundant call a cheap no-op).
-    #
-    # The onboarding dict is passed INLINE rather than letting the dispatcher
-    # re-read the row. For an org that re-read goes through the
-    # eventually-consistent by-org-id GSI, and the claim landed milliseconds
-    # ago -- it would read funnel_state "not_started" and silently skip the
-    # kickoff, which is precisely the miss the old router avoided by passing
-    # this same dict. Every value here is one we just wrote or just read.
-    #
-    # Deliberately carries no bootstrap_dispatched_at/_dispatch_id: this fast
-    # path cannot expire a stale claim (the dispatcher's staleness rule refuses
-    # to act on a claim it cannot date -- fail closed), and it does not need to.
-    # The /container/status poll passes the full row and is the recovery path.
-    from core.services.bootstrap_dispatcher import maybe_dispatch_bootstrap
-
-    await maybe_dispatch_bootstrap(
-        owner_id,
-        onboarding={
-            "onboarding_generation": generation,
-            "funnel_state": "submitted",
-            "bootstrap_state": owner_row.bootstrap_state or "not_started",
-            "bootstrap_attempts": owner_row.bootstrap_attempts or 0,
-            "user_id": owner_row.user_id,
-            "onboarding_submitted_by": submitted_by,
-            "onboarding_brief_text": brief_text,
-        },
-    )
     return DrainOutcome.DONE
 
 

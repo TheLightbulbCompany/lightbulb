@@ -185,6 +185,13 @@ it("does not expose member adds to a channel member without admin permission", (
   expect(panel.onAddMember).toBeUndefined();
   expect(panel.onRenameRoom).toBeUndefined();
   expect(panel.onRemoveMember).toBeUndefined();
+  expect(panel.onListenModeChange).toBeUndefined();
+});
+
+it.each(["channel", "dm", "group-dm"] as const)("lets room admins edit response modes in a %s", (kind) => {
+  state.activeRoom = { ...room, kind, members: room.members.map((member) => member.id === "owner" ? { ...member, role: "admin" } : member) };
+  compose();
+  expect(panel.onListenModeChange).toBeTypeOf("function");
 });
 
 it.each(["owner", "admin"] as const)("connects channel %s management to existing commands", async (role) => {

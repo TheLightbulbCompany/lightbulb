@@ -13,7 +13,7 @@ import time
 import json
 import logging
 import uuid
-from typing import Any, Awaitable, Callable, Dict, Optional, Set
+from typing import Any, Dict, Optional, Set
 
 from websockets import connect as ws_connect
 
@@ -273,18 +273,6 @@ class GatewayConnection:
         # billing drain window would let best-effort analytics starve usage
         # writes at shutdown.
         self._analytics_tasks: Set[asyncio.Task] = set()
-        # One-shot completion observers keyed by runId (== chat.send's
-        # idempotencyKey, which OpenClaw echoes as `runId` on every event for
-        # the run — src/gateway/server-methods/chat.ts). Registered via
-        # ``register_run_completion_callback`` by a caller that needs to
-        # observe a SPECIFIC dispatched run's terminal (final/error/aborted)
-        # without being the browser tab that sent it — e.g. the server-owned
-        # bootstrap dispatcher (INV-5, spec PR-6). Consumed (popped) exactly
-        # once, from the same TRUE-terminal gate ``_dispatch_push_notification``
-        # uses, then dropped — never re-fires for a re-delivered/duplicate
-        # terminal.
-        self._run_completion_callbacks: Dict[str, Callable[[str, dict], Awaitable[None]]] = {}
-        self._run_completion_tasks: Set[asyncio.Task] = set()
         # agent_id -> display name, TTL-cached from agents.list for push titles.
         # None until first resolve; _agent_names_at is the monotonic stamp.
         self._agent_names: Optional[Dict[str, str]] = None
@@ -1688,98 +1676,6 @@ class GatewayConnection:
         self._push_tasks.add(task)
         task.add_done_callback(self._push_tasks.discard)
 
-    def register_run_completion_callback(self, run_id: str, callback: Callable[[str, dict], Awaitable[None]]) -> None:
-        """One-shot observer for *run_id*'s TRUE terminal chat event.
-
-        *callback* is invoked ``await callback(state, payload)`` where
-        ``state`` is ``"final" | "error" | "aborted"`` and ``payload`` is the
-        raw terminal event body. Fired from ``_handle_message``'s TRUE-terminal
-        branch — the same gate ``_dispatch_push_notification`` uses, so an
-        interim `final` that only closes a tool-approval bracket (the run
-        continues as a separate follow-up) does NOT resolve this callback.
-        Overwrites any prior registration for the same *run_id*. The two
-        callers that can collide both want "latest wins": a genuine retry of
-        the same dispatch, and bootstrap_dispatcher's re-attach, which
-        deliberately registers the SAME observer under the kickoff's persisted
-        dispatch id from a process that did not dispatch it.
-        """
-        self._run_completion_callbacks[run_id] = callback
-
-    def unregister_run_completion_callback(self, run_id: str) -> None:
-        """Withdraw a registration made by ``register_run_completion_callback``
-        without waiting for a terminal event to arrive and consume it.
-
-        For a caller whose dispatch failed AFTER registering (e.g. chat.send
-        itself raised, so the run never reached OpenClaw and no terminal
-        event will EVER arrive for this *run_id*) — without this the entry
-        (and its closure, which can hold references back to a repo/pool)
-        leaks in ``_run_completion_callbacks`` until this ``GatewayConnection``
-        is torn down. Idempotent — popping a *run_id* with nothing
-        registered (already consumed, or never registered) is a silent
-        no-op.
-        """
-        self._run_completion_callbacks.pop(run_id, None)
-
-    def has_run_completion_callback(self, run_id: str) -> bool:
-        """Whether THIS connection currently observes *run_id*'s terminal.
-
-        The observer set is in-process memory; a caller holding the durable
-        record of a dispatched run (bootstrap_dispatcher's ``sent`` row) uses
-        this to tell "already observed here" from "the observing process is
-        gone — re-attach" without a DDB round trip.
-        """
-        return run_id in self._run_completion_callbacks
-
-    def _dispatch_run_completion(self, run_id: str, state: str, payload: dict) -> None:
-        """Pop and fire *run_id*'s registered completion callback, if any.
-
-        Fire-and-forget (mirrors ``_dispatch_push_notification``): the
-        callback runs as a tracked background task so a slow/failing
-        observer (a DDB write) can never delay or break frame delivery to
-        the browser. No-op when nothing is registered for *run_id* (the
-        overwhelming common case — most runs have no observer).
-        """
-        callback = self._run_completion_callbacks.pop(run_id, None)
-        if callback is None:
-            return
-
-        async def _run() -> None:
-            try:
-                await callback(state, payload)
-            except Exception:
-                logger.exception(
-                    "Run-completion callback failed for user %s run_id=%s",
-                    self.user_id,
-                    run_id,
-                )
-
-        task = asyncio.create_task(_run())
-        self._run_completion_tasks.add(task)
-        task.add_done_callback(self._run_completion_tasks.discard)
-
-    def _reject_pending_run_completions(self, reason: str) -> None:
-        """Fire every still-registered run-completion observer as errored.
-
-        For the teardown where the GATEWAY dropped us (dead reader loop,
-        park→dead escalation): the run behind a registered-but-unfired
-        callback (bootstrap_dispatcher's sent→delivered/failed move) may well
-        be dead with it, and its terminal can never arrive on this socket —
-        reconcile the observer as errored, mirroring how pending RPCs are
-        rejected on the same path, so the row reads ``failed`` and a human /
-        the next onboarding generation can recover. Reuses
-        ``_dispatch_run_completion`` (pop + fire as a tracked task), so it can
-        never double-fire a callback a real terminal already consumed.
-
-        Deliberately NOT called from ``close()``: that is this PROCESS letting
-        go of the socket while the run keeps going inside OpenClaw — see the
-        handoff there.
-        """
-        if not self._run_completion_callbacks:
-            return
-        payload = {"errorMessage": reason}
-        for run_id in list(self._run_completion_callbacks):
-            self._dispatch_run_completion(run_id, "error", payload)
-
     async def _resolve_member_from_session(self, parsed: dict) -> str:
         """Map a parsed session key to the Clerk member_id.
 
@@ -2021,11 +1917,9 @@ class GatewayConnection:
             return
 
         if event_name == "chat":
-            # NOTE: no `if room is None: return` here. Completion tracking,
-            # push notifications, active-run cleanup, and the e2e-latency
-            # metrics must fire for every terminal chat run, not just
-            # canonical-room ones (bootstrap_dispatcher's first-contact nudge
-            # and plain webchat both dispatch on non-room session keys).
+            # NOTE: no `if room is None: return` here. Push notifications,
+            # active-run cleanup, and e2e-latency metrics must fire for every
+            # terminal chat run, not just canonical-room ones.
             # `_publish_room_frame` already no-ops internally for a
             # non-room session key, so the room-channel publish stays
             # correctly gated without an explicit check here.
@@ -2097,7 +1991,6 @@ class GatewayConnection:
                 )
 
             if is_true_terminal:
-                self._dispatch_run_completion(run_id, state, payload)
                 await self._publish_room_frame(
                     session_key,
                     {
@@ -2276,10 +2169,6 @@ class GatewayConnection:
         # Durable liveness signal (R4 kill): the reader loop died with no
         # active runs, so is_alive is now False.
         self._note_gateway_liveness(connected=False)
-        # No terminal event can arrive on a dead reader — reconcile pending
-        # completion observers so a bootstrap kickoff doesn't stick at
-        # `dispatched` (see _reject_pending_run_completions).
-        self._reject_pending_run_completions("Gateway connection lost")
         for req_id, future in list(self._pending_rpcs.items()):
             if not future.done():
                 future.set_exception(RuntimeError("Gateway connection lost"))
@@ -2341,9 +2230,6 @@ class GatewayConnection:
                 # Durable liveness signal (R4 kill): escalating past parked
                 # to dead is the other path is_alive can flip False.
                 self._note_gateway_liveness(connected=False)
-                # Same reconcile as the dead-reader path: the run we just gave up
-                # on will never emit its terminal, so fire its completion observer.
-                self._reject_pending_run_completions("Gateway connection lost")
                 for req_id, future in list(self._pending_rpcs.items()):
                     if not future.done():
                         future.set_exception(RuntimeError("Gateway connection lost"))
@@ -2450,41 +2336,6 @@ class GatewayConnection:
                 await self._reader_task
             except asyncio.CancelledError:
                 pass
-        # The reader is provably dead now: nothing more can arrive on this
-        # socket. Whatever run-completion observer is STILL registered is
-        # HANDED OFF, never failed. close() is this process letting go of the
-        # socket — graceful shutdown (rolling deploy), the frontend-gone grace
-        # close, an IP-change recreate — and says nothing about the run, which
-        # keeps going inside OpenClaw. Failing the observer here marks a kickoff
-        # that is visibly working as "Friday couldn't start". The observer's
-        # durable record (the ``sent`` row keyed by the kickoff's dispatch id ==
-        # runId) is what lets whichever process polls next re-attach an observer
-        # on its own connection (bootstrap_dispatcher). Only a genuine gateway
-        # drop (``_on_reader_loop_exit``) still resolves pending observers as
-        # failed. Done AFTER the reader cancel, not before the drains: a terminal
-        # that arrived during the drains above has already fired its observer
-        # and popped it from this dict — clearing earlier would have dropped
-        # that terminal on the floor with no record and no lever.
-        if self._run_completion_callbacks:
-            put_metric("gateway.run_completion.handoff", value=float(len(self._run_completion_callbacks)))
-            logger.info(
-                "Handing off %d pending run-completion observer(s) for user %s on close",
-                len(self._run_completion_callbacks),
-                self.user_id,
-            )
-            self._run_completion_callbacks.clear()
-        # Drain in-flight run-completion observer tasks (INV-5 bootstrap
-        # dispatcher) — including ones a terminal spawned during the drains
-        # above — so teardown doesn't cancel a DDB completion write mid-flight;
-        # mirrors the push-dispatch drain.
-        if self._run_completion_tasks:
-            try:
-                await asyncio.wait(self._run_completion_tasks, timeout=5.0)
-            except Exception:
-                logger.exception(
-                    "Error waiting for run-completion tasks during close for user %s",
-                    self.user_id,
-                )
         if self._ws:
             await self._ws.close()
         # Reject any RPCs that did NOT settle during the drain window.
@@ -2648,42 +2499,6 @@ class GatewayConnectionPool:
         if conn is None:
             return
         conn.mark_side_run(run_id)
-
-    def register_run_completion_callback(
-        self, user_id: str, run_id: str, callback: Callable[[str, dict], Awaitable[None]]
-    ) -> bool:
-        """Public entry point for a caller that needs to observe a specific
-        dispatched run's TRUE terminal (final/error/aborted) without being
-        the browser tab that sent it — e.g. the server-owned bootstrap
-        dispatcher (INV-5, spec PR-6).
-
-        Returns False (registers nothing) when no connection exists for
-        *user_id*. Callers should call ``ensure_connection`` first (mirrors
-        ``mark_run_active``'s own contract) so this only returns False if the
-        connection vanished between the two calls.
-        """
-        conn = self._connections.get(user_id)
-        if conn is None:
-            return False
-        conn.register_run_completion_callback(run_id, callback)
-        return True
-
-    def unregister_run_completion_callback(self, user_id: str, run_id: str) -> None:
-        """Public entry point mirroring ``register_run_completion_callback`` —
-        see ``GatewayConnection.unregister_run_completion_callback``. Silently
-        no-ops when no connection exists for *user_id* (nothing to withdraw).
-        """
-        conn = self._connections.get(user_id)
-        if conn is None:
-            return
-        conn.unregister_run_completion_callback(run_id)
-
-    def has_run_completion_callback(self, user_id: str, run_id: str) -> bool:
-        """Whether a connection for *user_id* exists on THIS task and already
-        observes *run_id* — see ``GatewayConnection.has_run_completion_callback``.
-        False when there is no connection (nothing can be observing)."""
-        conn = self._connections.get(user_id)
-        return conn is not None and conn.has_run_completion_callback(run_id)
 
     async def gate_chat(self, *, user_id: str, owner_id: str, session_key: str) -> dict:
         """Pre-chat hard-stop for card-3 (bedrock_claude) users and the

@@ -290,14 +290,6 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
             "submitted_at": onboarding.get("funnel_submitted_at"),
             "completed_at": onboarding.get("funnel_completed_at"),
         },
-        "bootstrap": {
-            "state": onboarding.get("bootstrap_state") or "not_started",
-            "dispatch_id": onboarding.get("bootstrap_dispatch_id"),
-            "dispatched_at": onboarding.get("bootstrap_dispatched_at"),
-            "delivered_at": onboarding.get("bootstrap_delivered_at"),
-            "attempts": onboarding.get("bootstrap_attempts") or 0,
-            "last_error": onboarding.get("bootstrap_last_error"),
-        },
         "provider": {
             "choice": provider_choice,
             "byo_provider": (account or {}).get("byo_provider"),

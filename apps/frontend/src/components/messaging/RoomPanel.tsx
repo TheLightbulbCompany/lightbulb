@@ -80,6 +80,20 @@ const workLabel: Record<WorkState, string> = {
   ready: "Ready", queued: "Queued", working: "Working", paused: "Paused",
   "needs-approval": "Needs approval", completed: "Completed", failed: "Failed", offline: "Offline", unknown: "Unknown",
 };
+const responseLabel: Record<ListenMode, string> = {
+  active: "Automatic", mentions: "Mentions only", observe: "Observe",
+};
+
+function AgentResponse({ participant, selectId, onChange }: {
+  participant: RoomParticipant;
+  selectId: string;
+  onChange?: (agentId: string, mode: ListenMode) => void;
+}) {
+  const mode = participant.listenMode ?? "mentions";
+  if (!onChange) return <span className="text-sm text-muted-foreground">Response: {responseLabel[mode]}</span>;
+  return <><span className="text-sm text-muted-foreground">Response</span><select id={selectId} aria-label={`Response for ${participant.displayName}`} className="room-listen-mode" value={mode}
+    onChange={(event) => onChange(participant.id, event.target.value as ListenMode)}><option value="active">Automatic</option><option value="mentions">Mentions only</option><option value="observe">Observe</option></select></>;
+}
 
 function WorkStatus({ state }: { state: WorkState }) {
   const tone = state === "completed" ? "text-ok" : state === "failed" ? "text-err"
@@ -455,9 +469,7 @@ function RoomContent({
         <h3 className="font-semibold">Room members</h3><ul>{participants.map((participant) => <li key={`${participant.kind}:${participant.id}`} className="room-member">
           <ParticipantAvatar participant={participant} size="sm" /><ParticipantProfile participant={participant} currentUserId={currentUserId} onMessage={onSelectParticipant} disabled={!actionable} className="flex-1" />
           {participant.kind === "agent" ? <><span className="text-sm text-muted-foreground">{participant.mentionHandle ? `@${participant.mentionHandle}` : "Agent"}</span>
-            {onListenModeChange && <label className="sr-only" htmlFor={`${id}-${participant.id}-mode`}>Listen mode for {participant.displayName}</label>}
-            {onListenModeChange && <select id={`${id}-${participant.id}-mode`} className="room-listen-mode" value={participant.listenMode ?? "mentions"}
-              onChange={(event) => onListenModeChange(participant.id, event.target.value as ListenMode)}><option value="active">Active</option><option value="mentions">Mentions only</option><option value="observe">Observe</option></select>}
+            <AgentResponse participant={participant} selectId={`${id}-${participant.id}-mode`} onChange={onListenModeChange} />
             </> : <span className="text-sm text-muted-foreground">Person</span>}
         </li>)}</ul>
       </section>}
@@ -501,11 +513,7 @@ function RoomContent({
             <span className="text-sm text-muted-foreground">{participant.kind === "agent" ? "Agent" : "Person"}</span>
             {canManageMembers && onRemoveMember && participant.role !== "owner" && <Button type="button" variant="ghost" size="sm" disabled={!actionable}
               aria-label={`Remove ${participant.displayName}`} onClick={(event) => openManagement({ kind: participant.kind, id: participant.id }, event.currentTarget)}>Remove</Button>}
-            {participant.kind === "agent" && onListenModeChange && <>
-              <label className="sr-only" htmlFor={`${id}-context-${participant.id}-mode`}>Listen mode for {participant.displayName}</label>
-              <select id={`${id}-context-${participant.id}-mode`} className="room-listen-mode" value={participant.listenMode ?? "mentions"}
-                onChange={(event) => onListenModeChange(participant.id, event.target.value as ListenMode)}><option value="active">Active</option><option value="mentions">Mentions only</option><option value="observe">Observe</option></select>
-            </>}
+            {participant.kind === "agent" && <AgentResponse participant={participant} selectId={`${id}-context-${participant.id}-mode`} onChange={onListenModeChange} />}
           </li>)}</ul>
           {canAddMembers && memberPickerOpen && <div className="room-member-picker">
             {addMemberCandidates.length === 0 ? <p className="text-sm text-muted-foreground">Everyone in your workspace is already here.</p>

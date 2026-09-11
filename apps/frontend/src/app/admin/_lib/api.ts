@@ -184,12 +184,12 @@ export interface GrowthOwnerStage {
     | "signed_up"
     | "subscribed"
     | "container_ready"
-    | "friday_first_run_delivered"
+    | "onboarding_complete"
     | "automation_armed"
     | "first_autonomous_success";
   plan: string | null;
   status: string | null;
-  bootstrap_state: string;
+  onboarding_state: string;
   first_autonomous_at: string | null;
 }
 export interface GrowthSegment {
@@ -497,16 +497,6 @@ export interface AdminProvisioning {
     onboarding_goal_id?: string | null;
     onboarding_project_id?: string | null;
     onboarding_submitted_by?: string | null;
-    bootstrap_state?: string | null;
-    bootstrap_attempts?: number | null;
-    bootstrap_last_error?: string | null;
-    bootstrap_dispatch_id?: string | null;
-    bootstrap_dispatched_at?: string | null;
-    /** Write-ahead of chat.send. Set with no `bootstrap_sent_at` on a stuck
-     * row = the send may already have been accepted (never auto-retried). */
-    bootstrap_send_attempted_at?: string | null;
-    bootstrap_sent_at?: string | null;
-    bootstrap_delivered_at?: string | null;
     created_at?: string | null;
     updated_at?: string | null;
     /**

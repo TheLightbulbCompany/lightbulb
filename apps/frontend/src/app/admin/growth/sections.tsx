@@ -11,7 +11,7 @@ export const STAGE_LABEL: Record<GrowthOwnerStage["stage"], string> = {
   signed_up: "signed up",
   subscribed: "subscribed",
   container_ready: "container ready",
-  friday_first_run_delivered: "Friday's first run delivered",
+  onboarding_complete: "Onboarding complete",
   automation_armed: "automation armed",
   first_autonomous_success: "activated",
 };
@@ -21,7 +21,7 @@ export const STAGE_LABEL: Record<GrowthOwnerStage["stage"], string> = {
 const FLAG_LABEL: Record<Exclude<GrowthOwnerStage["stage"], "signed_up">, string> = {
   subscribed: "subscribed",
   container_ready: "container ready",
-  friday_first_run_delivered: "Friday's first run delivered",
+  onboarding_complete: "Onboarding complete",
   automation_armed: "automation armed",
   first_autonomous_success: "first autonomous success",
 };
@@ -105,13 +105,13 @@ export function Activation({ seg }: { seg: GrowthSegment }) {
       </div>
       <div className="mt-4">
         <Table
-          head={["owner", "stage", "status", "plan", "Friday kickoff", "first autonomous success"]}
+          head={["owner", "stage", "status", "plan", "Onboarding", "first autonomous success"]}
           rows={a.owners.map((o) => [
             owner(o),
             STAGE_LABEL[o.stage],
             o.status ? planLabel(o.status) : "—",
             o.plan ?? "—",
-            o.bootstrap_state,
+            o.onboarding_state,
             o.first_autonomous_at ?? "—",
           ])}
         />

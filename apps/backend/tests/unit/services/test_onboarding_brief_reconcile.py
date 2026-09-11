@@ -29,7 +29,6 @@ import pytest
 import core.containers as containers_mod
 import core.repositories.paperclip_repo as repo_mod
 import core.services.onboarding_brief as brief_mod
-import core.services.bootstrap_dispatcher as dispatcher_mod
 import core.services.clerk_admin as clerk_mod
 import core.services.paperclip_admin_client as admin_mod
 import core.services.paperclip_user_session as session_mod
@@ -62,8 +61,14 @@ def _owner_row(**overrides):
         onboarding_goal_id=None,
         funnel_state="not_started",
         funnel_submitted_at=None,
-        bootstrap_state="not_started",
-        bootstrap_attempts=0,
+        starter_agent_ids={
+            "ceo": "friday-uuid",
+            "engineering": "engineering-uuid",
+            "finance": "finance-uuid",
+            "growth": "growth-uuid",
+            "analytics": "analytics-uuid",
+            "customer_operations": "customer-operations-uuid",
+        },
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -76,6 +81,7 @@ def env(monkeypatch):
     repo.resolve_owner_row = AsyncMock(return_value=_owner_row())
     repo.claim_funnel_submission = AsyncMock(return_value=FunnelClaimResult.WON)
     repo.record_onboarding_ids = AsyncMock()
+    repo.complete_funnel_submission = AsyncMock(return_value=True)
     repo.revert_funnel_submission = AsyncMock()
     repo.delete_pending_brief = AsyncMock()
     monkeypatch.setattr(repo_mod, "PaperclipRepo", lambda **kwargs: repo)
@@ -95,9 +101,6 @@ def env(monkeypatch):
     ws.write_file = MagicMock()
     monkeypatch.setattr(containers_mod, "get_workspace", lambda: ws)
 
-    dispatch = AsyncMock()
-    monkeypatch.setattr(dispatcher_mod, "maybe_dispatch_bootstrap", dispatch)
-
     repo.record_pending_brief_failure = AsyncMock(return_value=1)
     repo.fail_pending_brief = AsyncMock()
     # Real cadence is 2s..60s. Keep the same NUMBER of attempts (the failure
@@ -107,7 +110,7 @@ def env(monkeypatch):
     # that raises mid-drain must not leave an owner poisoned for the next one.
     brief_mod._draining.clear()
 
-    return SimpleNamespace(repo=repo, admin=admin, ws=ws, dispatch=dispatch)
+    return SimpleNamespace(repo=repo, admin=admin, ws=ws)
 
 
 # --- Nothing to do -----------------------------------------------------------
@@ -167,7 +170,7 @@ async def test_paperclip_unavailable_keeps_the_brief_and_claims_nothing(env):
 # --- The happy path ----------------------------------------------------------
 
 
-async def test_drain_claims_seeds_stages_then_retires_the_pending_item(env):
+async def test_drain_claims_seeds_stages_completes_and_retires_without_synthetic_dispatch(env):
     await reconcile_pending_brief("user_abc")
 
     # Claim is fenced on the ROW's PK + generation, and carries the submitting
@@ -192,24 +195,10 @@ async def test_drain_claims_seeds_stages_then_retires_the_pending_item(env):
     assert brief_call.args[0] == "user_abc"  # owner id -- the workspace path
     assert brief_call.args[1] == "workspace-friday-uuid/BRIEF.md"
     assert "acme.com" in brief_call.args[2]
-    # The item is deliberately NOT retired here: dismissal would then rest on
-    # the row's funnel_state alone, which for an org is read through the
-    # eventually-consistent by-org-id GSI -- and a poll inside that window
-    # would re-render the funnel at a user who just submitted. Retirement is
-    # the completion sweep (bootstrap_dispatcher) or _settle_lost_claim.
-    env.repo.delete_pending_brief.assert_not_awaited()
-    # The onboarding dict is passed INLINE. Letting the dispatcher re-read the
-    # row would, for an org, go through the eventually-consistent by-org-id
-    # GSI milliseconds after the claim -- it would read "not_started" and skip
-    # the kickoff entirely.
-    env.dispatch.assert_awaited_once()
-    assert env.dispatch.await_args.args[0] == "user_abc"
-    passed = env.dispatch.await_args.kwargs["onboarding"]
-    assert passed["funnel_state"] == "submitted"
-    assert passed["onboarding_generation"] == "01GEN"
-    assert passed["user_id"] == "owner-row-user"
-    assert passed["onboarding_submitted_by"] == "member_zed"
-    assert passed["onboarding_brief_text"] == "work on acme.com"
+    env.repo.complete_funnel_submission.assert_awaited_once_with(
+        "owner-row-user", onboarding_generation="01GEN", owner_id="user_abc"
+    )
+    env.repo.delete_pending_brief.assert_awaited_once_with("user_abc")
 
 
 async def test_session_is_minted_for_the_owner_row_not_the_submitter(env, monkeypatch):
@@ -342,7 +331,6 @@ async def test_seed_failure_reverts_the_claim_and_keeps_the_brief(env):
     )
     env.ws.write_file.assert_not_called()
     env.repo.delete_pending_brief.assert_not_awaited()
-    env.dispatch.assert_not_awaited()
 
 
 async def test_seed_only_failure_does_not_attempt_rollback(env):

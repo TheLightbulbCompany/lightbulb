@@ -72,7 +72,7 @@ import { ContainerStatusContext } from "../../lib/containerStatusContext";
 import { isSubscriptionGate, purchaseGateCopy } from "../../lib/purchaseCta";
 import { ByoKeyScreen } from "./ByoKeyScreen";
 import { ChatGPTConnectScreen } from "./ChatGPTConnectScreen";
-import { FirstRunFailedNotice, ProvisioningStepper } from "./ProvisioningStepper";
+import { ProvisioningStepper } from "./ProvisioningStepper";
 
 const DEFAULT_MANAGE_URL = `${WEB_ORIGIN}/settings`;
 
@@ -443,19 +443,6 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
             and `teams_status` is only meaningful once the container is fine. */}
         {status.kind === "ready" && status.teamsStatus === "failed" ? (
           <TeamsDegradedBanner onRetry={onRetry} />
-        ) : null}
-        {/* First-run kickoff failed — same fixed-index, non-blocking rule as
-            the Teams banner above (index 1; the stepper stays the last child),
-            so toggling it never remounts the tab navigator. "failed" ONLY:
-            `dispatched` (fresh or stale-but-re-arming) and `sent` are recovered
-            by the dispatcher on the next poll and are not failures.
-            `ready` ONLY here, deliberately: a bar over live chat is the right
-            idiom exactly while there IS live chat. The same failure on a
-            container that never reached ready is surfaced INSIDE the stepper
-            below (it has replaced the tab shell by then, so there is nothing
-            for a bar to sit over) — see FirstRunFailedNotice's `inline`. */}
-        {status.kind === "ready" && status.bootstrapState === "failed" ? (
-          <FirstRunFailedNotice error={status.bootstrapError} />
         ) : null}
         <ProvisioningStepper status={status} onRetry={onRetry}>
           {children}

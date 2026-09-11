@@ -22,7 +22,6 @@ from core.containers.ecs_manager import (
 )
 from core.services import container_wake, wake_policy
 from core.services import readiness_state
-from core.services.bootstrap_dispatcher import maybe_dispatch_bootstrap
 from core.services.onboarding_brief import reconcile_pending_brief
 from core.services.management_api_client import ManagementApiClientError
 from core.observability.metrics import put_metric, timing
@@ -533,54 +532,6 @@ async def container_status(
     # dispatching a provision (see _provision_or_reconcile).
     if auth.is_org_context or contract["teams_state"] == "failed" or contract.get("metronome_ledger_missing"):
         _dispatch_watched(ensure_user_ready(auth))
-
-    # Server-owned bootstrap dispatch (INV-5, spec PR-6). Gate on the container
-    # being RUNNING ("starting" OR "ready"), NOT on "ready" alone: "ready"
-    # requires a live gateway connection, but during onboarding the funnel hides
-    # the chat surface so no chat RPC ever opens one -- gating on "ready" would
-    # DEADLOCK (funnel_state=submitted, bootstrap_state=not_started, forever,
-    # because the only thing that would open the connection is this dispatch).
-    # maybe_dispatch_bootstrap OPENS its own connection (resolve_running_container
-    # + ensure_connection) to send Friday's kickoff, so it only needs a running
-    # container; a "starting" attempt before OpenClaw is listening fails
-    # gracefully and retries on the next poll, and the connection it establishes
-    # is what flips the next poll to "ready". The funnel_state/bootstrap_state
-    # pre-check (mirroring the dispatcher's own guards, off the SAME `onboarding`
-    # dict compute_status already consumed -- zero extra reads) keeps the
-    # overwhelming majority of polls from even scheduling a no-op task; the
-    # dispatcher's atomic claim remains the real single-fire fence (INV-5).
-    #
-    # "dispatched" is admitted alongside "not_started" so the dispatcher's
-    # lazy staleness expiry can run at all: a claim whose process died mid
-    # -window is only findable by a poll that actually calls in, and this poll
-    # is the one place that already holds the row. The dispatcher returns on a
-    # comparison for a FRESH claim (the overwhelming majority), so admitting
-    # it costs nothing per poll and no extra reads.
-    #
-    # "sent" is admitted for the same reason in the other direction: the
-    # kickoff was acked, and the only outstanding work is OBSERVING its
-    # terminal — an in-process observer the dispatching process may have
-    # taken with it (rolling deploy, grace close). The dispatcher re-attaches
-    # one here if this process lacks it; when it already holds it (the common
-    # case) that is one dict lookup, no reads.
-    #
-    # "failed" is admitted because it was NOT actually terminal in the way the
-    # owner experiences it: a transient the dispatcher's classifier types
-    # deterministic (a connect rejection that literally says "retry shortly")
-    # or one that only shows up as the run's terminal (a rate limit) dead-ended
-    # the owner on the funnel spinner FOREVER behind a healthy container, until
-    # an operator noticed. The dispatcher's own retry is bounded — the same
-    # attempts budget, a backoff, and never the ambiguous send-attempted row
-    # (bootstrap_dispatcher._retry_failed_bootstrap) — so a genuinely broken
-    # bootstrap is NOT re-dispatched on every ~3s poll: past the bounds the
-    # dispatcher returns on the attempts comparison, off this same dict, with
-    # no reads at all.
-    if (
-        contract["runtime_phase"] in ("starting", "ready")
-        and onboarding.get("funnel_state") == "submitted"
-        and (onboarding.get("bootstrap_state") or "not_started") in ("not_started", "dispatched", "sent", "failed")
-    ):
-        asyncio.create_task(maybe_dispatch_bootstrap(owner_id, onboarding=onboarding))
 
     # runtime_phase "ready" requires TWO truths: DDB status "running" AND a
     # gateway-liveness row — and that row is written ONLY by a successful

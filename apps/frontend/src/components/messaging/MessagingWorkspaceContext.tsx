@@ -303,6 +303,9 @@ export function MessagingWorkspaceProvider({
   const directoryState = rooms.roomsLoading || rooms.directoryLoading ? "loading" : rooms.roomsError || rooms.directoryError ? "error" : "ready";
   const roomState = rooms.roomLoading ? "loading" : rooms.accessRemoved ? "access-removed" : rooms.roomError ? "unavailable" : rooms.liveConnected ? "ready" : "reconnecting";
   const pending = rooms.optimisticMessages.filter((message) => message.clientMessageId === clientMessageId || message.clientMessageId === threadClientMessageId);
+  const canManageResponses = ["owner", "admin"].includes(
+    rooms.activeRoom?.members.find((member) => member.kind === "human" && member.id === userId)?.role ?? "",
+  );
 
   const directoryProps: RoomDirectoryProps = {
     ownerScopeId: orgId ?? userId ?? "signed-out",
@@ -343,7 +346,7 @@ export function MessagingWorkspaceProvider({
     selectedThreadId: threadId,
     onSelectParticipant: async (participant) => { await rooms.selectDm(participant); },
     onRetry: () => void rooms.refreshRoom(),
-    onListenModeChange: (agentId, mode) => void changeListenMode(agentId, mode),
+    ...(canManageResponses ? { onListenModeChange: (agentId: string, mode: ListenMode) => void changeListenMode(agentId, mode) } : {}),
     onSetReaction: rooms.setReaction,
     onUpdateMessage: rooms.updateMessage,
     ...(!!rooms.activeRoom && rooms.activeRoom.kind !== "dm" && ["owner", "admin"].includes(

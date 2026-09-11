@@ -295,7 +295,7 @@ describe("ApiStack — canonical messaging storage and work delivery", () => {
         VisibilityTimeout: 300,
         ReceiveMessageWaitTimeSeconds: 20,
         KmsMasterKeyId: expect.anything(),
-        RedrivePolicy: expect.objectContaining({ maxReceiveCount: 8 }),
+        RedrivePolicy: expect.objectContaining({ maxReceiveCount: 360 }),
       }),
     );
     expect(byName["lightbulb-dev-openclaw-work-dlq.fifo"]).toEqual(
@@ -694,7 +694,7 @@ describe("ApiStack — messaging projector permissions and alarms", () => {
     const stopped = alarms.find(
       (alarm) => alarm.Properties.AlarmName === "lightbulb-dev-openclaw-work-pipe-stopped",
     );
-    expect(oldest.Properties.Threshold).toBe(300);
+    expect(oldest.Properties.Threshold).toBe(3600);
     expect(iterator.Properties.Threshold).toBe(300000);
     expect(stopped.Properties).toEqual(
       expect.objectContaining({

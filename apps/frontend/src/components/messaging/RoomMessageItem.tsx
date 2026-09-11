@@ -1,13 +1,13 @@
 "use client";
 
 import type { ReactElement, ReactNode } from "react";
-import { MessageCircle, SmilePlus } from "lucide-react";
+import { MessageCircle } from "lucide-react";
 import type { Components } from "react-markdown";
 import { Button } from "@/components/ui/button";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
 import { cn } from "@/lib/utils";
+import { EmojiPicker, readRecentEmoji } from "./EmojiPicker";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import { ParticipantProfile } from "./ParticipantProfile";
 import { RoomImageAttachments } from "./RoomImageAttachments";
@@ -15,7 +15,7 @@ import { RoomMessageContent } from "./RoomMessageContent";
 import type { RoomMessage, RoomParticipant, WorkState } from "./types";
 import type { RoomPanelProps } from "./RoomPanel";
 
-const reactionEmojis = ["👍", "❤️", "😂", "🎉", "👀", "✅"] as const; // replaced by the picker in Task 6
+const DEFAULT_QUICK_REACTIONS = ["👍", "✅", "🎉", "👀"];
 
 export interface RoomMessageItemProps {
   id: string;
@@ -43,16 +43,14 @@ export function RoomMessageItem({ id, message, participant, currentUserId, actio
   const name = participant?.displayName || message.author.displayName || "Unknown author";
   const timestamp = !Number.isNaN(Date.parse(message.createdAt)) ? message.createdAt : undefined;
   const time = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
-  const appliedReactions = reactionEmojis.filter((emoji) => (message.reactions?.[emoji]?.length ?? 0) > 0);
+  const appliedReactions = Object.entries(message.reactions ?? {}).filter(([, users]) => users.length > 0);
+  const quickReactions = (readRecentEmoji().length ? readRecentEmoji() : DEFAULT_QUICK_REACTIONS).slice(0, 4);
   const actions = ((!message.deletedAt && onToggleReaction) || !inThread || toolbarExtras) ? <>
-    {!message.deletedAt && onToggleReaction && <DropdownMenu>
-      <DropdownMenuTrigger asChild><Button type="button" variant="ghost" size="icon-sm" aria-label="Add reaction" title="Add reaction" disabled={!actionable || reactionPending}><SmilePlus aria-hidden="true" /></Button></DropdownMenuTrigger>
-      <DropdownMenuContent align="end" aria-label="Choose a reaction" onEscapeKeyDown={(event) => event.stopPropagation()}>
-        {reactionEmojis.map((emoji) => <DropdownMenuItem key={emoji} disabled={!actionable || reactionPending}
-          aria-label={`${message.reactions?.[emoji]?.includes(currentUserId) ? "Remove" : "Add"} ${emoji} reaction`}
-          onSelect={() => onToggleReaction(emoji)}><span aria-hidden="true">{emoji}</span><span>{message.reactions?.[emoji]?.includes(currentUserId) ? "Remove" : "Add"} reaction</span></DropdownMenuItem>)}
-      </DropdownMenuContent>
-    </DropdownMenu>}
+    {!message.deletedAt && onToggleReaction && <>
+      <span className="room-quick-reactions" aria-label="Quick reactions">{quickReactions.map((emoji) => <Button key={emoji} type="button" variant="ghost" size="icon-sm"
+        aria-label={`React ${emoji}`} title={`React ${emoji}`} disabled={!actionable || reactionPending} onClick={() => onToggleReaction(emoji)}>{emoji}</Button>)}</span>
+      <EmojiPicker onPick={onToggleReaction} disabled={!actionable || reactionPending} />
+    </>}
     {!inThread && onOpenThread && <Button type="button" variant="ghost" size="icon-sm" aria-label="Reply in thread" title="Reply in thread" disabled={!actionable}
       onClick={(event) => onOpenThread(event.currentTarget)}><MessageCircle aria-hidden="true" /></Button>}
     {toolbarExtras}
@@ -73,8 +71,7 @@ export function RoomMessageItem({ id, message, participant, currentUserId, actio
         <MarkdownView skipHtml components={markdown}>{message.text}</MarkdownView>
       </RoomMessageContent>
       {!message.deletedAt && onToggleReaction && appliedReactions.length > 0 && <div className="flex flex-wrap gap-1 mt-1" aria-label="Message reactions">
-        {appliedReactions.map((emoji) => {
-          const users = message.reactions?.[emoji] ?? [];
+        {appliedReactions.map(([emoji, users]) => {
           const selected = users.includes(currentUserId);
           return <Button key={emoji} type="button" size="sm" variant={selected ? "secondary" : "ghost"}
             aria-label={`${selected ? "Remove" : "Add"} ${emoji} reaction${users.length ? `, ${users.length}` : ""}`} aria-pressed={selected}

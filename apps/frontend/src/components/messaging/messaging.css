@@ -34,8 +34,8 @@
 .room-message-actions button { border-radius: 4px; }
 @media (hover: none), (pointer: coarse) {
   .room-message-actions { opacity: 1; pointer-events: auto; }
-  .room-message:has(.room-message-actions) .room-message-byline { padding-right: 112px; flex-wrap: wrap; }
-  .room-message-collapsed .room-message-content { padding-right: 112px; }
+  .room-message:has(.room-message-actions) .room-message-byline { padding-right: 248px; flex-wrap: wrap; }
+  .room-message-collapsed .room-message-content { padding-right: 248px; }
 }
 .room-message-content { flex: 1; min-width: 0; line-height: 1.5; }
 .room-message-content > :is(.prose, [class*="prose"]) { font-family: var(--font-sans); font-size: 1rem; line-height: 1.5; }
@@ -177,6 +177,8 @@
 .room-message-gutter { flex: none; width: 32px; padding-top: 4px; font-size: .75rem; line-height: 1.5; text-align: right; color: var(--muted-foreground); font-variant-numeric: tabular-nums; opacity: 0; }
 .room-message:hover .room-message-gutter, .room-message:focus-within .room-message-gutter { opacity: 1; }
 @media (hover: none), (pointer: coarse) { .room-message-gutter { opacity: 1; } }
+.room-quick-reactions { display: inline-flex; gap: 2px; }
+.room-quick-reactions button { min-width: 28px; }
 
 @media (prefers-reduced-motion: reduce) {
   .participant-avatar[data-agent-state="running"] { animation: none; }

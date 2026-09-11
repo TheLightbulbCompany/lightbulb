@@ -19,6 +19,17 @@ def _local_environment(monkeypatch):
     monkeypatch.setattr(settings, "ENVIRONMENT", "local")
 
 
+@pytest.fixture(autouse=True)
+def _legacy_seed_row(monkeypatch):
+    """These historical Friday/Atlas tests exercise a legacy seed row."""
+    repo = MagicMock(
+        resolve_owner_row=AsyncMock(
+            return_value=MagicMock(starter_agent_ids=None, seeded_agent_ids=["legacy-friday", "legacy-atlas"])
+        )
+    )
+    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo", MagicMock(return_value=repo))
+
+
 @pytest.fixture
 def manager(monkeypatch):
     """Construct an EcsManager without touching boto3."""

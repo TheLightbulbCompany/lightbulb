@@ -4330,6 +4330,8 @@ class EcsManager:
         # unreachable; the next reprovision self-heals.
         paperclip_agent_keys: dict[str, str] = {}
         paperclip_company_id: str | None = None
+        starter_agent_ids: dict[str, str] = {}
+        legacy_seeded_agent_ids: list[str] = []
         try:
             repo = PaperclipRepo(table_name="paperclip-companies")
             admin_client = PaperclipAdminClient(http_client=http)
@@ -4338,6 +4340,10 @@ class EcsManager:
                 repo=repo,
                 admin_client=admin_client,
             )
+            owner_row = await repo.resolve_owner_row(owner_id)
+            if owner_row is not None:
+                starter_agent_ids = dict(owner_row.starter_agent_ids or {})
+                legacy_seeded_agent_ids = list(owner_row.seeded_agent_ids or [])
             # Mint (or read) a per-agent Paperclip API key for EACH agent so
             # actions in Paperclip's audit log attribute to the acting agent,
             # not to Friday or the global admin service account. Self-healing:
@@ -4443,28 +4449,42 @@ class EcsManager:
             deployed_tag=deployed_tag,
         )
 
-        # Seed Friday's IDENTITY/SOUL/USER/BOOTSTRAP files on EFS so they're
-        # present before the container boots. Best-effort — failure here
-        # MUST NOT block provision; Friday boots with upstream defaults if
-        # this fails.
+        # Seed the workspace role contract selected by authoritative row state.
+        # New starter rows are UUID-keyed; legacy rows retain Friday/Atlas.
+        from core.services.starter_roster import pre_stage_starter_roster
         from core.services.friday_identity import (
             pre_stage_friday_identity,
             pre_stage_paperclip_identities,
         )
 
-        try:
-            await pre_stage_friday_identity(
-                owner_id=owner_id,
-                paperclip_agents=paperclip_agents,
-                workspace=get_workspace(),
-            )
-        except Exception as exc:  # noqa: BLE001 — best-effort.
-            put_metric("friday_identity.seed.error")
-            logger.warning(
-                "write_user_configs: pre_stage_friday_identity failed for owner=%s: %s",
-                owner_id,
-                exc,
-            )
+        if starter_agent_ids:
+            try:
+                await pre_stage_starter_roster(
+                    owner_id=owner_id,
+                    paperclip_agents=paperclip_agents,
+                    starter_agent_ids=starter_agent_ids,
+                    workspace=get_workspace(),
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort.
+                logger.warning(
+                    "write_user_configs: pre_stage_starter_roster failed for owner=%s: %s",
+                    owner_id,
+                    exc,
+                )
+        elif legacy_seeded_agent_ids:
+            try:
+                await pre_stage_friday_identity(
+                    owner_id=owner_id,
+                    paperclip_agents=paperclip_agents,
+                    workspace=get_workspace(),
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort.
+                put_metric("friday_identity.seed.error")
+                logger.warning(
+                    "write_user_configs: pre_stage_friday_identity failed for owner=%s: %s",
+                    owner_id,
+                    exc,
+                )
 
         # Stage each agent's per-agent Paperclip identity file
         # (paperclip-claimed-api-key.json) into its own workspace so it can
@@ -4493,22 +4513,23 @@ class EcsManager:
         # provision; Atlas boots with an empty workspace if this fails.
         from core.services.atlas_seed import pre_stage_atlas
 
-        try:
-            await pre_stage_atlas(
-                owner_id=owner_id,
-                paperclip_agents=paperclip_agents,
-                workspace=get_workspace(),
-            )
-        except Exception as exc:  # noqa: BLE001 — best-effort.
-            # Distinct from the seeder's per-file `atlas_seed.error`: this fires
-            # only on a catastrophic failure (e.g. import error) where the seeder
-            # never ran, vs a single bad file the seeder logged and skipped.
-            put_metric("atlas_seed.invoke_error")
-            logger.warning(
-                "write_user_configs: pre_stage_atlas failed for owner=%s: %s",
-                owner_id,
-                exc,
-            )
+        if legacy_seeded_agent_ids:
+            try:
+                await pre_stage_atlas(
+                    owner_id=owner_id,
+                    paperclip_agents=paperclip_agents,
+                    workspace=get_workspace(),
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort.
+                # Distinct from the seeder's per-file `atlas_seed.error`: this fires
+                # only on a catastrophic failure (e.g. import error) where the seeder
+                # never ran, vs a single bad file the seeder logged and skipped.
+                put_metric("atlas_seed.invoke_error")
+                logger.warning(
+                    "write_user_configs: pre_stage_atlas failed for owner=%s: %s",
+                    owner_id,
+                    exc,
+                )
 
         # Stage the container-global credentials/oauth.json after the config
         # write, so it's present for any reprovision / config-rewrite path that

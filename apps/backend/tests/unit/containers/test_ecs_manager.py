@@ -260,6 +260,96 @@ def manager(mock_settings, mock_ecs_client, mock_efs_client, mock_servicediscove
     return mgr
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("starter_agent_ids", "seeded_agent_ids", "uses_starter_seeder"),
+    [
+        ({"ceo": "agent-ceo", "finance": "agent-finance"}, None, True),
+        (None, ["legacy-friday", "legacy-atlas"], False),
+    ],
+    ids=["starter-row", "legacy-row"],
+)
+async def test_write_user_configs_routes_role_seeding_from_authoritative_row(
+    manager,
+    mock_settings,
+    monkeypatch,
+    tmp_path,
+    starter_agent_ids,
+    seeded_agent_ids,
+    uses_starter_seeder,
+):
+    """Starter rows get role contracts; legacy rows retain Friday and Atlas."""
+    mock_settings.EFS_MOUNT_PATH = str(tmp_path)
+    mock_settings.PAPERCLIP_INTERNAL_URL = "http://paperclip.test"
+    agents = [{"id": "agent-ceo", "name": "Renamed"}, {"id": "agent-finance", "name": "Also renamed"}]
+    row = MagicMock(starter_agent_ids=starter_agent_ids, seeded_agent_ids=seeded_agent_ids)
+    repo = MagicMock(resolve_owner_row=AsyncMock(return_value=row))
+    repo_factory = MagicMock(return_value=repo)
+
+    async def fetch_agents(*, owner_id, repo: object, admin_client):
+        assert owner_id == "owner-1"
+        assert repo is repo_instance
+        return agents
+
+    repo_instance = repo
+    http = MagicMock(aclose=AsyncMock())
+    workspace = MagicMock()
+    starter_seeder = AsyncMock()
+    friday_seeder = AsyncMock()
+    atlas_seeder = AsyncMock()
+    identity_seeder = AsyncMock()
+
+    monkeypatch.setattr("httpx.AsyncClient", MagicMock(return_value=http))
+    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo", repo_factory)
+    monkeypatch.setattr(
+        "core.services.paperclip_openclaw_pairing.fetch_paperclip_agents_for_owner",
+        AsyncMock(side_effect=fetch_agents),
+    )
+    monkeypatch.setattr("core.containers.ecs_manager.write_openclaw_config", AsyncMock())
+    monkeypatch.setattr("core.containers.ecs_manager._provision_mcp_servers", AsyncMock(return_value={}))
+    monkeypatch.setattr("core.containers.ecs_manager._provision_channel_accounts", AsyncMock(return_value=({}, [])))
+    monkeypatch.setattr("core.containers.ecs_manager.get_workspace", MagicMock(return_value=workspace))
+    monkeypatch.setattr(
+        "core.services.credentials.mcp_server.build_connected_integration_servers", AsyncMock(return_value={})
+    )
+    monkeypatch.setattr("core.services.provisioning_landing.build_provisioned_env", AsyncMock(return_value={}))
+    monkeypatch.setattr("core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        "core.services.paperclip_openclaw_pairing.resolve_company_id_for_owner", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr("core.services.starter_roster.pre_stage_starter_roster", starter_seeder)
+    monkeypatch.setattr("core.services.friday_identity.pre_stage_friday_identity", friday_seeder)
+    monkeypatch.setattr("core.services.friday_identity.pre_stage_paperclip_identities", identity_seeder)
+    monkeypatch.setattr("core.services.atlas_seed.pre_stage_atlas", atlas_seeder)
+    monkeypatch.setattr("core.services.owner_facts.write_owner_facts", AsyncMock())
+    monkeypatch.setattr(manager, "_deployed_image_tag", AsyncMock(return_value=""))
+    monkeypatch.setattr(manager, "ensure_device_identities", AsyncMock())
+
+    await manager.write_user_configs(
+        "owner-1",
+        "t" * 32,
+        provider_choice="bedrock_claude",
+        aip_arns=_TEST_AIP_ARNS,
+    )
+
+    repo_factory.assert_called_once_with(table_name="paperclip-companies")
+    repo.resolve_owner_row.assert_awaited_once_with("owner-1")
+    identity_seeder.assert_awaited_once()
+    if uses_starter_seeder:
+        starter_seeder.assert_awaited_once_with(
+            owner_id="owner-1",
+            paperclip_agents=agents,
+            starter_agent_ids=starter_agent_ids,
+            workspace=workspace,
+        )
+        friday_seeder.assert_not_awaited()
+        atlas_seeder.assert_not_awaited()
+    else:
+        starter_seeder.assert_not_awaited()
+        friday_seeder.assert_awaited_once()
+        atlas_seeder.assert_awaited_once()
+
+
 def _make_container_dict(
     user_id="user_test_123",
     service_name="openclaw-user_test_123-f4ae64abb2db",

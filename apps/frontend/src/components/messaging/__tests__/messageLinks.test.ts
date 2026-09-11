@@ -1,5 +1,14 @@
 import { expect, it, vi } from "vitest";
-import { copyText, messagePermalink } from "../messageLinks";
+import { copyText, messagePermalink, sessionPermalink, parseSessionPermalink } from "../messageLinks";
+
+it("recognizes only exact same-origin session URLs", () => {
+  const url = sessionPermalink("room-1", "session-1", "https://flickmeon.ai");
+  expect(url).toBe("https://flickmeon.ai/chat?panel=chat&room=room-1&session=session-1");
+  expect(parseSessionPermalink(url, "https://flickmeon.ai")).toEqual({ roomId: "room-1", sessionId: "session-1" });
+  for (const invalid of [url.replace("flickmeon.ai", "other.invalid"), `${url}&message=msg`, `${url}&session=second`, url.replace("/chat?", "/other?"), "javascript:alert(1)"]) {
+    expect(parseSessionPermalink(invalid, "https://flickmeon.ai")).toBeNull();
+  }
+});
 
 it("builds a chat permalink", () => {
   expect(messagePermalink("room-1", "msg-1", "https://flickmeon.ai")).toBe("https://flickmeon.ai/chat?panel=chat&room=room-1&message=msg-1");

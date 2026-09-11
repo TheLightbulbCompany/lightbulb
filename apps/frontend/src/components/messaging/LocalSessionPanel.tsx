@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/button";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
 import { accessLost, useLocalSessionHistory, type RoomResourceSource } from "@/hooks/useRoomResources";
 import { roomMarkdown } from "./roomMarkdown";
+import { copyText, sessionPermalink } from "./messageLinks";
+import { LocalSessionWork } from "./LocalSessionWork";
 
 export const sessionLabel = (s: LocalSession) => `${s.provider === "claude" ? "Claude" : "Codex"} · ${s.sessionId.slice(0, 8)}`;
 export const sessionStatus: Record<LocalSession["status"], string> = {
@@ -19,14 +21,16 @@ const unavailable: Record<NonNullable<LocalSession["controlUnavailableReason"]>,
 };
 type Attempt = { request: LocalSessionCommand; state: "sending" | "uncertain" | "rejected" | "received"; receipt?: LocalSessionCommandReceipt; error?: string };
 
-export function LocalSessionPanel({ session, ownerName, roomId, client, revision, onAccessLost }: {
+export function LocalSessionPanel({ session, ownerName, roomId, client, revision, onAccessLost, onShare }: {
   session: LocalSession; ownerName: string; roomId: string; client: RoomResourceSource["client"];
   revision: number; onAccessLost: () => void;
+  onShare?: (url: string) => void;
 }) {
   const history = useLocalSessionHistory(client, roomId, session.sessionId, session.latestEventSeq, revision, onAccessLost);
   const [text, setText] = useState("");
   const [attempt, setAttempt] = useState<Attempt | null>(null);
   const [checking, setChecking] = useState(false);
+  const [copyStatus, setCopyStatus] = useState("");
   const alive = useRef(true);
   const pending = useRef(false);
   const id = useId();
@@ -82,6 +86,12 @@ export function LocalSessionPanel({ session, ownerName, roomId, client, revision
   const target = sessionLabel(session);
   return <>
     <div className="local-session-summary">
+      <div className="flex flex-wrap gap-2">
+        <Button variant="outline" onClick={async () => setCopyStatus(await copyText(sessionPermalink(roomId, session.sessionId)) ? "Session link copied." : "Could not copy session link.")}>Copy session link</Button>
+        {onShare && <Button variant="outline" onClick={() => onShare(sessionPermalink(roomId, session.sessionId))}>Add link to conversation draft</Button>}
+      </div>
+      {copyStatus && <p role="status">{copyStatus}</p>}
+      <LocalSessionWork roomId={roomId} sessionId={session.sessionId} />
       <p className="font-semibold">{ownerName} · Mac · {session.deviceId.slice(0, 8)}</p>
       <p className="text-sm text-muted-foreground">{session.providerVersion} · {sessionStatus[session.status]}</p>
       {session.workspace?.changed && <p role="status" className="text-sm text-warn">Checkout changes detected. The next remote contribution asks the session to re-read relevant files; refresh is not proven.</p>}

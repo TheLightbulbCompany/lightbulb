@@ -282,6 +282,7 @@ async def register_session(owner_id: str, user_id: str, device_id: str, registra
         enrollment = await _enrolled(owner_id, user_id, device_id)
         previous = await repo.get_session(owner_id, sid)
         row = {
+            **{key: previous[key] for key in ("workLink", "workLinkRevision") if previous and key in previous},
             **registration.model_dump(by_alias=True),
             "pk": repo.session_pk(owner_id, sid),
             "sk": "META",

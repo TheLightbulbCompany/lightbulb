@@ -58,6 +58,51 @@ async function openSession() {
 }
 afterEach(() => vi.useRealTimers());
 
+it("consumes authorized session navigation once, allows Back and explicit repeat, and never sends on open", async () => {
+  const f = setup();
+  const view = render(<RoomPanel {...f.props} targetSession={{ sessionId: session.sessionId, nonce: 1 }} />);
+  expect(await screen.findByRole("region", { name: "Native session history" })).toBeInTheDocument();
+  expect(f.client.submitLocalSessionCommand).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole("button", { name: "Back to devices & sessions" }));
+  expect(screen.queryByRole("region", { name: "Native session history" })).not.toBeInTheDocument();
+  view.rerender(<RoomPanel {...f.props} targetSession={{ sessionId: session.sessionId, nonce: 1 }} />);
+  expect(screen.queryByRole("region", { name: "Native session history" })).not.toBeInTheDocument();
+  view.rerender(<RoomPanel {...f.props} targetSession={{ sessionId: session.sessionId, nonce: 2 }} />);
+  expect(await screen.findByRole("region", { name: "Native session history" })).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Add link to conversation draft" }));
+  expect(f.props.composer.onTextChange).toHaveBeenCalledWith(expect.stringContaining("Room draft stays here\n"));
+  expect(f.props.composer.onSubmit).not.toHaveBeenCalled();
+  expect(f.client.submitLocalSessionCommand).not.toHaveBeenCalled();
+});
+
+it("cannot select a session absent from the current authorized directory", async () => {
+  const f = setup();
+  render(<RoomPanel {...f.props} targetSession={{ sessionId: "not-authorized", nonce: 1 }} />);
+  expect(await screen.findByText("Session unavailable in this conversation.")).toBeInTheDocument();
+  expect(f.client.listLocalSessionEvents).not.toHaveBeenCalled();
+});
+
+it("does not replay a consumed URL selection after resource access is revoked and the pane reopened", async () => {
+  const f = setup();
+  render(<RoomPanel {...f.props} targetSession={{ sessionId: session.sessionId, nonce: 1 }} />);
+  expect(await screen.findByRole("region", { name: "Native session history" })).toBeInTheDocument();
+  act(() => f.emit("room.access.removed"));
+  expect(screen.queryByRole("region", { name: "Native session history" })).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Back to conversation" }));
+  await userEvent.click(screen.getByRole("button", { name: "Devices & sessions" }));
+  expect(await screen.findByRole("button", { name: /Open Codex/ })).toBeInTheDocument();
+  expect(screen.queryByRole("region", { name: "Native session history" })).not.toBeInTheDocument();
+});
+
+it("keeps optional linked work collapsed while native history remains usable", async () => {
+  const f = setup();
+  render(<RoomPanel {...f.props} />);
+  await openSession();
+  expect(screen.getByRole("button", { name: "Linked work", expanded: false })).toBeInTheDocument();
+  expect(screen.queryByRole("textbox", { name: "Issue ID" })).not.toBeInTheDocument();
+  expect(await screen.findByRole("region", { name: "Native session history" })).toBeInTheDocument();
+});
+
 it("opens resources without changing the controlled message-navigation thread target", async () => {
   const f = setup();
   const targets = vi.fn();

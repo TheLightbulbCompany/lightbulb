@@ -15,7 +15,8 @@ import { roomMarkdown as publicMarkdown } from "./roomMarkdown";
 import { safeHref } from "@/components/teams/shared/lib/safeHref";
 import { cn } from "@/lib/utils";
 import { roomUrlTransform } from "./markdown";
-import { copyText, messagePermalink } from "./messageLinks";
+import { copyText, messagePermalink, parseSessionPermalink } from "./messageLinks";
+import { openSessionPanel } from "@/components/workspace/workspaceController";
 import { RoomComposer, type RoomComposerProps } from "./RoomComposer";
 import { linkifyMentions, parseMentionHref } from "./mentions";
 import { readRecentEmoji } from "./EmojiPicker";
@@ -39,6 +40,7 @@ import type {
 import "./messaging.css";
 
 export interface RoomPanelProps {
+  targetSession?: { sessionId: string; nonce: number } | null;
   ownerScopeId: string;
   currentUserId: string;
   roomId: string;
@@ -98,6 +100,12 @@ const roomMarkdown: Partial<Components> = {
     const mention = href ? parseMentionHref(href) : null;
     if (mention) return <span className="room-mention" data-kind={mention.kind}>{children}</span>;
     const safe = safeHref(href);
+    const session = safe && typeof window !== "undefined" ? parseSessionPermalink(safe) : null;
+    if (session) return <a href={safe!} className="text-info underline underline-offset-4" onClick={event => {
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      event.preventDefault();
+      openSessionPanel(session.roomId, session.sessionId);
+    }}>{children}</a>;
     return safe ? <a href={safe} target="_blank" rel="noopener noreferrer" className="text-info underline underline-offset-4">{children}</a> : <span>{children}</span>;
   },
 };
@@ -170,6 +178,7 @@ function RoomContent({
   room,
   readSeqAtOpen,
   targetMessageId,
+  targetSession,
   state,
   httpReady,
   liveConnected,
@@ -237,6 +246,16 @@ function RoomContent({
   const managementCancel = useRef<HTMLButtonElement>(null);
   const [contextCollapsed, setContextCollapsed] = useState(true);
   const [localSelection, setSelection] = useState<{ kind: "thread" | "resources"; id: string } | null>(null);
+  const [consumedSession, setConsumedSession] = useState<number | null>(null);
+  const targetSessionNonce = targetSession?.nonce;
+  useEffect(() => {
+    if (targetSessionNonce === undefined) return;
+    onSelectThread?.(null);
+    setSearchTarget(null);
+    setSelection({ kind: "resources", id: "resources" });
+    // Only a new explicit navigation may reopen resources.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [targetSessionNonce]);
   const selection = useMemo(() => selectedThreadId === undefined ? localSelection
     : selectedThreadId ? { kind: "thread" as const, id: selectedThreadId }
       : localSelection?.kind !== "thread" ? localSelection : null, [selectedThreadId, localSelection]);
@@ -549,7 +568,10 @@ function RoomContent({
       </div>
     </aside>}
     {showResources && <RoomResources key={JSON.stringify([ownerScopeId, currentUserId, roomId, participants.filter(p => p.kind === "human").map(p => p.id).sort()])}
-      roomId={roomId} source={resourceSource!} participants={participants} onClose={closeDetail} />}
+      roomId={roomId} source={resourceSource!} participants={participants} onClose={closeDetail}
+      target={targetSession?.nonce !== consumedSession ? targetSession : null}
+      onTargetConsumed={() => setConsumedSession(targetSession?.nonce ?? null)}
+      onShare={url => composer.onTextChange(composer.text ? `${composer.text}\n${url}` : url)} />}
     {showDetail && !showResources && <aside className="room-context" aria-label="Thread" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>
         <h3 ref={detailHeading} tabIndex={-1} className="font-semibold room-wrap">Thread</h3></header>

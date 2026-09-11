@@ -82,6 +82,18 @@ directory. Desktop sharing is opt-in; disabling it stops local sharing. Native
 credentials and approvals remain on the owner's machine. Agent contributions
 carry an agent identity, never a human impersonation.
 
+A selected session's **Copy session link** or **Add link to conversation draft**
+lets a human explicitly share that same session in a room message. Opening it
+selects the existing session in the singleton Messages panel; it sends nothing.
+The normal room composer remains a room message, not native session input.
+**Linked work** is optional: expand it to link an existing issue by canonical ID,
+or an existing project workspace by project and workspace IDs. Each viewer's
+own current Teams access controls the displayed work title; unavailable work
+does not block native history or controls. Linking grants no work/session access.
+Closing an issue does not stop the session, and completing a session does not
+close an issue. No employee, issue, project, room or native session is created by
+these actions.
+
 The selected-session panel can show detected checkout changes, overlapping
 sessions and unknown/bounded coverage. These are advisories, not proof of fresh
 context. Sampling is capped at 512 paths, 4 MiB total and 1 MiB per file; ignored,

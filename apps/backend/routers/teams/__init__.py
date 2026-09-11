@@ -13,6 +13,7 @@ from . import issues as _issues
 from . import runs as _runs
 from . import search as _search
 from . import settings as _settings_r
+from . import session_work as _session_work
 from . import tree_control as _tree_control
 from . import work as _work
 
@@ -30,3 +31,4 @@ router.include_router(_work.router)
 router.include_router(_feed.router)
 router.include_router(_feedback.router)
 router.include_router(_settings_r.router)
+router.include_router(_session_work.router)

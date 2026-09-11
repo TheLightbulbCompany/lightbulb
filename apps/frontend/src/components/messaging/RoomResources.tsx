@@ -7,14 +7,26 @@ import { useRoomResources, type RoomResourceSource } from "@/hooks/useRoomResour
 import { LocalSessionPanel, sessionLabel, sessionStatus } from "./LocalSessionPanel";
 import type { RoomParticipant } from "./types";
 
-export function RoomResources({ roomId, source, participants, onClose }: {
+export function RoomResources({ roomId, source, participants, onClose, target, onTargetConsumed, onShare }: {
   roomId: string; source: RoomResourceSource; participants: readonly RoomParticipant[]; onClose: () => void;
+  target?: { sessionId: string; nonce: number } | null; onTargetConsumed?: () => void; onShare?: (url: string) => void;
 }) {
   const resources = useRoomResources(roomId, source);
   const [selection, setSelection] = useState<{ id: string; accessRevision: number } | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const buttons = useRef(new Map<string, HTMLButtonElement>());
   const lastSelected = useRef<string | null>(null);
+  const [unavailable, setUnavailable] = useState(false);
+  const [handled, setHandled] = useState<number | null>(null);
+  if (target && target.nonce !== handled && !resources.loading && (resources.data || resources.error)) {
+    const found = !resources.error && resources.data?.sessions.some(session => session.sessionId === target.sessionId);
+    setHandled(target.nonce);
+    setSelection(found ? { id: target.sessionId, accessRevision: resources.accessRevision } : null);
+    setUnavailable(!found);
+  }
+  useEffect(() => {
+    if (target && target.nonce === handled) onTargetConsumed?.();
+  }, [target, handled, onTargetConsumed]);
   const selected = selection?.accessRevision === resources.accessRevision
     ? resources.data?.sessions.find(session => session.sessionId === selection.id) : undefined;
   // A revoked selection must not reopen if this session is later shared again.
@@ -52,8 +64,9 @@ export function RoomResources({ roomId, source, participants, onClose }: {
       <h3 ref={heading} tabIndex={-1} className="font-semibold room-wrap">{selected ? sessionLabel(selected) : "Devices & sessions"}</h3>
     </header>
     {selected ? <LocalSessionPanel key={`${selected.sessionId}:${selected.generation}:${resources.accessRevision}`}
-      session={selected} ownerName={name(selected.humanUserId)} roomId={roomId} client={source.client} revision={resources.revision} onAccessLost={resources.revoke} />
+      session={selected} ownerName={name(selected.humanUserId)} roomId={roomId} client={source.client} revision={resources.revision} onAccessLost={resources.revoke} onShare={onShare} />
       : <div className="room-context-body">
+        {unavailable && <p role="status">Session unavailable in this conversation.</p>}
         {resources.loading && <p role="status">Loading devices and sessions…</p>}
         {resources.error && <div role="alert"><p>{resources.error}</p><Button variant="outline" onClick={() => void resources.refresh()}>Try again</Button></div>}
         {!resources.loading && !resources.error && humans.size === 0 && <p>No paired devices or shared sessions in this conversation.</p>}

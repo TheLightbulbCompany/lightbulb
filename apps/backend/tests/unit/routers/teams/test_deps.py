@@ -113,6 +113,31 @@ async def test_resolve_returns_context_for_active_company(auth_ctx, active_compa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stored_owner,active_org", [("other-org", "o1"), ("u1", "o1"), ("o1", None)])
+async def test_rejects_stale_company_scope_before_cookie_or_reconcile(active_company, stored_owner, active_org):
+    from core.auth import AuthContext
+    from fastapi import HTTPException
+
+    active_company.org_id = stored_owner
+    mint = AsyncMock(return_value="__Secure-paperclip-default.session_token=synthetic")
+    reconcile = AsyncMock()
+    response = _FakeResponse()
+    with pytest.raises(HTTPException) as exc:
+        await resolve_teams_context(
+            auth=AuthContext(user_id="u1", org_id=active_org),
+            repo=MagicMock(get=AsyncMock(return_value=active_company)),
+            session_factory=mint,
+            cookies={},
+            response=response,
+            reconcile=reconcile,
+        )
+    assert exc.value.status_code == (403 if active_org else 409)
+    assert response.cookies == []
+    mint.assert_not_awaited()
+    reconcile.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_resolve_raises_when_no_company(auth_ctx):
     repo = MagicMock()
     repo.get = AsyncMock(return_value=None)

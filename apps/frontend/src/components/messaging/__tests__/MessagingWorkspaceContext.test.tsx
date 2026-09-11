@@ -102,6 +102,20 @@ it("feeds the directory and conversation from one selected-room owner", () => {
   view.unmount();
 });
 
+it("hands a session intent to the current room and cancels it on message navigation", () => {
+  compose();
+  act(() => workspaceValue.openSession("room-1", "session-1"));
+  expect(panel.targetSession?.sessionId).toBe("session-1");
+  const nonce = panel.targetSession?.nonce;
+  act(() => workspaceValue.openSession("room-1", "session-1"));
+  expect(panel.targetSession?.nonce).not.toBe(nonce);
+  expect(panel.targetMessageId).toBeNull();
+  act(() => workspaceValue.openMessage("room-1", "message-1"));
+  expect(panel.targetSession).toBeNull();
+  expect(panel.targetMessageId).toBe("message-1");
+  expect(state.sendMessage).not.toHaveBeenCalled();
+});
+
 it("disables the resource pane transport while its workspace is hidden", () => {
   const view = render(<MessagingWorkspaceProvider subscribeToRoom><MessagingConversation /></MessagingWorkspaceProvider>);
   expect(panel.resourceSource).toBe(state.resourceSource);

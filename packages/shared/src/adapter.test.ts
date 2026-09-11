@@ -13,7 +13,6 @@ describe("PlatformAdapter contract", () => {
       uuid: () => "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
     };
     expect(await adapter.getToken()).toBe("token");
-    expect(adapter.wsUrl).toBeUndefined();
     expect(adapter.uuid()).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
     );

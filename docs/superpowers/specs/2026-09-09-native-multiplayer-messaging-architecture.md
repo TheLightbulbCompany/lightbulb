@@ -124,8 +124,7 @@ OpenClaw 9.3 already provides the primitives Lightbulb should compose:
   context;
 - native `user_request` and ambient `room_event` turns;
 - `visibleReplies: "automatic"`, which delivers addressed `user_request` finals
-  normally while native strict `room_event` handling keeps ambient finals private
-  unless the agent intentionally uses the `message` tool;
+  and finals from utility-gate-approved ambient turns normally;
 - native channel ingress, routing, message adapters, per-session serialization,
   compaction, memory, and pair-based bot-loop protection (20 peer events per
   60-second window, then a 60-second cooldown by the upstream default);
@@ -146,14 +145,15 @@ Therefore:
 4. Multiple humans appear as authenticated senders in each agent's channel
    context; they do not become one OpenClaw identity.
 5. Mentioned agents receive `user_request` turns in parallel.
-6. Unmentioned `active` listeners receive `room_event` turns and may interject
-   only through the native `message` tool.
+6. Unmentioned `active` listeners enter through the ambient relevance gate as
+   `room_event`; approved turns run as non-command `user_request` turns so their
+   final is delivered automatically.
 7. `mentions` and `observe` members do not run on unmentioned messages. Their next
    turn receives recent canonical history.
 8. Agent room posts become canonical Lightbulb messages and are delivered to peer
    agents, never echoed to their author.
-9. Ambient public interjections use `message`; addressed request finals deliver
-   automatically. Cross-agent coordination for this release happens in the
+9. Addressed and gate-approved ambient request finals deliver automatically.
+   Cross-agent coordination for this release happens in the
    canonical room or through explicit Paperclip work, not private session tools.
 10. One OpenClaw runtime is shared by one workspace/company, never across tenants.
 
@@ -247,10 +247,11 @@ does not equal `targetAgentId`, a malformed room ID, or an unknown event kind. I
 passes `groupPolicy: "open"` to native admission because the gateway token plus
 Lightbulb's current canonical membership check is the trust boundary; the SDK
 otherwise defaults group ingress to disabled.
-It sets the supplied kind in both `contextBinding.inboundEventKind` and
-`message.inboundEventKind`; omission would make the 9.3 context builder turn
-ambient work into `user_request`. Agent-sent and `room_event` ingress also sets
-`command: false` and `CommandInterpretationSuppressed: true`.
+It sets the supplied kind in `contextBinding.inboundEventKind` for native admission.
+After an ambient relevance decision returns `DISPATCH`, it sets
+`message.inboundEventKind` to `user_request` so the approved final is visible;
+agent-sent and ambient ingress still set `command: false` and
+`CommandInterpretationSuppressed: true`.
 
 The complete serialized ingress body is capped at 1,048,576 bytes with
 `readJsonWebhookBodyOrReject`. For current message sequence N, the backend selects
@@ -335,9 +336,9 @@ message-sending hooks plus unknown-send reconciliation, enables automatic text
 reconciliation, and does not define a text chunker. Inbound `user_request` dispatch supplies a core-managed
 durable delivery to `lightbulb:<roomId>` and a direct fallback that always throws;
 there is no path around the stable prepared/queue ID supplied to the native message
-adapter. The delivery boundary accepts final payloads only. Ambient `room_event`
-finals remain private/suppressed, while an intentional native `message` tool call
-still uses the same durable adapter. If a send becomes ambiguous, the adapter
+adapter. The delivery boundary accepts final payloads only. Gate-approved ambient
+finals use the same durable path; declined ambient turns never reach the full model.
+If a send becomes ambiguous, the adapter
 queries the owner-scoped receipt endpoint with `<queueId>:0`; an existing canonical
 receipt becomes the normalized OpenClaw `sent` receipt, 404 is `not_sent`, and a
 transient/invalid result remains `unresolved` for retry.
@@ -909,7 +910,8 @@ cadence and never publish one AppSync event per model token.
   over bounded recent context and the agent's Paperclip role. A missing utility
   model, malformed output, or a failed decision drops the optional ambient turn
   instead of falling through to the primary model. Explicit DMs and mentions bypass
-  this gate. This is a cost optimization, while the Bedrock/Metronome admission
+  this gate. An approved turn is promoted to a non-command `user_request` so its
+  normal final is durably posted once. This is a cost optimization, while the Bedrock/Metronome admission
   ledger remains the spend fence; do not add a second Lightbulb turn-budget state
   machine without production evidence that both controls are insufficient.
 - Explicitly set `tools.sessions.visibility: "agent"` and

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
 import { RoomPanel, type RoomPanelProps } from "../RoomPanel";
@@ -79,6 +79,28 @@ it("closes channel management if the viewer loses admin permission", async () =>
   rerender(<RoomPanel {...props} room={channel} participants={[{ ...owner, role: "member" }, friday]} onRenameRoom={onRenameRoom} />);
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   expect(onRenameRoom).not.toHaveBeenCalled();
+});
+
+it("navigates search results into controlled threads and focuses main results", async () => {
+  const scroll = vi.fn();
+  HTMLElement.prototype.scrollIntoView = scroll;
+  const onSelectThread = vi.fn();
+  const reply = { ...message, messageId: "reply", messageSeq: 2, text: "Searchable reply", threadRootMessageId: message.messageId };
+  const view = render(<RoomPanel {...props} messages={[message, reply]} selectedThreadId={null} onSelectThread={onSelectThread} historyComplete />);
+  await userEvent.click(screen.getByRole("button", { name: "Search this conversation" }));
+  await userEvent.type(screen.getByRole("searchbox"), "searchable");
+  await userEvent.click(within(screen.getByRole("list", { name: "Search results" })).getByRole("button"));
+  await waitFor(() => expect(onSelectThread).toHaveBeenLastCalledWith(message.messageId));
+  view.rerender(<RoomPanel {...props} messages={[message, reply]} selectedThreadId={message.messageId} onSelectThread={onSelectThread} historyComplete />);
+  const thread = screen.getByRole("complementary", { name: "Thread" });
+  expect(within(thread).getByText("Searchable reply").closest("article")).toHaveFocus();
+  expect(scroll).toHaveBeenCalledWith({ block: "center" });
+  await userEvent.click(screen.getByRole("button", { name: "Search this conversation" }));
+  await userEvent.type(screen.getByRole("searchbox"), "hello");
+  await userEvent.click(within(screen.getByRole("list", { name: "Search results" })).getByRole("button"));
+  await waitFor(() => expect(onSelectThread).toHaveBeenLastCalledWith(null));
+  view.rerender(<RoomPanel {...props} messages={[message, reply]} selectedThreadId={null} onSelectThread={onSelectThread} historyComplete />);
+  expect(screen.getByRole("article", { name: "Message from Friday" })).toHaveFocus();
 });
 
 it("names a DM for its counterpart and uses canonical author and member activity", () => {

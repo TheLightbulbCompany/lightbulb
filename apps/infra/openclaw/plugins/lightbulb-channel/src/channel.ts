@@ -845,43 +845,59 @@ export async function dispatchRoomEvent(deps: InboundDeps, event: LightbulbRoomI
         }
       : undefined;
 
-  const dispatch = await channelRuntime.inbound.dispatch({
-    cfg,
-    channel: CHANNEL_ID,
-    accountId,
-    route: { agentId: route.agentId, dmScope: route.dmScope, sessionKey: route.sessionKey },
-    ctxPayload,
-    messageId: event.eventId,
-    ...(botLoopProtection ? { botLoopProtection } : {}),
-    replyPipeline: {},
-    delivery: {
-      // Addressed and gate-approved ambient requests deliver their final through
-      // the durable message adapter (stable queue id).
-      preparePayload: (payload, info) =>
-        turnEventKind === "user_request" && info.kind === "final" ? payload : null,
-      durable:
-        turnEventKind === "user_request"
-          ? {
-              to: target,
-              replyToId: message.replyToMessageId,
-              threadId: message.threadRootMessageId ?? undefined,
-              requiredCapabilities: DURABLE_FINAL_CAPABILITIES,
-            }
-          : false,
-      deliver: async () => {
-        throw new Error("lightbulb: direct delivery is not supported; finals must use the durable adapter");
+  // The SDK resolves this promise only after the agent's reply has been
+  // delivered — minutes for a tool-heavy turn. The backend gives the ingress
+  // POST 30s and dead-letters the pointer after eight timeouts, so the answer
+  // goes back as soon as the turn is admitted here and the turn finishes in
+  // the background. Every refusal that can be known before the turn starts
+  // (route, ingress, ambient gate, self-echo) still returns synchronously above.
+  // ponytail: a refusal the SDK raises inside the turn (bot-loop guard) is only
+  // logged; the backend's run marker for that session lingers until its next
+  // dispatch. Post a run-declined signal to the backend if that ever matters.
+  void (async () => {
+    const dispatch = await channelRuntime.inbound.dispatch({
+      cfg,
+      channel: CHANNEL_ID,
+      accountId,
+      route: { agentId: route.agentId, dmScope: route.dmScope, sessionKey: route.sessionKey },
+      ctxPayload,
+      messageId: event.eventId,
+      ...(botLoopProtection ? { botLoopProtection } : {}),
+      replyPipeline: {},
+      delivery: {
+        // Addressed and gate-approved ambient requests deliver their final through
+        // the durable message adapter (stable queue id).
+        preparePayload: (payload, info) =>
+          turnEventKind === "user_request" && info.kind === "final" ? payload : null,
+        durable:
+          turnEventKind === "user_request"
+            ? {
+                to: target,
+                replyToId: message.replyToMessageId,
+                threadId: message.threadRootMessageId ?? undefined,
+                requiredCapabilities: DURABLE_FINAL_CAPABILITIES,
+              }
+            : false,
+        deliver: async () => {
+          throw new Error("lightbulb: direct delivery is not supported; finals must use the durable adapter");
+        },
       },
-    },
-  });
-  if (dispatch.admission.kind !== "dispatch") {
-    throw new IngressRejected(409, "lightbulb: channel declined the turn", {
-      admission: dispatch.admission.kind,
-      reason: dispatch.admission.reason,
     });
-  }
-  if (!dispatch.dispatched) {
-    throw new IngressRejected(500, "lightbulb: channel accepted the turn without dispatching it");
-  }
+    if (dispatch.admission.kind !== "dispatch") {
+      console.warn("[lightbulb-channel] turn declined after ack", {
+        eventId: event.eventId,
+        admission: dispatch.admission.kind,
+        reason: dispatch.admission.reason,
+      });
+    } else if (!dispatch.dispatched) {
+      console.warn("[lightbulb-channel] turn admitted but not dispatched", { eventId: event.eventId });
+    }
+  })().catch((error: unknown) => {
+    console.warn("[lightbulb-channel] turn failed after ack", {
+      eventId: event.eventId,
+      error: error instanceof Error ? error.name : typeof error,
+    });
+  });
   return "dispatched";
 }
 

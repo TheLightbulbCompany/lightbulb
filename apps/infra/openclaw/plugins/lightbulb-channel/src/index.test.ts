@@ -1109,13 +1109,40 @@ describe("private ingress handler", () => {
     });
   });
 
-  it("returns 500 when native dispatch reports no dispatched turn", async () => {
-    const state = handlerDeps({
-      dispatch: vi.fn(async () => ({ admission: { kind: "dispatch" }, dispatched: false })),
-    });
+  it("answers 202 as soon as the turn is admitted, before the SDK turn resolves", async () => {
+    let finishTurn: (value: unknown) => void = () => {};
+    const dispatch = vi.fn(() => new Promise((resolve) => { finishTurn = resolve; }));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const res = responseRecorder();
-    await createInboundHandler(state.deps)(request(), res);
-    expect(res.statusCode).toBe(500);
+    await createInboundHandler(handlerDeps({ dispatch }).deps)(request(), res);
+    expect(res.statusCode).toBe(202);
+    expect(JSON.parse(res.body).status).toBe("dispatched");
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    finishTurn({ admission: { kind: "dispatch" }, dispatched: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("logs, without retry or content, a turn the SDK declines or drops after the ack", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const declined = responseRecorder();
+    await createInboundHandler(
+      handlerDeps({ dispatch: vi.fn(async () => ({ admission: { kind: "drop", reason: "loop" }, dispatched: false })) }).deps,
+    )(request(), declined);
+    expect(declined.statusCode).toBe(202);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(warn).toHaveBeenCalledWith("[lightbulb-channel] turn declined after ack", expect.objectContaining({ admission: "drop", reason: "loop" }));
+
+    const failed = responseRecorder();
+    await createInboundHandler(
+      handlerDeps({ dispatch: vi.fn(async () => { throw new Error("gateway exploded: secret text"); }) }).deps,
+    )(request(), failed);
+    expect(failed.statusCode).toBe(202);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(warn).toHaveBeenCalledWith("[lightbulb-channel] turn failed after ack", { eventId: expect.any(String), error: "Error" });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("secret text");
+    warn.mockRestore();
   });
 
   it("documents the at-least-once crash window after dispatch and before commit", async () => {

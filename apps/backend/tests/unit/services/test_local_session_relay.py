@@ -121,6 +121,91 @@ async def start(transport):
 
 
 @pytest.mark.asyncio
+async def test_optional_cli_revocation_does_not_revoke_native_mac_sharing(transport, db):
+    sid = await start(transport)
+    db[1].update_item(
+        Key={"owner_id": OWNER}, UpdateExpression="REMOVE paired_devices.#cli", ExpressionAttributeNames={"#cli": CLI}
+    )
+    # A removed association cannot be newly enrolled, but existing Mac consent
+    # and every ongoing local-session transaction are independent of that node.
+    with pytest.raises(ApiProblem):
+        await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, cliDeviceId=CLI, enabled=True))
+    connect(transport, "conn-2", "2000")
+    assert (await relay(transport).handle_message("conn-2", registration()))["sessionId"] == sid
+    await relay(transport).handle_message(
+        "conn-2",
+        {
+            "type": "local.session.events",
+            "sessionId": sid,
+            "generation": "generation-1",
+            "batchId": "independent",
+            "afterSeq": 0,
+            "events": [{"kind": "text", "role": "assistant", "text": "still shared", "truncated": False}],
+        },
+    )
+    assert (await service.list_events(BOB, ROOM, sid)).events[0].text == "still shared"
+    resources = await service.list_resources(BOB, ROOM)
+    assert resources.devices[0].cli_device_id is None
+    await service.submit_command(BOB, ROOM, sid, command(service))
+    await relay(transport).dispatch_session(OWNER, sid)
+    assert (await repo.get_command(OWNER, sid, "request-1"))["state"] == "dispatched"
+    await relay(transport).handle_message(
+        "conn-2",
+        {
+            "type": "local.session.receipt",
+            "sessionId": sid,
+            "generation": "generation-1",
+            "requestId": "request-1",
+            "outcome": "applied",
+            "providerMessageId": "native",
+            "held": True,
+        },
+    )
+    db[1].update_item(
+        Key={"owner_id": OWNER}, UpdateExpression="REMOVE paired_devices.#mac", ExpressionAttributeNames={"#mac": MAC}
+    )
+    with pytest.raises(ApiProblem):
+        await relay(transport).handle_message("conn-2", registration())
+    with pytest.raises(ApiProblem):
+        await service.list_events(BOB, ROOM, sid)
+    with pytest.raises(ApiProblem):
+        await service.submit_command(BOB, ROOM, sid, command(service, requestId="after-mac-revocation"))
+
+
+@pytest.mark.asyncio
+async def test_native_capability_restriction_survives_reconnect_and_heartbeat(transport):
+    sid = await start(transport)
+    response = await relay(transport).handle_message(
+        "conn-1", registration(status="unknown", controlUnavailableReason="endpoint-unavailable")
+    )
+    assert response["sessionId"] == sid
+    assert abs(response["serverTime"] - time.time()) < 2
+    public = (await service.list_resources(BOB, ROOM)).sessions[0]
+    assert public.status == "unknown"
+    assert public.provider_version == "0.149.0"
+    assert public.control_unavailable_reason == "endpoint-unavailable"
+    assert public.capabilities.send_mode == "none"
+    await relay(transport).handle_message("conn-1", registration(status="unknown"))
+    public = (await service.list_resources(BOB, ROOM)).sessions[0]
+    assert public.capabilities.send_mode == "queue"
+    await relay(transport).handle_message(
+        "conn-1",
+        {
+            "type": "local.session.heartbeat",
+            "sessionId": sid,
+            "generation": "generation-1",
+            "status": "unknown",
+            "controlUnavailableReason": "runtime-unverified",
+        },
+    )
+    public = (await service.list_resources(BOB, ROOM)).sessions[0]
+    assert public.capabilities.send_mode == "none"
+    assert not public.capabilities_verified
+    with pytest.raises(ApiProblem):
+        await relay(transport).handle_message("conn-1", registration(controlUnavailableReason="/private/path"))
+
+
+@pytest.mark.asyncio
 async def test_backend_local_admission_uses_canonical_mac_and_never_opens_gateway(transport):
     # Fails if the router routes dedicated traffic through node/operator admission.
     from routers.websocket_chat import router

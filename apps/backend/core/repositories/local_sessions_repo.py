@@ -117,7 +117,7 @@ async def put_session(row: dict, previous: dict | None, enrollment: dict, *, ext
     projection.update(pk=user_pk(row["ownerId"], row["humanUserId"]), sk=f"SESSION#{row['sessionId']}")
     await store._transact(
         [
-            pairing_condition(row["ownerId"], row["humanUserId"], row["deviceId"], enrollment.get("cliDeviceId")),
+            pairing_condition(row["ownerId"], row["humanUserId"], row["deviceId"], None),
             enrollment_condition(enrollment),
             {"Put": put},
             {"Put": {"TableName": store._table().name, "Item": projection}},
@@ -174,7 +174,7 @@ async def admit_command(row: dict, enrollment: dict, receipt: dict) -> None:
     await store._transact(
         room_conditions(owner, human, receipt)
         + [
-            pairing_condition(owner, human, device, enrollment.get("cliDeviceId")),
+            pairing_condition(owner, human, device, None),
             enrollment_condition(enrollment),
             {
                 "Update": {

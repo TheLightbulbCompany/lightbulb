@@ -46,13 +46,17 @@ class Capabilities(ContractModel):
     interrupt: bool = False
 
 
+ControlUnavailableReason = Literal["runtime-unverified", "endpoint-unavailable", "unsupported-version", "history-gap"]
+
+
 class SessionRegistration(ContractModel):
     provider: Literal["claude", "codex"]
     profile_fingerprint: DeviceId
     native_conversation_id: OpaqueId
     generation: OpaqueId
     provider_version: Annotated[str, Field(min_length=1, max_length=128)]
-    status: Literal["idle", "busy", "waiting-approval", "offline"] = "offline"
+    status: Literal["idle", "busy", "waiting-approval", "unknown", "offline"] = "offline"
+    control_unavailable_reason: ControlUnavailableReason | None = None
     active_turn_id: OpaqueId | None = None
     capabilities: Capabilities = Field(default_factory=Capabilities)
     # The adapter must verify THIS provider version; omitted never inherits trust.
@@ -66,7 +70,9 @@ class LocalSession(ContractModel):
     human_user_id: str
     provider: Literal["claude", "codex"]
     generation: str
-    status: Literal["idle", "busy", "waiting-approval", "offline"]
+    status: Literal["idle", "busy", "waiting-approval", "unknown", "offline"]
+    provider_version: str
+    control_unavailable_reason: ControlUnavailableReason | None = None
     active_turn_id: str | None
     capabilities: Capabilities
     capabilities_verified: bool
@@ -136,7 +142,7 @@ def _public(model, row: dict):
     )
 
 
-async def _paired(owner_id: str, user_id: str, device_id: str, cli_device_id: str | None) -> None:
+async def _paired(owner_id: str, user_id: str, device_id: str, cli_device_id: str | None) -> dict:
     container = await container_repo.get_by_owner_id(owner_id, consistent=True)
     pairs = (container or {}).get("paired_devices", {})
     for key, client in ((device_id, "openclaw-macos"), (cli_device_id, "node-host")):
@@ -145,6 +151,7 @@ async def _paired(owner_id: str, user_id: str, device_id: str, cli_device_id: st
         pair = pairs.get(key, {})
         if pair.get("userId") != user_id or pair.get("clientId") != client:
             raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Paired desktop ownership is required.")
+    return pairs
 
 
 async def set_enrollment(auth: AuthContext, request: EnrollmentRequest) -> EnrollmentResponse:
@@ -163,7 +170,13 @@ async def _enrolled(owner: str, human: str, device: str) -> dict:
     enrollment = await repo.get_enrollment(owner, human, device)
     if not enrollment or not enrollment.get("enabled"):
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Local session sharing is disabled.")
-    await _paired(owner, human, device, enrollment.get("cliDeviceId"))
+    # The optional node association is validated at enrollment, not a second
+    # credential required for native sharing. Only canonical Mac revocation
+    # removes this authority; omit a companion that is no longer eligible.
+    pairs = await _paired(owner, human, device, None)
+    cli = pairs.get(enrollment.get("cliDeviceId"), {})
+    if cli.get("userId") != human or cli.get("clientId") != "node-host":
+        enrollment = {**enrollment, "cliDeviceId": None}
     return enrollment
 
 

@@ -37,8 +37,9 @@ class Descriptor(ContractModel):
     native_conversation_id: sessions.OpaqueId
     generation: sessions.OpaqueId
     provider_version: str = Field(min_length=1, max_length=128)
-    status: Literal["idle", "busy", "waiting-approval", "offline"]
+    status: Literal["idle", "busy", "waiting-approval", "unknown", "offline"]
     active_turn_id: sessions.OpaqueId | None = None
+    control_unavailable_reason: sessions.ControlUnavailableReason | None = None
 
 
 class Register(ContractModel):
@@ -51,8 +52,9 @@ class Heartbeat(ContractModel):
     type: Literal["local.session.heartbeat"]
     session_id: uuid.UUID
     generation: sessions.OpaqueId
-    status: Literal["idle", "busy", "waiting-approval", "offline"]
+    status: Literal["idle", "busy", "waiting-approval", "unknown", "offline"]
     active_turn_id: sessions.OpaqueId | None = None
+    control_unavailable_reason: sessions.ControlUnavailableReason | None = None
 
 
 class Event(ContractModel):
@@ -208,7 +210,10 @@ class LocalSessionRelay:
                             and message.previous_generation != previous["generation"]
                         ):
                             raise _conflict()
-                    compatible = (descriptor.provider, descriptor.provider_version) in _COMPATIBLE
+                    compatible = (
+                        descriptor.provider,
+                        descriptor.provider_version,
+                    ) in _COMPATIBLE and descriptor.control_unavailable_reason is None
                     row = _revised(
                         previous or {},
                         **descriptor.model_dump(by_alias=True),
@@ -252,6 +257,14 @@ class LocalSessionRelay:
                             activeTurnId=message.active_turn_id,
                             onlineUntil=int(time.time()) + LIVENESS_SECONDS,
                         )
+                        # Heartbeats may withdraw authority. A fresh registration
+                        # is required to restore it after runtime revalidation.
+                        if message.control_unavailable_reason is not None:
+                            updated.update(
+                                controlUnavailableReason=message.control_unavailable_reason,
+                                capabilities=sessions.Capabilities().model_dump(by_alias=True),
+                                capabilitiesVerified=False,
+                            )
                         await repo.put_session(
                             updated, row, enrollment, extra=[self._connection_check(cid, connection)]
                         )
@@ -281,6 +294,8 @@ class LocalSessionRelay:
                         else None
                     )
                 check_envelope(response)
+                if isinstance(message, (Register, Heartbeat)):
+                    response["serverTime"] = int(time.time())
                 return response
             except ClientError as exc:
                 if not store._is_cancelled(exc):
@@ -355,9 +370,7 @@ class LocalSessionRelay:
                 command,
                 _revised(command, **outcome, updatedAt=int(time.time())),
                 checks=[
-                    repo.pairing_condition(
-                        row["ownerId"], row["humanUserId"], row["deviceId"], enrollment.get("cliDeviceId")
-                    ),
+                    repo.pairing_condition(row["ownerId"], row["humanUserId"], row["deviceId"], None),
                     repo.enrollment_condition(enrollment),
                     self._session_check(row),
                     self._connection_check(cid, connection),
@@ -387,7 +400,7 @@ class LocalSessionRelay:
             return None
         return [
             *repo.room_conditions(owner, row["humanUserId"], command),
-            repo.pairing_condition(owner, row["humanUserId"], row["deviceId"], enrollment.get("cliDeviceId")),
+            repo.pairing_condition(owner, row["humanUserId"], row["deviceId"], None),
             repo.enrollment_condition(enrollment),
             self._session_check(row),
             self._connection_check(row["connectionId"], connection),

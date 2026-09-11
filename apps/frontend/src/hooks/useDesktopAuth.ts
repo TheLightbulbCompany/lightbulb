@@ -14,8 +14,18 @@ import { useEffect, useRef } from "react";
  */
 export function useDesktopAuth() {
   const { signIn, setActive } = useSignIn();
-  const { isSignedIn } = useAuth();
+  const { isLoaded, isSignedIn, userId } = useAuth();
   const consumingRef = useRef(false);
+
+  useEffect(() => {
+    if (!isLoaded) return; // Auth loading and route teardown are not logout.
+    const invoke = (window as Window & { __TAURI__?: { core?: { invoke?: (command: string, args: object) => Promise<unknown> } } }).__TAURI__?.core?.invoke;
+    if (!invoke) return;
+    // Workspace switches deliberately do not rebind native sharing consent.
+    void invoke("local_sessions_auth", { humanUserId: isSignedIn ? userId : null }).catch(() => {
+      // Older desktop builds have no sharing commands; settings explains updates.
+    });
+  }, [isLoaded, isSignedIn, userId]);
 
   useEffect(() => {
     // Only run in Tauri desktop app

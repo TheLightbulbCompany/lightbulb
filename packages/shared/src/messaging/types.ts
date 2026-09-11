@@ -205,7 +205,9 @@ export interface LocalSession {
   humanUserId: string;
   provider: "claude" | "codex";
   generation: string;
-  status: "idle" | "busy" | "waiting-approval" | "offline";
+  status: "idle" | "busy" | "waiting-approval" | "unknown" | "offline";
+  providerVersion: string;
+  controlUnavailableReason: "runtime-unverified" | "endpoint-unavailable" | "unsupported-version" | "history-gap" | null;
   activeTurnId: string | null;
   capabilities: LocalSessionCapabilities;
   capabilitiesVerified: boolean;

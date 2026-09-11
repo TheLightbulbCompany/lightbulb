@@ -62,85 +62,11 @@ impl JsonLines {
 }
 
 fn message(provider: &str, session: &str, row: &Value) -> Result<Option<Value>> {
-    if row.get("channel").is_some() || row.get("phase").is_some() {
-        return Ok(None);
-    }
-    let body = if provider == "claude" {
-        if !matches!(row["type"].as_str(), Some("assistant" | "user"))
-            || row["message"]["role"] != row["type"]
-            || row["message"].get("channel").is_some()
-            || row["message"].get("phase").is_some()
-        {
-            return Ok(None);
-        }
-        if matches!(row["type"].as_str(), Some("assistant" | "user"))
-            && (row["sessionId"] != session || row["version"] != "2.1.268")
-        {
-            return Err("missing or mismatched Claude conversation identity/version".into());
-        }
-        if row.get("sessionId").is_some() && row["sessionId"] != session {
-            return Err("transcript session mismatch".into());
-        }
-        if row.get("version").is_some() && row["version"] != "2.1.268" {
-            return Err("unsupported transcript version".into());
-        }
-        &row["message"]
-    } else {
-        if row["type"] == "session_meta"
-            && (row["payload"]["id"] != session || row["payload"]["cli_version"] != "0.149.0")
-        {
-            return Err("Codex transcript identity/version mismatch".into());
-        }
-        if row["type"] != "response_item"
-            || row["payload"]["type"] != "message"
-            || row["payload"].get("channel").is_some()
-            || match row["payload"]["role"].as_str() {
-                Some("assistant") => !matches!(
-                    row["payload"]["phase"].as_str(),
-                    Some("commentary" | "final_answer")
-                ),
-                Some("user") => row["payload"].get("phase").is_some(),
-                _ => true,
-            }
-        {
-            return Ok(None);
-        }
-        &row["payload"]
-    };
-    // Text blocks only: omit thinking signatures and structured tool/hook events.
-    if body["role"] != "assistant" && body["role"] != "user" {
-        return Ok(None);
-    }
-    let text = if let Some(s) = body["content"]
-        .as_str()
-        .filter(|_| provider == "claude" && body["role"] == "user")
-    {
-        s.to_owned()
-    } else {
-        body["content"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|b| {
-                b["type"]
-                    == if provider == "claude" {
-                        "text"
-                    } else if body["role"] == "user" {
-                        "input_text"
-                    } else {
-                        "output_text"
-                    }
-            })
-            .filter_map(|b| b["text"].as_str())
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    if text.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(
-        json!({"role":body["role"],"text":text,"timestamp":row["timestamp"]}),
-    ))
+    Ok(
+        lightbulb_desktop::local_sessions::normalize_public_message(provider, session, row)?.map(
+            |event| json!({"role":event["role"],"text":event["text"],"timestamp":row["timestamp"]}),
+        ),
+    )
 }
 
 fn command(program: &str, args: &[&str]) -> Result<String> {

@@ -237,8 +237,8 @@ async def count_paperclip_agents_for_owner(owner_id: str) -> int:
     when the owner has no company yet or Paperclip is unreachable.
 
     **0 means UNDETERMINABLE, never "a genuinely tiny owner."** Every
-    provisioned owner has Friday + Atlas seeded, so a reachable owner's roster
-    is always >= 2. Callers must treat 0 as "no signal" and fall back to their
+    provisioned owner has a persisted Paperclip roster, so a reachable owner's
+    count is positive. Callers must treat 0 as "no signal" and fall back to their
     own default — never as "small enough to shrink." See the deferral logic in
     ``stripe_webhook_handlers._apply_ultra_resize`` for why shrinking on an
     unknown count is the dangerous direction.
@@ -269,7 +269,7 @@ async def count_paperclip_agents_for_owner(owner_id: str) -> int:
 
 
 async def _resolve_seeded_agent_ids(*, owner_id: str, repo: PaperclipRepo) -> set[str]:
-    """Resolve the persisted seeded-agent IDs (Friday + Atlas) for an owner.
+    """Resolve persisted legacy founder-seed IDs (Friday + Atlas) for an owner.
 
     Source of truth is the persisted ``seeded_agent_ids`` captured on the
     provisioner's ``paperclip-companies`` row at ``provision_org`` time —
@@ -308,14 +308,28 @@ async def get_seeded_agent_ids(*, owner_id: str, repo: PaperclipRepo) -> set[str
         return set()
 
 
+async def get_starter_agent_ids(*, owner_id: str, repo: PaperclipRepo) -> set[str]:
+    """Best-effort starter UUIDs from the authoritative owner row."""
+    try:
+        row = await repo.resolve_owner_row(owner_id)
+        return set(row.starter_agent_ids.values()) if row and row.starter_agent_ids else set()
+    except Exception:  # noqa: BLE001 — provenance labeling must not break reads
+        return set()
+
+
+async def remove_starter_agent_id(*, owner_id: str, agent_id: str) -> None:
+    """Forget a starter UUID after its correlated deletion succeeds."""
+    await PaperclipRepo(table_name="paperclip-companies").remove_starter_agent_id(owner_id, agent_id)
+
+
 async def is_seeded_agent(*, owner_id: str, agent_id: str) -> bool:
-    """Whether ``agent_id`` is an Isol8-seeded agent (Friday or Atlas).
+    """Whether ``agent_id`` is a legacy Isol8-seeded agent (Friday or Atlas).
 
     This backs the **delete guards** (OpenClaw gateway + Teams REST), so it
     FAILS CLOSED: if the persisted-id lookup errors (e.g. a DynamoDB outage),
     we return ``True`` to block deletion rather than risk removing a seeded
     agent during the error window. A blocked delete is recoverable on retry;
-    a deleted Friday/Atlas breaks the provisioning contract.
+    deleting one would break its legacy provisioning contract.
     """
     repo = PaperclipRepo(table_name="paperclip-companies")
     try:

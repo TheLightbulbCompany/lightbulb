@@ -5,11 +5,6 @@ import type { CompanyAgent } from "@/components/teams/shared/types";
 import { AgentOrgControls } from "@/components/teams/agents/AgentOrgControls";
 import { handleShellLinkClick } from "@/lib/shellNav";
 
-// `isSeededAgent` now lives alongside the org controls that gate on it.
-// Re-exported here so existing importers (AgentsListPanel + tests) keep their
-// `@/components/teams/agents/AgentManageSection` import path.
-export { isSeededAgent } from "@/components/teams/agents/AgentOrgControls";
-
 function MetaRow({ label, value }: { label: string; value?: string | null }) {
   return (
     <div className="flex flex-col gap-0.5">

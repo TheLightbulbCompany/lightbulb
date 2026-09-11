@@ -21,12 +21,12 @@
 //      happened to return.
 //   3. It is reachable by keyboard. The old row was a bare `<div onClick>`.
 //
-// The roster COLLAPSES to Friday plus any pinned agents, and expands on a
+// The roster COLLAPSES to the CEO plus any pinned agents, and expands on a
 // chevron. An earlier version of this comment argued the opposite — that with
 // a 10-agent plan cap the whole cast fits on screen, so hiding rows behind a
 // chevron buys nothing. That argument was about screen SPACE and it was right
 // about screen space. Collapsing is not here to save room: it is here because
-// Friday is the product and a first-time owner reading ten equal rows cannot
+// The CEO is the front door, and a first-time owner reading equal rows cannot
 // tell who to talk to. Pinning is the escape hatch for owners who work with a
 // specific teammate often, and it is the reason manual drag-ordering is still
 // not here — a pin is one bit the user sets deliberately, not an ordering they
@@ -163,13 +163,12 @@ export function unknownStateLabel(status: string): string {
 export interface RosterEntry {
   agent: Agent;
   state: RosterState;
-  /** Friday — the per-owner CEO / orchestrator. Pinned first, always. */
+  /** The per-owner CEO / orchestrator. Pinned first, always. */
   isCeo: boolean;
   /** The raw `CompanyAgent.status`, carried only so a `state: "unknown"` row
    *  can show the value verbatim instead of inventing a label for it. */
   rawStatus?: string | null;
-  /** Friday / Atlas. The backend refuses to delete these outright, so the row
-   *  must not offer it — see the delete guard in the row. */
+  /** Backend-authored starter provenance, retained for roster consumers. */
   isSeeded?: boolean;
 }
 
@@ -180,7 +179,7 @@ export interface RosterEntry {
  * is a pure function of its ARGUMENTS cannot repeat it. That is why pins
  * arrive as a parameter here and are read by the host, not looked up inside.)
  *
- * Friday is first regardless of state: she is the front door to the whole
+ * The CEO is first regardless of state: it is the front door to the whole
  * company, and a front door that moves is a bad front door. Pinned agents come
  * next — the owner said these matter, which outranks anything derived. Then
  * attention rank, then name, so the order is stable and repeatable rather than
@@ -202,7 +201,7 @@ export function orderRoster(
 }
 
 /**
- * Who stays visible while the roster is collapsed: Friday, every pinned agent,
+ * Who stays visible while the roster is collapsed: the CEO, every pinned agent,
  * and whoever is currently OPEN.
  *
  * The active agent is not optional. `activeAgentId` is driven from outside the
@@ -210,7 +209,7 @@ export function orderRoster(
  * picker, `HomeQuickActions`, anything calling `openChatPanel` — so an agent
  * that is neither CEO nor pinned can become the open conversation without the
  * owner ever touching this list. Filtering it out would show the right agent in
- * the chat pane while the sidebar showed only Friday and a chevron: no
+ * the chat pane while the sidebar showed only the CEO and a chevron: no
  * `aria-current` row, no session list, no indication of what you are looking
  * at. That is precisely the "needs you" case collapsing is supposed to survive.
  *
@@ -235,7 +234,7 @@ interface AgentRosterProps {
   entries: RosterEntry[];
   /** Currently focused agent — its row is marked `active` + `aria-current`. */
   activeAgentId: string | null;
-  /** The undeletable default agent (no delete action rendered on its row). */
+  /** Runtime default identity; lifecycle policy is enforced by the backend. */
   defaultAgentId?: string;
   /** Agents the owner has published to the marketplace — gold pip on the avatar. */
   publishedAgentIds: ReadonlySet<string>;
@@ -257,7 +256,6 @@ interface AgentRosterProps {
 export function AgentRoster({
   entries,
   activeAgentId,
-  defaultAgentId,
   publishedAgentIds,
   freshlyInstalledAgentId,
   configSnapshot,
@@ -302,7 +300,7 @@ export function AgentRoster({
     [entries, pinned],
   );
 
-  // Collapsed shows Friday + pins; expanded shows everyone. Computed from the
+  // Collapsed shows the CEO + pins; expanded shows everyone. Computed from the
   // FULL ordered list so the counts in the header stay honest either way.
   const collapsed = useMemo(
     () => collapsedRoster(ordered, pinned, activeAgentId),
@@ -359,7 +357,7 @@ export function AgentRoster({
         )}
       </div>
 
-      {displayed.map(({ agent, state, isCeo, rawStatus, isSeeded }) => {
+      {displayed.map(({ agent, state, isCeo, rawStatus }) => {
         const name = agentDisplayName(agent);
         const isActive = activeAgentId === agent.id;
         const displayAgent = fromInstalledAgent(agent);
@@ -411,7 +409,7 @@ export function AgentRoster({
               <span className="agent-info">
                 <span className="agent-name">
                   <span className="agent-name__text">{name}</span>
-                  {/* Friday is the orchestrator every other agent reports
+                  {/* The CEO is the orchestrator every other agent reports
                       through — the roster should say so, not leave the owner
                       to remember which of ten names is the one that can
                       delegate. */}
@@ -437,7 +435,7 @@ export function AgentRoster({
             </button>
 
             <div className="agent-row-actions">
-              {/* No pin control on the CEO: she is always visible, so the
+              {/* No pin control on the CEO: it is always visible, so the
                   button could only ever be a no-op the owner can press. */}
               {!isCeo && (
                 <Tooltip>
@@ -500,21 +498,19 @@ export function AgentRoster({
                 </TooltipTrigger>
                 <TooltipContent>{`Rename ${name}`}</TooltipContent>
               </Tooltip>
-              {!isSeeded && agent.id !== defaultAgentId && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      className="agent-row-action agent-row-action--err"
-                      aria-label={`Delete ${name}`}
-                      onClick={() => onDelete(agent)}
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent>{`Delete ${name}`}</TooltipContent>
-                </Tooltip>
-              )}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    className="agent-row-action agent-row-action--err"
+                    aria-label={`Delete ${name}`}
+                    onClick={() => onDelete(agent)}
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>{`Delete ${name}`}</TooltipContent>
+              </Tooltip>
             </div>
 
             {isActive && renderSessions?.(agent.id)}

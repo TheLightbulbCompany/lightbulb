@@ -32,7 +32,15 @@ async def test_create_agent_registers_lightbulb_channel_account(monkeypatch):
         "create_paperclip_for_chat",
         AsyncMock(return_value={"id": "agent_123", "name": "Bob"}),
     )
-    monkeypatch.setattr("core.services.agent_budget.is_at_agent_budget", AsyncMock(return_value=False))
+    count_agents = AsyncMock(return_value=11)
+    monkeypatch.setattr(
+        "core.services.paperclip_openclaw_pairing.count_paperclip_agents_for_owner",
+        count_agents,
+    )
+    monkeypatch.setattr(
+        "core.repositories.billing_repo.get_by_owner_id",
+        AsyncMock(return_value={"plan": "standard"}),
+    )
     pool = MagicMock()
     pool.send_rpc = AsyncMock(return_value={"ok": True, "agentId": "agent_123"})
     monkeypatch.setattr(rpc, "get_gateway_pool", lambda: pool)
@@ -45,3 +53,5 @@ async def test_create_agent_registers_lightbulb_channel_account(monkeypatch):
     assert result["agentId"] == "agent_123"
     assert pool.send_rpc.await_count == 2
     register_mock.assert_awaited_once_with("owner_1", "agent_123")
+    count_agents.assert_not_awaited()
+    assert "idempotency_replay_only" not in rpc.create_paperclip_for_chat.await_args.kwargs

@@ -3,15 +3,12 @@
 The deploy is FIRE-AND-FORGET: the route schedules ``run_company_deploy`` off
 the request path and returns 202 with ``{started, agent_count}`` — there is no
 job row and no status/rollback endpoint. Progress + the roster live in Teams.
-The route is open to any signed-in buyer (the platform-admin launch gate was
-removed); plan gating is the Ultra 409 and concurrency is the owner-wide
-deploy claim the route takes before dispatching.
+The route is open to any workspace admin buyer and concurrency is the
+owner-wide deploy claim the route takes before dispatching.
 
 Follows the company-listing client/auth idiom from
-``test_marketplace_company_listings.py`` — the conftest ``client`` fixture is a
-personal (non-admin, email=None) caller; ``admin_client`` below is an
-``@isol8.co`` platform admin (kept for continuity; admin no longer changes the
-route's behaviour).
+``test_marketplace_company_listings.py`` — the conftest ``client`` fixture and
+``admin_client`` below both use active workspace-admin contexts.
 """
 
 import os
@@ -28,10 +25,15 @@ from core.auth import AuthContext, get_current_user  # noqa: E402
 
 @pytest.fixture
 def admin_client(app):
-    """TestClient authenticated as an @isol8.co platform admin (personal ctx)."""
+    """TestClient authenticated as a workspace admin."""
 
     async def _mock():
-        return AuthContext(user_id="human_admin", org_id="user_admin", org_role="org:admin", email="admin@isol8.co")
+        return AuthContext(
+            user_id="user_admin",
+            email="admin@thelightbulb.company",
+            org_id="org_admin",
+            org_role="org:admin",
+        )
 
     app.dependency_overrides.clear()
     app.dependency_overrides[get_current_user] = _mock
@@ -60,7 +62,7 @@ def deploy_claim():
         patch(
             "routers.marketplace_listings.container_repo.get_by_owner_id",
             new_callable=AsyncMock,
-            return_value={"owner_id": "user_admin", "status": "running"},
+            return_value={"owner_id": "org_admin", "status": "running"},
         ) as get_row,
     ):
         yield claim, release, get_row
@@ -124,7 +126,7 @@ def test_admin_deploy_standard_company_202(mock_get_published, mock_boto, mock_r
 
     # Background task fired with the run_company_deploy coroutine, right args —
     # no job_id (fire-and-forget). The task owns the claim from here.
-    mock_run.assert_called_once_with(owner_id="user_admin", listing=listing, tar_bytes=b"COMPANYTAR", claim_token="tok")
+    mock_run.assert_called_once_with(owner_id="org_admin", listing=listing, tar_bytes=b"COMPANYTAR", claim_token="tok")
     mock_create_task.assert_called_once_with(mock_run.return_value)
 
 
@@ -133,25 +135,22 @@ def test_admin_deploy_standard_company_202(mock_get_published, mock_boto, mock_r
 @patch("routers.marketplace_listings.company_deploy_service.run_company_deploy", new_callable=MagicMock)
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
-def test_admin_deploy_standard_company_skips_size_reconcile(
+def test_company_deploy_skips_entitlement_size_reconcile(
     mock_get_published, mock_boto, mock_run, mock_create_task, mock_get_ecs, admin_client
 ):
-    """A standard (<=10-agent) company is NOT size-gated: the ecs manager is
-    never consulted (no current-size read, no resize) and the deploy dispatches
-    202 exactly as before. A standard box is always adequate."""
+    """Company agent count never triggers a commercial size gate in deploy."""
     ecs = MagicMock()
     ecs.current_container_size = AsyncMock(return_value=("512", "2048"))
     ecs.resize_user_container = AsyncMock()
     mock_get_ecs.return_value = ecs
-    mock_get_published.return_value = _company_listing(agent_count=5, min_plan="standard")
+    mock_get_published.return_value = _company_listing(agent_count=15, min_plan="ultra_pro")
     mock_boto.return_value.get_object.return_value = _tar_body(b"COMPANYTAR")
 
     resp = admin_client.post("/api/v1/marketplace/listings/gstack/deploy")
 
     assert resp.status_code == 202, resp.text
-    assert resp.json() == {"started": True, "agent_count": 5}
+    assert resp.json() == {"started": True, "agent_count": 15}
     mock_create_task.assert_called_once_with(mock_run.return_value)
-    # Standard company: the size-reconcile path is never entered.
     mock_get_ecs.assert_not_called()
     ecs.current_container_size.assert_not_called()
     ecs.resize_user_container.assert_not_called()
@@ -175,7 +174,7 @@ def test_priced_company_without_purchase_403(
     resp = admin_client.post("/api/v1/marketplace/listings/gstack/deploy")
 
     assert resp.status_code == 403, resp.text
-    mock_purchase.assert_awaited_once_with(buyer_id="user_admin", listing_id="l1")
+    mock_purchase.assert_awaited_once_with(buyer_id="org_admin", listing_id="l1")
     mock_boto.assert_not_called()
     mock_run.assert_not_called()
     mock_create_task.assert_not_called()
@@ -212,7 +211,7 @@ def test_seller_deploys_own_priced_company_without_purchase(
     """Sellers don't buy their own listings — the identity bypass from the
     agent path applies to companies too."""
     listing = _company_listing(price_cents=2000)
-    listing["seller_id"] = "human_admin"
+    listing["seller_id"] = "user_admin"
     mock_get_published.return_value = listing
     mock_boto.return_value.get_object.return_value = _tar_body(b"COMPANYTAR")
 
@@ -292,49 +291,6 @@ def test_company_deploy_refused_when_pod_not_running(
 @patch("routers.marketplace_listings.company_deploy_service.run_company_deploy")
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
-@patch("routers.marketplace_listings.billing_repo.get_by_owner_id", new_callable=AsyncMock)
-def test_admin_deploy_ultra_pro_company_409(
-    mock_billing, mock_get_published, mock_boto, mock_run, mock_create_task, admin_client
-):
-    """A NON-ultra_pro admin deploying a >10-agent (ultra_pro) company is
-    rejected 409 'Requires Ultra' — the plan gate lives inside the
-    admin-gated branch, before any S3/dispatch work."""
-    mock_billing.return_value = None  # no billing row -> not ultra_pro
-    mock_get_published.return_value = _company_listing(agent_count=15, min_plan="ultra_pro")
-
-    resp = admin_client.post("/api/v1/marketplace/listings/gstack/deploy")
-
-    assert resp.status_code == 409, resp.text
-    assert "requires ultra" in resp.json()["detail"].lower()
-    mock_boto.assert_not_called()
-    mock_run.assert_not_called()
-    mock_create_task.assert_not_called()
-
-
-@patch("routers.marketplace_listings.asyncio.create_task")
-@patch("routers.marketplace_listings.company_deploy_service.run_company_deploy")
-@patch("routers.marketplace_listings.boto3.client")
-@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
-@patch("routers.marketplace_listings.billing_repo.get_by_owner_id", new_callable=AsyncMock)
-def test_admin_deploy_inconsistent_agent_count_409(
-    mock_billing, mock_get_published, mock_boto, mock_run, mock_create_task, admin_client
-):
-    """Belt-and-suspenders: min_plan='standard' but agent_count>10 still 409s for
-    a non-ultra_pro owner."""
-    mock_billing.return_value = {"plan": "standard"}
-    mock_get_published.return_value = _company_listing(agent_count=11, min_plan="standard")
-
-    resp = admin_client.post("/api/v1/marketplace/listings/gstack/deploy")
-
-    assert resp.status_code == 409, resp.text
-    mock_run.assert_not_called()
-    mock_create_task.assert_not_called()
-
-
-@patch("routers.marketplace_listings.asyncio.create_task")
-@patch("routers.marketplace_listings.company_deploy_service.run_company_deploy")
-@patch("routers.marketplace_listings.boto3.client")
-@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
 def test_second_company_deploy_refused_409(
     mock_get_published, mock_boto, mock_run, mock_create_task, client, deploy_claim
 ):
@@ -359,19 +315,14 @@ def test_second_company_deploy_refused_409(
     mock_create_task.assert_not_called()
 
 
-@patch("routers.marketplace_listings.get_ecs_manager")
-@patch("routers.marketplace_listings.billing_repo.get_by_owner_id", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.asyncio.create_task")
 @patch("routers.marketplace_listings.company_deploy_service.run_company_deploy")
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
-def test_one_company_fence_runs_before_the_plan_gate(
-    mock_get_published, mock_boto, mock_run, mock_create_task, mock_billing, mock_get_ecs, client, deploy_claim
+def test_one_company_fence_runs_before_artifact_work(
+    mock_get_published, mock_boto, mock_run, mock_create_task, client, deploy_claim
 ):
-    """Ordering: the fence is a pure row read and an unconditional refusal,
-    while the Ultra plan gate's size reconcile can KICK A CONTAINER RESTART.
-    An owner with a deployed company attempting an Ultra listing must get the
-    already-deployed 409 without the billing read or any ecs consult."""
+    """An existing company is refused before artifact reads or dispatch."""
     mock_get_published.return_value = _company_listing(agent_count=15, min_plan="ultra_pro")
     _claim, _release, get_row = deploy_claim
     get_row.return_value = {
@@ -384,7 +335,5 @@ def test_one_company_fence_runs_before_the_plan_gate(
 
     assert resp.status_code == 409, resp.text
     assert "already deployed First Co" in resp.json()["detail"]
-    mock_billing.assert_not_awaited()
-    mock_get_ecs.assert_not_called()
     mock_run.assert_not_called()
     mock_create_task.assert_not_called()

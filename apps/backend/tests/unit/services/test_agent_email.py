@@ -363,6 +363,10 @@ async def test_ensure_agent_address_mints_for_non_friday_agent(monkeypatch):
     assert out == ("atlas@acme-robotics.isol8.co", "ok")
     assert mint.call_args.kwargs["agent_name"] == "Atlas"
     assert mint.call_args.kwargs["agent_id"] == "agent_atlas"
+    assert ae.resolve_agent_name.await_args.kwargs == {
+        "agent_id": "agent_atlas",
+        "company_id": "co_1",
+    }
 
 
 @pytest.mark.asyncio
@@ -377,10 +381,20 @@ async def test_ensure_agent_address_reports_reason(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_resolve_agent_name_friday_short_circuits(monkeypatch):
+async def test_resolve_agent_name_reads_current_company_scoped_name_for_legacy_seed(monkeypatch):
+    monkeypatch.setattr(
+        ae,
+        "shared_admin_client",
+        lambda: _admin_returning({"name": "Ada", "companyId": "co_1"})(),
+    )
+    monkeypatch.setattr(ae, "get_admin_session_cookie", AsyncMock(return_value="cookie"))
+
     assert (
-        await ae.resolve_agent_name(agent_id="agent_friday", friday_agent_id="agent_friday", company_id="co_1")
-        == "Friday"
+        await ae.resolve_agent_name(
+            agent_id="agent_friday",
+            company_id="co_1",
+        )
+        == "Ada"
     )
 
 
@@ -394,9 +408,7 @@ async def test_resolve_agent_name_rejects_agent_from_a_different_company(monkeyp
         ae, "shared_admin_client", lambda: _admin_returning({"name": "Mallory", "companyId": "co_other"})()
     )
     monkeypatch.setattr(ae, "get_admin_session_cookie", AsyncMock(return_value="cookie"))
-    assert (
-        await ae.resolve_agent_name(agent_id="agent_mallory", friday_agent_id="agent_friday", company_id="co_1") is None
-    )
+    assert await ae.resolve_agent_name(agent_id="agent_mallory", company_id="co_1") is None
 
 
 @pytest.mark.asyncio
@@ -405,10 +417,7 @@ async def test_resolve_agent_name_rejects_agent_with_no_companyid(monkeypatch):
     the cross-company guard must not treat a falsy companyId as a pass."""
     monkeypatch.setattr(ae, "shared_admin_client", lambda: _admin_returning({"name": "Nameless"})())
     monkeypatch.setattr(ae, "get_admin_session_cookie", AsyncMock(return_value="cookie"))
-    assert (
-        await ae.resolve_agent_name(agent_id="agent_nameless", friday_agent_id="agent_friday", company_id="co_1")
-        is None
-    )
+    assert await ae.resolve_agent_name(agent_id="agent_nameless", company_id="co_1") is None
 
 
 @pytest.mark.asyncio

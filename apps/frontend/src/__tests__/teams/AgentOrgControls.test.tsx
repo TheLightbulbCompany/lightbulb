@@ -73,9 +73,9 @@ describe("AgentOrgControls", () => {
     await waitFor(() => expect(resume).toHaveBeenCalledWith("b"));
   });
 
-  it("hides delete for a seeded agent", () => {
+  it("offers delete for a starter agent and lets the backend enforce graph invariants", () => {
     render(<AgentOrgControls agent={FRIDAY} agents={AGENTS} />);
-    expect(screen.queryByRole("button", { name: /delete/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /delete/i })).toBeInTheDocument();
   });
 
   it("shows two-step delete for a regular agent and calls remove", async () => {
@@ -109,9 +109,9 @@ describe("AgentOrgControls", () => {
 
   it("offers recovery for a seeded agent (Friday/Atlas can wedge too)", () => {
     render(<AgentOrgControls agent={{ ...FRIDAY, status: "error" }} agents={AGENTS} />);
-    // Recovery is NOT gated by the seeded lock (unlike delete).
+    // Recovery and deletion are both available; the backend owns graph safety.
     expect(screen.getByRole("button", { name: /clear error/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /reset session/i })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /delete/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /delete/i })).toBeInTheDocument();
   });
 });

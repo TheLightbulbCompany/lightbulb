@@ -29,7 +29,6 @@ import pytest
 import core.containers as containers_mod
 import core.repositories.paperclip_repo as repo_mod
 import core.services.onboarding_brief as brief_mod
-import core.services.bootstrap_dispatcher as dispatcher_mod
 import core.services.clerk_admin as clerk_mod
 import core.services.paperclip_admin_client as admin_mod
 import core.services.paperclip_user_session as session_mod
@@ -47,6 +46,7 @@ PENDING = {
     "input": "https://acme.com",
     "brief_text": "work on acme.com",
     "submitted_by": "member_zed",
+    "target_agent_id": "friday-uuid",
 }
 
 
@@ -62,8 +62,14 @@ def _owner_row(**overrides):
         onboarding_goal_id=None,
         funnel_state="not_started",
         funnel_submitted_at=None,
-        bootstrap_state="not_started",
-        bootstrap_attempts=0,
+        starter_agent_ids={
+            "ceo": "friday-uuid",
+            "engineering": "engineering-uuid",
+            "finance": "finance-uuid",
+            "growth": "growth-uuid",
+            "analytics": "analytics-uuid",
+            "customer_operations": "customer-operations-uuid",
+        },
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -76,6 +82,7 @@ def env(monkeypatch):
     repo.resolve_owner_row = AsyncMock(return_value=_owner_row())
     repo.claim_funnel_submission = AsyncMock(return_value=FunnelClaimResult.WON)
     repo.record_onboarding_ids = AsyncMock()
+    repo.complete_funnel_submission = AsyncMock(return_value=True)
     repo.revert_funnel_submission = AsyncMock()
     repo.delete_pending_brief = AsyncMock()
     monkeypatch.setattr(repo_mod, "PaperclipRepo", lambda **kwargs: repo)
@@ -95,9 +102,6 @@ def env(monkeypatch):
     ws.write_file = MagicMock()
     monkeypatch.setattr(containers_mod, "get_workspace", lambda: ws)
 
-    dispatch = AsyncMock()
-    monkeypatch.setattr(dispatcher_mod, "maybe_dispatch_bootstrap", dispatch)
-
     repo.record_pending_brief_failure = AsyncMock(return_value=1)
     repo.fail_pending_brief = AsyncMock()
     # Real cadence is 2s..60s. Keep the same NUMBER of attempts (the failure
@@ -107,7 +111,7 @@ def env(monkeypatch):
     # that raises mid-drain must not leave an owner poisoned for the next one.
     brief_mod._draining.clear()
 
-    return SimpleNamespace(repo=repo, admin=admin, ws=ws, dispatch=dispatch)
+    return SimpleNamespace(repo=repo, admin=admin, ws=ws)
 
 
 # --- Nothing to do -----------------------------------------------------------
@@ -152,6 +156,50 @@ async def test_friday_not_seeded_yet_keeps_the_brief(env):
     env.repo.delete_pending_brief.assert_not_awaited()
 
 
+async def test_legacy_targetless_pending_brief_uses_existing_root_ceo(env):
+    legacy_pending = dict(PENDING)
+    legacy_pending.pop("target_agent_id")
+    env.repo.get_pending_brief.return_value = legacy_pending
+    env.admin.list_agents.return_value = [
+        {
+            "id": "imported-ceo-uuid",
+            "role": "ceo",
+            "name": "Imported CEO",
+            "reportsTo": "friday-uuid",
+        },
+        {**FRIDAY, "reportsTo": None},
+    ]
+
+    await reconcile_pending_brief("user_abc")
+
+    env.admin.create_goal.assert_awaited_once()
+    env.admin.create_project.assert_awaited_once()
+    assert env.admin.create_goal.await_args.kwargs["body"]["ownerAgentId"] == FRIDAY["id"]
+    assert env.admin.create_project.await_args.kwargs["body"]["leadAgentId"] == FRIDAY["id"]
+    assert env.ws.write_file.call_args.args[1] == "workspace-friday-uuid/BRIEF.md"
+
+
+async def test_legacy_targetless_pending_without_root_keeps_the_brief(env):
+    legacy_pending = dict(PENDING)
+    legacy_pending.pop("target_agent_id")
+    env.repo.get_pending_brief.return_value = legacy_pending
+    env.admin.list_agents.return_value = [
+        ATLAS,
+        {
+            "id": "imported-ceo-uuid",
+            "role": "ceo",
+            "name": "Imported CEO",
+            "reportsTo": "missing-parent",
+        },
+    ]
+
+    await reconcile_pending_brief("user_abc")
+
+    env.repo.claim_funnel_submission.assert_not_awaited()
+    env.admin.create_goal.assert_not_awaited()
+    env.repo.delete_pending_brief.assert_not_awaited()
+
+
 async def test_paperclip_unavailable_keeps_the_brief_and_claims_nothing(env):
     """Reads happen BEFORE the claim, so a Paperclip blip costs nothing --
     there is no claim to unwind."""
@@ -167,7 +215,74 @@ async def test_paperclip_unavailable_keeps_the_brief_and_claims_nothing(env):
 # --- The happy path ----------------------------------------------------------
 
 
-async def test_drain_claims_seeds_stages_then_retires_the_pending_item(env):
+async def test_room_before_welcome_after_specialist_delete_seeds_one_goal_and_project(env, monkeypatch):
+    from core.services.messaging import default_room_id
+
+    env.repo.resolve_owner_row.return_value = _owner_row(
+        starter_agent_ids={
+            "ceo": "friday-uuid",
+            "finance": "finance-uuid",
+            "growth": "growth-uuid",
+            "analytics": "analytics-uuid",
+            "customer_operations": "customer-operations-uuid",
+        }
+    )
+    first = {
+        "roomId": default_room_id("user_abc"),
+        "messageSeq": 1,
+        "messageId": "message-first",
+        "text": "Build a calmer scheduling tool for clinics",
+        "author": {"kind": "human", "id": "member_zed"},
+        "dispatchTargets": [{"agentId": "friday-uuid", "eventKind": "room_event"}],
+    }
+
+    async def store_brief(_owner_id, **values):
+        env.repo.get_pending_brief.return_value = {
+            **PENDING,
+            "input": values["user_input"],
+            "brief_text": values["brief_text"],
+            "submitted_by": values["submitted_by"],
+            "target_agent_id": values["target_agent_id"],
+        }
+        return True
+
+    env.repo.put_pending_brief = AsyncMock(side_effect=store_brief)
+    monkeypatch.setattr(
+        brief_mod.messaging_repo,
+        "list_messages_between",
+        AsyncMock(
+            side_effect=lambda _room, _start, through: (
+                [] if through == 0 else [first, {"messageSeq": 2, "author": {"kind": "agent"}}]
+            )
+        ),
+    )
+
+    assert await brief_mod.capture_first_workspace_message("user_abc", first) is True
+    assert await brief_mod.capture_first_workspace_message("user_abc", {**first, "messageSeq": 3}) is False
+
+    env.repo.put_pending_brief.assert_awaited_once()
+    env.admin.create_goal.assert_awaited_once()
+    env.admin.create_project.assert_awaited_once()
+
+
+async def test_goal_and_project_use_captured_dispatch_target_not_starter_ceo(env):
+    specialist = {"id": "engineering-uuid", "role": "engineer", "name": "Ada"}
+    env.repo.get_pending_brief.return_value = {
+        **PENDING,
+        "target_agent_id": specialist["id"],
+    }
+    env.admin.list_agents.return_value = [FRIDAY, specialist]
+
+    await reconcile_pending_brief("user_abc")
+
+    env.admin.create_goal.assert_awaited_once()
+    env.admin.create_project.assert_awaited_once()
+    assert env.admin.create_goal.await_args.kwargs["body"]["ownerAgentId"] == specialist["id"]
+    assert env.admin.create_project.await_args.kwargs["body"]["leadAgentId"] == specialist["id"]
+    assert env.ws.write_file.call_args.args[1] == "workspace-engineering-uuid/BRIEF.md"
+
+
+async def test_drain_claims_seeds_stages_completes_and_retires_without_synthetic_dispatch(env):
     await reconcile_pending_brief("user_abc")
 
     # Claim is fenced on the ROW's PK + generation, and carries the submitting
@@ -192,24 +307,10 @@ async def test_drain_claims_seeds_stages_then_retires_the_pending_item(env):
     assert brief_call.args[0] == "user_abc"  # owner id -- the workspace path
     assert brief_call.args[1] == "workspace-friday-uuid/BRIEF.md"
     assert "acme.com" in brief_call.args[2]
-    # The item is deliberately NOT retired here: dismissal would then rest on
-    # the row's funnel_state alone, which for an org is read through the
-    # eventually-consistent by-org-id GSI -- and a poll inside that window
-    # would re-render the funnel at a user who just submitted. Retirement is
-    # the completion sweep (bootstrap_dispatcher) or _settle_lost_claim.
-    env.repo.delete_pending_brief.assert_not_awaited()
-    # The onboarding dict is passed INLINE. Letting the dispatcher re-read the
-    # row would, for an org, go through the eventually-consistent by-org-id
-    # GSI milliseconds after the claim -- it would read "not_started" and skip
-    # the kickoff entirely.
-    env.dispatch.assert_awaited_once()
-    assert env.dispatch.await_args.args[0] == "user_abc"
-    passed = env.dispatch.await_args.kwargs["onboarding"]
-    assert passed["funnel_state"] == "submitted"
-    assert passed["onboarding_generation"] == "01GEN"
-    assert passed["user_id"] == "owner-row-user"
-    assert passed["onboarding_submitted_by"] == "member_zed"
-    assert passed["onboarding_brief_text"] == "work on acme.com"
+    env.repo.complete_funnel_submission.assert_awaited_once_with(
+        "owner-row-user", onboarding_generation="01GEN", owner_id="user_abc"
+    )
+    env.repo.delete_pending_brief.assert_awaited_once_with("user_abc")
 
 
 async def test_session_is_minted_for_the_owner_row_not_the_submitter(env, monkeypatch):
@@ -342,7 +443,6 @@ async def test_seed_failure_reverts_the_claim_and_keeps_the_brief(env):
     )
     env.ws.write_file.assert_not_called()
     env.repo.delete_pending_brief.assert_not_awaited()
-    env.dispatch.assert_not_awaited()
 
 
 async def test_seed_only_failure_does_not_attempt_rollback(env):

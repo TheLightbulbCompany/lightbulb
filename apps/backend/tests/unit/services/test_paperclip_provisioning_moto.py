@@ -232,15 +232,19 @@ async def test_provision_org_happy_path(repo, monkeypatch):
     approve_kwargs = admin.approve_join_request.call_args.kwargs
     assert approve_kwargs["session_cookie"] == "admin-cookie-test"  # admin approves
 
-    # provision_org seeds TWO agents in one step: Friday (ceo) and Atlas
-    # (recruiter). The existing kwargs assertions below describe the
-    # Friday seed; Atlas is exercised in the unit-level suite at
-    # tests/unit/services/test_paperclip_provisioning.py.
-    assert admin.create_agent.await_count == 2
+    # Fresh workspaces receive the complete generic starter roster.
+    assert admin.create_agent.await_count == 6
     by_name = {call.kwargs["name"]: call.kwargs for call in admin.create_agent.await_args_list}
-    assert set(by_name) == {"Friday", "Atlas"}
+    assert set(by_name) == {
+        "CEO",
+        "Engineering",
+        "Finance",
+        "Growth",
+        "Analytics",
+        "Customer Operations",
+    }
 
-    agent_kwargs = by_name["Friday"]
+    agent_kwargs = by_name["CEO"]
     assert agent_kwargs["company_id"] == "co_acme"
     # Canonical adapter_type is the underscore form ("openclaw_gateway")
     # — the previous hyphenated value ("openclaw-gateway") was rejected
@@ -268,6 +272,15 @@ async def test_provision_org_happy_path(repo, monkeypatch):
     assert row.status == "active"
     assert row.paperclip_password_encrypted  # not empty
     assert row.service_token_encrypted  # not empty
+    assert row.seeded_agent_ids is None
+    assert set(row.starter_agent_ids or {}) == {
+        "ceo",
+        "engineering",
+        "finance",
+        "growth",
+        "analytics",
+        "customer_operations",
+    }
 
     # Repo round-trip
     fetched = await repo.get("user_owner")
@@ -356,14 +369,15 @@ async def test_provision_org_seed_agent_failure_is_not_fatal(repo):
     admin = _make_admin_mock()
     admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "tok"})
     admin.create_company = AsyncMock(return_value={"id": "co_acme"})
-    # Friday (the REQUIRED CEO) lands; the OPTIONAL Atlas seed fails. An
-    # optional-seed failure is best-effort and must NOT block the active
-    # company. (A FAILED Friday, by contrast, leaves the company non-active —
-    # covered by the NEW-2 unit test in tests/unit/services.)
+    # A specialist failure is recorded on the returned row rather than raised.
     admin.create_agent = AsyncMock(
         side_effect=[
-            {"id": "agent_friday"},
-            PaperclipApiError("atlas create failed", status_code=500, body="boom"),
+            {"id": "agent_ceo"},
+            PaperclipApiError("engineering create failed", status_code=500, body="boom"),
+            {"id": "agent_finance"},
+            {"id": "agent_growth"},
+            {"id": "agent_analytics"},
+            {"id": "agent_customer_operations"},
         ]
     )
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
@@ -373,9 +387,9 @@ async def test_provision_org_seed_agent_failure_is_not_fatal(repo):
         owner_user_id="user_owner",
         owner_email="owner@acme.test",
     )
-    # Company is still active; the optional (Atlas) agent seed is best-effort.
-    assert row.status == "active"
+    assert row.status == "failed"
     assert row.company_id == "co_acme"
+    assert "engineering" not in (row.starter_agent_ids or {})
 
 
 async def test_provision_org_signup_failure_writes_durable_failed_marker(repo):
@@ -731,7 +745,7 @@ async def test_provision_org_cross_org_row_does_not_reconcile(repo):
 
 async def test_provision_org_fresh_create_mints_onboarding_generation_at_g2(repo):
     """A genuinely-new company (Friday seed lands on the FIRST attempt) mints
-    a fresh onboarding_generation and initializes funnel/bootstrap state on
+    a fresh onboarding_generation and initializes funnel state on
     the SAME write that persists the active row (INV-3)."""
     admin = _make_admin_mock()
     admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "tok"})
@@ -743,19 +757,17 @@ async def test_provision_org_fresh_create_mints_onboarding_generation_at_g2(repo
     assert row.status == "active"
     assert row.onboarding_generation is not None
     assert row.funnel_state == "not_started"
-    assert row.bootstrap_state == "not_started"
     # Repo round-trip — not just the in-memory return value.
     fetched = await repo.get("user_owner")
     assert fetched.onboarding_generation == row.onboarding_generation
     assert fetched.funnel_state == "not_started"
-    assert fetched.bootstrap_state == "not_started"
 
 
 async def test_provision_org_reconcile_adopt_does_not_clobber_onboarding_fields(repo):
     """THE writer-safety proof (spec PR-4's hardest requirement): a
-    reconcile-adopt retry (Friday seed failed on attempt 1, succeeds on
+    reconcile-adopt retry (starter seed failed on attempt 1, succeeds on
     attempt 2, same company_id) must NOT reset onboarding_generation or
-    funnel_state/bootstrap_state -- even though the row's whole-item `put`
+    funnel_state -- even though the row's whole-item `put`
     is called again on the retry. If this test fails, co-location just
     reintroduced the exact clobber bug the dedicated-table alternative would
     have structurally avoided.
@@ -764,8 +776,8 @@ async def test_provision_org_reconcile_adopt_does_not_clobber_onboarding_fields(
     admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "owner-session-1"})
     admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "owner-session-2"})
     admin.create_company = AsyncMock(return_value={"id": "co_acme"})
-    # Friday fails on the first attempt (company created, seed not landed).
-    admin.create_agent = AsyncMock(side_effect=PaperclipApiError("friday create failed", status_code=500, body="x"))
+    # CEO fails on the first attempt (company created, seed not landed).
+    admin.create_agent = AsyncMock(side_effect=PaperclipApiError("CEO create failed", status_code=500, body="x"))
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
 
     first = await prov.provision_org(owner_id="org_acme", owner_user_id="user_owner", owner_email="owner@acme.test")
@@ -788,10 +800,19 @@ async def test_provision_org_reconcile_adopt_does_not_clobber_onboarding_fields(
     assert pre_reconcile.funnel_state == "submitted"
     assert pre_reconcile.onboarding_goal_id == "goal-1"
 
-    # Second attempt: Friday now succeeds. This is the RECONCILE-ADOPT path
+    # Second attempt: all six starters land. This is the RECONCILE-ADOPT path
     # (reconciling_company=True) -- create_company must NOT be called again,
     # and the row's whole-item put must carry the onboarding fields forward.
-    admin.create_agent = AsyncMock(side_effect=[{"id": "agent_friday"}, {"id": "agent_atlas"}])
+    admin.create_agent = AsyncMock(
+        side_effect=[
+            {"id": "agent_ceo"},
+            {"id": "agent_engineering"},
+            {"id": "agent_finance"},
+            {"id": "agent_growth"},
+            {"id": "agent_analytics"},
+            {"id": "agent_customer_operations"},
+        ]
+    )
     second = await prov.provision_org(owner_id="org_acme", owner_user_id="user_owner", owner_email="owner@acme.test")
 
     assert admin.create_company.await_count == 1  # no new company minted

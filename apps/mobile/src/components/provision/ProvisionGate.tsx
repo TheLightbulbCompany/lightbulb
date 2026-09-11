@@ -72,7 +72,7 @@ import { ContainerStatusContext } from "../../lib/containerStatusContext";
 import { isSubscriptionGate, purchaseGateCopy } from "../../lib/purchaseCta";
 import { ByoKeyScreen } from "./ByoKeyScreen";
 import { ChatGPTConnectScreen } from "./ChatGPTConnectScreen";
-import { FirstRunFailedNotice, ProvisioningStepper } from "./ProvisioningStepper";
+import { ProvisioningStepper } from "./ProvisioningStepper";
 
 const DEFAULT_MANAGE_URL = `${WEB_ORIGIN}/settings`;
 
@@ -422,17 +422,15 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
   //
   // Branching here instead — stepper for starting/parked, a bare <View> for the
   // rest — would change the Provider's child element TYPE on every transition,
-  // and React tears down a subtree whose type changed. That subtree is
-  // `<FirstRunGate><Tabs>…` — the entire tab navigator — so a cold start would
+  // and React tears down a subtree whose type changed. That subtree is the
+  // entire live app — including the tab navigator — so a cold start would
   // remount it twice (loading → starting → ready), discarding composer drafts,
   // loaded message lists, scroll position and per-screen mount fetches each
   // time. One element type for all five states is what keeps `children` alive.
   //
   // `children` only ever mounts from here (every earlier return replaces the
   // whole tree with an interstitial), so this is also the one place that hands
-  // the polled status down via ContainerStatusContext — FirstRunGate reads it
-  // from there instead of running its own second `/container/status`-adjacent
-  // poll (mobile onboarding-parity Slice 2).
+  // the polled status down via ContainerStatusContext to in-app consumers.
   return (
     <ContainerStatusContext.Provider value={status}>
       <View style={styles.gateRoot}>
@@ -443,19 +441,6 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
             and `teams_status` is only meaningful once the container is fine. */}
         {status.kind === "ready" && status.teamsStatus === "failed" ? (
           <TeamsDegradedBanner onRetry={onRetry} />
-        ) : null}
-        {/* First-run kickoff failed — same fixed-index, non-blocking rule as
-            the Teams banner above (index 1; the stepper stays the last child),
-            so toggling it never remounts the tab navigator. "failed" ONLY:
-            `dispatched` (fresh or stale-but-re-arming) and `sent` are recovered
-            by the dispatcher on the next poll and are not failures.
-            `ready` ONLY here, deliberately: a bar over live chat is the right
-            idiom exactly while there IS live chat. The same failure on a
-            container that never reached ready is surfaced INSIDE the stepper
-            below (it has replaced the tab shell by then, so there is nothing
-            for a bar to sit over) — see FirstRunFailedNotice's `inline`. */}
-        {status.kind === "ready" && status.bootstrapState === "failed" ? (
-          <FirstRunFailedNotice error={status.bootstrapError} />
         ) : null}
         <ProvisioningStepper status={status} onRetry={onRetry}>
           {children}

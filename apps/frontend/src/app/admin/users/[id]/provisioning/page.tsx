@@ -69,6 +69,7 @@ export default async function AdminUserProvisioningPage({ params }: PageProps) {
   // not the `{error, source}` failure sentinel).
   const paperclipRow = paperclipReadError ? null : paperclip;
   const seededAgentIds = paperclipRow?.seeded_agent_ids ?? [];
+  const starterAgentIds = Object.entries(paperclipRow?.starter_agent_ids ?? {});
   const sfnExecution = data.sfn_execution;
   const sfnReadError = sfnExecution?.error ?? null;
   // Present exactly when a real DescribeExecution response was read (not
@@ -225,6 +226,23 @@ export default async function AdminUserProvisioningPage({ params }: PageProps) {
               <p className="text-sm text-muted-foreground">No seeded agents.</p>
             )}
           </div>
+          <div className="mt-4">
+            <div className="mb-2 text-xs uppercase tracking-caps text-muted-foreground">
+              Starter agents ({starterAgentIds.length})
+            </div>
+            {starterAgentIds.length > 0 ? (
+              <ul className="space-y-1 text-sm">
+                {starterAgentIds.map(([role, agentId]) => (
+                  <li key={role} className="flex items-baseline gap-2">
+                    <span className="text-xs text-muted-foreground">{role}</span>
+                    <span className="truncate font-mono text-foreground">{agentId}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-sm text-muted-foreground">No starter agents.</p>
+            )}
+          </div>
         </Card>
       ) : (
         <EmptyState
@@ -239,35 +257,6 @@ export default async function AdminUserProvisioningPage({ params }: PageProps) {
           <DefRow
             label="Funnel state"
             value={<StatusChip status={paperclipRow?.funnel_state ?? "unknown"} />}
-          />
-          <DefRow
-            label="Bootstrap state"
-            value={<StatusChip status={paperclipRow?.bootstrap_state ?? "unknown"} />}
-          />
-          <DefRow
-            label="Bootstrap attempts"
-            value={paperclipRow?.bootstrap_attempts?.toString() ?? "—"}
-          />
-          <DefRow label="Bootstrap last error" value={paperclipRow?.bootstrap_last_error ?? "—"} />
-          <DefRow
-            label="Dispatched at"
-            value={<RelativeTimestamp value={paperclipRow?.bootstrap_dispatched_at} />}
-            mono
-          />
-          <DefRow
-            label="Send attempted at"
-            value={<RelativeTimestamp value={paperclipRow?.bootstrap_send_attempted_at} />}
-            mono
-          />
-          <DefRow
-            label="Sent at"
-            value={<RelativeTimestamp value={paperclipRow?.bootstrap_sent_at} />}
-            mono
-          />
-          <DefRow
-            label="Delivered at"
-            value={<RelativeTimestamp value={paperclipRow?.bootstrap_delivered_at} />}
-            mono
           />
           <DefRow
             label="Onboarding generation"
@@ -326,7 +315,6 @@ export default async function AdminUserProvisioningPage({ params }: PageProps) {
       {/* 7. Levers */}
       <ProvisioningActionsPanel
         userId={id}
-        bootstrapState={paperclipRow?.bootstrap_state ?? null}
         containerStatus={containerRow?.status ?? null}
       />
     </div>

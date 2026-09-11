@@ -13,10 +13,7 @@ import type { Listing } from "@/lib/marketplace/types";
  *
  * Same deploy mechanics as the storefront's DeployCompanyButton (fire-and-
  * forget POST → 202 → agents land in the Teams roster; routines arrive
- * PAUSED), restyled to the drawer's card idiom. Plan gating stays
- * server-side: the "Requires Ultra" 409 renders an upgrade link and the
- * pod-not-running 503 tells the owner to wake their agents (in-workspace
- * that just means using the app — the status poll wakes a sleeping pod).
+ * PAUSED), restyled to the drawer's card idiom.
  */
 export function CompanyListingCard({ listing }: { listing: Listing }) {
   const company = companyMeta(listing);
@@ -48,11 +45,6 @@ export function CompanyListingCard({ listing }: { listing: Listing }) {
           : "border-[var(--edge)] bg-card hover:shadow-md hover:border-[var(--midnight-faint)] [@media(hover:hover)_and_(pointer:fine)]:hover:-translate-y-0.5"
       }`}
     >
-      {company.min_plan === "ultra_pro" && (
-        <span className="absolute top-3 right-3.5 text-2xs tracking-caps text-[var(--midnight)] font-bold">
-          ULTRA
-        </span>
-      )}
       <Link
         href={`/marketplace/listing/${listing.listing_id}`}
         target="_blank"
@@ -83,12 +75,7 @@ export function CompanyListingCard({ listing }: { listing: Listing }) {
       </div>
       {error && (
         <p className="text-xs text-[var(--err)]" role="alert">
-          {error}{" "}
-          {/Ultra/i.test(error) && (
-            <Link href="/settings" className="font-bold underline hover:opacity-80">
-              Upgrade in Settings
-            </Link>
-          )}
+          {error}
         </p>
       )}
     </article>

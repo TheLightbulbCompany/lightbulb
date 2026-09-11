@@ -70,14 +70,11 @@ _ENRICH_TIMEOUT_S = 5.0
 _SEEN_RUN_IDS_CAP = 4096
 _seen_run_ids: dict[str, None] = {}
 
-# owner:runId -> actor stamped at DISPATCH ("human" for a client WS chat.send,
-# "system" for a backend kickoff / first-contact nudge). Threaded through this
-# module-owned map rather than the gateway's ``_active_runs`` because the
-# dispatch sites (routers/websocket_chat, core/services/bootstrap_dispatcher)
-# and the terminal reader both key on the runId (== chat.send idempotencyKey ==
-# the runId OpenClaw echoes on every event), so the carry needs no change in
-# connection_pool. Runs NOT dispatched by those two sites (cron/channel/
-# paperclip) are never stamped -> actor stays None (never inferred from
+# owner:runId -> actor stamped at dispatch. The retired server kickoff path no
+# longer emits a ``system`` run; the room dispatch and terminal reader both key
+# on runId (== chat.send idempotencyKey == the runId OpenClaw echoes on every
+# event), so this module-owned map needs no connection-pool change. Runs not
+# stamped by a dispatch site (cron/channel/paperclip) stay None (never inferred from
 # run_source). Bounded FIFO, same idiom as _seen_run_ids: a stamped run whose
 # terminal never fires (backend down mid-run, send that never acked) is evicted
 # by the cap.

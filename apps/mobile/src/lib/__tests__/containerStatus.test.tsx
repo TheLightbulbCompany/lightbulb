@@ -310,67 +310,6 @@ describe("useContainerStatus teams_state field", () => {
 // Issue #1468: Friday's server-dispatched first-run kickoff rides the contract
 // as `bootstrap`, and nothing outside the admin page ever read it — so an owner
 // whose first run died sat on an empty chat forever.
-describe("useContainerStatus bootstrap field", () => {
-  beforeEach(() => {
-    mockUseOnboardingStatus.mockReset();
-    setActive("active");
-  });
-
-  it("surfaces a failed bootstrap (state + reason) on the ready status", async () => {
-    mockUseOnboardingStatus.mockReturnValue(
-      containerResult({
-        runtime_phase: "ready",
-        lifecycle: "ready",
-        bootstrap: { state: "failed", last_error: "chat.error: boom", attempts: 5 },
-      }),
-    );
-    const { result } = await renderHook(() => useContainerStatus());
-    await waitFor(() => expect(result.current.status.kind).toBe("ready"));
-    const status = result.current.status;
-    if (status.kind !== "ready") throw new Error(`expected ready, got ${status.kind}`);
-    expect(status.bootstrapState).toBe("failed");
-    expect(status.bootstrapError).toBe("chat.error: boom");
-  });
-
-  it("defaults to not_started when the body carries no bootstrap block", async () => {
-    mockUseOnboardingStatus.mockReturnValue(
-      containerResult({ runtime_phase: "ready", lifecycle: "ready" }),
-    );
-    const { result } = await renderHook(() => useContainerStatus());
-    await waitFor(() => expect(result.current.status.kind).toBe("ready"));
-    const status = result.current.status;
-    if (status.kind !== "ready") throw new Error(`expected ready, got ${status.kind}`);
-    expect(status.bootstrapState).toBe("not_started");
-  });
-
-  // THE GAP. `ready` requires a LIVE gateway registration on top of a running
-  // container (readiness_state.py), while the kickoff only needs the container.
-  // So the failure whose whole cause is "the gateway never registered" composes
-  // to `starting` — and dropping these two fields there is what made the notice
-  // unreachable in precisely the case it exists for.
-  it("surfaces the same failed bootstrap on a STARTING container", async () => {
-    mockUseOnboardingStatus.mockReturnValue(
-      containerResult({
-        runtime_phase: "starting",
-        lifecycle: "starting",
-        container_substatus: "gateway_healthy",
-        bootstrap: {
-          state: "failed",
-          last_error: "Gateway connect failed: gateway starting; retry shortly",
-          attempts: 5,
-        },
-      }),
-    );
-    const { result } = await renderHook(() => useContainerStatus());
-    await waitFor(() => expect(result.current.status.kind).toBe("starting"));
-    const status = result.current.status;
-    if (status.kind !== "starting") throw new Error(`expected starting, got ${status.kind}`);
-    expect(status.bootstrapState).toBe("failed");
-    expect(status.bootstrapError).toBe(
-      "Gateway connect failed: gateway starting; retry shortly",
-    );
-  });
-});
 
 describe("useContainerStatus blocked / needsSignup / teamPending / unreachable", () => {
   beforeEach(() => {

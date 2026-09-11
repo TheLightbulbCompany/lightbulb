@@ -232,17 +232,16 @@ describe("AgentsListPanel", () => {
     expect(screen.getByText("Marketplace · forge v3")).toBeInTheDocument();
   });
 
-  it("row pause action calls pause; delete hidden for seeded agents", async () => {
+  it("row pause and delete actions remain available for starter agents", async () => {
     mockPause.mockClear();
     mockRead.mockReturnValueOnce({
-      // seeded:true is the server-stamped lock — delete is hidden for it.
       data: { agents: [{ id: "f", name: "Friday", role: "ceo", status: "idle", seeded: true }] },
       isLoading: false,
       error: null,
       mutate: mockMutate,
     });
     render(<AgentsListPanel />);
-    expect(screen.queryByRole("button", { name: /delete/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /delete/i })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /pause/i }));
     await waitFor(() => expect(mockPause).toHaveBeenCalledWith("f"));
   });

@@ -161,9 +161,20 @@ test.describe('E2E: Workspace invitation and trial happy path', () => {
     await expect(page.getByText('New session', { exact: true })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Reset workspace layout' })).toHaveCount(0);
 
-    await conversations.locator('.room-directory-entry').first().click({ timeout: 30_000 });
+    const general = conversations.locator('.room-directory-entry').filter({ hasText: 'general' });
+    await expect(general).toHaveCount(1);
+    await general.click({ timeout: 30_000 });
     const messages = page.getByRole('region', { name: 'Messages', exact: true });
     await expect(messages).toBeVisible();
+    await expect(messages.getByText(
+      'Your team is ready: Engineering, Finance, Growth, Analytics, and Customer Operations. I’ll coordinate. Tell us what you’re trying to build or change.',
+      { exact: true },
+    )).toHaveCount(1);
+    const responseModes = page.getByRole('combobox', { name: /^Response for / });
+    await expect(responseModes).toHaveCount(6);
+    expect(await responseModes.evaluateAll((selects) =>
+      selects.map((select) => (select as HTMLSelectElement).value),
+    )).toEqual(['active', 'mentions', 'mentions', 'mentions', 'mentions', 'mentions']);
     await page.getByRole('textbox', { name: 'Message', exact: true }).fill('Workspace UI smoke');
     await page.getByRole('button', { name: 'Send message', exact: true }).click();
     const sent = messages.getByRole('article', { name: /^Message from / })

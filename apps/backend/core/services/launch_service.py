@@ -106,7 +106,7 @@ async def me(auth: AuthContext, s: Schedule) -> dict:
         await launch_waitlist_repo.claim_user(email, auth.user_id)
     onboarding = await readiness_state.resolve_onboarding_state(owner_id)
     joined = bool(row and row.get("joined_at"))
-    onboarded = onboarding.get("bootstrap_state") == "delivered"
+    onboarded = onboarding.get("funnel_state") == "complete"
     referral_jump = launch_phase.constants()["referral_jump"]
     # The board attachment, so a reload during the competition shows the
     # connected state instead of inviting a key re-paste. Read for joined
@@ -178,7 +178,7 @@ async def join_sheet(auth: AuthContext, s: Schedule, *, display_name: str, publi
     ``open`` phase and nothing else.
 
     Deliberately NOT gated on onboarding. It used to be: joining required
-    ``bootstrap_state == "delivered"`` (Friday's first run), on the reasoning
+    a completed onboarding intake, on the reasoning
     that the sheet row IS the competition entry and an entry should mean a
     real, provisioned business. In practice the gate was a funnel leak — the
     join surfaces are invisible for the whole provisioning window, which is

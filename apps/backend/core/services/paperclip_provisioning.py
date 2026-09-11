@@ -5,7 +5,7 @@ Three entry points (all async, all idempotent on user_id / owner_id):
 * ``provision_org`` — for ``organization.created``. Creates the Paperclip
   company AND the org owner's Better Auth account in a single
   end-to-end chain (sign_up_user -> create_company -> mint service token
-  -> seed Main Agent -> persist row). This is the only path that calls
+  -> seed the required agent roster -> persist row). This is the only path that calls
   ``create_company``.
 
 * ``provision_member`` — for ``organizationMembership.created``. Adds a
@@ -90,6 +90,15 @@ ATLAS_CAPABILITIES = (
     "owner publishes via the seller wizard)."
 )
 
+STARTER_ROSTER = (
+    ("ceo", "CEO", "ceo", "CEO", None),
+    ("engineering", "Engineering", "engineer", "Engineering", "ceo"),
+    ("finance", "Finance", "cfo", "Finance", "ceo"),
+    ("growth", "Growth", "cmo", "Growth", "ceo"),
+    ("analytics", "Analytics", "researcher", "Analytics", "ceo"),
+    ("customer_operations", "Customer Operations", "general", "Customer Operations", "ceo"),
+)
+
 
 # The onboarding attribute names carried on ``PaperclipCompany`` -- the exact
 # set of ``PaperclipCompany`` fields listed under "Onboarding" in
@@ -105,14 +114,6 @@ _ONBOARDING_FIELD_NAMES = (
     "funnel_completed_at",
     "onboarding_goal_id",
     "onboarding_project_id",
-    "bootstrap_state",
-    "bootstrap_dispatch_id",
-    "bootstrap_dispatched_at",
-    "bootstrap_send_attempted_at",
-    "bootstrap_sent_at",
-    "bootstrap_delivered_at",
-    "bootstrap_attempts",
-    "bootstrap_last_error",
 )
 
 
@@ -220,7 +221,7 @@ async def close_paperclip_provisioning(provisioning) -> None:
 
 
 def _ws_gateway_url(env_name: str) -> str:
-    """Pick the right WS gateway URL for the seeded Main Agent's
+    """Pick the right WS gateway URL for a seeded agent's
     openclaw-gateway adapter.
 
     In a deployed env this is ``settings.WS_GATEWAY_URL`` — the value CDK
@@ -265,7 +266,7 @@ class PaperclipProvisioning:
         the connection pool with the proxy router).
       * ``repo``: the async DynamoDB repo for paperclip-companies.
       * ``env_name``: the deploy-environment name used to compute the
-        seeded Main Agent's gateway URL (``dev``/``staging``/``prod``).
+        seeded agents' gateway URL (``dev``/``staging``/``prod``).
     """
 
     def __init__(
@@ -314,7 +315,7 @@ class PaperclipProvisioning:
         owner; admin stays as a co-owner of every company (harmless
         side effect — admin doesn't act without explicit code paths).
 
-        Service-token contract: the seeded Main Agent's
+        Service-token contract: every seeded agent's
         ``adapterConfig.authToken`` is a JWT whose ``sub`` claim MUST
         equal the container's ``owner_id``, because the WS Lambda
         authorizer uses ``sub`` to route the connection to that owner's
@@ -342,8 +343,8 @@ class PaperclipProvisioning:
 
         Idempotent: if a row already exists for ``owner_user_id`` with
         ``status="active"``, return it unchanged. A non-active row that
-        already carries a ``company_id`` (the Friday-partial case: the
-        company WAS created, only the required CEO seed failed) is
+        already carries a ``company_id`` (a partial roster, including the
+        legacy Friday-partial case) is
         RECONCILED — we adopt that company (sign in with the stored
         credential, skip the create + invite/accept/approve chain) and
         retry the seed against it, so a persistent seed outage never mints
@@ -359,7 +360,17 @@ class PaperclipProvisioning:
         # org_id == their user_id) would otherwise short-circuit here and
         # never get an org-indexed company. Only an active row for THIS
         # owner_id counts as "already provisioned."
-        if existing is not None and existing.status == "active" and existing.org_id == owner_id:
+        starter_incomplete = (
+            existing is not None
+            and existing.starter_agent_ids is not None
+            and any(not existing.starter_agent_ids.get(starter_key) for starter_key, *_ in STARTER_ROSTER)
+        )
+        if (
+            existing is not None
+            and existing.status == "active"
+            and existing.org_id == owner_id
+            and not starter_incomplete
+        ):
             logger.info(
                 "paperclip_provisioning.provision_org: owner %s already active for owner_id %s",
                 owner_user_id,
@@ -428,9 +439,9 @@ class PaperclipProvisioning:
         # password, and Paperclip has no user-delete/reset. The final
         # ``repo.put`` re-points the row at this org.
         adopting_existing = existing is not None and bool(existing.paperclip_user_id)
-        # Reconcile a Friday-partial company instead of reminting one. When a
-        # prior attempt CREATED the company but the REQUIRED Friday (CEO) seed
-        # didn't land, step 8 persists a NON-active ``failed`` row carrying the
+        # Reconcile a partially seeded company instead of reminting one. When a
+        # prior attempt CREATED the company but the required roster didn't land,
+        # step 8 persists a NON-active ``failed`` row carrying the
         # real ``company_id`` (a CEO-less company must never be marked active).
         # The ``status=="active"`` short-circuit above never fires for it, so
         # without adopting that company here the next /container/status poll
@@ -439,7 +450,7 @@ class PaperclipProvisioning:
         # on every ~3s poll for as long as the seed outage lasts. When a
         # non-active row already carries a company_id we ADOPT it: skip the
         # create + invite/accept/approve chain and resume at the seed step,
-        # retrying Friday/Atlas against the SAME company. A net-new failure with
+        # retrying the stored seed contract against the SAME company. A net-new failure with
         # NO company_id (the orphan-422 / pre-create marker) is deliberately
         # excluded — its ``company_id`` is "" and it re-runs the full chain.
         #
@@ -456,7 +467,7 @@ class PaperclipProvisioning:
         # downstream fence.
         reconciling_company = (
             existing is not None
-            and existing.status != "active"
+            and (existing.status != "active" or starter_incomplete)
             and bool(existing.company_id)
             and existing.org_id == owner_id
         )
@@ -628,9 +639,8 @@ class PaperclipProvisioning:
                     invite_token=invite_token,
                 )
 
-            # 6. Mint a long-lived OpenClaw service-token JWT. Baked
-            #    into the seeded Main Agent's adapter config so the
-            #    agent can reach the user's container via the gateway.
+            # 6. Mint a long-lived OpenClaw service-token JWT. Baked into each
+            #    seeded agent's adapter config so it can reach the container.
             #
             #    The JWT's ``sub`` claim MUST equal the container's
             #    ``owner_id`` — the WS Lambda authorizer extracts ``sub``
@@ -643,155 +653,97 @@ class PaperclipProvisioning:
             #    for org members.
             svc_token = service_token.mint(owner_id)
 
-            # IDs of the agents we seed below. Persisted on the company
-            # row (step 8) as the STABLE marker of "Isol8-seeded, must not
-            # be deleted" — see PaperclipCompany.seeded_agent_ids and
-            # paperclip_openclaw_pairing.is_seeded_agent. Each seed is
-            # best-effort, so a failed seed simply contributes no id.
-            #
-            # On the reconcile path an earlier attempt may already have seeded
-            # Atlas (a failed row can only carry Atlas — Friday's presence is
-            # exactly what marks the row active). Carry those ids forward so we
-            # don't drop them, and skip the Atlas re-create below. Native
-            # agent-create idempotency now makes the retry safe, but preserving
-            # the stored id avoids needless upstream work and supports old pins
-            # during rollout. The ternary short-circuits before touching
-            # ``existing`` unless reconciling_company is True (which implies
-            # existing is not None).
-            seeded_agent_ids: list[str] = list(existing.seeded_agent_ids or []) if reconciling_company else []
+            adapter_config = synthesize_openclaw_adapter(
+                gateway_url=_ws_gateway_url(self._env_name),
+                service_token=svc_token,
+                user_id=owner_user_id,
+            )
+            legacy_seed = reconciling_company and existing.starter_agent_ids is None and bool(existing.seeded_agent_ids)
 
-            # 7. Best-effort seed a "Main Agent" pointing at the
-            #    user's OpenClaw container. Failure here is not fatal
-            #    — the company is still usable, the user can create
-            #    agents from the UI manually. Acts AS the user (their
-            #    session) so the agent ends up owned by them.
-            # Captured for Atlas's org placement below; stays None when the
-            # Friday mint fails so Atlas simply seeds unparented.
-            friday_agent_id: str | None = None
-            try:
-                # Paperclip scopes this stable key by company, so the literal
-                # cannot replay another owner's seed. Its mapping cascades on
-                # agent deletion, allowing an intentional reseed after delete.
-                friday = await self._admin.create_agent(
-                    company_id=company_id,
-                    name="Friday",
-                    role="ceo",
-                    title=FRIDAY_TITLE,
-                    capabilities=FRIDAY_CAPABILITIES,
-                    adapter_type=OPENCLAW_GATEWAY_TYPE,
-                    adapter_config=synthesize_openclaw_adapter(
-                        gateway_url=_ws_gateway_url(self._env_name),
-                        service_token=svc_token,
-                        user_id=owner_user_id,
-                    ),
-                    session_cookie=new_user_session_cookie,
-                    idempotency_key="seed:friday:v1",
-                )
-                if isinstance(friday, dict) and friday.get("id"):
-                    friday_agent_id = friday["id"]
-                    # FIRST, not appended: on the reconcile path the list
-                    # already carries the previously-seeded Atlas, and
-                    # ``paperclip_repo``'s ``friday_agent_id`` projection reads
-                    # index 0 — appending here would hand the owner-send path
-                    # Atlas's id on exactly the owners whose first provision
-                    # half-failed. (Consumers that can resolve the CEO by ROLE
-                    # should do that instead of trusting position — see
-                    # ``friday_identity._resolve_ceo_agent_id``.)
-                    seeded_agent_ids.insert(0, friday["id"])
-            except PaperclipApiError as e:
-                logger.warning(
-                    "paperclip_provisioning.provision_org: seed agent failed for %s: %s",
-                    owner_user_id,
-                    e,
-                )
-
-            # 7b. Best-effort seed an "Atlas" agent alongside Friday. Atlas
-            #     is the in-house "agent recruiter" — Friday-as-orchestrator
-            #     delegates "hire a new agent" requests to Atlas, so it must
-            #     exist on day one. Wrapped in its own try/except so an Atlas
-            #     failure does NOT undo a successful Friday seed
-            #     (defense-in-depth — both seeds are best-effort).
-            #
-            #     Skip the create entirely when RECONCILING a failed row that
-            #     already carries Atlas. A failed row's seeded_agent_ids can
-            #     only ever be Atlas (Friday's presence is what flips the row
-            #     active). The stable seed key would replay the same Atlas on a
-            #     current Paperclip pin; the explicit skip also protects a
-            #     staged rollout and keeps the persisted seed id authoritative.
-            #     Accepted residual: the carried-forward
-            #     Atlas keeps reports_to=None (it was seeded before Friday
-            #     existed) — one correctly-counted unparented Atlas beats two
-            #     with one orphaned; re-parenting would need an extra
-            #     update-agent call (out of scope).
-            atlas_already_seeded = reconciling_company and bool(existing.seeded_agent_ids)
-            if not atlas_already_seeded:
+            if legacy_seed:
+                seeded_agent_ids = list(existing.seeded_agent_ids or [])
+                friday_agent_id: str | None = None
                 try:
-                    # Like Friday's key, this is company-scoped by Paperclip.
-                    atlas = await self._admin.create_agent(
+                    friday = await self._admin.create_agent(
                         company_id=company_id,
-                        name="Atlas",
-                        # Atlas was originally typed as ``role="recruiter"``
-                        # but Paperclip's AGENT_ROLES enum doesn't include
-                        # "recruiter" (see paperclip/packages/shared/src/
-                        # constants.ts). The constraint here is just
-                        # "must not be 'ceo'" because config.py:463 selects
-                        # the ceo-role agent as the default. "general" is the
-                        # most semantically neutral fit — which is exactly why
-                        # title + capabilities below must carry the real job:
-                        # the roster otherwise describes Atlas as a generalist
-                        # and Friday delegates domain work to it.
-                        role="general",
-                        title=ATLAS_TITLE,
-                        capabilities=ATLAS_CAPABILITIES,
-                        reports_to=friday_agent_id,
+                        name="Friday",
+                        role="ceo",
+                        title=FRIDAY_TITLE,
+                        capabilities=FRIDAY_CAPABILITIES,
                         adapter_type=OPENCLAW_GATEWAY_TYPE,
-                        adapter_config=synthesize_openclaw_adapter(
-                            gateway_url=_ws_gateway_url(self._env_name),
-                            service_token=svc_token,
-                            user_id=owner_user_id,
-                        ),
+                        adapter_config=adapter_config,
                         session_cookie=new_user_session_cookie,
-                        idempotency_key="seed:atlas:v1",
+                        idempotency_key="seed:friday:v1",
                     )
-                    if isinstance(atlas, dict) and atlas.get("id"):
-                        seeded_agent_ids.append(atlas["id"])
+                    if isinstance(friday, dict) and friday.get("id"):
+                        friday_agent_id = friday["id"]
+                        seeded_agent_ids.insert(0, friday_agent_id)
                 except PaperclipApiError as e:
                     logger.warning(
-                        "paperclip_provisioning.provision_org: seed Atlas agent failed for %s: %s",
+                        "paperclip_provisioning.provision_org: legacy Friday seed failed for %s: %s",
                         owner_user_id,
                         e,
                     )
+                seed_ok = friday_agent_id is not None
+                starter_agent_ids = None
+                missing_starter_keys: list[str] = []
+                keep_agent_ids = seeded_agent_ids
+            else:
+                seeded_agent_ids = []
+                starter_agent_ids = dict(existing.starter_agent_ids or {}) if reconciling_company else {}
+                for starter_key, name, role, title, parent_key in STARTER_ROSTER:
+                    if starter_agent_ids.get(starter_key):
+                        continue
+                    reports_to = starter_agent_ids.get(parent_key) if parent_key else None
+                    if parent_key and not reports_to:
+                        continue
+                    try:
+                        agent = await self._admin.create_agent(
+                            company_id=company_id,
+                            name=name,
+                            role=role,
+                            title=title,
+                            reports_to=reports_to,
+                            adapter_type=OPENCLAW_GATEWAY_TYPE,
+                            adapter_config=adapter_config,
+                            session_cookie=new_user_session_cookie,
+                            idempotency_key=f"seed:starter:{starter_key}:v1",
+                        )
+                        if isinstance(agent, dict) and agent.get("id"):
+                            starter_agent_ids[starter_key] = agent["id"]
+                    except PaperclipApiError as e:
+                        logger.warning(
+                            "paperclip_provisioning.provision_org: starter %s seed failed for %s: %s",
+                            starter_key,
+                            owner_user_id,
+                            e,
+                        )
+                    except httpx.RequestError:
+                        logger.warning(
+                            "paperclip_provisioning.provision_org: starter %s seed transport failed for %s",
+                            starter_key,
+                            owner_user_id,
+                        )
+                missing_starter_keys = [
+                    starter_key for starter_key, *_ in STARTER_ROSTER if not starter_agent_ids.get(starter_key)
+                ]
+                seed_ok = not missing_starter_keys
+                keep_agent_ids = list(starter_agent_ids.values())
 
-            # 7c. Purge Paperclip's built-in starter agents (see
-            #     _purge_builtin_agents for the full WHY). Gated on the REQUIRED
-            #     Friday seed landing (``friday_agent_id is not None`` — the same
-            #     condition as ``seed_ok`` below): on the failed path we leave the
-            #     half-provisioned company untouched, because the later reconcile
-            #     poll re-runs seeding AND this purge once Friday finally lands.
-            #     Runs on the reconcile path too, idempotently — an already-purged
-            #     company lists only Friday/Atlas, so nothing is deleted.
-            if friday_agent_id is not None:
+            # Paperclip's built-ins are purged only after the selected seed
+            # contract is complete. A later normal reconciliation retries any
+            # missing starter keys against the same company.
+            if seed_ok:
                 await self._purge_builtin_agents(
                     company_id=company_id,
                     session_cookie=new_user_session_cookie,
-                    seeded_agent_ids=seeded_agent_ids,
+                    keep_agent_ids=keep_agent_ids,
                 )
 
             # 8. Persist. The DDB column is still ``org_id`` — that's a
             #    Paperclip-side stored concept; we just feed it from the
             #    new ``owner_id`` kwarg.
             #
-            #    Only mark ``active`` if the REQUIRED CEO seed (Friday) actually
-            #    landed. Friday's seed is best-effort above, but a company with
-            #    no CEO is both unusable AND poisonous: the ``status=="active"``
-            #    idempotency short-circuit (top of this method) would freeze it —
-            #    every later poll returns the CEO-less row unchanged and never
-            #    re-seeds. When Friday is missing we persist a non-active
-            #    ``failed`` row instead, carrying the full adoptable credential
-            #    (paperclip_user_id + password) so a later poll signs IN and
-            #    reconciles rather than re-signing-up. Atlas stays optional — its
-            #    absence alone does NOT block ``active``.
-            seed_ok = friday_agent_id is not None
             now = datetime.now(timezone.utc)
 
             # ---- Onboarding fields (G2 mint / writer-safety — INV-3, INV-4) ----
@@ -802,16 +754,16 @@ class PaperclipProvisioning:
             # * ``reconciling_company`` (RECONCILE-ADOPT of an existing,
             #   non-active row's real company_id — see the docstring above):
             #   this is a RETRY of the SAME onboarding attempt, not a new one.
-            #   The generation (and whatever funnel/bootstrap progress exists)
+            #   The generation (and whatever funnel progress exists)
             #   was already established on ``existing`` by the ORIGINAL
             #   create — carry it forward untouched. This is the exact case
             #   the architecture spec's "load-bearing safety requirement"
             #   warns about: skipping this carry-forward would silently reset
-            #   a company's funnel/bootstrap state on every reconcile retry.
+            #   a company's funnel state on every reconcile retry.
             # * fresh create (``not reconciling_company``): a genuinely-new
             #   Paperclip company was just confirmed (``create_company`` ran
             #   above, unconditionally in this branch). Mint a fresh
-            #   onboarding_generation and reset funnel/bootstrap to their
+            #   onboarding_generation and reset the funnel to its
             #   initial states, atomically on this same write — never on
             #   ``provision_member`` (org seat), per INV-3.
             if reconciling_company:
@@ -820,7 +772,6 @@ class PaperclipProvisioning:
                 onboarding_fields = {
                     "onboarding_generation": str(ULID()),
                     "funnel_state": "not_started",
-                    "bootstrap_state": "not_started",
                 }
 
             row = PaperclipCompany(
@@ -835,11 +786,15 @@ class PaperclipProvisioning:
                 created_at=now,
                 updated_at=now,
                 seeded_agent_ids=seeded_agent_ids or None,
+                starter_agent_ids=starter_agent_ids,
                 last_error=(
                     None
                     if seed_ok
-                    else "provision_org: required CEO seed (Friday) did not land — "
-                    "company left non-active for a later poll to reconcile"
+                    else (
+                        "provision_org: required legacy CEO seed (Friday) did not land"
+                        if legacy_seed
+                        else "provision_org: missing required starter agents: " + ", ".join(missing_starter_keys)
+                    )
                 ),
                 **onboarding_fields,
             )
@@ -853,8 +808,8 @@ class PaperclipProvisioning:
                 )
             else:
                 logger.warning(
-                    "paperclip_provisioning.provision_org: owner_id %s company=%s created but CEO "
-                    "seed (Friday) missing — persisted status=failed for a later poll to reconcile",
+                    "paperclip_provisioning.provision_org: owner_id %s company=%s has an incomplete "
+                    "agent seed — persisted status=failed for a later poll to reconcile",
                     owner_id,
                     company_id,
                 )
@@ -1119,7 +1074,7 @@ class PaperclipProvisioning:
                 created_at=now,
                 updated_at=now,
                 # Replicate the seeded-agent marker onto every member row so
-                # the company's Friday/Atlas stay protected even if the
+                # the company's legacy Friday/Atlas stay protected even if the
                 # original provisioner's row is later purged (the company
                 # survives as long as ANY active member remains, and
                 # get_seeded_agent_ids resolves from any row carrying it).
@@ -1561,30 +1516,25 @@ class PaperclipProvisioning:
         *,
         company_id: str,
         session_cookie: str,
-        seeded_agent_ids: list[str],
+        keep_agent_ids: list[str],
     ) -> None:
-        """Delete every agent in the company that Isol8 did not seed.
+        """Best-effort removal of agents outside the selected seed contract.
 
         WHY this exists: Paperclip's company-bootstrap creates its OWN starter
         agents ("Reflection Coach", "Summarizer") server-side the instant a
         company is created — verified via DB timestamps, they land 1-5s BEFORE
-        our Friday/Atlas seeds, produced by upstream company-create and NOT by
-        any Isol8 code. The product requires a freshly provisioned company to
-        contain EXACTLY the two Isol8-seeded agents (Friday + Atlas). We can't
+        our seeds, produced by upstream company-create and NOT by
+        any Lightbulb code. We can't
         patch Paperclip on our timeline (fork release cycle), so provision_org
         deletes the leftovers here.
 
-        Keyed on ``seeded_agent_ids`` (the stable Isol8-seeded marker persisted
-        on the company row), NOT on agent names: the rule is "only Isol8-seeded
-        agents survive", so it keeps holding even if upstream renames a starter
-        or adds new ones.
+        Keyed on persisted agent IDs, not names, so renames remain safe.
 
         Best-effort and NEVER fatal — a leftover starter is a cosmetic roster
         wart, not a reason to fail provisioning. A list failure or any per-agent
         delete failure logs a warning + emits
         ``paperclip.provision.builtin_purge_error`` and is swallowed. Idempotent
-        on the reconcile path: an already-purged company lists only Friday/Atlas
-        (both in ``seeded_agent_ids``), so nothing is deleted.
+        on the reconcile path: an already-purged company contains only kept IDs.
 
         HARD LIMIT — Paperclip's built-in agents are UNDELETABLE. The starters
         (Reflection Coach, Summarizer) carry a built-in marker in their metadata,
@@ -1607,7 +1557,7 @@ class PaperclipProvisioning:
         was removed; verified against the pinned Paperclip commit's agents-service
         ``remove`` + routines-list route.)
         """
-        keep = set(seeded_agent_ids or ())
+        keep = set(keep_agent_ids)
         try:
             listed = await self._admin.list_agents(
                 session_cookie=session_cookie,

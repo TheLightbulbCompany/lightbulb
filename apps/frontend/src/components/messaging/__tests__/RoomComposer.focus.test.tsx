@@ -4,8 +4,7 @@ import { requestFocusComposer, consumeFocusComposerRequest, _resetFocusComposerR
 import { RoomComposer, type RoomComposerProps } from "../RoomComposer";
 
 const baseProps: RoomComposerProps = {
-  text: "", onTextChange: vi.fn(), members: [], selectedMentions: [],
-  onMentionsChange: vi.fn(), clientMessageId: "11111111-1111-4111-8111-111111111111",
+  text: "", onTextChange: vi.fn(), members: [], clientMessageId: "11111111-1111-4111-8111-111111111111",
   sendState: "idle", onSubmit: vi.fn(),
 };
 beforeEach(() => {

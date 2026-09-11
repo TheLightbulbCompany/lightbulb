@@ -2147,15 +2147,9 @@ class TestContainerStatusTeamsStatus:
 
     @pytest.mark.asyncio
     async def test_ready_poll_reads_paperclip_companies_exactly_once(self):
-        """P2 fix: compute_status and maybe_dispatch_bootstrap must share ONE
-        paperclip-companies read on the hot ready-poll path, not two --
-        container_status fetches `onboarding` via
-        readiness_state.resolve_onboarding_state ONCE and threads the SAME
-        dict into both, rather than letting maybe_dispatch_bootstrap
-        independently re-query the by-org-id GSI on every ~3s poll."""
+        """The hot ready-poll path reads paperclip-companies only once."""
         from routers.container import container_status
 
-        dispatch_mock = AsyncMock()
         fake_ecs = AsyncMock()
         fake_ecs.resolve_running_container = AsyncMock(
             return_value=({"service_name": "svc", "status": "running", "substatus": None}, "10.0.1.5")
@@ -2176,131 +2170,19 @@ class TestContainerStatusTeamsStatus:
             ),
             patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
             patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
-            patch("routers.container.maybe_dispatch_bootstrap", new=dispatch_mock),
         ):
             result = await container_status(_workspace_auth())
-            # maybe_dispatch_bootstrap is fired via asyncio.create_task
-            # (fire-and-forget, not patched out in this test) -- yield once
-            # so the scheduled task actually runs before asserting on it.
-            await asyncio.sleep(0)
 
         # CLIENT-HOOK removed the flat `phase`; the contract's runtime_phase
         # carries it now.
         assert result["runtime_phase"] == "ready"
-        # ONE physical read of the paperclip-companies row for this whole
-        # poll -- compute_status's internal composition AND the dispatch
-        # hook share it.
         repo.get_onboarding_state.assert_awaited_once_with("org_x")
-        dispatch_mock.assert_awaited_once_with("org_x", onboarding=onboarding_state)
-
-    @pytest.mark.asyncio
-    async def test_bootstrap_dispatches_while_starting_not_only_when_ready(self):
-        """Deadlock fix (#1418 P1): during onboarding the funnel hides chat, so
-        no chat RPC opens a gateway connection and runtime_phase never reaches
-        "ready". The dispatcher OPENS its own connection, so the gate is the
-        container being RUNNING ("starting" is enough) -- gating on "ready"
-        would strand funnel_state=submitted / bootstrap_state=not_started
-        forever."""
-        from routers.container import container_status
-
-        dispatch_mock = AsyncMock()
-        fake_ecs = AsyncMock()
-        fake_ecs.resolve_running_container = AsyncMock(
-            return_value=({"service_name": "svc", "status": "running", "substatus": None}, "10.0.1.5")
-        )
-        onboarding_state = _onboarding_state_stub("active")
-        onboarding_state["onboarding_generation"] = "01G"
-        onboarding_state["funnel_state"] = "submitted"
-        onboarding_state["bootstrap_state"] = "not_started"
-        onboarding_state["user_id"] = "creator_1"
-        repo = MagicMock()
-        repo.get = AsyncMock(return_value=SimpleNamespace(status="active"))
-        repo.get_onboarding_state = AsyncMock(return_value=onboarding_state)
-        with (
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
-            # Gateway NOT connected -> runtime_phase == "starting", NOT "ready".
-            patch(
-                "core.services.connection_service.is_gateway_connected",
-                new=AsyncMock(return_value=False),
-            ),
-            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
-            patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
-            patch("routers.container.maybe_dispatch_bootstrap", new=dispatch_mock),
-        ):
-            result = await container_status(_workspace_auth())
-            await asyncio.sleep(0)
-
-        assert result["runtime_phase"] == "starting"
-        # Dispatch STILL fires despite not being "ready" -- this is the fix.
-        dispatch_mock.assert_awaited_once_with("org_x", onboarding=onboarding_state)
-
-    @pytest.mark.asyncio
-    async def test_bootstrap_sent_row_still_schedules_the_dispatcher_for_observer_reattach(self):
-        """A ``sent`` kickoff's only outstanding work is OBSERVING its terminal,
-        and that observer is in-process memory the dispatching process may
-        have taken with it (rolling deploy, grace close). The dispatcher
-        re-attaches one from the row -- but only if this poll admits ``sent``
-        and actually calls in; a pre-check that stops at dispatched would
-        leave the restart case unobservable. ``delivered`` stays filtered."""
-        from routers.container import container_status
-
-        async def _poll(bootstrap_state: str) -> AsyncMock:
-            dispatch_mock = AsyncMock()
-            fake_ecs = AsyncMock()
-            fake_ecs.resolve_running_container = AsyncMock(
-                return_value=({"service_name": "svc", "status": "running", "substatus": None}, "10.0.1.5")
-            )
-            onboarding_state = _onboarding_state_stub("active")
-            onboarding_state["onboarding_generation"] = "01G"
-            onboarding_state["funnel_state"] = "submitted"
-            onboarding_state["bootstrap_state"] = bootstrap_state
-            onboarding_state["bootstrap_dispatch_id"] = "dispatch-1"
-            onboarding_state["user_id"] = "creator_1"
-            repo = MagicMock()
-            repo.get = AsyncMock(return_value=SimpleNamespace(status="active"))
-            repo.get_onboarding_state = AsyncMock(return_value=onboarding_state)
-            with (
-                patch("routers.container.get_ecs_manager", return_value=fake_ecs),
-                patch(
-                    "core.services.connection_service.is_gateway_connected",
-                    new=AsyncMock(return_value=True),
-                ),
-                patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
-                patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
-                patch("routers.container.maybe_dispatch_bootstrap", new=dispatch_mock),
-            ):
-                await container_status(_workspace_auth())
-                await asyncio.sleep(0)
-            return dispatch_mock
-
-        sent = await _poll("sent")
-        sent.assert_awaited_once()
-        assert sent.call_args.kwargs["onboarding"]["bootstrap_state"] == "sent"
-
-        # `failed` must reach the dispatcher too. It was excluded here, which
-        # made a transient that named itself retryable ("gateway starting;
-        # retry shortly") a PERMANENT dead end: the owner sat on the funnel
-        # spinner behind a running, healthy container until an operator ran the
-        # admin reset. The bounds that keep this poll cadence from hammering a
-        # genuinely broken bootstrap (attempt cap + backoff, never the
-        # ambiguous send-attempted row) live in the dispatcher, and it is the
-        # only place they can be evaluated — so the poll has to call in.
-        failed = await _poll("failed")
-        failed.assert_awaited_once()
-        assert failed.call_args.kwargs["onboarding"]["bootstrap_state"] == "failed"
-
-        delivered = await _poll("delivered")
-        delivered.assert_not_awaited()
 
 
 def _onboarding_state_with(
     *, funnel_state: str, onboarding_generation: str | None, teams_state: str | None = None
 ) -> dict:
-    """`get_onboarding_state` return shape with funnel_state/onboarding_generation
-    overridden -- for the onboarded-fact tests. compute_status derives
-    `onboarded` as `funnel_state == "complete"` when onboarding_generation is
-    set (ONBOARD's writers have run), else the legacy containers.onboarded_at
-    stamp -- see readiness_state.compute_status."""
+    """Return an onboarding row with the requested funnel fields."""
     state = _onboarding_state_stub(teams_state)
     state["funnel_state"] = funnel_state
     state["onboarding_generation"] = onboarding_generation

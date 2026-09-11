@@ -27,7 +27,7 @@ re-seeds affected agents when an account goes away). It is NOT wired into
 provisioning — IDENTITY.md is a workspace file that survives a config-rewrite
 reprovision, so a seeded agent stays seeded with no provision-time re-seed.
 That is also why a missing IDENTITY.md is a no-op here rather than a create:
-first-write of IDENTITY.md belongs to the friday/atlas pre-stage, and an
+first-write of IDENTITY.md belongs to the legacy friday/atlas pre-stage, and an
 agent without a base file simply isn't seeded yet.
 """
 

@@ -6,14 +6,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Lightbulb (`flickmeon.ai`) is an AI agent platform powered by [OpenClaw](https://github.com/openclaw/openclaw). Users subscribe, get a per-user ECS Fargate container running the OpenClaw Docker image, and interact with their agents via a WebSocket-based chat UI. The platform uses a Next.js 16 frontend (Vercel), FastAPI backend (ECS Fargate), Clerk for authentication, **DynamoDB** for metadata (users, containers, billing, usage counters, pending updates, channel links, admin actions, oauth tokens/state, integrations, webhook dedup, metronome fast-gate, bedrock AIP owners, agent-email, company slugs, paperclip-companies, marketplace listings/purchases/payouts/takedowns/sellers, provisioning-workflows — see `database-stack.ts` for the full set; BYO LLM keys live in **Secrets Manager**, not DynamoDB), AWS Bedrock + ChatGPT OAuth + BYO API key for LLM inference, Stripe for new subscription and marketplace purchases, and a configured Apple server-notification/verifier path retained only for historical Apple subscription lifecycle reconciliation. EFS provides per-user agent workspaces, and a per-tenant Paperclip BFF (Aurora Serverless v2 Postgres) powers the Teams Inbox. Infrastructure is managed via **AWS CDK** in `apps/infra/` (single source of IaC truth). The desktop app is **Tauri** (not Electron) — see `project_desktop_app_tauri` memory. There is also an **Expo iOS app** at `apps/mobile/` — see the "Mobile App" section.
 
-Every freshly provisioned owner gets two seed agents inside their Paperclip company: **Friday** (the per-owner CEO / orchestrator) and **Atlas** (the in-house agent-recruiter). Both are seeded by `paperclip_provisioning.provision_org` — see the "Provisioning Flow" section below. Custom agents beyond Friday/Atlas can be **published to the Lightbulb marketplace** for other users to deploy — see the "Marketplace" section.
+Every freshly provisioned workspace gets a six-agent Paperclip starter roster: **CEO**, **Engineering**, **Finance**, **Growth**, **Analytics**, and **Customer Operations**. `paperclip_provisioning.provision_org` records their role-keyed UUIDs in `starter_agent_ids`; CEO is the initial root and the specialists report to it. Names are user-editable, so policy follows those UUIDs and roles rather than a display name. This applies only to fresh workspaces — existing/founder rosters are not migrated. **Friday** and **Atlas** are portable curated marketplace packages, not automatic seeds. The roster is Lightbulb-native: it has no GStack or ACP dependency.
 
 The OpenClaw container image we run is an **extended image** built from our **OpenClaw fork** (`ghcr.io/thelightbulbcompany/agent`, a **Debian**-based image — NOT Alpine) with additional Linux skill binaries and baked plugins: the externalized upstream Slack/Discord/Bedrock plugins plus three in-repo plugins (`apps/infra/openclaw/plugins/{aws-exec-profile,lightbulb-marketplace,paperclip-exec-creds}`). Its Dockerfile lives at `apps/infra/openclaw/` and is published to ECR `lightbulb/openclaw-extended` by `.github/workflows/build-openclaw-image.yml`. The pinned base + per-env extended tags are tracked in `openclaw-version.json` at the repo root, where the fields mean distinct things:
 - `upstream` — the fork base the Dockerfile `FROM`s (e.g. `ghcr.io/thelightbulbcompany/agent:2026.7.2-isol8.4`). A **private** GHCR package, pulled only by the authenticated build workflow. Keep it in lockstep with the Dockerfile `FROM` line.
 - `image`/`tag`/`full` — the **legacy public** upstream image (`ghcr.io/openclaw/openclaw`), kept only as the bootstrap/unknown-env fallback in `container-stack.ts` (pulled by per-user ECS tasks with **no** registry credentials, so it must stay anonymously pullable). `tag` also feeds the `OPENCLAW_UPSTREAM_VERSION` env fallback.
 - `extendedImage` + per-env `dev.tag`/`prod.tag` — the ECR extended image actually deployed; `dev.tag`/`prod.tag` are the per-environment promotion gate (flip dev, validate, then prod). They drive `meta.lastTouchedVersion` via `deployed_upstream_version()`.
 
-Bundled agent-facing skills live at `apps/infra/openclaw/skills/` (`paperclip`, `lightbulb`). Both are **split**: a thin `SKILL.md` (routing table + non-negotiables) plus `references/*.md` the agent reads on demand — every agent pays for `SKILL.md` on every load, so new detail belongs in a reference, not inline. The `lightbulb` skill is the fleet's knowledge of the platform itself — when user-facing surfaces, marketplace/billing flows, or Paperclip seeding change, update it (each skill's sibling `MAINTENANCE.md` lists every anchor **and the reference file that now carries it**; it is a sibling and not a header comment because an HTML comment inside `SKILL.md` is invisible when rendered but still costs the whole fleet tokens on every load). Per-owner dynamic state (plan/provider) is NOT in the skill; it lives in `~/.openclaw/lightbulb-facts.json`, written by `core/services/owner_facts.py`.
+Bundled agent-facing skills live at `apps/infra/openclaw/skills/` (`paperclip`, `lightbulb`). Both are **split**: a thin `SKILL.md` (routing table + non-negotiables) plus `references/*.md` the agent reads on demand — every agent pays for `SKILL.md` on every load, so new detail belongs in a reference, not inline. The `lightbulb` skill owns platform facts; the `paperclip` skill owns team coordination. When user-facing surfaces, marketplace/billing flows, or Paperclip seeding change, update the relevant skill (each skill's sibling `MAINTENANCE.md` lists every anchor **and the reference file that now carries it**; it is a sibling and not a header comment because an HTML comment inside `SKILL.md` is invisible when rendered but still costs the whole fleet tokens on every load). Per-owner dynamic state (plan/provider) is NOT in the skill; it lives in `~/.openclaw/lightbulb-facts.json`, written by `core/services/owner_facts.py`.
 
 This repo does not vendor OpenClaw source. The base image is built from the **Isol8 fork `TheLightbulbCompany/agent`** (a GitHub fork of [github.com/openclaw/openclaw](https://github.com/openclaw/openclaw)). The fork's `main` tracks upstream — it was realigned to `openclaw/openclaw:main`, so `git pull upstream main` merges cleanly. Our patches do **not** live on `main`; they sit on `isol8/*` branches plus `v<version>-isol8.<n>` tags, which the fork's `docker-release.yml` builds and publishes to GHCR `ghcr.io/thelightbulbcompany/agent` (the carried patch set is enumerated in `openclaw-version.json`'s `notes`). The writable fork workspace is checked out at **`~/dev/agent-fork`** (origin = `TheLightbulbCompany/agent`, upstream = `openclaw/openclaw`). A stale second clone at `~/Desktop/agent` is pending delete — it sits on iCloud-synced Desktop and git operations hang there; do not use it. Treat fork checkouts as outside this repo — do not commit them into it.
 
@@ -238,7 +238,7 @@ When you change `openclaw.json` config, existing containers keep the old config 
 ```javascript
 // Browser console (any Lightbulb page with Clerk loaded):
 // PATCH -- wholesale-rewrites openclaw.json via write_user_configs + redeploys (preserves container).
-// Seeds agents.list from the owner's LIVE Paperclip roster, so it CAN wire existing Friday/Atlas ids;
+// Seeds agents.list from the owner's LIVE Paperclip roster, so it CAN wire existing agent ids;
 // it cannot CREATE the Paperclip company or agents (see Provisioning Flow).
 await fetch('https://api-dev.flickmeon.ai/api/v1/debug/provision', {method:'PATCH', headers:{Authorization:'Bearer '+await Clerk.session.getToken()}}).then(r=>r.json())
 
@@ -700,7 +700,7 @@ you cannot guess from the filename:
   attempt 0 as a backend child process for speed. The machine watches the
   row (watch loop in `service-stack.ts`) and takes the ECS leg over on
   error or after its tick backstop — custody never depends on a client poll.
-- `paperclip_provisioning.py` — owns `provision_org`, which seeds Friday + Atlas.
+- `paperclip_provisioning.py` — owns `provision_org`, which creates the generic six-agent starter roster for fresh workspaces and preserves legacy/founder rosters.
 - `config_patcher.py` — EFS-safe JSON deep-merge. `openclaw.json` writers take
   the persistent `.isol8-guard` and select the lock protocol recorded in
   `.isol8-protocol` (constants + `O_EXCL` acquire live in `efs_file_lock.py`);
@@ -890,14 +890,14 @@ Clerk sign-up
                                       ├─ sign up Paperclip user (Better Auth)
                                       ├─ create Paperclip company; bootstrap-admin invite/accept/approve
                                       ├─ write PaperclipCompany DDB row (status="active")
-                                      ├─ seed Friday (CEO) with adapter_type="openclaw_gateway"
-                                      │     adapter_config.url = wss://ws-<env>.flickmeon.ai
-                                      └─ seed Atlas (role="general") — best-effort; Atlas failure does NOT undo Friday
+                                      ├─ seed CEO, Engineering, Finance, Growth, Analytics,
+                                      │  and Customer Operations with adapter_type="openclaw_gateway"
+                                      └─ persist their stable role-keyed UUIDs in starter_agent_ids
                             1. ecs_manager.provision_user_container
                                  ├─ per-user EFS access point + ECS service
                                  └─ write_user_configs → write_openclaw_config(paperclip_agents=[…])
-                                       └─ openclaw.json on EFS lists Friday/Atlas agent_ids in agents.list[]
-                            0b. arm_nightly_ceo — seeds Friday's "Nightly CEO progress" routine when the
+                                       └─ openclaw.json on EFS lists the live Paperclip roster in agents.list[]
+                            0b. arm_nightly_ceo — seeds the CEO's "Nightly CEO progress" routine when the
                                 owner is PAID (trial_local is a metered no-op); every path to
                                 paid + provider chosen runs this executor, so this is the one door
                   (on later polls of an already-running ORG row, ensure_user_ready reconciles the
@@ -910,17 +910,19 @@ Key invariants:
 - **Paperclip URL is NOT in `openclaw.json`** — the Paperclip↔OpenClaw binding is on the Paperclip seed-agent's `adapterConfig.url`. The container connects to Paperclip via the agent's adapter at runtime; the container's own config only knows the agent IDs and workspace paths.
 - **`provision_org` is idempotent** — short-circuits on existing active rows. Member adds and duplicate signups return 409, which the caller treats as success.
 - **Fresh-provision Paperclip seeding is single-flight inside the executor** (`provision_runner.py` step 0) — deliberately, to kill the duplicate-company race a poll-thread seed allowed.
+- **Fresh-workspace chat starts in one canonical `#general` room.** It is created only while the room is missing or empty, with the CEO in `active` mode and the five specialists in `mentions` mode. Reconciliation never restores a removed member or resets a user's choice. Room owners/admins can set each agent's per-room mode to `active`, `mentions`, or `observe`; ordinary members see the mode but cannot change it.
+- **The first normal human message remains a normal dispatch.** Stored room modes choose its targets; a post-send capture then uses that first message once to create the initial goal/project and stage `BRIEF.md`. It does not force the CEO as the sole responder.
 
 ### Legacy containers (pre-Paperclip provisioning)
 
-Owners whose container was provisioned **before** Paperclip integration shipped have a container row but no `PaperclipCompany` row, and an `openclaw.json` that lists no agents. They get 409s from `/teams` and have no Friday/Atlas to chat with.
+Owners whose container was provisioned **before** Paperclip integration shipped have a container row but no `PaperclipCompany` row, and an `openclaw.json` that lists no agents. They get 409s from `/teams` and have no Paperclip roster to chat with.
 
 Two fixes:
 
 1. **Full reprovision** — `DELETE /api/v1/debug/provision` then `POST /api/v1/debug/provision`. The new poll cycle invokes `ensure_user_ready` against an empty slate.
 2. **Backfill script** — a one-shot `backfill_paperclip_for_legacy_users.py` (already run against prod, since deleted) paginated the `containers` table, found owners with no Paperclip row, and called `provision_org` for each. Recover it from git history only if a new legacy cohort appears.
 
-**`PATCH /debug/provision` cannot CREATE Paperclip state.** It wholesale-rewrites `openclaw.json` via `write_user_configs`, seeding `agents.list` from the owner's LIVE Paperclip roster — so it can wire existing Friday/Atlas ids into config, but it cannot create a Paperclip company, sign up a Paperclip user, or seed agents. Config repair ≠ provisioning.
+**`PATCH /debug/provision` cannot CREATE Paperclip state.** It wholesale-rewrites `openclaw.json` via `write_user_configs`, seeding `agents.list` from the owner's LIVE Paperclip roster — so it can wire existing agent IDs into config, but it cannot create a Paperclip company, sign up a Paperclip user, or seed agents. Config repair ≠ provisioning.
 
 ---
 
@@ -1040,7 +1042,7 @@ POST /listings/{id}/submit                              (draft → review)
 
 `.projects/` and `.stripe` are named in `_SKIP_DIR_NAMES` as a **backstop for workspaces dirtied by the retired Stripe-CLI path**. The Stripe Projects rail is backend-owned and writes nothing to EFS except `env.vars` in `openclaw.json`, so there is nothing on it for an export to leak — the exclusion is structural, and the named entries only cover leftovers and hand-copied debris.
 
-**Friday is unpublishable** — the `FRIDAY_PUBLISH_ERROR_MSG` guard in `agent_export.py` blocks the export at the router boundary. Publishing Friday would leak owner-keyed seeding content and hand a buyer a clone of someone else's CEO.
+**Founder-seeded Friday is unpublishable** — the `FRIDAY_PUBLISH_ERROR_MSG` guard in `agent_export.py` blocks exporting an owner's Friday workspace, which would leak owner-keyed content. The portable Friday and Atlas marketplace packages instead live under `apps/backend/marketplace/curated-agents/` and are ingested by `scripts/ingest_curated_agents.py`.
 
 ### Admin surface
 

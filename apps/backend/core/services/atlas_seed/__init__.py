@@ -1,6 +1,6 @@
-"""Pre-stage Atlas's workspace files on EFS at provision time.
+"""Pre-stage legacy Atlas workspace files on EFS at provision time.
 
-Atlas is the seeded agent-recruiter (Paperclip name="Atlas"). Like Friday, its
+Atlas is the legacy founder-seeded agent-recruiter (Paperclip name="Atlas"). Like Friday, its
 workspace files are written to EFS before the container boots so OpenClaw's
 writeFileIfMissing honors them on first run. Unlike Friday (5 inline markdown
 templates), Atlas ships dozens of files — .lobster workflows, .js tools, and

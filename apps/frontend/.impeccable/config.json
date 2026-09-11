@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          "src/components/messaging/messaging.css"
+        ],
+        "createdAt": "2026-09-11T18:27:16.258Z",
+        "reason": "Agent: existing 2px info delimiter on the semantic live-run article in RoomPanel.tsx; predates this change set and distinguishes active execution from completed messages."
+      }
+    ]
+  }
+}

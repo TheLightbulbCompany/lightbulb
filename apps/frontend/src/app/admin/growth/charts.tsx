@@ -294,7 +294,7 @@ const LADDER: GrowthOwnerStage["stage"][] = [
   "signed_up",
   "subscribed",
   "container_ready",
-  "friday_first_run_delivered",
+  "onboarding_complete",
   "automation_armed",
   "first_autonomous_success",
 ];

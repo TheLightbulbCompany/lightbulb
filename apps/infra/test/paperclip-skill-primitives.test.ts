@@ -8,6 +8,8 @@ const helper = resolve(skillRoot, "scripts/paperclip-api.sh");
 const skillMd = readFileSync(resolve(skillRoot, "SKILL.md"), "utf8");
 const monitorsMd = readFileSync(resolve(skillRoot, "references/monitors.md"), "utf8");
 const heartbeatRefMd = readFileSync(resolve(skillRoot, "references/heartbeat.md"), "utf8");
+const apiReferenceMd = readFileSync(resolve(skillRoot, "references/api-reference.md"), "utf8");
+const companySkillsMd = readFileSync(resolve(skillRoot, "references/company-skills.md"), "utf8");
 
 function runHelper(args: string[], input = "") {
   return spawnSync("bash", [helper, ...args], {
@@ -84,6 +86,19 @@ const ISSUE_WITH_STAGES = {
 };
 
 describe("bundled Paperclip operating primitives", () => {
+  it("routes coordination to an explicit assignee or the root CEO without a named fallback", () => {
+    const coordinationDocs = [skillMd, apiReferenceMd, companySkillsMd].join("\n");
+
+    expect(coordinationDocs).toContain("explicit assignee");
+    expect(coordinationDocs).toContain("root CEO");
+    expect(coordinationDocs).toContain("no `reportsTo`");
+    expect(coordinationDocs).not.toContain("Atlas");
+  });
+
+  it("does not describe agent count as a plan entitlement", () => {
+    expect(apiReferenceMd).not.toContain("plan's agent cap");
+  });
+
   it("builds run-scoped decisions with a stable ruleKey and idempotency key", () => {
     const result = runHelper(
       [

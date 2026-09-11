@@ -20,6 +20,6 @@ describe("GetStartedCard", () => {
   });
   it("renders an opened article", () => {
     render(<GetStartedCard gs={gsStub({ tab: "learn", activeArticle: "meet-friday-atlas" })} onAction={vi.fn()} />);
-    expect(screen.getByRole("heading", { name: /meet friday & atlas/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /meet your starter team/i })).toBeInTheDocument();
   });
 });

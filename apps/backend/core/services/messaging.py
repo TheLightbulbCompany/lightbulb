@@ -37,6 +37,12 @@ IMAGE_MAX_COUNT = 4
 ROOM_NAME_MAX_CHARS = 200
 EVENT_ID_MAX_BYTES = 256
 LIVE_SCHEMA_VERSION = 1
+DEFAULT_ROOM_NAME = "general"
+DEFAULT_ROOM_WELCOME = (
+    "Your team is ready: Engineering, Finance, Growth, Analytics, and Customer Operations. "
+    "I’ll coordinate. Tell us what you’re trying to build or change."
+)
+_STARTER_KEYS = ("ceo", "engineering", "finance", "growth", "analytics", "customer_operations")
 
 API_ERROR_STATUS = {
     "LOCAL_SESSION_FORBIDDEN": 403,
@@ -52,6 +58,7 @@ API_ERROR_STATUS = {
     "RUN_NOT_FOUND": 404,
     "OPERATION_NOT_FOUND": 404,
     "IDEMPOTENCY_CONFLICT": 409,
+    "AGENT_LIFECYCLE_CONFLICT": 409,
     "MESSAGE_CONFLICT": 409,
     "MEMBER_LIMIT": 409,
     "RUN_NOT_ACTIVE": 409,
@@ -850,6 +857,90 @@ async def list_rooms(auth: AuthContext) -> RoomListResponse:
     return RoomListResponse(rooms=summaries)
 
 
+def default_room_id(owner_id: str) -> str:
+    """Stable identity for the one fresh-workspace general room."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-default-room|{owner_id}"))
+
+
+async def ensure_default_room(owner_id: str, owner_user_id: str) -> str | None:
+    """Create the starter general room once, never reconcile it afterward."""
+    from core.repositories.paperclip_repo import PaperclipRepo
+
+    room_id = default_room_id(owner_id)
+    existing_room = await messaging_repo.get_room(room_id)
+    if existing_room is not None and int(existing_room.get("lastSeq") or 0) > 0:
+        return room_id
+
+    company = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id, consistent_read=True)
+    starter_ids = getattr(company, "starter_agent_ids", None) if company else None
+    if (
+        getattr(company, "status", None) != "active"
+        or not isinstance(starter_ids, dict)
+        or set(starter_ids) != set(_STARTER_KEYS)
+        or len(set(starter_ids.values())) != len(_STARTER_KEYS)
+    ):
+        return None
+
+    roster = await load_agent_roster(owner_id)
+    agents = {row["id"]: row for row in roster}
+    if any(agent_id not in agents for agent_id in starter_ids.values()):
+        return None
+    handles = mention_handles(roster)
+    members = [
+        {
+            "kind": "human",
+            "id": owner_user_id,
+            "displayName": await human_display_name(owner_user_id),
+            "mentionHandle": None,
+            "role": "owner",
+            "listenMode": None,
+        }
+    ]
+    members.extend(
+        {
+            "kind": "agent",
+            "id": starter_ids[key],
+            "displayName": agents[starter_ids[key]]["name"],
+            "mentionHandle": handles[starter_ids[key]],
+            "role": "member",
+            "listenMode": "active" if key == "ceo" else "mentions",
+        }
+        for key in _STARTER_KEYS
+    )
+    client_room_id = f"workspace-bootstrap-v2:{owner_id}"
+    if existing_room is None:
+        await messaging_repo.ensure_user_stream(owner_id, owner_user_id)
+        normalized = [{key: member.get(key) for key in ("kind", "id", "role", "listenMode")} for member in members]
+        await messaging_repo.create_room(
+            owner_id=owner_id,
+            room_id=room_id,
+            client_room_id=client_room_id,
+            creator_user_id=owner_user_id,
+            name=DEFAULT_ROOM_NAME,
+            kind="channel",
+            members=members,
+            req_hash=messaging_repo.request_hash(DEFAULT_ROOM_NAME, "channel", normalized),
+        )
+    ceo_id = starter_ids["ceo"]
+    await messaging_repo.create_message(
+        room_id=room_id,
+        owner_id=owner_id,
+        idemp_pk=messaging_repo.room_pk(room_id),
+        idemp_sk=messaging_repo.human_idemp_sk("__system__", f"{client_room_id}:welcome"),
+        req_hash=messaging_repo.request_hash(DEFAULT_ROOM_WELCOME, ceo_id),
+        author={"kind": "agent", "id": ceo_id, "displayName": agents[ceo_id]["name"]},
+        text=DEFAULT_ROOM_WELCOME,
+        mentions=[],
+        reply_to_message_id=None,
+        thread_root_message_id=None,
+        run_id=None,
+        dispatch_targets=[],
+        source_agent_id=ceo_id,
+        client_message_id=None,
+    )
+    return room_id
+
+
 async def create_room(auth: AuthContext, request: CreateRoomRequest) -> RoomDetail:
     owner_id = resolve_owner_id(auth)
     keys = [(member.kind, member.id) for member in request.members]
@@ -1155,6 +1246,9 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
     except messaging_repo.IdempotencyConflict as exc:
         raise ApiProblem("IDEMPOTENCY_CONFLICT", "clientMessageId was already used with a different request.") from exc
     await container_repo.touch_last_interactive(owner_id)
+    from core.services.onboarding_brief import capture_first_workspace_message
+
+    asyncio.create_task(capture_first_workspace_message(owner_id, item))
     return canonical_message(item)
 
 

@@ -70,11 +70,13 @@ SPOT_CAPACITY_STRATEGY = [{"capacityProvider": "FARGATE_SPOT", "weight": 1}]
 ON_DEMAND_CAPACITY_STRATEGY = [{"capacityProvider": "FARGATE", "weight": 1}]
 SPOT_PLACEMENT_FALLBACK_S = 300.0
 
-# Ultra tier box (large marketplace companies exceeding the flat tier's
-# agent budget). 2 vCPU / 8 GB — same constant home as PER_USER_* so the
+# Ultra tier box. 2 vCPU / 8 GB — same constant home as PER_USER_* so the
 # resize/register paths and the webhook tier logic pull sizes from one place.
 ULTRA_CPU = "2048"
 ULTRA_MEMORY_MIB = "8192"
+
+# Operational boot-reliability floor, never a billing or admission limit.
+AGENT_RELIABILITY_RESIZE_THRESHOLD = 10
 
 # The AIP tiers minted for a `bedrock_trial` (no-card free tier) owner. ONE
 # tier, and it must be sonnet: config.py makes sonnet the trial's
@@ -533,9 +535,9 @@ class EcsManager:
         """The (cpu, memory) a provision/reprovision must register for ``owner_id``.
 
         ``ultra_pro`` owners run the large ``ULTRA_CPU`` / ``ULTRA_MEMORY_MIB``
-        box (large marketplace companies past the flat tier's agent budget);
+        box;
         everyone else the flat ``PER_USER_CPU`` / ``PER_USER_MEMORY_MIB`` box —
-        UNLESS their live agent count is over the standard budget, see below.
+        UNLESS their live agent count crosses the reliability floor below.
 
         Deriving the size from the billing plan HERE is what makes the Ultra
         size DURABLE. The upgrade webhook resizes the running container, but the
@@ -547,9 +549,7 @@ class EcsManager:
         size of its own — so the box always tracks the owner's plan.
 
         **Agent count is the second input, and it is a RELIABILITY floor, not a
-        billing signal.** ``COMPANY_STANDARD_PLAN_MAX_AGENTS`` was previously
-        enforced only where an owner acquires many agents AT ONCE — a marketplace
-        company-package deploy, or a Stripe plan transition. Nothing watched
+        billing signal or product entitlement.** Nothing else needs to watch
         ORGANIC growth, and agents arrive one at a time from several paths: the
         /chat ``agents.create`` RPC, the Teams REST endpoint, a marketplace
         single-agent hire, and Atlas (the in-house recruiter) creating them
@@ -569,16 +569,18 @@ class EcsManager:
         loop. It converges on the owner's next task-def registration rather than
         bouncing the container the instant someone adds an agent.
 
-        This only ever sizes UP. Shrinking stays owned by
-        ``stripe_webhook_handlers._apply_ultra_resize``, which has the OOM-safe
-        deferral rules; a count-driven shrink here would fight it.
+        This helper only ever raises the plan-derived size to the reliability
+        floor. Explicit downsize decisions stay owned by
+        ``stripe_webhook_handlers._apply_ultra_resize``, which independently
+        checks the live count and refuses an unsafe shrink.
 
         Fail-safe: a provision must NEVER fail because billing or Paperclip is
         momentarily unreadable. A billing read error (or an absent row) falls
         back to the standard size — worst case an Ultra owner's reprovision lands
         standard-sized and the next reprovision restores it, which beats a failed
         provision. An agent count of 0 means UNDETERMINABLE (every provisioned
-        owner has Friday + Atlas, so a reachable roster is >= 2), so it is
+        fresh workspaces start with six agents and legacy workspaces have a
+        persisted roster), so it is
         treated as no signal and leaves the plan-derived size alone.
         """
         try:
@@ -593,7 +595,6 @@ class EcsManager:
         if (account or {}).get("plan") == "ultra_pro":
             return ULTRA_CPU, ULTRA_MEMORY_MIB
 
-        from core.services.company_package import COMPANY_STANDARD_PLAN_MAX_AGENTS
         from core.services.paperclip_openclaw_pairing import count_paperclip_agents_for_owner
 
         try:
@@ -609,15 +610,24 @@ class EcsManager:
                 exc_info=True,
             )
             agent_count = 0
-        if agent_count > COMPANY_STANDARD_PLAN_MAX_AGENTS:
-            logger.info(
-                "owner %s has %d live agents (> %d) on a non-Ultra plan; sizing the "
-                "container to the Ultra box so its boot does not contend itself to death",
+        if agent_count > 25:
+            logger.warning(
+                "owner %s has %d live agents during container sizing; monitor boot storage and contention",
                 owner_id,
                 agent_count,
-                COMPANY_STANDARD_PLAN_MAX_AGENTS,
             )
-            put_metric("container.size_upgraded_by_agent_count", dimensions={"reason": "organic_growth"})
+            put_metric(
+                "container.large_agent_roster_observed",
+                dimensions={"threshold": "over_25"},
+            )
+        if agent_count > AGENT_RELIABILITY_RESIZE_THRESHOLD:
+            logger.info(
+                "owner %s has %d live agents (> %d); applying the operational container reliability size floor",
+                owner_id,
+                agent_count,
+                AGENT_RELIABILITY_RESIZE_THRESHOLD,
+            )
+            put_metric("container.reliability_size_upgrade", dimensions={"reason": "live_agent_roster"})
             return ULTRA_CPU, ULTRA_MEMORY_MIB
         return PER_USER_CPU, PER_USER_MEMORY_MIB
 
@@ -4000,48 +4010,6 @@ class EcsManager:
 
                     await expire_superseded_gate_tokens(user_id)
 
-                    # FRIDAY'S FIRST RUN. This is the only moment we KNOW the
-                    # gateway is reachable, and it is reached by every route a
-                    # container takes to ready (see the comment above), so it
-                    # is the one place a kickoff can be dispatched without a
-                    # browser being open.
-                    #
-                    # Until now `maybe_dispatch_bootstrap` was reachable only
-                    # from `container_status` and `submit_brief` -- both driven
-                    # by the owner's tab. An owner who signed up, watched
-                    # "Provisioning your container...", and closed the tab was
-                    # never greeted: no poll, no kickoff, no first run. And
-                    # because the first-contact EMAIL is Friday's own tool call
-                    # DURING that run (bootstrap_dispatcher NUDGE_MESSAGE only
-                    # reminds her if a run ends without it), the thing that
-                    # would have brought them back never sent either. Closed
-                    # loop, no exit: two prod owners sat in it, one for twenty
-                    # days.
-                    #
-                    # Deliberately NOT a sweeper. A scanner would have to WAKE
-                    # stopped containers to greet owners who are not there --
-                    # spending money, and on a trial owner burning the daily
-                    # cap -- and this codebase prefers events over long-running
-                    # workers. Hanging it here wakes nothing: it fires only on
-                    # a container that just became ready under its own steam.
-                    #
-                    # Best-effort by construction. maybe_dispatch_bootstrap is
-                    # idempotent, claim-fenced, and returns early for every
-                    # owner with nothing owed (no generation, funnel not
-                    # submitted, already sent/delivered), so the common case is
-                    # one cheap read. It never raises -- but this is the
-                    # terminal write of a provision, so a failure here must not
-                    # unwind a container that is genuinely up.
-                    try:
-                        from core.services.bootstrap_dispatcher import maybe_dispatch_bootstrap
-
-                        await maybe_dispatch_bootstrap(user_id)
-                    except Exception:  # noqa: BLE001 — never fail a healthy provision
-                        logger.exception(
-                            "bootstrap kickoff dispatch failed for owner %s after ready transition "
-                            "(container is up; first run will retry on the owner's next poll)",
-                            user_id,
-                        )
                     return
                 if task_arn and ip and container.get("substatus") != "task_running":
                     # Task is RUNNING with an IP but the gateway port isn't
@@ -4321,6 +4289,8 @@ class EcsManager:
         # unreachable; the next reprovision self-heals.
         paperclip_agent_keys: dict[str, str] = {}
         paperclip_company_id: str | None = None
+        starter_agent_ids: dict[str, str] = {}
+        legacy_seeded_agent_ids: list[str] = []
         try:
             repo = PaperclipRepo(table_name="paperclip-companies")
             admin_client = PaperclipAdminClient(http_client=http)
@@ -4329,6 +4299,10 @@ class EcsManager:
                 repo=repo,
                 admin_client=admin_client,
             )
+            owner_row = await repo.resolve_owner_row(owner_id)
+            if owner_row is not None:
+                starter_agent_ids = dict(owner_row.starter_agent_ids or {})
+                legacy_seeded_agent_ids = list(owner_row.seeded_agent_ids or [])
             # Mint (or read) a per-agent Paperclip API key for EACH agent so
             # actions in Paperclip's audit log attribute to the acting agent,
             # not to Friday or the global admin service account. Self-healing:
@@ -4434,28 +4408,42 @@ class EcsManager:
             deployed_tag=deployed_tag,
         )
 
-        # Seed Friday's IDENTITY/SOUL/USER/BOOTSTRAP files on EFS so they're
-        # present before the container boots. Best-effort — failure here
-        # MUST NOT block provision; Friday boots with upstream defaults if
-        # this fails.
+        # Seed the workspace role contract selected by authoritative row state.
+        # New starter rows are UUID-keyed; legacy rows retain Friday/Atlas.
+        from core.services.starter_roster import pre_stage_starter_roster
         from core.services.friday_identity import (
             pre_stage_friday_identity,
             pre_stage_paperclip_identities,
         )
 
-        try:
-            await pre_stage_friday_identity(
-                owner_id=owner_id,
-                paperclip_agents=paperclip_agents,
-                workspace=get_workspace(),
-            )
-        except Exception as exc:  # noqa: BLE001 — best-effort.
-            put_metric("friday_identity.seed.error")
-            logger.warning(
-                "write_user_configs: pre_stage_friday_identity failed for owner=%s: %s",
-                owner_id,
-                exc,
-            )
+        if starter_agent_ids:
+            try:
+                await pre_stage_starter_roster(
+                    owner_id=owner_id,
+                    paperclip_agents=paperclip_agents,
+                    starter_agent_ids=starter_agent_ids,
+                    workspace=get_workspace(),
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort.
+                logger.warning(
+                    "write_user_configs: pre_stage_starter_roster failed for owner=%s: %s",
+                    owner_id,
+                    exc,
+                )
+        elif legacy_seeded_agent_ids:
+            try:
+                await pre_stage_friday_identity(
+                    owner_id=owner_id,
+                    paperclip_agents=paperclip_agents,
+                    workspace=get_workspace(),
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort.
+                put_metric("friday_identity.seed.error")
+                logger.warning(
+                    "write_user_configs: pre_stage_friday_identity failed for owner=%s: %s",
+                    owner_id,
+                    exc,
+                )
 
         # Stage each agent's per-agent Paperclip identity file
         # (paperclip-claimed-api-key.json) into its own workspace so it can
@@ -4484,22 +4472,23 @@ class EcsManager:
         # provision; Atlas boots with an empty workspace if this fails.
         from core.services.atlas_seed import pre_stage_atlas
 
-        try:
-            await pre_stage_atlas(
-                owner_id=owner_id,
-                paperclip_agents=paperclip_agents,
-                workspace=get_workspace(),
-            )
-        except Exception as exc:  # noqa: BLE001 — best-effort.
-            # Distinct from the seeder's per-file `atlas_seed.error`: this fires
-            # only on a catastrophic failure (e.g. import error) where the seeder
-            # never ran, vs a single bad file the seeder logged and skipped.
-            put_metric("atlas_seed.invoke_error")
-            logger.warning(
-                "write_user_configs: pre_stage_atlas failed for owner=%s: %s",
-                owner_id,
-                exc,
-            )
+        if legacy_seeded_agent_ids:
+            try:
+                await pre_stage_atlas(
+                    owner_id=owner_id,
+                    paperclip_agents=paperclip_agents,
+                    workspace=get_workspace(),
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort.
+                # Distinct from the seeder's per-file `atlas_seed.error`: this fires
+                # only on a catastrophic failure (e.g. import error) where the seeder
+                # never ran, vs a single bad file the seeder logged and skipped.
+                put_metric("atlas_seed.invoke_error")
+                logger.warning(
+                    "write_user_configs: pre_stage_atlas failed for owner=%s: %s",
+                    owner_id,
+                    exc,
+                )
 
         # Stage the container-global credentials/oauth.json after the config
         # write, so it's present for any reprovision / config-rewrite path that

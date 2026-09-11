@@ -45,7 +45,7 @@ function setup(roomId = "room") {
   const props: RoomPanelProps = {
     ownerScopeId: "org", currentUserId: "bob", roomId, room: { roomId, kind: "dm", name: null, roomRevision: 1, lastMessageSeq: 0, lastMessageAt: null, unreadCount: 0, updatedAt: "now" },
     state: "ready", httpReady: true, liveConnected: true, participants: people, messages: [], resourceSource: source,
-    composer: { text: "Room draft stays here", onTextChange: vi.fn(), members: people, selectedMentions: [], onMentionsChange: vi.fn(), clientMessageId: "room-draft", sendState: "idle", onSubmit: vi.fn() },
+    composer: { text: "Room draft stays here", onTextChange: vi.fn(), members: people, clientMessageId: "room-draft", sendState: "idle", onSubmit: vi.fn() },
   };
   const emit = (type: "room.resources.changed" | "room.metadata.changed" | "room.access.removed") => {
     for (const h of handlers) h({ type, payload: { roomId }, roomId, schemaVersion: 1, eventId: type, occurredAt: "now" } as LiveEvent);

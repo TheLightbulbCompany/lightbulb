@@ -30,7 +30,6 @@ import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { handleShellLinkClick } from "@/lib/shellNav";
 import { agentInspectorUrl } from "@/components/teams/shared/lib/agentInspectorUrl";
 import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
-import { isSeededAgent } from "@/components/teams/agents/AgentManageSection";
 import type { CompanyAgent } from "@/components/teams/shared/types";
 
 export interface AgentsListPanelProps {
@@ -120,7 +119,6 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
       header: "",
       align: "right",
       cell: (a) => {
-        const seeded = isSeededAgent(a);
         const paused = a.status === "paused";
         return (
           <span className="flex items-center justify-end gap-2">
@@ -130,18 +128,16 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
             >
               {paused ? "Resume" : "Pause"}
             </button>
-            {!seeded && (
-              <button
-                className="text-sm hover:underline text-[var(--err)]"
-                onClick={() => {
-                  if (window.confirm(`Delete ${a.name}? This removes the agent and its workspace.`)) {
-                    remove(a.id);
-                  }
-                }}
-              >
-                Delete
-              </button>
-            )}
+            <button
+              className="text-sm hover:underline text-[var(--err)]"
+              onClick={() => {
+                if (window.confirm(`Delete ${a.name}? This removes the agent and its workspace.`)) {
+                  remove(a.id);
+                }
+              }}
+            >
+              Delete
+            </button>
           </span>
         );
       },

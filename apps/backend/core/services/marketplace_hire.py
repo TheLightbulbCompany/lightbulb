@@ -6,11 +6,11 @@ which surfaces in the Teams Inbox "Needs Attention" band
 (``InboxPage`` -> ``NeedsAttentionBand`` -> ``ApprovalRow``, which already
 labels ``hire_agent`` as "Hire Agent"). The roster changes only on approve.
 
-**This does not touch the direct-create flow.** Seeding Friday/Atlas,
-marketplace deploys, and Atlas builds keep using ``POST /companies/{id}/agents``
+**This does not touch the direct-create flow.** Fresh starter-roster seeding,
+legacy Friday/Atlas provisioning, marketplace deploys, and Atlas builds keep using ``POST /companies/{id}/agents``
 unchanged. In particular it needs no ``require_board_approval_for_new_agents``
 flip — that flag turns the direct-create route into a fleet-wide 409, which
-would break signup seeding, where no human is awake to approve Friday and Atlas.
+would break signup seeding, where no human is awake to approve the starter roster.
 
 The shape, and why each step is there:
 
@@ -144,12 +144,8 @@ async def create_hire_approval(
     from core.config import settings
     from core.repositories import container_repo
     from core.repositories.paperclip_repo import PaperclipRepo
-    from core.services.paperclip_admin_client import (
-        PaperclipAdminClient,
-        PaperclipAgentCreateReplayMiss,
-    )
+    from core.services.paperclip_admin_client import PaperclipAdminClient
     from core.services.paperclip_admin_session import get_admin_session_cookie
-    from core.services.agent_budget import is_at_agent_budget
     from core.services.paperclip_agent_idempotency import build_agent_create_idempotency_key
     from core.services.paperclip_agent_lifecycle import create_paperclip_for_marketplace
     from core.services.paperclip_openclaw_pairing import resolve_company_id_for_owner
@@ -217,24 +213,13 @@ async def create_hire_approval(
     agent_id: str | None = None
     preserve_agent_on_failure = False
     try:
-        # At the cap, only an existing operation may replay. A missing key is a
-        # normal degraded recommendation, not a roster mutation or API failure.
-        at_agent_budget = await is_at_agent_budget(owner_id)
-        try:
-            agent = await create_paperclip_for_marketplace(
-                buyer_user_id=requested_by_user_id or owner_id,
-                owner_id=owner_id,
-                name=listing.get("name") or listing.get("slug") or "New agent",
-                role=None,
-                idempotency_key=idempotency_key,
-                idempotency_replay_only=at_agent_budget,
-            )
-        except PaperclipAgentCreateReplayMiss:
-            logger.info(
-                "create_hire_approval: owner=%s is at the agent budget with no matching operation — not filing",
-                owner_id,
-            )
-            return None
+        agent = await create_paperclip_for_marketplace(
+            buyer_user_id=requested_by_user_id or owner_id,
+            owner_id=owner_id,
+            name=listing.get("name") or listing.get("slug") or "New agent",
+            role=None,
+            idempotency_key=idempotency_key,
+        )
         agent_id = agent["id"]
 
         # Until both approval state and container state have been read, this

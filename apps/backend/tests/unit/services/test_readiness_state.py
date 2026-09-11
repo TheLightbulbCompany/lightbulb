@@ -508,11 +508,10 @@ class TestResolveOnboardingStateThreading:
             result = await readiness_state.resolve_onboarding_state("user_x")
         assert result["onboarding_generation"] is None
         assert result["funnel_state"] == "not_started"
-        assert result["bootstrap_state"] == "not_started"
         assert result["user_id"] is None
         assert result["onboarding_submitted_by"] is None
 
-    # The 25 keys `get_onboarding_state` has always returned for a
+    # The keys `get_onboarding_state` returns for a
     # genuinely-not-started row -- an explicit literal, independent of
     # BOTH `ONBOARDING_STATE_DEFAULTS` and `resolve_onboarding_state`'s
     # implementation, so drift on either side fails loudly instead of a
@@ -532,14 +531,6 @@ class TestResolveOnboardingStateThreading:
             "onboarding_project_id",
             "onboarding_brief_text",
             "onboarding_submitted_by",
-            "bootstrap_state",
-            "bootstrap_dispatch_id",
-            "bootstrap_dispatched_at",
-            "bootstrap_send_attempted_at",
-            "bootstrap_sent_at",
-            "bootstrap_delivered_at",
-            "bootstrap_attempts",
-            "bootstrap_last_error",
             "first_contact_state",
             "first_contact_attempts",
             "first_contact_reason",
@@ -551,7 +542,7 @@ class TestResolveOnboardingStateThreading:
         }
     )
 
-    def test_onboarding_state_defaults_have_the_expected_25_keys(self):
+    def test_onboarding_state_defaults_have_the_expected_keys(self):
         """paperclip_repo.ONBOARDING_STATE_DEFAULTS must carry exactly the
         literal key set above -- fails if a key is added or removed there
         without updating this literal (or vice versa)."""
@@ -618,7 +609,6 @@ class TestGenerationThreading:
         )
         assert contract["generations"]["onboarding_generation"] == "01J_ONBOARDING_GEN"
         assert contract["funnel"]["state"] == "complete"
-        assert contract["bootstrap"]["state"] == "delivered"
         # RECONCILE-WITH-ONBOARD: once a real onboarding_generation exists,
         # `onboarded` follows funnel_state == "complete", not the legacy
         # per-container onboarded_at stamp.

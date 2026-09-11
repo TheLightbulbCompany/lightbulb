@@ -207,6 +207,13 @@ it("does not expose member adds to a channel member without admin permission", (
   expect(panel.onAddMember).toBeUndefined();
   expect(panel.onRenameRoom).toBeUndefined();
   expect(panel.onRemoveMember).toBeUndefined();
+  expect(panel.onListenModeChange).toBeUndefined();
+});
+
+it.each(["channel", "dm", "group-dm"] as const)("lets room admins edit response modes in a %s", (kind) => {
+  state.activeRoom = { ...room, kind, members: room.members.map((member) => member.id === "owner" ? { ...member, role: "admin" } : member) };
+  compose();
+  expect(panel.onListenModeChange).toBeTypeOf("function");
 });
 
 it.each(["owner", "admin"] as const)("connects channel %s management to existing commands", async (role) => {
@@ -305,16 +312,14 @@ it("preserves a pending draft and focus when a conversation first mounts", () =>
   expect(field).toHaveFocus();
 });
 
-it("clears the old room's drafts, mentions, and attempt IDs on room change", () => {
+it("clears the old room's draft and attempt IDs on room change", () => {
   const view = compose();
   act(() => {
     panel.composer.onTextChange("Old draft");
-    panel.composer.onMentionsChange([{ kind: "agent", id: "agent-friday" }]);
     panel.onSelectThread?.("message-1");
   });
   act(() => {
     panel.threadComposer!.composer.onTextChange("Old reply");
-    panel.threadComposer!.composer.onMentionsChange([{ kind: "agent", id: "agent-friday" }]);
   });
   const oldMessageId = panel.composer.clientMessageId;
   const oldThreadId = panel.threadComposer!.composer.clientMessageId;
@@ -324,12 +329,10 @@ it("clears the old room's drafts, mentions, and attempt IDs on room change", () 
     <MessagingDirectory /><MessagingConversation />
   </MessagingWorkspaceProvider>);
   expect(panel.composer.text).toBe("");
-  expect(panel.composer.selectedMentions).toEqual([]);
   expect(panel.composer.clientMessageId).not.toBe(oldMessageId);
   expect(panel.threadComposer).toBeUndefined();
   act(() => panel.onSelectThread?.("message-2"));
   expect(panel.threadComposer!.composer.text).toBe("");
-  expect(panel.threadComposer!.composer.selectedMentions).toEqual([]);
   expect(panel.threadComposer!.composer.clientMessageId).not.toBe(oldThreadId);
 });
 

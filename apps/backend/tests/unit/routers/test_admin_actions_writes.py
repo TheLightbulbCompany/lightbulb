@@ -595,182 +595,6 @@ class TestProvisionRetry:
         assert kwargs["target_user_id"] == "u_target"
 
 
-class TestResetBootstrap:
-    """POST /api/v1/admin/users/{user_id}/provisioning/reset-bootstrap.
-
-    Re-arms a stuck onboarding kickoff: conditional bootstrap_state
-    ->not_started fenced on onboarding_generation. Accepts a `failed` row at
-    any age, and a `dispatched` row whose claim has EXPIRED (the dispatcher's
-    own staleness threshold) — but never one still in flight.
-    """
-
-    @staticmethod
-    def _company(
-        *,
-        bootstrap_state="failed",
-        onboarding_generation="01G",
-        dispatched_at=None,
-        dispatch_id=None,
-    ):
-        from datetime import datetime, timezone
-
-        from core.repositories.paperclip_repo import PaperclipCompany
-
-        return PaperclipCompany(
-            user_id="u_target",
-            org_id="",
-            company_id="company_1",
-            paperclip_user_id="pc_user_1",
-            paperclip_password_encrypted="SECRET-PW",
-            service_token_encrypted="SECRET-ST",
-            status="active",
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
-            funnel_state="submitted",
-            bootstrap_state=bootstrap_state,
-            onboarding_generation=onboarding_generation,
-            bootstrap_dispatched_at=dispatched_at,
-            bootstrap_dispatch_id=dispatch_id,
-        )
-
-    @staticmethod
-    def _dispatched_ago(seconds):
-        from datetime import datetime, timedelta, timezone
-
-        return datetime.now(timezone.utc) - timedelta(seconds=seconds)
-
-    @staticmethod
-    def _mock_repo(company, *, reset_result=True):
-        repo = MagicMock()
-        repo.get = AsyncMock(return_value=company)
-        repo.reset_bootstrap_for_retry = AsyncMock(return_value=reset_result)
-        return repo
-
-    @pytest.mark.asyncio
-    async def test_403_for_non_admin(self, async_client, non_admin_env):
-        res = await async_client.post("/api/v1/admin/users/u_target/provisioning/reset-bootstrap")
-        assert res.status_code == 403
-
-    @pytest.mark.asyncio
-    async def test_404_when_no_paperclip_row(self, async_client, admin_env):
-        repo = self._mock_repo(None)
-        with patch("routers.admin._paperclip_repo", return_value=repo):
-            res = await async_client.post("/api/v1/admin/users/u_target/provisioning/reset-bootstrap")
-        assert res.status_code == 404
-
-    @pytest.mark.asyncio
-    async def test_409_when_bootstrap_not_failed(self, async_client, admin_env):
-        company = self._company(bootstrap_state="delivered")
-        repo = self._mock_repo(company)
-        with patch("routers.admin._paperclip_repo", return_value=repo):
-            res = await async_client.post("/api/v1/admin/users/u_target/provisioning/reset-bootstrap")
-        assert res.status_code == 409
-        repo.reset_bootstrap_for_retry.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_409_when_reset_loses_race(self, async_client, admin_env):
-        company = self._company(bootstrap_state="failed")
-        repo = self._mock_repo(company, reset_result=False)
-        with patch("routers.admin._paperclip_repo", return_value=repo):
-            res = await async_client.post("/api/v1/admin/users/u_target/provisioning/reset-bootstrap")
-        assert res.status_code == 409
-        repo.reset_bootstrap_for_retry.assert_awaited_once_with(
-            "u_target", onboarding_generation="01G", expected_dispatch_id=None
-        )
-
-    @pytest.mark.asyncio
-    async def test_200_when_reset_lands(self, async_client, admin_env, mock_audit_repo):
-        company = self._company(bootstrap_state="failed")
-        repo = self._mock_repo(company, reset_result=True)
-        with patch("routers.admin._paperclip_repo", return_value=repo):
-            res = await async_client.post("/api/v1/admin/users/u_target/provisioning/reset-bootstrap")
-        assert res.status_code == 200
-        assert res.json()["ok"] is True
-        repo.reset_bootstrap_for_retry.assert_awaited_once_with(
-            "u_target", onboarding_generation="01G", expected_dispatch_id=None
-        )
-
-    @pytest.mark.asyncio
-    async def test_200_for_an_expired_dispatched_claim(self, async_client, admin_env, mock_audit_repo):
-        """The stuck-'dispatched' case this lever exists for — including the
-        ambiguous send-attempted-never-acked row the dispatcher refuses to
-        retry on its own. The write is fenced on the observed dispatch_id so a
-        claim landing between the operator's read and this write survives."""
-        from core.services.bootstrap_dispatcher import STALE_DISPATCH_AFTER_S
-
-        company = self._company(
-            bootstrap_state="dispatched",
-            dispatched_at=self._dispatched_ago(STALE_DISPATCH_AFTER_S + 60),
-            dispatch_id="dead-claim-1",
-        )
-        repo = self._mock_repo(company, reset_result=True)
-        with patch("routers.admin._paperclip_repo", return_value=repo):
-            res = await async_client.post("/api/v1/admin/users/u_target/provisioning/reset-bootstrap")
-        assert res.status_code == 200
-        repo.reset_bootstrap_for_retry.assert_awaited_once_with(
-            "u_target", onboarding_generation="01G", expected_dispatch_id="dead-claim-1"
-        )
-
-    @pytest.mark.asyncio
-    async def test_409_for_a_dispatch_still_in_flight(self, async_client, admin_env):
-        """A live claim must not be resettable mid-flight: the next poll would
-        dispatch a SECOND kickoff. The connect ladder alone runs ~3 minutes."""
-        company = self._company(
-            bootstrap_state="dispatched",
-            dispatched_at=self._dispatched_ago(30),
-            dispatch_id="live-claim-1",
-        )
-        repo = self._mock_repo(company)
-        with patch("routers.admin._paperclip_repo", return_value=repo):
-            res = await async_client.post("/api/v1/admin/users/u_target/provisioning/reset-bootstrap")
-        assert res.status_code == 409
-        assert "still in flight" in res.json()["detail"]
-        repo.reset_bootstrap_for_retry.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_409_for_a_dispatched_row_with_no_dispatch_id(self, async_client, admin_env):
-        """Nothing to fence the write on — refuse rather than write unfenced."""
-        from core.services.bootstrap_dispatcher import STALE_DISPATCH_AFTER_S
-
-        company = self._company(
-            bootstrap_state="dispatched",
-            dispatched_at=self._dispatched_ago(STALE_DISPATCH_AFTER_S + 60),
-            dispatch_id=None,
-        )
-        repo = self._mock_repo(company)
-        with patch("routers.admin._paperclip_repo", return_value=repo):
-            res = await async_client.post("/api/v1/admin/users/u_target/provisioning/reset-bootstrap")
-        assert res.status_code == 409
-        repo.reset_bootstrap_for_retry.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_409_for_a_sent_row(self, async_client, admin_env):
-        """`sent` means the kickoff WAS delivered; a reset would double-run it."""
-        company = self._company(bootstrap_state="sent")
-        repo = self._mock_repo(company)
-        with patch("routers.admin._paperclip_repo", return_value=repo):
-            res = await async_client.post("/api/v1/admin/users/u_target/provisioning/reset-bootstrap")
-        assert res.status_code == 409
-        repo.reset_bootstrap_for_retry.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_audit_row_written(self, async_client, admin_env, mock_audit_repo):
-        company = self._company(bootstrap_state="failed")
-        repo = self._mock_repo(company, reset_result=True)
-        with patch("routers.admin._paperclip_repo", return_value=repo):
-            res = await async_client.post("/api/v1/admin/users/u_target/provisioning/reset-bootstrap")
-        assert res.status_code == 200
-        mock_audit_repo.assert_awaited_once()
-        kwargs = mock_audit_repo.await_args.kwargs
-        assert kwargs["action"] == "provision.reset_bootstrap"
-        assert kwargs["target_user_id"] == "u_target"
-
-
-# ===========================================================================
-# Billing actions
-# ===========================================================================
-
-
 class TestBillingCancelSubscription:
     """POST /api/v1/admin/users/{user_id}/billing/cancel-subscription."""
 
@@ -1209,6 +1033,18 @@ class TestAgentDelete:
             res = await async_client.post("/api/v1/admin/users/u_target/agents/agent_42/delete")
         assert res.status_code == 200
         delete_everywhere.assert_awaited_once_with(owner_id="u_target", agent_id="agent_42")
+
+    @pytest.mark.asyncio
+    async def test_final_root_conflict_is_409(self, async_client, admin_env):
+        from core.services.paperclip_agent_lifecycle import AgentLifecycleConflict
+
+        with patch(
+            "core.services.paperclip_agent_lifecycle.delete_agent_everywhere",
+            new=AsyncMock(side_effect=AgentLifecycleConflict("The final root CEO cannot be deleted or demoted.")),
+        ):
+            res = await async_client.post("/api/v1/admin/users/u_target/agents/root/delete")
+        assert res.status_code == 409
+        assert res.json()["detail"] == "The final root CEO cannot be deleted or demoted."
 
     @pytest.mark.asyncio
     async def test_403_for_non_admin(self, async_client, non_admin_env):

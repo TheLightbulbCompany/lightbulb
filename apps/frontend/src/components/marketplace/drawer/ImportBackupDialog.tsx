@@ -1,7 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import Link from "next/link";
+import { useEffect, useRef, useState } from "react";
 
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import type { CompanyAgent } from "@/components/teams/shared/types";
@@ -15,7 +14,6 @@ function errMessage(e: unknown): string {
   const err = e as Error & { body?: { detail?: unknown } };
   const d = err?.body?.detail;
   if (typeof d === "string" && d) return d;
-  if (d && typeof d === "object" && (d as { error?: string }).error === "ultra_required") return "This import needs Ultra.";
   return err?.message || "Import failed";
 }
 
@@ -117,7 +115,6 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
     }
   }
 
-  const needsUltra = useMemo(() => !!preview && preview.plan !== "ultra_pro" && preview.existing_agents + agents.size > preview.standard_max_agents, [preview, agents]);
   const anyHistory = !!preview && preview.agents.some((a) => agents.has(a.id) && a.has_history);
   const claude = preview?.kind === "claude" ? (preview.claude ?? null) : null;
   // The claude preview carries its flags under `claude.safety_flags` (the
@@ -291,13 +288,6 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
               ))}
             </fieldset>
 
-            {needsUltra && (
-              <p role="alert" className="rounded-xl border border-[var(--warn)] p-3 text-[var(--warn)]">
-                You have {preview.existing_agents} agents; importing {agents.size} more brings you to {preview.existing_agents + agents.size}. The standard
-                plan runs up to {preview.standard_max_agents} agents per workspace. <Link href="/settings" className="underline">Upgrade to Ultra</Link> in Settings, or pick fewer agents.
-              </p>
-            )}
-
             {preview.skills.length > 0 && (
               <fieldset><legend className="text-xs text-muted-foreground">Skills</legend>
                 {preview.skills.map((s) => (<label key={s} className="mr-3 inline-flex items-center gap-1"><input type="checkbox" aria-label={s} checked={skills.has(s)} disabled={busy} onChange={() => toggle(skills, setSkills, s)} />{s}</label>))}
@@ -376,7 +366,7 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
                 // skills, no user memory) — an empty confirm would just delete
                 // the staging behind an empty success.
                 ? !target || (claudeCols.size === 0 && skills.size === 0 && !claude.has_user_memory)
-                : agents.size === 0 || needsUltra)}
+                : agents.size === 0)}
               className="rounded-full bg-[var(--midnight)] px-4 py-2 text-ui font-medium text-[var(--cream)] disabled:opacity-50">
               {phase === "confirming" ? "Adding…" : claude ? "Import context" : partial ? "Retry" : "Add to my team"}
             </button>

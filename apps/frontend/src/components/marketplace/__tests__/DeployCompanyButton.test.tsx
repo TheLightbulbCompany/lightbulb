@@ -84,14 +84,14 @@ describe("<DeployCompanyButton>", () => {
     expect(screen.queryByRole("button", { name: /deploy company/i })).toBeNull();
   });
 
-  it("ultra_pro company: renders an enabled Deploy button (plan gating is server-side)", () => {
+  it("legacy ultra_pro metadata does not disable deploy", () => {
     render(<DeployCompanyButton listing={companyListing("ultra_pro")} />);
 
     expect(screen.getByRole("button", { name: /deploy company/i })).toBeEnabled();
     expect(deployCompany).not.toHaveBeenCalled();
   });
 
-  it("Requires Ultra 409: shows the error with an Upgrade in Settings link, not a retry", async () => {
+  it("a legacy Requires Ultra error is shown as retryable, without an upgrade prompt", async () => {
     vi.mocked(deployCompany).mockRejectedValueOnce(new Error("Requires Ultra"));
     render(<DeployCompanyButton listing={companyListing("ultra_pro")} />);
 
@@ -99,11 +99,8 @@ describe("<DeployCompanyButton>", () => {
 
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent(/requires ultra/i);
-    expect(screen.getByRole("link", { name: /upgrade in settings/i })).toHaveAttribute(
-      "href",
-      "/settings",
-    );
-    expect(screen.queryByRole("button", { name: /try again/i })).toBeNull();
+    expect(screen.queryByRole("link", { name: /upgrade in settings/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /try again/i })).toBeInTheDocument();
   });
 
   it("already-deployed 409 is terminal — message only, no retry, no links", async () => {

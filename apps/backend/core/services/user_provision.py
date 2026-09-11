@@ -446,7 +446,7 @@ async def arm_nightly_ceo(owner_id: str, *, trust_cache: bool = True) -> str:
             # there is no orphan/failed-company cost leak: we only ever arm a
             # company provision_org actually finished (status="active").
             row = (
-                await provisioning.find_org_owner(owner_id)
+                await provisioning._repo.resolve_owner_row(owner_id)
                 if is_org_owner_id(owner_id)
                 else await provisioning.get_company_row(owner_id)
             )
@@ -456,8 +456,7 @@ async def arm_nightly_ceo(owner_id: str, *, trust_cache: bool = True) -> str:
             cached = account.get("nightly_ceo_armed_company") == company_id
             if cached and trust_cache:
                 return _arm_status("already_armed")  # cheap cache hit
-            # Friday is seeded FIRST (seed order == identity), so it's element 0.
-            friday_id = (row.seeded_agent_ids or [None])[0]
+            friday_id = (row.starter_agent_ids or {}).get("ceo") or (row.seeded_agent_ids or [None])[0]
             if not friday_id:
                 return _arm_status("friday_not_seeded")
             # A cache already naming this company means the claim is ours —
@@ -536,7 +535,7 @@ async def _ensure_paperclip_for_org(
         double-create. A member returns gracefully and waits — an admin
         will bootstrap the company (and the container it rides) on their
         poll, and the member joins on a subsequent poll. Letting a member
-        create here would seed Friday/Atlas pointing at a container members
+        create here would seed a starter roster pointing at a container members
         can't provision, leaving a company-without-container window.
 
     The underlying helpers treat a concurrent-create 409 as idempotent
@@ -692,11 +691,33 @@ async def _ensure_paperclip_for_owner(
     provisioning = await build_paperclip_provisioning()
     try:
         try:
-            await provisioning.provision_org(
+            before = await provisioning.get_company_row(owner_user_id)
+            company = await provisioning.provision_org(
                 owner_id=owner_id,
                 owner_user_id=owner_user_id,
                 owner_email=owner_email,
             )
+            from core.services.messaging import _STARTER_KEYS, ensure_default_room
+
+            before_starters = getattr(before, "starter_agent_ids", None) if before else None
+            company_starters = getattr(company, "starter_agent_ids", None)
+            fresh_or_partial = (
+                before is None
+                or getattr(before, "org_id", None) != owner_id
+                or (isinstance(before_starters, dict) and any(not before_starters.get(key) for key in _STARTER_KEYS))
+            )
+            complete = (
+                getattr(company, "status", None) == "active"
+                and isinstance(company_starters, dict)
+                and set(company_starters) == set(_STARTER_KEYS)
+                and all(company_starters.get(key) for key in _STARTER_KEYS)
+                and len(set(company_starters.values())) == len(_STARTER_KEYS)
+            )
+            if fresh_or_partial and complete:
+                try:
+                    await ensure_default_room(owner_id, owner_user_id)
+                except Exception:  # noqa: BLE001 — partial retries reconcile again
+                    logger.exception("ensure_user_ready: default room creation failed for owner=%s", owner_id)
         except PaperclipApiError as exc:
             # 409: a CONCURRENT provision_org (the previous ~3s
             # /container/status poll) is mid-flight and hasn't written the

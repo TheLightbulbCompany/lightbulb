@@ -260,6 +260,96 @@ def manager(mock_settings, mock_ecs_client, mock_efs_client, mock_servicediscove
     return mgr
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("starter_agent_ids", "seeded_agent_ids", "uses_starter_seeder"),
+    [
+        ({"ceo": "agent-ceo", "finance": "agent-finance"}, None, True),
+        (None, ["legacy-friday", "legacy-atlas"], False),
+    ],
+    ids=["starter-row", "legacy-row"],
+)
+async def test_write_user_configs_routes_role_seeding_from_authoritative_row(
+    manager,
+    mock_settings,
+    monkeypatch,
+    tmp_path,
+    starter_agent_ids,
+    seeded_agent_ids,
+    uses_starter_seeder,
+):
+    """Starter rows get role contracts; legacy rows retain Friday and Atlas."""
+    mock_settings.EFS_MOUNT_PATH = str(tmp_path)
+    mock_settings.PAPERCLIP_INTERNAL_URL = "http://paperclip.test"
+    agents = [{"id": "agent-ceo", "name": "Renamed"}, {"id": "agent-finance", "name": "Also renamed"}]
+    row = MagicMock(starter_agent_ids=starter_agent_ids, seeded_agent_ids=seeded_agent_ids)
+    repo = MagicMock(resolve_owner_row=AsyncMock(return_value=row))
+    repo_factory = MagicMock(return_value=repo)
+
+    async def fetch_agents(*, owner_id, repo: object, admin_client):
+        assert owner_id == "owner-1"
+        assert repo is repo_instance
+        return agents
+
+    repo_instance = repo
+    http = MagicMock(aclose=AsyncMock())
+    workspace = MagicMock()
+    starter_seeder = AsyncMock()
+    friday_seeder = AsyncMock()
+    atlas_seeder = AsyncMock()
+    identity_seeder = AsyncMock()
+
+    monkeypatch.setattr("httpx.AsyncClient", MagicMock(return_value=http))
+    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo", repo_factory)
+    monkeypatch.setattr(
+        "core.services.paperclip_openclaw_pairing.fetch_paperclip_agents_for_owner",
+        AsyncMock(side_effect=fetch_agents),
+    )
+    monkeypatch.setattr("core.containers.ecs_manager.write_openclaw_config", AsyncMock())
+    monkeypatch.setattr("core.containers.ecs_manager._provision_mcp_servers", AsyncMock(return_value={}))
+    monkeypatch.setattr("core.containers.ecs_manager._provision_channel_accounts", AsyncMock(return_value=({}, [])))
+    monkeypatch.setattr("core.containers.ecs_manager.get_workspace", MagicMock(return_value=workspace))
+    monkeypatch.setattr(
+        "core.services.credentials.mcp_server.build_connected_integration_servers", AsyncMock(return_value={})
+    )
+    monkeypatch.setattr("core.services.provisioning_landing.build_provisioned_env", AsyncMock(return_value={}))
+    monkeypatch.setattr("core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        "core.services.paperclip_openclaw_pairing.resolve_company_id_for_owner", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr("core.services.starter_roster.pre_stage_starter_roster", starter_seeder)
+    monkeypatch.setattr("core.services.friday_identity.pre_stage_friday_identity", friday_seeder)
+    monkeypatch.setattr("core.services.friday_identity.pre_stage_paperclip_identities", identity_seeder)
+    monkeypatch.setattr("core.services.atlas_seed.pre_stage_atlas", atlas_seeder)
+    monkeypatch.setattr("core.services.owner_facts.write_owner_facts", AsyncMock())
+    monkeypatch.setattr(manager, "_deployed_image_tag", AsyncMock(return_value=""))
+    monkeypatch.setattr(manager, "ensure_device_identities", AsyncMock())
+
+    await manager.write_user_configs(
+        "owner-1",
+        "t" * 32,
+        provider_choice="bedrock_claude",
+        aip_arns=_TEST_AIP_ARNS,
+    )
+
+    repo_factory.assert_called_once_with(table_name="paperclip-companies")
+    repo.resolve_owner_row.assert_awaited_once_with("owner-1")
+    identity_seeder.assert_awaited_once()
+    if uses_starter_seeder:
+        starter_seeder.assert_awaited_once_with(
+            owner_id="owner-1",
+            paperclip_agents=agents,
+            starter_agent_ids=starter_agent_ids,
+            workspace=workspace,
+        )
+        friday_seeder.assert_not_awaited()
+        atlas_seeder.assert_not_awaited()
+    else:
+        starter_seeder.assert_not_awaited()
+        friday_seeder.assert_awaited_once()
+        atlas_seeder.assert_awaited_once()
+
+
 def _make_container_dict(
     user_id="user_test_123",
     service_name="openclaw-user_test_123-f4ae64abb2db",
@@ -5158,87 +5248,6 @@ class TestProvisionFailureClassification:
         assert store.row.get("retryable") is True, "retryable must land on the row (release owns the transition)"
         assert store.row.get("last_error"), "last_error cause must land on the row"
         assert "Failed to create ECS service" in store.row["last_error"]
-
-
-class TestKickoffOnReadyTransition:
-    """Friday's first run must fire when the GATEWAY becomes reachable, with no
-    browser poll involved.
-
-    Before this, ``maybe_dispatch_bootstrap`` was reachable only from
-    ``container_status`` and ``submit_brief`` -- both driven by the owner's open
-    tab. An owner who signed up, watched "Provisioning your container...", and
-    closed the tab was never greeted. And because the first-contact EMAIL is
-    Friday's own tool call DURING that run, the message that would have brought
-    them back never sent either: no poll -> no kickoff -> no run -> no email ->
-    no return -> no poll. Two prod owners sat in that loop, one for twenty days.
-    """
-
-    @pytest.mark.asyncio
-    async def test_ready_transition_dispatches_the_kickoff(self, manager):
-        """The gateway-healthy write is the trigger -- no poll, no tab."""
-        dispatched = []
-
-        async def _fake_dispatch(owner_id, **kw):
-            dispatched.append(owner_id)
-
-        with (
-            patch.object(manager, "_poll_running_task", new_callable=AsyncMock) as poll,
-            patch.object(manager, "is_healthy", return_value=True),
-            patch.object(manager, "_ecs") as ecs,
-            patch("core.repositories.container_repo.get_by_owner_id", new_callable=AsyncMock) as get_row,
-            patch("core.repositories.container_repo.update_fields", new_callable=AsyncMock),
-            patch(
-                "core.services.bootstrap_dispatcher.maybe_dispatch_bootstrap",
-                side_effect=_fake_dispatch,
-            ),
-        ):
-            poll.return_value = ("arn:aws:ecs:us-east-1:0:task/abc", "10.0.1.5", 1)
-            get_row.return_value = {
-                "owner_id": "user_x",
-                "status": "provisioning",
-                "service_name": "openclaw-user_x-abc",
-                "substatus": "task_running",
-            }
-            ecs.describe_services.return_value = {"services": [{"deployments": [{"id": "d1", "status": "PRIMARY"}]}]}
-            await manager._await_running_transition("user_x")
-
-        assert dispatched == ["user_x"], (
-            "the kickoff must dispatch on the ready transition; without it an owner "
-            "who closes the tab is never greeted and never emailed"
-        )
-
-    @pytest.mark.asyncio
-    async def test_a_failing_kickoff_never_unwinds_a_healthy_container(self, manager):
-        """This is the TERMINAL write of a provision. A kickoff that raises must
-        not take down a container that is genuinely up -- the owner keeps a
-        working box and the first run retries on their next poll."""
-        with (
-            patch.object(manager, "_poll_running_task", new_callable=AsyncMock) as poll,
-            patch.object(manager, "is_healthy", return_value=True),
-            patch.object(manager, "_ecs") as ecs,
-            patch("core.repositories.container_repo.get_by_owner_id", new_callable=AsyncMock) as get_row,
-            patch("core.repositories.container_repo.update_fields", new_callable=AsyncMock) as upd,
-            patch(
-                "core.services.bootstrap_dispatcher.maybe_dispatch_bootstrap",
-                side_effect=RuntimeError("gateway refused the chat.send"),
-            ),
-        ):
-            poll.return_value = ("arn:aws:ecs:us-east-1:0:task/abc", "10.0.1.5", 1)
-            get_row.return_value = {
-                "owner_id": "user_y",
-                "status": "provisioning",
-                "service_name": "openclaw-user_y-abc",
-                "substatus": "task_running",
-            }
-            ecs.describe_services.return_value = {"services": [{"deployments": [{"id": "d1", "status": "PRIMARY"}]}]}
-            # Must NOT raise.
-            await manager._await_running_transition("user_y")
-
-        # The running write still landed -- the container is up regardless.
-        assert upd.await_count >= 1
-        assert any((c.args[1] if len(c.args) > 1 else {}).get("status") == "running" for c in upd.await_args_list), (
-            "the gateway-healthy write must survive a failing kickoff"
-        )
 
 
 class TestStaleLogConfigRefresh:

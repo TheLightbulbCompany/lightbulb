@@ -12,7 +12,7 @@ const props: RoomPanelProps = {
   ownerScopeId: "org", currentUserId: "owner", roomId: "room", state: "ready", httpReady: true, liveConnected: true,
   room: { roomId: "room", kind: "dm", name: null, roomRevision: 1, lastMessageSeq: 1, lastMessageAt: null, unreadCount: 0, updatedAt: "2026-09-10T00:00:00Z" },
   participants: [owner, friday], messages: [message],
-  composer: { text: "", onTextChange: vi.fn(), members: [owner, friday], selectedMentions: [], onMentionsChange: vi.fn(), clientMessageId: "draft", sendState: "idle", onSubmit: vi.fn() },
+  composer: { text: "", onTextChange: vi.fn(), members: [owner, friday], clientMessageId: "draft", sendState: "idle", onSubmit: vi.fn() },
 };
 
 it("renames a channel in a centered dialog with pending, retry, and focus restoration", async () => {
@@ -403,19 +403,28 @@ it("keeps rendering a finished run's text instead of collapsing it", () => {
   expect(screen.queryByText("Friday finished · no reply")).not.toBeInTheDocument();
 });
 
-it("lets wide room details change agent listen mode without giving humans a control", async () => {
+it("lets wide room details change agent response without giving humans a control", async () => {
   const user = userEvent.setup();
   const onListenModeChange = vi.fn();
   render(<RoomPanel {...props} onListenModeChange={onListenModeChange} />);
   await user.click(screen.getByRole("button", { name: "Show room details" }));
   const details = within(screen.getByRole("complementary", { name: "Room details" }));
-  const mode = details.getByRole("combobox", { name: "Listen mode for Friday" });
+  const mode = details.getByRole("combobox", { name: "Response for Friday" });
   expect(mode).toHaveValue("mentions");
-  expect(within(mode).getAllByRole("option").map((option) => option.textContent)).toEqual(["Active", "Mentions only", "Observe"]);
+  expect(within(mode).getAllByRole("option").map((option) => option.textContent)).toEqual(["Automatic", "Mentions only", "Observe"]);
   expect(details.getAllByRole("combobox")).toHaveLength(1);
-  expect(details.queryByRole("combobox", { name: "Listen mode for Owner" })).not.toBeInTheDocument();
+  expect(details.queryByRole("combobox", { name: "Response for Owner" })).not.toBeInTheDocument();
   await user.selectOptions(mode, "observe");
   expect(onListenModeChange).toHaveBeenCalledWith("friday", "observe");
+});
+
+it("shows an agent response as read-only text to ordinary members", async () => {
+  const user = userEvent.setup();
+  render(<RoomPanel {...props} participants={[{ ...owner, role: "member" }, friday]} />);
+  await user.click(screen.getByRole("button", { name: "Show room details" }));
+  const details = within(screen.getByRole("complementary", { name: "Room details" }));
+  expect(details.getByText("Response: Mentions only")).toBeInTheDocument();
+  expect(details.queryByRole("combobox", { name: "Response for Friday" })).not.toBeInTheDocument();
 });
 
 it("adds only eligible non-members to an existing channel", async () => {
@@ -653,4 +662,30 @@ it("shows an alert when copying the link fails, and clears it on the next succes
   expect(await screen.findByRole("alert")).toHaveTextContent("Could not copy the link.");
   await user.click(screen.getByRole("button", { name: "Copy link" }));
   await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+});
+
+it("opens the edit form for your last message when ArrowUp lands in an empty composer", () => {
+  const own = { ...message, messageId: "own", messageSeq: 2, author: { kind: "human" as const, id: props.currentUserId, displayName: "Owner" } };
+  render(<RoomPanel {...props} messages={[message, own]} onUpdateMessage={vi.fn()} />);
+  fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "ArrowUp" });
+  expect(screen.getByRole("textbox", { name: "Edit message" })).toBeInTheDocument();
+});
+
+it("lets a second ArrowUp reopen the edit form for the same message after Cancel", async () => {
+  const user = userEvent.setup();
+  const own = { ...message, messageId: "own", messageSeq: 2, author: { kind: "human" as const, id: props.currentUserId, displayName: "Owner" } };
+  render(<RoomPanel {...props} messages={[message, own]} onUpdateMessage={vi.fn()} />);
+  fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "ArrowUp" });
+  expect(screen.getByRole("textbox", { name: "Edit message" })).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Cancel edit" }));
+  expect(screen.queryByRole("textbox", { name: "Edit message" })).not.toBeInTheDocument();
+  fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "ArrowUp" });
+  expect(screen.getByRole("textbox", { name: "Edit message" })).toBeInTheDocument();
+});
+
+it("opens exactly one edit form when the ArrowUp target is also the open thread's root", () => {
+  const own = { ...message, messageId: "own", messageSeq: 2, author: { kind: "human" as const, id: props.currentUserId, displayName: "Owner" } };
+  render(<RoomPanel {...props} messages={[message, own]} selectedThreadId={own.messageId} onUpdateMessage={vi.fn()} />);
+  fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "ArrowUp" });
+  expect(screen.getAllByRole("textbox", { name: "Edit message" })).toHaveLength(1);
 });

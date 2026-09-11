@@ -86,6 +86,20 @@ const workLabel: Record<WorkState, string> = {
   ready: "Ready", queued: "Queued", working: "Working", paused: "Paused",
   "needs-approval": "Needs approval", completed: "Completed", failed: "Failed", offline: "Offline", unknown: "Unknown",
 };
+const responseLabel: Record<ListenMode, string> = {
+  active: "Automatic", mentions: "Mentions only", observe: "Observe",
+};
+
+function AgentResponse({ participant, selectId, onChange }: {
+  participant: RoomParticipant;
+  selectId: string;
+  onChange?: (agentId: string, mode: ListenMode) => void;
+}) {
+  const mode = participant.listenMode ?? "mentions";
+  if (!onChange) return <span className="text-sm text-muted-foreground">Response: {responseLabel[mode]}</span>;
+  return <><span className="text-sm text-muted-foreground">Response</span><select id={selectId} aria-label={`Response for ${participant.displayName}`} className="room-listen-mode" value={mode}
+    onChange={(event) => onChange(participant.id, event.target.value as ListenMode)}><option value="active">Automatic</option><option value="mentions">Mentions only</option><option value="observe">Observe</option></select></>;
+}
 
 function WorkStatus({ state }: { state: WorkState }) {
   const tone = state === "completed" ? "text-ok" : state === "failed" ? "text-err"
@@ -245,6 +259,7 @@ function RoomContent({
   const managementTrigger = useRef<HTMLButtonElement | null>(null);
   const managementCancel = useRef<HTMLButtonElement>(null);
   const [contextCollapsed, setContextCollapsed] = useState(true);
+  const [editTarget, setEditTarget] = useState<string | null>(null);
   const [localSelection, setSelection] = useState<{ kind: "thread" | "resources"; id: string } | null>(null);
   const [consumedSession, setConsumedSession] = useState<number | null>(null);
   const targetSessionNonce = targetSession?.nonce;
@@ -277,6 +292,7 @@ function RoomContent({
       setContextCollapsed(true);
     }
   }
+  const historyRef = useRef<HTMLDivElement>(null);
   const viewportNarrow = useSyncExternalStore(subscribeNarrow, getNarrow, getServerNarrow);
   const isNarrow = narrow ?? viewportNarrow;
   const visibleRoom = room?.roomId === roomId ? room : undefined;
@@ -389,6 +405,8 @@ function RoomContent({
     const mentionsMe = message.mentions.some((mention) => mention.kind === "human" && mention.id === currentUserId);
     return <RoomMessageItem key={message.messageId} id={`${id}-${inThread ? "thread" : "main"}-${message.messageId}`}
       message={message} text={linkifyMentions(message.text, message.mentions, participants)} participant={participant} currentUserId={currentUserId} actionable={actionable} inThread={inThread} collapsed={collapsed}
+      startEditing={!inThread && editTarget === message.messageId}
+      onEditingClosed={() => setEditTarget((current) => current === message.messageId ? null : current)}
       replyCount={inThread ? 0 : messages.filter((candidate) => candidate.threadRootMessageId === message.messageId).length}
       highlighted={inThread && searchTarget?.messageId === message.messageId} mentionsViewer={mentionsMe} markdown={roomMarkdown} urlTransform={roomUrlTransform} workStatus={(state) => <WorkStatus state={state} />}
       quickReactions={quickReactions} reactionPending={reactionPending !== null} reactionError={reactionError === message.messageId}
@@ -494,30 +512,35 @@ function RoomContent({
         <h3 className="font-semibold">Room members</h3><ul>{participants.map((participant) => <li key={`${participant.kind}:${participant.id}`} className="room-member">
           <ParticipantAvatar participant={participant} size="sm" /><ParticipantProfile participant={participant} currentUserId={currentUserId} onMessage={onSelectParticipant} disabled={!actionable} className="flex-1" />
           {participant.kind === "agent" ? <><span className="text-sm text-muted-foreground">{participant.mentionHandle ? `@${participant.mentionHandle}` : "Agent"}</span>
-            {onListenModeChange && <label className="sr-only" htmlFor={`${id}-${participant.id}-mode`}>Listen mode for {participant.displayName}</label>}
-            {onListenModeChange && <select id={`${id}-${participant.id}-mode`} className="room-listen-mode" value={participant.listenMode ?? "mentions"}
-              onChange={(event) => onListenModeChange(participant.id, event.target.value as ListenMode)}><option value="active">Active</option><option value="mentions">Mentions only</option><option value="observe">Observe</option></select>}
+            <AgentResponse participant={participant} selectId={`${id}-${participant.id}-mode`} onChange={onListenModeChange} />
             </> : <span className="text-sm text-muted-foreground">Person</span>}
         </li>)}</ul>
       </section>}
       {(state === "reconnecting" || !liveConnected) && <div className="room-state"><p role="status" aria-label="Room status">Reconnecting live updates. You can keep sending messages.</p>
         {onRetry && <Button variant="outline" onClick={onRetry}>Check for updates</Button>}</div>}
-      <RoomTimeline roomId={roomId} messages={mainMessages} readSeq={sentSinceOpen ? null : newLineSeq} ownLastSentSeq={ownLastSentSeq}
-        targetMessageId={targetMessageId ?? (activeSearchTarget ? activeSearchTarget.messageId : null)}
-        targetToken={targetMessageId ? undefined : activeSearchTarget?.token}
-        renderMessage={(message, collapsed) => renderMessage(message, false, collapsed)}
-        empty={pendingMessages.length ? null : <div className="room-empty"><h3 className="font-semibold text-lg">Start the conversation</h3><p className="text-sm text-muted-foreground">Share an update or mention an agent when you want help.</p></div>}>
-        {pendingMessages.filter((message) => message.threadRootMessageId === null).map((message) => <article key={message.clientMessageId} className="room-message" aria-label={`Pending message from ${viewer?.displayName ?? "You"}`}>
-          <Identity name={viewer?.displayName ?? "You"} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{viewer?.displayName ?? "You"}</span><span className="text-sm text-muted-foreground">Sending…</span></div><MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{linkifyMentions(message.text, message.mentions, participants)}</MarkdownView></div>
-        </article>)}
-        {runs.filter((run) => !run.threadRootMessageId).map(renderRun)}
-      </RoomTimeline>
+      <div ref={historyRef} className="contents">
+        <RoomTimeline roomId={roomId} messages={mainMessages} readSeq={sentSinceOpen ? null : newLineSeq} ownLastSentSeq={ownLastSentSeq}
+          targetMessageId={targetMessageId ?? (activeSearchTarget ? activeSearchTarget.messageId : null)}
+          targetToken={targetMessageId ? undefined : activeSearchTarget?.token}
+          renderMessage={(message, collapsed) => renderMessage(message, false, collapsed)}
+          empty={pendingMessages.length ? null : <div className="room-empty"><h3 className="font-semibold text-lg">Start the conversation</h3><p className="text-sm text-muted-foreground">Share an update or mention an agent when you want help.</p></div>}>
+          {pendingMessages.filter((message) => message.threadRootMessageId === null).map((message) => <article key={message.clientMessageId} className="room-message" aria-label={`Pending message from ${viewer?.displayName ?? "You"}`}>
+            <Identity name={viewer?.displayName ?? "You"} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{viewer?.displayName ?? "You"}</span><span className="text-sm text-muted-foreground">Sending…</span></div><MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{linkifyMentions(message.text, message.mentions, participants)}</MarkdownView></div>
+          </article>)}
+          {runs.filter((run) => !run.threadRootMessageId).map(renderRun)}
+        </RoomTimeline>
+      </div>
       <p className="room-typing text-sm text-muted-foreground" role="status">{typingMembers.length > 0 ? `${typingMembers.slice(0, 3).map((member) => member.displayName).join(", ")}${typingMembers.length > 3 ? " and others" : ""} ${typingMembers.length === 1 ? "is" : "are"} typing…` : ""}</p>
       {copied && <p role="status" aria-label="Link copied" className="sr-only">Link copied</p>}
       <RoomComposer {...composer}
         onSubmit={markSent(composer.onSubmit)}
         onRetry={composer.onRetry ? markSent(composer.onRetry) : undefined}
-        disabled={!actionable || composer.disabled} />
+        onEditLast={onUpdateMessage ? () => {
+          const own = mainMessages.filter((message) => message.author.kind === "human" && message.author.id === currentUserId && !message.deletedAt);
+          setEditTarget(own.length ? own[own.length - 1].messageId : null);
+        } : undefined}
+        disabled={!actionable || composer.disabled}
+        dropTargetRef={historyRef} />
     </div>
     {showContext && !showDetail && <aside className="room-context" aria-label="Room details">
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={() => setContextCollapsed(true)}><ArrowLeft aria-hidden="true" /></Button><h3 ref={contextHeading} tabIndex={-1} className="font-semibold">Room details</h3></header>
@@ -540,11 +563,7 @@ function RoomContent({
             <span className="text-sm text-muted-foreground">{participant.kind === "agent" ? "Agent" : "Person"}</span>
             {canManageMembers && onRemoveMember && participant.role !== "owner" && <Button type="button" variant="ghost" size="sm" disabled={!actionable}
               aria-label={`Remove ${participant.displayName}`} onClick={(event) => openManagement({ kind: participant.kind, id: participant.id }, event.currentTarget)}>Remove</Button>}
-            {participant.kind === "agent" && onListenModeChange && <>
-              <label className="sr-only" htmlFor={`${id}-context-${participant.id}-mode`}>Listen mode for {participant.displayName}</label>
-              <select id={`${id}-context-${participant.id}-mode`} className="room-listen-mode" value={participant.listenMode ?? "mentions"}
-                onChange={(event) => onListenModeChange(participant.id, event.target.value as ListenMode)}><option value="active">Active</option><option value="mentions">Mentions only</option><option value="observe">Observe</option></select>
-            </>}
+            {participant.kind === "agent" && <AgentResponse participant={participant} selectId={`${id}-context-${participant.id}-mode`} onChange={onListenModeChange} />}
           </li>)}</ul>
           {canAddMembers && memberPickerOpen && <div className="room-member-picker">
             {addMemberCandidates.length === 0 ? <p className="text-sm text-muted-foreground">Everyone in your workspace is already here.</p>

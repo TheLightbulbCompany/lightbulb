@@ -17,4 +17,9 @@ describe("get started content", () => {
     expect(ids).toHaveLength(6);
     expect(new Set(ids).size).toBe(6);
   });
+  it("describes the six-role starter team without fixed agent names", () => {
+    const copy = STEPS.map(({ title, description }) => `${title} ${description}`).join(" ");
+    expect(copy).toContain("CEO, Engineering, Finance, Growth, Analytics, and Customer Operations");
+    expect(copy).not.toMatch(/Friday|Atlas/);
+  });
 });

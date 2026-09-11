@@ -23,8 +23,17 @@ plugins/*/node_modules/
 # /app/dist/extensions/lightbulb-channel/fixtures/production.json out of it
 # (.github/workflows/build-openclaw-image.yml), so that fixture is a runtime
 # dependency of image qualification, not a test-only artifact.
+#
+# NOT excluding a bare plugins/**/*.test.*: aws-exec-profile and
+# paperclip-exec-creds keep their root-level index.test.mjs as a RUNTIME
+# qualification asset too — the same build workflow's qualify step
+# docker-runs
+# `node --test /app/dist/extensions/{aws-exec-profile,paperclip-exec-creds}/index.test.mjs`
+# straight from the built image, so those two files must ship. The
+# plugins/*/src/ rule below already drops every *.test.ts nested under
+# lightbulb-channel's/lightbulb-marketplace's src/ (their only tests,
+# checkout-only), so no separate test-file pattern is needed.
 plugins/*/src/
 plugins/*/package-lock.json
 plugins/*/tsconfig.json
 plugins/*/vitest.config.ts
-plugins/**/*.test.*

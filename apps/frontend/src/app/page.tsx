@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import { Suspense } from "react";
 import { LaunchRefCapture } from "@/components/launch/LaunchRefCapture";
 import { Navbar } from "@/components/landing/Navbar";
-import { HeroFunnel } from "@/components/landing/HeroFunnel";
-import { WorkspaceDemo } from "@/components/landing/WorkspaceDemo";
-import { MarketplaceTeaser } from "@/components/landing/MarketplaceTeaser";
+import { Hero } from "@/components/landing/Hero";
+import { HowItWorks } from "@/components/landing/HowItWorks";
+import { WorkspaceBand } from "@/components/landing/WorkspaceBand";
 import { PricingThreeCard as Pricing } from "@/components/landing/PricingThreeCard";
 import { Footer } from "@/components/landing/Footer";
 import { JsonLd, organizationJsonLd, pageMetadata, softwareApplicationJsonLd, websiteJsonLd } from "@/lib/seo";
@@ -15,9 +15,14 @@ export const metadata: Metadata = pageMetadata({
   path: "/",
 });
 
-// Funnel-first landing page: the first-run funnel IS the hero (answers stash
-// to sessionStorage and replay after signup via useLandingBriefReplay), the
-// workspace demo shows the product working, and the page gets out of the way.
+// Messaging-workspace landing: the hero sells the room (people and agents in
+// one channel), three steps show how it is set up, the band shows the product,
+// and pricing closes.
+//
+// NOTE: the previous funnel hero captured a brief to sessionStorage which
+// useLandingBriefReplay replayed after activation. That capture was removed
+// with the redesign (owner decision, 2026-09-11) — the hook still exists but
+// has no producer on this page.
 export default function LandingPage() {
   return (
     <main className="ld-page min-h-screen">
@@ -29,9 +34,9 @@ export default function LandingPage() {
         <LaunchRefCapture />
       </Suspense>
       <Navbar />
-      <HeroFunnel />
-      <WorkspaceDemo />
-      <MarketplaceTeaser />
+      <Hero />
+      <HowItWorks />
+      <WorkspaceBand />
       <Pricing />
       <Footer />
     </main>

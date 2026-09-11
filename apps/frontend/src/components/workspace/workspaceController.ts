@@ -229,6 +229,15 @@ export function openChatPanel(agentId: string): void {
   }
 }
 
+// Room permalinks (?panel=chat&room=…&message=…) retarget the same Messages
+// panel with room/message params instead of an agent id. Mirrors
+// openChatPanel's shape; kept separate rather than overloading openChatPanel's
+// signature since that one is called from many sites with a bare agentId.
+export function openMessagePanel(roomId: string, messageId?: string): void {
+  const descriptor = describePanel("chat", { room: roomId, ...(messageId ? { message: messageId } : {}) });
+  if (descriptor && _api) addOrFocus(descriptor);
+}
+
 export function activateMessagesPanel(): void {
   const descriptor = describePanel("chat", { agent: DEFAULT_AGENT_SENTINEL });
   if (descriptor) addOrFocus({ ...descriptor, params: { agentSelection: "resolved" } });

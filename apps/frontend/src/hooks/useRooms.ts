@@ -605,7 +605,13 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
     loadHistory: () => { void reconcile(0).catch(() => {}); },
     optimisticMessages: optimistic,
     typingMembers: [...typing.values()],
-    runs: [...runs.values()].filter((run) => !messages.some((message) => message.runId === run.runId)),
+    // A run whose text was already persisted as a message (same runId, or --
+    // when the persisted reply's runId doesn't match the run's -- the same
+    // agent posting identical trimmed text) is done double-duty; drop it so
+    // the completed run card doesn't render again below the real message.
+    runs: [...runs.values()].filter((run) => !messages.some((message) =>
+      message.runId === run.runId ||
+      (run.text.trim() && message.author.kind === "agent" && message.author.id === run.agentId && message.text.trim() === run.text.trim()))),
     liveConnected,
     httpReady,
     selectRoom,

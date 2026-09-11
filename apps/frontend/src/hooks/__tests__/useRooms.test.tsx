@@ -232,6 +232,39 @@ describe("useRooms canonical reconciliation", () => {
     });
     expect(result.current.runs[0]).toMatchObject({ runId, threadRootMessageId: firstMessage.messageId });
   });
+  it("drops a completed run once its text is persisted under a different runId", async () => {
+    // The persisted message's own runId can miss the live run's (e.g. a retry
+    // reassigns it) -- fall back to matching the same agent's identical text
+    // so the completed run card doesn't linger below the real message.
+    const { result } = renderHook(() => useRooms(), { wrapper });
+    await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(room.roomId));
+    const runId = "run-dup-1";
+    const agentId = room.members[1].id;
+    act(() => {
+      for (const handler of handlers) handler({
+        schemaVersion: 1, eventId: "frame-chunk", type: "room.run.frame", occurredAt: "2026-09-10T00:01:00Z",
+        payload: { roomId: room.roomId, agentId, runId, frame: { type: "chunk", content: "Persisted reply", runId, agentId } },
+      });
+    });
+    act(() => {
+      for (const handler of handlers) handler({
+        schemaVersion: 1, eventId: "frame-end", type: "room.run.frame", occurredAt: "2026-09-10T00:02:00Z",
+        payload: { roomId: room.roomId, agentId, runId, frame: { type: "run_ended", outcome: "done", runId, agentId } },
+      });
+    });
+    await waitFor(() => expect(result.current.runs).toEqual([expect.objectContaining({ runId, state: "completed", text: "Persisted reply" })]));
+
+    messaging.listRooms.mockClear();
+    const persisted: CanonicalRoomMessage = { ...firstMessage, messageId: "persisted-1", messageSeq: 2, runId: "different-run-id",
+      author: { kind: "agent", id: agentId, displayName: "Friday" }, text: "Persisted reply" };
+    act(() => { for (const handler of handlers) handler(messageEvent(persisted)); });
+    await waitFor(() => expect(result.current.messages.some((message) => message.messageId === persisted.messageId)).toBe(true));
+    // `room.message.created` unconditionally revalidates the room list (mutateRooms());
+    // let that settle here, or its dangling promise fires after this test unmounts.
+    await waitFor(() => expect(messaging.listRooms).toHaveBeenCalled());
+
+    expect(result.current.runs).toEqual([]);
+  });
   it("replaces active room state with the member upsert response", async () => {
     const updated = { ...room, roomRevision: 2, members: [...room.members, { ...room.members[1], id: "agent-atlas", displayName: "Atlas" }] };
     messaging.upsertMember.mockResolvedValue(updated);

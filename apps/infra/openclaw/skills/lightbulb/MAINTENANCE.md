@@ -17,6 +17,11 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   - Control Panel tabs ...... references/surfaces.md
   - Workspace search ........ references/surfaces.md
                               <- apps/frontend/src/components/workspace/WorkspaceHeader.tsx (search button + shortcut label)
+  - Message actions ......... references/surfaces.md
+                              <- apps/frontend/src/components/messaging/{RoomMessageItem,RoomMessageContent}.tsx (reactions,
+                                 reply-in-thread, edit/delete); messageLinks.ts (copy-link permalink format);
+                                 RoomPanel.tsx renderRun (muted "<Agent> finished · no reply" / "stopped" / "run failed"
+                                 status line for a silent agent turn)
   - Inbox page .............. apps/frontend/src/components/teams/inbox/InboxPage.tsx (the three bands);
                               InboxNeedsYou/InboxHappeningNow/InboxRecently.tsx;
                               apps/frontend/src/components/workspace/panelRegistry.ts (INBOX_SECTIONS + the teams-activity alias)

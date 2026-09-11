@@ -354,12 +354,20 @@ function RoomContent({
 
   function renderRun(run: RoomRunView) {
     const agent = participants.find((participant) => participant.kind === "agent" && participant.id === run.agentId);
-    return <article key={`${run.roomId}:${run.agentId}:${run.runId}`} className="room-message room-live-run" aria-label={`Live run from ${agent?.displayName ?? "Agent"}`}>
-      <Identity name={agent?.displayName ?? "Agent"} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{agent?.displayName ?? "Agent"}</span><WorkStatus state={run.state === "running" ? "working" : run.state === "completed" ? "completed" : run.state === "aborted" ? "paused" : "failed"} /></div>
+    const agentName = agent?.displayName ?? "Agent";
+    if (run.state !== "running") {
+      const label = run.state === "completed" ? `${agentName} finished · no reply` : run.state === "aborted" ? `${agentName} stopped` : `${agentName}'s run failed`;
+      return <div key={`${run.roomId}:${run.agentId}:${run.runId}`} className={cn("room-run-line", run.state === "failed" ? "text-err" : "text-muted-foreground")} role="status">
+        <Circle size={12} aria-hidden="true" />{label}
+        {run.tools.length > 0 && <details><summary>What it did</summary><ToolActivityTrace calls={run.tools} /></details>}
+      </div>;
+    }
+    return <article key={`${run.roomId}:${run.agentId}:${run.runId}`} className="room-message room-live-run" aria-label={`Live run from ${agentName}`}>
+      <Identity name={agentName} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{agentName}</span><WorkStatus state="working" /></div>
         {run.thinking && <details><summary>Thinking</summary><p className="room-wrap text-muted-foreground">{run.thinking}</p></details>}
         {run.text && <MarkdownView skipHtml components={roomMarkdown}>{run.text}</MarkdownView>}
         {run.tools.length > 0 && <ToolActivityTrace calls={run.tools} />}
-        {run.state === "running" && (onAbortRun || onSteerRun) && <form className="room-run-controls" onSubmit={(event) => {
+        {(onAbortRun || onSteerRun) && <form className="room-run-controls" onSubmit={(event) => {
           event.preventDefault();
           if (!onSteerRun) return;
           const input = event.currentTarget.elements.namedItem("steer") as HTMLInputElement | null;

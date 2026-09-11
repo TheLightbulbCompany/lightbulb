@@ -321,6 +321,13 @@ it("keeps a live thread reply out of main chat and renders it inside the thread"
   expect(within(screen.getByRole("complementary", { name: "Thread" })).getByRole("article", { name: "Live run from Friday" })).toHaveTextContent("Thread answer");
 });
 
+it("collapses a finished run with no reply into a muted status line", () => {
+  const run: RoomRunView = { roomId: "room", agentId: "friday", runId: "run-1", text: "", thinking: "", state: "completed", tools: [] };
+  render(<RoomPanel {...props} runs={[run]} />);
+  expect(screen.getByText("Friday finished · no reply")).toBeInTheDocument();
+  expect(screen.queryByRole("article", { name: "Live run from Friday" })).not.toBeInTheDocument();
+});
+
 it("lets wide room details change agent listen mode without giving humans a control", async () => {
   const user = userEvent.setup();
   const onListenModeChange = vi.fn();

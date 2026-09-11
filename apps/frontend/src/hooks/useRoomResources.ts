@@ -54,8 +54,8 @@ export function useRoomResources(roomId: string, { client, onEvent, connectionRe
         } catch (e) {
           if (id !== request.current) return;
           if (accessLost(e)) { revoke(); return; }
-          setData(null);
-          setAccessRevision(v => v + 1);
+          // Availability failure is not an authorization epoch change. Keep
+          // the selected panel (and its immutable uncertain command) mounted.
           setError("Could not refresh devices and sessions. Try again.");
         }
       } while (queued.current && id === request.current && !blocked.current);

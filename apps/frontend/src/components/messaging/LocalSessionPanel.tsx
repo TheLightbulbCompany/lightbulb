@@ -38,7 +38,8 @@ export function LocalSessionPanel({ session, ownerName, roomId, client, revision
   const canSend = session.status !== "offline" && session.capabilitiesVerified &&
     !session.controlUnavailableReason && session.capabilities.sendMode !== "none" &&
     !(session.status === "busy" && session.capabilities.sendMode === "immediate" && !session.activeTurnId);
-  const locked = checking || attempt?.state === "sending" || attempt?.state === "uncertain";
+  const unknownCurrent = attempt?.receipt?.state === "unknown" && attempt.receipt.expectedGeneration === session.generation;
+  const locked = checking || attempt?.state === "sending" || attempt?.state === "uncertain" || unknownCurrent;
 
   async function submit(request: LocalSessionCommand) {
     if (pending.current || !canSend) return;
@@ -77,12 +78,12 @@ export function LocalSessionPanel({ session, ownerName, roomId, client, revision
     } finally { pending.current = false; if (alive.current) setChecking(false); }
   }
   const receipt = attempt?.receipt;
-  const receiptText = receipt?.held ? "Held by the native session; approval remains on the owner's machine."
+  const receiptText = receipt?.state === "unknown" ? "Delivery unknown. The request may have been admitted. Further remote input remains paused until this is resolved or the native session restarts. A restart does not undo an admitted command; do not send a duplicate."
+    : receipt?.held ? "Queued or held by the native session."
     : receipt?.state === "applied" ? "Admitted to the native session — not completed work."
       : receipt?.state === "pending" ? "Pending delivery to the desktop."
         : receipt?.state === "dispatched" ? "Dispatched; native admission is not yet confirmed."
-          : receipt?.state === "unknown" ? "Delivery unknown. The request may have been admitted; do not send a duplicate."
-            : receipt?.state === "rejected" ? "The desktop rejected this request." : null;
+          : receipt?.state === "rejected" ? "The desktop rejected this request." : null;
   const target = sessionLabel(session);
   return <>
     <div className="local-session-summary">

@@ -1,7 +1,7 @@
 """Stateless paired-desktop transport; DynamoDB fences every worker and reconnect.
 
 No provider RPC or process registry. Dispatched means transport attempted; only a
-desktop journal receipt can establish native admission. Unknown blocks the queue.
+desktop journal receipt can establish native admission. Unknown blocks its process generation.
 """
 
 from __future__ import annotations
@@ -188,6 +188,7 @@ class LocalSessionRelay:
         )
         for _ in range(6):
             try:
+                notify_resources = True
                 if isinstance(message, Register):
                     descriptor = message.session
                     sid = repo.session_id(
@@ -267,6 +268,20 @@ class LocalSessionRelay:
                                 capabilities=sessions.Capabilities().model_dump(by_alias=True),
                                 capabilitiesVerified=False,
                             )
+                        # Renew the lease and drive delivery even when the public
+                        # resource projection is unchanged. Clock/revision churn
+                        # alone must not fan out a refetch to every room member.
+                        notify_resources = any(
+                            row.get(field) != updated.get(field)
+                            for field in (
+                                "status",
+                                "activeTurnId",
+                                "workspace",
+                                "capabilities",
+                                "capabilitiesVerified",
+                                "controlUnavailableReason",
+                            )
+                        ) or (row["onlineUntil"] <= int(time.time()) and updated["status"] != "offline")
                         await repo.put_session(
                             updated, row, enrollment, extra=[self._connection_check(cid, connection)]
                         )
@@ -280,11 +295,17 @@ class LocalSessionRelay:
                     else:
                         response = await self._receipt(cid, connection, enrollment, row, message)
                         await self.dispatch_session(owner, sid)
-                await publish_resources_changed(owner, human)
+                if notify_resources:
+                    await publish_resources_changed(owner, human)
                 if isinstance(message, (Register, Heartbeat)):
+                    unresolved_commands = [
+                        c for c in await repo.list_commands(owner, sid) if c["state"] in {"dispatched", "unknown"}
+                    ]
+                    # Prefer the current generation's blocking receipt. Retain
+                    # older unknowns and still reconcile them when none is current.
                     unresolved = next(
-                        (c for c in await repo.list_commands(owner, sid) if c["state"] in {"dispatched", "unknown"}),
-                        None,
+                        (c for c in unresolved_commands if c["expectedGeneration"] == row["generation"]),
+                        next(iter(unresolved_commands), None),
                     )
                     response["reconcile"] = (
                         {
@@ -422,16 +443,27 @@ class LocalSessionRelay:
                             command, _revised(command, state="rejected", updatedAt=int(time.time()))
                         )
                 commands = await repo.list_commands(owner, sid)
-                command = next((c for c in commands if c["state"] not in {"applied", "rejected"}), None)
+                command = next(
+                    (
+                        c
+                        for c in commands
+                        if c["state"] not in {"applied", "rejected"}
+                        and not (c["state"] == "unknown" and c["expectedGeneration"] != row["generation"])
+                    ),
+                    None,
+                )
                 if not command:
                     return
                 if command["state"] == "dispatched":
-                    if command.get("connectionId") != row.get("connectionId") or command["deliverBy"] <= int(
-                        time.time()
+                    if (
+                        command["expectedGeneration"] != row["generation"]
+                        or command.get("connectionId") != row.get("connectionId")
+                        or command["deliverBy"] <= int(time.time())
                     ):
                         await repo.replace_command(
                             command, _revised(command, state="unknown", updatedAt=int(time.time()))
                         )
+                        continue
                     return
                 if command["state"] == "unknown" or command.get("claimUntil", 0) > int(time.time()):
                     return

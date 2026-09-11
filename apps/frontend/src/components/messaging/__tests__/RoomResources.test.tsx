@@ -299,7 +299,7 @@ it("retains immutable command identity for uncertain retries and distinguishes a
   f.client.getLocalSessionCommand.mockResolvedValue({ ...f.receipt(original), state: "applied", held: true });
   await userEvent.click(screen.getByRole("button", { name: "Check delivery" }));
   expect(f.client.submitLocalSessionCommand).toHaveBeenCalledTimes(1);
-  expect(await screen.findByText(/Held by the native session/)).toBeInTheDocument();
+  expect(await screen.findByText(/Queued or held by the native session/)).toBeInTheDocument();
   expect(screen.getByText(/not completed work/)).toBeInTheDocument();
 });
 
@@ -312,6 +312,70 @@ it("retries an uncertain submission with the original request ID and payload", a
   await userEvent.click(screen.getByRole("button", { name: "Send follow-up" }));
   await userEvent.click(await screen.findByRole("button", { name: "Retry same request" }));
   expect(f.client.submitLocalSessionCommand.mock.calls[1]).toEqual(f.client.submitLocalSessionCommand.mock.calls[0]);
+});
+
+it.each([new Error("network"), new ApiError(503, {}, "unavailable")])("preserves an uncertain send through a failing resources poll and recovery (%s)", async error => {
+  vi.useFakeTimers();
+  const f = setup();
+  f.client.submitLocalSessionCommand.mockRejectedValueOnce(new Error("delivery timeout"));
+  render(<RoomPanel {...f.props} />);
+  await act(async () => fireEvent.click(screen.getByRole("button", {name:"Devices & sessions"})));
+  await act(async () => fireEvent.click(screen.getByRole("button", {name:/Open Codex/})));
+  const input = screen.getByRole("textbox", {name:/Send to Codex/});
+  fireEvent.change(input, {target:{value:"Do not duplicate this follow-up"}});
+  await act(async () => fireEvent.click(screen.getByRole("button", {name:"Send follow-up"})));
+  const original = f.client.submitLocalSessionCommand.mock.calls[0];
+  f.client.listResources.mockRejectedValueOnce(error);
+  await act(async () => vi.advanceTimersByTimeAsync(5000));
+  expect(screen.getByRole("region", {name:"Native session history"})).toBeInTheDocument();
+  expect(screen.getByText(/Could not refresh devices and sessions/)).toBeInTheDocument();
+  expect(screen.getByText(/last successful snapshot/i)).toBeInTheDocument();
+  expect(input).toHaveValue("Do not duplicate this follow-up");
+  expect(screen.getByRole("button", {name:"Retry same request"})).toBeEnabled();
+  await act(async () => vi.advanceTimersByTimeAsync(5000));
+  expect(screen.queryByText(/Could not refresh devices and sessions/)).not.toBeInTheDocument();
+  expect(screen.getByRole("textbox", {name:/Send to Codex/})).toBe(input);
+  await act(async () => fireEvent.click(screen.getByRole("button", {name:"Retry same request"})));
+  expect(f.client.submitLocalSessionCommand.mock.calls[1]).toEqual(original);
+  expect(f.client.submitLocalSessionCommand).toHaveBeenCalledTimes(2);
+});
+
+it.each([403,404])("still clears selected uncertain input when resources return %s", async status => {
+  const f = setup();
+  f.client.submitLocalSessionCommand.mockRejectedValueOnce(new Error("network"));
+  render(<RoomPanel {...f.props} />);
+  await openSession();
+  await userEvent.type(screen.getByRole("textbox", {name:/Send to Codex/}), "Private follow-up");
+  await userEvent.click(screen.getByRole("button", {name:"Send follow-up"}));
+  f.client.listResources.mockRejectedValueOnce(new ApiError(status, {}, "access removed"));
+  act(() => f.emit("room.resources.changed"));
+  expect(await screen.findByText(/Access to these resources was removed/)).toBeInTheDocument();
+  expect(screen.queryByRole("button", {name:"Retry same request"})).not.toBeInTheDocument();
+  expect(screen.queryByDisplayValue("Private follow-up")).not.toBeInTheDocument();
+});
+
+it("does not infer approval waiting from a queued native receipt", async () => {
+  const f = setup();
+  f.client.submitLocalSessionCommand.mockImplementation(async (_room, _session, request) => ({...f.receipt(request), state:"applied", held:true}));
+  render(<RoomPanel {...f.props} />);
+  await openSession();
+  await userEvent.type(screen.getByRole("textbox", {name:/Send to Codex/}), "Queued follow-up");
+  await userEvent.click(screen.getByRole("button", {name:"Send follow-up"}));
+  expect(await screen.findByText(/Queued or held by the native session/)).toBeInTheDocument();
+  expect(screen.queryByText(/approval remains on/)).not.toBeInTheDocument();
+});
+
+it("explains and pauses further input for an unknown current-generation outcome", async () => {
+  const f = setup();
+  f.client.submitLocalSessionCommand.mockImplementation(async (_room, _session, request) => ({...f.receipt(request), state:"unknown", held:true}));
+  render(<RoomPanel {...f.props} />);
+  await openSession();
+  await userEvent.type(screen.getByRole("textbox", {name:/Send to Codex/}), "Possibly admitted");
+  await userEvent.click(screen.getByRole("button", {name:"Send follow-up"}));
+  expect(await screen.findByText(/further remote input remains paused.*native session restarts/i)).toBeInTheDocument();
+  expect(screen.getByText(/restart does not undo/i)).toBeInTheDocument();
+  expect(screen.getByRole("textbox", {name:/Send to Codex/})).toBeDisabled();
+  expect(screen.getByRole("button", {name:"Check delivery"})).toBeEnabled();
 });
 
 it("renders only safe public text and labels native approval and capability limits", async () => {

@@ -63,12 +63,14 @@ export function RoomResources({ roomId, source, participants, onClose, target, o
       <Button variant="ghost" aria-label={selected ? "Back to devices & sessions" : "Back to conversation"} onClick={back}><ArrowLeft aria-hidden="true" /></Button>
       <h3 ref={heading} tabIndex={-1} className="font-semibold room-wrap">{selected ? sessionLabel(selected) : "Devices & sessions"}</h3>
     </header>
+    {resources.error && <div role="alert" className="p-4"><p>{resources.error}</p>
+      {resources.data && <p>Showing the last successful snapshot; availability may be stale.</p>}
+      <Button variant="outline" onClick={() => void resources.refresh()}>Try again</Button></div>}
     {selected ? <LocalSessionPanel key={`${selected.sessionId}:${selected.generation}:${resources.accessRevision}`}
       session={selected} ownerName={name(selected.humanUserId)} roomId={roomId} client={source.client} revision={resources.revision} onAccessLost={resources.revoke} onShare={onShare} />
       : <div className="room-context-body">
         {unavailable && <p role="status">Session unavailable in this conversation.</p>}
         {resources.loading && <p role="status">Loading devices and sessions…</p>}
-        {resources.error && <div role="alert"><p>{resources.error}</p><Button variant="outline" onClick={() => void resources.refresh()}>Try again</Button></div>}
         {!resources.loading && !resources.error && humans.size === 0 && <p>No paired devices or shared sessions in this conversation.</p>}
         {[...humans].map(human => {
           const data = resources.data!;

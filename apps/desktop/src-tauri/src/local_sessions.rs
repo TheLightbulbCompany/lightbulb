@@ -162,7 +162,8 @@ impl Journal {
         let ordered = if order_path.try_exists().map_err(|e| e.to_string())? {
             let last: (u64, String) = private_read(&order_path)?;
             let receipt: Receipt = private_read(&self.path(&cmd.session_id, &last.1))?;
-            cmd.command_seq > last.0 && receipt.outcome != "unknown"
+            cmd.command_seq > last.0
+                && (receipt.outcome != "unknown" || receipt.generation != generation)
         } else {
             true
         };
@@ -1002,6 +1003,43 @@ mod tests {
         );
         changed.request_id = "unseen".into();
         assert!(!reopened.admit(&changed, "g1", 110).unwrap());
+    }
+
+    #[test]
+    fn local_sessions_journal_native_successor_bypasses_only_old_generation_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = Journal {
+            dir: dir.path().into(),
+        };
+        let old = command();
+        assert!(journal.admit(&old, "g1", 110).unwrap());
+        let mut next = old.clone();
+        next.command_seq = 2;
+        next.request_id = "same-process".into();
+        assert!(!journal.admit(&next, "g1", 111).unwrap());
+        let restored = Journal {
+            dir: dir.path().into(),
+        };
+        next.command_seq = 3;
+        next.request_id = "new-process".into();
+        next.expected_generation = "g2".into();
+        assert!(restored.admit(&next, "g2", 112).unwrap());
+        assert!(!restored.admit(&old, "g2", 112).unwrap());
+        assert_eq!(
+            restored.reconcile("s1", "r1", "g1").unwrap().outcome,
+            "unknown"
+        );
+        let mut conflicting = old.clone();
+        conflicting.expected_generation = "g2".into();
+        assert!(restored.admit(&conflicting, "g2", 112).is_err());
+        next.request_id = "stale-process".into();
+        next.command_seq = 4;
+        next.expected_generation = "g1".into();
+        assert!(!restored.admit(&next, "g2", 112).unwrap());
+        next.request_id = "out-of-order".into();
+        next.command_seq = 2;
+        next.expected_generation = "g3".into();
+        assert!(!restored.admit(&next, "g3", 112).unwrap());
     }
 
     #[test]

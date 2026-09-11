@@ -2,10 +2,10 @@
 
 Familiar Slack flows, Lightbulb identity, and real agents. This is the full direction; the centered creation dialog is one delivery batch. Never ship fake controls or invent visibility/permission policies the backend does not enforce.
 
-- [x] Images and membership foundation: PRs #2462, #2463, #2464, #2465, #2467 merged; images and members verified in production.
-- [ ] Threads and reactions: #2466 and #2468 merged; promotion run 34546951308 in progress at handoff.
-- [ ] Notifications: #2469 in review.
-- [ ] Current batch: centered channel/message creation, channel rename, member removal.
+- [x] Images and membership foundation: PRs #2462, #2463, #2464, #2465, #2467 deployed to production; user functional acceptance pending.
+- [x] Threads and reactions: #2466 and #2468 deployed to production in successful promotion run 34546951308.
+- [ ] Notifications and centered channel/message creation: #2469 and #2470 merged; promotion run 34548271444 in progress.
+- [ ] Current batch: channel rename and member removal, #2471 in review.
 - [ ] Next: in-room search.
 - [ ] Later: own-message edit/delete, mark unread and unread navigation, profiles, pins/shared content, notification preferences, leave/archive. Add backend authorization and persistence wherever required before exposing controls.
 

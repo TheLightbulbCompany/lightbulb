@@ -326,6 +326,8 @@ export function MessagingWorkspaceProvider({
         (member) => member.kind === candidate.kind && member.id === candidate.id,
       )),
       onAddMember: addMember,
+      onRenameRoom: async (name: string) => { await rooms.updateRoom({ name }); },
+      onRemoveMember: rooms.removeMember,
     } : {}),
     onAbortRun: (runId) => void rooms.abortRun(runId),
     onSteerRun: (runId, text) => void rooms.steerRun(runId, text),

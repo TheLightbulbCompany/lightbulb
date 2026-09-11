@@ -149,12 +149,25 @@ it.each(["dm", "group-dm"] as const)("does not expose member adds for a %s", (ki
   state.activeRoom = { ...room, kind };
   compose();
   expect(panel.onAddMember).toBeUndefined();
+  expect(panel.onRenameRoom).toBeUndefined();
+  expect(panel.onRemoveMember).toBeUndefined();
 });
 
 it("does not expose member adds to a channel member without admin permission", () => {
   state.activeRoom = { ...room, kind: "channel", members: room.members.map((member) => member.id === "owner" ? { ...member, role: "member" } : member) };
   compose();
   expect(panel.onAddMember).toBeUndefined();
+  expect(panel.onRenameRoom).toBeUndefined();
+  expect(panel.onRemoveMember).toBeUndefined();
+});
+
+it.each(["owner", "admin"] as const)("connects channel %s management to existing commands", async (role) => {
+  state.activeRoom = { ...room, kind: "channel", members: room.members.map((member) => member.id === "owner" ? { ...member, role } : member) };
+  compose();
+  await act(async () => panel.onRenameRoom?.("New name"));
+  await act(async () => panel.onRemoveMember?.({ kind: "agent", id: "agent-friday" }));
+  expect(state.updateRoom).toHaveBeenCalledWith({ name: "New name" });
+  expect(state.removeMember).toHaveBeenCalledWith({ kind: "agent", id: "agent-friday" });
 });
 
 it("surfaces directory hydration failures through the existing retry control while retaining available rooms", () => {

@@ -14,6 +14,73 @@ const props: RoomPanelProps = {
   composer: { text: "", onTextChange: vi.fn(), members: [owner, friday], selectedMentions: [], onMentionsChange: vi.fn(), clientMessageId: "draft", sendState: "idle", onSubmit: vi.fn() },
 };
 
+it("renames a channel in a centered dialog with pending, retry, and focus restoration", async () => {
+  const user = userEvent.setup();
+  let reject!: (error: Error) => void;
+  const onRenameRoom = vi.fn(() => new Promise<void>((_, fail) => { reject = fail; }));
+  render(<RoomPanel {...props} room={{ ...props.room!, kind: "channel", name: "Launch" }} onRenameRoom={onRenameRoom} />);
+  await user.click(screen.getByRole("button", { name: "Show room details" }));
+  const trigger = screen.getByRole("button", { name: "Rename channel" });
+  await user.click(trigger);
+  const dialog = screen.getByRole("dialog", { name: "Rename channel" });
+  const input = within(dialog).getByRole("textbox", { name: "Channel name" });
+  expect(input).toHaveFocus();
+  expect(input).toHaveValue("Launch");
+  await user.clear(input);
+  await user.type(input, "   ");
+  expect(within(dialog).getByRole("button", { name: "Save name" })).toBeDisabled();
+  await user.type(input, "New name ");
+  await user.click(within(dialog).getByRole("button", { name: "Save name" }));
+  expect(onRenameRoom).toHaveBeenCalledWith("New name");
+  expect(within(dialog).getByRole("button", { name: "Saving…" })).toBeDisabled();
+  await user.keyboard("{Escape}");
+  expect(dialog).toBeInTheDocument();
+  await act(async () => reject(new Error("Could not save. Try again.")));
+  expect(within(dialog).getByRole("alert")).toHaveTextContent("Could not save. Try again.");
+  onRenameRoom.mockResolvedValue(undefined);
+  await user.click(within(dialog).getByRole("button", { name: "Save name" }));
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(trigger).toHaveFocus();
+});
+
+it("confirms removal of a non-owner with Cancel focused and restores focus", async () => {
+  const user = userEvent.setup();
+  const onRemoveMember = vi.fn().mockResolvedValue(undefined);
+  render(<RoomPanel {...props} room={{ ...props.room!, kind: "channel", name: "Launch" }} onRemoveMember={onRemoveMember} />);
+  await user.click(screen.getByRole("button", { name: "Show room details" }));
+  expect(screen.queryByRole("button", { name: "Remove Owner" })).not.toBeInTheDocument();
+  const trigger = screen.getByRole("button", { name: "Remove Friday" });
+  await user.click(trigger);
+  const dialog = screen.getByRole("dialog", { name: "Remove member" });
+  expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveFocus();
+  expect(dialog).toHaveTextContent("Remove Friday from Launch?");
+  await user.keyboard("{Escape}");
+  expect(onRemoveMember).not.toHaveBeenCalled();
+  expect(trigger).toHaveFocus();
+  await user.click(trigger);
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Remove member" }));
+  expect(onRemoveMember).toHaveBeenCalledWith({ kind: "agent", id: "friday" });
+});
+
+it.each(["dm", "group-dm", "channel"] as const)("does not expose management without channel admin permission (%s)", async (kind) => {
+  render(<RoomPanel {...props} room={{ ...props.room!, kind }}
+    participants={[{ ...owner, role: "member" }, friday]} onRenameRoom={vi.fn()} onRemoveMember={vi.fn()} />);
+  await userEvent.click(screen.getByRole("button", { name: "Show room details" }));
+  expect(screen.queryByRole("button", { name: "Rename channel" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Remove Friday" })).not.toBeInTheDocument();
+});
+
+it("closes channel management if the viewer loses admin permission", async () => {
+  const onRenameRoom = vi.fn();
+  const channel = { ...props.room!, kind: "channel" as const };
+  const { rerender } = render(<RoomPanel {...props} room={channel} onRenameRoom={onRenameRoom} />);
+  await userEvent.click(screen.getByRole("button", { name: "Show room details" }));
+  await userEvent.click(screen.getByRole("button", { name: "Rename channel" }));
+  rerender(<RoomPanel {...props} room={channel} participants={[{ ...owner, role: "member" }, friday]} onRenameRoom={onRenameRoom} />);
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(onRenameRoom).not.toHaveBeenCalled();
+});
+
 it("names a DM for its counterpart and uses canonical author and member activity", () => {
   render(<RoomPanel {...props} />);
   expect(screen.getByRole("region", { name: "Friday" })).toBeInTheDocument();

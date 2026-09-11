@@ -82,6 +82,8 @@ function ComposerAttempt({
   const [images, setImages] = useState<Array<{ file: File; preview: string; attachment?: ImageAttachment; error?: string }>>([]);
   const evidenceVersion = useRef(0);
   const [dropping, setDropping] = useState(false);
+  const dragDepthRef = useRef(0);
+  const externalDragDepthRef = useRef(0);
 
   useEffect(() => () => previews.current.forEach((preview) => URL.revokeObjectURL(preview)), []);
 
@@ -192,23 +194,79 @@ function ComposerAttempt({
 
   const carriesFiles = (transfer: DataTransfer | null) => !!transfer && [...transfer.types].includes("Files");
 
-  function dropImages(transfer: DataTransfer | null) {
+  const handleFormDragEnter = (event: React.DragEvent<HTMLFormElement>) => {
+    if (!carriesFiles(event.dataTransfer)) return;
+    dragDepthRef.current += 1;
+    setDropping(true);
+  };
+
+  const handleFormDragLeave = (event: React.DragEvent<HTMLFormElement>) => {
+    if (!carriesFiles(event.dataTransfer)) return;
+    dragDepthRef.current -= 1;
+    if (dragDepthRef.current === 0) setDropping(false);
+  };
+
+  const handleFormDrop = (event: React.DragEvent<HTMLFormElement>) => {
+    if (!carriesFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    dragDepthRef.current = 0;
+    externalDragDepthRef.current = 0;
     setDropping(false);
-    const files = [...(transfer?.files ?? [])].filter((file) => file.type.startsWith("image/"));
+    const files = [...(event.dataTransfer?.files ?? [])].filter((file) => file.type.startsWith("image/"));
     if (files.length) addImages(files);
-  }
+  };
 
   useEffect(() => {
     const node = dropTargetRef?.current;
     if (!node || !onUploadAttachment) return;
-    const over = (event: DragEvent) => { if (carriesFiles(event.dataTransfer)) { event.preventDefault(); setDropping(true); } };
-    const leave = () => setDropping(false);
-    const drop = (event: DragEvent) => { if (!carriesFiles(event.dataTransfer)) return; event.preventDefault(); dropImages(event.dataTransfer); };
-    node.addEventListener("dragover", over);
+
+    const enter = (event: DragEvent) => {
+      if (!carriesFiles(event.dataTransfer)) return;
+      externalDragDepthRef.current += 1;
+      setDropping(true);
+    };
+    const leave = (event: DragEvent) => {
+      if (!carriesFiles(event.dataTransfer)) return;
+      externalDragDepthRef.current -= 1;
+      if (externalDragDepthRef.current === 0) setDropping(false);
+    };
+    const drop = (event: DragEvent) => {
+      if (!carriesFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      dragDepthRef.current = 0;
+      externalDragDepthRef.current = 0;
+      setDropping(false);
+      const files = [...(event.dataTransfer?.files ?? [])].filter((file) => file.type.startsWith("image/"));
+      if (files.length) addImages(files);
+    };
+    const windowDragEnd = () => {
+      dragDepthRef.current = 0;
+      externalDragDepthRef.current = 0;
+      setDropping(false);
+    };
+    const windowDrop = () => {
+      dragDepthRef.current = 0;
+      externalDragDepthRef.current = 0;
+      setDropping(false);
+    };
+
+    node.addEventListener("dragenter", enter);
     node.addEventListener("dragleave", leave);
     node.addEventListener("drop", drop);
-    return () => { node.removeEventListener("dragover", over); node.removeEventListener("dragleave", leave); node.removeEventListener("drop", drop); };
-  });
+    window.addEventListener("dragend", windowDragEnd);
+    window.addEventListener("drop", windowDrop);
+
+    return () => {
+      node.removeEventListener("dragenter", enter);
+      node.removeEventListener("dragleave", leave);
+      node.removeEventListener("drop", drop);
+      window.removeEventListener("dragend", windowDragEnd);
+      window.removeEventListener("drop", windowDrop);
+    };
+    // addImages is not included because handlers are recreated on every render,
+    // capturing the current addImages closure from this effect invocation
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dropTargetRef, onUploadAttachment]);
 
   function syncTrigger(value: string, caret: number | null) {
     if (composing.current) return;
@@ -304,9 +362,10 @@ function ComposerAttempt({
   return <form className="room-composer" aria-label={`${label} composer`} aria-busy={pending || retryPending}
     data-dropping={dropping || undefined}
     onSubmit={(event) => { event.preventDefault(); submit(); }}
-    onDragOver={(event) => { if (carriesFiles(event.dataTransfer)) { event.preventDefault(); setDropping(true); } }}
-    onDragLeave={() => setDropping(false)}
-    onDrop={(event) => { if (!carriesFiles(event.dataTransfer)) return; event.preventDefault(); dropImages(event.dataTransfer); }}>
+    onDragEnter={handleFormDragEnter}
+    onDragOver={(event) => { if (carriesFiles(event.dataTransfer)) event.preventDefault(); }}
+    onDragLeave={handleFormDragLeave}
+    onDrop={handleFormDrop}>
     <div className="room-format" role="toolbar" aria-label="Formatting">
       {FORMAT_CONTROLS.map(({ style, label: controlLabel, Icon }) => <Button key={style} type="button" variant="ghost" size="icon-sm"
         aria-label={controlLabel} title={controlLabel} disabled={!editable} onClick={() => format(style)}><Icon aria-hidden="true" /></Button>)}

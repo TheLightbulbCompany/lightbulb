@@ -22,7 +22,7 @@ it("marks the composer while an image drag is over it and uploads on drop", asyn
   render(<Harness onUploadAttachment={upload} />);
   const form = screen.getByRole("form", { name: "Message composer" });
   const file = new File(["x"], "shot.png", { type: "image/png" });
-  fireEvent.dragOver(form, { dataTransfer: { types: ["Files"], files: [file] } });
+  fireEvent.dragEnter(form, { dataTransfer: { types: ["Files"] } });
   expect(form).toHaveAttribute("data-dropping", "true");
   fireEvent.drop(form, { dataTransfer: { types: ["Files"], files: [file] } });
   await waitFor(() => expect(upload).toHaveBeenCalledWith(file));
@@ -32,6 +32,40 @@ it("marks the composer while an image drag is over it and uploads on drop", asyn
 it("ignores a drag that carries no files", () => {
   render(<Harness onUploadAttachment={vi.fn(async () => attachment)} />);
   const form = screen.getByRole("form", { name: "Message composer" });
-  fireEvent.dragOver(form, { dataTransfer: { types: ["text/plain"], files: [] } });
+  fireEvent.dragEnter(form, { dataTransfer: { types: ["text/plain"] } });
   expect(form).not.toHaveAttribute("data-dropping");
+});
+
+it("does not flicker when dragging into child elements", () => {
+  render(<Harness onUploadAttachment={vi.fn(async () => attachment)} />);
+  const form = screen.getByRole("form", { name: "Message composer" });
+  const textarea = form.querySelector("textarea");
+  if (!textarea) throw new Error("textarea not found");
+
+  fireEvent.dragEnter(form, { dataTransfer: { types: ["Files"] } });
+  expect(form).toHaveAttribute("data-dropping", "true");
+
+  fireEvent.dragEnter(textarea, { dataTransfer: { types: ["Files"] } });
+  expect(form).toHaveAttribute("data-dropping", "true");
+
+  fireEvent.dragLeave(textarea, { dataTransfer: { types: ["Files"] } });
+  expect(form).toHaveAttribute("data-dropping", "true");
+
+  fireEvent.dragLeave(form, { dataTransfer: { types: ["Files"] } });
+  expect(form).not.toHaveAttribute("data-dropping");
+});
+
+it("shows hint for non-image files but does not upload them", async () => {
+  const upload = vi.fn(async () => attachment);
+  render(<Harness onUploadAttachment={upload} />);
+  const form = screen.getByRole("form", { name: "Message composer" });
+  const pdf = new File(["pdf"], "doc.pdf", { type: "application/pdf" });
+
+  fireEvent.dragEnter(form, { dataTransfer: { types: ["Files"] } });
+  expect(form).toHaveAttribute("data-dropping", "true");
+  expect(screen.getByText("Drop images to attach")).toBeInTheDocument();
+
+  fireEvent.drop(form, { dataTransfer: { types: ["Files"], files: [pdf] } });
+  expect(form).not.toHaveAttribute("data-dropping");
+  expect(upload).not.toHaveBeenCalled();
 });

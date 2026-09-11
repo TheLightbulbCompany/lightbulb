@@ -647,3 +647,28 @@ async def test_set_member_prefs_rejects_a_member_that_is_not_in_the_room(table):
     room_id, _ = await _room()
     with pytest.raises(repo.RoomNotFound):
         await repo.set_member_prefs(room_id, "human", USER_B, {"starred": True})
+
+
+@pytest.mark.asyncio
+async def test_user_sections_round_trip_preserve_order_and_replace_wholesale(table):
+    assert await repo.get_user_prefs(OWNER, USER_A) is None
+
+    first = await repo.put_user_sections(OWNER, USER_A, [{"id": "s-2", "name": "Ship"}, {"id": "s-1", "name": "Admin"}])
+    assert first == [{"id": "s-2", "name": "Ship"}, {"id": "s-1", "name": "Admin"}]
+    assert (await repo.get_user_prefs(OWNER, USER_A))["sections"] == first
+
+    replaced = await repo.put_user_sections(OWNER, USER_A, [{"id": "s-1", "name": "Admin"}])
+    assert replaced == [{"id": "s-1", "name": "Admin"}]
+    assert (await repo.get_user_prefs(OWNER, USER_A))["sections"] == replaced
+
+    assert await repo.put_user_sections(OWNER, USER_A, []) == []
+
+
+@pytest.mark.asyncio
+async def test_user_sections_are_per_user_and_survive_stream_deactivation(table):
+    await repo.put_user_sections(OWNER, USER_A, [{"id": "s-1", "name": "Admin"}])
+    assert await repo.get_user_prefs(OWNER, USER_B) is None
+
+    await repo.ensure_user_stream(OWNER, USER_A)
+    await repo.deactivate_user_stream(OWNER, USER_A)
+    assert (await repo.get_user_prefs(OWNER, USER_A))["sections"] == [{"id": "s-1", "name": "Admin"}]

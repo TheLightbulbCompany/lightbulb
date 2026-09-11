@@ -35,6 +35,8 @@ MESSAGE_TEXT_MAX_BYTES = 100_000
 IMAGE_MAX_BYTES = 5 * 1024 * 1024
 IMAGE_MAX_COUNT = 4
 ROOM_NAME_MAX_CHARS = 200
+MAX_SECTIONS = 20
+SECTION_NAME_MAX_CHARS = 40
 EVENT_ID_MAX_BYTES = 256
 LIVE_SCHEMA_VERSION = 1
 DEFAULT_ROOM_NAME = "general"
@@ -147,8 +149,18 @@ class RoomDetail(RoomSummary):
     created_at: datetime
 
 
+class RoomSection(ContractModel):
+    id: uuid.UUID
+    name: str = Field(min_length=1, max_length=SECTION_NAME_MAX_CHARS)
+
+
+class SectionsRequest(ContractModel):
+    sections: list[RoomSection] = Field(max_length=MAX_SECTIONS)
+
+
 class RoomListResponse(ContractModel):
     rooms: list[RoomSummary]
+    sections: list[RoomSection] = []
 
 
 class CreateRoomMember(ContractModel):
@@ -893,16 +905,20 @@ async def _room_detail(meta: dict, user_id: str, member: dict | None = None) -> 
     )
 
 
-async def list_rooms(auth: AuthContext) -> RoomListResponse:
-    owner_id = resolve_owner_id(auth)
-    discovered = await messaging_repo.list_rooms_for_member(owner_id, "human", auth.user_id)
+async def _user_sections(owner_id: str, user_id: str) -> list[RoomSection]:
+    prefs = await messaging_repo.get_user_prefs(owner_id, user_id)
+    return [RoomSection(id=row["id"], name=row["name"]) for row in (prefs or {}).get("sections", [])]
+
+
+async def _room_summaries(owner_id: str, user_id: str) -> list[RoomSummary]:
+    discovered = await messaging_repo.list_rooms_for_member(owner_id, "human", user_id)
     summaries: list[RoomSummary] = []
     for row in discovered:
         meta = row["meta"]
-        member = await messaging_repo.get_member(meta["roomId"], "human", auth.user_id)
+        member = await messaging_repo.get_member(meta["roomId"], "human", user_id)
         if member is None:
             continue
-        last_read = await messaging_repo.get_read_cursor(meta["roomId"], auth.user_id)
+        last_read = await messaging_repo.get_read_cursor(meta["roomId"], user_id)
         floor = max(last_read, int(member.get("joinedSeq", 0)))
         summaries.append(
             RoomSummary(
@@ -920,7 +936,27 @@ async def list_rooms(auth: AuthContext) -> RoomListResponse:
             )
         )
     summaries.sort(key=lambda room: room.updated_at, reverse=True)
-    return RoomListResponse(rooms=summaries)
+    return summaries
+
+
+async def list_rooms(auth: AuthContext) -> RoomListResponse:
+    owner_id = resolve_owner_id(auth)
+    summaries = await _room_summaries(owner_id, auth.user_id)
+    return RoomListResponse(rooms=summaries, sections=await _user_sections(owner_id, auth.user_id))
+
+
+async def put_sections(auth: AuthContext, request: SectionsRequest) -> RoomListResponse:
+    """Replace the caller's ordered section list. Sections are per-user view
+    state; a room's ``sectionId`` is not validated against them, so a deleted
+    section simply drops its rooms back into their default group."""
+    owner_id = resolve_owner_id(auth)
+    stored = await messaging_repo.put_user_sections(
+        owner_id,
+        auth.user_id,
+        [{"id": str(section.id), "name": section.name} for section in request.sections],
+    )
+    summaries = await _room_summaries(owner_id, auth.user_id)
+    return RoomListResponse(rooms=summaries, sections=[RoomSection(id=row["id"], name=row["name"]) for row in stored])
 
 
 def default_room_id(owner_id: str) -> str:

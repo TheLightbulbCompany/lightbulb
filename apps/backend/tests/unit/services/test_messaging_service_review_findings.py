@@ -341,3 +341,33 @@ async def test_room_member_updated_is_a_recognised_user_live_event():
     assert "room.member.updated" in messaging.USER_LIVE_EVENT_TYPES
     assert "room.member.updated" in messaging.LIVE_EVENT_TYPES
     assert "room.member.updated" not in messaging.ROOM_LIVE_EVENT_TYPES
+
+
+@pytest.mark.asyncio
+async def test_put_sections_persists_and_returns_the_whole_sidebar(monkeypatch):
+    auth = AuthContext(user_id="user_owner", org_id="org_1")
+    section_id = "33333333-3333-4333-8333-333333333333"
+    put = AsyncMock(return_value=[{"id": section_id, "name": "Ship"}])
+    monkeypatch.setattr(messaging.messaging_repo, "put_user_sections", put)
+    monkeypatch.setattr(messaging.messaging_repo, "list_rooms_for_member", AsyncMock(return_value=[]))
+    monkeypatch.setattr(messaging.messaging_repo, "get_user_prefs", AsyncMock(return_value=None))
+
+    result = await messaging.put_sections(
+        auth, messaging.SectionsRequest(sections=[messaging.RoomSection(id=section_id, name="Ship")])
+    )
+
+    assert [str(section.id) for section in result.sections] == [section_id]
+    assert result.rooms == []
+    put.assert_awaited_once_with("org_1", "user_owner", [{"id": section_id, "name": "Ship"}])
+
+
+def test_sections_request_rejects_too_many_sections_and_blank_names():
+    section_id = "33333333-3333-4333-8333-333333333333"
+    with pytest.raises(ValueError):
+        messaging.SectionsRequest(
+            sections=[messaging.RoomSection(id=section_id, name="Ship")] * (messaging.MAX_SECTIONS + 1)
+        )
+    with pytest.raises(ValueError):
+        messaging.RoomSection(id=section_id, name="")
+    with pytest.raises(ValueError):
+        messaging.RoomSection(id=section_id, name="x" * (messaging.SECTION_NAME_MAX_CHARS + 1))

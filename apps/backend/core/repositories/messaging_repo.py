@@ -128,6 +128,10 @@ def userstream_sk(user_id: str) -> str:
     return f"USERSTREAM#{user_id}"
 
 
+def pref_sk(user_id: str) -> str:
+    return f"PREF#{user_id}"
+
+
 def stream_pk(channel_key: str) -> str:
     return f"STREAM#{channel_key}"
 
@@ -1218,6 +1222,34 @@ async def deactivate_user_stream(owner_id: str, user_id: str) -> bool:
         if _is_cancelled(exc):
             return False
         raise
+
+
+async def get_user_prefs(owner_id: str, user_id: str) -> dict | None:
+    """The caller's sidebar preferences.
+
+    A dedicated ``PREF#`` item rather than the ``USERSTREAM#`` row: that row's
+    writes are conditioned on the delivery-key lifecycle (``ensure_user_stream``
+    / ``deactivate_user_stream``), so a sections write there would race key
+    rotation and be dropped on revocation.
+    """
+    return await _get(owner_pk(owner_id), pref_sk(user_id))
+
+
+async def put_user_sections(owner_id: str, user_id: str, sections: list[dict]) -> list[dict]:
+    """Replace the ordered section list wholesale (the client owns the order)."""
+    stored = [{"id": str(section["id"]), "name": str(section["name"])} for section in sections]
+    await run_in_thread(
+        _table().put_item,
+        Item={
+            "pk": owner_pk(owner_id),
+            "sk": pref_sk(user_id),
+            "ownerId": owner_id,
+            "userId": user_id,
+            "sections": _ddb_safe(stored),
+            "updatedAt": utc_now_iso(),
+        },
+    )
+    return stored
 
 
 # ---------------------------------------------------------------------------

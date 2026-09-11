@@ -41,6 +41,7 @@ from core.services.messaging import (
     RoomListResponse,
     ImageAttachment,
     RunStatusResponse,
+    SectionsRequest,
     SteerRunRequest,
     SteerRunResponse,
     TypingRequest,
@@ -202,6 +203,11 @@ async def live_config(auth: AuthContext = Depends(get_current_user)):
 @router.get("/messaging/rooms", response_model=RoomListResponse)
 async def list_rooms(auth: AuthContext = Depends(get_current_user)):
     return await service.list_rooms(auth)
+
+
+@router.put("/messaging/me/sections", response_model=RoomListResponse)
+async def put_sections(request: SectionsRequest, auth: AuthContext = Depends(get_current_user)):
+    return await service.put_sections(auth, request)
 
 
 @router.post("/messaging/rooms", response_model=RoomDetail, status_code=201)

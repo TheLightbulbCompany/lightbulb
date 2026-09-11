@@ -354,6 +354,7 @@ class OpenClawWorkWorker:
             member["id"],
             member_id=author.get("id") if author.get("kind") == "human" else None,
             event_kind=event_kind,
+            thread_root_message_id=message.get("threadRootMessageId"),
         )
         members = await messaging_repo.list_members(meta["roomId"])
         body = await build_ingress_body(
@@ -377,7 +378,7 @@ class OpenClawWorkWorker:
             # The plugin dedupes ingress by eventId (effect-once), so a timed-out
             # or dropped POST is safe to retry soon; holding the full 300s
             # visibility stalls the whole FIFO group (prod, 2026-09-10 18:15Z).
-            pool.clear_active_run(owner_id, session_key)
+            pool.clear_active_run(owner_id, session_key, preserve_room_context=True)
             raise WorkRetry(f"plugin ingress {type(exc).__name__}") from exc
         except Exception:
             pool.clear_active_run(owner_id, session_key)

@@ -167,6 +167,7 @@ export type QuestionResolvedEvent =
 // =============================================================================
 
 export type LiveEventType =
+  | "room.message.reactions.changed"
   | "room.message.created"
   | "room.message.available"
   | "room.typing.changed"
@@ -184,6 +185,7 @@ export type LiveEventType =
   | "paperclip.event";
 
 export const LIVE_EVENT_TYPES: ReadonlySet<string> = new Set<LiveEventType>([
+  "room.message.reactions.changed",
   "room.message.created",
   "room.message.available",
   "room.typing.changed",
@@ -213,7 +215,7 @@ export interface LiveEventEnvelope<T extends LiveEventType, P> {
 }
 
 export type RoomTypingChanged = { roomId: string; userId: string; displayName: string; expiresAt: string };
-export type RoomRunFrame = { roomId: string; agentId: string; runId: string; frame: ChatIncomingMessage };
+export type RoomRunFrame = { roomId: string; agentId: string; runId: string; threadRootMessageId?: string | null; frame: ChatIncomingMessage };
 export type RoomMetadataChanged = { roomId: string; roomRevision: number };
 export type RoomSubscriptionRotated = { roomId: string; deliveryKey: string; roomRevision: number };
 export type RoomAccessRemoved = { roomId: string; roomRevision: number };
@@ -241,6 +243,7 @@ export type PaperclipEvent = { eventName: PaperclipEventName; payload: unknown }
 export type LiveEvent =
   | LiveEventEnvelope<"room.message.created", CanonicalRoomMessage>
   | LiveEventEnvelope<"room.message.available", { roomId: string; messageId: string; messageSeq: number; threadRootMessageId: string | null; notify: boolean }>
+  | LiveEventEnvelope<"room.message.reactions.changed", CanonicalRoomMessage>
   | LiveEventEnvelope<"room.typing.changed", RoomTypingChanged>
   | LiveEventEnvelope<"room.run.frame", RoomRunFrame>
   | LiveEventEnvelope<"room.metadata.changed", RoomMetadataChanged>
@@ -316,6 +319,9 @@ function chatFrameValid(value: unknown): value is ChatIncomingMessage {
 }
 
 function canonicalMessageValid(value: unknown): value is CanonicalRoomMessage {
+  if (isObj(value) && value.reactions !== undefined && (!isObj(value.reactions) || Object.entries(value.reactions).some(([emoji, users]) =>
+    !["👍", "❤️", "😂", "🎉", "👀", "✅"].includes(emoji) || !Array.isArray(users) || users.length > 256 || !users.every(str)))) return false;
+  if (isObj(value) && value.reactionRevision !== undefined && (!Number.isInteger(value.reactionRevision) || (value.reactionRevision as number) < 0)) return false;
   if (!isObj(value) || !str(value.messageId) || !str(value.roomId) || !num(value.messageSeq) || !num(value.roomRevision)) return false;
   if (!isObj(value.author) || !authorKind(value.author.kind) || !str(value.author.id) || !str(value.author.displayName)) return false;
   return typeof value.text === "string" && Array.isArray(value.mentions) && value.mentions.every(memberRef) &&
@@ -332,6 +338,7 @@ function payloadValid(type: LiveEventType, payload: unknown): boolean {
   if (!isObj(payload)) return false;
   switch (type) {
     case "room.message.created":
+    case "room.message.reactions.changed":
       return canonicalMessageValid(payload);
     case "room.message.available":
       return str(payload.roomId) && str(payload.messageId) && num(payload.messageSeq) && payload.messageSeq > 0 &&
@@ -339,7 +346,8 @@ function payloadValid(type: LiveEventType, payload: unknown): boolean {
     case "room.typing.changed":
       return str(payload.roomId) && str(payload.userId) && text(payload.displayName) && str(payload.expiresAt);
     case "room.run.frame":
-      return str(payload.roomId) && str(payload.agentId) && str(payload.runId) && chatFrameValid(payload.frame);
+      return str(payload.roomId) && str(payload.agentId) && str(payload.runId) &&
+        (payload.threadRootMessageId === undefined || nullableString(payload.threadRootMessageId)) && chatFrameValid(payload.frame);
     case "room.metadata.changed":
     case "room.access.removed":
       return str(payload.roomId) && num(payload.roomRevision);

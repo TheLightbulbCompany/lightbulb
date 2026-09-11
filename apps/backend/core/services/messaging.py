@@ -57,6 +57,7 @@ API_ERROR_STATUS = {
 ROOM_LIVE_EVENT_TYPES = frozenset(
     {
         "room.message.created",
+        "room.message.reactions.changed",
         "room.typing.changed",
         "room.run.frame",
         "room.metadata.changed",
@@ -179,6 +180,11 @@ class UpsertRoomMemberRequest(ContractModel):
         return self
 
 
+class SetReactionRequest(ContractModel):
+    emoji: Literal["👍", "❤️", "😂", "🎉", "👀", "✅"]
+    active: bool
+
+
 class CanonicalMessage(ContractModel):
     message_id: uuid.UUID
     room_id: uuid.UUID
@@ -192,6 +198,8 @@ class CanonicalMessage(ContractModel):
     created_at: datetime
     run_id: str | None
     attachments: list["ImageAttachment"] = Field(default_factory=list, max_length=IMAGE_MAX_COUNT)
+    reactions: dict[str, list[str]] = Field(default_factory=dict)
+    reaction_revision: int = Field(default=0, ge=0)
 
 
 class ImageAttachment(ContractModel):
@@ -539,6 +547,8 @@ def canonical_message(item: dict[str, Any]) -> CanonicalMessage:
         created_at=item["createdAt"],
         run_id=item.get("runId"),
         attachments=item.get("attachments") or [],
+        reactions=item.get("reactions") or {},
+        reaction_revision=int(item.get("reactionRevision", 0)),
     )
 
 
@@ -963,6 +973,36 @@ async def list_messages(auth: AuthContext, room_id: str, after_seq: int, limit: 
     except ValueError as exc:
         raise ApiProblem("INVALID_REQUEST", str(exc)) from exc
     return MessagePage(messages=[canonical_message(row) for row in rows], next_after_seq=next_after)
+
+
+async def set_reaction(
+    auth: AuthContext, room_id: str, message_id: str, request: SetReactionRequest
+) -> CanonicalMessage:
+    from core.services.live_events import get_live_event_publisher
+
+    owner_id = resolve_owner_id(auth)
+    await require_room_member(owner_id, auth.user_id, room_id)
+    message_id = validate_uuid(message_id, label="message ID")
+    item = await messaging_repo.get_message_by_id(room_id, message_id)
+    if item is None:
+        raise ApiProblem("MESSAGE_NOT_FOUND", "Message not found in this room.")
+    try:
+        updated = await messaging_repo.set_reaction(
+            owner_id, room_id, item["messageSeq"], auth.user_id, request.emoji, request.active
+        )
+    except messaging_repo.MessagingRepoError as exc:
+        raise ApiProblem("INVALID_REQUEST", str(exc)) from exc
+    message = canonical_message(updated)
+    event = make_live_event(
+        "room.message.reactions.changed", message.model_dump(mode="json", by_alias=True), room_id=room_id
+    )
+    try:
+        await get_live_event_publisher().publish_room(room_id, event)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception("Could not publish message reactions for room %s", room_id)
+    return message
 
 
 async def _validate_message_links(

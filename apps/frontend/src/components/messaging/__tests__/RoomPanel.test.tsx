@@ -28,6 +28,15 @@ it("names a DM for its counterpart and uses canonical author and member activity
   expect(within(members).queryByRole("status", { name: "Work status" })).not.toBeInTheDocument();
 });
 
+it("shows persisted reactions and removes the viewer's reaction from a thread", async () => {
+  const onSetReaction = vi.fn().mockResolvedValue(undefined);
+  render(<RoomPanel {...props} onSetReaction={onSetReaction} messages={[{ ...message, reactions: { "👍": ["owner", "other"] } }]} />);
+  expect(screen.getByRole("button", { name: "Remove 👍 reaction, 2" })).toHaveAttribute("aria-pressed", "true");
+  await userEvent.click(screen.getByRole("button", { name: "Reply in thread" }));
+  await userEvent.click(within(screen.getByRole("complementary", { name: "Thread" })).getByRole("button", { name: "Remove 👍 reaction, 2" }));
+  expect(onSetReaction).toHaveBeenCalledWith("message", "👍", false);
+});
+
 it("excludes only the signed-in human when naming a group DM", () => {
   render(<RoomPanel {...props} room={{ ...props.room!, kind: "group-dm" }} participants={[owner, { ...owner, id: "alice", displayName: "Alice" }, { ...friday, id: "owner", displayName: "Atlas" }]} messages={[]} />);
   expect(screen.getByRole("heading", { name: "Alice and Atlas" })).toBeInTheDocument();
@@ -107,6 +116,18 @@ it("focuses a thread and restores its trigger and collapsed preference on Escape
   expect(reply).toHaveFocus();
   expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Show room details" })).toHaveAttribute("aria-expanded", "false");
+});
+
+it("keeps a live thread reply out of main chat and renders it inside the thread", async () => {
+  const run: RoomRunView = { roomId: "room", agentId: "friday", runId: "thread-run", threadRootMessageId: message.messageId,
+    state: "running", text: "Thread answer", thinking: "", tools: [] };
+  render(<RoomPanel {...props} runs={[run]} />);
+  expect(within(screen.getByRole("region", { name: "Messages" })).queryByRole("article", { name: "Live run from Friday" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Reply in thread" })).toBeInTheDocument();
+
+  await userEvent.click(screen.getByRole("button", { name: "Reply in thread" }));
+
+  expect(within(screen.getByRole("complementary", { name: "Thread" })).getByRole("article", { name: "Live run from Friday" })).toHaveTextContent("Thread answer");
 });
 
 it("lets wide room details change agent listen mode without giving humans a control", async () => {

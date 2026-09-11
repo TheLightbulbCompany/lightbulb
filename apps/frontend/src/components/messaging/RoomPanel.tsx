@@ -47,6 +47,7 @@ export interface RoomPanelProps {
   onSelectParticipant?: (participant: RoomParticipant) => void | Promise<void>;
   onRetry?: () => void;
   onListenModeChange?: (agentId: string, mode: ListenMode) => void;
+  onSetReaction?: (messageId: string, emoji: string, active: boolean) => Promise<void>;
   addMemberCandidates?: readonly DirectoryParticipant[];
   onAddMember?: (member: MemberRef) => Promise<void>;
   onAbortRun?: (runId: string) => void;
@@ -157,6 +158,7 @@ function RoomContent({
   onSelectParticipant,
   onRetry,
   onListenModeChange,
+  onSetReaction,
   addMemberCandidates = [],
   onAddMember,
   onAbortRun,
@@ -166,6 +168,8 @@ function RoomContent({
   narrow,
 }: RoomPanelProps) {
   const id = useId();
+  const [reactionPending, setReactionPending] = useState<string | null>(null);
+  const [reactionError, setReactionError] = useState<string | null>(null);
   const [membersOpen, setMembersOpen] = useState(false);
   const [memberPickerOpen, setMemberPickerOpen] = useState(false);
   const [addingMembers, setAddingMembers] = useState(false);
@@ -258,6 +262,23 @@ function RoomContent({
           {timestamp && <time className="text-sm text-muted-foreground" dateTime={timestamp} title={new Date(timestamp).toLocaleString()}>{new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>}
         </div>
         <MarkdownView skipHtml components={roomMarkdown}>{message.text}</MarkdownView>
+        {onSetReaction && <div className="flex flex-wrap gap-1 mt-1" aria-label="Message reactions">
+          {(["👍", "❤️", "😂", "🎉", "👀", "✅"] as const).map((emoji) => {
+            const users = message.reactions?.[emoji] ?? [];
+            const selected = users.includes(currentUserId);
+            return <Button key={emoji} type="button" size="sm" variant={selected ? "secondary" : "ghost"}
+              aria-label={`${selected ? "Remove" : "Add"} ${emoji} reaction${users.length ? `, ${users.length}` : ""}`} aria-pressed={selected}
+              disabled={!actionable || reactionPending !== null}
+              onClick={async () => {
+                setReactionPending(message.messageId);
+                setReactionError(null);
+                try { await onSetReaction(message.messageId, emoji, !selected); }
+                catch { setReactionError(message.messageId); }
+                finally { setReactionPending(null); }
+              }}>{emoji}{users.length > 0 && <span>{users.length}</span>}</Button>;
+          })}
+          {reactionError === message.messageId && <p role="alert" className="text-sm text-err">Could not update reaction. Try again.</p>}
+        </div>}
         {!!message.attachments?.length && onDownloadAttachment && <RoomImageAttachments roomId={message.roomId} attachments={message.attachments} download={onDownloadAttachment} />}
         {message.run && <div className="room-run"><WorkStatus state={message.run.state} />
           {message.run.details && <details><summary>Run details</summary><pre>{message.run.details.slice(0, 8192)}</pre>{message.run.details.length > 8192 && <p className="text-sm text-muted-foreground">Further details omitted.</p>}</details>}
@@ -270,6 +291,31 @@ function RoomContent({
         {!inThread && <Button type="button" variant="ghost" className="room-reply" disabled={!actionable}
           aria-label={`Reply in thread${replyCount > 0 ? `, ${replyCount} ${replyCount === 1 ? "reply" : "replies"}` : ""}`}
           onClick={(event) => openDetail("thread", message.messageId, event.currentTarget)}><MessageCircle aria-hidden="true" />{replyCount > 0 ? `${replyCount} ${replyCount === 1 ? "reply" : "replies"} · Open thread` : "Reply in thread"}</Button>}
+      </div>
+    </article>;
+  }
+
+  function renderRun(run: RoomRunView) {
+    const agent = participants.find((participant) => participant.kind === "agent" && participant.id === run.agentId);
+    return <article key={`${run.roomId}:${run.agentId}:${run.runId}`} className="room-message room-live-run" aria-label={`Live run from ${agent?.displayName ?? "Agent"}`}>
+      <Identity name={agent?.displayName ?? "Agent"} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{agent?.displayName ?? "Agent"}</span><WorkStatus state={run.state === "running" ? "working" : run.state === "completed" ? "completed" : run.state === "aborted" ? "paused" : "failed"} /></div>
+        {run.thinking && <details><summary>Thinking</summary><p className="room-wrap text-muted-foreground">{run.thinking}</p></details>}
+        {run.text && <MarkdownView skipHtml components={roomMarkdown}>{run.text}</MarkdownView>}
+        {run.tools.length > 0 && <ToolActivityTrace calls={run.tools} />}
+        {run.state === "running" && (onAbortRun || onSteerRun) && <form className="room-run-controls" onSubmit={(event) => {
+          event.preventDefault();
+          if (!onSteerRun) return;
+          const input = event.currentTarget.elements.namedItem("steer") as HTMLInputElement | null;
+          const text = input?.value.trim();
+          if (!text) return;
+          onSteerRun(run.runId, text);
+          event.currentTarget.reset();
+        }}>
+          {onSteerRun && <><label className="sr-only" htmlFor={`${id}-${run.runId}-steer`}>Steer {agent?.displayName ?? "agent"}</label>
+            <input id={`${id}-${run.runId}-steer`} name="steer" className="room-input" placeholder="Steer this run…" /></>}
+          {onSteerRun && <Button type="submit" variant="outline" disabled={!actionable}>Steer</Button>}
+          {onAbortRun && <Button type="button" variant="outline" disabled={!actionable} onClick={() => onAbortRun(run.runId)}>Stop</Button>}
+        </form>}
       </div>
     </article>;
   }
@@ -314,30 +360,7 @@ function RoomContent({
             {pendingMessages.filter((message) => message.threadRootMessageId === null).map((message) => <article key={message.clientMessageId} className="room-message" aria-label={`Pending message from ${viewer?.displayName ?? "You"}`}>
               <Identity name={viewer?.displayName ?? "You"} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{viewer?.displayName ?? "You"}</span><span className="text-sm text-muted-foreground">Sending…</span></div><MarkdownView skipHtml components={roomMarkdown}>{message.text}</MarkdownView></div>
             </article>)}</>}
-        {runs.map((run) => {
-          const agent = participants.find((participant) => participant.kind === "agent" && participant.id === run.agentId);
-          return <article key={`${run.roomId}:${run.agentId}:${run.runId}`} className="room-message room-live-run" aria-label={`Live run from ${agent?.displayName ?? "Agent"}`}>
-            <Identity name={agent?.displayName ?? "Agent"} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{agent?.displayName ?? "Agent"}</span><WorkStatus state={run.state === "running" ? "working" : run.state === "completed" ? "completed" : run.state === "aborted" ? "paused" : "failed"} /></div>
-              {run.thinking && <details><summary>Thinking</summary><p className="room-wrap text-muted-foreground">{run.thinking}</p></details>}
-              {run.text && <MarkdownView skipHtml components={roomMarkdown}>{run.text}</MarkdownView>}
-              {run.tools.length > 0 && <ToolActivityTrace calls={run.tools} />}
-              {run.state === "running" && (onAbortRun || onSteerRun) && <form className="room-run-controls" onSubmit={(event) => {
-                event.preventDefault();
-                if (!onSteerRun) return;
-                const input = event.currentTarget.elements.namedItem("steer") as HTMLInputElement | null;
-                const text = input?.value.trim();
-                if (!text) return;
-                onSteerRun(run.runId, text);
-                event.currentTarget.reset();
-              }}>
-                {onSteerRun && <><label className="sr-only" htmlFor={`${id}-${run.runId}-steer`}>Steer {agent?.displayName ?? "agent"}</label>
-                  <input id={`${id}-${run.runId}-steer`} name="steer" className="room-input" placeholder="Steer this run…" /></>}
-                {onSteerRun && <Button type="submit" variant="outline" disabled={!actionable}>Steer</Button>}
-                {onAbortRun && <Button type="button" variant="outline" disabled={!actionable} onClick={() => onAbortRun(run.runId)}>Stop</Button>}
-              </form>}
-            </div>
-          </article>;
-        })}
+        {runs.filter((run) => !run.threadRootMessageId).map(renderRun)}
       </div>
       <p className="room-typing text-sm text-muted-foreground" role="status">{typingMembers.length > 0 ? `${typingMembers.slice(0, 3).map((member) => member.displayName).join(", ")}${typingMembers.length > 3 ? " and others" : ""} ${typingMembers.length === 1 ? "is" : "are"} typing…` : ""}</p>
       <RoomComposer {...composer} disabled={!actionable || composer.disabled} />
@@ -387,7 +410,9 @@ function RoomContent({
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>
         <h3 ref={detailHeading} tabIndex={-1} className="font-semibold room-wrap">{parentMessage ? "Thread" : selectedContext!.title}</h3></header>
       <div className="room-context-body">{parentMessage ? <>{renderMessage(parentMessage, true)}
-        <div className="room-thread-replies" aria-label="Thread replies">{messages.filter((message) => message.threadRootMessageId === parentMessage.messageId).map((message) => renderMessage(message, true))}</div>
+        <div className="room-thread-replies" aria-label="Thread replies">{messages.filter((message) => message.threadRootMessageId === parentMessage.messageId).map((message) => renderMessage(message, true))}
+          {runs.filter((run) => run.threadRootMessageId === parentMessage.messageId).map(renderRun)}
+        </div>
       </> : <><p className="text-sm text-muted-foreground">{selectedContext!.kind.charAt(0).toUpperCase() + selectedContext!.kind.slice(1)}</p>
         {selectedContext!.status && <WorkStatus state={selectedContext!.status} />}<div className="room-context-record">{selectedContext!.content}</div>
         {selectedContext!.onAction && selectedContext!.actionLabel && <Button disabled={!actionable || selectedContext!.busy} aria-busy={selectedContext!.busy} onClick={selectedContext!.onAction}>{selectedContext!.actionLabel}</Button>}

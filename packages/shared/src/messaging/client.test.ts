@@ -134,11 +134,14 @@ it("recognises the member-updated live event", () => {
 });
 
 it("parses a room.member.updated frame and rejects a malformed one", () => {
+  // The backend publishes this on the user channel, not a room subscription,
+  // so (unlike other room.* events) the envelope itself carries no roomId --
+  // only payload.roomId does. See core/services/messaging.py's patch_room_me.
   const event = {
     schemaVersion: 1, eventId: "member-updated-1", type: "room.member.updated", occurredAt: "now",
-    roomId: "room-1", payload: { roomId: "room-1" },
+    payload: { roomId: "room-1" },
   };
   expect(parseLiveEvent(event)).toEqual(event);
-  expect(parseLiveEvent({ ...event, payload: { roomId: "other" } })).toBeNull();
   expect(parseLiveEvent({ ...event, payload: {} })).toBeNull();
+  expect(parseLiveEvent({ ...event, payload: { roomId: 42 } })).toBeNull();
 });

@@ -415,7 +415,10 @@ export function parseLiveEvent(raw: unknown): LiveEvent | null {
   const type = value.type as LiveEventType;
   if (!payloadValid(type, value.payload)) return null;
   const payload = value.payload as Record<string, unknown>;
-  if (type.startsWith("room.") && payload.roomId !== value.roomId) return null;
+  // `room.member.updated` rides the user channel (not a room subscription),
+  // so the backend never sets the envelope-level roomId for it -- only
+  // `payload.roomId` -- and this cross-check must not demand one.
+  if (type.startsWith("room.") && value.roomId !== undefined && payload.roomId !== value.roomId) return null;
   if (type === "room.message.created") {
     if (payload.messageSeq !== value.messageSeq || payload.roomRevision !== value.roomRevision) return null;
   }

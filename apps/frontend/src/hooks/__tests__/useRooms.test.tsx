@@ -721,9 +721,11 @@ describe("useRooms canonical reconciliation", () => {
     messaging.listRooms.mockClear();
 
     act(() => {
+      // Published on the user channel (not a room subscription), so the
+      // real wire frame carries no envelope-level roomId -- only payload.roomId.
       for (const handler of handlers) handler({
         schemaVersion: 1, eventId: "member-updated", type: "room.member.updated", occurredAt: "2026-09-10T00:03:00Z",
-        roomId: room.roomId, payload: { roomId: room.roomId },
+        payload: { roomId: room.roomId },
       });
     });
 

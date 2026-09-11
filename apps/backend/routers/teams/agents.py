@@ -45,7 +45,11 @@ from core.services.paperclip_openclaw_pairing import (
     get_starter_agent_ids,
     pair_with_openclaw,
 )
-from core.services.paperclip_agent_lifecycle import AgentLifecycleConflict, delete_agent_everywhere
+from core.services.paperclip_agent_lifecycle import (
+    AgentLifecycleConflict,
+    delete_agent_everywhere,
+    ensure_root_ceo_survives,
+)
 from core.services.paperclip_provisioning import _ws_gateway_url  # noqa: F401 — re-exported for downstream tasks.
 from core.services.paperclip_user_session import get_user_session_cookie
 from core.services.provision_gate import evaluate_provision_gate
@@ -695,7 +699,21 @@ async def patch_agent(
     payload = body.model_dump(exclude_none=True, by_alias=True)
     if "reports_to" in body.model_fields_set and body.reports_to is None:
         payload["reportsTo"] = None
-    upstream = await _admin().patch_agent(
+    admin = _admin()
+    if payload.get("reportsTo"):
+        target = await admin.get_agent(
+            agent_id=agent_id,
+            session_cookie=ctx.session_cookie,
+        )
+        listed = await admin.list_agents(
+            company_id=ctx.company_id,
+            session_cookie=ctx.session_cookie,
+        )
+        try:
+            ensure_root_ceo_survives(target=target, agents=envelope_list(listed, "agents")["agents"])
+        except AgentLifecycleConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    upstream = await admin.patch_agent(
         agent_id=agent_id,
         body=payload,
         session_cookie=ctx.session_cookie,

@@ -381,6 +381,15 @@ def test_patch_agent_drops_null_for_non_reports_to_fields(client, monkeypatch):
     fields (title here) must still be dropped, not forwarded, while a
     concurrent reportsTo value passes through."""
     admin = MagicMock()
+    agent = {
+        "id": "a1",
+        "companyId": "co_abc",
+        "name": "Specialist",
+        "role": "engineer",
+        "reportsTo": None,
+    }
+    admin.get_agent = AsyncMock(return_value=agent)
+    admin.list_agents = AsyncMock(return_value={"agents": [agent]})
     admin.patch_agent = AsyncMock(return_value={"id": "a1"})
     from routers.teams import agents as agents_mod
 
@@ -395,6 +404,67 @@ def test_patch_agent_drops_null_for_non_reports_to_fields(client, monkeypatch):
     forwarded = admin.patch_agent.await_args.kwargs["body"]
     assert forwarded == {"reportsTo": "mgr1"}
     assert "title" not in forwarded
+
+
+def test_patch_agent_rejects_moving_final_root_ceo_under_a_manager(client, monkeypatch):
+    admin = MagicMock()
+    root = {
+        "id": "root",
+        "companyId": "co_abc",
+        "name": "Renamed CEO",
+        "role": "ceo",
+        "reportsTo": None,
+    }
+    admin.get_agent = AsyncMock(return_value=root)
+    admin.list_agents = AsyncMock(return_value={"agents": [root]})
+    admin.patch_agent = AsyncMock(return_value={**root, "reportsTo": "manager"})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.patch(
+        "/api/v1/teams/agents/root",
+        json={"reportsTo": "manager"},
+        headers={"Authorization": "Bearer x"},
+    )
+
+    assert r.status_code == 409
+    assert r.json()["detail"] == "The final root CEO cannot be deleted or demoted."
+    admin.patch_agent.assert_not_awaited()
+
+
+def test_patch_agent_allows_moving_root_ceo_when_another_root_exists(client, monkeypatch):
+    admin = MagicMock()
+    retiring_root = {
+        "id": "old-root",
+        "companyId": "co_abc",
+        "name": "Ada",
+        "role": "ceo",
+        "reportsTo": None,
+    }
+    surviving_root = {
+        "id": "new-root",
+        "companyId": "co_abc",
+        "name": "Bea",
+        "role": "ceo",
+        "reportsTo": None,
+    }
+    updated = {**retiring_root, "reportsTo": "new-root"}
+    admin.get_agent = AsyncMock(return_value=retiring_root)
+    admin.list_agents = AsyncMock(return_value={"agents": [retiring_root, surviving_root]})
+    admin.patch_agent = AsyncMock(return_value=updated)
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.patch(
+        "/api/v1/teams/agents/old-root",
+        json={"reportsTo": "new-root"},
+        headers={"Authorization": "Bearer x"},
+    )
+
+    assert r.status_code == 200
+    assert r.json()["reportsTo"] == "new-root"
 
 
 def test_delete_agent_maps_final_root_conflict_to_409(client, monkeypatch):

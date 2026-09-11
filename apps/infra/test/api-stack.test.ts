@@ -591,6 +591,7 @@ describe("ApiStack — messaging projector permissions and alarms", () => {
       Environment: {
         Variables: Match.objectLike({
           MESSAGING_TABLE: Match.anyValue(),
+          USERS_TABLE: "lightbulb-dev-users",
           APPSYNC_EVENTS_HTTP_ENDPOINT: Match.anyValue(),
           APPSYNC_EVENTS_REGION: "us-east-1",
         }),

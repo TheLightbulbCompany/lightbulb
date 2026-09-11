@@ -39,7 +39,7 @@ const handlers = new Set<(event: LiveEvent) => void>();
 const messaging = {
   listRooms: vi.fn(async () => ({ rooms: [room as RoomSummary] })),
   getRoom: vi.fn<(roomId: string) => Promise<RoomDetail>>(async () => room),
-  listMessages: vi.fn(async () => ({ messages: [firstMessage], nextAfterSeq: null })),
+  listMessages: vi.fn(async () => ({ messages: [firstMessage], nextAfterSeq: null as number | null })),
   sendMessage: vi.fn(async (_roomId: string, request: { clientMessageId: string; text: string; mentions: unknown[]; replyToMessageId: string | null; threadRootMessageId: string | null }) => ({
     ...firstMessage,
     messageId: "55555555-5555-4555-8555-555555555555",
@@ -111,6 +111,21 @@ beforeEach(() => {
 });
 
 describe("useRooms canonical reconciliation", () => {
+  it("reports complete history only after all pages and exposes failed loads for retry", async () => {
+    const { result } = renderHook(() => useRooms(), { wrapper });
+    await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(room.roomId));
+    messaging.listMessages.mockResolvedValueOnce({ messages: [firstMessage], nextAfterSeq: 1 });
+    messaging.listMessages.mockRejectedValueOnce(new Error("offline"));
+    act(() => result.current.loadHistory());
+    await waitFor(() => expect(result.current.historyError).toBe(true));
+    expect(result.current.historyComplete).toBe(false);
+    expect(result.current.messages).toEqual([firstMessage]);
+    act(() => result.current.loadHistory());
+    await waitFor(() => expect(result.current.historyComplete).toBe(true));
+    expect(result.current.historyError).toBe(false);
+    expect(result.current.historyLoading).toBe(false);
+    expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 1, 100);
+  });
   it("keeps background arrivals unread until the window gains focus", async () => {
     vi.mocked(document.hasFocus).mockReturnValue(false);
     const { result } = renderHook(() => useRooms(), { wrapper });

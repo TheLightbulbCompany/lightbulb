@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 import { RoomComposer, type RoomComposerProps } from "./RoomComposer";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import { RoomImageAttachments } from "./RoomImageAttachments";
+import { RoomMessageSearch } from "./RoomMessageSearch";
 import { roomDisplayName } from "./types";
 import type {
   PendingRoomMessage,
@@ -38,6 +39,10 @@ export interface RoomPanelProps {
   liveConnected: boolean;
   participants: readonly RoomParticipant[];
   messages: readonly RoomMessage[];
+  historyLoading?: boolean;
+  historyComplete?: boolean;
+  historyError?: boolean;
+  onLoadHistory?: () => void;
   pendingMessages?: readonly PendingRoomMessage[];
   typingMembers?: readonly { userId: string; displayName: string }[];
   runs?: readonly RoomRunView[];
@@ -152,6 +157,10 @@ function RoomContent({
   liveConnected,
   participants,
   messages,
+  historyLoading,
+  historyComplete,
+  historyError,
+  onLoadHistory,
   pendingMessages = [],
   typingMembers = [],
   runs = [],
@@ -175,6 +184,7 @@ function RoomContent({
   narrow,
 }: RoomPanelProps) {
   const id = useId();
+  const [searchTarget, setSearchTarget] = useState<RoomMessage | null>(null);
   const [reactionPending, setReactionPending] = useState<string | null>(null);
   const [reactionError, setReactionError] = useState<string | null>(null);
   const [membersOpen, setMembersOpen] = useState(false);
@@ -262,6 +272,15 @@ function RoomContent({
   }, [selection]);
 
   useEffect(() => {
+    if (!searchTarget) return;
+    const root = searchTarget.threadRootMessageId;
+    if (root ? selection?.kind !== "thread" || selection.id !== root : selection !== null) return;
+    const target = document.getElementById(`${id}-${root ? "thread" : "main"}-${searchTarget.messageId}`);
+    target?.scrollIntoView({ block: "center" });
+    target?.focus({ preventScroll: true });
+  }, [id, searchTarget, selection]);
+
+  useEffect(() => {
     if (!contextCollapsed && isNarrow && !selection) contextHeading.current?.focus({ preventScroll: true });
     else if (contextCollapsed && contextWasOpen.current && isNarrow && !selection) contextTrigger.current?.focus({ preventScroll: true });
     contextWasOpen.current = !contextCollapsed;
@@ -295,7 +314,8 @@ function RoomContent({
     const name = participant?.displayName || message.author.displayName || "Unknown author";
     const timestamp = !Number.isNaN(Date.parse(message.createdAt)) ? message.createdAt : undefined;
     const replyCount = inThread ? 0 : messages.filter((candidate) => candidate.threadRootMessageId === message.messageId).length;
-    return <article key={message.messageId} className="room-message" aria-label={`Message from ${name}`}>
+    return <article key={message.messageId} id={`${id}-${inThread ? "thread" : "main"}-${message.messageId}`} tabIndex={-1}
+      className={cn("room-message", searchTarget?.messageId === message.messageId && "bg-accent")} aria-label={`Message from ${name}`}>
       {participant ? <ParticipantAvatar participant={participant} /> : <Identity name={name} avatarOnly size="default" />}
       <div className="room-message-content">
         <div className="room-message-byline">{participant && onSelectParticipant && !(participant.kind === "human" && participant.id === currentUserId)
@@ -373,6 +393,15 @@ function RoomContent({
           ? <ParticipantAvatar participant={counterparts[0]} size="sm" />
           : <RoomIcon size={20} aria-hidden="true" />}<h2 className="font-semibold text-lg truncate" title={roomName}>{roomName}</h2></div>
         <div className="room-audience">
+          <RoomMessageSearch roomId={roomId} messages={messages} participants={participants}
+            loading={historyLoading} complete={historyComplete} error={historyError} onLoad={onLoadHistory}
+            onSelect={(message) => {
+              const root = message.threadRootMessageId;
+              onSelectThread?.(root);
+              setSelection(root ? { kind: "thread", id: root } : null);
+              setContextCollapsed(true);
+              setSearchTarget(message);
+            }} />
           <Button ref={memberTrigger} type="button" variant="ghost" className="room-members-trigger" aria-label="View members" aria-expanded={membersOpen} aria-controls={`${id}-members`}
             onClick={() => setMembersOpen(!membersOpen)}><Users aria-hidden="true" />{participants.length}</Button>
         </div>

@@ -139,6 +139,9 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
   const roomError = detailResponse.error;
   const mutateRoom = detailResponse.mutate;
   const [messages, setMessages] = useState<CanonicalRoomMessage[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyComplete, setHistoryComplete] = useState(false);
+  const [historyError, setHistoryError] = useState(false);
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
   const [optimistic, setOptimistic] = useState<OptimisticRoomMessage[]>([]);
@@ -156,6 +159,9 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
     generation.current += 1;
     messagesRef.current = [];
     setMessages([]);
+    setHistoryLoading(false);
+    setHistoryComplete(false);
+    setHistoryError(false);
     setOptimistic([]);
     setAttempts(new Map());
     requests.current.clear();
@@ -196,9 +202,12 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
     if (reconciliation.current) return reconciliation.current;
     const roomId = activeRoomId;
     const runGeneration = generation.current;
+    setHistoryLoading(true);
+    setHistoryError(false);
     const run = async () => {
       while (requestedAfter.current !== null && generation.current === runGeneration) {
         let cursor = requestedAfter.current;
+        const completeHistory = cursor === 0;
         requestedAfter.current = null;
         for (;;) {
           const page: MessagePage = await messaging.listMessages(roomId, cursor, 100);
@@ -207,14 +216,25 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
           const merged = mergeCanonicalMessages(messagesRef.current, valid);
           messagesRef.current = merged;
           setMessages(merged);
-          if (page.nextAfterSeq === null) break;
+          if (page.nextAfterSeq === null) {
+            if (completeHistory) setHistoryComplete(true);
+            break;
+          }
           cursor = page.nextAfterSeq;
         }
       }
     };
-    reconciliation.current = run().finally(() => {
+    reconciliation.current = run().catch((error) => {
+      if (generation.current === runGeneration) {
+        setHistoryError(true);
+        setHistoryComplete(false);
+      }
+      throw error;
+    }).finally(() => {
+      if (generation.current !== runGeneration) return;
+      setHistoryLoading(false);
       reconciliation.current = null;
-      if (requestedAfter.current !== null && generation.current === runGeneration) void reconcile(requestedAfter.current);
+      if (requestedAfter.current !== null) void reconcile(requestedAfter.current).catch(() => {});
     });
     return reconciliation.current;
   }, [activeRoomId, accessRemoved, messaging]);
@@ -246,7 +266,7 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
 
   useEffect(() => {
     if (!subscriptionPath || !liveChannels.includes(subscriptionPath)) return;
-    void reconcile(0);
+    void reconcile(0).catch(() => {});
     reconcileRuns();
   }, [subscriptionPath, activeRoom?.roomRevision, liveChannels, connectionRevision, reconcile, reconcileRuns]);
 
@@ -283,7 +303,7 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
       const merged = mergeCanonicalMessages(messagesRef.current, [event.payload]);
       messagesRef.current = merged;
       setMessages(merged);
-      if (event.payload.messageSeq > previous + 1) void reconcile(previous);
+      if (event.payload.messageSeq > previous + 1) void reconcile(previous).catch(() => {});
       void mutateRooms();
       return;
     }
@@ -524,6 +544,10 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
     roomLoading: detailResponse.isLoading,
     accessRemoved,
     messages,
+    historyLoading,
+    historyComplete,
+    historyError,
+    loadHistory: () => { void reconcile(0).catch(() => {}); },
     optimisticMessages: optimistic,
     typingMembers: [...typing.values()],
     runs: [...runs.values()].filter((run) => !messages.some((message) => message.runId === run.runId)),

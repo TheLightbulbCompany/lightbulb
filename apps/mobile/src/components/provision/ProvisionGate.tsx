@@ -422,17 +422,15 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
   //
   // Branching here instead — stepper for starting/parked, a bare <View> for the
   // rest — would change the Provider's child element TYPE on every transition,
-  // and React tears down a subtree whose type changed. That subtree is
-  // `<FirstRunGate><Tabs>…` — the entire tab navigator — so a cold start would
+  // and React tears down a subtree whose type changed. That subtree is the
+  // entire live app — including the tab navigator — so a cold start would
   // remount it twice (loading → starting → ready), discarding composer drafts,
   // loaded message lists, scroll position and per-screen mount fetches each
   // time. One element type for all five states is what keeps `children` alive.
   //
   // `children` only ever mounts from here (every earlier return replaces the
   // whole tree with an interstitial), so this is also the one place that hands
-  // the polled status down via ContainerStatusContext — FirstRunGate reads it
-  // from there instead of running its own second `/container/status`-adjacent
-  // poll (mobile onboarding-parity Slice 2).
+  // the polled status down via ContainerStatusContext to in-app consumers.
   return (
     <ContainerStatusContext.Provider value={status}>
       <View style={styles.gateRoot}>

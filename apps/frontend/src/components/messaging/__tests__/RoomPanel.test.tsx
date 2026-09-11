@@ -43,6 +43,22 @@ it("renames a channel in a centered dialog with pending, retry, and focus restor
   expect(trigger).toHaveFocus();
 });
 
+it("renames a group chat and offers member management", async () => {
+  const user = userEvent.setup();
+  const onRenameRoom = vi.fn().mockResolvedValue(undefined);
+  render(<RoomPanel {...props} room={{ ...props.room!, kind: "group-dm", name: "Launch crew" }}
+    onRenameRoom={onRenameRoom} onAddMember={vi.fn()} addMemberCandidates={[]} />);
+  await user.click(screen.getByRole("button", { name: "Show room details" }));
+  expect(screen.getByRole("button", { name: "Add members" })).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Rename group chat" }));
+  const dialog = screen.getByRole("dialog", { name: "Rename group chat" });
+  const input = within(dialog).getByRole("textbox", { name: "Group chat name" });
+  await user.clear(input);
+  await user.type(input, "Product launch");
+  await user.click(within(dialog).getByRole("button", { name: "Save name" }));
+  expect(onRenameRoom).toHaveBeenCalledWith("Product launch");
+});
+
 it("confirms removal of a non-owner with Cancel focused and restores focus", async () => {
   const user = userEvent.setup();
   const onRemoveMember = vi.fn().mockResolvedValue(undefined);
@@ -62,11 +78,11 @@ it("confirms removal of a non-owner with Cancel focused and restores focus", asy
   expect(onRemoveMember).toHaveBeenCalledWith({ kind: "agent", id: "friday" });
 });
 
-it.each(["dm", "group-dm", "channel"] as const)("does not expose management without channel admin permission (%s)", async (kind) => {
+it.each(["dm", "group-dm", "channel"] as const)("does not expose management without room admin permission (%s)", async (kind) => {
   render(<RoomPanel {...props} room={{ ...props.room!, kind }}
     participants={[{ ...owner, role: "member" }, friday]} onRenameRoom={vi.fn()} onRemoveMember={vi.fn()} />);
   await userEvent.click(screen.getByRole("button", { name: "Show room details" }));
-  expect(screen.queryByRole("button", { name: "Rename channel" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Rename/ })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Remove Friday" })).not.toBeInTheDocument();
 });
 
@@ -320,11 +336,11 @@ it("lets wide room details change agent listen mode without giving humans a cont
   expect(onListenModeChange).toHaveBeenCalledWith("friday", "observe");
 });
 
-it("adds only eligible non-members to an existing channel", async () => {
+it.each(["channel", "group-dm"] as const)("adds only eligible non-members to an existing %s", async (kind) => {
   const user = userEvent.setup();
   const onAddMember = vi.fn(async () => undefined);
   render(<RoomPanel {...props}
-    room={{ ...props.room!, kind: "channel", name: "Launch" }}
+    room={{ ...props.room!, kind, name: "Launch" }}
     addMemberCandidates={[
       { kind: "human", id: "colleague", displayName: "Colleague", mentionHandle: null },
       { kind: "agent", id: "atlas", displayName: "Atlas", mentionHandle: null },
@@ -383,8 +399,8 @@ it("resets member selection and picker state when the room changes", async () =>
   expect(screen.getByRole("checkbox", { name: "Atlas" })).not.toBeChecked();
 });
 
-it.each(["dm", "group-dm"] as const)("does not offer member adds in a %s", async (kind) => {
-  render(<RoomPanel {...props} room={{ ...props.room!, kind }}
+it("does not offer member adds in a dm", async () => {
+  render(<RoomPanel {...props} room={{ ...props.room!, kind: "dm" }}
     addMemberCandidates={[{ kind: "agent", id: "atlas", displayName: "Atlas", mentionHandle: null }]}
     onAddMember={vi.fn()} />);
   await userEvent.click(screen.getByRole("button", { name: "Show room details" }));

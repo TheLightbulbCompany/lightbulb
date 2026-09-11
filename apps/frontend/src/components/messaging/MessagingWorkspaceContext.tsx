@@ -325,7 +325,7 @@ export function MessagingWorkspaceProvider({
     onListenModeChange: (agentId, mode) => void changeListenMode(agentId, mode),
     onSetReaction: rooms.setReaction,
     onUpdateMessage: rooms.updateMessage,
-    ...(rooms.activeRoom?.kind === "channel" && ["owner", "admin"].includes(
+    ...(rooms.activeRoom && rooms.activeRoom.kind !== "dm" && ["owner", "admin"].includes(
       rooms.activeRoom.members.find((member) => member.kind === "human" && member.id === userId)?.role ?? "",
     ) ? {
       addMemberCandidates: directoryParticipants.filter((candidate) => !rooms.activeRoom!.members.some(

@@ -58,7 +58,9 @@ function DirectoryContent({
   const [directoryOpen, setDirectoryOpen] = useState(false);
   const [markingUnread, setMarkingUnread] = useState<string | null>(null);
   const [unreadError, setUnreadError] = useState<{ roomId: string; label: string } | null>(null);
-  const validName = kind !== "channel" || (name.trim().length >= 1 && name.trim().length <= 80);
+  const validName = kind === "channel"
+    ? name.trim().length >= 1 && name.trim().length <= 80
+    : kind === "group-dm" ? name.trim().length <= 80 : true;
   const validCount = kind === "dm" ? selected.size === 1 : kind === "group-dm" ? selected.size >= 2 : true;
   const canCreate = !!onCreate && validName && validCount && selected.size <= 31;
   const visibleParticipants = participants.filter((participant) => {
@@ -130,11 +132,11 @@ function DirectoryContent({
     {unreadError && <p role="alert" className="px-2 text-sm text-err">Could not mark {unreadError.label} unread. <Button variant="outline" disabled={markingUnread !== null}
       onClick={() => void markRoomUnread(unreadError.roomId, unreadError.label)}>Try again</Button></p>}
     {partialError && <div role="alert" className="px-2 text-sm text-err">Some conversation details could not be loaded. {onRetry && <Button variant="outline" onClick={onRetry}>Try again</Button>}</div>}
-    {(["Channels", "Direct messages"] as const).map((group) => {
-      const entries = rooms.filter((room) => group === "Channels" ? room.kind === "channel" : room.kind !== "channel");
+    {(["Channels", "Group chats", "Direct messages"] as const).map((group) => {
+      const entries = rooms.filter((room) => group === "Channels" ? room.kind === "channel" : group === "Group chats" ? room.kind === "group-dm" : room.kind === "dm");
       return <section key={group} aria-label={group}>
         <h3 className="room-directory-group">{group}</h3>
-        {entries.length === 0 && <p className="text-sm text-muted-foreground px-2">{group === "Channels" ? "Create a channel for shared work." : "Start a conversation with people or agents."}</p>}
+        {entries.length === 0 && <p className="text-sm text-muted-foreground px-2">{group === "Channels" ? "Create a channel for shared work." : group === "Group chats" ? "Start a group chat with people or agents." : "Start a direct message."}</p>}
         <ul>{entries.map((room) => {
           const Icon = room.kind === "channel" ? Hash : room.kind === "group-dm" ? Users : MessageCircle;
           const label = roomDisplayName(room, room.participants);
@@ -172,11 +174,11 @@ function DirectoryContent({
       onSubmit={async (event) => {
         event.preventDefault();
         if (!canCreate || creationBusy) return;
-        const created = await onCreate?.({ kind, name: kind === "channel" ? name.trim() : null, members: [...selected.values()] });
+        const created = await onCreate?.({ kind, name: kind === "dm" ? null : name.trim() || null, members: [...selected.values()] });
         if (created) { setCreating(false); setName(""); setSelected(new Map()); setQuery(""); setKind("channel"); }
       }}>
       <div className="room-creation-header">
-        <DialogTitle>{kind === "channel" ? "Create a channel" : "New message"}</DialogTitle>
+        <DialogTitle>{kind === "channel" ? "Create a channel" : kind === "group-dm" ? "New group chat" : "New direct message"}</DialogTitle>
         <DialogDescription>Choose the people and agents you want to talk with.</DialogDescription>
       </div>
       <div className="room-creation-body">
@@ -185,9 +187,9 @@ function DirectoryContent({
         onChange={(event) => { setKind(event.target.value as RoomKind); setSelected(new Map()); }}>
         <option value="channel">Channel</option>
         <option value="dm">Direct message</option>
-        <option value="group-dm">Group message</option>
+        <option value="group-dm">Group chat</option>
       </select>
-      {kind === "channel" && <><label htmlFor={`${id}-name`}>Channel name</label>
+      {kind !== "dm" && <><label htmlFor={`${id}-name`}>{kind === "channel" ? "Channel name" : "Group chat name (optional)"}</label>
         <input id={`${id}-name`} className="room-input" value={name} maxLength={80} disabled={creationBusy} onChange={(event) => setName(event.target.value)} /></>}
       <p className="text-sm text-muted-foreground">Only selected workspace members can read this conversation.</p>
       <div className="room-picker">
@@ -215,7 +217,7 @@ function DirectoryContent({
       <div className="room-creation-footer">
         {creationError && <p role="alert" className="text-sm text-err">{creationError}</p>}
         <div className="room-composer-actions"><Button type="button" variant="ghost" disabled={creationBusy} onClick={() => setCreating(false)}>Cancel</Button>
-          <Button type="submit" disabled={!canCreate || creationBusy}>{creationBusy ? "Creating…" : kind === "channel" ? "Create channel" : "Start message"}</Button></div>
+          <Button type="submit" disabled={!canCreate || creationBusy}>{creationBusy ? "Creating…" : kind === "channel" ? "Create channel" : kind === "group-dm" ? "Start group chat" : "Start direct message"}</Button></div>
       </div>
     </form>
     </DialogContent>

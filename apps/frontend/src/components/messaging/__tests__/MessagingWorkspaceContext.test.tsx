@@ -151,8 +151,8 @@ it("offers channel admins only non-members and projects explicit member wire fie
   });
 });
 
-it.each(["dm", "group-dm"] as const)("does not expose member adds for a %s", (kind) => {
-  state.activeRoom = { ...room, kind };
+it("does not expose member management for a dm", () => {
+  state.activeRoom = { ...room, kind: "dm" };
   compose();
   expect(panel.onAddMember).toBeUndefined();
   expect(panel.onRenameRoom).toBeUndefined();
@@ -167,8 +167,10 @@ it("does not expose member adds to a channel member without admin permission", (
   expect(panel.onRemoveMember).toBeUndefined();
 });
 
-it.each(["owner", "admin"] as const)("connects channel %s management to existing commands", async (role) => {
-  state.activeRoom = { ...room, kind: "channel", members: room.members.map((member) => member.id === "owner" ? { ...member, role } : member) };
+it.each([
+  ["channel", "owner"], ["channel", "admin"], ["group-dm", "owner"], ["group-dm", "admin"],
+] as const)("connects %s %s management to existing commands", async (kind, role) => {
+  state.activeRoom = { ...room, kind, members: room.members.map((member) => member.id === "owner" ? { ...member, role } : member) };
   compose();
   await act(async () => panel.onRenameRoom?.("New name"));
   await act(async () => panel.onRemoveMember?.({ kind: "agent", id: "agent-friday" }));

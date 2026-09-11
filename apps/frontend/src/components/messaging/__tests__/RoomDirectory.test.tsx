@@ -23,6 +23,23 @@ it("creates through a centered portal with member settings and closes on success
   expect(onCreate).toHaveBeenCalledWith({ kind: "channel", name: "Launch", members: [{ kind: "agent", id: "atlas", role: "member", listenMode: "active" }] });
 });
 
+it("creates a named group chat with a flexible mix of participants", async () => {
+  const onCreate = vi.fn().mockResolvedValue(true);
+  render(<RoomDirectory ownerScopeId="org" state="ready" rooms={[]} participants={[alice, atlas]}
+    onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onCreate={onCreate} />);
+  fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
+  fireEvent.change(screen.getByLabelText("Conversation type"), { target: { value: "group-dm" } });
+  const dialog = screen.getByRole("dialog", { name: "New group chat" });
+  fireEvent.change(within(dialog).getByLabelText("Group chat name (optional)"), { target: { value: "Launch crew" } });
+  fireEvent.click(within(dialog).getByLabelText("Select Alice"));
+  fireEvent.click(within(dialog).getByLabelText("Select Atlas"));
+  fireEvent.click(within(dialog).getByRole("button", { name: "Start group chat" }));
+  await waitFor(() => expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({
+    kind: "group-dm", name: "Launch crew",
+    members: expect.arrayContaining([expect.objectContaining({ kind: "human", id: "alice" }), expect.objectContaining({ kind: "agent", id: "atlas" })]),
+  })));
+});
+
 it("preserves a failed draft and disables member controls while creating", async () => {
   const props = { ownerScopeId: "org", state: "ready" as const, rooms: [], participants: [atlas], onSelectRoom: vi.fn(), onSelectParticipant: vi.fn(), onCreate: vi.fn().mockResolvedValue(false) };
   const { rerender } = render(<RoomDirectory {...props} />);
@@ -50,7 +67,8 @@ it("names canonical DMs from counterparts and preserves selection and unread cou
     { ...base, roomId: "group", kind: "group-dm", name: null, participants: [alice, atlas] },
   ]} />);
   expect(screen.getByRole("button", { name: /Launch/ })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: /Alice and Atlas/ })).toBeInTheDocument();
+  expect(within(screen.getByRole("region", { name: "Group chats" })).getByRole("button", { name: /Alice and Atlas/ })).toBeInTheDocument();
+  expect(within(screen.getByRole("region", { name: "Direct messages" })).getByRole("button", { name: /Friday/ })).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /^Direct message$/ })).not.toBeInTheDocument();
   const row = screen.getByRole("button", { name: /Friday/ });
   expect(row).toHaveAttribute("aria-current", "page");

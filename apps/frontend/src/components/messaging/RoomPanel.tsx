@@ -227,8 +227,9 @@ function RoomContent({
   const showContext = showDetail || !contextCollapsed;
   const activeRuns = runs.filter((run) => run.state === "running");
   const viewer = participants.find((participant) => participant.kind === "human" && participant.id === currentUserId);
-  const canAddMembers = visibleRoom?.kind === "channel" && !!onAddMember;
-  const canManage = visibleRoom?.kind === "channel" && (viewer?.role === "owner" || viewer?.role === "admin");
+  const managedRoomKind = visibleRoom?.kind === "channel" ? "channel" : "group chat";
+  const canAddMembers = visibleRoom?.kind !== "dm" && !!onAddMember;
+  const canManage = visibleRoom?.kind !== "dm" && (viewer?.role === "owner" || viewer?.role === "admin");
   const removalTarget = management && management !== "rename"
     ? participants.find((member) => member.kind === management.kind && member.id === management.id && member.role !== "owner")
     : undefined;
@@ -464,9 +465,9 @@ function RoomContent({
     {showContext && !showDetail && <aside className="room-context" aria-label="Room details">
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={() => setContextCollapsed(true)}><ArrowLeft aria-hidden="true" /></Button><h3 ref={contextHeading} tabIndex={-1} className="font-semibold">Room details</h3></header>
       <div className="room-context-body">
-        {canManage && onRenameRoom && <section aria-labelledby={`${id}-channel-name`}>
-          <div className="room-members-heading"><h4 id={`${id}-channel-name`} className="font-semibold">Channel name</h4>
-            <Button type="button" variant="outline" disabled={!actionable} onClick={(event) => openManagement("rename", event.currentTarget)}>Rename channel</Button>
+        {canManage && onRenameRoom && <section aria-labelledby={`${id}-room-name`}>
+          <div className="room-members-heading"><h4 id={`${id}-room-name`} className="font-semibold">{visibleRoom?.kind === "channel" ? "Channel name" : "Group chat name"}</h4>
+            <Button type="button" variant="outline" disabled={!actionable} onClick={(event) => openManagement("rename", event.currentTarget)}>Rename {managedRoomKind}</Button>
           </div><p className="room-wrap text-sm text-muted-foreground">{roomName}</p>
         </section>}
         <section aria-labelledby={`${id}-context-members`}>
@@ -526,12 +527,12 @@ function RoomContent({
       <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto"
         onOpenAutoFocus={(event) => { if (management !== "rename") { event.preventDefault(); managementCancel.current?.focus(); } }}
         onCloseAutoFocus={(event) => { event.preventDefault(); (managementTrigger.current?.isConnected ? managementTrigger.current : contextHeading.current)?.focus(); }}>
-        <DialogHeader><DialogTitle>{management === "rename" ? "Rename channel" : "Remove member"}</DialogTitle>
-          <DialogDescription className="break-words">{management === "rename" ? "Choose a name that helps your team find this channel."
-            : `Remove ${removalTarget?.displayName ?? "this member"} from ${roomName}? They will lose access to this channel and its messages.`}</DialogDescription>
+        <DialogHeader><DialogTitle>{management === "rename" ? `Rename ${managedRoomKind}` : "Remove member"}</DialogTitle>
+          <DialogDescription className="break-words">{management === "rename" ? `Choose a name that helps your team find this ${managedRoomKind}.`
+            : `Remove ${removalTarget?.displayName ?? "this member"} from ${roomName}? They will lose access to this ${managedRoomKind} and its messages.`}</DialogDescription>
         </DialogHeader>
         <form className="grid gap-4" onSubmit={(event) => { event.preventDefault(); void saveManagement(); }}>
-          {management === "rename" && <div className="grid gap-2"><label htmlFor={`${id}-rename`} className="text-sm font-medium">Channel name</label>
+          {management === "rename" && <div className="grid gap-2"><label htmlFor={`${id}-rename`} className="text-sm font-medium">{visibleRoom?.kind === "channel" ? "Channel name" : "Group chat name"}</label>
             <input id={`${id}-rename`} className="room-input" value={roomNameDraft} maxLength={200} required disabled={managementPending}
               onChange={(event) => setRoomNameDraft(event.target.value)} /></div>}
           {managementError && <p role="alert" className="text-sm text-err break-words">{managementError}</p>}

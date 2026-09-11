@@ -45,6 +45,10 @@ const GAUGE = "22222222-2222-4222-8222-222222222222";
 const ROOM = "33333333-3333-4333-8333-333333333333";
 const MESSAGE = "44444444-4444-4444-8444-444444444444";
 const HISTORY_MESSAGE = "55555555-5555-4555-8555-555555555555";
+const ATTACHMENT = "66666666-6666-4666-8666-666666666666";
+const HISTORY_ATTACHMENT = "77777777-7777-4777-8777-777777777777";
+const WEBP_ATTACHMENT = "88888888-8888-4888-8888-888888888888";
+const GIF_ATTACHMENT = "99999999-9999-4999-8999-999999999999";
 const CREATED_AT = "2026-09-10T12:34:56.000Z";
 const ENV = {
   ISOL8_API_URL: "https://api.flickmeon.ai/",
@@ -65,6 +69,7 @@ function canonicalMessage(overrides: Record<string, unknown> = {}) {
     threadRootMessageId: null,
     createdAt: CREATED_AT,
     runId: null,
+    attachments: [],
     ...overrides,
   };
 }
@@ -598,9 +603,74 @@ describe("strict LightbulbRoomIngress", () => {
       ).ok,
     ).toBe(false);
   });
+
+  it("defaults missing attachments to empty and accepts bounded raster metadata", () => {
+    const withoutAttachments = parseIngress(ingress());
+    expect(withoutAttachments.ok && withoutAttachments.value.message.attachments).toEqual([]);
+
+    const parsed = parseIngress(ingress({
+      message: canonicalMessage({
+        attachments: [{ id: ATTACHMENT, fileName: "launch.png", contentType: "image/png", size: 5 * 1024 * 1024 }],
+      }),
+    }));
+    expect(parsed.ok && parsed.value.message.attachments).toEqual([
+      { id: ATTACHMENT, fileName: "launch.png", contentType: "image/png", size: 5 * 1024 * 1024 },
+    ]);
+  });
+
+  it.each([
+    ["client path", { id: ATTACHMENT, fileName: "launch.png", contentType: "image/png", size: 1, path: "/tmp/x" }],
+    ["invalid id", { id: "attachment-1", fileName: "launch.png", contentType: "image/png", size: 1 }],
+    ["unsafe filename", { id: ATTACHMENT, fileName: "../launch.png", contentType: "image/png", size: 1 }],
+    ["unsupported MIME", { id: ATTACHMENT, fileName: "launch.svg", contentType: "image/svg+xml", size: 1 }],
+    ["oversized file", { id: ATTACHMENT, fileName: "launch.png", contentType: "image/png", size: 5 * 1024 * 1024 + 1 }],
+  ])("rejects attachment %s", (_name, attachment) => {
+    expect(parseIngress(ingress({ message: canonicalMessage({ attachments: [attachment] }) })).ok).toBe(false);
+  });
+
+  it("rejects more than four attachments", () => {
+    const attachment = { id: ATTACHMENT, fileName: "launch.png", contentType: "image/png", size: 1 };
+    expect(parseIngress(ingress({ message: canonicalMessage({ attachments: Array(5).fill(attachment) }) })).ok).toBe(false);
+  });
 });
 
 describe("native inbound context and delivery", () => {
+  it("forwards only current attachments as native media under the trusted OpenClaw media root", async () => {
+    const sdk = inboundSdk();
+    const current = [
+      { id: ATTACHMENT, fileName: "launch source.png", contentType: "image/png", size: 123 },
+      { id: HISTORY_ATTACHMENT, fileName: "photo.jpeg", contentType: "image/jpeg", size: 124 },
+      { id: WEBP_ATTACHMENT, fileName: "chart.webp", contentType: "image/webp", size: 125 },
+      { id: GIF_ATTACHMENT, fileName: "demo.gif", contentType: "image/gif", size: 126 },
+    ];
+    const historical = { id: MESSAGE, fileName: "old.gif", contentType: "image/gif", size: 456 };
+    const event = ingress({
+      message: canonicalMessage({ attachments: current }),
+      recentHistory: [canonicalMessage({
+        messageId: HISTORY_MESSAGE,
+        messageSeq: 1,
+        attachments: [historical],
+      })],
+    });
+
+    await dispatchRoomEvent(
+      { sdk, cfg: config(), accountId: FRIDAY, channelRuntime: runtime(), env: () => ENV },
+      event,
+    );
+
+    const contextInput = vi.mocked(sdk.buildChannelInboundEventContext).mock.calls[0]![0] as any;
+    expect(contextInput.media).toEqual([
+      expect.objectContaining({ path: `/home/node/.openclaw/media/messaging/attachments/${ROOM}/${ATTACHMENT}.png` }),
+      expect.objectContaining({ path: `/home/node/.openclaw/media/messaging/attachments/${ROOM}/${HISTORY_ATTACHMENT}.jpg` }),
+      expect.objectContaining({ path: `/home/node/.openclaw/media/messaging/attachments/${ROOM}/${WEBP_ATTACHMENT}.webp` }),
+      expect.objectContaining({ path: `/home/node/.openclaw/media/messaging/attachments/${ROOM}/${GIF_ATTACHMENT}.gif` }),
+    ]);
+    expect(contextInput.media[0]).toMatchObject({
+      contentType: "image/png", kind: "image", fileName: "launch source.png", sizeBytes: 123, messageId: MESSAGE,
+    });
+    expect(JSON.stringify(contextInput.media)).not.toContain(`${MESSAGE}.gif`);
+  });
+
   it("passes explicit open admission, event kind, mentions, and structured context", async () => {
     const sdk = inboundSdk();
     const dispatch = vi.fn(async () => ({ admission: { kind: "dispatch" }, dispatched: true }));

@@ -165,8 +165,7 @@ function RotatingIdeas({ eyebrow }: { eyebrow: string }) {
   );
 }
 
-// The stepper's four short-lived holds — waiting on Clerk's `user`, on the
-// landing-brief replay, on billing — all replaced the entire chat surface with
+// The stepper's short-lived loading holds replace the entire chat surface with
 // an unlabelled centred spinner. On dev one of them sat there for 35s+ while
 // /container/status reported `lifecycle: "provisioning"`, so the owner saw a
 // bare spinner where the structured provisioning UI was supposed to be, and no
@@ -676,85 +675,10 @@ export function ProvisioningStepper({
     return () => clearInterval(interval);
   }, [phase]);
 
-  // First-run funnel: whoever first reaches a ready company — trial_local
-  // free-tier signup or an org owner/member — describes the business here
-  // before reaching chat. It's the committed onboarding front door (no
-  // skip), so the only way past it is submitting the brief (the backend's
-  // per-company DynamoDB claim makes a second submitter within the same
-  // org a no-op "already_submitted" rather than a duplicate). Placed
-  // BEFORE the ready return so a quick provision can't drop the funnel and
-  // lose the in-progress brief (and leave the kickoff hook, which requires
-  // briefSubmitted, unable to fire). Gated on gatePhase === "normal" so it
-  // never preempts a blocked / needs-signup / team-pending state. The
-  // `user` guard is load-bearing beyond null-safety: submit writes
-  // user.unsafeMetadata, so without a loaded Clerk user the funnel would
-  // be a dead-end form.
-  //
-  // "Have we onboarded?" is a PER-CONTAINER fact, not per-user: an org
-  // shares one container, so onboarding happens once for the whole org. The
-  // backend stamps it on the container row and surfaces it as
-  // `container.onboarded` on /container/status, so once anyone on this
-  // container completes the funnel, no one on it sees the funnel again —
-  // including a second org member whose own per-user marker is empty.
-  // `container.onboarded` is the SOLE durable authority for "have we
-  // onboarded?": the backend resets it when a container is wiped/
-  // reprovisioned, so a legitimately reprovisioned owner re-onboards.
-  //
-  // No SAME-SESSION flash-bridge (spec PR-9, CLIENT-HOOK deleted the
-  // `briefBaselineRef`/`sessionBriefSubmittedRef` latch): the funnel dismisses
-  // purely on the backend's own per-generation `funnel_state` advancing off
-  // "not_started" on the next shared bounded-loop poll (~1-2s via the realtime
-  // nudge, 5s backstop), rather than an in-memory guess at Clerk's
-  // `firstRun.briefSubmitted` re-render. NOTE (Option B, "watch Friday work"):
-  // the dismiss trigger is funnel SUBMISSION, not onboarding COMPLETION — see
-  // `awaitingBrief` below. `container.onboarded` is still the SOLE durable
-  // authority for the reprovision guard (a legacy row onboarded via the old
-  // onboarded_at, with funnel_state "not_started", must never re-show the
-  // funnel), which is why `awaitingBrief` keeps the `!containerOnboarded` term.
-  // Option B ("watch Friday work"): the funnel owns the screen only until the
-  // brief is SUBMITTED — not until onboarding COMPLETES. The moment the backend
-  // funnel_state advances past "not_started", we drop straight into Friday's
-  // chat so the user watches the server-dispatched first-run kickoff stream in
-  // live (goal/project/tasks appearing as she works), matching mobile's
-  // submit -> roster -> Friday redirect. `funnel_state` is the per-generation
-  // backend signal (resets to "not_started" when a container is recreated), so
-  // this keeps the reprovision safety `container.onboarded` gave; and the
-  // `!containerOnboarded` guard means a legacy-onboarded container (onboarded
-  // via the old onboarded_at, funnel_state still "not_started") never re-shows
-  // the funnel. Propagation from submit is ~1-2s via the realtime nudge (5s
-  // poll backstop), during which FirstRunFunnel shows its own "submitting" state
-  // — a brief confirmation, then live chat.
-  // Landing-page replay: answers stashed by the public landing funnel are
-  // POSTed once, right here, the moment the in-chat funnel would otherwise
-  // render (personal, normal-gate, non-terminal). While that submit is in
-  // flight — and until the next status poll reports it — the funnel is
-  // suppressed so the user isn't shown a form they already answered.
-
-  // Hold a neutral loader until Clerk resolves `user`. The funnel branch above
-  // requires a loaded user, so a not-yet-onboarded container would otherwise
-  // flash `children` (or the stepper) for a frame before the funnel takes over
-  // once `user` loads. Only matters where the funnel COULD show — a
-  // normal-gate, not-yet-onboarded, non-terminal container. A terminal error
-  // still routes to its card below.
-
-  // A ready-but-not-onboarded container BELONGS to the first-run funnel above,
-  // whatever the owner type (trial_local OR paid, personal OR org) — the funnel
-  // is keyed on `container.onboarded === false`, the authoritative per-container
-  // fact, NOT on the plan. But the funnel needs a truthy Clerk `user` (its
-  // submit writes user.unsafeMetadata), so its gate is `!!user`. When the
-  // container is already warm-ready while `user` is still resolving — the
-  // {isLoaded:true, user:null} window useUser returns right after an org
-  // `setActive` JWT refresh, which is exactly the paid-org-owner path (the
-  // personal path resolves `user` inline in useOnboardingGate, so it never hits
-  // this) — the funnel gate is skipped, the `!userLoaded` loader above is also
-  // skipped (Clerk reports loaded), and `phase === "ready"` below would hand
-  // straight off to the dockable workspace. That early ready-return beating the
-  // funnel IS the bug: a paid org owner is booted into a contextless workspace,
-  // the brief is never submitted, and Friday starts with zero goals/projects.
-  // Hold a neutral loader until `user` resolves so the funnel — not the dock —
-  // wins. On the auth-gated chat surface `user === null` is never "signed out"
-  // (WorkspaceShell / ChatLayout only mount this once isSignedIn), so it always
-  // resolves; an onboarded container falls through to children below.
+  // Chat-first onboarding begins after this provisioning gate. The backend
+  // captures the first canonical-room human message only when normal per-room
+  // dispatch selected an eligible agent; this component owns no brief form,
+  // draft replay, or synthetic kickoff state.
 
   // Ready — render children. `teams_state: "failed"` is a NON-BLOCKING
   // signal on the composed contract: Teams (Friday/Atlas) seeding failed
@@ -762,19 +686,6 @@ export function ProvisioningStepper({
   // app as normal and layer a small dismissible "Teams needs attention"
   // notice over it, never a blocking interstitial.
   //
-  // `bootstrap.state === "failed"` is the same shape of fact for the FIRST
-  // RUN: the owner submitted their brief, the container came up, and Friday's
-  // server-dispatched kickoff died anyway. Read off `derived.bootstrap` (which
-  // defaults an absent block for an older backend) and matched against
-  // "failed" ONLY — `dispatched` (fresh or stale-but-re-arming) and `sent` are
-  // both recovered/completed by the dispatcher itself on the next status poll,
-  // so showing them as failures would be a lie. See bootstrap_dispatcher.py.
-  //
-  // ONE positioning owner for both: each notice used to place itself at `fixed
-  // bottom-4 right-4`, so a container that is both Teams-degraded and
-  // first-run-failed would have stacked them at identical coordinates with the
-  // lower one unreadable. The corner stack owns the placement now; the notices
-  // own only their own card.
   if (phase === "ready") {
     const teamsDegraded = container?.teams_state === "failed";
     return (
@@ -1231,8 +1142,8 @@ export function ProvisioningStepper({
   // provisioning container, and in that gap the legacy fallback below
   // (!isTrialLocal && !container) would briefly render the paywall picker.
   // gatePhase === "loading" is the pre-first-response state, so waiting it
-  // out means the next thing a new trial user sees is the funnel, not a
-  // payment step they don't need.
+  // out means the next thing a new trial user sees is workspace provisioning,
+  // not a payment step they don't need.
   if (billingLoading || gatePhase === "loading") {
     return <StepperHold />;
   }
@@ -1307,14 +1218,6 @@ export function ProvisioningStepper({
   const currentIdx = steps.findIndex((s) => s.phase === phase);
   const currentStep = steps[currentIdx] || steps[0];
 
-  // The SAME `bootstrap.state === "failed"` fact the ready branch reads at the
-  // top of this component. It used to be read ONLY there, so a container that
-  // never reached ready — the exact case where the owner has no chat surface to
-  // fall back on — showed the cheerful cold-start card instead, with the reason
-  // sitting unread on every poll. A dev owner sat on it for 21 hours while
-  // `last_error` said "Gateway connect failed: gateway starting; retry shortly".
-  // Inline, NOT a second `fixed` corner stack: this branch has no `children`
-  // underneath to layer over, and the ready branch's stack owns the only one.
   // Past the second tier we stop claiming progress. Derived, not state, so
   // "Check again" cannot erase it — the old handler reset `timedOut` AND
   // `elapsedMs` to zero, which is how 21 hours kept looking like 5 minutes.
@@ -1746,42 +1649,7 @@ function TeamsDegradedNotice() {
 }
 
 
-/**
- * Non-blocking "Friday couldn't start" affordance layered over the ready app
- * when /container/status reports `bootstrap.state: "failed"` — the owner's
- * brief was submitted, the container is healthy, and the server-dispatched
- * first-run kickoff died anyway. Before this, that state rendered NOTHING to
- * the owner (only the admin provisioning page read it) and they sat on an
- * empty chat waiting for an agent that was never coming.
- *
- * NO retry button, deliberately. `bootstrap_state: "failed"` is terminal by
- * construction — `claim_bootstrap_dispatch` admits only `not_started`, so no
- * amount of polling re-dispatches it — and the ONLY re-arm lever
- * (`reset_bootstrap_for_retry`) is behind `require_platform_admin` on
- * /admin/users/{id}/provisioning/reset-bootstrap. A "Retry" here would be a
- * dead button, which is the same bug in a new costume. What the owner CAN
- * genuinely do is talk to Friday themselves — the chat surface behind this
- * notice is live — so that is what it says.
- *
- * `lastError` is rendered VERBATIM behind a native <details>, not classified
- * into tiers: #1460 tried the classifier and was reverted (#1463) for being
- * too much machinery with its own defects. The reason strings are written for
- * operators, so they stay collapsed under "Technical details" rather than
- * leading — but they are never swallowed, because support needs them.
- *
- * `inline` is the COLD-START rendering of the same fact, and it differs in
- * every way the branch differs:
- *   - no `fixed` corner placement (that stack belongs to the ready branch, and
- *     a test pins it at exactly one) and no toast shadow — this is the card;
- *   - no title of its own: the cold-start card's own <h2> already says "Setup
- *     didn't finish", and repeating it reads as two separate failures;
- *   - no dismiss ×. Dismissing on the ready branch leaves you in a working
- *     app. Dismissing here would leave you staring at the cold-start screen
- *     with the reason gone — i.e. straight back into the lie;
- *   - different body copy. "Your workspace is ready" is FALSE here — the
- *     container never reached ready, and there is no chat behind this screen
- *     to send Friday a message in, so that recovery does not exist either.
- */
+/** Render the current provisioning phase and its completed predecessors. */
 function StepperDisplay({
   currentPhase,
   steps,

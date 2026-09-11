@@ -1054,6 +1054,7 @@ async def test_pending_brief_round_trip(repo):
         detail=None,
         brief_text="work on acme.com",
         submitted_by="member_zed",
+        target_agent_id="agent_engineering",
     )
     assert landed is True
 
@@ -1063,6 +1064,7 @@ async def test_pending_brief_round_trip(repo):
     assert item["input"] == "acme.com"
     assert item["brief_text"] == "work on acme.com"
     assert item["submitted_by"] == "member_zed"
+    assert item["target_agent_id"] == "agent_engineering"
     # Absent, not "" -- "no detail" must not come back as a blank string a
     # later reader would quote at Friday.
     assert "detail" not in item

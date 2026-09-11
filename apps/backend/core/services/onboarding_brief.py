@@ -1,10 +1,11 @@
 """First-message onboarding intake and fulfilment.
 
 The first human message in a fresh workspace's canonical room remains a
-normal room dispatch. A post-send capture persists its text, then this module
-creates the initial goal/project and stages ``BRIEF.md`` in the starter CEO's
-workspace exactly once. The generation-fenced ``funnel_state`` is the durable
-claim; there is no synthetic bootstrap message or bootstrap dispatcher.
+normal room dispatch. When that dispatch selected an agent, a post-send capture
+persists its text and target, then this module creates the initial goal/project
+and stages ``BRIEF.md`` in that agent's workspace exactly once. The
+generation-fenced ``funnel_state`` is the durable claim; there is no synthetic
+bootstrap message or bootstrap dispatcher.
 """
 
 from __future__ import annotations
@@ -382,7 +383,7 @@ class DrainOutcome(str, Enum):
 
     NOT_READY = "not_ready"
     """The workspace can't receive a brief yet (no owner row, still
-    provisioning, starter CEO not seeded). The NORMAL first-run state -- this is
+    provisioning, selected agent not seeded). The NORMAL first-run state -- this is
     what the whole mechanism exists to wait through, so it must never burn a
     failure attempt."""
 
@@ -454,7 +455,7 @@ _draining: set[str] = set()
 async def capture_first_workspace_message(owner_id: str, message: dict) -> bool:
     """Turn the first human message in the canonical room into onboarding intake."""
     from core.repositories.paperclip_repo import PaperclipRepo
-    from core.services.messaging import _STARTER_KEYS, default_room_id
+    from core.services.messaging import default_room_id
 
     author = message.get("author") or {}
     text = str(message.get("text") or "").strip()
@@ -468,6 +469,16 @@ async def capture_first_workspace_message(owner_id: str, message: dict) -> bool:
     if len(text) > 2000:
         put_metric("OnboardingBriefTooLong")
         return False
+    target_agent_id = next(
+        (
+            target.get("agentId")
+            for target in message.get("dispatchTargets") or []
+            if isinstance(target, dict) and isinstance(target.get("agentId"), str)
+        ),
+        None,
+    )
+    if target_agent_id is None:
+        return False
 
     message_seq = int(message.get("messageSeq") or 0)
     earlier = await messaging_repo.list_messages_between(str(message["roomId"]), 1, message_seq - 1)
@@ -476,13 +487,7 @@ async def capture_first_workspace_message(owner_id: str, message: dict) -> bool:
 
     repo = PaperclipRepo(table_name="paperclip-companies")
     owner_row = await repo.resolve_owner_row(owner_id, consistent_read=True)
-    starter_ids = getattr(owner_row, "starter_agent_ids", None) if owner_row else None
-    if (
-        getattr(owner_row, "status", None) != "active"
-        or getattr(owner_row, "funnel_state", None) != "not_started"
-        or not isinstance(starter_ids, dict)
-        or set(starter_ids) != set(_STARTER_KEYS)
-    ):
+    if getattr(owner_row, "status", None) != "active" or getattr(owner_row, "funnel_state", None) != "not_started":
         return False
 
     landed = await repo.put_pending_brief(
@@ -493,6 +498,7 @@ async def capture_first_workspace_message(owner_id: str, message: dict) -> bool:
         brief_text=text,
         submitted_by=str(author["id"]),
         source_message_id=str(message["messageId"]),
+        target_agent_id=target_agent_id,
     )
     if not landed:
         return False
@@ -669,12 +675,12 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
         # tells the next person which kind it was.
         logger.warning("reconcile_brief: fulfilment read phase failed for %s: %s", owner_id, e, exc_info=True)
         raise
-    ceo_id = (owner_row.starter_agent_ids or {}).get("ceo")
-    friday = next((a for a in agents if a.get("id") == ceo_id), None)
-    if friday is None:
-        # The starter CEO has not landed yet — still provisioning.
+    target_agent_id = pending.get("target_agent_id")
+    target_agent = next((agent for agent in agents if agent.get("id") == target_agent_id), None)
+    if target_agent is None:
+        # The agent selected by normal room dispatch has not landed yet.
         return DrainOutcome.NOT_READY
-    friday_id = friday["id"]
+    assigned_agent_id = target_agent["id"]
 
     claim_result = await repo.claim_funnel_submission(
         owner_row.user_id,
@@ -694,21 +700,21 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
     project_id: str | None = None
     try:
         first_name = first_name_from_email(email)
-        # Seed before staging BRIEF.md, so the starter CEO has a project to
-        # work against when it next reads its workspace.
+        # Seed before staging BRIEF.md, so the dispatched agent has a project
+        # to work against when it next reads its workspace.
         goal_id, project_id = await seed_goal_and_project(
             admin=admin,
             session_cookie=session_cookie,
             company_id=owner_row.company_id,
-            friday_agent_id=friday_id,
+            friday_agent_id=assigned_agent_id,
             goal_title=derive_goal_title(path=path, user_input=user_input),
             project_name=project_name_for(first_name),
         )
         # Recorded BEFORE staging the workspace file, not after: this is the
         # generation-fenced write that decides who wins. Staging is a visible
-        # side effect on Friday's NEXT boot -- if this write raced a
-        # reprovision (generation moved on) and staging ran first anyway,
-        # Friday could boot against dead goal/project ids.
+        # side effect on the agent's next boot -- if this write raced a
+        # reprovision (generation moved on) and staging ran first anyway, the
+        # agent could boot against dead goal/project ids.
         await repo.record_onboarding_ids(
             owner_row.user_id,
             onboarding_generation=generation,
@@ -719,7 +725,7 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
         stage_first_run_files(
             workspace=get_workspace(),
             owner_id=owner_id,
-            friday_agent_id=friday_id,
+            friday_agent_id=assigned_agent_id,
             brief_md=render_brief_md(
                 path=path,
                 user_input=user_input,

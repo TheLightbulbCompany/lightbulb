@@ -71,7 +71,7 @@ async def test_first_message_keeps_normal_dispatch_then_schedules_onboarding_cap
     client_id = uuid.uuid4()
     members = [
         {"kind": "human", "id": auth.user_id},
-        {"kind": "agent", "id": "ceo", "listenMode": "active"},
+        {"kind": "agent", "id": "ceo", "listenMode": "observe"},
         {"kind": "agent", "id": "specialist", "listenMode": "mentions"},
     ]
     created = {
@@ -86,11 +86,13 @@ async def test_first_message_keeps_normal_dispatch_then_schedules_onboarding_cap
         "threadRootMessageId": None,
         "createdAt": "2026-09-11T00:00:00Z",
         "runId": None,
+        "dispatchTargets": [{"agentId": "specialist", "eventKind": "user_request"}],
         "attachments": [],
     }
     create = AsyncMock(return_value=created)
     capture = AsyncMock()
     monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=({"kind": "channel"}, {})))
+    monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value=members[2]))
     monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=members))
     monkeypatch.setattr(messaging.messaging_repo, "create_message", create)
     monkeypatch.setattr(messaging, "human_display_name", AsyncMock(return_value="Owner"))
@@ -103,14 +105,14 @@ async def test_first_message_keeps_normal_dispatch_then_schedules_onboarding_cap
         CreateMessageRequest(
             clientMessageId=client_id,
             text="Build patient scheduling",
-            mentions=[],
+            mentions=[{"kind": "agent", "id": "specialist"}],
             replyToMessageId=None,
             threadRootMessageId=None,
         ),
     )
     await asyncio.sleep(0)
 
-    assert create.await_args.kwargs["dispatch_targets"] == [{"agentId": "ceo", "eventKind": "room_event"}]
+    assert create.await_args.kwargs["dispatch_targets"] == [{"agentId": "specialist", "eventKind": "user_request"}]
     capture.assert_awaited_once_with("org_1", created)
 
 

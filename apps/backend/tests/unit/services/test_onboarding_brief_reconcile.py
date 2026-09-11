@@ -46,6 +46,7 @@ PENDING = {
     "input": "https://acme.com",
     "brief_text": "work on acme.com",
     "submitted_by": "member_zed",
+    "target_agent_id": "friday-uuid",
 }
 
 
@@ -170,15 +171,25 @@ async def test_paperclip_unavailable_keeps_the_brief_and_claims_nothing(env):
 # --- The happy path ----------------------------------------------------------
 
 
-async def test_room_before_welcome_human_seeds_one_goal_and_project(env, monkeypatch):
+async def test_room_before_welcome_after_specialist_delete_seeds_one_goal_and_project(env, monkeypatch):
     from core.services.messaging import default_room_id
 
+    env.repo.resolve_owner_row.return_value = _owner_row(
+        starter_agent_ids={
+            "ceo": "friday-uuid",
+            "finance": "finance-uuid",
+            "growth": "growth-uuid",
+            "analytics": "analytics-uuid",
+            "customer_operations": "customer-operations-uuid",
+        }
+    )
     first = {
         "roomId": default_room_id("user_abc"),
         "messageSeq": 1,
         "messageId": "message-first",
         "text": "Build a calmer scheduling tool for clinics",
         "author": {"kind": "human", "id": "member_zed"},
+        "dispatchTargets": [{"agentId": "friday-uuid", "eventKind": "room_event"}],
     }
 
     async def store_brief(_owner_id, **values):
@@ -187,6 +198,7 @@ async def test_room_before_welcome_human_seeds_one_goal_and_project(env, monkeyp
             "input": values["user_input"],
             "brief_text": values["brief_text"],
             "submitted_by": values["submitted_by"],
+            "target_agent_id": values["target_agent_id"],
         }
         return True
 
@@ -207,6 +219,23 @@ async def test_room_before_welcome_human_seeds_one_goal_and_project(env, monkeyp
     env.repo.put_pending_brief.assert_awaited_once()
     env.admin.create_goal.assert_awaited_once()
     env.admin.create_project.assert_awaited_once()
+
+
+async def test_goal_and_project_use_captured_dispatch_target_not_starter_ceo(env):
+    specialist = {"id": "engineering-uuid", "role": "engineer", "name": "Ada"}
+    env.repo.get_pending_brief.return_value = {
+        **PENDING,
+        "target_agent_id": specialist["id"],
+    }
+    env.admin.list_agents.return_value = [FRIDAY, specialist]
+
+    await reconcile_pending_brief("user_abc")
+
+    env.admin.create_goal.assert_awaited_once()
+    env.admin.create_project.assert_awaited_once()
+    assert env.admin.create_goal.await_args.kwargs["body"]["ownerAgentId"] == specialist["id"]
+    assert env.admin.create_project.await_args.kwargs["body"]["leadAgentId"] == specialist["id"]
+    assert env.ws.write_file.call_args.args[1] == "workspace-engineering-uuid/BRIEF.md"
 
 
 async def test_drain_claims_seeds_stages_completes_and_retires_without_synthetic_dispatch(env):

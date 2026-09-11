@@ -274,7 +274,7 @@ class PaperclipCompany:
     onboarding_brief_text: Optional[str] = None
     """The captured first human message, written with the same CAS claim as
     its onboarding state. Fulfilment turns it into ``BRIEF.md`` for the
-    starter CEO. It is additive/backward-compatible: absent legacy values read
+    normally dispatched agent. It is additive/backward-compatible: absent legacy values read
     as ``None`` and are cleared with the other claim-scoped fields on retry."""
 
     onboarding_submitted_by: Optional[str] = None
@@ -1494,7 +1494,7 @@ class PaperclipRepo:
         """Record the seeded goal/project ids on the row. Written LAST (same
         ordering rationale as the old sentinel's ``record_onboarding_ids``):
         the initial goal and project must be linked before fulfilment stages
-        the starter CEO's ``BRIEF.md``.
+        the dispatched agent's ``BRIEF.md``.
 
         Guarded on ``onboarding_generation = :gen AND funnel_state =
         :submitted`` -- this can only ever land against the SAME claim this
@@ -1640,6 +1640,7 @@ class PaperclipRepo:
         brief_text: Optional[str],
         submitted_by: str,
         source_message_id: Optional[str] = None,
+        target_agent_id: Optional[str] = None,
         overwrite: bool = False,
     ) -> bool:
         """Record a funnel answer that can't be fulfilled yet.
@@ -1658,8 +1659,11 @@ class PaperclipRepo:
         void forever -- the funnel is a committed front door with no skip.
 
         ``brief_text`` is precomputed at intake (rather than at drain time) so
-        the phrasing the user submitted is what Friday eventually opens with,
+        the phrasing the user submitted is what the dispatched agent opens with,
         even if the brief-building code changes between the two.
+
+        ``target_agent_id`` comes from the durable message's normal dispatch
+        result; fulfilment must not independently select or force an agent.
 
         ``overwrite=True`` skips the put-if-absent guard entirely and
         replaces whatever is there, ``pending`` included -- for the landing
@@ -1680,7 +1684,7 @@ class PaperclipRepo:
         }
         # Absent, not "": "no idea supplied" is a real signal on the "you pick"
         # path, and it must survive the round trip as None rather than as a
-        # blank string a later reader would quote back at Friday.
+        # blank string a later reader would quote back at the dispatched agent.
         if user_input:
             item["input"] = user_input
         if detail:
@@ -1689,6 +1693,8 @@ class PaperclipRepo:
             item["brief_text"] = brief_text
         if source_message_id:
             item["source_message_id"] = source_message_id
+        if target_agent_id:
+            item["target_agent_id"] = target_agent_id
 
         table = self._table()
         if overwrite:

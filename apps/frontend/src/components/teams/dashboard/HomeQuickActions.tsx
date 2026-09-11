@@ -35,7 +35,9 @@ function isPlainClick(e: MouseEvent): boolean {
 }
 
 export function HomeQuickActions({ stripeBound }: { stripeBound: boolean }) {
-  const { defaultId } = useAgents();
+  const { agents, defaultId } = useAgents();
+  const defaultAgent = agents.find((agent) => agent.id === defaultId);
+  const askLabel = `Ask ${defaultAgent?.name || defaultAgent?.identity?.name || "CEO"}`;
   const isDesktop = useIsDesktop();
   const { open: openMarketplace } = useMarketplaceDrawer();
 
@@ -44,7 +46,7 @@ export function HomeQuickActions({ stripeBound }: { stripeBound: boolean }) {
   // mobile delivers through the event below.
   // Mobile has no dock (`openChatPanel` no-ops on `!_api`), so it swaps the
   // URL to the bare chat view instead; its composer is always mounted.
-  const askFriday = (e: MouseEvent<HTMLAnchorElement>) => {
+  const askCeo = (e: MouseEvent<HTMLAnchorElement>) => {
     // Modifier / middle click: leave it alone, the href opens a real tab.
     if (!isPlainClick(e)) return;
     // No default agent yet (roster still loading, or an owner with none). The
@@ -63,7 +65,7 @@ export function HomeQuickActions({ stripeBound }: { stripeBound: boolean }) {
       // The mobile chat shell keeps its own `selectedAgentId` (app/chat/page.tsx),
       // which outranks `defaultId` once the owner has tapped any other agent —
       // without this, the URL swap can land back on a stale agent's composer,
-      // which then ignores a focus event addressed to Friday.
+      // which then ignores a focus event addressed to the CEO.
       window.dispatchEvent(new CustomEvent("selectAgent", { detail: { agentId: defaultId, source: "notification" } }));
       handleShellLinkClick(e, "/chat");
     }
@@ -80,8 +82,8 @@ export function HomeQuickActions({ stripeBound }: { stripeBound: boolean }) {
             middle-click follows, and next/link would only prefetch the route
             the shell is already on. */}
         {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
-        <a href="/chat" onClick={askFriday} className={CHIP}>
-          <MessageSquare size={14} strokeWidth={1.75} aria-hidden="true" /> Ask Friday
+        <a href="/chat" onClick={askCeo} className={CHIP}>
+          <MessageSquare size={14} strokeWidth={1.75} aria-hidden="true" /> {askLabel}
         </a>
         <a
           href={NEW_TASK_URL}

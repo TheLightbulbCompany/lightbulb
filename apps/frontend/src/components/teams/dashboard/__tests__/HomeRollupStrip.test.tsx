@@ -12,10 +12,10 @@ vi.mock("@/hooks/useCompanyRollup", () => ({
   useCompanyRollup: (span: number) => mockRollup(span),
 }));
 
-// Every tile's "Ask Friday" hands off to the same hook — a plain spy is
+// Every tile's "Ask CEO" hands off to the same hook — a plain spy is
 // enough to assert the exact draft each tile sends.
-const askFriday = vi.fn();
-vi.mock("@/hooks/useAskFriday", () => ({ useAskFriday: () => askFriday }));
+const askCeo = vi.fn();
+vi.mock("@/hooks/useAskCeo", () => ({ useAskCeo: () => askCeo }));
 
 // Only `details_submitted` is read, and only when there are no rows at all —
 // a bound-but-unonboarded account returns legitimately empty, and "finish
@@ -610,13 +610,13 @@ describe("HomeRollupStrip — business-first hero", () => {
     expect(hero.className).not.toContain("col-span-3");
   });
 
-  it("hands each tile's question to Friday with the period in it", () => {
+  it("hands each tile's question to the CEO with the period in it", () => {
     mockRollup.mockReturnValue(view({ rollup: LIVE }));
     render(<HomeRollupStrip spendCents={1400} />);
     const revenue = screen.getByRole("group", { name: "Revenue" });
-    fireEvent.click(within(revenue).getByRole("button", { name: "Ask Friday" }));
-    expect(askFriday).toHaveBeenCalledWith(expect.stringMatching(/revenue.*30 days/));
-    fireEvent.click(within(screen.getByRole("group", { name: "Agent spend" })).getByRole("button", { name: "Ask Friday" }));
-    expect(askFriday).toHaveBeenLastCalledWith(expect.stringMatching(/agents cost/));
+    fireEvent.click(within(revenue).getByRole("button", { name: "Ask CEO" }));
+    expect(askCeo).toHaveBeenCalledWith(expect.stringMatching(/revenue.*30 days/));
+    fireEvent.click(within(screen.getByRole("group", { name: "Agent spend" })).getByRole("button", { name: "Ask CEO" }));
+    expect(askCeo).toHaveBeenLastCalledWith(expect.stringMatching(/agents cost/));
   });
 });

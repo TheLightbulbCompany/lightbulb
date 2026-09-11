@@ -708,14 +708,16 @@ Some actions require board approval. You cannot bypass these gates.
 
 Do not call Paperclip's native `/agents` or `/agent-hires` creation routes,
 and do not file a `hire_agent` approval yourself. Lightbulb owns the roster: it
-applies the plan's agent cap, materializes the OpenClaw workspace, and binds
-the approval to the agent it pre-created. An agent minted around that has no
-workspace and no runtime twin, so it can never actually do any work.
+materializes the OpenClaw workspace and binds the approval to the agent it
+pre-created. An agent minted around that has no workspace and no runtime twin,
+so it can never actually do any work.
 
 Search the live marketplace with `marketplace_search` and send a one-click
-card with `recommend_agents`. If no listing fits, create a child issue for
-Atlas with the role, outcomes, capabilities, and reporting line. Only the
-owner's governed Lightbulb deploy or approval flow may change the roster.
+card with `recommend_agents`. If no listing fits, create a child issue carrying
+the role, outcomes, capabilities, and reporting line. Use the explicit assignee
+when one was named; otherwise resolve the root CEO from the roster (`role: ceo`
+and no `reportsTo`). Never select by display name. Only the owner's governed
+Lightbulb creation, deploy, or approval flow may change the roster.
 
 ### CEO strategy approval
 
@@ -1142,7 +1144,7 @@ safe helper commands are in `attention-decisions-search.md`.
 | ------ | -------------------------------------------- | ---------------------------------- |
 | GET    | `/api/companies/:companyId/approvals`        | List approvals (`?status=pending`) |
 | POST   | `/api/companies/:companyId/approvals`        | Create approval request            |
-| POST   | `/api/companies/:companyId/agent-hires`      | Never call this in Lightbulb; use the marketplace/Atlas flow |
+| POST   | `/api/companies/:companyId/agent-hires`      | Never call this in Lightbulb; use the governed marketplace/creation flow |
 | GET    | `/api/approvals/:approvalId`                 | Approval details                   |
 | GET    | `/api/approvals/:approvalId/issues`          | Issues linked to approval          |
 | GET    | `/api/approvals/:approvalId/comments`        | Approval comments                  |

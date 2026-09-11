@@ -17,29 +17,29 @@ describe("getStartedFirstTask", () => {
     expect(ONBOARDING_FIRST_TASK_DESCRIPTION.length).toBeGreaterThan(20);
   });
 
-  it("resolves the seeded CEO by role", () => {
+  it("resolves the root starter CEO by backend origin and role", () => {
     const agents: CompanyAgent[] = [
-      agent({ id: "friday", name: "Friday", role: "ceo", seeded: true }),
-      agent({ id: "atlas", name: "Atlas", role: "general", seeded: true }),
+      agent({ id: "division", name: "Division lead", role: "ceo", origin: "Starter", reportsTo: "ceo" }),
+      agent({ id: "ceo", name: "Renamed CEO", role: "ceo", origin: "Starter", reportsTo: null }),
     ];
-    expect(resolveCeoAgentId(agents)).toBe("friday");
+    expect(resolveCeoAgentId(agents)).toBe("ceo");
   });
 
-  it("does not infer the CEO from a seeded agent's name without role ceo", () => {
+  it("accepts a legacy Seed root CEO", () => {
     const agents: CompanyAgent[] = [
-      agent({ id: "friday", name: "Friday", seeded: true }),
+      agent({ id: "legacy", name: "Renamed legacy CEO", role: "ceo", origin: "Seed" }),
+    ];
+    expect(resolveCeoAgentId(agents)).toBe("legacy");
+  });
+
+  it("ignores a custom root CEO regardless of its display name", () => {
+    const agents: CompanyAgent[] = [
+      agent({ id: "imposter", name: "Friday", role: "ceo", origin: "Custom" }),
     ];
     expect(resolveCeoAgentId(agents)).toBeUndefined();
   });
 
-  it("ignores a user-created agent named Friday / using role ceo", () => {
-    const agents: CompanyAgent[] = [
-      agent({ id: "imposter", name: "Friday", role: "ceo", seeded: false }),
-    ];
-    expect(resolveCeoAgentId(agents)).toBeUndefined();
-  });
-
-  it("returns undefined when no seeded CEO exists", () => {
+  it("returns undefined when no starter or legacy root CEO exists", () => {
     expect(resolveCeoAgentId([])).toBeUndefined();
   });
 });

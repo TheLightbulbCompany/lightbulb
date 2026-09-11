@@ -6,7 +6,7 @@
 // — Inbox and Tasks own that second question now. This strip is the
 // first one: revenue, new customers, visitors and
 // agent spend, each an anchored figure (spec §2) rather than a dead number —
-// every tile carries an "Ask Friday" link that hands the owner's question,
+// every tile carries an "Ask CEO" link that hands the owner's question,
 // with the period already worded into it, straight to the CEO agent's
 // composer. The hero's bars are hover-labelled (a native <title> per bar) so
 // a specific day reads exactly, which a bare sparkline cannot answer.
@@ -28,7 +28,7 @@ import { PanelNotice, PanelTabs } from "@/components/teams/shell";
 import { useCompanyStripeStatus } from "@/components/settings/CompanyStripeSection";
 import { useCompanyRollup, type RollupDay, type RollupSpan } from "@/hooks/useCompanyRollup";
 import { RevenueBars, formatShortDay } from "@/components/teams/shared/RevenueBars";
-import { useAskFriday } from "@/hooks/useAskFriday";
+import { useAskCeo } from "@/hooks/useAskCeo";
 import { formatUsdCents } from "@/lib/creditAmounts";
 import { handleShellLinkClick, teamsPanelUrl } from "@/lib/shellNav";
 
@@ -128,9 +128,9 @@ function Tile({
   /** In-shell destination; href stays real for new-tab / middle-click. */
   href?: string;
   linkLabel?: string;
-  /** The question this tile's "Ask Friday" link hands to the CEO agent. */
+  /** The question this tile's "Ask CEO" link hands to the CEO agent. */
   askDraft?: string;
-  /** Hands `askDraft` to Friday. One `useAskFriday()` call lives in the
+  /** Hands `askDraft` to the CEO. One `useAskCeo()` call lives in the
    *  strip and is threaded down here — a tile calling the hook itself would
    *  mean one hook instance per tile for no reason. */
   onAsk?: (draft: string) => void;
@@ -190,7 +190,7 @@ function Tile({
           onClick={() => onAsk?.(askDraft)}
           className={`mt-2.5 inline-block label-caps text-[var(--midnight-muted)] underline-offset-4 hover:text-[var(--midnight)] hover:underline ${href && linkLabel ? "ml-4" : ""}`}
         >
-          Ask Friday
+          Ask CEO
         </button>
       )}
     </div>
@@ -230,9 +230,9 @@ export function HomeRollupStrip({
   spendCents: number | null | undefined;
 }) {
   const [span, setSpan] = useState<RollupSpan>(30);
-  // One hook instance for the whole strip; every tile's Ask Friday button
+  // One hook instance for the whole strip; every tile's Ask CEO button
   // hands its draft to this same `ask` rather than each calling the hook.
-  const ask = useAskFriday();
+  const ask = useAskCeo();
   const { rollup, windowStart, isLoading, error, isUnavailable } = useCompanyRollup(span);
   // Deduped with Accounts' read of the same key. Only `details_submitted` is
   // consulted, and only when there are no rows — rows win (moneyView's rule).

@@ -27,10 +27,10 @@ vi.mock("@/hooks/useBrainFiles", () => ({
 
 // Every ASK exit hands its draft to the shared hook — BrainPanel no longer
 // implements the handoff itself, so a plain spy is enough to assert which
-// draft each exit sends. useAskFriday's own test covers the dock/mobile
+// draft each exit sends. useAskCeo's own test covers the dock/mobile
 // fallback and the no-agent notice.
-const askFriday = vi.fn();
-vi.mock("@/hooks/useAskFriday", () => ({ useAskFriday: () => askFriday }));
+const askCeo = vi.fn();
+vi.mock("@/hooks/useAskCeo", () => ({ useAskCeo: () => askCeo }));
 
 // The panel merges the PUT's fresh stat into the file's own SWR cache entry
 // via useSWRConfig().mutate — spy on it the same way ArtifactsPanel.test.tsx does.
@@ -101,7 +101,7 @@ beforeEach(() => {
   deleteBrainFile.mockClear();
   uploadBrainFiles.mockClear();
   uploadBrainFiles.mockResolvedValue({ uploaded: [] });
-  askFriday.mockClear();
+  askCeo.mockClear();
   globalMutate.mockClear();
 });
 
@@ -196,8 +196,8 @@ describe("BrainPanel", () => {
   it("inbox files get the partial notice whose exit drafts the filing prompt", () => {
     treeState.files = POPULATED;
     render(<BrainPanel />);
-    fireEvent.click(screen.getByRole("button", { name: "Ask Friday to file it" }));
-    expect(askFriday).toHaveBeenCalledWith(expect.stringMatching(/1 file in the brain inbox/));
+    fireEvent.click(screen.getByRole("button", { name: "Ask CEO to file it" }));
+    expect(askCeo).toHaveBeenCalledWith(expect.stringMatching(/1 file in the brain inbox/));
   });
 
   it("clicking the inbox count lists inbox files; picking one opens it", () => {
@@ -332,8 +332,8 @@ describe("BrainPanel", () => {
     expect(screen.getByText(/names only/i)).toBeInTheDocument();
     fireEvent.change(box, { target: { value: "pricing" } });
     expect(screen.getByText("No page named that.")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /ask friday to search/i }));
-    expect(askFriday).toHaveBeenCalledWith(expect.stringContaining('"pricing"'));
+    fireEvent.click(screen.getByRole("button", { name: /ask ceo to search/i }));
+    expect(askCeo).toHaveBeenCalledWith(expect.stringContaining('"pricing"'));
   });
 
   it("a reports-only vault names the reports instead of claiming nothing is filed", () => {
@@ -404,8 +404,8 @@ describe("BrainPanel", () => {
   it("the toolbar ASK button drafts the open-ended prompt", () => {
     treeState.files = POPULATED;
     render(<BrainPanel />);
-    fireEvent.click(screen.getByRole("button", { name: "Ask Friday" }));
-    expect(askFriday).toHaveBeenCalledWith(
+    fireEvent.click(screen.getByRole("button", { name: "Ask CEO" }));
+    expect(askCeo).toHaveBeenCalledWith(
       "Look in our brain and tell me what we know about: ",
     );
   });
@@ -420,13 +420,13 @@ describe("BrainPanel", () => {
     expect(treeState.refresh).toHaveBeenCalled();
   });
 
-  it("shows the empty state with an Ask-Friday chip when the vault is empty", () => {
+  it("shows the empty state with an Ask-CEO chip when the vault is empty", () => {
     render(<BrainPanel />);
     expect(
       screen.getByText("Your company's brain fills as your agents learn."),
     ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /ask friday/i }));
-    expect(askFriday).toHaveBeenCalledWith(
+    fireEvent.click(screen.getByRole("button", { name: /ask ceo/i }));
+    expect(askCeo).toHaveBeenCalledWith(
       "Look in our brain and tell me what we know about: ",
     );
   });

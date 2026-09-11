@@ -48,9 +48,9 @@ vi.mock("@/components/settings/CompanyStripeSection", () => ({
 vi.mock("@/components/teams/dashboard/HomeQuickActions", () => ({
   HomeQuickActions: () => <section aria-label="Quick actions" />,
 }));
-// Every Business tile now calls useAskFriday() (via Tile), which in turn
+// Every Business tile now calls useAskCeo() (via Tile), which in turn
 // calls useAgents() — a real hook this file has no gateway context for.
-vi.mock("@/hooks/useAskFriday", () => ({ useAskFriday: () => vi.fn() }));
+vi.mock("@/hooks/useAskCeo", () => ({ useAskCeo: () => vi.fn() }));
 
 import { DashboardPanel } from "../DashboardPanel";
 import { useTeamsApi } from "@/hooks/useTeamsApi";

@@ -31,8 +31,10 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- apps/backend/routers/integrations.py; core/containers/config.py (integration_mcp_servers merge)
   - Marketplace flows ....... references/marketplace.md
                               <- apps/backend/routers/{marketplace_listings,marketplace_import}.py; core/services/{marketplace_service,agent_export,catalog_service,claude_code_import}.py
-  - Seed team + roster ...... references/company-and-plans.md
-                              <- apps/backend/core/services/paperclip_provisioning.py (provision_org); friday_identity.py; atlas_seed/
+  - Starter team + roster ... references/company-and-plans.md
+                              <- apps/backend/core/services/paperclip_provisioning.py (STARTER_ROSTER + provision_org);
+                                 core/services/{agent_provenance,paperclip_agent_lifecycle}.py;
+                                 core/repositories/paperclip_repo.py (starter_agent_ids)
   - Plans / providers ....... references/company-and-plans.md
                               <- apps/backend/core/services/{billing_service,provision_gate,owner_facts}.py
   - Provisioning rail ....... references/money.md

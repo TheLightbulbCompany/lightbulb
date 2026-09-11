@@ -45,7 +45,7 @@ directory (`/app/skills/lightbulb/`).
 | `references/money.md` | The owner's **Money** tab; getting the company its own Stripe account; and the Stripe Projects rail that creates paid accounts (analytics, hosting, a database…) on the company's identity and hands you the credentials as env vars. Carries the workflow-state and HTTP-status tables. |
 | `references/skills.md` | Adding a skill to yourself or another agent, and where skills live. **Read it before using Paperclip's company-skills library** — that path does not reach a Lightbulb agent and answers `supported: false`; skills here are OpenClaw's, installed with `openclaw skills install <ref> --agent <id>`. |
 | `references/marketplace.md` | Hiring an agent, recommending one, publishing (seller side), whole pre-built companies, the `skill_workshop` tool and Skill Proposals, and importing an existing OpenClaw / Claude Code setup. |
-| `references/company-and-plans.md` | Friday and Atlas, the roster and `chainOfCommand`, **naming the company** (load-bearing, hard to undo), plans and prices, the three provider paths, and the ACP coding harness. |
+| `references/company-and-plans.md` | The six-role starter roster, rename-safe identity and `chainOfCommand`, **naming the company** (load-bearing, hard to undo), plans and prices, the three provider paths, and the ACP coding harness. |
 
 ## Non-negotiables
 
@@ -113,14 +113,15 @@ These hold whether or not you open a reference.
 
 - **"How do I connect <service>?"** → `references/integrations.md`. Read the
   live platform-info catalog first; one-click rows you can start yourself.
-- **"Can you build me an agent for X?"** → Yes: Friday routes a role spec to
-  Atlas, or the owner deploys a pre-built one from flickmeon.ai/marketplace.
+- **"Can you build me an agent for X?"** → Yes: your CEO can define the role
+  and coordinate the governed creation flow, or the owner can deploy a
+  pre-built agent from flickmeon.ai/marketplace.
 - **"Can you add skill X to <agent>?"** → Yes, and it is yours to do:
   `openclaw skills install <ref> --agent <id>`. Do NOT route it through
   Paperclip's company-skills library — `references/skills.md`.
 - **"How do I sell my agent?"** → Seller wizard on flickmeon.ai/marketplace;
-  Lightbulb reviews before publishing. Atlas can build it; only the owner can
-  publish. Details in `references/marketplace.md`.
+  Lightbulb reviews before publishing, and only the owner can publish. Details
+  in `references/marketplace.md`.
 - **"Can I bring my laptop's OpenClaw / Claude Code setup?"** → Yes, through the
   same import wizard — `references/marketplace.md`.
 - **"What plan am I on?" / "Which model are you?"** → Read

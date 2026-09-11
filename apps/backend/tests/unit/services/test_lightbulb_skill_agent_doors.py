@@ -119,3 +119,19 @@ def test_the_401_row_is_scoped_to_hook_token_routes():
     flat = _flat()
     assert "A 401 from the script itself on a `/u/<owner>` route is a platform fault" in flat
     assert "the script refuses them before sending" in flat
+
+
+def test_the_skill_describes_the_generic_starter_roster_and_optional_classics():
+    flat = _flat()
+    assert "Fresh workspaces start with six agents" in flat
+    for role in ("CEO", "Engineering", "Finance", "Growth", "Analytics", "Customer Operations"):
+        assert role in flat
+    assert "Names are user-renamable" in flat
+    assert "Friday and Atlas are optional marketplace agents" in flat
+
+
+def test_the_home_surface_uses_the_current_ceo_display_name():
+    flat = _flat()
+    assert "current default CEO's display name" in flat
+    assert "Ask CEO while the roster loads" in flat
+    assert "Ask Friday" not in flat

@@ -81,3 +81,8 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
      because `executionPolicy` is REPLACE-semantics upstream: a hand-built
      `raw PATCH` of just `{monitor}` silently wipes the issue's
      reviewer/approver stages. Keep all three on re-vendor.
+  10. Rename-safe delegation targets (SKILL.md hiring rule +
+      references/{api-reference,company-skills}.md): use an explicit assignee
+      when supplied, otherwise resolve the root CEO by `role: ceo` and an empty
+      `reportsTo`; never fall back to a literal agent name. Fresh Lightbulb
+      workspaces no longer guarantee named Friday/Atlas identities.

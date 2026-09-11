@@ -408,12 +408,15 @@ class PushTests(unittest.TestCase):
         self.assertEqual(messages[0]["title"], "Alice")
 
     def test_author_token_is_never_collected(self):
-        _, urlopen = self.project(push_world())
+        # A DM notifies every non-author member, so the author clause is the
+        # only thing that can keep Alice's token out.
+        _, urlopen = self.project(push_world(kind="dm"))
         self.assertNotIn("tok-alice", urlopen.call_args.args[0].data.decode())
 
     def test_empty_text_bodies_as_an_image_and_long_text_is_truncated(self):
-        _, urlopen = self.project(push_world(), push_message(""))
-        self.assertEqual(json.loads(urlopen.call_args.args[0].data)[0]["body"], "Sent an image")
+        for blank in ("", "   "):
+            _, urlopen = self.project(push_world(), push_message(blank))
+            self.assertEqual(json.loads(urlopen.call_args.args[0].data)[0]["body"], "Sent an image")
         _, urlopen = self.project(push_world(), push_message("x" * 500))
         self.assertEqual(json.loads(urlopen.call_args.args[0].data)[0]["body"], "x" * 180)
 
@@ -436,6 +439,24 @@ class PushTests(unittest.TestCase):
         self.assertEqual(publish.call_count, 4)
         self.assertNotIn("tok-bob", "".join(logs.output))
         self.assertNotIn("hello", "".join(logs.output))
+
+    def test_failed_room_publish_sends_no_push(self):
+        # The record replays on failure and Expo has no eventId dedupe, so a
+        # push before the room publish would banner everyone twice.
+        index._ddb_client = FakeDdb(push_world())
+        with (
+            patch.object(index, "_publish", side_effect=[None, None, None, RuntimeError("throttled")]),
+            patch("index.urllib.request.urlopen") as urlopen,
+        ):
+            result = index.handler({"Records": [stream_record(push_message(), "501")]}, object())
+        self.assertEqual(result, {"batchItemFailures": [{"itemIdentifier": "501"}]})
+        urlopen.assert_not_called()
+
+    def test_nameless_channel_titles_with_the_author_alone(self):
+        world = push_world()
+        world[(f"ROOM#{ROOM_ID}", "META")]["name"] = None
+        _, urlopen = self.project(world)
+        self.assertEqual(json.loads(urlopen.call_args.args[0].data)[0]["title"], "Alice")
 
     def test_more_than_one_hundred_tokens_sends_one_hundred_and_warns(self):
         world = push_world(tokens={BOB_ID: [f"tok-{n}" for n in range(101)]})

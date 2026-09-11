@@ -286,7 +286,9 @@ def _send_push(tokens: list[str], message: dict[str, Any], meta: dict[str, Any])
             )
             tokens = tokens[:MAX_PUSH_TOKENS]
         author = message["author"]["displayName"]
-        title = f"{author} in #{meta.get('name')}" if meta.get("kind") == "channel" else author
+        # Every room kind may be nameless (CreateRoomRequest.name is optional).
+        name = meta.get("name") if meta.get("kind") == "channel" else None
+        title = f"{author} in #{name}" if name else author
         data = {
             "roomId": message["roomId"],
             "messageId": message["messageId"],
@@ -297,7 +299,8 @@ def _send_push(tokens: list[str], message: dict[str, Any], meta: dict[str, Any])
             {
                 "to": token,
                 "title": title,
-                "body": message["text"][:PUSH_BODY_CHARS] or "Sent an image",
+                # A whitespace-only caption is an attachment, not a body.
+                "body": message["text"].strip()[:PUSH_BODY_CHARS] or "Sent an image",
                 "data": data,
                 "sound": "default",
             }
@@ -318,7 +321,7 @@ def _send_push(tokens: list[str], message: dict[str, Any], meta: dict[str, Any])
         )
 
 
-def _notify_members(message: dict[str, Any], meta: dict[str, Any]) -> None:
+def _notify_members(message: dict[str, Any], meta: dict[str, Any]) -> list[str]:
     room_id, seq = message["roomId"], message["messageSeq"]
     owner_id = meta["ownerId"]
     root = message["threadRootMessageId"]
@@ -365,8 +368,7 @@ def _notify_members(message: dict[str, Any], meta: dict[str, Any]) -> None:
             "payload": {"roomId": room_id, "messageId": message["messageId"],
                         "messageSeq": seq, "threadRootMessageId": root, "notify": notify},
         })
-    # ponytail: immediate push; add a delayed READ re-check if double-notify annoys.
-    _send_push(tokens, message, meta)
+    return tokens
 
 
 def _current_credentials():
@@ -460,8 +462,12 @@ def _project_message(item: dict[str, Any]) -> None:
         "roomRevision": message["roomRevision"],
         "payload": message,
     }
-    _notify_members(message, meta)
+    tokens = _notify_members(message, meta)
     _publish(f"/rooms/{message['roomId']}/{delivery_key}", event)
+    # Push LAST: a raising publish replays the whole record, and Expo has no
+    # eventId dedupe, so an earlier send would banner every member twice.
+    # ponytail: immediate push; add a delayed READ re-check if double-notify annoys.
+    _send_push(tokens, message, meta)
 
 
 def _project_live(item: dict[str, Any]) -> None:

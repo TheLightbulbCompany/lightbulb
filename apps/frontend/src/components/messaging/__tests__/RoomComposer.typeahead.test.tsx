@@ -65,6 +65,21 @@ it("inserts a human as @Display Name and sends the structured mention", () => {
   }));
 });
 
+it("stops shipping a picked mention once its typed token is removed from the text", () => {
+  const onSubmit = vi.fn();
+  render(<Harness onSubmit={onSubmit} />);
+  type("@ad");
+  fireEvent.click(screen.getByRole("option", { name: /Aden Kim/ }));
+  expect(field()).toHaveValue("@Aden Kim ");
+  // Select-all and retype, wiping the inserted @Aden Kim token.
+  type("Never mind");
+  fireEvent.keyDown(field(), { key: "Enter" });
+  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+    text: "Never mind",
+    mentions: [],
+  }));
+});
+
 it("resolves a fully typed handle on send without ever opening the list", () => {
   const onSubmit = vi.fn();
   render(<Harness onSubmit={onSubmit} />);

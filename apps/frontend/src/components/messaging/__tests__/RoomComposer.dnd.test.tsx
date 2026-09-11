@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ImageAttachment, MemberRef } from "@lightbulb/shared";
@@ -12,6 +12,20 @@ function Harness({ onUploadAttachment }: { onUploadAttachment: (file: File) => P
   return <RoomComposer text={text} onTextChange={setText} members={[]} selectedMentions={mentions}
     onMentionsChange={setMentions} clientMessageId="11111111-1111-4111-8111-111111111111" sendState="idle"
     onSubmit={vi.fn()} onUploadAttachment={onUploadAttachment} />;
+}
+
+// A stand-in for the real external drop zone (RoomPanel passes its message
+// history container as dropTargetRef) — a sibling node outside the <form>.
+function ExternalHarness({ onUploadAttachment }: { onUploadAttachment: (file: File) => Promise<ImageAttachment> }) {
+  const [text, setText] = useState("");
+  const [mentions, setMentions] = useState<MemberRef[]>([]);
+  const historyRef = useRef<HTMLDivElement>(null);
+  return <>
+    <div data-testid="history" ref={historyRef}><div data-testid="history-child">messages</div></div>
+    <RoomComposer text={text} onTextChange={setText} members={[]} selectedMentions={mentions}
+      onMentionsChange={setMentions} clientMessageId="11111111-1111-4111-8111-111111111111" sendState="idle"
+      onSubmit={vi.fn()} onUploadAttachment={onUploadAttachment} dropTargetRef={historyRef} />
+  </>;
 }
 
 beforeEach(() => vi.stubGlobal("URL", { ...URL, createObjectURL: vi.fn(() => "blob:proof"), revokeObjectURL: vi.fn() }));
@@ -73,16 +87,49 @@ it("shows hint for non-image files but does not upload them", async () => {
 it("external drop target handler uses current onUploadAttachment after re-render", async () => {
   const upload1 = vi.fn(async () => attachment);
   const upload2 = vi.fn(async () => ({ ...attachment, id: "att-2" }));
-  const { rerender } = render(<Harness onUploadAttachment={upload1} />);
+  const { rerender } = render(<ExternalHarness onUploadAttachment={upload1} />);
+  const node = screen.getByTestId("history");
   const form = screen.getByRole("form", { name: "Message composer" });
   const file = new File(["x"], "shot.png", { type: "image/png" });
 
-  fireEvent.dragEnter(form, { dataTransfer: { types: ["Files"] } });
-  fireEvent.drop(form, { dataTransfer: { types: ["Files"], files: [file] } });
+  fireEvent.dragEnter(node, { dataTransfer: { types: ["Files"] } });
+  expect(form).toHaveAttribute("data-dropping", "true");
+  fireEvent.drop(node, { dataTransfer: { types: ["Files"], files: [file] } });
   await waitFor(() => expect(upload1).toHaveBeenCalledWith(file));
 
-  rerender(<Harness onUploadAttachment={upload2} />);
-  fireEvent.dragEnter(form, { dataTransfer: { types: ["Files"] } });
-  fireEvent.drop(form, { dataTransfer: { types: ["Files"], files: [file] } });
+  rerender(<ExternalHarness onUploadAttachment={upload2} />);
+  fireEvent.dragEnter(node, { dataTransfer: { types: ["Files"] } });
+  fireEvent.drop(node, { dataTransfer: { types: ["Files"], files: [file] } });
   await waitFor(() => expect(upload2).toHaveBeenCalledWith(file));
+});
+
+it("keeps the external drop hint through child drag events and only clears on a true node-leave", () => {
+  render(<ExternalHarness onUploadAttachment={vi.fn(async () => attachment)} />);
+  const node = screen.getByTestId("history");
+  const child = screen.getByTestId("history-child");
+  const form = screen.getByRole("form", { name: "Message composer" });
+
+  fireEvent.dragEnter(node, { dataTransfer: { types: ["Files"] } });
+  expect(form).toHaveAttribute("data-dropping", "true");
+
+  fireEvent.dragEnter(child, { dataTransfer: { types: ["Files"] } });
+  expect(form).toHaveAttribute("data-dropping", "true");
+
+  fireEvent.dragLeave(child, { dataTransfer: { types: ["Files"] } });
+  expect(form).toHaveAttribute("data-dropping", "true");
+
+  fireEvent.dragLeave(node, { dataTransfer: { types: ["Files"] } });
+  expect(form).not.toHaveAttribute("data-dropping");
+});
+
+it("clears the external drop hint on a window dragend", () => {
+  render(<ExternalHarness onUploadAttachment={vi.fn(async () => attachment)} />);
+  const node = screen.getByTestId("history");
+  const form = screen.getByRole("form", { name: "Message composer" });
+
+  fireEvent.dragEnter(node, { dataTransfer: { types: ["Files"] } });
+  expect(form).toHaveAttribute("data-dropping", "true");
+
+  fireEvent.dragEnd(window);
+  expect(form).not.toHaveAttribute("data-dropping");
 });

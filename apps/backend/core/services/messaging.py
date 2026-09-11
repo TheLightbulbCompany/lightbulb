@@ -35,6 +35,7 @@ MESSAGE_TEXT_MAX_BYTES = 100_000
 IMAGE_MAX_BYTES = 5 * 1024 * 1024
 IMAGE_MAX_COUNT = 4
 ROOM_NAME_MAX_CHARS = 200
+ROOM_TOPIC_MAX_CHARS = 250
 MAX_SECTIONS = 20
 SECTION_NAME_MAX_CHARS = 40
 EVENT_ID_MAX_BYTES = 256
@@ -140,6 +141,7 @@ class RoomSummary(ContractModel):
     starred: bool = False
     muted: bool = False
     section_id: str | None = None
+    topic: str | None = None
 
 
 class RoomDetail(RoomSummary):
@@ -206,12 +208,23 @@ class CreateRoomRequest(ContractModel):
 
 
 class PatchRoomRequest(ContractModel):
-    name: str | None
+    name: str | None = None
+    topic: str | None = None
 
     @field_validator("name")
     @classmethod
     def validate_name(cls, value: str | None) -> str | None:
         return validate_room_name(value)
+
+    @field_validator("topic")
+    @classmethod
+    def validate_topic(cls, value: str | None) -> str | None:
+        return validate_room_topic(value)
+
+    def named_updates(self) -> dict[str, Any]:
+        """Only the fields the caller sent, so a topic-only PATCH cannot blank
+        the name (and vice versa) while an explicit null still clears one."""
+        return {key: getattr(self, key) for key in ("name", "topic") if key in self.model_fields_set}
 
 
 class MemberPrefsRequest(ContractModel):
@@ -559,6 +572,17 @@ def validate_room_name(value: str | None) -> str | None:
     if not cleaned or len(cleaned) > ROOM_NAME_MAX_CHARS:
         raise ValueError(f"name must be 1..{ROOM_NAME_MAX_CHARS} characters or null")
     return cleaned
+
+
+def validate_room_topic(value: str | None) -> str | None:
+    if value is None:
+        return None
+    trimmed = value.strip()
+    if not trimmed:
+        return None
+    if len(trimmed) > ROOM_TOPIC_MAX_CHARS:
+        raise ValueError(f"topic exceeds {ROOM_TOPIC_MAX_CHARS} characters")
+    return trimmed
 
 
 def validate_message_text(value: str) -> str:
@@ -913,6 +937,7 @@ async def _room_detail(meta: dict, user_id: str, member: dict | None = None) -> 
         starred=bool(member.get("starred")),
         muted=bool(member.get("muted")),
         section_id=member.get("sectionId"),
+        topic=meta.get("topic"),
         delivery_key=meta["deliveryKey"],
         members=[_room_member(row) for row in with_human_handles(members)],
         last_read_seq=last_read,
@@ -948,6 +973,7 @@ async def _room_summaries(owner_id: str, user_id: str) -> list[RoomSummary]:
                 starred=bool(member.get("starred")),
                 muted=bool(member.get("muted")),
                 section_id=member.get("sectionId"),
+                topic=meta.get("topic"),
             )
         )
     summaries.sort(key=lambda room: room.updated_at, reverse=True)
@@ -1109,10 +1135,16 @@ async def get_room(auth: AuthContext, room_id: str) -> RoomDetail:
 async def patch_room(auth: AuthContext, room_id: str, request: PatchRoomRequest) -> RoomDetail:
     owner_id = resolve_owner_id(auth)
     meta, _ = await require_room_admin(owner_id, auth.user_id, room_id)
-    if meta.get("kind") == "dm":
+    updates = request.named_updates()
+    # A DM's display name is derived from its counterpart; a stored name would
+    # shadow it with nothing in the UI able to clear it. (Finding from #2483,
+    # merged to main — this generalizes the same guard to updates-scoping.)
+    if "name" in updates and meta.get("kind") == "dm":
         raise ApiProblem("ROOM_FORBIDDEN", "Direct messages cannot be renamed.")
+    if not updates:
+        return await _room_detail(meta, auth.user_id)
     try:
-        meta = await messaging_repo.patch_room_name(room_id, request.name)
+        meta = await messaging_repo.patch_room_meta(room_id, updates)
     except messaging_repo.RoomNotFound as exc:
         raise ApiProblem("ROOM_NOT_FOUND", "Room not found.") from exc
     await _publish_room_metadata(meta)
@@ -1183,6 +1215,19 @@ async def remove_member(auth: AuthContext, room_id: str, kind: str, member_id: s
     if target.get("role") == "owner":
         raise ApiProblem("INVALID_REQUEST", "The room owner cannot be removed.")
     await _remove_member_with_notices(meta, kind, member_id)
+
+
+async def leave_room(auth: AuthContext, room_id: str) -> None:
+    """A member removes themselves. The owner must transfer or delete the room
+    first — room deletion is out of scope, so this is a hard refusal."""
+    owner_id = resolve_owner_id(auth)
+    meta, member = await require_room_member(owner_id, auth.user_id, room_id)
+    if member.get("role") == "owner":
+        raise ApiProblem(
+            "INVALID_REQUEST",
+            "The room owner cannot leave. Make someone else an admin and transfer ownership first.",
+        )
+    await _remove_member_with_notices(meta, "human", auth.user_id)
 
 
 async def _remove_member_with_notices(meta: dict, kind: str, member_id: str) -> dict:

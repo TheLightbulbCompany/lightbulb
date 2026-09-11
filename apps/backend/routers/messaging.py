@@ -258,6 +258,12 @@ async def remove_room_member(
     return Response(status_code=204)
 
 
+@router.post("/messaging/rooms/{room_id}/leave", status_code=204)
+async def leave_room(room_id: str, auth: AuthContext = Depends(get_current_user)):
+    await service.leave_room(auth, room_id)
+    return Response(status_code=204)
+
+
 @router.get("/messaging/rooms/{room_id}/messages", response_model=MessagePage)
 async def list_room_messages(
     room_id: str,

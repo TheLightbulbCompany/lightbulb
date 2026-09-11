@@ -995,42 +995,53 @@ async def remove_member(
     return {**meta, "revision": revision, "updatedAt": now, "deliveryKey": new_delivery_key or meta["deliveryKey"]}
 
 
-async def patch_room_name(room_id: str, name: str | None) -> dict:
+_ROOM_META_FIELDS = ("name", "topic")
+
+
+async def patch_room_meta(room_id: str, updates: dict[str, Any]) -> dict:
+    """Update the caller-editable META fields under the usual revision CAS.
+
+    ``name`` is mirrored into the owner catalog row because
+    ``list_rooms_for_member`` joins the sidebar off it; ``topic`` is not in
+    that projection and is never mirrored.
+    """
     meta = await get_room(room_id)
     if meta is None:
         raise RoomNotFound(room_id)
+    named = {k: v for k, v in updates.items() if k in _ROOM_META_FIELDS}
     now = utc_now_iso()
     table_name = _table().name
     revision = int(meta["revision"]) + 1
-    await _transact(
-        [
-            {
-                "Update": {
-                    "TableName": table_name,
-                    "Key": {"pk": room_pk(room_id), "sk": "META"},
-                    "UpdateExpression": "SET #name = :name, revision = :rev, updatedAt = :now",
-                    "ConditionExpression": "revision = :expected",
-                    "ExpressionAttributeNames": {"#name": "name"},
-                    "ExpressionAttributeValues": {
-                        ":name": name,
-                        ":rev": revision,
-                        ":expected": revision - 1,
-                        ":now": now,
-                    },
-                }
-            },
+    names = {f"#{k}": k for k in named}
+    values = {f":{k}": _ddb_safe(v) for k, v in named.items()}
+    sets = ", ".join(f"#{k} = :{k}" for k in named)
+    items: list[dict] = [
+        {
+            "Update": {
+                "TableName": table_name,
+                "Key": {"pk": room_pk(room_id), "sk": "META"},
+                "UpdateExpression": f"SET {sets + ', ' if sets else ''}revision = :rev, updatedAt = :now",
+                "ConditionExpression": "revision = :expected",
+                "ExpressionAttributeNames": names or None,
+                "ExpressionAttributeValues": {**values, ":rev": revision, ":expected": revision - 1, ":now": now},
+            }
+        }
+    ]
+    if "name" in named:
+        items.append(
             {
                 "Update": {
                     "TableName": table_name,
                     "Key": {"pk": owner_pk(meta["ownerId"]), "sk": room_pk(room_id)},
                     "UpdateExpression": "SET #name = :name, updatedAt = :now",
                     "ExpressionAttributeNames": {"#name": "name"},
-                    "ExpressionAttributeValues": {":name": name, ":now": now},
+                    "ExpressionAttributeValues": {":name": _ddb_safe(named["name"]), ":now": now},
                 }
-            },
-        ]
-    )
-    return {**meta, "name": name, "revision": revision, "updatedAt": now}
+            }
+        )
+    items[0]["Update"] = {k: v for k, v in items[0]["Update"].items() if v is not None}
+    await _transact(items)
+    return {**meta, **named, "revision": revision, "updatedAt": now}
 
 
 # ---------------------------------------------------------------------------

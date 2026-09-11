@@ -221,19 +221,6 @@ async def test_create_room_replay_is_idempotent_and_conflict_is_detected(table):
 
 
 @pytest.mark.asyncio
-async def test_patch_room_name_persists_to_room_and_sidebar_catalog(table):
-    room_id, meta = await _room(name="Launch crew")
-
-    updated = await repo.patch_room_name(room_id, "Release crew")
-
-    assert updated["name"] == "Release crew"
-    assert updated["revision"] == meta["revision"] + 1
-    assert (await repo.get_room(room_id))["name"] == "Release crew"
-    listed = await repo.list_rooms_for_member(OWNER, "human", USER_A)
-    assert listed[0]["meta"]["name"] == "Release crew"
-
-
-@pytest.mark.asyncio
 async def test_default_room_uses_complete_renamed_starter_map_once_without_reconciling_members(table, monkeypatch):
     from core.repositories.paperclip_repo import PaperclipRepo
     from core.services import messaging
@@ -691,3 +678,29 @@ async def test_put_user_sections_does_not_clobber_other_pref_row_attributes(tabl
     prefs = await repo.get_user_prefs(OWNER, USER_A)
     assert prefs["sections"] == [{"id": "s-1", "name": "Admin"}]
     assert prefs["theme"] == "dark"
+
+
+@pytest.mark.asyncio
+async def test_patch_room_meta_writes_name_topic_and_mirrors_only_the_name(table):
+    room_id, meta = await _room(name="Launch crew")
+
+    renamed = await repo.patch_room_meta(room_id, {"name": "Release crew"})
+    assert renamed["name"] == "Release crew"
+    assert renamed["revision"] == meta["revision"] + 1
+    assert (await repo.get_room(room_id))["name"] == "Release crew"
+    listed = await repo.list_rooms_for_member(OWNER, "human", USER_A)
+    assert listed[0]["meta"]["name"] == "Release crew"
+
+    topicked = await repo.patch_room_meta(room_id, {"topic": "Ship v2 by Friday"})
+    assert topicked["topic"] == "Ship v2 by Friday"
+    assert topicked["name"] == "Release crew"
+    assert topicked["revision"] == renamed["revision"] + 1
+
+    both = await repo.patch_room_meta(room_id, {"name": None, "topic": None})
+    assert both["name"] is None and both["topic"] is None
+
+
+@pytest.mark.asyncio
+async def test_patch_room_meta_rejects_an_unknown_room(table):
+    with pytest.raises(repo.RoomNotFound):
+        await repo.patch_room_meta("11111111-1111-4111-8111-999999999999", {"topic": "x"})

@@ -55,6 +55,8 @@
 .room-typing { min-height: 20px; padding: 0 24px; overflow-wrap: anywhere; }
 .room-composer { position: relative; display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; margin: 0 20px 20px; padding: 12px; border: 1px solid var(--input); border-radius: 10px; background: var(--background); }
 .room-composer:focus-within { border-color: var(--ring); }
+.room-composer[data-dropping] { border-color: var(--ring); border-style: dashed; }
+.room-drop-hint { padding: 0 4px; }
 .room-composer textarea { min-height: 64px; max-height: 200px; resize: vertical; box-shadow: none; border: 0; padding: 2px 4px; border-radius: 0; background: transparent; caret-color: var(--foreground); }
 .room-composer textarea:focus-visible { outline: none; box-shadow: none; }
 .room-composer-help { font-size: .75rem; padding: 0 4px; }

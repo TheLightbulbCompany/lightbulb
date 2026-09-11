@@ -242,6 +242,7 @@ function RoomContent({
   const contextTrigger = useRef<HTMLButtonElement>(null);
   const contextWasOpen = useRef(false);
   const memberTrigger = useRef<HTMLButtonElement>(null);
+  const historyRef = useRef<HTMLDivElement>(null);
   const viewportNarrow = useSyncExternalStore(subscribeNarrow, getNarrow, getServerNarrow);
   const isNarrow = narrow ?? viewportNarrow;
   const visibleRoom = room?.roomId === roomId ? room : undefined;
@@ -466,16 +467,18 @@ function RoomContent({
       </section>}
       {(state === "reconnecting" || !liveConnected) && <div className="room-state"><p role="status" aria-label="Room status">Reconnecting live updates. You can keep sending messages.</p>
         {onRetry && <Button variant="outline" onClick={onRetry}>Check for updates</Button>}</div>}
-      <RoomTimeline roomId={roomId} messages={mainMessages} readSeq={sentSinceOpen ? null : newLineSeq} ownLastSentSeq={ownLastSentSeq}
-        targetMessageId={targetMessageId ?? (activeSearchTarget ? activeSearchTarget.messageId : null)}
-        targetToken={targetMessageId ? undefined : activeSearchTarget?.token}
-        renderMessage={(message, collapsed) => renderMessage(message, false, collapsed)}
-        empty={pendingMessages.length ? null : <div className="room-empty"><h3 className="font-semibold text-lg">Start the conversation</h3><p className="text-sm text-muted-foreground">Share an update or mention an agent when you want help.</p></div>}>
-        {pendingMessages.filter((message) => message.threadRootMessageId === null).map((message) => <article key={message.clientMessageId} className="room-message" aria-label={`Pending message from ${viewer?.displayName ?? "You"}`}>
-          <Identity name={viewer?.displayName ?? "You"} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{viewer?.displayName ?? "You"}</span><span className="text-sm text-muted-foreground">Sending…</span></div><MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{linkifyMentions(message.text, message.mentions, participants)}</MarkdownView></div>
-        </article>)}
-        {runs.filter((run) => !run.threadRootMessageId).map(renderRun)}
-      </RoomTimeline>
+      <div ref={historyRef} className="contents">
+        <RoomTimeline roomId={roomId} messages={mainMessages} readSeq={sentSinceOpen ? null : newLineSeq} ownLastSentSeq={ownLastSentSeq}
+          targetMessageId={targetMessageId ?? (activeSearchTarget ? activeSearchTarget.messageId : null)}
+          targetToken={targetMessageId ? undefined : activeSearchTarget?.token}
+          renderMessage={(message, collapsed) => renderMessage(message, false, collapsed)}
+          empty={pendingMessages.length ? null : <div className="room-empty"><h3 className="font-semibold text-lg">Start the conversation</h3><p className="text-sm text-muted-foreground">Share an update or mention an agent when you want help.</p></div>}>
+          {pendingMessages.filter((message) => message.threadRootMessageId === null).map((message) => <article key={message.clientMessageId} className="room-message" aria-label={`Pending message from ${viewer?.displayName ?? "You"}`}>
+            <Identity name={viewer?.displayName ?? "You"} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{viewer?.displayName ?? "You"}</span><span className="text-sm text-muted-foreground">Sending…</span></div><MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{linkifyMentions(message.text, message.mentions, participants)}</MarkdownView></div>
+          </article>)}
+          {runs.filter((run) => !run.threadRootMessageId).map(renderRun)}
+        </RoomTimeline>
+      </div>
       <p className="room-typing text-sm text-muted-foreground" role="status">{typingMembers.length > 0 ? `${typingMembers.slice(0, 3).map((member) => member.displayName).join(", ")}${typingMembers.length > 3 ? " and others" : ""} ${typingMembers.length === 1 ? "is" : "are"} typing…` : ""}</p>
       {copied && <p role="status" aria-label="Link copied" className="sr-only">Link copied</p>}
       <RoomComposer {...composer}
@@ -485,7 +488,8 @@ function RoomContent({
           const own = mainMessages.filter((message) => message.author.kind === "human" && message.author.id === currentUserId && !message.deletedAt);
           setEditTarget(own.length ? own[own.length - 1].messageId : null);
         } : undefined}
-        disabled={!actionable || composer.disabled} />
+        disabled={!actionable || composer.disabled}
+        dropTargetRef={historyRef} />
     </div>
     {showContext && !showDetail && <aside className="room-context" aria-label="Room details">
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={() => setContextCollapsed(true)}><ArrowLeft aria-hidden="true" /></Button><h3 ref={contextHeading} tabIndex={-1} className="font-semibold">Room details</h3></header>

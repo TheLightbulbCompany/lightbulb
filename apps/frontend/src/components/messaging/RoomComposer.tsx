@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type RefObject } from "react";
 import { AtSign, Bold, Code, Italic, ImagePlus, Link2, List, ListOrdered, Send, SquareCode, Strikethrough, X } from "lucide-react";
 import type { CreateMessageRequest, ImageAttachment, MemberRef } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
@@ -34,6 +34,7 @@ export interface RoomComposerProps {
   onTypingChange?: (typing: boolean) => void;
   onUploadAttachment?: (image: File) => Promise<ImageAttachment>;
   onEditLast?: () => void;
+  dropTargetRef?: RefObject<HTMLElement | null>;
 }
 
 const sameMember = (left: MemberRef, right: MemberRef) => left.kind === right.kind && left.id === right.id;
@@ -62,6 +63,7 @@ function ComposerAttempt({
   onTypingChange,
   onUploadAttachment,
   onEditLast,
+  dropTargetRef,
 }: RoomComposerProps) {
   const fieldId = useId();
   const field = useRef<HTMLTextAreaElement>(null);
@@ -79,6 +81,7 @@ function ComposerAttempt({
   const previews = useRef(new Set<string>());
   const [images, setImages] = useState<Array<{ file: File; preview: string; attachment?: ImageAttachment; error?: string }>>([]);
   const evidenceVersion = useRef(0);
+  const [dropping, setDropping] = useState(false);
 
   useEffect(() => () => previews.current.forEach((preview) => URL.revokeObjectURL(preview)), []);
 
@@ -187,6 +190,26 @@ function ComposerAttempt({
     setImages((current) => current.filter((image) => image.preview !== preview));
   }
 
+  const carriesFiles = (transfer: DataTransfer | null) => !!transfer && [...transfer.types].includes("Files");
+
+  function dropImages(transfer: DataTransfer | null) {
+    setDropping(false);
+    const files = [...(transfer?.files ?? [])].filter((file) => file.type.startsWith("image/"));
+    if (files.length) addImages(files);
+  }
+
+  useEffect(() => {
+    const node = dropTargetRef?.current;
+    if (!node || !onUploadAttachment) return;
+    const over = (event: DragEvent) => { if (carriesFiles(event.dataTransfer)) { event.preventDefault(); setDropping(true); } };
+    const leave = () => setDropping(false);
+    const drop = (event: DragEvent) => { if (!carriesFiles(event.dataTransfer)) return; event.preventDefault(); dropImages(event.dataTransfer); };
+    node.addEventListener("dragover", over);
+    node.addEventListener("dragleave", leave);
+    node.addEventListener("drop", drop);
+    return () => { node.removeEventListener("dragover", over); node.removeEventListener("dragleave", leave); node.removeEventListener("drop", drop); };
+  });
+
   function syncTrigger(value: string, caret: number | null) {
     if (composing.current) return;
     setTrigger(activeTrigger(value, caret));
@@ -279,11 +302,16 @@ function ComposerAttempt({
   }
 
   return <form className="room-composer" aria-label={`${label} composer`} aria-busy={pending || retryPending}
-    onSubmit={(event) => { event.preventDefault(); submit(); }}>
+    data-dropping={dropping || undefined}
+    onSubmit={(event) => { event.preventDefault(); submit(); }}
+    onDragOver={(event) => { if (carriesFiles(event.dataTransfer)) { event.preventDefault(); setDropping(true); } }}
+    onDragLeave={() => setDropping(false)}
+    onDrop={(event) => { if (!carriesFiles(event.dataTransfer)) return; event.preventDefault(); dropImages(event.dataTransfer); }}>
     <div className="room-format" role="toolbar" aria-label="Formatting">
       {FORMAT_CONTROLS.map(({ style, label: controlLabel, Icon }) => <Button key={style} type="button" variant="ghost" size="icon-sm"
         aria-label={controlLabel} title={controlLabel} disabled={!editable} onClick={() => format(style)}><Icon aria-hidden="true" /></Button>)}
     </div>
+    {dropping && <p className="room-drop-hint text-sm text-muted-foreground" role="status">Drop images to attach</p>}
     <label className="sr-only" htmlFor={fieldId}>{label}</label>
     {mentionOpen && <div id={`${fieldId}-targets`} className="room-typeahead" role="listbox" aria-label="Mention a room member">
       {options.map((member, index) => <button key={`${member.kind}:${member.id}`} id={`${fieldId}-option-${index}`} type="button" role="option" tabIndex={-1}

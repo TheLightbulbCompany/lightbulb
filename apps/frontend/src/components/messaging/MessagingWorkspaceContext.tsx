@@ -325,15 +325,17 @@ export function MessagingWorkspaceProvider({
     onListenModeChange: (agentId, mode) => void changeListenMode(agentId, mode),
     onSetReaction: rooms.setReaction,
     onUpdateMessage: rooms.updateMessage,
-    ...(rooms.activeRoom?.kind === "channel" && ["owner", "admin"].includes(
+    ...(!!rooms.activeRoom && rooms.activeRoom.kind !== "dm" && ["owner", "admin"].includes(
       rooms.activeRoom.members.find((member) => member.kind === "human" && member.id === userId)?.role ?? "",
     ) ? {
-      addMemberCandidates: directoryParticipants.filter((candidate) => !rooms.activeRoom!.members.some(
-        (member) => member.kind === candidate.kind && member.id === candidate.id,
-      )),
-      onAddMember: addMember,
       onRenameRoom: async (name: string) => { await rooms.updateRoom({ name }); },
-      onRemoveMember: rooms.removeMember,
+      ...(rooms.activeRoom!.kind === "channel" ? {
+        addMemberCandidates: directoryParticipants.filter((candidate) => !rooms.activeRoom!.members.some(
+          (member) => member.kind === candidate.kind && member.id === candidate.id,
+        )),
+        onAddMember: addMember,
+        onRemoveMember: rooms.removeMember,
+      } : {}),
     } : {}),
     onAbortRun: (runId) => void rooms.abortRun(runId),
     onSteerRun: (runId, text) => void rooms.steerRun(runId, text),

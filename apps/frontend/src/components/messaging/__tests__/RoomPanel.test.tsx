@@ -43,6 +43,24 @@ it("renames a channel in a centered dialog with pending, retry, and focus restor
   expect(trigger).toHaveFocus();
 });
 
+it("lets a group chat admin rename the chat without exposing channel membership controls", async () => {
+  const user = userEvent.setup();
+  const onRenameRoom = vi.fn().mockResolvedValue(undefined);
+  render(<RoomPanel {...props} room={{ ...props.room!, kind: "group-dm", name: "Launch crew" }}
+    onRenameRoom={onRenameRoom} onAddMember={vi.fn()} onRemoveMember={vi.fn()} />);
+  await user.click(screen.getByRole("button", { name: "Show room details" }));
+  expect(screen.queryByRole("button", { name: "Add members" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Remove Friday" })).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Rename group chat" }));
+  const dialog = screen.getByRole("dialog", { name: "Rename group chat" });
+  const input = within(dialog).getByRole("textbox", { name: "Group chat name" });
+  expect(input).toHaveValue("Launch crew");
+  await user.clear(input);
+  await user.type(input, "Release room");
+  await user.click(within(dialog).getByRole("button", { name: "Save name" }));
+  expect(onRenameRoom).toHaveBeenCalledWith("Release room");
+});
+
 it("confirms removal of a non-owner with Cancel focused and restores focus", async () => {
   const user = userEvent.setup();
   const onRemoveMember = vi.fn().mockResolvedValue(undefined);
@@ -62,12 +80,18 @@ it("confirms removal of a non-owner with Cancel focused and restores focus", asy
   expect(onRemoveMember).toHaveBeenCalledWith({ kind: "agent", id: "friday" });
 });
 
-it.each(["dm", "group-dm", "channel"] as const)("does not expose management without channel admin permission (%s)", async (kind) => {
+it.each(["dm", "group-dm", "channel"] as const)("does not expose management without room admin permission (%s)", async (kind) => {
   render(<RoomPanel {...props} room={{ ...props.room!, kind }}
     participants={[{ ...owner, role: "member" }, friday]} onRenameRoom={vi.fn()} onRemoveMember={vi.fn()} />);
   await userEvent.click(screen.getByRole("button", { name: "Show room details" }));
-  expect(screen.queryByRole("button", { name: "Rename channel" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Rename (channel|group chat)/ })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Remove Friday" })).not.toBeInTheDocument();
+});
+
+it("never offers renaming for a direct message", async () => {
+  render(<RoomPanel {...props} onRenameRoom={vi.fn()} />);
+  await userEvent.click(screen.getByRole("button", { name: "Show room details" }));
+  expect(screen.queryByRole("button", { name: /Rename/ })).not.toBeInTheDocument();
 });
 
 it("closes channel management if the viewer loses admin permission", async () => {

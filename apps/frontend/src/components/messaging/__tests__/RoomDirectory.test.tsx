@@ -42,15 +42,17 @@ it("preserves a failed draft and disables member controls while creating", async
   expect(screen.getByRole("button", { name: "New conversation" })).toHaveFocus();
 });
 
-it("names canonical DMs from counterparts and preserves selection and unread counts", () => {
+it("separates channels, group chats, and direct messages while preserving selection and unread counts", () => {
   const onSelectRoom = vi.fn();
   render(<RoomDirectory ownerScopeId="org" state="ready" currentRoomId="friday-dm" participants={[]} onSelectRoom={onSelectRoom} onSelectParticipant={vi.fn()} rooms={[
     base,
     { ...base, roomId: "friday-dm", kind: "dm", name: null, participants: [friday], unreadCount: 3 },
-    { ...base, roomId: "group", kind: "group-dm", name: null, participants: [alice, atlas] },
+    { ...base, roomId: "group", kind: "group-dm", name: "Launch crew", participants: [alice, atlas] },
   ]} />);
-  expect(screen.getByRole("button", { name: /Launch/ })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: /Alice and Atlas/ })).toBeInTheDocument();
+  expect(within(screen.getByRole("region", { name: "Channels" })).getByRole("button", { name: /Launch/ })).toBeInTheDocument();
+  expect(within(screen.getByRole("region", { name: "Group chats" })).getByRole("button", { name: /Launch crew/ })).toBeInTheDocument();
+  expect(within(screen.getByRole("region", { name: "Direct messages" })).getByRole("button", { name: /Friday/ })).toBeInTheDocument();
+  expect(screen.getByText("Group chats")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /^Direct message$/ })).not.toBeInTheDocument();
   const row = screen.getByRole("button", { name: /Friday/ });
   expect(row).toHaveAttribute("aria-current", "page");

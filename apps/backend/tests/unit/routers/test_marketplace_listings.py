@@ -109,7 +109,9 @@ def test_create_draft_requires_seller_profile(mock_profile, mock_create):
     from core.auth import AuthContext, get_current_user
 
     app.dependency_overrides.clear()
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_caller")
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(
+        user_id="human_caller", org_id="user_caller", org_role="org:admin"
+    )
     try:
         mock_profile.return_value = None
         from fastapi.testclient import TestClient
@@ -1290,7 +1292,7 @@ def test_deploy_paid_listing_with_revoked_license_403(
     mock_purchases.return_value.query.return_value = {
         "Items": [
             {
-                "buyer_id": "user_test_123",
+                "buyer_id": "org_test_456",
                 "purchase_id": "p1",
                 "listing_id": "lst_1",
                 "license_key_revoked": True,
@@ -1319,7 +1321,7 @@ def test_deploy_paid_listing_with_valid_purchase_succeeds(
     mock_purchases.return_value.query.return_value = {
         "Items": [
             {
-                "buyer_id": "user_test_123",
+                "buyer_id": "org_test_456",
                 "purchase_id": "p1",
                 "listing_id": "lst_1",
                 "license_key_revoked": False,
@@ -2004,7 +2006,7 @@ def authed_client_factory(app):
     created: list[TestClient] = []
 
     def _make(user_id: str, email: str | None = None) -> TestClient:
-        ctx = AuthContext(user_id=user_id, email=email)
+        ctx = AuthContext(user_id=f"human_{user_id}", org_id=user_id, org_role="org:admin", email=email)
 
         async def _override():
             return ctx
@@ -2033,10 +2035,10 @@ def test_search_seller_scoped_with_status_in(mock_search, authed_client_factory)
         {"listing_id": "l1", "status": "draft", "seller_id": "u_seller", "name": "A"},
     ]
     tc = authed_client_factory("u_seller", "seller@example.com")
-    resp = tc.get("/api/v1/marketplace/listings/search?seller_id=u_seller&status_in=draft,review,published")
+    resp = tc.get("/api/v1/marketplace/listings/search?seller_id=human_u_seller&status_in=draft,review,published")
     assert resp.status_code == 200, resp.text
     call_kwargs = mock_search.call_args.kwargs
-    assert call_kwargs["seller_id"] == "u_seller"
+    assert call_kwargs["seller_id"] == "human_u_seller"
     assert call_kwargs["include_unpublished"] is True
     # Seller-scoped responses can include private drafts — the response
     # MUST NOT be cacheable by a CDN. Otherwise CloudFront could serve
@@ -2087,7 +2089,7 @@ def test_search_free_only_spares_the_caller_their_own_paid_rows(mock_search, aut
     tc = authed_client_factory("u_seller", "seller@example.com")
     resp = tc.get("/api/v1/marketplace/listings/search?free_only=true")
     assert resp.status_code == 200, resp.text
-    assert mock_search.call_args.kwargs["viewer_id"] == "u_seller"
+    assert mock_search.call_args.kwargs["viewer_id"] == "human_u_seller"
     assert resp.headers["Cache-Control"] == "private, max-age=60"
 
     # Without free_only the body is caller-independent again.
@@ -2133,7 +2135,7 @@ def test_search_seller_scoped_status_in_filters_results(mock_search, authed_clie
         {"listing_id": "l1", "status": "draft", "seller_id": "u_seller", "name": "A"},
     ]
     tc = authed_client_factory("u_seller", "seller@example.com")
-    resp = tc.get("/api/v1/marketplace/listings/search?seller_id=u_seller&status_in=draft,published")
+    resp = tc.get("/api/v1/marketplace/listings/search?seller_id=human_u_seller&status_in=draft,published")
     assert resp.status_code == 200, resp.text
     call_kwargs = mock_search.call_args.kwargs
     assert call_kwargs["status_in"] == ["draft", "published"]
@@ -2599,7 +2601,7 @@ def test_patch_listing_forwards_only_provided_fields(mock_update, authed_client_
     )
     assert resp.status_code == 200, resp.text
     call_kwargs = mock_update.call_args.kwargs
-    assert call_kwargs["seller_id"] == "u_seller"
+    assert call_kwargs["seller_id"] == "human_u_seller"
     assert call_kwargs["name"] == "New Name"
     assert call_kwargs["price_cents"] == 500
     # Fields the wizard didn't touch are passed as None — the service's
@@ -2790,7 +2792,7 @@ def test_republish_creates_v2_draft(mock_create_new_version, authed_client_facto
     # caller's user_id as seller_id.
     mock_create_new_version.assert_awaited_once_with(
         listing_id="lst_1",
-        seller_id="u_seller",
+        seller_id="human_u_seller",
     )
 
 
@@ -2860,7 +2862,7 @@ def test_discard_removes_draft_row(mock_discard, authed_client_factory):
     client = authed_client_factory("u_seller", "seller@example.com")
     r = client.delete("/api/v1/marketplace/listings/lst_1?version=2")
     assert r.status_code == 204
-    mock_discard.assert_awaited_once_with(listing_id="lst_1", seller_id="u_seller", version=2)
+    mock_discard.assert_awaited_once_with(listing_id="lst_1", seller_id="human_u_seller", version=2)
 
 
 @patch("routers.marketplace_listings.marketplace_service.discard_draft", new_callable=AsyncMock)

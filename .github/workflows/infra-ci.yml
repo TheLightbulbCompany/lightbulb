@@ -24,6 +24,7 @@ on:
       - 'apps/infra/**'
       - '.github/workflows/infra-ci.yml'
       - '.github/workflows/deploy.yml'
+      - '.github/workflows/desktop-build.yml'
       - 'openclaw-version.json'
       - 'paperclip-version.json'
       - 'pnpm-lock.yaml'

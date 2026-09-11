@@ -238,6 +238,12 @@ export function openMessagePanel(roomId: string, messageId?: string): void {
   if (descriptor && _api) addOrFocus(descriptor);
 }
 
+let sessionIntent = 0;
+export function openSessionPanel(roomId: string, sessionId: string): void {
+  const descriptor = describePanel("chat", { room: roomId, session: sessionId });
+  if (descriptor && _api) addOrFocus(descriptor, { sessionIntent: String(++sessionIntent) });
+}
+
 export function activateMessagesPanel(): void {
   const descriptor = describePanel("chat", { agent: DEFAULT_AGENT_SENTINEL });
   if (descriptor) addOrFocus({ ...descriptor, params: { agentSelection: "resolved" } });

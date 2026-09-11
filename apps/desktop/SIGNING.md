@@ -4,11 +4,10 @@ The desktop build (`.github/workflows/desktop-build.yml`) signs **both** dev
 and prod tracks with the same `Developer ID Application: Prasiddha
 Parthsarthy (WZX4U3C22Y)` certificate and notarizes via the Apple notary
 service. This is a one-time setup — once the five secrets below are in
-GitHub, every future `desktop-dev-v*` or `desktop-v*` tag produces a clean
-signed + notarized DMG that opens without the "Isol8 is damaged" Gatekeeper
-warning. (That string is Tauri's `productName`, so it reads "Lightbulb is
-damaged" once the brand swap lands. The `isol8-notarize`
-app-specific-password label is NOT renamed.)
+GitHub, the workflow builds signed + notarized DMGs. Qualifying pushes to
+`main` publish dev only; production requires a manual workflow dispatch
+after dev verification. Release tags are workflow outputs, not build
+triggers. The `isol8-notarize` app-specific-password label is NOT renamed.
 
 ## One-time setup (run from the Mac that holds the Developer ID cert)
 
@@ -73,18 +72,24 @@ gh secret list --repo TheLightbulbCompany/lightbulb | grep -E "^APPLE_"
 
 ### 5. Cut a fresh signed build
 
-```bash
-# Bump version in apps/desktop/src-tauri/tauri.conf.json + Cargo.toml,
-# commit, then:
-git tag desktop-dev-v0.2.7        # signed + notarized dev DMG
-git tag desktop-v0.1.0            # signed + notarized prod DMG (first ever)
-git push origin --tags
-```
+Merge reviewed desktop changes to `main` through normal CI. Changes to
+`apps/desktop/**`, `pnpm-lock.yaml`, or `.github/workflows/desktop-build.yml`
+trigger a dev build; the production job is skipped on push.
 
-The workflow creates a **draft** release with the DMG attached. Approve
-+ publish from the GitHub Releases UI (or `gh release edit <tag>
---draft=false`). The landing-page `/api/download/desktop` route picks
-up the published release automatically — no frontend redeploy needed.
+After verifying that dev build, manually run **desktop-build** from GitHub
+Actions using the tested branch or tag. Dispatch builds dev again, then
+production only if that dev job succeeds. There is no approval pause
+between these jobs, so complete dev acceptance before dispatching.
+
+The workflow sets the build version to `0.4.${{ github.run_number }}`;
+do not bump local version files or push release tags to trigger a build.
+It creates `desktop-dev-v0.4.<run_number>` (dev prerelease) and, on manual
+dispatch, `desktop-v0.4.<run_number>` (production release).
+
+Each job creates a draft release, uploads its signed/notarized DMG, then
+automatically publishes the release. No manual draft-publication step is
+required. The landing-page `/api/download/desktop` route picks up the
+published release automatically — no frontend redeploy needed.
 
 ## What's in the secrets and why
 

@@ -6,6 +6,7 @@ self-heal, and legacy (un-flagged) clients keep wake-on-read under the daily
 budget.
 """
 
+from contextlib import ExitStack
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -16,7 +17,7 @@ from routers.container import container_status
 
 
 def _auth(user_id: str = "user_w") -> AuthContext:
-    return AuthContext(user_id=user_id, org_id=None, org_role=None, email="w@example.com")
+    return AuthContext(user_id=user_id, org_id="org_w", org_role="org:admin", email="w@example.com")
 
 
 def _parked_row() -> dict:
@@ -36,6 +37,20 @@ def _mock_manager(row: dict) -> MagicMock:
     return manager
 
 
+async def _compute_status(_owner_id: str, *, container: dict, onboarding: dict) -> dict:
+    parked = container.get("stop_reason") == "trial_idle"
+    return {
+        "lifecycle": "parked" if parked else ("error" if container.get("status") == "error" else "provisioning"),
+        "runtime_phase": "provisioning",
+        "chat_available": False,
+        "container_status": container.get("status"),
+        "container_substatus": container.get("substatus"),
+        "parked": parked,
+        "provider": {"subscription_status": "active"},
+        "teams_state": "ready",
+    }
+
+
 def _patches(row: dict, *, parked: bool, budget_ok: bool = True, trial_reason=None):
     """The full patch stack for driving the auto-retry branch in isolation."""
     return [
@@ -47,22 +62,18 @@ def _patches(row: dict, *, parked: bool, budget_ok: bool = True, trial_reason=No
         patch("routers.container.wake_policy.is_parked_trial", new=AsyncMock(return_value=parked)),
         patch("routers.container.wake_policy.legacy_wake_allowed", new=AsyncMock(return_value=budget_ok)),
         patch("routers.container.dispatch_provision", new=AsyncMock()),
+        patch("routers.container.ensure_workspace_trial_default", new=AsyncMock()),
+        patch("routers.container.ensure_user_ready", new=AsyncMock()),
+        patch("routers.container.readiness_state.resolve_onboarding_state", new=AsyncMock(return_value={})),
+        patch("routers.container.readiness_state.compute_status", new=_compute_status),
     ]
 
 
 async def _call(wake, patches):
-    with (
-        patches[0] as _mgr,
-        patches[1],
-        patches[2],
-        patches[3],
-        patches[4],
-        patches[5],
-        patches[6] as budget_p,
-        patches[7] as dispatch,
-    ):
+    with ExitStack() as stack:
+        entered = [stack.enter_context(item) for item in patches]
         body = await container_status(auth=_auth(), wake=wake)
-        return body, dispatch, budget_p
+        return body, entered[7], entered[6]
 
 
 class TestWakeGate:

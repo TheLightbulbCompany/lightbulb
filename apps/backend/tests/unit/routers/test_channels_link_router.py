@@ -31,7 +31,7 @@ def _patch_auth(auth: AuthContext):
 
 def _personal_auth(user_id: str = "user_personal") -> AuthContext:
     # Construct AuthContext matching the real signature (NO email param)
-    return AuthContext(user_id=user_id, org_id=None, org_role=None)
+    return AuthContext(user_id=f"human_{user_id}", org_id=user_id, org_role="org:admin")
 
 
 def test_delete_bot_unsupported_provider_returns_400(client):
@@ -63,7 +63,7 @@ def test_link_complete_happy_path(client):
         assert kwargs["provider"] == "telegram"
         assert kwargs["agent_id"] == "main"
         assert kwargs["code"] == "XYZ98765"
-        assert kwargs["member_id"] == "user_bob"
+        assert kwargs["member_id"] == "human_user_bob"
     finally:
         cleanup()
 

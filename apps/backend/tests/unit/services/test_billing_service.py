@@ -357,3 +357,42 @@ async def test_change_provider_refreshes_owner_facts(monkeypatch):
         "user_x",
         account_overrides={"provider_choice": "bedrock_claude", "byo_provider": None},
     )
+
+
+class TestLegacyFlatCheckoutIdempotencyKey:
+    """The retained legacy builder uses one stable key per 5-minute bucket."""
+
+    # Frozen so the 5-minute bucket cannot roll between two calls and fake a
+    # difference (or hide a sameness).
+    NOW = 1_800_000_000.0
+
+    @classmethod
+    async def _key_for(cls) -> str:
+        created = MagicMock(return_value=MagicMock(id="cs_1"))
+        with (
+            patch("core.services.billing_service.time.time", return_value=cls.NOW),
+            patch.object(
+                billing_service.billing_repo,
+                "get_by_owner_id",
+                new=AsyncMock(return_value={"stripe_customer_id": "cus_1"}),
+            ),
+            patch.object(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_flat"),
+            patch("stripe.checkout.Session.create", new=created),
+        ):
+            await billing_service._build_subscription_checkout(
+                owner_id="u_1",
+                line_items=[{"price": "price_flat", "quantity": 1}],
+                metadata={"owner_id": "u_1"},
+                success_url="https://x/ok",
+                cancel_url="https://x/no",
+                idempotency_key=billing_service._checkout_idempotency_key("flat_checkout", "u_1", "bedrock_claude:_"),
+            )
+        return created.call_args.kwargs["idempotency_key"]
+
+    @pytest.mark.asyncio
+    async def test_flat_checkout_key_is_untouched(self):
+        """The current flat-checkout key stays stable within its time bucket."""
+        key = await self._key_for()
+        with patch("core.services.billing_service.time.time", return_value=self.NOW):
+            unchanged = billing_service._checkout_idempotency_key("flat_checkout", "u_1", "bedrock_claude:_")
+        assert key == unchanged

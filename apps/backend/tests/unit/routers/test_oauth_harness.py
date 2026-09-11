@@ -21,6 +21,16 @@ from core.services.oauth_service import (
 )
 
 
+@pytest.fixture(autouse=True)
+def workspace_oauth_dependencies():
+    """The shared client is an org admin; router tests do not need billing."""
+    with (
+        patch("routers.oauth.billing_repo.get_by_owner_id", new=AsyncMock(return_value=None)),
+        patch("routers.oauth.resolve_token_owner", new=AsyncMock(return_value="user_test_123")),
+    ):
+        yield
+
+
 @pytest.fixture
 def oauth_table(monkeypatch):
     from core.config import settings as _settings
@@ -72,7 +82,7 @@ async def test_harness_start_uses_harness_purpose(async_client):
     assert resp.status_code == 200
     assert resp.json()["user_code"] == "HARN-1234"
     assert mock_start.await_args.kwargs["purpose"] == "harness"
-    assert mock_start.await_args.kwargs["bound_owner_id"] == "user_test_123"
+    assert mock_start.await_args.kwargs["bound_owner_id"] == "org_test_456"
 
 
 @pytest.mark.asyncio
@@ -88,13 +98,13 @@ async def test_harness_poll_completed_stages_opencode_auth(async_client, oauth_t
     """Completion writes OpenCode's auth.json to EFS — that write IS the
     connect (the container config already advertises the harness)."""
     monkeypatch.setenv("EFS_MOUNT_PATH", str(tmp_path))
-    _seed_active_row(row_key="user_test_123#harness", bound_owner_id="user_test_123")
-    done = DevicePollResult(account_id="acc_h", bound_owner_id="user_test_123")
+    _seed_active_row(row_key="user_test_123#harness", bound_owner_id="org_test_456")
+    done = DevicePollResult(account_id="acc_h", bound_owner_id="org_test_456")
     with patch("routers.oauth.poll_device_code", new=AsyncMock(return_value=done)):
         resp = await async_client.post("/api/v1/oauth/chatgpt/harness/poll")
     assert resp.status_code == 200
     assert resp.json() == {"status": "completed", "account_id": "acc_h"}
-    written = json.loads((tmp_path / "user_test_123" / "opencode-data" / "opencode" / "auth.json").read_text())
+    written = json.loads((tmp_path / "org_test_456" / "opencode-data" / "opencode" / "auth.json").read_text())
     assert written["openai"]["type"] == "oauth"
     assert written["openai"]["access"] == "harness_access"
     assert written["openai"]["refresh"] == "harness_refresh"
@@ -104,7 +114,7 @@ async def test_harness_poll_completed_stages_opencode_auth(async_client, oauth_t
 async def test_harness_and_provider_rows_are_independent(async_client, oauth_table):
     """A harness grant must NOT make the provider look connected (or vice
     versa) — the whole point of the second chain is that the two never share."""
-    _seed_active_row(row_key="user_test_123#harness", bound_owner_id="user_test_123")
+    _seed_active_row(row_key="user_test_123#harness", bound_owner_id="org_test_456")
 
     harness = await async_client.get("/api/v1/oauth/chatgpt/harness/status")
     provider = await async_client.get("/api/v1/oauth/chatgpt/status")
@@ -140,8 +150,8 @@ async def test_harness_disconnect_skips_row_bound_to_another_workspace(async_cli
 @pytest.mark.asyncio
 async def test_harness_disconnect_deletes_row_and_efs_file(async_client, oauth_table, tmp_path, monkeypatch):
     monkeypatch.setenv("EFS_MOUNT_PATH", str(tmp_path))
-    _seed_active_row(row_key="user_test_123#harness", bound_owner_id="user_test_123")
-    auth_path = tmp_path / "user_test_123" / "opencode-data" / "opencode" / "auth.json"
+    _seed_active_row(row_key="user_test_123#harness", bound_owner_id="org_test_456")
+    auth_path = tmp_path / "org_test_456" / "opencode-data" / "opencode" / "auth.json"
     auth_path.parent.mkdir(parents=True)
     auth_path.write_text("{}")
 
@@ -160,7 +170,7 @@ async def test_harness_disconnect_502_when_unlink_fails_and_row_survives(async_c
     'disconnected' over a surviving auth.json would leave a live, spawnable
     credential the UI claims is gone. The row must survive so status stays
     truthful and the user retries."""
-    _seed_active_row(row_key="user_test_123#harness", bound_owner_id="user_test_123")
+    _seed_active_row(row_key="user_test_123#harness", bound_owner_id="org_test_456")
     with patch("routers.oauth.delete_opencode_auth", new=AsyncMock(side_effect=OSError("efs io"))):
         resp = await async_client.post("/api/v1/oauth/chatgpt/harness/disconnect")
     assert resp.status_code == 502
@@ -174,8 +184,8 @@ async def test_harness_poll_staging_failure_revokes_row_and_502s(async_client, o
     running workspace nothing re-writes the file until a future provision
     event, so 'Connected' would be a lie with every spawn failing. The
     just-activated row is revoked so a fresh /harness/start works."""
-    _seed_active_row(row_key="user_test_123#harness", bound_owner_id="user_test_123")
-    done = DevicePollResult(account_id="acc_h", bound_owner_id="user_test_123")
+    _seed_active_row(row_key="user_test_123#harness", bound_owner_id="org_test_456")
+    done = DevicePollResult(account_id="acc_h", bound_owner_id="org_test_456")
     with (
         patch("routers.oauth.poll_device_code", new=AsyncMock(return_value=done)),
         patch(

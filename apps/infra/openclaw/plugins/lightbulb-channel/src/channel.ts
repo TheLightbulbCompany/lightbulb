@@ -10,6 +10,7 @@
  * that agent's id; each room is `agent:<agentId>:lightbulb:channel:<roomId>`.
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { invocationBinding } from "./local-sessions.js";
 import type {
   buildChannelInboundEventContext,
   ChannelBotLoopProtectionFacts,
@@ -706,7 +707,7 @@ function json(res: ServerResponse, status: number, body: Record<string, unknown>
   return true;
 }
 
-export async function dispatchRoomEvent(deps: InboundDeps, event: LightbulbRoomIngress): Promise<AmbientGateOutcome> {
+export async function dispatchRoomEvent(deps: InboundDeps, event: LightbulbRoomIngress, invocation?: string): Promise<AmbientGateOutcome> {
   const { sdk, cfg, accountId, channelRuntime } = deps;
   const { room, sender, message, eventKind } = event;
 
@@ -782,6 +783,7 @@ export async function dispatchRoomEvent(deps: InboundDeps, event: LightbulbRoomI
       dispatchSessionKey: route.sessionKey,
     },
     reply: {
+      nativeChannelId: room.id,
       to: target,
       originatingTo: target,
       ...(message.replyToMessageId ? { replyToId: message.replyToMessageId } : {}),
@@ -815,6 +817,8 @@ export async function dispatchRoomEvent(deps: InboundDeps, event: LightbulbRoomI
     },
     channelIngress: ingress,
     extra: {
+      ...(invocationBinding(invocation, accountId, room.id, event.eventId) ? { GatewayRunToolBindings: { lightbulbLocalSessions:
+        invocationBinding(invocation, accountId, room.id, event.eventId) } } : {}),
       ChannelStructuredContext: [
         {
           label: "Lightbulb room",
@@ -913,13 +917,20 @@ export function createInboundHandler(deps: InboundDeps) {
     if (event.sender.kind === "agent" && event.sender.id === accountId) {
       return json(res, 409, { error: "not_admitted", message: "an agent never receives its own message" });
     }
+    // Transport-only credential. Old strict-body plugins ignore it; absent/invalid headers
+    // leave ordinary room dispatch unchanged. Never promote a model/body field to authority.
+    const header = "x-lightbulb-local-session-token";
+    const raw = req.headers?.[header];
+    const count = (req.rawHeaders ?? []).filter((_, i) => i % 2 === 0).filter((name) => name.toLowerCase() === header).length;
+    const invocation = count <= 1 && typeof raw === "string" && raw.length <= 4096 && !raw.includes(",")
+      && invocationBinding(raw, accountId, event.room.id, event.eventId) ? raw : undefined;
     try {
       const outcome = await effectOnce.runOnce({
         eventId: event.eventId,
         effect: "dispatch",
         run: async () => {
           try {
-            return await dispatchRoomEvent(deps, event);
+            return await dispatchRoomEvent(deps, event, invocation);
           } catch (error) {
             if (error instanceof IngressRejected && error.status === 409) return "not_admitted";
             throw error;

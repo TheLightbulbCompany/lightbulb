@@ -9,6 +9,11 @@ export interface MemberRef {
 }
 
 export type ApiErrorCode =
+  | "LOCAL_SESSION_FORBIDDEN"
+  | "LOCAL_SESSION_NOT_FOUND"
+  | "LOCAL_SESSION_CONFLICT"
+  | "LOCAL_SESSION_UNSUPPORTED"
+  | "LOCAL_SESSION_OFFLINE"
   | "INVALID_REQUEST"
   | "ROOM_FORBIDDEN"
   | "ROOM_NOT_FOUND"
@@ -178,4 +183,102 @@ export interface LiveConfig {
   realtimeEndpoint: string;
   region: string;
   userChannelKey: string;
+}
+
+/** Resources belong to human members; they are never company/room members. */
+export interface LocalDevice {
+  deviceId: string;
+  humanUserId: string;
+  /** Explicitly enrolled sibling identity; absent means no association was supplied. */
+  cliDeviceId: string | null;
+}
+
+export interface LocalSessionCapabilities {
+  sendMode: "none" | "queue" | "immediate";
+  steer: boolean;
+  interrupt: boolean;
+}
+
+export interface LocalSession {
+  /** Advisory bounded local evidence, not proof that a harness refreshed files. */
+  workspace?: { revision: number; coverage: "bounded" | "unknown"; changed: boolean; overlap: boolean };
+  sessionId: string;
+  deviceId: string;
+  humanUserId: string;
+  provider: "claude" | "codex";
+  generation: string;
+  status: "idle" | "busy" | "waiting-approval" | "unknown" | "offline";
+  providerVersion: string;
+  controlUnavailableReason: "runtime-unverified" | "endpoint-unavailable" | "unsupported-version" | "history-gap" | null;
+  activeTurnId: string | null;
+  capabilities: LocalSessionCapabilities;
+  capabilitiesVerified: boolean;
+  /** Canonical last ingested event; opens recent history without loading every page. */
+  latestEventSeq: number;
+}
+
+export interface PairedNode {
+  deviceId: string;
+  humanUserId: string;
+  clientId: "openclaw-macos" | "node-host";
+  /** Explicit validated association only; not physical co-location or readiness. */
+  macDeviceId: string | null;
+}
+
+export interface RoomResources {
+  devices: LocalDevice[];
+  sessions: LocalSession[];
+  pairedNodes: PairedNode[];
+}
+
+export interface LocalSessionEvent {
+  seq: number;
+  kind: "text" | "tool" | "lifecycle";
+  text: string;
+  role: "user" | "assistant" | "system" | "tool";
+  truncated: boolean;
+}
+
+export interface LocalSessionEventPage {
+  events: LocalSessionEvent[];
+  nextAfterSeq: number | null;
+}
+
+export type LocalSessionCommand = {
+  /** Canonical command JSON is bounded to 8 KiB UTF-8, including these fields. */
+  requestId: string;
+  expectedGeneration: string;
+  expectedTurnId?: string | null;
+} & ({ kind: "send"; text: string } | { kind: "interrupt"; text?: never });
+
+export type LocalSessionCommandReceipt = {
+  requestId: string;
+  expectedGeneration: string;
+  kind: "send" | "interrupt";
+  text: string | null;
+  expectedTurnId: string | null;
+  sessionId: string;
+  roomId: string;
+  commandSeq: number;
+  /** applied acknowledges admission to the harness, not successful work. */
+  state: "pending" | "dispatched" | "applied" | "rejected" | "unknown";
+  createdAt: number;
+  /** Unix seconds; a delivery deadline, never a history TTL. */
+  deliverBy: number;
+  held: boolean;
+  providerMessageId: string | null;
+} & ({ actorUserId: string; actor?: never; invocationExpiresAt?: never }
+  | { actorUserId?: never; actor: { kind: "agent"; id: string }; invocationExpiresAt: number });
+
+export interface LocalSessionEnrollmentRequest {
+  deviceId: string;
+  cliDeviceId?: string | null;
+  enabled: boolean;
+  /** Optional stale-cleanup fence; only valid when disabling. */
+  expectedRevision?: string;
+}
+
+export interface LocalSessionEnrollment extends LocalDevice {
+  enabled: boolean;
+  revision: string;
 }

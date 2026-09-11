@@ -21,7 +21,13 @@ from core.observability.metrics import put_metric
 from core.repositories import messaging_repo
 from core.services import runtime_rpc
 from core.services.live_events import get_live_event_publisher
-from core.services.messaging import ApiProblem, canonical_message, json_body_size, make_live_event
+from core.services.messaging import (
+    ApiProblem,
+    canonical_message,
+    json_body_size,
+    make_live_event,
+    with_human_handles,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -126,11 +132,8 @@ async def build_ingress_body(
                 "kind": member["kind"],
                 "id": member["id"],
                 "displayName": member["displayName"],
-                **(
-                    {"mentionHandle": member["mentionHandle"], "listenMode": member["listenMode"]}
-                    if member["kind"] == "agent"
-                    else {}
-                ),
+                **({"mentionHandle": member["mentionHandle"]} if member.get("mentionHandle") else {}),
+                **({"listenMode": member["listenMode"]} if member["kind"] == "agent" else {}),
             }
             for member in members
         ],
@@ -360,7 +363,7 @@ class OpenClawWorkWorker:
             event_kind=event_kind,
             thread_root_message_id=message.get("threadRootMessageId"),
         )
-        members = await messaging_repo.list_members(meta["roomId"])
+        members = with_human_handles(await messaging_repo.list_members(meta["roomId"]))
         body = await build_ingress_body(
             meta=meta,
             target_agent_id=member["id"],

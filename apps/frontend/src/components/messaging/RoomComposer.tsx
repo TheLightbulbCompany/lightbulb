@@ -335,7 +335,7 @@ function ComposerAttempt({
 
   function choose(member: RoomParticipant) {
     if (!trigger) return;
-    const token = member.kind === "agent" && member.mentionHandle ? `@${member.mentionHandle}` : `@${member.displayName}`;
+    const token = member.mentionHandle ? `@${member.mentionHandle}` : `@${member.displayName}`;
     const next = applyCompletion(text, trigger, token);
     replaceText(next.text, next.caret, next.caret);
   }
@@ -419,7 +419,7 @@ function ComposerAttempt({
       renderRow={(member) => <>
         <ParticipantAvatar participant={member} size="sm" />
         <span className="min-w-0 flex-1 text-left"><span className="block truncate" title={member.displayName}>{member.displayName}</span>
-          <span className="text-muted-foreground text-sm">{member.kind === "agent" && member.mentionHandle ? `@${member.mentionHandle}` : "Person"}</span></span>
+          <span className="text-muted-foreground text-sm">{member.mentionHandle ? `@${member.mentionHandle}` : "Person"}</span></span>
       </>} />}
     {emojiOpen && <TypeaheadList id={`${fieldId}-targets`} label="Insert an emoji" items={emojiOptions} activeIndex={activeIndex}
       optionId={(index) => `${fieldId}-option-${index}`} onHover={setActiveIndex} onPick={(index) => chooseEmoji(emojiOptions[index].emoji)}

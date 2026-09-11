@@ -541,7 +541,7 @@ Chat:      Client --> https://api-{env}.flickmeon.ai/api/v1/messaging/* (Clerk H
                                     (lightbulb-channel plugin ingress; native replies POST back)
 
 REST:      Client --> https://api-{env}.flickmeon.ai (API Gateway HTTP API) --> VPC Link V2 --> ALB --> FastAPI
-Machines:  Tauri node hosts / Paperclip operators --> wss://ws-{env}.flickmeon.ai (API Gateway v2 WebSocket;
+Machines:  Tauri node hosts / local sessions / Paperclip operators --> wss://ws-{env}.flickmeon.ai (API GW v2 WS;
              machine-only authorizer, connectionId map in lightbulb-{env}-ws-connections)
 Browser:   Client --> wss://bv-{env}.flickmeon.ai (CloudFront VpcOrigin — raw WS the HTTP API can't carry)
              --> ALB browser-view listener (path-capped /api/v1/browser-view/*) --> routers/browser_view.py
@@ -903,7 +903,14 @@ member). The old channel goes permanently silent. This is a security boundary.
 
 **Agent dispatch.** The stream fans out twice, independently: the projector for
 live UI, and an EventBridge Pipe filtering `WORK#` inserts into
-`openclaw-work.fifo`. `core/services/openclaw_work.py` drains it as a **wake
+`openclaw-work.fifo`. The projector also fans mobile push out to Expo for every
+member it notified, and it sends that push **last** — a raising publish replays
+the whole stream record and Expo has no `eventId` dedupe, so an earlier send
+would banner every member twice. That push is also the one place **mute is
+enforced server-side**: mute is client-side on every other surface, so
+`member.muted` is checked there and nowhere else in the fanout.
+
+`core/services/openclaw_work.py` drains the work queue as a **wake
 signal only** — it re-reads canonical messages through `throughSeq`, rechecks
 membership, wakes the owner's container, and calls the baked `lightbulb-channel`
 plugin's gateway-authenticated private ingress once per targeted message, keyed
@@ -942,7 +949,7 @@ commands are HTTP and human delivery is AppSync (see "Messaging"). "Remove
 WebSockets" never meant every protocol that happens to use one — these remain,
 because events are not a substitute for them:
 
-1. **Machine relay:** API Gateway v2 WebSocket API; `$connect`/`$disconnect`/`$default` are **Lambda integrations** (`apps/infra/lambda/ws-*`). `ws-message` POSTs the payload to `http://{ALB}/api/v1/ws/message` inside the VPC, which `routers/websocket_chat.py` serves **for node/operator machine relays only**. Its two client kinds are Tauri node hosts (bidirectional `node.invoke`) and Paperclip operators (signed operator RPC).
+1. **Machine relay:** API Gateway v2 WebSocket API; `$connect`/`$disconnect`/`$default` are **Lambda integrations** (`apps/infra/lambda/ws-*`). `ws-message` POSTs the payload to `http://{ALB}/api/v1/ws/message` inside the VPC, which `routers/websocket_chat.py` serves **for machine relays only** (its docstring still says "node/operator"; the code admits a third). Its three client kinds are Tauri node hosts (bidirectional `node.invoke`), the desktop local-session relay (`clientId=lightbulb-local-sessions`, enrollment-gated), and Paperclip operators (signed operator RPC).
 2. The `websocket-authorizer` Lambda accepts exactly two credential kinds — paired-device JWTs (EdDSA, `kind=device`) and Paperclip service tokens (HS256) — and **deliberately refuses Clerk browser sessions**. DynamoDB `lightbulb-{env}-ws-connections` maps connectionId → owner; no `chat`/`native_human` rows exist.
 3. Backend `/ws/*` endpoints require the `x-lightbulb-ws-internal` shared-secret header, so forged callers arriving over the public HTTP API are rejected. Relay replies go out over the Management API (HTTPS POST to `@connections/{id}`).
 4. **Backend → container:** `core/gateway/connection_pool.py` holds OpenClaw's own native authenticated gateway socket. Unrelated to the door above, and unchanged.

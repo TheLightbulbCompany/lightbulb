@@ -313,8 +313,12 @@ async def test_gate_up_membership_add_failure_is_swallowed_and_metered():
 @pytest.mark.asyncio
 async def test_ensure_paperclip_for_owner_personal_calls_provision_org():
     """Personal owner → provision_org with owner_id == user_id."""
+    starter_ids = {
+        key: f"agent-{key}" for key in ("ceo", "engineering", "finance", "growth", "analytics", "customer_operations")
+    }
     fake_provisioning = MagicMock()
-    fake_provisioning.provision_org = AsyncMock()
+    fake_provisioning.get_company_row = AsyncMock(return_value=None)
+    fake_provisioning.provision_org = AsyncMock(return_value=MagicMock(status="active", starter_agent_ids=starter_ids))
     ensure_default_room = AsyncMock()
     with (
         patch(
@@ -338,6 +342,58 @@ async def test_ensure_paperclip_for_owner_personal_calls_provision_org():
         owner_user_id="user_p",
         owner_email="p@example.com",
     )
+    ensure_default_room.assert_awaited_once_with("user_p", "user_p")
+
+
+@pytest.mark.asyncio
+async def test_existing_active_starter_workspace_does_not_gain_default_room():
+    """A healthy pre-existing workspace is not fresh onboarding evidence."""
+    starter_ids = {
+        key: f"agent-{key}" for key in ("ceo", "engineering", "finance", "growth", "analytics", "customer_operations")
+    }
+    existing = MagicMock(status="active", starter_agent_ids=starter_ids)
+    fake_provisioning = MagicMock()
+    fake_provisioning.get_company_row = AsyncMock(return_value=existing)
+    fake_provisioning.provision_org = AsyncMock(return_value=existing)
+    ensure_default_room = AsyncMock()
+    with (
+        patch("core.services.user_provision.build_paperclip_provisioning", AsyncMock(return_value=fake_provisioning)),
+        patch("core.services.user_provision.close_paperclip_provisioning", AsyncMock()),
+        patch("core.services.messaging.ensure_default_room", ensure_default_room),
+    ):
+        await _ensure_paperclip_for_owner(
+            owner_id="user_p",
+            owner_user_id="user_p",
+            owner_email="p@example.com",
+            org_id=None,
+        )
+
+    ensure_default_room.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_partial_starter_workspace_gets_default_room_after_completion():
+    """A partial starter retry becomes eligible only after its map completes."""
+    complete = {
+        key: f"agent-{key}" for key in ("ceo", "engineering", "finance", "growth", "analytics", "customer_operations")
+    }
+    partial = MagicMock(status="failed", starter_agent_ids={**complete, "analytics": None})
+    fake_provisioning = MagicMock()
+    fake_provisioning.get_company_row = AsyncMock(return_value=partial)
+    fake_provisioning.provision_org = AsyncMock(return_value=MagicMock(status="active", starter_agent_ids=complete))
+    ensure_default_room = AsyncMock()
+    with (
+        patch("core.services.user_provision.build_paperclip_provisioning", AsyncMock(return_value=fake_provisioning)),
+        patch("core.services.user_provision.close_paperclip_provisioning", AsyncMock()),
+        patch("core.services.messaging.ensure_default_room", ensure_default_room),
+    ):
+        await _ensure_paperclip_for_owner(
+            owner_id="user_p",
+            owner_user_id="user_p",
+            owner_email="p@example.com",
+            org_id=None,
+        )
+
     ensure_default_room.assert_awaited_once_with("user_p", "user_p")
 
 
@@ -465,6 +521,7 @@ async def test_org_admin_create_failure_releases_claim():
     fake_provisioning.find_org_owner = AsyncMock(return_value=None)
     fake_provisioning.try_acquire_org_create_claim = AsyncMock(return_value="tok-1")
     fake_provisioning.release_org_create_claim = AsyncMock()
+    fake_provisioning.get_company_row = AsyncMock(return_value=None)
     boom = RuntimeError("paperclip down")
     fake_provisioning.provision_org = AsyncMock(side_effect=boom)
 
@@ -842,6 +899,7 @@ async def test_ensure_paperclip_for_owner_idempotent_on_duplicate_409():
     from core.services.paperclip_admin_client import PaperclipApiError
 
     fake_provisioning = MagicMock()
+    fake_provisioning.get_company_row = AsyncMock(return_value=None)
     fake_provisioning.provision_org = AsyncMock(
         side_effect=PaperclipApiError(
             "POST /api/auth/sign-up/email -> 409",
@@ -883,6 +941,7 @@ async def test_ensure_paperclip_for_owner_reraises_non_409_paperclip_error():
     from core.services.paperclip_admin_client import PaperclipApiError
 
     fake_provisioning = MagicMock()
+    fake_provisioning.get_company_row = AsyncMock(return_value=None)
     fake_provisioning.provision_org = AsyncMock(
         side_effect=PaperclipApiError(
             "POST /api/auth/sign-up/email -> 502",
@@ -924,6 +983,7 @@ async def test_ensure_paperclip_for_owner_records_duplicate_422_without_reraisin
     from core.services.paperclip_admin_client import PaperclipApiError
 
     fake_provisioning = MagicMock()
+    fake_provisioning.get_company_row = AsyncMock(return_value=None)
     fake_provisioning.provision_org = AsyncMock(
         side_effect=PaperclipApiError(
             "POST /api/auth/sign-up/email -> 422",

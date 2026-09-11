@@ -45,7 +45,10 @@ async def test_first_canonical_human_message_becomes_the_one_pending_brief():
     reconcile = AsyncMock()
     message = {
         "roomId": __import__("core.services.messaging", fromlist=["default_room_id"]).default_room_id(OWNER),
-        "messageSeq": 2,
+        # A human can win the room-created/welcome-message race and become
+        # sequence 1. Durable author order, not a fixed sequence, identifies
+        # onboarding intake.
+        "messageSeq": 1,
         "messageId": "msg_first",
         "text": "Build a calmer way for clinics to schedule patients",
         "author": {"kind": "human", "id": "user_member"},
@@ -53,6 +56,14 @@ async def test_first_canonical_human_message_becomes_the_one_pending_brief():
     with (
         patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
         patch("core.services.onboarding_brief.reconcile_pending_brief", reconcile),
+        patch(
+            "core.repositories.messaging_repo.list_messages_between",
+            new=AsyncMock(
+                side_effect=lambda _room, _start, through: (
+                    [] if through == 0 else [message, {"messageSeq": 2, "author": {"kind": "agent"}}]
+                )
+            ),
+        ),
     ):
         assert await capture_first_workspace_message(OWNER, message) is True
         assert await capture_first_workspace_message(OWNER, {**message, "messageSeq": 3}) is False

@@ -34,6 +34,7 @@ from enum import Enum
 from core.containers.workspace import Workspace
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event
+from core.repositories import messaging_repo
 
 logger = logging.getLogger(__name__)
 
@@ -506,13 +507,18 @@ async def capture_first_workspace_message(owner_id: str, message: dict) -> bool:
     text = str(message.get("text") or "").strip()
     if (
         message.get("roomId") != default_room_id(owner_id)
-        or int(message.get("messageSeq") or 0) != 2
+        or int(message.get("messageSeq") or 0) < 1
         or author.get("kind") != "human"
         or len(text) < 3
     ):
         return False
     if len(text) > 2000:
         put_metric("OnboardingBriefTooLong")
+        return False
+
+    message_seq = int(message.get("messageSeq") or 0)
+    earlier = await messaging_repo.list_messages_between(str(message["roomId"]), 1, message_seq - 1)
+    if any((row.get("author") or {}).get("kind") == "human" for row in earlier):
         return False
 
     repo = PaperclipRepo(table_name="paperclip-companies")

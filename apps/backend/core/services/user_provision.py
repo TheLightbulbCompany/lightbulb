@@ -691,17 +691,31 @@ async def _ensure_paperclip_for_owner(
     provisioning = await build_paperclip_provisioning()
     try:
         try:
-            await provisioning.provision_org(
+            before = await provisioning.get_company_row(owner_user_id)
+            company = await provisioning.provision_org(
                 owner_id=owner_id,
                 owner_user_id=owner_user_id,
                 owner_email=owner_email,
             )
-            from core.services.messaging import ensure_default_room
+            from core.services.messaging import _STARTER_KEYS, ensure_default_room
 
-            try:
-                await ensure_default_room(owner_id, owner_user_id)
-            except Exception:  # noqa: BLE001 — room creation retries on the next reconcile
-                logger.exception("ensure_user_ready: default room creation failed for owner=%s", owner_id)
+            before_starters = getattr(before, "starter_agent_ids", None) if before else None
+            company_starters = getattr(company, "starter_agent_ids", None)
+            fresh_or_partial = before is None or (
+                isinstance(before_starters, dict) and any(not before_starters.get(key) for key in _STARTER_KEYS)
+            )
+            complete = (
+                getattr(company, "status", None) == "active"
+                and isinstance(company_starters, dict)
+                and set(company_starters) == set(_STARTER_KEYS)
+                and all(company_starters.get(key) for key in _STARTER_KEYS)
+                and len(set(company_starters.values())) == len(_STARTER_KEYS)
+            )
+            if fresh_or_partial and complete:
+                try:
+                    await ensure_default_room(owner_id, owner_user_id)
+                except Exception:  # noqa: BLE001 — partial retries reconcile again
+                    logger.exception("ensure_user_ready: default room creation failed for owner=%s", owner_id)
         except PaperclipApiError as exc:
             # 409: a CONCURRENT provision_org (the previous ~3s
             # /container/status poll) is mid-flight and hasn't written the

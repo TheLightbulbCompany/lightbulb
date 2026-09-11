@@ -170,6 +170,45 @@ async def test_paperclip_unavailable_keeps_the_brief_and_claims_nothing(env):
 # --- The happy path ----------------------------------------------------------
 
 
+async def test_room_before_welcome_human_seeds_one_goal_and_project(env, monkeypatch):
+    from core.services.messaging import default_room_id
+
+    first = {
+        "roomId": default_room_id("user_abc"),
+        "messageSeq": 1,
+        "messageId": "message-first",
+        "text": "Build a calmer scheduling tool for clinics",
+        "author": {"kind": "human", "id": "member_zed"},
+    }
+
+    async def store_brief(_owner_id, **values):
+        env.repo.get_pending_brief.return_value = {
+            **PENDING,
+            "input": values["user_input"],
+            "brief_text": values["brief_text"],
+            "submitted_by": values["submitted_by"],
+        }
+        return True
+
+    env.repo.put_pending_brief = AsyncMock(side_effect=store_brief)
+    monkeypatch.setattr(
+        brief_mod.messaging_repo,
+        "list_messages_between",
+        AsyncMock(
+            side_effect=lambda _room, _start, through: (
+                [] if through == 0 else [first, {"messageSeq": 2, "author": {"kind": "agent"}}]
+            )
+        ),
+    )
+
+    assert await brief_mod.capture_first_workspace_message("user_abc", first) is True
+    assert await brief_mod.capture_first_workspace_message("user_abc", {**first, "messageSeq": 3}) is False
+
+    env.repo.put_pending_brief.assert_awaited_once()
+    env.admin.create_goal.assert_awaited_once()
+    env.admin.create_project.assert_awaited_once()
+
+
 async def test_drain_claims_seeds_stages_completes_and_retires_without_synthetic_dispatch(env):
     await reconcile_pending_brief("user_abc")
 

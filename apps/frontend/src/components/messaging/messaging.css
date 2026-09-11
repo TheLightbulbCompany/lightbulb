@@ -69,7 +69,7 @@
 .room-input::placeholder { color: var(--muted-foreground); }
 .room-picker { border-top: 1px solid var(--border); padding-top: 12px; min-width: 0; }
 .room-picker-list { max-height: 240px; overflow-y: auto; overscroll-behavior: contain; }
-.room-typeahead { position: absolute; left: 0; right: 0; bottom: calc(100% + 4px); z-index: 4; max-height: 240px; overflow-y: auto; overscroll-behavior: contain; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--popover); box-shadow: var(--shadow-pop); }
+.room-typeahead { position: absolute; left: 0; right: 0; bottom: calc(100% + 4px); z-index: 4; max-height: 240px; overflow-y: auto; overscroll-behavior: contain; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--popover); }
 .room-typeahead .room-choice-button[data-active] { background: var(--accent); }
 .room-choice { display: flex; align-items: center; gap: 8px; padding: 8px 4px; min-height: 44px; cursor: pointer; }
 .room-choice-button { width: 100%; border-radius: 4px; text-align: left; }

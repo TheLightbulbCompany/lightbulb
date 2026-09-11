@@ -230,7 +230,7 @@ function ComposerAttempt({
     onSubmit={(event) => { event.preventDefault(); submit(); }}>
     <label className="sr-only" htmlFor={fieldId}>{label}</label>
     {mentionOpen && <div id={`${fieldId}-targets`} className="room-typeahead" role="listbox" aria-label="Mention a room member">
-      {options.map((member, index) => <button key={`${member.kind}:${member.id}`} id={`${fieldId}-option-${index}`} type="button" role="option"
+      {options.map((member, index) => <button key={`${member.kind}:${member.id}`} id={`${fieldId}-option-${index}`} type="button" role="option" tabIndex={-1}
         aria-selected={index === activeIndex} className="room-choice room-choice-button" data-active={index === activeIndex || undefined}
         onMouseDown={(event) => event.preventDefault()} onMouseEnter={() => setActiveIndex(index)} onClick={() => choose(member)}>
         <ParticipantAvatar participant={member} size="sm" />

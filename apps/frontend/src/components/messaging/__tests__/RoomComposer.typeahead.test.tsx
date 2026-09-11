@@ -11,11 +11,11 @@ const members: RoomParticipant[] = [
   { kind: "agent", id: "agent-atlas", displayName: "Atlas", mentionHandle: "atlas", role: "member", listenMode: "mentions", joinedAt: "2026-09-10T00:00:00.000Z", joinedSeq: 3 },
 ];
 
-function Harness({ onSubmit = vi.fn() }: { onSubmit?: RoomComposerProps["onSubmit"] }) {
+function Harness({ onSubmit = vi.fn(), focusAgentId }: { onSubmit?: RoomComposerProps["onSubmit"]; focusAgentId?: string }) {
   const [text, setText] = useState("");
   const [mentions, setMentions] = useState<MemberRef[]>([]);
   return <RoomComposer text={text} onTextChange={setText} members={members} selectedMentions={mentions}
-    onMentionsChange={setMentions} clientMessageId="11111111-1111-4111-8111-111111111111" sendState="idle" onSubmit={onSubmit} />;
+    onMentionsChange={setMentions} clientMessageId="11111111-1111-4111-8111-111111111111" sendState="idle" onSubmit={onSubmit} focusAgentId={focusAgentId} />;
 }
 
 const field = () => screen.getByRole("textbox", { name: "Message" });
@@ -30,6 +30,13 @@ it("opens and filters the mention list from a typed @", () => {
   expect(screen.getByRole("listbox", { name: "Mention a room member" })).toBeInTheDocument();
   expect(screen.getByRole("option", { name: /Friday/ })).toBeInTheDocument();
   expect(screen.queryByRole("option", { name: /Atlas/ })).not.toBeInTheDocument();
+});
+
+it("puts the DM's agent first in a DM with one agent, ahead of members.list order", () => {
+  render(<Harness focusAgentId="agent-atlas" />);
+  type("Ask @");
+  const options = screen.getAllByRole("option");
+  expect(options[0]).toHaveAccessibleName(/Atlas/);
 });
 
 it("closes the list when nothing matches so prose after an @ is left alone", () => {

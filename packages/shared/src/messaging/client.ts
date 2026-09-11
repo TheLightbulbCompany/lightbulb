@@ -23,6 +23,7 @@ import type {
 const roomPath = (roomId: string) => `/messaging/rooms/${encodeURIComponent(roomId)}`;
 
 export interface MessagingClient {
+  setReaction(roomId: string, messageId: string, emoji: string, active: boolean): Promise<CanonicalRoomMessage>;
   getLiveConfig(): Promise<LiveConfig>;
   listRooms(): Promise<RoomListResponse>;
   createRoom(request: CreateRoomRequest): Promise<RoomDetail>;
@@ -43,6 +44,7 @@ export interface MessagingClient {
 
 export function createMessagingClient(api: ApiMethods): MessagingClient {
   return {
+    setReaction: (roomId, messageId, emoji, active) => api.put(`${roomPath(roomId)}/messages/${encodeURIComponent(messageId)}/reactions`, { emoji, active }) as Promise<CanonicalRoomMessage>,
     getLiveConfig: () => api.get("/messaging/live-config") as Promise<LiveConfig>,
     listRooms: () => api.get("/messaging/rooms") as Promise<RoomListResponse>,
     createRoom: (request) => api.post("/messaging/rooms", request) as Promise<RoomDetail>,

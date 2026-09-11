@@ -68,7 +68,14 @@ const live = {
 vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live }));
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ isLoaded: true, userId: "user-a", orgId: "org-a" }) }));
 
-import { useRooms } from "../useRooms";
+import { mergeCanonicalMessages, useRooms } from "../useRooms";
+
+it("keeps newer reactions when message snapshots arrive out of order", () => {
+  const latest = { messageId: "m", messageSeq: 1, reactionRevision: 2, reactions: { "👍": ["user-a"] } } as CanonicalRoomMessage;
+  const stale = { ...latest, reactionRevision: 1, reactions: {} };
+  expect(mergeCanonicalMessages([latest], [stale])).toEqual([latest]);
+  expect(mergeCanonicalMessages([stale], [latest])).toEqual([latest]);
+});
 
 function wrapper({ children }: { children: ReactNode }) {
   return <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>{children}</SWRConfig>;

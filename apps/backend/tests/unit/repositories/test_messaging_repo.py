@@ -96,6 +96,26 @@ async def _post(room_id, text="hi", targets=None, client_id="m-1", author=None):
 
 
 @pytest.mark.asyncio
+async def test_reactions_persist_idempotently_and_enforce_membership_and_owner(table):
+    room_id, _ = await _room([_member("human", USER_A, "owner"), _member("human", USER_B)])
+    message = await _post(room_id)
+    seq = message["messageSeq"]
+    await repo.set_reaction(OWNER, room_id, seq, USER_A, "👍", True)
+    await repo.set_reaction(OWNER, room_id, seq, USER_A, "👍", True)
+    updated = await repo.set_reaction(OWNER, room_id, seq, USER_B, "👍", True)
+    assert updated["reactions"] == {"👍": [USER_A, USER_B]}
+    assert (await repo.get_message(room_id, seq))["reactions"] == updated["reactions"]
+    for owner_id, user_id in [("other-owner", USER_A), (OWNER, "outsider")]:
+        with pytest.raises(repo.MessagingRepoError):
+            await repo.set_reaction(owner_id, room_id, seq, user_id, "❤️", True)
+    updated = await repo.set_reaction(OWNER, room_id, seq, USER_A, "👍", False)
+    assert updated["reactions"] == {"👍": [USER_B]}
+    updated = await repo.set_reaction(OWNER, room_id, seq, USER_B, "👍", False)
+    assert updated["reactions"] == {}
+    assert updated["messageSeq"] == seq
+
+
+@pytest.mark.asyncio
 async def test_create_room_writes_meta_catalog_idemp_members_and_agent_cursors(table):
     room_id, meta = await _room()
     assert meta["lastSeq"] == 0 and meta["revision"] == 1 and meta["deliveryKey"]

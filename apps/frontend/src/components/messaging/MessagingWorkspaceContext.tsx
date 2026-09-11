@@ -308,6 +308,7 @@ export function MessagingWorkspaceProvider({
     onSelectParticipant: selectParticipant,
     onRetry: () => void rooms.refreshRoom(),
     onListenModeChange: (agentId, mode) => void changeListenMode(agentId, mode),
+    onSetReaction: rooms.setReaction,
     ...(rooms.activeRoom?.kind === "channel" && ["owner", "admin"].includes(
       rooms.activeRoom.members.find((member) => member.kind === "human" && member.id === userId)?.role ?? "",
     ) ? {

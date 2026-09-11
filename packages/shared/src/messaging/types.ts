@@ -87,6 +87,8 @@ export interface UpsertRoomMemberRequest {
 }
 
 export interface CanonicalRoomMessage {
+  reactions?: Record<string, string[]>;
+  reactionRevision?: number;
   messageId: string;
   roomId: string;
   messageSeq: number;

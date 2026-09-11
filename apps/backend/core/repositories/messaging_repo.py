@@ -611,6 +611,67 @@ async def create_message(
     raise MessagingRepoError(f"could not append to room {room_id} after {_SEQ_RETRY_ATTEMPTS} attempts")
 
 
+async def set_reaction(owner_id: str, room_id: str, seq: int, user_id: str, emoji: str, active: bool) -> dict:
+    for _ in range(_SEQ_RETRY_ATTEMPTS):
+        message = await get_message(room_id, seq)
+        if message is None:
+            raise MessagingRepoError("Message not found.")
+        reactions = dict(message.get("reactions") or {})
+        users = set(reactions.get(emoji, []))
+        if active:
+            users.add(user_id)
+        else:
+            users.discard(user_id)
+        # ponytail: bound historical membership metadata; use separate reaction rows beyond 256 users per emoji.
+        if len(users) > 256:
+            raise MessagingRepoError("This reaction has reached its limit.")
+        if users:
+            reactions[emoji] = sorted(users)
+        else:
+            reactions.pop(emoji, None)
+        if len(json.dumps(reactions, ensure_ascii=False).encode("utf-8")) > 64_000:
+            raise MessagingRepoError("This message has reached its reaction limit.")
+        revision = int(message.get("reactionRevision", 0))
+        try:
+            await _transact(
+                [
+                    {
+                        "ConditionCheck": {
+                            "TableName": _table().name,
+                            "Key": {"pk": room_pk(room_id), "sk": "META"},
+                            "ConditionExpression": "ownerId = :owner",
+                            "ExpressionAttributeValues": {":owner": owner_id},
+                        }
+                    },
+                    {
+                        "ConditionCheck": {
+                            "TableName": _table().name,
+                            "Key": {"pk": room_pk(room_id), "sk": member_sk("human", user_id)},
+                            "ConditionExpression": "attribute_exists(sk)",
+                        }
+                    },
+                    {
+                        "Update": {
+                            "TableName": _table().name,
+                            "Key": {"pk": room_pk(room_id), "sk": msg_sk(seq)},
+                            "UpdateExpression": "SET reactions = :reactions, reactionRevision = :next",
+                            "ConditionExpression": "attribute_exists(sk) AND (attribute_not_exists(reactionRevision) OR reactionRevision = :expected)",
+                            "ExpressionAttributeValues": {
+                                ":reactions": reactions,
+                                ":next": revision + 1,
+                                ":expected": revision,
+                            },
+                        }
+                    },
+                ]
+            )
+            return {**message, "reactions": reactions, "reactionRevision": revision + 1}
+        except ClientError as exc:
+            if not _is_cancelled(exc):
+                raise
+    raise MessagingRepoError("Reaction could not be updated. Refresh and try again.")
+
+
 async def _replay_or_conflict(receipt: dict, req_hash: str) -> dict:
     if receipt.get("requestHash") != req_hash:
         raise IdempotencyConflict("idempotency key reused with a different request")

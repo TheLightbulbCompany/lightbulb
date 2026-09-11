@@ -20,8 +20,8 @@ def _sched(closes_delta_days: int, *, comp_slots: int = 200, closed_at=None) -> 
     )
 
 
-ONBOARDED = {"bootstrap_state": "delivered", "bootstrap_delivered_at": "2026-09-19T00:00:00+00:00"}
-NOT_ONBOARDED = {"bootstrap_state": "sent", "bootstrap_delivered_at": None}
+ONBOARDED = {"funnel_state": "complete"}
+NOT_ONBOARDED = {"funnel_state": "submitted"}
 
 
 def _row(**over):

@@ -59,6 +59,7 @@ describe("messaging HTTP client", () => {
   it("uses exact mutation verbs, paths, and bodies without server-owned owner/author fields", async () => {
     const { client, methods } = setup();
     await client.updateRoom(roomId, { name: null });
+    await client.updateMessage(roomId, messageId, { operationId: messageId, expectedRevision: 2, text: null });
     await client.upsertMember(roomId, { kind: "agent", id: agentId, role: "member", listenMode: "mentions" });
     await client.removeMember(roomId, "agent", agentId);
     await client.markRead(roomId, { lastReadSeq: 9 });
@@ -67,6 +68,7 @@ describe("messaging HTTP client", () => {
     await client.steerRun("run-1", { text: "focus on checkout" });
 
     expect(methods.patch).toHaveBeenCalledWith(`/messaging/rooms/${roomId}`, { name: null });
+    expect(methods.patch).toHaveBeenCalledWith(`/messaging/rooms/${roomId}/messages/${messageId}`, { operationId: messageId, expectedRevision: 2, text: null });
     expect(methods.post).toHaveBeenCalledWith(`/messaging/rooms/${roomId}/members`, {
       kind: "agent", id: agentId, role: "member", listenMode: "mentions",
     });

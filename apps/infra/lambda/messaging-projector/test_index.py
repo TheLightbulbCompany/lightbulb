@@ -110,6 +110,31 @@ class FakeDdb:
 
 
 class ProjectorTests(unittest.TestCase):
+    def test_edit_and_delete_publish_invalidation_without_content_or_notifications(self):
+        for deleted in (None, CREATED_AT):
+            old = message_item()
+            updated = {**old, "messageRevision": 1, "editedText": "changed", "editedAt": CREATED_AT, "deletedAt": deleted}
+            index._ddb_client = FakeDdb({(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY}})
+            record = stream_record(updated)
+            record["eventName"] = "MODIFY"
+            record["dynamodb"]["OldImage"] = av_map(old)
+            with patch.object(index, "_publish") as publish, patch.object(index, "_notify_members") as notify:
+                index.process_record(record)
+                event = publish.call_args.args[1]
+                self.assertEqual(event["type"], "room.message.updated")
+                self.assertEqual(event["payload"], {"roomId": ROOM_ID, "messageId": MESSAGE_ID, "messageSeq": 1})
+                notify.assert_not_called()
+
+    def test_delayed_insert_of_deleted_message_does_not_publish_original(self):
+        old = message_item()
+        latest = {**old, "messageRevision": 1, "editedText": None, "editedAt": CREATED_AT, "deletedAt": CREATED_AT}
+        index._ddb_client = FakeDdb({(old["pk"], old["sk"]): latest, (old["pk"], "META"): {"deliveryKey": DELIVERY_KEY}})
+        with patch.object(index, "_publish") as publish, patch.object(index, "_notify_members") as notify:
+            index.process_record(stream_record(old))
+            self.assertEqual(publish.call_args.args[1]["type"], "room.message.updated")
+            self.assertNotIn("hello", json.dumps(publish.call_args.args[1]))
+            notify.assert_not_called()
+
     def setUp(self):
         self.old_table = index.MESSAGING_TABLE
         self.old_endpoint = index.HTTP_ENDPOINT
@@ -127,8 +152,11 @@ class ProjectorTests(unittest.TestCase):
         index._ddb_client = self.old_ddb
 
     @patch("index._publish")
-    def test_ignores_noninsert_and_nonprojection_records(self, publish):
-        index.process_record({"eventName": "MODIFY"})
+    def test_ignores_removal_and_nonprojection_records(self, publish):
+        index.process_record({"eventName": "REMOVE"})
+        unchanged = stream_record({**message_item(), "reactionRevision": 1})
+        unchanged["eventName"] = "MODIFY"
+        index.process_record(unchanged)
         index.process_record(stream_record({"pk": "ROOM#x", "sk": "WORK#MESSAGE#1"}))
         publish.assert_not_called()
         self.assertEqual(index._ddb_client.calls, [])

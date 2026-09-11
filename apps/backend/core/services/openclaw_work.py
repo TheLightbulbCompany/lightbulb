@@ -88,7 +88,11 @@ def lightbulb_session_key(agent_id: str, room_id: str) -> str:
 
 
 def _public_message(row: dict[str, Any]) -> dict[str, Any]:
-    message = canonical_message(row).model_dump(mode="json", by_alias=True)
+    message = canonical_message(row, original_request=True).model_dump(
+        mode="json",
+        by_alias=True,
+        exclude={"reactions", "reaction_revision", "message_revision", "edited_at", "deleted_at"},
+    )
     if not message["attachments"]:
         del message["attachments"]
     return message

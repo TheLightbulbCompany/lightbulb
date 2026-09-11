@@ -9,6 +9,7 @@ import {
   type CanonicalRoomMessage,
   type ChatIncomingMessage,
   type CreateMessageRequest,
+  type UpdateMessageRequest,
   type CreateRoomRequest,
   type MessagePage,
   type MemberRef,
@@ -50,7 +51,9 @@ export function mergeCanonicalMessages(
   const byId = new Map(current.map((message) => [message.messageId, message]));
   for (const message of incoming) {
     const previous = byId.get(message.messageId);
-    if ((previous?.reactionRevision ?? 0) <= (message.reactionRevision ?? 0)) byId.set(message.messageId, message);
+    const content = (previous?.messageRevision ?? 0) > (message.messageRevision ?? 0) ? previous! : message;
+    const reactions = (previous?.reactionRevision ?? 0) > (message.reactionRevision ?? 0) ? previous! : message;
+    byId.set(message.messageId, { ...content, reactions: content.deletedAt ? {} : reactions.reactions, reactionRevision: reactions.reactionRevision });
   }
   return [...byId.values()].sort((left, right) => left.messageSeq - right.messageSeq);
 }
@@ -271,6 +274,11 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
   }, [subscriptionPath, activeRoom?.roomRevision, liveChannels, connectionRevision, reconcile, reconcileRuns]);
 
   useEffect(() => onEvent((event) => {
+    if (event.type === "room.message.updated" && event.payload.roomId === activeRoomId) {
+      // ponytail: reread room history on edits; add targeted reads if long rooms make this costly.
+      void reconcile(0).catch(() => {});
+      return;
+    }
     if (event.type === "room.message.available") {
       void mutateRooms();
       return;
@@ -400,6 +408,21 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
       throw error;
     }
   }, [activeRoomId, messaging, mutateRooms]);
+
+  const updateMessage = useCallback(async (messageId: string, request: UpdateMessageRequest) => {
+    if (!activeRoomId || accessRemoved) throw new Error("No room selected.");
+    const runGeneration = generation.current;
+    try {
+      const message = await messaging.updateMessage(activeRoomId, messageId, request);
+      if (generation.current !== runGeneration || message.roomId !== activeRoomId) return;
+      const merged = mergeCanonicalMessages(messagesRef.current, [message]);
+      messagesRef.current = merged;
+      setMessages(merged);
+    } catch (error) {
+      if (generation.current === runGeneration) void reconcile(0).catch(() => {});
+      throw error;
+    }
+  }, [activeRoomId, accessRemoved, messaging, reconcile]);
 
   const setReaction = useCallback(async (messageId: string, emoji: string, active: boolean) => {
     if (!activeRoomId || accessRemoved) throw new Error("No room selected.");
@@ -565,6 +588,7 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
     removeMember,
     sendMessage,
     setReaction,
+    updateMessage,
     uploadAttachment,
     downloadAttachment,
     reconcileSend,

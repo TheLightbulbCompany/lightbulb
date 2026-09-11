@@ -6,7 +6,8 @@ every protected operation rechecks the base ``MEMBER#`` row strongly):
     OWNER#<owner>   ROOM#<room>                        room directory projection
     ROOM#<room>     META                               owner, fields, revision, lastSeq, deliveryKey
     ROOM#<room>     MEMBER#<kind>#<id>                 role, listenMode, mentionHandle, joinedSeq
-    ROOM#<room>     MSG#<20-digit seq>                 immutable message + dispatchTargets
+    ROOM#<room>     MSG#<20-digit seq>                 original request + public edit overlay + dispatchTargets
+    ROOM#<room>     IDEMP#EDIT#<user>#<operationId>     durable edit/delete retry receipt
     ROOM#<room>     IDEMP#human#<user>#<clientMessageId>  durable human retry receipt
     OWNER#<owner>   IDEMP#AGENT#<eventId>              durable agent retry receipt (owner-scoped
                                                        because the receipt route carries no roomId)
@@ -56,6 +57,14 @@ class MessagingRepoError(Exception):
 
 class IdempotencyConflict(MessagingRepoError):
     """Same idempotency key, different canonical request."""
+
+
+class MessageConflict(MessagingRepoError):
+    pass
+
+
+class MessageForbidden(MessagingRepoError):
+    pass
 
 
 class MemberLimitExceeded(MessagingRepoError):
@@ -611,11 +620,110 @@ async def create_message(
     raise MessagingRepoError(f"could not append to room {room_id} after {_SEQ_RETRY_ATTEMPTS} attempts")
 
 
+async def update_message(
+    owner_id: str, room_id: str, seq: int, user_id: str, operation_id: str, expected_revision: int, text: str | None
+) -> dict:
+    """Change the public projection, retaining the original request for runtime work.
+
+    The durable receipt makes an uncertain retry safe, including after another edit.
+    Neither message sequence nor dispatch/work rows change.
+    """
+    message = await get_message(room_id, seq)
+    meta = await get_room(room_id)
+    member = await get_member(room_id, "human", user_id)
+    if (
+        not message
+        or not meta
+        or meta.get("ownerId") != owner_id
+        or not member
+        or message.get("author", {}).get("kind") != "human"
+        or message["author"].get("id") != user_id
+    ):
+        raise MessageForbidden("Only the author, while a room member, can change this message.")
+    receipt_sk = f"IDEMP#EDIT#{user_id}#{operation_id}"
+    req_hash = request_hash(message["messageId"], expected_revision, text)
+    receipt = await _get(room_pk(room_id), receipt_sk)
+    if receipt:
+        return await _replay_or_conflict(receipt, req_hash)
+    if message.get("deletedAt") or int(message.get("messageRevision", 0)) != expected_revision:
+        raise MessageConflict("This message changed. Refresh the conversation and try again.")
+    now = utc_now_iso()
+    changes = {
+        "editedText": text,
+        "messageRevision": expected_revision + 1,
+        "editedAt": now,
+        "deletedAt": now if text is None else None,
+    }
+    try:
+        await _transact(
+            [
+                {
+                    "ConditionCheck": {
+                        "TableName": _table().name,
+                        "Key": {"pk": room_pk(room_id), "sk": "META"},
+                        "ConditionExpression": "ownerId = :owner",
+                        "ExpressionAttributeValues": {":owner": owner_id},
+                    }
+                },
+                {
+                    "ConditionCheck": {
+                        "TableName": _table().name,
+                        "Key": {"pk": room_pk(room_id), "sk": member_sk("human", user_id)},
+                        "ConditionExpression": "attribute_exists(sk)",
+                    }
+                },
+                {
+                    "Update": {
+                        "TableName": _table().name,
+                        "Key": {"pk": room_pk(room_id), "sk": msg_sk(seq)},
+                        "UpdateExpression": "SET editedText = :text, messageRevision = :next, editedAt = :now, deletedAt = :deleted",
+                        "ConditionExpression": "attribute_exists(sk) AND #author.#kind = :human AND #author.id = :user AND (attribute_not_exists(messageRevision) OR messageRevision = :expected)",
+                        "ExpressionAttributeNames": {"#author": "author", "#kind": "kind"},
+                        "ExpressionAttributeValues": {
+                            ":text": text,
+                            ":next": expected_revision + 1,
+                            ":now": now,
+                            ":deleted": changes["deletedAt"],
+                            ":human": "human",
+                            ":user": user_id,
+                            ":expected": expected_revision,
+                        },
+                    }
+                },
+                {
+                    "Put": {
+                        "TableName": _table().name,
+                        "Item": {
+                            "pk": room_pk(room_id),
+                            "sk": receipt_sk,
+                            "requestHash": req_hash,
+                            "roomId": room_id,
+                            "messageId": message["messageId"],
+                            "messageSeq": seq,
+                            "createdAt": now,
+                        },
+                        "ConditionExpression": "attribute_not_exists(sk)",
+                    }
+                },
+            ]
+        )
+    except ClientError as exc:
+        if not _is_cancelled(exc):
+            raise
+        receipt = await _get(room_pk(room_id), receipt_sk)
+        if receipt:
+            return await _replay_or_conflict(receipt, req_hash)
+        raise MessageConflict("The message or room access changed. Refresh and try again.") from exc
+    return {**message, **changes}
+
+
 async def set_reaction(owner_id: str, room_id: str, seq: int, user_id: str, emoji: str, active: bool) -> dict:
     for _ in range(_SEQ_RETRY_ATTEMPTS):
         message = await get_message(room_id, seq)
         if message is None:
             raise MessagingRepoError("Message not found.")
+        if message.get("deletedAt"):
+            raise MessagingRepoError("Deleted messages cannot receive reactions.")
         reactions = dict(message.get("reactions") or {})
         users = set(reactions.get(emoji, []))
         if active:
@@ -655,11 +763,12 @@ async def set_reaction(owner_id: str, room_id: str, seq: int, user_id: str, emoj
                             "TableName": _table().name,
                             "Key": {"pk": room_pk(room_id), "sk": msg_sk(seq)},
                             "UpdateExpression": "SET reactions = :reactions, reactionRevision = :next",
-                            "ConditionExpression": "attribute_exists(sk) AND (attribute_not_exists(reactionRevision) OR reactionRevision = :expected)",
+                            "ConditionExpression": "attribute_exists(sk) AND (attribute_not_exists(reactionRevision) OR reactionRevision = :expected) AND (attribute_not_exists(messageRevision) OR messageRevision = :content)",
                             "ExpressionAttributeValues": {
                                 ":reactions": reactions,
                                 ":next": revision + 1,
                                 ":expected": revision,
+                                ":content": int(message.get("messageRevision", 0)),
                             },
                         }
                     },

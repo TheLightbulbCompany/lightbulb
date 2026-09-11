@@ -110,6 +110,7 @@ export type {
   ApiErrorCode,
   CanonicalRoomMessage,
   CreateMessageRequest,
+  UpdateMessageRequest,
   ImageAttachment,
   CreateRoomRequest,
   ListenMode,

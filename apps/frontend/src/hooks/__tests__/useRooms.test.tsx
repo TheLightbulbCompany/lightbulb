@@ -77,6 +77,17 @@ it("keeps newer reactions when message snapshots arrive out of order", () => {
   expect(mergeCanonicalMessages([stale], [latest])).toEqual([latest]);
 });
 
+it("never resurrects edited or deleted text from a newer reaction snapshot", () => {
+  const edited = { ...firstMessage, text: "corrected", messageRevision: 1, editedAt: "now", reactionRevision: 1 };
+  const reaction = { ...firstMessage, reactionRevision: 2, reactions: { "👍": ["user-a"] } };
+  const combined = mergeCanonicalMessages([edited], [reaction])[0];
+  expect(combined.text).toBe("corrected");
+  expect(combined.reactions).toEqual(reaction.reactions);
+  const deleted = { ...edited, text: "", messageRevision: 2, deletedAt: "now", reactions: {} };
+  expect(mergeCanonicalMessages([deleted], [reaction])[0]).toMatchObject({ text: "", deletedAt: "now", reactions: {} });
+  expect(mergeCanonicalMessages([reaction], [deleted])[0]).toMatchObject({ text: "", deletedAt: "now", reactions: {} });
+});
+
 function wrapper({ children }: { children: ReactNode }) {
   return <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>{children}</SWRConfig>;
 }
@@ -125,6 +136,19 @@ describe("useRooms canonical reconciliation", () => {
     expect(result.current.historyError).toBe(false);
     expect(result.current.historyLoading).toBe(false);
     expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 1, 100);
+  });
+  it("reconciles edits from history and retains them against delayed creation events", async () => {
+    const { result } = renderHook(() => useRooms(), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(room.roomId));
+    const edited = { ...firstMessage, text: "corrected", messageRevision: 1, editedAt: "now" };
+    messaging.listMessages.mockResolvedValue({ messages: [edited], nextAfterSeq: null });
+    act(() => { for (const handler of handlers) handler({ schemaVersion: 1, eventId: "edit", type: "room.message.updated", occurredAt: "now", roomId: room.roomId,
+      payload: { roomId: room.roomId, messageId: firstMessage.messageId, messageSeq: 1 } }); });
+    await waitFor(() => expect(result.current.messages[0]?.text).toBe("corrected"));
+    expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 0, 100);
+    act(() => { for (const handler of handlers) handler(messageEvent(firstMessage)); });
+    expect(result.current.messages[0].text).toBe("corrected");
   });
   it("keeps background arrivals unread until the window gains focus", async () => {
     vi.mocked(document.hasFocus).mockReturnValue(false);

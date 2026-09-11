@@ -396,11 +396,13 @@ it("restores a per-room draft when the owner returns to the room", () => {
 it("moves to the next room on Alt+ArrowDown and the next unread on Alt+Shift+ArrowDown", () => {
   const unreadRoom = { ...room, roomId: "room-2", unreadCount: 2 };
   const thirdRoom = { ...room, roomId: "room-3" };
-  state.rooms = [room, unreadRoom, thirdRoom];
+  // The adjacent room is deliberately NOT the unread one, so the two
+  // shortcuts cannot pass by landing on the same room.
+  state.rooms = [room, thirdRoom, unreadRoom];
   compose();
 
   fireEvent.keyDown(window, { key: "ArrowDown", altKey: true });
-  expect(state.selectRoom).toHaveBeenCalledWith(unreadRoom.roomId);
+  expect(state.selectRoom).toHaveBeenCalledWith(thirdRoom.roomId);
 
   fireEvent.keyDown(window, { key: "ArrowDown", altKey: true, shiftKey: true });
   expect(state.selectRoom).toHaveBeenLastCalledWith(unreadRoom.roomId);

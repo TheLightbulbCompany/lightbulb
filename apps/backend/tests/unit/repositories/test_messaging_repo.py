@@ -704,3 +704,32 @@ async def test_patch_room_meta_writes_name_topic_and_mirrors_only_the_name(table
 async def test_patch_room_meta_rejects_an_unknown_room(table):
     with pytest.raises(repo.RoomNotFound):
         await repo.patch_room_meta("11111111-1111-4111-8111-999999999999", {"topic": "x"})
+
+
+@pytest.mark.asyncio
+async def test_set_pin_appends_removes_is_idempotent_and_caps_at_fifty(table):
+    room_id, meta = await _room()
+
+    pinned = await repo.set_pin(room_id, "m-1", True)
+    assert pinned["pinnedMessageIds"] == ["m-1"]
+    assert pinned["revision"] == meta["revision"] + 1
+
+    again = await repo.set_pin(room_id, "m-1", True)
+    assert again["pinnedMessageIds"] == ["m-1"]
+    assert again["revision"] == pinned["revision"]
+
+    two = await repo.set_pin(room_id, "m-2", True)
+    assert two["pinnedMessageIds"] == ["m-1", "m-2"]
+
+    unpinned = await repo.set_pin(room_id, "m-1", False)
+    assert unpinned["pinnedMessageIds"] == ["m-2"]
+
+    missing = await repo.set_pin(room_id, "m-9", False)
+    assert missing["pinnedMessageIds"] == ["m-2"]
+    assert missing["revision"] == unpinned["revision"]
+
+    for index in range(3, 52):
+        await repo.set_pin(room_id, f"m-{index}", True)
+    assert len((await repo.get_room(room_id))["pinnedMessageIds"]) == 50
+    with pytest.raises(repo.PinLimitExceeded):
+        await repo.set_pin(room_id, "m-over", True)

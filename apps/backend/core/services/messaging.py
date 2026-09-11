@@ -36,6 +36,7 @@ IMAGE_MAX_BYTES = 5 * 1024 * 1024
 IMAGE_MAX_COUNT = 4
 ROOM_NAME_MAX_CHARS = 200
 ROOM_TOPIC_MAX_CHARS = 250
+MAX_PINNED_MESSAGES = messaging_repo.MAX_PINNED_MESSAGES
 MAX_SECTIONS = 20
 SECTION_NAME_MAX_CHARS = 40
 EVENT_ID_MAX_BYTES = 256
@@ -64,6 +65,7 @@ API_ERROR_STATUS = {
     "AGENT_LIFECYCLE_CONFLICT": 409,
     "MESSAGE_CONFLICT": 409,
     "MEMBER_LIMIT": 409,
+    "PIN_LIMIT": 409,
     "RUN_NOT_ACTIVE": 409,
     "RATE_LIMITED": 429,
     "RUNTIME_UNAVAILABLE": 503,
@@ -149,6 +151,7 @@ class RoomDetail(RoomSummary):
     members: list[RoomMember]
     last_read_seq: int = Field(ge=0)
     created_at: datetime
+    pinned_message_ids: list[str] = []
 
 
 class RoomSection(ContractModel):
@@ -942,6 +945,7 @@ async def _room_detail(meta: dict, user_id: str, member: dict | None = None) -> 
         members=[_room_member(row) for row in with_human_handles(members)],
         last_read_seq=last_read,
         created_at=meta["createdAt"],
+        pinned_message_ids=[str(value) for value in meta.get("pinnedMessageIds", [])],
     )
 
 
@@ -1345,6 +1349,22 @@ async def set_reaction(
 
         logging.getLogger(__name__).exception("Could not publish message reactions for room %s", room_id)
     return message
+
+
+async def set_pin(auth: AuthContext, room_id: str, message_id: str, pinned: bool) -> RoomDetail:
+    """Pin or unpin a message. Any member may do either (spec)."""
+    owner_id = resolve_owner_id(auth)
+    meta, member = await require_room_member(owner_id, auth.user_id, room_id)
+    if await messaging_repo.get_message_by_id(room_id, message_id) is None:
+        raise ApiProblem("MESSAGE_NOT_FOUND", "Message not found in this room.")
+    try:
+        meta = await messaging_repo.set_pin(room_id, message_id, pinned)
+    except messaging_repo.PinLimitExceeded as exc:
+        raise ApiProblem("PIN_LIMIT", f"A room can pin at most {MAX_PINNED_MESSAGES} messages.") from exc
+    except messaging_repo.RoomNotFound as exc:
+        raise ApiProblem("ROOM_NOT_FOUND", "Room not found.") from exc
+    await _publish_room_metadata(meta)
+    return await _room_detail(meta, auth.user_id, member)
 
 
 async def _validate_message_links(

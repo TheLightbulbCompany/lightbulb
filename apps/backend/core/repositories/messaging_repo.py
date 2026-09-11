@@ -75,6 +75,10 @@ class RoomNotFound(MessagingRepoError):
     pass
 
 
+class PinLimitExceeded(MessagingRepoError):
+    pass
+
+
 # ---------------------------------------------------------------------------
 # keys / ids
 # ---------------------------------------------------------------------------
@@ -1042,6 +1046,46 @@ async def patch_room_meta(room_id: str, updates: dict[str, Any]) -> dict:
     items[0]["Update"] = {k: v for k, v in items[0]["Update"].items() if v is not None}
     await _transact(items)
     return {**meta, **named, "revision": revision, "updatedAt": now}
+
+
+MAX_PINNED_MESSAGES = 50
+
+
+async def set_pin(room_id: str, message_id: str, pinned: bool) -> dict:
+    """Pin/unpin one message on META. Idempotent: a no-op change does not bump
+    the revision, so repeated clicks never churn every client's room cache."""
+    meta = await get_room(room_id)
+    if meta is None:
+        raise RoomNotFound(room_id)
+    current = [str(value) for value in meta.get("pinnedMessageIds", [])]
+    if pinned and message_id in current:
+        return meta
+    if not pinned and message_id not in current:
+        return meta
+    if pinned and len(current) >= MAX_PINNED_MESSAGES:
+        raise PinLimitExceeded(f"rooms hold at most {MAX_PINNED_MESSAGES} pinned messages")
+    updated = [*current, message_id] if pinned else [value for value in current if value != message_id]
+    now = utc_now_iso()
+    revision = int(meta["revision"]) + 1
+    await _transact(
+        [
+            {
+                "Update": {
+                    "TableName": _table().name,
+                    "Key": {"pk": room_pk(room_id), "sk": "META"},
+                    "UpdateExpression": "SET pinnedMessageIds = :pins, revision = :rev, updatedAt = :now",
+                    "ConditionExpression": "revision = :expected",
+                    "ExpressionAttributeValues": {
+                        ":pins": _ddb_safe(updated),
+                        ":rev": revision,
+                        ":expected": revision - 1,
+                        ":now": now,
+                    },
+                }
+            }
+        ]
+    )
+    return {**meta, "pinnedMessageIds": updated, "revision": revision, "updatedAt": now}
 
 
 # ---------------------------------------------------------------------------

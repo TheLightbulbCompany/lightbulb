@@ -412,3 +412,50 @@ async def test_leave_room_removes_a_non_owner_human_and_refuses_the_owner(monkey
         await messaging.leave_room(auth, "room-1")
     assert exc.value.error.code == "INVALID_REQUEST"
     assert remove.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_set_pin_allows_any_member_validates_the_message_and_publishes_metadata(monkeypatch):
+    auth = AuthContext(user_id="member", org_id="org_1")
+    meta = {"roomId": "room-1", "ownerId": "org_1", "kind": "channel", "revision": 2}
+    monkeypatch.setattr(
+        messaging,
+        "require_room_member",
+        AsyncMock(return_value=(meta, {"kind": "human", "id": "member", "role": "member"})),
+    )
+    monkeypatch.setattr(messaging.messaging_repo, "get_message_by_id", AsyncMock(return_value={"messageId": "m-1"}))
+    pin = AsyncMock(return_value={**meta, "pinnedMessageIds": ["m-1"], "revision": 3})
+    publish = AsyncMock()
+    monkeypatch.setattr(messaging.messaging_repo, "set_pin", pin)
+    monkeypatch.setattr(messaging, "_publish_room_metadata", publish)
+    monkeypatch.setattr(messaging, "_room_detail", AsyncMock(return_value="detail"))
+
+    assert await messaging.set_pin(auth, "room-1", "m-1", True) == "detail"
+    pin.assert_awaited_once_with("room-1", "m-1", True)
+    publish.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_set_pin_rejects_a_foreign_message_and_maps_the_cap_to_a_problem(monkeypatch):
+    auth = AuthContext(user_id="member", org_id="org_1")
+    meta = {"roomId": "room-1", "ownerId": "org_1", "kind": "channel", "revision": 2}
+    monkeypatch.setattr(
+        messaging,
+        "require_room_member",
+        AsyncMock(return_value=(meta, {"kind": "human", "id": "member", "role": "member"})),
+    )
+    monkeypatch.setattr(messaging.messaging_repo, "get_message_by_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(messaging, "_publish_room_metadata", AsyncMock())
+    with pytest.raises(ApiProblem) as missing:
+        await messaging.set_pin(auth, "room-1", "m-9", True)
+    assert missing.value.error.code == "MESSAGE_NOT_FOUND"
+
+    monkeypatch.setattr(messaging.messaging_repo, "get_message_by_id", AsyncMock(return_value={"messageId": "m-1"}))
+    monkeypatch.setattr(
+        messaging.messaging_repo,
+        "set_pin",
+        AsyncMock(side_effect=messaging.messaging_repo.PinLimitExceeded("too many")),
+    )
+    with pytest.raises(ApiProblem) as capped:
+        await messaging.set_pin(auth, "room-1", "m-1", True)
+    assert capped.value.error.code == "PIN_LIMIT"

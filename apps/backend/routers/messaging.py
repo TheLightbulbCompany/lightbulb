@@ -297,6 +297,16 @@ async def update_room_message(
     return await service.update_message(auth, room_id, message_id, request)
 
 
+@router.put("/messaging/rooms/{room_id}/pins/{message_id}", response_model=RoomDetail)
+async def pin_room_message(room_id: str, message_id: str, auth: AuthContext = Depends(get_current_user)):
+    return await service.set_pin(auth, room_id, message_id, True)
+
+
+@router.delete("/messaging/rooms/{room_id}/pins/{message_id}", response_model=RoomDetail)
+async def unpin_room_message(room_id: str, message_id: str, auth: AuthContext = Depends(get_current_user)):
+    return await service.set_pin(auth, room_id, message_id, False)
+
+
 @router.post("/messaging/rooms/{room_id}/attachments", response_model=ImageAttachment, status_code=201)
 async def upload_room_attachment(
     room_id: str,

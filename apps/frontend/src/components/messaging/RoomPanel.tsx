@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ArrowLeft, Check, Circle, CircleAlert, Hash, Link2, MessageCircle, Users } from "lucide-react";
+import { ArrowLeft, Check, Circle, CircleAlert, Hash, Link, Link2, MessageCircle, Users } from "lucide-react";
 import type { Components } from "react-markdown";
 import type { CreateMessageRequest, ListenMode, MemberRef, UpdateMessageRequest } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
@@ -11,6 +11,7 @@ import { Identity } from "@/components/teams/shared/components/Identity";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
 import { safeHref } from "@/components/teams/shared/lib/safeHref";
 import { cn } from "@/lib/utils";
+import { copyText, messagePermalink } from "./messageLinks";
 import { RoomComposer, type RoomComposerProps } from "./RoomComposer";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import { ParticipantProfile } from "./ParticipantProfile";
@@ -197,6 +198,7 @@ function RoomContent({
     await callback(request);
     setSentSinceOpen(true);
   };
+  const [copied, setCopied] = useState<string | null>(null);
   const [reactionPending, setReactionPending] = useState<string | null>(null);
   const [reactionError, setReactionError] = useState<string | null>(null);
   const [membersOpen, setMembersOpen] = useState(false);
@@ -330,7 +332,14 @@ function RoomContent({
       reactionPending={reactionPending !== null} reactionError={reactionError === message.messageId}
       onToggleReaction={onSetReaction && !message.deletedAt ? (emoji) => void toggleReaction(message, emoji) : undefined}
       onOpenThread={(button) => openDetail("thread", message.messageId, button)}
-      onSelectParticipant={onSelectParticipant} onUpdateMessage={onUpdateMessage} onDownloadAttachment={onDownloadAttachment} />;
+      onSelectParticipant={onSelectParticipant} onUpdateMessage={onUpdateMessage} onDownloadAttachment={onDownloadAttachment}
+      toolbarExtras={<Button type="button" variant="ghost" size="icon-sm" aria-label="Copy link"
+        title={copied === message.messageId ? "Copied" : "Copy link"}
+        onClick={async () => {
+          const ok = await copyText(messagePermalink(roomId, message.messageId));
+          setCopied(ok ? message.messageId : null);
+          if (ok) setTimeout(() => setCopied((current) => current === message.messageId ? null : current), 2000);
+        }}><Link aria-hidden="true" /></Button>} />;
   }
   async function toggleReaction(message: RoomMessage, emoji: string) {
     if (!onSetReaction || !actionable || reactionPending !== null) return;
@@ -422,6 +431,7 @@ function RoomContent({
         {runs.filter((run) => !run.threadRootMessageId).map(renderRun)}
       </RoomTimeline>
       <p className="room-typing text-sm text-muted-foreground" role="status">{typingMembers.length > 0 ? `${typingMembers.slice(0, 3).map((member) => member.displayName).join(", ")}${typingMembers.length > 3 ? " and others" : ""} ${typingMembers.length === 1 ? "is" : "are"} typing…` : ""}</p>
+      {copied && <p role="status" aria-label="Link copied" className="sr-only">Link copied</p>}
       <RoomComposer {...composer}
         onSubmit={markSent(composer.onSubmit)}
         onRetry={composer.onRetry ? markSent(composer.onRetry) : undefined}

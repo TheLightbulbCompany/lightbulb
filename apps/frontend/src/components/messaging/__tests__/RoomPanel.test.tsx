@@ -533,3 +533,16 @@ it("keeps the New line when a send fails and clears it after a successful send",
   await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2));
   await waitFor(() => expect(screen.queryByRole("separator", { name: "New messages" })).not.toBeInTheDocument());
 });
+
+it("copies a message permalink from the toolbar", async () => {
+  const user = userEvent.setup();
+  const writeText = vi.fn(async () => {});
+  // userEvent.setup() installs its own clipboard stub (getter-only); override
+  // it after setup so the handler writes through our spy (see
+  // IssueDetailPage.description.test.tsx for the same pattern).
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  render(<RoomPanel {...props} />);
+  await user.click(screen.getByRole("button", { name: "Copy link" }));
+  expect(writeText).toHaveBeenCalledWith(expect.stringContaining("panel=chat&room=room&message=message"));
+  expect(await screen.findByRole("status", { name: "Link copied" })).toBeInTheDocument();
+});

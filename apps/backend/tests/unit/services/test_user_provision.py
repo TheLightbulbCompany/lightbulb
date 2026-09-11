@@ -351,7 +351,7 @@ async def test_existing_active_starter_workspace_does_not_gain_default_room():
     starter_ids = {
         key: f"agent-{key}" for key in ("ceo", "engineering", "finance", "growth", "analytics", "customer_operations")
     }
-    existing = MagicMock(status="active", starter_agent_ids=starter_ids)
+    existing = MagicMock(status="active", org_id="user_p", starter_agent_ids=starter_ids)
     fake_provisioning = MagicMock()
     fake_provisioning.get_company_row = AsyncMock(return_value=existing)
     fake_provisioning.provision_org = AsyncMock(return_value=existing)
@@ -369,6 +369,34 @@ async def test_existing_active_starter_workspace_does_not_gain_default_room():
         )
 
     ensure_default_room.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_personal_workspace_does_not_suppress_new_org_default_room():
+    """A row for another workspace is absent for org onboarding freshness."""
+    starter_ids = {
+        key: f"agent-{key}" for key in ("ceo", "engineering", "finance", "growth", "analytics", "customer_operations")
+    }
+    personal = MagicMock(status="active", org_id="user_p", starter_agent_ids=starter_ids)
+    new_org = MagicMock(status="active", org_id="org_new", starter_agent_ids=starter_ids)
+    fake_provisioning = MagicMock()
+    fake_provisioning.get_company_row = AsyncMock(side_effect=[personal, new_org])
+    fake_provisioning.provision_org = AsyncMock(return_value=new_org)
+    ensure_default_room = AsyncMock()
+    with (
+        patch("core.services.user_provision.build_paperclip_provisioning", AsyncMock(return_value=fake_provisioning)),
+        patch("core.services.user_provision.close_paperclip_provisioning", AsyncMock()),
+        patch("core.services.messaging.ensure_default_room", ensure_default_room),
+    ):
+        for _ in range(2):
+            await _ensure_paperclip_for_owner(
+                owner_id="org_new",
+                owner_user_id="user_p",
+                owner_email="p@example.com",
+                org_id="org_new",
+            )
+
+    ensure_default_room.assert_awaited_once_with("org_new", "user_p")
 
 
 @pytest.mark.asyncio

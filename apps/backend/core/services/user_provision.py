@@ -701,8 +701,10 @@ async def _ensure_paperclip_for_owner(
 
             before_starters = getattr(before, "starter_agent_ids", None) if before else None
             company_starters = getattr(company, "starter_agent_ids", None)
-            fresh_or_partial = before is None or (
-                isinstance(before_starters, dict) and any(not before_starters.get(key) for key in _STARTER_KEYS)
+            fresh_or_partial = (
+                before is None
+                or getattr(before, "org_id", None) != owner_id
+                or (isinstance(before_starters, dict) and any(not before_starters.get(key) for key in _STARTER_KEYS))
             )
             complete = (
                 getattr(company, "status", None) == "active"

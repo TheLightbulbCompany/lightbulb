@@ -2,8 +2,8 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 import { SkillProposalsPanel } from "../SkillProposalsPanel";
 
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpc: (method: string | null) => {
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpc: (method: string | null) => {
     if (method === "skills.proposals.list") {
       return {
         data: { updatedAt: "t", proposals: [
@@ -14,7 +14,7 @@ vi.mock("@/hooks/useGatewayRpc", () => ({
     }
     return { data: undefined, error: undefined, isLoading: false, mutate: vi.fn() };
   },
-  useGatewayRpcMutation: () => vi.fn(),
+  useRuntimeRpcMutation: () => vi.fn(),
 }));
 
 describe("SkillProposalsPanel", () => {

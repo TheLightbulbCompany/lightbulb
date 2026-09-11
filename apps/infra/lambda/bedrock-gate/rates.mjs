@@ -1,9 +1,13 @@
 // The FOURTH copy of the Bedrock rate card (the meter Lambda's index.py _RATES
 // is the third; backend bedrock_pricing._RATES and the config.py catalog are
 // the other two). This Lambda has no backend import path, so it cannot share
-// the module; rates.test.mjs asserts this table is byte-equal to the meter's
-// by parsing index.py, because without it these WILL drift and the gate will
-// reserve/settle the wrong dollar amount.
+// the module; the lockstep guard is
+// apps/backend/tests/unit/billing/test_bedrock_gate_rates_lockstep.py, which
+// parses THIS file and compares it to the backend's tables (plus pricing-
+// arithmetic parity). It runs on every backend PR (not vitest — infra-ci.yml
+// does not run on backend PRs, so a vitest assertion would fire only after
+// drift had already merged and deployed). Without it these WILL drift and the
+// gate will reserve/settle the wrong dollar amount.
 //
 // USD per MILLION tokens, AWS `us.` Regional (CRIS) rate card. cache_read =
 // 0.1x input; cache_write = the 1-HOUR tier (2x input) because

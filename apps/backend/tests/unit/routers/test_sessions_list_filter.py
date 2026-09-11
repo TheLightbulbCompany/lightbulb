@@ -1,10 +1,10 @@
-"""sessions.list ownership filter: browser only sees the caller's own rows."""
+"""sessions.list ownership filter for the authenticated runtime RPC caller."""
 
 import os
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
-from routers.websocket_chat import _filter_sessions_for_user  # noqa: E402
+from core.services.runtime_rpc import _filter_sessions_for_user  # noqa: E402
 
 _UUID = "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
 

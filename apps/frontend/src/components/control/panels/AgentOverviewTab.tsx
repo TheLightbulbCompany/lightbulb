@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect, useMemo } from "react";
 import { Loader2, AlertCircle } from "lucide-react";
-import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { useRuntimeRpc, useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 import { ModelSelector } from "@/components/chat/ModelSelector";
 import { buildModelNameMap, displayModelName, listCatalogModels } from "@/lib/modelDisplay";
 import { AgentHeartbeatCard } from "@/components/control/agents/AgentHeartbeatCard";
@@ -31,12 +31,12 @@ function InfoRow({ label, value }: { label: string; value: string }) {
 }
 
 export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: string; agent?: AgentEntry; onAgentUpdated?: () => void }) {
-  const { data } = useGatewayRpc<Record<string, unknown>>(
+  const { data } = useRuntimeRpc<Record<string, unknown>>(
     "agent.identity.get",
     { agentId },
   );
-  const { data: configSnapshot, mutate: mutateConfig } = useGatewayRpc<ConfigSnapshot>("config.get");
-  const callRpc = useGatewayRpcMutation();
+  const { data: configSnapshot, mutate: mutateConfig } = useRuntimeRpc<ConfigSnapshot>("config.get");
+  const callRpc = useRuntimeRpcMutation();
   const [updatingModel, setUpdatingModel] = useState(false);
   const [modelError, setModelError] = useState<string | null>(null);
 

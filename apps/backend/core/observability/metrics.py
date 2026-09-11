@@ -30,7 +30,8 @@ NAMESPACE = "LightbulbAI"
 
 # Dimensions that must NOT appear in metrics (high cardinality = cost explosion).
 # These belong in structured log fields instead.
-#   - admin_user_id: unbounded per admin identity (admin_api.* middleware).
+#   - admin_user_id: unbounded per admin identity (audit trail lives in
+#     admin_actions_repo, not metrics dimensions).
 #   - tool_id: user-supplied/unbounded (key_service orphan-delete metric).
 _DENIED_DIMENSIONS = frozenset({"user_id", "container_id", "request_id", "owner_id", "admin_user_id", "tool_id"})
 

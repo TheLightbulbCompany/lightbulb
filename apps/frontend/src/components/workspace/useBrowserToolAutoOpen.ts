@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { ChatIncomingMessage } from "@lightbulb/shared";
-import { useGateway } from "@/hooks/useGateway";
+import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { normalizeToolName } from "@/lib/toolDisplay";
 import { getWorkspaceSnapshot, openPanel, type WorkspaceSnapshot } from "./workspaceController";
 
@@ -42,7 +42,7 @@ export function shouldSurfaceBrowser(
 
 /** Mount once in the desktop shell (it has the panel dock; mobile does not). */
 export function useBrowserToolAutoOpen(): void {
-  const { onChatMessage } = useGateway();
+  const { onChatMessage } = useLiveEvents();
   const seenRuns = useRef(new Set<string>());
   useEffect(
     () =>

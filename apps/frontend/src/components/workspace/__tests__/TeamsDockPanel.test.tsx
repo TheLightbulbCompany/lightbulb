@@ -115,6 +115,29 @@ describe("TeamsDockPanel — Brain `path` deep link (F1 seam)", () => {
     act(() => fire({ path: "main/facts.md" }));
     expect((lastRouterProps().panelParams as Params).path).toBe("main/facts.md");
   });
+
+  it("forwards the money `day` param through to TeamsPanelRouter", () => {
+    const { props } = makePanelProps("teams-money", { teamsKey: "money", day: "2026-09-05" });
+    render(<TeamsDockPanel {...props} />);
+    expect((lastRouterProps().panelParams as Params).day).toBe("2026-09-05");
+  });
+
+  it("forwards the agents `view` param — the absorbed org-chart key's only carrier", () => {
+    // ?panel=teams-org-chart aliases to teams-agents and its view rides in the
+    // params. Dropped here, an old Org chart link would open the roster.
+    const { props } = makePanelProps("teams-agents", { teamsKey: "agents", view: "chart" });
+    render(<TeamsDockPanel {...props} />);
+    expect((lastRouterProps().panelParams as Params).view).toBe("chart");
+  });
+
+  it("forwards the money `section` param — the absorbed keys' only carrier", () => {
+    // ?panel=teams-spend aliases to teams-money and its section rides in the
+    // params. Dropped here (the same spread that once dropped `path`), every
+    // absorbed key would open Money at the top of the page instead.
+    const { props } = makePanelProps("teams-money", { teamsKey: "money", section: "spend" });
+    render(<TeamsDockPanel {...props} />);
+    expect((lastRouterProps().panelParams as Params).section).toBe("spend");
+  });
 });
 
 describe("TeamsDockPanel — scroll-container wrapper", () => {

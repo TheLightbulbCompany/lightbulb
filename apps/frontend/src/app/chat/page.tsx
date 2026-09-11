@@ -4,10 +4,10 @@ import { Suspense, useCallback, useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import { useSearchParams } from "next/navigation";
 import { ChatLayout } from "@/components/chat/ChatLayout";
-import { AgentChatWindow } from "@/components/chat/AgentChatWindow";
+import { MessagingWorkspace } from "@/components/messaging/MessagingWorkspace";
 import { useAgents } from "@/hooks/useAgents";
 import { ControlPanelRouter } from "@/components/control/ControlPanelRouter";
-import { GatewayProvider } from "@/hooks/useGateway";
+import { LiveEventsProvider } from "@/hooks/useLiveEvents";
 import { ExecApprovalsProvider } from "@/hooks/useExecApprovals";
 import { QuestionsProvider } from "@/hooks/useQuestions";
 import { MarketplaceDrawerProvider } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
@@ -20,7 +20,7 @@ import {
   TEAMS_PANEL_PREFIX,
 } from "@/components/chat/InlineTeamsPanel";
 import { preloadTeamsPanels } from "@/components/teams/TeamsPanelRouter";
-import { resolvePanelAlias } from "@/components/workspace/panelRegistry";
+import { MONEY_SECTIONS, resolvePanelAlias } from "@/components/workspace/panelRegistry";
 import { pushSearchParams, replaceSearchParams } from "@/lib/shellNav";
 import { useIsDesktop } from "@/hooks/useIsDesktop";
 
@@ -71,7 +71,7 @@ function ChatPageInner() {
   const isDesktop = useIsDesktop();
   return (
     <MarketplaceDrawerProvider>
-      <GatewayProvider>
+      <LiveEventsProvider>
         <ExecApprovalsProvider>
           <QuestionsProvider>
             {isDesktop ? <WorkspaceShell /> : <MobileChatShell />}
@@ -87,7 +87,7 @@ function ChatPageInner() {
             inside MobileChatShell, colocated with the state that feeds it).
             Both stay inside GatewayProvider. */}
         {isDesktop ? <RunNotifications mode="desktop" /> : null}
-      </GatewayProvider>
+      </LiveEventsProvider>
     </MarketplaceDrawerProvider>
   );
 }
@@ -113,8 +113,8 @@ function MobileChatShell() {
   // (useIsDesktop's server snapshot is false), so a rewrite here lands before
   // the dynamically-imported WorkspaceShell ever reads window.location.search
   // — and the dock's reconciler deliberately needs the RAW key to carry a
-  // retired panel's meaning onto its successor (?panel=dreams → Brain's
-  // Dreams tab; see workspaceShellReconciler.ts and panelRegistry.ts).
+  // retired panel's meaning onto its successor (?panel=teams-org-chart → the
+  // Agents chart view; see workspaceShellReconciler.ts and panelRegistry.ts).
   const activePanel: string = panelParam ? resolvePanelAlias(panelParam) : "overview";
 
   // Per-panel params derived once from the URL (mobile's channel) and threaded
@@ -122,13 +122,38 @@ function MobileChatShell() {
   // report one-shot consumption / durable clears back through the callbacks
   // below, which strip the matching URL param (replace-only).
   const agentParam = searchParams.get("agent");
-  // A raw ?panel=dreams link never carries &tab=dreams — that's a synthesis
-  // describePanel does for the desktop URL channel (panelRegistry.ts:175),
-  // which this mobile channel doesn't run through. Mirror it here: since the
-  // alias always resolves to teams-brain, forcing tab here can never leak
-  // onto an unrelated panel.
-  const tabParam = searchParams.get("tab") ?? (panelParam === "dreams" ? "dreams" : null);
   const pathParam = searchParams.get("path");
+  const dayParam = searchParams.get("day");
+  // Same synthesis as `tab` above, for Money and Inbox: ?panel=teams-spend and
+  // ?panel=teams-activity carry no &section=, because the section IS the key.
+  // Every absorbed key aliases to the page that absorbed it, so reading the
+  // section off the RAW key here can never leak onto another panel. A
+  // hand-written ?section= wins nothing extra — TeamsPanelRouter validates it
+  // before either panel sees it.
+  const rawTeamsKey = panelParam?.startsWith(TEAMS_PANEL_PREFIX)
+    ? panelParam.slice(TEAMS_PANEL_PREFIX.length)
+    : null;
+  const absorbedSection =
+    rawTeamsKey === "activity"
+      ? "recently"
+      : // Bookmarks predating the pill tabs still carry ?tab=approvals; that
+        // band is now "Needs you".
+        rawTeamsKey === "inbox" && searchParams.get("tab") === "approvals"
+        ? "needs-you"
+        : rawTeamsKey && MONEY_SECTIONS.has(rawTeamsKey)
+          ? rawTeamsKey
+          : null;
+  const sectionParam = searchParams.get("section") ?? absorbedSection;
+  // And for Tasks: ?panel=teams-goals / teams-projects carry no &groupBy=,
+  // because the grouping IS the key. Both alias to teams-issues, so reading it
+  // off the RAW key here can never leak onto another panel.
+  const groupByParam =
+    searchParams.get("groupBy") ??
+    (rawTeamsKey === "goals" ? "goal" : rawTeamsKey === "projects" ? "project" : null);
+  // And for Agents: ?panel=teams-org-chart carries no &view=, because the view
+  // IS the key. It aliases to teams-agents, so reading it off the RAW key here
+  // can never leak onto another panel.
+  const viewParam = searchParams.get("view") ?? (rawTeamsKey === "org-chart" ? "chart" : null);
   const oneShots = {
     new: searchParams.get("new") ?? undefined,
     newIssue: searchParams.get("newIssue") ?? undefined,
@@ -185,6 +210,14 @@ function MobileChatShell() {
       params.delete("agent");
       params.delete("detailId");
       params.delete("tab");
+      // Inbox's band and Tasks' grouping are durable on desktop via
+      // clearablePanelParamKeys; mobile has no such registry, which is exactly
+      // why `tab` is deleted here. Without these two, a run toast's
+      // ?section=needs-you survives a plain sidebar nav and Inbox silently
+      // scrolls to a band nobody asked for.
+      params.delete("section");
+      params.delete("groupBy");
+      params.delete("view");
       pushSearchParams(params);
     },
     [searchParams],
@@ -307,6 +340,14 @@ function MobileChatShell() {
   return (
     <>
       <ChatLayout
+        statusIndicator={(
+          <RunNotifications
+            mode="mobile"
+            selectedAgentId={selectedAgentId}
+            activeView={activeView}
+            activePanel={activePanel}
+          />
+        )}
         activePanel={activePanel}
         onPanelChange={setActivePanel}
         openAgentIssues={openAgentIssues}
@@ -318,10 +359,10 @@ function MobileChatShell() {
         onOpenFile={handleOpenFile}
         onCloseFileViewer={handleCloseFileViewer}
       >
-        {/* Keep AgentChatWindow mounted but hidden so chat state
-            (messages, scroll position, streaming) survives view switches */}
+        {/* Keep the room workspace mounted but hidden so its canonical state
+            and draft survive in-shell panel switches. */}
         <div className={activeView === "chat" ? "flex flex-col h-full min-h-0" : "hidden"}>
-          <AgentChatWindow key={effectiveAgentId} agentId={effectiveAgentId} onOpenFile={handleOpenFile} />
+          <MessagingWorkspace initialAgentId={effectiveAgentId} />
         </div>
         {activeView === "control" && (
           <div className="flex flex-col h-full min-h-0">
@@ -333,8 +374,11 @@ function MobileChatShell() {
                 leaveToList={leaveToList}
                 panelParams={{
                   ...(agentParam ? { agent: agentParam } : {}),
-                  ...(tabParam ? { tab: tabParam } : {}),
+                  ...(groupByParam ? { groupBy: groupByParam } : {}),
+                  ...(viewParam ? { view: viewParam } : {}),
                   ...(pathParam ? { path: pathParam } : {}),
+                  ...(dayParam ? { day: dayParam } : {}),
+                  ...(sectionParam ? { section: sectionParam } : {}),
                   ...(oneShots.new ? { new: oneShots.new } : {}),
                   ...(oneShots.newIssue ? { newIssue: oneShots.newIssue } : {}),
                 }}
@@ -356,14 +400,6 @@ function MobileChatShell() {
           </div>
         )}
       </ChatLayout>
-      {/* Sibling of ChatLayout, still inside GatewayProvider (MobileChatShell
-          renders under it). Colocated with the selection/view state it reads. */}
-      <RunNotifications
-        mode="mobile"
-        selectedAgentId={selectedAgentId}
-        activeView={activeView}
-        activePanel={activePanel}
-      />
     </>
   );
 }

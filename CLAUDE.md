@@ -4,16 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Lightbulb (`flickmeon.ai`) is an AI agent platform powered by [OpenClaw](https://github.com/openclaw/openclaw). Users subscribe, get a per-user ECS Fargate container running the OpenClaw Docker image, and interact with their agents via a WebSocket-based chat UI. The platform uses a Next.js 16 frontend (Vercel), FastAPI backend (ECS Fargate), Clerk for authentication, **DynamoDB** for metadata (users, containers, billing, usage counters, pending updates, channel links, admin actions, oauth tokens/state, integrations, webhook dedup, metronome fast-gate, bedrock AIP owners, agent-email, company slugs, paperclip-companies, marketplace listings/purchases/payouts/takedowns/sellers, provisioning-workflows — see `database-stack.ts` for the full set; BYO LLM keys live in **Secrets Manager**, not DynamoDB), AWS Bedrock + ChatGPT OAuth + BYO API key for LLM inference, Stripe for billing (subscription + marketplace purchases; an Apple IAP rail that is LIVE in both envs — CDK sets `APPLE_IAP_BUNDLE_ID`, `APPLE_IAP_PRODUCT_ID` and `APPLE_IAP_APP_APPLE_ID` unconditionally, so `routers/apple_iap.py` does not 503), EFS for per-user agent workspaces, and a per-tenant Paperclip BFF (Aurora Serverless v2 Postgres) for the Teams Inbox. Infrastructure is managed via **AWS CDK** in `apps/infra/` (single source of IaC truth). The desktop app is **Tauri** (not Electron) — see `project_desktop_app_tauri` memory. There is also an **Expo iOS app** at `apps/mobile/` — see the "Mobile App" section.
+Lightbulb (`flickmeon.ai`) is an AI agent platform powered by [OpenClaw](https://github.com/openclaw/openclaw). Users subscribe, get a per-user ECS Fargate container running the OpenClaw Docker image, and interact with their agents via a WebSocket-based chat UI. The platform uses a Next.js 16 frontend (Vercel), FastAPI backend (ECS Fargate), Clerk for authentication, **DynamoDB** for metadata (users, containers, billing, usage counters, pending updates, channel links, admin actions, oauth tokens/state, integrations, webhook dedup, metronome fast-gate, bedrock AIP owners, agent-email, company slugs, paperclip-companies, marketplace listings/purchases/payouts/takedowns/sellers, provisioning-workflows — see `database-stack.ts` for the full set; BYO LLM keys live in **Secrets Manager**, not DynamoDB), AWS Bedrock + ChatGPT OAuth + BYO API key for LLM inference, Stripe for new subscription and marketplace purchases, and a configured Apple server-notification/verifier path retained only for historical Apple subscription lifecycle reconciliation. EFS provides per-user agent workspaces, and a per-tenant Paperclip BFF (Aurora Serverless v2 Postgres) powers the Teams Inbox. Infrastructure is managed via **AWS CDK** in `apps/infra/` (single source of IaC truth). The desktop app is **Tauri** (not Electron) — see `project_desktop_app_tauri` memory. There is also an **Expo iOS app** at `apps/mobile/` — see the "Mobile App" section.
 
-Every freshly provisioned owner gets two seed agents inside their Paperclip company: **Friday** (the per-owner CEO / orchestrator) and **Atlas** (the in-house agent-recruiter). Both are seeded by `paperclip_provisioning.provision_org` — see the "Provisioning Flow" section below. Custom agents beyond Friday/Atlas can be **published to the Lightbulb marketplace** for other users to deploy — see the "Marketplace" section.
+Every freshly provisioned workspace gets a six-agent Paperclip starter roster: **CEO**, **Engineering**, **Finance**, **Growth**, **Analytics**, and **Customer Operations**. `paperclip_provisioning.provision_org` records their role-keyed UUIDs in `starter_agent_ids`; CEO is the initial root and the specialists report to it. Names are user-editable, so policy follows those UUIDs and roles rather than a display name. This applies only to fresh workspaces — existing/founder rosters are not migrated. **Friday** and **Atlas** are portable curated marketplace packages, not automatic seeds. The roster is Lightbulb-native: it has no GStack or ACP dependency.
 
 The OpenClaw container image we run is an **extended image** built from our **OpenClaw fork** (`ghcr.io/thelightbulbcompany/agent`, a **Debian**-based image — NOT Alpine) with additional Linux skill binaries and baked plugins: the externalized upstream Slack/Discord/Bedrock plugins plus three in-repo plugins (`apps/infra/openclaw/plugins/{aws-exec-profile,lightbulb-marketplace,paperclip-exec-creds}`). Its Dockerfile lives at `apps/infra/openclaw/` and is published to ECR `lightbulb/openclaw-extended` by `.github/workflows/build-openclaw-image.yml`. The pinned base + per-env extended tags are tracked in `openclaw-version.json` at the repo root, where the fields mean distinct things:
 - `upstream` — the fork base the Dockerfile `FROM`s (e.g. `ghcr.io/thelightbulbcompany/agent:2026.7.2-isol8.4`). A **private** GHCR package, pulled only by the authenticated build workflow. Keep it in lockstep with the Dockerfile `FROM` line.
 - `image`/`tag`/`full` — the **legacy public** upstream image (`ghcr.io/openclaw/openclaw`), kept only as the bootstrap/unknown-env fallback in `container-stack.ts` (pulled by per-user ECS tasks with **no** registry credentials, so it must stay anonymously pullable). `tag` also feeds the `OPENCLAW_UPSTREAM_VERSION` env fallback.
 - `extendedImage` + per-env `dev.tag`/`prod.tag` — the ECR extended image actually deployed; `dev.tag`/`prod.tag` are the per-environment promotion gate (flip dev, validate, then prod). They drive `meta.lastTouchedVersion` via `deployed_upstream_version()`.
 
-Bundled agent-facing skills live at `apps/infra/openclaw/skills/` (`paperclip`, `lightbulb`). The `lightbulb` skill is the fleet's knowledge of the platform itself — when user-facing surfaces, marketplace/billing flows, or Paperclip seeding change, update its SKILL.md (anchors listed in its maintenance header). Per-owner dynamic state (plan/provider) is NOT in the skill; it lives in `~/.openclaw/lightbulb-facts.json`, written by `core/services/owner_facts.py`.
+Bundled agent-facing skills live at `apps/infra/openclaw/skills/` (`paperclip`, `lightbulb`). Both are **split**: a thin `SKILL.md` (routing table + non-negotiables) plus `references/*.md` the agent reads on demand — every agent pays for `SKILL.md` on every load, so new detail belongs in a reference, not inline. The `lightbulb` skill owns platform facts; the `paperclip` skill owns team coordination. When user-facing surfaces, marketplace/billing flows, or Paperclip seeding change, update the relevant skill (each skill's sibling `MAINTENANCE.md` lists every anchor **and the reference file that now carries it**; it is a sibling and not a header comment because an HTML comment inside `SKILL.md` is invisible when rendered but still costs the whole fleet tokens on every load). Per-owner dynamic state (plan/provider) is NOT in the skill; it lives in `~/.openclaw/lightbulb-facts.json`, written by `core/services/owner_facts.py`.
 
 This repo does not vendor OpenClaw source. The base image is built from the **Isol8 fork `TheLightbulbCompany/agent`** (a GitHub fork of [github.com/openclaw/openclaw](https://github.com/openclaw/openclaw)). The fork's `main` tracks upstream — it was realigned to `openclaw/openclaw:main`, so `git pull upstream main` merges cleanly. Our patches do **not** live on `main`; they sit on `isol8/*` branches plus `v<version>-isol8.<n>` tags, which the fork's `docker-release.yml` builds and publishes to GHCR `ghcr.io/thelightbulbcompany/agent` (the carried patch set is enumerated in `openclaw-version.json`'s `notes`). The writable fork workspace is checked out at **`~/dev/agent-fork`** (origin = `TheLightbulbCompany/agent`, upstream = `openclaw/openclaw`). A stale second clone at `~/Desktop/agent` is pending delete — it sits on iCloud-synced Desktop and git operations hang there; do not use it. Treat fork checkouts as outside this repo — do not commit them into it.
 
@@ -95,6 +95,15 @@ every one of these:**
 - **The EFS lock sidecars `.isol8-guard` / `.isol8-protocol`** — renaming them is a
   once-only migration across every EFS volume with a fatal failure mode and zero
   benefit (see "Config Patching Notes").
+- **The internal dispatch header `X-Isol8-Public-Host`** — API Gateway parameter
+  mapping (`api-stack.ts`) sets it from `$context.domainName`; `main.py`'s
+  `HostDispatcherMiddleware` and `routers/paperclip_proxy.py` read it to route
+  `company[-env].flickmeon.ai` traffic onto the Paperclip-proxy mount. Never
+  renamed to `Lightbulb` branding — a rename means moving the
+  `overwrite:header.*` parameter-mapping key and both readers together, not a
+  docs edit. This file itself drifted to a `X-Lightbulb-Public-Host` spelling
+  that appears in NO source file (fixed 2026-09-07): verify the header name
+  against `api-stack.ts`/`main.py`/`paperclip_proxy.py`, never against prose.
 
 **RUNTIME IDENTIFIERS — RETIRED 2026-08-31; do not reintroduce.** These used to
 sit in the residue list above as "leave them, existing users/data would break".
@@ -113,6 +122,27 @@ accept-both shims that existed only to bridge them:
 | `isol8-mcp-server` | `lightbulb-mcp-server` | the Paperclip agent API-key display name |
 | `isol8-backend` (operator device) | `lightbulb-backend` | `operator_device.build_paired_operator_entry` `displayName` |
 | `isol8-<owner>` STS session name | `lightbulb-<owner>` | `routers/connections.py` `RoleSessionName` |
+
+**NOT yet renamed — the same class, still open (audited 2026-09-08).** These were
+missed by the 2026-08-31 pass and are NOT residue; each needs a coordinated deploy
+or an accept-both shim, so do NOT sweep them. Full audit + per-item recipes:
+`docs/superpowers/plans/2026-09-08-isol8-runtime-identifier-gap.md`.
+
+| identifier | why it can't be swept |
+|---|---|
+| `X-Isol8-Public-Host` | API GW (`api-stack.ts`) and the backend are separate stacks in one pipeline run, and the backend rolls at `maxHealthyPercent: 200`; a hard swap misroutes every `company[-env]` request during the roll. Precedent shim: `require_ws_internal_caller` in `routers/websocket_chat.py`. |
+| the `ISOL8_*` container env vars + the baked `/usr/local/bin/isol8-*.sh`, `/etc/isol8-litestream.yml`, `/opt/isol8/` paths | three-sided (image, task def, AND per-owner Atlas seed files already on EFS). `container-stack.ts` hard-`exit 1`s when the boot-script path is missing, so a CDK deploy landing before the image fails EVERY container boot. |
+| `isol8_paperclip` | live session cookie — a hard swap logs every active session out |
+| `isol8.hire_suggestion` | emitted by the baked `lightbulb-marketplace` plugin, consumed by `parseHireSuggestion`, which returns null on mismatch → the HireCard silently degrades fleet-wide during a reroll |
+| `isol8.notifications`, `PAPERCLIP_ISOL8_NOTIFY_*` | lives in the Paperclip FORK image, not this repo |
+| `.isol8-seed-fingerprint`, `.openclaw/isol8-setup-seed.json` | EFS-resident per owner — same once-only-migration shape as the protected `.isol8-guard` |
+
+**Never rename these** — the name correctly describes protected residue, or the
+value is stored data: `_ISOL8_PATCH_RE` (parses the `-isol8.N` rollback tag),
+`ISOL8_SYSTEM_SELLER_ID`'s value `"__isol8__"` (written to marketplace rows),
+`ISOL8_CURATOR_EMAIL` (human-gated mail), and the `"isol8 top-up …"` descriptions in
+`metronome_funding.py` — those are part of an idempotent Metronome request body, so
+changing the string 409s a retried top-up on the money path.
 
 Three of these have a state-on-EFS or state-in-someone-else's-account tail:
 `lightbulb-connector` needs the quick-create stack relaunched **and** a rebuilt
@@ -172,6 +202,11 @@ git history is the operational record (it carries the run date and PR context
 an archive directory does not). Re-runnable ops tools stay in
 `apps/backend/scripts/`.
 
+One plan that stays under this rule: `docs/superpowers/plans/2026-09-07-audit-report.md`
+— its §6 ("Deliberately NOT recommended") names load-bearing scar tissue that
+must not be "fixed", and is referenced from
+`apps/infra/lambda/bedrock-usage-meter/test_index.py`.
+
 ### Monorepo Setup
 
 This is a **Turborepo monorepo** using **pnpm** for JS and **uv** for Python.
@@ -212,7 +247,7 @@ When you change `openclaw.json` config, existing containers keep the old config 
 ```javascript
 // Browser console (any Lightbulb page with Clerk loaded):
 // PATCH -- wholesale-rewrites openclaw.json via write_user_configs + redeploys (preserves container).
-// Seeds agents.list from the owner's LIVE Paperclip roster, so it CAN wire existing Friday/Atlas ids;
+// Seeds agents.list from the owner's LIVE Paperclip roster, so it CAN wire existing agent ids;
 // it cannot CREATE the Paperclip company or agents (see Provisioning Flow).
 await fetch('https://api-dev.flickmeon.ai/api/v1/debug/provision', {method:'PATCH', headers:{Authorization:'Bearer '+await Clerk.session.getToken()}}).then(r=>r.json())
 
@@ -351,6 +386,71 @@ A dispatch run deploys dev from that ref first — prod jobs still `needs:` the 
 stage, so a promotion cannot skip dev. The `lightbulb-deploy` concurrency group is unchanged,
 so a promotion queues behind an in-flight dev deploy.
 
+### `queue: max` — what it fixed, measured
+
+**It works.** Natural experiment over 60 deploy runs (34 cancelled), classifying each
+cancellation by what was happening at that instant, split on the `queue: max` merge
+(7dbc6afb7, ~03:13Z on 2026-09-08):
+
+```
+BEFORE : 22 cancellations, 19 match supersede-on-arrival   (86%)
+AFTER  : 12 cancellations,  0 match supersede-on-arrival   (0%)
+```
+
+*supersede-on-arrival* = cancelled within 5s of another run being **created**. That is the
+failure that killed four consecutive prod promotions on 2026-09-07/08: you are pending,
+somebody merges, you die silently. **It went to zero.**
+
+So the practical question — *"can my merge to `main` kill a colleague's pending promotion?"* —
+now has a measured answer: **no.** A merge freeze around a promotion is no longer buying that
+protection.
+
+**What is NOT established.** Of the 12 post-fix cancellations, 4 are a single cluster at
+03:50:57-59 (a run completed, four newer pending runs cancelled in the same second, the oldest
+pending started) and 8 are ambiguous or manual. So "oldest pending wins when the slot frees" is
+**n=1** — possibly real, unproven. It is also *orthogonal to merging*: if it exists, it fires
+when the slot frees regardless of what anyone merges.
+
+> **⚠️ A cancelled run with 0 jobs is NOT self-evidently an eviction.** Three sessions
+> independently misread the same run that way in one night, and one of those readings went into
+> this file as established before being retracted. The cheap disambiguator: check whether any
+> run actually **completed** in that second. Eviction cannot fire before the slot frees — if
+> nothing completed, something else cancelled it (usually a human).
+
+> **⚠️ A run's `status` field LAGS its jobs badly — do not use it for "has this started".**
+> Measured live 2026-09-08 14:27Z: run 34236826570 reported `status: queued` while **16 of its
+> jobs had completed** and 2 were in progress. An earlier run read `queued` with 18 jobs
+> executing. So `queued` at the run level does not mean "waiting" and does not mean "past the
+> concurrency gate" — it mostly means the field has not caught up.
+>
+> **For liveness, count jobs, not status:**
+> ```bash
+> gh run view <id> --repo TheLightbulbCompany/lightbulb --json jobs \
+>   --jq '[.jobs[]|select(.status!="queued")]|length'
+> ```
+> This lag is the likeliest root of the whole "queued means X" confusion.
+
+**Before dispatching**, the one precondition that is safe under every hypothesis above:
+```bash
+gh run list --repo TheLightbulbCompany/lightbulb --workflow deploy.yml --limit 10 \
+  --json status --jq '[.[]|select(.status!="completed")]|length'
+```
+Dispatch when that reads **0**.
+
+That group now carries **`queue: max`** (one line, patched in from `app.ts`). It exists
+because `cancel-in-progress: false` protects only a run that is already `in_progress` — a
+run still PENDING used to be evicted by the next arrival, since a group holds one pending
+run by default. The pipeline is runner-bound, so a promotion sits pending for minutes and
+any merge in that window silently cancelled it (three consecutive promotions on 2026-09-07,
+each cancelled having run zero jobs — a cancelled run with **0 jobs** is the eviction
+signature; one with jobs was cancelled by a human). `queue: max` queues up to 100 runs FIFO
+instead. **A promotion no longer needs a merge freeze, and re-dispatching does not jump the
+queue — it just adds another run behind the first.** The single group is deliberate: prod
+jobs `needs:` the dev stage, so a per-event group would let a promotion and a push deploy the
+same dev stacks concurrently. Note `queue: max` is a validation ERROR alongside
+`cancel-in-progress: true`, and eviction was also coalescing merge bursts — a burst now
+costs one dev deploy per merge.
+
 **⚠️ THE CONSEQUENCE: `main` IS AHEAD OF PROD BY DEFAULT.** Merging no longer ships. Prod
 sits at whatever was last promoted and drifts further behind with every merge, silently and
 by design. So: never infer prod's contents from `main`, and never tell an owner something is
@@ -487,7 +587,7 @@ entries at the root:
 
 ## Backend (FastAPI + DynamoDB)
 
-**Entry point:** `main.py` -- FastAPI app. The lifespan handler's real startup work is `_resume_wake_resize_transitions`, a one-time trial-idle reconcile sweep, and the running-gauges loop (`startup_containers()` is a no-op — ECS services are always-on; the gateway pool is created lazily on first `get_gateway_pool()`); shutdown is a `/health`-gated bounded ~20s graceful drain with `handoff_inflight_provisions`. Middleware worth knowing: `HostDispatcherMiddleware` rewrites requests arriving on `company[-env].flickmeon.ai` (via the `X-Lightbulb-Public-Host` header set by API GW parameter mapping) onto the `/__paperclip_proxy__` sentinel mount, plus `ShutdownAware`, `SecurityHeaders`, `ProxyHeaders` (VPC-CIDR-scoped), `AdminMetrics`, and observability middleware. A global `PaperclipApiError` handler self-heals Teams-BFF 401s by re-minting the Paperclip session cookie. CORS middleware, custom OpenAPI schema with BearerAuth.
+**Entry point:** `main.py` -- FastAPI app. The lifespan handler's real startup work is `_resume_wake_resize_transitions`, a one-time trial-idle reconcile sweep, and the running-gauges loop (`startup_containers()` is a no-op — ECS services are always-on; the gateway pool is created lazily on first `get_gateway_pool()`); shutdown is a `/health`-gated bounded ~20s graceful drain with `handoff_inflight_provisions`. Middleware worth knowing: `HostDispatcherMiddleware` rewrites requests arriving on `company[-env].flickmeon.ai` (via the `X-Isol8-Public-Host` header set by API GW parameter mapping) onto the `/__paperclip_proxy__` sentinel mount, plus `ShutdownAware`, `SecurityHeaders`, `ProxyHeaders` (VPC-CIDR-scoped), and observability middleware. A global `PaperclipApiError` handler self-heals Teams-BFF 401s by re-minting the Paperclip session cookie. CORS middleware, custom OpenAPI schema with BearerAuth.
 
 No SQLAlchemy, no ORM — DynamoDB items are plain dicts accessed via repositories.
 
@@ -609,7 +709,7 @@ you cannot guess from the filename:
   attempt 0 as a backend child process for speed. The machine watches the
   row (watch loop in `service-stack.ts`) and takes the ECS leg over on
   error or after its tick backstop — custody never depends on a client poll.
-- `paperclip_provisioning.py` — owns `provision_org`, which seeds Friday + Atlas.
+- `paperclip_provisioning.py` — owns `provision_org`, which creates the generic six-agent starter roster for fresh workspaces and preserves legacy/founder rosters.
 - `config_patcher.py` — EFS-safe JSON deep-merge. `openclaw.json` writers take
   the persistent `.isol8-guard` and select the lock protocol recorded in
   `.isol8-protocol` (constants + `O_EXCL` acquire live in `efs_file_lock.py`);
@@ -656,10 +756,11 @@ React 19, Tailwind CSS v4, Clerk auth, SWR, lucide-react icons.
 **Colours/fonts are the Brand Identity Manual's tokens**, defined once in
 `src/app/globals.css` (`--midnight --cream --bulb --brass`, cream/midnight steps,
 four state pairs; `.dark` reverses the ground and re-points the state tokens). No
-colour literal anywhere else except the five deliberate exemptions the scanner
-skips — `landing.css` and `components/landing/**` (marketing, its own palette),
-`lib/clerkAppearance.ts` (Clerk takes hex, not `var()`), `*Brand.ts` vendor
-marks, and tests (`__tests__/`, `*.test.*`, which hold literals as fixtures) —
+colour literal anywhere else except the six deliberate exemptions the scanner
+skips — `landing.css`, `landing-v2.css`, and `components/landing/**` (marketing,
+its own palette), `lib/clerkAppearance.ts` (Clerk takes hex, not `var()`),
+`*Brand.ts` vendor marks, and tests (`__tests__/`, `*.test.*`, which hold
+literals as fixtures) —
 `src/__tests__/brandTokens.test.ts` enforces it,
 `node scripts/brand-tokens-scan.mjs` lists offenders. Fonts: Source Sans 3 (UI) /
 Lora (prose) / mono for code only.
@@ -776,7 +877,7 @@ the chat-state handling in `_handle_message`):
 3. Responses are pushed via the Management API (HTTPS POST to `@connections/{id}`), sequenced per-connection by `core/gateway/frame_sender.py`.
 4. Lambda Authorizer validates the Clerk JWT (`?token=` query param); DynamoDB `lightbulb-{env}-ws-connections` maps connectionId → user.
 5. **Raw WS door:** the browser live-view panel needs an unbuffered WS the HTTP API can't carry, so `wss://bv[-env].flickmeon.ai` is a CloudFront distribution with a **VpcOrigin** to the ALB's browser-view listener (path-capped to `/api/v1/browser-view/*`); the Clerk JWT rides the `Sec-WebSocket-Protocol` offer.
-6. REST rides the API Gateway HTTP API → VPC Link **V2** → ALB, including the `company[-env]` host dispatch (`X-Lightbulb-Public-Host` parameter mapping → `HostDispatcherMiddleware`).
+6. REST rides the API Gateway HTTP API → VPC Link **V2** → ALB, including the `company[-env]` host dispatch (`X-Isol8-Public-Host` parameter mapping → `HostDispatcherMiddleware`).
 
 ---
 
@@ -798,14 +899,14 @@ Clerk sign-up
                                       ├─ sign up Paperclip user (Better Auth)
                                       ├─ create Paperclip company; bootstrap-admin invite/accept/approve
                                       ├─ write PaperclipCompany DDB row (status="active")
-                                      ├─ seed Friday (CEO) with adapter_type="openclaw_gateway"
-                                      │     adapter_config.url = wss://ws-<env>.flickmeon.ai
-                                      └─ seed Atlas (role="general") — best-effort; Atlas failure does NOT undo Friday
+                                      ├─ seed CEO, Engineering, Finance, Growth, Analytics,
+                                      │  and Customer Operations with adapter_type="openclaw_gateway"
+                                      └─ persist their stable role-keyed UUIDs in starter_agent_ids
                             1. ecs_manager.provision_user_container
                                  ├─ per-user EFS access point + ECS service
                                  └─ write_user_configs → write_openclaw_config(paperclip_agents=[…])
-                                       └─ openclaw.json on EFS lists Friday/Atlas agent_ids in agents.list[]
-                            0b. arm_nightly_ceo — seeds Friday's "Nightly CEO progress" routine when the
+                                       └─ openclaw.json on EFS lists the live Paperclip roster in agents.list[]
+                            0b. arm_nightly_ceo — seeds the CEO's "Nightly CEO progress" routine when the
                                 owner is PAID (trial_local is a metered no-op); every path to
                                 paid + provider chosen runs this executor, so this is the one door
                   (on later polls of an already-running ORG row, ensure_user_ready reconciles the
@@ -818,17 +919,19 @@ Key invariants:
 - **Paperclip URL is NOT in `openclaw.json`** — the Paperclip↔OpenClaw binding is on the Paperclip seed-agent's `adapterConfig.url`. The container connects to Paperclip via the agent's adapter at runtime; the container's own config only knows the agent IDs and workspace paths.
 - **`provision_org` is idempotent** — short-circuits on existing active rows. Member adds and duplicate signups return 409, which the caller treats as success.
 - **Fresh-provision Paperclip seeding is single-flight inside the executor** (`provision_runner.py` step 0) — deliberately, to kill the duplicate-company race a poll-thread seed allowed.
+- **Fresh-workspace chat starts in one canonical `#general` room.** It is created only while the room is missing or empty, with the CEO in `active` mode and the five specialists in `mentions` mode. Reconciliation never restores a removed member or resets a user's choice. Room owners/admins can set each agent's per-room mode to `active`, `mentions`, or `observe`; ordinary members see the mode but cannot change it.
+- **The first normal human message remains a normal dispatch.** Stored room modes choose its targets; a post-send capture then uses that first message once to create the initial goal/project and stage `BRIEF.md`. It does not force the CEO as the sole responder.
 
 ### Legacy containers (pre-Paperclip provisioning)
 
-Owners whose container was provisioned **before** Paperclip integration shipped have a container row but no `PaperclipCompany` row, and an `openclaw.json` that lists no agents. They get 409s from `/teams` and have no Friday/Atlas to chat with.
+Owners whose container was provisioned **before** Paperclip integration shipped have a container row but no `PaperclipCompany` row, and an `openclaw.json` that lists no agents. They get 409s from `/teams` and have no Paperclip roster to chat with.
 
 Two fixes:
 
 1. **Full reprovision** — `DELETE /api/v1/debug/provision` then `POST /api/v1/debug/provision`. The new poll cycle invokes `ensure_user_ready` against an empty slate.
 2. **Backfill script** — a one-shot `backfill_paperclip_for_legacy_users.py` (already run against prod, since deleted) paginated the `containers` table, found owners with no Paperclip row, and called `provision_org` for each. Recover it from git history only if a new legacy cohort appears.
 
-**`PATCH /debug/provision` cannot CREATE Paperclip state.** It wholesale-rewrites `openclaw.json` via `write_user_configs`, seeding `agents.list` from the owner's LIVE Paperclip roster — so it can wire existing Friday/Atlas ids into config, but it cannot create a Paperclip company, sign up a Paperclip user, or seed agents. Config repair ≠ provisioning.
+**`PATCH /debug/provision` cannot CREATE Paperclip state.** It wholesale-rewrites `openclaw.json` via `write_user_configs`, seeding `agents.list` from the owner's LIVE Paperclip roster — so it can wire existing agent IDs into config, but it cannot create a Paperclip company, sign up a Paperclip user, or seed agents. Config repair ≠ provisioning.
 
 ---
 
@@ -836,23 +939,19 @@ Two fixes:
 
 ### Plan model
 
-Post-2026-04-26 flat-fee cutover. Three paid shapes. Orgs pay a base **plus** per-seat:
+The public billing contract is workspace-first: `GET /billing/account` exposes server-owned `workspace_price_usd` and `ultra_price_usd`, never membership counts or per-seat pricing. Public web/mobile copy must read those fields or use neutral/loading copy; do not bake a workspace price into a client release.
 
-| shape | Stripe price(s) | amount | who |
+| plan | Stripe price | display amount | owner |
 |---|---|---|---|
-| **Flat** | `STRIPE_FLAT_PRICE_ID` | $50/mo (`FLAT_PRICE_USD`, echoed by `/billing/account`) | personal owners |
-| **Teams** | `STRIPE_TEAM_BASE_PRICE_ID` **+** `STRIPE_TEAM_SEAT_PRICE_ID` | `TEAM_BASE_PRICE_USD` $50 base **+** `TEAM_SEAT_PRICE_USD` $20/seat | orgs |
-| **Ultra Pro** | `STRIPE_ULTRA_PRICE_ID` | $150/mo for personal; for orgs it is a **base-item price swap** — $150 base + N × $20 seats (seat item untouched; fresh Ultra checkout refused for an org with no live team sub). Display dollars are frontend-only (`settings/page.tsx`); the backend has only the price id. | large marketplace companies over the flat tier's agent budget |
+| **Workspace** | `STRIPE_WORKSPACE_PRICE_ID` | `WORKSPACE_PRICE_USD` (currently 50), echoed by `/billing/account` | one workspace, unlimited members |
+| **Ultra** | `STRIPE_ULTRA_PRICE_ID` | `ULTRA_PRICE_USD` (currently 150), echoed by `/billing/account` | one workspace, unlimited members |
 
-**A Teams subscription is TWO line items, not one.** `create_team_seat_checkout` builds `[{base, quantity: 1}, {seat, quantity: seat_count}]`, so a 4-person org pays `$50 + 4 × $20 = $130/mo`. Both amounts are echoed to the frontend by `/billing/account` (`team_base_price_usd`, `team_seat_price_usd`) so `TeamBillingCard` renders "$50 + N × $20" without hardcoding either number.
+Workspace billing is seat-free: `STRIPE_WORKSPACE_PRICE_ID` and
+`STRIPE_ULTRA_PRICE_ID` are the only recurring Stripe subscription prices.
 
-Two constraints in that code worth not breaking:
-- **Nothing may select the line items by position** — Stripe does not guarantee order. The webhook picks the seat item by price id (`subscription_item_on_price`), and `create_team_seat_checkout` refuses to start if the base and seat price ids are equal.
-- **Seat quantity has a single writer**, `sync_team_seat_quantity`, driven off Clerk membership webhooks. Quantity is floored at 1 so a transient member-count read of 0 never creates a zero-quantity subscription. Pending invitations count as seats from the moment they're sent.
+**Apple IAP no longer accepts new purchases or restores.** The authenticated `POST /billing/apple/link` endpoint is a 410 tombstone that returns before verifier or repository work; there is no Apple/mobile checkout route. Keep `POST /webhooks/apple-iap`, StoreKit 2 JWS verification against pinned Apple root certificates, the configured Apple identifiers, `billing_repo` Apple fields, GSI `apple-original-transaction-index`, entitlement teardown, and cancellation/expiration mapping until App Store Connect proves there are zero active, grace-period, billing-retry, or refunded-but-unexpired subscriptions. The mobile app retains `expo-iap` only to open Apple's subscription-management UI for a hypothetical historical subscriber; it has no SKU, purchase, restore, or link action. `POST /billing/checkout` is the only subscription purchase API.
 
-**Apple IAP** is a code-complete second purchase rail (App Store guideline 3.1.3(b)): `routers/apple_iap.py` (link-purchase endpoints + `POST /webhooks/apple-iap` App Store Server Notifications, deduped on `notificationUUID`, StoreKit 2 JWS verified against pinned Apple root certs), `billing_repo.set_apple_subscription`, GSI `apple-original-transaction-index` on the billing table. The rail is LIVE in both envs — CDK sets `APPLE_IAP_BUNDLE_ID`, `APPLE_IAP_PRODUCT_ID` and `APPLE_IAP_APP_APPLE_ID` unconditionally (`service-stack.ts`), so the router does not 503. The mobile app drives it (`co.isol8.mobile.plan.monthly` via expo-iap → `/billing/apple/link`); those ids change with the next App Store record (the app never shipped), not before.
-
-Containers default to a 1 vCPU / 4 GB box launched on **Fargate Spot** (~70% cheaper than on-demand; `ecs_manager` falls back to on-demand when Spot capacity is unavailable — at service create and via a zero-placement timeout in the provisioning poller). The old *plan*-tier size ladder is gone, but size is not uniform: `_size_for_owner` returns `ULTRA_CPU`/`ULTRA_MEMORY_MIB` (2 vCPU / 8 GB) for **either** an `ultra_pro` plan **or** a live agent count over `COMPANY_STANDARD_PLAN_MAX_AGENTS` (10) — the latter is a RELIABILITY floor, not a billing signal, added after an 11-agent prod owner crash-looped on boot 2026-08-14 (24 SQLite DBs restoring concurrently starved the single vCPU; `database is locked` is what SQLite reports when a starved process exhausts its busy timeout). Sizing is derived at every provision/reprovision, so a hand-set size not backed by plan-or-agent-count is silently undone. Paid containers stay always-on while the subscription is active. Checkout bills the first month immediately — the 14-day Stripe trial was removed 2026-07-17 (evaluation happens on the no-card free tier below; the `/billing/trial-checkout` route path and `is_trial_blocked` names were kept for compatibility). Legacy `trialing` rows created before the cutover remain valid until they convert; for those, trial-clock state is owned by Stripe (do not compute trial-days-left from `trial_end` locally).
+Containers default to a 1 vCPU / 4 GB box launched on **Fargate Spot** (~70% cheaper than on-demand; `ecs_manager` falls back to on-demand when Spot capacity is unavailable — at service create and via a zero-placement timeout in the provisioning poller). The old *plan*-tier size ladder is gone, but size is not uniform: `_size_for_owner` returns `ULTRA_CPU`/`ULTRA_MEMORY_MIB` (2 vCPU / 8 GB) for **either** an `ultra_pro` plan **or** a live agent count over `COMPANY_STANDARD_PLAN_MAX_AGENTS` (10) — the latter is a RELIABILITY floor, not a billing signal, added after an 11-agent prod owner crash-looped on boot 2026-08-14 (24 SQLite DBs restoring concurrently starved the single vCPU; `database is locked` is what SQLite reports when a starved process exhausts its busy timeout). Sizing is derived at every provision/reprovision, so a hand-set size not backed by plan-or-agent-count is silently undone. Paid containers stay always-on while the subscription is active. Checkout bills the first month immediately through `POST /billing/checkout` for a workspace plan; the 14-day Stripe trial was removed 2026-07-17 (evaluation happens on the no-card free tier below). Legacy `trialing` rows created before the cutover remain valid until they convert; for those, trial-clock state is owned by Stripe (do not compute trial-days-left from `trial_end` locally).
 
 ### Free tier (no card) — `trial_local`
 
@@ -952,7 +1051,7 @@ POST /listings/{id}/submit                              (draft → review)
 
 `.projects/` and `.stripe` are named in `_SKIP_DIR_NAMES` as a **backstop for workspaces dirtied by the retired Stripe-CLI path**. The Stripe Projects rail is backend-owned and writes nothing to EFS except `env.vars` in `openclaw.json`, so there is nothing on it for an export to leak — the exclusion is structural, and the named entries only cover leftovers and hand-copied debris.
 
-**Friday is unpublishable** — the `FRIDAY_PUBLISH_ERROR_MSG` guard in `agent_export.py` blocks the export at the router boundary. Publishing Friday would leak owner-keyed seeding content and hand a buyer a clone of someone else's CEO.
+**Founder-seeded Friday is unpublishable** — the `FRIDAY_PUBLISH_ERROR_MSG` guard in `agent_export.py` blocks exporting an owner's Friday workspace, which would leak owner-keyed content. The portable Friday and Atlas marketplace packages instead live under `apps/backend/marketplace/curated-agents/` and are ingested by `scripts/ingest_curated_agents.py`.
 
 ### Admin surface
 
@@ -1006,8 +1105,8 @@ Only the ones with a non-obvious constraint are worth writing down here:
 | `ENCRYPTION_KEY` | Fernet key protecting ChatGPT OAuth tokens + Paperclip credentials (NOT BYOK — those live in Secrets Manager). Rotating it orphans every stored token. |
 | `CLOUD_MAP_SERVICE_ARN` | Registration target — the shared Cloud Map service every per-user ECS service attaches to via `serviceRegistries`. |
 | `CLOUD_MAP_NAMESPACE_NAME` + `CLOUD_MAP_SERVICE_NAME` | Discovery side — `DiscoverInstances` takes *names*, not the ARN, so both are needed on top of the ARN. Unset ⇒ `discover_ip` returns None and every container looks unreachable. |
-| `STRIPE_TEAM_BASE_PRICE_ID` | Org flat base, always quantity 1. Display dollars mirrored by `TEAM_BASE_PRICE_USD` (50). **Must differ from the seat price id** or checkout refuses to start. |
-| `STRIPE_TEAM_SEAT_PRICE_ID` | Org per-seat; quantity = live Clerk member count. Display dollars mirrored by `TEAM_SEAT_PRICE_USD` (20). |
+| `STRIPE_WORKSPACE_PRICE_ID` | One recurring Workspace Price. Its display amount is `WORKSPACE_PRICE_USD`, returned by `/billing/account`. |
+| `STRIPE_ULTRA_PRICE_ID` | One recurring Ultra Price. Its display amount is `ULTRA_PRICE_USD`, returned by `/billing/account`. |
 | `MARKETPLACE_LISTINGS_TABLE` | Must be set — there is NO disable gate; marketplace routers mount unconditionally and an empty value means runtime errors, not a designed off-switch. |
 | `AGENT_EMAIL_DOMAIN` | Empty disables agent-email minting entirely. Derived per-env in `lightbulb-stage.ts` from `PLATFORM_MAIL_DOMAIN` — the **mail** domain, never the product domain: prod gets the apex, dev gets it `dev.`-prefixed. Agent addresses are `{agent}@{slug}.{AGENT_EMAIL_DOMAIN}`: `{agent}@{slug}.thelightbulb.company` in prod, `…@{slug}.dev.thelightbulb.company` in dev. `flickmeon.ai` carries no mail at all. |
 | `CORS_ORIGINS` | Comma-separated. Note the API Gateway HTTP API handles CORS preflight at the gateway on the REST path — its allow/expose headers must match FastAPI's. |
@@ -1042,7 +1141,7 @@ Located in `apps/infra/lib/stacks/`. Entry point: `apps/infra/lib/app.ts`. Per-e
 | `database-stack.ts` | The core DynamoDB tables (`lightbulb-{env}-{suffix}`) **and the Paperclip Aurora Serverless v2 cluster** (Postgres, 0–4 ACU, Data API). Three tables live elsewhere: `ws-connections` (api-stack), `bedrock-gate-tokens` (gate stack), `bedrock-invocation-dedup` (meter stack). |
 | `container-stack.ts` | ECS cluster for per-user OpenClaw containers, EFS filesystem, Cloud Map namespace + the one shared Cloud Map service all per-user services register into, container task-definition scaffolding |
 | `service-stack.ts` | Backend FastAPI service on ECS Fargate: task definition (Docker image from ECR), service, target-group wiring, DynamoDB/secrets IAM, the SFN provision watchdog, and the marketplace artifacts S3 bucket. **NOT autoscaled** — `desiredCount: 1` in both envs, with no scalable target, and that is deliberate: per-owner container WebSockets, `_pending_rpcs`, `_active_runs` and several other maps live in-process, so a second instance would not simply share load (see #1196). Note rolling deploys run at `maxHealthyPercent: 200`, so N is transiently 2 on every deploy — which is why the provisioning/bootstrap claim-leases exist. |
-| `api-stack.ts` | Both front doors: the HTTP API (REST) with VPC Link **V2** → ALB + custom-domain host dispatch (`X-Lightbulb-Public-Host`) + Route53 records, AND the WebSocket API with **Lambda integrations** (`ws-connect`/`ws-disconnect`/`ws-message`), the Clerk-JWT Lambda authorizer, the `ws-connections` table, and the `bv-` CloudFront VpcOrigin distribution for raw WS. |
+| `api-stack.ts` | Both front doors: the HTTP API (REST) with VPC Link **V2** → ALB + custom-domain host dispatch (`X-Isol8-Public-Host`) + Route53 records, AND the WebSocket API with **Lambda integrations** (`ws-connect`/`ws-disconnect`/`ws-message`), the Clerk-JWT Lambda authorizer, the `ws-connections` table, and the `bv-` CloudFront VpcOrigin distribution for raw WS. |
 | `bedrock-gate-stack.ts` | The streaming Lambda fronting bedrock-runtime — the enforcement fence for all Bedrock inference (+ the gate-tokens table). See the Billing section. |
 | `bedrock-meter-stack.ts` | Invocation-log meter Lambda — the auditor + backstop kill, and the sole Metronome writer (+ the invocation-dedup table). |
 | `paperclip-stack.ts` | Per-tenant Paperclip BFF — Fargate service, Cloud Map service discovery, ALB host route (the Aurora cluster comes from database-stack as a prop). Cross-stack KMS-cycle posture documented inline. See `apps/infra/paperclip/RUNBOOK.md`. |
@@ -1078,6 +1177,6 @@ Expo iOS app at `apps/mobile/` (`@lightbulb/mobile`): Expo SDK 57 / React Native
 - Routes: `(auth)/sign-in`; `(app)/chat`, `agent/[agentId]`, `settings`, `teams/*`, and a control tree mirroring the web panels (overview, agents, channels, integrations, llm, marketplace, sessions, skills, usage).
 - Auth: Clerk Expo + `expo-apple-authentication`, token cache in `expo-secure-store`.
 - Push: `PushRegistration.tsx` gets an Expo push token → `POST /devices {token, platform, deviceId}`; unregister `DELETE /devices/{deviceId}`.
-- **Apple IAP** via expo-iap, product `co.isol8.mobile.plan.monthly`; `src/lib/appleIap.ts` posts the signed transaction to `/billing/apple/link`, falling back to `/billing/apple/web-checkout`.
+- **Apple subscriptions:** no new StoreKit purchase/restore/link surface or SKU. Personal/no-workspace billing gates open `flickmeon.ai/onboarding` so the user creates or selects the billed workspace first; subscription purchase then uses the web app's sole `POST /billing/checkout` route. `expo-iap` remains only for `deepLinkToSubscriptions` so a hypothetical historical Apple subscriber can manage cancellation.
 - CI/release: `mobile-ci.yml` (PR: shared+mobile typecheck/lint/jest + `expo export` as the Metro-resolution gate, self-hosted mac); `mobile-release.yml` (`mobile-v*` tag → `eas build --local` → `eas submit` to TestFlight); `mobile-ota.yml` (merge to main → `eas update --channel production`). `runtimeVersion.policy: "fingerprint"` guarantees an OTA whose native fingerprint doesn't match the installed binary is never delivered.
 - **Gotcha:** Metro inlines `EXPO_PUBLIC_*` at bundle time and `eas update` does NOT read eas.json build env — a no-env export once shipped an OTA with an empty Clerk key (see the comment block in `mobile-ota.yml`).

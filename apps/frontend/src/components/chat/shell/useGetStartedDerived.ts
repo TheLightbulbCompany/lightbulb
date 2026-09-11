@@ -4,7 +4,7 @@ import { useMemo } from "react";
 import useSWR from "swr";
 
 import { useApi } from "@/lib/api";
-import { useGatewayRpc } from "@/hooks/useGatewayRpc";
+import { useRuntimeRpc } from "@/hooks/useRuntimeRpc";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { useChannelLinks } from "@/hooks/useChannelLinks";
 import { useProvisioningState } from "@/hooks/useProvisioningState";
@@ -46,7 +46,7 @@ export function useGetStartedDerived(): GetStartedDerivedSignals & { chatReady: 
   // Ready-equivalent for the derived UI state: a parked box is a healthy,
   // completed onboarding — the "chat" step must not un-complete when it
   // sleeps. The sessions.list RPC below can't fire against a parked socket,
-  // but useGatewayRpc nulls its own key while parked (freezing the last
+  // but useRuntimeRpc nulls its own key while parked (freezing the last
   // cached value), so chatStarted stays correct across a park.
   const chatReady = container?.runtime_phase === "ready" || container?.lifecycle === "parked";
 
@@ -126,12 +126,12 @@ export function useGetStartedDerived(): GetStartedDerivedSignals & { chatReady: 
   // bounded window (not `limit: 1`) to be sure a token-bearing one is visible —
   // still cheap (no last-message / derived-title enrichment). Gated on
   // `chatReady` via a null method (the gateway pool is connected by then;
-  // useGatewayRpc additionally self-nulls while parked) and
+  // useRuntimeRpc additionally self-nulls while parked) and
   // low-frequency (dedupingInterval bumped to 5min, overriding the hook's 10s)
   // so it is not an always-on poll; the hook's event-driven revalidation stays
   // throttled. The `emitStep("chat")` event still completes real in-app chats
   // instantly (OR'd in `useGetStarted`), so this read only backfills history.
-  const { data: sessionsData } = useGatewayRpc<
+  const { data: sessionsData } = useRuntimeRpc<
     { sessions?: { totalTokens?: number }[] } | { totalTokens?: number }[]
   >(
     chatReady ? "sessions.list" : null,

@@ -1,28 +1,22 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import useSWR, { useSWRConfig } from "swr";
+import { useSWRConfig } from "swr";
 import { useSearchParams } from "next/navigation";
-import Link from "next/link";
 
 import { capture } from "@/lib/analytics";
 import { setSignupStep } from "@/lib/signupFlow";
-import { useApi } from "@/lib/api";
 import {
   Loader2,
   XCircle,
   CheckCircle,
   Circle,
 } from "lucide-react";
-import { useOrganization, useAuth, useUser } from "@clerk/nextjs";
+import { useOrganization, useAuth } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
-import { FirstRunFunnel } from "@/components/onboarding/FirstRunFunnel";
-import { useLandingBriefReplay } from "@/hooks/useLandingBriefReplay";
 import { useBilling } from "@/hooks/useBilling";
-import { useCredits, isCreditsBlocked } from "@/hooks/useCredits";
 import { useProvisioningState, type BlockedPayload } from "@/hooks/useProvisioningState";
-import { useGateway } from "@/hooks/useGateway";
-import { useGatewayRpc } from "@/hooks/useGatewayRpc";
+import { useRuntimeRpc } from "@/hooks/useRuntimeRpc";
 import { nextOnboardingCompletion } from "@/components/chat/onboardingAnalytics";
 import { replaceSearchParams } from "@/lib/shellNav";
 import { SUPPORT_MAILTO } from "@/lib/domain";
@@ -31,14 +25,7 @@ import { ByoKeyStep } from "@/components/chat/ByoKeyStep";
 import { CreditsStep } from "@/components/chat/CreditsStep";
 import { TeamBillingCard } from "@/components/chat/TeamBillingCard";
 import { Logo, LogoMark } from "@/components/Logo";
-import { PROVIDER_CARDS, type ProviderChoiceId } from "@/lib/providerCards";
-import {
-  CREDIT_PRESETS_CENTS,
-  DEFAULT_CREDITS_CENTS,
-  MAX_CREDITS_CENTS,
-  MIN_CREDITS_CENTS,
-  formatUsdCents,
-} from "@/lib/creditAmounts";
+import { PROVIDER_CARDS } from "@/lib/providerCards";
 // Provisioning copy + timing live in @lightbulb/shared so the web and mobile
 // steppers stay in lockstep. Aliased to this file's historical local names so
 // every usage site below is unchanged.
@@ -178,8 +165,7 @@ function RotatingIdeas({ eyebrow }: { eyebrow: string }) {
   );
 }
 
-// The stepper's four short-lived holds — waiting on Clerk's `user`, on the
-// landing-brief replay, on billing — all replaced the entire chat surface with
+// The stepper's short-lived loading holds replace the entire chat surface with
 // an unlabelled centred spinner. On dev one of them sat there for 35s+ while
 // /container/status reported `lifecycle: "provisioning"`, so the owner saw a
 // bare spinner where the structured provisioning UI was supposed to be, and no
@@ -210,11 +196,6 @@ export function ProvisioningStepper({
   const { organization } = useOrganization();
   const isOrg = !!organization;
   const { userId: clerkUserId } = useAuth();
-  // Clerk user object — the first-run funnel branch below reads (and its
-  // component writes) user.unsafeMetadata.firstRun. `isLoaded` distinguishes
-  // "Clerk still resolving" (hold a loader) from "loaded, signed out"
-  // (user === null) — see the flash guard before the ready branch.
-  const { user, isLoaded: userLoaded } = useUser();
   // Per-OWNER activation-marker key so a shared/QA browser doesn't let the first
   // account's activation suppress onboarding_ready for a later account's real
   // first cold start. The event is a person-level denominator (PostHog is
@@ -226,14 +207,11 @@ export function ProvisioningStepper({
     isLoading: billingLoading,
     isSubscribed,
     refresh: refreshBilling,
-    startTeamCheckout,
+    startCheckout,
   } = useBilling();
-  // Free-tier discriminator: trial_local accounts are NOT is_subscribed
-  // (is_subscribed is the PAID predicate; the free tier grants platform use
-  // without a subscription) and never set provider_choice — there is no
-  // provider to pick for the free tier. Used below to keep these users off
-  // the payment short-circuit, the poll gate, and — the actually-broken
-  // case — the ProviderPicker fallback.
+  // A workspace trial_local account is not paid and has no provider choice.
+  // Keep it out of the pre-entitlement picker while its workspace is already
+  // provisioning; provider setup happens only after workspace billing.
   const isTrialLocal = account?.subscription_status === "trial_local";
   // Set when we first enter the container/gateway phase — _not_ at component
   // mount. Time spent on the pre-provision steps (provider choice, billing
@@ -308,19 +286,8 @@ export function ProvisioningStepper({
     refresh,
   } = useProvisioningState();
 
-  // Instant-ready: the backend's connection pool pushes
-  // status_change("HEALTHY") over the WebSocket at the exact moment the
-  // container handshake completes. Revalidate /container/status right then
-  // so the stepper flips to ready in one round trip instead of waiting out
-  // the remainder of the shared bounded loop's cadence.
-  const { onEvent } = useGateway();
-  useEffect(() => {
-    return onEvent((event, payload) => {
-      if (event !== "status_change") return;
-      if ((payload as { state?: string } | null)?.state !== "HEALTHY") return;
-      refresh();
-    });
-  }, [onEvent, refresh]);
+  // Private runtime health/onboarding events invalidate this shared status key
+  // in LiveEventsProvider, so the stepper observes readiness through HTTP.
 
   // The trial_local row is created as a side effect of /container/status, not
   // by /billing/account — and useBilling does not revalidate on focus or an
@@ -392,7 +359,7 @@ export function ProvisioningStepper({
     (isSubscribed || isTrialLocal) && derived?.phase !== "ready" && derived?.phase !== "parked";
 
   // Poll gateway health every 3s once container looks ready
-  const { data: gatewayHealth } = useGatewayRpc<Record<string, unknown>>(
+  const { data: gatewayHealth } = useRuntimeRpc<Record<string, unknown>>(
     shouldPollContainer && containerReady ? "health" : null,
     undefined,
     { refreshInterval: 3000, dedupingInterval: 2000 },
@@ -472,8 +439,7 @@ export function ProvisioningStepper({
     // Pre-signup user lands in payment phase to pick a provider path.
     // Recovery flow skips billing — the user already has a subscription. A
     // provisioning container (200 from /container/status) means the backend
-    // already gated this user in — a fresh personal signup gets an
-    // auto-created trial_local there — so don't force payment while the
+    // already gated this workspace in — so don't force payment while the
     // container is coming up, even if billing hasn't caught up to the trial.
     if (trigger !== "recovery" && !isSubscribed && !isTrialLocal && !container) return "payment";
 
@@ -709,117 +675,10 @@ export function ProvisioningStepper({
     return () => clearInterval(interval);
   }, [phase]);
 
-  // First-run funnel: whoever first reaches a ready company — trial_local
-  // free-tier signup or an org owner/member — describes the business here
-  // before reaching chat. It's the committed onboarding front door (no
-  // skip), so the only way past it is submitting the brief (the backend's
-  // per-company DynamoDB claim makes a second submitter within the same
-  // org a no-op "already_submitted" rather than a duplicate). Placed
-  // BEFORE the ready return so a quick provision can't drop the funnel and
-  // lose the in-progress brief (and leave the kickoff hook, which requires
-  // briefSubmitted, unable to fire). Gated on gatePhase === "normal" so it
-  // never preempts a blocked / needs-signup / team-pending state. The
-  // `user` guard is load-bearing beyond null-safety: submit writes
-  // user.unsafeMetadata, so without a loaded Clerk user the funnel would
-  // be a dead-end form.
-  //
-  // "Have we onboarded?" is a PER-CONTAINER fact, not per-user: an org
-  // shares one container, so onboarding happens once for the whole org. The
-  // backend stamps it on the container row and surfaces it as
-  // `container.onboarded` on /container/status, so once anyone on this
-  // container completes the funnel, no one on it sees the funnel again —
-  // including a second org member whose own per-user marker is empty.
-  // `container.onboarded` is the SOLE durable authority for "have we
-  // onboarded?": the backend resets it when a container is wiped/
-  // reprovisioned, so a legitimately reprovisioned owner re-onboards.
-  //
-  // No SAME-SESSION flash-bridge (spec PR-9, CLIENT-HOOK deleted the
-  // `briefBaselineRef`/`sessionBriefSubmittedRef` latch): the funnel dismisses
-  // purely on the backend's own per-generation `funnel_state` advancing off
-  // "not_started" on the next shared bounded-loop poll (~1-2s via the realtime
-  // nudge, 5s backstop), rather than an in-memory guess at Clerk's
-  // `firstRun.briefSubmitted` re-render. NOTE (Option B, "watch Friday work"):
-  // the dismiss trigger is funnel SUBMISSION, not onboarding COMPLETION — see
-  // `awaitingBrief` below. `container.onboarded` is still the SOLE durable
-  // authority for the reprovision guard (a legacy row onboarded via the old
-  // onboarded_at, with funnel_state "not_started", must never re-show the
-  // funnel), which is why `awaitingBrief` keeps the `!containerOnboarded` term.
-  const containerOnboarded = container?.onboarded === true;
-  // Option B ("watch Friday work"): the funnel owns the screen only until the
-  // brief is SUBMITTED — not until onboarding COMPLETES. The moment the backend
-  // funnel_state advances past "not_started", we drop straight into Friday's
-  // chat so the user watches the server-dispatched first-run kickoff stream in
-  // live (goal/project/tasks appearing as she works), matching mobile's
-  // submit -> roster -> Friday redirect. `funnel_state` is the per-generation
-  // backend signal (resets to "not_started" when a container is recreated), so
-  // this keeps the reprovision safety `container.onboarded` gave; and the
-  // `!containerOnboarded` guard means a legacy-onboarded container (onboarded
-  // via the old onboarded_at, funnel_state still "not_started") never re-shows
-  // the funnel. Propagation from submit is ~1-2s via the realtime nudge (5s
-  // poll backstop), during which FirstRunFunnel shows its own "submitting" state
-  // — a brief confirmation, then live chat.
-  const funnelState = container?.funnel?.state ?? "not_started";
-  const awaitingBrief = !containerOnboarded && funnelState === "not_started";
-  // Landing-page replay: answers stashed by the public landing funnel are
-  // POSTed once, right here, the moment the in-chat funnel would otherwise
-  // render (personal, normal-gate, non-terminal). While that submit is in
-  // flight — and until the next status poll reports it — the funnel is
-  // suppressed so the user isn't shown a form they already answered.
-  const { replaying: briefReplaying, orgDraftVersion } = useLandingBriefReplay({
-    gatePhase,
-    awaitingBrief,
-    isTerminalError,
-  });
-  if (
-    !!user &&
-    gatePhase === "normal" &&
-    // A terminally-failed container must fall through to the Setup-failed card
-    // below, never the funnel — submitting a brief to a dead backend is a
-    // dead end. (A retrying error is NOT terminal, so it still shows the
-    // funnel/provisioning UI like any live cold start.)
-    !isTerminalError &&
-    awaitingBrief
-  ) {
-    if (briefReplaying) {
-      return <StepperHold />;
-    }
-    // Keyed on the org-draft copy: the funnel reads its draft at mount, and
-    // the landing-stash copy for org contexts happens after it has mounted —
-    // the remount is what makes the pre-filled answers visible.
-    return <FirstRunFunnel key={`funnel-${orgDraftVersion}`} />;
-  }
-
-  // Hold a neutral loader until Clerk resolves `user`. The funnel branch above
-  // requires a loaded user, so a not-yet-onboarded container would otherwise
-  // flash `children` (or the stepper) for a frame before the funnel takes over
-  // once `user` loads. Only matters where the funnel COULD show — a
-  // normal-gate, not-yet-onboarded, non-terminal container. A terminal error
-  // still routes to its card below.
-  if (!userLoaded && gatePhase === "normal" && awaitingBrief && !isTerminalError) {
-    return <StepperHold />;
-  }
-
-  // A ready-but-not-onboarded container BELONGS to the first-run funnel above,
-  // whatever the owner type (trial_local OR paid, personal OR org) — the funnel
-  // is keyed on `container.onboarded === false`, the authoritative per-container
-  // fact, NOT on the plan. But the funnel needs a truthy Clerk `user` (its
-  // submit writes user.unsafeMetadata), so its gate is `!!user`. When the
-  // container is already warm-ready while `user` is still resolving — the
-  // {isLoaded:true, user:null} window useUser returns right after an org
-  // `setActive` JWT refresh, which is exactly the paid-org-owner path (the
-  // personal path resolves `user` inline in useOnboardingGate, so it never hits
-  // this) — the funnel gate is skipped, the `!userLoaded` loader above is also
-  // skipped (Clerk reports loaded), and `phase === "ready"` below would hand
-  // straight off to the dockable workspace. That early ready-return beating the
-  // funnel IS the bug: a paid org owner is booted into a contextless workspace,
-  // the brief is never submitted, and Friday starts with zero goals/projects.
-  // Hold a neutral loader until `user` resolves so the funnel — not the dock —
-  // wins. On the auth-gated chat surface `user === null` is never "signed out"
-  // (WorkspaceShell / ChatLayout only mount this once isSignedIn), so it always
-  // resolves; an onboarded container falls through to children below.
-  if (phase === "ready" && !user && awaitingBrief) {
-    return <StepperHold />;
-  }
+  // Chat-first onboarding begins after this provisioning gate. The backend
+  // captures the first canonical-room human message only when normal per-room
+  // dispatch selected an eligible agent; this component owns no brief form,
+  // draft replay, or synthetic kickoff state.
 
   // Ready — render children. `teams_state: "failed"` is a NON-BLOCKING
   // signal on the composed contract: Teams (Friday/Atlas) seeding failed
@@ -827,30 +686,13 @@ export function ProvisioningStepper({
   // app as normal and layer a small dismissible "Teams needs attention"
   // notice over it, never a blocking interstitial.
   //
-  // `bootstrap.state === "failed"` is the same shape of fact for the FIRST
-  // RUN: the owner submitted their brief, the container came up, and Friday's
-  // server-dispatched kickoff died anyway. Read off `derived.bootstrap` (which
-  // defaults an absent block for an older backend) and matched against
-  // "failed" ONLY — `dispatched` (fresh or stale-but-re-arming) and `sent` are
-  // both recovered/completed by the dispatcher itself on the next status poll,
-  // so showing them as failures would be a lie. See bootstrap_dispatcher.py.
-  //
-  // ONE positioning owner for both: each notice used to place itself at `fixed
-  // bottom-4 right-4`, so a container that is both Teams-degraded and
-  // first-run-failed would have stacked them at identical coordinates with the
-  // lower one unreadable. The corner stack owns the placement now; the notices
-  // own only their own card.
   if (phase === "ready") {
     const teamsDegraded = container?.teams_state === "failed";
-    const firstRunFailed = derived?.bootstrap.state === "failed";
     return (
       <>
         {children}
-        {(teamsDegraded || firstRunFailed) && (
+        {teamsDegraded && (
           <div className="fixed bottom-4 right-4 z-(--z-toast) flex flex-col items-end gap-2">
-            {firstRunFailed && (
-              <FirstRunFailedNotice lastError={derived?.bootstrap.last_error ?? null} />
-            )}
             {teamsDegraded && <TeamsDegradedNotice />}
           </div>
         )}
@@ -996,9 +838,9 @@ export function ProvisioningStepper({
 
   // Needs-signup: backend signals via 404 that the owner has never
   // started signup (gate would fire `signup_required` for an admin).
-  // Render the ProviderPicker by intent here — the picker's
-  // POST /billing/trial-checkout is the only path that creates the
-  // first billing row. Placed before billing/onboarded fall-through so
+  // Render the ProviderPicker by intent here. Its workspace-admin CTA posts
+  // the unified checkout endpoint; personal contexts are directed to select a
+  // workspace. Placed before billing/onboarded fall-through so
   // we don't depend on the post-billing-load render order to surface
   // the picker for fresh users.
   if (gatePhase === "needs-signup") {
@@ -1010,10 +852,8 @@ export function ProvisioningStepper({
   //
   // provider_choice is NOT persisted via /users/sync — that endpoint accepts
   // the field and ignores it. billing_accounts (owner-keyed) is the source of
-  // truth, and it has exactly two writers: the ProviderPicker's "Subscribe"
-  // step (POST /billing/trial-checkout, at signup) and POST /billing/provider
-  // (post-signup switches — how ByoKeyStep commits its sub-provider, since
-  // trial-checkout submits `byo_key` with no byo_provider).
+  // truth. Checkout deliberately does not write it; POST /billing/provider
+  // owns the post-entitlement selection (including ByoKeyStep's sub-provider).
   if (phase === "provider" && providerChoice !== null) {
     const handleProviderComplete = async () => {
       capture("onboarding_provider_completed", {
@@ -1035,18 +875,7 @@ export function ProvisioningStepper({
             <ByoKeyStep onComplete={handleProviderComplete} />
           )}
           {providerChoice === "bedrock_claude" && (
-            // `?credits=bundled` on the Checkout success_url means the balance
-            // was already paid for in that same session and the grant is in
-            // flight through the webhook. CreditsStep otherwise only skips once
-            // the balance READS spendable, which it does not at the instant the
-            // browser gets back from Stripe — so the owner who paid precisely
-            // to avoid a second step was shown a live second purchase form, and
-            // could pay twice. The awaiting state keeps the same balance poll,
-            // so it advances by itself the moment the credits land.
-            <CreditsStep
-              onComplete={handleProviderComplete}
-              awaitingBundledGrant={searchParams.get("credits") === "bundled"}
-            />
+            <CreditsStep onComplete={handleProviderComplete} />
           )}
         </div>
       </div>
@@ -1113,10 +942,9 @@ export function ProvisioningStepper({
     );
   }
 
-  // Teams billing paywall: the gate returns team_billing_required for an org
-  // owner (or member) with no billing row. Render the real per-seat checkout
-  // card instead of the generic blocked card. TeamBillingCard is admin-gated
-  // internally — a member sees "ask your org admin" with no CTA — and takes
+  // Workspace billing paywall: the gate returns team_billing_required for an
+  // owner (or member) with no billing row. The card is admin-gated
+  // internally — a member sees "ask your workspace admin" with no CTA — and takes
   // the gate's own `action.admin_only` rather than assuming it.
   //
   // The wrapper mirrors the generic blocked card below (logo centerpiece +
@@ -1131,13 +959,11 @@ export function ProvisioningStepper({
             <Logo size="lg" href={null} />
           </div>
           <TeamBillingCard
-            seatCount={account?.seat_count ?? null}
-            seatPriceUsd={account?.team_seat_price_usd ?? null}
-            basePriceUsd={account?.team_base_price_usd ?? null}
+            workspacePriceUsd={account?.workspace_price_usd}
             ownerRole={blocked.owner_role}
             adminOnly={blocked.action.admin_only}
             isSubscribed={false}
-            onSubscribe={startTeamCheckout}
+            onSubscribe={() => startCheckout("workspace")}
           />
           <div className="mt-6 flex items-center gap-2">
             <Button
@@ -1157,57 +983,6 @@ export function ProvisioningStepper({
           </div>
         </div>
       </div>
-    );
-  }
-
-  // Free-tier conversion: a trial owner who hit the daily cap or ran out the
-  // window. Render the provider picker RIGHT HERE instead of the generic
-  // blocked card, whose action is a link out to /settings?panel=billing.
-  //
-  // That link was the whole problem. It landed on a lone Subscribe button
-  // wired to a HARDCODED `provider_choice: "bedrock_claude"`, so a converting
-  // owner never saw the three-way choice and — because they never carried a
-  // `?provider=` back from Checkout — never reached CreditsStep either. They
-  // came out the far side on Bedrock-managed inference having chosen nothing
-  // and bought nothing. Picking here threads the choice through Checkout's
-  // success_url (`?checkout=success&provider=<id>`), which is exactly what
-  // drives the provider step above — CreditsStep for bedrock_claude, so buying
-  // credits is part of converting rather than a thing to discover later.
-  //
-  // Same shape as the team_billing_required interception above: keep the gate's
-  // canvas, swap the card in the middle.
-  //
-  // `!isOrg` is checked explicitly rather than left to the backend. These two
-  // codes can only come from a `trial_local` row, which is personal-only, so
-  // an org cannot reach here today — but that is an invariant of a different
-  // layer, and this picker posts to /billing/trial-checkout, which an org
-  // admin must NOT use (orgs pay per-seat via startTeamCheckout). If the
-  // free tier ever opens to orgs, the silent failure would be an org admin
-  // buying a personal flat subscription. Enforce it where the consequence is.
-  if (
-    gatePhase === "blocked" &&
-    blocked &&
-    providerChoice === null &&
-    !isOrg &&
-    (blocked.code === "trial_daily_cap" || blocked.code === "trial_expired")
-  ) {
-    return (
-      // `isOrg={false}` literally, not the narrowed `isOrg`: the guard above
-      // has already excluded orgs, and TS narrows `organization` to `never`
-      // here — so there is no org name to pass and no org copy to render.
-      <ProviderPicker
-        isOrg={false}
-        source="trial_conversion"
-        // The gate's own `message` is the heading, not a prefix to the
-        // subheading. Concatenating it under a heading derived from the same
-        // text rendered the sentence twice ("You've used today's free
-        // allowance." above "You've used today's free allowance — resets
-        // tomorrow…") — a duplicated-copy bug on the paywall, at the exact
-        // moment someone is deciding to pay. Backend owns the what-happened
-        // half (it knows cap vs expiry); this owns the what-now half.
-        heading={blocked.message}
-        subheading="Pick how you want to power your agents — $50/month covers your always-on infrastructure."
-      />
     );
   }
 
@@ -1367,8 +1142,8 @@ export function ProvisioningStepper({
   // provisioning container, and in that gap the legacy fallback below
   // (!isTrialLocal && !container) would briefly render the paywall picker.
   // gatePhase === "loading" is the pre-first-response state, so waiting it
-  // out means the next thing a new trial user sees is the funnel, not a
-  // payment step they don't need.
+  // out means the next thing a new trial user sees is workspace provisioning,
+  // not a payment step they don't need.
   if (billingLoading || gatePhase === "loading") {
     return <StepperHold />;
   }
@@ -1390,18 +1165,12 @@ export function ProvisioningStepper({
   //      `account.provider_choice` is set but `isSubscribed` is false.
   //      They MUST see the picker again to restart checkout.
   //
-  //   3. trial_local (free-tier) owner: is_subscribed is FALSE (it's the
-  //      PAID predicate — the free tier is usable but not subscribed) and
-  //      provider_choice is never set — there's no provider to pick on the
-  //      free tier. The `isTrialLocal` guard keeps these users off the
-  //      picker so they flow straight into container/gateway/ready instead
-  //      of being shown a payment step they don't need.
+  //   3. A trial_local workspace: it is not paid and has no provider choice.
+  //      The `isTrialLocal` guard keeps an already-provisioning workspace off
+  //      the picker while the billing state catches up.
   //   4. A provisioning container (200 from /container/status) means the
-  //      backend already gated this user in. For a fresh personal signup the
-  //      trial_local row is created there, and /billing/account may not have
-  //      caught up yet — so a live container bypasses the picker too, closing
-  //      the cross-fetch race where a real trial user briefly reads as
-  //      non-trial.
+  //      backend already gated this workspace in. /billing/account may not
+  //      have caught up yet, so a live container bypasses the picker too.
   const ownerOnboarded = isSubscribed && Boolean(account?.provider_choice);
   if (!ownerOnboarded && !isTrialLocal && !container) {
     return <ProviderPicker isOrg={isOrg} orgName={organization?.name} />;
@@ -1449,15 +1218,6 @@ export function ProvisioningStepper({
   const currentIdx = steps.findIndex((s) => s.phase === phase);
   const currentStep = steps[currentIdx] || steps[0];
 
-  // The SAME `bootstrap.state === "failed"` fact the ready branch reads at the
-  // top of this component. It used to be read ONLY there, so a container that
-  // never reached ready — the exact case where the owner has no chat surface to
-  // fall back on — showed the cheerful cold-start card instead, with the reason
-  // sitting unread on every poll. A dev owner sat on it for 21 hours while
-  // `last_error` said "Gateway connect failed: gateway starting; retry shortly".
-  // Inline, NOT a second `fixed` corner stack: this branch has no `children`
-  // underneath to layer over, and the ready branch's stack owns the only one.
-  const firstRunFailed = derived?.bootstrap.state === "failed";
   // Past the second tier we stop claiming progress. Derived, not state, so
   // "Check again" cannot erase it — the old handler reset `timedOut` AND
   // `elapsedMs` to zero, which is how 21 hours kept looking like 5 minutes.
@@ -1465,7 +1225,6 @@ export function ProvisioningStepper({
   // While the failure is known, the pod animation would keep steaming as if
   // work were still happening.
   const podAnimating =
-    !firstRunFailed &&
     (phase === "gateway" || phase === "channels-sidecars" || phase === "agent");
 
   return (
@@ -1697,7 +1456,7 @@ export function ProvisioningStepper({
             {/* Step: payment/container — key spinner */}
             <div
               className={`provision-anim ${
-                !firstRunFailed && (phase === "payment" || phase === "container") ? "active" : ""
+                phase === "payment" || phase === "container" ? "active" : ""
               }`}
             >
               <div className="anim-key-circle" />
@@ -1737,24 +1496,20 @@ export function ProvisioningStepper({
             aria-live="polite"
             aria-atomic="true"
           >
-            {firstRunFailed
-              ? "Setup didn't finish"
-              : currentStep?.activeLabel || "Setting up..."}
+            {currentStep?.activeLabel || "Setting up..."}
           </h2>
           {/* Rotating "while you wait, try asking your agent to…" prompts are
               an invitation to keep waiting. Once the failure is known there is
               nothing to wait for, so they go. */}
-          {!firstRunFailed && (
-            <div className="provision-desc provision-desc-ideas">
-              <RotatingIdeas
-                eyebrow={
-                  isOrg
-                    ? `Preparing workspace for ${organization?.name} — try asking your agent to…`
-                    : "While you wait, try asking your agent to…"
-                }
-              />
-            </div>
-          )}
+          <div className="provision-desc provision-desc-ideas">
+            <RotatingIdeas
+              eyebrow={
+                isOrg
+                  ? `Preparing workspace for ${organization?.name} — try asking your agent to…`
+                  : "While you wait, try asking your agent to…"
+              }
+            />
+          </div>
 
           {/* Progress dots */}
           <div className="provision-dots">
@@ -1771,13 +1526,19 @@ export function ProvisioningStepper({
               "cold starts can take a few minutes" caption is a claim about the
               future, so it only survives while that is still plausibly true:
               not once the failure is known, and not past the stuck tier. */}
-          {!firstRunFailed &&
-            (phase === "container" ||
+          {(phase === "container" ||
               phase === "gateway" ||
               phase === "channels-sidecars" ||
               phase === "agent") &&
             elapsedMs > 0 && (
-              <div className="provision-elapsed" aria-live="polite">
+              /* aria-live="off" is deliberate: this value ticks once per
+                 second and provisioning routinely runs minutes, so a live
+                 region here reads the elapsed time to a screen reader once per
+                 second for the whole of onboarding and buries the step
+                 transitions announced from the same region by the
+                 `provision-title` heading above. This is the number, not the
+                 news. */
+              <div className="provision-elapsed" aria-live="off">
                 {formatElapsed(elapsedMs)}
                 {!stuck && " · cold starts can take a few minutes"}
               </div>
@@ -1795,14 +1556,7 @@ export function ProvisioningStepper({
           {/* The known-failure card. Inline, in the flow of this card — the
               ready branch's `fixed` corner stack is the only one, and there is
               no app behind this screen to layer a toast over. */}
-          {firstRunFailed && (
-            <FirstRunFailedNotice
-              lastError={derived?.bootstrap.last_error ?? null}
-              inline
-            />
-          )}
-
-          {!firstRunFailed && timedOut && (
+          {timedOut && (
             <div className="provision-timeout">
               {/* Two tiers. The first is honest for a slow-but-live cold start.
                   The second stops claiming it is "still going" — past 15 min
@@ -1895,203 +1649,7 @@ function TeamsDegradedNotice() {
 }
 
 
-/**
- * Non-blocking "Friday couldn't start" affordance layered over the ready app
- * when /container/status reports `bootstrap.state: "failed"` — the owner's
- * brief was submitted, the container is healthy, and the server-dispatched
- * first-run kickoff died anyway. Before this, that state rendered NOTHING to
- * the owner (only the admin provisioning page read it) and they sat on an
- * empty chat waiting for an agent that was never coming.
- *
- * NO retry button, deliberately. `bootstrap_state: "failed"` is terminal by
- * construction — `claim_bootstrap_dispatch` admits only `not_started`, so no
- * amount of polling re-dispatches it — and the ONLY re-arm lever
- * (`reset_bootstrap_for_retry`) is behind `require_platform_admin` on
- * /admin/users/{id}/provisioning/reset-bootstrap. A "Retry" here would be a
- * dead button, which is the same bug in a new costume. What the owner CAN
- * genuinely do is talk to Friday themselves — the chat surface behind this
- * notice is live — so that is what it says.
- *
- * `lastError` is rendered VERBATIM behind a native <details>, not classified
- * into tiers: #1460 tried the classifier and was reverted (#1463) for being
- * too much machinery with its own defects. The reason strings are written for
- * operators, so they stay collapsed under "Technical details" rather than
- * leading — but they are never swallowed, because support needs them.
- *
- * `inline` is the COLD-START rendering of the same fact, and it differs in
- * every way the branch differs:
- *   - no `fixed` corner placement (that stack belongs to the ready branch, and
- *     a test pins it at exactly one) and no toast shadow — this is the card;
- *   - no title of its own: the cold-start card's own <h2> already says "Setup
- *     didn't finish", and repeating it reads as two separate failures;
- *   - no dismiss ×. Dismissing on the ready branch leaves you in a working
- *     app. Dismissing here would leave you staring at the cold-start screen
- *     with the reason gone — i.e. straight back into the lie;
- *   - different body copy. "Your workspace is ready" is FALSE here — the
- *     container never reached ready, and there is no chat behind this screen
- *     to send Friday a message in, so that recovery does not exist either.
- */
-function FirstRunFailedNotice({
-  lastError,
-  inline = false,
-}: {
-  lastError: string | null;
-  inline?: boolean;
-}) {
-  const [dismissed, setDismissed] = useState(false);
-  // Same predicate the credits banner uses, so the two can never explain the
-  // same screen differently. When the gate is what stopped Friday, this is a
-  // billing problem the owner resolves themselves — routing them to support
-  // would queue a self-serviceable failure behind a human. Both SWR keys are
-  // already mounted by the banner on this screen, so this costs no request.
-  const stepperApi = useApi();
-  const { balance: creditsBalance, error: creditsError } = useCredits();
-  const { data: creditsMe, error: creditsMeError } = useSWR<{ provider_choice: string | null }>(
-    "/users/me",
-    () => stepperApi.get("/users/me") as Promise<{ provider_choice: string | null }>,
-  );
-  // Both reads are async, so on the first render `creditsBlocked` is false
-  // simply because nothing has loaded. Firing the impression then would emit
-  // `cause: "unknown"` for every owner and a second `cause: "credits"` a
-  // moment later — double-counting the failure and under-reporting the
-  // credits share, which is the exact metric this dimension was added to
-  // measure. Wait until both have resolved, then fire once.
-  // Resolved OR errored. SWR leaves `data` undefined on error, not only while
-  // loading, so a "both defined" gate silently dropped the impression whenever
-  // a credits read failed — i.e. for exactly the owners whose first run failed
-  // hardest, during the very incidents this metric is meant to size.
-  const creditsResolved =
-    (creditsBalance !== undefined || creditsError) && (creditsMe !== undefined || creditsMeError);
-  const creditsBlocked = isCreditsBlocked(creditsBalance, creditsMe?.provider_choice);
-  const captured = useRef(false);
-  useEffect(() => {
-    if (!creditsResolved || captured.current) return;
-    captured.current = true;
-    capture("first_run_failed_notice_shown", {
-      surface: inline ? "cold_start" : "ready",
-      cause: creditsBlocked ? "credits" : "unknown",
-    });
-  }, [inline, creditsBlocked, creditsResolved]);
-  if (dismissed) return null;
-  return (
-    <div
-      role="status"
-      aria-live="polite"
-      className={
-        inline
-          ? "mx-auto mt-7 max-w-sm rounded-xl border border-err bg-cream px-4 py-3 text-left"
-          : "max-w-sm rounded-xl border border-err bg-cream px-4 py-3 shadow-lg"
-      }
-    >
-      <div className="flex items-start gap-3">
-        <div className="flex-1">
-          {!inline && (
-            <p className="text-sm font-medium text-err">Friday couldn&apos;t start</p>
-          )}
-          <p className={`text-xs text-[var(--midnight-soft)] ${inline ? "" : "mt-1"}`}>
-            {creditsBlocked && !inline ? (
-              // NOT "she failed BECAUSE you're out of credits". `creditsBlocked`
-              // is read off the balance alone and never looks at `lastError`,
-              // so it is a correlate, not a cause: an owner whose container
-              // genuinely broke (EFS mount, ECS placement, gateway timeout —
-              // all of which reach `bootstrap_state: "failed"`) AND whose
-              // balance is low would be told a falsehood, top up, and see
-              // nothing change. Name the blocker, claim nothing about the
-              // cause, and keep the support exit below for both branches.
-              <>
-                Your Claude credits are used up, which will stop Friday running.
-                Top up and send her a message — your brief is saved. If she
-                still doesn&apos;t start, contact support.
-              </>
-            ) : creditsBlocked && inline ? (
-              // Same blocker, but there is NO CHAT behind the cold-start card
-              // (the container never reached ready), so "send her a message" is
-              // a recovery that does not exist here — the exact false
-              // instruction the inline/ready copy split was written to avoid.
-              // Deliberately does NOT promise that setup resumes by itself.
-              // `bootstrap_state: "failed"` is only reached once
-              // MAX_BOOTSTRAP_ATTEMPTS is spent (or the failure was
-              // deterministic), and a top-up changes the balance without
-              // re-arming the row — `reset_bootstrap_for_retry` is admin-only.
-              // So topping up is necessary and may not be sufficient, and
-              // support is named as the step that finishes it.
-              <>
-                Your Claude credits are used up, which would stop Friday
-                running. Top up first — then contact support to restart setup,
-                and we&apos;ll pick it up from your saved brief.
-              </>
-            ) : inline ? (
-              <>
-                Your container came up, but the first-run kickoff failed and
-                won&apos;t retry on its own. Contact support and we&apos;ll
-                re-arm it — your brief is saved.
-              </>
-            ) : (
-              <>
-                Your workspace is ready, but her first run didn&apos;t get going.
-                Send her a message here to kick things off — if that doesn&apos;t
-                work either, contact support and we&apos;ll get it sorted.
-              </>
-            )}
-          </p>
-          {lastError && (
-            <details className="mt-2">
-              <summary className="cursor-pointer text-xs font-medium text-[var(--midnight-soft)]">
-                Technical details
-              </summary>
-              <p className="mt-1 break-words font-mono text-caption leading-snug text-[var(--midnight-soft)]">
-                {lastError}
-              </p>
-            </details>
-          )}
-          {/* Top up leads when credits are the likely blocker, but support is
-              ALWAYS present: the owner this branch can be wrong about is
-              precisely the one with a genuinely broken container, and they
-              must never be left without a path to a human. */}
-          <div className="mt-2 flex flex-wrap items-center gap-3">
-            {creditsBlocked && (
-              <Link
-                href="/chat?provider=bedrock_claude"
-                onClick={() =>
-                  capture("credits_topup_clicked", {
-                    source: "first_run_failed_notice",
-                    surface: inline ? "cold_start" : "ready",
-                  })
-                }
-                className="text-xs font-medium text-[var(--midnight)] underline"
-              >
-                Top up now
-              </Link>
-            )}
-            <a
-              href={SUPPORT_MAILTO}
-              onClick={() =>
-                capture("support_contact_clicked", {
-                  source: "first_run_failed_notice",
-                  surface: inline ? "cold_start" : "ready",
-                  cause: creditsBlocked ? "credits" : "unknown",
-                })
-              }
-              className="text-xs font-medium text-[var(--midnight)] underline"
-            >
-              Contact support
-            </a>
-          </div>
-        </div>
-        <button
-          type="button"
-          aria-label="Dismiss"
-          onClick={() => setDismissed(true)}
-          className="text-lg leading-none text-[var(--midnight-muted)] hover:text-[var(--midnight)]"
-        >
-          ×
-        </button>
-      </div>
-    </div>
-  );
-}
-
-
+/** Render the current provisioning phase and its completed predecessors. */
 function StepperDisplay({
   currentPhase,
   steps,
@@ -2142,134 +1700,11 @@ function StepperDisplay({
 }
 
 /**
- * The three-way provider choice + Stripe Checkout hand-off.
+ * The provider comparison shown before subscription.
  *
- * Two surfaces render it, and they are the ONLY two paths that create a
- * billing row via POST /billing/trial-checkout:
- *   - fresh signup (`gatePhase === "needs-signup"`), and
- *   - free-tier conversion, when a trial owner hits the cap or the window.
- *
- * The conversion surface passes `heading`/`subheading` to say why the picker
- * appeared; everything below the copy is identical, deliberately. A converting
- * owner used to be sent to /settings, where a single Subscribe button posted a
- * HARDCODED `provider_choice: "bedrock_claude"` — so they never chose a
- * provider and never reached CreditsStep, landing on Bedrock-managed inference
- * with no credits and no prompt to buy any. Routing both surfaces through this
- * one picker is what keeps "picked a provider" and "paid" inseparable.
- *
- * `source` on the analytics event distinguishes them; keep it accurate, the
- * signup-vs-conversion split is the conversion funnel.
+ * Checkout creates one workspace subscription; it deliberately does not
+ * persist a provider choice. Provider setup is a post-entitlement step.
  */
-
-/** The flat monthly subscription, in dollars — the same on all three paths. */
-const FLAT_PRICE_USD = 50;
-
-// Shared with CreditsStep via lib/creditAmounts — the two purchase surfaces
-// had drifted to different preset ladders for the same balance.
-const MIN_STARTER_CREDITS_CENTS = MIN_CREDITS_CENTS;
-const MAX_STARTER_CREDITS_CENTS = MAX_CREDITS_CENTS;
-const DEFAULT_STARTER_CREDITS_CENTS = DEFAULT_CREDITS_CENTS;
-const STARTER_CREDIT_PRESETS_CENTS = CREDIT_PRESETS_CENTS;
-
-
-/**
- * Amount chooser for the bedrock_claude starter credits.
- *
- * Presets plus a free-entry box, matching CreditsStep's control so the two
- * places an owner buys credits behave the same way. Deliberately NOT extracted
- * from CreditsStep: that component's control is welded to its own submit +
- * one-click-opt-in flow, and the shared piece would be four presets and an
- * input.
- *
- * Blur-commit on the custom field, not change-commit: clamping mid-keystroke
- * turns "" into $5 and "1" into $5 while someone is typing "100", which fights
- * the user for the whole entry. The raw string is held locally and only
- * reconciled to a legal amount on blur.
- */
-function StarterCreditsPicker({
-  valueCents,
-  onChange,
-  disabled,
-}: {
-  valueCents: number;
-  onChange: (cents: number) => void;
-  disabled: boolean;
-}) {
-  const [draft, setDraft] = useState<string>(String(valueCents / 100));
-
-  const commit = useCallback(
-    (raw: string) => {
-      // Empty/blank restores the previous amount rather than committing a
-      // number. `Number("")` is 0, not NaN, so the finite-check below lets it
-      // through and the clamp silently rewrites a cleared box to the $5 floor
-      // — someone who picked $100 and select-all-deleted to retype would buy
-      // $5. `<input type="number">` also reports "" for a partially-invalid
-      // entry, so this is the ordinary typing path, not an edge case.
-      if (raw.trim() === "") {
-        setDraft(String(valueCents / 100));
-        return;
-      }
-      const dollars = Number(raw);
-      if (!Number.isFinite(dollars)) {
-        setDraft(String(valueCents / 100));
-        return;
-      }
-      // Whole dollars only. The presets are whole, the input steps by 5, and
-      // rounding at the source is what keeps the quoted total exact — cents
-      // would put binary float error into the price string the customer is
-      // asked to agree to ($60.230000000000004).
-      const clamped = Math.min(
-        Math.max(Math.round(dollars) * 100, MIN_STARTER_CREDITS_CENTS),
-        MAX_STARTER_CREDITS_CENTS,
-      );
-      onChange(clamped);
-      setDraft(String(clamped / 100));
-    },
-    [onChange, valueCents],
-  );
-
-  return (
-    <div className="space-y-2">
-      <div className="flex flex-wrap gap-1.5">
-        {STARTER_CREDIT_PRESETS_CENTS.map((c) => (
-          <button
-            key={c}
-            type="button"
-            disabled={disabled}
-            aria-pressed={valueCents === c}
-            onClick={() => {
-              onChange(c);
-              setDraft(String(c / 100));
-            }}
-            className={
-              "rounded-full border px-2.5 py-1 text-xs transition-colors disabled:opacity-50 " +
-              (valueCents === c
-                ? "border-[var(--midnight)] bg-[var(--cream-deep)] text-[var(--midnight)] font-medium"
-                : "border-[var(--edge)] bg-cream text-[var(--midnight)] hover:bg-[var(--cream-deep)]")
-            }
-          >
-            ${c / 100}
-          </button>
-        ))}
-      </div>
-      <label className="flex items-center gap-1.5 text-xs text-[var(--midnight-muted)]">
-        <span>Custom $</span>
-        <input
-          type="number"
-          min={MIN_STARTER_CREDITS_CENTS / 100}
-          max={MAX_STARTER_CREDITS_CENTS / 100}
-          step={5}
-          value={draft}
-          disabled={disabled}
-          aria-label="Starter Claude credits in dollars"
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={(e) => commit(e.target.value)}
-          className="w-20 rounded-md border border-[var(--edge)] bg-cream-deep px-2 py-1 text-xs text-[var(--midnight)] disabled:opacity-50"
-        />
-      </label>
-    </div>
-  );
-}
 
 export function ProviderPicker({
   isOrg,
@@ -2295,49 +1730,41 @@ export function ProviderPicker({
   // panel. It used to be duplicated inline here — two copies of the same POST
   // + redirect, which is how the two surfaces drifted into offering different
   // copy for the same three paths in the first place.
-  const { startTrialCheckout } = useBilling();
-  const [loading, setLoading] = useState<string | null>(null);
+  const { startCheckout, account } = useBilling();
+  const workspacePriceUsd = account?.workspace_price_usd;
+  const workspacePriceDescription =
+    workspacePriceUsd === undefined
+      ? "We'll show your workspace subscription price shortly."
+      : `The $${workspacePriceUsd}/month workspace subscription covers your always-on agent infrastructure.`;
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Starter Claude credits for the bedrock_claude path. Sent with that card's
-  // Checkout only; the server re-scopes it to bedrock anyway, since the other
-  // two providers spend no Isol8 credits.
-  const [creditsCents, setCreditsCents] = useState<number>(DEFAULT_STARTER_CREDITS_CENTS);
-
-  const handlePick = useCallback(async (id: ProviderChoiceId) => {
-    setLoading(id);
+  const startWorkspaceCheckout = useCallback(async () => {
+    setLoading(true);
     setError(null);
     capture("subscription_checkout_started", {
-      provider_choice: id,
       owner_type: isOrg ? "org" : "personal",
       source,
-      ...(id === "bedrock_claude" ? { credits_cents: creditsCents } : {}),
     });
     try {
-      // Redirects to Stripe Checkout on success, so the browser leaves this
-      // page and `loading` only ever clears on the failure path below. After
-      // Checkout returns, the wizard re-mounts on
-      // /chat?checkout=success&provider=<id>; the subscription.updated webhook
-      // persists provider_choice to the user row, the wizard sees
-      // subscription_status === "trialing", and advances into the provider
-      // phase. Without that round-trip the user is stuck in the payment phase.
-      await startTrialCheckout(id, id === "bedrock_claude" ? creditsCents : undefined);
+      // Checkout does not carry a provider choice. The provider controls are
+      // reached after entitlement, through the existing provider flow.
+      await startCheckout("workspace");
     } catch (err) {
       capture("subscription_checkout_failed", {
-        provider_choice: id,
         owner_type: isOrg ? "org" : "personal",
         source,
         error: err instanceof Error ? err.message : "unknown",
       });
-      setLoading(null);
-      // Fixed copy, not err.message. startTrialCheckout propagates ApiError
+      setLoading(false);
+      // Fixed copy, not err.message. startCheckout propagates ApiError
       // carrying the backend `detail`, so surfacing it verbatim put strings
       // like "No Stripe customer for owner_id=user_2xK…" and the literal
       // "checkout_in_progress" in front of a customer at the paywall. The
       // real error still reaches the console and the capture() above.
-      console.error("trial checkout failed", err);
+      console.error("workspace checkout failed", err);
       setError("Couldn't start checkout. Please try again.");
     }
-  }, [startTrialCheckout, isOrg, source, creditsCents]);
+  }, [startCheckout, isOrg, source]);
 
   return (
     // `@container` (not a viewport breakpoint) because this now renders inside
@@ -2354,13 +1781,13 @@ export function ProviderPicker({
             <LogoMark className="brand-mark--hero mb-4" />
           )}
           <h2 className="text-2xl font-semibold tracking-display text-[var(--midnight)] font-editorial-serif">
-            {heading ?? "One price. Three ways to power it."}
+            {heading ?? "One workspace plan"}
           </h2>
           <p className={"text-[var(--midnight-muted)] text-sm max-w-md " + (embedded ? "" : "mx-auto")}>
             {subheading ??
               (isOrg
-                ? `Pick how ${orgName} wants to pay for inference. The $50/month covers the always-on agent infrastructure.`
-                : "Pick how you want to pay for inference. The $50/month covers your always-on agent infrastructure.")}
+                ? `${workspacePriceDescription} Choose your inference provider after checkout.`
+                : `${workspacePriceDescription} Choose your inference provider after checkout.`)}
           </p>
         </div>
 
@@ -2379,20 +1806,16 @@ export function ProviderPicker({
             >
               <div className="space-y-1">
                 <h3 className="font-medium text-[var(--midnight)]">{card.title}</h3>
-                {/* Bedrock's total moves with the chosen credit amount, so its
-                    price line is computed rather than the static card copy —
-                    the number the customer reads here is the number Checkout
-                    charges. The other two are a flat $50 and keep the static
-                    subtitle. */}
                 <p className="text-sm text-[var(--midnight-muted)]">
-                  {card.id === "bedrock_claude"
-                    ? `${formatUsdCents(FLAT_PRICE_USD * 100 + creditsCents)} at checkout, then $${FLAT_PRICE_USD} / month`
-                    : card.subtitle}
+                  {workspacePriceUsd === undefined
+                    ? "Loading workspace price…"
+                    : `$${workspacePriceUsd} / month`}
                 </p>
                 <p className="text-xs text-[var(--midnight)] font-medium">
-                  {card.id === "bedrock_claude"
-                    ? `Includes ${formatUsdCents(creditsCents)} Claude credits — no second step`
-                    : card.trialNote}
+                  {card.subtitle}
+                </p>
+                <p className="text-xs text-[var(--midnight-muted)]">
+                  {card.trialNote}
                 </p>
                 {isOrg && card.id === "chatgpt_oauth" && (
                   <p className="text-xs text-[var(--midnight-muted)]">
@@ -2401,13 +1824,6 @@ export function ProviderPicker({
                   </p>
                 )}
               </div>
-              {card.id === "bedrock_claude" && (
-                <StarterCreditsPicker
-                  valueCents={creditsCents}
-                  onChange={setCreditsCents}
-                  disabled={loading !== null}
-                />
-              )}
               <ul className="text-sm text-[var(--midnight-soft)] space-y-2 flex-1">
                 {card.bullets.map((b) => (
                   <li key={b} className="flex items-start gap-2">
@@ -2416,26 +1832,23 @@ export function ProviderPicker({
                   </li>
                 ))}
               </ul>
-              <Button
-                className={
-                  card.highlighted
-                    ? "w-full rounded-full bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] text-cream"
-                    : "w-full rounded-full border-[var(--edge)] text-[var(--midnight)] hover:bg-[var(--cream-deep)]"
-                }
-                variant={card.highlighted ? "default" : "outline"}
-                // All three CTAs read "Get started", so the visible label alone
-                // gives a screen-reader user three identical buttons and no way
-                // to tell which plan each buys — the <h3> above is not part of
-                // the button's accessible name. Naming it after the card fixes
-                // that (and is what the tests query by).
-                aria-label={`${card.cta} — ${card.title}`}
-                onClick={() => handlePick(card.id)}
-                disabled={loading !== null}
-              >
-                {loading === card.id ? <Loader2 className="h-4 w-4 animate-spin" /> : card.cta}
-              </Button>
             </div>
           ))}
+        </div>
+        <div className={embedded ? "" : "mx-auto max-w-sm"}>
+          {isOrg ? (
+            <Button
+              className="w-full rounded-full bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] text-cream"
+              onClick={startWorkspaceCheckout}
+              disabled={loading}
+            >
+              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Subscribe to workspace plan"}
+            </Button>
+          ) : (
+            <p className="text-sm text-[var(--midnight-muted)]">
+              Create or select a workspace to subscribe.
+            </p>
+          )}
         </div>
       </div>
     </div>

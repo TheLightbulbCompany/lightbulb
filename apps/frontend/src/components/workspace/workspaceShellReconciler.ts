@@ -17,8 +17,7 @@ import {
   type WorkspaceCommand,
 } from "./urlChannel";
 import {
-  chatPanelId,
-  DEFAULT_AGENT_SENTINEL,
+  MESSAGES_PANEL_ID,
   ONE_SHOT_PARAMS,
   NON_COMMAND_PARAMS,
 } from "./panelRegistry";
@@ -33,7 +32,8 @@ export interface ReconcilerDecision {
   // via openChatPanel with the descriptor's agentId). Deliberately NOT
   // alias-resolved: describePanel resolves the alias itself AND branches on the
   // pre-alias key to carry a retired panel's meaning onto its successor
-  // (?panel=dreams must land on Brain's DREAMS tab, panelRegistry.ts). Handing
+  // (?panel=teams-org-chart must land on the Agents CHART view,
+  // panelRegistry.ts). Handing
   // it a pre-resolved key silently drops that — the whole reason a deep link to
   // a retired panel used to open its successor's default tab.
   panelKey: string | null;
@@ -47,13 +47,8 @@ export interface ReconcilerDecision {
 export function deriveReconcilerAction(
   search: string,
   lastApplied: string | null,
-  // Whether useAgents has SETTLED (data !== undefined). While the roster is
-  // in flight the default agent id is unknowable, so a chat command naming
-  // the concrete default agent would fail openChatPanel's sentinel
-  // unification and add a duplicate panel beside chat:__default__ — one the
-  // layout writer then persists. Chat commands are therefore DEFERRED (no
-  // execute, no latch, no strip) until the roster settles; the shell re-runs
-  // the reconciler when isSettled flips true.
+  // Preserve the existing roster-readiness gate: deferred chat commands are
+  // neither latched nor stripped until the shell reports a settled roster.
   agentsSettled = true,
 ): ReconcilerDecision | null {
   const sig = commandSignature(search);
@@ -85,21 +80,12 @@ export function deriveReconcilerAction(
 
 // Whether executing `command` will focus an existing panel rather than open a
 // new one — analytics-only (workspace_panel_opened fires for NEW panels).
-// Mirrors openChatPanel's sentinel unification: the Mission Control sentinel
-// panel durably means "the default agent", so a command naming the concrete
-// default agent is "already open" when the sentinel is.
+// All agent commands target the singleton Messages panel.
 export function isCommandTargetOpen(
   command: WorkspaceCommand,
   openPanelIds: readonly string[],
-  resolveDefaultAgentId: () => string | undefined,
 ): boolean {
   const { descriptor } = command;
   if (descriptor.component !== "chat") return openPanelIds.includes(descriptor.panelId);
-  const agentId = descriptor.params.agentId;
-  if (openPanelIds.includes(chatPanelId(agentId))) return true;
-  const resolved = resolveDefaultAgentId();
-  if (agentId === DEFAULT_AGENT_SENTINEL) {
-    return resolved !== undefined && openPanelIds.includes(chatPanelId(resolved));
-  }
-  return resolved === agentId && openPanelIds.includes(chatPanelId(DEFAULT_AGENT_SENTINEL));
+  return openPanelIds.includes(MESSAGES_PANEL_ID);
 }

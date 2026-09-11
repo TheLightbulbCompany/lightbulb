@@ -396,7 +396,10 @@ async def test_force_never_rewrites_workspace_state(force_ws, fake_files_dir):
     ):
         assert state_rel not in force_ws.overwrote
         assert state_rel not in force_ws.if_missing_calls
-    force_ws.delete_file.assert_not_called()
+    # Scoped to the state marker: the legacy-TOOLS.md sweep is the one thing
+    # allowed to delete from the workspace, and it never touches .openclaw/.
+    deleted = [c.args[1] for c in force_ws.delete_file.call_args_list]
+    assert not [rel for rel in deleted if ".openclaw/" in rel], deleted
 
 
 @pytest.mark.asyncio
@@ -548,3 +551,84 @@ async def test_fresh_workspace_stays_missing_only_and_stamps_marker(workspace_st
     assert result["auto_refreshed"] is False
     stamped = [c.args[1] for c in workspace_stub.write_file.call_args_list]
     assert _MARKER_PATH in stamped
+
+
+# --- Legacy TOOLS.md sweep ----------------------------------------------------
+#
+# OpenClaw's boot doctor merges a workspace TOOLS.md into that workspace's
+# AGENTS.md and unlinks it (src/commands/doctor-tools-md-migration.ts). Atlas's
+# reference file did that on every boot, producing a 32,933-byte AGENTS.md —
+# 12,900 chars past the 20,000-char bootstrap cap. The reference now ships as
+# ATLAS-TOOLS.md; the sweep clears the copy earlier bundles left on EFS so the
+# next boot has nothing left to merge back in.
+
+
+def _tools_sweep_ws(tmp_path, *, tools_exists: bool, extra_agents: tuple[str, ...] = ()):
+    """Workspace double for the TOOLS.md sweep.
+
+    ``extra_agents`` are agents Atlas BUILT — `atlas-skeleton-generator.js`
+    writes a `workspace/TOOLS.md` into each, so the same doctor migration is
+    armed there. Measured on prod: three such workspaces held a 12,053-byte
+    TOOLS.md beside a 13,773-byte AGENTS.md, a 25,826-byte merge on next boot.
+    """
+    ws = MagicMock()
+    agent_ids = ["uuid-atlas", *extra_agents]
+    dirs = {}
+    for aid in agent_ids:
+        d = tmp_path / f"workspace-{aid}"
+        d.mkdir()
+        if tools_exists:
+            (d / "TOOLS.md").write_text("# TOOLS.md\n", encoding="utf-8")
+        dirs[aid] = d
+    ws.agent_workspace_path.side_effect = lambda _o, aid: dirs[aid]
+    ws.list_workspace_agent_dirs.return_value = agent_ids
+    ws.read_file.return_value = "# TOOLS.md\n"
+    ws.write_file_if_missing.return_value = True
+    return ws
+
+
+@pytest.mark.asyncio
+async def test_legacy_tools_md_is_deleted(tmp_path, fake_files_dir):
+    """Doctor's own behaviour is merge-then-unlink, so the file does not
+    survive a boot either way. Deleting simply skips the harmful merge."""
+    ws = _tools_sweep_ws(tmp_path, tools_exists=True)
+    await pre_stage_atlas(owner_id="user_x", paperclip_agents=_AGENTS, workspace=ws)
+    ws.delete_file.assert_any_call("user_x", "workspace-uuid-atlas/TOOLS.md")
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_covers_agents_atlas_BUILT_not_just_atlas(tmp_path, fake_files_dir):
+    """The regression this exists for: the first sweep only looked at Atlas's
+    own workspace, leaving built agents armed to breach on their next boot."""
+    ws = _tools_sweep_ws(tmp_path, tools_exists=True, extra_agents=("uuid-built-1", "uuid-built-2"))
+    await pre_stage_atlas(owner_id="user_x", paperclip_agents=_AGENTS, workspace=ws)
+    deleted = {c.args[1] for c in ws.delete_file.call_args_list}
+    assert "workspace-uuid-built-1/TOOLS.md" in deleted
+    assert "workspace-uuid-built-2/TOOLS.md" in deleted
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_runs_even_when_atlas_cannot_be_resolved(tmp_path, fake_files_dir):
+    """The regression this exists for: the sweep sat AFTER the
+    ambiguous/no_agents/no_atlas early returns, so owners without a resolvable
+    Atlas never reached it. Measured on prod, that left the 3 workspaces whose
+    merge would actually breach the cap while clearing 5 harmless ones."""
+    ws = _tools_sweep_ws(tmp_path, tools_exists=True, extra_agents=("uuid-built-1",))
+    # A roster with agents but no Atlas -> the no_atlas early exit. (An EMPTY
+    # roster exits earlier still, as no_agents; both are before the old sweep
+    # position, so either would have reproduced the bug.)
+    result = await pre_stage_atlas(
+        owner_id="user_x",
+        paperclip_agents=[{"name": "Friday", "id": "uuid-friday"}],
+        workspace=ws,
+    )
+    assert result["reason"] == "no_atlas"
+    deleted = {c.args[1] for c in ws.delete_file.call_args_list}
+    assert "workspace-uuid-built-1/TOOLS.md" in deleted, "sweep must run before the early return"
+
+
+@pytest.mark.asyncio
+async def test_no_delete_when_the_workspace_has_no_tools_md(tmp_path, fake_files_dir):
+    ws = _tools_sweep_ws(tmp_path, tools_exists=False)
+    await pre_stage_atlas(owner_id="user_x", paperclip_agents=_AGENTS, workspace=ws)
+    ws.delete_file.assert_not_called()

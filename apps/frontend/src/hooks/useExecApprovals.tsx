@@ -30,7 +30,7 @@
 import * as React from "react";
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useAuth } from "@clerk/nextjs";
-import { useGateway } from "@/hooks/useGateway";
+import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { isSessionKeyForUser } from "@/lib/sessionKey";
 
 export type ExecApprovalDecision = "allow-once" | "allow-always" | "deny";
@@ -159,11 +159,6 @@ interface PluginRequestPayload {
   };
   createdAtMs?: number;
   expiresAtMs?: number;
-}
-
-interface ResolvedPayload {
-  id?: string;
-  decision?: ExecApprovalDecision;
 }
 
 /** Default approval lifetime when the server doesn't supply expiresAtMs.
@@ -386,7 +381,7 @@ function isApprovalForCurrentUser(
 }
 
 export function useExecApprovals(): UseExecApprovalsReturn {
-  const { onEvent, sendReq } = useGateway();
+  const { onEvent, runtime } = useLiveEvents();
   const { userId } = useAuth();
   const userIdRef = useRef(userId);
   useEffect(() => {
@@ -456,71 +451,24 @@ export function useExecApprovals(): UseExecApprovalsReturn {
     [],
   );
 
-  // Subscribe to exec.approval.requested — enqueue new approvals.
-  useEffect(() => {
-    const unsub = onEvent((eventName, data) => {
-      if (eventName !== "exec.approval.requested") return;
-      const req = parseRequest(data);
-      if (!req) return;
-      // Multi-tenancy guard: drop approvals targeting other org members.
-      // See isApprovalForCurrentUser for the why and the routing context.
-      if (!isApprovalForCurrentUser(req, userIdRef.current)) return;
-
-      // Idempotent: a retry/reconnect can redeliver the same approval.
-      if (trackedIdsRef.current.has(req.id)) return;
-      trackedIdsRef.current.add(req.id);
-      setQueue((prev) => [...prev, req]);
-
-      // Schedule auto-prune at expiry. Matches OpenClaw's pattern at
-      // ui/src/ui/app-gateway.ts — without this, a never-resolved
-      // approval sits in the queue indefinitely. Delay is derived from a
-      // server-clock lifetime (skew-free) — see autoPruneDelayMs.
-      const timer = setTimeout(
-        () => removeFromQueue(req.id, "auto_pruned"),
-        autoPruneDelayMs(req),
-      );
-      timersRef.current.set(req.id, timer);
-    });
-    return unsub;
-  }, [onEvent, removeFromQueue]);
-
-  // Subscribe to plugin.approval.requested — enqueue plugin approvals into
-  // the same queue. Same multi-tenant guard + dedup + auto-prune as exec.
-  useEffect(() => {
-    const unsub = onEvent((eventName, data) => {
-      if (eventName !== "plugin.approval.requested") return;
-      const req = parsePluginRequest(data);
-      if (!req) return;
-      if (!isApprovalForCurrentUser(req, userIdRef.current)) return;
-      if (trackedIdsRef.current.has(req.id)) return;
-      trackedIdsRef.current.add(req.id);
-      setQueue((prev) => [...prev, req]);
-      const timer = setTimeout(
-        () => removeFromQueue(req.id, "auto_pruned"),
-        autoPruneDelayMs(req),
-      );
-      timersRef.current.set(req.id, timer);
-    });
-    return unsub;
-  }, [onEvent, removeFromQueue]);
-
-  // Subscribe to {exec,plugin}.approval.resolved — drop server-resolved
-  // approvals. This fires when the approval was decided through some other
-  // channel (CLI, another tab, the desktop bridge), not just our own
-  // resolve(). Both payloads are shaped `{id}`.
-  useEffect(() => {
-    const unsub = onEvent((eventName, data) => {
-      if (
-        eventName !== "exec.approval.resolved" &&
-        eventName !== "plugin.approval.resolved"
-      )
-        return;
-      const p = data as ResolvedPayload;
-      if (!p?.id) return;
-      removeFromQueue(p.id, "resolved");
-    });
-    return unsub;
-  }, [onEvent, removeFromQueue]);
+  // Private AppSync approval events preserve the existing request projection.
+  useEffect(() => onEvent((event) => {
+    if (event.type === "runtime.approval.resolved") {
+      removeFromQueue(event.payload.id, "resolved");
+      return;
+    }
+    if (event.type !== "runtime.approval.requested") return;
+    const request = parsePluginRequest(event.payload) ?? parseRequest(event.payload);
+    if (!request || !isApprovalForCurrentUser(request, userIdRef.current)) return;
+    if (trackedIdsRef.current.has(request.id)) return;
+    trackedIdsRef.current.add(request.id);
+    setQueue((current) => [...current, request]);
+    const timer = setTimeout(
+      () => removeFromQueue(request.id, "auto_pruned"),
+      autoPruneDelayMs(request),
+    );
+    timersRef.current.set(request.id, timer);
+  }), [onEvent, removeFromQueue]);
 
   // Cleanup all timers on unmount.
   useEffect(() => {
@@ -534,17 +482,9 @@ export function useExecApprovals(): UseExecApprovalsReturn {
   const resolve = useCallback(
     async (id: string, decision: ExecApprovalDecision): Promise<void> => {
       setError(null);
-      // Route to the matching RPC by the entry's kind — plugin approvals
-      // resolve through plugin.approval.resolve, exec through exec's. Read
-      // the kind from the queue mirror so the (id, decision) signature stays
-      // narrow. Default to exec when the entry is unknown (already pruned).
-      const entry = queueRef.current.find((e) => e.id === id);
-      const method =
-        entry?.kind === "plugin"
-          ? "plugin.approval.resolve"
-          : "exec.approval.resolve";
+      const entry = queueRef.current.find((request) => request.id === id);
       try {
-        await sendReq(method, { id, decision });
+        await runtime.resolveApproval(id, { decision, kind: entry?.kind ?? "exec" });
         // Optimistically remove. The server will also emit
         // {exec,plugin}.approval.resolved which is a no-op since we already
         // removed.
@@ -567,7 +507,7 @@ export function useExecApprovals(): UseExecApprovalsReturn {
         throw e;
       }
     },
-    [sendReq, removeFromQueue],
+    [runtime, removeFromQueue],
   );
 
   const dismiss = useCallback(

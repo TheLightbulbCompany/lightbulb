@@ -1,7 +1,9 @@
-import { legacyTablePrefix, tablePrefix } from "../lib/table-names";
+import { tablePrefix } from "../lib/table-names";
 import * as cdk from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
+import * as fs from "fs";
 import * as kms from "aws-cdk-lib/aws-kms";
+import * as path from "path";
 import {
   BROWSER_EGRESS_PROXY_PORT,
   ContainerStack,
@@ -10,6 +12,17 @@ import { ROOT_DOMAIN } from "../lib/domains";
 import { DatabaseStack } from "../lib/stacks/database-stack";
 import { NetworkStack } from "../lib/stacks/network-stack";
 import { ServiceStack } from "../lib/stacks/service-stack";
+
+const OPENCLAW_VERSION = JSON.parse(
+  fs.readFileSync(path.join(__dirname, "..", "..", "..", "openclaw-version.json"), "utf8"),
+) as {
+  forkTag: string;
+  forkCommit: string;
+  baseImageDigest: string;
+  gatewayBuildId: string;
+  dev: { tag: string; artifactDigest: string; runtimeManifestDigest: string };
+  prod: { tag: string; artifactDigest: string; runtimeManifestDigest: string };
+};
 
 /**
  * Builds a real ServiceStack wired to real upstream stacks (Network, Database,
@@ -86,6 +99,13 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     connectionsTableName: `${tablePrefix(environment)}ws-connections`,
     wsApiId: "test-ws-api-id",
     wsStage: "prod",
+    messagingTableName: `lightbulb-${environment}-messaging`,
+    openClawWorkQueueUrl: `https://sqs.us-east-1.amazonaws.com/877352799272/lightbulb-${environment}-openclaw-work.fifo`,
+    openClawWorkQueueArn: `arn:aws:sqs:us-east-1:877352799272:lightbulb-${environment}-openclaw-work.fifo`,
+    appsyncEventsHttpEndpoint: `https://events-${environment}.appsync-api.us-east-1.amazonaws.com/event`,
+    appsyncEventsRealtimeEndpoint: `wss://events-${environment}.appsync-realtime-api.us-east-1.amazonaws.com/event/realtime`,
+    appsyncEventsApiArn: `arn:aws:appsync:us-east-1:877352799272:apis/events-${environment}`,
+    appsyncEventsRegion: "us-east-1",
     agentMailConfigurationSet: "isol8-test-agent-mail",
     stripeProjectsCatalog: environment === "prod" ? "prod" : "testing",
   });
@@ -98,6 +118,33 @@ const SERVICE_TEMPLATE_DEV = buildServiceStack("dev");
 
 describe("ServiceStack — clean handoff / rolling deploy", () => {
   const template = SERVICE_TEMPLATE_DEV;
+
+  test.each(["dev", "prod"] as const)(
+    "injects the %s current OpenClaw release identity into backend tasks",
+    (environment) => {
+      const selected = OPENCLAW_VERSION[environment];
+      const environmentValues = [
+        ["OPENCLAW_FORK_TAG", OPENCLAW_VERSION.forkTag],
+        ["OPENCLAW_FORK_COMMIT", OPENCLAW_VERSION.forkCommit],
+        ["OPENCLAW_BASE_IMAGE_DIGEST", OPENCLAW_VERSION.baseImageDigest],
+        ["OPENCLAW_GATEWAY_BUILD_ID", OPENCLAW_VERSION.gatewayBuildId],
+        ["OPENCLAW_EXTENDED_ARTIFACT_DIGEST", selected.artifactDigest],
+        ["OPENCLAW_RUNTIME_MANIFEST_DIGEST", selected.runtimeManifestDigest],
+      ].map(([Name, Value]) => Match.objectLike({ Name, Value }));
+
+      (environment === "dev" ? template : buildServiceStack(environment)).hasResourceProperties(
+        "AWS::ECS::TaskDefinition",
+        {
+          ContainerDefinitions: Match.arrayWith([
+            Match.objectLike({
+              Name: "backend",
+              Environment: Match.arrayWith(environmentValues),
+            }),
+          ]),
+        },
+      );
+    },
+  );
 
   test("does not wire the retired platform-ops owner or token into backend tasks", () => {
     const taskDefinitions = template.findResources("AWS::ECS::TaskDefinition");
@@ -153,12 +200,12 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     });
   });
 
-  test("backend task definition carries STRIPE_TEAM_BASE_PRICE_ID", () => {
+  test("backend task definition carries STRIPE_WORKSPACE_PRICE_ID", () => {
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
           Environment: Match.arrayWith([
-            Match.objectLike({ Name: "STRIPE_TEAM_BASE_PRICE_ID" }),
+            Match.objectLike({ Name: "STRIPE_WORKSPACE_PRICE_ID" }),
           ]),
         }),
       ]),
@@ -966,5 +1013,112 @@ describe("ServiceStack — agent-mail outbound wiring", () => {
     expect(statement.Resource).not.toContain(
       "arn:aws:ses:us-east-1:877352799272:tenant/*",
     );
+  });
+});
+
+describe("ServiceStack — messaging environment and least privilege", () => {
+  test("backend receives the exact messaging environment contract", () => {
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "lightbulb-dev-backend",
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: "backend",
+          Environment: Match.arrayWith([
+            { Name: "MESSAGING_TABLE", Value: "lightbulb-dev-messaging" },
+            {
+              Name: "OPENCLAW_WORK_QUEUE_URL",
+              Value:
+                "https://sqs.us-east-1.amazonaws.com/877352799272/lightbulb-dev-openclaw-work.fifo",
+            },
+            {
+              Name: "APPSYNC_EVENTS_HTTP_ENDPOINT",
+              Value:
+                "https://events-dev.appsync-api.us-east-1.amazonaws.com/event",
+            },
+            {
+              Name: "APPSYNC_EVENTS_REALTIME_ENDPOINT",
+              Value:
+                "wss://events-dev.appsync-realtime-api.us-east-1.amazonaws.com/event/realtime",
+            },
+            { Name: "APPSYNC_EVENTS_REGION", Value: "us-east-1" },
+          ]),
+        }),
+      ]),
+    });
+  });
+
+  test("backend consumes only the work FIFO and publishes only to messaging namespaces", () => {
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::IAM::ManagedPolicy", {
+      ManagedPolicyName: "lightbulb-dev-backend-messaging",
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          {
+            Sid: "ConsumeOpenClawWork",
+            Effect: "Allow",
+            Action: [
+              "sqs:ReceiveMessage",
+              "sqs:DeleteMessage",
+              "sqs:ChangeMessageVisibility",
+              "sqs:GetQueueAttributes",
+            ],
+            Resource:
+              "arn:aws:sqs:us-east-1:877352799272:lightbulb-dev-openclaw-work.fifo",
+          },
+          {
+            Sid: "PublishMessagingEvents",
+            Effect: "Allow",
+            Action: "appsync:EventPublish",
+            Resource: [
+              "arn:aws:appsync:us-east-1:877352799272:apis/events-dev/channelNamespace/rooms",
+              "arn:aws:appsync:us-east-1:877352799272:apis/events-dev/channelNamespace/users",
+            ],
+          },
+        ]),
+      },
+    });
+    const policies = JSON.stringify({
+      ...SERVICE_TEMPLATE_DEV.findResources("AWS::IAM::Policy"),
+      ...SERVICE_TEMPLATE_DEV.findResources("AWS::IAM::ManagedPolicy"),
+    });
+    expect(policies).not.toContain("appsync:EventSubscribe");
+    expect(policies).not.toContain("dynamodb:DescribeStream");
+  });
+
+  test("owned-table policy supports transactions without stream permissions", () => {
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Sid: "DynamoDbOwnedTables",
+            Action: Match.arrayWith(["dynamodb:TransactWriteItems"]),
+          }),
+        ]),
+      }),
+    });
+  });
+
+  test("machine WebSocket environment and ManageConnections permission remain", () => {
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "lightbulb-dev-backend",
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Environment: Match.arrayWith([
+            Match.objectLike({ Name: "WS_MANAGEMENT_API_URL" }),
+            Match.objectLike({ Name: "WS_GATEWAY_URL" }),
+            Match.objectLike({ Name: "WS_CONNECTIONS_TABLE" }),
+          ]),
+        }),
+      ]),
+    });
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Sid: "WebSocketManageConnections",
+            Action: "execute-api:ManageConnections",
+          }),
+        ]),
+      }),
+    });
   });
 });

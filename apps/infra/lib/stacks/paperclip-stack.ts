@@ -34,7 +34,7 @@ const PAPERCLIP_VERSION: PaperclipVersionConfig = JSON.parse(
 /**
  * Environments whose Paperclip BFF arms the fork's governed-agent-creation
  * fence. Opt-in per environment and dev-first: add "prod" only after dev has
- * run a full provision (Friday + Atlas) and a marketplace hire under the
+ * run a full provision (the generic starter roster) and a marketplace hire under the
  * fence, on a Paperclip image that actually carries it.
  */
 const GOVERNED_AGENT_CREATION_ENVIRONMENTS = new Set<string>(["dev"]);
@@ -438,8 +438,7 @@ export class PaperclipStack extends cdk.Stack {
         // the limiter never defended that class. Upstream's own knob; "false"
         // disables it. Asserted in paperclip-stack.test.ts for both envs.
         PAPERCLIP_AUTH_RATE_LIMIT_ENABLED: "false",
-        // Isol8 tenants must contain EXACTLY the Isol8-seeded agents
-        // (Friday + Atlas). The fork (v2026.7-isol8.5+) gates its built-in
+        // Lightbulb owns the fresh-workspace starter roster. The fork (v2026.7-isol8.5+) gates its built-in
         // starter-agent auto-provisioning (Reflection Coach / Summarizer)
         // behind this env var — covering BOTH company-create and the
         // unconditional startup reconcile that would otherwise re-create

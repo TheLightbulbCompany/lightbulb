@@ -8,11 +8,11 @@ import {
   Text,
   View,
 } from "react-native";
-import { useGatewayRpc } from "@lightbulb/shared";
+import { useRuntimeRpc } from "@lightbulb/shared";
 
 import { usePulse } from "../../../components/chat/usePulse";
 import { colors, fonts, radii, spacing, type } from "../../../config/theme";
-import { useGateway } from "../../../providers/gateway";
+import { useLiveEvents } from "../../../providers/live-events";
 import { LogoMark } from "../../../components/LogoMark";
 
 // ---------------------------------------------------------------------------
@@ -187,9 +187,9 @@ function StateBadge({ state }: { state: SkillState }) {
 // ---------------------------------------------------------------------------
 
 export default function SkillsPanel() {
-  const gateway = useGateway();
-  const { data, error, isLoading, mutate } = useGatewayRpc<unknown>(
-    gateway,
+  const live = useLiveEvents();
+  const { data, error, isLoading, mutate } = useRuntimeRpc<unknown>(
+    live,
     "skills.status",
   );
 
@@ -206,7 +206,6 @@ export default function SkillsPanel() {
     }
   }, [mutate]);
 
-  const connectionDown = !gateway.isConnected && gateway.error != null;
   const showEmpty = skills.length === 0 && !isLoading && data != null;
 
   const renderItem = useCallback(({ item }: { item: ListEntry }) => {
@@ -262,12 +261,6 @@ export default function SkillsPanel() {
         >
           <Text style={styles.retryText}>Retry</Text>
         </Pressable>
-      </View>
-    );
-  } else if (!data && connectionDown) {
-    body = (
-      <View style={styles.centerGrow}>
-        <Text style={styles.dim}>{gateway.error}</Text>
       </View>
     );
   } else {

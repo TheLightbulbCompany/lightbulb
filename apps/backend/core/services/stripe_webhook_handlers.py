@@ -36,7 +36,7 @@ from core.observability.metrics import put_metric, timing
 from core.observability.product_analytics import capture_product_event
 from core.repositories import billing_repo, container_repo
 from core.services import webhook_dedup
-from core.services.billing_service import BillingService, subscription_item_on_price
+from core.services.billing_service import BillingService
 
 logger = logging.getLogger(__name__)
 
@@ -104,12 +104,11 @@ _PAID_SUBSCRIPTION_STATUSES = ("trialing", "active")
 # trial shape over it.
 _CONVERSION_PREREQUISITE_GATES = frozenset({"oauth_required", "byo_provider_required"})
 
-# A Checkout Session Stripe has actually SETTLED — the precondition for every
-# irreversible thing handle_checkout_session does off a session (granting
-# credits, stamping the launch winner's coupon as consumed).
+# A Checkout Session Stripe has actually SETTLED — the precondition for
+# stamping the launch winner's coupon as consumed.
 #   - "paid"               : card cleared synchronously.
 #   - "no_payment_required": $0 due — a 100%-off coupon, which is exactly the
-#                            shape of the launch winner's free Starter month —
+#                            shape of the launch winner's free Workspace month —
 #                            still a completed purchase.
 # Anything else ("unpaid") is a delayed method (ACH etc.): Stripe fires
 # checkout.session.completed immediately and async_payment_succeeded (or
@@ -292,11 +291,9 @@ def dispatch_metronome_provisioning(owner_id: str) -> None:
     off ``trial_local`` — which silently skips the transition branches
     entirely (the same hazard the conversion branch documents).
 
-    Failure is covered twice over, so dropping it is survivable:
-    ``create_credit_top_up_checkout`` re-ensures before taking money (so "buy
-    credits" self-heals), and ``is_owner_blocked`` fails CLOSED for a
-    bedrock_claude owner with no customer (so a stranded owner is blocked
-    rather than silently spending our Bedrock budget).
+    ``is_owner_blocked`` fails CLOSED for a bedrock_claude owner with no
+    customer, so a provisioning failure blocks spend rather than silently
+    spending our Bedrock budget.
     """
     # Hold a strong reference until the task finishes. asyncio keeps only a
     # WEAK reference to a running task, so a bare fire-and-forget
@@ -658,18 +655,24 @@ async def resolve_owner_account(subscription_event_data: dict) -> dict | None:
     so the GSI on ``stripe_customer_id`` is no longer 1:1.
 
     Resolution order:
-      1. ``subscription.metadata.owner_id`` — set at checkout time, pins
-         each subscription to a single billing row. Always prefer this.
+      1. ``subscription.metadata.workspace_id`` — canonical workspace binding
+         set by unified Checkout. ``owner_id`` remains a legacy fallback.
       2. ``stripe_customer_id`` GSI → if exactly one match, use it
          (legacy 1:1 case). If multiple, filter by
          ``stripe_subscription_id == event.id``.
     """
     metadata = subscription_event_data.get("metadata") or {}
-    owner_id = metadata.get("owner_id")
+    workspace_id = metadata.get("workspace_id")
+    owner_id = workspace_id or metadata.get("owner_id")
     if owner_id:
         account = await billing_repo.get_by_owner_id(owner_id)
-        if account:
+        if account and account.get("stripe_customer_id") == subscription_event_data.get("customer"):
             return account
+        # workspace_id is an explicit canonical binding. A missing/mismatched
+        # row must not fall through to a shared-customer guess.
+        if workspace_id:
+            put_metric("stripe.webhook.owner_resolve", dimensions={"path": "workspace_metadata_miss"})
+            return None
         put_metric("stripe.webhook.owner_resolve", dimensions={"path": "metadata_miss"})
 
     customer_id = subscription_event_data.get("customer")
@@ -760,7 +763,7 @@ def _subscriber_distinct_id(account: dict, event_data: dict) -> str | None:
     merge onto the same person the frontend ``identify()``s. Personal owners:
     ``owner_id`` IS the Clerk user id. Org owners: ``owner_id`` is the org id,
     so prefer the subscribing human's ``clerk_user_id`` threaded through
-    checkout metadata (``create_flat_fee_checkout`` sets it)."""
+    checkout metadata (the subscription checkout sets it)."""
     metadata = event_data.get("metadata") or {}
     return metadata.get("clerk_user_id") or account.get("owner_id")
 
@@ -802,42 +805,17 @@ def _bridge_subscription_state(
     )
 
 
-async def _count_owner_paperclip_agents(owner_id: str) -> int:
-    """Live Paperclip agent count for an owner, or 0 if it can't be fetched.
-
-    Thin alias kept for this module's readers; the implementation lives beside
-    the roster fetch it wraps, and is shared with ``ecs_manager._size_for_owner``
-    so the "how many agents does this owner have" question has ONE answer.
-    0 still means UNDETERMINABLE here — see the deferral rules below.
-    """
-    from core.services.paperclip_openclaw_pairing import count_paperclip_agents_for_owner
-
-    return await count_paperclip_agents_for_owner(owner_id)
-
-
 async def _apply_ultra_resize(owner_id: str, *, old_plan: str, new_plan: str) -> None:
     """Resize the owner's container to match a tier TRANSITION.
 
     No-op unless the tier actually flipped — every ordinary ``.updated`` (renewal,
-    payment-method change, seat sync) must not bounce the container.
+    payment-method change) must not bounce the container.
 
     - Upgrade (→ ultra_pro): grow to the Ultra box.
-    - Downgrade (ultra_pro → standard): shrink to the flat box ONLY when the
-      live agent count is in ``0 < count <= COMPANY_STANDARD_PLAN_MAX_AGENTS``.
-      The count is DEFERRED (container left at Ultra size, metric emitted) when:
-        * ``count > COMPANY_STANDARD_PLAN_MAX_AGENTS`` — an oversized company;
-          the smaller box would OOM under the same workload.
-        * ``count == 0`` — the count is UNDETERMINABLE. Every provisioned owner
-          always has Friday + Atlas seeded, so a reachable owner's list is never
-          empty (>= 2); 0 means Paperclip was unreachable, NOT a legitimately
-          tiny owner. Shrinking on an unknown count would OOM an oversized owner
-          and NOT self-heal (post-shrink the plan is "standard", so later
-          flat-price events are standard->standard no-ops — only an admin resize
-          or a paid re-upgrade recovers). Defer instead.
-      Billing follows Stripe either way (the plan is already persisted
-      "standard"); only the resize waits for the owner to trim agents (a later
-      sub event or an admin completes the shrink). This is the OOM-safe
-      downgrade.
+    - Downgrade (ultra_pro → standard): shrink to the flat box only when the
+      live roster confirms that doing so is operationally safe. Agent identity
+      count is not a billing entitlement; it remains an independent reliability
+      sizing input. An unavailable count leaves the current task size alone.
 
     Best-effort: a resize failure must not 500 the webhook back to Stripe.
     """
@@ -852,8 +830,9 @@ async def _apply_ultra_resize(owner_id: str, *, old_plan: str, new_plan: str) ->
         PER_USER_MEMORY_MIB,
         ULTRA_CPU,
         ULTRA_MEMORY_MIB,
+        AGENT_RELIABILITY_RESIZE_THRESHOLD,
     )
-    from core.services.company_package import COMPANY_STANDARD_PLAN_MAX_AGENTS
+    from core.services.paperclip_openclaw_pairing import count_paperclip_agents_for_owner
 
     try:
         if now_ultra:
@@ -861,32 +840,21 @@ async def _apply_ultra_resize(owner_id: str, *, old_plan: str, new_plan: str) ->
             put_metric("ultra.resize", dimensions={"direction": "up"})
             return
 
-        # Downgrade out of Ultra: shrink DOWN only for a confirmed-small company
-        # (0 < count <= budget). Defer otherwise so we never OOM an oversized —
-        # or an undeterminable — owner into the smaller box.
-        agent_count = await _count_owner_paperclip_agents(owner_id)
+        agent_count = await count_paperclip_agents_for_owner(owner_id)
         if agent_count == 0:
-            # A reachable owner ALWAYS lists >= 2 agents (Friday + Atlas are
-            # seeded at provision), so 0 means the count is unavailable
-            # (Paperclip unreachable), never a genuinely tiny owner. Shrinking on
-            # an unknown count risks OOMing an oversized owner AND doesn't
-            # self-heal (post-shrink plan="standard" makes later flat events
-            # standard->standard no-ops). Defer to an admin / re-upgrade.
-            put_metric("ultra.downgrade_deferred_unknown_count", 1)
+            put_metric("container.reliability_downsize_skipped", dimensions={"reason": "unknown_count"})
             logger.warning(
-                "Deferring Ultra down-resize for owner %s: agent count unavailable "
-                "(Paperclip unreachable) — leaving container at Ultra size to avoid OOM",
+                "Skipping down-resize for owner %s: live agent count is unavailable",
                 owner_id,
             )
             return
-        if agent_count > COMPANY_STANDARD_PLAN_MAX_AGENTS:
-            put_metric("ultra.downgrade_deferred_oversized", 1)
-            logger.warning(
-                "Deferring Ultra down-resize for owner %s: %d agents exceed the "
-                "standard budget of %d — leaving container at Ultra size to avoid OOM",
+        if agent_count > AGENT_RELIABILITY_RESIZE_THRESHOLD:
+            put_metric("container.reliability_downsize_skipped", dimensions={"reason": "live_agent_roster"})
+            logger.info(
+                "Skipping down-resize for owner %s: %d live agents exceed the reliability threshold of %d",
                 owner_id,
                 agent_count,
-                COMPANY_STANDARD_PLAN_MAX_AGENTS,
+                AGENT_RELIABILITY_RESIZE_THRESHOLD,
             )
             return
 
@@ -894,6 +862,37 @@ async def _apply_ultra_resize(owner_id: str, *, old_plan: str, new_plan: str) ->
         put_metric("ultra.resize", dimensions={"direction": "down"})
     except Exception:
         logger.exception("Ultra tier resize failed for owner %s", owner_id)
+
+
+def _workspace_plan_from_subscription_items(event_data: dict[str, Any]) -> str | None:
+    """Return the configured Workspace/Ultra plan for one recurring item only.
+
+    A workspace subscription has exactly one recurring Stripe item.  Never
+    persist a subscription event whose item shape cannot prove that invariant:
+    accepting an unknown or multi-item payload can mask an unsupported
+    recurring charge.
+    """
+    items = (event_data.get("items") or {}).get("data") or []
+    if len(items) != 1:
+        reason = "missing_or_multiple_items"
+    else:
+        price = (items[0] or {}).get("price") or {}
+        price_id = price.get("id")
+        if not isinstance(price.get("recurring"), dict):
+            reason = "non_recurring_item"
+        elif price_id == settings.STRIPE_WORKSPACE_PRICE_ID and price_id:
+            return "standard"
+        elif price_id == settings.STRIPE_ULTRA_PRICE_ID and price_id:
+            return "ultra_pro"
+        else:
+            reason = "unknown_price"
+    put_metric("stripe.subscription.invalid_shape", dimensions={"reason": reason})
+    logger.warning(
+        "Ignoring subscription %s: expected one configured recurring Workspace or Ultra item (%s)",
+        event_data.get("id"),
+        reason,
+    )
+    return None
 
 
 async def handle_subscription_state(event: dict[str, Any], billing_service: BillingService) -> Response | None:
@@ -964,6 +963,9 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
             old_status,
         )
         return None
+    new_plan = _workspace_plan_from_subscription_items(event_data)
+    if new_plan is None:
+        return None
     await billing_repo.set_subscription(
         owner_id=account["owner_id"],
         subscription_id=event_data["id"],
@@ -980,7 +982,7 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     # surfaced as `incomplete` (skipped entirely by the guard above), it is
     # the follow-up .updated(active) that performs the deferred writes.
     #
-    # Events on an already-established subscription (renewals, seat syncs,
+    # Events on an already-established subscription (renewals,
     # payment-method changes, and past_due/unpaid/paused recoveries) must
     # NEVER persist it: subscription metadata is a snapshot of the provider
     # chosen at checkout and is never updated by change_provider, so on those
@@ -1012,7 +1014,7 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
                 account["owner_id"],
                 provider_choice=metadata_provider,
                 byo_provider=metadata_byo if metadata_provider == "byo_key" else None,
-                # create_flat_fee_checkout threads the subscribing human's
+                # Legacy subscription Checkout threaded the subscribing human's
                 # Clerk id through subscription metadata; for chatgpt_oauth
                 # that human is the workspace owner / initial connector.
                 # None just leaves any synchronously-written connector
@@ -1077,97 +1079,15 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
         # anything at all.
         dispatch_company_stripe_request(account["owner_id"])
 
-    # Teams per-seat subscriptions additionally record the subscription item
-    # id + seat quantity so sync_team_seat_quantity has an item to modify.
-    # Detect by explicit metadata purpose OR by the seat price id. Personal
-    # flat subs skip this entirely.
-    items = (event_data.get("items") or {}).get("data") or []
-    # A Teams subscription carries TWO items (flat base + per-seat) and Stripe
-    # does not guarantee their order. Select the seat item BY PRICE ID: storing
-    # the base item's id here would make sync_team_seat_quantity drive the base
-    # quantity, billing a 4-seat org $50x4 + $20 instead of $50 + $20x4.
-    # NOTHING in this handler reads items by position — see is_ultra below.
-    seat_item = subscription_item_on_price(items, settings.STRIPE_TEAM_SEAT_PRICE_ID)
-    # bool(seat_item) is a strict superset of the old "first item is the seat
-    # price" fallback, and cannot over-detect: nothing but a real per-seat line
-    # item ever carries STRIPE_TEAM_SEAT_PRICE_ID.
-    is_team_seat = metadata.get("purpose") == "team_seat" or bool(seat_item)
-    team_seat_persisted = False
-    if is_team_seat and seat_item:
-        try:
-            await billing_repo.set_team_subscription(
-                owner_id=account["owner_id"],
-                subscription_id=event_data["id"],
-                subscription_item_id=seat_item.get("id"),
-                status=new_status,
-                seat_count=int(seat_item.get("quantity") or 0),
-            )
-            team_seat_persisted = True
-        except Exception:
-            logger.exception("Failed to record team seat state for owner %s", account["owner_id"])
-    elif is_team_seat and not seat_item:
-        # Reached only via metadata.purpose == "team_seat" (bool(seat_item)
-        # can't be True here without seat_item also being truthy) but no item
-        # on the subscription matches STRIPE_TEAM_SEAT_PRICE_ID -- either the
-        # env var is unset in this deploy or the Stripe seat price was rotated
-        # to a new id. Non-destructive (existing stored subscription_item_id/
-        # seat_count are left alone), but must not be silent: a rotation would
-        # otherwise freeze seat counts on every subsequent webhook with no
-        # visible signal.
-        logger.warning(
-            "Team-seat subscription %s (owner %s) detected via metadata but no "
-            "item matches STRIPE_TEAM_SEAT_PRICE_ID=%r -- seat state not refreshed "
-            "(price unset or rotated?)",
-            event_data.get("id"),
-            account["owner_id"],
-            settings.STRIPE_TEAM_SEAT_PRICE_ID,
-        )
-
-    # Ultra Pro tier: derive the tier FROM THE PRICE on the subscription item —
-    # a direct sibling of the team-seat detection above, and NEVER from
-    # subscription.metadata (a checkout-time snapshot that goes stale; the same
-    # clobber the entering_live provider guard defends against). Persist the
-    # plan and resize the container only on the tier transition.
-    # Scanned by price, not read off items[0]: an Ultra sub is single-item
-    # TODAY, but the moment one grows a second line item (a metered-overage
-    # item, a Stripe-side add-on or coupon) an Ultra owner whose ultra price
-    # lands at index >= 1 would fall to "standard" here and get their
-    # container resized DOWN — silently. Same rule as the seat item above.
-    is_ultra = bool(subscription_item_on_price(items, settings.STRIPE_ULTRA_PRICE_ID))
-    if items:
-        # Only act when the payload actually carries the subscription item. A
-        # partial `.updated` can arrive with an empty items.data; treating that
-        # absence as "not ultra" would wrongly downgrade + shrink an Ultra owner.
-        #
-        # Team subs are INCLUDED: tier and headcount are independent axes. A
-        # team's tier rides its BASE item (the ultra price once upgraded) while
-        # its seat item is untouched, so this branch and the seat-persistence
-        # branch above operate on different items — and the seat write MUST
-        # run first. set_team_subscription is a full read-then-put_item
-        # rewrite of the row (it has no per-field UpdateExpression), so it
-        # would clobber a `plan` written by this branch back to whatever it
-        # read at the top of the handler; set_plan's scoped update_item has no
-        # such blast radius. Swapping the order would silently revert every
-        # tier write on an Ultra team's seat-change events.
-        old_plan = account.get("plan") or "standard"
-        new_plan = "ultra_pro" if is_ultra else "standard"
-        plan_persisted = False
-        try:
-            await billing_repo.set_plan(account["owner_id"], plan=new_plan, now_iso=utc_now_iso())
-            plan_persisted = True
-        except Exception:
-            logger.exception("Failed to persist plan for owner %s", account["owner_id"])
-        # Resize ONLY when the durable plan write committed. If set_plan raised
-        # (transient DDB) but we resized anyway, the container size would change
-        # without the plan persisted — plan and size diverge, and a later
-        # flat-price event would read the OLD plan and mis-decide the resize.
-        # Skipping the resize keeps them from ever splitting in the
-        # size-without-plan direction. Resize decisions still key off the row's
-        # PRIOR plan vs the price-derived one, so it fires only on a real
-        # transition even though the persist is idempotent. Best-effort inside
-        # (a resize failure never 500s the webhook).
-        if plan_persisted:
-            await _apply_ultra_resize(account["owner_id"], old_plan=old_plan, new_plan=new_plan)
+    old_plan = account.get("plan") or "standard"
+    plan_persisted = False
+    try:
+        await billing_repo.set_plan(account["owner_id"], plan=new_plan, now_iso=utc_now_iso())
+        plan_persisted = True
+    except Exception:
+        logger.exception("Failed to persist plan for owner %s", account["owner_id"])
+    if plan_persisted:
+        await _apply_ultra_resize(account["owner_id"], old_plan=old_plan, new_plan=new_plan)
 
     if old_status == "trial_local" and new_status in ("trialing", "active"):
         # Trial→paid conversion: the running container is still the locked-down
@@ -1255,12 +1175,8 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
         # produce a facts file asserting a provider the row never got.
         facts_overrides["provider_choice"] = metadata_provider
         facts_overrides["byo_provider"] = metadata_byo if metadata_provider == "byo_key" else None
-    if team_seat_persisted:
-        # Same shape for the seat fields: on a brand-new Teams seat sub the
-        # eventually-consistent row re-read can miss the just-committed
-        # subscription_item_id/seat_count and mislabel the plan as flat-fee.
-        facts_overrides["subscription_item_id"] = seat_item.get("id")
-        facts_overrides["seat_count"] = int(seat_item.get("quantity") or 0)
+    if plan_persisted:
+        facts_overrides["plan"] = new_plan
     await write_owner_facts(account["owner_id"], account_overrides=facts_overrides)
 
     # Customer-analytics bridge (the EMF put_metric above is the operational
@@ -1357,33 +1273,18 @@ async def handle_invoice_payment_failed(event: dict[str, Any], billing_service: 
 
 
 async def handle_checkout_session(event: dict[str, Any], billing_service: BillingService) -> Response | None:
-    """`checkout.session.completed` + `checkout.session.async_payment_succeeded`.
+    """Handle the Checkout events still owned outside subscription lifecycle.
 
-    Subscription STATE always comes from the ``customer.subscription.*``
-    handlers above — this handler never touches it. What it owns is funding
-    credits, for the two session shapes that carry them: the standalone
-    top-up Checkout (``purpose=credit_top_up``) and the ``bedrock_claude``
-    subscription Checkout, which bundles starter credits as a one-time line
-    item (``credits_cents``). For both:
-
-      1. Grant the paid-for credits as an UNGATED Metronome commit —
-         the money is already collected by THIS checkout, so the grant
-         must never generate a second Metronome→Stripe invoice
-         (grant_prepaid_credits is access-schedule-only, live-verified
-         to release instantly with zero invoices).
-      2. Flip the billing row's ``credits_auto_charge`` flag when the
-         customer opted in — the session that just succeeded carries the
-         ``setup_future_usage=off_session`` consent, so success here is
-         the only legitimate place the flag turns on.
-      3. Run the restore-only gate refresh so a revoked owner is re-armed
-         the moment the credits land (same hook as the one-click path).
+    Subscription state is handled exclusively by ``customer.subscription.*``.
+    Customer credit purchases use Metronome payment-gated commits directly;
+    there is no Stripe Checkout credit-settlement or bundled-credit branch.
     """
     session = event["data"]["object"]
     session_metadata = session.get("metadata") or {}
-    # Launch competition: a SETTLED session that carried the winner free-month
+    # Launch competition: a settled session that carried the winner free-month
     # discount just CONSUMED the coupon — stamp the sheet row so a forced
     # close rerun cannot attach a second free month to the subscription this
-    # checkout minted. Before the credit-funding early return below, because
+    # checkout minted. This check happens before the handler returns because
     # most winner checkouts carry no credits at all. The settled check is
     # load-bearing, not defensive: a delayed-payment session fires
     # checkout.session.completed while the payment can still FAIL, and
@@ -1398,112 +1299,6 @@ async def handle_checkout_session(event: dict[str, Any], billing_service: Billin
         from core.services.launch_close import mark_winner_coupon_consumed
 
         await mark_winner_coupon_consumed(session_metadata["owner_id"])
-    # Two session shapes fund credits here:
-    #   - purpose=credit_top_up      → the standalone top-up Checkout
-    #                                  (mode=payment), amount in `amount_cents`
-    #   - credits_cents on a flat    → the bedrock_claude SUBSCRIPTION Checkout
-    #     subscription Checkout        (mode=subscription), which carries the
-    #                                  starter credits as a one-time line item
-    #                                  beside the recurring price
-    # The subscription half of that second shape is still owned by the
-    # customer.subscription.* handlers — this only grants the credits. Without
-    # this branch the one-time line item would be CHARGED and never granted,
-    # which is worse than the two-checkout flow it replaces.
-    credits_cents_str = session_metadata.get("amount_cents") or session_metadata.get("credits_cents")
-    is_credit_funding = session_metadata.get("purpose") == "credit_top_up" or bool(
-        session_metadata.get("credits_cents")
-    )
-    if not is_credit_funding:
-        return Response(status_code=200)
-
-    # Only grant when Stripe has actually collected payment — a failed ACH
-    # must never leave free credits behind (see _SETTLED_PAYMENT_STATUSES).
-    payment_status = session.get("payment_status")
-    if payment_status not in _SETTLED_PAYMENT_STATUSES:
-        put_metric("credit.top_up.deferred", dimensions={"payment_status": payment_status or "unknown"})
-        logger.info(
-            "Credit top-up deferred for session %s — payment_status=%s",
-            session.get("id"),
-            payment_status,
-        )
-        return Response(status_code=200)
-
-    metadata = session_metadata
-    owner_id = metadata.get("owner_id")
-    amount_cents_str = credits_cents_str
-    if not owner_id or not amount_cents_str:
-        logger.error("Credit top-up checkout.session missing metadata: %s", session.get("id"))
-        return Response(status_code=200)
-
-    # Make the ledger exist BEFORE granting, rather than assuming a prior
-    # webhook already built it.
-    #
-    # The standalone top-up can assume it: create_credit_top_up_checkout
-    # refuses to take the money at all unless metronome_customer_id and
-    # metronome_contract_id are already on the row. The bundled path cannot
-    # make that check — a converting owner is still `trial_local` at checkout
-    # time, which is deliberately excluded from LEDGER_ELIGIBLE_STATUSES, so
-    # there is no ledger to verify yet.
-    #
-    # The ledger is created by handle_subscription_state's entering_live
-    # branch as a best-effort background task, and Stripe delivers
-    # checkout.session.completed and customer.subscription.created unordered.
-    # Granting on the assumption that task has landed means the common
-    # interleaving raises FundingError, 500s, and leaves the owner charged and
-    # still blocked on `credits_required` until a redelivery happens to arrive
-    # after provisioning — the "paid for a container that won't boot" outcome
-    # this whole flow exists to remove. If provisioning had failed outright,
-    # every redelivery would fail identically and Stripe would give up with
-    # the money collected.
-    #
-    # ensure_metronome_customer is idempotent on the persisted ids, so this is
-    # a no-op for the top-up path and for redeliveries. It returns None while
-    # the row is not yet ledger-eligible; raising then is correct — Stripe
-    # redelivers, and the retry re-attempts provisioning instead of waiting on
-    # someone else's background task.
-    from core.billing.metronome_provisioning import ensure_metronome_customer
-
-    if not await ensure_metronome_customer(owner_id=owner_id):
-        put_metric("credit.grant.ledger_not_ready", dimensions={"source": "checkout"})
-        logger.warning(
-            "Credit grant deferred for owner %s session %s — Metronome ledger not ready yet; "
-            "raising so Stripe redelivers.",
-            owner_id,
-            session.get("id"),
-        )
-        raise RuntimeError(f"Metronome ledger not ready for owner {owner_id}")
-
-    # Grant the REQUESTED amount, not what Stripe charged — a 100%-off
-    # internal coupon charges nothing but still funds the full balance
-    # (the coupon is us absorbing the cost). Bundled sessions disable
-    # promotion codes outright, so this only applies to standalone top-ups.
-    from core.billing.metronome_funding import grant_prepaid_credits_and_refresh_gate
-
-    # Session id as the Metronome Idempotency-Key: one completed Checkout
-    # grants exactly once, however many times Stripe redelivers (or fires
-    # completed + async_payment_succeeded back-to-back). A grant failure
-    # re-raises so the webhook 500s and Stripe redelivers — paid-for
-    # credits must never be silently dropped. The helper follows the grant
-    # with the restore-only fast-gate refresh (best-effort, positive-balance
-    # only, so a Metronome read lag can never re-revoke the owner who just
-    # paid).
-    await grant_prepaid_credits_and_refresh_gate(
-        owner_id,
-        int(amount_cents_str),
-        idempotency_key=f"checkout-{session['id']}",
-    )
-
-    if metadata.get("auto_charge_opt_in") == "true":
-        try:
-            await billing_repo.set_credits_auto_charge(owner_id, enabled=True)
-            put_metric("billing.auto_charge.enabled")
-        except Exception:
-            # The credits themselves landed; consent can be re-granted on a
-            # later checkout. Don't fail the webhook into redelivery (the
-            # grant above would replay harmlessly, but the noise is real).
-            logger.exception("Failed to persist auto-charge opt-in for owner %s", owner_id)
-
-    put_metric("credit.top_up.granted", dimensions={"source": "checkout"})
     return Response(status_code=200)
 
 

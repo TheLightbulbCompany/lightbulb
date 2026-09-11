@@ -15,8 +15,8 @@
 "use client";
 
 import { useEffect } from "react";
-import { useGateway } from "@/hooks/useGateway";
-import { useGatewayRpc } from "@/hooks/useGatewayRpc";
+import { useLiveEvents } from "@/hooks/useLiveEvents";
+import { useRuntimeRpc } from "@/hooks/useRuntimeRpc";
 
 export type ProgressCardStepStatus = "pending" | "in_progress" | "completed";
 
@@ -38,7 +38,6 @@ interface ProgressCardGetResult {
 }
 
 const PROGRESS_CARD_GET_METHOD = "progressCard.get";
-const PROGRESS_CARD_CHANGED_EVENT = "progressCard.changed";
 
 export interface UseProgressCardResult {
   card: ProgressCard | null;
@@ -49,24 +48,21 @@ export interface UseProgressCardResult {
 /** Read the durable progress card for `sessionKey` (null while there's no
  *  active session), kept fresh by the gateway's push event. */
 export function useProgressCard(sessionKey: string | null): UseProgressCardResult {
-  const { onEvent } = useGateway();
-  const { data, error, isLoading, mutate } = useGatewayRpc<ProgressCardGetResult>(
+  const { onEvent } = useLiveEvents();
+  const { data, error, isLoading, mutate } = useRuntimeRpc<ProgressCardGetResult>(
     sessionKey ? PROGRESS_CARD_GET_METHOD : null,
     sessionKey ? { sessionKey } : undefined,
   );
 
-  // useGatewayRpc's own event-name matching (method === event ||
+  // useRuntimeRpc's own event-name matching (method === event ||
   // method.startsWith(event + ".")) doesn't fire here: the RPC method is
   // "progressCard.get" and the push event is "progressCard.changed" — same
   // namespace, different leaf. Revalidate by hand, scoped to this session.
   useEffect(() => {
     if (!sessionKey) return;
-    return onEvent((event, payload) => {
-      if (event !== PROGRESS_CARD_CHANGED_EVENT) return;
-      const eventSessionKey =
-        payload && typeof payload === "object"
-          ? (payload as Record<string, unknown>).sessionKey
-          : undefined;
+    return onEvent((event) => {
+      if (event.type !== "runtime.progress.changed") return;
+      const eventSessionKey = event.payload.sessionKey;
       // Case-INSENSITIVE: OpenClaw lowercases session keys, so the event
       // carries the container's canonical `agent:<id>:user_3h3v…` while ours
       // holds the mixed-case Clerk id (`user_3H3v…`). An exact compare never

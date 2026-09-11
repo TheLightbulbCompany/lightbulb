@@ -1,0 +1,105 @@
+// @vitest-environment jsdom
+import { beforeEach, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, within } from "@testing-library/react";
+import type { ReactNode } from "react";
+import { WorkspaceShell } from "../WorkspaceShell";
+
+const state = vi.hoisted(() => ({
+  phase: "selecting", selectProps: vi.fn(), organization: null as { id: string } | null,
+  activePanelId: "chat:__default__", chatReady: true,
+}));
+vi.mock("@/hooks/useOnboardingGate", () => ({ useOnboardingGate: () => state.phase }));
+vi.mock("@clerk/nextjs", () => ({
+  useAuth: () => ({ isSignedIn: true, userId: "user_1" }),
+  useOrganization: () => ({ organization: state.organization }),
+  OrganizationList: (props: unknown) => { state.selectProps(props); return null; },
+}));
+// An owner-aware child must never mount without an active workspace.
+vi.mock("@/hooks/useAgents", () => ({ useAgents: () => {
+  if (!state.organization) throw new Error("Owner data requested without a workspace");
+  return { agents: [], defaultId: undefined, isSettled: true };
+} }));
+vi.mock("../useBrowserToolAutoOpen", () => ({ useBrowserToolAutoOpen: () => {} }));
+vi.mock("next/navigation", () => ({ useSearchParams: () => null }));
+vi.mock("../workspaceController", () => ({
+  useWorkspaceState: () => ({ activePanelId: state.activePanelId }),
+  refreshWorkspaceSnapshot: vi.fn(),
+  getWorkspaceSnapshot: () => ({ ready: false }),
+}));
+vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
+  MessagingWorkspaceProvider: ({ children, subscribeToRoom }: { children: ReactNode; subscribeToRoom: boolean }) => (
+    <section aria-label="Messaging owner" data-subscribed={subscribeToRoom}>{children}</section>
+  ),
+}));
+vi.mock("../WorkspaceSidebar", () => ({
+  WorkspaceSidebar: ({ onRecoveryReprovision, chatReady }: { onRecoveryReprovision: () => void; chatReady: boolean }) => (
+    <nav aria-label="Workspace"><button onClick={onRecoveryReprovision} data-ready={chatReady}>Recover</button></nav>
+  ),
+}));
+vi.mock("../WorkspaceHeader", () => ({ WorkspaceHeader: () => <header /> }));
+vi.mock("dockview-react", () => ({
+  themeLight: { name: "light", className: "dockview-theme-light" },
+  DockviewReact: ({ disableDnd }: { disableDnd: boolean }) => <div aria-label="Dock" data-dnd-disabled={disableDnd} />,
+}));
+vi.mock("@/components/chat/ProvisioningStepper", () => ({
+  ProvisioningStepper: ({ children, trigger }: { children: ReactNode; trigger?: string }) => <div data-testid="stepper" data-trigger={trigger}>{children}</div>,
+}));
+vi.mock("@/components/chat/InlineTeamsNav", () => ({ InlineTeamsNavProvider: ({ children }: { children: ReactNode }) => children }));
+vi.mock("@/components/teams/TeamsEventsProvider", () => ({ TeamsEventsProvider: ({ children }: { children: ReactNode }) => children }));
+vi.mock("@/components/teams/command-palette/CommandPaletteProvider", () => ({ CommandPaletteProvider: ({ children }: { children: ReactNode }) => children }));
+vi.mock("@/components/teams/TeamsPanelRouter", () => ({ preloadTeamsPanels: vi.fn() }));
+vi.mock("@/components/desktop/DesktopPermissionsGate", () => ({ DesktopPermissionsGate: () => null }));
+vi.mock("@/components/chat/TrialBanner", () => ({ TrialBanner: () => null }));
+vi.mock("@/components/chat/OutOfCreditsBanner", () => ({ OutOfCreditsBanner: () => null }));
+vi.mock("@/components/chat/LaunchJoinBanner", () => ({ LaunchJoinBanner: () => null }));
+vi.mock("@/components/chat/LaunchJoinModal", () => ({ LaunchJoinModal: () => null }));
+vi.mock("@/components/getstarted/GetStarted", () => ({ GetStarted: () => null }));
+vi.mock("@/components/marketplace/drawer/MarketplaceDrawerProvider", () => ({ useMarketplaceDrawer: () => ({ open: vi.fn() }) }));
+vi.mock("@/components/chat/shell/useUserSyncOnce", () => ({ useUserSyncOnce: () => {} }));
+vi.mock("@/components/chat/shell/useCheckoutReturn", () => ({ useCheckoutReturn: () => ({ showSubscriptionSuccess: true }) }));
+vi.mock("@/components/chat/shell/useGetStartedDerived", () => ({ useGetStartedDerived: () => ({ chatReady: state.chatReady }) }));
+beforeEach(() => {
+  state.phase = "selecting";
+  state.organization = null;
+  state.activePanelId = "chat:__default__";
+  state.chatReady = true;
+  vi.clearAllMocks();
+});
+it("offers Clerk workspace selection instead of an endless loading shell", () => {
+  render(<WorkspaceShell />);
+  expect(screen.getByRole("heading", { name: "Choose your workspace" })).toBeInTheDocument();
+  expect(state.selectProps).toHaveBeenCalledWith(expect.objectContaining({ hidePersonal: true, afterSelectOrganizationUrl: "/chat" }));
+});
+it("never substitutes the user ID for a missing workspace", () => {
+  state.phase = "ready";
+  expect(() => render(<WorkspaceShell />)).not.toThrow();
+  expect(screen.getByText("Loading…")).toBeInTheDocument();
+});
+
+it("shares one messaging owner across sidebar and dock, subscribing only to active Messages", () => {
+  state.phase = "ready";
+  state.organization = { id: "org_1" };
+  const view = render(<WorkspaceShell />);
+  const owner = screen.getByRole("region", { name: "Messaging owner" });
+  expect(screen.getAllByRole("region", { name: "Messaging owner" })).toHaveLength(1);
+  expect(within(owner).getByRole("navigation", { name: "Workspace" })).toBeInTheDocument();
+  expect(within(owner).getByLabelText("Dock")).toHaveAttribute("data-dnd-disabled", "true");
+  expect(owner).toHaveAttribute("data-subscribed", "true");
+  state.activePanelId = "browser";
+  view.rerender(<WorkspaceShell />);
+  expect(owner).toHaveAttribute("data-subscribed", "false");
+  state.activePanelId = "chat:__default__";
+  view.rerender(<WorkspaceShell />);
+  expect(owner).toHaveAttribute("data-subscribed", "true");
+});
+
+it("preserves checkout confirmation, readiness and the recovery stepper", () => {
+  state.phase = "ready";
+  state.organization = { id: "org_1" };
+  state.chatReady = false;
+  render(<WorkspaceShell />);
+  expect(screen.getByText("Subscription confirmed! Your agent is being upgraded.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Recover" })).toHaveAttribute("data-ready", "false");
+  fireEvent.click(screen.getByRole("button", { name: "Recover" }));
+  expect(screen.getByTestId("stepper")).toHaveAttribute("data-trigger", "recovery");
+});

@@ -544,95 +544,6 @@
 .agent-row-action--err:hover {
   color: var(--err);
 }
-/* Full-text session search — rendered above .session-list, same indented
-   block below the active agent row (see .session-list's own comment for the
-   flex-basis/flex-wrap mechanics). */
-.session-search {
-  flex-basis: 100%;
-  min-width: 0;
-  padding: 2px 2px 4px 38px;
-}
-.session-search__box {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-md);
-  background: var(--cream);
-}
-.session-search__icon {
-  flex-shrink: 0;
-  color: var(--midnight-muted);
-}
-.session-search__input {
-  flex: 1;
-  min-width: 0;
-  border: 0;
-  background: transparent;
-  color: var(--midnight);
-  font-size: var(--text-xs);
-}
-.session-search__input:focus {
-  outline: none;
-}
-.session-search__results {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin-top: 4px;
-  max-height: 240px;
-  overflow-y: auto;
-}
-.session-search__hint {
-  padding: 5px 8px;
-  color: var(--midnight-muted);
-  font-size: var(--text-xs);
-}
-.session-search__group-label {
-  padding: 4px 8px 1px;
-  color: var(--midnight-label);
-  font-size: var(--text-2xs);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-caps);
-}
-.session-search__hit {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  width: 100%;
-  min-width: 0;
-  padding: 5px 8px;
-  border: 0;
-  background: transparent;
-  border-radius: var(--radius-md);
-  color: var(--midnight-soft);
-  text-align: left;
-  cursor: pointer;
-  transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
-}
-.session-search__hit:hover {
-  background: var(--cream);
-  color: var(--midnight);
-}
-.session-search__hit-meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--midnight-muted);
-  font-size: var(--text-2xs);
-}
-.session-search__hit-role {
-  font-weight: 500;
-}
-.session-search__hit-snippet {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow: hidden;
-  font-size: var(--text-xs);
-}
 /* Nested per-agent session list — rendered under the active agent row. Mounted
    inside `.agent-item` (a flex row); `flex-basis:100%` + the parent's
    `flex-wrap:wrap` push it onto its own line, so it reads as an indented block
@@ -652,9 +563,14 @@
   padding: 2px 2px 2px 38px;
   margin-top: -2px;
 }
+/* A column, not a row: the name + relative time sit on one line and the
+   last-message preview wraps under them. Rows with no preview collapse back
+   to a single line on their own — no modifier class needed. */
 .session-item {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 1px;
   width: 100%;
   min-width: 0;
   padding: 5px 8px;
@@ -676,9 +592,38 @@
   color: var(--midnight);
   font-weight: 500;
 }
+.session-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
 .session-label {
   flex: 1;
   min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Bad terminal outcome. Colour is the secondary cue — the icon carries an
+   aria-label and a title, so the signal survives without it. */
+.session-outcome {
+  flex-shrink: 0;
+  align-self: center;
+  color: var(--err);
+}
+/* Metadata, so it never wins width from the name: it keeps its intrinsic size
+   and the label truncates around it. */
+.session-when {
+  flex-shrink: 0;
+  font-size: var(--text-2xs);
+  color: var(--midnight-faint);
+}
+.session-preview {
+  min-width: 0;
+  font-size: var(--text-2xs);
+  line-height: var(--text-2xs--line-height);
+  color: var(--midnight-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -718,6 +663,45 @@
 .session-row .session-delete:hover {
   background: var(--cream);
   color: var(--err);
+}
+/* A pinned row's pin stays visible at rest — hover-only, the row would sit on
+   top with nothing on screen explaining why. Same button, higher specificity
+   than the `display:none` base. */
+.session-row .session-action--on {
+  display: flex;
+  color: var(--midnight);
+}
+/* Archived drawer — collapsed by default, under "New session". */
+.session-archived {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.session-archived-toggle {
+  color: var(--midnight-faint);
+}
+.session-archived-note {
+  padding: 4px 8px 4px 26px;
+  color: var(--midnight-faint);
+  font-size: var(--text-2xs);
+}
+/* Archived rows are read-only: restore or delete, never select. Dimmed rather
+   than recoloured so the whole row reads as inactive in both themes. */
+.session-row--archived {
+  opacity: 0.72;
+}
+.session-row--archived .session-item {
+  cursor: default;
+}
+/* Restore and delete stay visible at rest here. The drawer is opened
+   deliberately and holds a handful of rows, so hiding the only way back out
+   behind a hover would make archive look one-way all over again. */
+.session-row--archived .session-rename {
+  display: flex;
+}
+.session-row--archived .session-item:hover {
+  background: transparent;
+  color: var(--midnight-muted);
 }
 .session-rename-input {
   flex: 1;
@@ -887,7 +871,8 @@
   color: var(--ok);
   margin: 0;
 }
-@media (max-width: 768px) {
+/* Exact complement of useIsDesktop's (min-width: 860px) shell boundary. */
+@media (max-width: 859px) {
   .app-shell {
     grid-template-columns: 1fr;
     grid-template-areas: "main";

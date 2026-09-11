@@ -25,11 +25,73 @@ export const RETIRED_PANEL_ALIASES: Readonly<Record<string, string>> = {
   "teams-members": "teams-settings",
   "teams-skills": "teams-dashboard",
   "teams-costs": "teams-dashboard",
-  // Dreams folded into the Brain panel as its second tab (Notes | Dreams) —
-  // the standalone control-panel surface is gone, so old deep links and
-  // persisted layouts land on Brain instead.
-  dreams: "teams-brain",
+  // Money is ONE page, and Payments/Products/Customers/Spend are its sections.
+  // They alias to its key so the dock (which dedupes by panel id) opens ONE
+  // "Money" tab no matter which of the five keys a link carries — Home's tiles
+  // link three of them. describePanel synthesizes `section` from the RAW key
+  // below.
+  "teams-payments": "teams-money",
+  "teams-products": "teams-money",
+  "teams-customers": "teams-money",
+  "teams-spend": "teams-money",
+  // Activity folded into Inbox's "Recently" band. Aliased, not routed: the
+  // dock dedupes by panel id, so a router-level mapping would leave an
+  // Activity link opening a SECOND tab titled "Inbox".
+  "teams-activity": "teams-inbox",
+  // Goals and Projects are groupings of the Tasks page, not tabs of their own
+  // — the same rows, cut a different way. Aliased for the same reason as
+  // Money's four keys: the dock dedupes by panel id, so a router-level
+  // mapping would open two tabs both titled "Tasks". describePanel
+  // synthesizes `groupBy` from the RAW key below.
+  "teams-goals": "teams-issues",
+  "teams-projects": "teams-issues",
+  // The org chart is the SAME roster read, drawn as a tree — a view of the
+  // Agents panel, not a page of its own. Aliased for the same reason as the
+  // four Money keys: the dock dedupes by panel id, so a router-level mapping
+  // would open two tabs both titled "Agents". describePanel synthesizes
+  // `view` from the RAW key below.
+  "teams-org-chart": "teams-agents",
 };
+
+// The sections of the Money page — the set an absorbed key or a `?section=`
+// deep link may name. Exported so TeamsPanelRouter narrows against the same
+// list instead of keeping a second copy.
+export const MONEY_SECTIONS: ReadonlySet<string> = new Set([
+  "payments",
+  "customers",
+  "products",
+  "spend",
+]);
+
+/** The three bands of the Inbox page, in render order. A ?section deep link
+ *  scrolls to `inbox-<section>`; anything else is ignored. */
+export const INBOX_SECTIONS: ReadonlySet<string> = new Set([
+  "needs-you",
+  "happening-now",
+  "recently",
+]);
+
+/** Declared HERE, not in InboxPage, so the router and InboxPanel narrow to the
+ *  same list the registry validates against. */
+export type InboxSectionId = "needs-you" | "happening-now" | "recently";
+
+/** The Tasks page's grouping dimensions — the set an absorbed key or a
+ *  `?groupBy=` deep link may name. `TasksList.GROUP_OPTIONS` is the live list
+ *  the menu renders; `TasksList.groupBy.test.tsx` pins the two together, so a
+ *  new grouping cannot ship deep-linkable-but-unrendered (or the reverse). */
+export const TASKS_GROUP_BY: ReadonlySet<string> = new Set([
+  "none",
+  "status",
+  "assignee",
+  "priority",
+  "project",
+  "goal",
+  "parent",
+]);
+
+/** The Agents panel's two views — the set an absorbed key or a `?view=` deep
+ *  link may name. The roster is the default; `chart` is the org chart. */
+export const AGENTS_VIEWS: ReadonlySet<string> = new Set(["list", "chart"]);
 
 // One-shot intents: copied to the target panel's open params, immediately
 // stripped from the URL, cleared after consumption, excluded from the
@@ -38,30 +100,25 @@ export const RETIRED_PANEL_ALIASES: Readonly<Record<string, string>> = {
 export const ONE_SHOT_PARAMS = ["new", "newIssue", "action"] as const;
 
 // Billing-return params: not commands. useCheckoutReturn owns their strips.
-export const NON_COMMAND_PARAMS = ["checkout", "subscription", "credits", "provider"] as const;
+export const NON_COMMAND_PARAMS = ["checkout", "subscription", "provider"] as const;
 
 const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
   dashboard: "Home",
   agents: "Agents",
-  "org-chart": "Org chart",
   inbox: "Inbox",
   issues: "Tasks",
   routines: "Automations",
-  goals: "Goals",
-  projects: "Projects",
-  activity: "Activity",
   artifacts: "Library",
   brain: "Brain",
   accounts: "Accounts",
   search: "Search",
   settings: "Team Settings",
-  // Money → Spend. CONTROL_KEYS.usage stays exactly as it is: the two open the
-  // same component (SpendPanel wraps UsagePanel), and `?panel=usage` links are
-  // already in the wild.
-  spend: "Spend",
-  payments: "Payments",
-  products: "Products",
-  customers: "Customers",
+  // The one ledger page. The four keys it absorbed live in
+  // RETIRED_PANEL_ALIASES, not here — one page, one panel id.
+  // CONTROL_KEYS.usage stays exactly as it is: `?panel=usage` links are
+  // already in the wild, and Money's Agent spend section is a different,
+  // smaller surface than that panel.
+  money: "Money",
   // Shells with named exits (owner ruling 2026-09-01): the map is complete
   // before every rail is. Keys are permanent the moment they ship — mobile
   // builds `?panel=teams-<key>` as a string.
@@ -89,6 +146,9 @@ const TEAMS_DETAIL_KEYS: Readonly<Record<string, string>> = {
 // dock panels but are NOT in the sidebar — /settings remains their home.
 const CONTROL_KEYS: Readonly<Record<string, string>> = {
   overview: "Overview",
+  // Its own panel again (owner ruling 2026-09-08): Brain is the vault, and a
+  // memory-core control surface does not belong behind a business tab.
+  dreams: "Dreams",
   sessions: "Sessions",
   channels: "Channels",
   usage: "Usage",
@@ -108,21 +168,21 @@ export const PANEL_COMPONENT_KEYS: ReadonlySet<string> = new Set([
   "missing",
 ]);
 
-// Key-map membership must be OWN-property only: the `in` operator walks the
-// prototype chain, so Object.prototype keys ("constructor", "valueOf", …) in
-// a crafted ?panel URL would pass validation and render inherited functions
-// as titles/components instead of rejecting to null.
-function hasOwnKey(map: Readonly<Record<string, string>>, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(map, key);
-}
+// Key-map membership must be OWN-property only (Object.hasOwn): the `in`
+// operator walks the prototype chain, so Object.prototype keys
+// ("constructor", "valueOf", …) in a crafted ?panel URL would pass validation
+// and render inherited functions as titles/components instead of rejecting to
+// null.
 
 export function resolvePanelAlias(panelKey: string): string {
-  return hasOwnKey(RETIRED_PANEL_ALIASES, panelKey) ? RETIRED_PANEL_ALIASES[panelKey] : panelKey;
+  return Object.hasOwn(RETIRED_PANEL_ALIASES, panelKey) ? RETIRED_PANEL_ALIASES[panelKey] : panelKey;
 }
 
 export function chatPanelId(agentId: string): string {
   return `chat:${agentId}`;
 }
+
+export const MESSAGES_PANEL_ID = chatPanelId(DEFAULT_AGENT_SENTINEL);
 
 export function describePanel(
   panelKey: string,
@@ -132,14 +192,29 @@ export function describePanel(
 
   if (key === "chat") {
     const agentId = params.agent ?? params.agentId;
-    if (!agentId) return null;
-    return {
-      panelId: chatPanelId(agentId),
-      component: "chat",
-      title: "Chat",
-      params: { agentId },
-      renderer: "always",
-    };
+    if (agentId) {
+      return {
+        panelId: MESSAGES_PANEL_ID,
+        component: "chat",
+        title: "Messages",
+        params: { agentId },
+        renderer: "always",
+      };
+    }
+    // Room permalinks (?panel=chat&room=…&message=…): `message` is a durable
+    // param here, not a one-shot — the reconciler delivers chat params
+    // straight from descriptor.params (never via oneShots), see Ruling 3 in
+    // task-7a's report.
+    if (params.room) {
+      return {
+        panelId: MESSAGES_PANEL_ID,
+        component: "chat",
+        title: "Messages",
+        params: { roomId: params.room, ...(params.message ? { messageId: params.message } : {}) },
+        renderer: "always",
+      };
+    }
+    return null;
   }
 
   if (key === "file-viewer") {
@@ -167,7 +242,7 @@ export function describePanel(
 
   if (key.startsWith("teams-")) {
     const teamsKey = key.slice("teams-".length);
-    if (hasOwnKey(TEAMS_DETAIL_KEYS, teamsKey)) {
+    if (Object.hasOwn(TEAMS_DETAIL_KEYS, teamsKey)) {
       const detailId = params.detailId;
       if (!detailId) return null;
       return {
@@ -177,30 +252,57 @@ export function describePanel(
         params: { teamsKey, detailId },
       };
     }
-    if (hasOwnKey(TEAMS_LIST_KEYS, teamsKey)) {
+    if (Object.hasOwn(TEAMS_LIST_KEYS, teamsKey)) {
       const p: Record<string, string> = { teamsKey };
       // Durable filters ride along; one-shots are handled by the reconciler
       // at open time and never enter these params.
-      if (teamsKey === "issues" && params.agent) p.agent = params.agent;
-      // ?tab deep links (bookmarks predating the URL-sync removal still carry
-      // them) select the inbox band; tab clicks never write it back.
-      if (teamsKey === "inbox" && params.tab) p.tab = params.tab;
+      if (teamsKey === "issues") {
+        if (params.agent) p.agent = params.agent;
+        // Goals and Projects absorbed into Tasks as groupings, so the cut a
+        // link meant survives only if it is read off the RAW key — same
+        // synthesis, same reason, as `money` and `inbox`.
+        if (panelKey === "teams-goals") p.groupBy = "goal";
+        else if (panelKey === "teams-projects") p.groupBy = "project";
+        else if (params.groupBy && TASKS_GROUP_BY.has(params.groupBy)) {
+          p.groupBy = params.groupBy;
+        }
+      }
+      // Agents absorbed the org chart as its second view, so the view a link
+      // meant survives only if it is read off the RAW key — same synthesis,
+      // same reason, as `money` and `inbox`.
+      if (teamsKey === "agents") {
+        if (panelKey === "teams-org-chart") p.view = "chart";
+        else if (params.view && AGENTS_VIEWS.has(params.view)) p.view = params.view;
+      }
+      // Inbox absorbed Activity, so the band a link meant survives only if it
+      // is read off the RAW key — same synthesis, same reason, as `money`.
+      if (teamsKey === "inbox") {
+        if (panelKey === "teams-activity") p.section = "recently";
+        else if (params.section && INBOX_SECTIONS.has(params.section)) p.section = params.section;
+        // Bookmarks predating the pill tabs still carry ?tab=approvals; that
+        // band is now "Needs you". Every other old tab value named an issue
+        // list, which lives on Tasks — those land at the top of Inbox.
+        else if (params.tab === "approvals") p.section = "needs-you";
+      }
       // ?path mirrors the file-viewer grammar: a deep link selects a wiki
       // page; in-panel selection clicks never write it back.
       if (teamsKey === "brain" && params.path) p.path = params.path;
-      // The retired `dreams` control panel aliases here (RETIRED_PANEL_ALIASES) —
-      // an old ?panel=dreams link should land ON the Dreams tab, not silently
-      // default to Notes. Checked on the ORIGINAL panelKey (pre-alias), so a
-      // fresh ?panel=teams-brain link is untouched — which means every caller
-      // must hand describePanel the RAW ?panel value and let it resolve —
-      // a caller that pre-resolves makes this branch permanently dead.
-      if (teamsKey === "brain" && panelKey === "dreams") p.tab = "dreams";
+      // ?day scopes the Payments section to one UTC day — the hero bar on Home links here.
+      if (teamsKey === "money" && params.day) p.day = params.day;
+      // The four absorbed keys (teams-payments/products/customers/spend) alias
+      // to teams-money, so the section they meant survives only if it is read
+      // off the RAW key — same synthesis, same reason, as `agents` above.
+      if (teamsKey === "money") {
+        const raw = panelKey.startsWith("teams-") ? panelKey.slice("teams-".length) : panelKey;
+        if (MONEY_SECTIONS.has(raw)) p.section = raw;
+        else if (params.section && MONEY_SECTIONS.has(params.section)) p.section = params.section;
+      }
       return { panelId: key, component: "teams", title: TEAMS_LIST_KEYS[teamsKey], params: p };
     }
     return null;
   }
 
-  if (hasOwnKey(CONTROL_KEYS, key)) {
+  if (Object.hasOwn(CONTROL_KEYS, key)) {
     const p: Record<string, string> = { controlKey: key };
     if (key === "agents" && params.agent) p.agentId = params.agent;
     return { panelId: `control:${key}`, component: "control", title: CONTROL_KEYS[key], params: p };
@@ -218,13 +320,15 @@ export function durableParamsFor(panelId: string): string[] {
   // param or a refresh resurrects the panel the user just closed. "panel" +
   // "agentId" cover the explicit ?panel=chat grammar (describePanel accepts
   // agent OR agentId) so an externally-authored chat link clears fully.
-  if (panelId.startsWith("chat:")) return ["panel", "agent", "agentId"];
+  if (panelId.startsWith("chat:")) return ["panel", "agent", "agentId", "room", "message"];
   if (panelId === "file-viewer") return ["panel", "path", "agent"];
   if (panelId === "agent-inspector") return ["panel", "agent", "inspectorTab"];
   if (panelId === "control:agents") return ["panel", "agent"];
-  if (panelId === "teams-issues") return ["panel", "agent"];
-  if (panelId === "teams-inbox") return ["panel", "tab"];
+  if (panelId === "teams-agents") return ["panel", "view"];
+  if (panelId === "teams-issues") return ["panel", "agent", "groupBy"];
+  if (panelId === "teams-inbox") return ["panel", "section"];
   if (panelId === "teams-brain") return ["panel", "path"];
+  if (panelId === "teams-money") return ["panel", "day", "section"];
   if (/^teams-(issue|routine|project|goal|run)-detail:/.test(panelId)) return ["panel", "detailId"];
   return ["panel"];
 }
@@ -236,9 +340,15 @@ export function durableParamsFor(panelId: string): string[] {
 // param (an agent filter, an inspector tab) survives an unfiltered navigation
 // — breaking the mobile invariant that plain panel nav drops stale state.
 export function clearablePanelParamKeys(panelId: string): string[] {
-  if (panelId === "teams-issues") return ["agent"];
-  if (panelId === "teams-inbox") return ["tab"];
+  // roomId/messageId included alongside agentId/agentSelection: an agent open
+  // must clear a stale room target and vice versa, or the two grammars fight
+  // (see openMessagePanel / openChatPanel in workspaceController.ts).
+  if (panelId === MESSAGES_PANEL_ID) return ["agentId", "agentSelection", "roomId", "messageId"];
+  if (panelId === "teams-agents") return ["view"];
+  if (panelId === "teams-issues") return ["agent", "groupBy"];
+  if (panelId === "teams-inbox") return ["section"];
   if (panelId === "teams-brain") return ["path"];
+  if (panelId === "teams-money") return ["day", "section"];
   if (panelId === "file-viewer") return ["path", "agent"];
   if (panelId === "agent-inspector" || panelId === "control:agents") {
     return ["agentId", "initialTab"];

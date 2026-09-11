@@ -1,0 +1,225 @@
+import { useAuth, useOrganization } from "@clerk/clerk-expo";
+import {
+  createApiClient,
+  createMessagingClient,
+  createRuntimeClient,
+  useLiveEvents as useSharedLiveEvents,
+  type ChatIncomingMessage,
+  type LiveConfig,
+  type LiveEvent,
+  type LiveEventOf,
+  type RuntimeRpcSource,
+} from "@lightbulb/shared";
+import { randomUUID } from "expo-crypto";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import { AppState } from "react-native";
+
+import { makeAdapter } from "../lib/adapter";
+
+export interface ActiveRoomSubscription {
+  roomId: string;
+  deliveryKey: string;
+}
+
+export interface LiveEventsContextValue extends RuntimeRpcSource {
+  httpReady: boolean;
+  liveConnected: boolean;
+  liveChannels: readonly string[];
+  liveError: string | null;
+  messaging: ReturnType<typeof createMessagingClient>;
+  runtime: ReturnType<typeof createRuntimeClient>;
+  claimActiveRoomSubscription(room: ActiveRoomSubscription): () => void;
+  onChatMessage(
+    handler: (
+      frame: ChatIncomingMessage,
+      event: LiveEventOf<"room.run.frame">,
+    ) => void,
+  ): () => void;
+}
+
+const LiveEventsContext = createContext<LiveEventsContextValue | null>(null);
+
+export function LiveEventsProvider({ children }: { children: ReactNode }) {
+  const { getToken, isLoaded, userId } = useAuth();
+  const { organization } = useOrganization();
+  const getTokenRef = useRef(getToken);
+  getTokenRef.current = getToken;
+  const api = useMemo(
+    () => createApiClient(makeAdapter(() => getTokenRef.current())),
+    [],
+  );
+  const messaging = useMemo(() => createMessagingClient(api), [api]);
+  const runtime = useMemo(
+    () => createRuntimeClient(api, () => randomUUID()),
+    [api],
+  );
+  const ownerScope = organization?.id ?? userId;
+  const httpReady = !!isLoaded && !!userId;
+  const [config, setConfig] = useState<LiveConfig | null>(null);
+  const [configError, setConfigError] = useState<Error | null>(null);
+  const [foreground, setForeground] = useState(AppState.currentState === "active");
+  const [activeRoom, setActiveRoom] = useState<ActiveRoomSubscription | null>(null);
+  const activeRoomClaim = useRef<symbol | null>(null);
+  const eventHandlers = useRef(new Set<(event: LiveEvent) => void>());
+  const chatHandlers = useRef(
+    new Set<
+      (
+        frame: ChatIncomingMessage,
+        event: LiveEventOf<"room.run.frame">,
+      ) => void
+    >(),
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    let retry: ReturnType<typeof setTimeout> | null = null;
+    setConfig(null);
+    setConfigError(null);
+    if (!httpReady) return;
+
+    const load = () => {
+      void messaging.getLiveConfig().then((next) => {
+        if (cancelled) return;
+        setConfig(next);
+        setConfigError(null);
+      }).catch((error: unknown) => {
+        if (cancelled) return;
+        setConfigError(error instanceof Error ? error : new Error("Live configuration unavailable"));
+        retry = setTimeout(load, 3_000);
+      });
+    };
+    load();
+    return () => {
+      cancelled = true;
+      if (retry) clearTimeout(retry);
+    };
+  }, [httpReady, messaging, ownerScope, userId]);
+
+  useEffect(() => {
+    setActiveRoom(null);
+  }, [userId, ownerScope]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") setForeground(true);
+      else if (state === "background") setForeground(false);
+    });
+    return () => subscription.remove();
+  }, []);
+
+  const dispatchEvent = useCallback((event: LiveEvent) => {
+    for (const handler of eventHandlers.current) handler(event);
+  }, []);
+  const dispatchChat = useCallback(
+    (
+      frame: ChatIncomingMessage,
+      event: LiveEventOf<"room.run.frame">,
+    ) => {
+      for (const handler of chatHandlers.current) handler(frame, event);
+    },
+    [],
+  );
+
+  const userChannel = config ? `/users/${config.userChannelKey}` : null;
+  const roomChannel = activeRoom
+    ? `/rooms/${activeRoom.roomId}/${activeRoom.deliveryKey}`
+    : null;
+  const live = useSharedLiveEvents({
+    config: config ?? null,
+    getToken: () => getTokenRef.current({ template: "lightbulb-appsync" }),
+    userChannel,
+    roomChannel,
+    uuid: () => randomUUID(),
+    onEvent: dispatchEvent,
+    onChatMessage: dispatchChat,
+    enabled: foreground && httpReady,
+  });
+
+  const claimActiveRoomSubscription = useCallback(
+    (room: ActiveRoomSubscription) => {
+      const claim = Symbol();
+      activeRoomClaim.current = claim;
+      setActiveRoom((current) =>
+        current?.roomId === room.roomId &&
+        current.deliveryKey === room.deliveryKey
+          ? current
+          : room,
+      );
+      return () => {
+        if (activeRoomClaim.current !== claim) return;
+        activeRoomClaim.current = null;
+        setActiveRoom(null);
+      };
+    },
+    [],
+  );
+  const onEvent = useCallback((handler: (event: LiveEvent) => void) => {
+    eventHandlers.current.add(handler);
+    return () => eventHandlers.current.delete(handler);
+  }, []);
+  const onChatMessage = useCallback(
+    (
+      handler: (
+        frame: ChatIncomingMessage,
+        event: LiveEventOf<"room.run.frame">,
+      ) => void,
+    ) => {
+      chatHandlers.current.add(handler);
+      return () => chatHandlers.current.delete(handler);
+    },
+    [],
+  );
+
+  const value = useMemo<LiveEventsContextValue>(
+    () => ({
+      httpReady,
+      liveConnected: live.liveConnected,
+      liveChannels: live.liveChannels,
+      liveError: configError ? "Live updates are reconnecting." : live.lastError,
+      messaging,
+      runtime,
+      claimActiveRoomSubscription,
+      onChatMessage,
+      rpc: runtime.rpc,
+      getOperation: runtime.getOperation,
+      onEvent,
+      connectionRevision: live.connectionRevision,
+    }),
+    [
+      httpReady,
+      live.liveConnected,
+      live.liveChannels,
+      live.lastError,
+      live.connectionRevision,
+      configError,
+      messaging,
+      runtime,
+      claimActiveRoomSubscription,
+      onChatMessage,
+      onEvent,
+    ],
+  );
+
+  return (
+    <LiveEventsContext.Provider value={value}>
+      {children}
+    </LiveEventsContext.Provider>
+  );
+}
+
+export function useLiveEvents(): LiveEventsContextValue {
+  const value = useContext(LiveEventsContext);
+  if (!value) {
+    throw new Error("useLiveEvents must be used within a LiveEventsProvider");
+  }
+  return value;
+}

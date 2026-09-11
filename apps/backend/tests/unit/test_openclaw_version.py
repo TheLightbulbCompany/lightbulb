@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 import pytest
+from jsonschema import Draft7Validator
 
 from core import openclaw_version
 
@@ -32,6 +33,12 @@ def _clear_cache_and_env(monkeypatch):
     monkeypatch.delenv("OPENCLAW_UPSTREAM_VERSION", raising=False)
     monkeypatch.delenv("OPENCLAW_DEV_TAG", raising=False)
     monkeypatch.delenv("OPENCLAW_PROD_TAG", raising=False)
+    monkeypatch.delenv("OPENCLAW_FORK_TAG", raising=False)
+    monkeypatch.delenv("OPENCLAW_FORK_COMMIT", raising=False)
+    monkeypatch.delenv("OPENCLAW_BASE_IMAGE_DIGEST", raising=False)
+    monkeypatch.delenv("OPENCLAW_GATEWAY_BUILD_ID", raising=False)
+    monkeypatch.delenv("OPENCLAW_EXTENDED_ARTIFACT_DIGEST", raising=False)
+    monkeypatch.delenv("OPENCLAW_RUNTIME_MANIFEST_DIGEST", raising=False)
     yield
     _clear_pinned_cache()
 
@@ -40,6 +47,62 @@ def _pinned() -> dict:
     # apps/backend/tests/unit/test_openclaw_version.py -> repo root is parents[4]
     repo_root = Path(__file__).resolve().parents[4]
     return json.loads((repo_root / "openclaw-version.json").read_text())
+
+
+def test_pinned_release_identity_matches_schema_and_selected_manifest(monkeypatch):
+    pinned = _pinned()
+    schema_path = Path(__file__).resolve().parents[4] / "openclaw-version.schema.json"
+    schema = json.loads(schema_path.read_text())
+    Draft7Validator.check_schema(schema)
+    Draft7Validator(schema).validate(pinned)
+
+    monkeypatch.setenv("ENVIRONMENT", "prod")
+    assert openclaw_version.pinned_release_identity() == openclaw_version.PinnedReleaseIdentity(
+        fork_tag=pinned["forkTag"],
+        fork_commit=pinned["forkCommit"],
+        base_image_digest=pinned["baseImageDigest"],
+        gateway_build_id=pinned["gatewayBuildId"],
+        extended_tag=pinned["prod"]["tag"],
+        extended_artifact_digest=pinned["prod"]["artifactDigest"],
+        runtime_manifest_digest=pinned["prod"]["runtimeManifestDigest"],
+    )
+
+
+def test_pinned_release_identity_uses_injected_current_environment_without_repo_json(monkeypatch):
+    fork_commit = "0123456789abcdef0123456789abcdef01234567"
+    monkeypatch.setattr(openclaw_version, "_load_pinned", lambda: {})
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+    monkeypatch.setenv("OPENCLAW_DEV_TAG", "9999.9.9-isol8.1-abcdef1")
+    monkeypatch.setenv("OPENCLAW_FORK_TAG", "v9999.9.9-isol8.1")
+    monkeypatch.setenv("OPENCLAW_FORK_COMMIT", fork_commit)
+    monkeypatch.setenv("OPENCLAW_BASE_IMAGE_DIGEST", f"sha256:{'a' * 64}")
+    monkeypatch.setenv("OPENCLAW_GATEWAY_BUILD_ID", fork_commit[:7])
+    monkeypatch.setenv("OPENCLAW_EXTENDED_ARTIFACT_DIGEST", f"sha256:{'b' * 64}")
+    monkeypatch.setenv("OPENCLAW_RUNTIME_MANIFEST_DIGEST", f"sha256:{'c' * 64}")
+
+    assert openclaw_version.pinned_release_identity() == openclaw_version.PinnedReleaseIdentity(
+        fork_tag="v9999.9.9-isol8.1",
+        fork_commit=fork_commit,
+        base_image_digest=f"sha256:{'a' * 64}",
+        gateway_build_id=fork_commit[:7],
+        extended_tag="9999.9.9-isol8.1-abcdef1",
+        extended_artifact_digest=f"sha256:{'b' * 64}",
+        runtime_manifest_digest=f"sha256:{'c' * 64}",
+    )
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("OPENCLAW_BASE_IMAGE_DIGEST", "sha256:short"),
+        ("OPENCLAW_GATEWAY_BUILD_ID", "deadbee"),
+        ("OPENCLAW_RUNTIME_MANIFEST_DIGEST", ""),
+    ],
+)
+def test_pinned_release_identity_rejects_malformed_or_inconsistent_evidence(monkeypatch, name, value):
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+    monkeypatch.setenv(name, value)
+    assert openclaw_version.pinned_release_identity() is None
 
 
 def test_json_fallback_matches_repo_file():

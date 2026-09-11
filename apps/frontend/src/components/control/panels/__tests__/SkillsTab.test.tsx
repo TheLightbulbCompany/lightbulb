@@ -6,9 +6,9 @@ import { SkillsTab } from "../SkillsTab";
 const mockData = vi.fn();
 const mockMutate = vi.fn();
 const mockMutation = vi.fn();
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpc: () => ({ data: mockData(), error: undefined, isLoading: false, mutate: mockMutate }),
-  useGatewayRpcMutation: () => mockMutation,
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpc: () => ({ data: mockData(), error: undefined, isLoading: false, mutate: mockMutate }),
+  useRuntimeRpcMutation: () => mockMutation,
 }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 

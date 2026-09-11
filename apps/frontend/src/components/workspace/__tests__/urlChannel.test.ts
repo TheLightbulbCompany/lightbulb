@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { MESSAGES_PANEL_ID } from "../panelRegistry";
 import {
   parseCommand,
   commandSignature,
@@ -26,17 +27,21 @@ describe("parseCommand", () => {
   it("resolves retired aliases", () => {
     expect(parseCommand("?panel=teams-approvals")?.descriptor.panelId).toBe("teams-inbox");
     expect(parseCommand("?panel=credits")?.descriptor.panelId).toBe("control:llm");
-    // Dreams folded into Brain as a tab — an old ?panel=dreams deep link
-    // must open the Brain panel, not 404 into "missing", and land ON the
-    // Dreams tab rather than silently defaulting to Notes (review finding 3).
+    // Dreams is its own control panel again — ?panel=dreams opens it, not the
+    // Brain panel it spent a while folded into.
     const dreamsCmd = parseCommand("?panel=dreams");
-    expect(dreamsCmd?.descriptor.panelId).toBe("teams-brain");
-    expect(dreamsCmd?.descriptor.params).toEqual({ teamsKey: "brain", tab: "dreams" });
+    expect(dreamsCmd?.descriptor.panelId).toBe("control:dreams");
+    expect(dreamsCmd?.descriptor.params).toEqual({ controlKey: "dreams" });
+    // The org chart is a view of the roster now.
+    const chartCmd = parseCommand("?panel=teams-org-chart");
+    expect(chartCmd?.descriptor.panelId).toBe("teams-agents");
+    expect(chartCmd?.descriptor.params).toEqual({ teamsKey: "agents", view: "chart" });
   });
 
   it("defines /chat?agent= as open-or-focus that agent's chat (deploy-success link)", () => {
     const c = parseCommand("?agent=agent-uuid-1");
-    expect(c?.descriptor.panelId).toBe("chat:agent-uuid-1");
+    expect(c?.descriptor.panelId).toBe(MESSAGES_PANEL_ID);
+    expect(c?.descriptor.params).toEqual({ agentId: "agent-uuid-1" });
     expect(c?.descriptor.component).toBe("chat");
   });
 
@@ -45,6 +50,19 @@ describe("parseCommand", () => {
     expect(parseCommand("?checkout=success")).toBeNull();
     expect(parseCommand("?panel=definitely-not-a-panel")).toBeNull();
     expect(parseCommand("?panel=teams-issue-detail")).toBeNull(); // detail without id
+  });
+
+  // Ruling 3 (task-7a): the reconciler delivers chat params straight from
+  // descriptor.params (WorkspaceShell.tsx's `openChatPanel(command.descriptor
+  // .params.agentId)`), never via oneShots — a chat command never reaches the
+  // oneShots-carrying openPanel() branch (workspaceShellReconciler.ts's
+  // `panelKey = component === "chat" ? null : …`). So `message` is a durable
+  // chat param, not a one-shot: nothing is stripped from the URL.
+  it("treats ?panel=chat&room=…&message=… as a durable chat command", () => {
+    const command = parseCommand("?panel=chat&room=r1&message=m1");
+    expect(command?.descriptor.params).toMatchObject({ roomId: "r1", messageId: "m1" });
+    expect(command?.oneShots).toEqual({});
+    expect(stripOneShots("?panel=chat&room=r1&message=m1")).toBeNull();
   });
 });
 
@@ -82,7 +100,7 @@ describe("clearPanelFromUrl", () => {
   it("clears ?agent when the closed panel is the bare-?agent chat command", () => {
     // Rule 7 makes bare ?agent a chat command, so closing that chat panel
     // must clear it — otherwise refresh resurrects the closed panel.
-    expect(clearPanelFromUrl("?agent=agent-uuid-1", "chat:agent-uuid-1")).toBe("");
+    expect(clearPanelFromUrl("?agent=agent-uuid-1", MESSAGES_PANEL_ID)).toBe("");
   });
   it("returns null when the closed panel is not the URL-named one", () => {
     expect(clearPanelFromUrl("?panel=teams-inbox", "teams-issues")).toBeNull();
@@ -93,47 +111,44 @@ describe("clearPanelFromUrl", () => {
   it("clears the explicit ?panel=chat grammar fully (agent OR agentId form)", () => {
     // Both forms are parseable grammar (describePanel accepts agent ?? agentId)
     // — closing the chat panel must leave no dangling ?panel=chat / ?agentId.
-    expect(clearPanelFromUrl("?panel=chat&agent=a-1", "chat:a-1")).toBe("");
-    expect(clearPanelFromUrl("?panel=chat&agentId=a-1", "chat:a-1")).toBe("");
+    expect(clearPanelFromUrl("?panel=chat&agent=a-1", MESSAGES_PANEL_ID)).toBe("");
+    expect(clearPanelFromUrl("?panel=chat&agentId=a-1", MESSAGES_PANEL_ID)).toBe("");
   });
   it("clears ?path when the URL-named file viewer closes", () => {
     expect(clearPanelFromUrl("?panel=file-viewer&path=%2Fnotes.md", "file-viewer")).toBe("");
   });
-  it("clears ?tab when the URL-named inbox closes", () => {
-    expect(clearPanelFromUrl("?panel=teams-inbox&tab=approvals", "teams-inbox")).toBe("");
+  it("clears ?section when the URL-named inbox closes", () => {
+    expect(clearPanelFromUrl("?panel=teams-inbox&section=needs-you", "teams-inbox")).toBe("");
   });
 });
 
-describe("clearClosedPanelFromUrl (sentinel unification)", () => {
-  it("clears ?agent=<concrete default> when the sentinel chat panel closes", () => {
-    // The reconciler focused the sentinel for this command (openChatPanel's
-    // unification), so the close event carries chat:__default__ while the URL
-    // names the concrete id.
-    expect(clearClosedPanelFromUrl("?agent=friday-id", "chat:__default__", () => "friday-id")).toBe(
+describe("clearClosedPanelFromUrl (Messages singleton)", () => {
+  it("clears ?agent=<concrete default> when Messages closes", () => {
+    expect(clearClosedPanelFromUrl("?agent=friday-id", "chat:__default__")).toBe(
       "",
     );
   });
-  it("clears a sentinel-named URL when the concrete default panel closes", () => {
+  it("clears a sentinel-named URL when Messages closes", () => {
     expect(
-      clearClosedPanelFromUrl("?agent=__default__", "chat:friday-id", () => "friday-id"),
+      clearClosedPanelFromUrl("?agent=__default__", MESSAGES_PANEL_ID),
     ).toBe("");
   });
-  it("returns null when the resolver doesn't know the default agent", () => {
+  it("clears an explicit chat URL without resolving the default agent", () => {
     expect(
-      clearClosedPanelFromUrl("?agent=friday-id", "chat:__default__", () => undefined),
-    ).toBeNull();
+      clearClosedPanelFromUrl("?panel=chat&agentId=friday-id&checkout=success", MESSAGES_PANEL_ID),
+    ).toBe("checkout=success");
   });
-  it("does not unify a NON-default concrete id with the sentinel", () => {
+  it("clears Messages for a non-default agent too", () => {
     expect(
-      clearClosedPanelFromUrl("?agent=other-id", "chat:__default__", () => "friday-id"),
-    ).toBeNull();
+      clearClosedPanelFromUrl("?agent=other-id", "chat:__default__"),
+    ).toBe("");
   });
   it("passes plain (non-sentinel) closes straight through", () => {
-    expect(clearClosedPanelFromUrl("?agent=agent-1", "chat:agent-1", () => undefined)).toBe("");
-    expect(clearClosedPanelFromUrl("?panel=teams-inbox", "teams-inbox", () => "friday-id")).toBe(
+    expect(clearClosedPanelFromUrl("?agent=agent-1", MESSAGES_PANEL_ID)).toBe("");
+    expect(clearClosedPanelFromUrl("?panel=teams-inbox", "teams-inbox")).toBe(
       "",
     );
-    expect(clearClosedPanelFromUrl("?panel=teams-inbox", "teams-issues", () => "friday-id")).toBeNull();
+    expect(clearClosedPanelFromUrl("?panel=teams-inbox", "teams-issues")).toBeNull();
   });
 });
 

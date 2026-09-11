@@ -27,7 +27,7 @@ from __future__ import annotations
 import re
 from typing import TypedDict
 
-from core.billing.bedrock_aip import TIER_TO_FM, resolve_tier_from_aip_arn
+from core.billing.bedrock_aip import TIER_TO_FM
 
 
 class UnknownModelError(Exception):
@@ -207,43 +207,3 @@ def price_from_tier(
         cache_read_tokens=cache_read_tokens,
         cache_write_tokens=cache_write_tokens,
     )
-
-
-async def price_from_aip_arn(
-    *,
-    aip_arn: str,
-    input_tokens: int,
-    output_tokens: int,
-    cache_read_tokens: int = 0,
-    cache_write_tokens: int = 0,
-) -> int:
-    """Price an invocation whose modelId is a per-owner AIP ARN.
-
-    The AIP ARN cannot be priced directly (it carries no foundation-model id),
-    so we resolve the owner's tier (Plan 2's AIP registry) and delegate to
-    ``price_from_tier``. The meter endpoint prefers ``price_from_tier`` directly
-    (it resolves the tier alongside the owner in one read); this helper remains
-    for callers that hold only the AIP ARN.
-
-    NOTE (plan/reality reconciliation): the Plan-3 doc declared this helper
-    synchronous and called ``resolve_tier_from_aip_arn`` without ``await``. The
-    merged Plan-2 ``resolve_tier_from_aip_arn`` is an ``async def`` (it does a
-    DynamoDB reverse-table GetItem), so this helper MUST be ``async`` and await
-    it — a sync call would only ever return an un-awaited coroutine, which the
-    tier map never matches, silently raising UnknownModelError on every record.
-
-    Raises:
-        UnknownModelError: the AIP ARN maps to no known tier.
-    """
-    tier = await resolve_tier_from_aip_arn(aip_arn)
-    try:
-        return price_from_tier(
-            tier,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cache_read_tokens=cache_read_tokens,
-            cache_write_tokens=cache_write_tokens,
-        )
-    except UnknownModelError:
-        # Surface the AIP ARN (the caller's input) in the error, not the tier.
-        raise UnknownModelError(aip_arn) from None

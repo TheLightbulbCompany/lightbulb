@@ -1,21 +1,23 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, act } from "@testing-library/react";
-import { useEffect } from "react";
+import type { LiveEvent } from "@lightbulb/shared";
 
-// Module-level handlers — captured from the mocked useGateway so the
-// test can drive synthetic events into the provider.
+// Module-level handler captured from the live-events provider so tests can
+// drive canonical Paperclip envelopes into the invalidation layer.
 let eventHandler: ((event: string, data: unknown) => void) | null = null;
-const sendMock = vi.fn();
-const setIsConnected = vi.fn();
+const liveState = { connectionRevision: 0 };
 
-const gatewayState = { isConnected: false };
-
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({
-    isConnected: gatewayState.isConnected,
-    send: sendMock,
-    onEvent: (handler: (event: string, data: unknown) => void) => {
-      eventHandler = handler;
+vi.mock("@/hooks/useLiveEvents", () => ({
+  useLiveEvents: () => ({
+    connectionRevision: liveState.connectionRevision,
+    onEvent: (handler: (event: LiveEvent) => void) => {
+      eventHandler = (eventName, payload) => handler({
+        schemaVersion: 1,
+        eventId: `event-${eventName}`,
+        type: "paperclip.event",
+        occurredAt: "2026-09-09T00:00:00.000Z",
+        payload: { eventName, payload },
+      } as LiveEvent);
       return () => {
         eventHandler = null;
       };
@@ -24,8 +26,8 @@ vi.mock("@/hooks/useGateway", () => ({
 }));
 
 const mutateMock = vi.fn();
-vi.mock("swr", () => ({
-  useSWRConfig: () => ({ mutate: mutateMock }),
+vi.mock("@/hooks/useTeamsApi", () => ({
+  useTeamsApi: () => ({ mutate: mutateMock }),
 }));
 
 /**
@@ -98,26 +100,16 @@ function invalidatedKeys(): string[] {
 }
 
 import { TeamsEventsProvider, EVENT_KEY_MAP } from "@/components/teams/TeamsEventsProvider";
-import { acquireTeamsEvents, releaseTeamsEvents, _resetTeamsEventsForTests } from "@/lib/teamsSubscription";
 
 beforeEach(() => {
-  sendMock.mockReset();
   mutateMock.mockReset();
-  setIsConnected.mockReset();
   eventHandler = null;
-  gatewayState.isConnected = false;
-  _resetTeamsEventsForTests();
+  liveState.connectionRevision = 0;
 });
 
 describe("TeamsEventsProvider", () => {
-  it("sends teams.subscribe when connected", async () => {
-    gatewayState.isConnected = true;
-    render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
-    expect(sendMock).toHaveBeenCalledWith({ type: "teams.subscribe" });
-  });
-
   it("invalidates inbox + dashboard + activity + issues on teams.activity.logged", async () => {
-    gatewayState.isConnected = true;
+    liveState.connectionRevision = 1;
     render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
     expect(eventHandler).not.toBeNull();
     // Isolate the event's invalidation from the first-subscribe reconcile
@@ -149,7 +141,7 @@ describe("TeamsEventsProvider", () => {
     // never matches the detail key `/teams/issues/{id}`, and nothing else
     // rescues it — `revalidateOnFocus` is globally off (SwrProvider) and
     // useIssueDetail sets no refreshInterval.
-    gatewayState.isConnected = true;
+    liveState.connectionRevision = 1;
     render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
     mutateMock.mockClear(); // drop the first-subscribe reconcile
 
@@ -180,7 +172,7 @@ describe("TeamsEventsProvider", () => {
   });
 
   it("does not touch issue-detail keys for non-issue activity events", () => {
-    gatewayState.isConnected = true;
+    liveState.connectionRevision = 1;
     render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
     mutateMock.mockClear();
 
@@ -198,7 +190,7 @@ describe("TeamsEventsProvider", () => {
   });
 
   it("survives an activity payload with no entityId", () => {
-    gatewayState.isConnected = true;
+    liveState.connectionRevision = 1;
     render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
     mutateMock.mockClear();
 
@@ -217,7 +209,7 @@ describe("TeamsEventsProvider", () => {
   ])(
     "invalidates the open %s detail subtree + its list on an entity activity event",
     (entityType, entityId, expectedDetailKeys, listKey) => {
-      gatewayState.isConnected = true;
+      liveState.connectionRevision = 1;
       render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
       mutateMock.mockClear(); // drop the first-subscribe reconcile
 
@@ -243,7 +235,7 @@ describe("TeamsEventsProvider", () => {
   it("invalidates both the primary and legacy run keys on a heartbeat_run activity event", () => {
     // RunDetailPanel reads `/teams/heartbeat-runs/{id}` with a `/teams/runs/{id}`
     // legacy fallback, and its sub-resources carry query strings.
-    gatewayState.isConnected = true;
+    liveState.connectionRevision = 1;
     render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
     mutateMock.mockClear();
 
@@ -267,7 +259,7 @@ describe("TeamsEventsProvider", () => {
     // AgentInspectorPanel has no `/teams/agents/{id}` key — it scans the
     // roster list. Only `teams.agent.status` refreshed that list before, so an
     // agent.updated/paused/renamed activity left the inspector stale.
-    gatewayState.isConnected = true;
+    liveState.connectionRevision = 1;
     render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
     mutateMock.mockClear();
 
@@ -286,7 +278,7 @@ describe("TeamsEventsProvider", () => {
     // Paperclip's plugin SDK can emit an arbitrary entityType/entityId
     // (plugin-host-services.ts), and built-in agents can pass a slug instead
     // of a UUID. Both must be inert, not throw and not over-invalidate.
-    gatewayState.isConnected = true;
+    liveState.connectionRevision = 1;
     render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
     mutateMock.mockClear();
 
@@ -309,7 +301,7 @@ describe("TeamsEventsProvider", () => {
     // the entity prefixes are omitted, a routine/project/goal changed while
     // the user was outside Teams stays stale on re-entry, because the read
     // layer's 15s dedup blocks the mount-refetch.
-    gatewayState.isConnected = true;
+    liveState.connectionRevision = 1;
     render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
     const keys = invalidatedKeys();
     expect(keys).toEqual(expect.arrayContaining([
@@ -318,7 +310,7 @@ describe("TeamsEventsProvider", () => {
   });
 
   it("invalidates dashboard + agents on teams.agent.status", () => {
-    gatewayState.isConnected = true;
+    liveState.connectionRevision = 1;
     render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
     mutateMock.mockClear(); // drop the first-subscribe reconcile
     act(() => {
@@ -330,7 +322,7 @@ describe("TeamsEventsProvider", () => {
   });
 
   it("invalidates dashboard + inbox on teams.heartbeat.run.queued", () => {
-    gatewayState.isConnected = true;
+    liveState.connectionRevision = 1;
     render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
     mutateMock.mockClear(); // drop the first-subscribe reconcile
     act(() => {
@@ -351,7 +343,7 @@ describe("TeamsEventsProvider", () => {
       // the `?`-bounded prefixes in EVENT_KEY_MAP — so an open Task panel
       // kept showing a terminated run as "Running" until remount. Run
       // lifecycle events must refresh cached per-issue runs lists directly.
-      gatewayState.isConnected = true;
+      liveState.connectionRevision = 1;
       render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
       mutateMock.mockClear(); // drop the first-subscribe reconcile
       act(() => {
@@ -367,7 +359,7 @@ describe("TeamsEventsProvider", () => {
   );
 
   it("ignores teams.plugin.* events (no UI bound in v1)", () => {
-    gatewayState.isConnected = true;
+    liveState.connectionRevision = 1;
     render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
     mutateMock.mockClear(); // drop the first-subscribe reconcile
     act(() => {
@@ -378,7 +370,7 @@ describe("TeamsEventsProvider", () => {
   });
 
   it("invalidates every distinct mapped key on teams.stream.resumed", () => {
-    gatewayState.isConnected = true;
+    liveState.connectionRevision = 1;
     render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
     mutateMock.mockClear(); // drop the first-subscribe reconcile
     act(() => {
@@ -398,15 +390,11 @@ describe("TeamsEventsProvider", () => {
     ]));
   });
 
-  it("reconciles (invalidates all mapped keys) on FIRST subscribe when already connected", () => {
-    // The gateway connection persists across navigation while this provider
-    // mounts/unmounts with the Teams layout. Mounting already-connected means
-    // any activity.logged emitted while the user was outside Teams was missed
-    // (Paperclip WS has no replay) and the read layer's 15s dedup blocks the
-    // mount-refetch — so first-subscribe MUST reconcile, not just reconnect.
-    gatewayState.isConnected = true;
+  it("reconciles all mapped keys on provider entry", () => {
+    // AppSync has no replay. Entering Teams must reconcile reads even if the
+    // private user subscription was already live while this provider was absent.
+    liveState.connectionRevision = 1;
     render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
-    expect(sendMock).toHaveBeenCalledWith({ type: "teams.subscribe" });
     const keys = invalidatedKeys();
     expect(keys).toEqual(
       expect.arrayContaining([
@@ -415,52 +403,26 @@ describe("TeamsEventsProvider", () => {
         "/teams/inbox",
         "/teams/issues",
         "/teams/agents",
-        // The reconcile MUST cover every key any event maps to — including the
-        // NeedsAttentionBand sources — or a missed approval/failed-run stays
-        // stale on Teams re-entry. Regression guard for the ALL_KEYS drift.
         "/teams/approvals",
         "/teams/inbox/runs",
-        // Per-issue runs lists reconcile via mutateIssueRunLists, not ALL_KEYS.
         "/teams/issues/iss_1/runs",
       ]),
     );
   });
 
-  it("re-subscribes and invalidates on isConnected false→true transition", () => {
-    gatewayState.isConnected = false;
+  it("reconciles when the live connection revision advances", () => {
+    liveState.connectionRevision = 0;
     const { rerender } = render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
-    expect(sendMock).not.toHaveBeenCalled();
+    mutateMock.mockClear();
 
-    gatewayState.isConnected = true;
+    liveState.connectionRevision = 1;
     rerender(<TeamsEventsProvider><div /></TeamsEventsProvider>);
-    expect(sendMock).toHaveBeenCalledWith({ type: "teams.subscribe" });
-    // And ALL mapped keys are invalidated as a "no backfill" safety net.
     const keys = invalidatedKeys();
     expect(keys).toEqual(expect.arrayContaining(["/teams/dashboard", "/teams/inbox"]));
   });
 
-  it("sends teams.unsubscribe on unmount", () => {
-    gatewayState.isConnected = true;
-    const { unmount } = render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
-    sendMock.mockClear();
-    unmount();
-    expect(sendMock).toHaveBeenCalledWith({ type: "teams.unsubscribe" });
-  });
-
-  it("does NOT unsubscribe on unmount while another consumer holds the subscription", () => {
-    gatewayState.isConnected = true;
-    // Simulate RunNotifications holding the shared subscription.
-    acquireTeamsEvents();
-    const { unmount } = render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
-    sendMock.mockClear();
-    unmount();
-    expect(sendMock).not.toHaveBeenCalledWith({ type: "teams.unsubscribe" });
-    // Drop the simulated holder so no state escapes this test.
-    releaseTeamsEvents(sendMock);
-  });
-
   it("ignores non-teams events (e.g. an OpenClaw event leaking through)", () => {
-    gatewayState.isConnected = true;
+    liveState.connectionRevision = 1;
     render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
     mutateMock.mockClear(); // drop the first-subscribe reconcile
     act(() => {
@@ -471,7 +433,7 @@ describe("TeamsEventsProvider", () => {
   });
 
   it("invalidates query-stringed inbox keys (#3c useInboxData fan-out) on inbox events", () => {
-    gatewayState.isConnected = true;
+    liveState.connectionRevision = 1;
     render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
     mutateMock.mockClear(); // drop the first-subscribe reconcile
 
@@ -537,7 +499,7 @@ describe("TeamsEventsProvider revalidation throttle", () => {
   });
 
   it("coalesces a burst on one key into a leading fire plus ONE trailing flush", () => {
-    gatewayState.isConnected = true;
+    liveState.connectionRevision = 1;
     render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
     mutateMock.mockClear(); // drop the first-subscribe reconcile
 
@@ -558,10 +520,10 @@ describe("TeamsEventsProvider revalidation throttle", () => {
 
   it("does not drop the LAST event of a burst", () => {
     // The reason this throttle has a trailing edge at all, unlike the sibling
-    // useGatewayRpc path which just drops suppressed events: these keys have
+    // useRuntimeRpc path which just drops suppressed events: these keys have
     // no refreshInterval and revalidateOnFocus is off globally, so a dropped
     // final event would leave the board stale until the next Teams re-entry.
-    gatewayState.isConnected = true;
+    liveState.connectionRevision = 1;
     render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
 
     const issueActivity = {
@@ -589,7 +551,7 @@ describe("TeamsEventsProvider revalidation throttle", () => {
   });
 
   it("throttles per key — a busy key does not suppress a quiet one", () => {
-    gatewayState.isConnected = true;
+    liveState.connectionRevision = 1;
     render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
     mutateMock.mockClear();
 
@@ -611,7 +573,7 @@ describe("TeamsEventsProvider revalidation throttle", () => {
   it("lets a single isolated event through immediately (leading edge)", () => {
     // Throttling must not add latency to the common case: one change, one
     // live update. The board should not feel laggy.
-    gatewayState.isConnected = true;
+    liveState.connectionRevision = 1;
     render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
     mutateMock.mockClear();
 
@@ -624,7 +586,7 @@ describe("TeamsEventsProvider revalidation throttle", () => {
   it("leaves the reconcile paths unthrottled", () => {
     // stream.resumed is the missed-event catch-up, not a per-mutation signal.
     // Throttling it would reopen the staleness window it exists to close.
-    gatewayState.isConnected = true;
+    liveState.connectionRevision = 1;
     render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
     mutateMock.mockClear();
 
@@ -672,7 +634,7 @@ describe("TeamsEventsProvider board keeper", () => {
   });
 
   it("revalidates the board keys after 20s while the tab is visible", () => {
-    gatewayState.isConnected = true;
+    liveState.connectionRevision = 1;
     render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
     mutateMock.mockClear(); // drop the first-subscribe reconcile
 
@@ -699,7 +661,7 @@ describe("TeamsEventsProvider board keeper", () => {
 
   it("does NOT revalidate while the tab is hidden (background tabs must not spin)", () => {
     visibility = "hidden";
-    gatewayState.isConnected = true;
+    liveState.connectionRevision = 1;
     render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
     mutateMock.mockClear(); // drop the first-subscribe reconcile
 
@@ -720,7 +682,3 @@ describe("EVENT_KEY_MAP triage wiring", () => {
     expect(EVENT_KEY_MAP["teams.heartbeat.run.status"]).toContain("/teams/inbox/runs");
   });
 });
-
-// Coverage-only export to suppress unused-import warning on useEffect.
-const _u = useEffect;
-void _u;

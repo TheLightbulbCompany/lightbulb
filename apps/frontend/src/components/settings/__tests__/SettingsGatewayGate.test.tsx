@@ -1,32 +1,27 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 
-// The gate wraps /settings in the GatewayProvider so the gateway-bound config
-// panels (Skills, Skill Proposals, Channel Status, MCP, LLM health dot)
-// can mount.
-
-// Stub GatewayProvider so the test never opens a real WebSocket; we only assert
-// the provider boundary wraps the children.
-vi.mock("@/hooks/useGateway", () => ({
-  GatewayProvider: ({ children }: { children: React.ReactNode }) => (
-    <div data-testid="gateway-provider">{children}</div>
+// Settings routes need the shared live/runtime provider so authenticated
+// configuration panels can issue canonical HTTP RPCs and receive invalidations.
+vi.mock("@/hooks/useLiveEvents", () => ({
+  LiveEventsProvider: ({ children }: { children: React.ReactNode }) => (
+    <div data-testid="live-events-provider">{children}</div>
   ),
 }));
 
 import { SettingsGatewayGate } from "../SettingsGatewayGate";
 
 describe("SettingsGatewayGate", () => {
-  it("wraps children INSIDE the GatewayProvider", () => {
+  it("wraps children inside the LiveEventsProvider", () => {
     render(
       <SettingsGatewayGate>
         <span data-testid="settings-child">child content</span>
       </SettingsGatewayGate>,
     );
-    const provider = screen.getByTestId("gateway-provider");
+    const provider = screen.getByTestId("live-events-provider");
     const child = screen.getByTestId("settings-child");
     expect(provider).toBeInTheDocument();
-    // Nested inside, not a sibling — this is what makes the WS available to
-    // every gateway-bound /settings panel.
+    // Nested inside, not a sibling, so every settings panel shares one client.
     expect(provider).toContainElement(child);
   });
 });

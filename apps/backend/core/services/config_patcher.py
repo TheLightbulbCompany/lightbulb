@@ -12,7 +12,7 @@ from collections.abc import Iterable
 from typing import Any, Callable
 
 from core.config import settings
-from core.containers.config import memory_plugin_entries, workflow_plugin_entries
+from core.containers.config import _lightbulb_bindings, memory_plugin_entries, workflow_plugin_entries
 from core.services.agent_roster import read_agent_roster, write_agent_roster
 from core.services.config_schema import ConfigSchemaError, gate_config
 from core.services.efs_file_lock import (
@@ -196,6 +196,10 @@ def _ensure_channel_bindings_for_patch(cfg: dict, patch: dict, agent_for_account
     channels = patch.get("channels")
     if not isinstance(channels, dict):
         return
+    agents_block = cfg.get("agents") or {}
+    known_agent_ids = set(agents_block.get("entries") or {}) | {
+        a.get("id") for a in (agents_block.get("list") or []) if isinstance(a, dict)
+    }
     bindings = cfg.get("bindings")
     if not isinstance(bindings, list):
         bindings = []
@@ -210,6 +214,15 @@ def _ensure_channel_bindings_for_patch(cfg: dict, patch: dict, agent_for_account
             if not isinstance(account_cfg, dict):
                 continue
             mapped_agent_id = (agent_for_account or {}).get(account_id)
+            if mapped_agent_id is not None and known_agent_ids and mapped_agent_id not in known_agent_ids:
+                # Third door onto the same invariant. `apply_install` maps the
+                # account to the agent recorded when the OAuth flow STARTED; if
+                # that agent is deleted before the callback lands, the mapping
+                # names an agent that no longer exists. Leaving the account
+                # unbound misroutes it to the default agent — recoverable, and
+                # far better than a binding that makes the whole config
+                # unloadable and freezes every later change.
+                continue
             if mapped_agent_id is not None:
                 # Rebinding this account to a different agent must not leave
                 # the OLD account-wide binding behind, or the dispatcher can
@@ -224,6 +237,14 @@ def _ensure_channel_bindings_for_patch(cfg: dict, patch: dict, agent_for_account
                 agent_id = mapped_agent_id
             else:
                 agent_id = account_id
+                # Same invariant as the reprovision path in containers/config.py:
+                # a binding must name an agent that exists, or OpenClaw rejects
+                # the WHOLE config at load and the owner is frozen on their
+                # previous file. Enforced only when this config actually
+                # declares a roster — a config we cannot read one from must not
+                # silently lose its bindings.
+                if known_agent_ids and agent_id not in known_agent_ids:
+                    continue
             new_binding = {
                 "type": "route",
                 "agentId": agent_id,
@@ -313,8 +334,8 @@ async def replace_provider_block(
 
     ``heartbeat_model`` governs ``heartbeat.model`` SEPARATELY from
     ``cheap_model``: the heartbeat is an ordinary agent turn the Codex OAuth
-    token CAN serve on the mini tier (unlike compaction), so on the Bedrock →
-    ChatGPT swap it re-pins to ``openai/gpt-5.4-mini`` while the compaction
+    token CAN serve on the Luna tier (unlike compaction), so on the Bedrock →
+    ChatGPT swap it re-pins to ``openai/gpt-5.6-luna`` while the compaction
     slots clear. Folding it into ``cheap_model`` (the old behavior) silently
     dropped the heartbeat's cheap-tier routing on that swap. Sibling keys
     (``every``, ``isolatedSession``, ``lightContext``) are preserved.
@@ -515,7 +536,7 @@ async def replace_provider_block(
         # below never collide with them.
         plugins["entries"] = {
             **workflow_plugin_entries(llm_task_model=llm_task_model),
-            **memory_plugin_entries(),
+            **memory_plugin_entries(owner_id),
             **copy.deepcopy(acpx_entry or {}),
             **copy.deepcopy(plugin_entries),
         }
@@ -864,6 +885,85 @@ async def apply_paperclip_meta(
         _mutate,
         f"paperclip-meta merge agent_id={agent_id!r}",
     )
+
+
+async def register_lightbulb_agent_account(owner_id: str, agent_id: str) -> None:
+    """Add ``agent_id`` to ``channels.lightbulb.accounts`` plus its matching
+    top-level binding — the exact shape ``core.containers.config
+    ._lightbulb_bindings`` emits at provision/reprovision time.
+
+    ``build_openclaw_config_dict`` only derives these from the live Paperclip
+    roster when the WHOLE config is (re)written (provision, reapply, image
+    update). An agent hired afterwards — chat-intercepted ``agents.create``,
+    or a marketplace/catalog deploy — never goes through that path, so without
+    this call the new agent has no inbound route on the ``lightbulb`` channel
+    and every room message dispatched to it 404s against the plugin forever.
+    The plugin declares ``reload.configPrefixes: ["channels.lightbulb"]`` +
+    ``accountScopedRestart``, so this hot patch alone is enough.
+
+    Idempotent: no-op write when the account and binding already match.
+    """
+
+    def _mutate(current: dict) -> bool:
+        changed = False
+        channels = current.get("channels")
+        if not isinstance(channels, dict):
+            channels = {}
+            current["channels"] = channels
+        lightbulb = channels.get("lightbulb")
+        if not isinstance(lightbulb, dict):
+            lightbulb = {"enabled": True}
+            channels["lightbulb"] = lightbulb
+        accounts = lightbulb.get("accounts")
+        if not isinstance(accounts, dict):
+            accounts = {}
+            lightbulb["accounts"] = accounts
+        if accounts.get(agent_id) != {"enabled": True}:
+            accounts[agent_id] = {"enabled": True}
+            changed = True
+
+        bindings = current.get("bindings")
+        if not isinstance(bindings, list):
+            bindings = []
+            current["bindings"] = bindings
+        binding = _lightbulb_bindings([agent_id])[0]
+        if binding not in bindings:
+            bindings.append(binding)
+            changed = True
+        return changed
+
+    await _locked_rmw(owner_id, _mutate, f"register lightbulb channel account agent_id={agent_id!r}")
+
+
+async def deregister_lightbulb_agent_account(owner_id: str, agent_id: str) -> None:
+    """Remove ``agent_id``'s Lightbulb channel account + binding.
+
+    Counterpart of :func:`register_lightbulb_agent_account` — called on the
+    ``agents.delete`` path (and a failed hire's rollback) so a deleted agent
+    doesn't leave a dead inbound route behind. No-op if absent.
+    """
+
+    def _mutate(current: dict) -> bool:
+        changed = False
+        channels = current.get("channels")
+        if isinstance(channels, dict):
+            lightbulb = channels.get("lightbulb")
+            if isinstance(lightbulb, dict):
+                accounts = lightbulb.get("accounts")
+                if isinstance(accounts, dict) and agent_id in accounts:
+                    del accounts[agent_id]
+                    changed = True
+
+        bindings = current.get("bindings")
+        if isinstance(bindings, list):
+            binding = _lightbulb_bindings([agent_id])[0]
+            filtered = [b for b in bindings if b != binding]
+            if len(filtered) != len(bindings):
+                current["bindings"] = filtered
+                changed = True
+        return changed
+
+    await _locked_rmw(owner_id, _mutate, f"deregister lightbulb channel account agent_id={agent_id!r}")
 
 
 async def delete_openclaw_config_path(

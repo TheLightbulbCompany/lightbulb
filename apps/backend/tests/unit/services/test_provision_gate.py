@@ -1,5 +1,6 @@
 """Tests for the provision-gate helper."""
 
+import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -11,7 +12,26 @@ from core.services.provision_gate import (
     is_paid_subscription,
     is_subscription_active,
     is_trial_blocked,
+    should_arm_nightly_ceo,
 )
+
+
+@pytest.mark.parametrize(
+    "account,expected",
+    [
+        ({"subscription_status": "active"}, True),
+        ({"subscription_status": "trialing"}, True),
+        ({"subscription_status": None, "stripe_subscription_id": "sub_1"}, True),  # legacy paid
+        ({"subscription_status": "trial_local", "trial_end": int(time.time()) + 86400}, True),  # active trial
+        ({"subscription_status": "trial_local", "trial_end": int(time.time()) - 86400}, False),  # expired trial
+        ({"subscription_status": "trial_local"}, True),  # no trial_end -> not expired -> armed
+        ({"subscription_status": "canceled"}, False),
+        ({"subscription_status": "past_due"}, False),
+        (None, False),
+    ],
+)
+def test_should_arm_nightly_ceo(account, expected):
+    assert should_arm_nightly_ceo(account) is expected
 
 
 @pytest.mark.asyncio
@@ -36,11 +56,9 @@ async def test_no_billing_account_returns_signup_required():
 @pytest.mark.asyncio
 async def test_no_billing_org_owner_returns_team_billing_required():
     """An org owner (owner_id starts with 'org_') with no billing row gets a
-    DISTINCT team_billing_required code, not the personal signup_required. The
-    free tier is personal-only, so a team never falls into a card-less
-    trial_local — an org with no billing needs per-seat Teams billing, and the
-    frontend keys the Teams paywall off this code rather than the personal
-    provider picker."""
+    DISTINCT team_billing_required code, not generic signup_required. An org
+    with no billing needs a Workspace Stripe subscription, and the frontend
+    keys its workspace-billing CTA off this stable compatibility code."""
     with (
         patch("core.services.provision_gate.billing_repo") as repo,
         patch("core.services.trial_cap.billing_repo", repo),

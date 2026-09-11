@@ -1,29 +1,8 @@
-/* Dockable workspace shell grid.
- *
- * A fixed 280px sidebar spanning full height, with a flex-column main area on
- * the right (header row, then banners + stepper + dock fill):
- *
- *     +-----------+------------------+
- *     |           |     header       |   <- 56px row
- *     |  sidebar  +------------------+
- *     |  (280px)  | content          |
- *     |           |  banners         |
- *     |           |  dock (flex fill)|
- *     +-----------+------------------+
- *
- * The sidebar itself reuses ChatLayout.css's `.cream-sidebar` block (roster,
- * `.create-pill`, `.agent-item`, `.session-list`, footer …) verbatim — those
- * classes aren't grid-coupled and are safe to share. What is NOT reused is
- * `.app-shell` / `.main-area`: those are coupled to the old file-viewer slide
- * transition (grid-template-columns morph) which the dock replaces.
- *
- * Palette is the brand token set the sidebar uses: --cream / --cream-deep
- * grounds, --edge borders, --midnight for the dark controls.
- */
+/* Message workspace: global rail, conversation directory, flexible canvas. */
 .workspace-shell {
   display: grid;
-  grid-template-columns: 280px 1fr;
-  grid-template-areas: "sidebar main";
+  grid-template-columns: 56px 264px minmax(0, 1fr);
+  grid-template-areas: "rail sidebar main";
   height: 100vh;
   /* clip, not hidden: a hidden box is still programmatically scrollable, so
      any stray scrollIntoView/focus reveal can shift the entire shell out of
@@ -34,6 +13,75 @@
 
 .workspace-shell > .cream-sidebar {
   grid-area: sidebar;
+  min-width: 0;
+}
+
+.workspace-shell .workspace-primary-nav,
+.workspace-shell .workspace-more-nav {
+  padding: 8px 12px;
+}
+
+.workspace-shell .workspace-primary-nav,
+.workspace-shell .workspace-more-nav nav {
+  display: grid;
+  gap: 2px;
+}
+
+.workspace-shell .workspace-primary-nav button,
+.workspace-shell .workspace-more-nav button,
+.workspace-shell .workspace-more-nav summary {
+  min-height: 36px;
+  border-radius: 4px;
+  padding: 6px 8px;
+  color: var(--midnight-soft);
+  font-size: var(--text-ui);
+  cursor: pointer;
+}
+
+.workspace-shell .workspace-primary-nav button,
+.workspace-shell .workspace-more-nav button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+}
+
+.workspace-shell .workspace-primary-nav button:enabled:hover,
+.workspace-shell .workspace-primary-nav button[aria-current="page"],
+.workspace-shell .workspace-more-nav button:enabled:hover,
+.workspace-shell .workspace-more-nav button[aria-current="page"],
+.workspace-shell .workspace-more-nav summary:hover {
+  background: var(--cream-deeper);
+  color: var(--midnight);
+}
+
+.workspace-shell .workspace-primary-nav button:disabled,
+.workspace-shell .workspace-more-nav button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.workspace-shell .workspace-primary-nav button:focus-visible,
+.workspace-shell .workspace-more-nav button:focus-visible,
+.workspace-shell .workspace-more-nav summary:focus-visible {
+  outline: 2px solid var(--midnight);
+  outline-offset: 2px;
+}
+
+/* The sidebar owns the scroll; the shared mobile directory keeps its layout. */
+.workspace-shell .sidebar-scroll > .room-directory {
+  height: auto;
+  overflow: visible;
+  border-right: 0;
+  gap: 16px;
+  padding: 8px 12px;
+}
+
+.workspace-shell .workspace-conversations-disabled {
+  padding: 8px 20px;
+  color: var(--midnight-muted);
+  font-size: var(--text-ui);
 }
 
 .workspace-main {
@@ -59,6 +107,44 @@
   padding: 0 16px;
   border-bottom: 1px solid var(--edge);
   background: var(--cream);
+}
+
+.workspace-header__spacer {
+  min-width: 8px;
+  flex: 1 1 0;
+}
+
+.workspace-search {
+  display: grid;
+  width: min(360px, 40vw);
+  height: 32px;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  padding: 0 8px;
+  background: var(--cream-deep);
+  color: var(--midnight-muted);
+  font-size: 12px;
+  text-align: left;
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+.workspace-search:hover {
+  background: var(--cream-deeper);
+  color: var(--midnight);
+}
+
+.workspace-search:focus-visible {
+  outline: 2px solid var(--midnight);
+  outline-offset: 2px;
+}
+
+.workspace-search kbd {
+  border-left: 1px solid var(--edge);
+  padding-left: 8px;
+  font: inherit;
 }
 
 /* …but that rule and the sidebar header's own `border-bottom` (ChatLayout.css,
@@ -90,6 +176,7 @@
   min-height: 0;
   background: var(--cream);
 }
+
 
 /* ── Panel-content scroll model ──────────────────────────────────────────
  *
@@ -240,4 +327,75 @@
 .dv-shell.dockview-theme-lightbulb .dv-tab.dv-inactive-tab:hover {
   background-color: var(--cream-deeper);
   color: var(--midnight);
+}
+
+/* Global destinations are always reachable, including with dock tabs hidden. */
+.workspace-rail {
+  grid-area: rail;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 4px;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--cream-deep);
+  border-right: 1px solid var(--edge);
+}
+.workspace-rail > button,
+.workspace-rail > a {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 44px;
+  min-height: 40px;
+  border-radius: 7px;
+  color: var(--midnight-muted);
+  text-decoration: none;
+  cursor: pointer;
+}
+.workspace-rail > button span { font-size: 9px; font-weight: 600; }
+.workspace-rail .workspace-rail__icon { position: relative; display: inline-flex; }
+.workspace-rail .workspace-rail__activity-badge {
+  position: absolute;
+  top: -6px;
+  right: -10px;
+  display: grid;
+  place-items: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border: 1px solid var(--warn);
+  border-radius: 999px;
+  background: var(--cream-deep);
+  color: var(--warn);
+  font-size: 8px;
+  font-weight: 600;
+  line-height: 1;
+}
+.workspace-rail > button:hover,
+.workspace-rail > a:hover,
+.workspace-rail > button[aria-current="page"] {
+  color: var(--midnight);
+  background: var(--cream-deeper);
+}
+.workspace-rail > button:disabled { opacity: 0.5; cursor: not-allowed; }
+.workspace-rail > button:focus-visible,
+.workspace-rail > a:focus-visible { outline: 2px solid var(--midnight); outline-offset: 1px; }
+.workspace-rail__spacer { flex: 1; min-height: 16px; }
+.workspace-shell .sidebar-header { flex: none; }
+.workspace-shell .sidebar-footer { padding: 12px 16px; }
+.workspace-shell .workspace-status { margin-top: 12px; font-size: var(--text-caption); color: var(--midnight-muted); }
+.workspace-shell .workspace-status summary { cursor: pointer; }
+.workspace-shell .workspace-status summary:focus-visible { outline: 2px solid var(--midnight); }
+.workspace-shell .workspace-status > :not(summary) { margin-top: 12px; }
+.workspace-shell[data-messages-active="true"] .dv-tabs-and-actions-container { display: none; }
+.workspace-shell[data-messages-active="true"] .dockview-theme-lightbulb {
+  --dv-tabs-and-actions-container-height: 0px;
+}
+@media (max-width: 1000px) {
+  .workspace-shell { grid-template-columns: 56px 220px minmax(0, 1fr); }
 }

@@ -304,6 +304,7 @@ _PAPERCLIP_PROVISION_FIELDS = (
     "paperclip_user_id",
     "last_error",
     "seeded_agent_ids",
+    "starter_agent_ids",
     "scheduled_purge_at",
     "onboarding_generation",
     "funnel_state",
@@ -312,14 +313,6 @@ _PAPERCLIP_PROVISION_FIELDS = (
     "onboarding_goal_id",
     "onboarding_project_id",
     "onboarding_submitted_by",
-    "bootstrap_state",
-    "bootstrap_attempts",
-    "bootstrap_dispatch_id",
-    "bootstrap_dispatched_at",
-    "bootstrap_send_attempted_at",
-    "bootstrap_sent_at",
-    "bootstrap_delivered_at",
-    "bootstrap_last_error",
     "created_at",
     "updated_at",
 )
@@ -423,7 +416,10 @@ async def get_provisioning(user_id: str) -> dict:
 
     status_contract, paperclip_row, gate = await asyncio.gather(
         _with_timeout(compute_status(owner_id, container=container), "readiness_status"),
-        _with_timeout(_paperclip_repo().get(owner_id), "ddb_paperclip"),
+        _with_timeout(
+            _paperclip_repo().resolve_owner_row(owner_id, include_inactive=True),
+            "ddb_paperclip",
+        ),
         _with_timeout(probe_provision_gate(owner_id=owner_id), "provision_gate"),
     )
     paperclip_read_failed = _read_failed(paperclip_row, label="ddb_paperclip")
@@ -574,10 +570,13 @@ async def get_agent_detail(user_id: str, agent_id: str) -> dict:
     #      AgentOverviewTab.tsx and SkillsTab.tsx.
     #   2. Wire format: OpenClaw's schemas use camelCase (`agentId`), not
     #      snake_case. Main app always sends camelCase — we must too.
-    #   3. `sessions.list` isn't filterable by agent server-side; main app
-    #      fetches the full list and narrows client-side (SessionsPanel.tsx).
-    #      We replicate that below. `config.get` takes no params
-    #      (AgentOverviewTab.tsx).
+    #   3. `sessions.list` IS filterable by agent: `agentId` is a first-class
+    #      param and narrows the container's store load, not just the rows it
+    #      returns. (The "agentId requires sessionKeys" rule belongs to
+    #      `sessions.search`.) An earlier comment here claimed the opposite and
+    #      had this call pull every agent's store, forcing a transcript
+    #      projection per foreign row on a 1-vCPU box. `config.get` takes no
+    #      params (AgentOverviewTab.tsx).
     try:
         identity, sessions_raw, skills, config = await asyncio.wait_for(
             asyncio.gather(
@@ -585,6 +584,7 @@ async def get_agent_detail(user_id: str, agent_id: str) -> dict:
                 _rpc(
                     "sessions.list",
                     {
+                        "agentId": agent_id,
                         "includeGlobal": True,
                         "includeUnknown": True,
                         "includeDerivedTitles": True,
@@ -603,7 +603,11 @@ async def get_agent_detail(user_id: str, agent_id: str) -> dict:
         logger.warning("admin_service.get_agent_detail gateway error: %s", e)
         return {"error": str(e), "org": org_context}
 
-    # sessions.list is not agent-filterable; narrow client-side.
+    # The `agentId` param above already narrowed rows to this agent (plus the
+    # `global` row, which `includeGlobal` asks for and which carries no
+    # agentId). The client-side pass below is kept as the belt-and-braces
+    # filter that drops `global`/`unknown`, not as a substitute for a
+    # server-side filter that does not exist.
     #
     # Two shape normalizations, both mirroring main-app SessionsPanel:
     # - envelope: response is either {sessions: [...]} or a raw array

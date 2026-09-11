@@ -646,20 +646,22 @@ async def _meta_pages(owner_id: str) -> list[dict[str, str]]:
     data = resp.json().get("data")
     if not isinstance(data, list):
         raise RuntimeError("Meta /me/accounts returned no page list")
-    return [
+    pages = [
         {
             "id": str(p["id"]),
             "label": p.get("name") or str(p["id"]),
-            # Page token when Graph returned one, else the user token — no page
-            # token means this grant can't act on the Page, which surfaces as
-            # the subscribe call's own caller-facing refusal.
-            "token": p.get("access_token") or token,
+            "token": p["access_token"],
             "graph_base": _FACEBOOK_GRAPH_BASE,
             "object_type": "page",
         }
         for p in data
-        if isinstance(p, dict) and p.get("id")
+        if isinstance(p, dict) and p.get("id") and p.get("access_token")
     ]
+    if data and not pages:
+        # A user token must never be substituted here: Page-gated Graph edges
+        # require the Page access token returned for that Page.
+        raise RuntimeError("Meta /me/accounts returned pages without Page access tokens")
+    return pages
 
 
 def _read_instagram_credentials(owner_id: str) -> dict:

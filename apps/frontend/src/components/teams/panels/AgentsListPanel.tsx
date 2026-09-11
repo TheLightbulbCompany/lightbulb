@@ -1,7 +1,12 @@
 "use client";
 
+// The roster AND the org chart: same `/agents` read, two views. The retired
+// `teams-org-chart` key aliases onto this panel (panelRegistry's
+// RETIRED_PANEL_ALIASES) and arrives as `view: "chart"`, so an old link opens
+// ONE Agents tab on the chart rather than a second tab drawing the same rows.
+
 import { useMemo, useState } from "react";
-import { Bot } from "lucide-react";
+import { Bot, List, Network } from "lucide-react";
 import {
   EditorialButton,
   EditorialDialog,
@@ -13,14 +18,30 @@ import {
 } from "@/components/teams/shell";
 import { AgentCreateChooser } from "@/components/agents/AgentCreateChooser";
 import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
+import { OrgChart } from "@/components/teams/org-chart/OrgChart";
+import {
+  setAgentsViewMode,
+  useAgentsViewMode,
+  type AgentsViewMode,
+} from "@/components/teams/agents/agentsViewMode";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { handleShellLinkClick } from "@/lib/shellNav";
 import { agentInspectorUrl } from "@/components/teams/shared/lib/agentInspectorUrl";
 import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
-import { isSeededAgent } from "@/components/teams/agents/AgentManageSection";
 import type { CompanyAgent } from "@/components/teams/shared/types";
 
-export function AgentsListPanel() {
+export interface AgentsListPanelProps {
+  /** `?view=` (or the retired `teams-org-chart` key), already validated by the
+   *  router. Honoured on this mount without touching the stored preference —
+   *  the toggle takes the view back, and the preference is what it always was.
+   *  Re-delivered rather than remounted when an already-open panel is
+   *  re-opened, so it is compared against its previous value below. */
+  initialView?: AgentsViewMode | null;
+}
+
+export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
   const { read } = useTeamsApi();
   const { pause, resume, remove } = useAgentMutations();
   const { data, isLoading, error, mutate } = read<{ agents: CompanyAgent[] }>(
@@ -28,6 +49,17 @@ export function AgentsListPanel() {
   );
   const [creating, setCreating] = useState(false);
   const [search, setSearch] = useState("");
+  const storedView = useAgentsViewMode();
+  const [viewDeepLink, setViewDeepLink] = useState<AgentsViewMode | null>(initialView ?? null);
+  const view = viewDeepLink ?? storedView;
+  // Adjust-state-during-render, not an effect — the same pattern TasksList
+  // uses for its `?groupBy` re-delivery: dockview merges parameters into an
+  // open panel instead of remounting it, and a plain sidebar nav clears them.
+  const [prevInitialView, setPrevInitialView] = useState(initialView);
+  if (initialView !== prevInitialView) {
+    setPrevInitialView(initialView);
+    setViewDeepLink(initialView ?? null);
+  }
 
   const agents = data?.agents;
   const filtered = useMemo(() => {
@@ -43,8 +75,11 @@ export function AgentsListPanel() {
 
   if (error) {
     return (
-      <div className="editorial-page p-8 text-[var(--err)]">
-        Error: {String(error)}
+      <div
+        role="alert"
+        className="editorial-page p-8 font-editorial-serif text-xl italic text-[var(--err)]"
+      >
+        We couldn&rsquo;t load your agents.
       </div>
     );
   }
@@ -84,7 +119,6 @@ export function AgentsListPanel() {
       header: "",
       align: "right",
       cell: (a) => {
-        const seeded = isSeededAgent(a);
         const paused = a.status === "paused";
         return (
           <span className="flex items-center justify-end gap-2">
@@ -94,18 +128,16 @@ export function AgentsListPanel() {
             >
               {paused ? "Resume" : "Pause"}
             </button>
-            {!seeded && (
-              <button
-                className="text-sm hover:underline text-[var(--err)]"
-                onClick={() => {
-                  if (window.confirm(`Delete ${a.name}? This removes the agent and its workspace.`)) {
-                    remove(a.id);
-                  }
-                }}
-              >
-                Delete
-              </button>
-            )}
+            <button
+              className="text-sm hover:underline text-[var(--err)]"
+              onClick={() => {
+                if (window.confirm(`Delete ${a.name}? This removes the agent and its workspace.`)) {
+                  remove(a.id);
+                }
+              }}
+            >
+              Delete
+            </button>
           </span>
         );
       },
@@ -139,13 +171,27 @@ export function AgentsListPanel() {
         }
       />
       <PanelToolbar
-        searchValue={search}
+        // Chart view keeps the value (so returning to the list restores the
+        // search) but does not offer the box: a control that visibly changes
+        // nothing is worse than no control.
+        searchValue={view === "chart" ? "" : search}
         onSearchChange={setSearch}
-        searchPlaceholder="Find agent..."
+        searchPlaceholder={view === "chart" ? "" : "Find agent..."}
         searchAriaLabel="Search agents"
+        hideSearch={view === "chart"}
+        actions={
+          <ViewModeToggle
+            view={view}
+            onChange={(mode) => {
+              // An explicit pick beats the deep link and becomes the preference.
+              setViewDeepLink(null);
+              setAgentsViewMode(mode);
+            }}
+          />
+        }
       />
       {isLoading ? (
-        <div className="font-editorial-serif text-xl italic text-[var(--midnight-muted)]">
+        <div role="status" className="font-editorial-serif text-xl italic text-[var(--midnight-muted)]">
           Loading…
         </div>
       ) : filtered.length === 0 ? (
@@ -159,6 +205,13 @@ export function AgentsListPanel() {
           }
           action={{ label: "New agent", onClick: () => setCreating(true) }}
         />
+      ) : view === "chart" ? (
+        // The chart draws the WHOLE roster, never the search-filtered slice.
+        // An org chart is a structure, and filtering a structure is not a
+        // smaller structure — it is several orphaned roots that misdescribe who
+        // reports to whom. Search stays a list affordance, the way grouping and
+        // sort are list-only on Tasks.
+        <OrgChart agents={agents ?? []} />
       ) : (
         <PanelDataTable<CompanyAgent>
           rows={filtered}
@@ -177,6 +230,56 @@ export function AgentsListPanel() {
           }}
         />
       )}
+    </div>
+  );
+}
+
+/** Roster or org chart. Modelled on TasksList's list/board toggle — same
+ *  control shape, same per-browser persistence idiom. */
+function ViewModeToggle({
+  view,
+  onChange,
+}: {
+  view: AgentsViewMode;
+  onChange: (mode: AgentsViewMode) => void;
+}) {
+  const buttonClass = (active: boolean) =>
+    cn(
+      "inline-flex h-7 w-7 items-center justify-center transition-colors",
+      active
+        ? "bg-[var(--midnight)] text-[var(--cream)]"
+        : "text-[var(--midnight-muted)] hover:text-[var(--midnight)]",
+    );
+  return (
+    <div className="flex items-center overflow-hidden rounded-md border border-[var(--edge)]">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            className={buttonClass(view === "list")}
+            onClick={() => onChange("list")}
+            aria-pressed={view === "list"}
+            aria-label="List view"
+          >
+            <List size={16} />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>List view</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            className={buttonClass(view === "chart")}
+            onClick={() => onChange("chart")}
+            aria-pressed={view === "chart"}
+            aria-label="Org chart view"
+          >
+            <Network size={16} />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>Org chart</TooltipContent>
+      </Tooltip>
     </div>
   );
 }

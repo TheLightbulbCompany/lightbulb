@@ -13,7 +13,7 @@ import {
   ChevronDown,
   Monitor,
 } from "lucide-react";
-import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { useRuntimeRpc, useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -179,11 +179,11 @@ function hasViableInstallSpec(skill: SkillStatusEntry): boolean {
 
 export function SkillsTab({ agentId }: { agentId?: string }) {
   const params = agentId ? { agentId } : {};
-  const { data: raw, error, isLoading, mutate } = useGatewayRpc<SkillStatusReport | SkillStatusEntry[]>(
+  const { data: raw, error, isLoading, mutate } = useRuntimeRpc<SkillStatusReport | SkillStatusEntry[]>(
     "skills.status",
     params,
   );
-  const callRpc = useGatewayRpcMutation();
+  const callRpc = useRuntimeRpcMutation();
   const [filter, setFilter] = useState("");
   const [activeCategory, setActiveCategory] = useState<Category>("All");
   const [unsupportedCollapsed, setUnsupportedCollapsed] = useState(true);

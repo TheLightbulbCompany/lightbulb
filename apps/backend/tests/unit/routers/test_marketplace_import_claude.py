@@ -32,12 +32,6 @@ def client(tmp_path: Path):
         patch("routers.marketplace_import._s3", return_value=s3),
         patch("routers.marketplace_import.settings") as settings,
         patch("routers.marketplace_import.container_repo.get_by_owner_id", new_callable=AsyncMock) as get_row,
-        patch("routers.marketplace_import.count_paperclip_agents_for_owner", new_callable=AsyncMock, return_value=2),
-        patch(
-            "routers.marketplace_import.billing_repo.get_by_owner_id",
-            new_callable=AsyncMock,
-            return_value={"plan": "flat"},
-        ),
     ):
         settings.MARKETPLACE_ARTIFACTS_BUCKET = "bkt"
         get_row.return_value = {"owner_id": OWNER, "gateway_token": "gw"}

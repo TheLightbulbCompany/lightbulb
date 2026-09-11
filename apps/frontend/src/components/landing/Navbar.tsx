@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { useAuth, UserButton } from "@clerk/nextjs";
 
 import { Logo } from "@/components/Logo";
+import { hydrateFromStorage, strike, useLampTheme } from "@/components/landing/HeroLamp/lampStore";
 import { captureSignupCta } from "@/lib/signupFlow";
 
 export function Navbar() {
@@ -13,6 +14,14 @@ export function Navbar() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const { isSignedIn, isLoaded } = useAuth();
   const pathname = usePathname() ?? "/";
+  const theme = useLampTheme();
+  // Only `.ld-page` routes read data-lb-theme; on /marketplace (no .ld-page)
+  // the toggle would flip the attribute and change nothing. Derived from the
+  // route, not discovered from the DOM — the surface is a property of the page.
+  const hasThemeSurface = !pathname.startsWith("/marketplace");
+  useEffect(() => {
+    hydrateFromStorage(); // adopt a stored choice into the store; the inline script already painted it
+  }, []);
   const onLanding = pathname === "/";
   const onMarketplace = pathname.startsWith("/marketplace");
   const onBlog = pathname.startsWith("/blog");
@@ -83,7 +92,8 @@ export function Navbar() {
   }, []);
 
   const initialActive = (id: string) => {
-    if (onLanding) return id === "home" ? "active" : undefined;
+    // The landing hero is no longer a nav destination; the observer takes over on scroll.
+    if (onLanding) return undefined;
     if (onMarketplace) return id === "marketplace" ? "active" : undefined;
     if (onBlog) return id === "blog" ? "active" : undefined;
     if (onDocs) return id === "docs" ? "active" : undefined;
@@ -94,26 +104,19 @@ export function Navbar() {
     <nav className="landing-nav" aria-label="Main navigation">
       <div className="nav-brand">
         <Logo size="md" withMark />
-        <span className="nav-badge">Public Beta</span>
       </div>
       <div className={`nav-links${mobileOpen ? " mobile-open" : ""}`} ref={linksRef}>
-        <Link href="/" data-section="home" className={initialActive("home")}>
-          Home
-        </Link>
         <Link href={anchor("workspace")} data-section="workspace" className={initialActive("workspace")}>
           Product
-        </Link>
-        <Link href={anchor("marketplace")} data-section="marketplace" className={initialActive("marketplace")}>
-          Marketplace
-        </Link>
-        <Link href={anchor("pricing")} data-section="pricing" className={initialActive("pricing")}>
-          Pricing
         </Link>
         <Link href="/docs" data-section="docs" className={initialActive("docs")}>
           Docs
         </Link>
         <Link href="/blog" data-section="blog" className={initialActive("blog")}>
-          Blog
+          Blogs
+        </Link>
+        <Link href={anchor("pricing")} data-section="pricing" className={initialActive("pricing")}>
+          Pricing
         </Link>
         {/* Plain <a>: an API route (302 to the signed DMG), not a Next page. */}
         {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
@@ -132,6 +135,27 @@ export function Navbar() {
         )}
       </div>
       <div className="nav-right">
+        {hasThemeSurface && (
+          <button
+            type="button"
+            className="nav-theme"
+            onClick={strike}
+            aria-pressed={theme === "dark"}
+            aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            title={theme === "dark" ? "Light mode" : "Dark mode"}
+          >
+            {theme === "dark" ? (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <circle cx="12" cy="12" r="4" stroke="currentColor" strokeWidth="1.6" />
+                <path d="M12 2.5v2.5M12 19v2.5M2.5 12H5M19 12h2.5M5.3 5.3l1.8 1.8M16.9 16.9l1.8 1.8M5.3 18.7l1.8-1.8M16.9 7.1l1.8-1.8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+              </svg>
+            ) : (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5a8.5 8.5 0 1 0 10.7 10.7Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+              </svg>
+            )}
+          </button>
+        )}
         {isLoaded && isSignedIn ? (
           <>
             <Link href="/chat" className="btn-primary">
@@ -155,7 +179,7 @@ export function Navbar() {
                 })
               }
             >
-              Sign up
+              Get started free
             </Link>
           </>
         )}

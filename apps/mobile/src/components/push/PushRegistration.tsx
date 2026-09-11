@@ -11,12 +11,9 @@ import { makeAdapter } from "../../lib/adapter";
 import { parseAgentDeepLink } from "../../lib/deepLink";
 import { configureNotificationHandler } from "../../lib/notifications";
 import { getDeviceId, LAST_REG_KEY } from "../../lib/pushDevice";
-import { sessionIdFromKey } from "@lightbulb/shared";
 
-/** Route a tapped notification (warm OR cold-start launch) to whatever it is
- * about: an agent chat, landing on the session the reply belongs to (sessionKey
- * → ?sessionId, which the chat screen already consumes via
- * useNavParamConsumer), or the Teams issue an agent is waiting on.
+/** Route a tapped notification (warm OR cold-start launch) to its agent room
+ * or the Teams issue an agent is waiting on.
  *
  * The Teams case is checked FIRST because it is the one that used to fall
  * through. Teams pushes deliberately carry no `agentId` — the backend omits it
@@ -58,10 +55,7 @@ function routeFromResponse(
 
   const agentId = data?.agentId;
   if (agentId) {
-    const sessionId = sessionIdFromKey(data?.sessionKey);
-    router.push(
-      sessionId ? `/agent/${agentId}?sessionId=${sessionId}` : `/agent/${agentId}`,
-    );
+    router.push(`/agent/${agentId}`);
     return;
   }
   const parsed = data?.url ? parseAgentDeepLink(data.url) : null;
@@ -69,7 +63,7 @@ function routeFromResponse(
 }
 
 /**
- * Mounted inside the signed-in subtree (GatewayProvider). Requests notification
+ * Mounted inside the signed-in subtree (LiveEventsProvider). Requests notification
  * permission, registers the Expo push token with the backend, installs the
  * foreground-suppression handler, and routes notification taps (including the
  * one that cold-started the app) to the right agent chat. Renders nothing.

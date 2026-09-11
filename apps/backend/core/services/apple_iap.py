@@ -74,9 +74,9 @@ def owner_account_token(owner_id: str) -> str:
     token to mint, store, look up, or leak — the server recomputes it and
     compares.
 
-    ``ownerAccountToken`` in ``apps/mobile/src/lib/appleIap.ts`` is the same
-    computation and the two MUST stay in lockstep: a divergence rejects every
-    real purchase, since the comparison is what authorizes the link.
+    Retired mobile purchase clients used this same computation. Keep it stable
+    while historical Apple transactions and their lifecycle remain supported:
+    changing it would invalidate the account binding on those transactions.
 
     Lowercase hex, matching what Apple echoes back and what the JS side emits.
     """
@@ -600,9 +600,8 @@ async def link_purchase(*, owner_id: str, signed_transaction: str) -> AppleSubsc
     same transaction replayed writes the same row, so a client retrying after a
     dropped response cannot double-grant or corrupt anything.
     """
-    # The Apple product is the PERSONAL flat plan. An org pays a different
-    # shape entirely — base + per-seat, quantity driven by Clerk membership via
-    # sync_team_seat_quantity — so there is nothing here an org can validly buy.
+    # Organization workspaces use Stripe-managed Workspace or Ultra
+    # subscriptions; an Apple purchase can never be attached to an org.
     #
     # This is a money fence, not a UX one, and it belongs on the server. An org
     # that reaches this by any route (client bug, stale build, direct call) has
@@ -612,7 +611,7 @@ async def link_purchase(*, owner_id: str, signed_transaction: str) -> AppleSubsc
     # gets a permanent dead end with real money taken. Refuse before StoreKit is
     # ever reached instead.
     if is_org_owner_id(owner_id):
-        raise AppleIapError("Team workspaces are billed per seat and cannot subscribe through the App Store")
+        raise AppleIapError("Workspace subscriptions are managed through Stripe and cannot use the App Store")
 
     subscription = verify_transaction(signed_transaction)
 

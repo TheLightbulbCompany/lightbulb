@@ -254,18 +254,15 @@ def test_synthesize_sets_agent_id_so_runs_route_to_that_agent():
     assert cfg["agentId"] == "agent-xyz"
 
 
-def test_fallback_session_key_cannot_collide_with_the_owners_chat_session():
-    """REGRESSION: the no-issue fallback key must not equal the /chat General key.
+def test_fallback_session_key_cannot_collide_with_a_human_general_session():
+    """The no-issue Paperclip fallback must not equal a human General key.
 
     Once ``agentId`` is set the adapter prefixes the fallback sessionKey with
-    ``agent:<agentId>:`` (openclaw-gateway execute.ts). A bare
-    ``user_id`` fallback therefore resolves to ``agent:<agentId>:<user_id>`` —
-    exactly ``build_chat_session_key(agent_id, user_id, None)``. Every heartbeat
-    and manual wake would then be appended to the owner's real /chat transcript,
-    load its history as context, and stream into their open chat window.
+    ``agent:<agentId>:`` (openclaw-gateway execute.ts). A bare ``user_id``
+    fallback would therefore collide with ``agent:<agentId>:<user_id>`` and
+    load a human's private session history as Paperclip context.
     """
     from core.gateway.connection_pool import _parse_session_key
-    from routers.websocket_chat import build_chat_session_key
 
     agent_id, user_id = "agent-xyz", "user_2abc"
     cfg = synthesize_openclaw_adapter(
@@ -277,9 +274,8 @@ def test_fallback_session_key_cannot_collide_with_the_owners_chat_session():
     # What the adapter will actually put on the wire for a no-issue wake.
     resolved = f"agent:{agent_id}:{cfg['sessionKey']}"
 
-    assert resolved != build_chat_session_key(agent_id, user_id, None)
-    # And it must classify as a Paperclip session, so _handle_message treats it
-    # as isolated and never fans it out to the member's /chat socket.
+    assert resolved != f"agent:{agent_id}:{user_id}"
+    # It classifies as a Paperclip session rather than human-owned runtime state.
     parsed = _parse_session_key(resolved)
     assert parsed["source"] == "paperclip"
     assert parsed["agent_id"] == agent_id

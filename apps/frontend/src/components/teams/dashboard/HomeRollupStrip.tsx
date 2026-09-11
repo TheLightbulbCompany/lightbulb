@@ -6,7 +6,7 @@
 // — Inbox and Tasks own that second question now. This strip is the
 // first one: revenue, new customers, visitors and
 // agent spend, each an anchored figure (spec §2) rather than a dead number —
-// every tile carries an "Ask Friday" link that hands the owner's question,
+// every tile carries an "Ask CEO" link that hands the owner's question,
 // with the period already worded into it, straight to the CEO agent's
 // composer. The hero's bars are hover-labelled (a native <title> per bar) so
 // a specific day reads exactly, which a bare sparkline cannot answer.
@@ -27,7 +27,8 @@ import { useState, type ReactNode } from "react";
 import { PanelNotice, PanelTabs } from "@/components/teams/shell";
 import { useCompanyStripeStatus } from "@/components/settings/CompanyStripeSection";
 import { useCompanyRollup, type RollupDay, type RollupSpan } from "@/hooks/useCompanyRollup";
-import { useAskFriday } from "@/hooks/useAskFriday";
+import { RevenueBars, formatShortDay } from "@/components/teams/shared/RevenueBars";
+import { useAskCeo } from "@/hooks/useAskCeo";
 import { formatUsdCents } from "@/lib/creditAmounts";
 import { handleShellLinkClick, teamsPanelUrl } from "@/lib/shellNav";
 
@@ -45,18 +46,6 @@ function sum(days: RollupDay[], key: "revenue_microcents" | "signups" | "visitor
  *  Escaped, not literal: U+2212 is indistinguishable from a hyphen in source. */
 function formatSignedUsdCents(cents: number): string {
   return cents < 0 ? `\u2212${formatUsdCents(-cents)}` : formatUsdCents(cents);
-}
-
-/** Locale AND timezone pinned: `undefined` resolves the HOST default, so the
- *  same date renders "Aug 30" on one machine and "30 Aug" on another — and a
- *  test asserting either fails on the other runner with a failure that reads
- *  as a date-logic bug. */
-function formatDay(day: string): string {
-  return new Date(day + "T00:00:00Z").toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    timeZone: "UTC",
-  });
 }
 
 /** Locale pinned — `toLocaleString()` alone renders 1,234 or 1.234 by host. */
@@ -112,58 +101,6 @@ function Sparkline({
   );
 }
 
-/**
- * The hero's chart: one bar per day with the exact day and amount in a
- * native <title>, so hovering answers "what was that day" without a chart
- * library (spec §2, linked views). Negative days (refund-heavy) hang below a
- * hairline baseline; the last bar is midnight, the rest the neutral chart
- * token — one accent, and it means "today".
- *
- * The per-day <title> is a pointer-hover affordance only — it reaches nobody
- * on keyboard or touch. The SVG itself is `role="img"` labelled as a whole
- * ("Revenue over the period"), and the aggregate those users actually get is
- * the tile's exact figure plus the comparison caption beside it, not any one
- * bar's value.
- */
-function HeroBars({ days, format }: { days: RollupDay[]; format: (cents: number) => string }) {
-  const values = days.map((d) => (Number.isFinite(d.revenue_microcents) ? d.revenue_microcents : 0));
-  if (values.length === 0) return null;
-  const lo = Math.min(...values, 0);
-  const hi = Math.max(...values, 0);
-  const range = hi - lo || 1;
-  const zeroY = 20 - ((0 - lo) / range) * 20;
-  const slot = 100 / values.length;
-  const gap = slot * 0.25;
-  return (
-    <svg viewBox="0 0 100 20" preserveAspectRatio="none" role="img" aria-label="Revenue over the period" className="mt-3 h-12 w-full">
-      {values.map((v, i) => {
-        // Clamp ONCE, use the clamped value for both y and height — a zero
-        // (or tiny) day drew from the unclamped y with a clamped height,
-        // which stranded its 0.2-tall sliver below the baseline (or off the
-        // viewBox entirely) instead of resting on it.
-        const h = Math.max((Math.abs(v) / range) * 20, 0.2);
-        // Clamped at 0: in an all-non-positive window `zeroY` sits at the very
-        // top (0), and an unclamped zero-day sliver drew upward from there to
-        // y=-0.2, outside the viewBox.
-        const y = v >= 0 ? Math.max(zeroY - h, 0) : zeroY;
-        return (
-          <rect
-            key={days[i].day}
-            x={(i * slot + gap / 2).toFixed(2)}
-            y={y.toFixed(2)}
-            width={(slot - gap).toFixed(2)}
-            height={h.toFixed(2)}
-            fill={i === values.length - 1 ? "var(--midnight)" : "var(--chart-5)"}
-          >
-            <title>{`${formatDay(days[i].day)} · ${format(microcentsToCents(v))}`}</title>
-          </rect>
-        );
-      })}
-      <line x1="0" x2="100" y1={zeroY.toFixed(2)} y2={zeroY.toFixed(2)} stroke="var(--edge)" strokeWidth="0.5" vectorEffect="non-scaling-stroke" />
-    </svg>
-  );
-}
-
 function Tile({
   icon: Icon,
   label,
@@ -183,7 +120,7 @@ function Tile({
   value: string;
   caption: ReactNode;
   series?: number[];
-  /** A pre-built chart (the hero's HeroBars) rendered instead of a Sparkline. */
+  /** A pre-built chart (the shared RevenueBars) rendered instead of a Sparkline. */
   chart?: ReactNode;
   unavailable?: boolean;
   /** Spans two columns beside the tiles; renders `chart` (the hero bars). Revenue only. */
@@ -191,9 +128,9 @@ function Tile({
   /** In-shell destination; href stays real for new-tab / middle-click. */
   href?: string;
   linkLabel?: string;
-  /** The question this tile's "Ask Friday" link hands to the CEO agent. */
+  /** The question this tile's "Ask CEO" link hands to the CEO agent. */
   askDraft?: string;
-  /** Hands `askDraft` to Friday. One `useAskFriday()` call lives in the
+  /** Hands `askDraft` to the CEO. One `useAskCeo()` call lives in the
    *  strip and is threaded down here — a tile calling the hook itself would
    *  mean one hook instance per tile for no reason. */
   onAsk?: (draft: string) => void;
@@ -253,7 +190,7 @@ function Tile({
           onClick={() => onAsk?.(askDraft)}
           className={`mt-2.5 inline-block label-caps text-[var(--midnight-muted)] underline-offset-4 hover:text-[var(--midnight)] hover:underline ${href && linkLabel ? "ml-4" : ""}`}
         >
-          Ask Friday
+          Ask CEO
         </button>
       )}
     </div>
@@ -293,9 +230,9 @@ export function HomeRollupStrip({
   spendCents: number | null | undefined;
 }) {
   const [span, setSpan] = useState<RollupSpan>(30);
-  // One hook instance for the whole strip; every tile's Ask Friday button
+  // One hook instance for the whole strip; every tile's Ask CEO button
   // hands its draft to this same `ask` rather than each calling the hook.
-  const ask = useAskFriday();
+  const ask = useAskCeo();
   const { rollup, windowStart, isLoading, error, isUnavailable } = useCompanyRollup(span);
   // Deduped with Accounts' read of the same key. Only `details_submitted` is
   // consulted, and only when there are no rows — rows win (moneyView's rule).
@@ -406,7 +343,7 @@ export function HomeRollupStrip({
   // there is no backfill, so rollups start at the Stripe binding.
   const rangeLabel =
     rollup?.first_day && rollup.first_day > windowStart
-      ? `Since ${formatDay(rollup.first_day)}`
+      ? `Since ${formatShortDay(rollup.first_day)}`
       : `Last ${span} days`;
   // `days[]` is SPARSE — the writer returns None and stores nothing when every
   // source was empty, so absent days are omitted rather than zero-filled. The
@@ -488,7 +425,7 @@ export function HomeRollupStrip({
             rollup.first_day,
             formatSignedUsdCents,
           )}
-          chart={<HeroBars days={days} format={formatSignedUsdCents} />}
+          chart={<RevenueBars days={days} />}
           unavailable={isUnavailable("revenue_microcents")}
           href={teamsPanelUrl("payments")}
           linkLabel="Open Payments"

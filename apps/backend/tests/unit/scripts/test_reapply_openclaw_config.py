@@ -531,3 +531,122 @@ async def test_reapply_owner_config_threads_the_target_image_to_the_writer(deplo
 
     write_mock.assert_awaited_once()
     assert write_mock.call_args.kwargs["deployed_tag"] == deployed_tag
+
+
+# --------------------------------------------------------------------------- #
+# --all-owners — the fleet delivery lever
+# --------------------------------------------------------------------------- #
+
+
+def _fleet_patches(rows, *, reapply_side_effect=None):
+    """Patch the fleet path's two seams: the DDB scan and the service call.
+
+    The fleet loop reaches reapply_owner_config through the same
+    ``reapply_one`` helper the single-owner path uses, so per-owner
+    collaborators (get_by_owner_id / resolve_provider_choice) are stubbed
+    permissively — what these tests assert is WHICH owners get visited and
+    what the loop does when one of them fails.
+    """
+    by_owner = {r["owner_id"]: r for r in rows}
+    reapply_mock = AsyncMock(
+        side_effect=reapply_side_effect or (lambda owner_id: {"owner_id": owner_id, "restored_subtrees": []})
+    )
+    return reapply_mock, [
+        patch("core.repositories.container_repo.scan_all", AsyncMock(return_value=rows)),
+        patch(
+            "core.repositories.container_repo.get_by_owner_id",
+            AsyncMock(side_effect=lambda owner_id, **kw: by_owner.get(owner_id)),
+        ),
+        patch(
+            "core.services.container_provision.resolve_provider_choice",
+            AsyncMock(return_value=("bedrock_claude", None)),
+        ),
+        patch("core.services.update_service.reapply_owner_config", reapply_mock),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_all_owners_visits_every_eligible_owner():
+    rows = [
+        {"owner_id": "org_b", "gateway_token": "gw", "status": "running"},
+        {"owner_id": "user_a", "gateway_token": "gw", "status": "stopped"},
+    ]
+    reapply_mock, cms = _fleet_patches(rows)
+    for cm in cms:
+        cm.start()
+    try:
+        rc = await mod.main(apply=True, env="prod", all_owners=True)
+    finally:
+        for cm in cms:
+            cm.stop()
+
+    assert rc == 0
+    # Sorted, so a re-run after a partial failure reads the same way.
+    assert [c.args[0] for c in reapply_mock.await_args_list] == ["org_b", "user_a"]
+
+
+@pytest.mark.asyncio
+async def test_all_owners_skips_provisioning_rows_and_legacy_rows():
+    """A row mid-provision is skipped (the provisioner writes the config from
+    this same generator); a row with no gateway_token is refused the way the
+    single-owner path refuses it, not counted as a success."""
+    rows = [
+        {"owner_id": "org_live", "gateway_token": "gw", "status": "running"},
+        {"owner_id": "org_inflight", "gateway_token": "gw", "status": "provisioning"},
+        {"owner_id": "org_legacy", "status": "running"},  # no gateway_token
+    ]
+    reapply_mock, cms = _fleet_patches(rows)
+    for cm in cms:
+        cm.start()
+    try:
+        rc = await mod.main(apply=True, env="prod", all_owners=True)
+    finally:
+        for cm in cms:
+            cm.stop()
+
+    assert rc == 0
+    assert [c.args[0] for c in reapply_mock.await_args_list] == ["org_live"]
+
+
+@pytest.mark.asyncio
+async def test_all_owners_continues_past_a_failure_and_exits_nonzero():
+    """One owner's failure must not strand the rest of the fleet — that is the
+    whole reason this loop exists rather than 34 hand-run invocations."""
+    rows = [
+        {"owner_id": "org_a", "gateway_token": "gw", "status": "running"},
+        {"owner_id": "org_b", "gateway_token": "gw", "status": "running"},
+        {"owner_id": "org_c", "gateway_token": "gw", "status": "running"},
+    ]
+
+    def _boom(owner_id):
+        if owner_id == "org_b":
+            raise RuntimeError("EFS write failed")
+        return {"owner_id": owner_id, "restored_subtrees": []}
+
+    reapply_mock, cms = _fleet_patches(rows, reapply_side_effect=_boom)
+    for cm in cms:
+        cm.start()
+    try:
+        rc = await mod.main(apply=True, env="prod", all_owners=True)
+    finally:
+        for cm in cms:
+            cm.stop()
+
+    assert rc == 1  # one owner failed
+    assert [c.args[0] for c in reapply_mock.await_args_list] == ["org_a", "org_b", "org_c"]
+
+
+@pytest.mark.asyncio
+async def test_all_owners_dry_run_touches_nothing():
+    rows = [{"owner_id": "org_a", "gateway_token": "gw", "status": "running"}]
+    reapply_mock, cms = _fleet_patches(rows)
+    for cm in cms:
+        cm.start()
+    try:
+        rc = await mod.main(apply=False, env="prod", all_owners=True)
+    finally:
+        for cm in cms:
+            cm.stop()
+
+    assert rc == 0
+    reapply_mock.assert_not_awaited()

@@ -1,0 +1,80 @@
+import type { ApiMethods } from "../api/client";
+import type {
+  AbortRunResponse,
+  CanonicalRoomMessage,
+  CreateMessageRequest,
+  UpdateMessageRequest,
+  ImageAttachment,
+  CreateRoomRequest,
+  LiveConfig,
+  MemberKind,
+  MessagePage,
+  PatchRoomRequest,
+  ReadCursorRequest,
+  ReadCursorResponse,
+  RoomDetail,
+  RoomListResponse,
+  RunStatusResponse,
+  SteerRunRequest,
+  SteerRunResponse,
+  TypingRequest,
+  UpsertRoomMemberRequest,
+} from "./types";
+
+const roomPath = (roomId: string) => `/messaging/rooms/${encodeURIComponent(roomId)}`;
+
+export interface MessagingClient {
+  updateMessage(roomId: string, messageId: string, request: UpdateMessageRequest): Promise<CanonicalRoomMessage>;
+  setReaction(roomId: string, messageId: string, emoji: string, active: boolean): Promise<CanonicalRoomMessage>;
+  getLiveConfig(): Promise<LiveConfig>;
+  listRooms(): Promise<RoomListResponse>;
+  createRoom(request: CreateRoomRequest): Promise<RoomDetail>;
+  getRoom(roomId: string): Promise<RoomDetail>;
+  updateRoom(roomId: string, request: PatchRoomRequest): Promise<RoomDetail>;
+  upsertMember(roomId: string, request: UpsertRoomMemberRequest): Promise<RoomDetail>;
+  removeMember(roomId: string, kind: MemberKind, memberId: string): Promise<void>;
+  listMessages(roomId: string, afterSeq: number, limit?: number): Promise<MessagePage>;
+  sendMessage(roomId: string, request: CreateMessageRequest): Promise<CanonicalRoomMessage>;
+  uploadAttachment(roomId: string, image: File): Promise<ImageAttachment>;
+  downloadAttachment(roomId: string, attachmentId: string): Promise<Blob>;
+  markRead(roomId: string, request: ReadCursorRequest): Promise<ReadCursorResponse>;
+  markUnread(roomId: string): Promise<ReadCursorResponse>;
+  setTyping(request: TypingRequest): Promise<void>;
+  abortRun(runId: string): Promise<AbortRunResponse>;
+  steerRun(runId: string, request: SteerRunRequest): Promise<SteerRunResponse>;
+  getRunStatus(runId: string): Promise<RunStatusResponse>;
+}
+
+export function createMessagingClient(api: ApiMethods): MessagingClient {
+  return {
+    updateMessage: (roomId, messageId, request) => api.patch(`${roomPath(roomId)}/messages/${encodeURIComponent(messageId)}`, request) as Promise<CanonicalRoomMessage>,
+    setReaction: (roomId, messageId, emoji, active) => api.put(`${roomPath(roomId)}/messages/${encodeURIComponent(messageId)}/reactions`, { emoji, active }) as Promise<CanonicalRoomMessage>,
+    getLiveConfig: () => api.get("/messaging/live-config") as Promise<LiveConfig>,
+    listRooms: () => api.get("/messaging/rooms") as Promise<RoomListResponse>,
+    createRoom: (request) => api.post("/messaging/rooms", request) as Promise<RoomDetail>,
+    getRoom: (roomId) => api.get(roomPath(roomId)) as Promise<RoomDetail>,
+    updateRoom: (roomId, request) => api.patch(roomPath(roomId), request) as Promise<RoomDetail>,
+    upsertMember: (roomId, request) => api.post(`${roomPath(roomId)}/members`, request) as Promise<RoomDetail>,
+    async removeMember(roomId, kind, memberId) {
+      await api.del(`${roomPath(roomId)}/members/${kind}/${encodeURIComponent(memberId)}`);
+    },
+    listMessages: (roomId, afterSeq, limit = 100) => api.get(
+      `${roomPath(roomId)}/messages?afterSeq=${encodeURIComponent(String(afterSeq))}&limit=${encodeURIComponent(String(limit))}`,
+    ) as Promise<MessagePage>,
+    sendMessage: (roomId, request) => api.post(`${roomPath(roomId)}/messages`, request) as Promise<CanonicalRoomMessage>,
+    uploadAttachment: (roomId, image) => {
+      const body = new FormData();
+      body.append("image", image);
+      return api.upload(`${roomPath(roomId)}/attachments`, body) as Promise<ImageAttachment>;
+    },
+    downloadAttachment: (roomId, attachmentId) => api.downloadBlob(`${roomPath(roomId)}/attachments/${encodeURIComponent(attachmentId)}`),
+    markRead: (roomId, request) => api.put(`${roomPath(roomId)}/read`, request) as Promise<ReadCursorResponse>,
+    markUnread: (roomId) => api.post(`${roomPath(roomId)}/unread`, {}) as Promise<ReadCursorResponse>,
+    async setTyping(request) {
+      await api.post("/messaging/typing", request);
+    },
+    abortRun: (runId) => api.post(`/messaging/runs/${encodeURIComponent(runId)}/abort`, {}) as Promise<AbortRunResponse>,
+    steerRun: (runId, request) => api.post(`/messaging/runs/${encodeURIComponent(runId)}/steer`, request) as Promise<SteerRunResponse>,
+    getRunStatus: (runId) => api.get(`/messaging/runs/${encodeURIComponent(runId)}`) as Promise<RunStatusResponse>,
+  };
+}

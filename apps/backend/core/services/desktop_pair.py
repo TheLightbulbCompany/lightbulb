@@ -18,7 +18,7 @@ import json
 import logging
 import os
 import secrets
-import tempfile
+import stat
 import time
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Protocol
@@ -26,9 +26,11 @@ from typing import Awaitable, Callable, Protocol
 from cryptography.hazmat.primitives import serialization
 
 from core.services.efs_file_lock import (
-    chown_uid_1000_best_effort,
+    SidecarLockIdentityError,
+    _open_regular_fd,
+    _path_names_open_fd,
+    chown_fd_uid_1000_best_effort,
     get_file_lock,
-    open_lock_fd,
 )
 
 
@@ -44,9 +46,9 @@ logger = logging.getLogger(__name__)
 # lock STILL matters — it guards against cross-process writers (the
 # in-container node self-registering during first connect runs in a
 # different OS process). Shared implementation in ``efs_file_lock``.
-def _get_paired_lock(owner_id: str):
-    """Return the per-owner in-process write lock (both paired.json files)."""
-    return get_file_lock(f"desktop_pair:{owner_id}")
+def _get_paired_lock(lock_path: str):
+    """Return the in-process lock for this canonical pairing sidecar."""
+    return get_file_lock(lock_path)
 
 
 # Retired brand generations of the display-name suffix WE compose. A device
@@ -705,14 +707,13 @@ class EfsWorkspaceAdapter:
     def _paths(self) -> tuple[str, str, str, str]:
         """Resolve ``(devices_dir, paired_path, lock_path, owner_dir)``."""
         owner_dir = str(self.workspace.user_path(self.owner_id))
-        devices_dir = os.path.join(owner_dir, "devices")
+        devices_dir = str(self.workspace._resolve_user_file(self.owner_id, "devices"))
         paired_path = os.path.join(devices_dir, "paired.json")
         lock_path = os.path.join(devices_dir, "paired.json.lock")
         return devices_dir, paired_path, lock_path, owner_dir
 
     def _pairing_paths(self, subdir: str, filename: str) -> tuple[str, str, str]:
-        owner_dir = str(self.workspace.user_path(self.owner_id))
-        target_dir = os.path.join(owner_dir, subdir)
+        target_dir = str(self.workspace._resolve_user_file(self.owner_id, subdir))
         json_path = os.path.join(target_dir, filename)
         lock_path = os.path.join(target_dir, f"{filename}.lock")
         return target_dir, json_path, lock_path
@@ -721,11 +722,9 @@ class EfsWorkspaceAdapter:
         """Locked read-modify-write of ``devices/paired.json``.
 
         The mutator runs synchronously inside the lock — keep it cheap.
-        If it returns False, no write occurs (idempotent path) and no
-        directories are created. This is what makes "revoke against a
-        never-paired owner" safe to call on hosts where the EFS mount
-        path is read-only or absent (e.g. unit tests on macOS where the
-        default ``/mnt/efs/users`` doesn't exist).
+        If it returns False, no data-file write occurs. The canonical lock
+        directory/sidecar may still be created because even an absent-file
+        read must join the same cross-process protocol as a first writer.
         """
         devices_dir, paired_path, lock_path, _ = self._paths()
         await self._mutate_pairing_json(
@@ -766,68 +765,102 @@ class EfsWorkspaceAdapter:
         # Innermost (acquired inside _do_rmw): fcntl.lockf guards
         # cross-process callers (in-container node self-registration).
         # See _get_paired_lock / efs_file_lock for the two-layer rationale.
-        in_process_lock = _get_paired_lock(self.owner_id)
+        in_process_lock = _get_paired_lock(lock_path)
 
         def _do_rmw():
             current: dict = {}
-            paired_exists = os.path.exists(json_path)
-
-            lock_fd = None
+            target_parent = os.path.dirname(target_dir)
+            os.makedirs(target_parent, exist_ok=True)
             try:
-                if paired_exists:
-                    # Acquire the cross-process lock BEFORE reading so we
-                    # see a consistent view across concurrent writers
-                    # (in-container node self-registration, admin
-                    # workers, /desktop/pair).
-                    lock_fd = self._open_lock_fd(target_dir, lock_path)
-                    fcntl.lockf(lock_fd, fcntl.LOCK_EX)
+                os.mkdir(target_dir, 0o700)
+            except FileExistsError:
+                pass
+            observed_dir = os.lstat(target_dir)
+            if stat.S_ISLNK(observed_dir.st_mode) or not stat.S_ISDIR(observed_dir.st_mode):
+                raise SidecarLockIdentityError(f"pairing directory is not a real directory: {target_dir}")
+
+            dir_flags = os.O_RDONLY
+            if hasattr(os, "O_DIRECTORY"):
+                dir_flags |= os.O_DIRECTORY
+            if hasattr(os, "O_NOFOLLOW"):
+                dir_flags |= os.O_NOFOLLOW
+            dir_fd = os.open(target_dir, dir_flags)
+            if not _path_names_open_fd(target_dir, dir_fd):
+                os.close(dir_fd)
+                raise SidecarLockIdentityError(f"pairing directory changed identity: {target_dir}")
+            chown_fd_uid_1000_best_effort(dir_fd)
+            lock_fd = None
+            data_fd = None
+            try:
+                # The canonical sidecar is acquired before even checking
+                # whether paired.json exists. This makes the fresh-file path
+                # participate in the same RMW protocol as every later write.
+                lock_fd = _open_regular_fd("paired.json.lock", create=True, dir_fd=dir_fd)
+                if not _path_names_open_fd("paired.json.lock", lock_fd, dir_fd=dir_fd):
+                    raise SidecarLockIdentityError(f"pairing lock changed identity: {lock_path}")
+                chown_fd_uid_1000_best_effort(lock_fd)
+                fcntl.lockf(lock_fd, fcntl.LOCK_EX)
+                if not _path_names_open_fd("paired.json.lock", lock_fd, dir_fd=dir_fd):
+                    raise SidecarLockIdentityError(f"pairing lock changed identity: {lock_path}")
+
+                try:
+                    data_fd = _open_regular_fd("paired.json", create=False, dir_fd=dir_fd)
+                except FileNotFoundError:
+                    data_fd = None
+
+                if data_fd is not None:
+                    if not _path_names_open_fd("paired.json", data_fd, dir_fd=dir_fd):
+                        raise SidecarLockIdentityError(f"pairing file changed identity: {json_path}")
                     try:
-                        with open(json_path, "r") as f:
+                        with os.fdopen(os.dup(data_fd), "r") as f:
                             loaded = json.load(f)
-                        if isinstance(loaded, dict):
-                            current = loaded
-                        else:
-                            logger.warning(
-                                "%s for owner %s was not a dict (got %s); resetting",
-                                log_label,
-                                self.owner_id,
-                                type(loaded).__name__,
-                            )
+                        if not isinstance(loaded, dict):
+                            raise ValueError("pairing document is not an object")
+                        current = loaded
                     except (OSError, ValueError) as exc:
-                        logger.warning(
-                            "Failed to parse %s for owner %s (%s); resetting",
-                            log_label,
-                            self.owner_id,
-                            exc,
-                        )
+                        raise SidecarLockIdentityError(
+                            f"refusing to replace invalid {log_label} for owner {self.owner_id}"
+                        ) from exc
 
                 changed = mutator(current)
                 if not changed:
                     return
 
-                # Phase 2 — write. If paired.json didn't exist we haven't
-                # opened the lock yet; create devices/ first, then lock.
-                if lock_fd is None:
-                    os.makedirs(target_dir, exist_ok=True)
-                    self._chown_uid_1000_best_effort(target_dir)
-                    lock_fd = self._open_lock_fd(target_dir, lock_path)
-                    fcntl.lockf(lock_fd, fcntl.LOCK_EX)
-
                 # Validate serializability before touching disk.
                 serialized = json.dumps(current, indent=2)
-
-                fd, tmp_path = tempfile.mkstemp(dir=target_dir, suffix=".tmp")
+                tmp_name = f".paired.{secrets.token_hex(16)}.tmp"
+                tmp_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                if hasattr(os, "O_NOFOLLOW"):
+                    tmp_flags |= os.O_NOFOLLOW
+                tmp_fd = os.open(tmp_name, tmp_flags, 0o600, dir_fd=dir_fd)
                 try:
-                    with os.fdopen(fd, "w") as f:
+                    with os.fdopen(tmp_fd, "w") as f:
                         f.write(serialized)
-                    self._chown_uid_1000_best_effort(tmp_path)
-                    os.rename(tmp_path, json_path)
-                except Exception:
-                    if os.path.exists(tmp_path):
+                        f.flush()
+                        os.fsync(f.fileno())
+                        chown_fd_uid_1000_best_effort(f.fileno())
+
+                    if data_fd is None:
                         try:
-                            os.unlink(tmp_path)
-                        except OSError:
+                            os.lstat("paired.json", dir_fd=dir_fd)
+                        except FileNotFoundError:
                             pass
+                        else:
+                            raise SidecarLockIdentityError(f"pairing file appeared during write: {json_path}")
+                    elif not _path_names_open_fd("paired.json", data_fd, dir_fd=dir_fd):
+                        raise SidecarLockIdentityError(f"pairing file changed identity: {json_path}")
+                    if not _path_names_open_fd("paired.json.lock", lock_fd, dir_fd=dir_fd):
+                        raise SidecarLockIdentityError(f"pairing lock changed identity: {lock_path}")
+                    if not _path_names_open_fd(target_dir, dir_fd):
+                        raise SidecarLockIdentityError(f"pairing directory changed identity: {target_dir}")
+                    os.replace(tmp_name, "paired.json", src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+                    if not _path_names_open_fd(target_dir, dir_fd):
+                        raise SidecarLockIdentityError(f"pairing directory changed identity: {target_dir}")
+                except Exception:
+                    try:
+                        os.unlink(tmp_name, dir_fd=dir_fd)
+                    except FileNotFoundError:
+                        pass
                     raise
 
                 logger.info(
@@ -837,9 +870,14 @@ class EfsWorkspaceAdapter:
                     len(current),
                 )
             finally:
+                if data_fd is not None:
+                    os.close(data_fd)
                 if lock_fd is not None:
-                    fcntl.lockf(lock_fd, fcntl.LOCK_UN)
-                    lock_fd.close()
+                    try:
+                        fcntl.lockf(lock_fd, fcntl.LOCK_UN)
+                    finally:
+                        os.close(lock_fd)
+                os.close(dir_fd)
 
         def _do_rmw_locked():
             # Acquire the per-owner threading lock first; this is the
@@ -851,23 +889,6 @@ class EfsWorkspaceAdapter:
                 _do_rmw()
 
         await asyncio.to_thread(_do_rmw_locked)
-
-    def _open_lock_fd(self, devices_dir: str, lock_path: str):
-        """Open the dedicated ``.lock`` file in r+ mode, creating it if missing.
-
-        A separate ``.lock`` file (not ``paired.json`` itself) is required
-        because the write path swaps paired.json's inode via ``os.rename`` — a
-        lock held on the old inode wouldn't protect against a new writer racing
-        the rename. Shared implementation in ``efs_file_lock``.
-        """
-        return open_lock_fd(devices_dir, lock_path)
-
-    def _chown_uid_1000_best_effort(self, path: str) -> None:
-        """Match OpenClaw container ownership (node uid=1000 gid=1000).
-
-        Shared implementation in ``efs_file_lock``.
-        """
-        chown_uid_1000_best_effort(path)
 
     async def get_gateway_token(self) -> str:
         container = await self.container_repo.get_by_owner_id(self.owner_id)

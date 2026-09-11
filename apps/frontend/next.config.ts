@@ -4,13 +4,9 @@ import path from "path";
 
 import { ROOT_DOMAIN } from "./src/lib/domain";
 
-// Our own origins, derived per-environment rather than enumerated. The static
+// Our API origin, derived per-environment rather than enumerated. The static
 // string this replaced named prod AND dev hosts at once, which cannot be right
 // for both once the two environments sit on different domains.
-//
-// `apiOrigin` -> `wsOrigin` is the same api→ws hostname rewrite the client uses
-// (`@lightbulb/shared`'s deriveWebSocketUrl), inlined because next.config runs in
-// plain Node before that package is transpiled.
 const apiOrigin = (() => {
   const raw = process.env.NEXT_PUBLIC_API_URL;
   if (!raw) return `https://api.${ROOT_DOMAIN}`;
@@ -20,11 +16,6 @@ const apiOrigin = (() => {
     return `https://api.${ROOT_DOMAIN}`;
   }
 })();
-
-const wsOrigin = apiOrigin
-  .replace(/^https:\/\//, "wss://")
-  .replace(/^http:\/\//, "ws://")
-  .replace(/\/\/api(?=[-.])/, "//ws");
 
 // A Clerk publishable key is `pk_(live|test)_<base64 of "<frontend-api-host>$">`,
 // so the instance's own host comes out of the key this build was compiled with —
@@ -47,7 +38,7 @@ const clerkOrigins = (() => {
 // header. PostHog is same-origin (reverse-proxied via /ingest below), so only
 // the cross-origin vendors need listing: Clerk (auth), Stripe (billing),
 // Cloudflare Turnstile (Clerk bot-check), Vercel (analytics scripts), plus our
-// own REST API + WebSocket gateway for connect-src. 'unsafe-inline'/'unsafe-eval'
+// own REST API + AppSync Events realtime endpoint for connect-src.
 // are required until a nonce-based policy is wired (a follow-up before enforcing).
 //
 // Termly (app.termly.io) needs BOTH script-src and connect-src: the SDK is a
@@ -58,7 +49,7 @@ const clerkOrigins = (() => {
 // is the only reason that has not bitten; promoting this header to enforcing
 // without these two entries is exactly the trap this note exists to prevent.
 //
-// Only OUR origins are derived (apiOrigin/wsOrigin/clerkOrigins above). Every
+// Only OUR API/Clerk origins are derived above. Every third-party origin below
 // third-party origin below stays a literal on purpose — Stripe, Termly,
 // Cloudflare Turnstile, Vercel and PostHog are not ours to rename, and there is
 // nothing to derive them from.
@@ -71,7 +62,7 @@ const reportOnlyCsp = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
-  `connect-src 'self' https://*.clerk.accounts.dev ${clerkOrigins.join(" ")} ${apiOrigin} https://api.stripe.com ${wsOrigin} https://us.i.posthog.com https://us-assets.i.posthog.com https://app.termly.io`,
+  `connect-src 'self' https://*.clerk.accounts.dev ${clerkOrigins.join(" ")} ${apiOrigin} https://api.stripe.com wss://*.appsync-realtime-api.us-east-1.amazonaws.com https://us.i.posthog.com https://us-assets.i.posthog.com https://app.termly.io`,
   `frame-src 'self' https://js.stripe.com https://hooks.stripe.com https://challenges.cloudflare.com https://*.clerk.accounts.dev ${clerkOrigins.join(" ")}`,
   "worker-src 'self' blob:",
   "manifest-src 'self'",

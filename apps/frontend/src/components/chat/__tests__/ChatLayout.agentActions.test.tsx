@@ -50,20 +50,22 @@ vi.mock("@/lib/analytics", () => ({
 }));
 
 let emitChatMessage: (msg: Record<string, unknown>) => void = () => {};
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({
+let onChatMessage = (h: (m: Record<string, unknown>) => void) => {
+  emitChatMessage = h;
+  return () => {};
+};
+vi.mock("@/hooks/useLiveEvents", () => ({
+  useLiveEvents: () => ({
+    liveConnected: true,
     nodeConnected: false,
     onEvent: () => () => {},
-    onChatMessage: (h: (m: Record<string, unknown>) => void) => {
-      emitChatMessage = h;
-      return () => {};
-    },
+    onChatMessage,
     sendReq: () => Promise.resolve(),
   }),
 }));
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpc: () => ({ data: { config: {} } }),
-  useGatewayRpcMutation: () => vi.fn(),
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpc: () => ({ data: { config: {} } }),
+  useRuntimeRpcMutation: () => vi.fn(),
 }));
 
 // Active agent in the gateway roster (drives ``currentAgentId``). Mutable so
@@ -159,9 +161,10 @@ import { ChatLayout } from "../ChatLayout";
 const openAgentInspector = vi.fn();
 const openAgentIssues = vi.fn();
 
-function renderShell() {
+function renderShell(statusIndicator?: React.ReactNode) {
   return render(
     <ChatLayout
+      statusIndicator={statusIndicator}
       activePanel="overview"
       onPanelChange={vi.fn()}
       openAgentInspector={openAgentInspector}
@@ -173,6 +176,14 @@ function renderShell() {
     </ChatLayout>,
   );
 }
+
+beforeEach(() => {
+  emitChatMessage = () => {};
+  onChatMessage = (handler) => {
+    emitChatMessage = handler;
+    return () => {};
+  };
+});
 
 describe("ChatLayout — header agent-action cluster", () => {
   beforeEach(() => {
@@ -190,6 +201,12 @@ describe("ChatLayout — header agent-action cluster", () => {
     expect(screen.getByLabelText("Open agent inspector")).toBeTruthy();
     expect(screen.getByLabelText("See this agent's work")).toBeTruthy();
     expect(screen.getByLabelText("Pause agent")).toBeTruthy();
+  });
+
+  it("places a run indicator in the header instead of over the composer", () => {
+    renderShell(<button type="button">Team is working</button>);
+    const indicator = screen.getByRole("button", { name: "Team is working" });
+    expect(indicator.parentElement).toContainElement(screen.getByRole("button", { name: "Get help" }));
   });
 
   it("opens the inspector for the active agent", () => {
@@ -296,7 +313,7 @@ describe("ChatLayout — mobile roster", () => {
     expect(stateOf("Friday")).toBe("idle");
 
     act(() =>
-      emitChatMessage({ type: "run_active", active: true, agent_id: "agent_1", session_id: "s1" }),
+      emitChatMessage({ type: "run_active", active: true, agentId: "agent_1", sessionId: "s1" }),
     );
     expect(stateOf("Friday")).toBe("running");
   });

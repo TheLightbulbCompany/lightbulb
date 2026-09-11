@@ -18,13 +18,13 @@ const PREVIEW = {
   plugins: [{ id: "weather", spec: "openclaw-weather@1.2.0", has_dependencies: true }],
   file_count: 7, files: ["./AGENTS.md"], mcp_servers: ["gh"], skills: ["remotion", "notes"], cron_jobs: 1,
   safety_flags: [], warnings: ["backup was written by OpenClaw 2026.3.11; Lightbulb runs 2026.7.2 — unsupported config keys are dropped, not failed"],
-  skipped_big_files: [], existing_agents: 2, standard_max_agents: 10, plan: "flat",
+  skipped_big_files: [],
 };
 
 const CLAUDE_PREVIEW = {
   import_id: "import-claude456789", kind: "claude", agent_id: "", name: "Claude Code context", description: "",
   agents: [], plugins: [], file_count: 0, files: [], mcp_servers: [], skills: [], cron_jobs: 0,
-  safety_flags: [], warnings: [], skipped_big_files: [], existing_agents: 2, standard_max_agents: 10, plan: "flat",
+  safety_flags: [], warnings: [], skipped_big_files: [],
   claude: {
     collections: [
       { id: "isol8-abc123", label: "isol8", file_count: 3 },
@@ -83,18 +83,16 @@ describe("ImportBackupDialog", () => {
     await waitFor(() => expect(onImported).toHaveBeenCalledWith("new-uuid"));
   });
 
-  it("shows the Ultra upsell and disables confirm when the sum exceeds the standard cap", async () => {
+  it("allows importing into a large roster without an Ultra upsell", async () => {
     mockPost.mockImplementation(async (url: string) => {
       if (url === "/marketplace/import/presign") return { upload_url: "https://s3/put", key: "k", max_bytes: 1e9, expires_in: 900 };
-      if (url === "/marketplace/import") return { ...PREVIEW, existing_agents: 9 };
+      if (url === "/marketplace/import") return PREVIEW;
       throw new Error("unexpected " + url);
     });
     render(<ImportBackupDialog open onOpenChange={() => {}} onImported={() => {}} />);
     pickFile();
     await screen.findByText("Quill");
-    expect(screen.getByText(/Ultra Pro/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /add to my team/i })).toBeDisabled();
-    fireEvent.click(screen.getByLabelText("Work Bot")); // 9 + 1 = 10 → OK
+    expect(screen.queryByText(/Ultra/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /add to my team/i })).toBeEnabled();
   });
 

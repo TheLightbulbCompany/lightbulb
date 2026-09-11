@@ -23,9 +23,9 @@ import { Button } from "@/components/ui/button";
 
 /**
  * Post-onboarding provider switch. Distinct from `ProviderPicker` in
- * ProvisioningStepper, which goes through `/billing/trial-checkout` and a
- * Stripe Checkout redirect — this modal targets `/billing/provider` and
- * assumes an already-active subscription.
+ * ProvisioningStepper, which presents workspace checkout before entitlement —
+ * this modal targets `/billing/provider` and assumes an already-active
+ * subscription.
  *
  * UX flow:
  *   1. Pick a provider card (all three for personal and org owners alike;

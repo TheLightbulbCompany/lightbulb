@@ -70,13 +70,9 @@ class GatewayConnectUnavailableError(RuntimeError):
     shortly", {retryable: true, retryAfterMs})`` while the container boots.
     Nothing about that rejection is permanent — the very next connect succeeds.
 
-    It used to arrive as a BARE ``RuntimeError`` (the catch-all below), which
-    put it in the same bucket as an auth rejection: not in
-    ``bootstrap_dispatcher._TRANSIENT_DISPATCH_ERRORS``, so the bootstrap
-    dispatcher skipped its ~3-minute connect-retry ladder entirely and wrote
-    ``bootstrap_state="failed"`` on the FIRST hit — permanently dead-ending
-    that owner's onboarding. Three prod owners were wedged on exactly this
-    rejection.
+    It used to arrive as a bare ``RuntimeError`` and could be mistaken for an
+    auth rejection, turning a short startup delay into a terminal onboarding
+    failure.
 
     Discriminated on the STRUCTURED signal the gateway sends (``retryable`` /
     the ``UNAVAILABLE`` code), never on the message text, which is free-form
@@ -130,6 +126,7 @@ async def perform_signed_connect(
     recv_timeout: float = _DEFAULT_TIMEOUT,
     scopes=None,
     identity=None,
+    trusted_broker_profile_id: str | None = None,
 ) -> dict:
     """Run the OpenClaw 4.5 signed-device connect handshake on an open socket.
 
@@ -205,6 +202,8 @@ async def perform_signed_connect(
         token=token,
         nonce=nonce,
         scopes=scopes,
+        platform="linux" if trusted_broker_profile_id is not None else None,
+        trusted_broker_profile_id=trusted_broker_profile_id,
     )
     params = {
         "minProtocol": 4,
@@ -217,12 +216,16 @@ async def perform_signed_connect(
         },
         "role": BACKEND_ROLE,
         "scopes": list(scopes),
-        "auth": {"token": token},
+        "auth": {
+            "token": token,
+            **({"trustedBrokerProfileId": trusted_broker_profile_id} if trusted_broker_profile_id is not None else {}),
+        },
         "device": device,
     }
     if caps:
         params["caps"] = list(caps)
-    await ws.send(json.dumps({"type": "req", "id": str(uuid.uuid4()), "method": "connect", "params": params}))
+    request_id = str(uuid.uuid4())
+    await ws.send(json.dumps({"type": "req", "id": request_id, "method": "connect", "params": params}))
 
     # Step 4: verify hello-ok.
     resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=recv_timeout))
@@ -254,6 +257,23 @@ async def perform_signed_connect(
                 retry_after_ms=_retry_after_ms(error),
             )
         raise RuntimeError(f"Gateway connect failed: {message}")
+    if trusted_broker_profile_id is not None:
+        hello = resp.get("payload")
+        auth = hello.get("auth") if isinstance(hello, dict) else None
+        if not (
+            resp.get("type") == "res"
+            and resp.get("id") == request_id
+            and resp.get("ok") is True
+            and isinstance(hello, dict)
+            and hello.get("type") == "hello-ok"
+            and hello.get("protocol") == 4
+            and isinstance(auth, dict)
+            and auth.get("role") == "operator"
+            and set(auth.get("scopes", [])) == set(scopes)
+            and not {"deviceToken", "deviceTokens", "bootstrapToken"} & auth.keys()
+            and not {"deviceToken", "deviceTokens", "bootstrapToken"} & hello.keys()
+        ):
+            raise RuntimeError("Gateway trusted-profile handshake proof is invalid")
     return resp
 
 
@@ -269,6 +289,8 @@ async def gateway_rpc_oneshot(
     recv_timeout: float = _DEFAULT_TIMEOUT,
     rpc_timeout: float = _DEFAULT_TIMEOUT,
     scopes=None,
+    identity=None,
+    trusted_broker_profile_id: str | None = None,
 ) -> dict:
     """Open a short-lived signed connection, send one RPC, return its payload.
 
@@ -285,6 +307,8 @@ async def gateway_rpc_oneshot(
             caps=caps,
             recv_timeout=recv_timeout,
             scopes=scopes,
+            identity=identity,
+            trusted_broker_profile_id=trusted_broker_profile_id,
         )
 
         req_id = str(uuid.uuid4())

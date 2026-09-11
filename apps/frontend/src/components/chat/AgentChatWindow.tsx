@@ -23,9 +23,7 @@ import { useAuth, useOrganization } from "@clerk/nextjs";
 import { Loader2, RefreshCw, Clock, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { LogoMark } from "@/components/Logo";
-import { useGateway } from "@/hooks/useGateway";
-
-import type { ChatIncomingMessage } from "@/hooks/useGateway";
+import { useLiveEvents } from "@/hooks/useLiveEvents";
 
 interface AgentChatWindowProps {
   agentId: string | null;
@@ -49,7 +47,7 @@ interface PendingUpdate {
 function UpdateBanner() {
   const api = useApi();
   const { organization, membership } = useOrganization();
-  const { onChatMessage } = useGateway();
+  const { onEvent } = useLiveEvents();
 
   const [applying, setApplying] = useState(false);
   const [dismissed, setDismissed] = useState(false);
@@ -88,16 +86,15 @@ function UpdateBanner() {
     setRemovedIds((prev) => new Set(prev).add(updateId));
   }, []);
 
-  // Listen for update_available WS events to trigger refetch
+  // Refresh update state from the private resource invalidation stream.
   useEffect(() => {
-    const unsub = onChatMessage((msg: ChatIncomingMessage) => {
-      if (msg.type === "update_available") {
+    return onEvent((event) => {
+      if (event.type === "runtime.resource.invalidated" && event.payload.resource === "config") {
         setDismissed(false);
-        refetchUpdates();
+        void refetchUpdates();
       }
     });
-    return unsub;
-  }, [onChatMessage, refetchUpdates]);
+  }, [onEvent, refetchUpdates]);
 
   const handleApplyNow = useCallback(
     async (updateId: string) => {
@@ -245,6 +242,9 @@ export function AgentChatWindow({
     renderGroups,
     isStreaming,
     busy,
+    runPhase,
+    runStartedAt,
+    lastTurnRecap,
     sendMessage,
     cancelMessage,
     clearMessages,
@@ -278,7 +278,7 @@ export function AgentChatWindow({
   // Hydrate the composer pill from the ACTIVE session's persisted row so it
   // reflects what sessions.patch wrote, not a stub. useAgentSessions shares its
   // SWR cache with the sidebar (same key), so this is not a second fetch; the
-  // active row is matched on sessionId (null == the legacy "General" row).
+  // active row is matched on sessionId (null == the legacy 3-part row).
   const { sessions: agentSessions, mutate: mutateSessions } = useAgentSessions(
     agentId,
     userId ?? null,
@@ -409,7 +409,7 @@ export function AgentChatWindow({
         console.error("Failed to send message:", err);
       }
     },
-    [sendMessage, api, agentId],
+    [sendMessage, api, agentId, mutateSessions],
   );
 
   // NOTE: there is deliberately no `if (chatError)` branch. Errors render as
@@ -559,7 +559,12 @@ export function AgentChatWindow({
         rewindDisabled={busy}
       />
       <UpdateBanner />
-      <StreamingStatusBar isStreaming={isStreaming} active={busy} />
+      <StreamingStatusBar
+        active={busy}
+        runPhase={runPhase}
+        runStartedAt={runStartedAt}
+        lastTurnRecap={lastTurnRecap}
+      />
       <AgentProgressCard sessionKey={progressSessionKey} />
       <ExecApprovalCards />
       <QuestionCards />

@@ -47,8 +47,8 @@ export default function DocsPage() {
         <p className="blog-eyebrow">docs</p>
         <h1 className="blog-title">How Lightbulb works</h1>
         <p className="blog-lede">
-          A private AI company: your own workspace, persistent memory, and a team that starts
-          with Friday and Atlas. Five short pages cover everything from sign-up to the approval
+          A private AI company: your own workspace, persistent memory, and a six-role starter
+          team led by your CEO. Five short pages cover everything from sign-up to the approval
           gates that keep you in control.
         </p>
         <div className="docs-hero-actions">

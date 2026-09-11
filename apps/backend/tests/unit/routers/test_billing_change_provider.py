@@ -777,13 +777,13 @@ async def test_change_provider_bedrock_to_chatgpt_hot_path_no_restart(async_clie
         # bedrock-haiku compaction override and hit the overflow bug.
         assert cheap_model is None
         # The heartbeat is an ordinary agent turn the Codex OAuth token CAN
-        # serve on the mini tier (unlike compaction) — so the hot swap re-pins
+        # serve on the Luna tier (unlike compaction) — so the hot swap re-pins
         # it rather than clearing it with the compaction slots. Same for the
         # utility model (titles etc.). Subagents re-pin to the standard tier
         # so children never inherit a stale bedrock ref; llm-task has no cheap
         # tier on this path (cheap_model is None) and goes enable-only.
-        assert heartbeat_model == "openai/gpt-5.4-mini"
-        assert utility_model == "openai/gpt-5.4-mini"
+        assert heartbeat_model == "openai/gpt-5.6-luna"
+        assert utility_model == "openai/gpt-5.6-luna"
         assert subagent_model == "openai/gpt-5.6-sol"
         assert llm_task_model is None
         # The search pin SURVIVES the swap (mirrors provision-time, which now

@@ -16,7 +16,7 @@ import {
 describe("lampStore", () => {
   beforeEach(() => {
     document.documentElement.removeAttribute("data-lb-theme");
-    setTheme("dark");
+    setTheme("light");
     // after setTheme, which persists: every test starts with nothing stored
     window.localStorage.clear();
     clearTheming();
@@ -39,49 +39,50 @@ describe("lampStore", () => {
   });
 
   it("hydrating a stored theme adopts it without the transition marker", () => {
-    window.localStorage.setItem(LAMP_STORAGE_KEY, "light");
+    window.localStorage.setItem(LAMP_STORAGE_KEY, "dark");
     hydrateFromStorage();
-    expect(getTheme()).toBe("light");
+    expect(getTheme()).toBe("dark");
     expect(document.documentElement.hasAttribute("data-lb-theming")).toBe(false);
   });
 
-  it("defaults to dark on the server and the client", () => {
-    expect(getServerTheme()).toBe("dark");
-    expect(getTheme()).toBe("dark");
+  it("defaults to light on the server and the client", () => {
+    expect(getServerTheme()).toBe("light");
+    expect(getTheme()).toBe("light");
   });
 
   it("strike toggles and writes the contract", () => {
     strike();
-    expect(getTheme()).toBe("light");
-    expect(document.documentElement.getAttribute("data-lb-theme")).toBe("light");
-    expect(window.localStorage.getItem(LAMP_STORAGE_KEY)).toBe("light");
-    strike();
     expect(getTheme()).toBe("dark");
     expect(document.documentElement.getAttribute("data-lb-theme")).toBe("dark");
+    expect(window.localStorage.getItem(LAMP_STORAGE_KEY)).toBe("dark");
+    strike();
+    expect(getTheme()).toBe("light");
+    expect(document.documentElement.getAttribute("data-lb-theme")).toBe("light");
   });
 
   it("lightOn is idempotent and never darkens", () => {
+    setTheme("dark");
     lightOn();
     lightOn();
     expect(getTheme()).toBe("light");
   });
 
-  it("hydrateFromStorage adopts a stored light, ignores junk", () => {
-    window.localStorage.setItem(LAMP_STORAGE_KEY, "light");
-    hydrateFromStorage();
-    expect(getTheme()).toBe("light");
-    setTheme("dark");
-    window.localStorage.setItem(LAMP_STORAGE_KEY, "banana");
+  it("hydrateFromStorage adopts a stored dark, ignores junk", () => {
+    window.localStorage.setItem(LAMP_STORAGE_KEY, "dark");
     hydrateFromStorage();
     expect(getTheme()).toBe("dark");
+    setTheme("light");
+    window.localStorage.setItem(LAMP_STORAGE_KEY, "banana");
+    hydrateFromStorage();
+    expect(getTheme()).toBe("light");
     // hydration is not a write: junk is left where it was
     expect(window.localStorage.getItem(LAMP_STORAGE_KEY)).toBe("banana");
   });
 
-  it("hydrating with nothing stored paints dark but stores no choice", () => {
+  it("hydrating with nothing stored paints light but stores no choice", () => {
     document.documentElement.removeAttribute("data-lb-theme");
     hydrateFromStorage();
-    expect(document.documentElement.getAttribute("data-lb-theme")).toBe("dark");
+    expect(document.documentElement.getAttribute("data-lb-theme")).toBe("light");
     expect(window.localStorage.getItem(LAMP_STORAGE_KEY)).toBeNull();
   });
 
@@ -109,8 +110,8 @@ describe("lampStore", () => {
 
   it("useLampTheme tracks the store", () => {
     const { result } = renderHook(() => useLampTheme());
-    expect(result.current).toBe("dark");
-    act(() => strike());
     expect(result.current).toBe("light");
+    act(() => strike());
+    expect(result.current).toBe("dark");
   });
 });

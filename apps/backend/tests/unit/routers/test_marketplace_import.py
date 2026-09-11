@@ -25,9 +25,7 @@ KEY = f"imports/{OWNER}/0123456789abcdef0123456789abcdef.tar.gz"
 
 
 def _auth() -> AuthContext:
-    # If AuthContext's constructor differs, copy the override used in
-    # tests/unit/routers/test_marketplace_listings.py.
-    return AuthContext(user_id=OWNER, email="o@example.com", org_id=None, org_role=None)
+    return AuthContext(user_id="user_importer", email="o@example.com", org_id=OWNER, org_role="org:admin")
 
 
 def _archive(agents_list=None, extra=None) -> bytes:
@@ -94,12 +92,6 @@ def client(tmp_path: Path):
         patch("routers.marketplace_import._s3", return_value=s3),
         patch("routers.marketplace_import.settings") as settings,
         patch("routers.marketplace_import.container_repo.get_by_owner_id", new_callable=AsyncMock) as get_row,
-        patch("routers.marketplace_import.count_paperclip_agents_for_owner", new_callable=AsyncMock, return_value=2),
-        patch(
-            "routers.marketplace_import.billing_repo.get_by_owner_id",
-            new_callable=AsyncMock,
-            return_value={"plan": "flat"},
-        ),
     ):
         settings.MARKETPLACE_ARTIFACTS_BUCKET = "bkt"
         get_row.return_value = {"owner_id": OWNER, "gateway_token": "gw"}
@@ -133,7 +125,6 @@ def test_import_streams_from_s3_and_returns_preview(client):
     assert body["import_id"].startswith("import-") and body["kind"] == "state-dir"
     assert body["agent_id"] == "main" and body["name"] == "Quill"
     assert body["mcp_servers"] == ["gh"] and "remotion" in body["skills"]
-    assert body["existing_agents"] == 2 and body["standard_max_agents"] == 10 and body["plan"] == "flat"
     staging = user_root / f"workspace-{body['import_id']}"
     assert (staging / "raw").is_dir() and (staging / "workspace" / "openclaw.json").is_file()
     assert s3.deleted == [KEY]  # raw upload consumed
@@ -278,33 +269,39 @@ def test_confirm_partial_failure_keeps_staging_and_reports(client):
     assert (user_root / f"workspace-{import_id}" / "raw").is_dir()
 
 
-def test_confirm_ultra_gate_409_for_standard_plan(client):
+def test_confirm_allows_import_above_ten_agents_without_a_count_lookup(client):
     c, _, s3, _ = client
-    s3.objects[KEY] = _archive(agents_list=[{"id": f"a{i}"} for i in range(9)])
-    import_id = _start(c)  # existing 2 + 9 = 11 > 10
-    with patch("routers.marketplace_import.register_staged_agent_under_claim", new_callable=AsyncMock) as reg:
-        r = c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={})
-    assert r.status_code == 409
-    assert r.json()["detail"]["error"] == "ultra_required"
-    assert r.json()["detail"]["existing_agents"] == 2 and r.json()["detail"]["importing"] == 9
-    reg.assert_not_awaited()
-
-
-def test_confirm_ultra_plan_passes_gate(client):
-    c, _, s3, _ = client
-    s3.objects[KEY] = _archive(agents_list=[{"id": f"a{i}"} for i in range(9)])
-    import_id = _start(c)
+    s3.objects[KEY] = _archive(agents_list=[{"id": "main"}])
     with (
         patch(
-            "routers.marketplace_import.billing_repo.get_by_owner_id",
+            "core.services.paperclip_openclaw_pairing.count_paperclip_agents_for_owner",
             new_callable=AsyncMock,
-            return_value={"plan": "ultra_pro"},
-        ),
+            return_value=11,
+        ) as count_agents,
         patch("routers.marketplace_import.register_staged_agent_under_claim", new_callable=AsyncMock) as reg,
     ):
-        reg.return_value = {"agent_id": "u", "name": "n", "registered": True, "publish_hint": "", "warnings": []}
-        r = c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={"agent_ids": ["a0"]})
-    assert r.status_code == 200
+        import_id = _start(c)
+        reg.return_value = {
+            "agent_id": "uuid-main",
+            "name": "Quill",
+            "registered": True,
+            "publish_hint": "",
+            "warnings": [],
+        }
+        r = c.post(f"/api/v1/marketplace/import/{import_id}/confirm", json={})
+    assert r.status_code == 200, r.text
+    count_agents.assert_not_awaited()
+    reg.assert_awaited_once()
+    assert r.json()["agents"] == [
+        {
+            "source_agent_id": "main",
+            "agent_id": "uuid-main",
+            "name": "Quill",
+            "ok": True,
+            "error": None,
+            "warnings": [],
+        }
+    ]
 
 
 def _plugin_archive() -> bytes:

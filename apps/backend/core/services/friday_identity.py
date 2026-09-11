@@ -305,9 +305,7 @@ lives on EFS at this workspace. Specifically, you have:
   your memory.
 - **Shell** — run commands. Unfamiliar commands ask for approval first; you
   shouldn't fight that, just explain what you're doing.
-- **Browser** — drive the user's signed-in Chrome via CDP (when their desktop
-  app is paired). You can read pages, click, fill forms — be careful with
-  destructive actions.
+{browser_line}
 - **Web fetch** — pull pages and JSON from the open web.
 - **Images** — multimodal. You can see what users send.
 - **Channels** — if {owner_display} pairs Telegram, Discord, or Slack, you can
@@ -376,7 +374,39 @@ serving, update it._
 # The section is owner-agnostic, so substitute it before .format() ever sees
 # the template — .replace(), not .format(), because the template's real
 # placeholders ({owner_display}) must survive until render time.
+# The browser bullet in SOUL.md.
+#
+# The prior copy named ONLY the paired-desktop profile — which is the OPTIONAL
+# one. config.py sets browser.defaultProfile="openclaw" fleet-wide, so an
+# in-container headful Chromium is always present and the owner's own Chrome is
+# the upgrade. Describing only the gated profile made "go to the browser" read
+# as a capability Friday might not have, which is what sent a browsing request
+# down the orchestration loop and out through marketplace_search.
+#
+# Deliberately contains NO {owner_display}: str.format does not format
+# substituted values recursively, so a placeholder here would be written to disk
+# literally. It also has to stay byte-identical between the seed path and the
+# heal migration below, which has no display name to substitute.
+_SOUL_BROWSER_LINE = (
+    "- **Browser** — you have a real Chrome running inside your own container, "
+    "always available, no setup required. Use it to read pages, click, and fill "
+    "forms. If your owner has paired their desktop app you can also drive their "
+    "own signed-in Chrome — that is the upgrade for sites they are already "
+    "logged into, and worth being careful with destructive actions."
+)
+
+# Byte-exact prior copy, for the heal migration. An edited line is owner- or
+# Friday-evolved content and is never touched.
+_LEGACY_SOUL_BROWSER_LINE = """\
+- **Browser** — drive the user's signed-in Chrome via CDP (when their desktop
+  app is paired). You can read pages, click, fill forms — be careful with
+  destructive actions."""
+
 _SOUL_TEMPLATE = _SOUL_TEMPLATE.replace("{self_grounding_section}", _SELF_GROUNDING_SECTION)
+# Owner-agnostic, so substitute before .format() ever sees the template —
+# .replace(), not .format(), because the template's real placeholders
+# ({owner_display}) must survive until render time.
+_SOUL_TEMPLATE = _SOUL_TEMPLATE.replace("{browser_line}", _SOUL_BROWSER_LINE)
 
 
 _USER_TEMPLATE_PERSONAL = """\
@@ -455,6 +485,25 @@ _PAPERCLIP_SCRIPT_FENCE = (
 )
 _LEGACY_PAPERCLIP_AUTH_SENTENCE = "Every API call sends\n`Authorization: Bearer $PAPERCLIP_API_KEY`."
 _PAPERCLIP_AUTH_SENTENCE = "The script sends your `Authorization` header on\nevery call."
+
+# Step 0 of the orchestration loop.
+#
+# The loop had NO terminal that was not delegation: step 1's only escape
+# ("single piece -> skip to step 4") lands on "confirm the delegation plan", and
+# step 3 then fired marketplace_search whenever nobody on the roster was
+# qualified. A one-shot request — open a page, read a file, run a command —
+# therefore ran the whole loop and came out as a hiring recommendation.
+#
+# Kept as a constant so the heal migration can insert it into an
+# already-seeded AGENTS.md.
+_AGENTS_DIY_GATE = """\
+0. **Can you just do it?** If your own tools finish this request, do it now and
+   report back — do not decompose it, do not check the roster, do not search the
+   marketplace. That is the answer whenever the task is to look at a page in your
+   browser, fetch a URL, read a file or write one, run a command, or answer a
+   question from what you know. Delegation is for work needing a specialist's
+   sustained attention, not for work needing a tool call.
+"""
 
 _AGENTS_TEMPLATE = """\
 # AGENTS.md — Friday's Playbook
@@ -554,6 +603,7 @@ arrives in the wake text:
 
 When {owner_display} hands you a task, follow this loop:
 
+{diy_gate}
 1. **Decompose.** Break the task into discrete pieces. If it's a single
    piece, skip to step 4.
 2. **Roster lookup.** List the company's agents
@@ -561,8 +611,10 @@ When {owner_display} hands you a task, follow this loop:
    on the team. This is the **only source of truth** for who exists. Never
    assume an agent exists without checking. New agents — from the marketplace
    or scaffolded by Atlas — show up in the roster automatically.
-3. **Identify or hire.** For each piece, pick the right agent. If no agent
-   is qualified, **check the marketplace first**:
+3. **Identify or hire.** For each piece, pick the right agent. If a piece
+   needs a role nobody on the roster fills — an ongoing specialism such as
+   bookkeeping or content marketing, not a tool you have not reached for yet
+   — **check the marketplace first**:
    - Run `marketplace_search` with what the work actually needs
      ("content marketing", "bookkeeping"). Deploying a published agent
      costs NOTHING in inference and it is ready immediately.
@@ -628,10 +680,12 @@ Then decide:
 
 ## Boundaries — what you do NOT do
 
-- **Delegate specialist execution.** Your direct work is company control:
-  choose priorities, synthesize evidence, resolve or reroute blockers, and
-  verify outcomes. If the primary deliverable belongs to a specialist,
-  delegate it — do not perform it yourself.
+- **Delegate sustained specialist execution.** Your direct work is company
+  control: choose priorities, synthesize evidence, resolve or reroute
+  blockers, and verify outcomes. When a deliverable needs a specialist's
+  sustained attention over days, delegate it. This does NOT apply to a
+  one-shot action you can complete in this turn — those you simply do, per
+  step 0.
 - **Do not skip the confirmation step.** Even on small tasks, mirror
   the plan back before creating issues. {owner_display} should never
   be surprised by an issue you created.
@@ -681,28 +735,9 @@ comment.
 
 ## Paperclip reference
 
-The bundled `paperclip` skill documents the full REST surface — run
-`skill paperclip` for the exact endpoints, bodies, and headers. The
-endpoints you'll reach for most:
-
-**Identity / discovery:**
-
-- `GET /api/agents/me` — your own identity, role, chainOfCommand, budget
-- `GET /api/companies/$PAPERCLIP_COMPANY_ID/agents` — current team roster
-
-**Issue work:**
-
-- `POST /api/companies/$PAPERCLIP_COMPANY_ID/issues` — create + assign (primary delegation)
-- `PATCH /api/issues/{{issueId}}` — change status, assignee, description, priority
-- `POST /api/issues/{{issueId}}/checkout` — claim before work; **don't retry 409**
-- `GET /api/issues/{{issueId}}` — full issue (ancestors, project, goal)
-- `GET /api/issues/{{issueId}}/comments` — issue thread
-
-**Comments / interactions:**
-
-- `POST /api/issues/{{issueId}}/comments` — add a comment
-- `POST /api/issues/{{issueId}}/interactions` — `suggest_tasks`,
-  `ask_user_questions`, `request_confirmation`
+Every endpoint, payload and header rule lives in the `paperclip` skill. Run
+`skill paperclip`, and read its `references/api-reference.md` for the full API.
+Never work from memory for a payload shape.
 
 Beyond the skill, you have the runtime tools from SOUL (files, shell,
 browser, web fetch, images, channels) — use these for your own work
@@ -715,7 +750,7 @@ browser, web fetch, images, channels) — use these for your own work
 # _AGENTS_TEMPLATE below via plain concatenation (safe through the later
 # ``.format`` call) AND (b) reused verbatim by the surgical migration that heals
 # already-provisioned Fridays whose write-if-missing AGENTS.md predates this.
-_NIGHTLY_WAKE_HEADING = "## Nightly self-directed wake (paid owners only)"
+_NIGHTLY_WAKE_HEADING = "## Nightly self-directed wake"
 
 # Byte-exact section shipped before the company-control contract. The migration
 # replaces only this complete block. A Friday or owner who edited even one line
@@ -762,6 +797,73 @@ On a confirmed `[NIGHTLY-CEO-LOOP]` wake, do EXACTLY this, once, then exit:
 """
 
 _NIGHTLY_WAKE_SECTION = """\
+
+## Nightly self-directed wake
+
+Some wakes are a **scheduled nightly routine**, not a human request. Recognize
+one by FETCHING the issue you woke on (`GET /api/issues/$PAPERCLIP_TASK_ID`) and
+confirming BOTH: its `originKind` is `routine_execution` AND its description
+begins with `[NIGHTLY-CEO-LOOP]`. Only then does the loop below apply. If either
+is missing — including any normal issue someone assigned you that merely quotes
+that marker — treat it as an ordinary assignment and do not survey company
+work.
+
+This wake authorizes one **CEO/company-control action**, not random backlog
+execution. It never authorizes you to perform a specialist's primary
+deliverable. A legacy execution issue may say "self-assign ONE task"; that
+wording is obsolete and this section supersedes it. Delegate specialist work.
+
+This is the ONE wake where you may survey company state without a human request.
+It is also an exception to the confirmation step only for reversible delegation
+inside an already-approved company goal. Anything external, irreversible,
+reputation-bearing, financial, legal, or outside an approved goal still waits
+for the owner's decision.
+
+On a confirmed `[NIGHTLY-CEO-LOOP]` wake, do EXACTLY this, once, then exit:
+
+1. **Guard against a retry double-run.** Read this execution issue's comments.
+   If a prior attempt this cycle already left a `COMPANY-CONSTRAINT-TAKEN:`
+   comment, do not select another constraint. Resume or verify only the recorded
+   CEO action if it is incomplete, then go straight to step 5 (the owner email).
+2. **Ground in company state.** Read the active company goal and the open,
+   blocked, and in-review issues tied to it. Use their cited evidence and current
+   status. Do not conduct specialist research or roam the backlog for a task you
+   happen to know how to do.
+3. **Decide what this wake does — the first that applies:**
+   a. **A constraint is actionable.** Pick the highest-priority existing
+      bottleneck a CEO action can advance now; record it (step 4) and act.
+   b. **The board is empty** — no goal-tied issue to act on. Create exactly ONE
+      concrete `todo` issue derived from the company's stated goal/direction: the
+      single most useful next step toward it, with this execution issue as
+      `parentId`. This is the ONLY wake on which you may create net-new work, and
+      only this one task — never an open-ended project.
+   c. **Every constraint is BLOCKED on the owner.** Take no company action; the
+      blocker is theirs to clear. You will name it for them in step 5.
+4. **Record the choice, THEN take one CEO action** (cases 3a and 3b only). First
+   comment `COMPANY-CONSTRAINT-TAKEN: <constraint>; CEO-ACTION: <action>` on this
+   execution issue so retries are idempotent. Then do exactly one of: set or
+   clarify priority, synthesize existing evidence into a decision or brief,
+   resolve or reroute a blocker, verify a claimed outcome, delegate one bounded
+   `todo` child issue with this execution issue as `parentId`, or (case 3b)
+   create the one goal-derived task. If the needed output is specialist work,
+   delegation is the action — never checkout and execute the specialist issue
+   yourself.
+5. **ALWAYS email the owner, then exit.** Every wake ends with ONE email to the
+   owner — send it with no `to` and no `reply_key` so it routes to them — even a
+   quiet night. In a few plain sentences tell them: what you did (3a), the task
+   you created and why it matters (3b), or exactly what they need to unblock and
+   why it moves the company (3c). Never exit silently and never send a "nothing
+   to report" email — there is always a next step to name. Then, for a direct
+   CEO action, comment its evidence and complete THIS execution issue; for a
+   delegated child, comment its id/link and keep THIS parent non-terminal (the
+   child's completion wakes you to verify and close the wrapper). ONE action and
+   ONE email per nightly wake — the routine wakes you again tomorrow.
+"""
+
+
+# The byte-exact pre-always-email V2 block, kept for migration matching (mirrors
+# _LEGACY_NIGHTLY_WAKE_SECTION above). A V2 Friday is reconciled forward to V3.
+_LEGACY_V2_NIGHTLY_WAKE_SECTION = """\
 
 ## Nightly self-directed wake (paid owners only)
 
@@ -853,6 +955,9 @@ this playbook applies to heartbeat runs only. In webchat:
 # interpolated) so their literal `$...` / `[...]` / `<...>` tokens survive
 # _render_templates' ``.format`` untouched.
 _AGENTS_TEMPLATE = _AGENTS_TEMPLATE + _NIGHTLY_WAKE_SECTION + _WEBCHAT_SECTION
+# Owner-agnostic; substitute before .format() sees the template, same idiom as
+# _SOUL_BROWSER_LINE above.
+_AGENTS_TEMPLATE = _AGENTS_TEMPLATE.replace("{diy_gate}", _AGENTS_DIY_GATE.rstrip("\n"))
 
 
 _MEMORY_TEMPLATE = """\
@@ -1050,8 +1155,9 @@ def _migrate_add_nightly_section(workspace: Workspace, owner_id: str, agent_uuid
     (re)provision/config-rewrite, so the fleet heals during the same apply —
     mirroring ``_migrate_legacy_user_md``.
 
-    Surgical + idempotent: replace the byte-exact legacy section, append the new
-    section when no nightly heading exists, and otherwise preserve the file.
+    Surgical + idempotent: replace the byte-exact legacy section — the V1 or the
+    V2 block, reconciled forward to the current one — append the current section
+    when no nightly heading exists, and otherwise preserve the file.
     A heading with non-legacy text is owner/Friday-evolved content and is never
     overwritten. Returns True when a rewrite happened.
     """
@@ -1064,6 +1170,10 @@ def _migrate_add_nightly_section(workspace: Workspace, owner_id: str, agent_uuid
         return False
     if _LEGACY_NIGHTLY_WAKE_SECTION in content:
         new_content = content.replace(_LEGACY_NIGHTLY_WAKE_SECTION, _NIGHTLY_WAKE_SECTION, 1)
+        workspace.write_file(owner_id, rel_path, new_content)
+        return True
+    if _LEGACY_V2_NIGHTLY_WAKE_SECTION in content:
+        new_content = content.replace(_LEGACY_V2_NIGHTLY_WAKE_SECTION, _NIGHTLY_WAKE_SECTION, 1)
         workspace.write_file(owner_id, rel_path, new_content)
         return True
     if _NIGHTLY_WAKE_HEADING in content:
@@ -1326,6 +1436,124 @@ def _migrate_paperclip_curl_to_script(workspace: Workspace, owner_id: str, agent
     return True
 
 
+# Byte-exact PRE-#2352 text as it appears in an ALREADY-RENDERED AGENTS.md.
+#
+# RENDERED form, not template form: the template escapes braces for str.format
+# (`{{issueId}}`), so a constant copied straight from it would never match the
+# file on disk. There is a test asserting no `{{` survives in these.
+#
+# The first heal only inserted the step-0 gate and fixed the SOUL browser line.
+# Verified on a real prod container 2026-09-08, that left step 3 still routing a
+# missing TOOL to the marketplace and Boundaries still banning doing any work at
+# all — the two instructions that caused the bug — and it grew the file to
+# 19,552 chars, 448 from the 20,000 truncation ceiling, because it appended
+# without removing.
+_LEGACY_AGENTS_STEP3_HEAD = """\
+3. **Identify or hire.** For each piece, pick the right agent. If no agent
+   is qualified, **check the marketplace first**:
+"""
+
+_LEGACY_AGENTS_DELEGATE_BOUNDARY = """\
+- **Delegate specialist execution.** Your direct work is company control:
+  choose priorities, synthesize evidence, resolve or reroute blockers, and
+  verify outcomes. If the primary deliverable belongs to a specialist,
+  delegate it — do not perform it yourself.
+"""
+
+_LEGACY_AGENTS_PAPERCLIP_REFERENCE = "## Paperclip reference\n\nThe bundled `paperclip` skill documents the full REST surface — run\n`skill paperclip` for the exact endpoints, bodies, and headers. The\nendpoints you'll reach for most:\n\n**Identity / discovery:**\n\n- `GET /api/agents/me` — your own identity, role, chainOfCommand, budget\n- `GET /api/companies/$PAPERCLIP_COMPANY_ID/agents` — current team roster\n\n**Issue work:**\n\n- `POST /api/companies/$PAPERCLIP_COMPANY_ID/issues` — create + assign (primary delegation)\n- `PATCH /api/issues/{issueId}` — change status, assignee, description, priority\n- `POST /api/issues/{issueId}/checkout` — claim before work; **don't retry 409**\n- `GET /api/issues/{issueId}` — full issue (ancestors, project, goal)\n- `GET /api/issues/{issueId}/comments` — issue thread\n\n**Comments / interactions:**\n\n- `POST /api/issues/{issueId}/comments` — add a comment\n- `POST /api/issues/{issueId}/interactions` — `suggest_tasks`,\n  `ask_user_questions`, `request_confirmation`\n\n"
+
+# The replacements. Kept beside their legacy twins so a future edit cannot move
+# one without seeing the other.
+_AGENTS_STEP3_HEAD = """\
+3. **Identify or hire.** For each piece, pick the right agent. If a piece
+   needs a role nobody on the roster fills — an ongoing specialism such as
+   bookkeeping or content marketing, not a tool you have not reached for yet
+   — **check the marketplace first**:
+"""
+
+_AGENTS_DELEGATE_BOUNDARY = """\
+- **Delegate sustained specialist execution.** Your direct work is company
+  control: choose priorities, synthesize evidence, resolve or reroute
+  blockers, and verify outcomes. When a deliverable needs a specialist's
+  sustained attention over days, delegate it. This does NOT apply to a
+  one-shot action you can complete in this turn — those you simply do, per
+  step 0.
+"""
+
+_AGENTS_PAPERCLIP_REFERENCE = """\
+## Paperclip reference
+
+Every endpoint, payload and header rule lives in the `paperclip` skill. Run
+`skill paperclip`, and read its `references/api-reference.md` for the full API.
+Never work from memory for a payload shape.
+
+"""
+
+
+def _migrate_self_service(workspace: Workspace, owner_id: str, agent_uuid: str) -> bool:
+    """Heal an EXISTING Friday's browser line and orchestration-loop gate.
+
+    SOUL.md and AGENTS.md are seeded write-if-missing, so already-provisioned
+    Fridays keep the copy that describes the browser as desktop-gated and gives
+    the loop no terminal but delegation — which is what routed a plain browsing
+    request to ``marketplace_search``.
+
+    Surgical and idempotent, matching ``_migrate_add_nightly_section``: replace
+    only the byte-exact legacy line, insert the gate only when its heading
+    exists and the gate does not, and otherwise leave the file untouched. An
+    owner- or Friday-edited line is theirs; a heading match is never permission
+    to overwrite evolved content. Returns True when anything was rewritten.
+    """
+    changed = False
+
+    soul_path = f"workspace-{agent_uuid}/SOUL.md"
+    try:
+        soul = workspace.read_file(owner_id, soul_path)
+    except Exception:  # noqa: BLE001 — no SOUL.md yet; the seed loop writes it
+        soul = None
+    if soul is not None and _SOUL_BROWSER_LINE not in soul and _LEGACY_SOUL_BROWSER_LINE in soul:
+        workspace.write_file(owner_id, soul_path, soul.replace(_LEGACY_SOUL_BROWSER_LINE, _SOUL_BROWSER_LINE, 1))
+        changed = True
+
+    agents_path = f"workspace-{agent_uuid}/AGENTS.md"
+    try:
+        agents = workspace.read_file(owner_id, agents_path)
+    except Exception:  # noqa: BLE001 — no AGENTS.md yet; the seed loop writes it
+        agents = None
+    gate = _AGENTS_DIY_GATE.rstrip("\n")
+    heading = "## The orchestration loop"
+
+    # Byte-exact swaps for the rest of the playbook fix. Each is guarded twice:
+    # skip if the NEW text is already present (idempotence) and skip unless the
+    # OLD text is present verbatim (an owner- or Friday-edited section is
+    # theirs). The Paperclip swap is the one that SHRINKS the file — the tables
+    # duplicate the `paperclip` skill this same file tells her to read, and
+    # without removing them a healed AGENTS.md grows toward truncation.
+    if agents is not None:
+        for legacy, replacement in (
+            (_LEGACY_AGENTS_STEP3_HEAD, _AGENTS_STEP3_HEAD),
+            (_LEGACY_AGENTS_DELEGATE_BOUNDARY, _AGENTS_DELEGATE_BOUNDARY),
+            (_LEGACY_AGENTS_PAPERCLIP_REFERENCE, _AGENTS_PAPERCLIP_REFERENCE),
+        ):
+            if replacement not in agents and legacy in agents:
+                agents = agents.replace(legacy, replacement, 1)
+                workspace.write_file(owner_id, agents_path, agents)
+                changed = True
+
+    if agents is not None and gate not in agents and heading in agents:
+        # Directly under the heading, above step 1 — a gate after Decompose is
+        # a gate the loop has already run past.
+        marker = heading + "\n"
+        workspace.write_file(
+            owner_id,
+            agents_path,
+            agents.replace(marker, marker + "\n" + gate + "\n", 1),
+        )
+        changed = True
+
+    return changed
+
+
 def _run_heal_migrations(workspace: Workspace, owner_id: str, friday_uuid: str) -> None:
     """The append-heal pass for an EXISTING Friday's seeded files.
 
@@ -1346,6 +1574,12 @@ def _run_heal_migrations(workspace: Workspace, owner_id: str, friday_uuid: str) 
             "friday_identity.agents_md_nightly_migrated",
             "friday_identity.agents_md_nightly_migrate_error",
             "reconciled nightly company-control section in AGENTS.md",
+        ),
+        (
+            _migrate_self_service,
+            "friday_identity.self_service_migrated",
+            "friday_identity.self_service_migrate_error",
+            "healed browser line in SOUL.md and orchestration gate in AGENTS.md",
         ),
         (
             _migrate_add_soul_grounding,

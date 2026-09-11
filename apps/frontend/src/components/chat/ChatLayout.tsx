@@ -2,7 +2,7 @@
 
 import "./ChatLayout.css";
 import { useEffect, useRef, useState } from "react";
-import { useAuth, useUser, UserButton } from "@clerk/nextjs";
+import { OrganizationList, useAuth, useUser, UserButton } from "@clerk/nextjs";
 
 import { capture } from "@/lib/analytics";
 import { useSearchParams } from "next/navigation";
@@ -16,7 +16,7 @@ import { TrialBanner } from "@/components/chat/TrialBanner";
 import { OutOfCreditsBanner } from "@/components/chat/OutOfCreditsBanner";
 import { LaunchJoinBanner } from "@/components/chat/LaunchJoinBanner";
 import { LaunchJoinModal } from "@/components/chat/LaunchJoinModal";
-import { useGatewayRpc } from "@/hooks/useGatewayRpc";
+import { useRuntimeRpc } from "@/hooks/useRuntimeRpc";
 import { useAgents, type Agent } from "@/hooks/useAgents";
 import { useBilling } from "@/hooks/useBilling";
 import { useOnboardingGate } from "@/hooks/useOnboardingGate";
@@ -39,6 +39,7 @@ import { GetStarted } from "@/components/getstarted/GetStarted";
 import { TEAMS_PANEL_PREFIX } from "@/components/chat/InlineTeamsPanel";
 import { pushSearchParams } from "@/lib/shellNav";
 import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
+import { ArchivedSessions } from "@/components/chat/ArchivedSessions";
 import { SessionList } from "@/components/chat/SessionList";
 import { useActiveSession } from "@/hooks/useActiveSession";
 import { useAgentSessions, type AgentSession } from "@/hooks/useAgentSessions";
@@ -50,6 +51,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 
 interface ChatLayoutProps {
   children: React.ReactNode;
+  statusIndicator?: React.ReactNode;
   activePanel?: string;
   onPanelChange?: (panel: string) => void;
   openAgentIssues?: (agentId: string) => void;
@@ -70,6 +72,7 @@ function dispatchSelectAgentEvent(agentId: string): void {
 
 export function ChatLayout({
   children,
+  statusIndicator,
   activePanel,
   onPanelChange,
   openAgentIssues,
@@ -97,7 +100,7 @@ export function ChatLayout({
   // Models catalog for the sidebar agent rows: resolves Bedrock
   // application-inference-profile ARNs to display names ("Claude Opus 4.6")
   // — the raw ARN's last segment is an opaque random suffix.
-  const { data: configSnapshot } = useGatewayRpc<{ config?: unknown }>("config.get");
+  const { data: configSnapshot } = useRuntimeRpc<{ config?: unknown }>("config.get");
   // Per-agent runtime state for the roster (Teams roster status ∪ live gateway
   // runs). Shares the `/teams/agents` SWR key the pause/resume control below
   // already reads, so this adds no request on this shell.
@@ -126,11 +129,34 @@ export function ChatLayout({
   // Per-agent session state. `useActiveSession` is a shared module store, so
   // selecting a row here drives the transcript in AgentChatWindow's
   // useAgentChat (same store) — no prop drilling across subtrees.
-  const { activeSessionId, newSession, selectSession } = useActiveSession(currentAgentId);
-  const { sessions: agentSessions, renameSession, deleteSession } = useAgentSessions(
+  //
+  // The list comes first because it decides the seed — see the same block in
+  // WorkspaceSidebar for why it is gated on an EMPTY list rather than on a
+  // null active session.
+  const {
+    sessions: agentSessions,
+    isLoading: sessionsLoading,
+    renameSession,
+    deleteSession,
+    setArchived,
+    setPinned,
+  } = useAgentSessions(currentAgentId, clerkUserId ?? null);
+  const { activeSessionId, newSession, selectSession } = useActiveSession(
     currentAgentId,
-    clerkUserId ?? null,
+    !sessionsLoading && agentSessions.length === 0,
   );
+
+  // Archive is the rail's removal action, so the owner can archive the session
+  // they are sitting in. The chat would then keep rendering a transcript the
+  // rail no longer lists — fall back to the legacy row, exactly as delete does.
+  // Gated on a patch that actually LANDED: the container refuses to archive a
+  // session with a run still in flight, and a refused archive must leave the
+  // owner where they were rather than silently moving them.
+  const handleArchiveSession = async (s: AgentSession): Promise<void> => {
+    const wasActive = s.sessionId === activeSessionId;
+    const ok = await setArchived(s.key, true);
+    if (ok && wasActive) selectSession(null);
+  };
 
   // Header agent-action cluster (next to the file-tree button): pause/resume +
   // inspector/work deep links for the active agent, so the user can act on the
@@ -251,11 +277,15 @@ export function ChatLayout({
     setCreateFormOpen(true);
   }
 
-  // Block the chat shell until the gate is ``ready``. See
-  // ``useOnboardingGate`` for the full state-machine; the rule is the
-  // same as before — anything other than ``ready`` means we're either
-  // still loading, mid-redirect to /onboarding, or auto-activating an org
-  // membership, none of which should let owner_id-aware hooks render.
+  if (onboardingPhase === "selecting") {
+    return (
+      <main className="flex min-h-screen flex-col items-center justify-center gap-6 p-4">
+        <h1 className="text-2xl font-bold">Choose your workspace</h1>
+        <OrganizationList hidePersonal afterSelectOrganizationUrl="/chat" afterCreateOrganizationUrl="/onboarding" skipInvitationScreen />
+      </main>
+    );
+  }
+  // The shell waits for routing; useProvisioningState independently gates polling.
   if (onboardingPhase !== "ready") {
     return (
       <div className="app-shell" style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
@@ -368,7 +398,19 @@ export function ChatLayout({
                     onRename={(s, label) => {
                       void renameSession(s.key, label);
                     }}
-                    onDelete={(s) => setDeleteSessionTarget(s)}
+                    onArchive={(s) => {
+                      void handleArchiveSession(s);
+                    }}
+                    onPin={(s, next) => {
+                      void setPinned(s.key, next);
+                    }}
+                    archivedSlot={
+                      <ArchivedSessions
+                        agentId={currentAgentId}
+                        userId={clerkUserId ?? null}
+                        onDelete={(s) => setDeleteSessionTarget(s)}
+                      />
+                    }
                   />
                 )}
               />
@@ -465,6 +507,7 @@ export function ChatLayout({
               </div>
             )}
             <div style={{ flex: 1 }} />
+            {statusIndicator}
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
@@ -521,17 +564,17 @@ export function ChatLayout({
                   window.dispatchEvent(new CustomEvent("getstarted:focus-composer"));
                 },
                 task: () => {
-                  // ONE navigation to the inbox panel with the New-task
+                  // ONE navigation to the Tasks panel with the New-task
                   // intent. Mirror what `setActivePanel` (page.tsx) would
                   // build — set panel, drop stale agent/detailId filters —
-                  // and add `newIssue=onboarding` so the inbox auto-opens its
-                  // New-task dialog (read by InboxPage) pre-filled with the
+                  // and add `newIssue=onboarding` so Tasks auto-opens its
+                  // New-task dialog (read by IssuesPanel) pre-filled with the
                   // CEO-directed first task. Calling `onPanelChange` and then
                   // a second relative `?panel=…` push grew two history
                   // entries (Back needed two presses) and the relative form
                   // dropped the other query params setActivePanel preserves.
                   const params = new URLSearchParams(searchParams.toString());
-                  params.set("panel", `${TEAMS_PANEL_PREFIX}inbox`);
+                  params.set("panel", `${TEAMS_PANEL_PREFIX}issues`);
                   params.delete("agent");
                   params.delete("detailId");
                   params.set("newIssue", "onboarding");

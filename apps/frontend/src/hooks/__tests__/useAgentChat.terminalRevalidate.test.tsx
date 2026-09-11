@@ -19,7 +19,7 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
-import type { ChatIncomingMessage } from "@/hooks/useGateway";
+import type { ChatIncomingMessage } from "@lightbulb/shared";
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("@/lib/notify", () => ({
@@ -34,23 +34,28 @@ const sendReq = vi.fn();
 const sendChat = vi.fn();
 const send = vi.fn();
 
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({
+vi.mock("@/hooks/useAgentRoomTransport", () => ({
+  useAgentRoomTransport: (agentId: string | null) => ({
     isConnected: true,
-    nodeConnected: false,
-    error: null,
-    reconnectAttempt: 0,
-    send,
-    sendReq,
-    sendChat,
-    onEvent: () => () => {},
-    onChatMessage: (h: (m: ChatIncomingMessage) => void) => {
-      chatHandlers.push(h);
+    onChatMessage: (handler: (message: ChatIncomingMessage) => void) => {
+      chatHandlers.push(handler);
       return () => {
-        chatHandlers = chatHandlers.filter((x) => x !== h);
+        chatHandlers = chatHandlers.filter((candidate) => candidate !== handler);
       };
     },
-    reconnect: vi.fn(),
+    sendRoomMessage: async (message: string, clientMessageId: string) =>
+      sendChat(agentId, message, clientMessageId, undefined),
+    abortRun: async (runId: string) => {
+      const accepted = send({ type: "agent_abort", agentId: agentId, runId });
+      if (accepted === false) throw new Error("Stop not sent");
+      return {};
+    },
+    steerRun: async (runId: string, text: string) => {
+      const accepted = send({ type: "agent_steer", agentId: agentId, runId, text });
+      if (accepted === false) throw new Error("Steer not sent");
+      return {};
+    },
+    rpc: sendReq,
   }),
 }));
 
@@ -139,8 +144,8 @@ describe("useAgentChat — the run terminal soft-revalidates history", () => {
     const callsBefore = historyCalls();
 
     await act(async () => {
-      dispatch({ type: "chunk", agent_id: "agent-X", content: "hi back", runId } as ChatIncomingMessage);
-      dispatch({ type: "done", agent_id: "agent-X", runId } as ChatIncomingMessage);
+      dispatch({ type: "chunk", agentId: "agent-X", content: "hi back", runId } as ChatIncomingMessage);
+      dispatch({ type: "done", agentId: "agent-X", runId } as ChatIncomingMessage);
     });
 
     await waitFor(() => expect(historyCalls()).toBe(callsBefore + 1));
@@ -173,8 +178,8 @@ describe("useAgentChat — the run terminal soft-revalidates history", () => {
     const callsBefore = historyCalls();
 
     await act(async () => {
-      dispatch({ type: "done", agent_id: "agent-X", runId } as ChatIncomingMessage);
-      dispatch({ type: "run_ended", agent_id: "agent-X", runId } as ChatIncomingMessage);
+      dispatch({ type: "done", agentId: "agent-X", runId } as ChatIncomingMessage);
+      dispatch({ type: "run_ended", agentId: "agent-X", runId } as ChatIncomingMessage);
     });
     await waitFor(() => expect(historyCalls()).toBe(callsBefore + 1));
     // Settle: no second fetch from the trailing run_ended.
@@ -209,8 +214,8 @@ describe("useAgentChat — the run terminal soft-revalidates history", () => {
     });
     const runId = lastClientRunId();
     await act(async () => {
-      dispatch({ type: "chunk", agent_id: "agent-X", content: "hi back", runId } as ChatIncomingMessage);
-      dispatch({ type: "done", agent_id: "agent-X", runId } as ChatIncomingMessage);
+      dispatch({ type: "chunk", agentId: "agent-X", content: "hi back", runId } as ChatIncomingMessage);
+      dispatch({ type: "done", agentId: "agent-X", runId } as ChatIncomingMessage);
     });
     const localAfterTerminal = result.current.chatMessages.length;
     expect(localAfterTerminal).toBe(3); // seed + user + folded assistant
@@ -246,8 +251,8 @@ describe("useAgentChat — the run terminal soft-revalidates history", () => {
     });
     const runId = lastClientRunId();
     await act(async () => {
-      dispatch({ type: "chunk", agent_id: "agent-X", content: "hi back", runId } as ChatIncomingMessage);
-      dispatch({ type: "done", agent_id: "agent-X", runId } as ChatIncomingMessage);
+      dispatch({ type: "chunk", agentId: "agent-X", content: "hi back", runId } as ChatIncomingMessage);
+      dispatch({ type: "done", agentId: "agent-X", runId } as ChatIncomingMessage);
     });
     expect(result.current.chatMessages).toHaveLength(3);
 

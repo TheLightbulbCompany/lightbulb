@@ -4,11 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from core.services.company_package import (
-    COMPANY_STANDARD_PLAN_MAX_AGENTS,
-    CompanyMeta,
-    parse_company_meta,
-)
+from core.services.company_package import CompanyMeta, parse_company_meta
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "companies"
 
@@ -35,7 +31,7 @@ def test_parse_gstack_real_package():
     assert meta.min_plan == "standard"
 
 
-def test_min_plan_flips_above_threshold():
+def test_large_company_is_standard_compatible():
     meta = CompanyMeta(
         slug="big",
         name="Big",
@@ -43,7 +39,7 @@ def test_min_plan_flips_above_threshold():
         version=None,
         license="MIT",
         authors=[],
-        agent_count=COMPANY_STANDARD_PLAN_MAX_AGENTS + 1,
+        agent_count=37,
         team_count=0,
         skill_count=0,
         agent_slugs=[],
@@ -51,8 +47,6 @@ def test_min_plan_flips_above_threshold():
         skill_slugs=[],
         env_requirements=[],
     )
-    assert meta.min_plan == "ultra_pro"
-    meta.agent_count = COMPANY_STANDARD_PLAN_MAX_AGENTS
     assert meta.min_plan == "standard"
 
 

@@ -16,33 +16,32 @@ import { resolvePanelAlias, describePanel } from "../../workspace/panelRegistry"
 // The live nav set, in the spec §5.1 IA. "Issues" was renamed to "Tasks" and
 // Members removed (#1022), Costs cut (#1003), Skills retired for in-app
 // ClawHub search (#1175); Artifacts (#1307, now "Library") and Search (#1312)
-// were added; "Dashboard" became "Home" with the IA shell.
+// were added; "Dashboard" became "Home" with the IA shell. The consolidation
+// (spec 2026-09-06) took it to NINE: Org chart became a view of the Agents
+// panel and Brain came off the rail — Search stays, overriding the spec
+// (owner ruling 2026-09-08).
 const ALL_LABELS = [
   "Home",
   "Search",
   "Inbox",
-  "Payments",
-  "Products",
-  "Customers",
-  "Spend",
+  "Money",
   "Tasks",
   "Automations",
-  "Goals",
-  "Projects",
+  "Leads",
+  "Library",
+  "Accounts",
+];
+
+/** Shells whose capability is not live: registered, reachable by URL, and
+ *  deliberately NOT offered in the rail or the palette. */
+const COMING_SOON_LABELS = [
   "Support",
   "Publish",
   "SEO & AEO",
   "Ads",
-  "Leads",
-  "Brain",
-  "Library",
-  "Org chart",
-  "Accounts",
   "Identity",
-  "Domain & Site",
   "Compliance",
   "Contracts",
-  "Activity",
 ];
 
 describe("CompanyNav", () => {
@@ -55,9 +54,6 @@ describe("CompanyNav", () => {
     const { unmount } = render(<CompanyNav />);
     expect(screen.getByText("Accounts")).toBeInTheDocument();
     expect(screen.queryByText("Domain & Site")).toBeNull();
-    // Their neighbours in the Company section are untouched.
-    expect(screen.getByText("Identity")).toBeInTheDocument();
-    expect(screen.getByText("Compliance")).toBeInTheDocument();
     unmount();
 
     stripeStatus.data = undefined;
@@ -66,15 +62,50 @@ describe("CompanyNav", () => {
     expect(screen.queryByText("Domain & Site")).toBeNull();
   });
 
-  it("visibleCompanySections drops exactly the provisioning-marked items and nothing else", () => {
+  it("drops the shells always, and Domain & Site only while the rail is off", () => {
     const on = visibleCompanySections({ provisioningEnabled: true });
     const off = visibleCompanySections({ provisioningEnabled: false });
-    expect(on).toBe(COMPANY_SECTIONS);
     const flat = (s: typeof on) => s.flatMap((sec) => sec.items.map((i) => i.panel));
-    const dropped = flat(on).filter((p) => !flat(off).includes(p));
-    expect(dropped).toEqual(["teams-domain-site"]);
-    // No section is emptied by the filter, so the section order is intact.
+    const all = COMPANY_SECTIONS.flatMap((sec) => sec.items.map((i) => i.panel));
+
+    const shells = [
+      "teams-support",
+      "teams-publish",
+      "teams-seo",
+      "teams-ads",
+      "teams-identity",
+      "teams-compliance",
+      "teams-contracts",
+    ];
+    // Hidden in BOTH modes — a shell is not a provisioning question.
+    for (const panel of shells) {
+      expect(flat(on)).not.toContain(panel);
+      expect(flat(off)).not.toContain(panel);
+    }
+    // Compared as sets: teams-domain-site sits mid-list in the Company
+    // section, so declaration order is not the drop order.
+    expect(all.filter((p) => !flat(on).includes(p)).sort()).toEqual([...shells].sort());
+    expect(all.filter((p) => !flat(off).includes(p)).sort()).toEqual(
+      [...shells, "teams-domain-site"].sort(),
+    );
+    // No section is emptied, so the section order is intact.
     expect(off.map((s) => s.label)).toEqual(on.map((s) => s.label));
+  });
+
+  it("keeps every shell registered so an old link still opens it", () => {
+    // The rail stops offering them; the panel registry must not stop resolving
+    // them, or a saved link or an agent-built URL breaks.
+    const all = COMPANY_SECTIONS.flatMap((sec) => sec.items.map((i) => i.panel));
+    for (const panel of ["teams-support", "teams-publish", "teams-seo", "teams-ads", "teams-identity", "teams-compliance", "teams-contracts"]) {
+      expect(all).toContain(panel);
+    }
+  });
+
+  it("does not offer a shell in the rail", () => {
+    render(<CompanyNav />);
+    for (const label of COMING_SOON_LABELS) {
+      expect(screen.queryByText(label)).toBeNull();
+    }
   });
 
   it("renders every company panel", () => {
@@ -86,40 +117,76 @@ describe("CompanyNav", () => {
   it("declares the spec §5.1 section order: top block, Money, Work, Growth, Knowledge, Company", () => {
     expect(COMPANY_SECTIONS.map((s) => s.label)).toEqual([
       null,
-      "Money",
+      null, // Money — a one-item group carries no caption
       "Work",
       "Growth",
       "Knowledge",
       "Company",
     ]);
   });
-  it("files the four Money tabs in spec order and opens teams-spend on click", () => {
-    // The three Stripe reads first, then what the agents cost. Products is a
-    // peer tab, not a section of Payments — all three read one connected
-    // account and none is subordinate to another.
-    const money = COMPANY_SECTIONS.find((s) => s.label === "Money");
-    expect(money?.items.map((i) => i.label)).toEqual([
-      "Payments",
-      "Products",
-      "Customers",
-      "Spend",
-    ]);
+  it("files a single, uncaptioned Money item and opens teams-money on click", () => {
+    // Payments/Products/Customers/Spend are absorbed into the one ledger page
+    // (spec §3) — the sidebar carries one item, not four peer tabs, and a
+    // one-item group carries no caption (the item IS the caption).
+    const money = COMPANY_SECTIONS.find((s) => s.items.some((i) => i.panel === "teams-money"));
+    expect(money?.label).toBeNull();
+    expect(money?.items.map((i) => i.label)).toEqual(["Money"]);
     const onPanelChange = vi.fn();
     render(<CompanyNav onPanelChange={onPanelChange} />);
-    fireEvent.click(screen.getByText("Spend"));
-    expect(onPanelChange).toHaveBeenCalledWith("teams-spend");
+    fireEvent.click(screen.getByText("Money"));
+    expect(onPanelChange).toHaveBeenCalledWith("teams-money");
   });
   it('puts "Home" first', () => {
     expect(COMPANY_SECTIONS[0].items[0].label).toBe("Home");
   });
-  it('files "Brain" and "Library" under Knowledge and opens teams-artifacts on click', () => {
+  it('files "Library" under Knowledge and opens teams-artifacts on click', () => {
     const knowledge = COMPANY_SECTIONS.find((s) => s.label === "Knowledge");
-    expect(knowledge?.items.map((i) => i.label)).toEqual(["Brain", "Library"]);
+    expect(knowledge?.items.map((i) => i.label)).toEqual(["Library"]);
     const onPanelChange = vi.fn();
     render(<CompanyNav onPanelChange={onPanelChange} />);
     fireEvent.click(screen.getByText("Library"));
     expect(onPanelChange).toHaveBeenCalledWith("teams-artifacts");
   });
+  it("offers exactly nine items, in the consolidated order", () => {
+    // The rail cut's whole point (spec §3), so it is asserted as an ordered
+    // list, not a count: 22 items became 9. Provisioning off, since Domain &
+    // Site is a capability question rather than an IA one.
+    const labels = visibleCompanySections({ provisioningEnabled: false }).flatMap((s) =>
+      s.items.map((i) => i.label),
+    );
+    expect(labels).toEqual(ALL_LABELS);
+    expect(labels).toHaveLength(9);
+  });
+
+  it("stops offering Brain, whose key stays registered", () => {
+    // Owner ruling 2026-09-08: Brain is not useful in its current state, and a
+    // graph-based Brain is its own spec. Not absorbed and not aliased — just
+    // not offered, so ?panel=teams-brain still opens it.
+    render(<CompanyNav />);
+    expect(screen.queryByText("Brain")).toBeNull();
+    const all = COMPANY_SECTIONS.flatMap((sec) => sec.items.map((i) => i.panel));
+    expect(all).not.toContain("teams-brain");
+    expect(resolvePanelAlias("teams-brain")).toBe("teams-brain");
+    expect(describePanel("teams-brain", {})).toMatchObject({ panelId: "teams-brain" });
+    // And Dreams, which used to be its second tab, resolves on its own again.
+    expect(describePanel("dreams", {})).toMatchObject({ panelId: "control:dreams" });
+  });
+
+  it("stops offering Org chart, which still resolves onto the Agents panel", () => {
+    // Absorbed as the Agents panel's chart view (owner ruling 2026-09-08). The
+    // rail drops it; the key must keep resolving, or a saved link, a bookmark
+    // or an agent-built URL breaks.
+    render(<CompanyNav />);
+    expect(screen.queryByText("Org chart")).toBeNull();
+    const all = COMPANY_SECTIONS.flatMap((sec) => sec.items.map((i) => i.panel));
+    expect(all).not.toContain("teams-org-chart");
+    expect(resolvePanelAlias("teams-org-chart")).toBe("teams-agents");
+    expect(describePanel("teams-org-chart", {})).toMatchObject({
+      panelId: "teams-agents",
+      params: { teamsKey: "agents", view: "chart" },
+    });
+  });
+
   it("has no dead ends — every item's panel key resolves in the registry", () => {
     for (const section of COMPANY_SECTIONS) {
       for (const item of section.items) {
@@ -136,8 +203,8 @@ describe("CompanyNav", () => {
     // Label is "Tasks"; the panel key stayed `teams-issues`.
     fireEvent.click(screen.getByText("Tasks"));
     expect(onPanelChange).toHaveBeenCalledWith("teams-issues");
-    fireEvent.click(screen.getByText("Brain"));
-    expect(onPanelChange).toHaveBeenCalledWith("teams-brain");
+    fireEvent.click(screen.getByText("Automations"));
+    expect(onPanelChange).toHaveBeenCalledWith("teams-routines");
   });
   it("marks the active item with the midnight accent", () => {
     render(<CompanyNav activePanel="teams-routines" />);

@@ -18,14 +18,17 @@ idempotency contract is testable in isolation.
 from __future__ import annotations
 
 import enum
+import hashlib
 import logging
 import os
 import time
+import uuid
 
 import boto3
 from botocore.exceptions import ClientError
 
 from core.config import settings
+from core.dynamodb import run_in_thread
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +53,30 @@ def _emit_dedup_metric(source: str, outcome: str) -> None:
 class WebhookDedupResult(str, enum.Enum):
     RECORDED = "recorded"
     ALREADY_SEEN = "already_seen"
+
+
+class WebhookProcessingInProgress(RuntimeError):
+    """Another live worker owns this event's retryable processing lease."""
+
+
+class MembershipLifecycleInProgress(RuntimeError):
+    """An older membership event still owns this member's lifecycle lease."""
+
+
+class MembershipLifecycleSuperseded(RuntimeError):
+    """This worker no longer owns the member lifecycle it was processing."""
+
+
+class TopUpIntentConflict(RuntimeError):
+    """A caller reused a top-up idempotency token with different money inputs."""
+
+
+def membership_lifecycle_key(owner_id: str, alias: str) -> str:
+    """Stable central key for one org/member lifecycle, independent of containers."""
+    if not isinstance(owner_id, str) or not owner_id or not isinstance(alias, str) or not alias:
+        raise ValueError("membership lifecycle identity is required")
+    digest = hashlib.sha256(f"{owner_id}\0{alias}".encode()).hexdigest()
+    return f"human-membership:{digest}"
 
 
 def _table():
@@ -90,8 +117,642 @@ async def has_event(event_id: str) -> bool:
     Strongly consistent, because the caller is deciding entitlement and an
     eventually-consistent miss would grant it.
     """
-    response = _table().get_item(Key={"event_id": event_id}, ConsistentRead=True)
+    response = await run_in_thread(_table().get_item, Key={"event_id": event_id}, ConsistentRead=True)
     return response.get("Item") is not None
+
+
+async def record_permanent_marker(event_id: str, *, source: str) -> None:
+    """Create a no-TTL terminal marker, idempotently.
+
+    This is for deny-state whose safety lifetime is not a provider retry window
+    (for example a deleted Clerk subject). The conditional put prevents an
+    accidental replay from rewriting marker metadata.
+    """
+    try:
+        await run_in_thread(
+            _table().put_item,
+            Item={
+                "event_id": event_id,
+                "source": source,
+                "state": "completed",
+                "recorded_at": int(time.time()),
+            },
+            ConditionExpression="attribute_not_exists(event_id)",
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+
+async def _read_event(event_id: str) -> dict:
+    return (await run_in_thread(_table().get_item, Key={"event_id": event_id}, ConsistentRead=True)).get("Item", {})
+
+
+def top_up_intent_key(owner_id: str, request_id: str) -> str:
+    """Permanent idempotency identity for one workspace credit purchase."""
+    if not isinstance(owner_id, str) or not owner_id or not isinstance(request_id, str) or not request_id:
+        raise ValueError("workspace and request_id are required")
+    return f"metronome-top-up:{owner_id}:{request_id}"
+
+
+def active_top_up_key(owner_id: str) -> str:
+    """Permanent one-per-workspace pointer for a nonterminal top-up."""
+    if not isinstance(owner_id, str) or not owner_id:
+        raise ValueError("workspace is required")
+    return f"metronome-top-up-active:{owner_id}"
+
+
+_TOP_UP_TERMINAL_STATUSES = frozenset({"paid", "failed"})
+
+
+async def get_active_top_up(owner_id: str) -> dict | None:
+    """Return the workspace's durable top-up pointer, including terminal state."""
+    item = await _read_event(active_top_up_key(owner_id))
+    if not item:
+        return None
+    if item.get("kind") != "metronome-top-up-active" or item.get("owner_id") != owner_id:
+        raise TopUpIntentConflict("active top-up identity is unavailable")
+    return item
+
+
+async def get_top_up_intent(owner_id: str, request_id: str) -> dict | None:
+    """Return one permanent intent, scoped by its workspace and request UUID."""
+    item = await _read_event(top_up_intent_key(owner_id, request_id))
+    if not item:
+        return None
+    if (
+        item.get("kind") != "metronome-top-up"
+        or item.get("owner_id") != owner_id
+        or item.get("request_id") != request_id
+        or item.get("state") not in {"pending", "completed", "paid", "failed"}
+    ):
+        raise TopUpIntentConflict("top-up intent identity is unavailable")
+    return item
+
+
+async def _claim_active_top_up(owner_id: str, intent: dict) -> None:
+    """Point a workspace at one pending intent; replace terminal pointers only."""
+    key = active_top_up_key(owner_id)
+    fields = {
+        "kind": "metronome-top-up-active",
+        "owner_id": owner_id,
+        "intent_event_id": intent["event_id"],
+        "request_id": intent["request_id"],
+        "status": "pending",
+        "amount_cents": intent["amount_cents"],
+        "metronome_customer_id": intent["metronome_customer_id"],
+        "metronome_contract_id": intent["metronome_contract_id"],
+    }
+    try:
+        await run_in_thread(
+            _table().put_item,
+            Item={"event_id": key, "recorded_at": int(time.time()), **fields},
+            ConditionExpression="attribute_not_exists(event_id)",
+        )
+        return
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+    existing = await get_active_top_up(owner_id)
+    if existing is None:
+        raise TopUpIntentConflict("active top-up identity is unavailable")
+    if existing.get("intent_event_id") == intent["event_id"]:
+        return
+    if existing.get("status") not in _TOP_UP_TERMINAL_STATUSES:
+        raise TopUpIntentConflict("another top-up is active for this workspace")
+
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"event_id": key},
+            UpdateExpression=(
+                "SET #intent = :intent, #request = :request, #status = :pending, "
+                "amount_cents = :amount, metronome_customer_id = :customer, "
+                "metronome_contract_id = :contract, recorded_at = :now"
+            ),
+            ConditionExpression=("#kind = :kind AND #intent = :previous AND (#status = :paid OR #status = :failed)"),
+            ExpressionAttributeNames={
+                "#kind": "kind",
+                "#intent": "intent_event_id",
+                "#request": "request_id",
+                "#status": "status",
+            },
+            ExpressionAttributeValues={
+                ":kind": "metronome-top-up-active",
+                ":previous": existing["intent_event_id"],
+                ":intent": intent["event_id"],
+                ":request": intent["request_id"],
+                ":pending": "pending",
+                ":paid": "paid",
+                ":failed": "failed",
+                ":amount": intent["amount_cents"],
+                ":customer": intent["metronome_customer_id"],
+                ":contract": intent["metronome_contract_id"],
+                ":now": int(time.time()),
+            },
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        latest = await get_active_top_up(owner_id)
+        if latest and latest.get("intent_event_id") == intent["event_id"]:
+            return
+        raise TopUpIntentConflict("another top-up is active for this workspace") from exc
+
+
+async def get_or_create_top_up_intent(owner_id: str, request_id: str, binding: dict) -> dict:
+    """Atomically pin the complete payment-gated Metronome request body.
+
+    The normal webhook dedup rows expire, but money idempotency must survive
+    both vendor retention and a UTC-day boundary. This uses the same table's
+    existing permanent-marker pattern, keyed by workspace plus the caller UUID.
+    """
+    required = {
+        "amount_cents",
+        "effective_at",
+        "metronome_customer_id",
+        "metronome_contract_id",
+        "stripe_customer_id",
+        "product_id",
+        "credit_type_id",
+        "description",
+        "idempotency_key",
+    }
+    if set(binding) != required:
+        raise ValueError("top-up intent binding is incomplete")
+    key = top_up_intent_key(owner_id, request_id)
+    item = {
+        "event_id": key,
+        "kind": "metronome-top-up",
+        "state": "pending",
+        "owner_id": owner_id,
+        "request_id": request_id,
+        "recorded_at": int(time.time()),
+        **binding,
+    }
+    try:
+        await run_in_thread(
+            _table().put_item,
+            Item=item,
+            ConditionExpression="attribute_not_exists(event_id)",
+        )
+        await _claim_active_top_up(owner_id, item)
+        return item
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+    existing = await _read_event(key)
+    if not existing or existing.get("kind") != "metronome-top-up":
+        raise TopUpIntentConflict("top-up intent identity is unavailable")
+    if existing.get("owner_id") != owner_id or existing.get("request_id") != request_id:
+        raise TopUpIntentConflict("top-up intent binding changed")
+    # ``effective_at`` is generated only on the original request and pinned
+    # forever. A retry after UTC midnight supplies a different candidate but
+    # must replay the original body, not be rejected as a changed purchase.
+    if any(existing.get(field) != value for field, value in binding.items() if field != "effective_at"):
+        raise TopUpIntentConflict("top-up intent binding changed")
+    if existing.get("state") not in {"pending", "completed", "paid", "failed"}:
+        raise TopUpIntentConflict("top-up intent state is unavailable")
+    if existing["state"] not in _TOP_UP_TERMINAL_STATUSES:
+        await _claim_active_top_up(owner_id, existing)
+    return existing
+
+
+async def complete_top_up_intent(event_id: str) -> None:
+    """Mark a pinned top-up body complete after Metronome accepts it."""
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"event_id": event_id},
+            UpdateExpression="SET #state = :completed, completed_at = if_not_exists(completed_at, :now)",
+            ConditionExpression="#kind = :kind AND (#state = :pending OR #state = :completed)",
+            ExpressionAttributeNames={"#kind": "kind", "#state": "state"},
+            ExpressionAttributeValues={
+                ":kind": "metronome-top-up",
+                ":pending": "pending",
+                ":completed": "completed",
+                ":now": int(time.time()),
+            },
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        existing = await _read_event(event_id)
+        if existing.get("kind") == "metronome-top-up" and existing.get("state") in _TOP_UP_TERMINAL_STATUSES:
+            return
+        raise TopUpIntentConflict("top-up intent state is unavailable") from exc
+
+
+async def record_top_up_provider_attempt(event_id: str) -> int:
+    """Atomically retain the first instant a provider write could occur."""
+    now = int(time.time())
+    try:
+        response = await run_in_thread(
+            _table().update_item,
+            Key={"event_id": event_id},
+            UpdateExpression="SET provider_attempted_at = if_not_exists(provider_attempted_at, :now)",
+            ConditionExpression="#kind = :kind AND #state = :pending",
+            ExpressionAttributeNames={"#kind": "kind", "#state": "state"},
+            ExpressionAttributeValues={
+                ":kind": "metronome-top-up",
+                ":pending": "pending",
+                ":now": now,
+            },
+            ReturnValues="ALL_NEW",
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        raise TopUpIntentConflict("top-up intent state is unavailable") from exc
+    return int(response["Attributes"]["provider_attempted_at"])
+
+
+async def set_active_top_up_status(
+    owner_id: str,
+    metronome_customer_id: str,
+    metronome_contract_id: str,
+    status: str,
+    *,
+    intent_event_id: str | None = None,
+) -> bool:
+    """Advance a matching active pointer without terminally settling it."""
+    if status not in {"requested", "action_required"}:
+        raise ValueError("invalid active top-up status")
+    active = await get_active_top_up(owner_id)
+    if (
+        active is None
+        or active.get("metronome_customer_id") != metronome_customer_id
+        or active.get("metronome_contract_id") != metronome_contract_id
+        or (intent_event_id is not None and active.get("intent_event_id") != intent_event_id)
+    ):
+        return False
+    if active.get("status") in _TOP_UP_TERMINAL_STATUSES:
+        return False
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"event_id": active_top_up_key(owner_id)},
+            UpdateExpression="SET #status = :status, updated_at = :now",
+            ConditionExpression="#kind = :kind AND #intent = :intent AND #status = :current",
+            ExpressionAttributeNames={"#status": "status", "#kind": "kind", "#intent": "intent_event_id"},
+            ExpressionAttributeValues={
+                ":status": status,
+                ":current": active["status"],
+                ":now": int(time.time()),
+                ":kind": "metronome-top-up-active",
+                ":intent": active["intent_event_id"],
+            },
+        )
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return False
+
+
+async def settle_active_top_up(
+    owner_id: str,
+    metronome_customer_id: str,
+    metronome_contract_id: str,
+    status: str,
+    *,
+    invoice_id: str,
+) -> bool:
+    """Bind an invoice permanently before settling its exact purchase intent.
+
+    Every retry resumes this binding, including after the active pointer has
+    been replaced. The marker has no TTL: a later webhook for an old invoice
+    must never settle a new purchase.
+    """
+    if status not in _TOP_UP_TERMINAL_STATUSES:
+        raise ValueError("invalid terminal top-up status")
+    if not isinstance(invoice_id, str) or not invoice_id:
+        raise ValueError("invoice_id is required")
+    key = f"metronome-top-up-invoice:{invoice_id}"
+    marker = await _read_event(key)
+    if not marker:
+        active = await get_active_top_up(owner_id)
+        if (
+            active is None
+            or active.get("metronome_customer_id") != metronome_customer_id
+            or active.get("metronome_contract_id") != metronome_contract_id
+            or active.get("status") in _TOP_UP_TERMINAL_STATUSES
+        ):
+            return False
+        marker = {
+            "event_id": key,
+            "kind": "metronome-top-up-invoice",
+            "state": "processing",
+            "owner_id": owner_id,
+            "invoice_id": invoice_id,
+            "intent_event_id": active["intent_event_id"],
+            "request_id": active["request_id"],
+            "metronome_customer_id": metronome_customer_id,
+            "metronome_contract_id": metronome_contract_id,
+            "status": status,
+            "recorded_at": int(time.time()),
+        }
+        try:
+            await run_in_thread(
+                _table().put_item,
+                Item=marker,
+                ConditionExpression="attribute_not_exists(event_id)",
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+            marker = await _read_event(key)
+
+    if (
+        marker.get("kind") != "metronome-top-up-invoice"
+        or marker.get("owner_id") != owner_id
+        or marker.get("metronome_customer_id") != metronome_customer_id
+        or marker.get("metronome_contract_id") != metronome_contract_id
+    ):
+        raise TopUpIntentConflict("top-up invoice binding changed")
+    if marker.get("state") == "completed":
+        return False
+    # The first terminal event wins, even if a conflicting status arrives
+    # while that event is still being processed.
+    status = marker["status"]
+
+    await run_in_thread(
+        _table().update_item,
+        Key={"event_id": marker["intent_event_id"]},
+        UpdateExpression="SET #state = :status, settled_at = if_not_exists(settled_at, :now)",
+        ConditionExpression=(
+            "#kind = :kind AND owner_id = :owner AND request_id = :request "
+            "AND metronome_customer_id = :customer AND metronome_contract_id = :contract "
+            "AND (#state = :pending OR #state = :completed OR #state = :status)"
+        ),
+        ExpressionAttributeNames={"#state": "state", "#kind": "kind"},
+        ExpressionAttributeValues={
+            ":status": status,
+            ":now": int(time.time()),
+            ":kind": "metronome-top-up",
+            ":owner": owner_id,
+            ":request": marker["request_id"],
+            ":customer": metronome_customer_id,
+            ":contract": metronome_contract_id,
+            ":pending": "pending",
+            ":completed": "completed",
+        },
+    )
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"event_id": active_top_up_key(owner_id)},
+            UpdateExpression="SET #status = :status, settled_at = if_not_exists(settled_at, :now)",
+            ConditionExpression="#kind = :kind AND intent_event_id = :intent",
+            ExpressionAttributeNames={"#status": "status", "#kind": "kind"},
+            ExpressionAttributeValues={
+                ":status": status,
+                ":now": int(time.time()),
+                ":kind": "metronome-top-up-active",
+                ":intent": marker["intent_event_id"],
+            },
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        # A newer pointer may already exist; the immutable intent above is
+        # still the sole target of this invoice's replay.
+    await run_in_thread(
+        _table().update_item,
+        Key={"event_id": key},
+        UpdateExpression="SET #state = :completed",
+        ConditionExpression="intent_event_id = :intent",
+        ExpressionAttributeNames={"#state": "state"},
+        ExpressionAttributeValues={":completed": "completed", ":intent": marker["intent_event_id"]},
+    )
+    return True
+
+
+async def begin_event_processing(
+    event_id: str,
+    *,
+    source: str,
+    lease_seconds: int = 300,
+) -> str | None:
+    """Claim a retryable event, returning ``None`` only when it is complete.
+
+    Unlike ``record_event_or_skip``, an in-flight claim is never acknowledged
+    as a duplicate. The caller returns a retryable 5xx, then may take over after
+    the bounded lease. This removes the unsafe record-then-delete rollback gap.
+    """
+    if lease_seconds < 1:
+        raise ValueError("lease_seconds must be positive")
+    now = int(time.time())
+    claim_id = str(uuid.uuid4())
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"event_id": event_id},
+            UpdateExpression=(
+                "SET #state = :processing, claim_id = :claim, lease_until = :lease, "
+                "#source = :source, recorded_at = if_not_exists(recorded_at, :now), #ttl = :ttl"
+            ),
+            ConditionExpression=("attribute_not_exists(event_id) OR (#state = :processing AND lease_until < :now)"),
+            ExpressionAttributeNames={"#state": "state", "#source": "source", "#ttl": "ttl"},
+            ExpressionAttributeValues={
+                ":processing": "processing",
+                ":claim": claim_id,
+                ":lease": now + lease_seconds,
+                ":source": source,
+                ":now": now,
+                ":ttl": now + _TTL_SECONDS,
+            },
+        )
+        return claim_id
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+    item = await _read_event(event_id)
+    # Pre-state-machine rows were written only after the old caller decided to
+    # suppress duplicates, so preserve them as completed during rollout.
+    if item and item.get("state") in {None, "completed"}:
+        return None
+    raise WebhookProcessingInProgress(f"webhook event {event_id} is already processing")
+
+
+async def complete_event_processing(event_id: str, claim_id: str) -> None:
+    """Publish completion only while this worker still owns the lease."""
+    now = int(time.time())
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"event_id": event_id},
+            UpdateExpression="SET #state = :completed, completed_at = :now REMOVE claim_id, lease_until",
+            ConditionExpression="#state = :processing AND claim_id = :claim",
+            ExpressionAttributeNames={"#state": "state"},
+            ExpressionAttributeValues={
+                ":completed": "completed",
+                ":processing": "processing",
+                ":claim": claim_id,
+                ":now": now,
+            },
+        )
+        return
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+    item = await _read_event(event_id)
+    if item.get("state") == "completed":
+        return
+    raise RuntimeError(f"webhook event {event_id} processing lease was lost")
+
+
+async def begin_membership_lifecycle(
+    owner_id: str,
+    alias: str,
+    *,
+    event_id: str,
+    sequence: str,
+    access_state: str,
+    lease_seconds: int = 300,
+) -> str | None:
+    """Serialize one member's signed create/delete events in provider order.
+
+    The completed row intentionally has no TTL: it is the membership authority
+    even before an owner container exists. A newer event waits while an older
+    event owns the lease, then advances the durable epoch after that event
+    completes (or after its bounded lease expires following a worker crash).
+    """
+    if not isinstance(event_id, str) or not event_id or not isinstance(sequence, str) or not sequence:
+        raise ValueError("complete membership lifecycle epoch is required")
+    if access_state not in {"allowed", "revoked"}:
+        raise ValueError("invalid membership lifecycle state")
+    if lease_seconds < 1:
+        raise ValueError("lease_seconds must be positive")
+
+    key = membership_lifecycle_key(owner_id, alias)
+    now = int(time.time())
+    claim_id = str(uuid.uuid4())
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"event_id": key},
+            UpdateExpression=(
+                "SET #kind = :kind, lifecycle_event_id = :event, #sequence = :sequence, "
+                "access_state = :access, lifecycle_status = :processing, claim_id = :claim, "
+                "lease_until = :lease, recorded_at = if_not_exists(recorded_at, :now), updated_at = :now "
+                "REMOVE completed_at, #ttl"
+            ),
+            ConditionExpression=(
+                "attribute_not_exists(event_id) OR "
+                "(lifecycle_status = :processing AND lifecycle_event_id = :event "
+                "AND #sequence = :sequence AND lease_until < :lease_now) OR "
+                "((attribute_not_exists(claim_id) OR lease_until < :lease_now) AND #sequence < :sequence)"
+            ),
+            ExpressionAttributeNames={"#kind": "kind", "#sequence": "sequence", "#ttl": "ttl"},
+            ExpressionAttributeValues={
+                ":kind": "human-membership",
+                ":event": event_id,
+                ":sequence": sequence,
+                ":access": access_state,
+                ":processing": "processing",
+                ":claim": claim_id,
+                ":lease": now + lease_seconds,
+                ":lease_now": now + 1,
+                ":now": now,
+            },
+        )
+        return claim_id
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+    item = await _read_event(key)
+    stored_sequence = item.get("sequence")
+    if isinstance(stored_sequence, str) and stored_sequence > sequence:
+        return None
+    if stored_sequence == sequence and item.get("lifecycle_event_id") == event_id:
+        if item.get("lifecycle_status") == "completed":
+            return None
+        raise MembershipLifecycleInProgress(f"membership event {event_id} is already processing")
+    if isinstance(stored_sequence, str) and stored_sequence == sequence:
+        return None
+    raise MembershipLifecycleInProgress(f"an older membership event for {owner_id} is still processing")
+
+
+async def renew_membership_lifecycle(
+    owner_id: str,
+    alias: str,
+    claim_id: str,
+    *,
+    lease_seconds: int = 300,
+) -> None:
+    """Refresh the lifecycle lease, failing closed after takeover/supersession."""
+    if lease_seconds < 1:
+        raise ValueError("lease_seconds must be positive")
+    now = int(time.time())
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"event_id": membership_lifecycle_key(owner_id, alias)},
+            UpdateExpression="SET lease_until = :lease, updated_at = :now",
+            ConditionExpression="lifecycle_status = :processing AND claim_id = :claim",
+            ExpressionAttributeValues={
+                ":processing": "processing",
+                ":claim": claim_id,
+                ":lease": now + lease_seconds,
+                ":now": now,
+            },
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        raise MembershipLifecycleSuperseded("membership lifecycle lease was lost") from exc
+
+
+async def complete_membership_lifecycle(owner_id: str, alias: str, claim_id: str) -> None:
+    """Publish the permanent access epoch only while this worker owns it."""
+    now = int(time.time())
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"event_id": membership_lifecycle_key(owner_id, alias)},
+            UpdateExpression=(
+                "SET lifecycle_status = :completed, completed_at = :now, updated_at = :now "
+                "REMOVE claim_id, lease_until, #ttl"
+            ),
+            ConditionExpression="lifecycle_status = :processing AND claim_id = :claim",
+            ExpressionAttributeNames={"#ttl": "ttl"},
+            ExpressionAttributeValues={
+                ":completed": "completed",
+                ":processing": "processing",
+                ":claim": claim_id,
+                ":now": now,
+            },
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        raise MembershipLifecycleSuperseded("membership lifecycle lease was lost") from exc
+
+
+async def get_membership_lifecycle(owner_id: str, alias: str) -> dict | None:
+    """Read the central membership authority with strong consistency."""
+    item = await _read_event(membership_lifecycle_key(owner_id, alias))
+    if not item:
+        return None
+    marker = {
+        "event_id": item.get("lifecycle_event_id"),
+        "sequence": item.get("sequence"),
+        "state": item.get("access_state"),
+    }
+    if not (
+        item.get("kind") == "human-membership"
+        and isinstance(marker["event_id"], str)
+        and marker["event_id"]
+        and isinstance(marker["sequence"], str)
+        and marker["sequence"]
+        and marker["state"] in {"allowed", "revoked"}
+    ):
+        raise RuntimeError("membership lifecycle state unavailable")
+    return marker
 
 
 async def record_event_or_skip(event_id: str, *, source: str, ttl_seconds: int | None = None) -> WebhookDedupResult:

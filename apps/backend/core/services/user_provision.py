@@ -24,7 +24,9 @@ import re
 import uuid
 from collections import defaultdict
 
-from core.auth import AuthContext, is_org_owner_id
+from fastapi import HTTPException
+
+from core.auth import AuthContext, is_org_owner_id, resolve_owner_id
 from core.billing.metronome_provisioning import ensure_metronome_customer
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import (
@@ -32,7 +34,7 @@ from core.observability.product_analytics import (
     capture_product_event,
 )
 from core.repositories import billing_repo, container_repo
-from core.services import clerk_admin, wake_policy
+from core.services import wake_policy
 from core.services.agent_routine_provisioning import (
     NIGHTLY_CEO_ROUTINE_CRON,
     NIGHTLY_CEO_ROUTINE_DESCRIPTION,
@@ -47,7 +49,7 @@ from core.services.paperclip_provisioning import (
     build_paperclip_provisioning,
     close_paperclip_provisioning,
 )
-from core.services.provision_gate import evaluate_provision_gate, has_always_on_entitlement
+from core.services.provision_gate import evaluate_provision_gate, should_arm_nightly_ceo
 from core.services.trial_cap import utc_today
 
 logger = logging.getLogger(__name__)
@@ -81,139 +83,46 @@ def _clean_signup_flow_id(value: str | None) -> str | None:
     return None
 
 
-async def ensure_personal_trial_default(auth: AuthContext, owner_id: str, *, signup_flow_id: str | None = None) -> None:
-    """Auto-default a brand-new PERSONAL owner into a card-less ``trial_local``
-    billing row (idempotent conditional put — no-op if any row already exists).
+async def ensure_workspace_trial_default(
+    auth: AuthContext, workspace_id: str, *, signup_flow_id: str | None = None
+) -> None:
+    """Create the active workspace's unarmed trial once, before either provision gate.
 
-    The free tier is PERSONAL-ONLY: orgs get no card-less trial (the master
-    plan refuses org owners; Teams billing is per-seat / no-trial), so
-    ``not auth.is_org_context`` excludes every org context, admin included.
-
-    Called from BOTH ``ensure_user_ready`` (before its gate) AND
-    ``GET /container/status`` (before ITS gate). Each evaluates the provision
-    gate independently, and the row must exist before whichever gate runs
-    first — otherwise the gate sees no billing row, returns ``signup_required``,
-    and the caller short-circuits (``/container/status`` 404s to the
-    ProviderPicker) before the trial is ever created. Keeping the personal-only
-    predicate in one place stops the two gate sites from drifting.
-
-    Enforces the SAME tenancy invariant (Gate B) as ``/billing/trial-checkout``:
-    a user with a pending org invitation may not take a personal plan — they
-    must accept the invite and become a seat. Without it, this auto-default
-    would be a way around that gate: the invited user need only let the
-    ``/container/status`` poll run to land a personal ``trial_local`` row and a
-    personal container. The frontend normally routes them to the invitation
-    screen, but a direct poll or a routing race must not be able to violate a
-    backend invariant.
-
-    ANALYTICS. This function is the sole emitter of the trial funnel's three
-    server events, because it is the only place that decides whether a trial
-    exists:
-
-    - ``trial_start_requested`` — a personal owner with no billing row is
-      about to be given one. Fires once per attempt.
-    - ``trial_started`` — the conditional put actually wrote the row.
-      Carries a DETERMINISTIC ``event_uuid`` (uuid5 over owner id + UTC day),
-      so PostHog ingestion drops the duplicates the ``created`` flag cannot
-      see — a backend restart, the transient second task during a rolling
-      deploy — while a GENUINE second trial on a later day (a re-signup after
-      an account wipe, a dev clean-slate reset, the founder re-testing) still
-      counts. Keying on the owner alone would have silently zeroed every one
-      of those. There was a second, CLIENT-side emitter until this change; it
-      double-counted every trial started in a browser that kept its storage
-      and single-counted the rest.
-    - ``trial_start_failed`` — a personal owner who wanted a trial did not
-      get one, with the reason in ``error_code``. Previously invisible: a
-      user blocked by Gate B just sat on a spinner and left no event.
-
-    ``requested`` and ``failed`` go through ``capture_once_per_owner_per_day``
-    (the helper ``trial_cap_reached``/``trial_expired_block`` already use)
-    because both sit on a path the status poll re-enters indefinitely while the
-    owner stays blocked. ``trial_started`` does not need it — it fires only on
-    the write that created the row, and carries its own deterministic uuid.
-
-    ``signup_flow_id`` comes from the client on the ``/container/status``
-    poll (``?flow=``) and is the join key back to the anonymous half of the
-    journey, for the cases where PostHog's own identity stitch breaks. The
-    ``ensure_user_ready`` path also reaches here (from the Paperclip-proxy
-    handshake and the Teams reconcile) and has no flow id to give — if that
-    path wins the race for a brand-new owner, ``trial_started`` lands without
-    one. The status poll is the first thing /chat does, so in practice it
-    wins; when it does not, the person-level ``signup_flow_id`` set at
-    identify() is the fallback join.
-    An org context emits NOTHING here — orgs are excluded from the free
-    tier by design, so an org owner never appears in the trial funnel at
-    all. Read org activation off the subscription events, not these.
+    The conditional put selects one creator across members and backend instances.
+    Existing trial analytics describe row creation; runtime readiness arms its clock.
     """
-    if auth.is_org_context:
-        return
-
-    # Short-circuit on an existing row BEFORE the Clerk call. This helper runs on
-    # every ~3s /container/status poll; the invitation lookup is a Clerk API call
-    # and must not run on each one. Once the row exists there is nothing to
-    # create, so the only callers that reach Clerk are those at the actual signup
-    # moment (no billing row yet) — and an invited user gets routed to the
-    # invitation screen rather than left polling.
-    if await billing_repo.get_by_owner_id(owner_id):
+    if resolve_owner_id(auth) != workspace_id:
+        raise HTTPException(status_code=403, detail="Workspace does not match the active organization")
+    if await billing_repo.get_by_owner_id(workspace_id):
         return
 
     signup_flow_id = _clean_signup_flow_id(signup_flow_id)
     flow_props = {"signup_flow_id": signup_flow_id} if signup_flow_id else {}
-    # Once per owner per UTC day, NOT once per call. Everything below this line
-    # runs on EVERY status poll for as long as the owner stays blocked, because
-    # the only short-circuit above is "a billing row exists" and a blocked owner
-    # never gets one. At the 15s steady-state poll cadence that is ~480 events
-    # an hour from one person sitting on the invitation screen, which would make
-    # these two events a measure of how long tabs stay open rather than of how
-    # many people hit the block.
-    capture_once_per_owner_per_day(owner_id=owner_id, event="trial_start_requested", properties=flow_props)
-
-    pending = await clerk_admin.list_pending_invitations_for_user(auth.user_id)
-    if pending:
-        logger.info(
-            "user_provision: personal trial default refused for user=%s — pending org invitation",
-            auth.user_id,
-        )
-        capture_once_per_owner_per_day(
-            owner_id=owner_id,
-            event="trial_start_failed",
-            properties={**flow_props, "error_code": "pending_org_invitation"},
-        )
-        return
-
+    capture_once_per_owner_per_day(owner_id=workspace_id, event="trial_start_requested", properties=flow_props)
     try:
         created = await billing_repo.create_trial_local_if_absent(
-            owner_id=owner_id,
-            owner_type="personal",
+            owner_id=workspace_id, owner_type="org", trial_end=None
         )
     except Exception as exc:
-        # The write is the one step here that can fail on us rather than on
-        # a policy decision, and a user whose trial row never landed is a
-        # user stuck on the ProviderPicker forever. Name it, then re-raise —
-        # the caller's own error handling is unchanged.
-        # Same daily gate. Note the consequence: a second, DIFFERENT failure for
-        # the same owner on the same day is suppressed, because the key is
-        # (event, owner, day) and not the error code. That is the right trade
-        # for a funnel signal — the operational channel for a repeated write
-        # failure is the raised exception, not PostHog.
         capture_once_per_owner_per_day(
-            owner_id=owner_id,
+            owner_id=workspace_id,
             event="trial_start_failed",
             properties={**flow_props, "error_code": type(exc).__name__},
         )
         raise
 
     if created:
-        # Only the call that actually wrote the row fires this — every
-        # later idempotent no-op (each ~3s poll) must not re-fire it. The
-        # deterministic uuid is the second line of defence, covering the
-        # cases the `created` flag cannot see (see the docstring).
         capture_product_event(
-            distinct_id=owner_id,
+            distinct_id=workspace_id,
             event="trial_started",
-            properties={**flow_props, "owner_type": "personal"},
-            event_uuid=str(uuid.uuid5(_TRIAL_STARTED_NAMESPACE, f"{owner_id}:{utc_today()}")),
+            properties={**flow_props, "owner_type": "org"},
+            event_uuid=str(uuid.uuid5(_TRIAL_STARTED_NAMESPACE, f"{workspace_id}:{utc_today()}")),
         )
+
+
+async def arm_workspace_trial_if_unset(workspace_id: str) -> None:
+    """Start a ready workspace's unarmed local trial exactly once."""
+    await billing_repo.arm_trial_if_unset(workspace_id)
 
 
 async def ensure_user_ready(auth: AuthContext) -> None:
@@ -227,7 +136,7 @@ async def ensure_user_ready(auth: AuthContext) -> None:
          ONE shared company is normally CREATED by the provisioning
          executor's runner (scripts.provision_runner step 0), not here.
       3. Container (ECS) provisioning + the owner company-CREATE, for
-         container-owners only (personal user OR org admin), via
+         workspace admins only, via
          ``_provision_or_reconcile`` — which reads the container row and
          decides between "dispatch the executor" and "seed here",
          because those are the same job routed by live state. See its
@@ -236,15 +145,10 @@ async def ensure_user_ready(auth: AuthContext) -> None:
          decision, and got it wrong for the seed half — a self-healing
          poll on a running container seeded nothing).
     """
-    owner_id = auth.org_id if auth.is_org_context else auth.user_id
+    owner_id = resolve_owner_id(auth)
 
-    # Auto-default a brand-new personal owner into a card-less trial_local
-    # BEFORE the gate is evaluated, so the gate (which treats trial_local as
-    # active + provision-eligible) returns None below and the normal
-    # Paperclip-seed + dispatch_provision flow runs. Personal-only + the
-    # rationale for the shared helper live in its docstring; /container/status
-    # calls the SAME helper before its own gate.
-    await ensure_personal_trial_default(auth, owner_id)
+    # Both status and this background entry point need the row before gating.
+    await ensure_workspace_trial_default(auth, owner_id)
 
     # Metronome customer lifecycle, BEFORE the gate — not after it.
     #
@@ -262,16 +166,27 @@ async def ensure_user_ready(auth: AuthContext) -> None:
     # gated-for-any-other-reason owner (no subscription, pending invitation)
     # costs one DDB read and no Metronome traffic. Org members never run it:
     # the org's customer belongs to the org owner_id and an admin poll creates
-    # it. Best-effort — a Metronome outage must never block provisioning; the
-    # next poll retries, and the short-circuit on the persisted id makes the
-    # steady state a single read.
+    # it. Best-effort — a Metronome outage must never block provisioning.
+    #
+    # "The next poll retries" is NOT a blanket guarantee — this function is
+    # only re-entered from a running container for org context, a failed
+    # Teams seed, or (since the ledger-missing dispatch in
+    # routers/container.py) a ledger-eligible owner with no
+    # metronome_customer_id yet. That third case is what makes a failure
+    # HERE actually retry for a personal owner: without it, this except
+    # swallowed the error and nothing ever called this function again for a
+    # healthy running personal container (see readiness_state.compute_status's
+    # `metronome_ledger_missing` and the incident it was added to fix). The
+    # short-circuit on the persisted id makes a retried steady state a single
+    # read either way.
     if not auth.is_org_context or auth.is_org_admin:
         try:
             await ensure_metronome_customer(owner_id=owner_id)
         except Exception:
             put_metric("metronome.provision.error")
             logger.exception(
-                "Metronome customer provisioning failed for owner %s — will retry on next status poll",
+                "Metronome customer provisioning failed for owner %s — retried by the next "
+                "status poll via routers/container.py's metronome_ledger_missing re-dispatch",
                 owner_id,
             )
 
@@ -482,11 +397,12 @@ async def arm_nightly_ceo(owner_id: str, *, trust_cache: bool = True) -> str:
     ``owner_id`` prefix (``is_org_owner_id``), the executor's own rule; a
     personal owner_id IS the user_id.
 
-    Paid-only: ``has_always_on_entitlement`` returns True only for Stripe
-    ``active``/``trialing`` (or the legacy None+stripe_sub row) and fail-closes
-    on no account — a ``trial_local`` owner is NEVER armed. Returns the outcome
-    (``armed`` covers created OR title-skipped: the routine is present either
-    way) and emits it as the ``nightly_ceo.arm`` metric's ``status``. Does NOT
+    Armed for paid OR an unexpired trial (``should_arm_nightly_ceo``): paid buys
+    always-on, and the nightly CEO is ALSO extended to live ``trial_local``
+    owners as a retention lever (an EXPIRED trial is not armed, and self-disarms
+    at the wake path). Returns the outcome (``armed`` covers created, reactivated
+    OR title-skipped: the routine is present either way) and emits it as the
+    ``nightly_ceo.arm`` metric's ``status``. Does NOT
     swallow: a failure emits ``status=error`` and re-raises, and the caller
     decides — the executor classifies it into its retry ABI exactly like a
     seed failure; ``_maybe_arm_nightly_ceo`` logs and moves on.
@@ -506,12 +422,20 @@ async def arm_nightly_ceo(owner_id: str, *, trust_cache: bool = True) -> str:
         elects exactly one winner to seed (plus ``create_enabled_schedule_routine``'s
         title-skip as a backstop).
       - Owner opt-out: ``nightly_ceo_opted_out`` (durable — survives a full
-        reprovision because billing is preserved) blocks re-seeding, and the
-        title-skip never reconciles an existing paused trigger.
+        reprovision because billing is preserved) blocks arming entirely (bailed
+        above). Any paused routine reaching the create step is therefore an
+        ENTITLEMENT pause (teardown / cancel), which ``reconcile_paused=True``
+        re-enables on re-entitlement. Both re-subscribe paths reach the reconcile:
+        a torn-down container re-provisions through the executor
+        (``trust_cache=False``, which ignores the cache), and a container that
+        SURVIVED teardown (``delete_user_service`` is best-effort) is caught by
+        the poll-path self-heal — teardown's ``disarm_owner_nightly_automation``
+        releases the ``nightly_ceo_armed_company`` cache when it pauses, so the
+        ``trust_cache=True`` poll no longer short-circuits on it.
     """
     try:
         account = await billing_repo.get_by_owner_id(owner_id)
-        if not has_always_on_entitlement(account):
+        if not should_arm_nightly_ceo(account):
             return _arm_status("not_entitled")
         if account.get("nightly_ceo_opted_out"):
             return _arm_status("opted_out")
@@ -522,7 +446,7 @@ async def arm_nightly_ceo(owner_id: str, *, trust_cache: bool = True) -> str:
             # there is no orphan/failed-company cost leak: we only ever arm a
             # company provision_org actually finished (status="active").
             row = (
-                await provisioning.find_org_owner(owner_id)
+                await provisioning._repo.resolve_owner_row(owner_id)
                 if is_org_owner_id(owner_id)
                 else await provisioning.get_company_row(owner_id)
             )
@@ -532,8 +456,7 @@ async def arm_nightly_ceo(owner_id: str, *, trust_cache: bool = True) -> str:
             cached = account.get("nightly_ceo_armed_company") == company_id
             if cached and trust_cache:
                 return _arm_status("already_armed")  # cheap cache hit
-            # Friday is seeded FIRST (seed order == identity), so it's element 0.
-            friday_id = (row.seeded_agent_ids or [None])[0]
+            friday_id = (row.starter_agent_ids or {}).get("ceo") or (row.seeded_agent_ids or [None])[0]
             if not friday_id:
                 return _arm_status("friday_not_seeded")
             # A cache already naming this company means the claim is ours —
@@ -551,6 +474,12 @@ async def arm_nightly_ceo(owner_id: str, *, trust_cache: bool = True) -> str:
                     description=NIGHTLY_CEO_ROUTINE_DESCRIPTION,
                     cron=NIGHTLY_CEO_ROUTINE_CRON,
                     timezone="UTC",
+                    # Re-enable a teardown/expiry/past_due-paused routine on
+                    # re-entitlement. Owner opt-outs are already filtered above
+                    # (nightly_ceo_opted_out), so a paused routine here is safe
+                    # to reactivate — without this a churn→resubscribe owner
+                    # keeps a paused routine (the title-skip won't reconcile it).
+                    reconcile_paused=True,
                 )
             except Exception:
                 # Seed failed — release the claim (or the stale cache) so the
@@ -606,7 +535,7 @@ async def _ensure_paperclip_for_org(
         double-create. A member returns gracefully and waits — an admin
         will bootstrap the company (and the container it rides) on their
         poll, and the member joins on a subsequent poll. Letting a member
-        create here would seed Friday/Atlas pointing at a container members
+        create here would seed a starter roster pointing at a container members
         can't provision, leaving a company-without-container window.
 
     The underlying helpers treat a concurrent-create 409 as idempotent
@@ -762,11 +691,33 @@ async def _ensure_paperclip_for_owner(
     provisioning = await build_paperclip_provisioning()
     try:
         try:
-            await provisioning.provision_org(
+            before = await provisioning.get_company_row(owner_user_id)
+            company = await provisioning.provision_org(
                 owner_id=owner_id,
                 owner_user_id=owner_user_id,
                 owner_email=owner_email,
             )
+            from core.services.messaging import _STARTER_KEYS, ensure_default_room
+
+            before_starters = getattr(before, "starter_agent_ids", None) if before else None
+            company_starters = getattr(company, "starter_agent_ids", None)
+            fresh_or_partial = (
+                before is None
+                or getattr(before, "org_id", None) != owner_id
+                or (isinstance(before_starters, dict) and any(not before_starters.get(key) for key in _STARTER_KEYS))
+            )
+            complete = (
+                getattr(company, "status", None) == "active"
+                and isinstance(company_starters, dict)
+                and set(company_starters) == set(_STARTER_KEYS)
+                and all(company_starters.get(key) for key in _STARTER_KEYS)
+                and len(set(company_starters.values())) == len(_STARTER_KEYS)
+            )
+            if fresh_or_partial and complete:
+                try:
+                    await ensure_default_room(owner_id, owner_user_id)
+                except Exception:  # noqa: BLE001 — partial retries reconcile again
+                    logger.exception("ensure_user_ready: default room creation failed for owner=%s", owner_id)
         except PaperclipApiError as exc:
             # 409: a CONCURRENT provision_org (the previous ~3s
             # /container/status poll) is mid-flight and hasn't written the

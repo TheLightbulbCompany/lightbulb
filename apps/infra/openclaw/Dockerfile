@@ -23,57 +23,99 @@ RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
       build-essential ca-certificates curl git \
     && rm -rf /var/lib/apt/lists/*
 
-# Pin Go from go.dev — Debian 12's apt golang-go is 1.19, but several
-# steipete/* tools have go.mod directives requiring Go ≥1.24.
-RUN GO_VER=1.24.2 && \
-    curl -sL https://go.dev/dl/go${GO_VER}.linux-amd64.tar.gz \
-      | tar -xz -C /usr/local
+# Pin Go from go.dev — Debian 12's apt golang-go is 1.19, and the version-pinned
+# tools below carry go.mod directives up to `go 1.26.7` (eightctl, spogo).
+# GO_VERSION must be >= the highest of those. Check the floor with:
+#   curl -s https://proxy.golang.org/<lowercased-module-path>/@v/<version>.mod \
+#     | grep '^go '
+# The tarball is checksummed the same way the litestream layer is, from go.dev's
+# own published hash: curl -s 'https://go.dev/dl/?mode=json' | jq.
+ARG GO_VERSION=1.27.1
+ARG GO_SHA256=63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445
+RUN set -eux; \
+    curl -fsSL -o /tmp/go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"; \
+    echo "${GO_SHA256}  /tmp/go.tgz" | sha256sum -c -; \
+    tar -xzf /tmp/go.tgz -C /usr/local; \
+    rm /tmp/go.tgz
 
+# GOTOOLCHAIN defaults to "auto", which answers a go.mod directive newer than the
+# installed toolchain by silently DOWNLOADING a second toolchain mid-build. That
+# is how GO_VER sat at 1.24.2 in this file for months while the tools it builds
+# drifted to a 1.26.7 floor: every build passed, on a compiler nothing in this
+# repo names, re-chosen on each rebuild. "local" turns that into a loud build
+# failure that names the module that moved and the version to raise GO_VERSION to.
 ENV PATH=/usr/local/go/bin:$PATH \
     GOPATH=/opt/go \
-    GOBIN=/out/bin
-# CGO_ENABLED is left at Go's default (=1) so packages with C-binding deps
-# build correctly. wacli@v0.8.1 (and any future tool that pulls in
-# go-sqlite3 or similar) emits a `wacli_requires_cgo_enabled_1_for_go_sqlite3`
-# stub-import compile error when CGO is off. Pure-Go tools build identically
-# at CGO=1 vs CGO=0; build-essential is already installed above (Layer 1)
-# so gcc is available, and the final image FROMs Debian-based openclaw so
-# dynamic libc linking works at runtime.
+    GOBIN=/out/bin \
+    GOTOOLCHAIN=local
+# CGO_ENABLED is left at Go's default (=1) so a tool with C-binding deps
+# (go-sqlite3 and friends) still builds rather than emitting a
+# `..._requires_cgo_enabled_1_for_go_sqlite3` stub-import compile error.
+# Pure-Go tools build identically at CGO=1 vs CGO=0; build-essential is
+# already installed above (Layer 1) so gcc is available, and the final image
+# FROMs Debian-based openclaw so dynamic libc linking works at runtime.
 
 RUN mkdir -p /out/bin
 
 # Steipete + community Go tools — `go install` writes binaries into GOBIN (=/out/bin).
+#
+# EVERY LINE IS VERSION-PINNED, and the versions below are simply what `@latest`
+# resolved to on 2026-09-07 — this was a freeze, not a bump. `@latest` meant two
+# rebuilds of the same commit could produce different binaries, and worse, it
+# silently moved the Go floor underneath the pinned toolchain above: on
+# 2026-09-07 `wacli@latest` resolved to v0.18.0, whose go.mod requires Go
+# >= 1.27, and `goplaces@latest` to v0.4.9 requiring >= 1.26.7. With GOTOOLCHAIN
+# unset (= "auto") Go answers that by downloading a whole second toolchain
+# mid-build instead of failing, so the drift is invisible in the build log.
+#
+# A version tag is weaker than the ARG + SHA256 + smoke-test pattern the
+# litestream layer below uses, because a git tag is mutable at the origin. It is
+# not as weak as it looks: `go install` resolves through proxy.golang.org and
+# verifies every module against sum.golang.org, so the BYTES for a given version
+# are fixed even though the tag name is not. There is no equivalent of a
+# published checksums.txt to hash here, which is why this stops at the tag.
+#
+# To bump one: read the release notes, then
+#   curl -s https://proxy.golang.org/<lowercased-module-path>/@latest
+# and change the tag here. Do not reintroduce `@latest`.
+#
 # Module-path subtlety: github transferred most of these repos from steipete/*
 # to openclaw/* in early 2026, so browser URLs 301-redirect. But `go install`
 # resolves the canonical path from each release's go.mod, NOT from github
-# redirects. So per tool we have to use whichever path is declared at @latest:
-#   wacli@v0.8.1 → openclaw/wacli (released after rename)
-#   gogcli@v0.35.0 → openclaw/gogcli (flipped 2026-08: v0.35.0's go.mod
-#     declares the new path, so the steipete/* install path started failing
-#     with "module declares its path as: github.com/openclaw/gogcli")
-#   songsee/goplaces/spogo @latest → still steipete/* (released before
-#     rename; their go.mod hasn't been bumped to the new path)
-# When a future release of those three ships with `module github.com/openclaw/*`
-# in its go.mod, flip them too. Verify with:
-#   curl -s https://raw.githubusercontent.com/<owner>/<tool>/HEAD/go.mod | head -1
-RUN go install github.com/steipete/eightctl/cmd/eightctl@latest && \
-    go install github.com/Hyaxia/blogwatcher/cmd/blogwatcher@latest && \
-    go install github.com/steipete/ordercli/cmd/ordercli@latest && \
-    go install github.com/steipete/sonoscli/cmd/sonos@latest && \
-    go install github.com/openclaw/wacli/cmd/wacli@latest && \
-    go install github.com/steipete/gifgrep/cmd/gifgrep@latest && \
-    go install github.com/steipete/blucli/cmd/blu@latest && \
-    go install github.com/steipete/songsee/cmd/songsee@latest && \
-    go install github.com/openclaw/gogcli/cmd/gog@latest && \
-    go install github.com/steipete/goplaces/cmd/goplaces@latest && \
-    go install github.com/steipete/spogo/cmd/spogo@latest
+# redirects. So per tool we use whichever path THAT VERSION declares:
+#   gogcli@v0.39.1 → openclaw/gogcli (flipped 2026-08 at v0.35.0, whose go.mod
+#     declares the new path — the steipete/* install path started failing with
+#     "module declares its path as: github.com/openclaw/gogcli")
+#   everything else → still steipete/* (their go.mod hasn't been bumped)
+# When a future release of one ships with `module github.com/openclaw/*` in its
+# go.mod, flip its path as part of the version bump. Verify with:
+#   curl -s https://raw.githubusercontent.com/<owner>/<tool>/<tag>/go.mod | head -1
+RUN go install github.com/steipete/eightctl/cmd/eightctl@v0.2.5 && \
+    go install github.com/Hyaxia/blogwatcher/cmd/blogwatcher@v0.0.4 && \
+    go install github.com/steipete/ordercli/cmd/ordercli@v0.1.0 && \
+    go install github.com/steipete/sonoscli/cmd/sonos@v0.3.4 && \
+    go install github.com/steipete/gifgrep/cmd/gifgrep@v0.4.0 && \
+    go install github.com/steipete/blucli/cmd/blu@v0.1.5 && \
+    go install github.com/steipete/songsee/cmd/songsee@v0.1.2 && \
+    go install github.com/openclaw/gogcli/cmd/gog@v0.39.1 && \
+    go install github.com/steipete/spogo/cmd/spogo@v0.10.8
 
-# notesmd-cli (formerly obsidian-cli) — `go build` from a cloned repo.
-RUN git clone --depth=1 https://github.com/Yakitrak/notesmd-cli.git /tmp/notesmd && \
-    cd /tmp/notesmd && go build -o /out/bin/notesmd-cli .
+# DELETED (2026-09-07), both from the list above — neither binary was ever
+# reachable by an agent on this fleet:
+#   wacli    — its skill is extensions/whatsapp/skills/wacli, and `whatsapp` is
+#              in the base image's EXCLUDED_CORE_BUNDLED_PLUGIN_DIRS
+#              (scripts/lib/bundled-plugin-build-entries.mjs), so the skill that
+#              would use it is not in the image at all.
+#   goplaces — its skill declares requires.env ["GOOGLE_PLACES_API_KEY"], which
+#              is set nowhere in this repo, so the skill is never eligible.
+#   notesmd-cli — see the deleted obsidian-cli symlink in the final stage.
 
 # openhue — `go build` from repo root (skipping `make build`/GoReleaser).
-RUN git clone --depth=1 https://github.com/openhue/openhue-cli.git /tmp/openhue && \
+# Tag-pinned for the same reason as the `go install` lines above: a
+# `--depth=1` clone of the default branch is HEAD-at-build-time, not a version.
+ARG OPENHUE_VERSION=0.24
+RUN git clone --depth=1 --branch "${OPENHUE_VERSION}" \
+      https://github.com/openhue/openhue-cli.git /tmp/openhue && \
     cd /tmp/openhue && go build -o /out/bin/openhue .
 
 # =============================================================================
@@ -81,13 +123,12 @@ RUN git clone --depth=1 https://github.com/openhue/openhue-cli.git /tmp/openhue 
 # =============================================================================
 # Fat (non-slim) variant: bundles plugin runtime deps so first-use of
 # browser/codex/channels doesn't pay a ~6min lazy npm-install on cold start.
-FROM ghcr.io/thelightbulbcompany/agent:2026.8.1-isol8.3
+FROM ghcr.io/thelightbulbcompany/agent:2026.9.3-isol8.2@sha256:bff34c1100fab434f7953b8529863979df7deeda6963a8b0169caa4446c2ef18
 # PLUGIN-PIN POLICY (read before bumping the @openclaw/* pins below): the baked
 # plugins pin to the latest PUBLISHED plugin dist of the FROM tag's release
-# line on npm. The FROM tag is on the 2026.8.1 line, which upstream cut as a
-# STABLE release on 2026-08-30 — so all eight baked plugins pin to the stable
-# 2026.8.1 dist (previously the 2026.8.1-beta.3 prerelease) to stay in lockstep
-# with the 8.1 host; promoting this base to dev and then prod is the separate
+# line on npm. The FROM tag is on the stable 2026.9.3 line, so all eight baked
+# plugins pin to the exact 2026.9.3 dist to stay in lockstep with the host;
+# promoting this base to dev and then prod is the separate
 # dev.tag/prod.tag flip in openclaw-version.json. Keep these
 # pins in lockstep with the FROM tag on every base bump: the 7.1 line moved the
 # channel inbound-dispatch contract (turn-adoption ack), so a stale channel
@@ -146,19 +187,23 @@ RUN curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.17.0.zip" 
     /tmp/aws/install && \
     rm -rf /tmp/aws /tmp/awscliv2.zip
 
-# ---- Layer 2: 1Password CLI (apt repo) ----
-RUN curl -sS https://downloads.1password.com/linux/keys/1password.asc \
-      | gpg --dearmor -o /usr/share/keyrings/1password-archive-keyring.gpg && \
-    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] https://downloads.1password.com/linux/debian/amd64 stable main" \
-      > /etc/apt/sources.list.d/1password.list && \
-    apt-get update -qq && apt-get install -y --no-install-recommends 1password-cli && \
-    rm -rf /var/lib/apt/lists/*
+# ---- Layer 2: (REMOVED) 1Password CLI ----
+# Deleted 2026-09-07. It satisfied the bundled `1password` skill (requires.bins
+# ["op"]), so the skill WAS eligible and sat in every agent's prompt — pointing
+# at a vault nobody on this platform has. There is no 1Password anywhere in
+# Lightbulb: no `op` in any skill, service, materializer or task definition,
+# no OP_* env var, no vault reference. Secrets reach a container from AWS
+# Secrets Manager via openclaw.json `env.vars`
+# (provisioning_landing.build_provisioned_env) and from per-owner EFS files
+# written by core/services/credentials/materializers/. If an owner ever wants
+# 1Password, that is a credential-materializer, not a baked CLI.
 
 # ---- Layer 3: GitHub CLI (apt repo) ----
 # Was previously a `curl … | tar xz` pipe of the GitHub release tarball,
 # which broke on the bookworm-slim base when the gh tarball download went
-# through GitHub's release-assets redirect. The apt-repo path matches the
-# 1Password setup just above and is what GitHub officially recommends.
+# through GitHub's release-assets redirect. The apt-repo path is what GitHub
+# officially recommends (it also used to match the 1Password layer above, which
+# this file no longer has).
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       -o /usr/share/keyrings/githubcli-archive-keyring.gpg && \
     chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && \
@@ -175,9 +220,19 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 # with "uvx: not found" — bundle-mcp reports "Connection closed" and
 # re-attempts on every session prep, eventually driving the container
 # into ECS-healthcheck-unhealthy replacement.
-RUN curl -sSL https://astral.sh/uv/install.sh | HOME=/tmp sh && \
+#
+# Version-pinned: the bare /uv/install.sh URL always installs whatever astral
+# released most recently, so the same commit produced different uv builds on
+# different days. The versioned URL is astral's own supported form. The script
+# itself verifies the SHA256 of the archive it downloads, which is why there is
+# no separate `sha256sum -c` here the way the litestream layer below has one —
+# what is pinned is the version, and the installer covers the bytes.
+# Bump with: curl -s https://api.github.com/repos/astral-sh/uv/releases/latest
+ARG UV_VERSION=0.12.10
+RUN curl -sSL "https://astral.sh/uv/${UV_VERSION}/install.sh" | HOME=/tmp sh && \
     install -m 755 /tmp/.local/bin/uv /usr/local/bin/uv && \
-    install -m 755 /tmp/.local/bin/uvx /usr/local/bin/uvx
+    install -m 755 /tmp/.local/bin/uvx /usr/local/bin/uvx && \
+    uv --version && uvx --version
 
 # ---- Layer 5: pip packages (no cache, pre-built wheels only) ----
 # nano-pdf entry points land on PATH via system python (/usr/local/bin).
@@ -206,16 +261,35 @@ RUN pip install --no-cache-dir --break-system-packages \
       websockets nano-pdf
 
 # ---- Layer 6: Go-built skills (copied from builder) ----
-# 13 binaries built in the builder stage — Go toolchain itself stays out
+# 10 binaries built in the builder stage — Go toolchain itself stays out
 # of the final image, saving ~600 MB.
 COPY --from=builder /out/bin/ /usr/local/bin/
 
-# OpenClaw's `obsidian` SKILL.md still requires bin "obsidian-cli", so
-# alias to the renamed `notesmd-cli` to keep eligibility.
-RUN ln -s /usr/local/bin/notesmd-cli /usr/local/bin/obsidian-cli
+# REMOVED 2026-09-07: the `obsidian-cli` symlink onto notesmd-cli, and the
+# notesmd-cli build that fed it (see the builder stage). The comment here used
+# to say the `obsidian` skill requires bin "obsidian-cli" — it does not, and at
+# no tag we have run did it. At v2026.8.1-isol8.3 that skill's frontmatter is
+# `requires: { bins: ["obsidian"] }`, and its body says outright "Do not rely on
+# third-party `obsidian-cli` unless user explicitly asks for it". The only other
+# consumer, extensions/memory-wiki, calls resolveCommand("obsidian") and warns
+# `obsidian-cli-missing` when THAT is absent. So the alias never made anything
+# eligible; it just shipped a binary. The real `obsidian` CLI cannot be
+# installed here anyway — it is a component of the Obsidian desktop app and
+# talks to the running app over IPC.
 
-# ---- Layer 7: himalaya (pre-built binary via install.sh) ----
-RUN curl -sSL https://raw.githubusercontent.com/pimalaya/himalaya/master/install.sh | sh
+# ---- Layer 7: (REMOVED) himalaya ----
+# Deleted 2026-09-07. It installed to /usr/local/bin/himalaya, which satisfied
+# the bundled `himalaya` skill (requires.bins ["himalaya"]) and put an IMAP/SMTP
+# mail CLI in every agent's prompt — while apps/infra/openclaw/skills/lightbulb
+# spends prose telling the same agent that "Lightbulb does not use Gmail,
+# himalaya, or an OpenClaw email channel". Agent mail on this platform is
+# {agent}@{slug}.thelightbulb.company over SES (ses-inbound-stack + the
+# agent-mail scripts), and an owner watching Friday hunt for a mail account
+# through himalaya is a logged incident (core/services/onboarding_brief.py).
+# It was also the only network-fetched binary in this file with no version, no
+# checksum and no smoke test: `curl | sh` of an install script on the upstream
+# repo's `master` branch. Removing it removes both the misdirection and the
+# unpinned fetch at once.
 
 # ---- Layer 8: Node packages ----
 # Globals install with --ignore-scripts (faster, no build deps) EXCEPT the three
@@ -240,10 +314,14 @@ ENV NPM_CONFIG_PREFIX=/usr/local
 # this is the bridge that lets pipelines reach hosted-OAuth MCP servers (e.g.
 # Attio) the same way they call any other CLI. Baked as a global bin to stay
 # off the per-run npx connect storm; its auth comes from a pre-seeded vault.
+# The five formerly-unpinned globals below are now pinned too, to what npm
+# resolved on 2026-09-07 (freeze, not bump) — an unpinned global meant a rebuild
+# of the same commit could ship a different clawhub or gemini-cli than the tag
+# it was built from. Bump with `npm view <pkg> version`.
 RUN npm i -g --ignore-scripts \
-      clawhub openai \
-      @steipete/oracle @steipete/summarize \
-      @google/gemini-cli \
+      clawhub@0.23.3 openai@7.10.0 \
+      @steipete/oracle@0.19.0 @steipete/summarize@0.21.13 \
+      @google/gemini-cli@0.58.0 \
       mcporter@0.12.0 \
       @paperclipai/mcp-server@2026.529.0
 
@@ -390,8 +468,8 @@ RUN curl -fsSL -o /tmp/google-chrome.deb \
 # placeholder, so this layer ships and rolls ahead of any Zero Trust org
 # existing — same image-first decoupling as layers 9b and 10 above.
 #
-# Codename is read from the base rather than hardcoded (unlike the 1Password /
-# GitHub repos above, which serve one distro-agnostic "stable" suite):
+# Codename is read from the base rather than hardcoded (unlike the GitHub repo
+# above, which serves one distro-agnostic "stable" suite):
 # Cloudflare publishes per-suite, and this base's Debian release is whatever
 # the upstream OpenClaw fork's node image is on. Cloudflare currently publishes
 # both bookworm and trixie; a base that moves to a suite they do not publish
@@ -427,7 +505,7 @@ RUN chmod 0755 /usr/local/bin/isol8-warp-boot.sh
 RUN set -eux; \
     for P in slack discord; do \
       mkdir -p "/opt/stage-$P"; \
-      npm install --prefix "/opt/stage-$P" "@openclaw/$P@2026.8.1"; \
+      npm install --prefix "/opt/stage-$P" "@openclaw/$P@2026.9.3"; \
       mkdir -p "/app/dist/extensions/$P"; \
       cp -R "/opt/stage-$P/node_modules/@openclaw/$P/." "/app/dist/extensions/$P/"; \
       mkdir -p "/app/dist/extensions/$P/node_modules"; \
@@ -451,7 +529,7 @@ RUN set -eux; \
 # the FROM tag / openclaw-version.json#upstream.
 RUN set -eux; \
     mkdir -p /opt/stage-amazon-bedrock; \
-    npm install --prefix /opt/stage-amazon-bedrock "@openclaw/amazon-bedrock-provider@2026.8.1"; \
+    npm install --prefix /opt/stage-amazon-bedrock "@openclaw/amazon-bedrock-provider@2026.9.3"; \
     mkdir -p /app/dist/extensions/amazon-bedrock; \
     cp -R /opt/stage-amazon-bedrock/node_modules/@openclaw/amazon-bedrock-provider/. /app/dist/extensions/amazon-bedrock/; \
     mkdir -p /app/dist/extensions/amazon-bedrock/node_modules; \
@@ -475,7 +553,7 @@ RUN set -eux; \
 # pinned in lockstep with the FROM tag / openclaw-version.json#upstream.
 RUN set -eux; \
     mkdir -p /opt/stage-lobster; \
-    npm install --prefix /opt/stage-lobster "@openclaw/lobster@2026.8.1"; \
+    npm install --prefix /opt/stage-lobster "@openclaw/lobster@2026.9.3"; \
     mkdir -p /app/dist/extensions/lobster; \
     cp -R /opt/stage-lobster/node_modules/@openclaw/lobster/. /app/dist/extensions/lobster/; \
     mkdir -p /app/dist/extensions/lobster/node_modules; \
@@ -496,7 +574,7 @@ RUN set -eux; \
 # lockstep with the FROM tag, same as the layers above.
 RUN set -eux; \
     mkdir -p /opt/stage-parallel; \
-    npm install --prefix /opt/stage-parallel "@openclaw/parallel-plugin@2026.8.1"; \
+    npm install --prefix /opt/stage-parallel "@openclaw/parallel-plugin@2026.9.3"; \
     mkdir -p /app/dist/extensions/parallel; \
     cp -R /opt/stage-parallel/node_modules/@openclaw/parallel-plugin/. /app/dist/extensions/parallel/; \
     mkdir -p /app/dist/extensions/parallel/node_modules; \
@@ -522,14 +600,14 @@ RUN set -eux; \
 # any plugin dir not owned by uid 0; it auto-activates from
 # plugins.entries.firecrawl.enabled). The npm package is
 # `@openclaw/firecrawl-plugin`; its plugin id + discovery dir are `firecrawl`.
-# We now pin the stable 2026.8.1 dist explicitly — the same dist every other
-# baked plugin pins to on this 8.1 base — so it stays in lockstep with the FROM
+# We pin the stable 2026.9.3 dist explicitly — the same dist every other baked
+# plugin pins to on this host — so it stays in lockstep with the FROM
 # tag rather than tracking whatever `@beta` resolves to on the day of the build;
 # re-resolve `npm view @openclaw/firecrawl-plugin@beta version` on each base
 # bump. Bake it root-owned, same as the layers above.
 RUN set -eux; \
     mkdir -p /opt/stage-firecrawl; \
-    npm install --prefix /opt/stage-firecrawl "@openclaw/firecrawl-plugin@2026.8.1"; \
+    npm install --prefix /opt/stage-firecrawl "@openclaw/firecrawl-plugin@2026.9.3"; \
     mkdir -p /app/dist/extensions/firecrawl; \
     cp -R /opt/stage-firecrawl/node_modules/@openclaw/firecrawl-plugin/. /app/dist/extensions/firecrawl/; \
     mkdir -p /app/dist/extensions/firecrawl/node_modules; \
@@ -552,7 +630,7 @@ RUN set -eux; \
 # It ships NO node_modules of its own. Its two imports resolve from the host by
 # self-referencing the `openclaw` package from /app — `openclaw/plugin-sdk/
 # tool-plugin` exactly as aws-exec-profile does, and `typebox` from
-# /app/node_modules (openclaw depends on typebox 1.3.3, which the plugin pins
+# /app/node_modules (openclaw depends on typebox 1.3.18, which the plugin pins
 # in lockstep). The `openclaw` devDependency exists only to typecheck the build
 # locally and is ~460MB; it must never reach the image, which this COPY-only
 # layer guarantees structurally.
@@ -562,6 +640,11 @@ RUN set -eux; \
 # plugins.entries["lightbulb-marketplace"] in core/containers/config.py.
 COPY plugins/lightbulb-marketplace /app/dist/extensions/lightbulb-marketplace
 RUN chown -R root:root /app/dist/extensions/lightbulb-marketplace
+
+# ---- Layer 12e: native Lightbulb multiplayer channel ----
+# Dependency-free first-party channel plugin. The committed dist/ is the baked
+# artifact; its public plugin-sdk imports resolve from /app via Layer 17.
+COPY --chown=root:root plugins/lightbulb-channel /app/dist/extensions/lightbulb-channel
 
 # ---- Layer 13: externalized ACP runtime backend (acpx) ----
 # acpx is the official ACP runtime plugin that lets a native OpenClaw agent
@@ -585,7 +668,7 @@ RUN chown -R root:root /app/dist/extensions/lightbulb-marketplace
 # the FROM tag / openclaw-version.json#upstream.
 RUN set -eux; \
     mkdir -p /opt/stage-acpx; \
-    npm install --prefix /opt/stage-acpx "@openclaw/acpx@2026.8.1"; \
+    npm install --prefix /opt/stage-acpx "@openclaw/acpx@2026.9.3"; \
     mkdir -p /app/dist/extensions/acpx; \
     cp -R /opt/stage-acpx/node_modules/@openclaw/acpx/. /app/dist/extensions/acpx/; \
     mkdir -p /app/dist/extensions/acpx/node_modules; \
@@ -611,7 +694,7 @@ RUN set -eux; \
 # openclaw-version.json#upstream.
 RUN set -eux; \
     mkdir -p /opt/stage-tokenjuice; \
-    npm install --prefix /opt/stage-tokenjuice "@openclaw/tokenjuice@2026.8.1"; \
+    npm install --prefix /opt/stage-tokenjuice "@openclaw/tokenjuice@2026.9.3"; \
     mkdir -p /app/dist/extensions/tokenjuice; \
     cp -R /opt/stage-tokenjuice/node_modules/@openclaw/tokenjuice/. /app/dist/extensions/tokenjuice/; \
     mkdir -p /app/dist/extensions/tokenjuice/node_modules; \

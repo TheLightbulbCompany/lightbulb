@@ -65,6 +65,20 @@ afterEach(() => {
 });
 
 describe("useOnboardingStatus", () => {
+  it("clears sticky state immediately when the workspace scope changes", async () => {
+    global.fetch = vi.fn().mockImplementationOnce(jsonResponder(200, contractBody({ service_name: "org-a" })))
+      .mockRejectedValue(new Error("org-b unavailable"));
+    const api = makeApi();
+    const { result, rerender } = renderHook(
+      ({ scope }) => useOnboardingStatus({ api, enabled: true, scope }),
+      { wrapper, initialProps: { scope: "org-a" } },
+    );
+    await waitFor(() => expect(result.current.classified?.kind).toBe("container"));
+    rerender({ scope: "org-b" });
+    expect(result.current.classified).toBeNull();
+    await waitFor(() => expect(result.current.networkError).toBeDefined());
+    expect(result.current.classified).toBeNull();
+  });
   it("classifies a 200 container body and derives its UI phase", async () => {
     global.fetch = vi.fn().mockImplementation(jsonResponder(200, contractBody()));
     const { result } = renderHook(
@@ -275,10 +289,8 @@ describe("useOnboardingStatus", () => {
       expect(url).toContain("wake=1");
       expect(url).toContain("flow=flow-abc");
       expect(url.match(/\?/g)?.length).toBe(1);
-      // ...and the SWR cache key stays the bare path. Every
-      // `mutate("/container/status")` call in the web app targets that
-      // literal, so a param leaking into the key would silently orphan all
-      // of them — which is the one way this change could break the app.
+      // Without an explicit scope (the mobile/default behavior), the SWR
+      // cache key stays the bare path; request params never become keys.
       const keys = [...cache.keys()].map(String);
       expect(keys).toContain("/container/status");
       expect(keys.some((k) => k.includes("flow="))).toBe(false);

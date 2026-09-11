@@ -71,6 +71,7 @@ def _build(**kw):
 
 def test_carried_binding_wins_over_synthesized_one():
     out = _build(
+        paperclip_agents=[{"id": "agent_f", "role": "ceo"}],
         channel_accounts={"slack": {"T1": {"mode": "http"}}},
         channel_bindings=[{"type": "route", "agentId": "agent_f", "match": {"channel": "slack", "accountId": "T1"}}],
     )
@@ -80,7 +81,13 @@ def test_carried_binding_wins_over_synthesized_one():
 
 
 def test_legacy_account_without_carried_binding_still_synthesizes():
-    out = _build(channel_accounts={"telegram": {"agent_a": {"botToken": "x"}}}, channel_bindings=[])
+    # The legacy `agentId == accountId` convention only holds because such an
+    # account is keyed BY an agent id — so that agent has to exist.
+    out = _build(
+        paperclip_agents=[{"id": "agent_a", "role": "ceo"}],
+        channel_accounts={"telegram": {"agent_a": {"botToken": "x"}}},
+        channel_bindings=[],
+    )
     assert {"type": "route", "agentId": "agent_a", "match": {"channel": "telegram", "accountId": "agent_a"}} in out[
         "bindings"
     ]
@@ -88,6 +95,7 @@ def test_legacy_account_without_carried_binding_still_synthesizes():
 
 def test_stale_binding_for_missing_account_is_dropped():
     out = _build(
+        paperclip_agents=[{"id": "agent_f", "role": "ceo"}],
         channel_accounts={"slack": {"T1": {"mode": "http"}}},
         channel_bindings=[
             {"type": "route", "agentId": "agent_f", "match": {"channel": "slack", "accountId": "T1"}},
@@ -96,3 +104,97 @@ def test_stale_binding_for_missing_account_is_dropped():
     )
     slack_bindings = [b for b in out["bindings"] if b["match"]["channel"] == "slack"]
     assert slack_bindings == [{"type": "route", "agentId": "agent_f", "match": {"channel": "slack", "accountId": "T1"}}]
+
+
+def test_no_binding_is_written_for_an_account_that_is_not_an_agent():
+    """Upstream normalizes channel-root settings into an `accounts.default`
+    husk (ours held only dmPolicy). Carrying it and applying the legacy
+    `agentId == accountId` rule emitted `agentId: "default"`, which OpenClaw
+    rejects at load — `bindings.N.agentId: Unknown agent id "default"` — so the
+    container refuses the WHOLE config and keeps running the previous one.
+    A binding must name an agent that exists."""
+    out = _build(
+        paperclip_agents=[{"id": "agent_f", "role": "ceo"}],
+        channel_accounts={"slack": {"T1": {"mode": "http"}, "default": {"dmPolicy": "pairing"}}},
+        channel_bindings=[{"type": "route", "agentId": "agent_f", "match": {"channel": "slack", "accountId": "T1"}}],
+    )
+    known = set(out["agents"].get("entries") or {k["id"]: k for k in (out["agents"].get("list") or [])})
+    assert all(b["agentId"] in known for b in out["bindings"]), out["bindings"]
+    assert not any(b["match"]["accountId"] == "default" for b in out["bindings"])
+    # The account itself is still carried — only the bogus binding is withheld.
+    assert "default" in out["channels"]["slack"]["accounts"]
+
+
+def test_carried_binding_naming_a_dead_agent_is_dropped():
+    """Same invariant on the carry side: a binding already on disk that names a
+    deleted agent must not be re-emitted, or the config stays unloadable
+    forever — regeneration would keep carrying its own bad output."""
+    out = _build(
+        paperclip_agents=[{"id": "agent_f", "role": "ceo"}],
+        channel_accounts={"slack": {"T1": {"mode": "http"}}},
+        channel_bindings=[
+            {"type": "route", "agentId": "deleted_agent", "match": {"channel": "slack", "accountId": "T1"}}
+        ],
+    )
+    assert not any(b["agentId"] == "deleted_agent" for b in out["bindings"])
+
+
+@pytest.mark.asyncio
+async def test_credential_less_account_husk_is_not_carried():
+    """OpenClaw persists provider-level settings back to disk as a synthetic
+    `accounts.default`. Ours was left holding only dmPolicy after a BYO bot was
+    deleted (routers/channels.py strips the root credentials, never the husk).
+    Carrying it re-injects a bot that does not exist."""
+    cfg_on_disk = {
+        "channels": {
+            "slack": {
+                "accounts": {
+                    "T1": {"mode": "http", "webhookPath": "/slack/events/T1"},
+                    "default": {"dmPolicy": "pairing"},
+                }
+            }
+        },
+        "bindings": [],
+    }
+    with (
+        patch("core.containers.ecs_manager.read_openclaw_config_from_efs", AsyncMock(return_value=cfg_on_disk)),
+        patch("core.repositories.slack_installs_repo.list_for_owner", AsyncMock(return_value=[])),
+    ):
+        accounts, _ = await em._provision_channel_accounts("org_1")
+    assert list(accounts["slack"]) == ["T1"]
+
+
+@pytest.mark.asyncio
+async def test_provider_with_only_husks_is_dropped_entirely():
+    cfg_on_disk = {"channels": {"slack": {"accounts": {"default": {"dmPolicy": "pairing"}}}}, "bindings": []}
+    with (
+        patch("core.containers.ecs_manager.read_openclaw_config_from_efs", AsyncMock(return_value=cfg_on_disk)),
+        patch("core.repositories.slack_installs_repo.list_for_owner", AsyncMock(return_value=[])),
+    ):
+        accounts, _ = await em._provision_channel_accounts("org_1")
+    assert "slack" not in accounts
+
+
+def test_progress_streaming_never_dumps_tool_output():
+    """`progress` posts each tool's OUTPUT into the conversation. A Read of a
+    bundled SKILL.md put the entire file — including notes addressed to our own
+    engineers — into an owner's shared Slack channel."""
+    out = _build(
+        paperclip_agents=[{"id": "agent_f", "role": "ceo"}],
+        channel_accounts={"slack": {"T1": {"mode": "http"}}},
+    )
+    assert out["channels"]["slack"]["streaming"]["progress"]["toolProgress"] is False
+    assert out["channels"]["slack"]["streaming"]["mode"] == "progress"
+
+
+def test_tool_output_is_silenced_for_owners_who_already_have_a_streaming_block():
+    """The bug reaches EXISTING owners, who all carry a streaming block already
+    — so a setdefault on the parent would never touch them."""
+    out = _build(
+        paperclip_agents=[{"id": "agent_f", "role": "ceo"}],
+        channel_accounts={"telegram": {"agent_f": {"botToken": "x"}}},
+        channel_bindings=[
+            {"type": "route", "agentId": "agent_f", "match": {"channel": "telegram", "accountId": "agent_f"}}
+        ],
+    )
+    assert out["channels"]["telegram"]["streaming"]["progress"]["toolProgress"] is False

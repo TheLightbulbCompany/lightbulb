@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "./landing.css";
+@import "./landing-v2.css";
 @import "./blog.css";
 
 @custom-variant dark (&:is(.dark *));
@@ -131,6 +132,49 @@
  *     (on --card:   6.04     6.06        5.47        6.53)
  *     --brass  5.18:1 on midnight, 4.23:1 on --card — rules and labels, not copy.
  */
+/* Messaging uses neutral surfaces; marketing and existing routes keep the brand palette. */
+.workspace-shell {
+  --background: var(--cream);
+  --foreground: var(--midnight);
+  --card: var(--cream);
+  --card-foreground: var(--midnight);
+  --popover: var(--cream);
+  --popover-foreground: var(--midnight);
+  --primary: var(--midnight);
+  --primary-foreground: var(--cream);
+  --secondary: var(--cream-deep);
+  --secondary-foreground: var(--midnight);
+  --muted: var(--cream-deep);
+  --muted-foreground: var(--midnight-muted);
+  --accent: var(--cream-deep);
+  --accent-foreground: var(--midnight);
+  --border: var(--edge);
+  --input: var(--edge);
+  --ring: var(--midnight);
+  --cream: #ffffff;
+  --cream-deep: #fafafa;
+  --cream-deeper: #ededed;
+  --edge: #e4e4e7;
+  --edge-soft: #f0f0f2;
+  --midnight: #242428;
+  --midnight-soft: #45454b;
+  --midnight-muted: #66666e;
+  --midnight-label: #66666e;
+  --midnight-faint: #85858d;
+}
+.dark .workspace-shell {
+  --cream: #1c1c20;
+  --cream-deep: #232328;
+  --cream-deeper: #33333a;
+  --edge: #3d3d45;
+  --edge-soft: #303036;
+  --midnight: #f4f4f5;
+  --midnight-soft: #d4d4d8;
+  --midnight-muted: #b0b0ba;
+  --midnight-label: #b0b0ba;
+  --midnight-faint: #92929d;
+}
+
 :root {
   --radius: 0.5rem;
 

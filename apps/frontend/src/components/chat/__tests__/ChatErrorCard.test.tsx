@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
+import * as React from "react";
 import { render, screen } from "@testing-library/react";
 
 import { ChatErrorCard } from "../ChatErrorCard";
@@ -43,86 +44,32 @@ describe("ChatErrorCard", () => {
     expect(screen.getByText("Request refused")).toBeInTheDocument();
   });
 
-  it("converts trial_daily_cap in place instead of linking out to settings", () => {
-    // The paywall renders HERE, in the transcript where the run stopped.
-    //
-    // It used to be a red error card whose CTA cross-routed to
-    // /settings?panel=billing, and for a mid-session owner that was the ONLY
-    // paywall reachable at all: useOnboardingStatus polls "0/off once ready",
-    // so nothing re-asks the gate after the shell settles and
-    // ProvisioningStepper's own picker branch never fires. Flipping the gate
-    // instead is not an option either — the stepper wraps {dock}, so a blocked
-    // gate unmounts the whole workspace mid-session.
+  it("links a trial cap to the org billing surface without a personal provider picker", () => {
     render(<ChatErrorCard code="trial_daily_cap" message="server copy" />);
 
-    expect(screen.getByText("You've used today's free usage")).toBeInTheDocument();
-    // All three paths on offer, with their real prices — an owner whose free
-    // usage ran out is exactly who should get the full choice.
-    expect(screen.getByRole("button", { name: /powered by claude/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /sign in with chatgpt/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /bring your own api key/i })).toBeInTheDocument();
-    // $70 is the pre-payment disclosure for the Bedrock path: its Checkout
-    // bundles $20 of starter credits beside the $50 subscription, because
-    // provision_gate won't start that container on a zero balance.
-    expect(screen.getByText(/\$70 at checkout/i)).toBeInTheDocument();
-
-    // The card renders from `code`, ignoring the server message, so the
-    // pre-send and mid-run refusals are identical.
-    expect(screen.queryByText("server copy")).not.toBeInTheDocument();
-    // No bounce to settings — the whole point of converting in place.
-    expect(screen.queryByRole("link", { name: "Upgrade to keep going" })).not.toBeInTheDocument();
-  });
-
-  it("suppresses the paywall on non-newest bubbles so purchase forms cannot stack", () => {
-    // MessageList renders one card per errored message, and each ProviderPicker
-    // owns its own credit amount and loading state. Stacked copies let an owner
-    // set $100 on the visible card, scroll up, and buy an older card's $20 —
-    // charged an amount the screen never quoted — with CTAs that do not disable
-    // one another.
-    render(<ChatErrorCard code="trial_daily_cap" message="" interactive={false} />);
-    expect(screen.queryByRole("button", { name: /powered by claude/i })).not.toBeInTheDocument();
-    // It still says what happened, and still offers a way forward.
     expect(screen.getByText("Daily free limit reached")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Upgrade to keep going" })).toBeInTheDocument();
+    expect(screen.queryByText("server copy")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Upgrade to keep going" })).toHaveAttribute(
+      "href",
+      "/settings?panel=billing",
+    );
+    expect(screen.queryByText("Powered by Claude")).not.toBeInTheDocument();
   });
 
-  it("does not wrap the purchase form in role=alert", () => {
-    // role="alert" carries implicit aria-live="assertive" + aria-atomic, so
-    // every credit-amount change re-announced the whole pricing table and cut
-    // the screen-reader user off mid-interaction. Right for a static error,
-    // wrong for a live form.
+  it("uses an alert for trial errors now that no interactive form is embedded", () => {
     render(<ChatErrorCard code="trial_daily_cap" message="" />);
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "You've used today's free usage" })).toBeInTheDocument();
-    // A genuine error still announces assertively.
-    render(<ChatErrorCard code="timeout" message="upstream timed out" />);
     expect(screen.getByRole("alert")).toBeInTheDocument();
   });
 
-  it("ignores Object.prototype keys arriving as an error code", () => {
-    // Indexing a plain object literal with a server-supplied key resolves
-    // inherited members to truthy functions, which sailed through the gate and
-    // rendered a purchase form for a code that is not a trial code.
-    for (const code of ["constructor", "toString", "hasOwnProperty"]) {
-      const { unmount } = render(<ChatErrorCard code={code} message="boom" />);
-      expect(screen.queryByRole("button", { name: /powered by claude/i })).not.toBeInTheDocument();
-      expect(screen.getByText("Failed to generate")).toBeInTheDocument();
-      unmount();
-    }
-  });
-
-  it("converts trial_expired in place and omits the reset line — expiry is permanent", () => {
-    // Non-empty, distinctive message: proves the card ignores it (a
-    // regressed `message ||` fallback would surface this string instead of
-    // the hardcoded copy).
+  it("links trial expiry to billing and omits a reset line", () => {
     render(<ChatErrorCard code="trial_expired" message="server copy: trial_expired" />);
     expect(screen.getByText("Your free trial has ended")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /powered by claude/i })).toBeInTheDocument();
     expect(screen.queryByText("server copy: trial_expired")).not.toBeInTheDocument();
-    // trial_cap._is_expired never self-clears, so no "resets at midnight"
-    // here — that line belongs to the daily-cap variant only.
     expect(screen.queryByText(/resets at midnight/i)).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: /choose a plan/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /choose a plan/i })).toHaveAttribute(
+      "href",
+      "/settings?panel=billing",
+    );
   });
 
   it("renders out_of_credits with a top-up CTA instead of Failed to generate", () => {
@@ -158,18 +105,34 @@ describe("ChatErrorCard", () => {
     );
   });
 
-  it("suppresses Retry on money codes but keeps it elsewhere", () => {
-    const onRetry = vi.fn();
-    for (const code of ["trial_daily_cap", "trial_expired", "out_of_credits", "subscription_inactive"]) {
-      const { unmount } = render(<ChatErrorCard code={code} message="" onRetry={onRetry} />);
-      // Retry against a budget wall is guaranteed to fail until reset or
-      // top-up; offering it reads as product flakiness, not an exhausted
-      // allowance.
+  /**
+   * The card carried a Retry button behind `Boolean(onRetry)` and a
+   * MONEY_CODES suppression list, and the only production caller
+   * (MessageList) never passed a handler — so it had never rendered, not
+   * once. It was deleted rather than wired: Retry is only truthful for
+   * `timeout`, and reaching it needs a resend threaded four layers down
+   * through MessageList, which has no send on its props at all.
+   *
+   * Cast past the prop type on purpose. A future caller can only resurrect
+   * this button by passing a handler, so that is exactly what the guard has
+   * to attempt.
+   */
+  it("has no Retry affordance, for any code, even when handed a handler", () => {
+    const Card = ChatErrorCard as unknown as React.FC<Record<string, unknown>>;
+    for (const code of [
+      "timeout",
+      "rate_limit",
+      "refusal",
+      "context_length",
+      "trial_daily_cap",
+      "trial_expired",
+      "out_of_credits",
+      "subscription_inactive",
+    ]) {
+      const { unmount } = render(<Card code={code} message="" onRetry={vi.fn()} />);
       expect(screen.queryByRole("button", { name: /retry/i })).not.toBeInTheDocument();
       unmount();
     }
-    render(<ChatErrorCard code="timeout" message="" onRetry={onRetry} />);
-    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
   });
 
   it("falls back to a generic title for unknown codes and shows the upstream message verbatim", () => {
@@ -184,14 +147,6 @@ describe("ChatErrorCard", () => {
     expect(
       screen.getByText("Your agent encountered an error. Please try again."),
     ).toBeInTheDocument();
-  });
-
-  it("renders a retry button when onRetry is provided", () => {
-    const onRetry = vi.fn();
-    render(<ChatErrorCard code="rate_limit" message="rate limited" onRetry={onRetry} />);
-    const retryBtn = screen.getByRole("button", { name: /retry/i });
-    retryBtn.click();
-    expect(onRetry).toHaveBeenCalledTimes(1);
   });
 
   it("attaches the code as a data attribute for analytics / e2e", () => {

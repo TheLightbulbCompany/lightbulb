@@ -21,7 +21,6 @@ import * as tasks from "aws-cdk-lib/aws-stepfunctions-tasks";
 import {
   allTableArns,
   bothTableArns,
-  legacyTablePrefix,
   alertTopicArn,
   resourcePrefix,
   tableName,
@@ -39,8 +38,12 @@ import { BROWSER_EGRESS_PROXY_PORT } from "./container-stack";
 // the read in container-stack.ts — bump openclaw-version.json only.
 interface OpenClawVersionConfig {
   tag: string;
-  dev: { tag: string };
-  prod: { tag: string };
+  forkTag: string;
+  forkCommit: string;
+  baseImageDigest: string;
+  gatewayBuildId: string;
+  dev: { tag: string; artifactDigest: string; runtimeManifestDigest: string };
+  prod: { tag: string; artifactDigest: string; runtimeManifestDigest: string };
   [key: string]: unknown;
 }
 
@@ -160,6 +163,13 @@ export interface ServiceStackProps extends cdk.StackProps {
   connectionsTableName: string;
   wsApiId: string;
   wsStage: string;
+  messagingTableName: string;
+  openClawWorkQueueUrl: string;
+  openClawWorkQueueArn: string;
+  appsyncEventsHttpEndpoint: string;
+  appsyncEventsRealtimeEndpoint: string;
+  appsyncEventsApiArn: string;
+  appsyncEventsRegion: string;
   /**
    * Agent-email base domain, "isol8.co" in prod (set in lockstep with the
    * prod-only SesInboundStack — see lightbulb-stage.ts). Empty/undefined in every
@@ -322,6 +332,34 @@ export class ServiceStack extends cdk.Stack {
       description: `Lightbulb ${env} Fargate task role`,
     });
 
+    // Messaging is kept in a dedicated policy so the already size-bound inline
+    // role policy does not repack. The backend consumes work and publishes live
+    // events; the DynamoDB outbox Pipe remains the sole work-queue producer.
+    new iam.ManagedPolicy(this, "BackendMessaging", {
+      managedPolicyName: `${resourcePrefix(env)}backend-messaging`,
+      roles: [this.taskRole],
+      statements: [
+        new iam.PolicyStatement({
+          sid: "ConsumeOpenClawWork",
+          actions: [
+            "sqs:ReceiveMessage",
+            "sqs:DeleteMessage",
+            "sqs:ChangeMessageVisibility",
+            "sqs:GetQueueAttributes",
+          ],
+          resources: [props.openClawWorkQueueArn],
+        }),
+        new iam.PolicyStatement({
+          sid: "PublishMessagingEvents",
+          actions: ["appsync:EventPublish"],
+          resources: [
+            `${props.appsyncEventsApiArn}/channelNamespace/rooms`,
+            `${props.appsyncEventsApiArn}/channelNamespace/users`,
+          ],
+        }),
+      ],
+    });
+
     // ECR pull + DescribeImages (admin dropdown of available openclaw-extended tags)
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
@@ -339,7 +377,7 @@ export class ServiceStack extends cdk.Stack {
 
     // Replica lifecycle: the backend owns the S3 replica prefix's lifecycle —
     // wipe/reprovision and agent-delete flows must prefix-delete
-    // s3://isol8-{env}-openclaw-replicas/{owner}/..., or the next boot's
+    // s3://lightbulb-{env}-openclaw-replicas/{owner}/..., or the next boot's
     // restore resurrects pre-wipe state (sessions, device trust, auth rows
     // with live OAuth tokens). List+Delete only across the bucket — the
     // backend's sole READ is the statement below.
@@ -452,13 +490,13 @@ export class ServiceStack extends cdk.Stack {
     // three statements live in a dedicated ManagedPolicy attached to the task
     // role, NOT in the inline default policy: the backend role's inline policy
     // is already near CloudFormation's 10 KB inline-policy limit, and adding
-    // these inline would tip CDK into spilling statements (e.g. the by-name
-    // DynamoDbIntegrations grant) into an overflow ManagedPolicy — silently
-    // relocating them out of the AWS::IAM::Policy resource other features rely
-    // on. A standalone, explicitly named ManagedPolicy keeps the inline policy
-    // stable and is more auditable. CreateRole is boundary-conditioned so a
-    // backend that can CreateRole+PutRolePolicy cannot escalate beyond the
-    // OwnerBedrockBoundary (Bedrock+EFS+logs+ssm).
+    // these inline would tip CDK into spilling statements (e.g. the
+    // DynamoDbOwnedTables wildcard grant) into an overflow ManagedPolicy —
+    // silently relocating them out of the AWS::IAM::Policy resource other
+    // features rely on. A standalone, explicitly named ManagedPolicy keeps
+    // the inline policy stable and is more auditable. CreateRole is
+    // boundary-conditioned so a backend that can CreateRole+PutRolePolicy
+    // cannot escalate beyond the OwnerBedrockBoundary (Bedrock+EFS+logs+ssm).
     new iam.ManagedPolicy(this, "BackendOwnerBedrockManage", {
       managedPolicyName: `lightbulb-${env}-backend-owner-bedrock-manage`,
       roles: [this.taskRole],
@@ -791,59 +829,10 @@ export class ServiceStack extends cdk.Stack {
           "dynamodb:BatchGetItem",
           "dynamodb:BatchWriteItem",
           "dynamodb:ConditionCheckItem",
+          "dynamodb:TransactWriteItems",
           "dynamodb:DescribeTable",
         ],
         resources: allTableArns(this.region, this.account, env),
-      }),
-    );
-    // The credential-layer integration tables are granted by NAME, not via
-    // grantReadWriteData. grantReadWriteData would export each table's ARN from
-    // the database stack and import it here, creating a cross-stack export. An
-    // export that another stack imports cannot be deleted, which permanently
-    // blocks renaming or replacing the table. Granting by the table name avoids
-    // the export entirely. The action set matches what integrations_repo and
-    // oauth_state_repo actually call.
-    this.taskRole.addToPolicy(
-      new iam.PolicyStatement({
-        sid: "DynamoDbIntegrations",
-        actions: [
-          "dynamodb:GetItem",
-          "dynamodb:PutItem",
-          "dynamodb:UpdateItem",
-          "dynamodb:DeleteItem",
-          "dynamodb:Query",
-          "dynamodb:Scan",
-        ],
-        resources: [
-          ...bothTableArns(this.region, this.account, env, "integrations"),
-          ...bothTableArns(this.region, this.account, env, "oauth-state"),
-          // Per-owner AIP reverse index (Plan 2). Folded into this by-name DDB
-          // statement (identical action set + condition-less shape) rather than
-          // added as a separate fourth statement: the backend role's inline
-          // policy is near CloudFormation's 10 KB limit, so a separate statement
-          // risks tipping CDK into an overflow ManagedPolicy that would relocate
-          // this very statement out of the AWS::IAM::Policy resource other
-          // features assert on. Same cross-stack-export-avoidance posture; the
-          // grant (GetItem/PutItem/UpdateItem/DeleteItem/Query) is identical.
-          ...bothTableArns(this.region, this.account, env, "bedrock-aip-owners"),
-          // Metronome local fast-gate flag (Phase 2). Folded into this by-name
-          // statement for the SAME reason as bedrock-aip-owners above: a separate
-          // grantReadWriteData would both bloat the near-10 KB inline policy
-          // (tipping CDK into an overflow ManagedPolicy that relocates this very
-          // statement) AND export the table ARN cross-stack. The action set
-          // (GetItem/PutItem/UpdateItem/Query) matches MetronomeFastGate +
-          // metronome_provisioning + metronome_funding.
-          ...bothTableArns(this.region, this.account, env, "metronome-fast-gate"),
-          // bedrock-gate bearer-token table. mint_gate_token / deny_gate_token
-          // (core/billing/bedrock_gate_tokens.py) PutItem/UpdateItem/DeleteItem
-          // here for EVERY Bedrock owner at provision time, so without this grant
-          // Bedrock provisioning AccessDenies fleet-wide. Folded into this
-          // by-name statement for the SAME 10 KB-inline-policy reason as the two
-          // tables above (a separate grantReadWriteData would tip CDK into an
-          // overflow ManagedPolicy). The table itself is defined in the
-          // bedrock-gate stack (gate-private), so only the ARN is referenced.
-          ...bothTableArns(this.region, this.account, env, "bedrock-gate-tokens"),
-        ],
       }),
     );
     // Webhook dedup helper does conditional PutItem with attribute_not_exists;
@@ -891,7 +880,9 @@ export class ServiceStack extends cdk.Stack {
     // (no cross-stack prop threading). The parameter doubles as the fleet
     // break-glass lever — value "direct" routes new provisions straight to
     // bedrock-runtime. Single-parameter read-only grant; kept as its own tiny
-    // statement (NOT folded into DynamoDbIntegrations).
+    // statement — an SSM action doesn't fit the DynamoDbOwnedTables wildcard
+    // grant's DynamoDB-only action set, so it couldn't be folded into that
+    // one either.
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "BedrockGateUrlParamRead",
@@ -1151,28 +1142,6 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
-    // DynamoDB CRUD on connections table
-    this.taskRole.addToPolicy(
-      new iam.PolicyStatement({
-        sid: "DynamoDbConnections",
-        actions: [
-          "dynamodb:GetItem",
-          "dynamodb:PutItem",
-          "dynamodb:UpdateItem",
-          "dynamodb:DeleteItem",
-          "dynamodb:Query",
-          "dynamodb:Scan",
-        ],
-        resources: [
-          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.connectionsTableName}`,
-          // GSI ARN — required to Query the by-user-id index added in
-          // api-stack.ts. Without this, broker fanout queries 400 with
-          // AccessDeniedException at runtime.
-          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.connectionsTableName}/index/*`,
-        ],
-      }),
-    );
-
     // -------------------------------------------------------------------------
     // Marketplace Artifacts S3 Bucket
     //
@@ -1345,6 +1314,9 @@ export class ServiceStack extends cdk.Stack {
     const privateSubnetIds = props.vpc
       .selectSubnets({ subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS })
       .subnetIds.join(",");
+    const currentOpenClawVersion = env.startsWith("prod")
+      ? OPENCLAW_VERSION.prod
+      : OPENCLAW_VERSION.dev;
 
     // Backend container environment + secrets, declared as consts (rather
     // than inline literals) so the provisioning-executor task definition can
@@ -1360,6 +1332,12 @@ export class ServiceStack extends cdk.Stack {
       OPENCLAW_UPSTREAM_VERSION: OPENCLAW_VERSION.tag,
       OPENCLAW_DEV_TAG: OPENCLAW_VERSION.dev.tag,
       OPENCLAW_PROD_TAG: OPENCLAW_VERSION.prod.tag,
+      OPENCLAW_FORK_TAG: OPENCLAW_VERSION.forkTag,
+      OPENCLAW_FORK_COMMIT: OPENCLAW_VERSION.forkCommit,
+      OPENCLAW_BASE_IMAGE_DIGEST: OPENCLAW_VERSION.baseImageDigest,
+      OPENCLAW_GATEWAY_BUILD_ID: OPENCLAW_VERSION.gatewayBuildId,
+      OPENCLAW_EXTENDED_ARTIFACT_DIGEST: currentOpenClawVersion.artifactDigest,
+      OPENCLAW_RUNTIME_MANIFEST_DIGEST: currentOpenClawVersion.runtimeManifestDigest,
       // The Litestream replica bucket for this env. Every backend code path
       // that touches the local-sqlite layout (sentinel writes, replica
       // lifecycle deletes) keys off this being set. Name-based (never a
@@ -1368,6 +1346,11 @@ export class ServiceStack extends cdk.Stack {
       WS_MANAGEMENT_API_URL: props.managementApiUrl,
       WS_GATEWAY_URL: props.webSocketUrl,
       WS_CONNECTIONS_TABLE: props.connectionsTableName,
+      MESSAGING_TABLE: props.messagingTableName,
+      OPENCLAW_WORK_QUEUE_URL: props.openClawWorkQueueUrl,
+      APPSYNC_EVENTS_HTTP_ENDPOINT: props.appsyncEventsHttpEndpoint,
+      APPSYNC_EVENTS_REALTIME_ENDPOINT: props.appsyncEventsRealtimeEndpoint,
+      APPSYNC_EVENTS_REGION: props.appsyncEventsRegion,
       // WS caller-attestation gate, enforced in every env. The
       // x-lightbulb-ws-internal header is verified flowing from the WS Lambdas on
       // both dev and prod (zero secret-fetch failures across real connects),
@@ -1405,28 +1388,12 @@ export class ServiceStack extends cdk.Stack {
       // Stripe live mode, dev in test mode, and they MUST NOT cross-pollinate
       // (a test-mode Price would silently create test subscriptions in prod).
       // Read per-env from the runner's secrets at synth time.
-      STRIPE_FLAT_PRICE_ID:
+      STRIPE_WORKSPACE_PRICE_ID:
         env === "prod"
-          ? (process.env.STRIPE_FLAT_PRICE_ID_PROD ?? "")
-          : (process.env.STRIPE_FLAT_PRICE_ID_DEV ?? ""),
-      // Stripe per-seat Teams Price ID — same env-specific live/test split
-      // as STRIPE_FLAT_PRICE_ID above (a test-mode Price would silently
-      // create test subscriptions in prod). Read per-env from the runner's
-      // secrets at synth time. Consumed by billing_service.create_team_seat_checkout.
-      STRIPE_TEAM_SEAT_PRICE_ID:
-        env === "prod"
-          ? (process.env.STRIPE_TEAM_SEAT_PRICE_ID_PROD ?? "")
-          : (process.env.STRIPE_TEAM_SEAT_PRICE_ID_DEV ?? ""),
-      // Stripe Teams BASE Price ID — the $50/mo flat component charged
-      // alongside the per-seat item. Same env-specific live/test split as
-      // STRIPE_FLAT_PRICE_ID above. Read per-env from the runner's secrets at
-      // synth time.
-      STRIPE_TEAM_BASE_PRICE_ID:
-        env === "prod"
-          ? (process.env.STRIPE_TEAM_BASE_PRICE_ID_PROD ?? "")
-          : (process.env.STRIPE_TEAM_BASE_PRICE_ID_DEV ?? ""),
-      // Stripe Ultra Pro Price ID — same env-specific live/test split as
-      // STRIPE_FLAT_PRICE_ID above (a test-mode Price would silently create
+          ? (process.env.STRIPE_WORKSPACE_PRICE_ID_PROD ?? "")
+          : (process.env.STRIPE_WORKSPACE_PRICE_ID_DEV ?? ""),
+      // Stripe Ultra Price ID — same env-specific live/test split as
+      // STRIPE_WORKSPACE_PRICE_ID above (a test-mode Price would silently create
       // test subscriptions in prod). Read per-env from the runner's secrets
       // at synth time. Consumed by the Ultra-tier checkout call site.
       STRIPE_ULTRA_PRICE_ID:
@@ -1471,23 +1438,22 @@ export class ServiceStack extends cdk.Stack {
       // NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY — publishable by design (Clerk
       // serves it in HTML), so plain env var is appropriate (not a
       // Secrets Manager secret). Same per-env runner-secret pattern as
-      // STRIPE_FLAT_PRICE_ID. Dev fallback hardcoded so local synths
+      // STRIPE_WORKSPACE_PRICE_ID. Dev fallback hardcoded so local synths
       // and developer cdk-synth-from-laptop work out of the box.
       CLERK_PUBLISHABLE_KEY:
         env === "prod"
           ? (process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_PROD ?? "")
           : (process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV ??
               "pk_test_dXAtbW90aC01NS5jbGVyay5hY2NvdW50cy5kZXYk"),
-      // Apple IAP. Every one of these is REQUIRED for core/services/apple_iap
-      // to build a verifier at all — with any of them missing the link and
-      // notification endpoints answer 503, so a completed StoreKit purchase
-      // never grants a plan and renewals are never recorded. They are plain env
-      // vars, not secrets: the bundle/product/app ids are public (they ship in
-      // the binary and the App Store listing), and the actual trust anchor is
-      // the certificate directory below.
+      // Historical Apple subscription lifecycle only. New purchase/restore is
+      // retired and /billing/apple/link is an authenticated 410 tombstone, but
+      // every value remains required for /webhooks/apple-iap to build its JWS
+      // verifier. Missing one loses renewal, expiry, refund, and billing-retry
+      // reconciliation. These IDs are public; the trust anchor is the pinned
+      // certificate directory below.
       APPLE_IAP_BUNDLE_ID: "co.isol8.mobile",
-      // Must match the product created in App Store Connect EXACTLY, and the
-      // SKU the app requests (EXPO_PUBLIC_APPLE_IAP_PRODUCT_ID in eas.json). A
+      // Retained as the allowlist for historical server notifications until
+      // App Store Connect proves no subscription can still be live. A
       // transaction naming anything else is refused rather than granted.
       APPLE_IAP_PRODUCT_ID: "company.thelightbulb.mobile.plan.monthly",
       // Numeric App Store app id — the same ascAppId eas.json submits against.
@@ -1527,8 +1493,9 @@ export class ServiceStack extends cdk.Stack {
       // synchronous chat gate's balance projection.
       METRONOME_BASE_URL: "https://api.metronome.com/v1",
       // Literal name (not a cross-stack tableName Ref) — same posture as
-      // BEDROCK_AIP_OWNERS_TABLE above: the table is granted BY NAME in the
-      // DynamoDbIntegrations statement, so no cross-stack export is created.
+      // BEDROCK_AIP_OWNERS_TABLE above: the table is covered by the
+      // DynamoDbOwnedTables wildcard statement, so no cross-stack export is
+      // created.
       METRONOME_FAST_GATE_TABLE: tableName(env, "metronome-fast-gate"),
       // Per-env rate card the per-customer contract references at
       // provision. Dev = sandbox rate card (2026-06-10); prod =

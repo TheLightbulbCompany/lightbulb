@@ -74,7 +74,7 @@ export function AgentPaperclipFields({
         >
           Capabilities{" "}
           <span className="text-[var(--midnight-faint)]">
-            (what this agent does — Friday reads this)
+            (what this agent does — your CEO reads this)
           </span>
         </label>
         <textarea

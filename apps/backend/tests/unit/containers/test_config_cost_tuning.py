@@ -118,7 +118,7 @@ class TestHeartbeatIsolation:
         hb = _cfg("chatgpt_oauth")["agents"]["defaults"]["heartbeat"]
         assert hb["isolatedSession"] is True
         assert hb["lightContext"] is True
-        assert hb["model"] == "openai/gpt-5.4-mini"
+        assert hb["model"] == "openai/gpt-5.6-luna"
 
     def test_heartbeat_disabled_on_trial(self):
         """Trial must pin every="0m" — the documented upstream disable. An
@@ -133,7 +133,7 @@ class TestUtilityModel:
         for titles/utility calls — verified in fork source, the trim||chain
         ends at resolveAgentEffectiveModelPrimary."""
         assert _cfg("bedrock_claude")["agents"]["defaults"]["utilityModel"] == _HAIKU_REF
-        assert _cfg("chatgpt_oauth")["agents"]["defaults"]["utilityModel"] == "openai/gpt-5.4-mini"
+        assert _cfg("chatgpt_oauth")["agents"]["defaults"]["utilityModel"] == "openai/gpt-5.6-luna"
         assert (
             _cfg("byo_key", byo_provider="anthropic")["agents"]["defaults"]["utilityModel"]
             == "anthropic/claude-haiku-4-5"
@@ -181,6 +181,10 @@ class TestLlmTaskRouting:
                 "defaultProvider": "amazon-bedrock",
                 "defaultModel": _AIPS["haiku"],
             },
+            "llm": {
+                "allowModelOverride": True,
+                "allowedCompletionModels": [f"amazon-bedrock/{_AIPS['haiku']}"],
+            },
         }
 
     def test_llm_task_unpinned_where_no_cheap_tier(self):
@@ -201,3 +205,11 @@ class TestLlmTaskRouting:
             "defaultProvider": "openai",
             "defaultModel": "gpt-5.4-mini",
         }
+        for entry, target in (
+            (anthropic, "anthropic/claude-haiku-4-5"),
+            (openai, "openai/gpt-5.4-mini"),
+        ):
+            assert entry["llm"] == {
+                "allowModelOverride": True,
+                "allowedCompletionModels": [target],
+            }

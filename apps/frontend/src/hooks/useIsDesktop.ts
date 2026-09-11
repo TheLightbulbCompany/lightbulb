@@ -2,8 +2,8 @@
 
 import { useSyncExternalStore } from "react";
 
-const QUERY = "(min-width: 769px)";
-// The chat shell's CSS mobile block is @media (max-width: 768px)
+const QUERY = "(min-width: 860px)";
+// The chat shell's CSS mobile block is @media (max-width: 859px)
 // (ChatLayout.css) — this is its exact complement, so the JS branch and the
 // CSS branch can never disagree at any viewport width.
 

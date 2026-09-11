@@ -14,18 +14,20 @@
 // matching validate.mjs so callers can tell "not vendored" from "conversion
 // failed".
 import { existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { dirname, join, resolve } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const bundlePath = join(here, "openclaw-config-schema.mjs");
+const bundlePath = process.argv[2]
+  ? resolve(process.argv[2])
+  : join(here, "openclaw-config-schema.mjs");
 
 if (!existsSync(bundlePath)) {
   console.error("schema bundle missing: run scripts/vendor_openclaw_schema.sh");
   process.exit(2);
 }
 
-const { ConfigSchema, z } = await import(bundlePath);
+const { ConfigSchema, z } = await import(pathToFileURL(bundlePath).href);
 
 // io:"input" — we validate what is WRITTEN to disk, before zod defaults/
 // transforms are applied, which is exactly what OpenClaw's loader parses.

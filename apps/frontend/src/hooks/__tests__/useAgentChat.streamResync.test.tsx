@@ -17,38 +17,37 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import type { ChatIncomingMessage } from "@/hooks/useGateway";
+import type { ChatIncomingMessage } from "@lightbulb/shared";
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 
 let chatHandlers: Array<(msg: ChatIncomingMessage) => void> = [];
-let eventHandlers: Array<(name: string, data: unknown) => void> = [];
 const sendReq = vi.fn<(method: string, params?: unknown) => Promise<unknown>>();
 const sendChat = vi.fn();
 const send = vi.fn();
 
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({
+vi.mock("@/hooks/useAgentRoomTransport", () => ({
+  useAgentRoomTransport: (agentId: string | null) => ({
     isConnected: true,
-    nodeConnected: false,
-    error: null,
-    reconnectAttempt: 0,
-    send,
-    sendReq,
-    sendChat,
-    onEvent: (h: (name: string, data: unknown) => void) => {
-      eventHandlers.push(h);
+    onChatMessage: (handler: (message: ChatIncomingMessage) => void) => {
+      chatHandlers.push(handler);
       return () => {
-        eventHandlers = eventHandlers.filter((x) => x !== h);
+        chatHandlers = chatHandlers.filter((candidate) => candidate !== handler);
       };
     },
-    onChatMessage: (h: (msg: ChatIncomingMessage) => void) => {
-      chatHandlers.push(h);
-      return () => {
-        chatHandlers = chatHandlers.filter((x) => x !== h);
-      };
+    sendRoomMessage: async (message: string, clientMessageId: string) =>
+      sendChat(agentId, message, clientMessageId, undefined),
+    abortRun: async (runId: string) => {
+      const accepted = send({ type: "agent_abort", agentId: agentId, runId });
+      if (accepted === false) throw new Error("Stop not sent");
+      return {};
     },
-    reconnect: vi.fn(),
+    steerRun: async (runId: string, text: string) => {
+      const accepted = send({ type: "agent_steer", agentId: agentId, runId, text });
+      if (accepted === false) throw new Error("Steer not sent");
+      return {};
+    },
+    rpc: sendReq,
   }),
 }));
 
@@ -72,7 +71,6 @@ function lastAssistantContent(result: {
 describe("useAgentChat — segment-scoped non-append resync frames", () => {
   beforeEach(() => {
     chatHandlers = [];
-    eventHandlers = [];
     sendReq.mockReset().mockResolvedValue({});
     sendChat.mockReset();
     send.mockReset().mockReturnValue(true);
@@ -92,7 +90,7 @@ describe("useAgentChat — segment-scoped non-append resync frames", () => {
     act(() =>
       dispatch({
         type: "chunk",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: runA,
         content: "I'll create that as a company goal in Paperclip.",
       } as ChatIncomingMessage),
@@ -100,7 +98,7 @@ describe("useAgentChat — segment-scoped non-append resync frames", () => {
     act(() =>
       dispatch({
         type: "tool_start",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: runA,
         tool: "exec",
         toolCallId: "t1",
@@ -109,7 +107,7 @@ describe("useAgentChat — segment-scoped non-append resync frames", () => {
     act(() =>
       dispatch({
         type: "tool_end",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: runA,
         tool: "exec",
         toolCallId: "t1",
@@ -122,12 +120,12 @@ describe("useAgentChat — segment-scoped non-append resync frames", () => {
     act(() =>
       dispatch({
         type: "chunk",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: runA,
         content: "Created the company goal.",
       } as ChatIncomingMessage),
     );
-    act(() => dispatch({ type: "done", agent_id: "agent-X", runId: runA } as ChatIncomingMessage));
+    act(() => dispatch({ type: "done", agentId: "agent-X", runId: runA } as ChatIncomingMessage));
 
     const content = lastAssistantContent(result);
     expect(content).toContain("I'll create that as a company goal in Paperclip.");
@@ -146,7 +144,7 @@ describe("useAgentChat — segment-scoped non-append resync frames", () => {
     act(() =>
       dispatch({
         type: "chunk",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: runA,
         content: "A long first segment that the tool call commits.",
       } as ChatIncomingMessage),
@@ -154,7 +152,7 @@ describe("useAgentChat — segment-scoped non-append resync frames", () => {
     act(() =>
       dispatch({
         type: "tool_start",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: runA,
         tool: "exec",
         toolCallId: "t1",
@@ -163,7 +161,7 @@ describe("useAgentChat — segment-scoped non-append resync frames", () => {
     act(() =>
       dispatch({
         type: "tool_end",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: runA,
         tool: "exec",
         toolCallId: "t1",
@@ -173,7 +171,7 @@ describe("useAgentChat — segment-scoped non-append resync frames", () => {
     act(() =>
       dispatch({
         type: "chunk",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: runA,
         content: "Created",
       } as ChatIncomingMessage),
@@ -181,13 +179,13 @@ describe("useAgentChat — segment-scoped non-append resync frames", () => {
     act(() =>
       dispatch({
         type: "chunk",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: runA,
         content: " the goal.",
         append: true,
       } as ChatIncomingMessage),
     );
-    act(() => dispatch({ type: "done", agent_id: "agent-X", runId: runA } as ChatIncomingMessage));
+    act(() => dispatch({ type: "done", agentId: "agent-X", runId: runA } as ChatIncomingMessage));
 
     const content = lastAssistantContent(result);
     expect(content).toContain("A long first segment that the tool call commits.");
@@ -206,7 +204,7 @@ describe("useAgentChat — segment-scoped non-append resync frames", () => {
     act(() =>
       dispatch({
         type: "chunk",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: runA,
         content: "Before the plan.",
       } as ChatIncomingMessage),
@@ -216,7 +214,7 @@ describe("useAgentChat — segment-scoped non-append resync frames", () => {
     act(() =>
       dispatch({
         type: "agent_activity",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: runA,
         activity: "plan",
         title: "Proposed plan",
@@ -226,7 +224,7 @@ describe("useAgentChat — segment-scoped non-append resync frames", () => {
     act(() =>
       dispatch({
         type: "chunk",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: runA,
         content: " After the plan.",
         append: true,
@@ -237,12 +235,12 @@ describe("useAgentChat — segment-scoped non-append resync frames", () => {
     act(() =>
       dispatch({
         type: "chunk",
-        agent_id: "agent-X",
+        agentId: "agent-X",
         runId: runA,
         content: "Before the plan. After the plan.",
       } as ChatIncomingMessage),
     );
-    act(() => dispatch({ type: "done", agent_id: "agent-X", runId: runA } as ChatIncomingMessage));
+    act(() => dispatch({ type: "done", agentId: "agent-X", runId: runA } as ChatIncomingMessage));
 
     const content = lastAssistantContent(result);
     expect(content).toContain("Before the plan.");

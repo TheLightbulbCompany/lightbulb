@@ -11,7 +11,7 @@ vi.mock("@/components/teams/agents/hooks/useAgentMutations", () => ({
   useAgentMutations: () => ({ setReportsTo, pause, resume, remove }),
 }));
 
-import { AgentManageSection, isSeededAgent } from "@/components/teams/agents/AgentManageSection";
+import { AgentManageSection } from "@/components/teams/agents/AgentManageSection";
 
 const FRIDAY: CompanyAgent = { id: "f", name: "Friday", role: "ceo", status: "idle", seeded: true };
 const BOB: CompanyAgent = { id: "b", name: "Bob", role: "engineer", status: "idle" };
@@ -19,20 +19,10 @@ const AGENTS = [FRIDAY, BOB];
 
 beforeEach(() => { setReportsTo.mockReset(); pause.mockReset(); resume.mockReset(); remove.mockReset(); });
 
-describe("isSeededAgent", () => {
-  it("reads the server-stamped seeded flag, not role/name", () => {
-    expect(isSeededAgent(FRIDAY)).toBe(true);
-    expect(isSeededAgent({ id: "x", name: "x", seeded: true })).toBe(true);
-    // role "ceo" / name "Atlas" alone must NOT flag a user-created agent.
-    expect(isSeededAgent({ id: "u", name: "Atlas", role: "ceo" })).toBe(false);
-    expect(isSeededAgent(BOB)).toBe(false);
-  });
-});
-
 describe("AgentManageSection", () => {
-  it("hides delete for seeded agents", () => {
+  it("offers delete for starter agents", () => {
     render(<AgentManageSection agent={FRIDAY} agents={AGENTS} />);
-    expect(screen.queryByRole("button", { name: /delete/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /delete/i })).toBeInTheDocument();
   });
 
   it("shows delete for regular agents, calls remove, then onDeleted", async () => {

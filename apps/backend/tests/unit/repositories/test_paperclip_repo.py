@@ -15,7 +15,6 @@ import pytest
 from moto import mock_aws
 
 from core.repositories.paperclip_repo import (
-    BootstrapClaimResult,
     FunnelClaimResult,
     PaperclipCompany,
     PaperclipRepo,
@@ -100,18 +99,13 @@ def _make_company(user_id="u1", status="active", **kwargs):
         last_error=kwargs.get("last_error"),
         scheduled_purge_at=kwargs.get("scheduled_purge_at"),
         seeded_agent_ids=kwargs.get("seeded_agent_ids"),
+        starter_agent_ids=kwargs.get("starter_agent_ids"),
         onboarding_generation=kwargs.get("onboarding_generation"),
         funnel_state=kwargs.get("funnel_state"),
         funnel_submitted_at=kwargs.get("funnel_submitted_at"),
         funnel_completed_at=kwargs.get("funnel_completed_at"),
         onboarding_goal_id=kwargs.get("onboarding_goal_id"),
         onboarding_project_id=kwargs.get("onboarding_project_id"),
-        bootstrap_state=kwargs.get("bootstrap_state"),
-        bootstrap_dispatch_id=kwargs.get("bootstrap_dispatch_id"),
-        bootstrap_dispatched_at=kwargs.get("bootstrap_dispatched_at"),
-        bootstrap_delivered_at=kwargs.get("bootstrap_delivered_at"),
-        bootstrap_attempts=kwargs.get("bootstrap_attempts"),
-        bootstrap_last_error=kwargs.get("bootstrap_last_error"),
     )
 
 
@@ -125,6 +119,28 @@ async def test_seeded_agent_ids_absent_round_trips_as_none(repo):
     await repo.put(_make_company(user_id="user_noseed"))
     retrieved = await repo.get("user_noseed")
     assert retrieved.seeded_agent_ids is None
+
+
+async def test_starter_agent_ids_round_trip(repo):
+    starter_ids = {
+        "ceo": "agent-ceo",
+        "engineering": "agent-eng",
+        "finance": "agent-fin",
+        "growth": "agent-growth",
+        "analytics": "agent-analytics",
+        "customer_operations": "agent-cx",
+    }
+    await repo.put(_make_company(user_id="user_starter", starter_agent_ids=starter_ids))
+
+    assert (await repo.get("user_starter")).starter_agent_ids == starter_ids
+
+
+async def test_legacy_seeded_row_reads_without_starter_ids(repo):
+    await repo.put(_make_company(user_id="user_legacy", seeded_agent_ids=["friday_id", "atlas_id"]))
+
+    retrieved = await repo.get("user_legacy")
+    assert retrieved.seeded_agent_ids == ["friday_id", "atlas_id"]
+    assert retrieved.starter_agent_ids is None
 
 
 async def test_paperclip_email_round_trips(repo):
@@ -500,9 +516,6 @@ async def test_onboarding_fields_round_trip(repo):
             funnel_submitted_at=now,
             onboarding_goal_id="goal-1",
             onboarding_project_id="proj-1",
-            bootstrap_state="dispatched",
-            bootstrap_dispatch_id="disp-1",
-            bootstrap_attempts=2,
         )
     )
     fetched = await repo.get("user_onb")
@@ -511,9 +524,6 @@ async def test_onboarding_fields_round_trip(repo):
     assert fetched.funnel_submitted_at == now
     assert fetched.onboarding_goal_id == "goal-1"
     assert fetched.onboarding_project_id == "proj-1"
-    assert fetched.bootstrap_state == "dispatched"
-    assert fetched.bootstrap_dispatch_id == "disp-1"
-    assert fetched.bootstrap_attempts == 2
 
 
 async def test_onboarding_fields_absent_round_trip_as_none(repo):
@@ -521,7 +531,6 @@ async def test_onboarding_fields_absent_round_trip_as_none(repo):
     fetched = await repo.get("user_no_onb")
     assert fetched.onboarding_generation is None
     assert fetched.funnel_state is None
-    assert fetched.bootstrap_state is None
 
 
 async def test_put_without_onboarding_kwargs_wipes_previously_set_fields(repo):
@@ -583,6 +592,49 @@ async def test_resolve_owner_row_org_finds_creator_row_via_gsi(repo):
     assert resolved is not None
     assert resolved.user_id == "user_creator"
     assert resolved.onboarding_generation == "01CREATOR"
+
+
+async def test_resolve_owner_row_prefers_row_with_starter_ids(repo):
+    """A member row may be older, but starter identity lives only on the
+    authoritative owner row."""
+    now = datetime.now(timezone.utc)
+    await repo.put(_make_company(user_id="user_member", org_id="org_acme", created_at=now))
+    await repo.put(
+        _make_company(
+            user_id="user_owner",
+            org_id="org_acme",
+            created_at=now + timedelta(seconds=5),
+            starter_agent_ids={"ceo": "agent-ceo"},
+        )
+    )
+
+    resolved = await repo.resolve_owner_row("org_acme")
+    assert resolved is not None
+    assert resolved.user_id == "user_owner"
+    assert resolved.starter_agent_ids == {"ceo": "agent-ceo"}
+
+
+async def test_remove_starter_agent_id_removes_only_matching_entry(repo):
+    await repo.put(
+        _make_company(
+            user_id="user_owner",
+            org_id="org_acme",
+            starter_agent_ids={"ceo": "agent-ceo", "finance": "agent-fin"},
+        )
+    )
+
+    await repo.remove_starter_agent_id("org_acme", "agent-fin")
+
+    assert (await repo.get("user_owner")).starter_agent_ids == {"ceo": "agent-ceo"}
+
+
+async def test_remove_unknown_starter_agent_id_is_a_no_op(repo):
+    starter_ids = {"ceo": "agent-ceo", "finance": "agent-fin"}
+    await repo.put(_make_company(user_id="user_owner", starter_agent_ids=starter_ids))
+
+    await repo.remove_starter_agent_id("user_owner", "agent-other")
+
+    assert (await repo.get("user_owner")).starter_agent_ids == starter_ids
 
 
 async def test_find_owner_row_hydrates_from_gsi_without_a_second_get(repo):
@@ -901,672 +953,6 @@ async def test_revert_funnel_submission_does_not_downgrade_complete(repo):
 
 
 # ---------------------------------------------------------------------------
-# claim_bootstrap_dispatch / mark_bootstrap_delivered / mark_bootstrap_failed
-# ---------------------------------------------------------------------------
-
-
-async def test_claim_bootstrap_dispatch_wins_fresh(repo):
-    await repo.put(
-        _make_company(
-            user_id="u1", onboarding_generation="01G", funnel_state="submitted", bootstrap_state="not_started"
-        )
-    )
-    result, dispatch_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01G")
-    assert result is BootstrapClaimResult.WON
-    assert dispatch_id
-    fetched = await repo.get("u1")
-    assert fetched.bootstrap_state == "dispatched"
-    assert fetched.bootstrap_dispatch_id == dispatch_id
-    assert fetched.bootstrap_dispatched_at is not None
-    assert fetched.bootstrap_attempts == 1
-
-
-async def test_claim_bootstrap_dispatch_exactly_once(repo):
-    """INV-5: only ONE caller ever wins the claim for a given generation --
-    a second attempt (a racing /status poll, a duplicate /brief dispatch
-    hook) must not re-dispatch."""
-    await repo.put(
-        _make_company(
-            user_id="u1", onboarding_generation="01G", funnel_state="submitted", bootstrap_state="not_started"
-        )
-    )
-    first, first_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01G")
-    second, second_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01G")
-    assert first is BootstrapClaimResult.WON
-    assert second is BootstrapClaimResult.NOT_READY
-    assert second_id is None
-    fetched = await repo.get("u1")
-    assert fetched.bootstrap_dispatch_id == first_id
-    assert fetched.bootstrap_attempts == 1
-
-
-async def test_claim_bootstrap_dispatch_not_ready_when_funnel_not_submitted(repo):
-    await repo.put(
-        _make_company(
-            user_id="u1", onboarding_generation="01G", funnel_state="not_started", bootstrap_state="not_started"
-        )
-    )
-    result, dispatch_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01G")
-    assert result is BootstrapClaimResult.NOT_READY
-    assert dispatch_id is None
-    assert (await repo.get("u1")).bootstrap_state == "not_started"
-
-
-async def test_claim_bootstrap_dispatch_stale_generation_is_a_silent_no_op(repo):
-    await repo.put(
-        _make_company(
-            user_id="u1", onboarding_generation="01NEW", funnel_state="submitted", bootstrap_state="not_started"
-        )
-    )
-    result, dispatch_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01OLD")
-    assert result is BootstrapClaimResult.STALE_GENERATION
-    assert dispatch_id is None
-    assert (await repo.get("u1")).bootstrap_state == "not_started"
-
-
-async def test_claim_bootstrap_dispatch_missing_row_is_stale_generation(repo):
-    result, dispatch_id = await repo.claim_bootstrap_dispatch("user_never_provisioned", onboarding_generation="01G")
-    assert result is BootstrapClaimResult.STALE_GENERATION
-    assert dispatch_id is None
-
-
-async def test_mark_bootstrap_delivered_completes_funnel(repo):
-    await repo.put(
-        _make_company(
-            user_id="u1", onboarding_generation="01G", funnel_state="submitted", bootstrap_state="not_started"
-        )
-    )
-    _, dispatch_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01G")
-    assert await repo.mark_bootstrap_delivered("u1", onboarding_generation="01G", dispatch_id=dispatch_id) is True
-    fetched = await repo.get("u1")
-    assert fetched.bootstrap_state == "delivered"
-    assert fetched.bootstrap_delivered_at is not None
-    assert fetched.funnel_state == "complete"
-    assert fetched.funnel_completed_at is not None
-
-
-async def test_mark_bootstrap_delivered_fenced_on_dispatch_id(repo):
-    """A completion observer for a SUPERSEDED dispatch attempt (e.g. a
-    delayed/duplicate chat.final delivered after a retry already re-claimed
-    the row under a fresh dispatch_id) must not resolve the LATER attempt."""
-    await repo.put(
-        _make_company(
-            user_id="u1", onboarding_generation="01G", funnel_state="submitted", bootstrap_state="not_started"
-        )
-    )
-    assert (
-        await repo.mark_bootstrap_delivered("u1", onboarding_generation="01G", dispatch_id="stale-dispatch-id") is False
-    )
-    fetched = await repo.get("u1")
-    # No-op: still not_started, funnel still submitted.
-    assert fetched.bootstrap_state == "not_started"
-    assert fetched.funnel_state == "submitted"
-
-
-async def test_mark_bootstrap_delivered_is_a_noop_against_a_superseded_generation(repo):
-    await repo.put(
-        _make_company(
-            user_id="u1", onboarding_generation="01OLD", funnel_state="submitted", bootstrap_state="not_started"
-        )
-    )
-    _, dispatch_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01OLD")
-    # Company reprovisioned mid-flight: new generation, fresh not_started state.
-    await repo.put(_make_company(user_id="u1", onboarding_generation="01NEW", funnel_state="not_started"))
-    assert await repo.mark_bootstrap_delivered("u1", onboarding_generation="01OLD", dispatch_id=dispatch_id) is False
-    fetched = await repo.get("u1")
-    assert fetched.onboarding_generation == "01NEW"
-    assert fetched.funnel_state == "not_started"
-
-
-async def test_mark_bootstrap_failed_records_error(repo):
-    await repo.put(
-        _make_company(
-            user_id="u1", onboarding_generation="01G", funnel_state="submitted", bootstrap_state="not_started"
-        )
-    )
-    _, dispatch_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01G")
-    await repo.mark_bootstrap_failed(
-        "u1", onboarding_generation="01G", dispatch_id=dispatch_id, reason="container unreachable"
-    )
-    fetched = await repo.get("u1")
-    assert fetched.bootstrap_state == "failed"
-    assert fetched.bootstrap_last_error == "container unreachable"
-    # A failed dispatch does NOT complete the funnel.
-    assert fetched.funnel_state == "submitted"
-
-
-async def test_mark_bootstrap_failed_fenced_on_dispatch_id(repo):
-    await repo.put(
-        _make_company(
-            user_id="u1", onboarding_generation="01G", funnel_state="submitted", bootstrap_state="not_started"
-        )
-    )
-    await repo.mark_bootstrap_failed("u1", onboarding_generation="01G", dispatch_id="stale-dispatch-id", reason="boom")
-    fetched = await repo.get("u1")
-    assert fetched.bootstrap_state == "not_started"
-    assert fetched.bootstrap_last_error is None
-
-
-async def test_terminal_bootstrap_transitions_emit_the_activation_metric(repo):
-    """``bootstrap.state`` is the ONLY fleet-wide signal that an owner
-    submitted a goal and never got an agent response -- the W66 alarm reads
-    the ``failed`` rollup. It is emitted here rather than at the callers
-    because only this conditional write knows the transition LANDED: a
-    guard-fail (a superseded observer, a duplicate terminal) must not be
-    counted, or the alarm reports failures that never happened."""
-    await repo.put(
-        _make_company(
-            user_id="u1", onboarding_generation="01G", funnel_state="submitted", bootstrap_state="not_started"
-        )
-    )
-    _, dispatch_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01G")
-
-    with patch("core.repositories.paperclip_repo.put_metric") as metric:
-        await repo.mark_bootstrap_failed(
-            "u1", onboarding_generation="01G", dispatch_id=dispatch_id, reason="gateway starting; retry shortly"
-        )
-    metric.assert_called_once_with("bootstrap.state", dimensions={"status": "failed"})
-
-    # A guard-fail writes nothing, so it must count nothing.
-    with patch("core.repositories.paperclip_repo.put_metric") as metric:
-        await repo.mark_bootstrap_failed(
-            "u1", onboarding_generation="01G", dispatch_id="stale-dispatch-id", reason="boom"
-        )
-    metric.assert_not_called()
-
-    # The delivered leg, on a fresh generation so the CAS can land.
-    await repo.put(
-        _make_company(
-            user_id="u2", onboarding_generation="01H", funnel_state="submitted", bootstrap_state="not_started"
-        )
-    )
-    _, dispatch_id2 = await repo.claim_bootstrap_dispatch("u2", onboarding_generation="01H")
-    with patch("core.repositories.paperclip_repo.put_metric") as metric:
-        assert await repo.mark_bootstrap_delivered("u2", onboarding_generation="01H", dispatch_id=dispatch_id2) is True
-    metric.assert_called_once_with("bootstrap.state", dimensions={"status": "delivered"})
-
-
-# ---------------------------------------------------------------------------
-# rearm_bootstrap_dispatch (transient-failure retry path)
-# ---------------------------------------------------------------------------
-
-
-async def test_rearm_bootstrap_dispatch_returns_row_to_not_started(repo):
-    """The TRANSIENT counterpart to mark_bootstrap_failed: state back to
-    not_started so the next poll re-dispatches, attempts KEPT (they bound the
-    total dispatches), reason recorded, funnel untouched (still submitted —
-    that's what makes the row re-dispatchable)."""
-    await repo.put(
-        _make_company(
-            user_id="u1", onboarding_generation="01G", funnel_state="submitted", bootstrap_state="not_started"
-        )
-    )
-    _, dispatch_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01G")
-    await repo.rearm_bootstrap_dispatch(
-        "u1", onboarding_generation="01G", dispatch_id=dispatch_id, reason="[Errno 111] Connect call failed"
-    )
-    fetched = await repo.get("u1")
-    assert fetched.bootstrap_state == "not_started"
-    assert fetched.bootstrap_attempts == 1  # kept, not reset
-    assert fetched.bootstrap_last_error == "[Errno 111] Connect call failed"
-    assert fetched.funnel_state == "submitted"
-
-
-async def test_rearm_then_next_claim_wins_and_increments_attempts(repo):
-    """The whole point of the re-arm: a later /container/status poll's claim
-    must WIN again on the same generation, minting a fresh dispatch_id and
-    counting the new attempt."""
-    await repo.put(
-        _make_company(
-            user_id="u1", onboarding_generation="01G", funnel_state="submitted", bootstrap_state="not_started"
-        )
-    )
-    first, first_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01G")
-    await repo.rearm_bootstrap_dispatch("u1", onboarding_generation="01G", dispatch_id=first_id, reason="boot race")
-    second, second_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01G")
-    assert first is BootstrapClaimResult.WON
-    assert second is BootstrapClaimResult.WON
-    assert second_id != first_id
-    fetched = await repo.get("u1")
-    assert fetched.bootstrap_state == "dispatched"
-    assert fetched.bootstrap_dispatch_id == second_id
-    assert fetched.bootstrap_attempts == 2
-
-
-async def test_rearm_bootstrap_dispatch_fenced_on_dispatch_id(repo):
-    """A stale re-arm from a superseded dispatch attempt must not yank a
-    LATER attempt's in-flight dispatched state back to not_started."""
-    await repo.put(
-        _make_company(
-            user_id="u1", onboarding_generation="01G", funnel_state="submitted", bootstrap_state="not_started"
-        )
-    )
-    _, dispatch_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01G")
-    await repo.rearm_bootstrap_dispatch(
-        "u1", onboarding_generation="01G", dispatch_id="stale-dispatch-id", reason="boom"
-    )
-    fetched = await repo.get("u1")
-    assert fetched.bootstrap_state == "dispatched"  # untouched
-    assert fetched.bootstrap_dispatch_id == dispatch_id
-    assert fetched.bootstrap_last_error is None
-
-
-async def test_rearm_bootstrap_dispatch_is_a_noop_against_a_superseded_generation(repo):
-    await repo.put(
-        _make_company(
-            user_id="u1", onboarding_generation="01OLD", funnel_state="submitted", bootstrap_state="not_started"
-        )
-    )
-    _, dispatch_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01OLD")
-    # Company reprovisioned mid-flight: new generation, fresh not_started state.
-    await repo.put(_make_company(user_id="u1", onboarding_generation="01NEW", funnel_state="not_started"))
-    await repo.rearm_bootstrap_dispatch("u1", onboarding_generation="01OLD", dispatch_id=dispatch_id, reason="boom")
-    fetched = await repo.get("u1")
-    assert fetched.onboarding_generation == "01NEW"
-    assert fetched.bootstrap_state is None  # the fresh row untouched
-
-
-async def test_rearm_bootstrap_dispatch_never_downgrades_a_resolved_dispatch(repo):
-    """A dispatch that already resolved (delivered) is fenced on
-    bootstrap_state=="dispatched" — a late transient classifier from the same
-    dispatch (e.g. a raced completion) must not un-deliver it."""
-    await repo.put(
-        _make_company(
-            user_id="u1", onboarding_generation="01G", funnel_state="submitted", bootstrap_state="not_started"
-        )
-    )
-    _, dispatch_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01G")
-    await repo.mark_bootstrap_delivered("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
-    await repo.rearm_bootstrap_dispatch("u1", onboarding_generation="01G", dispatch_id=dispatch_id, reason="late")
-    fetched = await repo.get("u1")
-    assert fetched.bootstrap_state == "delivered"
-    assert fetched.funnel_state == "complete"
-
-
-# ---------------------------------------------------------------------------
-# rearm_failed_bootstrap (bounded automatic retry OF a `failed` row)
-#
-# `failed` used to be reachable only by the admin lever, so a transient the
-# dispatcher's classifier types deterministic dead-ended the owner until a
-# human noticed. This is the automatic counterpart; the condition expression is
-# what keeps it from reintroducing the risks `failed` exists to hold.
-# ---------------------------------------------------------------------------
-
-
-async def _claim_then_fail(repo, *, generation="01G", reason="Gateway connect failed: gateway starting") -> str:
-    """A `failed` row with NEITHER send stamp — the dispatch died at connect,
-    so nothing ever reached the socket (provably unsent)."""
-    await repo.put(
-        _make_company(
-            user_id="u1", onboarding_generation=generation, funnel_state="submitted", bootstrap_state="not_started"
-        )
-    )
-    _, dispatch_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation=generation)
-    await repo.mark_bootstrap_failed("u1", onboarding_generation=generation, dispatch_id=dispatch_id, reason=reason)
-    return dispatch_id
-
-
-async def test_rearm_failed_bootstrap_returns_a_failed_row_to_not_started(repo):
-    """Attempts KEPT (they are the retry's only bound — the admin lever is the
-    one that zeroes them), last_error kept as history, funnel untouched so the
-    owner-visible contract is unchanged while the retry runs."""
-    dispatch_id = await _claim_then_fail(repo)
-    assert await repo.rearm_failed_bootstrap("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
-    fetched = await repo.get("u1")
-    assert fetched.bootstrap_state == "not_started"
-    assert fetched.bootstrap_attempts == 1  # kept, not reset
-    assert fetched.bootstrap_last_error == "Gateway connect failed: gateway starting"
-    assert fetched.funnel_state == "submitted"
-
-
-async def test_rearm_failed_then_next_claim_wins_and_counts_the_attempt(repo):
-    """The point of the re-arm: the next /container/status poll must be able to
-    claim again on the SAME generation, minting a fresh dispatch_id — and the
-    attempt must be counted, or the cap would never bite."""
-    dispatch_id = await _claim_then_fail(repo)
-    await repo.rearm_failed_bootstrap("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
-    result, second_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01G")
-    assert result is BootstrapClaimResult.WON
-    assert second_id != dispatch_id
-    fetched = await repo.get("u1")
-    assert fetched.bootstrap_attempts == 2
-
-
-async def test_rearm_failed_bootstrap_is_fenced_on_dispatch_id(repo):
-    """Two backend instances race this on the same poll cycle (a rolling deploy
-    runs 2). Only the write carrying the failed attempt's own dispatch_id may
-    land, so the loser cannot yank a re-claimed row back to not_started."""
-    await _claim_then_fail(repo)
-    assert not await repo.rearm_failed_bootstrap("u1", onboarding_generation="01G", dispatch_id="some-other-id")
-    assert (await repo.get("u1")).bootstrap_state == "failed"
-
-
-async def test_rearm_failed_bootstrap_is_a_noop_against_a_superseded_generation(repo):
-    dispatch_id = await _claim_then_fail(repo, generation="01OLD")
-    # Company reprovisioned mid-flight: new generation, fresh row.
-    await repo.put(_make_company(user_id="u1", onboarding_generation="01NEW", funnel_state="not_started"))
-    assert not await repo.rearm_failed_bootstrap("u1", onboarding_generation="01OLD", dispatch_id=dispatch_id)
-    fetched = await repo.get("u1")
-    assert fetched.onboarding_generation == "01NEW"
-    assert fetched.bootstrap_state is None  # the fresh row untouched
-
-
-async def test_rearm_failed_bootstrap_refuses_an_unacked_send(repo):
-    """AMBIGUOUS: the write-ahead stamp is set and the ack never was, so
-    OpenClaw may already have taken the run. Excluded IN THE WRITE, not just in
-    the caller's read — a fresh claim mints a new idempotencyKey it cannot
-    dedup, so this is the row that could run Friday twice."""
-    await repo.put(
-        _make_company(
-            user_id="u1", onboarding_generation="01G", funnel_state="submitted", bootstrap_state="not_started"
-        )
-    )
-    _, dispatch_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01G")
-    await repo.mark_bootstrap_send_attempted("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
-    await repo.mark_bootstrap_failed("u1", onboarding_generation="01G", dispatch_id=dispatch_id, reason="ack timed out")
-    assert not await repo.rearm_failed_bootstrap("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
-    assert (await repo.get("u1")).bootstrap_state == "failed"
-
-
-async def test_rearm_failed_bootstrap_admits_an_acked_run_that_errored(repo):
-    """The other post-send shape: the kickoff WAS acked and the run was
-    observed to terminate in a chat error (the dev rate-limit case). That run
-    is definitively over, so a fresh one cannot overlap it —
-    bootstrap_sent_at is the whole difference from the row above."""
-    await repo.put(
-        _make_company(
-            user_id="u1", onboarding_generation="01G", funnel_state="submitted", bootstrap_state="not_started"
-        )
-    )
-    _, dispatch_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01G")
-    await repo.mark_bootstrap_send_attempted("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
-    await repo.mark_bootstrap_sent("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
-    await repo.mark_bootstrap_failed(
-        "u1", onboarding_generation="01G", dispatch_id=dispatch_id, reason="⚠️ API rate limit reached."
-    )
-    assert await repo.rearm_failed_bootstrap("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
-    assert (await repo.get("u1")).bootstrap_state == "not_started"
-
-
-async def test_rearm_failed_bootstrap_only_takes_a_failed_row(repo):
-    """A live `dispatched` claim belongs to the staleness rule, and a
-    `delivered` one is done — neither may be dragged back to not_started."""
-    await repo.put(
-        _make_company(
-            user_id="u1", onboarding_generation="01G", funnel_state="submitted", bootstrap_state="not_started"
-        )
-    )
-    _, dispatch_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01G")
-    assert not await repo.rearm_failed_bootstrap("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
-    assert (await repo.get("u1")).bootstrap_state == "dispatched"
-
-    await repo.mark_bootstrap_delivered("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
-    assert not await repo.rearm_failed_bootstrap("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
-    assert (await repo.get("u1")).bootstrap_state == "delivered"
-
-
-# ---------------------------------------------------------------------------
-# mark_bootstrap_send_attempted / mark_bootstrap_sent — the two stamps between
-# the claim and the terminal marks. They are what a later poll reads to tell a
-# dead claimant that never sent from one that may already have.
-# ---------------------------------------------------------------------------
-
-
-async def _claimed(repo, generation="01G"):
-    await repo.put(
-        _make_company(
-            user_id="u1", onboarding_generation=generation, funnel_state="submitted", bootstrap_state="not_started"
-        )
-    )
-    _, dispatch_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation=generation)
-    return dispatch_id
-
-
-async def test_send_attempted_then_sent_walks_the_ladder(repo):
-    dispatch_id = await _claimed(repo)
-    assert await repo.mark_bootstrap_send_attempted("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
-    attempted = await repo.get("u1")
-    # Stamp 2 records the intent WITHOUT resolving the state — the row is
-    # still `dispatched`, because nothing is known about the outcome yet.
-    assert attempted.bootstrap_state == "dispatched"
-    assert attempted.bootstrap_send_attempted_at is not None
-    assert attempted.bootstrap_sent_at is None
-
-    assert await repo.mark_bootstrap_sent("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
-    sent = await repo.get("u1")
-    assert sent.bootstrap_state == "sent"
-    assert sent.bootstrap_sent_at is not None
-    assert sent.funnel_state == "submitted"  # completion, not delivery, completes the funnel
-
-
-async def test_sent_returns_false_when_the_row_moved_on_under_the_claim(repo):
-    """The ack landed but the row was already settled by a stale-claim
-    recovery. The caller must be able to TELL — reading the swallowed
-    guard-fail as success is what let a delivered kickoff sit in `failed`
-    with no warning and an admin reset waiting to double-deliver."""
-    dispatch_id = await _claimed(repo)
-    await repo.mark_bootstrap_send_attempted("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
-    await repo.mark_bootstrap_failed(
-        "u1", onboarding_generation="01G", dispatch_id=dispatch_id, reason="assumed dead", only_if_unacked=True
-    )
-
-    assert not await repo.mark_bootstrap_sent("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
-    settled = await repo.get("u1")
-    assert settled.bootstrap_state == "failed"  # not silently re-opened
-    # ...but the DELIVERY is still recorded against that row. It is the one
-    # fact no other writer can reconstruct, and it turns the recorded reason's
-    # "may double-deliver" into something an operator can act on.
-    assert settled.bootstrap_sent_at is not None
-
-
-async def test_a_late_ack_on_a_superseded_generation_annotates_nothing(repo):
-    """Nothing left to annotate: a reprovision minted a new incarnation, so the
-    old attempt's delivery is not a fact about THIS row."""
-    dispatch_id = await _claimed(repo)
-    await repo.put(_make_company(user_id="u1", onboarding_generation="01NEW", funnel_state="not_started"))
-
-    assert not await repo.mark_bootstrap_sent("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
-    fresh = await repo.get("u1")
-    assert fresh.bootstrap_sent_at is None
-    assert fresh.onboarding_generation == "01NEW"
-
-
-async def test_send_attempted_returns_false_when_the_claim_moved_on(repo):
-    """The caller must not send when it no longer holds the claim."""
-    await _claimed(repo)
-    assert not await repo.mark_bootstrap_send_attempted(
-        "u1", onboarding_generation="01G", dispatch_id="someone-elses-claim"
-    )
-    assert (await repo.get("u1")).bootstrap_send_attempted_at is None
-
-
-async def test_terminal_marks_accept_a_sent_row(repo):
-    """`sent` is a live post-claim state: the completion observer's
-    delivered/failed writes sit on top of it unchanged."""
-    dispatch_id = await _claimed(repo)
-    await repo.mark_bootstrap_sent("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
-    await repo.mark_bootstrap_delivered("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
-    delivered = await repo.get("u1")
-    assert delivered.bootstrap_state == "delivered"
-    assert delivered.funnel_state == "complete"
-
-
-async def test_terminal_failure_accepts_a_sent_row(repo):
-    dispatch_id = await _claimed(repo)
-    await repo.mark_bootstrap_sent("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
-    await repo.mark_bootstrap_failed("u1", onboarding_generation="01G", dispatch_id=dispatch_id, reason="chat.aborted")
-    failed = await repo.get("u1")
-    assert failed.bootstrap_state == "failed"
-    assert failed.bootstrap_last_error == "chat.aborted"
-
-
-async def test_rearm_refuses_a_claim_that_has_already_attempted_a_send(repo):
-    """THE double-send race: a claimant judged dead may be merely SLOW and
-    stamp its write-ahead between a recovery poll's read and its re-arm. The
-    re-arm must be fenced on the STAMP, not just on state+dispatch_id — a
-    re-armed row is immediately re-claimable, so a landed re-arm here means
-    Friday runs twice."""
-    dispatch_id = await _claimed(repo)
-    await repo.mark_bootstrap_send_attempted("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
-
-    await repo.rearm_bootstrap_dispatch(
-        "u1", onboarding_generation="01G", dispatch_id=dispatch_id, reason="assumed dead"
-    )
-    still = await repo.get("u1")
-    assert still.bootstrap_state == "dispatched"  # untouched — the live claimant keeps it
-    assert still.bootstrap_last_error is None
-    # And the row stays unclaimable, so the recovering poll cannot send either.
-    result, _ = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01G")
-    assert result is BootstrapClaimResult.NOT_READY
-
-
-async def test_only_if_unacked_refuses_to_fail_a_row_that_acked_in_the_window(repo):
-    """The same race on the other branch: settling an ACKED row `failed` would
-    mislabel a delivered kickoff and invite an admin reset into a second one."""
-    dispatch_id = await _claimed(repo)
-    await repo.mark_bootstrap_send_attempted("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
-    await repo.mark_bootstrap_sent("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
-
-    await repo.mark_bootstrap_failed(
-        "u1",
-        onboarding_generation="01G",
-        dispatch_id=dispatch_id,
-        reason="assumed dead mid-send",
-        only_if_unacked=True,
-    )
-    assert (await repo.get("u1")).bootstrap_state == "sent"  # untouched
-
-    # Without the flag (the completion observer's call) a terminal chat.error
-    # still resolves that same row — the narrowing is opt-in, not a new rule.
-    await repo.mark_bootstrap_failed("u1", onboarding_generation="01G", dispatch_id=dispatch_id, reason="chat.error")
-    assert (await repo.get("u1")).bootstrap_state == "failed"
-
-
-async def test_only_if_unacked_still_settles_a_genuinely_unacked_claim(repo):
-    dispatch_id = await _claimed(repo)
-    await repo.mark_bootstrap_send_attempted("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
-
-    await repo.mark_bootstrap_failed(
-        "u1",
-        onboarding_generation="01G",
-        dispatch_id=dispatch_id,
-        reason="ack never recorded",
-        only_if_unacked=True,
-    )
-    settled = await repo.get("u1")
-    assert settled.bootstrap_state == "failed"
-    assert settled.bootstrap_last_error == "ack never recorded"
-
-
-async def test_a_new_claim_clears_the_previous_attempts_stamps(repo):
-    """A re-claimed row must start a CLEAN per-attempt record: a leftover
-    send_attempted stamp would make the NEXT dead claim look ambiguous (never
-    re-armed) when it provably sent nothing.
-
-    Reached via the admin lever, since that is the only path that returns an
-    ATTEMPTED row to not_started — the automatic re-arm is fenced against
-    exactly this stamp (see test_rearm_refuses_a_claim_that_has_already_...)."""
-    dispatch_id = await _claimed(repo)
-    await repo.mark_bootstrap_send_attempted("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
-    assert await repo.reset_bootstrap_for_retry("u1", onboarding_generation="01G", expected_dispatch_id=dispatch_id)
-    # Cleared by the reset itself, not merely by the next claim: between the two
-    # an operator reading "send attempted at ..." on a not_started row would
-    # misread what is in flight.
-    assert (await repo.get("u1")).bootstrap_send_attempted_at is None
-
-    _, second_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01G")
-    reclaimed = await repo.get("u1")
-    assert second_id != dispatch_id
-    assert reclaimed.bootstrap_send_attempted_at is None
-    assert reclaimed.bootstrap_sent_at is None
-
-
-# ---------------------------------------------------------------------------
-# reset_bootstrap_for_retry
-# ---------------------------------------------------------------------------
-
-
-async def test_reset_bootstrap_for_retry_recovers_an_expired_dispatched_claim(repo):
-    """The admin lever's stuck-'dispatched' case (the row's claimant died).
-    Fenced on the observed dispatch_id, so a claim that landed in between is
-    never stomped."""
-    dispatch_id = await _claimed(repo)
-    await repo.mark_bootstrap_send_attempted("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
-
-    assert not await repo.reset_bootstrap_for_retry(
-        "u1", onboarding_generation="01G", expected_dispatch_id="a-different-claim"
-    )
-    assert (await repo.get("u1")).bootstrap_state == "dispatched"
-
-    assert await repo.reset_bootstrap_for_retry("u1", onboarding_generation="01G", expected_dispatch_id=dispatch_id)
-    reset = await repo.get("u1")
-    assert reset.bootstrap_state == "not_started"
-    assert reset.bootstrap_attempts == 0
-    assert reset.funnel_state == "submitted"
-
-
-async def test_reset_bootstrap_for_retry_without_a_dispatch_id_still_only_takes_failed(repo):
-    """The no-fence form is the original failed-only lever, unchanged."""
-    dispatch_id = await _claimed(repo)
-    assert not await repo.reset_bootstrap_for_retry("u1", onboarding_generation="01G")
-    assert (await repo.get("u1")).bootstrap_state == "dispatched"
-    await repo.mark_bootstrap_failed("u1", onboarding_generation="01G", dispatch_id=dispatch_id, reason="boom")
-    assert await repo.reset_bootstrap_for_retry("u1", onboarding_generation="01G")
-    assert (await repo.get("u1")).bootstrap_state == "not_started"
-
-
-async def test_reset_bootstrap_for_retry_lands_on_failed_row(repo):
-    """Admin retry re-arms a failed kickoff: bootstrap_state back to
-    not_started, attempts zeroed (so MAX_BOOTSTRAP_ATTEMPTS re-arms),
-    dispatch_id REMOVEd -- while bootstrap_last_error is kept as history
-    and the funnel stays submitted for the next dispatch claim."""
-    await repo.put(
-        _make_company(
-            user_id="u1", onboarding_generation="01G", funnel_state="submitted", bootstrap_state="not_started"
-        )
-    )
-    _, dispatch_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01G")
-    await repo.mark_bootstrap_failed(
-        "u1", onboarding_generation="01G", dispatch_id=dispatch_id, reason="container unreachable"
-    )
-
-    ok = await repo.reset_bootstrap_for_retry("u1", onboarding_generation="01G")
-
-    assert ok is True
-    fetched = await repo.get("u1")
-    assert fetched.bootstrap_state == "not_started"
-    assert fetched.bootstrap_attempts == 0
-    assert fetched.bootstrap_dispatch_id is None
-    assert fetched.bootstrap_last_error == "container unreachable"
-    assert fetched.funnel_state == "submitted"
-
-
-async def test_reset_bootstrap_for_retry_returns_false_on_condition_fail(repo):
-    """The fence: only a genuinely failed bootstrap on the SAME generation
-    the operator read may be reset -- a mid-flight dispatch or a superseded
-    generation is a no-op (False)."""
-    await repo.put(
-        _make_company(
-            user_id="u1", onboarding_generation="01G", funnel_state="submitted", bootstrap_state="not_started"
-        )
-    )
-    _, dispatch_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01G")
-
-    # Still dispatched (not failed): must not yank a live kickoff.
-    assert await repo.reset_bootstrap_for_retry("u1", onboarding_generation="01G") is False
-    assert (await repo.get("u1")).bootstrap_state == "dispatched"
-
-    await repo.mark_bootstrap_failed("u1", onboarding_generation="01G", dispatch_id=dispatch_id, reason="boom")
-
-    # Failed, but the operator is holding a stale generation: no-op.
-    assert await repo.reset_bootstrap_for_retry("u1", onboarding_generation="01STALE") is False
-    fetched = await repo.get("u1")
-    assert fetched.bootstrap_state == "failed"
-    assert fetched.bootstrap_attempts == 1
-    assert fetched.bootstrap_dispatch_id == dispatch_id
-
-
-# ---------------------------------------------------------------------------
 # first_contact claim / settle / attempts
 #
 # Once-only is inferred SERVER-SIDE from this state, never from a
@@ -1643,6 +1029,20 @@ async def test_onboarding_state_projects_first_contact_and_friday(repo):
     assert state["friday_agent_id"] == "agent_friday"
 
 
+async def test_onboarding_state_prefers_starter_ceo_over_legacy_friday(repo):
+    await repo.put(
+        _make_company(
+            user_id="u1",
+            org_id="u1",
+            onboarding_generation="01G",
+            seeded_agent_ids=["agent_friday", "agent_atlas"],
+            starter_agent_ids={"ceo": "agent_ceo"},
+        )
+    )
+
+    assert (await repo.get_onboarding_state("u1"))["friday_agent_id"] == "agent_ceo"
+
+
 # --- Pending brief (intake before the workspace can receive it) --------------
 
 
@@ -1654,6 +1054,7 @@ async def test_pending_brief_round_trip(repo):
         detail=None,
         brief_text="work on acme.com",
         submitted_by="member_zed",
+        target_agent_id="agent_engineering",
     )
     assert landed is True
 
@@ -1663,6 +1064,7 @@ async def test_pending_brief_round_trip(repo):
     assert item["input"] == "acme.com"
     assert item["brief_text"] == "work on acme.com"
     assert item["submitted_by"] == "member_zed"
+    assert item["target_agent_id"] == "agent_engineering"
     # Absent, not "" -- "no detail" must not come back as a blank string a
     # later reader would quote at Friday.
     assert "detail" not in item

@@ -35,6 +35,7 @@ from core.repositories import container_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import ses_email
 from core.services.agent_email import ensure_agent_address
+from core.services.agent_export import resolve_apex_ceo_agent_id
 from core.services.owner_facts import write_owner_facts
 from core.services.paperclip_owner_email import lookup_owner_email
 
@@ -103,7 +104,7 @@ async def send_to_owner(
         generation = onboarding.get("onboarding_generation") or ""
         row_user_id = onboarding.get("user_id") or owner_id
         company_id = onboarding.get("company_id")
-        friday_agent_id = onboarding.get("friday_agent_id")
+        fallback_ceo_agent_id = onboarding.get("friday_agent_id")
         state = onboarding.get("first_contact_state") or "not_started"
 
         # POLICY — inferred from state, never from the `purpose` label.
@@ -161,11 +162,17 @@ async def send_to_owner(
         if not owner_email:
             return await _fail("no_owner_email", "error")
 
-        if not company_id or not friday_agent_id:
+        if not company_id:
+            return await _fail("incomplete_provisioning", "error")
+
+        resolved_agent_id = agent_id
+        if resolved_agent_id is None:
+            resolved_agent_id = await resolve_apex_ceo_agent_id(owner_id=owner_id) or fallback_ceo_agent_id
+        if not resolved_agent_id:
             return await _fail("incomplete_provisioning", "error")
 
         address, reason = await ensure_agent_address(
-            owner_id=owner_id, agent_id=agent_id or friday_agent_id, owner_email=owner_email
+            owner_id=owner_id, agent_id=resolved_agent_id, owner_email=owner_email
         )
         if not address:
             result = "no_address" if reason in ("slug_allocation_failed", "mint_failed") else "error"

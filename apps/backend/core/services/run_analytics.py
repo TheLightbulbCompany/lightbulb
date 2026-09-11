@@ -70,14 +70,11 @@ _ENRICH_TIMEOUT_S = 5.0
 _SEEN_RUN_IDS_CAP = 4096
 _seen_run_ids: dict[str, None] = {}
 
-# owner:runId -> actor stamped at DISPATCH ("human" for a client WS chat.send,
-# "system" for a backend kickoff / first-contact nudge). Threaded through this
-# module-owned map rather than the gateway's ``_active_runs`` because the
-# dispatch sites (routers/websocket_chat, core/services/bootstrap_dispatcher)
-# and the terminal reader both key on the runId (== chat.send idempotencyKey ==
-# the runId OpenClaw echoes on every event), so the carry needs no change in
-# connection_pool. Runs NOT dispatched by those two sites (cron/channel/
-# paperclip) are never stamped -> actor stays None (never inferred from
+# owner:runId -> actor stamped at dispatch. The retired server kickoff path no
+# longer emits a ``system`` run; the room dispatch and terminal reader both key
+# on runId (== chat.send idempotencyKey == the runId OpenClaw echoes on every
+# event), so this module-owned map needs no connection-pool change. Runs not
+# stamped by a dispatch site (cron/channel/paperclip) stay None (never inferred from
 # run_source). Bounded FIFO, same idiom as _seen_run_ids: a stamped run whose
 # terminal never fires (backend down mid-run, send that never acked) is evicted
 # by the cap.
@@ -120,16 +117,26 @@ def _coarse_source(source: str) -> str:
     return "unknown"
 
 
-def schedule_run_completed(*, owner_id: str, parsed: dict, payload: dict, phase: str) -> asyncio.Task | None:
-    """Emit a run-completion terminal to CloudWatch (always) and PostHog (gated).
+def schedule_run_completed(
+    *, owner_id: str, parsed: dict, payload: dict, phase: str, emit_metric: bool = True
+) -> asyncio.Task | None:
+    """Emit a run-completion terminal to CloudWatch and PostHog (both gated).
 
     ``parsed`` is the ``_parse_session_key`` dict for the event's sessionKey;
     ``phase`` is ``"end"`` or ``"error"``. Deduped on ``owner:run_id`` so a run
     seen by both the chat reader loop and the operator relay tap emits once.
-    Fires the ``run.completed`` CloudWatch metric unconditionally; returns the
-    PostHog enrichment+capture task (for the caller's drain set), or None when
-    the run was already emitted or the PostHog write key is unset. Synchronous
-    and I/O-free — safe on the reader loop.
+    Fires the ``run.completed`` CloudWatch metric (unless ``emit_metric`` is
+    False); returns the PostHog enrichment+capture task (for the caller's drain
+    set), or None when the run was already emitted or the PostHog write key is
+    unset. Synchronous and I/O-free — safe on the reader loop.
+
+    ``emit_metric=False`` exists for the one caller that RE-observes runs after
+    the fact (``cron_run_telemetry.sweep_cron_runs``). The PostHog event is
+    idempotent across processes via the deterministic capture uuid below; the
+    CloudWatch metric has no durable dedup, and two backend tasks run the
+    sweeping worker during every rolling deploy. So the metric keeps its
+    "observed live" meaning and PostHog carries the complete count — an
+    under-counted metric beats a double-counted one.
     """
     run_id = payload.get("runId")
     # Dedup ONCE — this gates BOTH the CloudWatch metric and the PostHog event,
@@ -157,7 +164,8 @@ def schedule_run_completed(*, owner_id: str, parsed: dict, payload: dict, phase:
     # ``source`` is intentionally coarse — webchat / channel / cron / paperclip;
     # the fine-grained routine-vs-issue split needs the async Paperclip join and
     # stays in PostHog. For storm detection, paperclip+failure is the signal.
-    put_metric("run.completed", dimensions={"outcome": outcome, "source": _coarse_source(parsed.get("source", ""))})
+    if emit_metric:
+        put_metric("run.completed", dimensions={"outcome": outcome, "source": _coarse_source(parsed.get("source", ""))})
 
     # PostHog product event — fine-grained, gated on the analytics write key.
     if not settings.POSTHOG_PROJECT_WRITE_KEY:

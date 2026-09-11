@@ -1,4 +1,5 @@
 """WebSocket $connect handler — stores connection in DynamoDB, notifies backend."""
+
 import os
 import urllib.request
 import boto3
@@ -46,44 +47,51 @@ def handler(event, context):
 
     logger.info("WebSocket connect: connection_id=%s user_id=%s", connection_id, user_id)
 
-    # Forward clientId from query for FastAPI ws_connect to recognize node-host
-    # vs operator/control-ui connections. Only known values (node-host,
-    # openclaw-macos) trigger the synthetic-challenge skip downstream; unknown
-    # values are forwarded verbatim and ignored.
+    # clientId is untrusted query input. It is admitted only when it matches the
+    # already-verified credential kind from the Lambda authorizer context.
     qs = event.get("queryStringParameters") or {}
     client_id = qs.get("clientId")
-
-    # Derive connectionType HERE (not only in the backend /ws/connect handler):
-    # this Lambda writes the row BEFORE notifying the backend, and the owner-keyed
-    # fan-out defaults a missing connectionType to "chat". Without this, a
-    # node-host or paperclip-operator socket would look like a chat recipient
-    # until the backend notification overwrites the row — and permanently if that
-    # notify fails. Keep these client-id sets in sync with NODE_HOST_CLIENT_IDS /
-    # PAPERCLIP_OPERATOR_CLIENT_ID in routers/websocket_chat.py.
-    if client_id == "paperclip-operator":
-        connection_type = "operator"
-    elif client_id in ("node-host", "openclaw-macos"):
+    auth_kind = authorizer.get("authKind", "")
+    device_id = authorizer.get("deviceId", "")
+    if not user_id:
+        return {"statusCode": 403}
+    if auth_kind == "device":
+        if client_id not in ("node-host", "openclaw-macos") or not device_id:
+            return {"statusCode": 403}
         connection_type = "node"
+    elif auth_kind == "paperclip_service":
+        if client_id != "paperclip-operator" or device_id:
+            return {"statusCode": 403}
+        connection_type = "operator"
     else:
-        connection_type = "chat"
+        # Clerk browser sessions, missing provenance, unknown client IDs, and
+        # cross-kind combinations all fail before a connection row is written.
+        return {"statusCode": 403}
 
-    table.put_item(Item={
-        "connectionId": connection_id,
-        "userId": user_id,
-        "orgId": org_id or "",
-        "ownerId": org_id or user_id,  # owner = org for org members, else the user
-        "connectionType": connection_type,
-        "connectedAt": str(event["requestContext"].get("connectedAt", "")),
-    })
+    table.put_item(
+        Item={
+            "connectionId": connection_id,
+            "userId": user_id,
+            "orgId": org_id or "",
+            "ownerId": org_id or user_id,
+            "connectionType": connection_type,
+            "authKind": auth_kind,
+            "clientId": client_id,
+            **({"deviceId": device_id} if auth_kind == "device" else {}),
+            "connectedAt": str(event["requestContext"].get("connectedAt", "")),
+        }
+    )
 
     headers = {
         "x-connection-id": connection_id,
         "x-user-id": user_id,
         "x-org-id": org_id or "",
+        "x-auth-kind": auth_kind,
+        "x-client-id": client_id,
         "Content-Type": "application/json",
     }
-    if client_id:
-        headers["x-client-id"] = client_id
+    if auth_kind == "device":
+        headers["x-verified-device-id"] = device_id
     ws_secret = _get_ws_internal_secret()
     if ws_secret:
         headers["x-lightbulb-ws-internal"] = ws_secret

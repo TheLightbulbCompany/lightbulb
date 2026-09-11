@@ -58,7 +58,7 @@ export class AuthedFetch {
   private async send(method: string, path: string, body?: unknown): Promise<Response> {
     // Retry on transient 502/503/504 — the gateway proxies RPC to the
     // user's OpenClaw container over WebSocket, and during an upgrade
-    // (free→starter) the container is reconfigured (model swap) and the
+    // (free→Workspace) the container is reconfigured (model swap) and the
     // gateway briefly returns "Gateway RPC call failed" (502). Up to 5
     // attempts with 2s backoff covers typical reconfig windows. Non-5xx
     // errors return immediately.

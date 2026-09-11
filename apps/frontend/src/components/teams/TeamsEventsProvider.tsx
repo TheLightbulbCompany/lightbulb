@@ -1,18 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef } from "react";
-import { useSWRConfig } from "swr";
-import { useGateway } from "@/hooks/useGateway";
-import {
-  acquireTeamsEvents,
-  releaseTeamsEvents,
-  resubscribeTeamsEvents,
-} from "@/lib/teamsSubscription";
+import { useLiveEvents } from "@/hooks/useLiveEvents";
+import { useTeamsApi } from "@/hooks/useTeamsApi";
 
 /**
- * Mounts inside TeamsLayout (which is inside GatewayProvider). Subscribes
- * to Paperclip live events forwarded by the BFF and invalidates SWR cache
- * keys per event type so panels rerender automatically.
+ * Mounts inside the authenticated live-events provider. Paperclip events arrive
+ * on the private user subscription and invalidate scoped SWR cache keys.
  *
  * Pattern mirrors Paperclip's own LiveUpdatesProvider — a single mount
  * point owns all realtime invalidation; panels themselves stay free of
@@ -49,8 +43,9 @@ export const EVENT_KEY_MAP: Record<string, string[]> = {
 // deduped union of every key any event can invalidate — NOT a second literal
 // list — so the catch-all can never drift out of sync with EVENT_KEY_MAP and
 // silently skip a live key. That drift is exactly what would strand
-// /teams/approvals and /teams/inbox/runs (both feed NeedsAttentionBand via
-// useInboxTriage) behind the read layer's 15s dedup window on Teams re-entry.
+// /teams/approvals and /teams/inbox/runs (both feed Inbox's "Needs you" band —
+// InboxNeedsYou, via useAttentionFeed and useInboxTriage) behind the read
+// layer's 15s dedup window on Teams re-entry.
 /**
  * `activity.logged` is Paperclip's ONLY signal that a specific row changed —
  * there are no `issue.*` / `routine.*` / `project.*` live-event types. Every
@@ -105,7 +100,7 @@ const BOARD_KEEPER_INTERVAL_MS = 20_000;
 
 /**
  * Event-driven revalidation is throttled per cache key, mirroring the gateway
- * RPC path (`useGatewayRpc` in @lightbulb/shared, which throttles the same way and
+ * RPC path (`useRuntimeRpc` in @lightbulb/shared, which throttles the same way and
  * for the same reason). The read layer gives these zero protection on its own:
  * `mutate(predicate)` explicitly deletes SWR's concurrent-request markers, so
  * useTeamsApi's 15s `dedupingInterval` never applies and EVERY event becomes a
@@ -193,14 +188,9 @@ export function activityTargets(data: unknown): {
 }
 
 export function TeamsEventsProvider({ children }: { children: React.ReactNode }) {
-  const { isConnected, send, onEvent } = useGateway();
-  const { mutate } = useSWRConfig();
-  // null = never observed; false = observed disconnected; true = observed connected.
-  // Full invalidation fires on any transition INTO connected — both the first
-  // subscribe (null→true) and a reconnect (false→true) — but never on a
-  // redundant effect re-run while already connected (true→true). See the
-  // resubscribe effect for why first-subscribe must reconcile too.
-  const wasConnectedRef = useRef<boolean | null>(null);
+  const { connectionRevision, onEvent } = useLiveEvents();
+  const { mutate } = useTeamsApi();
+  const reconciledRevisionRef = useRef<number | null>(null);
 
   // Invalidate every SWR key that matches `prefix` exactly OR starts with
   // `${prefix}?`. SWR's `mutate` accepts a predicate; this is the documented
@@ -281,53 +271,32 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
   }, []);
 
   useEffect(() => {
-    const st = throttleRef.current;
+    const state = throttleRef.current;
+    reconciledRevisionRef.current = null;
     return () => {
-      if (st.timer !== undefined) clearTimeout(st.timer);
+      if (state.timer !== undefined) clearTimeout(state.timer);
+      state.timer = undefined;
+      state.pending.clear();
+      state.lastAt.clear();
     };
-  }, []);
+  }, [mutate]);
 
-  // Refcounted hold on the shared per-connection subscription: another
-  // consumer (RunNotifications) may still need teams events after this
-  // panel-scoped provider unmounts. Declared BEFORE the resubscribe effect
-  // per the teamsSubscription ordering contract.
+  // AppSync is ephemeral. Reconcile current scoped reads on provider entry and
+  // after each private-user subscription reconnect.
   useEffect(() => {
-    acquireTeamsEvents();
-    return () => releaseTeamsEvents(send);
-  }, [send]);
-
-  // (re)subscribe + full invalidation on every entry into a connected+subscribed
-  // state (first subscribe AND reconnect).
-  useEffect(() => {
-    if (!isConnected) {
-      wasConnectedRef.current = false;
-      return;
-    }
-    resubscribeTeamsEvents(send);
-    if (wasConnectedRef.current !== true) {
-      // Reconcile whenever we (re)subscribe from a not-yet-subscribed state —
-      // first subscribe (null) OR reconnect (false). Paperclip's WS has no
-      // replay cursor, and the Teams read layer's 15s dedup window
-      // (useTeamsApi) suppresses refetch-on-navigation by design, delegating
-      // freshness to these event-driven mutations. That trust only holds while
-      // continuously subscribed: any activity.logged emitted before this
-      // subscription — e.g. while the user was outside Teams, since this
-      // provider mounts/unmounts with the Teams layout while the gateway
-      // connection persists — is lost, and the dedup blocks the mount-refetch
-      // that would recover it. Refetching everything on (re)subscribe closes
-      // that missed-event window. Fires once per Teams entry (the provider is
-      // layout-scoped, not per-panel), so intra-Teams panel switches stay
-      // deduped.
-      for (const key of ALL_KEYS) mutateKeyPrefix(key);
-      mutateIssueRunLists();
-    }
-    wasConnectedRef.current = true;
-  }, [isConnected, send, mutateKeyPrefix, mutateIssueRunLists]);
+    if (reconciledRevisionRef.current === connectionRevision) return;
+    reconciledRevisionRef.current = connectionRevision;
+    for (const key of ALL_KEYS) mutateKeyPrefix(key);
+    mutateIssueRunLists();
+  }, [connectionRevision, mutateKeyPrefix, mutateIssueRunLists]);
 
   // Wire event listener.
   useEffect(() => {
-    const unsub = onEvent((event, data) => {
-      if (!event.startsWith("teams.")) return;
+    let active = true;
+    const unsub = onEvent((liveEvent) => {
+      if (!active || liveEvent.type !== "paperclip.event") return;
+      const event = liveEvent.payload.eventName;
+      const data = liveEvent.payload.payload;
       // Reconcile paths stay UNTHROTTLED (here and in the resubscribe effect):
       // they are the missed-event catch-up, they fire once per Teams entry /
       // stream resume rather than per mutation, and throttling them would
@@ -364,6 +333,7 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
       }
     });
     return () => {
+      active = false;
       unsub();
     };
   }, [onEvent, mutateKeyPrefix, mutateEntitySubtree, mutateIssueRunLists, throttledMutate]);

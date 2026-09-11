@@ -11,10 +11,10 @@ import { useSyncExternalStore } from "react";
 // — there is no plain `IDisposable` export, unlike the brief's import list.
 import type { DockviewApi, IDockviewPanel, DockviewIDisposable as IDisposable } from "dockview-react";
 import { pushSearchParams, replaceSearchParams } from "@/lib/shellNav";
-import { requestFocusComposer } from "@/lib/focusComposerRequest";
+import { deferFocusComposerRequest, requestFocusComposer } from "@/lib/focusComposerRequest";
 import {
   describePanel,
-  chatPanelId,
+  MESSAGES_PANEL_ID,
   clearablePanelParamKeys,
   DEFAULT_AGENT_SENTINEL,
   type PanelDescriptor,
@@ -86,8 +86,9 @@ function commitSnapshot(next: WorkspaceSnapshot): void {
 }
 
 function agentIdOfChatPanel(panel: IDockviewPanel | undefined): string | null {
-  if (!panel || !panel.id.startsWith("chat:")) return null;
-  const raw = panel.id.slice("chat:".length);
+  if (panel?.id !== MESSAGES_PANEL_ID) return null;
+  const raw = panel.params?.agentId;
+  if (typeof raw !== "string" || !raw) return null;
   if (raw === DEFAULT_AGENT_SENTINEL) return _resolveDefaultAgentId() ?? null;
   return raw;
 }
@@ -100,11 +101,6 @@ function recomputeSnapshot(): void {
   const active = _api.activePanel;
   const openPanelIds = _api.panels.map((p) => p.id);
   const groupActivePanels = _api.groups.map((g) => g.activePanel);
-  // Dedupe: a restored layout can hold both a sentinel chat panel
-  // (chat:__default__) and the concrete chat panel it resolves to in separate
-  // groups — both map to the same agentId, and a duplicate would wrongly widen
-  // the desktop suppression key set (harmless there, but the snapshot is a
-  // shared contract, so keep it clean).
   const visibleChatAgentIds = Array.from(
     new Set(
       groupActivePanels
@@ -190,12 +186,12 @@ function addOrFocus(descriptor: PanelDescriptor, extraParams?: Record<string, st
     }
     // A panel restored from a persisted layout keeps whatever title was
     // serialized at save time — re-assert the registry title so a rename
-    // reaches long-lived layouts. Differs-only: ChatPanel self-titles to the
-    // agent name (and chat re-opens route through openChatPanel anyway).
+    // reaches long-lived layouts.
     if (existing.title !== descriptor.title) {
       existing.api.setTitle(descriptor.title);
     }
     existing.api.setActive();
+    recomputeSnapshot();
     return;
   }
   _api.addPanel({
@@ -215,7 +211,6 @@ export function openPanel(
   const descriptor = describePanel(panelKey, params);
   if (!descriptor) return;
   if (descriptor.component === "chat") {
-    // Chat identity needs sentinel unification — delegate.
     openChatPanel(descriptor.params.agentId);
     return;
   }
@@ -225,42 +220,41 @@ export function openPanel(
   }
 }
 
-// One chat panel per agent. A sentinel panel (`chat:__default__`, from the
-// Mission Control default layout) durably means "the CEO/default agent" —
-// opening the concrete agent it currently resolves to must focus the
-// sentinel panel, not open a duplicate.
+// Every agent shortcut retargets the same Messages panel.
 export function openChatPanel(agentId: string): void {
-  if (!_api) return;
-  const concrete = _api.getPanel(chatPanelId(agentId));
-  if (concrete) {
-    concrete.api.setActive();
-    return;
-  }
-  if (agentId !== DEFAULT_AGENT_SENTINEL) {
-    const sentinel = _api.getPanel(chatPanelId(DEFAULT_AGENT_SENTINEL));
-    if (sentinel && _resolveDefaultAgentId() === agentId) {
-      sentinel.api.setActive();
-      return;
-    }
-  } else {
-    const resolved = _resolveDefaultAgentId();
-    if (resolved) {
-      const concreteDefault = _api.getPanel(chatPanelId(resolved));
-      if (concreteDefault) {
-        concreteDefault.api.setActive();
-        return;
-      }
-    }
-  }
   const descriptor = describePanel("chat", { agent: agentId });
-  if (descriptor) addOrFocus(descriptor);
+  if (descriptor && _api) {
+    deferFocusComposerRequest(agentId);
+    addOrFocus(descriptor);
+  }
 }
 
-// Hand the default agent a drafted message: open (or focus) its chat and seed
-// the composer. Same record-then-open-then-event sequence as the Get Started
-// chat action in WorkspaceShell — the slot covers a freshly ADDED panel whose
-// ChatInput hasn't mounted, the event covers an already-mounted one; ChatInput
-// consumes the slot on both paths so nothing double-fires. False when no
+// Room permalinks (?panel=chat&room=…&message=…) retarget the same Messages
+// panel with room/message params instead of an agent id. Mirrors
+// openChatPanel's shape; kept separate rather than overloading openChatPanel's
+// signature since that one is called from many sites with a bare agentId.
+export function openMessagePanel(roomId: string, messageId?: string): void {
+  const descriptor = describePanel("chat", { room: roomId, ...(messageId ? { message: messageId } : {}) });
+  if (descriptor && _api) addOrFocus(descriptor);
+}
+
+export function activateMessagesPanel(): void {
+  const descriptor = describePanel("chat", { agent: DEFAULT_AGENT_SENTINEL });
+  if (descriptor) addOrFocus({ ...descriptor, params: { agentSelection: "resolved" } });
+}
+
+// Metadata from the canonical room is not another agent-selection command.
+// This marker is transient: layout sanitization persists only the agentId.
+export function syncMessagesPanelAgent(agentId?: string): void {
+  const panel = _api?.getPanel(MESSAGES_PANEL_ID);
+  if (!panel || (panel.params?.agentId === agentId && panel.params?.agentSelection === "resolved")) return;
+  panel.api.updateParameters({ agentId, agentSelection: "resolved" });
+  recomputeSnapshot();
+}
+
+// Hand the default agent a drafted message. openChatPanel defers the slot so
+// this immediate event cannot seed a same-agent composer in the wrong room;
+// ChatPanel releases it once the selected DM is rendered. False when no
 // default agent resolves (pre-provision) so callers can stay silent.
 export function openChatPanelWithDraft(draft: string): boolean {
   const target = _resolveDefaultAgentId();
@@ -286,23 +280,6 @@ export function closeSubjectDeleted(selfPanelId: string, listPanelKey: string): 
     const self = _api.getPanel(selfPanelId);
     if (self) _api.removePanel(self);
     openPanel(listPanelKey);
-  } finally {
-    _shellOpDepth -= 1;
-  }
-}
-
-// Sidebar agent-delete: close the agent's chat panel if it happens to be
-// open. Removed under the shell-op guard so the clear-on-close listener
-// doesn't touch the URL mid-delete; a bare ?agent still naming the deleted
-// agent is left for the reconciler, which resolves it to the agent-gone
-// state.
-export function closeChatPanelIfOpen(agentId: string): void {
-  if (!_api) return;
-  const panel = _api.getPanel(chatPanelId(agentId));
-  if (!panel) return;
-  _shellOpDepth += 1;
-  try {
-    _api.removePanel(panel);
   } finally {
     _shellOpDepth -= 1;
   }

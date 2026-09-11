@@ -8,7 +8,7 @@ import { useApi } from "@/lib/api";
 import { externalLinkClick } from "@/lib/externalAuth";
 import { notifyApiError } from "@/lib/notify";
 import { useChatGPTOAuth } from "@/hooks/useChatGPTOAuth";
-import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { useRuntimeRpc, useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 import { CreditsSection } from "./CreditsSection";
 import { ModelRoutingCard } from "./ModelRoutingCard";
 import { OpenAIIcon, AnthropicIcon } from "@/components/chat/ProviderIcons";
@@ -312,7 +312,7 @@ function BedrockBlock({
       <div className={ACTION_CARD}>
         <span className={EYEBROW}>Provider</span>
         <p className="text-sm text-[var(--midnight)]">
-          Credits and auto-reload are managed below.
+          Workspace credits are managed below.
         </p>
         <button
           onClick={onChangeProvider}
@@ -486,11 +486,11 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
   // Live container auth health for the provider dot. The panel mounts under the
   // control surface's GatewayProvider, so the RPC resolves. These hooks sit
   // above the early return below so hook order stays stable across renders.
-  const { data: authStatus, mutate: revalidateAuthStatus } = useGatewayRpc<{
+  const { data: authStatus, mutate: revalidateAuthStatus } = useRuntimeRpc<{
     ts: number;
     providers: AuthStatusProvider[];
   }>("models.authStatus");
-  const refreshAuthStatus = useGatewayRpcMutation();
+  const refreshAuthStatus = useRuntimeRpcMutation();
   const providerStatus = resolveProviderStatus(
     user?.provider_choice ?? null,
     user?.byo_provider ?? null,

@@ -20,8 +20,8 @@ import {
   agentDisplayName,
   getAgentModelString,
   useAgents,
-  useGatewayRpc,
-  useGatewayRpcMutation,
+  useRuntimeRpc,
+  useRuntimeRpcMutation,
   type Agent,
 } from "@lightbulb/shared";
 
@@ -34,7 +34,7 @@ import {
   displayModelName,
   type CatalogModel,
 } from "../../../lib/agentCatalog";
-import { useGateway } from "../../../providers/gateway";
+import { useLiveEvents } from "../../../providers/live-events";
 
 // ---------------------------------------------------------------------------
 // config.get snapshot — the model catalog + per-agent config entry (tools /
@@ -260,12 +260,12 @@ export default function AgentDetail() {
     agentId: string;
     name?: string;
   }>();
-  const gateway = useGateway();
-  const callRpc = useGatewayRpcMutation(gateway);
+  const live = useLiveEvents();
+  const callRpc = useRuntimeRpcMutation(live);
 
-  const { agents: roster, defaultId, refresh: mutateAgents } = useAgents(gateway);
-  const { data: configSnapshot, mutate: mutateConfig } = useGatewayRpc<unknown>(
-    gateway,
+  const { agents: roster, defaultId, refresh: mutateAgents } = useAgents(live);
+  const { data: configSnapshot, mutate: mutateConfig } = useRuntimeRpc<unknown>(
+    live,
     "config.get",
   );
 
@@ -350,7 +350,7 @@ export default function AgentDetail() {
 
   // ---- Delete ----
   const confirmDelete = useCallback(() => {
-    if (!agent || isDefault) return;
+    if (!agent) return;
     Alert.alert(
       `Delete ${displayName}?`,
       "This removes the agent and its workspace files. This cannot be undone.",
@@ -373,7 +373,7 @@ export default function AgentDetail() {
         },
       ],
     );
-  }, [agent, isDefault, displayName, callRpc, mutateAgents]);
+  }, [agent, displayName, callRpc, mutateAgents]);
 
   const paperclip = configEntry?.params?.paperclip;
   const tools = configEntry?.tools;
@@ -528,7 +528,7 @@ export default function AgentDetail() {
       </Text>
 
       {/* Danger zone */}
-      {!isDefault && agent ? (
+      {agent ? (
         <Pressable
           style={({ pressed }) => [styles.deleteButton, pressed && styles.pressed]}
           onPress={confirmDelete}
@@ -538,10 +538,6 @@ export default function AgentDetail() {
           <Feather name="trash-2" size={16} color={colors.danger} />
           <Text style={styles.deleteText}>Delete agent</Text>
         </Pressable>
-      ) : isDefault ? (
-        <Text style={styles.footnote}>
-          The default agent is protected and can’t be deleted.
-        </Text>
       ) : null}
 
       <ModelPickerModal

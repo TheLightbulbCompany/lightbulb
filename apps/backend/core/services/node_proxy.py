@@ -56,6 +56,23 @@ _patched_sessions: dict[str, str] = {}
 _LEGACY_DESKTOP_SUFFIXES = (" | Lightbulb Desktop", " | Lightbulb AI Desktop", " | Isol8 Desktop")
 
 
+async def _publish_node_invalidation(owner_id: str, user_id: str) -> None:
+    from core.services.live_events import get_live_event_publisher
+    from core.services.messaging import make_live_event
+
+    try:
+        await get_live_event_publisher().publish_user(
+            owner_id,
+            user_id,
+            make_live_event(
+                "runtime.resource.invalidated",
+                {"resource": "health", "resourceId": "desktop-node"},
+            ),
+        )
+    except Exception:
+        logger.warning("desktop-node invalidation publish failed", exc_info=True)
+
+
 def get_user_cli_node(user_id: str) -> dict | None:
     """Return the CLI subprocess node info for user, or None if not connected.
 
@@ -133,6 +150,41 @@ async def handle_node_connect(
     """
     ecs = get_ecs_manager()
     container, ip = await ecs.resolve_running_container(owner_id)
+
+    if container is None or ip is None:
+        # No reachable container: resolve_running_container returns (None, None)
+        # for a stopped/absent row, or (container, None) for a provisioning row
+        # with no service yet / a "running" row Cloud Map can't find an
+        # instance for. Fail closed here instead of building
+        # ws://None:{GATEWAY_PORT} below -- that getaddrinfo failure fires on
+        # every desktop reconnect attempt against a paired device whose
+        # container isn't up, logged with a full traceback each time (a retry
+        # storm against an unresolvable host). Tell the node why and close
+        # the socket so its own backoff kicks in instead of it waiting on a
+        # connect.challenge that will never arrive.
+        logger.warning(
+            "node relay: no running container owner=%s user=%s conn=%s",
+            owner_id,
+            user_id,
+            connection_id,
+        )
+        put_metric("node.connect.no_container_ip")
+        try:
+            management_api.send_message(
+                connection_id,
+                {
+                    "type": "error",
+                    "code": "container_unavailable",
+                    "message": "No running container to relay to",
+                },
+            )
+        except Exception:
+            pass
+        try:
+            management_api.close_connection(connection_id)
+        except Exception:
+            pass
+        return None
 
     # Build a displayable name for node.list. Prefer the name the desktop
     # client already sent in connect_params (set by the Tauri IPC from the
@@ -299,13 +351,7 @@ async def handle_node_connect(
 
         await patch_openclaw_config(owner_id, {"tools": {"deny": list(TOOL_DENY_BASE)}})
 
-    # Per-user broadcast
-    pool = get_gateway_pool()
-    await pool.broadcast_to_member(
-        owner_id,
-        user_id,
-        {"type": "node_status", "status": "connected"},
-    )
+    await _publish_node_invalidation(owner_id, user_id)
 
     logger.info(
         "Node proxy established: user=%s owner=%s conn=%s nodeId=%s",
@@ -344,8 +390,8 @@ async def handle_node_message(connection_id: str, message: dict) -> None:
 
 async def handle_node_disconnect(
     connection_id: str,
-    owner_id: str,
-    user_id: str,
+    owner_id: str | None = None,
+    user_id: str | None = None,
 ) -> None:
     """Close the upstream connection and update per-user tracking.
 
@@ -361,6 +407,8 @@ async def handle_node_disconnect(
     # Safe because _node_upstreams.pop is atomic.
     if upstream is None:
         return
+    owner_id = owner_id or upstream.owner_id
+    user_id = user_id or upstream.user_id
     # Best-effort close: if the upstream errors here (e.g. broken pipe
     # mid-shutdown) we still need to fall through to per-user state
     # teardown so chat stops binding to the dead nodeId. Without this
@@ -449,12 +497,7 @@ async def handle_node_disconnect(
     # active node — otherwise the UI flickers to disconnected even though the
     # new socket is live.
     if is_owning_close:
-        pool = get_gateway_pool()
-        await pool.broadcast_to_member(
-            owner_id,
-            user_id,
-            {"type": "node_status", "status": "disconnected"},
-        )
+        await _publish_node_invalidation(owner_id, user_id)
 
     logger.info(
         "Node proxy closed: user=%s conn=%s owning=%s",

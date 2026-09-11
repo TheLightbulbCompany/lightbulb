@@ -13,11 +13,10 @@ import time
 import json
 import logging
 import uuid
-from typing import Any, Awaitable, Callable, Dict, Optional, Set
+from typing import Any, Dict, Optional, Set
 
 from websockets import connect as ws_connect
 
-from core.gateway.frame_sender import FrameSender
 from core.gateway.operator_rpc import GATEWAY_PORT, GatewayConnectAuthError, perform_signed_connect
 from core.observability.logging import bind_log_context
 from core.observability.product_analytics import schedule_trial_first_agent_response
@@ -27,11 +26,6 @@ from core.services.connection_service import ConnectionService
 from core.dynamodb import utc_now_iso
 
 logger = logging.getLogger(__name__)
-
-# How long a connection caches its owner's recipient set (from the
-# by-owner-id GSI) before re-querying. The recipient set is stable across a
-# streaming run, so we query once per ~5s rather than once per chunk.
-_RECIPIENTS_TTL_S = 5.0
 
 _HANDSHAKE_TIMEOUT = 10  # seconds
 _RPC_TIMEOUT = 30  # seconds
@@ -46,34 +40,6 @@ _RPC_DRAIN_TIMEOUT = 5.0  # graceful-shutdown: wait this long for in-flight RPCs
 # serially — so without a bound here, a slow/degraded Metronome stalls
 # delivery of every subsequent event on this owner's gateway connection.
 _BUDGET_RECLASSIFY_TIMEOUT_S = 2.0  # seconds
-_GRACE_PERIOD = 30  # seconds before closing idle connection
-_PUSH_GRACE_CEILING_S = 300  # max extra hold while a run is active (bounded by parked watchdog)
-_ACTIVE_RUN_POLL_S = 5  # re-check cadence for the active-run hold
-
-# Second, longer grace applied ONLY to free-tier (trial_local) owners after
-# the gateway WS is closed: if the owner still looks idle by every liveness
-# check after this window, the container itself is stopped (desiredCount=0).
-# Sub-spec 3 (event-driven scale-to-zero). Deliberately generous — a trial
-# container costs ~$0.02/hr, but killing a container out from under a slow
-# turn or a just-reopened tab costs trust. Over-preserve, never over-kill.
-_TRIAL_STOP_GRACE_S = 150
-
-# Layer 3 of scale-to-zero: recovers a LOST API Gateway `$disconnect`. The
-# browser pings every 30s (see websocket_chat.py's ping handler); if API
-# Gateway fails to deliver a `$disconnect` for a closed tab, nothing else
-# ever calls `remove_frontend_connection` for it, so the owner's
-# `_frontend_connections` entry never empties, `_grace_close` never arms,
-# and a trial container idles forever even with nobody home. 180s = 6
-# missed pings is comfortably past any single dropped ping (jitter, a
-# backgrounded tab throttled by the browser) while still catching a truly
-# gone tab in a bounded window. On expiry we force-clear the stale entry
-# and flow into the exact same `remove_frontend_connection` tail a normal
-# disconnect takes — so Task 12's veto ladder (`_maybe_stop_trial_container`,
-# gated on cross-task DDB truth via `count_live_chat_connections`) still
-# owns the actual stop decision. A healthy tab on another backend task is
-# still protected.
-_CLIENT_DEADLINE_S = 180
-
 # Application-level WebSocket keepalive tuned for long-running LLM turns.
 # The websockets library defaults ping_interval=20 / ping_timeout=20 — fine for
 # REST-shaped traffic, but the OpenClaw Node event loop legitimately blocks
@@ -150,8 +116,8 @@ class GatewayAuthBackoff(RuntimeError):
     Callers must NOT treat this as retryable.
 
     These are distinct types precisely so ``except RuntimeError`` can never
-    catch both — that conflation latched bootstrap dispatch at ``failed`` on a
-    5-second cooldown.
+    catch both — a cooldown must never be treated as a terminal onboarding
+    failure.
     """
 
 
@@ -190,56 +156,70 @@ _AGENT_NAME_TTL_S = 60.0
 # one. Far above any realistic count of concurrent `/btw` runs on one session.
 _SIDE_RUN_IDS_CAP = 256
 
+# Frame types whose full-text resync payload is accumulated per run.
+_RUN_TEXT_TYPES = frozenset({"chunk", "thinking"})
+_ROOM_SAFE_FRAME_TYPES = frozenset(
+    {
+        "chunk",
+        "thinking",
+        "done",
+        "error",
+        "run_ended",
+        "run_active",
+        "tool_start",
+        "tool_end",
+        "tool_error",
+        "tool_progress",
+        "command_output",
+        "agent_activity",
+        "btw_result",
+    }
+)
+
+# Bound on the per-connection run-text accumulator. Entries self-clean on the
+# run's chat terminal; this cap is only a safety net for a run whose terminal
+# never arrives (container killed mid-stream, reader loop torn down). Well
+# above any realistic count of concurrent runs on one owner's container.
+_RUN_TEXT_CAP = 64
+
+
+class _RunText:
+    """Per-run accumulation behind the ``_full_content`` resync payload.
+
+    OpenClaw resets its assistant text buffer at every ``message_start``
+    (``resetAssistantMessageState`` → ``state.deltaBuffer = ""``), and every
+    tool call ends one assistant message and starts another. So the ``text``
+    on a ``stream: "assistant"`` agent event is cumulative within the CURRENT
+    assistant message only, while our chunk stream — and the frontend bubble
+    it paints — is keyed by ``runId`` and spans the whole run.
+
+    ``blocks`` maps frame type → ``(prefix, last_snapshot)``: the text of the
+    run's earlier assistant messages, plus the last per-message snapshot seen.
+    A snapshot that no longer extends the previous one is a message boundary,
+    so the previous snapshot retires into the prefix.
+
+    Deliberately NOT delta accumulation: keeping upstream's own per-message
+    snapshot as the tail means a delta we never received (a gateway seq gap)
+    still heals on the next event, because ``text`` carries the whole current
+    message rather than only what changed.
+    """
+
+    __slots__ = ("blocks", "resync")
+
+    def __init__(self) -> None:
+        self.blocks: dict[str, tuple[str, str]] = {}
+        # Set when the gateway reports a seq gap: frames were dropped between
+        # the container and us, so the next text frame must ship as a full
+        # replace rather than an append.
+        self.resync = False
+
+
 # A chat run whose terminal arrives later than this is a hung/stale outlier
 # (e.g. a terminal re-delivered after a reconnect), NOT a real latency
 # datapoint — emitting its elapsed would inflate the chat.e2e.latency p99 and
 # can false-fire W9 (p99 > 20s SLO). 10 min is far past any legitimate chat
 # round-trip; over-ceiling terminals bump chat.run.abandoned instead.
 _E2E_LATENCY_CEILING_MS = 10 * 60 * 1000  # 10 minutes
-
-
-def _deliver_to_recipients(
-    recipients: list[tuple[str, str, str]],
-    message: dict,
-    target_member_id: Optional[str],
-    sender: "FrameSender",
-    on_gone: Optional[Any] = None,
-) -> tuple[int, int]:
-    """Enqueue *message* to the chat connections among *recipients* (the
-    ``(connectionId, member_userId, connectionType)`` rows from the by-owner-id
-    GSI), returning ``(enqueued, skipped)``.
-
-    - Filters to ``connectionType == "chat"`` so node/operator transparent pipes
-      never receive chat frames.
-    - Demuxes to *target_member_id* when set (case-insensitive — OpenClaw
-      lowercases sessionKeys, so the parsed member id is lowercase while DDB
-      stores the original Clerk user_id); broadcasts to every chat connection
-      when it is ``None``.
-
-    Delivery is asynchronous: the ``FrameSender`` drains each connection's
-    queue off the event loop, preserving per-connection order. A recipient
-    that turns out to be Gone is pruned via *on_gone* (an async callable
-    taking the connection id); transient failures are logged and skipped by
-    the sender, never treated as gone — a blip must not delete a live
-    socket's row.
-
-    Shared by the cached chat path (``GatewayConnection._forward_to_frontends``)
-    and the connection-less pool broadcast
-    (``GatewayConnectionPool._fanout_to_owner``) so both keep one
-    chat-filter/demux definition.
-    """
-    enqueued = 0
-    skipped = 0
-    for conn_id, member_id, conn_type in recipients:
-        if conn_type != "chat":
-            skipped += 1
-            continue
-        if target_member_id is not None and (member_id or "").lower() != target_member_id.lower():
-            skipped += 1
-            continue
-        sender.enqueue(conn_id, message, on_gone=on_gone)
-        enqueued += 1
-    return enqueued, skipped
 
 
 # The user-facing text for each way an owner can run out of Isol8 budget.
@@ -264,12 +244,9 @@ class GatewayConnection:
         user_id: str,
         ip: str,
         token: str,
-        management_api: Any,
-        frontend_connections: Set[str],
         on_activity: Any = None,
         owner_id: Optional[str] = None,
         conn_svc: Optional[ConnectionService] = None,
-        sender: Optional[FrameSender] = None,
     ) -> None:
         self.user_id = user_id
         # The owner key (org_id for org members, else user_id) this connection
@@ -280,30 +257,12 @@ class GatewayConnection:
         self.owner_id = owner_id or user_id
         self.ip = ip
         self.token = token
-        self._management_api = management_api
-        # Ordered non-blocking frame delivery. The pool passes its shared
-        # instance so append-delta continuity state is per-connectionId across
-        # every GatewayConnection; the default covers direct constructions
-        # (tests) only.
-        self._sender = sender or FrameSender(management_api)
-        # Owner-keyed fan-out reads recipients from the ws-connections
-        # by-owner-id GSI via this service — so any backend instance can deliver
-        # to all of an owner's tabs/devices. Defaults to the module singleton.
         self._conn_svc = conn_svc or ConnectionService()
-        # Short-TTL cache of the owner's recipient set so we don't query DDB
-        # per streamed chunk. Invalidated on a dead-conn prune.
-        self._recipients_cache: Optional[list[tuple[str, str, str]]] = None
-        self._recipients_cache_ts: float = 0.0
-        self._on_activity = on_activity  # callback(user_id) for idle tracking
+        self._on_activity = on_activity
         self._ws: Any = None
         self._reader_task: Optional[asyncio.Task] = None
         self._pending_rpcs: Dict[str, asyncio.Future] = {}
-        # Shared reference to the pool's canonical set — NOT a copy. Backs only
-        # the grace/idle-teardown check now (delivery + per-member demux are
-        # sourced from the by-owner-id GSI, not from in-process state).
-        self._frontend_connections = frontend_connections
         self._closed = False
-        self._grace_task: Optional[asyncio.Task] = None
         self._billing_tasks: Set[asyncio.Task] = set()
         # Fire-and-forget run-completion push tasks (mirrors _billing_tasks):
         # tracked so close() can drain them instead of cancelling a send.
@@ -314,18 +273,6 @@ class GatewayConnection:
         # billing drain window would let best-effort analytics starve usage
         # writes at shutdown.
         self._analytics_tasks: Set[asyncio.Task] = set()
-        # One-shot completion observers keyed by runId (== chat.send's
-        # idempotencyKey, which OpenClaw echoes as `runId` on every event for
-        # the run — src/gateway/server-methods/chat.ts). Registered via
-        # ``register_run_completion_callback`` by a caller that needs to
-        # observe a SPECIFIC dispatched run's terminal (final/error/aborted)
-        # without being the browser tab that sent it — e.g. the server-owned
-        # bootstrap dispatcher (INV-5, spec PR-6). Consumed (popped) exactly
-        # once, from the same TRUE-terminal gate ``_dispatch_push_notification``
-        # uses, then dropped — never re-fires for a re-delivered/duplicate
-        # terminal.
-        self._run_completion_callbacks: Dict[str, Callable[[str, dict], Awaitable[None]]] = {}
-        self._run_completion_tasks: Set[asyncio.Task] = set()
         # agent_id -> display name, TTL-cached from agents.list for push titles.
         # None until first resolve; _agent_names_at is the monotonic stamp.
         self._agent_names: Optional[Dict[str, str]] = None
@@ -336,6 +283,21 @@ class GatewayConnection:
         # Non-emptiness is the load-bearing signal for the parked-vs-dead
         # teardown decision in `_reader_loop` — see _on_reader_loop_exit.
         self._active_runs: Dict[str, Dict[str, Any]] = {}
+        # Room-routing metadata may outlive `_active_runs` briefly when an
+        # ingress POST times out after OpenClaw accepted it. It is deliberately
+        # separate so uncertain delivery never keeps a connection "active".
+        self._room_run_context: Dict[str, Dict[str, Any]] = {}
+        # Recently terminal run IDs retain their session key so idempotent abort
+        # still passes current room authorization after the active entry is
+        # cleared. Bounded insertion-order map; runtime state remains
+        # process-local like the gateway connection itself.
+        self._terminal_run_ids: Dict[str, str] = {}
+        self._live_publish_lock = asyncio.Lock()
+        # Lightbulb room session keys this connection has asked the gateway to
+        # stream (`sessions.messages.subscribe`). See
+        # `subscribe_room_session` for why a room run is invisible without it.
+        # Re-sent by `connect()`, so a reconnect keeps streaming.
+        self._room_session_subs: set[str] = set()
         # Last-forwarded run-active value per webchat session_key. Deduplicates
         # `sessions.changed` bursts so only transitions produce a `run_active`
         # frame. SEPARATE from `_active_runs` (which is the parked-vs-dead
@@ -355,6 +317,13 @@ class GatewayConnection:
         # handler skips all ``_active_runs`` mutation for them. Insertion-ordered
         # dict used as a bounded FIFO set; entries self-clean on their terminal.
         self._side_run_ids: Dict[str, None] = {}
+        # runId -> per-run text accumulation for the full-text resync payload
+        # (see `_RunText` and `_rewrite_run_full_text`). Keyed by runId, so two
+        # concurrent runs on a shared org container — or a `/btw` side run
+        # alongside its primary — never read each other's text. Insertion-
+        # ordered, used as a bounded FIFO; entries self-clean on the run's
+        # chat terminal.
+        self._run_text: Dict[str, _RunText] = {}
         # True after the reader_loop has died with active runs in flight.
         # Means: the OpenClaw process is presumed alive (we just saw it
         # streaming) but our WS to it tore down (e.g. websockets ping
@@ -524,27 +493,10 @@ class GatewayConnection:
             raise
 
     def _emit_status_change(self, state: str, reason: str) -> None:
-        """Push a status_change event to all connected frontend WebSockets."""
+        # AppSync carries a reconcile hint, not a second status authority.
+        from core.services.status_events import publish_status_changed
 
-        # Wrap as {type: "event"} so the frontend WS router in useGateway
-        # delivers it to onEvent subscribers (unrecognized types are dropped).
-        message = {
-            "type": "event",
-            "event": "status_change",
-            "payload": {
-                "state": state,
-                "reason": reason,
-                "timestamp": utc_now_iso(),
-            },
-        }
-
-        async def _on_gone(conn_id: str) -> None:
-            self._frontend_connections.discard(conn_id)
-            put_metric("gateway.frontend.prune")
-            logger.info("Pruned gone frontend connection %s for user %s", conn_id, self.user_id)
-
-        for conn_id in list(self._frontend_connections):
-            self._sender.enqueue(conn_id, message, on_gone=_on_gone)
+        publish_status_changed(self.owner_id)
 
     @property
     def is_connected(self) -> bool:
@@ -586,7 +538,14 @@ class GatewayConnection:
     def has_active_runs(self) -> bool:
         return bool(self._active_runs)
 
-    def mark_run_active(self, session_key: str, agent_id: str | None = None, member_id: str | None = None) -> None:
+    def mark_run_active(
+        self,
+        session_key: str,
+        agent_id: str | None = None,
+        member_id: str | None = None,
+        event_kind: str | None = None,
+        thread_root_message_id: str | None = None,
+    ) -> None:
         """Record an in-flight run for *session_key* (parked-vs-dead signal).
 
         Called from the chat dispatcher before the chat.send RPC is forwarded so
@@ -608,6 +567,8 @@ class GatewayConnection:
         """
         key = session_key.lower()
         now = time.monotonic()
+        if not hasattr(self, "_room_run_context"):
+            self._room_run_context = {}
         existing = self._active_runs.get(key)
         if existing is not None:
             existing["started_at"] = now
@@ -616,11 +577,22 @@ class GatewayConnection:
                 existing["agent_id"] = agent_id
             if member_id:
                 existing["member_id"] = member_id
+            if event_kind and existing.get("event_kind") is None:
+                # First kind wins for the life of the run — an ambient
+                # room_event re-mark must not flip an in-flight addressed
+                # run's suppression state (see `_publish_room_frame`).
+                existing["event_kind"] = event_kind
+            if thread_root_message_id and existing.get("thread_root_message_id") is None:
+                existing["thread_root_message_id"] = thread_root_message_id
+                self._room_run_context[key] = {"thread_root_message_id": thread_root_message_id}
             return
         self._active_runs[key] = {
             "started_at": now,
             "last_event_at": now,
             "agent_id": agent_id or "",
+            "run_id": None,
+            "event_kind": event_kind,
+            "thread_root_message_id": thread_root_message_id,
             # Canonical dispatch member id for the run-completion push audience.
             "member_id": member_id,
             # Set when OpenClaw emits an approval-requested agent event for this
@@ -628,8 +600,11 @@ class GatewayConnection:
             # `final` that closes the approval bracket does NOT end the run.
             "awaiting_approval": False,
         }
+        self._room_run_context[key] = {"thread_root_message_id": thread_root_message_id}
+        while len(self._room_run_context) > 256:
+            self._room_run_context.pop(next(iter(self._room_run_context)), None)
 
-    def _touch_run(self, session_key: str) -> None:
+    def _touch_run(self, session_key: str, run_id: str | None = None) -> None:
         """Bump ``last_event_at`` on the active run keyed by *session_key*.
 
         No-op if no run is active for the key (e.g. cron / channel sessions).
@@ -643,6 +618,8 @@ class GatewayConnection:
         run = self._active_runs.get(session_key.lower())
         if run is not None:
             run["last_event_at"] = time.monotonic()
+            if run_id:
+                run["run_id"] = run_id
 
     def reset_run_state_dedup(self) -> None:
         """Forget the last-forwarded ``run_active`` per session so the next
@@ -657,9 +634,23 @@ class GatewayConnection:
         """
         self._run_state.clear()
 
-    def _clear_active_run(self, session_key: str) -> None:
-        """Pop the run keyed by *session_key* (chat.final / error / aborted)."""
-        self._active_runs.pop(session_key.lower(), None)
+    def _clear_active_run(
+        self,
+        session_key: str,
+        run_id: str | None = None,
+        *,
+        preserve_room_context: bool = False,
+    ) -> None:
+        """Pop an active run and retain its terminal ID for idempotent abort."""
+        key = session_key.lower()
+        active = self._active_runs.pop(key, None)
+        if not preserve_room_context:
+            getattr(self, "_room_run_context", {}).pop(key, None)
+        terminal_id = run_id or (active or {}).get("run_id")
+        if terminal_id:
+            self._terminal_run_ids[terminal_id] = session_key.lower()
+            while len(self._terminal_run_ids) > 256:
+                self._terminal_run_ids.pop(next(iter(self._terminal_run_ids)), None)
         # Reset run-active dedup so the next run's first `hasActiveRun:true`
         # sessions.changed is forwarded as a fresh transition. (The frontend
         # busy-gate is already closed by the run_ended/done/error frame; this
@@ -718,6 +709,9 @@ class GatewayConnection:
         run = self._active_runs.get(session_key.lower())
         if run is not None:
             run["awaiting_approval"] = True
+        room_context = getattr(self, "_room_run_context", {}).get(session_key.lower())
+        if room_context is not None:
+            room_context["awaiting_approval"] = True
 
     def _is_true_terminal(self, session_key: str, state: str) -> bool:
         """True iff this chat-terminal event genuinely ends the per-session run.
@@ -747,11 +741,18 @@ class GatewayConnection:
         """
         if state in ("error", "aborted"):
             return True
-        run = self._active_runs.get(session_key.lower())
+        key = session_key.lower()
+        run = self._active_runs.get(key) or getattr(self, "_room_run_context", {}).get(key)
         if run is not None and run.get("awaiting_approval"):
             # Suppress Run A's genuine terminal final so the per-session window
             # survives the approval; the separate follow-up run's final clears it.
             run["awaiting_approval"] = False
+            active = self._active_runs.get(key)
+            if active is not None:
+                active["awaiting_approval"] = False
+            room_context = getattr(self, "_room_run_context", {}).get(key)
+            if room_context is not None:
+                room_context["awaiting_approval"] = False
             return False
         return True
 
@@ -845,6 +846,8 @@ class GatewayConnection:
 
         self._reader_task = asyncio.create_task(self._reader_loop())
         await self._subscribe_session_events()
+        for room_session_key in list(self._room_session_subs):
+            await self._send_room_session_subscribe(room_session_key)
         put_metric("gateway.connection", dimensions={"event": "connect"})
         self._emit_status_change("HEALTHY", "Gateway connected")
         # Durable liveness signal (R4 kill) -- covers both a fresh connect()
@@ -888,15 +891,29 @@ class GatewayConnection:
         tokens or different connects.
 
         The signed handshake itself lives in `operator_rpc.perform_signed_connect`
-        (shared with the one-shot operator calls). The pool opts into
-        `tool-events` so OpenClaw streams `stream:"tool"` events to us — without
-        that capability the gateway silently drops them.
+        (shared with the one-shot operator calls).
+
+        Capabilities we opt into, both load-bearing:
+
+        - ``tool-events`` — OpenClaw streams ``stream:"tool"`` events only to
+          clients declaring it; without it the gateway silently drops them.
+        - ``approvals`` — ``canDeliverApprovals`` needs an approval scope AND
+          proof the client renders that approval kind: an internal approval
+          runtime, a client id in one of its hardcoded sets (control-ui, the
+          native apps, tui), or this capability. We connect as ``gateway-client``
+          and match none of those sets, so without it we are not an approval
+          route at all. That is worse than a dropped event: with no route the
+          gateway calls ``manager.expire(id, "no-approval-route")`` and hands the
+          agent ``decision: null`` immediately. It covers plugin and system-agent
+          approvals — which the frontend already subscribes to — while exec
+          approvals stay moot because ``tools.exec.mode`` is ``"full"`` and none
+          is ever created.
         """
         await perform_signed_connect(
             self._ws,
             owner_id=self.user_id,
             token=self.token,
-            caps=["tool-events"],
+            caps=["tool-events", "approvals"],
             recv_timeout=_HANDSHAKE_TIMEOUT,
         )
 
@@ -968,6 +985,52 @@ class GatewayConnection:
             await self._ws.send(json.dumps(frame))
         except Exception:
             logger.warning("sessions.subscribe send failed user=%s", self.user_id, exc_info=True)
+
+    async def subscribe_room_session(self, session_key: str) -> None:
+        """Ask the gateway to stream a Lightbulb room session to this connection.
+
+        Channel-initiated runs are registered with ``isControlUiVisible: false``
+        — the fork derives it from the message provider, and only the internal
+        ``webchat`` channel counts as visible (agent-9.3
+        src/auto-reply/reply/agent-runner-execution.ts:172-187,
+        src/utils/message-channel-constants.ts). Every broadcast that gate
+        protects is then skipped for our room runs: tool events
+        (src/gateway/server-chat.ts:1619), assistant/item text (:1699) and the
+        whole chat terminal (:746). So the backend saw NOTHING for a room run —
+        no ``agent`` events, no ``chat`` final — and ``_publish_room_frame``
+        never fired even though ``mark_run_active`` had opened the window.
+
+        The one door a hidden run leaves open is ``sessionMessageSubscribers``:
+        a client that called ``sessions.messages.subscribe`` for the session key
+        gets the tool branch (:1641), the hidden text mirror (:1698) and the
+        chat terminal (:742) delivered to it by connection id. One RPC per room
+        session, `operator.read`-scoped, which we already hold.
+
+        Idempotent per connection and fire-and-forget for the same reason
+        ``_subscribe_session_events`` is: the ack carries nothing we need.
+        """
+        if not session_key or session_key in self._room_session_subs:
+            return
+        self._room_session_subs.add(session_key)
+        await self._send_room_session_subscribe(session_key)
+
+    async def _send_room_session_subscribe(self, session_key: str) -> None:
+        if self._ws is None:
+            return
+        frame = {
+            "type": "req",
+            "id": str(uuid.uuid4()),
+            "method": "sessions.messages.subscribe",
+            "params": {"key": session_key},
+        }
+        try:
+            await self._ws.send(json.dumps(frame))
+        except Exception:
+            logger.warning(
+                "sessions.messages.subscribe send failed user=%s",
+                self.user_id,
+                exc_info=True,
+            )
 
     async def send_rpc(self, req_id: str, method: str, params: dict) -> None:
         """Send {type: req} on the gateway WebSocket."""
@@ -1092,6 +1155,9 @@ class GatewayConnection:
           (live stdout/stderr addressed to the matching tool pill).
         - ``stream: "plan" | "patch" | "item" | "acp"`` are folded into one
           uniform ``agent_activity`` envelope for a single low-noise pill.
+        - ``stream: "run_status" | "compaction"`` ride the same envelope but
+          describe the run's CURRENT STATE (startup phase, history compaction)
+          rather than an event; the frontend routes them to the status strip.
 
         ``approval`` and ``lifecycle`` are intentionally NOT handled here — they
         are consumed upstream in ``_handle_message`` (approval run-active window
@@ -1168,6 +1234,40 @@ class GatewayConnection:
                 if "output" in data:
                     transformed["output"] = data["output"]
 
+        elif stream in ("run_status", "compaction"):
+            # Two "what is it doing right now" streams that used to fall out of
+            # this transform as None.
+            #
+            # run_status: the typed startup phases OpenClaw emits between the
+            # send and the first token (agent-run-status-events.ts). A closed
+            # enum — preparing_workspace | naming_worktree | creating_worktree |
+            # running_setup | provisioning_environment | preparing_context |
+            # starting_model — so the frontend maps it to copy rather than
+            # printing a raw enum at someone who does not know what a worktree
+            # is. Only the workspace/context/model three reach our fleet; the
+            # worktree and environment phases come from project sessions and
+            # worker environments, neither of which we run.
+            #
+            # compaction: history compaction start/end. A long session stalls
+            # for tens of seconds here with no explanation, and a compaction
+            # that FAILS (completed: false) otherwise reads as an unexplained
+            # pause followed by a possibly context-lost reply.
+            #
+            # Both ride the existing agent_activity envelope — no new frame
+            # type, no protocol change — and `detail` carries the whole payload
+            # so the frontend can tell a completed compaction from a failed one.
+            # The frontend routes these two activities to the run-status strip
+            # instead of a transcript pill: a phase is the run's current state,
+            # not an event worth logging.
+            phase = data.get("phase", "")
+            if phase:
+                transformed = {
+                    "type": "agent_activity",
+                    "activity": stream,
+                    "title": phase,
+                    "detail": data,
+                }
+
         elif stream in ("plan", "patch", "item", "acp"):
             # Low-noise "agent activity" surfaces upstream renders as rich
             # affordances (proposed plan, patch summary, item lifecycle, ACP
@@ -1225,6 +1325,69 @@ class GatewayConnection:
             return {"type": frame_type, "content": text}
         return None
 
+    def _run_text_state(self, run_id: str) -> "_RunText":
+        """Get-or-create the run's text accumulator, evicting oldest past the cap."""
+        state = self._run_text.get(run_id)
+        if state is None:
+            state = _RunText()
+            self._run_text[run_id] = state
+            while len(self._run_text) > _RUN_TEXT_CAP:
+                self._run_text.pop(next(iter(self._run_text)), None)
+        return state
+
+    def _rewrite_run_full_text(self, frame: dict) -> None:
+        """Widen a text frame's authoritative text from per-MESSAGE to per-RUN.
+
+        ``_build_text_frame`` copies OpenClaw's ``text`` verbatim, but that
+        field is cumulative only within the current assistant message —
+        upstream clears its buffer at every ``message_start``, and every tool
+        call starts a new assistant message. Our chunk stream is keyed by
+        ``runId`` and the frontend paints one bubble per run, so on the normal
+        agentic shape (text → tool_use → text) the authoritative text a
+        resyncing client receives would be the LAST block only: everything the
+        agent said before the last tool call disappears from the bubble.
+
+        Two frame shapes carry authoritative text and both are widened here:
+
+        - append form — ``content`` is the delta, ``_full_content`` is the
+          snapshot ``FrameSender`` ships to a client with no continuity for
+          this run (mid-run reconnect, a second tab, a dropped frame);
+        - cumulative-replacement form — ``content`` IS the snapshot, and the
+          client replaces its whole buffer with it.
+
+        The delta-append path itself was never wrong, so this changes nothing
+        for a client that saw every frame. It also does not touch the
+        ``chat``-terminal replace, which already carries run-scoped text from
+        the gateway's own accumulator and stays the end-of-run authority.
+        """
+        frame_type = frame.get("type")
+        run_id = frame.get("runId")
+        if frame_type not in _RUN_TEXT_TYPES or not run_id:
+            return
+        key = "_full_content" if "_full_content" in frame else "content"
+        snapshot = frame.get(key)
+        if not isinstance(snapshot, str):
+            return
+
+        state = self._run_text_state(run_id)
+        prefix, last = state.blocks.get(frame_type, ("", ""))
+        # A snapshot that no longer extends the previous one is a new assistant
+        # message (or an upstream `replace`): retire the old text into the
+        # prefix so the run's bubble keeps it.
+        if last and not snapshot.startswith(last):
+            prefix += last
+        state.blocks[frame_type] = (prefix, snapshot)
+        frame[key] = prefix + snapshot
+
+        # Seq gap: the gateway told us it dropped frames, so this client's
+        # append stream has a hole. Ship the widened text as a replace instead
+        # of a delta — `prefix + snapshot` is whole-run authoritative, so the
+        # hole closes on the first frame after the gap.
+        if state.resync:
+            state.resync = False
+            if frame.pop("append", None):
+                frame["content"] = frame.pop("_full_content")
+
     @staticmethod
     def _extract_thinking_text(payload: dict) -> str | None:
         """Extract thinking/reasoning text from a chat event's message.content field."""
@@ -1267,110 +1430,78 @@ class GatewayConnection:
                     text_parts.append(text)
         return "".join(text_parts) if text_parts else None
 
-    async def _forward_to_frontends(self, message: dict, target_member_id: str | None = None) -> None:
-        """Send a message to the owner's frontend chat clients.
-
-        Recipients are sourced from the ws-connections ``by-owner-id`` GSI (the
-        single source of truth for fan-out, so any backend instance can reach
-        all of an owner's tabs/devices) via a short-TTL cache, then:
-
-        - filtered to ``connectionType == "chat"`` so node/operator transparent
-          pipes never receive chat ``chunk``/``done`` events;
-        - demuxed per member when *target_member_id* is set (case-insensitive,
-          because OpenClaw lowercases sessionKeys so the member_id parsed from
-          the event is lowercase while DDB stores the original Clerk user_id);
-        - broadcast to every chat connection when *target_member_id* is ``None``
-          (status changes, SWR revalidation, etc.).
-
-        On a recipient-query failure we log and drop the event — there is no
-        in-process fallback (DynamoDB is the single source of truth). A
-        recipient that turns out to be Gone at send time is pruned by the
-        sender via ``_prune_dead_conn`` so the GSI stops returning it.
-        """
-        recipients = await self._cached_owner_recipients()
-        if recipients is None:
-            # query failed; logged in the helper. No in-process fallback.
+    async def _publish_room_frame(self, session_key: str, frame: dict) -> None:
+        parsed = parse_lightbulb_session_key(session_key)
+        if parsed is None or frame.get("type") not in _ROOM_SAFE_FRAME_TYPES:
             return
+        key = session_key.lower()
+        active = self._active_runs.get(key)
+        room_context = active or getattr(self, "_room_run_context", {}).get(key)
+        if (active or {}).get("event_kind") == "room_event" and frame.get("type") in {"chunk", "thinking"}:
+            return
+        from core.repositories import messaging_repo
+        from core.services.live_events import get_live_event_publisher
+        from core.services.messaging import make_live_event
 
-        enqueued, skipped = _deliver_to_recipients(
-            recipients, message, target_member_id, self._sender, on_gone=self._prune_dead_conn
+        meta = await messaging_repo.get_room(parsed["room_id"])
+        if meta is None or meta.get("ownerId") != self.owner_id:
+            return
+        member = await messaging_repo.get_member(parsed["room_id"], "agent", parsed["agent_id"])
+        if member is None:
+            return
+        normalized = {**frame}
+        normalized.pop("_full_content", None)
+        run_id = normalized.get("runId") or (active or {}).get("run_id")
+        event = make_live_event(
+            "room.run.frame",
+            {
+                "roomId": parsed["room_id"],
+                "agentId": parsed["agent_id"],
+                "runId": run_id,
+                "threadRootMessageId": (room_context or {}).get("thread_root_message_id"),
+                "frame": normalized,
+            },
+            room_id=parsed["room_id"],
         )
-        # Log delivery summary for non-chunk messages (chunks are too frequent)
-        msg_type = message.get("type", "?")
-        if msg_type not in ("chunk",):
-            logger.info(
-                "[%s] forward type=%s target=%s enqueued=%d skipped=%d total=%d",
-                self.user_id,
-                msg_type,
-                target_member_id or "broadcast",
-                enqueued,
-                skipped,
-                len(recipients),
-            )
-
-    async def _cached_owner_recipients(self) -> Optional[list[tuple[str, str, str]]]:
-        """Return ``(connectionId, member_userId, connectionType)`` rows for
-        ``self.owner_id`` from the by-owner-id GSI, cached on a short TTL.
-
-        Returns ``None`` on query failure so the caller drops the event rather
-        than falling back to the in-process set (DynamoDB is the single source of
-        truth for fan-out recipients).
-
-        The cache is busted on every ``$connect``/``$disconnect`` for this owner
-        (``invalidate_recipients_cache`` from ``add``/``remove_frontend_connection``),
-        so a newly-opened tab is picked up on its own first stream. The GSI is
-        eventually consistent, but fan-out is always gated behind a ``chat.send``
-        round-trip + LLM turn while the connection's row was written at
-        ``$connect`` — so propagation has long since completed by the time any
-        frame is delivered. The only residual is a brand-new tab whose *very
-        first* action is a one-shot frame within the sub-second propagation
-        window; accepted, negligible, and self-heals on the next event.
-        """
-        now = time.monotonic()
-        if self._recipients_cache is not None and (now - self._recipients_cache_ts) < _RECIPIENTS_TTL_S:
-            return self._recipients_cache
         try:
-            recipients = await self._conn_svc.query_by_owner(self.owner_id)
+            async with self._live_publish_lock:
+                await get_live_event_publisher().publish_room(parsed["room_id"], event)
         except Exception:
-            logger.exception(
-                "owner-keyed fan-out query failed for owner=%s — dropping event",
+            logger.warning(
+                "room run-frame publish failed owner=%s frame_type=%s",
                 self.owner_id,
+                normalized.get("type"),
+                exc_info=True,
             )
-            return None
-        self._recipients_cache = recipients
-        self._recipients_cache_ts = now
-        return recipients
 
-    def invalidate_recipients_cache(self) -> None:
-        """Drop the cached owner recipient set so the next fan-out re-queries
-        the by-owner-id GSI. Called when a frontend connection is added/removed
-        for this owner, so a newly-opened tab is included in its own first
-        stream instead of waiting up to _RECIPIENTS_TTL_S behind a stale cache."""
-        self._recipients_cache = None
-        self._recipients_cache_ts = 0.0
+    def _private_audience(self, session_key: str) -> str | None:
+        run = self._active_runs.get(session_key.lower()) if session_key else None
+        member = (run or {}).get("member_id")
+        if isinstance(member, str) and member.startswith("user_"):
+            return member
+        return self.owner_id if self.owner_id.startswith("user_") else None
 
-    async def _prune_dead_conn(self, conn_id: str) -> None:
-        """Best-effort prune of a dead connection row + recipient-cache bust."""
-        # Drop any frames still queued for the dead connection (and its
-        # append-continuity state) so the sender doesn't keep POSTing at a
-        # Gone endpoint.
-        self._sender.forget_connection(conn_id)
+    async def _publish_user_event(self, event_type: str, payload: Any, session_key: str = "") -> None:
+        user_id = self._private_audience(session_key)
+        from core.services.live_events import get_live_event_publisher, publish_owner_users
+        from core.services.messaging import make_live_event
+
+        event = make_live_event(event_type, payload)
         try:
-            # delete_connection is a blocking boto3 call; offload it so it doesn't
-            # stall the event loop (and all concurrent chat streaming) during
-            # fan-out. Mirrors query_by_owner's to_thread offload.
-            await asyncio.to_thread(self._conn_svc.delete_connection, conn_id)
+            if user_id is not None:
+                await get_live_event_publisher().publish_user(self.owner_id, user_id, event)
+            else:
+                # No addressable member (org owner, container-originated event
+                # with no dispatching human) — fan out to every active member
+                # stream instead of silently dropping the event.
+                await publish_owner_users(self.owner_id, event)
         except Exception:
-            logger.warning("failed to prune dead conn %s", conn_id, exc_info=True)
-        # Also drop it from the in-process set: that set now backs only the
-        # grace/idle-teardown check (_grace_close), so leaving a pruned id there
-        # could keep an idle gateway connection alive indefinitely.
-        self._frontend_connections.discard(conn_id)
-        # Invalidate so the next forward re-queries instead of re-sending to it.
-        self._recipients_cache = None
-        self._recipients_cache_ts = 0.0
-        put_metric("gateway.frontend.prune")
-        logger.info("Pruned gone frontend connection %s for owner %s", conn_id, self.owner_id)
+            logger.warning(
+                "private runtime event publish failed owner=%s event_type=%s",
+                self.owner_id,
+                event_type,
+                exc_info=True,
+            )
 
     def _record_usage_from_session(self, payload: dict) -> None:
         """Record usage after a billable event by resolving the session key
@@ -1545,98 +1676,6 @@ class GatewayConnection:
         self._push_tasks.add(task)
         task.add_done_callback(self._push_tasks.discard)
 
-    def register_run_completion_callback(self, run_id: str, callback: Callable[[str, dict], Awaitable[None]]) -> None:
-        """One-shot observer for *run_id*'s TRUE terminal chat event.
-
-        *callback* is invoked ``await callback(state, payload)`` where
-        ``state`` is ``"final" | "error" | "aborted"`` and ``payload`` is the
-        raw terminal event body. Fired from ``_handle_message``'s TRUE-terminal
-        branch — the same gate ``_dispatch_push_notification`` uses, so an
-        interim `final` that only closes a tool-approval bracket (the run
-        continues as a separate follow-up) does NOT resolve this callback.
-        Overwrites any prior registration for the same *run_id*. The two
-        callers that can collide both want "latest wins": a genuine retry of
-        the same dispatch, and bootstrap_dispatcher's re-attach, which
-        deliberately registers the SAME observer under the kickoff's persisted
-        dispatch id from a process that did not dispatch it.
-        """
-        self._run_completion_callbacks[run_id] = callback
-
-    def unregister_run_completion_callback(self, run_id: str) -> None:
-        """Withdraw a registration made by ``register_run_completion_callback``
-        without waiting for a terminal event to arrive and consume it.
-
-        For a caller whose dispatch failed AFTER registering (e.g. chat.send
-        itself raised, so the run never reached OpenClaw and no terminal
-        event will EVER arrive for this *run_id*) — without this the entry
-        (and its closure, which can hold references back to a repo/pool)
-        leaks in ``_run_completion_callbacks`` until this ``GatewayConnection``
-        is torn down. Idempotent — popping a *run_id* with nothing
-        registered (already consumed, or never registered) is a silent
-        no-op.
-        """
-        self._run_completion_callbacks.pop(run_id, None)
-
-    def has_run_completion_callback(self, run_id: str) -> bool:
-        """Whether THIS connection currently observes *run_id*'s terminal.
-
-        The observer set is in-process memory; a caller holding the durable
-        record of a dispatched run (bootstrap_dispatcher's ``sent`` row) uses
-        this to tell "already observed here" from "the observing process is
-        gone — re-attach" without a DDB round trip.
-        """
-        return run_id in self._run_completion_callbacks
-
-    def _dispatch_run_completion(self, run_id: str, state: str, payload: dict) -> None:
-        """Pop and fire *run_id*'s registered completion callback, if any.
-
-        Fire-and-forget (mirrors ``_dispatch_push_notification``): the
-        callback runs as a tracked background task so a slow/failing
-        observer (a DDB write) can never delay or break frame delivery to
-        the browser. No-op when nothing is registered for *run_id* (the
-        overwhelming common case — most runs have no observer).
-        """
-        callback = self._run_completion_callbacks.pop(run_id, None)
-        if callback is None:
-            return
-
-        async def _run() -> None:
-            try:
-                await callback(state, payload)
-            except Exception:
-                logger.exception(
-                    "Run-completion callback failed for user %s run_id=%s",
-                    self.user_id,
-                    run_id,
-                )
-
-        task = asyncio.create_task(_run())
-        self._run_completion_tasks.add(task)
-        task.add_done_callback(self._run_completion_tasks.discard)
-
-    def _reject_pending_run_completions(self, reason: str) -> None:
-        """Fire every still-registered run-completion observer as errored.
-
-        For the teardown where the GATEWAY dropped us (dead reader loop,
-        park→dead escalation): the run behind a registered-but-unfired
-        callback (bootstrap_dispatcher's sent→delivered/failed move) may well
-        be dead with it, and its terminal can never arrive on this socket —
-        reconcile the observer as errored, mirroring how pending RPCs are
-        rejected on the same path, so the row reads ``failed`` and a human /
-        the next onboarding generation can recover. Reuses
-        ``_dispatch_run_completion`` (pop + fire as a tracked task), so it can
-        never double-fire a callback a real terminal already consumed.
-
-        Deliberately NOT called from ``close()``: that is this PROCESS letting
-        go of the socket while the run keeps going inside OpenClaw — see the
-        handoff there.
-        """
-        if not self._run_completion_callbacks:
-            return
-        payload = {"errorMessage": reason}
-        for run_id in list(self._run_completion_callbacks):
-            self._dispatch_run_completion(run_id, "error", payload)
-
     async def _resolve_member_from_session(self, parsed: dict) -> str:
         """Map a parsed session key to the Clerk member_id.
 
@@ -1659,57 +1698,91 @@ class GatewayConnection:
 
         return self.user_id
 
+    async def _fetch_session_row(self, session_key: str) -> dict | None:
+        """The one gateway session row for *session_key*, or ``None``.
+
+        Fast path is ``sessions.describe {key}``: one keyed lookup for the
+        row we actually want, instead of ``sessions.list {}``, whose cost
+        grows with the owner's entire session store and which ran on the
+        owner's own container after EVERY chat turn.
+
+        Verified against the pinned fork tag ``v2026.8.1-isol8.3``:
+        ``sessions.describe`` is scope ``operator.read`` and has existed
+        since ``<=2026.7`` (``src/gateway/methods/core-descriptors.ts``), so
+        it is safe on every image tag in the fleet; it responds
+        ``{"session": null}`` on a miss; and it builds its row with the same
+        ``buildGatewaySessionRow`` ``sessions.list`` uses, so every field
+        read below is present. ``estimatedCostUsd`` is in fact better
+        resolved there — list rows are built ``lightweightListRow: true``
+        (``session-utils-list.ts``), which reads only the stored value,
+        while describe also runs the transcript-usage fallback.
+
+        The scan survives as the COLD path, for a describe MISS only.
+        OpenClaw's session-key folding is one-directional — a mixed-case key
+        also matches its lowercased legacy alias, never the reverse
+        (``foldedSessionKeyAliasCandidates``) — so the case-insensitive
+        compare the scan does is not reproducible with a keyed lookup, and
+        dropping it would silently lose usage analytics for those rows. A
+        describe that RAISES is deliberately NOT retried against the scan:
+        it propagates to the caller's handler, exactly as a failing
+        ``sessions.list`` did.
+        """
+        req_id = str(uuid.uuid4())
+        await self.send_rpc(req_id, "sessions.describe", {"key": session_key})
+        result = await self.wait_for_response(req_id, timeout=10)
+        session = result.get("session") if isinstance(result, dict) else None
+        if isinstance(session, dict):
+            return session
+
+        req_id = str(uuid.uuid4())
+        await self.send_rpc(req_id, "sessions.list", {})
+        result = await self.wait_for_response(req_id, timeout=10)
+        if not isinstance(result, dict):
+            logger.warning(
+                "sessions.list returned non-dict for user %s: type=%s",
+                self.user_id,
+                type(result).__name__,
+            )
+            return None
+
+        sessions = [s for s in result.get("sessions", []) if isinstance(s, dict)]
+        session_key_lower = session_key.lower()
+        for s in sessions:
+            if str(s.get("key", "")).lower() == session_key_lower:
+                put_metric("chat.session_usage.describe.miss")
+                logger.warning(
+                    "sessions.describe missed %s for user %s; recovered by scan",
+                    session_key,
+                    self.user_id,
+                )
+                return s
+
+        logger.warning(
+            "Session %s not found for user %s (describe + %d-row scan). Available: %s",
+            session_key,
+            self.user_id,
+            len(sessions),
+            [s.get("key", "?") for s in sessions[:5]],
+        )
+        return None
+
     async def _fetch_and_record_usage(self, session_key: str, member_user_id: str) -> None:
         """Fetch session token counts via RPC and record usage.
 
         Analytics only. The free-tier daily-spend counter is NOT written
-        here — the Bedrock invocation-log meter Lambda is its sole writer
-        (it sees every invocation at the AWS layer, cache-inclusive and
-        deduped on Bedrock's ``requestId``). A second in-band writer would
-        double-count.
+        here. That counter has TWO writers, both outside this function: the
+        bedrock-gate settles it first (in JavaScript, on the hot inference
+        path), and the Bedrock invocation-log meter Lambda backstops by
+        counting only the invocations the gate missed. Exactly-once is
+        guaranteed by the shared ``requestId`` dedup table
+        (``lightbulb-{env}-bedrock-invocation-dedup``), not by single-writer
+        discipline — a third in-band writer here would still double-count.
         """
         raw_cost_microcents: int | None = None
         model: str = "unknown"
         try:
-            # Query sessions.list to get token data for this session
-            req_id = str(uuid.uuid4())
-            await self.send_rpc(req_id, "sessions.list", {})
-            result = await self.wait_for_response(req_id, timeout=10)
-
-            if not isinstance(result, dict):
-                logger.warning(
-                    "sessions.list returned non-dict for user %s: type=%s",
-                    self.user_id,
-                    type(result).__name__,
-                )
-                return
-
-            # Find our session in the list.
-            # sessions.list returns "key" (not "sessionKey"), and chat.final
-            # lowercases the session key, so compare case-insensitively.
-            sessions = result.get("sessions", [])
-            session_key_lower = session_key.lower()
-            logger.info(
-                "sessions.list returned %d sessions for user %s, looking for %s",
-                len(sessions),
-                self.user_id,
-                session_key,
-            )
-            session = None
-            for s in sessions:
-                s_key = s.get("key", "")
-                if s_key.lower() == session_key_lower:
-                    session = s
-                    break
-
+            session = await self._fetch_session_row(session_key)
             if not session:
-                available_keys = [s.get("key", "?") for s in sessions[:5]]
-                logger.warning(
-                    "Session %s not found for user %s. Available: %s",
-                    session_key,
-                    self.user_id,
-                    available_keys,
-                )
                 return
 
             input_tokens = int(session.get("inputTokens", 0) or 0)
@@ -1720,8 +1793,8 @@ class GatewayConnection:
 
             # OpenClaw computes estimatedCostUsd INCLUDING cache tokens, from
             # the same per-run snapshot as inputTokens (assigned, not
-            # accumulated — see upstream session-usage.ts). sessions.list does
-            # NOT serialize the cache token counts, so the token-based pricing
+            # accumulated — see upstream session-usage.ts). The gateway session
+            # row does NOT serialize the cache token counts, so token pricing
             # path sees cacheRead/cacheWrite=0 and captures only ~3% of real
             # cost (cache tokens are ~99.99% of volume). When present, bill on
             # estimatedCostUsd as the authoritative raw cost; otherwise fall
@@ -1747,7 +1820,7 @@ class GatewayConnection:
 
             # Drop only a run with no token volume AND no billable cost. A
             # cache-heavy turn can report ~0 input/output tokens (cache counts
-            # are omitted by sessions.list) but a real positive cost — keep it.
+            # are omitted from the row) but a real positive cost — keep it.
             if input_tokens <= 0 and output_tokens <= 0 and not raw_cost_microcents:
                 logger.warning(
                     "Zero tokens + no cost in session %s for user %s — session keys: %s",
@@ -1792,524 +1865,210 @@ class GatewayConnection:
             logger.exception("Failed to fetch session usage for user %s", self.user_id)
 
     async def _handle_message(self, data: dict) -> None:
-        """Route an incoming gateway message.
-
-        Event routing:
-        - ``agent`` events: streaming text via ``_transform_agent_event``.
-          OpenClaw coalesces these at a hardcoded 150ms per stream per run
-          (fork server-chat.ts) — they are NOT per-token.
-        - ``chat`` events: only terminal states (final/error/aborted). Delta
-          states are ignored because agent events already carry the same
-          text (the ``chat`` stream has its own, separate 150ms throttle).
-        - Other events: forwarded as-is for SWR revalidation.
-        """
-        msg_type = data.get("type")
-
-        if msg_type == "res":
+        """Resolve RPCs and project only authorized native runtime events."""
+        if data.get("type") == "res":
             req_id = data.get("id")
             future = self._pending_rpcs.get(req_id)
             if future and not future.done():
                 if data.get("ok"):
                     future.set_result(data.get("payload", {}))
                 else:
-                    # Serialize the full error object so details/issues survive
-                    err_obj = data.get("error", {})
-                    if isinstance(err_obj, dict):
-                        err_msg = json.dumps(err_obj)
-                    else:
-                        err_msg = str(err_obj or "RPC call rejected")
-                    future.set_exception(RuntimeError(err_msg))
+                    error = data.get("error", {})
+                    future.set_exception(RuntimeError(json.dumps(error) if isinstance(error, dict) else str(error)))
+            return
+        if data.get("type") != "event":
             return
 
-        if msg_type == "event":
-            event_name = data.get("event", "")
-            payload = data.get("payload", {})
+        event_name = data.get("event", "")
+        payload = data.get("payload")
+        if not isinstance(payload, dict) or event_name in {"health", "tick"}:
+            return
+        session_key = payload.get("sessionKey") if isinstance(payload.get("sessionKey"), str) else ""
+        run_id = payload.get("runId") if isinstance(payload.get("runId"), str) else None
+        if session_key:
+            self._touch_run(session_key, run_id)
+        parsed_key = _parse_session_key(session_key) if session_key else {}
+        room = parse_lightbulb_session_key(session_key) if session_key else None
 
-            # Extract per-member routing target from sessionKey. OpenClaw
-            # includes sessionKey in agent/chat event payloads (set in
-            # server-chat.ts). For org webchat sessions the key is
-            # "agent:{agentId}:{userId}" — _parse_session_key extracts
-            # member_id so we can route events to the specific member
-            # who initiated the chat instead of broadcasting to all org
-            # members. Falls back to None (broadcast) for personal
-            # sessions, channel sessions, or missing keys.
-            session_key = ""
-            if isinstance(payload, dict):
-                session_key = payload.get("sessionKey", "")
-            parsed_key = _parse_session_key(session_key) if session_key else {}
-            target_member = parsed_key.get("member_id")
-            # Channel-originated events (Telegram, Discord, Slack DMs, groups,
-            # rooms) don't need to be forwarded to the web UI — OpenClaw's
-            # channel plugin already delivers them directly to the platform.
-            # Without this gate, channel responses leak into the web chat and
-            # overwrite or intermix with the user's web conversation.
-            session_source = parsed_key.get("source", "")
-            is_channel_session = session_source in ("dm", "group", "channel")
-            is_cron_session = session_source == "cron"
-            # Paperclip issue/run sessions are NOT web chat: Paperclip activity
-            # reaches Teams via its own event stream, so forwarding it here
-            # leaks another surface's transcript into /chat — and because these
-            # keys carry no member_id, the owner-keyed fan-out would BROADCAST
-            # it to every member of the org. "unknown" covers any future
-            # structurally-recognised-but-unclassified key the same way (fail
-            # closed). Keyless control frames (sessions.updated, slash-command
-            # finals) parse to an empty source and still forward.
-            is_isolated_session = session_source in ("paperclip", "unknown")
-
-            # Trailing opaque session id for the 4-part webchat key
-            # (build_chat_session_key). None for the legacy 3-part "General"
-            # key and for any non-webchat key. The client demuxes streamed
-            # frames per session by matching this to its active session.
-            session_parts = session_key.split(":") if session_key else []
-            session_id = session_parts[3] if len(session_parts) == 4 and session_source == "webchat" else None
-
-            # Drop noisy periodic events (health, tick) entirely — they are
-            # OpenClaw-internal keep-alives and should never reach frontends.
-            if event_name in ("health", "tick"):
-                logger.debug(
-                    "Gateway heartbeat for %s: event=%s",
-                    self.user_id,
-                    event_name,
-                )
+        if event_name == "agent":
+            stream = payload.get("stream")
+            stream_data = payload.get("data")
+            if not isinstance(stream_data, dict):
                 return
+            if (
+                stream == "approval"
+                and stream_data.get("phase") == "requested"
+                and stream_data.get("status") in {"pending", "unavailable"}
+                and session_key
+                and not self._is_side_run(run_id)
+            ):
+                self._mark_awaiting_approval(session_key)
+            if stream == "lifecycle" and stream_data.get("phase") in {"end", "error"}:
+                if stream_data["phase"] == "end":
+                    self._record_usage_from_session(payload)
+                self._emit_run_completed(payload, parsed_key, stream_data["phase"])
+            if room is None:
+                return
+            transformed = self._transform_agent_event(payload)
+            if transformed is not None:
+                self._rewrite_run_full_text(transformed)
+                transformed["agent_id"] = room["agent_id"]
+                await self._publish_room_frame(session_key, transformed)
+            return
 
-            # Bump the active-run liveness timestamp for this session_key.
-            # No-op when no run is tracked for the key (cron/channel sessions,
-            # missed mark_run_active call) so it is cheap to call eagerly.
-            if session_key:
-                self._touch_run(session_key)
-            if event_name != "agent":
-                state = payload.get("state", "") if isinstance(payload, dict) else ""
-                logger.info(
-                    "[%s] gateway event=%s state=%s sessionKey=%s target=%s",
-                    self.user_id,
-                    event_name,
-                    state,
-                    session_key[:60] if session_key else "-",
-                    target_member or "broadcast",
+        if event_name == "chat":
+            # NOTE: no `if room is None: return` here. Push notifications,
+            # active-run cleanup, and e2e-latency metrics must fire for every
+            # terminal chat run, not just canonical-room ones.
+            # `_publish_room_frame` already no-ops internally for a
+            # non-room session key, so the room-channel publish stays
+            # correctly gated without an explicit check here.
+            agent_id = parsed_key.get("agent_id")
+            state = payload.get("state")
+            if state not in {"final", "error", "aborted"} or not run_id:
+                return
+            self._run_text.pop(run_id, None)
+            run_is_side = self._is_side_run(run_id)
+            primary_started_at: float | None = None
+            carried_member: str | None = None
+            if run_is_side:
+                self._forget_side_run(run_id)
+                is_true_terminal = True
+            else:
+                is_true_terminal = bool(session_key) and self._is_true_terminal(session_key, state)
+                if is_true_terminal:
+                    active = self._active_runs.get(session_key.lower())
+                    if active is not None:
+                        primary_started_at = active.get("started_at")
+                        carried_member = active.get("member_id")
+
+            if state == "final":
+                put_metric("chat.message.count")
+                if is_true_terminal and not run_is_side and (self._extract_assistant_text(payload) or "").strip():
+                    self._emit_trial_first_response()
+                thinking = self._extract_thinking_text(payload)
+                if thinking:
+                    await self._publish_room_frame(
+                        session_key,
+                        {"type": "thinking", "content": thinking, "agent_id": agent_id, "runId": run_id},
+                    )
+                text = self._extract_assistant_text(payload)
+                if text:
+                    await self._publish_room_frame(
+                        session_key,
+                        {"type": "chunk", "content": text, "agent_id": agent_id, "runId": run_id},
+                    )
+                await self._publish_room_frame(
+                    session_key,
+                    {"type": "done", "agent_id": agent_id, "runId": run_id},
+                )
+            elif state == "error":
+                message = payload.get("errorMessage") or payload.get("error") or "Agent run failed"
+                if isinstance(message, dict):
+                    message = message.get("message") or "Agent run failed"
+                error_kind = payload.get("errorKind")
+                upstream_message = None
+                if error_kind == "rate_limit":
+                    money = await self._budget_error_code()
+                    if money is not None:
+                        upstream_message = str(message)
+                        error_kind, message = money
+                frame = {"type": "error", "message": str(message), "agent_id": agent_id, "runId": run_id}
+                if error_kind:
+                    frame["code"] = error_kind
+                if upstream_message:
+                    frame["upstream_message"] = upstream_message
+                await self._publish_room_frame(session_key, frame)
+            else:
+                await self._publish_room_frame(
+                    session_key,
+                    {
+                        "type": "error",
+                        "message": "Agent run was cancelled",
+                        "agent_id": agent_id,
+                        "runId": run_id,
+                    },
                 )
 
-            if event_name == "agent":
-                stream = payload.get("stream", "")
-                # Exclude text streams (assistant, reasoning, thinking) from
-                # INFO logs — they fire every ~150ms for the whole run, so
-                # logging would blow up CloudWatch volume on long responses.
-                if stream not in ("assistant", "reasoning", "thinking", ""):
-                    data = payload.get("data", {})
-                    logger.info(
-                        "Agent event for user %s: stream=%s phase=%s name=%s keys=%s",
-                        self.user_id,
-                        stream,
-                        data.get("phase", ""),
-                        data.get("name", ""),
-                        list(data.keys()) if isinstance(data, dict) else type(data).__name__,
-                    )
-                # Approval pause: when a tool call needs an async approval,
-                # OpenClaw emits this approval-requested agent event; the run
-                # then reaches completion and emits its GENUINE terminal `final`,
-                # with the work continuing as a SEPARATE follow-up run (see
-                # `_mark_awaiting_approval` / `_is_true_terminal` for the full
-                # sequence). Flag the run so `_is_true_terminal` suppresses that
-                # terminal `final` and the per-session run-active window survives
-                # the approval round-trip (otherwise → UI "dead air"). No-op for
-                # cron/channel sessions, which never have a tracked active run.
-                # Done before the channel/cron forwarding gate because the marker
-                # is independent of whether we forward the event to the web UI.
-                if (
-                    stream == "approval"
-                    and isinstance(payload.get("data"), dict)
-                    and payload["data"].get("phase") == "requested"
-                    and payload["data"].get("status") in ("pending", "unavailable")
-                    and session_key
-                    # A side (`/btw`) run's approval must not flag the PRIMARY
-                    # run's window (shared session_key) as awaiting-approval —
-                    # that would suppress the primary's real terminal.
-                    and not self._is_side_run(payload.get("runId"))
-                ):
-                    self._mark_awaiting_approval(session_key)
-                # Billing: lifecycle/end fires once per completed agent run
-                # for BOTH webchat and channel-driven runs (webchat's chat.final
-                # only fires for webchat, so we use lifecycle/end instead).
-                # Billing runs for ALL sessions (web + channel). Product
-                # analytics hangs off the same terminal, widened to the error
-                # phase too — OpenClaw's lifecycleEnded guard means every run
-                # emits exactly one of end/error; billing stays end-only.
-                if (
-                    stream == "lifecycle"
-                    and isinstance(payload.get("data"), dict)
-                    and payload["data"].get("phase") in ("end", "error")
-                ):
-                    if payload["data"]["phase"] == "end":
-                        self._record_usage_from_session(payload)
-                    self._emit_run_completed(payload, parsed_key, payload["data"]["phase"])
-                # Skip forwarding channel, cron, and Paperclip (issue/run)
-                # events to the web UI. Each runs in its own isolated session
-                # inside OpenClaw with its own delivery path — their streaming
-                # events must not leak into a user's active web chat (a routine's
-                # "done"/error would terminate or corrupt the user's streaming
-                # session, and a member-less key would broadcast to the whole org).
-                if is_channel_session or is_cron_session or is_isolated_session:
-                    return
-                transformed = self._transform_agent_event(payload)
-                if transformed:
-                    # Tag with agent_id so the frontend can route messages
-                    # to the correct agent conversation and prevent cross-
-                    # agent leakage when switching agents mid-stream.
-                    event_agent_id = parsed_key.get("agent_id")
-                    if event_agent_id:
-                        transformed["agent_id"] = event_agent_id
-                    if session_id is not None:
-                        transformed["session_id"] = session_id
-                    await self._forward_to_frontends(transformed, target_member)
-
-            elif event_name == "chat":
-                # Skip forwarding channel, cron, and Paperclip chat events to
-                # the web UI (see the agent-event gate above).
-                if is_channel_session or is_cron_session or is_isolated_session:
-                    return
-                # Chat events -- only terminal states.
-                # Delta states are skipped; agent events handle streaming.
-                state = payload.get("state", "")
-                # Tag all chat messages with agent_id so the frontend can
-                # route responses to the correct agent conversation.
-                event_agent_id = parsed_key.get("agent_id")
-                # runId is a required field on every chat-terminal event we
-                # forward: the frontend keys its per-run assistant bubble on
-                # it. OpenClaw guarantees it on final/error/aborted (server-
-                # chat.ts `chat` event emitter), so no defensive guard here.
-                # Delta/unknown states never forward, so they don't need it.
-                if state not in ("final", "error", "aborted"):
-                    return
-                run_id = payload["runId"]
-                # Side-channel (`/btw`) terminal: a side run shares this
-                # session_key with the primary run but owns NO active-run window
-                # (the dispatcher skips mark_run_active for it). It must NOT
-                # touch `_active_runs` — clearing here would tear down the
-                # PRIMARY run's window mid-stream, dropping the busy-gate and
-                # reintroducing the per-session JSONL write-lock race. It must
-                # also NOT consult `_is_true_terminal` (that would consume the
-                # primary run's awaiting_approval flag). So treat it as terminal
-                # for ITS OWN run only — forget the id and forward `run_ended`
-                # (the frontend drops it via its own side-run set). Mirrors
-                # upstream's per-runId run tracking + the clients' separate
-                # btw-id sets (app-gateway.ts chatSideResultTerminalRuns /
-                # tui-event-handlers.ts isLocalBtwRunId).
-                # Captured before _forget_side_run drops the id, so the
-                # chat.e2e.latency END guard at the bottom of this block can
-                # tell a side (`/btw`) run from a primary run reliably.
-                run_is_side = self._is_side_run(run_id)
-                # START monotonic of the chat.e2e.latency SLO span (alarm W9),
-                # reused from the active-run window the dispatcher opened via
-                # mark_run_active (which stamps started_at BEFORE the chat.send
-                # RPC is forwarded). Captured here, at the clear site, BEFORE
-                # _clear_active_run pops the entry — the END emit at the bottom
-                # of this block computes elapsed from it. None when this session
-                # had no active-run window (e.g. a side run, an interim approval
-                # bracket that stays active, or a run we never marked), in which
-                # case no metric is emitted.
-                primary_started_at: float | None = None
-                # Canonical dispatch member id carried on the active-run entry
-                # (mark_run_active), read back here for the run-completion push
-                # audience. NOT the echoed/lowercased target_member — see
-                # _dispatch_push_notification.
-                carried_member: str | None = None
-                if run_is_side:
-                    self._forget_side_run(run_id)
-                    is_true_terminal = True
-                else:
-                    # Clear the active-run entry only on a TRUE terminal so
-                    # subsequent reader_loop exits make the dead-vs-parked
-                    # decision based on still-in-flight runs only. An interim
-                    # `final` that merely closes a tool-approval bracket is NOT
-                    # terminal (the run continues via a separate follow-up run),
-                    # so `_is_true_terminal` keeps it active to avoid run-active
-                    # "dead air" across the approval. `_is_true_terminal`
-                    # consumes the pending-approval flag, so call it exactly once
-                    # and reuse the result for both clearing the run and the
-                    # authoritative `run_ended` forward below.
-                    is_true_terminal = bool(session_key) and self._is_true_terminal(session_key, state)
-                    if is_true_terminal:
-                        active = self._active_runs.get(session_key.lower())
-                        if active is not None:
-                            primary_started_at = active.get("started_at")
-                            carried_member = active.get("member_id")
-                        # NOTE: _clear_active_run is DEFERRED to after the push
-                        # dispatch in the is_true_terminal block below. Clearing
-                        # here flips has_active_runs to False before the push task
-                        # is spawned, so a concurrent _grace_close could tear the
-                        # connection down mid-forward and cancel the reader before
-                        # the push is ever created — losing the closed-app push.
-                if state == "final":
-                    put_metric("chat.message.count")
-                    # A reply the owner can read: a true terminal (not an interim
-                    # tool-approval final), not a /btw side run, and carrying
-                    # assistant text — a /status or /help final and an empty-content
-                    # final are not agent replies.
-                    if is_true_terminal and not run_is_side and (self._extract_assistant_text(payload) or "").strip():
-                        self._emit_trial_first_response()
-                    # Deliver thinking from content blocks for models that
-                    # batch reasoning into the final message (reasoningLevel
-                    # not set to "stream"). Once reasoningLevel:"stream" is
-                    # enabled on the session, this will typically be empty
-                    # because thinking streamed via agent events already.
-                    thinking_text = self._extract_thinking_text(payload)
-                    if thinking_text:
-                        fwd: dict = {"type": "thinking", "content": thinking_text}
-                        if event_agent_id:
-                            fwd["agent_id"] = event_agent_id
-                        fwd["runId"] = run_id
-                        if session_id is not None:
-                            fwd["session_id"] = session_id
-                        await self._forward_to_frontends(fwd, target_member)
-                    # Forward the assistant text from chat.final as a NON-append
-                    # full-text chunk. For agent runs the streamed chunks already
-                    # painted the same text, so this is a visual no-op — and it
-                    # doubles as the authoritative replace that corrects any
-                    # delta a client may have missed mid-run (dropped frame,
-                    # transient send failure). For slash commands (/help,
-                    # /approve, etc.) there is no agent stream — this is the
-                    # only path that delivers the response text at all.
-                    text_content = self._extract_assistant_text(payload)
-                    if text_content:
-                        fwd = {"type": "chunk", "content": text_content}
-                        if event_agent_id:
-                            fwd["agent_id"] = event_agent_id
-                        fwd["runId"] = run_id
-                        if session_id is not None:
-                            fwd["session_id"] = session_id
-                        await self._forward_to_frontends(fwd, target_member)
-                    fwd = {"type": "done"}
-                    if event_agent_id:
-                        fwd["agent_id"] = event_agent_id
-                    fwd["runId"] = run_id
-                    if session_id is not None:
-                        fwd["session_id"] = session_id
-                    await self._forward_to_frontends(fwd, target_member)
-                elif state == "error":
-                    # OpenClaw's `chat` terminal error event carries the
-                    # human-readable text in `errorMessage` and a coarse,
-                    # closed-enum classification in `errorKind` (see
-                    # upstream src/gateway/protocol/schema/logs-chat.ts:
-                    # ChatEventSchema). `errorKind` is one of:
-                    #   refusal | timeout | rate_limit | context_length | unknown
-                    # We forward both so the frontend can render a typed
-                    # error card with tailored copy/actions instead of a
-                    # generic "Agent run failed" block. The legacy `error`
-                    # key is read as a defensive fallback in case some
-                    # older path still emits it.
-                    err_msg = payload.get("errorMessage")
-                    err_kind = payload.get("errorKind")
-                    if not err_msg:
-                        legacy_err = payload.get("error")
-                        if isinstance(legacy_err, dict):
-                            err_msg = legacy_err.get("message")
-                        elif legacy_err:
-                            err_msg = str(legacy_err)
-                    if not err_msg:
-                        err_msg = "Agent run failed"
-
-                    # A budget refusal reaches us disguised as a provider
-                    # throttle (see _budget_error_code). Recover the real reason
-                    # so the user gets a limit card with an upgrade path instead
-                    # of "wait for your quota to reset", which for a capped
-                    # free-tier owner is advice they cannot act on.
-                    upstream_msg: Optional[str] = None
-                    if err_kind == "rate_limit":
-                        money = await self._budget_error_code()
-                        if money is not None:
-                            upstream_msg = err_msg
-                            err_kind, err_msg = money
-
-                    put_metric(
-                        "chat.error",
-                        dimensions={
-                            "reason": err_kind or "agent_error",
-                            # Makes mislabelling VISIBLE. If we ever start
-                            # reclassifying real AWS throttles, this spikes
-                            # instead of failing silently. EVERY chat.error
-                            # emitter carries this dimension (the others hard-
-                            # code "false") — a partial rollout would fork the
-                            # metric identity and silently drop whichever
-                            # emitters lack it from any reason-keyed query.
-                            "reclassified": "true" if upstream_msg else "false",
-                        },
-                    )
-                    fwd = {"type": "error", "message": err_msg}
-                    if err_kind:
-                        fwd["code"] = err_kind
-                    if upstream_msg:
-                        # Keep the true upstream cause on the wire for logs and
-                        # support. The card renders from `code`, so this never
-                        # reaches the user as copy.
-                        fwd["upstream_message"] = upstream_msg
-                    if event_agent_id:
-                        fwd["agent_id"] = event_agent_id
-                    fwd["runId"] = run_id
-                    if session_id is not None:
-                        fwd["session_id"] = session_id
-                    await self._forward_to_frontends(fwd, target_member)
-                elif state == "aborted":
-                    put_metric("chat.error", dimensions={"reason": "aborted", "reclassified": "false"})
-                    fwd = {"type": "error", "message": "Agent run was cancelled"}
-                    if event_agent_id:
-                        fwd["agent_id"] = event_agent_id
-                    fwd["runId"] = run_id
-                    if session_id is not None:
-                        fwd["session_id"] = session_id
-                    await self._forward_to_frontends(fwd, target_member)
-
-                # Authoritative "run truly ended" frame. This is an Isol8-
-                # synthesized frame — there is no upstream `run_ended` event; we
-                # derive it from the chat terminal states. ADDITIONAL to the
-                # done/error/aborted frames above — never a replacement. The
-                # frontend keys off this (not a local heuristic) to drain its
-                # queued messages for the run, so it must fire EXACTLY ONCE per
-                # run and ONLY on a genuine termination. The `is_true_terminal`
-                # gate guarantees we skip Run A's terminal `final` while it is
-                # paused awaiting an async approval (the work resumes as a
-                # separate follow-up run), so a paused-on-approval session never
-                # drains early.
-                if is_true_terminal:
-                    # Server-side completion observers (INV-5) — independent of
-                    # frame forwarding below and of whether any browser tab is
-                    # even watching. Fires for every TRUE terminal state
-                    # (final/error/aborted), not just "final" (unlike the push
-                    # dispatch, which excludes aborted).
-                    self._dispatch_run_completion(run_id, state, payload)
-
-                    run_ended: dict = {
+            if is_true_terminal:
+                await self._publish_room_frame(
+                    session_key,
+                    {
                         "type": "run_ended",
                         "runId": run_id,
                         "outcome": "done" if state == "final" else state,
-                    }
-                    if event_agent_id:
-                        run_ended["agent_id"] = event_agent_id
-                    if session_id is not None:
-                        run_ended["session_id"] = session_id
-                    await self._forward_to_frontends(run_ended, target_member)
+                        "agent_id": agent_id,
+                    },
+                )
+                if state in {"final", "error"} and not run_is_side:
+                    self._dispatch_push_notification(payload, carried_member, agent_id, state)
+                if not run_is_side:
+                    self._clear_active_run(session_key, run_id)
+            if primary_started_at is not None:
+                elapsed_ms = max(0.0, (time.monotonic() - primary_started_at) * 1000.0)
+                if elapsed_ms <= _E2E_LATENCY_CEILING_MS:
+                    put_metric("chat.e2e.latency", value=elapsed_ms, unit="Milliseconds")
+                else:
+                    put_metric("chat.run.abandoned")
+            return
 
-                    # Push a notification for a terminal reply (fire-and-forget,
-                    # off the reader-loop hot path — mirrors billing at the
-                    # agent-event lifecycle site). Final AND error push (a run
-                    # failing while the user is away deserves notice as much as
-                    # one finishing); aborted never pushes — the user cancelled
-                    # it themselves. Audience is the CANONICAL member carried on
-                    # the active-run entry, not the echoed/lowercased
-                    # target_member (which would PK-miss the users table).
-                    # Skip side (`/btw`) runs: they carry no member (carried_member
-                    # is None → would fall back to the owner) and are not the
-                    # user-initiated primary reply the push is for.
-                    if state in ("final", "error") and not run_is_side:
-                        self._dispatch_push_notification(payload, carried_member, event_agent_id, state)
-
-                    # Clear the non-side active-run window now — AFTER the push
-                    # task has been created — so the teardown guard
-                    # (has_active_runs) keeps the container connection alive
-                    # through terminal processing and the push spawn. This closes
-                    # the race where a concurrent _grace_close, seeing an empty
-                    # _active_runs and no frontends, tore the connection down
-                    # during the run_ended/done forwards and cancelled the reader
-                    # before _dispatch_push_notification ran. Side runs never
-                    # owned the entry, so they must not clear it.
-                    if not run_is_side:
-                        self._clear_active_run(session_key)
-
-                # END of the chat.e2e.latency SLO span (alarm W9). Elapsed is
-                # computed from the active-run window's started_at — stamped by
-                # mark_run_active BEFORE the chat.send RPC was forwarded and
-                # captured above at the clear site — so no parallel correlation
-                # map is needed: the pool already records the run start. Emits on
-                # EVERY primary-run TRUE terminal — final (success), error,
-                # aborted — so the metric reflects real completions of all kinds.
-                # Side (`/btw`) runs and interim approval brackets leave
-                # primary_started_at None and emit nothing, so the p99 reflects
-                # genuine user-perceived round-trips only. No dimensions: alarm
-                # W9 queries chat.e2e.latency on {env,service} only (auto-injected
-                # by put_metric); a custom dim would create a separate,
-                # un-alarmed metric stream.
-                # PASSIVE measurement: this runs AFTER all frame forwarding above
-                # and is wrapped best-effort (never raises), so it cannot
-                # alter/drop/delay/reorder any frame the frontend receives.
-                if primary_started_at is not None:
-                    try:
-                        elapsed_ms = max(0.0, (time.monotonic() - primary_started_at) * 1000.0)
-                        if elapsed_ms <= _E2E_LATENCY_CEILING_MS:
-                            put_metric("chat.e2e.latency", value=elapsed_ms, unit="Milliseconds")
-                        else:
-                            # Late/stale terminal (e.g. re-delivered after a
-                            # reconnect, or a hung run). Exclude it from the SLO
-                            # p99 — a multi-minute outlier would false-fire W9 —
-                            # but count the abandonment so it stays visible.
-                            put_metric("chat.run.abandoned")
-                    except Exception:
-                        logger.warning(
-                            "chat.e2e.latency emit failed for run_id=%s",
-                            run_id,
-                            exc_info=True,
-                        )
-
-            elif event_name == "chat.side_result":
-                # `/btw` answers ride a distinct channel OpenClaw's web UI
-                # renders as a side card; map it to a frontend chat-union frame
-                # so it surfaces instead of being silently dropped by the
-                # raw-forward path below. Side-channel only — it never touches
-                # `_active_runs`/`_side_run_ids` or the primary run's window.
-                if is_channel_session or is_cron_session or is_isolated_session:
-                    return
-                frame: dict = {
+        if event_name == "chat.side_result" and room is not None:
+            await self._publish_room_frame(
+                session_key,
+                {
                     "type": "btw_result",
                     "question": payload.get("question", ""),
                     "text": payload.get("text", ""),
-                    "runId": payload.get("runId"),
-                }
-                if payload.get("isError"):
-                    frame["isError"] = True
-                side_agent_id = parsed_key.get("agent_id")
-                if side_agent_id:
-                    frame["agent_id"] = side_agent_id
-                await self._forward_to_frontends(frame, target_member)
-
-            elif event_name == "sessions.changed":
-                # OpenClaw's authoritative per-session run-state, broadcast on
-                # every run start/end/transition. The payload embeds both
-                # `hasActiveRun` and `status`, so we resolve it locally — NO
-                # follow-up RPC (that would deadlock inside the reader loop).
-                # `hasActiveRun` ALONE is not trustworthy; see
-                # `_is_session_run_active` for why terminal `status` must win.
-                # Webchat-only + member-demuxed: a non-webchat
-                # or member-less key must never reach the web UI (would leak
-                # another surface or broadcast to the whole org). Deduped against
-                # the last-forwarded value so message/transcript-driven
-                # `sessions.changed` bursts don't spam identical frames.
-                # Allow-list on webchat (not a deny-list of known-bad sources):
-                # a malformed/unclassified key parses to source "" and must NOT
-                # fall through — that would forward with target_member=None and
-                # broadcast the frame to every one of the owner's chat
-                # connections. Webchat keys always carry a member_id, so gating
-                # here also guarantees per-member demux.
-                if session_source != "webchat":
-                    return
-                active = _is_session_run_active(payload)
-                # Normalized to lowercase — see `mark_run_active` for why
-                # every ``_active_runs``/``_run_state`` touch must agree on
-                # casing (this dict is written only from event-side keys, but
-                # normalize anyway rather than trust upstream's casing).
-                run_state_key = session_key.lower()
-                if self._run_state.get(run_state_key) == active:
-                    return
-                self._run_state[run_state_key] = active
-                fwd_ra: dict = {"type": "run_active", "active": active}
-                event_agent_id = parsed_key.get("agent_id")
-                if event_agent_id:
-                    fwd_ra["agent_id"] = event_agent_id
-                if session_id is not None:
-                    fwd_ra["session_id"] = session_id
-                await self._forward_to_frontends(fwd_ra, target_member)
-
-            else:
-                # Forward other events as-is for SWR revalidation (broadcast to all)
-                await self._forward_to_frontends(data)
+                    "isError": bool(payload.get("isError")),
+                    "agent_id": room["agent_id"],
+                    "runId": run_id,
+                },
+            )
             return
+
+        if event_name == "sessions.changed" and room is not None:
+            active_row = self._active_runs.get(session_key.lower())
+            active_run_id = (active_row or {}).get("run_id")
+            if not active_run_id:
+                return
+            active = _is_session_run_active(payload)
+            key = session_key.lower()
+            if self._run_state.get(key) == active:
+                return
+            self._run_state[key] = active
+            await self._publish_room_frame(
+                session_key,
+                {"type": "run_active", "active": active, "agent_id": room["agent_id"], "runId": active_run_id},
+            )
+            return
+
+        nested_request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+        event_session = session_key or nested_request.get("sessionKey", "")
+        if event_name in {"exec.approval.requested", "plugin.approval.requested"}:
+            await self._publish_user_event("runtime.approval.requested", payload, event_session)
+        elif event_name in {"exec.approval.resolved", "plugin.approval.resolved"}:
+            await self._publish_user_event("runtime.approval.resolved", {"id": payload.get("id")}, event_session)
+        elif event_name == "question.requested":
+            await self._publish_user_event("runtime.question.requested", payload, event_session)
+        elif event_name == "question.resolved":
+            await self._publish_user_event("runtime.question.resolved", payload, event_session)
+        elif event_name == "progressCard.changed":
+            await self._publish_user_event(
+                "runtime.progress.changed",
+                {"sessionKey": payload.get("sessionKey"), "revision": payload.get("revision")},
+                event_session,
+            )
+        else:
+            resources = {
+                "agents.changed": "agents",
+                "config.changed": "config",
+                "models.changed": "models",
+                "skills.changed": "skills",
+                "tools.changed": "tools",
+            }
+            resource = resources.get(event_name)
+            if resource:
+                await self._publish_user_event("runtime.resource.invalidated", {"resource": resource}, event_session)
 
     async def _reader_loop(self) -> None:
         """Background task: read all messages from gateway WebSocket."""
@@ -2410,10 +2169,6 @@ class GatewayConnection:
         # Durable liveness signal (R4 kill): the reader loop died with no
         # active runs, so is_alive is now False.
         self._note_gateway_liveness(connected=False)
-        # No terminal event can arrive on a dead reader — reconcile pending
-        # completion observers so a bootstrap kickoff doesn't stick at
-        # `dispatched` (see _reject_pending_run_completions).
-        self._reject_pending_run_completions("Gateway connection lost")
         for req_id, future in list(self._pending_rpcs.items()):
             if not future.done():
                 future.set_exception(RuntimeError("Gateway connection lost"))
@@ -2466,6 +2221,7 @@ class GatewayConnection:
                     list(self._active_runs.keys()),
                 )
                 self._active_runs.clear()
+                getattr(self, "_room_run_context", {}).clear()
                 self._parked = False
                 self._emit_status_change(
                     "GATEWAY_DOWN_DEAD",
@@ -2474,9 +2230,6 @@ class GatewayConnection:
                 # Durable liveness signal (R4 kill): escalating past parked
                 # to dead is the other path is_alive can flip False.
                 self._note_gateway_liveness(connected=False)
-                # Same reconcile as the dead-reader path: the run we just gave up
-                # on will never emit its terminal, so fire its completion observer.
-                self._reject_pending_run_completions("Gateway connection lost")
                 for req_id, future in list(self._pending_rpcs.items()):
                     if not future.done():
                         future.set_exception(RuntimeError("Gateway connection lost"))
@@ -2571,8 +2324,6 @@ class GatewayConnection:
                     "Error draining pending RPCs during close for user %s",
                     self.user_id,
                 )
-        if self._grace_task and not self._grace_task.done():
-            self._grace_task.cancel()
         if self._parked_watchdog_task and not self._parked_watchdog_task.done():
             self._parked_watchdog_task.cancel()
             try:
@@ -2585,41 +2336,6 @@ class GatewayConnection:
                 await self._reader_task
             except asyncio.CancelledError:
                 pass
-        # The reader is provably dead now: nothing more can arrive on this
-        # socket. Whatever run-completion observer is STILL registered is
-        # HANDED OFF, never failed. close() is this process letting go of the
-        # socket — graceful shutdown (rolling deploy), the frontend-gone grace
-        # close, an IP-change recreate — and says nothing about the run, which
-        # keeps going inside OpenClaw. Failing the observer here marks a kickoff
-        # that is visibly working as "Friday couldn't start". The observer's
-        # durable record (the ``sent`` row keyed by the kickoff's dispatch id ==
-        # runId) is what lets whichever process polls next re-attach an observer
-        # on its own connection (bootstrap_dispatcher). Only a genuine gateway
-        # drop (``_on_reader_loop_exit``) still resolves pending observers as
-        # failed. Done AFTER the reader cancel, not before the drains: a terminal
-        # that arrived during the drains above has already fired its observer
-        # and popped it from this dict — clearing earlier would have dropped
-        # that terminal on the floor with no record and no lever.
-        if self._run_completion_callbacks:
-            put_metric("gateway.run_completion.handoff", value=float(len(self._run_completion_callbacks)))
-            logger.info(
-                "Handing off %d pending run-completion observer(s) for user %s on close",
-                len(self._run_completion_callbacks),
-                self.user_id,
-            )
-            self._run_completion_callbacks.clear()
-        # Drain in-flight run-completion observer tasks (INV-5 bootstrap
-        # dispatcher) — including ones a terminal spawned during the drains
-        # above — so teardown doesn't cancel a DDB completion write mid-flight;
-        # mirrors the push-dispatch drain.
-        if self._run_completion_tasks:
-            try:
-                await asyncio.wait(self._run_completion_tasks, timeout=5.0)
-            except Exception:
-                logger.exception(
-                    "Error waiting for run-completion tasks during close for user %s",
-                    self.user_id,
-                )
         if self._ws:
             await self._ws.close()
         # Reject any RPCs that did NOT settle during the drain window.
@@ -2630,6 +2346,7 @@ class GatewayConnection:
         # Drop active-run state. close() means we don't expect to talk to
         # this OpenClaw process again under this connection instance.
         self._active_runs.clear()
+        getattr(self, "_room_run_context", {}).clear()
         self._parked = False
 
 
@@ -2642,31 +2359,10 @@ class GatewayConnectionPool:
     # inherit it without each one having to know the attribute exists.
     _closing: bool = False
 
-    def __init__(
-        self,
-        management_api: Any,
-        conn_svc: Optional[ConnectionService] = None,
-    ) -> None:
-        self._management_api = management_api
-        # One FrameSender for the whole pool: per-connectionId queues +
-        # append-delta continuity must be global (a browser connection can
-        # receive frames from a GatewayConnection AND the pool-level fan-out).
-        self._sender = FrameSender(management_api)
-        # Shared ConnectionService used by every GatewayConnection's owner-keyed
-        # fan-out (query_by_owner on the by-owner-id GSI). Defaults to a fresh
-        # instance — the same wiring as the module singleton elsewhere.
+    def __init__(self, conn_svc: Optional[ConnectionService] = None) -> None:
         self._conn_svc = conn_svc or ConnectionService()
         self._connections: Dict[str, GatewayConnection] = {}
-        self._frontend_connections: Dict[str, Set[str]] = {}  # owner_id -> set of conn_ids
         self._lock = asyncio.Lock()
-        self._grace_tasks: Dict[str, asyncio.Task] = {}
-        # Per-owner client-liveness deadline (Layer 3 of scale-to-zero — see
-        # `_CLIENT_DEADLINE_S`). One `asyncio.TimerHandle` per owner, armed by
-        # `note_client_activity`. In-process, single-backend-instance scope —
-        # same posture as `_grace_tasks` (desiredCount=1 for the backend
-        # service), so a timer armed on this task is the only one that can
-        # exist for a given owner.
-        self._client_deadline_handles: Dict[str, asyncio.TimerHandle] = {}
         # Per-user reconnect attempt timestamps for the `_RECONNECT_FLOOR_S`
         # storm guard. Tracks the start of the *most recent* reconnect (not
         # success / failure) so a single bad container can't burn the
@@ -2681,7 +2377,7 @@ class GatewayConnectionPool:
         # Detached connections being drained+closed off the pool lock (the
         # changed-IP recreate path). Strong refs kept so the fire-and-forget
         # close task isn't GC'd mid-drain.
-        self._background_close_tasks: Set[asyncio.Task] = set()
+        self._background_close_tasks: set[asyncio.Task] = set()
         # Per-owner {endpoint: monotonic_abandoned_at} history of connections we
         # recreated AWAY from. Fences the changed-IP recreate against a STALE
         # resolve (a concurrent request straddling a task replacement) rolling a
@@ -2735,6 +2431,8 @@ class GatewayConnectionPool:
         session_key: str,
         agent_id: str | None = None,
         member_id: str | None = None,
+        event_kind: str | None = None,
+        thread_root_message_id: str | None = None,
     ) -> None:
         """Public entry point for the chat dispatcher.
 
@@ -2752,9 +2450,27 @@ class GatewayConnectionPool:
         conn = self._connections.get(user_id)
         if conn is None:
             return
-        conn.mark_run_active(session_key, agent_id, member_id=member_id)
+        conn.mark_run_active(
+            session_key,
+            agent_id,
+            member_id=member_id,
+            event_kind=event_kind,
+            thread_root_message_id=thread_root_message_id,
+        )
 
-    def clear_active_run(self, user_id: str, session_key: str) -> None:
+    async def subscribe_room_session(self, user_id: str, session_key: str) -> None:
+        """Stream a room session's run events to the owner's connection.
+
+        No-ops without a connection, like ``mark_run_active``. See
+        ``GatewayConnection.subscribe_room_session`` for why a room run emits
+        nothing to us until this lands.
+        """
+        conn = self._connections.get(user_id)
+        if conn is None:
+            return
+        await conn.subscribe_room_session(session_key)
+
+    def clear_active_run(self, user_id: str, session_key: str, *, preserve_room_context: bool = False) -> None:
         """Tear down the active-run window opened by ``mark_run_active``.
 
         The dispatcher marks a run active *before* issuing chat.send so the
@@ -2762,13 +2478,15 @@ class GatewayConnectionPool:
         never reaches OpenClaw (timeout, container unreachable, gateway error),
         no terminal event will ever arrive to clear the window — leaving a stale
         entry that keeps the connection parking on a WS drop forever. The
-        dispatcher calls this on the chat.send failure path. Silently no-ops
-        when no connection exists. Idempotent.
+        dispatcher calls this on the chat.send failure path. When delivery is
+        uncertain, ``preserve_room_context`` retains only bounded routing
+        metadata for frames that may still arrive; it does not keep the run
+        active. Silently no-ops when no connection exists. Idempotent.
         """
         conn = self._connections.get(user_id)
         if conn is None:
             return
-        conn._clear_active_run(session_key)
+        conn._clear_active_run(session_key, preserve_room_context=preserve_room_context)
 
     def mark_side_run(self, user_id: str, run_id: str) -> None:
         """Record *run_id* as a side-channel (`/btw`) run on *user_id*'s
@@ -2781,42 +2499,6 @@ class GatewayConnectionPool:
         if conn is None:
             return
         conn.mark_side_run(run_id)
-
-    def register_run_completion_callback(
-        self, user_id: str, run_id: str, callback: Callable[[str, dict], Awaitable[None]]
-    ) -> bool:
-        """Public entry point for a caller that needs to observe a specific
-        dispatched run's TRUE terminal (final/error/aborted) without being
-        the browser tab that sent it — e.g. the server-owned bootstrap
-        dispatcher (INV-5, spec PR-6).
-
-        Returns False (registers nothing) when no connection exists for
-        *user_id*. Callers should call ``ensure_connection`` first (mirrors
-        ``mark_run_active``'s own contract) so this only returns False if the
-        connection vanished between the two calls.
-        """
-        conn = self._connections.get(user_id)
-        if conn is None:
-            return False
-        conn.register_run_completion_callback(run_id, callback)
-        return True
-
-    def unregister_run_completion_callback(self, user_id: str, run_id: str) -> None:
-        """Public entry point mirroring ``register_run_completion_callback`` —
-        see ``GatewayConnection.unregister_run_completion_callback``. Silently
-        no-ops when no connection exists for *user_id* (nothing to withdraw).
-        """
-        conn = self._connections.get(user_id)
-        if conn is None:
-            return
-        conn.unregister_run_completion_callback(run_id)
-
-    def has_run_completion_callback(self, user_id: str, run_id: str) -> bool:
-        """Whether a connection for *user_id* exists on THIS task and already
-        observes *run_id* — see ``GatewayConnection.has_run_completion_callback``.
-        False when there is no connection (nothing can be observing)."""
-        conn = self._connections.get(user_id)
-        return conn is not None and conn.has_run_completion_callback(run_id)
 
     async def gate_chat(self, *, user_id: str, owner_id: str, session_key: str) -> dict:
         """Pre-chat hard-stop for card-3 (bedrock_claude) users and the
@@ -2962,23 +2644,13 @@ class GatewayConnectionPool:
         return {"blocked": False}
 
     async def _create_connection(self, user_id: str, ip: str, token: str) -> GatewayConnection:
-        """Create and connect a new GatewayConnection."""
-        # Ensure the canonical set exists before passing it as a shared
-        # reference. The GatewayConnection reads this set directly when
-        # fanning out events — no copy, no sync, no race.
-        if user_id not in self._frontend_connections:
-            self._frontend_connections[user_id] = set()
+        """Create and connect one owner-bound machine gateway connection."""
         conn = GatewayConnection(
             user_id=user_id,
             ip=ip,
             token=token,
-            management_api=self._management_api,
-            frontend_connections=self._frontend_connections[user_id],
-            # `user_id` here IS the pool's owner key (org_id or user_id);
-            # pass it explicitly as owner_id so the fan-out is unambiguous.
             owner_id=user_id,
             conn_svc=self._conn_svc,
-            sender=self._sender,
         )
         await conn.connect()
         self._connections[user_id] = conn
@@ -3152,14 +2824,6 @@ class GatewayConnectionPool:
                     # owner's dead-socket teardown (~25s worst case) can't
                     # head-of-line-block ensure_connection for every other owner.
                     self._connections.pop(user_id, None)
-                    # The replacement created below shares this owner's frontend
-                    # connection set (passed by reference into every GatewayConnection).
-                    # Blank the detached connection's copy so its background teardown
-                    # can't fan out a spurious GATEWAY_DOWN to the UI *after* the fresh
-                    # connection reports HEALTHY — the two emits are otherwise
-                    # unordered. The pool's shared set (and thus the new conn's) is
-                    # untouched.
-                    conn._frontend_connections = set()
                     self._close_detached(conn)
                     conn = None
             if conn is not None and conn._parked:
@@ -3315,416 +2979,41 @@ class GatewayConnectionPool:
         self._auth_backoff_until.pop(user_id, None)
         self._auth_failures.pop(user_id, None)
 
-    def add_frontend_connection(self, user_id: str, connection_id: str) -> None:
-        """Register a frontend WS connection so its owner's recipient cache is
-        busted (it's picked up on the next fan-out) and any pending idle-teardown
-        grace period is cancelled.
+    def resolve_run(self, owner_id: str, run_id: str) -> dict | None:
+        conn = self._connections.get(owner_id)
+        if conn is None:
+            return None
+        for session_key, run in conn._active_runs.items():
+            if run.get("run_id") == run_id:
+                return {
+                    "sessionKey": session_key,
+                    "agentId": run.get("agent_id"),
+                    "terminal": False,
+                }
+        terminal_session_key = conn._terminal_run_ids.get(run_id)
+        if terminal_session_key is not None:
+            return {
+                "sessionKey": terminal_session_key,
+                "terminal": True,
+            }
+        return None
 
-        Per-member routing is NOT tracked here: delivery + demux are sourced from
-        the by-owner-id GSI (the row's ``userId`` is the member), so the only
-        in-process role of a registered connection is the grace/idle-teardown
-        signal below.
+    async def close_idle_user(self, owner_id: str) -> bool:
+        """Close an idle machine connection before a durable trial stop.
+
+        The pool lock serializes this decision with connection creation; active
+        runs and parked connections are never detached.
         """
-        if user_id not in self._frontend_connections:
-            self._frontend_connections[user_id] = set()
-        self._frontend_connections[user_id].add(connection_id)
-
-        # Bust the owner's recipient cache so a just-opened tab is picked up on
-        # its own first stream instead of waiting behind a stale cached set for
-        # up to _RECIPIENTS_TTL_S. (The by-owner-id GSI is the source; this only
-        # forces a re-query on the next fan-out for this owner.)
-        conn = self._connections.get(user_id)
-        if conn is not None:
-            conn.invalidate_recipients_cache()
-            # Forget the run-active dedup so a tab that (re)connects or opens
-            # mid-run gets a fresh `run_active` on the next `sessions.changed`
-            # instead of having the still-true state suppressed as a duplicate —
-            # otherwise its status bar sits dark through the active window. The
-            # frontend clears its own `containerRunActive` on disconnect, so
-            # without this the server would never re-light it. (OpenClaw's own
-            # client re-reads sessions.list on reconnect for the same reason.)
-            conn.reset_run_state_dedup()
-
-        # Cancel grace period if one is running
-        grace = self._grace_tasks.pop(user_id, None)
-        if grace and not grace.done():
-            grace.cancel()
-
-        # Arm/reset the client-liveness deadline (Layer 3) — a fresh
-        # registration is activity too, not just pings.
-        self.note_client_activity(user_id)
-
-    def note_client_activity(self, owner_id: str) -> None:
-        """(Re)arm the per-owner client-liveness deadline.
-
-        Called on every ping (`websocket_chat.ws_message`'s ping handler,
-        alongside the existing `_touch_liveness` DDB stamp) and from
-        `add_frontend_connection` — both are "the browser is still there"
-        signals. Cancels any existing timer and reschedules a fresh one
-        `_CLIENT_DEADLINE_S` out; on expiry `_on_client_deadline_expired`
-        force-clears the owner's frontend set and flows into the same tail
-        `remove_frontend_connection` takes on a normal disconnect (arms
-        `_grace_close`, Task 12's veto ladder).
-
-        No-ops when the owner has no registered frontend connection — the
-        timer must exist only while there is a connection set for it to
-        eventually clear (guards a stray/late ping racing a disconnect).
-        Also no-ops (best-effort) when there is no running event loop, which
-        never happens in production (both callers run inside a live FastAPI
-        request coroutine) but keeps this safe to call from synchronous test
-        contexts.
-        """
-        self._cancel_client_deadline(owner_id)
-        if not self._frontend_connections.get(owner_id):
-            return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-        handle = loop.call_later(_CLIENT_DEADLINE_S, self._fire_client_deadline, owner_id)
-        self._client_deadline_handles[owner_id] = handle
-
-    def _cancel_client_deadline(self, owner_id: str) -> None:
-        """Cancel + drop the owner's client-liveness timer, if any.
-
-        Idempotent — safe to call whether or not a timer is currently armed.
-        Called on every path that empties (or might empty)
-        `_frontend_connections[owner_id]`: `remove_frontend_connection` (when
-        the set drains) and `close_user` (defense in depth — always cancels,
-        even off a path that didn't go through `remove_frontend_connection`).
-        """
-        handle = self._client_deadline_handles.pop(owner_id, None)
-        if handle is not None:
-            handle.cancel()
-
-    def _fire_client_deadline(self, owner_id: str) -> None:
-        """`TimerHandle` callback (sync, runs on the event loop thread).
-
-        Just spawns the async expiry check — `_on_client_deadline_expired`
-        needs to await `remove_frontend_connection`'s downstream
-        `_grace_close` task creation and touches `_frontend_connections`,
-        neither of which a bare callback can do directly.
-        """
-        self._client_deadline_handles.pop(owner_id, None)
-        asyncio.create_task(self._on_client_deadline_expired(owner_id))
-
-    async def _on_client_deadline_expired(self, owner_id: str) -> None:
-        """No ping (or reconnect) arrived for `_CLIENT_DEADLINE_S` — presume
-        a lost `$disconnect` and recover it.
-
-        Re-reads `_frontend_connections` at fire time rather than trusting
-        any captured state, so a set that already emptied via a different
-        path (e.g. a dead-connection prune inside `GatewayConnection`) is a
-        harmless no-op here — nothing to force-clear, nothing to arm.
-
-        When the set is non-empty, force-clears it by routing every
-        registered connection id through `remove_frontend_connection` — the
-        SAME function a normal `$disconnect` calls — so the last removal
-        arms `_grace_close` exactly the way Task 12 already verified. This
-        deliberately does not duplicate any of that veto logic; it only
-        recovers the missing disconnect signal.
-        """
-        fcs = self._frontend_connections.get(owner_id)
-        if not fcs:
-            return
-        logger.warning(
-            "Client liveness deadline expired for owner=%s (no ping in %ss) — "
-            "force-clearing %d stale frontend connection(s)",
-            owner_id,
-            _CLIENT_DEADLINE_S,
-            len(fcs),
-        )
-        put_metric("gateway.client_deadline.expired")
-        for conn_id in list(fcs):
-            self.remove_frontend_connection(owner_id, conn_id)
-
-    def remove_frontend_connection(self, user_id: str, connection_id: str) -> None:
-        """Unregister a frontend connection. Start grace period if none remain."""
-        fcs = self._frontend_connections.get(user_id)
-        if fcs:
-            fcs.discard(connection_id)
-
-        # Bust the recipient cache so a removed tab stops receiving events
-        # promptly rather than lingering in a cached set for up to the TTL.
-        conn = self._connections.get(user_id)
-        if conn is not None:
-            conn.invalidate_recipients_cache()
-
-        if not fcs:
-            # No frontends left. Normal disconnects supersede the client-
-            # liveness deadline entirely — it must never outlive an empty
-            # connection set (it would otherwise fire later and no-op, but
-            # cancelling promptly keeps `_client_deadline_handles` honest).
-            self._cancel_client_deadline(user_id)
-            # Start grace period if no frontend connections remain AND a
-            # gateway connection actually exists to tear down.
-            if user_id in self._connections:
-                self._grace_tasks[user_id] = asyncio.create_task(self._grace_close(user_id))
-
-    def arm_idle_teardown_if_unattended(self, user_id: str) -> None:
-        """Arm the standard grace-close for a gateway connection that exists
-        with no frontend registered on this task.
-
-        ``remove_frontend_connection`` is otherwise the ONLY armer of
-        ``_grace_close`` — it fires on a frontend *leaving*. A connection
-        created while the frontend set is already empty (the status poll's
-        self-heal dial: a status-only client, or a browser whose WS landed
-        on a different backend task) never traverses that path, so nothing
-        would ever close it: it refreshes gateway liveness indefinitely and,
-        for a trial owner, keeps a scaled-to-zero-eligible container running
-        with nobody attached.
-
-        Safe to over-arm: ``_grace_close`` re-checks the frontend set at
-        fire time, and ``_maybe_stop_trial_container`` re-checks cross-task
-        DDB truth (live chat connections, operator runs) before stopping
-        anything — so arming here can only over-preserve, never over-kill.
-        No-op when a frontend IS registered here or when no connection
-        exists.
-
-        A PENDING grace task IS coverage — even one that belongs to the
-        PREVIOUS connection (parked in the post-close trial-stop sleep
-        while a status poll dialed a replacement) — because every grace
-        task re-runs this arm on its way out (``_grace_close``'s finally):
-        however it exits — stop completed, stop vetoed, or cancelled — it
-        re-arms a fresh cycle if an unattended connection exists at that
-        moment. Deliberately NO cancellation of a pending task here: a
-        cancel landing while the old task is inside ``close_user`` would
-        abandon the old connection's drain mid-flight (leaked reader task
-        and socket), and shielding the drain instead lets its completion
-        erase a returning client's registration — both were real review
-        findings. Skip-and-let-it-finish has neither problem.
-        """
-        if self._frontend_connections.get(user_id):
-            return
-        if user_id not in self._connections:
-            return
-        existing = self._grace_tasks.get(user_id)
-        if existing is not None and not existing.done() and existing is not asyncio.current_task():
-            return
-        self._grace_tasks[user_id] = asyncio.create_task(self._grace_close(user_id))
-
-    def broadcast_to_owner(self, owner_id: str, event: str, payload: dict) -> None:
-        """Push a generic ``{type: "event"}`` frame to every frontend WS
-        registered for *owner_id*.
-
-        Pool-level (keyed off ``_frontend_connections`` only) rather than
-        routed through a ``GatewayConnection`` — deliberately independent of
-        whether an OpenClaw gateway connection exists yet, since a billing or
-        Paperclip write (e.g. ``needs_signup`` -> ``provisioning``) can land
-        before the container itself is up. Mirrors
-        ``GatewayConnection._emit_status_change``'s enqueue shape but fans out
-        to the whole owner rather than one connection's own frontend set.
-
-        Never raises: ``FrameSender.enqueue`` never raises, and a Gone
-        recipient is pruned via ``on_gone`` the same way every other
-        pool-level push handles it. See ``core.services.status_events.
-        publish_status_changed`` for the primary caller.
-        """
-        message = {"type": "event", "event": event, "payload": payload}
-
-        async def _on_gone(conn_id: str) -> None:
-            fcs = self._frontend_connections.get(owner_id)
-            if fcs:
-                fcs.discard(conn_id)
-            put_metric("gateway.frontend.prune")
-
-        for conn_id in list(self._frontend_connections.get(owner_id, ())):
-            self._sender.enqueue(conn_id, message, on_gone=_on_gone)
-
-    async def _grace_close(self, user_id: str) -> None:
-        """Wait the grace period, then close the gateway connection if still idle.
-
-        Guard: while a run is still in flight for this owner, HOLD the connection
-        open (bounded by _PUSH_GRACE_CEILING_S) so the reader loop still observes
-        run_ended and can fire the completion push — even with no client attached
-        (e.g. a phone that sent then closed). Clients re-appearing cancels this
-        task via remove/add_frontend_connection, so the loop also exits when a
-        client returns.
-
-        Then, for free-tier (``trial_local``) owners, a second and longer grace
-        follows the WS close: if the owner still has no live chat clients, no
-        in-flight webchat run and no parked connection, the container itself is
-        stopped (desiredCount=0) via ``_maybe_stop_trial_container``. Event-driven
-        only — this task exists solely because a last-disconnect event armed it;
-        the wake path is the existing GET /container/status auto-retry (cap-gated).
-
-        ``conn.has_active_runs`` is a ``@property``; the pool-level
-        ``self.has_active_runs(owner)`` is a method. Both are used below.
-        """
-        try:
-            await asyncio.sleep(_GRACE_PERIOD)
-            waited = 0.0
-            while not self._frontend_connections.get(user_id) and waited < _PUSH_GRACE_CEILING_S:
-                conn = self._connections.get(user_id)
-                if conn is None or not conn.has_active_runs:
-                    break
-                await asyncio.sleep(_ACTIVE_RUN_POLL_S)
-                waited += _ACTIVE_RUN_POLL_S
-            if self._frontend_connections.get(user_id):
-                return  # a client came back while we held the connection open
-
-            # Decide trial-ness AND run-state BEFORE close_user: afterwards the
-            # GatewayConnection is popped, so has_active_runs/is_parked would
-            # always read "no connection" and could never see a run that was live
-            # at close time. A run still in flight here (the push-grace ceiling
-            # lapsed with one running) means the container is actively working
-            # even though the last tab closed — the trial-stop arm must NOT be
-            # armed on top of it. (Lazy billing_repo import matches gate_chat:
-            # core.containers imports this module, so a top-level repo import
-            # would be circular.)
-            from core.repositories import billing_repo
-
-            # A failed billing read must not skip close_user (the behavior this
-            # method has always guaranteed) — treat the owner as non-trial and
-            # fall through to the plain WS close.
-            try:
-                account = await billing_repo.get_by_owner_id(user_id)
-            except Exception:
-                logger.exception("grace-close billing read failed user=%s", user_id)
-                account = None
-            is_trial = bool(account) and account.get("subscription_status") == "trial_local"
-            run_in_flight = self.has_active_runs(user_id) or self.is_parked(user_id)
-            # Captured BEFORE close_user pops the connection: the stop's
-            # replacement veto needs to tell a genuinely new connection's
-            # liveness row apart from THIS connection's own leftover row
-            # (mark_gateway_disconnected's conditioned delete can fail).
-            closed_conn = self._connections.get(user_id)
-            closed_conn_token = getattr(closed_conn, "_liveness_token", None)
-            await self.close_user(user_id)
-            if not (is_trial and not run_in_flight):
-                return
-            # close_user popped this task out of _grace_tasks; re-register it so a
-            # reconnect's add_frontend_connection cancels the extended sleep
-            # cleanly (defense in depth with the fire-time frontend re-check in
-            # _maybe_stop_trial_container). The grace task now outlives the WS
-            # close — nothing else keys teardown off _grace_tasks membership.
-            self._grace_tasks[user_id] = asyncio.current_task()
-            try:
-                await asyncio.sleep(_TRIAL_STOP_GRACE_S)
-                await self._maybe_stop_trial_container(user_id, closed_conn_token=closed_conn_token)
-            finally:
-                if self._grace_tasks.get(user_id) is asyncio.current_task():
-                    self._grace_tasks.pop(user_id, None)
-        except asyncio.CancelledError:
-            pass
-        finally:
-            # Exit guarantee for arm_idle_teardown_if_unattended's
-            # skip-if-pending: a status poll may have dialed a REPLACEMENT
-            # connection while this task was mid-cycle (most likely during
-            # the post-close trial-stop sleep), and the arm deliberately
-            # treated this pending task as coverage. Make that true: on the
-            # way out — stop completed, stop vetoed, or cancelled — re-arm a
-            # fresh cycle if an unattended connection exists right now. The
-            # arm's own guards make this a no-op in every other exit: a
-            # returning client (cancel path) has a registered frontend, and
-            # a normally-completed cycle closed its connection.
-            self.arm_idle_teardown_if_unattended(user_id)
-
-    async def _maybe_stop_trial_container(
-        self, owner_id: str, trigger: str = "grace", closed_conn_token: str | None = None
-    ) -> None:
-        """Stop a trial container that provably has nobody using it.
-
-        Every check must pass; any doubt = don't stop (over-preserve, never
-        over-kill — the container costs ~$0.02/hr, a killed run costs trust).
-        Re-checks ``trial_local`` at fire time so an owner who converted to a
-        paid plan during the grace is never stopped out from under their first
-        paid session (the stop deliberately keys on ``subscription_status``,
-        not a container-row stamp that could lag the conversion).
-
-        Also called directly by Tasks 13/14 with a different *trigger* metric
-        dimension. Those callers may invoke while a GatewayConnection still
-        exists, so the has_active_runs/is_parked vetoes below are load-bearing
-        there. In the grace path they always read "no connection" (close_user
-        already ran) — the meaningful vetoes there are the frontend re-check,
-        the trial re-read, and the cross-task live-chat count.
-        """
-        try:
-            if self._frontend_connections.get(owner_id):
-                return  # a client reconnected on this task
-            # Grace path only: the cycle that armed this stop closed its own
-            # connection before the stop-grace sleep, so ANY connection
-            # present now is a REPLACEMENT (a status-poll self-heal dial
-            # that landed mid-sleep). It must not be stopped on the old
-            # cycle's deadline — skip; the old task's exit re-arm gives it
-            # a full fresh cycle of its own. Direct callers (trigger !=
-            # "grace") deliberately stop despite a live connection — their
-            # has_active_runs/is_parked vetoes are the fence there.
-            if trigger == "grace" and owner_id in self._connections:
-                return
-            from core.repositories import billing_repo
-
-            account = await billing_repo.get_by_owner_id(owner_id)
-            if not account or account.get("subscription_status") != "trial_local":
-                return
-            if self.has_active_runs(owner_id) or self.is_parked(owner_id):
-                return  # in-flight/parked webchat run — never kill mid-turn
-            if await self._conn_svc.count_live_chat_connections(owner_id) > 0:
-                return  # cross-task truth: another backend task holds a live tab
-            if await self._conn_svc.has_live_operator_connection(owner_id):
-                # A Paperclip run is executing RIGHT NOW. has_active_runs above
-                # is webchat-only and is blind to it: a trial owner who posts a
-                # Teams comment and closes their tab has a live Friday run the
-                # pool never sees. Stopping the container under it kills a
-                # legitimate turn — over-kill, which this ladder forbids. The
-                # adapter opens its WS in execute() and closes it when the run
-                # ends, so the connection's existence IS the run.
-                return
-            # Final re-check under the pool's connect lock, immediately
-            # before the irreversible stop. The entry veto above is
-            # TOCTOU-exposed two ways: a replacement dial mid-handshake has
-            # not been inserted into _connections yet, and an insert can
-            # land during the awaited billing / connection-service reads.
-            # Serializing on _lock closes both for any dial that began
-            # before this point — it has either inserted its connection
-            # (veto) or failed. A dial starting after is indistinguishable
-            # from one starting right after the stop; both fail fast
-            # against a stopping container and self-correct on the next
-            # presence-backed wake poll.
-            # Final re-checks for EVERY trigger, immediately before the
-            # irreversible stop. Both production callers need them: the
-            # grace path races replacement dials (mid-handshake or landing
-            # during the awaited reads above), and boot_reconcile — a NEW
-            # worker sweeping "running" rows during a rolling deploy — is
-            # blind to a live connection an EXISTING worker holds. The
-            # locked local check is a free no-op at boot (empty pool).
-            async with self._lock:
-                if owner_id in self._connections or self._frontend_connections.get(owner_id):
-                    return
-            # The lock above is process-local; the durable cross-worker
-            # signal is the gateway-liveness row (mark_gateway_connected).
-            # Compare TOKENS, not mere presence: the grace cycle's own
-            # row's conditioned delete can fail, and a leftover row
-            # refreshed just before close is still inside the freshness
-            # window at stop-fire time — treating it as a replacement
-            # would veto the stop with nothing left to re-arm it (the
-            # container would run indefinitely). A fresh row bearing a
-            # DIFFERENT token than the connection the caller just closed
-            # (or ANY token, for boot_reconcile's closed_conn_token=None)
-            # is a live connection somewhere — the worker holding it owns
-            # teardown; a row bearing the closed connection's own token is
-            # its stale leftover and no reason to keep the container up.
-            live_token = await self._conn_svc.get_live_gateway_conn_token(owner_id)
-            if live_token is not None and live_token != closed_conn_token:
-                return
-            # One last SYNCHRONOUS local look after the awaited read above:
-            # a local dial can acquire the connect lock the moment our
-            # locked check released it, complete its handshake, and insert
-            # into _connections while the DDB read was in flight — and its
-            # own liveness write is dispatched async, so the strong read
-            # cannot see it either. A dict lookup here closes that local
-            # window; the residual (an insert landing between this line and
-            # the ECS call) is irreducible without a distributed fence and
-            # self-corrects on the next presence-backed wake poll.
-            if owner_id in self._connections:
-                return
-
-            from core.containers import get_ecs_manager
-
-            await get_ecs_manager().stop_user_service(owner_id, reason="trial_idle")
-            put_metric("gateway.trial_scale_to_zero", dimensions={"trigger": trigger})
-        except Exception:
-            logger.exception("trial scale-to-zero check failed owner=%s", owner_id)
+        async with self._lock:
+            conn = self._connections.get(owner_id)
+            if conn is None:
+                return True
+            if conn.has_active_runs or conn._parked:
+                return False
+            self._connections.pop(owner_id, None)
+        await conn.close()
+        await conn.drain_liveness_write()
+        return True
 
     async def close_user(self, user_id: str) -> None:
         """Close gateway connection for a user."""
@@ -3740,16 +3029,6 @@ class GatewayConnectionPool:
             # leaving a dead worker's row falsely "ready" for the
             # freshness window.
             await conn.drain_liveness_write()
-        self._frontend_connections.pop(user_id, None)
-        self._grace_tasks.pop(user_id, None)
-        # This pops the whole frontend-connection entry regardless of
-        # whether it was already emptied via `remove_frontend_connection` —
-        # defense in depth so the client-liveness deadline can never outlive
-        # the connection set it protects (see `_cancel_client_deadline`).
-        self._cancel_client_deadline(user_id)
-        # Drop the reconnect-floor entry so a fresh user (e.g. someone who
-        # signed out and back in on the same backend task) doesn't inherit
-        # a stale throttle from the previous session.
         self._last_reconnect_at.pop(user_id, None)
         # Same rationale as the reconnect-floor pop above: a torn-down user
         # must not leave auth-backoff state behind for a future incarnation
@@ -3758,129 +3037,20 @@ class GatewayConnectionPool:
         self._auth_backoff_until.pop(user_id, None)
         self._auth_failures.pop(user_id, None)
 
-    async def broadcast_to_member(self, owner_id: str, member_user_id: str, message: dict) -> None:
-        """Send a message to the owner's chat tabs, demuxed to one org member.
-
-        For personal accounts (``owner_id == member_user_id``) it broadcasts to
-        all of the owner's chat connections; for org accounts it demuxes to
-        *member_user_id*'s connections only.
-
-        Routes through the pool-level owner-keyed fan-out (``query_by_owner`` on
-        the by-owner-id GSI), NOT through a ``GatewayConnection``. The node-status
-        path that calls this (``node_proxy.handle_node_connect``/disconnect)
-        creates a ``NodeUpstreamConnection``, not a chat ``GatewayConnection`` —
-        so requiring one here meant a status ping landing on a task with no
-        active chat for the owner silently dropped (and at N>1 it would miss the
-        member's tab on another task entirely). The pool path needs no
-        per-owner ``GatewayConnection`` to exist.
-        """
-        target = None if owner_id == member_user_id else member_user_id
-        await self._fanout_to_owner(owner_id, message, target_member_id=target)
-
-    async def _fanout_to_owner(self, owner_id: str, message: dict, target_member_id: Optional[str] = None) -> None:
-        """Owner-keyed fan-out reachable WITHOUT a ``GatewayConnection``.
-
-        Queries the by-owner-id GSI directly via the pool's ``ConnectionService``
-        and delivers through the shared chat-filter/demux helper, so any backend
-        instance can push to an owner's tabs even when no chat gateway connection
-        exists on this task. On a query failure we log and drop (DynamoDB is the
-        single source of truth — no in-process fallback).
-        """
-        try:
-            recipients = await self._conn_svc.query_by_owner(owner_id)
-        except Exception:
-            logger.exception(
-                "owner fan-out query failed for owner=%s — dropping broadcast",
-                owner_id,
-            )
-            return
-
-        async def _on_gone(conn_id: str) -> None:
-            await self._prune_owner_connection(owner_id, conn_id)
-
-        _deliver_to_recipients(recipients, message, target_member_id, self._sender, on_gone=_on_gone)
-
-    async def _prune_owner_connection(self, owner_id: str, conn_id: str) -> None:
-        """Best-effort prune of a gone connection seen during a pool-level
-        broadcast: delete the ws-connections row and, if a ``GatewayConnection``
-        exists for this owner on this task, drop the id from its in-process set +
-        bust its recipient cache so a subsequent chat stream re-queries."""
-        try:
-            await asyncio.to_thread(self._conn_svc.delete_connection, conn_id)
-        except Exception:
-            logger.warning("failed to prune dead conn %s", conn_id, exc_info=True)
-        fcs = self._frontend_connections.get(owner_id)
-        if fcs:
-            fcs.discard(conn_id)
-        conn = self._connections.get(owner_id)
-        if conn is not None:
-            conn.invalidate_recipients_cache()
-        # Observability parity with GatewayConnection._prune_dead_conn so node-path
-        # prunes are visible in CloudWatch too.
-        put_metric("gateway.frontend.prune")
-        logger.info("Pruned gone frontend connection %s for owner %s", conn_id, owner_id)
-
     async def close_all(self) -> None:
-        """Shutdown: close all connections concurrently, then drain delivery."""
-        # Fence new dials (see ensure_connection), then serialize with any
-        # in-flight one: it holds _lock through connection insertion, so
-        # passing through the lock once here guarantees every dial that
-        # began before shutdown has either inserted — and is in the
-        # snapshot below — or will refuse on the flag. Without this, a
-        # status-poll self-heal dial landing mid-shutdown leaves a live
-        # reader plus a fresh liveness row that makes other workers read
-        # this owner as "ready" off a dead process for up to 180s.
+        """Fence new dials, close machine connections, and drain liveness."""
         self._closing = True
         async with self._lock:
             pass
-        # Capture the connection objects BEFORE the close gather pops them:
-        # close() only SCHEDULES the terminal liveness delete, so shutdown
-        # must drain those writes afterwards or lifespan teardown can cancel
-        # a queued delete while the preceding connect put still lands —
-        # leaving a dead process's row falsely "ready" for the freshness
-        # window. Bounded like the sender flush below: a wedged DDB call
-        # must not hang shutdown.
         conns = list(self._connections.values())
         await asyncio.gather(
-            *(self.close_user(uid) for uid in list(self._connections.keys())),
+            *(self.close_user(owner_id) for owner_id in list(self._connections)),
             return_exceptions=True,
         )
-        # Each drain is self-bounded and shield-protected, so this gather
-        # completes within the drain timeout without cancelling any write.
-        await asyncio.gather(*(c.drain_liveness_write() for c in conns), return_exceptions=True)
-        # A grace task mid-close_user has already POPPED its connection, so
-        # the snapshot above missed it — close_user does not run under
-        # _lock, so the lock pass-through cannot make the snapshot complete
-        # for that path. close_user now drains the terminal delete before
-        # returning, so briefly OBSERVING the active grace tasks is enough
-        # to land those writes too. asyncio.wait, never wait_for(gather):
-        # wait does NOT cancel unfinished tasks on timeout, so a grace task
-        # parked in its 30s/150s sleep (normal at shutdown) or one whose
-        # close drains run long simply keeps running instead of being
-        # cancelled mid-cleanup — the exact abandonment this drain exists
-        # to prevent.
-        grace = [t for t in self._grace_tasks.values() if t is not None and not t.done()]
-        if grace:
-            done, pending = await asyncio.wait(grace, timeout=5.0)
-            if pending:
-                logger.debug(
-                    "%d grace task(s) still pending at shutdown (normal when parked in a grace sleep)",
-                    len(pending),
-                )
-        # Drain any detached background closes (changed-IP recreate) still in
-        # flight: they were popped from `_connections`, so the snapshot above
-        # missed them, yet they carry the same billing/liveness drains shutdown
-        # must not abandon. Bounded like the grace drain — a wedged close keeps
-        # running rather than being cancelled mid-cleanup.
-        bg = [t for t in self._background_close_tasks if not t.done()]
-        if bg:
-            await asyncio.wait(bg, timeout=5.0)
-        # Flush queued frontend frames (close() above enqueues final
-        # status_change frames) so shutdown doesn't cancel deliveries mid-send.
-        try:
-            await asyncio.wait_for(self._sender.flush(), timeout=5.0)
-        except Exception:
-            logger.warning("Frame sender flush timed out during shutdown", exc_info=True)
+        await asyncio.gather(*(conn.drain_liveness_write() for conn in conns), return_exceptions=True)
+        active_closes = [task for task in self._background_close_tasks if not task.done()]
+        if active_closes:
+            await asyncio.wait(active_closes, timeout=5.0)
 
     async def emit_running_gauges(self) -> None:
         """Emit gateway-running-count gauges. Called by the lifespan loop.
@@ -3939,6 +3109,21 @@ def _is_session_run_active(payload: dict) -> bool:
     if isinstance(has_active_run, bool):
         return has_active_run
     return status == "running"
+
+
+def parse_lightbulb_session_key(session_key: str) -> dict[str, str] | None:
+    """Parse exactly ``agent:<uuid>:lightbulb:channel:<room-uuid>``."""
+    parts = session_key.split(":") if isinstance(session_key, str) else []
+    if len(parts) != 5 or parts[0] != "agent" or parts[2:4] != ["lightbulb", "channel"]:
+        return None
+    try:
+        agent_id = str(uuid.UUID(parts[1]))
+        room_id = str(uuid.UUID(parts[4]))
+    except ValueError:
+        return None
+    if agent_id != parts[1].lower() or room_id != parts[4].lower():
+        return None
+    return {"agent_id": agent_id, "room_id": room_id}
 
 
 def _parse_session_key(session_key: str) -> dict:

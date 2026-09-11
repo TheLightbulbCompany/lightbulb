@@ -37,7 +37,7 @@ export function InlineTeamsPanel({
   leaveToList?: (listPanelKey: string) => void;
   panelParams?: Record<string, string>;
   onConsumeOneShot?: (key: "new" | "newIssue") => void;
-  onUpdateDurableParam?: (key: "agent" | "path", value: string | null) => void;
+  onUpdateDurableParam?: (key: "agent" | "path" | "day", value: string | null) => void;
 }): React.ReactElement {
   const teamsPanel = panel.slice(TEAMS_PANEL_PREFIX.length);
   // Mirror the workspace-status gate /teams applies in TeamsLayout: surface the

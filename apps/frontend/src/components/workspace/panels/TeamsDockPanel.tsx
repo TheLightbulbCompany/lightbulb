@@ -16,8 +16,11 @@ interface TeamsDockPanelParams {
   teamsKey: string; // "inbox" | "issues" | … | "issue-detail" | …
   detailId?: string;
   agent?: string; // durable issues filter
-  tab?: string; // durable inbox band deep link
+  groupBy?: string; // durable Tasks grouping (the absorbed Goals/Projects keys)
+  view?: string; // durable Agents view (the absorbed org-chart key)
   path?: string; // durable brain page deep link
+  day?: string; // durable money day scope
+  section?: string; // durable Money / Inbox section (the absorbed keys)
   new?: string; // one-shot, re-delivered via updateParameters
   newIssue?: string; // one-shot
 }
@@ -52,8 +55,11 @@ export function TeamsDockPanel(props: IDockviewPanelProps<TeamsDockPanelParams>)
         detailId={params.detailId ?? null}
         panelParams={{
           ...(params.agent ? { agent: params.agent } : {}),
-          ...(params.tab ? { tab: params.tab } : {}),
+          ...(params.groupBy ? { groupBy: params.groupBy } : {}),
+          ...(params.view ? { view: params.view } : {}),
           ...(params.path ? { path: params.path } : {}),
+          ...(params.day ? { day: params.day } : {}),
+          ...(params.section ? { section: params.section } : {}),
           ...(params.new ? { new: params.new } : {}),
           ...(params.newIssue ? { newIssue: params.newIssue } : {}),
         }}

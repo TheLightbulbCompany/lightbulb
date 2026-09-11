@@ -2,23 +2,24 @@
 // mobile shell is not it.
 //
 // The bug this pins: MobileChatShell used to canonicalize a retired ?panel key
-// in the address bar (?panel=dreams → ?panel=teams-brain, replace-only). On a
-// DESKTOP viewport that rewrite still ran — useIsDesktop's server snapshot is
-// false, so ChatPageInner mounts the mobile branch for the hydration render
-// (chatPageBranch.test.tsx pins that branch contract), React flushes that
-// child's passive effects, and only later does the dynamically-imported
-// WorkspaceShell load and read window.location.search. By then the raw key was
-// gone, so describePanel's `panelKey === "dreams"` branch — the thing that
-// carries a retired panel's meaning onto its successor — could never fire and
-// Brain opened on Notes.
+// in the address bar (replace-only). On a DESKTOP viewport that rewrite still
+// ran — useIsDesktop's server snapshot is false, so ChatPageInner mounts the
+// mobile branch for the hydration render (chatPageBranch.test.tsx pins that
+// branch contract), React flushes that child's passive effects, and only later
+// does the dynamically-imported WorkspaceShell load and read
+// window.location.search. By then the raw key was gone, so describePanel's
+// pre-alias branch — the thing that carries a retired panel's meaning onto its
+// successor — could never fire, and the successor opened on its default view.
+// (It was ?panel=dreams → Brain's Dreams tab then; today the live case is
+// ?panel=teams-org-chart → the Agents panel's chart view.)
 //
 // workspaceShellUrl.test.ts already covers the dock's chain, but it feeds
-// deriveReconcilerAction a hardcoded "?panel=dreams" string and never mounts
-// ChatPage, so it stayed green throughout. These tests mount the real page and
-// assert against the LIVE window.location.search, which is where the rewrite
-// was observable.
+// deriveReconcilerAction a hardcoded search string and never mounts ChatPage,
+// so it stayed green throughout. These tests mount the real page and assert
+// against the LIVE window.location.search, which is where the rewrite was
+// observable.
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import React from "react";
 
 // Faithful to the App Router: useSearchParams tracks the live query string
@@ -35,10 +36,22 @@ vi.mock("@/hooks/useIsDesktop", () => ({ useIsDesktop: () => false }));
 // ChatLayout reduced to a pass-through so the inline Teams mount below is
 // reached (the sibling chatPageBranch.test.tsx swallows children instead —
 // it asserts which shell mounts, not what the shell threads down).
+// The shell hands ChatLayout its `onPanelChange` (setActivePanel) — captured
+// so a test can perform a plain sidebar nav without mounting the real nav.
+const layout = vi.hoisted(() => ({ onPanelChange: (() => {}) as (next: string) => void }));
 vi.mock("@/components/chat/ChatLayout", () => ({
-  ChatLayout: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  ChatLayout: ({
+    children,
+    onPanelChange,
+  }: {
+    children: React.ReactNode;
+    onPanelChange?: (next: string) => void;
+  }) => {
+    if (onPanelChange) layout.onPanelChange = onPanelChange;
+    return <div>{children}</div>;
+  },
 }));
-vi.mock("@/components/chat/AgentChatWindow", () => ({ AgentChatWindow: () => null }));
+vi.mock("@/components/messaging/MessagingWorkspace", () => ({ MessagingWorkspace: () => null }));
 vi.mock("@/components/notifications/RunNotifications", () => ({ RunNotifications: () => null }));
 // Echo the params the shell derives from the URL; keep the real key helpers.
 vi.mock("@/components/chat/InlineTeamsPanel", async (importOriginal) => ({
@@ -48,21 +61,22 @@ vi.mock("@/components/chat/InlineTeamsPanel", async (importOriginal) => ({
       data-testid="inline-teams"
       data-panel={props.panel}
       data-tab={props.panelParams?.tab ?? ""}
+      data-view={props.panelParams?.view ?? ""}
     />
   ),
 }));
 
-vi.mock("@/hooks/useGateway", () => ({
-  GatewayProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  // Shape-faithful: MobileChatShell → useAgents → useGatewayRpc destructures
-  // these and calls onEvent in a passive effect.
-  useGateway: () => ({
-    sendReq: vi.fn().mockResolvedValue({}),
-    onEvent: () => () => {},
-    onChatMessage: () => () => {},
-    isParked: false,
-    isConnected: false,
-  }),
+// This fixture covers URL ownership, not network lifecycle. Stub the current
+// boundaries: retired Gateway/AgentChatWindow mocks left real SWR requests
+// running after jsdom teardown when the native messaging shell replaced them.
+vi.mock("@/hooks/useLiveEvents", () => ({
+  LiveEventsProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+vi.mock("@/hooks/useAgents", () => ({
+  useAgents: () => ({ agents: [], defaultId: null, isLoading: false, isSettled: true }),
+}));
+vi.mock("@/hooks/useQuestions", () => ({
+  QuestionsProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 vi.mock("@/hooks/useExecApprovals", () => ({
   ExecApprovalsProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -79,39 +93,45 @@ import { describePanel } from "@/components/workspace/panelRegistry";
 import { deriveReconcilerAction } from "@/components/workspace/workspaceShellReconciler";
 import { TeamsPanelRouter } from "@/components/teams/TeamsPanelRouter";
 
-describe("/chat — the shell never rewrites the URL command", () => {
+describe("/chat — a retired ?panel=teams-org-chart lands on the Agents chart view", () => {
   beforeEach(() => {
-    window.history.replaceState(null, "", "/chat?panel=dreams");
+    window.history.replaceState(null, "", "/chat?panel=teams-org-chart");
   });
 
-  it("leaves a retired ?panel key in the address bar, and lands mobile on Dreams", () => {
+  it("does not leave real network requests running behind the URL-only fixture", async () => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(JSON.stringify({}), { status: 200 }));
+    await act(async () => { render(<ChatPage />); });
+    expect(window.location.search).toBe("?panel=teams-org-chart");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("leaves the retired key in the address bar, and lands mobile on the chart", () => {
     render(<ChatPage />);
-
-    // The rewrite was a replaceState in a passive effect — already flushed.
-    expect(window.location.search).toBe("?panel=dreams");
-
+    expect(window.location.search).toBe("?panel=teams-org-chart");
     const inline = screen.getByTestId("inline-teams");
-    expect(inline).toHaveAttribute("data-panel", "teams-brain"); // resolved at READ time
-    expect(inline).toHaveAttribute("data-tab", "dreams");
+    expect(inline).toHaveAttribute("data-panel", "teams-agents"); // resolved at READ time
+    expect(inline).toHaveAttribute("data-view", "chart");
   });
 
-  it("desktop dock still resolves ?panel=dreams to Brain's Dreams tab after the mobile branch has mounted", () => {
+  it("a plain sidebar nav clears the view — mobile has no clearablePanelParamKeys", () => {
     render(<ChatPage />);
+    act(() => layout.onPanelChange("teams-issues"));
+    const params = new URLSearchParams(window.location.search);
+    expect(params.get("panel")).toBe("teams-issues");
+    expect(params.get("view")).toBeNull();
+  });
 
-    // Everything below is the real desktop chain, fed the LIVE search string
-    // the way WorkspaceShell.onReady feeds it (window.location.search, not a
-    // literal) — that substitution is the whole point of this test.
+  it("desktop dock resolves it to ONE Agents panel on the chart view", () => {
+    render(<ChatPage />);
     const decision = deriveReconcilerAction(window.location.search, null)!;
     const descriptor = describePanel(decision.panelKey!, decision.durableParams)!;
-    expect(descriptor.panelId).toBe("teams-brain");
+    expect(descriptor.panelId).toBe("teams-agents");
 
-    // addOrFocus's create branch passes descriptor.params to addPanel verbatim,
-    // and TeamsDockPanel forwards them as panelParams (both pinned by
-    // workspaceShellUrl.test.ts / TeamsDockPanel.test.tsx).
     const element = TeamsPanelRouter({
       panel: descriptor.params.teamsKey,
       panelParams: descriptor.params,
-    }) as React.ReactElement<{ initialTab: string | null }>;
-    expect(element.props.initialTab).toBe("dreams");
+    }) as React.ReactElement<{ initialView: string | null }>;
+    expect(element.props.initialView).toBe("chart");
   });
 });

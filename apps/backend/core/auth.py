@@ -77,6 +77,8 @@ class AuthContext:
     # surfaces who each customer belongs to (including bail-outs who clicked
     # Subscribe but never completed Checkout).
     email: str | None = None
+    # Immutable JWT provenance; display/email and tenant ownership are separate.
+    verified_issuer: str | None = None
 
     @property
     def is_org_context(self) -> bool:
@@ -95,13 +97,22 @@ class AuthContext:
 
 
 def resolve_owner_id(auth: AuthContext) -> str:
-    """Return the container/workspace owner: org_id if in org, else user_id."""
-    return auth.org_id if auth.is_org_context else auth.user_id
+    """Return the active organization workspace owner."""
+    if not auth.org_id:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "workspace_required",
+                "message": "Choose or create a workspace to continue.",
+            },
+        )
+    return auth.org_id
 
 
 def get_owner_type(auth: AuthContext) -> str:
-    """Return 'org' or 'personal' based on auth context."""
-    return "org" if auth.is_org_context else "personal"
+    """Return the owner type after requiring an active organization."""
+    resolve_owner_id(auth)
+    return "org"
 
 
 def is_org_owner_id(owner_id: str) -> bool:
@@ -116,8 +127,9 @@ def is_org_owner_id(owner_id: str) -> bool:
 
 
 def require_org_admin(auth: AuthContext) -> AuthContext:
-    """Raise 403 if user is in an org but not an admin. Personal context passes through."""
-    if auth.is_org_context and not auth.is_org_admin:
+    """Require an active organization whose current user is an admin."""
+    resolve_owner_id(auth)
+    if not auth.is_org_admin:
         put_metric("auth.org_admin.denied")
         raise HTTPException(status_code=403, detail="Organization admin access required")
     return auth
@@ -216,6 +228,7 @@ async def get_current_user(
             org_slug=org["org_slug"],
             org_permissions=org["org_permissions"],
             email=payload.get("email"),
+            verified_issuer=payload.get("iss"),
         )
         bind_request_context(request_id_var.get() or "", payload["sub"])
         return ctx
@@ -260,6 +273,7 @@ async def get_optional_user(
             org_slug=org["org_slug"],
             org_permissions=org["org_permissions"],
             email=payload.get("email"),
+            verified_issuer=payload.get("iss"),
         )
     except Exception:
         return None

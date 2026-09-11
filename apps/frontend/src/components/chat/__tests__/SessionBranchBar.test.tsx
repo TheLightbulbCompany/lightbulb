@@ -3,9 +3,9 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const mutate = vi.fn().mockResolvedValue(undefined);
-const useGatewayRpc = vi.fn();
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpc: (...args: unknown[]) => useGatewayRpc(...args),
+const useRuntimeRpc = vi.fn();
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpc: (...args: unknown[]) => useRuntimeRpc(...args),
 }));
 
 import { SessionBranchBar, type SessionBranch } from "@/components/chat/SessionBranchBar";
@@ -21,7 +21,7 @@ function branch(over: Partial<SessionBranch> = {}): SessionBranch {
 }
 
 function serve(branches: SessionBranch[] | undefined) {
-  useGatewayRpc.mockReturnValue({
+  useRuntimeRpc.mockReturnValue({
     data: branches ? { branches } : undefined,
     error: undefined,
     isLoading: false,
@@ -30,7 +30,7 @@ function serve(branches: SessionBranch[] | undefined) {
 }
 
 beforeEach(() => {
-  useGatewayRpc.mockReset();
+  useRuntimeRpc.mockReset();
   mutate.mockClear();
 });
 
@@ -116,6 +116,6 @@ describe("SessionBranchBar", () => {
   it("reads no branches at all without a session key", () => {
     serve(undefined);
     render(<SessionBranchBar sessionKey={null} onSwitch={vi.fn()} branchRefreshToken={0} />);
-    expect(useGatewayRpc).toHaveBeenCalledWith(null, undefined, expect.anything());
+    expect(useRuntimeRpc).toHaveBeenCalledWith(null, undefined, expect.anything());
   });
 });

@@ -15,7 +15,9 @@ from core.services.config_patcher import (  # noqa: E402
     apply_deploy_aux_mutations,
     delete_openclaw_config_path,
     delete_provider_level_channel_secrets,
+    deregister_lightbulb_agent_account,
     patch_openclaw_config,
+    register_lightbulb_agent_account,
     remove_from_openclaw_config_list,
     ensure_plugin_config_keys,
     replace_provider_block,
@@ -1090,7 +1092,9 @@ async def test_replace_provider_block_swaps_bedrock_for_chatgpt(tmp_efs_with_bed
     # amazon-bedrock dropped; bundled extensions survive the wholesale replace.
     assert result["plugins"]["entries"] == {
         **workflow_plugin_entries(),
-        **memory_plugin_entries(),
+        # Same owner id the swap ran under -- the dreaming minute is derived
+        # from it, so a bare call would compare against the un-jittered 03:00.
+        **memory_plugin_entries("user_p"),
     }
     assert "amazon-bedrock" not in result["plugins"]["entries"]
     assert result["agents"]["defaults"]["model"]["primary"] == "openai/gpt-5.5"
@@ -1233,7 +1237,7 @@ async def test_replace_provider_block_preserves_memory_core(tmp_efs_with_bedrock
     )
     with open(os.path.join(tmp_efs_with_bedrock_provider, "user_p", "openclaw.json")) as f:
         entries = json.load(f)["plugins"]["entries"]
-    assert entries["memory-core"] == memory_plugin_entries()["memory-core"]
+    assert entries["memory-core"] == memory_plugin_entries("user_p")["memory-core"]
     assert entries["memory-core"]["config"]["dreaming"]["enabled"] is True
     assert entries["memory-core"]["config"]["dreaming"]["phases"]["deep"] == {"enabled": False}
 
@@ -1274,7 +1278,7 @@ async def test_replace_provider_block_leaves_memory_search_enabled(tmp_efs_with_
     # The swap leaves memorySearch at its provisioned value — recall stays on.
     assert result["agents"]["defaults"]["memorySearch"]["enabled"] is True
     assert "memory-core" in result["plugins"]["entries"]
-    assert result["plugins"]["entries"]["memory-core"] == memory_plugin_entries()["memory-core"]
+    assert result["plugins"]["entries"]["memory-core"] == memory_plugin_entries("user_p")["memory-core"]
     # The provider-derived value survives untouched (no model key on FTS-only).
     assert result["agents"]["defaults"]["memorySearch"]["provider"] == "none"
     assert "model" not in result["agents"]["defaults"]["memorySearch"]
@@ -2057,13 +2061,13 @@ async def test_replace_provider_block_to_oauth_repins_all_provider_keys(bedrock_
     await replace_provider_block(
         "user_1",
         providers={},
-        default_model={"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.4"]},
+        default_model={"primary": "openai/gpt-5.6-sol", "fallbacks": ["openai/gpt-5.4"]},
         plugin_entries={},
         ceo_model=None,
         cheap_model=None,
-        heartbeat_model="openai/gpt-5.4-mini",
-        utility_model="openai/gpt-5.4-mini",
-        subagent_model="openai/gpt-5.5",
+        heartbeat_model="openai/gpt-5.6-luna",
+        utility_model="openai/gpt-5.6-luna",
+        subagent_model="openai/gpt-5.6-sol",
         llm_task_model=None,
         web_search_provider="parallel-free",
         tool_search_mode=None,
@@ -2077,14 +2081,14 @@ async def test_replace_provider_block_to_oauth_repins_all_provider_keys(bedrock_
     assert "model" not in defaults["compaction"]["memoryFlush"]
     assert defaults["compaction"]["midTurnPrecheck"] == {"enabled": True}
 
-    # Heartbeat is an ordinary turn the OAuth token CAN serve on mini — it is
+    # Heartbeat is an ordinary turn the OAuth token CAN serve on Luna — it is
     # re-pinned, NOT deleted with the compaction slots. Siblings survive.
-    assert defaults["heartbeat"]["model"] == "openai/gpt-5.4-mini"
+    assert defaults["heartbeat"]["model"] == "openai/gpt-5.6-luna"
     assert defaults["heartbeat"]["every"] == "30m"
     assert defaults["heartbeat"]["isolatedSession"] is True
 
-    assert defaults["utilityModel"] == "openai/gpt-5.4-mini"
-    assert defaults["subagents"]["model"] == "openai/gpt-5.5"
+    assert defaults["utilityModel"] == "openai/gpt-5.6-luna"
+    assert defaults["subagents"]["model"] == "openai/gpt-5.6-sol"
     assert defaults["subagents"]["allowAgents"] == ["*"]
     assert defaults["subagents"]["runTimeoutSeconds"] == 1800
 
@@ -2378,3 +2382,129 @@ async def test_ensure_plugin_config_keys_noop_when_entry_absent():
         assert not os.path.exists(os.path.join(tmpdir, "user_w", "openclaw.json.bak"))
 
     assert "memory-wiki" not in result["plugins"]["entries"]
+
+
+@pytest.mark.asyncio
+async def test_patch_writes_no_binding_for_an_account_that_is_not_an_agent(efs_dir):
+    """Same invariant as the reprovision path: a binding naming an agent that
+    does not exist makes OpenClaw reject the whole config at load, freezing the
+    owner on their previous file. This is the PATCH door onto that bug."""
+    path = os.path.join(efs_dir, "user_1", "openclaw.json")
+    with open(path) as f:
+        base = json.load(f)
+    base["agents"]["entries"] = {"agent_f": {}}
+    with open(path, "w") as f:
+        json.dump(base, f)
+
+    await patch_openclaw_config(
+        "user_1",
+        {"channels": {"slack": {"accounts": {"default": {"dmPolicy": "pairing"}}}}},
+    )
+    with open(path) as f:
+        result = json.load(f)
+    assert result.get("bindings", []) == []
+
+
+@pytest.mark.asyncio
+async def test_patch_still_binds_an_account_named_after_a_real_agent(efs_dir):
+    path = os.path.join(efs_dir, "user_1", "openclaw.json")
+    with open(path) as f:
+        base = json.load(f)
+    base["agents"]["entries"] = {"ray": {}}
+    with open(path, "w") as f:
+        json.dump(base, f)
+
+    await patch_openclaw_config("user_1", {"channels": {"telegram": {"accounts": {"ray": {"botToken": "T"}}}}})
+    with open(path) as f:
+        result = json.load(f)
+    assert result["bindings"] == [
+        {"type": "route", "agentId": "ray", "match": {"channel": "telegram", "accountId": "ray"}}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_patch_skips_a_mapped_binding_whose_agent_was_deleted(efs_dir):
+    """apply_install maps the account to the agent recorded when the OAuth flow
+    STARTED. If that agent is deleted before the callback lands, the mapping
+    names a dead agent — and writing it would freeze the whole config."""
+    path = os.path.join(efs_dir, "user_1", "openclaw.json")
+    with open(path) as f:
+        base = json.load(f)
+    base["agents"]["entries"] = {"agent_alive": {}}
+    with open(path, "w") as f:
+        json.dump(base, f)
+
+    await patch_openclaw_config(
+        "user_1",
+        {"channels": {"slack": {"accounts": {"T1": {"mode": "http"}}}}},
+        agent_for_account={"T1": "agent_deleted"},
+    )
+    with open(path) as f:
+        result = json.load(f)
+    assert result.get("bindings", []) == []
+
+
+_LIGHTBULB_BINDING = {
+    "agentId": "agent_x",
+    "match": {"channel": "lightbulb", "accountId": "agent_x", "peer": {"kind": "channel", "id": "*"}},
+}
+
+
+@pytest.mark.asyncio
+async def test_register_lightbulb_agent_account_adds_account_and_exact_binding_shape(efs_dir):
+    await register_lightbulb_agent_account("user_1", "agent_x")
+    with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
+        result = json.load(f)
+    assert result["channels"]["lightbulb"]["accounts"]["agent_x"] == {"enabled": True}
+    assert result["bindings"] == [_LIGHTBULB_BINDING]
+
+
+@pytest.mark.asyncio
+async def test_register_lightbulb_agent_account_is_idempotent(efs_dir):
+    await register_lightbulb_agent_account("user_1", "agent_x")
+    await register_lightbulb_agent_account("user_1", "agent_x")
+    with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
+        result = json.load(f)
+    assert result["channels"]["lightbulb"]["accounts"] == {"agent_x": {"enabled": True}}
+    assert result["bindings"] == [_LIGHTBULB_BINDING]
+
+
+@pytest.mark.asyncio
+async def test_register_lightbulb_agent_account_preserves_other_channels_and_agents(efs_dir):
+    path = os.path.join(efs_dir, "user_1", "openclaw.json")
+    with open(path) as f:
+        base = json.load(f)
+    base["channels"] = {"lightbulb": {"enabled": True, "accounts": {"friday": {"enabled": True}}}}
+    base["bindings"] = [
+        {
+            "agentId": "friday",
+            "match": {"channel": "lightbulb", "accountId": "friday", "peer": {"kind": "channel", "id": "*"}},
+        }
+    ]
+    with open(path, "w") as f:
+        json.dump(base, f)
+
+    await register_lightbulb_agent_account("user_1", "agent_x")
+    with open(path) as f:
+        result = json.load(f)
+    assert set(result["channels"]["lightbulb"]["accounts"]) == {"friday", "agent_x"}
+    assert len(result["bindings"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_deregister_lightbulb_agent_account_removes_account_and_binding(efs_dir):
+    await register_lightbulb_agent_account("user_1", "agent_x")
+    await deregister_lightbulb_agent_account("user_1", "agent_x")
+    with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
+        result = json.load(f)
+    assert "agent_x" not in result["channels"]["lightbulb"]["accounts"]
+    assert result["bindings"] == []
+
+
+@pytest.mark.asyncio
+async def test_deregister_lightbulb_agent_account_is_noop_when_absent(efs_dir):
+    await deregister_lightbulb_agent_account("user_1", "agent_never_registered")
+    backup = os.path.join(efs_dir, "user_1", "openclaw.json.bak")
+    # mutate_fn returned False (nothing to remove) -- _locked_rmw skips the
+    # write entirely, so no backup is taken.
+    assert not os.path.exists(backup)

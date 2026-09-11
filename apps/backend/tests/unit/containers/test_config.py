@@ -215,7 +215,12 @@ class TestOpenclawConfigShape:
         assert entry["enabled"] is True
         dreaming = entry["config"]["dreaming"]
         assert dreaming["enabled"] is True
-        assert dreaming["frequency"] == "0 3 * * *"
+        # Nightly in the 03:00 UTC hour, jittered by owner across that hour so
+        # the whole paid fleet does not sweep in one minute (see
+        # _dreaming_frequency and test_dreaming_minute_is_jittered_per_owner).
+        minute, rest = dreaming["frequency"].split(" ", 1)
+        assert rest == "3 * * *"
+        assert 0 <= int(minute) <= 59
         assert dreaming["timezone"] == "UTC"
         assert dreaming["phases"]["light"] == {"enabled": True}
         assert dreaming["phases"]["rem"] == {"enabled": True}
@@ -286,14 +291,9 @@ class TestOpenclawConfigShape:
         assert entries["command-logger"]["enabled"] is True
         assert entries["session-memory"]["enabled"] is True
 
-    def test_channels_empty_until_configured(self):
-        """Channels ship EMPTY at provision — a provider block only appears once
-        the wizard PATCHes the first account. Shipping the enabled-trio made every
-        un-set-up owner count 3 'configured' channels, which broke agent-authored
-        delivery crons (delivery.channel ambiguity) and left an orphan-credential
-        crash-loop substrate."""
+    def test_native_lightbulb_channel_present_before_external_channels(self):
         config = _cfg()
-        assert config["channels"] == {}
+        assert config["channels"] == {"lightbulb": {"enabled": True, "accounts": {"main": {"enabled": True}}}}
 
     def test_session_dm_scope(self):
         config = _cfg()
@@ -436,9 +436,9 @@ class TestOpenclawConfigStaticSectionsAcrossProviders:
             ("bedrock_trial", {}),
         ],
     )
-    def test_channels_empty_for_every_provider(self, provider_choice, kwargs):
+    def test_native_channel_present_for_every_provider(self, provider_choice, kwargs):
         config = _cfg(provider_choice=provider_choice, **kwargs)
-        assert config["channels"] == {}
+        assert config["channels"]["lightbulb"]["enabled"] is True
 
     @pytest.mark.parametrize(
         "provider_choice,kwargs",
@@ -486,14 +486,69 @@ class TestWriteOpenclawConfigAsync:
         assert cfg["gateway"]["auth"]["token"] == "t-1"
         assert cfg["agents"]["defaults"]["verboseDefault"] == "full"
         assert cfg["tools"]["exec"]["mode"] == "full"
-        assert cfg["channels"] == {}
+        assert cfg["channels"]["lightbulb"]["enabled"] is True
         assert cfg["browser"]["defaultProfile"] == "openclaw"
         assert "nodeHost" not in cfg
         assert cfg["gateway"]["nodes"]["browser"]["mode"] == "auto"
+        assert out.stat().st_mode & 0o777 == 0o600
+        assert not list(tmp_path.glob(".openclaw.json.*.tmp"))
         # Phase one remains on the legacy persistent sidecar until boot
         # recovery publishes the protocol marker.
         assert (tmp_path / "openclaw.json.lock").is_file()
         assert (tmp_path / "openclaw.json.lock.isol8-guard").is_file()
+
+    async def test_atomic_full_write_preserves_open_reader(self, tmp_path):
+        out = tmp_path / "openclaw.json"
+        previous = '{"sentinel":"previous complete config"}'
+        out.write_text(previous)
+
+        with out.open() as held_reader:
+            await write_openclaw_config(
+                config_path=out,
+                gateway_token="synthetic-new-token",
+                provider_choice="bedrock_claude",
+                user_id="u_1",
+                aip_arns=_AIPS,
+            )
+            assert held_reader.read() == previous
+
+        assert json.loads(out.read_text())["gateway"]["auth"]["token"] == "synthetic-new-token"
+        assert out.stat().st_mode & 0o777 == 0o600
+        assert not list(tmp_path.glob(".openclaw.json.*.tmp"))
+
+    @pytest.mark.parametrize("failure_point", ["serialize", "fsync", "replace"])
+    async def test_atomic_full_write_failure_preserves_active_and_backup(self, tmp_path, failure_point):
+        out = tmp_path / "openclaw.json"
+        backup = tmp_path / "openclaw.json.bak"
+        active_bytes = b'{"sentinel":"active complete config"}'
+        backup_bytes = b'{"sentinel":"backup complete config"}'
+        out.write_bytes(active_bytes)
+        backup.write_bytes(backup_bytes)
+
+        def fail_serialization(_config, stream, **_kwargs):
+            stream.write('{"partial":')
+            raise OSError("synthetic write failure")
+
+        fault = (
+            patch("core.containers.config.json.dump", side_effect=fail_serialization)
+            if failure_point == "serialize"
+            else patch(
+                f"core.containers.config.os.{failure_point}",
+                side_effect=OSError("synthetic write failure"),
+            )
+        )
+        with fault, pytest.raises(OSError, match="synthetic write failure"):
+            await write_openclaw_config(
+                config_path=out,
+                gateway_token="must-not-land",
+                provider_choice="bedrock_claude",
+                user_id="u_1",
+                aip_arns=_AIPS,
+            )
+
+        assert out.read_bytes() == active_bytes
+        assert backup.read_bytes() == backup_bytes
+        assert not list(tmp_path.glob(".openclaw.json.*.tmp"))
 
     async def test_post_transition_full_write_uses_ephemeral_sidecar(self, tmp_path):
         out = tmp_path / "openclaw.json"
@@ -724,7 +779,13 @@ class TestChannelAccountsReinjection:
             "telegram": {"agent_a": {"botToken": "123:ABC"}},
             "slack": {"agent_b": {"mode": "socket", "appToken": "xapp-", "botToken": "xoxb-"}},
         }
-        cfg = _cfg(channel_accounts=accounts)
+        # These accounts are keyed BY agent id — which is the only reason the
+        # legacy `agentId == accountId` synthesis is sound — so those agents
+        # have to be on the roster.
+        cfg = _cfg(
+            paperclip_agents=[{"id": "agent_a", "role": "ceo"}, {"id": "agent_b", "role": "general"}],
+            channel_accounts=accounts,
+        )
         assert {
             "type": "route",
             "agentId": "agent_a",
@@ -736,16 +797,16 @@ class TestChannelAccountsReinjection:
             "match": {"channel": "slack", "accountId": "agent_b"},
         } in cfg["bindings"]
 
-    def test_no_channel_accounts_emits_empty_channels(self):
+    def test_no_external_channel_accounts_keeps_native_channel(self):
         cfg = _cfg()
-        assert cfg["channels"] == {}
-        assert cfg.get("bindings", []) == []
+        assert cfg["channels"]["lightbulb"]["enabled"] is True
+        assert {binding["match"]["channel"] for binding in cfg["bindings"]} == {"lightbulb"}
 
     def test_unknown_provider_in_channel_accounts_is_skipped(self):
-        # A provider not in the static channels block must not crash or inject.
+        # An unknown external provider must not crash or inject alongside Lightbulb.
         cfg = _cfg(channel_accounts={"webchat": {"x": {"botToken": "t"}}})
         assert "webchat" not in cfg["channels"]
-        assert cfg.get("bindings", []) == []
+        assert {binding["match"]["channel"] for binding in cfg["bindings"]} == {"lightbulb"}
 
     async def test_write_openclaw_config_threads_channel_accounts(self, tmp_path):
         out = tmp_path / "openclaw.json"
@@ -755,6 +816,7 @@ class TestChannelAccountsReinjection:
             provider_choice="bedrock_claude",
             user_id="u_1",
             aip_arns=_AIPS,
+            paperclip_agents=[{"id": "agent_a", "role": "ceo"}],
             channel_accounts={"telegram": {"agent_a": {"botToken": "123:ABC"}}},
         )
         cfg = json.loads(out.read_text())

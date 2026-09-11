@@ -57,8 +57,8 @@ param grammar.
 |---|---|
 | Home | The dashboard. Company name as H1. Revenue hero (7/30/90d **bars with hover values**, vs previous period, net of refunds) beside the anchored figures, each with **Ask Friday**: Agent spend (billed by us, runs, by-model link) and New customers (30d). Then the top of each detail page: **Needs you** (3, from the attention feed and approvals), **Happening now** (live runs), **Recent work** (Library artifacts), each with an "Open …" link. Quick actions live in the masthead meta. The ported Paperclip telemetry (Run Activity / Success Rate charts, Agents / Open Tasks / Pending Approvals metric cards, Recent tasks, Recent activity) is removed from Home. |
 | Payments · Products · Customers · Spend | **One tab, Money.** Ledger only, no hero (Home has it). Masthead meta carries "$N landed in <month>". Sections: Payments (newest first, Show more), Customers (with "N new in 30 days"), What you sell, Agent spend billed by us (figure · runs · by model). Accepts a `day` param so a bar on Home's hero opens the payments of that day, and states what changed in the window (biggest day, top payer). The four keys stay registered and open Money scrolled to their section. |
-| Inbox · Activity | **One tab, Inbox.** Sections: **Needs you** (approvals with Approve/Decline inline, questions, recovery, blocked, each with its action), **Happening now** (live runs), **Recently** (the activity feed, day-grouped, one type filter select). The needs-attention band and the five pill tabs go. `teams-activity` opens Inbox scrolled to Recently. |
-| Tasks · Goals · Projects | **One tab, Tasks.** Goals are headings with "N of M done" and a progress rule; projects are sub-headings; tasks are rows (status circle, title, assignee, status word, updated-ago). Group-by select: Goal · Project · Agent · Status. List/Board toggle stays. `teams-goals` / `teams-projects` open Tasks grouped by Goal / Project. No due dates (Paperclip issues have none), no goal money measure (goals have no metric). |
+| Inbox · Activity | **One tab, Inbox — and it holds NO task rows.** Owner decision 2026-09-08, after the finding that Inbox and Tasks render the same issue rows today (Inbox = five pill tabs over `/issues`, plus one attention tab): the two pages split **by kind**, not by filter. Inbox answers "what needs me"; Tasks answers "what is the work". Sections: **Needs you** (approvals with Approve/Decline inline, agent questions, failed/blocked runs, recovery — everything awaiting a human response, each with its action), **Happening now** (live runs), **Recently** (the activity feed, day-grouped, one type filter select). The needs-attention band, the five pill tabs and the issue list all go. `teams-activity` opens Inbox scrolled to Recently. **Consequences, accepted:** "mine" was a server scope (`/issues?scope=mine`) and survives as an assignee filter on Tasks; "unread" was per-browser `localStorage` read-marks (`useReadInboxItems`), never server state and never synced across devices — it retires with the pill tabs rather than moving. |
+| Tasks · Goals · Projects | **One tab, Tasks.** Goals are headings with "N of M done" and a progress rule; projects are sub-headings; tasks are rows (status circle, title, assignee, status word, updated-ago). Group-by select: Goal · Project · Agent · Status. List/Board toggle stays. `teams-goals` / `teams-projects` open Tasks grouped by Goal / Project. **A goal heading stays clickable and opens the existing goal detail view** (owner decision 2026-09-08): a project is only `{id, name, color}` and folds into a grouping losing nothing, but a goal carries `description`, its own `status`, an `ownerAgentId` and a parent (`parentId`/`level`, so goals nest) — flattening it to a heading would drop all four. Tasks also gains the **assignee filter** that Inbox's "mine" scope used to provide. No due dates (Paperclip issues have none), no goal money measure (goals have no metric). |
 | Search | Folds into ⌘K: the palette gains a results section over the existing `/search` route. |
 | Org chart | A view inside the Agents panel the roster opens. |
 | Brain | Off the rail; key stays; Dreams returns to a Settings control panel. The company-graph Brain is its own spec. |
@@ -113,9 +113,13 @@ Brain graph follow as their own specs after the consolidation lands.
 
 ## 7. Constraints
 
-Panel keys permanent; `RETIRED_PANEL_ALIASES` is key→key with no params, so
-absorbed keys are mapped in the panel router with a preselected section, not
-aliased. `CompanyNav.test.tsx` asserts the exact label list and section order
+Panel keys permanent. An absorbed key ALIASES to the page that absorbed it
+(`RETIRED_PANEL_ALIASES`: `teams-spend` → `teams-money`) and `describePanel`
+synthesizes the section from the RAW key — the `dreams` → `teams-brain`
+precedent, which carries Brain's Dreams tab the same way. Mapping absorbed keys
+in the router instead would leave them as separate panel ids, and the dock
+dedupes by panel id: Home's Payments/Customers/Spend tiles would open three
+sibling tabs all titled "Money". `CompanyNav.test.tsx` asserts the exact label list and section order
 and must change in the same commit as the nav. Brand tokens only
 (`node scripts/brand-tokens-scan.mjs src` prints 0). Issue #2285 (the
 provisioning stepper hides every read-only panel) is out of scope here.

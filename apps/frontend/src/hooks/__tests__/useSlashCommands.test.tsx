@@ -2,9 +2,9 @@ import { describe, it, expect, vi } from "vitest";
 import { renderHook } from "@testing-library/react";
 import { useSlashCommands } from "@/hooks/useSlashCommands";
 
-// Mock useGatewayRpc to return a fixed commands.list payload.
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpc: (): { data: unknown; isLoading: boolean } => ({
+// Mock useRuntimeRpc to return a fixed commands.list payload.
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpc: (): { data: unknown; isLoading: boolean } => ({
     data: {
       commands: [
         { name: "help", description: "List", category: "tools", source: "native", acceptsArgs: false },

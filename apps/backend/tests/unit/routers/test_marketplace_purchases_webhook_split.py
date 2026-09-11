@@ -110,10 +110,10 @@ def test_webhook_dedup_key_is_source_prefixed(mock_construct, mock_dedup, client
 @patch("core.repositories.marketplace_repo._ddb_client")
 @patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
 @patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
-def test_marketplace_webhook_ignores_billing_shaped_session(mock_dedup, mock_construct, mock_boto_client, client):
+def test_marketplace_webhook_ignores_unrelated_checkout_session(mock_dedup, mock_construct, mock_boto_client, client):
     """With the dedup collision fixed, BOTH endpoints genuinely process every
-    checkout.session.completed. A billing credit-top-up session carries no
-    listing metadata and must be acked without writing a purchase."""
+    checkout.session.completed. An unrelated session carries no listing
+    metadata and must be acknowledged without writing a purchase."""
     fake_ddb = MagicMock()
     mock_boto_client.return_value = fake_ddb
     from core.services.webhook_dedup import WebhookDedupResult
@@ -124,9 +124,9 @@ def test_marketplace_webhook_ignores_billing_shaped_session(mock_dedup, mock_con
         "type": "checkout.session.completed",
         "data": {
             "object": {
-                "id": "cs_topup",
+                "id": "cs_unrelated",
                 "payment_status": "paid",
-                "metadata": {"owner_id": "u1", "purpose": "credit_top_up"},
+                "metadata": {"owner_id": "u1"},
                 "amount_total": 5000,
             }
         },

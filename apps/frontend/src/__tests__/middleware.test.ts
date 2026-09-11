@@ -137,6 +137,16 @@ describe('decideAdminHostRouting (admin host gate)', () => {
     ).toEqual({ kind: 'passthrough' });
   });
 
+  it('passes through the choose-organization session task on admin hosts', () => {
+    expect(
+      decideAdminHostRouting(
+        'admin.flickmeon.ai',
+        '/session-tasks/choose-organization',
+        ADMIN_HOSTS,
+      ),
+    ).toEqual({ kind: 'passthrough' });
+  });
+
   it('still redirects truly off-admin paths (e.g. /chat) on admin hosts', () => {
     // Regression guard — the original gate behavior for non-auth, non-admin
     // paths is preserved.

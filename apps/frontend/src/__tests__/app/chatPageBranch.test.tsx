@@ -24,8 +24,10 @@ vi.mock("@/components/workspace/WorkspaceShell", () => ({
 }));
 vi.mock("@/components/chat/ChatLayout", () => ({
   // Ignore children so the mobile shell's AgentChatWindow / ControlPanelRouter
-  // subtree never mounts (no gateway, no RPC) — the marker is all we assert.
-  ChatLayout: () => <div data-testid="chat-layout" />,
+  // subtree never mounts (no gateway, no RPC), but keep the header status slot.
+  ChatLayout: ({ statusIndicator }: { statusIndicator?: React.ReactNode }) => (
+    <div data-testid="chat-layout">{statusIndicator}</div>
+  ),
 }));
 
 // RunNotifications renders nothing in prod; here it echoes its mode so the test
@@ -39,7 +41,7 @@ vi.mock("@/components/notifications/RunNotifications", () => ({
 // Providers → pass-throughs (no WebSocket, no drawer context churn).
 vi.mock("@/hooks/useGateway", () => ({
   GatewayProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  // Inert, but SHAPE-FAITHFUL. MobileChatShell calls useAgents() → useGatewayRpc,
+  // Inert, but SHAPE-FAITHFUL. MobileChatShell calls useAgents() → useRuntimeRpc,
   // which destructures { sendReq, onEvent, isParked } and invokes onEvent inside
   // a passive effect. A bare {} made only the mobile case throw "onEvent is not
   // a function" (desktop never hit it — WorkspaceShell is mocked inert).

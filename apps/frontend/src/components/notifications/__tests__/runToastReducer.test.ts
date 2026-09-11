@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import type { ChatIncomingMessage } from "@/hooks/useGateway";
+import type { ChatIncomingMessage } from "@lightbulb/shared";
 import {
   createRunToastState,
   reduceChatFrame,
@@ -22,16 +22,16 @@ function chatCtx(keys: string[], teamsPanelActive = false): RunToastContext {
 // Mobile watching (agent-sel, General/null) in chat view — the old bgCtx.
 const bgCtx: RunToastContext = chatCtx(["agent-sel:"]);
 
-// Omit session_id entirely when unset, matching the real wire shape of a
-// General-session frame (backend never stamps session_id on 3-part keys), so
-// tests exercise the `"session_id" in msg === false` branch of the reducer.
+// Omit sessionId entirely when unset, matching the real wire shape of a
+// General-session frame (backend never stamps sessionId on 3-part keys), so
+// tests exercise the `"sessionId" in msg === false` branch of the reducer.
 function chunk(runId: string, agentId?: string, sessionId?: string): ChatIncomingMessage {
   return {
     type: "chunk",
     content: "hi",
     runId,
-    agent_id: agentId,
-    ...(sessionId !== undefined ? { session_id: sessionId } : {}),
+    agentId: agentId,
+    ...(sessionId !== undefined ? { sessionId: sessionId } : {}),
   };
 }
 
@@ -45,8 +45,8 @@ function runEnded(
     type: "run_ended",
     runId,
     outcome,
-    agent_id: agentId,
-    ...(sessionId !== undefined ? { session_id: sessionId } : {}),
+    agentId: agentId,
+    ...(sessionId !== undefined ? { sessionId: sessionId } : {}),
   };
 }
 
@@ -92,7 +92,7 @@ describe("reduceChatFrame — run start", () => {
   it("suppresses the watched agent when both are on General (null session)", () => {
     const s = createRunToastState();
     const ctx: RunToastContext = chatCtx(["agent-sel:"]);
-    const watched: ChatIncomingMessage = chunk("r1", "agent-sel"); // no session_id -> null
+    const watched: ChatIncomingMessage = chunk("r1", "agent-sel"); // no sessionId -> null
     expect(reduceChatFrame(s, watched, ctx)).toEqual([]);
     expect(reduceChatFrame(s, runEnded("r1", "done", "agent-sel"), ctx)).toEqual([]);
   });
@@ -116,18 +116,15 @@ describe("reduceChatFrame — run start", () => {
     ]);
   });
 
-  it("ignores frames without runId or agent_id, btw_result, and passive frames", () => {
+  it("ignores frames without runId or agentId and passive frames", () => {
     const s = createRunToastState();
     expect(reduceChatFrame(s, chunk("r1", undefined), bgCtx)).toEqual([]);
-    expect(
-      reduceChatFrame(s, { type: "btw_result", question: "q", text: "t" }, bgCtx),
-    ).toEqual([]);
     expect(reduceChatFrame(s, { type: "heartbeat" }, bgCtx)).toEqual([]);
     expect(
-      reduceChatFrame(s, { type: "run_active", active: true, agent_id: "a" }, bgCtx),
+      reduceChatFrame(s, { type: "run_active", active: true, agentId: "a" }, bgCtx),
     ).toEqual([]);
     expect(
-      reduceChatFrame(s, { type: "done", runId: "r1", agent_id: "agent-bg" }, bgCtx),
+      reduceChatFrame(s, { type: "done", runId: "r1", agentId: "agent-bg" }, bgCtx),
     ).toEqual([]);
   });
 });
@@ -168,7 +165,7 @@ describe("reduceChatFrame — desktop multi-panel suppression", () => {
   it("suppresses a sessionless frame on bare-agent match", () => {
     const s = createRunToastState();
     const ctx = chatCtx(["A", "A:"]); // A visible on General/null
-    expect(reduceChatFrame(s, chunk("r1", "A"), ctx)).toEqual([]); // no session_id -> null
+    expect(reduceChatFrame(s, chunk("r1", "A"), ctx)).toEqual([]); // no sessionId -> null
   });
 });
 
@@ -227,7 +224,7 @@ describe("reduceChatFrame — terminals (run_ended only)", () => {
     ]);
   });
 
-  it("ignores a never-seen terminal with no agent_id", () => {
+  it("ignores a never-seen terminal with no agentId", () => {
     const s = createRunToastState();
     expect(reduceChatFrame(s, runEnded("r9", "done"), bgCtx)).toEqual([]);
   });

@@ -12,11 +12,43 @@ existing ``test_webhooks_clerk_email_sync.py``.
 
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import boto3
 import pytest
+from moto import mock_aws
 
 from core.services.paperclip_admin_client import PaperclipApiError
+from core.services import webhook_dedup as _webhook_dedup
+
+_REAL_BEGIN_EVENT_PROCESSING = _webhook_dedup.begin_event_processing
+_REAL_COMPLETE_EVENT_PROCESSING = _webhook_dedup.complete_event_processing
+
+
+@pytest.fixture(autouse=True)
+def lifecycle_io(monkeypatch):
+    """Isolate canonical revocation and lifecycle storage."""
+    revoke = AsyncMock()
+    lifecycle = {}
+
+    async def begin_membership(owner_id, alias, *, event_id, sequence, access_state, **kwargs):
+        lifecycle[(owner_id, alias)] = {"event_id": event_id, "sequence": sequence, "state": access_state}
+        return "membership_claim_test"
+
+    monkeypatch.setattr("core.services.messaging.revoke_human_membership", revoke)
+    monkeypatch.setattr(_webhook_dedup, "begin_event_processing", AsyncMock(return_value="claim_test"))
+    monkeypatch.setattr(_webhook_dedup, "complete_event_processing", AsyncMock())
+    monkeypatch.setattr(_webhook_dedup, "begin_membership_lifecycle", AsyncMock(side_effect=begin_membership))
+    monkeypatch.setattr(_webhook_dedup, "renew_membership_lifecycle", AsyncMock())
+    monkeypatch.setattr(_webhook_dedup, "complete_membership_lifecycle", AsyncMock())
+    monkeypatch.setattr(
+        _webhook_dedup,
+        "get_membership_lifecycle",
+        AsyncMock(side_effect=lambda owner_id, alias: lifecycle.get((owner_id, alias))),
+    )
+    return revoke
 
 
 def _bypass_svix(monkeypatch):
@@ -32,6 +64,106 @@ def _svix_headers() -> dict:
         "svix-timestamp": "1234567890",
         "svix-signature": "ignored",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("archive_failure", [False, True])
+async def test_membership_revocation_failure_redelivers_same_svix_and_still_deauthorizes(
+    lifecycle_io, monkeypatch, archive_failure
+):
+    from core.services import webhook_dedup
+    from routers import webhooks
+
+    _bypass_svix(monkeypatch)
+    monkeypatch.setattr(webhook_dedup, "begin_event_processing", _REAL_BEGIN_EVENT_PROCESSING)
+    monkeypatch.setattr(webhook_dedup, "complete_event_processing", _REAL_COMPLETE_EVENT_PROCESSING)
+    lifecycle_io.side_effect = [RuntimeError("canonical revocation failed"), None]
+    provisioning = AsyncMock()
+    if archive_failure:
+        provisioning.archive_member.side_effect = PaperclipApiError("retry", 503, "")
+    monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=provisioning))
+    monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
+    enqueue = AsyncMock()
+    monkeypatch.setattr(webhooks, "_enqueue_paperclip_retry", enqueue)
+    request = SimpleNamespace(
+        headers=_svix_headers(),
+        body=AsyncMock(
+            return_value=json.dumps(
+                {
+                    "type": "organizationMembership.deleted",
+                    "data": {"organization": {"id": "org_acme"}, "user_id": "member"},
+                }
+            ).encode()
+        ),
+    )
+    with mock_aws():
+        boto3.client("dynamodb", region_name="us-east-1").create_table(
+            TableName="clerk-dedup-test",
+            KeySchema=[{"AttributeName": "event_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "event_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", "clerk-dedup-test")
+        with pytest.raises(RuntimeError, match="canonical revocation failed"):
+            await webhooks.handle_clerk_webhook(request)
+        provisioning.archive_member.assert_awaited_once_with(user_id="member")
+        if archive_failure:
+            provisioning.disable.assert_awaited_once_with(user_id="member")
+            enqueue.assert_awaited_once()
+        assert (
+            webhook_dedup._table().get_item(Key={"event_id": "msg_test"}).get("Item", {}).get("state") == "processing"
+        )
+        webhook_dedup._table().update_item(
+            Key={"event_id": "msg_test"},
+            UpdateExpression="SET lease_until = :expired",
+            ExpressionAttributeValues={":expired": 0},
+        )
+        assert await webhooks.handle_clerk_webhook(request) == {"status": "ok"}
+        assert await webhook_dedup.has_event("msg_test")
+        assert await webhooks.handle_clerk_webhook(request) == {"status": "duplicate"}
+        assert lifecycle_io.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_membership_delete_revokes_canonical_rooms_before_paperclip(lifecycle_io, monkeypatch):
+    from routers import webhooks
+
+    events = []
+    lifecycle_io.side_effect = lambda owner_id, user_id: events.append("canonical-revoked")
+    provisioning = AsyncMock()
+    provisioning.archive_member.side_effect = lambda **kwargs: events.append("paperclip-archived")
+    monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=provisioning))
+    monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
+
+    await webhooks._handle_organization_membership_deleted({"organization": {"id": "org_acme"}, "user_id": "member"})
+
+    lifecycle_io.assert_awaited_once_with("org_acme", "member")
+    assert events[:2] == ["canonical-revoked", "paperclip-archived"]
+
+
+@pytest.mark.asyncio
+async def test_newer_admission_stops_old_delete_during_paperclip_cleanup(
+    monkeypatch,
+):
+    from routers import webhooks
+
+    events = []
+    provisioning = AsyncMock()
+    provisioning.archive_member.side_effect = lambda **kwargs: events.append("paperclip-archived")
+
+    async def renew(org_id, user_id, claim_id):
+        if "paperclip-archived" in events:
+            raise _webhook_dedup.MembershipLifecycleSuperseded("newer create owns lifecycle")
+
+    monkeypatch.setattr(webhooks, "_renew_member_lifecycle", AsyncMock(side_effect=renew))
+    monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=provisioning))
+    monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
+
+    with pytest.raises(_webhook_dedup.MembershipLifecycleSuperseded):
+        await webhooks._handle_organization_membership_deleted(
+            {"organization": {"id": "org_acme"}, "user_id": "member"},
+            lifecycle_claim_id="delete-claim",
+        )
 
 
 # ----------------------------------------------------------------------
@@ -67,14 +199,13 @@ async def test_organization_created_does_not_provision():
 
 
 # ----------------------------------------------------------------------
-# organizationMembership.created -> log + dual-tenancy invariant probe
+# organizationMembership.created -> membership lifecycle only
 # ----------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_membership_created_does_not_provision():
-    """The membership webhook is record-keeping + dual-tenancy invariant
-    probe only. Should NOT call provision_member,
+    """The membership webhook is record-keeping only. Should NOT call provision_member,
     build_paperclip_provisioning, or _enqueue_paperclip_retry. The new
     member's paperclip-membership row will be added by the first
     /container/status poll on their session via ensure_user_ready."""
@@ -83,10 +214,7 @@ async def test_membership_created_does_not_provision():
     with (
         patch("routers.webhooks.build_paperclip_provisioning") as mock_factory,
         patch("routers.webhooks._enqueue_paperclip_retry", new=AsyncMock()) as mock_retry,
-        patch(
-            "routers.webhooks.billing_repo.get_by_owner_id",
-            new=AsyncMock(return_value=None),  # no personal billing row -> invariant clean
-        ) as mock_billing,
+        patch("routers.webhooks.billing_repo.get_by_owner_id", new=AsyncMock()) as mock_billing,
     ):
         await _handle_organization_membership_created(
             {
@@ -100,8 +228,7 @@ async def test_membership_created_does_not_provision():
 
     mock_factory.assert_not_called()
     mock_retry.assert_not_awaited()
-    # Invariant probe still runs.
-    mock_billing.assert_awaited()
+    mock_billing.assert_not_awaited()
 
 
 # ----------------------------------------------------------------------
@@ -120,6 +247,7 @@ async def test_membership_deleted_calls_archive_member(async_client, monkeypatch
 
     mock_provisioning = AsyncMock()
     mock_provisioning.archive_member = AsyncMock(return_value=None)
+    durable_revoke = AsyncMock()
 
     payload = {
         "type": "organizationMembership.deleted",
@@ -130,9 +258,15 @@ async def test_membership_deleted_calls_archive_member(async_client, monkeypatch
         },
     }
 
-    with patch(
-        "routers.webhooks.build_paperclip_provisioning",
-        new=AsyncMock(return_value=mock_provisioning),
+    with (
+        patch(
+            "routers.webhooks.build_paperclip_provisioning",
+            new=AsyncMock(return_value=mock_provisioning),
+        ),
+        patch(
+            "core.services.messaging.revoke_human_membership",
+            new=durable_revoke,
+        ),
     ):
         resp = await async_client.post(
             "/api/v1/webhooks/clerk",
@@ -141,6 +275,7 @@ async def test_membership_deleted_calls_archive_member(async_client, monkeypatch
         )
 
     assert resp.status_code == 200
+    durable_revoke.assert_awaited_once()
     mock_provisioning.archive_member.assert_awaited_once_with(user_id="user_member")
 
 
@@ -352,6 +487,7 @@ async def test_user_deleted_calls_disable(async_client, monkeypatch):
 
     mock_provisioning = AsyncMock()
     mock_provisioning.disable = AsyncMock(return_value=None)
+    sweep = AsyncMock(return_value=0)
 
     payload = {"type": "user.deleted", "data": {"id": "user_x", "deleted": True}}
 
@@ -362,7 +498,7 @@ async def test_user_deleted_calls_disable(async_client, monkeypatch):
         ),
         patch(
             "core.repositories.channel_link_repo.sweep_by_member",
-            new=AsyncMock(return_value=0),
+            new=sweep,
         ),
     ):
         resp = await async_client.post(
@@ -372,6 +508,7 @@ async def test_user_deleted_calls_disable(async_client, monkeypatch):
         )
 
     assert resp.status_code == 200
+    sweep.assert_awaited_once_with("user_x")
     mock_provisioning.disable.assert_awaited_once_with(user_id="user_x")
 
 
@@ -470,18 +607,16 @@ async def test_clerk_webhook_dedupes_by_svix_id(async_client, monkeypatch):
     """
     _bypass_svix(monkeypatch)
 
-    # First call: dedupe says "RECORDED", real handler runs.
-    # Second call: dedupe says "ALREADY_SEEN", handler must skip.
-    from core.services.webhook_dedup import WebhookDedupResult
-
-    dedupe_results = [WebhookDedupResult.RECORDED, WebhookDedupResult.ALREADY_SEEN]
+    # First call owns the retryable lease; the completed second call skips.
+    claim = "claim_test"
+    dedupe_results = [claim, None]
 
     async def _fake_dedupe(event_id, *, source):
         assert source == "clerk"
         return dedupe_results.pop(0)
 
     monkeypatch.setattr(
-        "core.services.webhook_dedup.record_event_or_skip",
+        "core.services.webhook_dedup.begin_event_processing",
         _fake_dedupe,
     )
 

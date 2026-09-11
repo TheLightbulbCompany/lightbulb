@@ -1,15 +1,10 @@
 "use client";
 
 import { useCallback, useState } from "react";
+import { PROVIDER_CARDS } from "@/lib/providerCards";
 
 export interface TeamBillingCardProps {
-  seatCount: number | null;
-  seatPriceUsd: number | null;
-  /**
-   * Flat monthly base charged alongside the per-seat item. null/undefined
-   * falls back to seats-only pricing (pre-base-price backend rows).
-   */
-  basePriceUsd?: number | null;
+  workspacePriceUsd?: number;
   ownerRole: "admin" | "member";
   /**
    * Mirrors the provision gate's `blocked.action.admin_only`. Combined with
@@ -25,9 +20,9 @@ export interface TeamBillingCardProps {
 }
 
 /**
- * The one Teams-billing paywall card. Rendered in two places (the /chat
+ * The workspace-billing paywall card. Rendered in two places (the /chat
  * blocked screen and the settings billing panel), so it owns no data fetching
- * — seat count + price are passed in from the /billing/account payload, and
+ * — the workspace price is passed in from the /billing/account payload, and
  * the actions are injected by the caller. Admin-gated: members see an
  * ask-your-admin message with no CTA.
  *
@@ -42,9 +37,7 @@ export interface TeamBillingCardProps {
  * carry its own styles.
  */
 export function TeamBillingCard({
-  seatCount,
-  seatPriceUsd,
-  basePriceUsd,
+  workspacePriceUsd,
   ownerRole,
   adminOnly = true,
   isSubscribed = false,
@@ -54,17 +47,7 @@ export function TeamBillingCard({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const price = seatPriceUsd ?? 0;
   const canAct = !(adminOnly && ownerRole !== "admin");
-  // seatCount is null while Clerk membership is still loading (or
-  // unavailable). Rendering "0 seats × $20 = $0/mo" in that window is a
-  // misleading flash — show a neutral placeholder until it resolves to a
-  // real number.
-  const seatsKnown = seatCount != null;
-  const seats = seatCount ?? 0;
-  // "No free members": seats counts joined members AND pending invitations.
-  const base = basePriceUsd ?? 0;
-  const total = base + seats * price;
 
   const run = useCallback(
     async (fn?: () => Promise<void>) => {
@@ -74,8 +57,10 @@ export function TeamBillingCard({
       try {
         await fn();
       } catch (err) {
-        setBusy(false);
         setError(err instanceof Error ? err.message : "Something went wrong. Please try again.");
+      } finally {
+        // A same-plan response stays on this page; never strand its CTA busy.
+        setBusy(false);
       }
     },
     [],
@@ -94,18 +79,23 @@ export function TeamBillingCard({
         5.00:1 on cream, so the workaround is retired and this uses the token
         like everything around it.
       */}
-      <div className="text-base font-semibold leading-snug text-[var(--midnight)]">Teams billing</div>
+      <div className="text-base font-semibold leading-snug text-[var(--midnight)]">Workspace billing</div>
       <p className="mt-1 text-ui leading-snug text-[var(--midnight-muted)]">
-        {seatsKnown ? (
-          <>
-            ${base} base + {seats} {seats === 1 ? "seat" : "seats"} × ${price} ={" "}
-            <strong className="font-semibold text-[var(--midnight)]">${total}/mo</strong>. Everyone
-            you invite is a seat, from the moment you invite them.
-          </>
+        {workspacePriceUsd === undefined ? (
+          "Loading workspace price…"
         ) : (
-          "Loading team size…"
+          <>
+            <strong className="font-semibold text-[var(--midnight)]">${workspacePriceUsd}/mo</strong> for
+            your workspace, with unlimited members.
+          </>
         )}
       </p>
+      <div className="mt-4 space-y-2 rounded-lg border border-[var(--edge)] bg-[var(--cream)] px-3.5 py-3 text-ui leading-snug text-[var(--midnight-muted)]">
+        <p className="font-semibold text-[var(--midnight)]">Inference costs are separate</p>
+        {PROVIDER_CARDS.map((card) => (
+          <p key={card.id}>{card.subtitle}</p>
+        ))}
+      </div>
 
       {error && (
         <div
@@ -119,7 +109,7 @@ export function TeamBillingCard({
       <div className="mt-4">
         {!canAct ? (
           <p className="rounded-lg border border-[var(--edge)] bg-[var(--cream)] px-3.5 py-3 text-ui leading-snug text-[var(--midnight-muted)]">
-            Ask your org admin to set up Teams billing. Only an organization admin can start the team
+            Ask your workspace admin to set up billing. Only a workspace admin can start the
             subscription.
           </p>
         ) : isSubscribed ? (
@@ -138,7 +128,7 @@ export function TeamBillingCard({
             onClick={() => run(onSubscribe)}
             className="inline-flex min-h-11 items-center justify-center rounded-full bg-[var(--midnight)] px-6 py-2.5 text-sm font-bold text-cream transition-colors hover:bg-[var(--midnight-soft)] disabled:cursor-not-allowed disabled:bg-cream-deep disabled:text-[var(--midnight-muted)] disabled:hover:bg-cream-deep"
           >
-            {busy ? "Starting checkout…" : "Subscribe your team"}
+            {busy ? "Starting checkout…" : "Subscribe workspace"}
           </button>
         )}
       </div>

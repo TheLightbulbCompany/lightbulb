@@ -1,4 +1,5 @@
-import { render, screen } from "@testing-library/react-native";
+import { Alert } from "react-native";
+import { fireEvent, render, screen } from "@testing-library/react-native";
 
 // The control Agents tab and the Chat roster answer the same question — "is
 // this a wake or a failure?" — and reviewers caught them diverging twice: once
@@ -11,14 +12,14 @@ jest.mock("expo-router", () => ({
   Stack: { Screen: () => null },
 }));
 
-const mockSendReq = jest.fn(async () => ({}));
-jest.mock("../../../../providers/gateway", () => ({
-  useGateway: () => ({
-    isConnected: true,
-    error: null,
-    sendReq: mockSendReq,
+jest.mock("../../../../providers/live-events", () => ({
+  useLiveEvents: () => ({
+    httpReady: true,
+    liveConnected: true,
+    connectionRevision: 1,
+    rpc: jest.fn(),
+    getOperation: jest.fn(),
     onEvent: () => () => {},
-    isParked: false,
   }),
 }));
 
@@ -49,7 +50,7 @@ let mockAgents = makeRoster();
 jest.mock("@lightbulb/shared", () => ({
   ...jest.requireActual("@lightbulb/shared"),
   useAgents: () => mockAgents,
-  useGatewayRpcMutation: () => jest.fn(),
+  useRuntimeRpcMutation: () => jest.fn(),
 }));
 
 import AgentsPanel from "../agents";
@@ -93,6 +94,19 @@ describe("control Agents tab roster states", () => {
     await render(<AgentsPanel />);
     expect(screen.getByText("Friday")).toBeTruthy();
     expect(screen.getByText(/Gateway connection lost/)).toBeTruthy();
+  });
+
+  it("lets the backend decide whether the current default can be deleted", async () => {
+    const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    await render(<AgentsPanel />);
+
+    fireEvent(screen.getByLabelText(/Friday.*long-press to delete/i), "longPress");
+
+    expect(alert).toHaveBeenCalledWith(
+      "Delete Friday?",
+      expect.any(String),
+      expect.any(Array),
+    );
   });
 
   it("never shows the error card and 'No agents yet.' at once", async () => {

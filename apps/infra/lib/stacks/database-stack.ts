@@ -3,7 +3,7 @@ import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as kms from "aws-cdk-lib/aws-kms";
 import * as rds from "aws-cdk-lib/aws-rds";
-import { legacyTablePrefix, tablePrefix } from "../table-names";
+import { tablePrefix } from "../table-names";
 import { Construct } from "constructs";
 
 export interface DatabaseStackProps extends cdk.StackProps {
@@ -45,6 +45,7 @@ export class DatabaseStack extends cdk.Stack {
   public readonly integrationsTable: dynamodb.Table;
   public readonly provisioningWorkflowsTable: dynamodb.Table;
   public readonly paperclipCompaniesTable: dynamodb.Table;
+  public readonly roomReadCursorsTable: dynamodb.Table;
 
   // Paperclip Aurora Serverless v2 cluster (Task 1 of paperclip-rebuild).
   // pgvector extension is created by the drizzle migrations runner in
@@ -289,8 +290,8 @@ export class DatabaseStack extends cdk.Stack {
     });
 
     // Per-owner Bedrock AIP -> owner reverse index (Plan 2). PK aip_arn.
-    // Written by ensure_owner_aips; read by resolve_owner_from_aip_arn on the
-    // Plan-3 meter hot path (a single bounded GetItem per invocation record).
+    // Written by ensure_owner_aips; read by the bedrock-usage-meter Lambda's
+    // own boto3 GetItem on its hot path (no backend code reads this table).
     this.bedrockAipOwnersTable = createTable("BedrockAipOwnersTable", "bedrock-aip-owners", {
       partitionKey: { name: "aip_arn", type: dynamodb.AttributeType.STRING },
     });
@@ -334,6 +335,13 @@ export class DatabaseStack extends cdk.Stack {
       partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "state", type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // Product-only per-human sequence state. Native OpenClaw SQLite remains
+    // canonical for every room message, sender, and search result.
+    this.roomReadCursorsTable = createTable("RoomReadCursorsTable", "room-read-cursors", {
+      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "cursor_key", type: dynamodb.AttributeType.STRING },
     });
 
     // Paperclip companies — maps Isol8 user_id → their Paperclip company

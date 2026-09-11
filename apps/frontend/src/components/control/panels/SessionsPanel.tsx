@@ -2,7 +2,7 @@
 
 import { useState, useCallback } from "react";
 import { Loader2, RefreshCw, Trash2 } from "lucide-react";
-import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { useRuntimeRpc, useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -131,11 +131,11 @@ export function SessionsPanel() {
   const lim = parseInt(limit, 10);
   if (lim > 0) params.limit = lim;
 
-  const { data: rawData, error, isLoading, mutate } = useGatewayRpc<SessionsResponse | Session[]>(
+  const { data: rawData, error, isLoading, mutate } = useRuntimeRpc<SessionsResponse | Session[]>(
     "sessions.list",
     params,
   );
-  const callRpc = useGatewayRpcMutation();
+  const callRpc = useRuntimeRpcMutation();
 
   const sessions: Session[] = Array.isArray(rawData)
     ? rawData

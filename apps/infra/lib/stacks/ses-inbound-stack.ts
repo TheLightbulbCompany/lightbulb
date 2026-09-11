@@ -412,11 +412,11 @@ export class SesInboundStack extends cdk.Stack {
     // CloudFormation Export/Fn::ImportValue pair across the stack boundary —
     // exactly the "export that can never be safely renamed/deleted" trap
     // this codebase deliberately avoids everywhere else (see the
-    // DynamoDbIntegrations by-name-grant comment above, and
-    // marketplaceArtifactsBucket vs. CFN_TEMPLATE_URL for the same
-    // literal-string-over-token posture). Because the name is fully
-    // deterministic, the literal is exactly as correct as the token and
-    // costs nothing.
+    // DynamoDbOwnedTables by-name/wildcard-grant comment in
+    // service-stack.ts, and marketplaceArtifactsBucket vs. CFN_TEMPLATE_URL
+    // for the same literal-string-over-token posture). Because the name is
+    // fully deterministic, the literal is exactly as correct as the token
+    // and costs nothing.
     this.attachmentsBucketName = attachmentsBucketName;
     this.rawBucketName = rawBucketName;
 

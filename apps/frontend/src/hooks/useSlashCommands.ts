@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { useGatewayRpc } from "@/hooks/useGatewayRpc";
+import { useRuntimeRpc } from "@/hooks/useRuntimeRpc";
 import { HIDDEN_COMMANDS, type SlashCommand } from "@/lib/slashCommands";
 
 type CommandsListEntry = {
@@ -19,7 +19,7 @@ export function useSlashCommands(agentId: string | null): {
   commands: SlashCommand[];
   isLoading: boolean;
 } {
-  const { data, isLoading } = useGatewayRpc<CommandsListResult>(
+  const { data, isLoading } = useRuntimeRpc<CommandsListResult>(
     agentId ? "commands.list" : null,
     agentId ? { agentId, includeArgs: true, scope: "text" } : undefined,
     { dedupingInterval: 60_000 },

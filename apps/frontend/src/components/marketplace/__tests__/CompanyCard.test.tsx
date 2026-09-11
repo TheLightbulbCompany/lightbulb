@@ -29,9 +29,10 @@ describe("CompanyCard", () => {
     expect(screen.getByText(/one-click deploy/i)).toBeInTheDocument();
   });
 
-  it("shows the Ultra Pro badge for large companies", () => {
+  it("does not treat legacy min_plan metadata as a deploy entitlement", () => {
     render(<CompanyCard listing={companyListing(49, "ultra_pro")} />);
-    expect(screen.getByText(/requires ultra pro/i)).toBeInTheDocument();
+    expect(screen.getByText(/one-click deploy/i)).toBeInTheDocument();
+    expect(screen.queryByText(/requires ultra/i)).toBeNull();
   });
 });
 

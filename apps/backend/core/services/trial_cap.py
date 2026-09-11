@@ -69,17 +69,27 @@ def utc_today() -> str:
 def _is_expired(account: dict) -> bool:
     """Has this trial_local owner's 3-day window elapsed?
 
-    ``trial_local``'s clock is OURS by construction — ``trial_end`` is stamped
-    locally at signup (created + 3 days), never sourced from a Stripe
-    Subscription. The "Stripe owns the trial clock" rule applies to Stripe
+    ``trial_local``'s clock is OURS by construction — ``trial_end`` is armed
+    locally on the first canonical ready poll (ready + 3 days), never sourced
+    from a Stripe Subscription. The "Stripe owns the trial clock" rule applies to Stripe
     trials ("trialing"), not this local one, so a plain read-time comparison is
     correct: no persisted status flip, no worker.
 
-    A MISSING ``trial_end`` is not expired — legacy dev rows predate the stamp,
-    and the daily cap still bounds them.
+    A MISSING ``trial_end`` is not expired — the trial remains unarmed until
+    its workspace runtime first becomes ready, and the daily cap still bounds it.
     """
     trial_end = account.get("trial_end")
     return trial_end is not None and int(time.time()) > int(trial_end)
+
+
+def is_trial_expired(account: dict | None) -> bool:
+    """Public: True only for a ``trial_local`` owner whose 3-day window elapsed.
+
+    Expiry ONLY — the daily $3 cap is a separate, transient gate that resets at
+    the UTC rollover, so it is deliberately not folded in here. Nightly-CEO
+    arming keys off expiry (a capped-today trial is still armed; the cap gates
+    the run, not the arm)."""
+    return bool(account) and account.get("subscription_status") == "trial_local" and _is_expired(account)
 
 
 async def trial_block_reason(owner_id: str) -> str | None:

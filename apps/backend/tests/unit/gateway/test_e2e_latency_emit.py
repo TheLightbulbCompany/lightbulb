@@ -44,9 +44,11 @@ def conn():
     c._recipients_cache = None
     c._recipients_cache_ts = 0.0
     c._active_runs = {}
+    c._terminal_run_ids = {}
     c._analytics_tasks = set()
     c._run_state = {}
     c._side_run_ids = {}
+    c._run_text = {}
     c._parked = False
     c._parked_watchdog_task = None
     # Run-completion observer registry (INV-5 bootstrap dispatcher). Not
@@ -83,7 +85,7 @@ async def test_primary_terminal_emits_positive_latency(conn):
 
     with (
         patch("core.gateway.connection_pool.put_metric", side_effect=fake_put_metric),
-        patch.object(conn, "_forward_to_frontends", AsyncMock()),
+        patch.object(conn, "_publish_room_frame", AsyncMock()),
     ):
         await conn._handle_message({"type": "event", "event": "chat", "payload": payload})
 
@@ -116,7 +118,7 @@ async def test_terminal_without_active_run_emits_nothing(conn):
 
     with (
         patch("core.gateway.connection_pool.put_metric", side_effect=fake_put_metric),
-        patch.object(conn, "_forward_to_frontends", AsyncMock()),
+        patch.object(conn, "_publish_room_frame", AsyncMock()),
     ):
         await conn._handle_message({"type": "event", "event": "chat", "payload": payload})
 
@@ -158,7 +160,7 @@ async def test_side_run_terminal_emits_nothing(conn):
 
     with (
         patch("core.gateway.connection_pool.put_metric", side_effect=fake_put_metric),
-        patch.object(conn, "_forward_to_frontends", AsyncMock()),
+        patch.object(conn, "_publish_room_frame", AsyncMock()),
     ):
         await conn._handle_message({"type": "event", "event": "chat", "payload": payload})
 

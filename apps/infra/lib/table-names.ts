@@ -21,7 +21,6 @@
  * tableName change on their own.
  */
 export const tablePrefix = (env: string) => `lightbulb-${env}-`;
-export const legacyTablePrefix = (env: string) => `isol8-${env}-`;
 
 /**
  * Non-table AWS resource names carry the same brand prefix as tables.

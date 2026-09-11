@@ -331,11 +331,11 @@ async def record_close_state(
 async def create_stripe_coupon(auth: AuthContext, *, force: bool = False) -> dict:
     """Mint the launch free-month coupon: 100% off, ``duration="once"``,
     redeemable through ``COUPON_REDEEM_BY``, and RESTRICTED to the flat
-    (Starter) subscription product via ``applies_to.products`` — the free
-    month is a Starter month, never a discount on the bundled starter-credits
+    (Workspace) subscription product via ``applies_to.products`` — the free
+    month is a Workspace month, never a discount on the bundled starter-credits
     line item (a 100%-off coupon on the whole session would zero up to
     $1,000 of credits the webhook still grants in full). The product id is
-    resolved from ``STRIPE_FLAT_PRICE_ID`` at mint time. There are NO
+    resolved from ``STRIPE_WORKSPACE_PRICE_ID`` at mint time. There are NO
     promotion codes — the coupon is attached server-side (to paying winners'
     subscriptions by the close action, and pre-applied at checkout for
     unpaid winners), never typed by a customer. Refuses a second mint unless
@@ -356,13 +356,13 @@ async def create_stripe_coupon(auth: AuthContext, *, force: bool = False) -> dic
     if COUPON_REDEEM_BY <= datetime.now(timezone.utc):
         # Stripe rejects a past `redeem_by` outright; say why instead of 502ing.
         raise SettingsInvalid({"stripe_coupon_id": "the coupon redeem-by instant (Oct 31 ET) is already past"})
-    if not settings.STRIPE_FLAT_PRICE_ID:
-        raise SettingsInvalid({"stripe_coupon_id": "STRIPE_FLAT_PRICE_ID is not configured for this env"})
+    if not settings.STRIPE_WORKSPACE_PRICE_ID:
+        raise SettingsInvalid({"stripe_coupon_id": "STRIPE_WORKSPACE_PRICE_ID is not configured for this env"})
 
     nonce = row["mint_nonce"] + 1 if force else max(row["mint_nonce"], 1)
     env = settings.ENVIRONMENT
     try:
-        price = await run_in_thread(stripe.Price.retrieve, settings.STRIPE_FLAT_PRICE_ID)
+        price = await run_in_thread(stripe.Price.retrieve, settings.STRIPE_WORKSPACE_PRICE_ID)
         product = price["product"]
         coupon = await run_in_thread(
             stripe.Coupon.create,

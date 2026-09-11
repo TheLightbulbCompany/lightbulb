@@ -62,9 +62,11 @@ def _make_terminal_conn(owner_id="org_1"):
     conn._recipients_cache = None
     conn._recipients_cache_ts = 0.0
     conn._active_runs = {}
+    conn._terminal_run_ids = {}
     conn._analytics_tasks = set()
     conn._run_state = {}
     conn._side_run_ids = {}
+    conn._run_text = {}
     conn._parked = False
     conn._parked_watchdog_task = None
     # Run-completion observer registry (INV-5 bootstrap dispatcher). Not
@@ -229,7 +231,7 @@ async def test_carry_canonical_member_through_terminal():
     with (
         patch("core.services.push_service.send_push_to_user", sent),
         patch("core.gateway.connection_pool.put_metric"),
-        patch.object(conn, "_forward_to_frontends", AsyncMock()),
+        patch.object(conn, "_publish_room_frame", AsyncMock()),
         patch.object(conn, "_resolve_agent_name", AsyncMock(return_value="Friday")),
     ):
         await conn._handle_message({"type": "event", "event": "chat", "payload": payload})
@@ -267,14 +269,14 @@ async def test_push_dispatched_before_active_run_cleared():
         order.append("dispatch")
         return real_dispatch(*a, **k)
 
-    def rec_clear(key):
+    def rec_clear(*a, **k):
         order.append("clear")
-        return real_clear(key)
+        return real_clear(*a, **k)
 
     with (
         patch("core.services.push_service.send_push_to_user", AsyncMock()),
         patch("core.gateway.connection_pool.put_metric"),
-        patch.object(conn, "_forward_to_frontends", AsyncMock()),
+        patch.object(conn, "_publish_room_frame", AsyncMock()),
         patch.object(conn, "_resolve_agent_name", AsyncMock(return_value="Friday")),
         patch.object(conn, "_dispatch_push_notification", side_effect=rec_dispatch),
         patch.object(conn, "_clear_active_run", side_effect=rec_clear),
@@ -302,7 +304,7 @@ async def test_terminal_error_state_pushes_failure():
     with (
         patch("core.services.push_service.send_push_to_user", sent),
         patch("core.gateway.connection_pool.put_metric"),
-        patch.object(conn, "_forward_to_frontends", AsyncMock()),
+        patch.object(conn, "_publish_room_frame", AsyncMock()),
         patch.object(conn, "_resolve_agent_name", AsyncMock(return_value="Friday")),
     ):
         await conn._handle_message({"type": "event", "event": "chat", "payload": payload})
@@ -328,7 +330,7 @@ async def test_terminal_aborted_does_not_push():
     with (
         patch("core.services.push_service.send_push_to_user", sent),
         patch("core.gateway.connection_pool.put_metric"),
-        patch.object(conn, "_forward_to_frontends", AsyncMock()),
+        patch.object(conn, "_publish_room_frame", AsyncMock()),
         patch.object(conn, "_resolve_agent_name", AsyncMock(return_value="Friday")),
     ):
         await conn._handle_message({"type": "event", "event": "chat", "payload": payload})
@@ -359,7 +361,7 @@ async def test_side_run_final_does_not_push():
     with (
         patch("core.services.push_service.send_push_to_user", sent),
         patch("core.gateway.connection_pool.put_metric"),
-        patch.object(conn, "_forward_to_frontends", AsyncMock()),
+        patch.object(conn, "_publish_room_frame", AsyncMock()),
         patch.object(conn, "_resolve_agent_name", AsyncMock(return_value="Friday")),
     ):
         await conn._handle_message({"type": "event", "event": "chat", "payload": payload})

@@ -31,27 +31,29 @@ from core.services.paperclip_adapter_config import (
 )
 from core.services.paperclip_admin_client import (
     PaperclipAdminClient,
-    PaperclipAgentCreateReplayMiss,
     shared_admin_client,
 )
 from core.services.paperclip_agent_idempotency import (
     build_agent_create_idempotency_key,
     paperclip_agent_intent,
 )
-from core.services.agent_budget import AGENT_BUDGET_EXCEEDED_DETAIL, is_at_agent_budget
 from core.services.agent_provenance import stamp_agent_provenance
 from core.services.agent_redaction import strip_agent_secrets
 from core.services.paperclip_openclaw_pairing import (
     ensure_operator_device_paired,
     get_seeded_agent_ids,
-    is_seeded_agent,
+    get_starter_agent_ids,
     pair_with_openclaw,
 )
-from core.services.paperclip_agent_lifecycle import delete_agent_everywhere
+from core.services.paperclip_agent_lifecycle import (
+    AgentLifecycleConflict,
+    delete_agent_everywhere,
+    ensure_root_ceo_survives,
+)
 from core.services.paperclip_provisioning import _ws_gateway_url  # noqa: F401 — re-exported for downstream tasks.
 from core.services.paperclip_user_session import get_user_session_cookie
 from core.services.provision_gate import evaluate_provision_gate
-from core.services.user_provision import ensure_user_ready
+from core.services.user_provision import ensure_user_ready, ensure_workspace_trial_default
 
 from . import deps as deps_mod
 from ._guards import require_trial_runway
@@ -79,16 +81,20 @@ router = APIRouter()
 # core.services.agent_redaction so neither surface can drift on what's secret.
 
 
-def _mark_seeded(agent, seeded_ids, sidecar=None):
+def _mark_seeded(agent, seeded_ids, sidecar=None, starter_ids=()):
     """Stamp backend-authored seed and origin fields for the browser.
 
-    ``seeded`` is the single source of truth the Teams UI uses to lock
-    Friday/Atlas (hide Delete, show meta read-only). Determined from the
+    ``seeded`` is backend-authored starter provenance. Determined from the
     persisted seeded-agent IDs — never role/name — so a user-created
     agent is never falsely locked. Marketplace identity requires a complete
     server-written deployment sidecar; ambiguous legacy rows become Custom.
     """
-    return stamp_agent_provenance(agent, seeded_ids=seeded_ids, sidecar=sidecar)
+    return stamp_agent_provenance(
+        agent,
+        seeded_ids=seeded_ids,
+        starter_ids=starter_ids,
+        sidecar=sidecar,
+    )
 
 
 async def _load_agent_sidecars(owner_id: str, agent_ids: list[str]) -> dict[str, dict]:
@@ -393,6 +399,7 @@ async def _self_heal_reconcile(auth: AuthContext) -> dict | None:
     owner_id = resolve_owner_id(auth)
     is_admin = auth.is_org_admin if auth.is_org_context else True
 
+    await ensure_workspace_trial_default(auth, owner_id)
     gate = await evaluate_provision_gate(
         owner_id=owner_id,
         is_admin=is_admin,
@@ -449,11 +456,18 @@ async def list_agents(ctx: TeamsContext = Depends(_ctx)):
     )
     envelope = envelope_list(upstream, "agents")
     owner_id = _resolve_owner_id(ctx)
-    seeded_ids = await get_seeded_agent_ids(owner_id=owner_id, repo=_repo())
+    repo = _repo()
+    seeded_ids, starter_ids = await asyncio.gather(
+        get_seeded_agent_ids(owner_id=owner_id, repo=repo),
+        get_starter_agent_ids(owner_id=owner_id, repo=repo),
+    )
     agent_ids = [a["id"] for a in envelope["agents"] if isinstance(a.get("id"), str)]
     sidecars = await _load_agent_sidecars(owner_id, agent_ids)
     return {
-        "agents": [_mark_seeded(_redact_agent(a), seeded_ids, sidecars.get(a.get("id"))) for a in envelope["agents"]]
+        "agents": [
+            _mark_seeded(_redact_agent(a), seeded_ids, sidecars.get(a.get("id")), starter_ids)
+            for a in envelope["agents"]
+        ]
     }
 
 
@@ -554,9 +568,6 @@ async def create_agent(body: CreateAgentBody, ctx: TeamsContext = Depends(_ctx))
     """
     creator_user_id = _creator_user_id(ctx)
     owner_id = _resolve_owner_id(ctx)
-    # At the cap, the same logical operation may replay its existing Paperclip
-    # agent, but Paperclip atomically refuses a missing operation key.
-    at_agent_budget = await is_at_agent_budget(owner_id)
     # Mint the service token with owner_id (NOT the creator's user_id).
     # The OpenClaw container is keyed by owner_id (org_id for org members,
     # user_id for personal owners). The WS Lambda authorizer puts service
@@ -586,23 +597,19 @@ async def create_agent(body: CreateAgentBody, ctx: TeamsContext = Depends(_ctx))
             budget_monthly_cents=body.budget_monthly_cents,
         ),
     )
-    try:
-        paperclip_agent = await _admin().create_agent(
-            session_cookie=await _user_session(ctx),
-            company_id=ctx.company_id,
-            name=body.name,
-            role=body.role,
-            adapter_type=OPENCLAW_GATEWAY_TYPE,
-            adapter_config=adapter_config,
-            title=body.title,
-            capabilities=body.capabilities,
-            reports_to=body.reports_to,
-            budget_monthly_cents=body.budget_monthly_cents,
-            idempotency_key=idempotency_key,
-            idempotency_replay_only=at_agent_budget,
-        )
-    except PaperclipAgentCreateReplayMiss as exc:
-        raise HTTPException(status_code=409, detail=AGENT_BUDGET_EXCEEDED_DETAIL) from exc
+    paperclip_agent = await _admin().create_agent(
+        session_cookie=await _user_session(ctx),
+        company_id=ctx.company_id,
+        name=body.name,
+        role=body.role,
+        adapter_type=OPENCLAW_GATEWAY_TYPE,
+        adapter_config=adapter_config,
+        title=body.title,
+        capabilities=body.capabilities,
+        reports_to=body.reports_to,
+        budget_monthly_cents=body.budget_monthly_cents,
+        idempotency_key=idempotency_key,
+    )
 
     # Pair with the owner's OpenClaw container if reachable. Failure is
     # non-fatal — the next container provision picks the agent up via
@@ -662,9 +669,13 @@ async def get_agent(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
         session_cookie=ctx.session_cookie,
     )
     owner_id = _resolve_owner_id(ctx)
-    seeded_ids = await get_seeded_agent_ids(owner_id=owner_id, repo=_repo())
+    repo = _repo()
+    seeded_ids, starter_ids = await asyncio.gather(
+        get_seeded_agent_ids(owner_id=owner_id, repo=repo),
+        get_starter_agent_ids(owner_id=owner_id, repo=repo),
+    )
     sidecars = await _load_agent_sidecars(owner_id, [agent_id])
-    return _mark_seeded(_redact_agent(upstream), seeded_ids, sidecars.get(agent_id))
+    return _mark_seeded(_redact_agent(upstream), seeded_ids, sidecars.get(agent_id), starter_ids)
 
 
 @router.patch("/agents/{agent_id}")
@@ -688,7 +699,21 @@ async def patch_agent(
     payload = body.model_dump(exclude_none=True, by_alias=True)
     if "reports_to" in body.model_fields_set and body.reports_to is None:
         payload["reportsTo"] = None
-    upstream = await _admin().patch_agent(
+    admin = _admin()
+    if payload.get("reportsTo"):
+        target = await admin.get_agent(
+            agent_id=agent_id,
+            session_cookie=ctx.session_cookie,
+        )
+        listed = await admin.list_agents(
+            company_id=ctx.company_id,
+            session_cookie=ctx.session_cookie,
+        )
+        try:
+            ensure_root_ceo_survives(target=target, agents=envelope_list(listed, "agents")["agents"])
+        except AgentLifecycleConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    upstream = await admin.patch_agent(
         agent_id=agent_id,
         body=payload,
         session_cookie=ctx.session_cookie,
@@ -702,18 +727,14 @@ async def patch_agent(
 async def delete_agent(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
     """Delete an agent. Idempotent — 404 from upstream is swallowed.
 
-    Seeded agents (Friday/Atlas) are part of the provisioning contract and
-    must not be deleted. The OpenClaw gateway delete path enforces this in
-    ``websocket_chat._guard_seeded_delete``; guard the REST path too
-    (defense in depth — the UI deletes via the gateway, but this endpoint
-    is still reachable directly).
+    The shared lifecycle preserves a final root CEO while allowing any other
+    agent, including starter specialists, to be removed.
     """
-    if await is_seeded_agent(owner_id=_resolve_owner_id(ctx), agent_id=agent_id):
-        raise HTTPException(status_code=403, detail="Seeded agents (Friday/Atlas) cannot be deleted.")
-    return await delete_agent_everywhere(
-        owner_id=_resolve_owner_id(ctx),
-        agent_id=agent_id,
-    )
+    owner_id = _resolve_owner_id(ctx)
+    try:
+        return await delete_agent_everywhere(owner_id=owner_id, agent_id=agent_id)
+    except AgentLifecycleConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/agents/{agent_id}/pause")

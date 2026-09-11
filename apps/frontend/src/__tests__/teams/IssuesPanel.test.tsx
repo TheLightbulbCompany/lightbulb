@@ -114,6 +114,28 @@ describe("IssuesPanel", () => {
     expect(screen.queryByTestId("new-issue-dialog-stub")).not.toBeInTheDocument();
   });
 
+  // Get Started's "Create your first task" step moved here with Inbox's issue
+  // rows; it opens the SAME dialog, pre-filled with a CEO-directed task.
+  it("pre-fills the composer for the onboarding first task, and only then", () => {
+    render(<IssuesPanel newTask newTaskPrefill="onboarding" />);
+    const props = newIssueDialogStub.mock.calls.at(-1)![0] as {
+      defaultTitle?: string;
+      defaultStatus?: string;
+    };
+    expect(props.defaultTitle).toContain("[your goal]");
+    expect(props.defaultStatus).toBe("todo");
+  });
+
+  it("leaves the composer blank for a plain New task intent", () => {
+    render(<IssuesPanel newTask />);
+    const props = newIssueDialogStub.mock.calls.at(-1)![0] as {
+      defaultTitle?: string;
+      defaultStatus?: string;
+    };
+    expect(props.defaultTitle).toBeUndefined();
+    expect(props.defaultStatus).toBeUndefined();
+  });
+
   it("re-opens the dialog when newTask goes false→true on a mounted panel", () => {
     const { rerender } = render(<IssuesPanel newTask={false} />);
     expect(screen.queryByTestId("new-issue-dialog-stub")).not.toBeInTheDocument();
@@ -161,5 +183,50 @@ describe("IssuesPanel", () => {
     expect(
       screen.getByRole("switch", { name: /routine tasks/i }),
     ).toHaveAttribute("aria-checked", "true");
+  });
+
+  // The Group control is an icon button (aria-label "Group") opening a
+  // popover of options — not a <select>.
+  // Grouping is a list-view affordance and board is the default view, so a
+  // test that wants the Group menu has to switch first.
+  const goToListView = () => {
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "List view" }));
+    });
+  };
+  const pickGrouping = (label: string) => {
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Group" }));
+    });
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: label }));
+    });
+  };
+
+  it("offers New goal for the grouping the owner is LOOKING AT, not the one the URL opened on", () => {
+    // The bug this pins: gating on the deep-link prop meant someone who
+    // grouped by goal from the menu saw no "New goal" — and a company with no
+    // goals yet has no goal link to arrive by, so that was the only path to
+    // its first goal.
+    render(<IssuesPanel />);
+    goToListView();
+    expect(screen.queryByRole("button", { name: "New goal" })).toBeNull();
+    pickGrouping("Goal");
+    expect(screen.getByRole("button", { name: "New goal" })).toBeInTheDocument();
+  });
+
+  it("offers New project once the owner groups by project", () => {
+    render(<IssuesPanel />);
+    goToListView();
+    expect(screen.queryByRole("button", { name: "New project" })).toBeNull();
+    pickGrouping("Project");
+    expect(screen.getByRole("button", { name: "New project" })).toBeInTheDocument();
+  });
+
+  it("drops New goal when the owner regroups away from a goal deep link", () => {
+    render(<IssuesPanel initialGroupBy="goal" />);
+    expect(screen.getByRole("button", { name: "New goal" })).toBeInTheDocument();
+    pickGrouping("Status");
+    expect(screen.queryByRole("button", { name: "New goal" })).toBeNull();
   });
 });

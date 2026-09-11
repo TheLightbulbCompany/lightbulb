@@ -10,8 +10,7 @@
       "channel": "development",
       "env": {
         "EXPO_PUBLIC_API_URL": "https://api-dev.flickmeon.ai/api/v1",
-        "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_test_dXAtbW90aC01NS5jbGVyay5hY2NvdW50cy5kZXYk",
-        "EXPO_PUBLIC_APPLE_IAP_PRODUCT_ID": "company.thelightbulb.mobile.plan.monthly"
+        "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_test_dXAtbW90aC01NS5jbGVyay5hY2NvdW50cy5kZXYk"
       }
     },
     "development-simulator": {
@@ -25,8 +24,7 @@
       "channel": "preview",
       "env": {
         "EXPO_PUBLIC_API_URL": "https://api-dev.flickmeon.ai/api/v1",
-        "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_test_dXAtbW90aC01NS5jbGVyay5hY2NvdW50cy5kZXYk",
-        "EXPO_PUBLIC_APPLE_IAP_PRODUCT_ID": "company.thelightbulb.mobile.plan.monthly"
+        "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_test_dXAtbW90aC01NS5jbGVyay5hY2NvdW50cy5kZXYk"
       }
     },
     "production": {
@@ -34,8 +32,7 @@
       "channel": "production",
       "env": {
         "EXPO_PUBLIC_API_URL": "https://api.flickmeon.ai/api/v1",
-        "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_live_Y2xlcmsuZmxpY2ttZW9uLmFpJA",
-        "EXPO_PUBLIC_APPLE_IAP_PRODUCT_ID": "company.thelightbulb.mobile.plan.monthly"
+        "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_live_Y2xlcmsuZmxpY2ttZW9uLmFpJA"
       }
     }
   },

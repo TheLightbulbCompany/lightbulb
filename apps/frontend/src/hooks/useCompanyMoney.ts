@@ -130,7 +130,13 @@ export function moneyView<Row>(
   return data.data.length ? { kind: "rows" } : { kind: "zero" };
 }
 
-export function useCompanyMoney<Row>(kind: MoneyKind) {
+export interface MoneyWindow {
+  /** Inclusive UTC days, YYYY-MM-DD — the shape /company/payments takes. */
+  start: string;
+  end: string;
+}
+
+export function useCompanyMoney<Row>(kind: MoneyKind, window?: MoneyWindow) {
   const api = useApi();
   const [cursor, setCursor] = useState<string | null>(null);
   // Pages already fetched, in order. "Load more" APPENDS — swapping the SWR key
@@ -138,15 +144,31 @@ export function useCompanyMoney<Row>(kind: MoneyKind) {
   // page 1, and an empty final page then rendered "No payments yet" to an owner
   // who had just paged through dozens of them.
   const [earlier, setEarlier] = useState<Row[]>([]);
+  // A window change is a different list: drop the pages accumulated under
+  // the old one, or Sept 5's rows would sit above Sept 6's under a Sept 6
+  // heading.
+  const windowKey = window ? `${window.start}..${window.end}` : "";
+  const [seenWindow, setSeenWindow] = useState(windowKey);
+  if (seenWindow !== windowKey) {
+    setSeenWindow(windowKey);
+    setCursor(null);
+    setEarlier([]);
+  }
 
-  const key = cursor ? `/company/${kind}?starting_after=${cursor}` : `/company/${kind}`;
+  const base = window
+    ? `/company/${kind}?start=${window.start}&end=${window.end}`
+    : `/company/${kind}`;
+  const key = cursor ? `${base}${window ? "&" : "?"}starting_after=${cursor}` : base;
   const { data, error, isLoading } = useSWR<MoneyEnvelope<Row>>(
     key,
     (path: string) => api.get(path) as Promise<MoneyEnvelope<Row>>,
-    // keepPreviousData: without it, changing the cursor on "Load more" blanks
-    // `data`, so the view flips to `loading` and every accumulated row is
-    // replaced by a skeleton until the next page lands.
-    { dedupingInterval: 30_000, keepPreviousData: true },
+    // keepPreviousData only WHILE PAGING: without it, changing the cursor on
+    // "Load more" blanks `data`, so the view flips to `loading` and every
+    // accumulated row is replaced by a skeleton until the next page lands.
+    // With it on a WINDOW change it is a lie — Sept 5's rows would sit under a
+    // "Payments on Sept 6" heading until the new day lands. A window change
+    // resets the cursor to null, so this is exactly the paging case.
+    { dedupingInterval: 30_000, keepPreviousData: cursor !== null },
   );
 
   const next = useCallback(() => {
@@ -166,6 +188,10 @@ export function useCompanyMoney<Row>(kind: MoneyKind) {
     // otherwise strand them with no way back to page 1.
     view: rows.length && view.kind !== "forbidden" ? ({ kind: "rows" } as MoneyView) : view,
     hasMore: !!data?.has_more,
+    /** Straight off the envelope — the only thing that can say an account is
+     *  actually bound. A section may only offer a Stripe Dashboard link when
+     *  there is a Stripe account behind it. */
+    stripeBound: !!data?.stripe_bound,
     next,
   };
 }

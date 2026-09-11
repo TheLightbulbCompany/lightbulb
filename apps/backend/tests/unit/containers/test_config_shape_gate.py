@@ -19,6 +19,7 @@ import json
 
 import pytest
 
+from core import openclaw_version
 from core.containers.config import build_openclaw_config_dict
 from core.services import config_schema
 
@@ -373,3 +374,38 @@ def test_model_policy_is_81_only(monkeypatch):
     makes the picker resolve against the account-scoped catalog (#115953)."""
     assert _cfg(monkeypatch, emit_81=True)["agents"]["defaults"]["modelPolicy"] == {"allow": ["openai/*"]}
     assert "modelPolicy" not in _cfg(monkeypatch, emit_81=False)["agents"]["defaults"]
+
+
+def test_model_selection_scope_is_81_only(monkeypatch):
+    """``agents.defaults.modelSelectionScope`` is an 8.1 key, and 7.2's
+    ``agents.defaults`` is ``.strict()``. "session" is what stops a chat
+    ``/model`` directive persisting the picked model back into the file the
+    backend owns (sticky-model-selection.ts defaults an unset value to
+    "effective", which writes)."""
+    assert _cfg(monkeypatch, emit_81=True)["agents"]["defaults"]["modelSelectionScope"] == "session"
+    assert "modelSelectionScope" not in _cfg(monkeypatch, emit_81=False)["agents"]["defaults"]
+
+
+def _mcp_cfg(tag: str) -> dict:
+    """A config carrying an mcp block — runtimeScope is only written when one exists."""
+    return build_openclaw_config_dict(
+        **_COMMON,
+        deployed_tag=tag,
+        integration_mcp_servers={"stripe": {"command": "npx", "args": ["-y", "@stripe/mcp"]}},
+    )
+
+
+def test_mcp_runtime_scope_follows_the_target_image_not_the_env_pin(monkeypatch):
+    """``mcp.runtimeScope`` exists only from 2026.6.1; an older gateway's MCP
+    schema is strict and crash-loops on the unknown key at boot.
+
+    The gate used to read ``deployed_upstream_at_least`` (THIS environment's
+    pin) while every sibling gate read ``deployed_tag``. Inert while the pin and
+    the running image agree, but it is the one gate that could write a
+    newer-only key onto a lagging container — an image roll BACK, or a
+    reprovision mid-promotion — which is the exact failure ``_target_upstream``
+    exists to prevent. Patch the old predicate open to prove it is off the path.
+    """
+    monkeypatch.setattr(openclaw_version, "deployed_upstream_at_least", lambda target: True)
+    assert "runtimeScope" not in _mcp_cfg("2026.5.12-0654e00")["mcp"]
+    assert _mcp_cfg("2026.8.1-isol8.3-abc1234")["mcp"]["runtimeScope"] == "shared"

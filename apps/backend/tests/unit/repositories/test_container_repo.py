@@ -887,7 +887,10 @@ async def test_upsert_cas_pins_absent_fields_as_absent(dynamodb_table):
     # The pinned-lease set comes back from the SAME builder that wrote the
     # condition, and pins both fields — as absent here. A comparator that
     # rebuilt this itself is how the condition and its triage drift apart.
-    assert lease_expected == dict.fromkeys(container_repo._LEASE_CAS_FIELDS, None)
+    assert lease_expected == {
+        **dict.fromkeys(container_repo._LEASE_CAS_FIELDS, None),
+        **dict.fromkeys(container_repo._RELEASE_OWNED_FIELDS, (False, None)),
+    }
     created = await container_repo.upsert("user_nolease", {"status": "provisioning"})
     assert "provision_claim_id" not in created
     again = await container_repo.upsert("user_nolease", {"status": "running"})
@@ -945,6 +948,201 @@ async def test_update_fields_cannot_touch_the_gate_fields_at_all(dynamodb_table)
     row = await container_repo.get_by_owner_id("user_scoped")
     assert row["bedrock_gate_token_hash"] == "hash_B"
     assert row["bedrock_gate_superseded_hashes"] == ["hash_A"]
+
+
+@pytest.mark.asyncio
+async def test_upsert_preserves_stable_release(dynamodb_table):
+    from core.repositories import container_repo
+
+    row = await container_repo.upsert("release-owner", {"status": "stopped"})
+    row.update(desired_release_id="candidate", active_release_id="candidate", release_revision=4)
+    dynamodb_table.put_item(Item=row)
+
+    result = await container_repo.upsert("release-owner", {"status": "provisioning"})
+    stored = dynamodb_table.get_item(Key={"owner_id": "release-owner"})["Item"]
+
+    assert result["desired_release_id"] == stored["desired_release_id"] == "candidate"
+    assert stored["active_release_id"] == "candidate"
+    assert stored["release_revision"] == 4
+    assert "release_update_id" not in stored
+
+    unassigned = await container_repo.upsert("unassigned-owner", {"status": "provisioning"})
+    assert not {"desired_release_id", "active_release_id", "release_revision", "release_update_id"} & unassigned.keys()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "field",
+    ["desired_release_id", "active_release_id", "release_revision", "release_update_id"],
+)
+@pytest.mark.parametrize("writer", ["upsert", "update_fields", "update_container_leased"])
+@pytest.mark.parametrize("value", ["private-release-value", None])
+async def test_release_fields_are_refused_from_generic_container_writers(dynamodb_table, field, writer, value):
+    from core.repositories import container_repo
+
+    original = {
+        "owner_id": "release-reject",
+        "status": "provisioning",
+        "provision_claim_id": "claim",
+        "provision_attempt_token": "attempt",
+        "release_update_id": "reserved",
+    }
+    dynamodb_table.put_item(Item=original)
+
+    with pytest.raises(ValueError) as error:
+        if writer == "update_container_leased":
+            await container_repo.update_container_leased("release-reject", "claim", {field: value})
+        else:
+            await getattr(container_repo, writer)("release-reject", {field: value})
+
+    assert field in str(error.value)
+    assert "private-release-value" not in str(error.value)
+    assert dynamodb_table.get_item(Key={"owner_id": "release-reject"})["Item"] == original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("changed_field", "changed_value"),
+    [
+        ("desired_release_id", "winner-desired"),
+        ("active_release_id", "winner-active"),
+        ("release_revision", 5),
+        ("release_update_id", None),
+    ],
+)
+async def test_upsert_release_cas_stops_on_every_release_field_change(dynamodb_table, changed_field, changed_value):
+    from core.repositories import container_repo
+
+    original = await container_repo.upsert("release-race", {"status": "stopped", "winner_data": "before"})
+    original.update(desired_release_id="candidate", active_release_id="candidate", release_revision=4)
+    dynamodb_table.put_item(Item=original)
+    real_run_in_thread = container_repo.run_in_thread
+    state = {"puts": 0}
+
+    async def racing_run_in_thread(fn, **kwargs):
+        if getattr(fn, "__name__", "") == "put_item":
+            state["puts"] += 1
+            if state["puts"] == 1:
+                dynamodb_table.update_item(
+                    Key={"owner_id": "release-race"},
+                    UpdateExpression="SET #field = :value, winner_data = :winner",
+                    ExpressionAttributeNames={"#field": changed_field},
+                    ExpressionAttributeValues={":value": changed_value, ":winner": "complete"},
+                )
+        return await real_run_in_thread(fn, **kwargs)
+
+    with (
+        patch.object(container_repo, "run_in_thread", racing_run_in_thread),
+        pytest.raises(container_repo.ProvisionSuperseded, match=changed_field),
+    ):
+        await container_repo.upsert("release-race", {"status": "provisioning", "loser_data": "no"})
+
+    stored = dynamodb_table.get_item(Key={"owner_id": "release-race"})["Item"]
+    assert state["puts"] == 1
+    assert stored == {**original, changed_field: changed_value, "winner_data": "complete"}
+
+
+@pytest.mark.asyncio
+async def test_upsert_release_cas_stops_on_revision_aba(dynamodb_table):
+    from core.repositories import container_repo
+
+    original = await container_repo.upsert("release-aba", {"status": "stopped"})
+    original.update(desired_release_id="candidate", active_release_id="candidate", release_revision=4)
+    dynamodb_table.put_item(Item=original)
+    real_run_in_thread = container_repo.run_in_thread
+
+    async def racing_run_in_thread(fn, **kwargs):
+        if getattr(fn, "__name__", "") == "put_item":
+            dynamodb_table.update_item(
+                Key={"owner_id": "release-aba"},
+                UpdateExpression="SET desired_release_id = :release, active_release_id = :release, release_revision = :revision",
+                ExpressionAttributeValues={":release": "candidate", ":revision": 5},
+            )
+        return await real_run_in_thread(fn, **kwargs)
+
+    with (
+        patch.object(container_repo, "run_in_thread", racing_run_in_thread),
+        pytest.raises(container_repo.ProvisionSuperseded, match="release_revision"),
+    ):
+        await container_repo.upsert("release-aba", {"status": "provisioning"})
+
+    stored = dynamodb_table.get_item(Key={"owner_id": "release-aba"})["Item"]
+    assert stored["desired_release_id"] == stored["active_release_id"] == "candidate"
+    assert stored["release_revision"] == 5
+    assert stored["status"] == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_update_fields_release_reservation_race_is_a_stop(dynamodb_table):
+    from core.repositories import container_repo
+
+    await container_repo.upsert("release-update-race", {"status": "stopped"})
+    real_run_in_thread = container_repo.run_in_thread
+    fired = False
+
+    async def racing_run_in_thread(fn, **kwargs):
+        nonlocal fired
+        if getattr(fn, "__name__", "") == "update_item" and not fired:
+            fired = True
+            dynamodb_table.update_item(
+                Key={"owner_id": "release-update-race"},
+                UpdateExpression="SET release_update_id = :update",
+                ExpressionAttributeValues={":update": "reserved"},
+            )
+        return await real_run_in_thread(fn, **kwargs)
+
+    with (
+        patch.object(container_repo, "run_in_thread", racing_run_in_thread),
+        pytest.raises(container_repo.ProvisionSuperseded),
+    ):
+        await container_repo.update_fields("release-update-race", {"status": "running"})
+
+    assert fired
+    assert dynamodb_table.get_item(Key={"owner_id": "release-update-race"})["Item"]["status"] == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_update_fields_release_missing_row_stays_none(dynamodb_table):
+    from core.repositories import container_repo
+
+    assert await container_repo.update_fields("release-missing", {"status": "running"}) is None
+
+
+@pytest.mark.asyncio
+async def test_update_fields_release_unexpected_error_propagates(dynamodb_table):
+    from botocore.exceptions import ClientError
+
+    from core.repositories import container_repo
+
+    error = ClientError({"Error": {"Code": "InternalServerError", "Message": "failed"}}, "UpdateItem")
+
+    async def fail(*args, **kwargs):
+        raise error
+
+    with patch.object(container_repo, "run_in_thread", fail), pytest.raises(ClientError) as raised:
+        await container_repo.update_fields("release-error", {"status": "running"})
+    assert raised.value is error
+
+
+@pytest.mark.asyncio
+async def test_update_fields_release_unparseable_refused_row_fails_closed(dynamodb_table):
+    from botocore.exceptions import ClientError
+
+    from core.repositories import container_repo
+
+    error = ClientError(
+        {
+            "Error": {"Code": "ConditionalCheckFailedException", "Message": "refused"},
+            "Item": {"owner_id": {"INVALID": "shape"}},
+        },
+        "UpdateItem",
+    )
+
+    async def refuse(*args, **kwargs):
+        raise error
+
+    with patch.object(container_repo, "run_in_thread", refuse), pytest.raises(container_repo.ProvisionSuperseded):
+        await container_repo.update_fields("release-unparseable", {"status": "running"})
 
 
 @pytest.mark.asyncio

@@ -285,7 +285,9 @@ class Settings(BaseSettings):
     # Per-owner Bedrock AIP + scoped-role enforcement (Plan 2). Empty defaults
     # keep the backend booting in non-AWS unit-test contexts.
     BEDROCK_AIP_OWNERS_TABLE: str = ""
-    """Reverse index PK aip_arn -> owner_id. Read by resolve_owner_from_aip_arn."""
+    """Reverse index PK aip_arn -> owner_id/tier/plan. Read by the
+    bedrock-usage-meter Lambda via its own boto3 GetItem — no backend code
+    reads this table directly."""
     BEDROCK_OWNER_BOUNDARY_ARN: str = ""
     """Permissions-boundary policy ARN every backend-minted role must carry."""
     BEDROCK_OWNER_BASE_POLICY_ARN: str = ""
@@ -304,34 +306,18 @@ class Settings(BaseSettings):
     # Billing / Stripe
     STRIPE_SECRET_KEY: str = ""
     STRIPE_WEBHOOK_SECRET: str = ""
-    STRIPE_FLAT_PRICE_ID: str = ""
-    # Per-seat Stripe price for the Teams (org) subscription. Empty default so
-    # the app boots without it; CDK-wired in dev/prod. Quantity = org member
-    # count, no trial. This is the billing source of truth for "$20/seat".
-    STRIPE_TEAM_SEAT_PRICE_ID: str = ""
-    # Flat monthly base for the Teams (org) subscription, charged once
-    # alongside the per-seat item. Empty default so the app boots without it;
-    # CDK-wired in dev/prod. This is the billing source of truth for "$50 base".
-    STRIPE_TEAM_BASE_PRICE_ID: str = ""
-    # Stripe price for the Ultra Pro tier (large marketplace companies exceeding
-    # the flat tier's agent budget). Empty default so the app boots without it;
-    # CDK-wired in dev/prod. This is the billing source of truth for "$150".
+    STRIPE_WORKSPACE_PRICE_ID: str = ""
+    # Stripe price for the Ultra runtime tier. Empty default so the app boots
+    # without it; CDK-wired in dev/prod. This is the billing source of truth
+    # for "$150".
     STRIPE_ULTRA_PRICE_ID: str = ""
-    # Display dollars for one seat, echoed to the frontend via /billing/account
-    # so the paywall renders "N × $20" without hardcoding the number in the UI.
-    # Kept in lockstep with STRIPE_TEAM_SEAT_PRICE_ID's unit amount in Stripe.
-    TEAM_SEAT_PRICE_USD: int = 20
-    # Display dollars for the Teams base, echoed to the frontend via
-    # /billing/account so the paywall renders "$50 + N × $20" without
-    # hardcoding the number in the UI. Kept in lockstep with
-    # STRIPE_TEAM_BASE_PRICE_ID's unit amount in Stripe.
-    TEAM_BASE_PRICE_USD: int = 50
-    # Display dollars for the personal flat plan, echoed to clients via
-    # /billing/account. Kept in lockstep with STRIPE_FLAT_PRICE_ID's unit
+    # Display dollars for the Workspace plan, echoed to clients via
+    # /billing/account. Kept in lockstep with STRIPE_WORKSPACE_PRICE_ID's unit
     # amount in Stripe. The iOS paywall renders the web price from this, and
     # App Review requires a displayed external price to be accurate, so a
     # divergence here is a compliance bug rather than a cosmetic one.
-    FLAT_PRICE_USD: int = 50
+    WORKSPACE_PRICE_USD: int = 50
+    ULTRA_PRICE_USD: int = 150
 
     # Apple In-App Purchase (App Store guideline 3.1.3(b) — the plan must also
     # be buyable inside the iOS app). ALL default empty, and the feature is off
@@ -457,6 +443,26 @@ class Settings(BaseSettings):
     # Transfer) is price * (100 - fee) / 100; the buyer always pays the
     # listed price. 15 = launch decision 2026-08-13.
     MARKETPLACE_PLATFORM_FEE_PERCENT: int = 15
+
+    # --- Native multiplayer messaging (set by CDK ServiceStack; spec
+    # docs/superpowers/specs/2026-09-09-native-multiplayer-messaging-architecture.md).
+    # The env names are the frozen cross-packet contract — do not rename.
+    MESSAGING_TABLE: str = ""
+    """Canonical room/message table (``lightbulb-{env}-messaging``). Empty is
+    only legal outside a deployed task; ``_validate_deployed_security`` fails
+    boot without it because every room command would 500 at first use."""
+    OPENCLAW_WORK_QUEUE_URL: str = ""
+    """FIFO wake queue (``lightbulb-{env}-openclaw-work.fifo``). Empty disables
+    the in-process worker (tests, local dev without AWS)."""
+    APPSYNC_EVENTS_HTTP_ENDPOINT: str = ""
+    """AppSync Events HTTP publish endpoint (ends ``/event``). Empty makes the
+    live publisher a metric-only no-op."""
+    APPSYNC_EVENTS_REALTIME_ENDPOINT: str = ""
+    """AppSync Events realtime endpoint (ends ``/event/realtime``) handed to
+    browsers by ``GET /messaging/live-config``."""
+    APPSYNC_EVENTS_REGION: str = ""
+    """Region the Event API lives in — the SigV4 signing region, which is not
+    necessarily ``AWS_REGION``."""
 
     # Encryption (base64-encoded 32-byte key for Fernet encryption of BYOK API keys)
     ENCRYPTION_KEY: str = ""
@@ -608,6 +614,10 @@ class Settings(BaseSettings):
                 "WS internal-caller enforcement must be ON with a secret in a deployed environment; "
                 "otherwise /ws/connect can be re-bound to another user via forged headers."
             )
+        # The canonical messaging table is wired by the same CDK stack; a
+        # missing value is a dropped variable, not a feature toggle.
+        if not self.MESSAGING_TABLE:
+            raise ValueError("MESSAGING_TABLE must be set in a deployed environment (native multiplayer rooms).")
         # SEC-8: token-origin (`azp`) verification. In enforce mode an empty
         # allowlist would silently verify nothing while looking secure — fail
         # closed. In audit mode, warn loudly so the gap can't go quiet again.

@@ -28,8 +28,22 @@ SKILL = SKILL_DIR / "SKILL.md"
 HELPER = SKILL_DIR / "scripts" / "lightbulb-api.sh"
 
 
+def _skill_text() -> str:
+    """The whole skill: SKILL.md plus every references/*.md.
+
+    The skill was SPLIT into a thin SKILL.md + references/ read on demand
+    (#2367). These tests pin what the skill TELLS THE AGENT, which is the union
+    of both — an agent that follows the routing table reads the reference too.
+    Asserting against SKILL.md alone made a pure file-layout change look like a
+    deleted rule, and would do so again on the next split.
+    """
+    parts = [SKILL.read_text()]
+    parts += [f.read_text() for f in sorted((SKILL_DIR / "references").glob("*.md"))]
+    return "\n".join(parts)
+
+
 def _flat() -> str:
-    return " ".join(SKILL.read_text().split())
+    return " ".join(_skill_text().split())
 
 
 # ---------------------------------------------------------------------------
@@ -105,3 +119,19 @@ def test_the_401_row_is_scoped_to_hook_token_routes():
     flat = _flat()
     assert "A 401 from the script itself on a `/u/<owner>` route is a platform fault" in flat
     assert "the script refuses them before sending" in flat
+
+
+def test_the_skill_describes_the_generic_starter_roster_and_optional_classics():
+    flat = _flat()
+    assert "Fresh workspaces start with six agents" in flat
+    for role in ("CEO", "Engineering", "Finance", "Growth", "Analytics", "Customer Operations"):
+        assert role in flat
+    assert "Names are user-renamable" in flat
+    assert "Friday and Atlas are optional marketplace agents" in flat
+
+
+def test_the_home_surface_uses_the_current_ceo_display_name():
+    flat = _flat()
+    assert "current default CEO's display name" in flat
+    assert "Ask CEO while the roster loads" in flat
+    assert "Ask Friday" not in flat

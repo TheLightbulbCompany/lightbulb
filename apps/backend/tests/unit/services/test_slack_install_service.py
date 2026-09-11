@@ -19,6 +19,19 @@ def test_account_block_is_http_with_secret_refs_and_no_plaintext():
     assert block["slashCommand"] == {"enabled": True, "name": "lightbulb"}
 
 
+def test_account_block_opens_channels_so_mentions_are_answered():
+    """The plugin's schema materializes groupPolicy="allowlist" when unset, and
+    we never list channels — so every channel message was dropped with an
+    ephemeral "not in its allowlist" notice that only the mentioner saw.
+    "open" + the default requireMention=true is a normal Slack bot: it answers
+    when @-mentioned in a channel a human invited it to."""
+    block = svc.account_block("T0123ABC")
+    assert block["groupPolicy"] == "open"
+    # Both halves pinned: "open" without requireMention answers EVERY channel
+    # message, and requireMention's true is only a runtime `?? true` upstream.
+    assert block["requireMention"] is True
+
+
 def test_route_binding_targets_agent_by_account():
     assert svc.route_binding("T1", "agent_f") == {
         "type": "route",
@@ -63,11 +76,20 @@ async def test_apply_install_writes_secret_row_taskdef_and_config_in_order():
         calls.append(f"refresh:{extra_secrets[0]['name']}:{extra_secrets[0]['valueFrom']}")
         return "arn:td"
 
+    async def _greet(token, user):
+        calls.append(f"greet:{token}:{user}")
+
     async def _patch(owner, patch, *, agent_for_account=None):
         calls.append("patch")
         assert patch["channels"]["slack"]["accounts"]["T1"]["mode"] == "http"
         assert patch["channels"]["slack"]["enabled"] is True
-        assert patch["channels"]["slack"]["streaming"] == {"mode": "progress"}
+        # toolProgress off: progress posts each tool's OUTPUT into the channel,
+        # and a Read of a bundled SKILL.md dumped the whole file into the
+        # owner's shared company channel.
+        assert patch["channels"]["slack"]["streaming"] == {
+            "mode": "progress",
+            "progress": {"toolProgress": False},
+        }
         assert agent_for_account == {"T1": "agent_f"}
 
     mgr = MagicMock()
@@ -78,6 +100,7 @@ async def test_apply_install_writes_secret_row_taskdef_and_config_in_order():
         patch("core.services.slack_install_service._mark_connected", _status),
         patch("core.services.slack_install_service.get_ecs_manager", lambda: mgr),
         patch("core.services.slack_install_service.patch_openclaw_config", _patch),
+        patch("core.services.slack_install_service._greet_installer", _greet),
     ):
         row = await svc.apply_install(**_install_kwargs())
     assert row["status"] == "active"
@@ -87,6 +110,7 @@ async def test_apply_install_writes_secret_row_taskdef_and_config_in_order():
         "status",
         "refresh:SLACK_BOT_TOKEN_T1:arn:secret:bot_token::",
         "patch",
+        "greet:xoxb-1:U_ADMIN",
     ]
 
 
@@ -287,3 +311,64 @@ def test_manifest_scopes_match_service_scopes():
     bot_events = manifest["settings"]["event_subscriptions"]["bot_events"]
     assert "assistant_thread_started" in bot_events
     assert "assistant_thread_context_changed" in bot_events
+
+
+class _Resp:
+    def __init__(self, body):
+        self._body = body
+
+    def json(self):
+        return self._body
+
+
+class _Client:
+    """Minimal httpx.AsyncClient stand-in recording the one POST we make."""
+
+    def __init__(self, sent, body=None, raises=None):
+        self._sent, self._body, self._raises = sent, body or {"ok": True}, raises
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def post(self, url, *, headers, json):
+        if self._raises:
+            raise self._raises
+        self._sent.append((url, headers, json))
+        return _Resp(self._body)
+
+
+@pytest.mark.asyncio
+async def test_greet_installer_dms_the_installer_with_the_bot_token():
+    sent = []
+    with patch("core.services.slack_install_service.httpx.AsyncClient", lambda **kw: _Client(sent)):
+        await svc._greet_installer("xoxb-abc", "U_ADMIN")
+    assert len(sent) == 1
+    url, headers, body = sent[0]
+    assert url == svc.SLACK_POST_MESSAGE_URL
+    assert headers["Authorization"] == "Bearer xoxb-abc"
+    # A user id as `channel` is what opens the IM — that IS the fix.
+    assert body["channel"] == "U_ADMIN"
+    assert body["text"] == svc.INSTALL_GREETING
+
+
+@pytest.mark.asyncio
+async def test_greet_installer_is_a_noop_without_an_installer_id():
+    sent = []
+    with patch("core.services.slack_install_service.httpx.AsyncClient", lambda **kw: _Client(sent)):
+        await svc._greet_installer("xoxb-abc", "")
+    assert sent == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kw",
+    [{"body": {"ok": False, "error": "channel_not_found"}}, {"raises": RuntimeError("slack down")}],
+)
+async def test_greet_installer_never_raises(kw):
+    """The workspace is already connected by the time we greet — a failed
+    greeting must not turn a good install into a rollback."""
+    with patch("core.services.slack_install_service.httpx.AsyncClient", lambda **k: _Client([], **kw)):
+        await svc._greet_installer("xoxb-abc", "U_ADMIN")

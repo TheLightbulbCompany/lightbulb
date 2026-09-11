@@ -18,14 +18,13 @@
 // smaller. Built by code (never persisted as a preset blob) so the default
 // evolves with releases; Reset re-applies it.
 import type { DockviewApi } from "dockview-react";
-import { chatPanelId, DEFAULT_AGENT_SENTINEL } from "./panelRegistry";
+import { MESSAGES_PANEL_ID, DEFAULT_AGENT_SENTINEL } from "./panelRegistry";
 
 export function buildMissionControlLayout(api: DockviewApi): void {
-  const chatId = chatPanelId(DEFAULT_AGENT_SENTINEL);
   api.addPanel({
-    id: chatId,
+    id: MESSAGES_PANEL_ID,
     component: "chat",
-    title: "Chat",
+    title: "Messages",
     params: { agentId: DEFAULT_AGENT_SENTINEL },
     renderer: "always",
   });
@@ -43,5 +42,5 @@ export function buildMissionControlLayout(api: DockviewApi): void {
     title: "Inbox",
     params: { teamsKey: "inbox" },
   });
-  api.getPanel(chatId)?.api.setActive();
+  api.getPanel(MESSAGES_PANEL_ID)?.api.setActive();
 }

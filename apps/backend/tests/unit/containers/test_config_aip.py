@@ -89,7 +89,7 @@ def test_byo_path_ignores_aip_arns():
         byo_provider="anthropic",
         aip_arns=None,
     )
-    assert default_model["primary"] == "anthropic/claude-sonnet-4-6"
+    assert default_model["primary"] == "anthropic/claude-sonnet-5"
 
 
 def test_build_config_dict_bedrock_without_aips_raises():

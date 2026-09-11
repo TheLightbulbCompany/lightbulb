@@ -13,7 +13,6 @@ so local dev without real Clerk admin creds still renders the admin
 UI (with no users listed).
 """
 
-import asyncio
 import logging
 
 import httpx
@@ -25,7 +24,6 @@ logger = logging.getLogger(__name__)
 
 _CLERK_API_BASE = "https://api.clerk.com/v1"
 _TIMEOUT_S = 5.0
-_PENDING_INVITATION_PAGE_LIMIT = 100
 
 
 async def list_users(*, query: str = "", limit: int = 50, offset: int = 0) -> dict:
@@ -219,141 +217,6 @@ async def get_organization(org_id: str) -> dict | None:
         logger.warning("clerk_admin.get_organization HTTP %s", response.status_code)
         return None
     return response.json()
-
-
-async def get_organization_member_count(org_id: str) -> int:
-    """Live member count for a Clerk organization (seat quantity source).
-
-    Prefers ``members_count`` off the org object (one call). Falls back to the
-    memberships list endpoint's ``total_count``. Returns 0 when CLERK_SECRET_KEY
-    is unset or on any network/HTTP error — same defensive posture as the other
-    helpers, so a Clerk outage yields a no-op seat sync rather than a crash.
-    """
-    org = await get_organization(org_id)
-    if org and isinstance(org.get("members_count"), int):
-        return org["members_count"]
-
-    if not settings.CLERK_SECRET_KEY:
-        return 0
-
-    headers = {"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}"}
-    try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
-            response = await client.get(
-                f"{_CLERK_API_BASE}/organizations/{org_id}/memberships",
-                headers=headers,
-                params={"limit": 1},
-            )
-    except Exception as e:  # noqa: BLE001
-        logger.warning("clerk_admin.get_organization_member_count network error: %s", e)
-        return 0
-
-    if response.status_code >= 400:
-        logger.warning("clerk_admin.get_organization_member_count HTTP %s", response.status_code)
-        return 0
-
-    try:
-        payload = response.json()
-    except ValueError:
-        return 0
-    total = payload.get("total_count") if isinstance(payload, dict) else None
-    return total if isinstance(total, int) else 0
-
-
-async def _pending_invitation_count(org_id: str) -> int | None:
-    """Count an org's pending invitations. None signals an unreadable result.
-
-    None is distinct from 0: 0 means "no pending invitations", None means the
-    read failed and the caller must not treat the absence as a reduction.
-    Filtering on status=pending is what makes revoked and expired invitations
-    fall out of the seat count on their own.
-
-    Deliberately mirrors list_pending_invitations_for_user (the codebase's
-    only other *filtered* Clerk list read) rather than
-    get_organization_member_count's total_count shortcut: nothing establishes
-    that Clerk's total_count respects a status filter, and if it silently
-    reports the all-statuses total, every accepted invitation would become a
-    phantom seat. So this reads len(data) off a status=pending page instead.
-    _PENDING_INVITATION_PAGE_LIMIT is the same cap already accepted for Gate
-    B's per-user equivalent.
-
-    A FULL page is treated as unreadable (returns None, not the count) — a
-    truncated read is an uncertain read, and None must never quietly become a
-    lower number; see get_organization_seat_count's strict-mode note for why.
-    The logger.warning still fires so a large org shows up in the logs rather
-    than disappearing into a wrong number; pagination can follow if that ever
-    actually happens.
-    """
-    if not settings.CLERK_SECRET_KEY:
-        return 0
-
-    headers = {"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}"}
-    params = {"status": "pending", "limit": _PENDING_INVITATION_PAGE_LIMIT}
-    try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
-            response = await client.get(
-                f"{_CLERK_API_BASE}/organizations/{org_id}/invitations",
-                headers=headers,
-                params=params,
-            )
-    except Exception as e:  # noqa: BLE001
-        logger.warning("clerk_admin._pending_invitation_count network error: %s", e)
-        return None
-
-    if response.status_code >= 400:
-        logger.warning("clerk_admin._pending_invitation_count HTTP %s org=%s", response.status_code, org_id)
-        return None
-
-    try:
-        payload = response.json()
-    except ValueError:
-        return None
-
-    data = payload.get("data") if isinstance(payload, dict) else payload
-    if not isinstance(data, list):
-        return None
-
-    count = len(data)
-    if count >= _PENDING_INVITATION_PAGE_LIMIT:
-        logger.warning(
-            "clerk_admin._pending_invitation_count org=%s hit the %d-item page cap; "
-            "pending count is truncated, treating as unreadable",
-            org_id,
-            _PENDING_INVITATION_PAGE_LIMIT,
-        )
-        return None
-    return count
-
-
-async def get_organization_seat_count(org_id: str) -> int:
-    """Billable seats for an org: accepted members PLUS pending invitations.
-
-    The platform principle is "no free members" — an invitation is billed from
-    the moment it is sent. Because acceptance moves a person from pending to
-    member, this total does NOT change when an invite is accepted; it moves
-    only on invite, revoke, expire, and remove.
-
-    **Returns 0 whenever the count is not known for certain** — either read
-    failing, or a truncated invitations page. 0 is the module-wide "unreadable"
-    convention and every caller already treats it as "don't act": the seat sync
-    no-ops, the account page falls back to the stored Stripe quantity, and
-    checkout 503s so the admin retries. A guessed number is worse than none
-    here, because the sync writes an ABSOLUTE Stripe quantity — a low guess is
-    indistinguishable from a real downgrade and bills a proration credit that
-    gets charged back on the next successful sync.
-    """
-    # Concurrent: the two reads hit unrelated Clerk resources (the org object
-    # and the invitations list), and every real org has at least its creating
-    # admin — so sequencing them to skip the second call on members == 0 would
-    # pay double latency on every real call to save one call in a case that
-    # does not occur.
-    members, pending = await asyncio.gather(
-        get_organization_member_count(org_id),
-        _pending_invitation_count(org_id),
-    )
-    if members <= 0 or pending is None:
-        return 0
-    return members + pending
 
 
 async def list_user_organizations(user_id: str, *, limit: int = 25) -> list[dict]:

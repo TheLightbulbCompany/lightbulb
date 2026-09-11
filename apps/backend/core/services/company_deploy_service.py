@@ -10,10 +10,10 @@ machinery the Teams create-agent path uses:
     Paperclip create_agent -> pair_with_openclaw -> ensure_operator_device_paired
     -> materialize_agent (identity + skills onto EFS + openclaw.json entry).
 
-Org-chart grafting: the owner's seeded **Friday** is the real CEO. The package
+Org-chart grafting: the owner's root **CEO** is the real CEO. The package
 has its own CEO (``plan.ceo_slug``). Anything at the top of the package graph
 (the package CEO itself, or an agent that reports to it — the "division head")
-is re-parented to report to Friday; everyone else keeps the package's
+is re-parented to report to that root CEO; everyone else keeps the package's
 ``reportsTo`` edge, remapped to the freshly-minted manager id.
 
 Fire-and-forget: the deploy endpoint fires this via ``asyncio.create_task`` and
@@ -28,7 +28,7 @@ uses (``paperclip_agent_lifecycle.create_paperclip_for_marketplace`` +
 ``run_company_deploy`` NEVER raises (it is a background task target). It tracks
 the agents it creates in a local list; on any failure it best-effort rolls back
 exactly that set (deleting each Paperclip agent + unwinding its container/EFS
-side effects, guarding ``is_seeded_agent`` so Friday/Atlas can never be removed)
+side effects, guarding legacy seeded agents so they can never be removed)
 and logs. Progress and the final roster are observed in Teams — the Paperclip
 agent roster is the source of truth; this flow just kicks off + cleans up.
 """
@@ -404,8 +404,8 @@ async def _rollback(owner_id: str, created: list[dict], *, cause: BaseException 
     """Best-effort teardown of exactly the agents this run created.
 
     For each created agent: guard ``is_seeded_agent`` (fails CLOSED — a seeded
-    Friday/Atlas is never deleted; if the check itself errors we SKIP rather than
-    risk deleting a seed), then delete the Paperclip agent and unwind its
+    legacy founder seed is never deleted; if the check itself errors we skip
+    rather than risk deleting it), then delete the Paperclip agent and unwind its
     container/EFS side effects. Each step is in its own try/except so one stuck
     delete can't strand the rest. Never raises.
 

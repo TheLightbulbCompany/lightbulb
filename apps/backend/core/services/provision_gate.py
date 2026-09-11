@@ -146,6 +146,28 @@ def has_always_on_entitlement(account: Mapping[str, Any] | None) -> bool:
     return is_paid_subscription(account)
 
 
+def should_arm_nightly_ceo(account: Mapping[str, Any] | None) -> bool:
+    """Whether the nightly CEO routine should be ARMED for this owner.
+
+    Deliberately BROADER than ``has_always_on_entitlement`` (paid-only, for
+    webhooks / channels): the nightly CEO is a retention lever we also extend to
+    trials — but only while the trial is LIVE. Armed for paid (active/trialing)
+    OR an unexpired ``trial_local``. An EXPIRED trial is not armed; canceled /
+    past_due / no-row are not armed. Fail-closed on no account.
+
+    The nightly run for a trial is still cap-gated at the wake path and at the
+    bedrock-gate, so arming an unexpired-but-capped trial is harmless (the run
+    is refused that day and resumes at the UTC rollover)."""
+    if is_paid_subscription(account):
+        return True
+    if not account or account.get("subscription_status") != "trial_local":
+        return False
+    # Local import avoids a provision_gate <-> trial_cap import cycle.
+    from core.services.trial_cap import is_trial_expired
+
+    return not is_trial_expired(account)
+
+
 def is_trial_blocked(account: Mapping[str, Any] | None) -> bool:
     """Whether this account has a subscription state that should block
     creating a fresh subscription checkout. See ``TRIAL_BLOCKED_STATUSES``.
@@ -195,21 +217,16 @@ class Gate:
 
 
 def _team_billing_required_gate(owner_role: str) -> Gate:
-    """The Teams per-seat paywall gate.
+    """The workspace subscription paywall gate.
 
-    An org owner without an *active* per-seat subscription is always routed
-    here — the free tier is personal-only, so a team never falls into the
-    card-less ``trial_local`` path and must never be sent to the personal
-    ``signup_required`` picker (``/onboarding``). Surfaced both when the org
-    has no billing row at all AND when it has a customer row from an abandoned
-    team checkout (``stripe_customer_id`` written, ``subscription_status``
-    still None) — both mean "no live seat subscription", and the frontend keys
-    the Teams-billing paywall off this single code.
+    An org owner without an active workspace subscription is always routed
+    here. The stable machine code keeps existing clients compatible while the
+    user-facing wording describes the seat-free contract.
     """
     return Gate(
         code="team_billing_required",
-        title="Set up Teams billing",
-        message="Your team needs an active per-seat subscription to start.",
+        title="Set up workspace billing",
+        message="Your workspace needs an active subscription to start.",
         action_label="Set up billing",
         action_href="/settings/billing",
         action_admin_only=True,
@@ -333,8 +350,8 @@ def gate_for_trial_reason(reason: str | None, owner_role: str) -> Gate | None:
 
 def trial_expired_gate(owner_role: str) -> Gate:
     """The blocked-gate a trial_local owner sees once their 3-day window
-    (``trial_end``, stamped by ``billing_repo.create_trial_local_if_absent``
-    at signup) has passed. Mirrors ``trial_daily_cap_gate`` field-for-field
+    (``trial_end``, armed by the first canonical ready status poll) has
+    passed. Mirrors ``trial_daily_cap_gate`` field-for-field
     so the provision gate and gate_chat's Layer 2 render an identical
     'trial ended' card instead of a spinner or a generic error."""
     return Gate(
@@ -459,11 +476,9 @@ async def _evaluate_provision_gate_inner(
         # This is *distinct* from an inactive subscription below, which
         # has its own re-activation path.
         if owner_id.startswith("org_"):
-            # The free tier is personal-only, so a team never falls into a
-            # card-less trial_local. An org with no billing needs per-seat
-            # Teams billing; surface a DISTINCT code the frontend keys the
-            # Teams-billing paywall off (rather than the personal provider
-            # picker).
+            # The free tier is personal-only, so a workspace never falls into
+            # card-less trial_local. Surface the stable distinct code rather
+            # than routing a workspace to the personal provider picker.
             return _team_billing_required_gate(owner_role)
         # FIRST-TOUCH invitation check: a fresh personal signup whose email
         # holds a PENDING org invitation must not be funneled into the

@@ -232,109 +232,6 @@ class TestPersistence:
         assert resp["Item"]["plan"]["S"] == "trial"
 
 
-class TestResolveOwner:
-    @pytest.mark.asyncio
-    async def test_round_trips_a_persisted_arn(self, aip_tables):
-        from core.billing.bedrock_aip import persist_owner_aips, resolve_owner_from_aip_arn
-
-        arns = {
-            "opus": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-o",
-            "sonnet": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-s",
-            "haiku": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-h",
-        }
-        await persist_owner_aips("org_abc", arns, role_arn="arn:aws:iam::877352799272:role/r")
-        assert await resolve_owner_from_aip_arn(arns["sonnet"]) == "org_abc"
-        assert await resolve_owner_from_aip_arn(arns["haiku"]) == "org_abc"
-
-    @pytest.mark.asyncio
-    async def test_returns_none_for_unknown_arn(self, aip_tables):
-        from core.billing.bedrock_aip import resolve_owner_from_aip_arn
-
-        assert (
-            await resolve_owner_from_aip_arn(
-                "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/nope"
-            )
-            is None
-        )
-
-    @pytest.mark.asyncio
-    async def test_resolve_tier_round_trips_a_persisted_arn(self, aip_tables):
-        from core.billing.bedrock_aip import persist_owner_aips, resolve_tier_from_aip_arn
-
-        arns = {
-            "opus": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-o",
-            "sonnet": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-s",
-            "haiku": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-h",
-        }
-        await persist_owner_aips("org_abc", arns, role_arn="arn:aws:iam::877352799272:role/r")
-        assert await resolve_tier_from_aip_arn(arns["opus"]) == "opus"
-        assert await resolve_tier_from_aip_arn(arns["sonnet"]) == "sonnet"
-        assert await resolve_tier_from_aip_arn(arns["haiku"]) == "haiku"
-
-    @pytest.mark.asyncio
-    async def test_resolve_tier_returns_none_for_unknown_arn(self, aip_tables):
-        from core.billing.bedrock_aip import resolve_tier_from_aip_arn
-
-        assert (
-            await resolve_tier_from_aip_arn("arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/nope")
-            is None
-        )
-
-    @pytest.mark.asyncio
-    async def test_combined_resolver_round_trips_owner_and_tier(self, aip_tables):
-        from core.billing.bedrock_aip import (
-            persist_owner_aips,
-            resolve_owner_and_tier_from_aip_arn,
-        )
-
-        arns = {
-            "opus": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-o",
-            "sonnet": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-s",
-            "haiku": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-h",
-        }
-        await persist_owner_aips("org_abc", arns, role_arn="arn:aws:iam::877352799272:role/r")
-        assert await resolve_owner_and_tier_from_aip_arn(arns["sonnet"]) == ("org_abc", "sonnet")
-
-    @pytest.mark.asyncio
-    async def test_combined_resolver_returns_none_pair_for_unknown_arn(self, aip_tables):
-        from core.billing.bedrock_aip import resolve_owner_and_tier_from_aip_arn
-
-        assert await resolve_owner_and_tier_from_aip_arn(
-            "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/nope"
-        ) == (None, None)
-
-    @pytest.mark.asyncio
-    async def test_combined_resolver_does_a_single_get_item(self, aip_tables, monkeypatch):
-        # Cleanup J: owner + tier come from ONE reverse-table read per record.
-        import core.billing.bedrock_aip as mod
-        from core.billing.bedrock_aip import (
-            persist_owner_aips,
-            resolve_owner_and_tier_from_aip_arn,
-        )
-
-        arns = {
-            "opus": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-o",
-            "sonnet": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-s",
-            "haiku": "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/aip-h",
-        }
-        await persist_owner_aips("org_abc", arns, role_arn="arn:aws:iam::877352799272:role/r")
-
-        real_table = mod._aip_owners_table()
-        calls = {"get_item": 0}
-        real_get_item = real_table.get_item
-
-        def _counting_get_item(*a, **k):
-            calls["get_item"] += 1
-            return real_get_item(*a, **k)
-
-        real_table.get_item = _counting_get_item
-        monkeypatch.setattr(mod, "_aip_owners_table", lambda: real_table)
-
-        owner, tier = await resolve_owner_and_tier_from_aip_arn(arns["opus"])
-        assert (owner, tier) == ("org_abc", "opus")
-        assert calls["get_item"] == 1
-
-
 class TestEnsureAips:
     @pytest.mark.asyncio
     async def test_creates_one_aip_per_tier_and_persists(self, aip_tables, monkeypatch):
@@ -374,8 +271,9 @@ class TestEnsureAips:
         tags = {t["key"]: t["value"] for t in created["opus"]["tags"]}
         assert tags["owner_id"] == "org_abc"
         assert tags["tier"] == "opus"
-        # Persisted: reverse lookup resolves.
-        assert await mod.resolve_owner_from_aip_arn(arns["opus"]) == "org_abc"
+        # Persisted: reverse row resolves.
+        resp = aip_tables.get_item(TableName="test-aip-owners", Key={"aip_arn": {"S": arns["opus"]}})
+        assert resp["Item"]["owner_id"]["S"] == "org_abc"
 
     @pytest.mark.asyncio
     async def test_idempotent_no_recreate_when_already_present(self, aip_tables, monkeypatch):
@@ -397,7 +295,8 @@ class TestEnsureAips:
         fake.create_inference_profile.assert_not_called()
         # C1 self-heal: short-circuit re-puts reverse rows so the index is
         # consistent even if a prior run's reverse PutItem partially failed.
-        assert await mod.resolve_owner_from_aip_arn(arns["haiku"]) == "org_abc"
+        resp = aip_tables.get_item(TableName="test-aip-owners", Key={"aip_arn": {"S": arns["haiku"]}})
+        assert resp["Item"]["owner_id"]["S"] == "org_abc"
 
     @pytest.mark.asyncio
     async def test_conflict_adopts_existing_aip_instead_of_failing(self, aip_tables, monkeypatch):
@@ -440,8 +339,9 @@ class TestEnsureAips:
 
         assert arns["opus"].endswith("opus-exist")
         assert set(arns) == {"opus", "sonnet", "haiku"}
-        # Adopted AIPs are persisted -> reverse lookup resolves.
-        assert await mod.resolve_owner_from_aip_arn(arns["sonnet"]) == "org_abc"
+        # Adopted AIPs are persisted -> reverse row resolves.
+        resp = aip_tables.get_item(TableName="test-aip-owners", Key={"aip_arn": {"S": arns["sonnet"]}})
+        assert resp["Item"]["owner_id"]["S"] == "org_abc"
 
     @pytest.mark.asyncio
     async def test_default_tiers_none_mints_three_with_paid_plan(self, aip_tables, monkeypatch):

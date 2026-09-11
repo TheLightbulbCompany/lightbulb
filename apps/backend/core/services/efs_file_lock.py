@@ -70,6 +70,15 @@ def chown_uid_1000_best_effort(path: str) -> None:
         pass
 
 
+def chown_fd_uid_1000_best_effort(fd: int) -> None:
+    """Match access-point ownership without following a replaceable pathname."""
+    try:
+        if os.getuid() == 0:
+            os.fchown(fd, 1000, 1000)
+    except OSError:
+        pass
+
+
 def open_lock_fd(lock_dir: str, lock_path: str):
     """Open (creating if needed) a dedicated ``.lock`` file in ``r+`` mode.
 
@@ -77,15 +86,31 @@ def open_lock_fd(lock_dir: str, lock_path: str):
     ``os.rename``, so a lock on the old inode wouldn't fence a racing rename.
     The caller ``fcntl.lockf``-locks the returned fd and closes it when done.
     """
-    if not os.path.exists(lock_path):
-        os.makedirs(lock_dir, exist_ok=True)
-        chown_uid_1000_best_effort(lock_dir)
-        # ``open(..., "a")`` creates the file if missing without truncating a
-        # concurrent lock holder's fd.
-        with open(lock_path, "a"):
-            pass
-        chown_uid_1000_best_effort(lock_path)
-    return open(lock_path, "r+")
+    os.makedirs(lock_dir, exist_ok=True)
+    dir_flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        dir_flags |= os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        dir_flags |= os.O_NOFOLLOW
+    dir_fd = os.open(lock_dir, dir_flags)
+    try:
+        if not _path_names_open_fd(lock_dir, dir_fd):
+            raise SidecarLockIdentityError(f"lock directory changed identity: {lock_dir}")
+        chown_fd_uid_1000_best_effort(dir_fd)
+        if os.path.dirname(os.path.abspath(lock_path)) != os.path.abspath(lock_dir):
+            raise SidecarLockIdentityError(f"lock path is outside lock directory: {lock_path}")
+        lock_name = os.path.basename(lock_path)
+        fd = _open_regular_fd(lock_name, create=True, dir_fd=dir_fd)
+        try:
+            if not _path_names_open_fd(lock_name, fd, dir_fd=dir_fd):
+                raise SidecarLockIdentityError(f"lock path changed identity: {lock_path}")
+            chown_fd_uid_1000_best_effort(fd)
+            return os.fdopen(fd, "r+")
+        except Exception:
+            os.close(fd)
+            raise
+    finally:
+        os.close(dir_fd)
 
 
 class SidecarLockTimeoutError(TimeoutError):
@@ -96,13 +121,13 @@ class SidecarLockIdentityError(RuntimeError):
     """Raised when a held sidecar pathname no longer names the acquired inode."""
 
 
-def _open_regular_fd(path: str, *, create: bool) -> int:
+def _open_regular_fd(path: str, *, create: bool, dir_fd: int | None = None) -> int:
     flags = os.O_RDWR
     if create:
         flags |= os.O_CREAT
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
-    fd = os.open(path, flags, 0o600)
+    fd = os.open(path, flags, 0o600, dir_fd=dir_fd)
     opened = os.fstat(fd)
     if not stat.S_ISREG(opened.st_mode):
         os.close(fd)
@@ -110,15 +135,15 @@ def _open_regular_fd(path: str, *, create: bool) -> int:
     return fd
 
 
-def _path_names_open_fd(path: str, fd: int) -> bool:
+def _path_names_open_fd(path: str, fd: int, *, dir_fd: int | None = None) -> bool:
     try:
-        current = os.lstat(path)
+        current = os.lstat(path, dir_fd=dir_fd)
     except FileNotFoundError:
         return False
     opened = os.fstat(fd)
     return (
-        stat.S_ISREG(current.st_mode)
-        and not stat.S_ISLNK(current.st_mode)
+        not stat.S_ISLNK(current.st_mode)
+        and stat.S_IFMT(current.st_mode) == stat.S_IFMT(opened.st_mode)
         and current.st_dev == opened.st_dev
         and current.st_ino == opened.st_ino
     )
@@ -179,7 +204,9 @@ def _legacy_openclaw_config_lock(
 
     sidecar_fd = _open_regular_fd(lock_path, create=True)
     try:
-        chown_uid_1000_best_effort(lock_path)
+        if not _path_names_open_fd(lock_path, sidecar_fd):
+            raise SidecarLockIdentityError(f"OpenClaw config sidecar changed identity: {lock_path}")
+        chown_fd_uid_1000_best_effort(sidecar_fd)
         _acquire_fcntl_until(
             sidecar_fd,
             deadline=deadline,
@@ -223,7 +250,7 @@ def _ephemeral_openclaw_config_lock(
                     raise SidecarLockTimeoutError(f"timed out waiting for OpenClaw config sidecar: {lock_path}")
                 time.sleep(poll_interval_s)
 
-        chown_uid_1000_best_effort(lock_path)
+        chown_fd_uid_1000_best_effort(sidecar_fd)
         yield
     finally:
         if sidecar_fd is not None:
@@ -250,7 +277,9 @@ def openclaw_config_recovery_guard(
     guard_fd = _open_regular_fd(guard_path, create=True)
     acquired = False
     try:
-        chown_uid_1000_best_effort(guard_path)
+        if not _path_names_open_fd(guard_path, guard_fd):
+            raise SidecarLockIdentityError(f"OpenClaw config guard changed identity: {guard_path}")
+        chown_fd_uid_1000_best_effort(guard_fd)
         deadline = time.monotonic() + max(0.0, timeout_s)
         _acquire_fcntl_until(
             guard_fd,
@@ -270,6 +299,19 @@ def openclaw_config_recovery_guard(
                 fcntl.lockf(guard_fd, fcntl.LOCK_UN)
         finally:
             os.close(guard_fd)
+
+
+@contextmanager
+def _openclaw_config_sidecar_under_guard(
+    lock_dir: str, lock_path: str, *, deadline: float, poll_interval_s: float
+) -> Iterator[None]:
+    """Acquire only the sidecar; caller holds the matching local lock and recovery guard."""
+    if _uses_ephemeral_openclaw_protocol(lock_path):
+        with _ephemeral_openclaw_config_lock(lock_path, deadline=deadline, poll_interval_s=poll_interval_s):
+            yield
+    else:
+        with _legacy_openclaw_config_lock(lock_dir, lock_path, deadline=deadline, poll_interval_s=poll_interval_s):
+            yield
 
 
 @contextmanager
@@ -304,21 +346,10 @@ def openclaw_config_sidecar_lock(
         timeout_s=timeout_s,
         poll_interval_s=poll_interval_s,
     ):
-        if _uses_ephemeral_openclaw_protocol(lock_path):
-            with _ephemeral_openclaw_config_lock(
-                lock_path,
-                deadline=deadline,
-                poll_interval_s=poll_interval_s,
-            ):
-                yield
-        else:
-            with _legacy_openclaw_config_lock(
-                lock_dir,
-                lock_path,
-                deadline=deadline,
-                poll_interval_s=poll_interval_s,
-            ):
-                yield
+        with _openclaw_config_sidecar_under_guard(
+            lock_dir, lock_path, deadline=deadline, poll_interval_s=poll_interval_s
+        ):
+            yield
 
 
 if __name__ == "__main__":  # pragma: no cover - self-check

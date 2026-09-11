@@ -14,7 +14,7 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import type { ChatIncomingMessage } from "@/hooks/useGateway";
+import type { ChatIncomingMessage } from "@lightbulb/shared";
 import type { ContentBlock, ChatRenderItem, HistoryMessage } from "@/hooks/internal/types";
 import { useAgentChat } from "@/hooks/useAgentChat";
 
@@ -25,23 +25,28 @@ const sendReq = vi.fn().mockResolvedValue({});
 const sendChat = vi.fn();
 const send = vi.fn();
 
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({
+vi.mock("@/hooks/useAgentRoomTransport", () => ({
+  useAgentRoomTransport: (agentId: string | null) => ({
     isConnected: true,
-    nodeConnected: false,
-    error: null,
-    reconnectAttempt: 0,
-    send,
-    sendReq,
-    sendChat,
-    onEvent: () => () => {},
-    onChatMessage: (h: (msg: ChatIncomingMessage) => void) => {
-      chatHandlers.push(h);
+    onChatMessage: (handler: (message: ChatIncomingMessage) => void) => {
+      chatHandlers.push(handler);
       return () => {
-        chatHandlers = chatHandlers.filter((x) => x !== h);
+        chatHandlers = chatHandlers.filter((candidate) => candidate !== handler);
       };
     },
-    reconnect: vi.fn(),
+    sendRoomMessage: async (message: string, clientMessageId: string) =>
+      sendChat(agentId, message, clientMessageId, undefined),
+    abortRun: async (runId: string) => {
+      const accepted = send({ type: "agent_abort", agentId: agentId, runId });
+      if (accepted === false) throw new Error("Stop not sent");
+      return {};
+    },
+    steerRun: async (runId: string, text: string) => {
+      const accepted = send({ type: "agent_steer", agentId: agentId, runId, text });
+      if (accepted === false) throw new Error("Steer not sent");
+      return {};
+    },
+    rpc: sendReq,
   }),
 }));
 
@@ -75,7 +80,7 @@ function startTool() {
     type: "tool_start",
     tool: "bash",
     toolCallId: "t1",
-    agent_id: AGENT,
+    agentId: AGENT,
     runId: RUN,
   } as ChatIncomingMessage);
 }
@@ -127,7 +132,7 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
           tool: "bash",
           toolCallId: "t1",
           partialResult: [{ type: "text", text: "line 1\n" }],
-          agent_id: AGENT,
+          agentId: AGENT,
           runId: RUN,
         } as ChatIncomingMessage);
       });
@@ -156,7 +161,7 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
           tool: "bash",
           toolCallId: "t1",
           partialResult: [{ type: "text", text: "real output\n" }],
-          agent_id: AGENT,
+          agentId: AGENT,
           runId: RUN,
         } as ChatIncomingMessage);
         // Status-only update: no partialResult — must not clear the prior output.
@@ -164,7 +169,7 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
           type: "tool_progress",
           tool: "bash",
           toolCallId: "t1",
-          agent_id: AGENT,
+          agentId: AGENT,
           runId: RUN,
         } as ChatIncomingMessage);
       });
@@ -189,14 +194,14 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
           type: "command_output",
           toolCallId: "t1",
           output: "compiling...\n",
-          agent_id: AGENT,
+          agentId: AGENT,
           runId: RUN,
         } as ChatIncomingMessage);
         emit({
           type: "command_output",
           toolCallId: "t1",
           output: "done\n",
-          agent_id: AGENT,
+          agentId: AGENT,
           runId: RUN,
         } as ChatIncomingMessage);
       });
@@ -218,7 +223,7 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
         type: "command_output",
         toolCallId: "ghost",
         output: "x",
-        agent_id: AGENT,
+        agentId: AGENT,
         runId: RUN,
       } as ChatIncomingMessage);
     });
@@ -233,7 +238,7 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
         activity: "plan",
         title: "Proposed a plan",
         detail: { steps: ["a"] },
-        agent_id: AGENT,
+        agentId: AGENT,
         runId: RUN,
       } as ChatIncomingMessage);
     });
@@ -250,7 +255,7 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
     // earlier text.
     const { result } = renderHook(() => useAgentChat(AGENT, "main"));
     act(() => {
-      emit({ type: "chunk", content: "Here is the answer.", agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
+      emit({ type: "chunk", content: "Here is the answer.", agentId: AGENT, runId: RUN } as ChatIncomingMessage);
     });
     act(() => {
       emit({
@@ -258,12 +263,12 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
         activity: "plan",
         title: "Proposed a plan",
         detail: { steps: ["a"] },
-        agent_id: AGENT,
+        agentId: AGENT,
         runId: RUN,
       } as ChatIncomingMessage);
     });
     act(() => {
-      emit({ type: "done", agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
+      emit({ type: "done", agentId: AGENT, runId: RUN } as ChatIncomingMessage);
     });
 
     // The folded turn is a single assistant message; locate the content array
@@ -307,7 +312,7 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
         activity: "plan",
         title: "Proposed a plan",
         detail: { steps: ["a"] },
-        agent_id: AGENT,
+        agentId: AGENT,
         runId: RUN,
       } as ChatIncomingMessage);
     });
@@ -322,7 +327,7 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
     });
     expect(send).toHaveBeenCalledWith({
       type: "agent_abort",
-      agent_id: AGENT,
+      agentId: AGENT,
       runId: RUN,
     });
   });
@@ -345,7 +350,7 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
         tool: "bash",
         toolCallId: "observed-1",
         partialResult: [{ type: "text", text: "line 1\n" }],
-        agent_id: AGENT,
+        agentId: AGENT,
         runId: RUN,
       } as ChatIncomingMessage);
     });
@@ -360,7 +365,7 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
     });
     expect(send).toHaveBeenCalledWith({
       type: "agent_abort",
-      agent_id: AGENT,
+      agentId: AGENT,
       runId: RUN,
     });
   });
@@ -375,7 +380,7 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
         type: "command_output",
         toolCallId: "observed-2",
         output: "compiling...\n",
-        agent_id: AGENT,
+        agentId: AGENT,
         runId: RUN,
       } as ChatIncomingMessage);
     });
@@ -387,7 +392,7 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
     });
     expect(send).toHaveBeenCalledWith({
       type: "agent_abort",
-      agent_id: AGENT,
+      agentId: AGENT,
       runId: RUN,
     });
   });
@@ -411,7 +416,7 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
           type: "command_output",
           toolCallId: "t1",
           output: "streamed line\n",
-          agent_id: AGENT,
+          agentId: AGENT,
           runId: RUN,
         } as ChatIncomingMessage);
         // Tool terminates with NO payload (e.g. an aborted exec or a
@@ -421,13 +426,13 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
           type: "tool_end",
           tool: "bash",
           toolCallId: "t1",
-          agent_id: AGENT,
+          agentId: AGENT,
           runId: RUN,
         } as ChatIncomingMessage);
       });
       // End the run so the live turn folds into a single history bubble.
       act(() => {
-        emit({ type: "done", agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
+        emit({ type: "done", agentId: AGENT, runId: RUN } as ChatIncomingMessage);
       });
       act(() => {
         vi.advanceTimersByTime(TOOL_STREAM_THROTTLE_MS);
@@ -461,7 +466,7 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
           tool: "bash",
           toolCallId: "t1",
           result: [{ type: "text", text: "ok" }],
-          agent_id: AGENT,
+          agentId: AGENT,
           runId: RUN,
         } as ChatIncomingMessage);
       });
@@ -475,7 +480,7 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
       expect(liveEndedAt).toBeDefined();
 
       act(() => {
-        emit({ type: "done", agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
+        emit({ type: "done", agentId: AGENT, runId: RUN } as ChatIncomingMessage);
       });
       act(() => {
         vi.advanceTimersByTime(TOOL_STREAM_THROTTLE_MS);
@@ -506,7 +511,7 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
         activity: "plan",
         title: "Other agent plan",
         detail: {},
-        agent_id: "other-agent",
+        agentId: "other-agent",
         runId: RUN,
       } as ChatIncomingMessage);
     });
@@ -521,7 +526,7 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
   it("drops a late agent_activity frame for a cleared/tombstoned run", () => {
     const { result } = renderHook(() => useAgentChat(AGENT, "main"));
     act(() => {
-      emit({ type: "chunk", content: "hi", agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
+      emit({ type: "chunk", content: "hi", agentId: AGENT, runId: RUN } as ChatIncomingMessage);
     });
     act(() => {
       result.current.clearMessages();
@@ -532,7 +537,7 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
         activity: "plan",
         title: "Late plan",
         detail: { steps: ["a"] },
-        agent_id: AGENT,
+        agentId: AGENT,
         runId: RUN,
       } as ChatIncomingMessage);
     });
@@ -551,7 +556,7 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
     act(() => {
       // Establish the active run, then clear it (tombstones RUN, nulls
       // clientRunIdRef).
-      emit({ type: "chunk", content: "hi", agent_id: AGENT, runId: RUN } as ChatIncomingMessage);
+      emit({ type: "chunk", content: "hi", agentId: AGENT, runId: RUN } as ChatIncomingMessage);
     });
     act(() => {
       result.current.clearMessages();
@@ -564,7 +569,7 @@ describe("useAgentChat — dropped sub-stream surfacing (C)", () => {
         activity: "plan",
         title: "Late plan",
         detail: { steps: ["a"] },
-        agent_id: AGENT,
+        agentId: AGENT,
         runId: RUN,
       } as ChatIncomingMessage);
     });

@@ -11,7 +11,7 @@ import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as cloudwatchActions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as ssm from "aws-cdk-lib/aws-ssm";
-import { alertTopicArn, legacyTablePrefix, logGroupPath, tablePrefix } from "../table-names";
+import { alertTopicArn, logGroupPath, tablePrefix } from "../table-names";
 import { Construct } from "constructs";
 
 // =============================================================================
@@ -200,24 +200,6 @@ export class BedrockGateStack extends cdk.Stack {
         authType: lambda.FunctionUrlAuthType.NONE,
         invokeMode: lambda.InvokeMode.RESPONSE_STREAM,
       });
-      // Since October 2025, a public (NONE-auth) Function URL needs the
-      // resource policy to grant lambda:InvokeFunction IN ADDITION to the
-      // lambda:InvokeFunctionUrl statement addFunctionUrl auto-creates —
-      // with only the auto statement, EVERY request 403s at the front door
-      // (AccessDeniedException; live-verified on first deploy). The
-      // InvokedViaFunctionUrl condition keeps this public grant URL-only:
-      // it does NOT open the direct lambda:InvokeFunction API. CDK 2.190.0
-      // predates the property, hence the L1 + raw override.
-      const urlInvokePermission = new lambda.CfnPermission(
-        this,
-        `GateFnUrlInvokeFunction${idSuffix}`,
-        {
-          functionName: fn.functionName,
-          action: "lambda:InvokeFunction",
-          principal: "*",
-        },
-      );
-      urlInvokePermission.addOverride("Properties.InvokedViaFunctionUrl", true);
       new cdk.CfnOutput(this, `GateUrl${outSuffix}`, {
         value: fnUrl.url,
         description: `bedrock-gate Function URL (${gateEnv})`,

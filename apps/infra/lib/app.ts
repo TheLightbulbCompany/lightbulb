@@ -117,6 +117,8 @@ class NoExternalIdCredentials extends AwsCredentialsProvider {
 
 const CDKOUT_BUCKET = "cdk-hnb659fds-assets-877352799272-us-east-1";
 const CDKOUT_S3_URI = `s3://${CDKOUT_BUCKET}/gha-cdk-out/\${{ github.run_id }}-\${{ github.run_attempt }}`;
+// One tarball, not 6,376 loose objects. See the "cdk.out transport" block below.
+const CDKOUT_TARBALL = `${CDKOUT_S3_URI}/cdk.out.tgz`;
 const CDKOUT_OIDC_STEP = {
   name: "Authenticate Via OIDC Role",
   uses: "aws-actions/configure-aws-credentials@v4",
@@ -147,27 +149,15 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
     ],
     // Stripe flat-fee Price IDs are baked into the per-env ECS task env at
     // synth time by service-stack.ts. Empty string is tolerated (the backend
-    // surfaces "STRIPE_FLAT_PRICE_ID not configured" at the trial-checkout
-    // call site) but onboarding will fail until both secrets are populated.
+    // surfaces "STRIPE_WORKSPACE_PRICE_ID not configured" at the billing
+    // checkout endpoint) but onboarding will fail until both secrets are populated.
     env: {
-      STRIPE_FLAT_PRICE_ID_DEV: "${{ secrets.STRIPE_FLAT_PRICE_ID_DEV }}",
-      STRIPE_FLAT_PRICE_ID_PROD: "${{ secrets.STRIPE_FLAT_PRICE_ID_PROD }}",
-      // Stripe per-seat Teams Price IDs — same synth-time bake + per-env
-      // live/test split as the flat price above. Empty string is tolerated
-      // (the backend surfaces "STRIPE_TEAM_SEAT_PRICE_ID not configured" at
-      // the team-checkout call site) but org admins cannot subscribe until
-      // both secrets are populated.
-      STRIPE_TEAM_SEAT_PRICE_ID_DEV: "${{ secrets.STRIPE_TEAM_SEAT_PRICE_ID_DEV }}",
-      STRIPE_TEAM_SEAT_PRICE_ID_PROD: "${{ secrets.STRIPE_TEAM_SEAT_PRICE_ID_PROD }}",
-      // Stripe Teams BASE Price IDs — the $50/mo flat component charged
-      // alongside the per-seat item. Same synth-time bake + per-env live/test
-      // split as the seat price above.
-      STRIPE_TEAM_BASE_PRICE_ID_DEV: "${{ secrets.STRIPE_TEAM_BASE_PRICE_ID_DEV }}",
-      STRIPE_TEAM_BASE_PRICE_ID_PROD: "${{ secrets.STRIPE_TEAM_BASE_PRICE_ID_PROD }}",
-      // Stripe Ultra Pro Price IDs — same synth-time bake + per-env live/test
-      // split as the flat/team prices above. Empty string is tolerated (the
-      // backend surfaces "STRIPE_ULTRA_PRICE_ID not configured" at the
-      // ultra-checkout call site) but the Ultra tier cannot be purchased until
+      STRIPE_WORKSPACE_PRICE_ID_DEV: "${{ secrets.STRIPE_WORKSPACE_PRICE_ID_DEV }}",
+      STRIPE_WORKSPACE_PRICE_ID_PROD: "${{ secrets.STRIPE_WORKSPACE_PRICE_ID_PROD }}",
+      // Stripe Ultra Price IDs — same synth-time bake + per-env live/test
+      // split as the Workspace price above. Empty string is tolerated (the
+      // backend surfaces "STRIPE_ULTRA_PRICE_ID not configured" at the billing
+      // checkout endpoint) but the Ultra tier cannot be purchased until
       // both secrets are populated.
       STRIPE_ULTRA_PRICE_ID_DEV: "${{ secrets.STRIPE_ULTRA_PRICE_ID_DEV }}",
       STRIPE_ULTRA_PRICE_ID_PROD: "${{ secrets.STRIPE_ULTRA_PRICE_ID_PROD }}",
@@ -417,25 +407,6 @@ pipeline.workflowFile.patch(
     contents: "write",
   }),
 
-  // Expire the `cdk.out` handoff artifact after one day. It is consumed by the
-  // asset/deploy jobs inside the same run, so nothing reads it after the run
-  // ends — at the repo default of 90 days each ~33 MB upload just accrues
-  // against the org's 2 GB shared Actions/Packages storage until uploads start
-  // failing with "Artifact storage quota has been hit", blocking every deploy.
-  //
-  // cdk-pipelines-github has no retention option (`stepsToUploadAssembly` in
-  // pipeline.js hardcodes the `with:` block), and this file is regenerated on
-  // every synth, so a hand-edit to deploy.yml would be silently reverted. A
-  // synth-time patch is the only form of this setting that survives.
-  //
-  // The step index is positional because RFC 6902 has no find-by-predicate. If
-  // a construct upgrade reorders the steps this throws at synth ("Cannot set
-  // properties of undefined") for any step lacking a `with:` block — but it
-  // would land silently on the wrong step if that step happens to have one, so
-  // `deploy-workflow-retention.test.ts` asserts the setting is on the cdk.out
-  // upload specifically.
-  JsonPatch.add("/jobs/Build-Synth/steps/2/with/retention-days", 1),
-
   // Gate the prod frontend release on the same `workflow_dispatch` condition
   // the prod stack Deploy jobs get from `jobSettings` above.
   //
@@ -449,6 +420,44 @@ pipeline.workflowFile.patch(
   // resolve the path and synth throws, rather than gating something else.
   JsonPatch.add("/jobs/prod-DeployVercelProd/if", PROD_PROMOTE_IF),
   JsonPatch.add("/jobs/prod-DeployCompanyProd/if", PROD_PROMOTE_IF),
+
+  // Queue pending runs instead of evicting them.
+  //
+  // `cancel-in-progress: false` above protects a run that is already
+  // `in_progress`. It does NOT protect a run that is still PENDING: by default
+  // a concurrency group holds at most ONE pending run, and "any existing
+  // pending job or workflow in the same concurrency group will be canceled and
+  // the new queued job or workflow will take its place".
+  //
+  // Prod ships only on `workflow_dispatch`, and this pipeline is runner-bound
+  // (~2 concurrent job slots for 67 jobs, 10-30 min per run), so a promotion
+  // routinely sits PENDING for minutes waiting on the group. Every merge to
+  // main inside that window fires a push run that silently evicts it. On the
+  // night of 2026-09-07 that killed three consecutive promotions of a live
+  // prod defect fix -- runs 34177495429, 34177614173 and 34173158922, each
+  // cancelled having run ZERO jobs, which is the signature of a pending
+  // eviction. The person merging never feels the cost; it lands on whoever is
+  // promoting, which is why it recurs.
+  //
+  // `queue: max` raises the pending limit to 100 and drains FIFO, so nothing is
+  // evicted and a dispatched promotion always eventually runs. The GROUP IS
+  // UNCHANGED -- one run at a time still touches CloudFormation -- and that is
+  // exactly why this is preferred over giving `workflow_dispatch` a group of
+  // its own: separate groups would let a push run and a promotion (which
+  // deploys the dev stage first, by design) deploy the same dev stacks at once.
+  //
+  // Tradeoff, deliberately accepted: eviction was also acting as coalescing, so
+  // a burst of merges used to collapse into one or two dev deploys and now runs
+  // one per merge. Nothing is lost -- dev still converges on HEAD -- it costs
+  // self-hosted runner time and queue depth. `cancel-in-progress: true` would
+  // restore the coalescing but is a validation ERROR alongside `queue: max`,
+  // and would kill in-flight CloudFormation updates besides.
+  //
+  // Not expressible through the construct: `ConcurrencyOptions` carries exactly
+  // `group` and `cancelInProgress` and renders exactly those two keys
+  // (cdk-pipelines-github pipeline.js:205-208). Same patch mechanism, and the
+  // same stable non-positional path, as the two `if` patches above.
+  JsonPatch.add("/concurrency/queue", "max"),
 );
 
 
@@ -474,6 +483,16 @@ pipeline.workflowFile.patch(
 // WHERE: the CDK bootstrap assets bucket, which the OIDC role the asset jobs
 // already assume can write. Deliberately NOT a new bucket: creating one needs
 // a CDK deploy, and CDK deploys are what this unblocks.
+//
+// ONE TARBALL, NOT A RECURSIVE COPY. The first version of this shipped cdk.out
+// as ~6,376 loose objects and every one of the 39 Assets-* jobs pulled the whole
+// tree back down. The assets bucket is the account's only `aws:kms` bucket and
+// bootstrap leaves `BucketKeyEnabled=false`, so each object GET is also one KMS
+// Decrypt: measured 2026-08-08..09-07, 11,709 downloads x 6,373 objects = 74.6M
+// Decrypt calls = $223.81/mo, plus $29.85 GET + $21.86 PUT + $60.33 egress --
+// more than all customer Bedrock inference combined. A tar.gz makes it 1 object
+// (89 MB -> 33 MB), which is 1 Decrypt and 1 GET per job and a third of the
+// egress: ~$336/mo -> ~$27/mo, without touching the bootstrap stack.
 //
 // Job names are read from the committed workflow rather than hardcoded: the
 // Assets-FileAssetN set changes whenever assets are added or removed, and a
@@ -503,18 +522,21 @@ const cdkoutPatches: JsonPatch[] = [
   // (pipeline.js:502,511 hardcode actions/upload-artifact).
   JsonPatch.replace("/jobs/Build-Synth/steps/3", {
     name: "Upload cdk.out to S3",
-    run: `aws s3 cp apps/infra/cdk.out ${CDKOUT_S3_URI}/ --recursive --only-show-errors`,
+    run: `tar -czf cdk.out.tgz -C apps/infra cdk.out && aws s3 cp cdk.out.tgz ${CDKOUT_TARBALL} --only-show-errors`,
   }),
 ];
 for (const job of assetJobNames()) {
   // Asset jobs are [Download cdk.out, Install, Authenticate, Publish]. The
   // download runs BEFORE credentials exist, so it is removed from the front
   // and re-inserted after the auth step rather than swapped in place.
+  // `rm -rf cdk.out` before the extract: asset jobs never check out, so on the
+  // self-hosted runner the workspace still holds whatever the last job left
+  // there, and tar merges into an existing tree rather than replacing it.
   cdkoutPatches.push(JsonPatch.remove(`/jobs/${job}/steps/0`));
   cdkoutPatches.push(
     JsonPatch.add(`/jobs/${job}/steps/2`, {
       name: "Download cdk.out from S3",
-      run: `aws s3 cp ${CDKOUT_S3_URI}/ cdk.out/ --recursive --only-show-errors`,
+      run: `aws s3 cp ${CDKOUT_TARBALL} cdk.out.tgz --only-show-errors && rm -rf cdk.out && tar -xzf cdk.out.tgz`,
     }),
   );
 }

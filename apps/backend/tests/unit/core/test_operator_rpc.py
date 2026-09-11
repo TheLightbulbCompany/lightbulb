@@ -407,6 +407,67 @@ class TestPerformSignedConnect:
         assert sent["params"]["device"]["id"] == identity.device_id
         assert sent["params"]["device"]["publicKey"] == identity.public_key_b64
 
+    @pytest.mark.asyncio
+    async def test_trusted_profile_connect_uses_v4_assertion_and_rejects_returned_tokens(self, operator_seed):
+        from core.crypto.operator_device import load_operator_device_from_seed
+
+        identity = load_operator_device_from_seed(operator_seed)
+        fixed = uuid_mod.UUID("12345678-1234-5678-1234-567812345678")
+        scopes = ("operator.admin", "operator.read", "operator.write")
+
+        def hello(auth_overrides=None):
+            return json.dumps(
+                {
+                    "type": "res",
+                    "id": str(fixed),
+                    "ok": True,
+                    "payload": {
+                        "type": "hello-ok",
+                        "protocol": 4,
+                        "auth": {"role": "operator", "scopes": list(scopes), **(auth_overrides or {})},
+                    },
+                }
+            )
+
+        ws = AsyncMock()
+        ws.recv = AsyncMock(
+            side_effect=[
+                json.dumps({"event": "connect.challenge", "payload": {"nonce": "n"}}),
+                hello(),
+            ]
+        )
+        with patch.object(operator_rpc.uuid, "uuid4", return_value=fixed):
+            await operator_rpc.perform_signed_connect(
+                ws,
+                owner_id="org_test",
+                token="token",
+                identity=identity,
+                scopes=scopes,
+                trusted_broker_profile_id="profile_test",
+            )
+        frame = json.loads(ws.send.await_args.args[0])
+        assert frame["params"]["auth"] == {
+            "token": "token",
+            "trustedBrokerProfileId": "profile_test",
+        }
+
+        ws.recv = AsyncMock(
+            side_effect=[
+                json.dumps({"event": "connect.challenge", "payload": {"nonce": "n"}}),
+                hello({"deviceToken": "must-not-return"}),
+            ]
+        )
+        with patch.object(operator_rpc.uuid, "uuid4", return_value=fixed):
+            with pytest.raises(RuntimeError, match="handshake proof"):
+                await operator_rpc.perform_signed_connect(
+                    ws,
+                    owner_id="org_test",
+                    token="token",
+                    identity=identity,
+                    scopes=scopes,
+                    trusted_broker_profile_id="profile_test",
+                )
+
 
 # --------------------------------------------------------------------------
 # gateway_rpc_oneshot

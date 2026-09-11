@@ -152,7 +152,7 @@ class _Harness:
                 side_effect=lambda **kw: self._send("not_selected", **kw),
             ),
             patch("core.services.launch_close.run_in_thread", AsyncMock(side_effect=self._stripe)),
-            patch("core.services.launch_close.settings.STRIPE_FLAT_PRICE_ID", "price_flat"),
+            patch("core.services.launch_close.settings.STRIPE_WORKSPACE_PRICE_ID", "price_flat"),
             # Appended LAST on purpose: `self.mint`/`self.list_all_mock`
             # below index into this list positionally.
             patch("core.services.launch_close.launch_phase.email_copy", side_effect=lambda: self.email_copy),
@@ -412,7 +412,7 @@ async def test_a_paying_ultra_winner_is_skipped_and_gets_the_unpaid_email():
     """A product-restricted coupon on a non-flat sub discounts $0 without
     erroring — so an Ultra paying winner must NOT be stamped, counted as
     attached, or told "next invoice is $0". Skipped visibly; the unpaid
-    variant ("first month of Starter is free at checkout") is literally
+    variant ("first month of Workspace is free at checkout") is literally
     accurate for them."""
     rows = [_row("a@x.com", 1)]
     billing = {"user_a": dict(PAYING, stripe_subscription_id="sub_ultra")}
@@ -745,7 +745,7 @@ async def _attach(retrieved_sub):
 
     with (
         patch("core.services.launch_close.run_in_thread", AsyncMock(side_effect=_stripe)),
-        patch("core.services.launch_close.settings.STRIPE_FLAT_PRICE_ID", "price_flat"),
+        patch("core.services.launch_close.settings.STRIPE_WORKSPACE_PRICE_ID", "price_flat"),
     ):
         done = await launch_close._attach_coupon({"stripe_subscription_id": "sub_1"}, "coup_1")
     return done, [c for c in calls if c[0] == "modify"]
@@ -833,96 +833,6 @@ async def test_winner_discount_never_raises():
             "core.services.launch_close.launch_waitlist_repo.get", AsyncMock(side_effect=RuntimeError("ddb down"))
         ):
             assert await launch_close.winner_checkout_discount("user_a") is None
-
-
-# ---------------------------------------------------------------------------
-# Checkout injection — _build_subscription_checkout applies the discount
-# ---------------------------------------------------------------------------
-
-
-async def _build_checkout_captured(discount, *, price="price_flat", line_items=None):
-    from unittest.mock import MagicMock
-
-    from core.services import billing_service
-
-    captured: dict = {}
-
-    def fake_create(**kwargs):
-        captured.update(kwargs)
-        return MagicMock(id="cs_1", url="https://checkout.stripe.com/x")
-
-    lookup = AsyncMock(return_value=discount)
-    with (
-        patch.object(billing_service.stripe.checkout.Session, "create", fake_create),
-        patch.object(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat"),
-        patch.object(
-            billing_service.billing_repo,
-            "get_by_owner_id",
-            AsyncMock(return_value={"owner_id": "user_a", "stripe_customer_id": "cus_1"}),
-        ),
-        patch("core.services.launch_close.winner_checkout_discount", lookup),
-    ):
-        await billing_service._build_subscription_checkout(
-            owner_id="user_a",
-            line_items=line_items if line_items is not None else [{"price": price, "quantity": 1}],
-            metadata={"owner_id": "user_a"},
-            success_url="https://x/ok",
-            cancel_url="https://x/no",
-            idempotency_key="k1",
-        )
-    return captured, lookup
-
-
-async def test_checkout_pre_applies_the_winner_coupon_and_drops_promo_codes():
-    captured, _ = await _build_checkout_captured([{"coupon": "coup_1"}])
-    assert captured["discounts"] == [{"coupon": "coup_1"}]
-    # Stripe refuses discounts + allow_promotion_codes together.
-    assert "allow_promotion_codes" not in captured
-    # The consumed-marker rides BOTH metadata targets so the checkout webhook
-    # can stamp the sheet row (no second free month on a forced rerun).
-    assert captured["metadata"]["launch_winner_coupon"] == "true"
-    assert captured["subscription_data"]["metadata"]["launch_winner_coupon"] == "true"
-
-
-async def test_checkout_untouched_for_a_non_winner():
-    captured, _ = await _build_checkout_captured(None)
-    assert "discounts" not in captured
-    assert captured["allow_promotion_codes"] is True
-    assert "launch_winner_coupon" not in captured["metadata"]
-
-
-async def test_bundled_credits_checkout_keeps_the_discount_and_the_credits_line():
-    """The BUNDLED shape end to end: a flagged winner picking starter credits
-    gets a session with the flat line AND the one-time credits line, the
-    coupon pre-applied, and the credits line passed through untouched — the
-    coupon's applies_to product restriction (minted in launch_settings) is
-    what keeps the discount off the credits line at Stripe, so the credits
-    are always paid while the Starter month is free."""
-    credits_line = {
-        "price_data": {
-            "currency": "usd",
-            "unit_amount": 10_000,
-            "product_data": {"name": "Claude credits", "description": "Prepaid Claude inference balance."},
-        },
-        "quantity": 1,
-    }
-    items = [{"price": "price_flat", "quantity": 1}, credits_line]
-    captured, _ = await _build_checkout_captured([{"coupon": "coup_1"}], line_items=items)
-    assert captured["discounts"] == [{"coupon": "coup_1"}]
-    assert "allow_promotion_codes" not in captured
-    assert captured["metadata"]["launch_winner_coupon"] == "true"
-    assert captured["subscription_data"]["metadata"]["launch_winner_coupon"] == "true"
-    assert captured["line_items"] == items  # credits line verbatim — never discounted app-side
-
-
-async def test_ultra_checkout_gets_no_discount_even_for_a_winner():
-    """The coupon is product-restricted to Starter — an Ultra session gets no
-    discount at all (the lookup is never even consulted), rather than a
-    Stripe applicability error. Free month = Starter month."""
-    captured, lookup = await _build_checkout_captured([{"coupon": "coup_1"}], price="price_ultra")
-    assert "discounts" not in captured
-    assert captured["allow_promotion_codes"] is True
-    lookup.assert_not_awaited()
 
 
 async def test_the_pot_freeze_folds_in_counted_teams_only():

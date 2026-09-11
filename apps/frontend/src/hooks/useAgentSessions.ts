@@ -1,8 +1,8 @@
 "use client";
 
 import { useMemo } from "react";
-import useSWR from "swr";
-import { useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import useSWR, { useSWRConfig } from "swr";
+import { useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
 import { notifyApiError } from "@/lib/notify";
 
 // Mirror of the backend guard (websocket_chat.py _SESSION_ID_RE): a strict
@@ -11,8 +11,34 @@ import { notifyApiError } from "@/lib/notify";
 const SESSION_ID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
+/**
+ * Name for the legacy 3-part `agent:{agentId}:{userId}` row.
+ *
+ * It used to read "General", which said nothing about what it is: the channel
+ * the PLATFORM writes to. The onboarding kickoff, the first-contact nudge and
+ * every deployed marketplace agent's cron jobs all land on that key, and for an
+ * owner who predates sessions it also holds their whole prior conversation. It
+ * is not special to the container — 8.1 classifies 3- and 4-part keys alike —
+ * so it is listed and sorted like any other session, just under a truthful name.
+ */
+export const LEGACY_ROW_LABEL = "Agent updates";
+
+/** The container's own run-status vocabulary, on every sessions.list row. */
+const RUN_STATUSES = ["queued", "running", "done", "failed", "killed", "timeout"] as const;
+export type SessionRunStatus = (typeof RUN_STATUSES)[number];
+
+/** Terminal outcomes worth surfacing — a run that ended badly. */
+export type UnhappyRunStatus = "failed" | "killed" | "timeout";
+const UNHAPPY_STATUSES: readonly string[] = ["failed", "killed", "timeout"];
+
+export function isUnhappyRun(
+  status: SessionRunStatus | undefined,
+): status is UnhappyRunStatus {
+  return status !== undefined && UNHAPPY_STATUSES.includes(status);
+}
+
 export interface AgentSession {
-  /** Trailing UUID for a real session; null == the legacy "General" session. */
+  /** Trailing UUID for a real session; null == the legacy 3-part session. */
   sessionId: string | null;
   /** The full OpenClaw session key. */
   key: string;
@@ -20,6 +46,16 @@ export interface AgentSession {
   label: string;
   /** Untruncated source of `label`; what a rename editor must start from. */
   rawLabel: string;
+  /** One-line preview of the last visible message; upstream caps it at 240. */
+  preview?: string;
+  /** Outcome of the session's most recent run. */
+  status?: SessionRunStatus;
+  /** Error text from that run, when it failed. */
+  lastRunError?: string;
+  /** The last run was aborted rather than ending on its own. */
+  abortedLastRun?: boolean;
+  /** Owner-set sort pin (sessions.patch {pinned}); pinned rows lead the rail. */
+  pinned?: boolean;
   updatedAt?: number;
   totalTokens?: number;
   // Per-session model/effort overrides sessions.list reports (all optional —
@@ -39,8 +75,17 @@ interface RawSessionRow {
   key: string;
   label?: string;
   derivedTitle?: string;
-  title?: string;
-  lastMessage?: { text?: string };
+  /**
+   * The row's ONLY preview field: a top-level string, capped at 240 chars by
+   * the container. There is no `lastMessage` object and no `title` — this hook
+   * used to declare both and read them in the label chain, and neither branch
+   * could ever be reached.
+   */
+  lastMessagePreview?: string;
+  status?: string;
+  lastRunError?: string;
+  abortedLastRun?: boolean;
+  pinned?: boolean;
   updatedAt?: number;
   totalTokens?: number;
   model?: string;
@@ -66,12 +111,114 @@ function modelControlsOf(row: RawSessionRow): Pick<
   };
 }
 
+// Conversational openers that carry no information about what the session is
+// about. Stripped from the FRONT only, repeatedly, so "hey, please help me
+// draft X" reduces to "draft X". Longest-first so "i want you to" wins over
+// "i want".
+const TITLE_OPENERS = [
+  "i would like you to",
+  "i'd like you to",
+  "i want you to",
+  "i need you to",
+  "can you please",
+  "could you please",
+  "would you please",
+  "can you",
+  "could you",
+  "would you",
+  "will you",
+  "please",
+  "help me",
+  "let's",
+  "lets",
+  "hey there",
+  "hello",
+  "hey",
+  "hi",
+  "pls",
+  "ok",
+  "okay",
+  "so",
+];
+
+/** Word-boundary trim; titles read better short and a rail has no room anyway. */
+const TITLE_MAX_LEN = 40;
+
+/**
+ * Turn a session's derived title — which is just the owner's first message,
+ * whitespace-collapsed and truncated by the container — into something that
+ * reads like a name.
+ *
+ * Deliberately NOT persisted with `sessions.patch {label}`. This is a pure,
+ * deterministic function of a field every read already returns, so recomputing
+ * it costs nothing, while writing it back would permanently occupy the
+ * user-set-name slot with a regex's output: no later (or better) title could
+ * ever replace it, and "did the owner name this?" would stop being answerable.
+ * A model-written title is the case that WOULD justify persisting, because the
+ * client cannot recompute one.
+ *
+ * ponytail: a hand-rolled opener list, not NLP. It catches the openers that
+ * actually show up; anything it misses just falls through unchanged, which is
+ * the behaviour we had before.
+ */
+export function titleFromDerived(derived: string): string {
+  let text = derived.trim();
+  if (!text) return "";
+
+  // Strip openers until none match, keeping the original if we strip it away
+  // entirely (a message that is nothing but "hey" is still its own best name).
+  for (let pass = 0; pass < TITLE_OPENERS.length; pass++) {
+    const lower = text.toLowerCase();
+    const opener = TITLE_OPENERS.find(
+      (o) => lower.startsWith(`${o} `) || lower.startsWith(`${o},`),
+    );
+    if (!opener) break;
+    const stripped = text.slice(opener.length).replace(/^[\s,:;-]+/, "");
+    if (!stripped) break;
+    text = stripped;
+  }
+
+  if (text.length > TITLE_MAX_LEN) {
+    const cut = text.slice(0, TITLE_MAX_LEN);
+    const lastSpace = cut.lastIndexOf(" ");
+    text = `${(lastSpace > TITLE_MAX_LEN / 2 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+  }
+
+  // Only the first character is touched: lowercasing the rest would flatten
+  // acronyms and names ("SOC2", "Sarah").
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/**
+ * Run outcome off the row, type-guarded the way modelControlsOf guards its
+ * fields: rows are untyped over the wire, and an unrecognised status must read
+ * as "no outcome" rather than render a marker we cannot explain.
+ */
+function runOutcomeOf(
+  row: RawSessionRow,
+): Pick<AgentSession, "status" | "lastRunError" | "abortedLastRun"> {
+  const status = RUN_STATUSES.find((s) => s === row.status);
+  return {
+    status,
+    lastRunError: typeof row.lastRunError === "string" ? row.lastRunError : undefined,
+    abortedLastRun: typeof row.abortedLastRun === "boolean" ? row.abortedLastRun : undefined,
+  };
+}
+
+/** The row's preview line, or undefined when blank/absent (never an empty string). */
+function previewOf(row: RawSessionRow): string | undefined {
+  const text = typeof row.lastMessagePreview === "string" ? row.lastMessagePreview.trim() : "";
+  return text || undefined;
+}
+
 function labelsFor(
   row: RawSessionRow,
   sessionId: string,
 ): { label: string; rawLabel: string } {
-  // A user-set label (sessions.patch {label}) always wins over derived titles.
-  const raw = (row.label || row.derivedTitle || row.title || row.lastMessage?.text || "").trim();
+  // A user-set label (sessions.patch {label}) always wins over derived titles,
+  // and is used VERBATIM — it is the owner's own words, not ours to tidy. Only
+  // the derived title (== the owner's first message) gets cleaned into a name.
+  const raw = row.label?.trim() || titleFromDerived(row.derivedTitle ?? "");
   // Never blank — fall back to a short id so the row is always clickable.
   const rawLabel = raw || `Session ${sessionId.slice(0, 8)}`;
   // Display copy is truncated; rawLabel stays intact so a rename editor never
@@ -83,67 +230,65 @@ function labelsFor(
 /**
  * Per-agent session list for the sidebar. The backend sessions.list proxy has
  * already dropped paperclip/cron/channel/other-member rows; here we keep only
- * 4-part `agent:{agentId}:{userId}:{uuid}` rows for THIS agent + user, newest
- * first. The legacy General (3-part) row is added by useAgentSessions' Task-12
- * extension.
+ * 4-part `agent:{agentId}:{userId}:{uuid}` rows for THIS agent + user, plus the
+ * legacy 3-part row when one exists. All of them sorted newest first.
  */
 export function useAgentSessions(
   agentId: string | null,
   userId: string | null,
+  /**
+   * List the owner's ARCHIVED sessions instead of their active ones. The
+   * container reads `archived` as a three-way filter (`true` archived only,
+   * `"all"` both, omitted active only), so the archived drawer is a second
+   * scoped read rather than a client-side split of one oversized page.
+   */
+  archived = false,
 ): {
   sessions: AgentSession[];
   isLoading: boolean;
   mutate: () => Promise<unknown>;
   renameSession: (key: string, label: string) => Promise<void>;
   deleteSession: (key: string) => Promise<void>;
+  /** Resolves true when the patch landed; false when it failed (already toasted). */
+  setArchived: (key: string, next: boolean) => Promise<boolean>;
+  setPinned: (key: string, next: boolean) => Promise<void>;
 } {
-  const callRpc = useGatewayRpcMutation();
+  const callRpc = useRuntimeRpcMutation();
+  const { mutate: globalMutate } = useSWRConfig();
 
-  // sessions.list applies `limit` on the container BEFORE the backend proxy
-  // filters rows down to this caller's own 4-part keys — a shared container
-  // busy with paperclip/cron/channel/other-member sessions can push the
-  // user's own rows past a single page's cutoff, making them silently
-  // disappear from the sidebar. Walk the offset/nextOffset/hasMore cursor
-  // (mirrors chat.history's paging) until the container reports no more
-  // rows, accumulating every page before the useMemo filter below runs.
+  // ONE scoped call, keyed by user AND agent. `agentId` is a first-class
+  // sessions.list param and narrows the container's STORE LOAD, not just the
+  // returned rows — the expensive half. The comment that used to sit here
+  // claimed the RPC had no agent filter (that "agentId requires sessionKeys"
+  // rule belongs to sessions.search, not sessions.list) and that belief is why
+  // this fetcher used to walk up to 10 pages × 100 rows of EVERY agent's store
+  // and filter client-side, forcing a transcript projection per foreign row on
+  // a 1-vCPU container. With the server-side filter a per-agent key is cheaper
+  // than the shared one, not dearer, so the walk and the shared key are gone.
   //
-  // ONE key for every caller, not one per agent: the RPC has no agent filter
-  // (the container's `agentId` param requires `sessionKeys`), so a per-agent
-  // key made the sidebar plus each open chat panel each run its own full
-  // scan of every agent's store — N concurrent transcript-reading scans on a
-  // single vCPU, 13–26s apiece under load. The per-agent split happens in the
-  // useMemo below, client-side, on the shared result. Keyed by user, not
-  // constant: the app-wide SWR cache outlives a sign-out, and the proxy scopes
-  // rows to the caller, so one user's cached rows would filter to an empty
-  // sidebar for the next until revalidation.
+  // Keyed by user as well as agent because the app-wide SWR cache outlives a
+  // sign-out, and the proxy scopes rows to the caller — one user's cached rows
+  // would filter to an empty sidebar for the next until revalidation.
   const { data, isLoading, mutate } = useSWR<{ sessions: RawSessionRow[] }>(
-    agentId && userId ? ["sessions.list.all", userId] : null,
+    agentId && userId ? ["sessions.list", userId, agentId, archived] : null,
     async () => {
-      const base = {
+      // includeLastMessage rides along free: includeDerivedTitles already
+      // forces the bounded transcript projection, and the SAME batched read
+      // produces lastMessagePreview (session-utils-list.ts gates the read on
+      // either flag, then fills both fields from one result).
+      const res = (await callRpc("sessions.list", {
+        agentId,
         includeGlobal: false,
         includeUnknown: false,
         includeDerivedTitles: true,
         includeLastMessage: true,
         limit: 100,
-      };
-      const rows: RawSessionRow[] = [];
-      let offset = 0;
-      // Bounded walk: cap the page count so a pathological container store
-      // (or a server that never flips hasMore) can't spin the sidebar
-      // forever. Hitting the cap before hasMore goes false is a silent
-      // coverage limit — an accepted bound, not a bug to raise.
-      for (let page = 0; page < 10; page++) {
-        const res = (await callRpc("sessions.list", { ...base, offset })) as {
-          sessions?: RawSessionRow[];
-          nextOffset?: number;
-          hasMore?: boolean;
-        };
-        const batch = res?.sessions ?? [];
-        rows.push(...batch);
-        if (res?.hasMore !== true || batch.length === 0) break;
-        offset = typeof res.nextOffset === "number" ? res.nextOffset : offset + batch.length;
-      }
-      return { sessions: rows };
+        // Omitted (not `false`) for the active rail: the container treats an
+        // absent flag as "active only" already, and the archived read is the
+        // only caller that needs to say anything.
+        ...(archived ? { archived: true } : {}),
+      })) as { sessions?: RawSessionRow[] };
+      return { sessions: res?.sessions ?? [] };
     },
     {
       dedupingInterval: 30_000,
@@ -176,31 +321,63 @@ export function useAgentSessions(
         sessionId,
         key: row.key,
         ...labelsFor(row, sessionId),
+        preview: previewOf(row),
+        ...runOutcomeOf(row),
+        pinned: row.pinned === true,
         updatedAt: row.updatedAt,
         totalTokens: row.totalTokens,
         ...modelControlsOf(row),
       });
     }
-    // Surface the legacy 3-part conversation as a normal "General" session so
-    // no pre-sessions history is orphaned. Match case-insensitively for the same
+    // Surface the legacy 3-part conversation as an ordinary row so no
+    // pre-sessions history is orphaned. Match case-insensitively for the same
     // reason as above; the backend proxy has already scoped rows to this user.
     const legacyKey = `agent:${agentIdL}:${userIdL}`;
-    const generalRow = rows.find(
+    const legacyRow = rows.find(
       (row) => typeof row?.key === "string" && row.key.toLowerCase() === legacyKey,
     );
-
-    out.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
-    if (generalRow) {
-      out.unshift({
+    if (legacyRow) {
+      out.push({
         sessionId: null,
-        key: generalRow.key,
-        label: "General",
-        rawLabel: "General",
-        ...modelControlsOf(generalRow),
+        key: legacyRow.key,
+        label: LEGACY_ROW_LABEL,
+        rawLabel: LEGACY_ROW_LABEL,
+        preview: previewOf(legacyRow),
+        ...runOutcomeOf(legacyRow),
+        pinned: legacyRow.pinned === true,
+        // Carried over deliberately: the projection used to drop it, which was
+        // survivable only while this row was fixed to the top of the list.
+        // Sorted by recency it would otherwise sit last forever.
+        updatedAt: legacyRow.updatedAt,
+        ...modelControlsOf(legacyRow),
       });
     }
+    // Sort AFTER the legacy row is in, so it takes its place by recency like
+    // any other session instead of being fixed to either end. An owner-set pin
+    // is the ONLY thing that overrides recency — that is what a pin is for.
+    out.sort(
+      (a, b) =>
+        (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || (b.updatedAt ?? 0) - (a.updatedAt ?? 0),
+    );
     return out;
   }, [data, agentId, userId]);
+
+  // Archive and the active rail are two SWR keys over the same store, so every
+  // move between them has to refresh BOTH: archiving from the rail must empty a
+  // row out of it AND land it in the drawer, and restoring does the reverse.
+  // Revalidating only the caller's own key leaves the other half stale until
+  // focus. Keyed off the tuple this hook builds, so the shape stays in one file.
+  const revalidateBothLists = async (): Promise<void> => {
+    if (!agentId || !userId) return;
+    try {
+      await Promise.all([
+        globalMutate(["sessions.list", userId, agentId, false]),
+        globalMutate(["sessions.list", userId, agentId, true]),
+      ]);
+    } catch {
+      // revalidates on next focus
+    }
+  };
 
   const renameSession = async (key: string, label: string): Promise<void> => {
     // sessions.patch {label} is OpenClaw's user-set session name; it wins over
@@ -230,12 +407,46 @@ export function useAgentSessions(
     await callRpc("sessions.delete", { key, deleteTranscript: true });
     // The delete persisted; a failed revalidation only delays the sidebar
     // refresh (SWR retries on focus) and must not read as a failed delete.
-    try {
-      await mutate();
-    } catch {
-      // revalidates on next focus
-    }
+    await revalidateBothLists();
   };
 
-  return { sessions, isLoading, mutate, renameSession, deleteSession };
+  /**
+   * Archive (or restore) a session — `sessions.patch {archived}`, which stamps
+   * `archivedAt` and moves the row between the two lists. Reversible, which is
+   * why the rail offers it with no confirm at all while delete keeps one.
+   *
+   * The container REFUSES to archive a session with a run still in flight
+   * ("Session ... is still active; retry the archive") and refuses an agent's
+   * main session outright, so the failure is surfaced rather than swallowed.
+   */
+  const setArchived = async (key: string, next: boolean): Promise<boolean> => {
+    try {
+      await callRpc("sessions.patch", { key, archived: next });
+    } catch (err) {
+      notifyApiError(err, next ? "Failed to archive session" : "Failed to restore session", {
+        dedupeKey: "session-archive",
+      });
+      // Reported, not thrown: the caller uses this to decide whether to move
+      // the owner OFF the session it just archived, and a refused archive
+      // (a run still in flight) must leave them exactly where they are.
+      return false;
+    }
+    await revalidateBothLists();
+    return true;
+  };
+
+  /** Pin (or unpin) a session — `sessions.patch {pinned}`; pinned rows lead the rail. */
+  const setPinned = async (key: string, next: boolean): Promise<void> => {
+    try {
+      await callRpc("sessions.patch", { key, pinned: next });
+    } catch (err) {
+      notifyApiError(err, next ? "Failed to pin session" : "Failed to unpin session", {
+        dedupeKey: "session-pin",
+      });
+      return;
+    }
+    await revalidateBothLists();
+  };
+
+  return { sessions, isLoading, mutate, renameSession, deleteSession, setArchived, setPinned };
 }

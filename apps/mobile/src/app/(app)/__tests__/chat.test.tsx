@@ -1,30 +1,21 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { fireEvent, render, screen } from "@testing-library/react-native";
 
 // expo-router isn't in the jest transform allowlist; stub the bits <Chat/> uses.
 jest.mock("expo-router", () => ({ router: { push: jest.fn() } }));
 
-// Per-test Clerk user (factory is lazy — the closure reads this at render
-// time). null = signed-out, keeping the first-run redirect effect inert.
-let mockClerkUser: unknown = null;
-jest.mock("@clerk/clerk-expo", () => ({
-  useUser: () => ({ user: mockClerkUser }),
+// The roster reads through the canonical runtime source.
+jest.mock("../../../providers/live-events", () => ({
+  useLiveEvents: () => ({
+    httpReady: true,
+    liveConnected: true,
+    liveError: null,
+    connectionRevision: 1,
+    rpc: jest.fn(),
+    getOperation: jest.fn(),
+    onEvent: () => () => {},
+  }),
 }));
 
-// Mock the gateway provider + the agents.list RPC so <Chat/> renders offline.
-// sendReq backs the reused SessionsSheet's sessions.list fetch; the payload is
-// swapped per test (mock-prefixed so the jest.mock factory may reference it).
-let mockSessionsPayload: unknown = { sessions: [] };
-const mockSendReq = jest.fn(async (method: string) => {
-  if (method === "sessions.list") return mockSessionsPayload;
-  return {};
-});
-jest.mock("../../../providers/gateway", () => ({
-  useGateway: () => ({ isConnected: true, error: null, sendReq: mockSendReq }),
-}));
-
-// Container status drives the first-run redirect's durable stand-down gate
-// (`onboarded`). null = no ready status yet (the default; first-run users see
-// onboarded=false and get redirected once).
 let mockContainerStatus: unknown = null;
 jest.mock("../../../lib/containerStatusContext", () => ({
   useContainerStatusContext: () => mockContainerStatus,
@@ -59,16 +50,13 @@ jest.mock("@lightbulb/shared", () => ({
 }));
 
 import Chat from "../chat";
-import { GatewayRpcError } from "@lightbulb/shared";
+import { RuntimeRpcError } from "@lightbulb/shared";
 
 const routerPush = jest.requireMock("expo-router").router.push as jest.Mock;
 
 describe("Chat roster", () => {
   beforeEach(() => {
-    mockClerkUser = null;
     routerPush.mockClear();
-    mockSendReq.mockClear();
-    mockSessionsPayload = { sessions: [] };
     mockContainerStatus = null;
     mockAgents = makeRoster();
   });
@@ -88,29 +76,6 @@ describe("Chat roster", () => {
     expect(await screen.findByText("START A NEW TASK WITH…")).toBeTruthy();
   });
 
-  it("walks a first-run user into the default agent's chat", async () => {
-    mockClerkUser = { unsafeMetadata: { firstRun: { briefSubmitted: true } } };
-    await render(<Chat />);
-    await waitFor(() =>
-      expect(routerPush).toHaveBeenCalledWith({
-        pathname: "/(app)/agent/[agentId]",
-        params: { agentId: "agent_a", name: "Friday" },
-      }),
-    );
-    expect(routerPush).toHaveBeenCalledTimes(1);
-  });
-
-  it("does NOT redirect a returning user who already onboarded", async () => {
-    // briefSubmitted is permanently sticky; the durable `onboarded` fact is
-    // what stands the redirect down once the backend reports funnel complete.
-    // Without this gate the user gets yanked into Friday on every roster mount.
-    mockClerkUser = { unsafeMetadata: { firstRun: { briefSubmitted: true } } };
-    mockContainerStatus = { kind: "ready", onboarded: true };
-    await render(<Chat />);
-    expect(screen.getByText("Friday")).toBeTruthy();
-    expect(routerPush).not.toHaveBeenCalled();
-  });
-
   // Whether a missing roster is a wake or a failure is decided by the SERVER's
   // container status, not by the shape of the RPC error. An earlier revision
   // inferred it from the error plus a 90s timer; the timer's deadline lived in
@@ -118,10 +83,11 @@ describe("Chat roster", () => {
   // container re-armed the grace forever.
   describe("a waking container", () => {
     const WAKING = () =>
-      new GatewayRpcError({
+      new RuntimeRpcError({
+        status: 503,
         message: "Container is starting up. Try again in a moment.",
         retryable: true,
-        retryAfterMs: 3000,
+        retryAfter: 3,
       });
 
     it("reads as loading while the server says the container is coming up", async () => {
@@ -204,68 +170,12 @@ describe("Chat roster", () => {
     });
   });
 
-  describe("per-agent sessions (long-press)", () => {
-    const NAMED = {
-      key: "agent:agent_a:user_x:11111111-1111-4111-8111-111111111111",
-      label: "Plan the launch",
-      updatedAt: 1000,
-    };
-
-    it("opens the agent's sessions sheet on long-press", async () => {
-      mockClerkUser = { id: "user_x" };
-      await render(<Chat />);
-      expect(screen.queryByText("SESSIONS")).toBeNull();
-      fireEvent(screen.getByLabelText("Friday"), "longPress");
-      expect(await screen.findByText("SESSIONS")).toBeTruthy();
-    });
-
-    it("navigates into a chosen session with its id + label", async () => {
-      mockClerkUser = { id: "user_x" };
-      mockSessionsPayload = { sessions: [NAMED] };
-      await render(<Chat />);
-      fireEvent(screen.getByLabelText("Friday"), "longPress");
-      fireEvent.press(await screen.findByText("Plan the launch"));
-      expect(routerPush).toHaveBeenCalledWith({
-        pathname: "/(app)/agent/[agentId]",
-        params: {
-          agentId: "agent_a",
-          name: "Friday",
-          sessionId: "11111111-1111-4111-8111-111111111111",
-          sessionLabel: "Plan the launch",
-        },
-      });
-    });
-
-    it("navigates to General without a session id", async () => {
-      mockClerkUser = { id: "user_x" };
-      await render(<Chat />);
-      fireEvent(screen.getByLabelText("Friday"), "longPress");
-      fireEvent.press(await screen.findByText("General"));
-      expect(routerPush).toHaveBeenCalledWith({
-        pathname: "/(app)/agent/[agentId]",
-        params: { agentId: "agent_a", name: "Friday" },
-      });
-    });
-
-    it("starts a new session from the roster sheet", async () => {
-      mockClerkUser = { id: "user_x" };
-      await render(<Chat />);
-      fireEvent(screen.getByLabelText("Friday"), "longPress");
-      fireEvent.press(await screen.findByLabelText("New session"));
-      expect(routerPush).toHaveBeenCalledWith({
-        pathname: "/(app)/agent/[agentId]",
-        params: { agentId: "agent_a", name: "Friday", newSession: "1" },
-      });
-    });
-
-    it("still opens General chat on a normal tap", async () => {
-      mockClerkUser = { id: "user_x" };
-      await render(<Chat />);
-      fireEvent.press(screen.getByLabelText("Friday"));
-      expect(routerPush).toHaveBeenCalledWith({
-        pathname: "/(app)/agent/[agentId]",
-        params: { agentId: "agent_a", name: "Friday" },
-      });
+  it("opens the agent's canonical room on tap", async () => {
+    await render(<Chat />);
+    fireEvent.press(screen.getByLabelText("Friday"));
+    expect(routerPush).toHaveBeenCalledWith({
+      pathname: "/(app)/agent/[agentId]",
+      params: { agentId: "agent_a", name: "Friday" },
     });
   });
 });

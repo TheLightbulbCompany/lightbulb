@@ -11,8 +11,8 @@ vi.mock("../workspaceController", () => ({
 
 let chatHandler: ((msg: ChatIncomingMessage) => void) | null = null;
 const unsubscribe = vi.fn();
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({
+vi.mock("@/hooks/useLiveEvents", () => ({
+  useLiveEvents: () => ({
     onChatMessage: (handler: (msg: ChatIncomingMessage) => void) => {
       chatHandler = handler;
       return unsubscribe;

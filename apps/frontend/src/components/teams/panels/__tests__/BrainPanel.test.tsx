@@ -27,10 +27,10 @@ vi.mock("@/hooks/useBrainFiles", () => ({
 
 // Every ASK exit hands its draft to the shared hook — BrainPanel no longer
 // implements the handoff itself, so a plain spy is enough to assert which
-// draft each exit sends. useAskFriday's own test covers the dock/mobile
+// draft each exit sends. useAskCeo's own test covers the dock/mobile
 // fallback and the no-agent notice.
-const askFriday = vi.fn();
-vi.mock("@/hooks/useAskFriday", () => ({ useAskFriday: () => askFriday }));
+const askCeo = vi.fn();
+vi.mock("@/hooks/useAskCeo", () => ({ useAskCeo: () => askCeo }));
 
 // The panel merges the PUT's fresh stat into the file's own SWR cache entry
 // via useSWRConfig().mutate — spy on it the same way ArtifactsPanel.test.tsx does.
@@ -44,13 +44,6 @@ vi.mock("swr", async (importOriginal) => {
 // .lobster files, which Brain never renders.
 vi.mock("@/components/chat/LobsterGraphView", () => ({
   LobsterGraphView: () => null,
-}));
-
-// The Dreams tab renders DreamsPanel's body verbatim (folded in from its
-// retired standalone control panel) — stub it so this suite never opens the
-// gateway RPCs DreamsPanel itself makes.
-vi.mock("@/components/control/panels/DreamsPanel", () => ({
-  DreamsPanel: () => <div data-testid="dreams-panel-body">DreamsPanel</div>,
 }));
 
 import { BrainPanel } from "../BrainPanel";
@@ -108,7 +101,7 @@ beforeEach(() => {
   deleteBrainFile.mockClear();
   uploadBrainFiles.mockClear();
   uploadBrainFiles.mockResolvedValue({ uploaded: [] });
-  askFriday.mockClear();
+  askCeo.mockClear();
   globalMutate.mockClear();
 });
 
@@ -203,8 +196,8 @@ describe("BrainPanel", () => {
   it("inbox files get the partial notice whose exit drafts the filing prompt", () => {
     treeState.files = POPULATED;
     render(<BrainPanel />);
-    fireEvent.click(screen.getByRole("button", { name: "Ask Friday to file it" }));
-    expect(askFriday).toHaveBeenCalledWith(expect.stringMatching(/1 file in the brain inbox/));
+    fireEvent.click(screen.getByRole("button", { name: "Ask CEO to file it" }));
+    expect(askCeo).toHaveBeenCalledWith(expect.stringMatching(/1 file in the brain inbox/));
   });
 
   it("clicking the inbox count lists inbox files; picking one opens it", () => {
@@ -339,8 +332,8 @@ describe("BrainPanel", () => {
     expect(screen.getByText(/names only/i)).toBeInTheDocument();
     fireEvent.change(box, { target: { value: "pricing" } });
     expect(screen.getByText("No page named that.")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /ask friday to search/i }));
-    expect(askFriday).toHaveBeenCalledWith(expect.stringContaining('"pricing"'));
+    fireEvent.click(screen.getByRole("button", { name: /ask ceo to search/i }));
+    expect(askCeo).toHaveBeenCalledWith(expect.stringContaining('"pricing"'));
   });
 
   it("a reports-only vault names the reports instead of claiming nothing is filed", () => {
@@ -377,9 +370,9 @@ describe("BrainPanel", () => {
     // never reports dirty=false on unmount, so a stale flag would fire a
     // phantom prompt here.
     expect(confirmSpy).toHaveBeenCalledTimes(2);
-    fireEvent.mouseDown(screen.getByRole("tab", { name: "Dreams" }));
+    // A second guarded navigation must not re-prompt.
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     expect(confirmSpy).toHaveBeenCalledTimes(2);
-    expect(screen.getByTestId("dreams-panel-body")).toBeInTheDocument();
   });
 
   it("searching guards a dirty NON-markdown file, which has no Edit toggle to be `editing` behind", () => {
@@ -404,15 +397,15 @@ describe("BrainPanel", () => {
     expect(screen.queryByDisplayValue("hello there")).toBeNull();
 
     expect(confirmSpy).toHaveBeenCalledTimes(2);
-    fireEvent.mouseDown(screen.getByRole("tab", { name: "Dreams" }));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     expect(confirmSpy).toHaveBeenCalledTimes(2);
   });
 
   it("the toolbar ASK button drafts the open-ended prompt", () => {
     treeState.files = POPULATED;
     render(<BrainPanel />);
-    fireEvent.click(screen.getByRole("button", { name: "Ask Friday" }));
-    expect(askFriday).toHaveBeenCalledWith(
+    fireEvent.click(screen.getByRole("button", { name: "Ask CEO" }));
+    expect(askCeo).toHaveBeenCalledWith(
       "Look in our brain and tell me what we know about: ",
     );
   });
@@ -427,13 +420,13 @@ describe("BrainPanel", () => {
     expect(treeState.refresh).toHaveBeenCalled();
   });
 
-  it("shows the empty state with an Ask-Friday chip when the vault is empty", () => {
+  it("shows the empty state with an Ask-CEO chip when the vault is empty", () => {
     render(<BrainPanel />);
     expect(
       screen.getByText("Your company's brain fills as your agents learn."),
     ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /ask friday/i }));
-    expect(askFriday).toHaveBeenCalledWith(
+    fireEvent.click(screen.getByRole("button", { name: /ask ceo/i }));
+    expect(askCeo).toHaveBeenCalledWith(
       "Look in our brain and tell me what we know about: ",
     );
   });
@@ -612,89 +605,13 @@ describe("BrainPanel", () => {
     expect(useBrainFileSpy).toHaveBeenLastCalledWith("entities/index.md");
   });
 
-  describe("Notes | Dreams tabs", () => {
-    it("renders a Notes | Dreams tab bar, defaulting to Notes (the vault pane shows)", () => {
-      treeState.files = POPULATED;
-      render(<BrainPanel />);
-      const notesTab = screen.getByRole("tab", { name: "Notes" });
-      expect(notesTab).toHaveAttribute("aria-selected", "true");
-      expect(screen.getByRole("tab", { name: "Dreams" })).toBeInTheDocument();
-      expect(screen.getByTestId("brain-notes-pane")).toBeInTheDocument();
-    });
-
-    it("mounts the DreamsPanel body on the Dreams tab and hides the Notes pane", () => {
-      treeState.files = POPULATED;
-      render(<BrainPanel />);
-      // Radix activates a tab on mousedown, not on the synthetic click event.
-      fireEvent.mouseDown(screen.getByRole("tab", { name: "Dreams" }));
-      expect(screen.getByTestId("dreams-panel-body")).toBeInTheDocument();
-      expect(screen.queryByTestId("brain-notes-pane")).not.toBeInTheDocument();
-    });
-
-    it("hides the Notes-only masthead meta/actions (counts, size · modified, Delete) on the Dreams tab", () => {
-      treeState.files = POPULATED;
-      fileState.file = md("entities/ada-lovelace.md", "# Ada");
-      render(<BrainPanel initialPath="entities/ada-lovelace.md" />);
-      expect(screen.getByTestId("panel-masthead-meta")).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: /delete/i })).toBeInTheDocument();
-
-      fireEvent.mouseDown(screen.getByRole("tab", { name: "Dreams" }));
-
-      expect(screen.getByTestId("dreams-panel-body")).toBeInTheDocument();
-      expect(screen.queryByTestId("panel-masthead-meta")).not.toBeInTheDocument();
-      expect(screen.queryByRole("button", { name: /delete/i })).not.toBeInTheDocument();
-    });
-
-    it("switching back to Notes restores the vault pane", () => {
-      treeState.files = POPULATED;
-      render(<BrainPanel />);
-      fireEvent.mouseDown(screen.getByRole("tab", { name: "Dreams" }));
-      expect(screen.getByTestId("dreams-panel-body")).toBeInTheDocument();
-
-      fireEvent.mouseDown(screen.getByRole("tab", { name: "Notes" }));
-      expect(screen.getByTestId("brain-notes-pane")).toBeInTheDocument();
-      expect(screen.queryByTestId("dreams-panel-body")).not.toBeInTheDocument();
-    });
-
-    it("initialTab='dreams' seeds the Dreams tab active on mount (old ?panel=dreams links)", () => {
-      treeState.files = POPULATED;
-      render(<BrainPanel initialTab="dreams" />);
-      expect(screen.getByRole("tab", { name: "Dreams" })).toHaveAttribute("aria-selected", "true");
-      expect(screen.getByTestId("dreams-panel-body")).toBeInTheDocument();
-      expect(screen.queryByTestId("brain-notes-pane")).not.toBeInTheDocument();
-    });
-
-    it("guards a dirty editor on tab switch — declining discard keeps Notes and the draft (review finding 1)", () => {
-      treeState.files = POPULATED;
-      fileState.file = md("entities/ada-lovelace.md", "# Ada");
-      render(<BrainPanel initialPath="entities/ada-lovelace.md" />);
-      fireEvent.click(screen.getByRole("button", { name: "Edit" }));
-      fireEvent.change(screen.getByDisplayValue("# Ada"), {
-        target: { value: "# Ada — DRAFT" },
-      });
-
-      const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
-      fireEvent.mouseDown(screen.getByRole("tab", { name: "Dreams" }));
-
-      expect(confirmSpy).toHaveBeenCalled();
-      expect(screen.queryByTestId("dreams-panel-body")).not.toBeInTheDocument();
-      // Notes stayed mounted throughout — the draft was never unmounted/reset.
-      expect(screen.getByDisplayValue("# Ada — DRAFT")).toBeInTheDocument();
-    });
-
-    it("guards a dirty editor on tab switch — accepting discard switches to Dreams (review finding 1)", () => {
-      treeState.files = POPULATED;
-      fileState.file = md("entities/ada-lovelace.md", "# Ada");
-      render(<BrainPanel initialPath="entities/ada-lovelace.md" />);
-      fireEvent.click(screen.getByRole("button", { name: "Edit" }));
-      fireEvent.change(screen.getByDisplayValue("# Ada"), {
-        target: { value: "# Ada — DRAFT" },
-      });
-
-      vi.spyOn(window, "confirm").mockReturnValue(true);
-      fireEvent.mouseDown(screen.getByRole("tab", { name: "Dreams" }));
-
-      expect(screen.getByTestId("dreams-panel-body")).toBeInTheDocument();
-    });
+  it("is the vault and nothing else — no tab bar, no Dreams", () => {
+    // Dreams went back to being its own Settings control panel (owner ruling
+    // 2026-09-08): a memory-core surface is not a section of the company brain.
+    treeState.files = POPULATED;
+    render(<BrainPanel />);
+    expect(screen.queryByRole("tab", { name: "Dreams" })).toBeNull();
+    expect(screen.queryByRole("tab", { name: "Notes" })).toBeNull();
+    expect(screen.getByTestId("brain-notes-pane")).toBeInTheDocument();
   });
 });

@@ -8,7 +8,11 @@ import { SwrProvider } from "@/components/SwrProvider";
 import { SupportProvider } from "@/components/support/SupportProvider";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { clerkAppearance } from "@/lib/clerkAppearance";
+import {
+  clerkAppearance,
+  clerkLocalization,
+  clerkTaskUrls,
+} from "@/lib/clerkAppearance";
 import { SITE_URL } from "@/lib/domain";
 import "./globals.css";
 
@@ -59,16 +63,15 @@ export const metadata: Metadata = {
   },
 };
 
-// The landing room paints midnight; every other `.ld-page` route (/blog,
-// /docs, /[seoSlug]) paints cream. INLINE and blocking so `data-lb-theme` is
-// on <html> before the first stylesheet paints — a deferred script flashes.
-// SCOPED to "/" because only the home page has a lamp to strike; writing the
-// attribute anywhere else painted those routes midnight forever. The CSP is
-// report-only today AND allows 'unsafe-inline' (next.config.ts); enforcing a
-// nonce-based policy means giving this tag the same nonce.
+// A stored dark choice must be on <html> BEFORE the first stylesheet paints —
+// a deferred script flashes light then dark. Light is the default, so with
+// nothing stored the attribute is simply absent and the server markup already
+// matches. Only `.ld-page` reads the attribute (landing, /docs, /blog,
+// /[seoSlug]); it cannot reach /chat or admin, so the script runs everywhere.
+// The nav toggle (Navbar.tsx → lampStore) writes the same attribute + key.
 const THEME_SCRIPT =
-  "if(location.pathname==='/'){var t=null;try{t=localStorage.getItem('lightbulb-theme')}catch(e){}" +
-  "document.documentElement.setAttribute('data-lb-theme',t==='light'?'light':'dark')}";
+  "try{if(localStorage.getItem('lightbulb-theme')==='dark')" +
+  "document.documentElement.setAttribute('data-lb-theme','dark')}catch(e){}";
 
 export const viewport: Viewport = {
   width: "device-width",
@@ -81,9 +84,14 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <ClerkProvider appearance={clerkAppearance}>
-      {/* suppressHydrationWarning: the script above writes an attribute onto
-          <html> that the server-rendered markup does not carry. */}
+    <ClerkProvider
+      appearance={clerkAppearance}
+      localization={clerkLocalization}
+      taskUrls={clerkTaskUrls}
+    >
+      {/* suppressHydrationWarning: THEME_SCRIPT writes data-lb-theme onto
+          <html> for returning dark-mode visitors, which the server markup
+          does not carry. */}
       <html
         lang="en"
         suppressHydrationWarning

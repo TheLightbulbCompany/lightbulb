@@ -1,40 +1,39 @@
-// frontend/src/hooks/useGatewayRpc.ts
+// frontend/src/hooks/useRuntimeRpc.ts
 "use client";
 
 import type { SWRConfiguration } from "swr";
 import {
-  useGatewayRpc as useGatewayRpcShared,
-  useGatewayRpcMutation as useGatewayRpcMutationShared,
+  useRuntimeRpc as useRuntimeRpcShared,
+  useRuntimeRpcMutation as useRuntimeRpcMutationShared,
   type RpcResult,
 } from "@lightbulb/shared";
-import { useGateway } from "@/hooks/useGateway";
+import { useLiveEvents } from "@/hooks/useLiveEvents";
 
-// Implementation lives in @lightbulb/shared (Phase 1 extraction — see the
-// mobile-app plan); this wrapper binds the web gateway context so feature
-// code keeps its historical no-arg call signature.
+// Implementation lives in @lightbulb/shared; this wrapper binds the web live
+// context so existing feature code keeps its historical no-arg call signature.
 
 /**
- * Hook for read-only RPC calls via the gateway WebSocket (auto-fetched via SWR).
+ * Hook for read-only runtime RPC calls over HTTP (auto-fetched via SWR).
  *
  * Usage:
- *   const { data, isLoading } = useGatewayRpc<HealthData>("health");
- *   const { data } = useGatewayRpc<AgentList>("agents.list");
+ *   const { data, isLoading } = useRuntimeRpc<HealthData>("health");
+ *   const { data } = useRuntimeRpc<AgentList>("agents.list");
  */
-export function useGatewayRpc<T = unknown>(
+export function useRuntimeRpc<T = unknown>(
   method: string | null,
   params?: Record<string, unknown>,
   config?: SWRConfiguration,
 ): RpcResult<T> {
-  return useGatewayRpcShared<T>(useGateway(), method, params, config);
+  return useRuntimeRpcShared<T>(useLiveEvents(), method, params, config);
 }
 
 /**
- * Hook for write RPC calls via the gateway WebSocket (imperative, not auto-fetched).
+ * Hook for imperative runtime RPC calls over HTTP.
  *
  * Usage:
- *   const callRpc = useGatewayRpcMutation();
+ *   const callRpc = useRuntimeRpcMutation();
  *   await callRpc("config.set", { key: "value" });
  */
-export function useGatewayRpcMutation() {
-  return useGatewayRpcMutationShared(useGateway());
+export function useRuntimeRpcMutation() {
+  return useRuntimeRpcMutationShared(useLiveEvents());
 }

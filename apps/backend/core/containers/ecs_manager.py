@@ -15,12 +15,14 @@ import re
 import secrets
 import socket
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import boto3
 from botocore.exceptions import ClientError
 from ulid import ULID
 
+from core import openclaw_version
 from core.config import settings
 from core.dynamodb import utc_now_iso
 from core.observability.metrics import put_metric, timing
@@ -28,7 +30,7 @@ from core.containers.config import (
     BEDROCK_PROVIDER_CHOICES,
     BEDROCK_TRIAL_CHOICE,
     CHANNEL_PROVIDER_IDS,
-    build_device_paired_json,
+    _build_node_paired_entry,
     generate_node_device_identity,
     load_node_device_identity,
     read_openclaw_config_from_efs,
@@ -37,6 +39,7 @@ from core.containers.config import (
 from core.containers.workspace import get_workspace
 from core.repositories import billing_repo, container_repo
 from core.repositories.container_repo import ProvisionSuperseded
+from core.services.owner_lifecycle import serialize_owner_lifecycle
 
 logger = logging.getLogger(__name__)
 
@@ -67,11 +70,13 @@ SPOT_CAPACITY_STRATEGY = [{"capacityProvider": "FARGATE_SPOT", "weight": 1}]
 ON_DEMAND_CAPACITY_STRATEGY = [{"capacityProvider": "FARGATE", "weight": 1}]
 SPOT_PLACEMENT_FALLBACK_S = 300.0
 
-# Ultra Pro tier box (large marketplace companies exceeding the flat tier's
-# agent budget). 2 vCPU / 8 GB — same constant home as PER_USER_* so the
+# Ultra tier box. 2 vCPU / 8 GB — same constant home as PER_USER_* so the
 # resize/register paths and the webhook tier logic pull sizes from one place.
 ULTRA_CPU = "2048"
 ULTRA_MEMORY_MIB = "8192"
+
+# Operational boot-reliability floor, never a billing or admission limit.
+AGENT_RELIABILITY_RESIZE_THRESHOLD = 10
 
 # The AIP tiers minted for a `bedrock_trial` (no-card free tier) owner. ONE
 # tier, and it must be sonnet: config.py makes sonnet the trial's
@@ -99,6 +104,37 @@ SINGLE_WRITER_DEPLOYMENT_CONFIG = {
     "minimumHealthyPercent": 0,
     "maximumPercent": 100,
 }
+
+
+@dataclass(frozen=True)
+class LiveOpenClawRuntimeEvidence:
+    """Identity-bound address of one observed running OpenClaw task."""
+
+    task_arn: str
+    task_definition_arn: str
+    private_ip: str
+    gateway_build_id: str
+
+
+def _tagged_image_tag(image: object) -> str:
+    """Return a container image's tag, or ``""`` for digest/invalid refs."""
+    image_ref = str(image or "")
+    if "@" in image_ref:
+        return ""
+    _, separator, tag = image_ref.rpartition(":")
+    return tag if separator and "/" not in tag else ""
+
+
+def _task_private_ip(task: dict) -> str | None:
+    """Extract a private IPv4 address from an ECS task ENI."""
+    for attachment in task.get("attachments", []):
+        if attachment.get("type") != "ElasticNetworkInterface":
+            continue
+        for detail in attachment.get("details", []):
+            value = detail.get("value")
+            if detail.get("name") == "privateIPv4Address" and isinstance(value, str) and value:
+                return value
+    return None
 
 
 def _user_owned_mcp_servers(existing_servers: dict, integration_provider_keys: set[str]) -> dict:
@@ -149,6 +185,21 @@ async def _provision_mcp_servers(owner_id: str, connected_servers: dict) -> dict
         return connected_servers
 
 
+# A real channel account carries a transport or a credential. OpenClaw reads
+# provider-LEVEL settings as a synthetic "[default]" account and persists it to
+# disk on write-back, so a config can accumulate an `accounts.default` husk
+# holding nothing but policy (ours held only dmPolicy, left behind when a
+# provider-level BYO bot was deleted — routers/channels.py strips the root
+# credentials but never the husk). Carrying one forward re-injects a bot that
+# does not exist and, before the binding guard in config.py, produced an
+# `agentId: "default"` that made the whole config unloadable.
+_CHANNEL_ACCOUNT_CONFIGURED_KEYS = ("mode", "botToken", "appToken", "token", "signingSecret", "webhookPath")
+
+
+def _is_configured_channel_account(account: object) -> bool:
+    return isinstance(account, dict) and any(k in account for k in _CHANNEL_ACCOUNT_CONFIGURED_KEYS)
+
+
 async def _provision_channel_accounts(owner_id: str) -> tuple[dict[str, dict[str, dict]], list[dict]]:
     """Channel bot accounts + their route bindings, to re-inject into a
     regenerated openclaw.json.
@@ -178,7 +229,9 @@ async def _provision_channel_accounts(owner_id: str) -> tuple[dict[str, dict[str
                 continue
             accounts = entry.get("accounts")
             if isinstance(accounts, dict) and accounts:
-                out[provider] = accounts
+                configured = {k: v for k, v in accounts.items() if _is_configured_channel_account(v)}
+                if configured:
+                    out[provider] = configured
         bindings = [
             b
             for b in (existing_cfg.get("bindings") or [])
@@ -482,9 +535,9 @@ class EcsManager:
         """The (cpu, memory) a provision/reprovision must register for ``owner_id``.
 
         ``ultra_pro`` owners run the large ``ULTRA_CPU`` / ``ULTRA_MEMORY_MIB``
-        box (large marketplace companies past the flat tier's agent budget);
+        box;
         everyone else the flat ``PER_USER_CPU`` / ``PER_USER_MEMORY_MIB`` box —
-        UNLESS their live agent count is over the standard budget, see below.
+        UNLESS their live agent count crosses the reliability floor below.
 
         Deriving the size from the billing plan HERE is what makes the Ultra
         size DURABLE. The upgrade webhook resizes the running container, but the
@@ -496,9 +549,7 @@ class EcsManager:
         size of its own — so the box always tracks the owner's plan.
 
         **Agent count is the second input, and it is a RELIABILITY floor, not a
-        billing signal.** ``COMPANY_STANDARD_PLAN_MAX_AGENTS`` was previously
-        enforced only where an owner acquires many agents AT ONCE — a marketplace
-        company-package deploy, or a Stripe plan transition. Nothing watched
+        billing signal or product entitlement.** Nothing else needs to watch
         ORGANIC growth, and agents arrive one at a time from several paths: the
         /chat ``agents.create`` RPC, the Teams REST endpoint, a marketplace
         single-agent hire, and Atlas (the in-house recruiter) creating them
@@ -518,16 +569,18 @@ class EcsManager:
         loop. It converges on the owner's next task-def registration rather than
         bouncing the container the instant someone adds an agent.
 
-        This only ever sizes UP. Shrinking stays owned by
-        ``stripe_webhook_handlers._apply_ultra_resize``, which has the OOM-safe
-        deferral rules; a count-driven shrink here would fight it.
+        This helper only ever raises the plan-derived size to the reliability
+        floor. Explicit downsize decisions stay owned by
+        ``stripe_webhook_handlers._apply_ultra_resize``, which independently
+        checks the live count and refuses an unsafe shrink.
 
         Fail-safe: a provision must NEVER fail because billing or Paperclip is
         momentarily unreadable. A billing read error (or an absent row) falls
         back to the standard size — worst case an Ultra owner's reprovision lands
         standard-sized and the next reprovision restores it, which beats a failed
         provision. An agent count of 0 means UNDETERMINABLE (every provisioned
-        owner has Friday + Atlas, so a reachable roster is >= 2), so it is
+        fresh workspaces start with six agents and legacy workspaces have a
+        persisted roster), so it is
         treated as no signal and leaves the plan-derived size alone.
         """
         try:
@@ -542,7 +595,6 @@ class EcsManager:
         if (account or {}).get("plan") == "ultra_pro":
             return ULTRA_CPU, ULTRA_MEMORY_MIB
 
-        from core.services.company_package import COMPANY_STANDARD_PLAN_MAX_AGENTS
         from core.services.paperclip_openclaw_pairing import count_paperclip_agents_for_owner
 
         try:
@@ -558,15 +610,24 @@ class EcsManager:
                 exc_info=True,
             )
             agent_count = 0
-        if agent_count > COMPANY_STANDARD_PLAN_MAX_AGENTS:
-            logger.info(
-                "owner %s has %d live agents (> %d) on a non-Ultra plan; sizing the "
-                "container to the Ultra box so its boot does not contend itself to death",
+        if agent_count > 25:
+            logger.warning(
+                "owner %s has %d live agents during container sizing; monitor boot storage and contention",
                 owner_id,
                 agent_count,
-                COMPANY_STANDARD_PLAN_MAX_AGENTS,
             )
-            put_metric("container.size_upgraded_by_agent_count", dimensions={"reason": "organic_growth"})
+            put_metric(
+                "container.large_agent_roster_observed",
+                dimensions={"threshold": "over_25"},
+            )
+        if agent_count > AGENT_RELIABILITY_RESIZE_THRESHOLD:
+            logger.info(
+                "owner %s has %d live agents (> %d); applying the operational container reliability size floor",
+                owner_id,
+                agent_count,
+                AGENT_RELIABILITY_RESIZE_THRESHOLD,
+            )
+            put_metric("container.reliability_size_upgrade", dimensions={"reason": "live_agent_roster"})
             return ULTRA_CPU, ULTRA_MEMORY_MIB
         return PER_USER_CPU, PER_USER_MEMORY_MIB
 
@@ -642,11 +703,7 @@ class EcsManager:
         it has none (a digest-pinned ``@sha256:…`` image carries no tag)."""
         resp = await asyncio.to_thread(self._ecs.describe_task_definition, taskDefinition=task_definition)
         defs = (resp.get("taskDefinition") or {}).get("containerDefinitions") or []
-        image = str((defs[0] if defs else {}).get("image") or "")
-        if "@" in image:
-            return ""
-        _, sep, tag = image.rpartition(":")
-        return tag if sep and "/" not in tag else ""
+        return _tagged_image_tag((defs[0] if defs else {}).get("image"))
 
     def _build_register_kwargs_from_base(
         self,
@@ -828,7 +885,7 @@ class EcsManager:
                 primary container.
             new_cpu / new_memory: Optional task size. The provision/reprovision
                 callers pass the owner's plan-derived size (``_size_for_owner``)
-                so an Ultra Pro owner's box stays 2 vCPU / 8 GB across every
+                so an Ultra owner's box stays 2 vCPU / 8 GB across every
                 re-register. ``None`` falls back to the standard PER_USER_* box.
 
         Returns:
@@ -867,6 +924,7 @@ class EcsManager:
         except Exception as e:
             logger.error("Failed to deregister task definition %s: %s", task_definition_arn, e)
 
+    @serialize_owner_lifecycle
     async def refresh_task_definition(
         self,
         owner_id: str,
@@ -1247,7 +1305,7 @@ class EcsManager:
             # per-user env vars, and the per-user OPENCLAW_HOOK_TOKEN (so the
             # OpenClaw gateway can verify inbound webhook calls) before the
             # service is created so the first task pulls them. Size by the
-            # owner's plan so an Ultra Pro owner's first task def is the large
+            # owner's plan so an Ultra owner's first task def is the large
             # box, not the standard one.
             new_cpu, new_memory = await self._size_for_owner(user_id)
             task_def_arn = self._register_task_definition(
@@ -1364,6 +1422,7 @@ class EcsManager:
         logger.info("Created ECS service %s for user %s", service_name, user_id)
         return service_name
 
+    @serialize_owner_lifecycle
     async def stop_user_service(self, user_id: str, *, reason: str = "manual") -> None:
         """Scale a user's ECS service to 0 (stopped).
 
@@ -1569,6 +1628,7 @@ class EcsManager:
             put_metric("container.start.refused", dimensions={"reason": reason})
             raise ContainerStartRefused(reason, user_id, _TRIAL_REFUSAL_COPY[reason])
 
+    @serialize_owner_lifecycle
     async def start_user_service(
         self,
         user_id: str,
@@ -1709,6 +1769,7 @@ class EcsManager:
         # cold-start leaves the row stuck.
         asyncio.create_task(self._await_running_transition(user_id))
 
+    @serialize_owner_lifecycle
     async def force_redeploy_user_service(self, user_id: str) -> None:
         """Replace the service's task with a fresh one on the CURRENT revision.
 
@@ -1732,6 +1793,7 @@ class EcsManager:
             deploymentConfiguration=SINGLE_WRITER_DEPLOYMENT_CONFIG,
         )
 
+    @serialize_owner_lifecycle
     async def resize_user_container(
         self,
         user_id: str,
@@ -1955,6 +2017,7 @@ class EcsManager:
             _register_only=True,
         )
 
+    @serialize_owner_lifecycle
     async def rollout_config_lock_protocol(
         self,
         user_id: str,
@@ -2169,6 +2232,7 @@ class EcsManager:
         """
         return await self._wait_for_service_drained(user_id, timeout_s=timeout_s)
 
+    @serialize_owner_lifecycle
     async def reprovision_for_user(self, user_id: str) -> dict:
         """Full reprovision: re-register the task def from the current CDK
         base (picks up the latest pinned image) AND rewrite the EFS
@@ -2248,7 +2312,7 @@ class EcsManager:
 
         Sizes by the owner's plan (``_size_for_owner``) rather than a flat
         hardcode: for a standard owner that IS the 1 vCPU / 4 GB box, but an
-        Ultra Pro owner must land on their 2 vCPU / 8 GB box — re-applying the
+        Ultra owner must land on their 2 vCPU / 8 GB box — re-applying the
         standard size here would silently undo the upgrade webhook's resize,
         the exact revert the plan-derived provision sizing exists to prevent.
         """
@@ -2264,6 +2328,7 @@ class EcsManager:
             "memory": new_memory,
         }
 
+    @serialize_owner_lifecycle
     async def delete_user_service(self, user_id: str) -> dict | None:
         """Remove a user's ECS service and per-user resources entirely.
 
@@ -2539,6 +2604,93 @@ class EcsManager:
         except Exception:
             return False
 
+    async def live_runtime_evidence(self, owner_id: str) -> LiveOpenClawRuntimeEvidence | None:
+        """Prove the owner's current running task matches the immutable pin.
+
+        Every value is read fresh. The task ARN from the strongly consistent
+        owner row anchors one ECS task snapshot; its service, task definition,
+        configured image tag, observed runtime digest, and ENI address must all
+        agree. Any missing or conflicting observation fails closed.
+
+        This is identity evidence only: it neither mutates container state nor
+        qualifies or advertises native-room behavior.
+        """
+        try:
+            pinned = openclaw_version.pinned_release_identity()
+            if pinned is None:
+                return None
+
+            container = await container_repo.get_by_owner_id(owner_id, consistent=True)
+            if not container or container.get("status") != "running":
+                return None
+
+            service_name = container.get("service_name")
+            task_arn = container.get("task_arn")
+            task_definition_arn = container.get("task_definition_arn")
+            if not all(isinstance(value, str) and value for value in (service_name, task_arn, task_definition_arn)):
+                return None
+
+            tasks_response = await asyncio.to_thread(
+                self._ecs.describe_tasks,
+                cluster=self._cluster,
+                tasks=[task_arn],
+            )
+            tasks = tasks_response.get("tasks") or []
+            if tasks_response.get("failures") or len(tasks) != 1:
+                return None
+            task = tasks[0]
+            if (
+                task.get("taskArn") != task_arn
+                or task.get("taskDefinitionArn") != task_definition_arn
+                or task.get("lastStatus") != "RUNNING"
+                or task.get("desiredStatus") != "RUNNING"
+                or task.get("group") != f"service:{service_name}"
+            ):
+                return None
+
+            task_definition_response = await asyncio.to_thread(
+                self._ecs.describe_task_definition,
+                taskDefinition=task_definition_arn,
+            )
+            task_definition = task_definition_response.get("taskDefinition") or {}
+            if task_definition.get("taskDefinitionArn") != task_definition_arn:
+                return None
+
+            definitions = [
+                definition
+                for definition in task_definition.get("containerDefinitions") or []
+                if definition.get("name") == "openclaw"
+            ]
+            running_containers = [
+                running for running in task.get("containers") or [] if running.get("name") == "openclaw"
+            ]
+            if len(definitions) != 1 or len(running_containers) != 1:
+                return None
+
+            configured_image = definitions[0].get("image")
+            running = running_containers[0]
+            if (
+                _tagged_image_tag(configured_image) != pinned.extended_tag
+                or running.get("lastStatus") != "RUNNING"
+                or running.get("image") != configured_image
+                or running.get("imageDigest") != pinned.runtime_manifest_digest
+            ):
+                return None
+
+            private_ip = _task_private_ip(task)
+            if not private_ip:
+                return None
+
+            return LiveOpenClawRuntimeEvidence(
+                task_arn=task_arn,
+                task_definition_arn=task_definition_arn,
+                private_ip=private_ip,
+                gateway_build_id=pinned.gateway_build_id,
+            )
+        except Exception:
+            logger.warning("Could not prove live OpenClaw runtime identity for owner %s", owner_id, exc_info=True)
+            return None
+
     async def resolve_running_container(self, user_id: str) -> tuple[dict | None, str | None]:
         """Look up a user's container and discover its task IP.
 
@@ -2801,6 +2953,7 @@ class EcsManager:
         except Exception:
             logger.exception("opencode harness auth staging failed for %s", user_id)
 
+    @serialize_owner_lifecycle
     async def provision_user_container(
         self,
         user_id: str,
@@ -3272,8 +3425,10 @@ class EcsManager:
                     )
                 except ProvisionSuperseded:
                     raise
-                except Exception as e:
-                    logger.warning("Config write failed during restart: %s (continuing anyway)", e)
+                except Exception:
+                    put_metric("container.provision", dimensions={"status": "error"})
+                    put_metric("container.error_state")
+                    raise
 
                 # Re-register the task definition with the freshly-computed
                 # secrets_for_task. Without this, a BYOK user whose container
@@ -3301,7 +3456,7 @@ class EcsManager:
                         )
                         # Size by plan on the restart path too — this is the
                         # branch a full reprovision (stop -> dispatch_provision)
-                        # lands on, so without it an Ultra Pro reprovision would
+                        # lands on, so without it an Ultra reprovision would
                         # silently revert the container to the standard box.
                         restart_cpu, restart_memory = await self._size_for_owner(user_id)
                         new_task_def_arn = await asyncio.to_thread(
@@ -3855,48 +4010,6 @@ class EcsManager:
 
                     await expire_superseded_gate_tokens(user_id)
 
-                    # FRIDAY'S FIRST RUN. This is the only moment we KNOW the
-                    # gateway is reachable, and it is reached by every route a
-                    # container takes to ready (see the comment above), so it
-                    # is the one place a kickoff can be dispatched without a
-                    # browser being open.
-                    #
-                    # Until now `maybe_dispatch_bootstrap` was reachable only
-                    # from `container_status` and `submit_brief` -- both driven
-                    # by the owner's tab. An owner who signed up, watched
-                    # "Provisioning your container...", and closed the tab was
-                    # never greeted: no poll, no kickoff, no first run. And
-                    # because the first-contact EMAIL is Friday's own tool call
-                    # DURING that run (bootstrap_dispatcher NUDGE_MESSAGE only
-                    # reminds her if a run ends without it), the thing that
-                    # would have brought them back never sent either. Closed
-                    # loop, no exit: two prod owners sat in it, one for twenty
-                    # days.
-                    #
-                    # Deliberately NOT a sweeper. A scanner would have to WAKE
-                    # stopped containers to greet owners who are not there --
-                    # spending money, and on a trial owner burning the daily
-                    # cap -- and this codebase prefers events over long-running
-                    # workers. Hanging it here wakes nothing: it fires only on
-                    # a container that just became ready under its own steam.
-                    #
-                    # Best-effort by construction. maybe_dispatch_bootstrap is
-                    # idempotent, claim-fenced, and returns early for every
-                    # owner with nothing owed (no generation, funnel not
-                    # submitted, already sent/delivered), so the common case is
-                    # one cheap read. It never raises -- but this is the
-                    # terminal write of a provision, so a failure here must not
-                    # unwind a container that is genuinely up.
-                    try:
-                        from core.services.bootstrap_dispatcher import maybe_dispatch_bootstrap
-
-                        await maybe_dispatch_bootstrap(user_id)
-                    except Exception:  # noqa: BLE001 — never fail a healthy provision
-                        logger.exception(
-                            "bootstrap kickoff dispatch failed for owner %s after ready transition "
-                            "(container is up; first run will retry on the owner's next poll)",
-                            user_id,
-                        )
                     return
                 if task_arn and ip and container.get("substatus") != "task_running":
                     # Task is RUNNING with an IP but the gateway port isn't
@@ -4073,13 +4186,10 @@ class EcsManager:
                 continue
             if task.get("lastStatus") != "RUNNING":
                 continue
-            for attachment in task.get("attachments", []):
-                if attachment.get("type") != "ElasticNetworkInterface":
-                    continue
-                for detail in attachment.get("details", []):
-                    if detail.get("name") == "privateIPv4Address":
-                        task_arn = task.get("taskArn") or task_arns[0]
-                        return task_arn, detail.get("value"), len(task_arns)
+            private_ip = _task_private_ip(task)
+            if private_ip:
+                task_arn = task.get("taskArn") or task_arns[0]
+                return task_arn, private_ip, len(task_arns)
         return None, None, len(task_arns)
 
     async def write_user_configs(
@@ -4113,7 +4223,7 @@ class EcsManager:
           the legacy ``main`` agent so provision still succeeds.
         - `devices/.node-device-key.pem` — the node role's private key, read
           by the in-container agent for loopback authentication
-        - `devices/paired.json` — the combined trust store (node + operator)
+        - `devices/paired.json` — the merged trust store (node + operators)
 
         Also ensures the operator Ed25519 private key is present in the
         container's DynamoDB row (KMS-encrypted).
@@ -4179,6 +4289,8 @@ class EcsManager:
         # unreachable; the next reprovision self-heals.
         paperclip_agent_keys: dict[str, str] = {}
         paperclip_company_id: str | None = None
+        starter_agent_ids: dict[str, str] = {}
+        legacy_seeded_agent_ids: list[str] = []
         try:
             repo = PaperclipRepo(table_name="paperclip-companies")
             admin_client = PaperclipAdminClient(http_client=http)
@@ -4187,6 +4299,10 @@ class EcsManager:
                 repo=repo,
                 admin_client=admin_client,
             )
+            owner_row = await repo.resolve_owner_row(owner_id)
+            if owner_row is not None:
+                starter_agent_ids = dict(owner_row.starter_agent_ids or {})
+                legacy_seeded_agent_ids = list(owner_row.seeded_agent_ids or [])
             # Mint (or read) a per-agent Paperclip API key for EACH agent so
             # actions in Paperclip's audit log attribute to the acting agent,
             # not to Friday or the global admin service account. Self-healing:
@@ -4292,28 +4408,42 @@ class EcsManager:
             deployed_tag=deployed_tag,
         )
 
-        # Seed Friday's IDENTITY/SOUL/USER/BOOTSTRAP files on EFS so they're
-        # present before the container boots. Best-effort — failure here
-        # MUST NOT block provision; Friday boots with upstream defaults if
-        # this fails.
+        # Seed the workspace role contract selected by authoritative row state.
+        # New starter rows are UUID-keyed; legacy rows retain Friday/Atlas.
+        from core.services.starter_roster import pre_stage_starter_roster
         from core.services.friday_identity import (
             pre_stage_friday_identity,
             pre_stage_paperclip_identities,
         )
 
-        try:
-            await pre_stage_friday_identity(
-                owner_id=owner_id,
-                paperclip_agents=paperclip_agents,
-                workspace=get_workspace(),
-            )
-        except Exception as exc:  # noqa: BLE001 — best-effort.
-            put_metric("friday_identity.seed.error")
-            logger.warning(
-                "write_user_configs: pre_stage_friday_identity failed for owner=%s: %s",
-                owner_id,
-                exc,
-            )
+        if starter_agent_ids:
+            try:
+                await pre_stage_starter_roster(
+                    owner_id=owner_id,
+                    paperclip_agents=paperclip_agents,
+                    starter_agent_ids=starter_agent_ids,
+                    workspace=get_workspace(),
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort.
+                logger.warning(
+                    "write_user_configs: pre_stage_starter_roster failed for owner=%s: %s",
+                    owner_id,
+                    exc,
+                )
+        elif legacy_seeded_agent_ids:
+            try:
+                await pre_stage_friday_identity(
+                    owner_id=owner_id,
+                    paperclip_agents=paperclip_agents,
+                    workspace=get_workspace(),
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort.
+                put_metric("friday_identity.seed.error")
+                logger.warning(
+                    "write_user_configs: pre_stage_friday_identity failed for owner=%s: %s",
+                    owner_id,
+                    exc,
+                )
 
         # Stage each agent's per-agent Paperclip identity file
         # (paperclip-claimed-api-key.json) into its own workspace so it can
@@ -4342,22 +4472,23 @@ class EcsManager:
         # provision; Atlas boots with an empty workspace if this fails.
         from core.services.atlas_seed import pre_stage_atlas
 
-        try:
-            await pre_stage_atlas(
-                owner_id=owner_id,
-                paperclip_agents=paperclip_agents,
-                workspace=get_workspace(),
-            )
-        except Exception as exc:  # noqa: BLE001 — best-effort.
-            # Distinct from the seeder's per-file `atlas_seed.error`: this fires
-            # only on a catastrophic failure (e.g. import error) where the seeder
-            # never ran, vs a single bad file the seeder logged and skipped.
-            put_metric("atlas_seed.invoke_error")
-            logger.warning(
-                "write_user_configs: pre_stage_atlas failed for owner=%s: %s",
-                owner_id,
-                exc,
-            )
+        if legacy_seeded_agent_ids:
+            try:
+                await pre_stage_atlas(
+                    owner_id=owner_id,
+                    paperclip_agents=paperclip_agents,
+                    workspace=get_workspace(),
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort.
+                # Distinct from the seeder's per-file `atlas_seed.error`: this fires
+                # only on a catastrophic failure (e.g. import error) where the seeder
+                # never ran, vs a single bad file the seeder logged and skipped.
+                put_metric("atlas_seed.invoke_error")
+                logger.warning(
+                    "write_user_configs: pre_stage_atlas failed for owner=%s: %s",
+                    owner_id,
+                    exc,
+                )
 
         # Stage the container-global credentials/oauth.json after the config
         # write, so it's present for any reprovision / config-rewrite path that
@@ -4417,8 +4548,8 @@ class EcsManager:
         What this writes:
 
         - `devices/.node-device-key.pem` (if not already on EFS)
-        - `devices/paired.json` (always overwritten with the latest node +
-          operator entries)
+        - `devices/paired.json` (locked merge of the latest node + managed
+          operator entries, preserving desktop and other unrelated devices)
         - DynamoDB `containers` row `operator_device_id` + `operator_priv_key_enc`
           (latter is KMS-encrypted with encryption-context bound to owner_id)
 
@@ -4501,7 +4632,7 @@ class EcsManager:
         # Pre-pair each Paperclip agent's device so its relayed operator connect
         # clears the remote-pairing wall, and bind each agent's adapterConfig
         # authToken to this container's gateway_token. Best-effort and enumerated
-        # at provision so a reprovision (which overwrites paired.json) re-includes
+        # at provision so a reprovision's locked merge re-includes
         # them. Paperclip unavailability must never block container provision.
         paperclip_entries: list[dict] = []
         try:
@@ -4530,10 +4661,51 @@ class EcsManager:
                 exc,
             )
 
-        paired_json = build_device_paired_json(
+        from core.services.desktop_pair import EfsWorkspaceAdapter
+
+        device_ids = [
             node_identity["device_id"],
-            node_identity["public_key_b64"],
-            operator_entry=operator_entry,
-            extra_operator_entries=paperclip_entries,
+            operator_entry["deviceId"],
+            *(entry["deviceId"] for entry in paperclip_entries),
+        ]
+        if len(device_ids) != len(set(device_ids)):
+            raise RuntimeError("managed device trust identities collide")
+
+        desired_entries = [
+            _build_node_paired_entry(node_identity["device_id"], node_identity["public_key_b64"]),
+            operator_entry,
+            *paperclip_entries,
+        ]
+        old_operator_id = (existing_container or {}).get("operator_device_id")
+
+        def _merge_managed_devices(paired: dict) -> bool:
+            changed = False
+            if old_operator_id and old_operator_id != operator_entry["deviceId"]:
+                old_operator = paired.get(old_operator_id)
+                if isinstance(old_operator, dict) and old_operator.get("displayName") == "lightbulb-backend":
+                    paired.pop(old_operator_id)
+                    changed = True
+            for entry in desired_entries:
+                device_id = entry["deviceId"]
+                current = paired.get(device_id)
+                if current is not None and (
+                    not isinstance(current, dict) or current.get("publicKey") != entry["publicKey"]
+                ):
+                    raise RuntimeError("managed device trust identities collide")
+                wanted = {**current, **entry} if isinstance(current, dict) else entry
+                if isinstance(current, dict) and entry.get("role") == "node":
+                    # A stable node key keeps its gateway-issued role token.
+                    wanted["tokens"] = current.get("tokens", entry.get("tokens"))
+                    wanted["createdAtMs"] = current.get("createdAtMs", entry.get("createdAtMs"))
+                if current != wanted:
+                    paired[device_id] = wanted
+                    changed = True
+            return changed
+
+        adapter = EfsWorkspaceAdapter(
+            owner_id=user_id,
+            workspace=workspace,
+            container_repo=container_repo,
+            gateway_ws_url=settings.WS_GATEWAY_URL,
         )
-        workspace.write_file(user_id, "devices/paired.json", paired_json)
+        await adapter.mutate_paired_json(_merge_managed_devices)

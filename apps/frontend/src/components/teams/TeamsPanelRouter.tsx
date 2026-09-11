@@ -2,6 +2,16 @@
 
 import dynamic from "next/dynamic";
 import { PageSkeleton } from "@/components/teams/shared/components/PageSkeleton";
+import {
+  AGENTS_VIEWS,
+  INBOX_SECTIONS,
+  MONEY_SECTIONS,
+  TASKS_GROUP_BY,
+  type InboxSectionId,
+} from "@/components/workspace/panelRegistry";
+import type { AgentsViewMode } from "./agents/agentsViewMode";
+import type { MoneySectionId } from "./panels/MoneyPanel";
+import type { TasksGroupBy } from "./issues/TasksList";
 
 // Shown while a panel's code-split chunk loads. Without a loading fallback,
 // next/dynamic renders nothing and a first visit flashes a blank pane before
@@ -20,22 +30,22 @@ function PanelSkeleton() {
 const PANEL_LOADERS: Record<string, () => Promise<React.ComponentType>> = {
   dashboard: () => import("./panels/DashboardPanel").then((m) => m.DashboardPanel),
   agents: () => import("./panels/AgentsListPanel").then((m) => m.AgentsListPanel),
-  "org-chart": () => import("./panels/OrgChartPanel").then((m) => m.OrgChartPanel),
   inbox: () => import("./panels/InboxPanel").then((m) => m.InboxPanel),
   issues: () => import("./panels/IssuesPanel").then((m) => m.IssuesPanel),
   routines: () => import("./panels/RoutinesPanel").then((m) => m.RoutinesPanel),
+  // UNREACHABLE while `teams-goals` / `teams-projects` alias to `teams-issues`
+  // (panelRegistry.RETIRED_PANEL_ALIASES) — the alias resolves before this map
+  // is consulted, so nothing routes here. Kept because these panels are still
+  // the only place a goal or project is CREATED, edited or deleted; lifting
+  // the alias is what makes them reachable again. Do not treat as live.
   goals: () => import("./panels/GoalsPanel").then((m) => m.GoalsPanel),
   projects: () => import("./panels/ProjectsListPanel").then((m) => m.ProjectsListPanel),
-  activity: () => import("./panels/ActivityPanel").then((m) => m.ActivityPanel),
   artifacts: () => import("./panels/ArtifactsPanel").then((m) => m.ArtifactsPanel),
   brain: () => import("./panels/BrainPanel").then((m) => m.BrainPanel),
   accounts: () => import("./panels/AccountsPanel").then((m) => m.AccountsPanel),
   search: () => import("./panels/SearchPanel").then((m) => m.SearchPanel),
   settings: () => import("./panels/SettingsPanel").then((m) => m.SettingsPanel),
-  spend: () => import("./panels/SpendPanel").then((m) => m.SpendPanel),
-  payments: () => import("./panels/PaymentsPanel").then((m) => m.PaymentsPanel),
-  products: () => import("./panels/ProductsPanel").then((m) => m.ProductsPanel),
-  customers: () => import("./panels/CustomersPanel").then((m) => m.CustomersPanel),
+  money: () => import("./panels/MoneyPanel").then((m) => m.MoneyPanel),
   publish: () => import("./panels/PublishPanel").then((m) => m.PublishPanel),
   seo: () => import("./panels/SeoPanel").then((m) => m.SeoPanel),
   ads: () => import("./panels/AdsPanel").then((m) => m.AdsPanel),
@@ -85,6 +95,43 @@ const BrainPanel = dynamic(
   () => import("./panels/BrainPanel").then((m) => m.BrainPanel),
   { loading: PanelSkeleton },
 );
+// Agents absorbed the org chart as its second view — `teams-org-chart` aliases
+// to `teams-agents` in the registry (one panel id, one dock tab) and arrives
+// here as `view`.
+const AgentsListPanel = dynamic(
+  () => import("./panels/AgentsListPanel").then((m) => m.AgentsListPanel),
+  { loading: PanelSkeleton },
+);
+
+// Money absorbed the four old Payments/Products/Customers/Spend tabs as
+// sections of one ledger page. Those keys alias to `money` in the registry
+// (one panel id, one dock tab) and arrive here as `section` — an owner's saved
+// link still lands on the part of the page they bookmarked.
+const MoneyPanel = dynamic(() => import("./panels/MoneyPanel").then((m) => m.MoneyPanel), { loading: PanelSkeleton });
+
+// The fence for a hand-typed ?section=: MoneyPanel feeds this into a
+// `#money-${section}` selector, and an arbitrary string there throws.
+function asMoneySection(value: string | undefined): MoneySectionId | null {
+  return value && MONEY_SECTIONS.has(value) ? (value as MoneySectionId) : null;
+}
+
+// Same fence for Inbox: InboxPage feeds this into a `#inbox-${section}`
+// selector, so an arbitrary string there must never reach it.
+function asInboxSection(value: string | undefined): InboxSectionId | undefined {
+  return value && INBOX_SECTIONS.has(value) ? (value as InboxSectionId) : undefined;
+}
+
+// And for Agents: an unknown ?view falls back to the panel's own stored
+// preference rather than reaching it as a bogus view.
+function asAgentsView(value: string | undefined): AgentsViewMode | null {
+  return value && AGENTS_VIEWS.has(value) ? (value as AgentsViewMode) : null;
+}
+
+// And for Tasks: an unknown ?groupBy falls back to the page's own default
+// (no grouping) rather than reaching TasksList as a bogus dimension.
+function asTasksGroupBy(value: string | undefined): TasksGroupBy | undefined {
+  return value && TASKS_GROUP_BY.has(value) ? (value as TasksGroupBy) : undefined;
+}
 
 // Warm every panel chunk (called from the shell during browser idle time) so
 // the first open of a panel mounts from the module cache instead of fetching
@@ -99,12 +146,6 @@ export function preloadTeamsPanels(): void {
   }
 }
 
-function normalizeNewIssue(
-  value: string | undefined,
-): "1" | "onboarding" | null {
-  return value === "1" || value === "onboarding" ? value : null;
-}
-
 export interface TeamsPanelRouterProps {
   panel: string;
   detailId?: string | null;
@@ -114,7 +155,7 @@ export interface TeamsPanelRouterProps {
   // reaching here — this router no longer rewrites the URL for aliases.
   panelParams?: Record<string, string>;
   onConsumeOneShot?: (key: "new" | "newIssue") => void;
-  onUpdateDurableParam?: (key: "agent" | "path", value: string | null) => void;
+  onUpdateDurableParam?: (key: "agent" | "path" | "day", value: string | null) => void;
 }
 
 export function TeamsPanelRouter({
@@ -145,33 +186,50 @@ export function TeamsPanelRouter({
     return (
       <IssuesPanel
         agentFilter={panelParams?.agent ?? null}
-        newTask={panelParams?.new === "task"}
-        onNewTaskConsumed={() => onConsumeOneShot?.("new")}
+        initialGroupBy={asTasksGroupBy(panelParams?.groupBy)}
+        // Two channels, one dialog: `?new=task` from the sidebar pill, and
+        // `?newIssue=` from Get Started, which Inbox used to own.
+        newTask={panelParams?.new === "task" || Boolean(panelParams?.newIssue)}
+        newTaskPrefill={panelParams?.newIssue === "onboarding" ? "onboarding" : null}
+        onNewTaskConsumed={() => {
+          onConsumeOneShot?.("new");
+          onConsumeOneShot?.("newIssue");
+        }}
         onAgentFilterCleared={() => onUpdateDurableParam?.("agent", null)}
       />
     );
   }
+  if (panel === "agents") {
+    return <AgentsListPanel initialView={asAgentsView(panelParams?.view)} />;
+  }
   if (panel === "inbox") {
-    return (
-      <InboxPanel
-        newIssue={normalizeNewIssue(panelParams?.newIssue)}
-        onNewIssueConsumed={() => onConsumeOneShot?.("newIssue")}
-        initialTab={panelParams?.tab ?? null}
-      />
-    );
+    return <InboxPanel section={asInboxSection(panelParams?.section)} />;
   }
 
   if (panel === "brain") {
     return (
       <BrainPanel
         initialPath={panelParams?.path ?? null}
-        initialTab={panelParams?.tab === "dreams" ? "dreams" : null}
         onPathUnavailable={() => onUpdateDurableParam?.("path", null)}
       />
     );
   }
 
-  const Cmp = PANELS[panel];
+  if (panel === "money") {
+    return (
+      <MoneyPanel
+        section={asMoneySection(panelParams?.section)}
+        day={panelParams?.day ?? null}
+        onDayCleared={() => onUpdateDurableParam?.("day", null)}
+      />
+    );
+  }
+
+  // Own-property only (Object.hasOwn) — `in` and bracket access both walk the
+  // prototype chain, so a `panel` of "constructor"/"valueOf" would resolve to
+  // an inherited Object.prototype value instead of rejecting to "Unknown
+  // panel". Same hazard panelRegistry.ts guards against for its own key-maps.
+  const Cmp = Object.hasOwn(PANELS, panel) ? PANELS[panel] : undefined;
   if (!Cmp) return <div className="p-8">Unknown panel: {panel}</div>;
   return <Cmp />;
 }

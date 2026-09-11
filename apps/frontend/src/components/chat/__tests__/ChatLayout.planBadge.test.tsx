@@ -51,17 +51,17 @@ vi.mock("@/lib/analytics", () => ({
   capture: vi.fn(),
 }));
 
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({
+vi.mock("@/hooks/useLiveEvents", () => ({
+  useLiveEvents: () => ({
     nodeConnected: false,
     onEvent: () => () => {},
     onChatMessage: () => () => {},
     sendReq: () => Promise.resolve(),
   }),
 }));
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpc: () => ({ data: { config: {} } }),
-  useGatewayRpcMutation: () => vi.fn(),
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpc: () => ({ data: { config: {} } }),
+  useRuntimeRpcMutation: () => vi.fn(),
 }));
 
 vi.mock("@/hooks/useAgents", () => ({

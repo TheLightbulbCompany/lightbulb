@@ -40,6 +40,7 @@ _TEST_AIP_ARNS = {
 # test that needs the real lease primitives can put them back.
 _REAL_LEASED = _container_repo_module.update_container_leased
 _REAL_TAKEOVER = _container_repo_module.takeover_provision
+_REAL_RELEASE = _container_repo_module.release_provision_to_error
 _REAL_GET_BY_OWNER = _container_repo_module.get_by_owner_id
 _REAL_PERSIST_HASH = _bedrock_gate_tokens_module.persist_gate_token_hash
 
@@ -257,6 +258,96 @@ def manager(mock_settings, mock_ecs_client, mock_efs_client, mock_servicediscove
         mock_boto3.client.side_effect = client_factory
         mgr = EcsManager()
     return mgr
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("starter_agent_ids", "seeded_agent_ids", "uses_starter_seeder"),
+    [
+        ({"ceo": "agent-ceo", "finance": "agent-finance"}, None, True),
+        (None, ["legacy-friday", "legacy-atlas"], False),
+    ],
+    ids=["starter-row", "legacy-row"],
+)
+async def test_write_user_configs_routes_role_seeding_from_authoritative_row(
+    manager,
+    mock_settings,
+    monkeypatch,
+    tmp_path,
+    starter_agent_ids,
+    seeded_agent_ids,
+    uses_starter_seeder,
+):
+    """Starter rows get role contracts; legacy rows retain Friday and Atlas."""
+    mock_settings.EFS_MOUNT_PATH = str(tmp_path)
+    mock_settings.PAPERCLIP_INTERNAL_URL = "http://paperclip.test"
+    agents = [{"id": "agent-ceo", "name": "Renamed"}, {"id": "agent-finance", "name": "Also renamed"}]
+    row = MagicMock(starter_agent_ids=starter_agent_ids, seeded_agent_ids=seeded_agent_ids)
+    repo = MagicMock(resolve_owner_row=AsyncMock(return_value=row))
+    repo_factory = MagicMock(return_value=repo)
+
+    async def fetch_agents(*, owner_id, repo: object, admin_client):
+        assert owner_id == "owner-1"
+        assert repo is repo_instance
+        return agents
+
+    repo_instance = repo
+    http = MagicMock(aclose=AsyncMock())
+    workspace = MagicMock()
+    starter_seeder = AsyncMock()
+    friday_seeder = AsyncMock()
+    atlas_seeder = AsyncMock()
+    identity_seeder = AsyncMock()
+
+    monkeypatch.setattr("httpx.AsyncClient", MagicMock(return_value=http))
+    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo", repo_factory)
+    monkeypatch.setattr(
+        "core.services.paperclip_openclaw_pairing.fetch_paperclip_agents_for_owner",
+        AsyncMock(side_effect=fetch_agents),
+    )
+    monkeypatch.setattr("core.containers.ecs_manager.write_openclaw_config", AsyncMock())
+    monkeypatch.setattr("core.containers.ecs_manager._provision_mcp_servers", AsyncMock(return_value={}))
+    monkeypatch.setattr("core.containers.ecs_manager._provision_channel_accounts", AsyncMock(return_value=({}, [])))
+    monkeypatch.setattr("core.containers.ecs_manager.get_workspace", MagicMock(return_value=workspace))
+    monkeypatch.setattr(
+        "core.services.credentials.mcp_server.build_connected_integration_servers", AsyncMock(return_value={})
+    )
+    monkeypatch.setattr("core.services.provisioning_landing.build_provisioned_env", AsyncMock(return_value={}))
+    monkeypatch.setattr("core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        "core.services.paperclip_openclaw_pairing.resolve_company_id_for_owner", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr("core.services.starter_roster.pre_stage_starter_roster", starter_seeder)
+    monkeypatch.setattr("core.services.friday_identity.pre_stage_friday_identity", friday_seeder)
+    monkeypatch.setattr("core.services.friday_identity.pre_stage_paperclip_identities", identity_seeder)
+    monkeypatch.setattr("core.services.atlas_seed.pre_stage_atlas", atlas_seeder)
+    monkeypatch.setattr("core.services.owner_facts.write_owner_facts", AsyncMock())
+    monkeypatch.setattr(manager, "_deployed_image_tag", AsyncMock(return_value=""))
+    monkeypatch.setattr(manager, "ensure_device_identities", AsyncMock())
+
+    await manager.write_user_configs(
+        "owner-1",
+        "t" * 32,
+        provider_choice="bedrock_claude",
+        aip_arns=_TEST_AIP_ARNS,
+    )
+
+    repo_factory.assert_called_once_with(table_name="paperclip-companies")
+    repo.resolve_owner_row.assert_awaited_once_with("owner-1")
+    identity_seeder.assert_awaited_once()
+    if uses_starter_seeder:
+        starter_seeder.assert_awaited_once_with(
+            owner_id="owner-1",
+            paperclip_agents=agents,
+            starter_agent_ids=starter_agent_ids,
+            workspace=workspace,
+        )
+        friday_seeder.assert_not_awaited()
+        atlas_seeder.assert_not_awaited()
+    else:
+        starter_seeder.assert_not_awaited()
+        friday_seeder.assert_awaited_once()
+        atlas_seeder.assert_awaited_once()
 
 
 def _make_container_dict(
@@ -777,6 +868,39 @@ class TestCreateUserService:
 
 class TestStopUserService:
     """Test scaling service to 0."""
+
+    @pytest.mark.asyncio
+    async def test_stop_holds_shared_owner_lifecycle_guard(
+        self,
+        manager,
+        mock_ecs_client,
+        monkeypatch,
+    ):
+        """Removing the ECS lifecycle decorator would let this stop race EFS credential work."""
+        from contextlib import asynccontextmanager
+
+        held = False
+
+        @asynccontextmanager
+        async def lifecycle_guard(_owner_id):
+            nonlocal held
+            held = True
+            try:
+                yield
+            finally:
+                held = False
+
+        monkeypatch.setattr("core.services.owner_lifecycle.owner_lifecycle_guard", lifecycle_guard)
+        mock_ecs_client.update_service.side_effect = lambda **_kwargs: held or pytest.fail("ECS ran outside guard")
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="running"))
+            mock_repo.update_status = AsyncMock(
+                side_effect=lambda *_args: held or pytest.fail("status ran outside guard")
+            )
+            mock_repo.stamp_stop_reason = AsyncMock()
+            await manager.stop_user_service("user_test_123")
+
+        assert held is False
 
     @pytest.mark.asyncio
     async def test_stop_scales_to_zero(self, manager, mock_ecs_client):
@@ -4690,22 +4814,21 @@ class TestProvisionLeaseFencing:
     # separated from it by the plan lookup, the task-def register and the ECS
     # update_service call.
 
-    async def _seed_restart_row(self, container_repo, owner):
+    async def _seed_restart_row(self, container_repo, owner, *, access_point_id="fsap-existing"):
         """Claim the row and give it the shape the restart branch needs: an
         ACTIVE service at desiredCount 0, with an access point already on
         record so the branch re-registers rather than falling back to
         start_user_service."""
         claim = await container_repo.try_claim_provision(owner, claim_id="claim-loser")
-        await container_repo.update_fields(
-            owner,
-            {
-                "service_name": f"openclaw-{owner}",
-                "gateway_token": "gw-existing",
-                "hook_token": "hook-existing",
-                "access_point_id": "fsap-existing",
-                "task_definition_arn": "arn:old",
-            },
-        )
+        fields = {
+            "service_name": f"openclaw-{owner}",
+            "gateway_token": "gw-existing",
+            "hook_token": "hook-existing",
+            "task_definition_arn": "arn:old",
+        }
+        if access_point_id is not None:
+            fields["access_point_id"] = access_point_id
+        await container_repo.update_fields(owner, fields)
         return claim
 
     def _stub_restart_branch(self, manager, monkeypatch, *, register):
@@ -4722,7 +4845,102 @@ class TestProvisionLeaseFencing:
         monkeypatch.setattr("core.billing.bedrock_gate_tokens.hash_token", MagicMock(return_value="gate-hash"))
         monkeypatch.setattr("core.billing.bedrock_gate_tokens.persist_gate_token_hash", AsyncMock())
         monkeypatch.setattr("core.billing.bedrock_gate_url.gate_url", MagicMock(return_value="https://gate"))
+        monkeypatch.setattr("core.repositories.slack_installs_repo.list_for_owner", AsyncMock(return_value=[]))
         manager._ecs.update_service = MagicMock()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("access_point_id", ["fsap-existing", None], ids=["access-point", "no-access-point"])
+    @pytest.mark.parametrize(
+        ("config_error", "retryable"),
+        [(ValueError("invalid config shape"), False), (OSError("EFS unavailable"), True)],
+        ids=["deterministic", "transient"],
+    )
+    async def test_restart_config_failure_stops_before_activation(
+        self, manager, monkeypatch, access_point_id, config_error, retryable
+    ):
+        with _real_containers_table(monkeypatch) as container_repo:
+            owner = f"user_restart_config_{type(config_error).__name__}_{access_point_id is None}"
+            claim = await self._seed_restart_row(container_repo, owner, access_point_id=access_point_id)
+            register = MagicMock(return_value="arn:new")
+            self._stub_restart_branch(manager, monkeypatch, register=register)
+            config_write = AsyncMock(side_effect=config_error)
+            monkeypatch.setattr(manager, "write_user_configs", config_write)
+            start = AsyncMock()
+            monkeypatch.setattr(manager, "start_user_service", start)
+            poller = AsyncMock()
+            monkeypatch.setattr(manager, "_await_running_transition", poller)
+            monkeypatch.setattr("core.repositories.container_repo.release_provision_to_error", _REAL_RELEASE)
+            metric = MagicMock()
+            monkeypatch.setattr("core.containers.ecs_manager.put_metric", metric)
+
+            with pytest.raises(type(config_error)) as raised:
+                await manager.provision_user_container(
+                    owner,
+                    provider_choice="bedrock_claude",
+                    claim_id=claim,
+                )
+
+            assert raised.value is config_error
+            config_write.assert_awaited_once()
+            register.assert_not_called()
+            manager._ecs.update_service.assert_not_called()
+            start.assert_not_awaited()
+            manager._deregister_task_definition.assert_not_called()
+            poller.assert_not_called()
+            assert metric.call_args_list == [
+                call("container.provision", dimensions={"status": "error"}),
+                call("container.error_state"),
+            ]
+            row = await container_repo.get_by_owner_id(owner)
+            assert row["task_definition_arn"] == "arn:old"
+            assert row["status"] == "error"
+            assert row["substatus"] == "provision_failed"
+            assert row["retryable"] is retryable
+            assert row["last_error"] == f"{type(config_error).__name__}: {config_error}"
+
+    @pytest.mark.asyncio
+    async def test_restart_config_supersession_stops_without_error_release(self, manager, monkeypatch):
+        from core.repositories.container_repo import ProvisionSuperseded
+
+        with _real_containers_table(monkeypatch) as container_repo:
+            owner = "user_restart_config_superseded"
+            claim = await self._seed_restart_row(container_repo, owner)
+            register = MagicMock(return_value="arn:loser")
+            self._stub_restart_branch(manager, monkeypatch, register=register)
+            state: dict = {}
+
+            async def config_then_takeover(*args, **kwargs):
+                state["winner"] = await container_repo.takeover_provision(owner)
+                raise ProvisionSuperseded("lease moved during config write")
+
+            config_write = AsyncMock(side_effect=config_then_takeover)
+            monkeypatch.setattr(manager, "write_user_configs", config_write)
+            start = AsyncMock()
+            monkeypatch.setattr(manager, "start_user_service", start)
+            poller = AsyncMock()
+            monkeypatch.setattr(manager, "_await_running_transition", poller)
+            metric = MagicMock()
+            monkeypatch.setattr("core.containers.ecs_manager.put_metric", metric)
+
+            with pytest.raises(ProvisionSuperseded):
+                await manager.provision_user_container(
+                    owner,
+                    provider_choice="bedrock_claude",
+                    claim_id=claim,
+                )
+
+            config_write.assert_awaited_once()
+            register.assert_not_called()
+            manager._ecs.update_service.assert_not_called()
+            start.assert_not_awaited()
+            manager._deregister_task_definition.assert_not_called()
+            poller.assert_not_called()
+            row = await container_repo.get_by_owner_id(owner)
+            assert row["task_definition_arn"] == "arn:old"
+            assert row["status"] == "provisioning"
+            assert row["provision_claim_id"] == state["winner"] != claim
+            container_repo.release_provision_to_error.assert_not_awaited()
+            metric.assert_called_once_with("container.provision", dimensions={"status": "superseded"})
 
     @pytest.mark.asyncio
     async def test_takeover_while_re_registering_cannot_stamp_the_task_def_arn(self, manager, monkeypatch):
@@ -5030,87 +5248,6 @@ class TestProvisionFailureClassification:
         assert store.row.get("retryable") is True, "retryable must land on the row (release owns the transition)"
         assert store.row.get("last_error"), "last_error cause must land on the row"
         assert "Failed to create ECS service" in store.row["last_error"]
-
-
-class TestKickoffOnReadyTransition:
-    """Friday's first run must fire when the GATEWAY becomes reachable, with no
-    browser poll involved.
-
-    Before this, ``maybe_dispatch_bootstrap`` was reachable only from
-    ``container_status`` and ``submit_brief`` -- both driven by the owner's open
-    tab. An owner who signed up, watched "Provisioning your container...", and
-    closed the tab was never greeted. And because the first-contact EMAIL is
-    Friday's own tool call DURING that run, the message that would have brought
-    them back never sent either: no poll -> no kickoff -> no run -> no email ->
-    no return -> no poll. Two prod owners sat in that loop, one for twenty days.
-    """
-
-    @pytest.mark.asyncio
-    async def test_ready_transition_dispatches_the_kickoff(self, manager):
-        """The gateway-healthy write is the trigger -- no poll, no tab."""
-        dispatched = []
-
-        async def _fake_dispatch(owner_id, **kw):
-            dispatched.append(owner_id)
-
-        with (
-            patch.object(manager, "_poll_running_task", new_callable=AsyncMock) as poll,
-            patch.object(manager, "is_healthy", return_value=True),
-            patch.object(manager, "_ecs") as ecs,
-            patch("core.repositories.container_repo.get_by_owner_id", new_callable=AsyncMock) as get_row,
-            patch("core.repositories.container_repo.update_fields", new_callable=AsyncMock),
-            patch(
-                "core.services.bootstrap_dispatcher.maybe_dispatch_bootstrap",
-                side_effect=_fake_dispatch,
-            ),
-        ):
-            poll.return_value = ("arn:aws:ecs:us-east-1:0:task/abc", "10.0.1.5", 1)
-            get_row.return_value = {
-                "owner_id": "user_x",
-                "status": "provisioning",
-                "service_name": "openclaw-user_x-abc",
-                "substatus": "task_running",
-            }
-            ecs.describe_services.return_value = {"services": [{"deployments": [{"id": "d1", "status": "PRIMARY"}]}]}
-            await manager._await_running_transition("user_x")
-
-        assert dispatched == ["user_x"], (
-            "the kickoff must dispatch on the ready transition; without it an owner "
-            "who closes the tab is never greeted and never emailed"
-        )
-
-    @pytest.mark.asyncio
-    async def test_a_failing_kickoff_never_unwinds_a_healthy_container(self, manager):
-        """This is the TERMINAL write of a provision. A kickoff that raises must
-        not take down a container that is genuinely up -- the owner keeps a
-        working box and the first run retries on their next poll."""
-        with (
-            patch.object(manager, "_poll_running_task", new_callable=AsyncMock) as poll,
-            patch.object(manager, "is_healthy", return_value=True),
-            patch.object(manager, "_ecs") as ecs,
-            patch("core.repositories.container_repo.get_by_owner_id", new_callable=AsyncMock) as get_row,
-            patch("core.repositories.container_repo.update_fields", new_callable=AsyncMock) as upd,
-            patch(
-                "core.services.bootstrap_dispatcher.maybe_dispatch_bootstrap",
-                side_effect=RuntimeError("gateway refused the chat.send"),
-            ),
-        ):
-            poll.return_value = ("arn:aws:ecs:us-east-1:0:task/abc", "10.0.1.5", 1)
-            get_row.return_value = {
-                "owner_id": "user_y",
-                "status": "provisioning",
-                "service_name": "openclaw-user_y-abc",
-                "substatus": "task_running",
-            }
-            ecs.describe_services.return_value = {"services": [{"deployments": [{"id": "d1", "status": "PRIMARY"}]}]}
-            # Must NOT raise.
-            await manager._await_running_transition("user_y")
-
-        # The running write still landed -- the container is up regardless.
-        assert upd.await_count >= 1
-        assert any((c.args[1] if len(c.args) > 1 else {}).get("status") == "running" for c in upd.await_args_list), (
-            "the gateway-healthy write must survive a failing kickoff"
-        )
 
 
 class TestStaleLogConfigRefresh:

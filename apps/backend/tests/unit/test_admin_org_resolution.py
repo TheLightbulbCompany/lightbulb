@@ -995,14 +995,19 @@ async def test_get_agent_detail_uses_camelcase_params():
     assert captured["skills.status"] == {"agentId": "agt_1"}
     # config.get: no params (matches AgentOverviewTab.tsx).
     assert captured["config.get"] == {}
-    # sessions.list: include-* flags, and NO agent filter of any form (main
-    # app filters client-side — OpenClaw's schema would reject agentId here).
+    # sessions.list: include-* flags, and the camelCase agent filter. This
+    # assertion used to require the OPPOSITE — that no agent filter was sent,
+    # "because OpenClaw's schema would reject agentId here". It does not:
+    # `agentId` is a first-class list param and narrows the container's store
+    # load, not just the returned rows. (The "agentId requires sessionKeys"
+    # rule belongs to `sessions.search`.) Without it this call pulled every
+    # agent's store and forced a transcript projection per foreign row.
     sessions_params = captured["sessions.list"]
     assert sessions_params.get("includeGlobal") is True
     assert sessions_params.get("includeUnknown") is True
     assert sessions_params.get("includeDerivedTitles") is True
     assert sessions_params.get("includeLastMessage") is True
-    assert "agentId" not in sessions_params
+    assert sessions_params.get("agentId") == "agt_1"
     assert "agent_id" not in sessions_params
     assert "limit" not in sessions_params
 

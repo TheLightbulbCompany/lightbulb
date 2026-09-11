@@ -44,7 +44,9 @@ from __future__ import annotations
 import logging
 from typing import Any, Literal, Optional
 
+from core.billing.metronome_provisioning import is_ledger_eligible
 from core.repositories import billing_repo, container_repo
+from core.repositories.paperclip_repo import ONBOARDING_STATE_DEFAULTS
 from core.services import connection_service
 from core.services.provision_gate import is_subscription_active
 
@@ -118,49 +120,19 @@ async def resolve_onboarding_state(owner_id: str) -> dict:
     for a genuinely absent row.
 
     PUBLIC (not underscore-prefixed): callers that need the raw onboarding
-    dict for something OTHER than composing it into the StatusContract --
-    e.g. ``routers/container.py`` threading it into
-    ``core.services.bootstrap_dispatcher.maybe_dispatch_bootstrap`` so the
-    dispatcher doesn't re-query the paperclip-companies row a second time on
-    every ~3s ready poll -- call this directly, then pass the SAME dict into
-    ``compute_status(..., onboarding=...)`` below so IT doesn't re-fetch
-    either. This does NOT weaken INV-1: the composer is still the only
-    place readiness+onboarding facts are COMBINED into a verdict: this
-    function returns one store's raw facts, untouched, and
-    ``routers/container.py`` is deliberately not composing anything itself
-    with the result the way this same file's INV-1 architecture test
-    forbids -- it only re-threads it to the two functions that already
-    accept a pre-fetched onboarding dict/row (compute_status,
-    maybe_dispatch_bootstrap), and only reads via this readiness_state
-    accessor, never ``paperclip_repo`` directly.
+    dict for something OTHER than composing it into the StatusContract —
+    for example, ``routers/container.py`` checks its ``pending_brief`` bit
+    before scheduling a retry. Pass that same dict into
+    ``compute_status(..., onboarding=...)`` to avoid a second read. This does
+    not weaken INV-1: the composer is still the only place readiness and
+    onboarding facts are combined into a verdict; this function returns one
+    store's raw facts untouched.
     """
     try:
         return await _paperclip_repo().get_onboarding_state(owner_id)
     except Exception:  # noqa: BLE001 — a degraded read must never break /status
         logger.info("readiness_state: paperclip-companies read failed for owner %s", owner_id, exc_info=True)
-        return {
-            "onboarding_generation": None,
-            "funnel_state": "not_started",
-            "pending_brief": False,
-            "funnel_submitted_at": None,
-            "funnel_completed_at": None,
-            "onboarding_goal_id": None,
-            "onboarding_project_id": None,
-            "onboarding_brief_text": None,
-            "onboarding_submitted_by": None,
-            "bootstrap_state": "not_started",
-            "bootstrap_dispatch_id": None,
-            "bootstrap_dispatched_at": None,
-            "bootstrap_send_attempted_at": None,
-            "bootstrap_sent_at": None,
-            "bootstrap_delivered_at": None,
-            "bootstrap_attempts": 0,
-            "bootstrap_last_error": None,
-            "teams_state": None,
-            "company_id": None,
-            "paperclip_user_id": None,
-            "user_id": None,
-        }
+        return dict(ONBOARDING_STATE_DEFAULTS)
 
 
 async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboarding: Any = _NOT_GIVEN) -> dict[str, Any]:
@@ -178,9 +150,7 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
             wouldn't see yet. Omit it (the default) to have this function
             read the row itself.
         onboarding: an already-fetched ``resolve_onboarding_state(owner_id)``
-            dict. Pass this when the caller already read it (e.g.
-            ``routers/container.py`` threading it into
-            ``maybe_dispatch_bootstrap`` too) to skip a redundant
+            dict. Pass this when the caller already read it to skip a redundant
             paperclip-companies read. Omit it (the default) to have this
             function read it itself.
 
@@ -213,6 +183,12 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
     provider_choice = (account or {}).get("provider_choice")
     subscription_status = (account or {}).get("subscription_status")
     sub_active = is_subscription_active(account)
+    # Derived off the SAME already-fetched `account` — no extra read. Lets
+    # routers/container.py's running-container poll re-dispatch
+    # ensure_user_ready for a ledger-eligible owner whose Metronome
+    # provisioning never landed (e.g. a transient failure at signup), without
+    # this composer growing a second INV-1-violating cross-store read.
+    metronome_ledger_missing = is_ledger_eligible(account) and not (account or {}).get("metronome_customer_id")
 
     parked = False
     runtime_phase: RuntimePhase
@@ -225,7 +201,7 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
             # started signup" / "needs to re-subscribe" -- the picker.
             # Org: the free tier is personal-only (trial_local never
             # applies to an org_ owner), so an inactive/absent org billing
-            # row is the Teams per-seat paywall, folded into "blocked"
+            # row is the workspace billing paywall, folded into "blocked"
             # here -- the router's own evaluate_provision_gate call still
             # supplies the precise blocked-gate payload (team_billing_required
             # vs subscription_required vs payment_past_due); this composer
@@ -261,13 +237,11 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
     # A brief the user has submitted but that the server hasn't been able to
     # fulfil yet (Paperclip still provisioning -- the common case, since the
     # funnel deliberately renders DURING provisioning) is "submitted" as far as
-    # the CLIENT is concerned: they answered, so they must not be shown the
-    # funnel again. It is emphatically NOT submitted as far as the row is
-    # concerned -- no claim, no goal, no project -- which is why this mapping
-    # lives here, in the composer, and not in the raw onboarding dict that
-    # `bootstrap_dispatcher` reads to decide whether to wake Friday (see
-    # `PaperclipRepo._has_pending_brief`). INV-1: combining facts into a
-    # verdict is this function's job.
+    # the CLIENT is concerned: their first message is safely captured. It is
+    # emphatically NOT submitted as far as the row is concerned — no claim,
+    # no goal, no project — which is why this mapping lives here in the
+    # composer rather than in the raw onboarding dict. INV-1: combining facts
+    # into a verdict is this function's job.
     if funnel_state == "not_started" and onboarding.get("pending_brief"):
         funnel_state = "submitted"
     # RECONCILE-WITH-ONBOARD: container.py:554's legacy "onboarded" fact
@@ -304,14 +278,6 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
             "submitted_at": onboarding.get("funnel_submitted_at"),
             "completed_at": onboarding.get("funnel_completed_at"),
         },
-        "bootstrap": {
-            "state": onboarding.get("bootstrap_state") or "not_started",
-            "dispatch_id": onboarding.get("bootstrap_dispatch_id"),
-            "dispatched_at": onboarding.get("bootstrap_dispatched_at"),
-            "delivered_at": onboarding.get("bootstrap_delivered_at"),
-            "attempts": onboarding.get("bootstrap_attempts") or 0,
-            "last_error": onboarding.get("bootstrap_last_error"),
-        },
         "provider": {
             "choice": provider_choice,
             "byo_provider": (account or {}).get("byo_provider"),
@@ -319,4 +285,9 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
             "subscription_status": subscription_status,
         },
         "teams_state": onboarding.get("teams_state"),
+        # Internal-only -- NOT part of the wire StatusContract (see
+        # routers/container.py's `_status_response`, which whitelists fields
+        # and does not forward this one). Consumed solely by the
+        # running-container poll's ensure_user_ready re-dispatch check.
+        "metronome_ledger_missing": metronome_ledger_missing,
     }

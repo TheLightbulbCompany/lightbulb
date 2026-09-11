@@ -118,8 +118,8 @@ async def test_no_metronome_ledger_blocks():
     with "no ledger at all"; the second state handed owners unmetered
     Bedrock — Opus-tier for the CEO agent — on our account.
 
-    Not a dead end: the gate renders credits_required, ensure_user_ready
-    provisions BEFORE the gate, and create_credit_top_up_checkout re-ensures.
+    Not a dead end: the gate renders credits_required and the paid workspace
+    lifecycle provisions the Metronome customer before a top-up is allowed.
     """
     with _gate(row=None, metronome_customer_id=None) as m:
         assert await is_owner_blocked(OWNER) is True

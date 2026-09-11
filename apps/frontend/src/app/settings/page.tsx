@@ -11,7 +11,7 @@ import { planLabel } from "@/lib/planLabel";
 import { useAuth, useUser, UserButton, useOrganization, useClerk } from "@clerk/nextjs";
 import { useApi, ApiError } from "@/lib/api";
 import { useBilling } from "@/hooks/useBilling";
-import { ProviderPicker } from "@/components/chat/ProvisioningStepper";
+import { useCheckoutReturn } from "@/components/chat/shell/useCheckoutReturn";
 import { MyChannelsSection } from "@/components/settings/MyChannelsSection";
 import { WebhooksPanel } from "@/components/settings/WebhooksPanel";
 import { DesktopFileAccess } from "@/components/desktop/DesktopFileAccess";
@@ -26,6 +26,7 @@ import { IntegrationsPanel } from "@/components/control/panels/IntegrationsPanel
 import { SkillsTab } from "@/components/control/panels/SkillsTab";
 import { SkillProposalsPanel } from "@/components/control/panels/SkillProposalsPanel";
 import { ChannelsStatusPanel } from "@/components/control/panels/ChannelsStatusPanel";
+import { DreamsPanel } from "@/components/control/panels/DreamsPanel";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { SettingsNav } from "@/components/settings/SettingsNav";
 import {
@@ -56,6 +57,7 @@ type Panel =
   | "local-mcp"
   | "skills"
   | "skill-proposals"
+  | "dreams"
   | "channel-status"
   | "marketplace";
 
@@ -234,24 +236,18 @@ function ProfilePanel() {
 // Billing Panel
 // =============================================================================
 
-// Keep in lockstep with STRIPE_ULTRA_PRICE_ID's unit amount in Stripe. The
-// billing account response carries only `plan`, not the price, so the display
-// price is a labeled constant here rather than echoed from the server.
-const ULTRA_PRICE_USD = 150;
-
-// Ultra Pro control for a non-per-seat subscribed owner. When the owner is
-// already on ultra_pro it collapses to an "Ultra Pro" active badge; otherwise
-// it renders the upgrade button that calls useBilling().upgradeToUltra (which
+// Ultra control for a subscribed owner. When the owner is
+// already on ultra_pro it collapses to an "Ultra" active badge; otherwise
+// it renders the upgrade button that calls useBilling().startCheckout("ultra") (which
 // redirects to a fresh Checkout, or refreshes in place on the item-swap path).
-// Never rendered on the per-seat TeamBillingCard — Ultra-for-teams exists at
-// the billing layer, but the org upgrade CTA hasn't been built on the
-// frontend yet.
 function UltraUpgradeRow({
   plan,
-  upgradeToUltra,
+  ultraPriceUsd,
+  startCheckout,
 }: {
   plan: "standard" | "ultra_pro" | undefined;
-  upgradeToUltra: () => Promise<void>;
+  ultraPriceUsd?: number;
+  startCheckout: (plan: "workspace" | "ultra") => Promise<void>;
 }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -261,7 +257,7 @@ function UltraUpgradeRow({
     setError(null);
     setLoading(true);
     try {
-      await upgradeToUltra();
+      await startCheckout("ultra");
       // The fresh-checkout path redirects away and never returns here; the
       // in-place swap resolves and the refreshed account re-renders this row
       // as the Ultra badge — clear the spinner either way.
@@ -270,14 +266,14 @@ function UltraUpgradeRow({
       setError("Couldn't start the upgrade. Please try again.");
       setLoading(false);
     }
-  }, [upgradeToUltra]);
+  }, [startCheckout]);
 
   if (plan === "ultra_pro") {
     return (
       <div style={{ marginTop: 14 }}>
         <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600, color: "var(--midnight)", background: "color-mix(in srgb, var(--midnight) 8%, transparent)", padding: "3px 10px", borderRadius: 999 }}>
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-          Ultra Pro
+          Ultra
         </span>
         <div className="settings-card-desc" style={{ marginTop: 6 }}>
           Larger marketplace companies unlocked.
@@ -290,7 +286,7 @@ function UltraUpgradeRow({
     <div style={{ marginTop: 14 }}>
       <button type="button" className="settings-btn-save" onClick={handleUpgrade} disabled={loading}>
         {loading && <span className="settings-spinner" style={{ width: 14, height: 14, borderWidth: 2, marginRight: 6, display: "inline-block", verticalAlign: "middle" }} />}
-        Upgrade to Ultra Pro — ${ULTRA_PRICE_USD}/mo
+        {ultraPriceUsd === undefined ? "Upgrade to Ultra" : `Upgrade to Ultra — $${ultraPriceUsd}/mo`}
       </button>
       {error && (
         <div className="settings-alert settings-alert-error" style={{ marginTop: 8 }}>
@@ -302,14 +298,16 @@ function UltraUpgradeRow({
 }
 
 function BillingPanel() {
+  // Settings is a direct Checkout success target, so it owns the existing
+  // webhook-refresh/URL-cleanup seam as well as the chat shell does.
+  useCheckoutReturn();
   const {
     account,
     isLoading,
     error: accountError,
     isSubscribed,
     openPortal,
-    startTeamCheckout,
-    upgradeToUltra,
+    startCheckout,
   } = useBilling();
   const { membership } = useOrganization();
 
@@ -342,6 +340,11 @@ function BillingPanel() {
   }
 
   const subscriptionStatus = account?.subscription_status ?? null;
+  const workspacePriceUsd = account?.workspace_price_usd;
+  const workspacePlanTitle =
+    workspacePriceUsd === undefined ? "Lightbulb plan" : `Lightbulb — $${workspacePriceUsd} / month`;
+  const workspaceRecurringPrice =
+    workspacePriceUsd === undefined ? "your workspace rate" : `$${workspacePriceUsd}/mo`;
   // No-card free tier. is_subscribed is FALSE for these rows (paid
   // predicate) even though the platform is usable — the card below renders
   // the free-tier framing with a Subscribe CTA instead of Manage Payment
@@ -377,26 +380,10 @@ function BillingPanel() {
   // @/lib/planLabel so the mapping can't drift between surfaces.
   const statusChipLabel = planLabel(subscriptionStatus, { expired: isTrialExpired });
 
-  // Org context: Teams billing is per-seat, not the flat $50/mo personal
-  // plan, so org admins get TeamBillingCard instead of the personal card
-  // below — but ONLY when the org is either unsubscribed (the paywall case)
-  // or actually on a real per-seat Stripe subscription
-  // (account.is_seat_subscription). A subscribed org on a flat/comped/
-  // grandfathered sub (no subscription_item_id) has no per-seat Stripe item
-  // to price, so showing "N seats × $price" there is fabricated — it falls
-  // through to the normal subscribed billing view below instead.
-  //
-  // Org-level spend is admin-only, full stop — a non-admin member is routed
-  // to a standalone "Billing restricted" card before any of the
-  // subscription-shape branches below run, so it never sees spend figures
-  // or a Manage/Subscribe control regardless of seat-vs-flat shape.
-  // TeamBillingCard has its own internal member-vs-admin gate (used by the
-  // /chat blocked-screen caller), but we don't reuse it for the member case
-  // here because its seat-math line ("N seats × $price") would be fabricated
-  // for a flat/comped org.
+  // Workspace billing is admin-only. Members do not see subscription controls
+  // or workspace spend; an unsubscribed admin gets the shared workspace card.
   const isOrgContext = Boolean(membership);
   const orgRole: "admin" | "member" = membership?.role === "org:admin" ? "admin" : "member";
-  const isSeatSubscription = Boolean(account?.is_seat_subscription);
 
   if (isOrgContext && orgRole === "member") {
     return (
@@ -416,7 +403,7 @@ function BillingPanel() {
   // Below this point, isOrgContext (when true) implies orgRole === "admin" —
   // the member case returned above.
 
-  if (isOrgContext && (!isSubscribed || isSeatSubscription)) {
+  if (isOrgContext && !isSubscribed) {
     return (
       <div className="settings-panel" id="panel-billing" role="tabpanel">
         <h1 className="settings-page-title">Billing</h1>
@@ -430,12 +417,10 @@ function BillingPanel() {
         )}
 
         <TeamBillingCard
-          seatCount={account?.seat_count ?? null}
-          seatPriceUsd={account?.team_seat_price_usd ?? null}
-          basePriceUsd={account?.team_base_price_usd ?? null}
+            workspacePriceUsd={account?.workspace_price_usd}
           ownerRole={orgRole}
           isSubscribed={isSubscribed}
-          onSubscribe={startTeamCheckout}
+          onSubscribe={() => startCheckout("workspace")}
           onManage={handlePortal}
         />
       </div>
@@ -443,10 +428,8 @@ function BillingPanel() {
   }
 
   if (isOrgContext) {
-    // Subscribed org, NOT a per-seat sub (flat/comped/grandfathered) — the
-    // normal subscribed billing view, same shape as the personal card
-    // below, restoring the current/lifetime spend line org admins
-    // previously saw pre-org-context-rewrite. No per-seat pricing math.
+    // A subscribed workspace uses the normal plan card, with no membership
+    // pricing math.
     // orgRole is guaranteed "admin" here (member case returned above).
     return (
       <div className="settings-panel" id="panel-billing" role="tabpanel">
@@ -479,11 +462,11 @@ function BillingPanel() {
               Manage Payment
             </button>
           </div>
-          {/* A flat/comped org sub (no per-seat item) can still upgrade to
-              Ultra — only the per-seat TeamBillingCard path omits the CTA,
-              and that's a frontend gap, not a backend limit (Ultra now
-              supports per-seat subs too). */}
-          <UltraUpgradeRow plan={account?.plan} upgradeToUltra={upgradeToUltra} />
+          <UltraUpgradeRow
+            plan={account?.plan}
+            ultraPriceUsd={account?.ultra_price_usd}
+            startCheckout={startCheckout}
+          />
         </div>
       </div>
     );
@@ -505,7 +488,7 @@ function BillingPanel() {
         <div className="settings-card-header">
           <div>
             <div className="settings-card-title">
-              {isTrialLocal ? "Lightbulb — Free tier" : "Lightbulb — $50 / month"}
+              {isTrialLocal ? "Lightbulb — Free tier" : workspacePlanTitle}
               {statusChipLabel && (
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 4, marginLeft: 8, fontSize: 11, fontWeight: 600, color: "var(--midnight)", background: "color-mix(in srgb, var(--midnight) 8%, transparent)", padding: "2px 8px", borderRadius: 999, textTransform: isTrialLocal ? undefined : "capitalize" }}>
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
@@ -516,8 +499,8 @@ function BillingPanel() {
             <div className="settings-card-desc">
               {subscriptionStatus === "trialing"
                 ? trialEndLabel
-                  ? `Free trial — full access until ${trialEndLabel}, then $50/mo. Cancel anytime before then.`
-                  : "Free trial — full access now, then $50/mo. Cancel anytime."
+                  ? `Free trial — full access until ${trialEndLabel}, then ${workspaceRecurringPrice}. Cancel anytime before then.`
+                  : `Free trial — full access now, then ${workspaceRecurringPrice}. Cancel anytime.`
                 : isTrialLocal
                   ? isTrialExpired
                     ? `Free tier ended${trialEndLabel ? ` on ${trialEndLabel}` : ""} — your agents are paused.`
@@ -532,43 +515,21 @@ function BillingPanel() {
               {portalLoading && <span className="settings-spinner" style={{ width: 14, height: 14, borderWidth: 2, marginRight: 6, display: "inline-block", verticalAlign: "middle" }} />}
               Manage Payment
             </button>
-          ) : isTrialLocal ? (
-            // No CTA in the header — the picker renders full-width below the
-            // card. No Manage Payment either: a trial_local row has no Stripe
-            // customer, so the portal would fail.
-            null
           ) : (
             <Link href="/chat" className="settings-btn-save">
               Sign up
             </Link>
           )}
         </div>
-        {/* The SAME picker the chat paywall renders (ChatErrorCard's trial
-            branch) — one component, so this surface cannot drift back into
-            showing a different set of choices or a different price. It used
-            to hand-roll three pill buttons over PROVIDER_SWITCH_CARDS, the
-            array documented as the POST-purchase variant that deliberately
-            carries no pricing ("the sales framing would be noise" for an
-            owner who already subscribed). Rendered pre-purchase, that
-            stripped the prices off the one screen whose entire job is to
-            show them — including the fact that the Bedrock path costs $70
-            today, not $50. */}
-        {isTrialLocal && (
-          <div style={{ marginTop: 20 }}>
-            <ProviderPicker
-              embedded
-              isOrg={false}
-              source="settings_billing"
-              heading={isTrialExpired ? "Your agents are paused" : "Subscribe to keep your agents running"}
-              subheading="Pick how you want to power your agents. The $50/month covers your always-on infrastructure."
-            />
-          </div>
-        )}
         {/* Ultra upgrade hangs off the paid card for a subscribed owner only —
             an unsubscribed / Sign-up / free-tier owner must pick the base plan
             first. */}
         {isSubscribed && (
-          <UltraUpgradeRow plan={account?.plan} upgradeToUltra={upgradeToUltra} />
+          <UltraUpgradeRow
+            plan={account?.plan}
+            ultraPriceUsd={account?.ultra_price_usd}
+            startCheckout={startCheckout}
+          />
         )}
       </div>
     </div>
@@ -674,6 +635,7 @@ const PANELS: Record<Panel, () => React.ReactElement> = {
   // owner-level (global) skills surface — the engine-room home.
   skills: () => <SkillsTab />,
   "skill-proposals": SkillProposalsPanel,
+  dreams: DreamsPanel,
   "channel-status": ChannelsStatusPanel,
   marketplace: MarketplacePanel,
 };
@@ -820,4 +782,3 @@ function SettingsPageInner() {
     </>
   );
 }
-

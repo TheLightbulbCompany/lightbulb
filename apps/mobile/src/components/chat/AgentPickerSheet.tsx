@@ -14,9 +14,8 @@ interface Props {
 }
 
 /**
- * Slide-up agent picker for the roster's "New task" action: pick an agent to
- * start a brand-new session with. Shares the cream-card / drag-handle shell
- * with SessionsSheet; the caller owns navigation + session minting.
+ * Slide-up agent picker for the roster's "New task" action. The caller opens
+ * that agent's canonical direct-message room.
  */
 export function AgentPickerSheet({ visible, onClose, agents, onPick }: Props) {
   return (

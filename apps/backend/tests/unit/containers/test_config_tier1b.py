@@ -251,6 +251,25 @@ class TestBrowserBounds:
         assert "--use-angle=gl" not in extra_args
         assert "--use-gl=angle" not in extra_args
 
+    def test_unsupported_flag_infobar_suppressed(self):
+        """The owner must not be shown Chrome's --no-sandbox warning bubble.
+
+        `noSandbox` is forced above (the gateway runs as root and Chromium
+        refuses to start as root without it), and Chrome answers that with a
+        yellow "You are using an unsupported command-line flag" bar on every
+        session. It is visible in the Browser live-view panel, it names a
+        decision the owner did not make, and there is nothing they can do
+        about it.
+
+        `--test-type` is the switch that suppresses it. `--disable-infobars`
+        is NOT: it stopped working on this bubble around Chrome 76 and is
+        inert on the Chrome 151 prod runs, so a swap to it would silently
+        bring the bar back.
+        """
+        extra_args = _cfg()["browser"]["extraArgs"]
+        assert "--test-type" in extra_args
+        assert "--disable-infobars" not in extra_args
+
     def test_browser_egress_proxy_off_by_default(self):
         """No knob, no proxy flag — a container keeps egressing on the AWS NAT
         IP exactly as before. The container image ships WARP inert, so an
@@ -391,7 +410,13 @@ class TestChannelProgressDrafts:
 
     def test_reinjected_telegram_gets_progress_streaming(self):
         cfg = _cfg(channel_accounts=self._ACCOUNTS)
-        assert cfg["channels"]["telegram"]["streaming"] == {"mode": "progress"}
+        # toolProgress off: progress posts each tool's OUTPUT into the
+        # conversation, and a Read of a bundled SKILL.md dumped the whole file
+        # into an owner's shared company channel.
+        assert cfg["channels"]["telegram"]["streaming"] == {
+            "mode": "progress",
+            "progress": {"toolProgress": False},
+        }
 
     def test_discord_left_on_upstream_default(self):
         """Discord already defaults to progress upstream — no key needed."""
@@ -399,8 +424,12 @@ class TestChannelProgressDrafts:
         assert "streaming" not in cfg["channels"]["discord"]
 
     def test_trial_still_gets_no_channels(self):
+        """No third-party channel (telegram) reinjection on trial — only the
+        always-on native ``lightbulb`` channel, unconditional on every
+        provider path, is present."""
         cfg = _cfg("bedrock_trial", channel_accounts=self._ACCOUNTS)
-        assert cfg["channels"] == {}
+        assert cfg["channels"] == {"lightbulb": {"enabled": True, "accounts": {"main": {"enabled": True}}}}
+        assert "telegram" not in cfg["channels"]
 
 
 class TestDebugCommandProdGate:
@@ -432,19 +461,43 @@ class TestHooksAgentAllowlist:
 
 class TestSessionBounds:
     def test_maintenance_enforce_with_raised_bounds(self):
-        """warn mode is unbounded growth on EFS; enforce spares durable human
-        conversations (synthetic rows only) and zstd-archives before deleting.
-        Bounds are generous multiples of upstream defaults (500 rows / 30d) to
-        protect heavy owners; resetArchiveRetention defaults to keep-forever
-        upstream, so it must be set explicitly."""
+        """warn mode is unbounded growth; enforce spares durable human
+        conversations and zstd-archives before deleting. maxEntries/pruneAfter
+        are generous multiples of upstream defaults (500 rows / 30d) to protect
+        heavy owners; resetArchiveRetention defaults to keep-forever upstream,
+        so it must be set explicitly.
+
+        maxDiskBytes/highWaterBytes are fixed per-agent physical disk bounds.
+        """
         maintenance = _cfg()["session"]["maintenance"]
         assert maintenance == {
             "mode": "enforce",
             "maxEntries": 2000,
             "pruneAfter": "90d",
-            "maxDiskBytes": "500mb",
+            "maxDiskBytes": "256mb",
+            "highWaterBytes": "204mb",
             "resetArchiveRetention": "90d",
         }
+
+    def test_session_disk_budget_constants_match_emitted_config(self):
+        """The session budget is PER AGENT (OpenClaw resolves the store under
+        agents/<agentId>/, and the 8.1 sweep measures one agent's directory), and
+        those databases sit on the task's Fargate-default ephemeral storage — the
+        nested `openclaw-state`/`openclaw-agents` volumes, not EFS. So the
+        container-wide worst case is N_agents x maxDiskBytes and it has to fit
+        the disk alongside the image, /tmp, the shared state DB and headroom.
+
+        This is the test that fails if someone raises maxDiskBytes toward
+        upstream's 10 GiB default without also buying the disk to back it.
+        """
+        assert config_module.SESSION_MAX_DISK_MIB == 256
+        assert config_module.SESSION_HIGH_WATER_MIB == 204
+        maintenance = _cfg()["session"]["maintenance"]
+        assert maintenance["maxDiskBytes"] == f"{config_module.SESSION_MAX_DISK_MIB}mb"
+        assert maintenance["highWaterBytes"] == f"{config_module.SESSION_HIGH_WATER_MIB}mb"
+        # Non-null high water is one of the three conditions gating the 8.1
+        # eviction sweep (mode == "enforce" && maxDiskBytes && highWaterBytes).
+        assert maintenance["mode"] == "enforce"
 
     def test_reset_is_idle_based(self):
         """The unconfigured default is daily 04:00 gateway-local = 04:00 UTC =

@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   requestFocusComposer,
   consumeFocusComposerRequest,
+  deferFocusComposerRequest,
+  releaseFocusComposerRequest,
   _resetFocusComposerRequestForTests,
 } from "../focusComposerRequest";
 
@@ -61,5 +63,17 @@ describe("focusComposerRequest", () => {
     requestFocusComposer("a-1");
     vi.setSystemTime(new Date("2026-01-01T00:00:04Z"));
     expect(consumeFocusComposerRequest("a-1")).toEqual({});
+  });
+
+  it("restarts expiry after deferred navigation completes", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    requestFocusComposer("a-1", "Keep me");
+    deferFocusComposerRequest("a-1");
+    vi.setSystemTime(new Date("2026-01-01T00:00:06Z"));
+    expect(consumeFocusComposerRequest("a-1")).toBeNull();
+    expect(releaseFocusComposerRequest("a-1")).toBe(true);
+    vi.setSystemTime(new Date("2026-01-01T00:00:10Z"));
+    expect(consumeFocusComposerRequest("a-1")).toEqual({ draft: "Keep me" });
   });
 });

@@ -122,7 +122,7 @@ async def test_byo_key_anthropic_branch(tmp_path):
     # Default tier is the cheaper Sonnet 4.6, with Haiku 4.5 as the cheap
     # error-failover. Opus 4.6 is reserved for the CEO agent (Friday) via
     # per-agent agents.list[*].model — see test_ceo_agent_gets_premium_model.
-    assert primary == "anthropic/claude-sonnet-4-6"
+    assert primary == "anthropic/claude-sonnet-5"
     assert fallbacks == ["anthropic/claude-haiku-4-5"]
     # byo anthropic uses Anthropic-DIRECT ids — no Bedrock date-stamp.
     # The premium ref strips the erroneous "-v1" suffix (Bedrock-only).
@@ -183,7 +183,7 @@ async def test_bedrock_claude_branch(tmp_path):
     "provider_choice,byo_provider,expected",
     [
         # Anthropic-DIRECT id — no Bedrock "-v1" suffix.
-        ("byo_key", "anthropic", "anthropic/claude-opus-4-6"),
+        ("byo_key", "anthropic", "anthropic/claude-opus-5"),
         ("byo_key", "openai", "openai/gpt-5.6-sol"),
         # chatgpt_oauth is a flat-rate plan — no premium tier to reserve, so
         # the CEO inherits the default (no per-agent model override).
@@ -205,7 +205,7 @@ def test_premium_model_ref_matrix(provider_choice, byo_provider, expected):
     "provider_choice,byo_provider,expected_ceo_model",
     [
         ("bedrock_claude", None, f"amazon-bedrock/{_AIPS['opus']}"),
-        ("byo_key", "anthropic", "anthropic/claude-opus-4-6"),
+        ("byo_key", "anthropic", "anthropic/claude-opus-5"),
         ("byo_key", "openai", "openai/gpt-5.6-sol"),
     ],
 )
@@ -420,8 +420,8 @@ async def test_midturn_precheck_enabled_across_auth_paths(tmp_path, provider_cho
     [
         # The maintenance heartbeat runs on the cheap tier for EVERY provider,
         # including chatgpt_oauth — unlike compaction, the heartbeat is an
-        # ordinary turn the Codex OAuth token can serve on the mini tier.
-        ("chatgpt_oauth", None, "openai/gpt-5.4-mini"),
+        # ordinary turn the Codex OAuth token can serve on the Luna tier.
+        ("chatgpt_oauth", None, "openai/gpt-5.6-luna"),
         ("byo_key", "openai", "openai/gpt-5.4-mini"),
         ("byo_key", "anthropic", "anthropic/claude-haiku-4-5"),
         ("bedrock_claude", None, f"amazon-bedrock/{_AIPS['haiku']}"),
@@ -431,7 +431,7 @@ def test_heartbeat_model_ref_matrix(provider_choice, byo_provider, expected):
     """heartbeat_model_ref resolves a cheap tier for every provider.
 
     It diverges from cheap_model_ref only on chatgpt_oauth, where the
-    heartbeat (a normal turn) can use gpt-5.4-mini even though compaction
+    heartbeat (a normal turn) can use gpt-5.6-luna even though compaction
     cannot override the Codex backend's native summarizer.
     """
     assert heartbeat_model_ref(provider_choice, byo_provider, aip_arns=_AIPS) == expected
@@ -441,7 +441,7 @@ def test_heartbeat_model_ref_matrix(provider_choice, byo_provider, expected):
 @pytest.mark.parametrize(
     "provider_choice,byo_provider,expected_model",
     [
-        ("chatgpt_oauth", None, "openai/gpt-5.4-mini"),
+        ("chatgpt_oauth", None, "openai/gpt-5.6-luna"),
         ("byo_key", "openai", "openai/gpt-5.4-mini"),
         ("byo_key", "anthropic", "anthropic/claude-haiku-4-5"),
         ("bedrock_claude", None, f"amazon-bedrock/{_AIPS['haiku']}"),
@@ -578,10 +578,10 @@ async def test_chatgpt_oauth_aux_inherits_primary(tmp_path):
     (gpt-5.4-mini), so pinning it made compaction fail silently (compactionCount
     stayed 0), context grew to the 272k budget, and the turn died with "Context
     overflow: prompt too large". They inherit the OAuth-invocable primary
-    (gpt-5.5) so compaction runs.
+    (gpt-5.6-sol) so compaction runs.
 
     The heartbeat is the exception: it's an ordinary turn (not compaction), so it
-    CAN run on the cheap tier and IS demoted to gpt-5.4-mini — keeping the 30-min
+    CAN run on the cheap tier and IS demoted to gpt-5.6-luna — keeping the 30-min
     per-agent maintenance poll off the premium model. midTurnPrecheck stays on
     (it's model-free)."""
     await write_openclaw_config(
@@ -596,7 +596,7 @@ async def test_chatgpt_oauth_aux_inherits_primary(tmp_path):
     assert "model" not in defaults["compaction"]
     assert "model" not in defaults["compaction"].get("memoryFlush", {})
     # Heartbeat is demoted to the cheap tier (ordinary turn, not compaction).
-    assert defaults["heartbeat"]["model"] == "openai/gpt-5.4-mini"
+    assert defaults["heartbeat"]["model"] == "openai/gpt-5.6-luna"
     # The context-pressure precheck stays enabled (provider-agnostic, model-free).
     assert defaults["compaction"]["midTurnPrecheck"]["enabled"] is True
     # Heartbeat cadence still present.
@@ -746,9 +746,13 @@ def test_bedrock_trial_emits_exactly_one_model():
     assert [m["id"] for m in models] == [_AIPS["sonnet"]]
     assert models[0]["name"] == "Claude Sonnet 4.6"
     assert models[0]["cost"] == {"input": 3.3, "output": 16.5, "cacheRead": 0.33, "cacheWrite": 6.6}
-    # Primary == fallback: there is no cheaper/premium tier to route to, and
-    # the single model must not be user-swappable to one IAM would deny.
-    assert default_model == {"primary": _SONNET_REF, "fallbacks": [_SONNET_REF]}
+    # NO fallbacks key: there is no cheaper/premium tier to route to. A
+    # self-fallback used to be emitted here and could never fire —
+    # createModelCandidateCollector dedupes on provider/model and the primary is
+    # already the first candidate — while still making
+    # hasConfiguredModelFallbacks() report true, which flips `fallbackConfigured`
+    # and sends the overload path chasing an empty model lane.
+    assert default_model == {"primary": _SONNET_REF}
     # Discovery stays off — same as the paid path.
     assert plugin_entries["amazon-bedrock"]["config"]["discovery"]["enabled"] is False
 
@@ -790,7 +794,9 @@ def test_one_aip_bedrock_claude_no_longer_raises():
     )
     models = cfg["models"]["providers"]["amazon-bedrock"]["models"]
     assert [m["id"] for m in models] == [_AIPS["sonnet"]]
-    assert cfg["agents"]["defaults"]["model"] == {"primary": _SONNET_REF, "fallbacks": [_SONNET_REF]}
+    # One tier -> nothing to fall back to, so the key is omitted rather than
+    # pointed at the primary (see test_bedrock_trial_emits_exactly_one_model).
+    assert cfg["agents"]["defaults"]["model"] == {"primary": _SONNET_REF}
     assert "enabled" not in cfg["cron"]  # cron SERVICE stays on; block now carries the O6 store-key pin
     assert cfg["agents"]["defaults"]["heartbeat"]["every"] == "30m"
 
@@ -826,9 +832,17 @@ def test_bedrock_trial_disables_heartbeat():
 
 
 def test_bedrock_trial_skips_channel_account_reinjection():
+    """Third-party channel accounts (telegram) are never reinjected on trial —
+    only the always-on native ``lightbulb`` channel (the in-app multiplayer
+    surface, unconditional on every provider path) is present."""
     cfg = _trial_cfg(channel_accounts=_CHANNEL_ACCOUNTS)
-    assert cfg["channels"] == {}
-    assert "bindings" not in cfg
+    assert cfg["channels"] == {"lightbulb": {"enabled": True, "accounts": {"main": {"enabled": True}}}}
+    assert cfg["bindings"] == [
+        {
+            "agentId": "main",
+            "match": {"channel": "lightbulb", "accountId": "main", "peer": {"kind": "channel", "id": "*"}},
+        }
+    ]
 
 
 def test_bedrock_trial_emits_no_acp_block():
@@ -841,7 +855,14 @@ def test_bedrock_trial_emits_no_acp_block():
 
 def test_paid_bedrock_keeps_cron_heartbeat_channels_and_acp():
     """The trial lockdown must not leak onto the paid path."""
-    cfg = _paid_cfg(channel_accounts=_CHANNEL_ACCOUNTS, acp_enabled=True)
+    # acct_1 is the telegram account id AND the agent it routes to (legacy
+    # `agentId == accountId`), so that agent must be on the roster — a binding
+    # naming an absent agent makes OpenClaw reject the whole config at load.
+    cfg = _paid_cfg(
+        paperclip_agents=[{"id": "acct_1", "role": "ceo"}],
+        channel_accounts=_CHANNEL_ACCOUNTS,
+        acp_enabled=True,
+    )
     assert "enabled" not in cfg["cron"]  # cron SERVICE stays on; block now carries the O6 store-key pin
     assert cfg["agents"]["defaults"]["heartbeat"] == {
         "every": "30m",
@@ -851,8 +872,14 @@ def test_paid_bedrock_keeps_cron_heartbeat_channels_and_acp():
     }
     assert cfg["channels"]["telegram"]["enabled"] is True
     assert cfg["channels"]["telegram"]["accounts"] == _CHANNEL_ACCOUNTS["telegram"]
+    # The native lightbulb-channel binding is seeded first (unconditional on
+    # every provider path), then the reinjected telegram route is appended.
     assert cfg["bindings"] == [
-        {"type": "route", "agentId": "acct_1", "match": {"channel": "telegram", "accountId": "acct_1"}}
+        {
+            "agentId": "acct_1",
+            "match": {"channel": "lightbulb", "accountId": "acct_1", "peer": {"kind": "channel", "id": "*"}},
+        },
+        {"type": "route", "agentId": "acct_1", "match": {"channel": "telegram", "accountId": "acct_1"}},
     ]
     assert cfg["acp"]["allowedAgents"] == ["claude"]
 
@@ -1022,16 +1049,13 @@ def test_run_retries_capped(provider_choice, kwargs):
     assert "runRetries" not in cfg["agents"]["defaults"]
 
 
-def test_subagent_concurrency_capped_on_trial_only():
+def test_subagent_concurrency_capped_tighter_on_trial():
     """Subagents do NOT count against agents.defaults.maxConcurrent, so the
-    fan-out lane needs its own bound (upstream default 8) — but only where the
-    spend is OURS.
+    fan-out lane needs its own bound (upstream default 8) on EVERY path — see
+    test_subagent_lane_is_bounded_on_every_path for why.
 
-    Unlike the other three bounds (timeoutSeconds, runRetries, loopDetection),
-    which are sane everywhere because no legitimate run wants 48 hours or 160
-    retries, this one throttles CAPABILITY. A paid owner's spend is bounded by
-    their own credits or their own API key, so there is no reason to make them
-    delegate more slowly than upstream allows."""
+    The trial gets a tighter bound still: no human is in the loop, and a fan-out
+    is the fastest way to burn the $3.00/day cap."""
     trial = build_openclaw_config_dict(
         user_id="u_1",
         gateway_token="test-token",
@@ -1052,7 +1076,7 @@ def test_subagent_concurrency_capped_on_trial_only():
             "haiku": "arn:aws:bedrock:us-east-1:1:application-inference-profile/h",
         },
     )
-    assert "maxConcurrent" not in paid["agents"]["defaults"]["subagents"]
+    assert paid["agents"]["defaults"]["subagents"]["maxConcurrent"] == 4
     assert paid["agents"]["defaults"]["subagents"]["allowAgents"] == ["*"]
 
 
@@ -1110,3 +1134,56 @@ def test_context_tokens_unset_off_bedrock(provider_choice, kwargs):
         user_id="u_1", gateway_token="test-token", provider_choice=provider_choice, **kwargs
     )
     assert "contextTokens" not in cfg["agents"]["defaults"]
+
+
+def test_dreaming_minute_is_jittered_per_owner():
+    """Dreaming is a nightly self-run per agent. Every paid container firing it
+    in the same minute is a fleet-wide thundering herd — a simultaneous Bedrock
+    burst and a simultaneous EFS/SQLite burst — for a sweep with no reason to be
+    synchronised.
+
+    The minute is derived from the owner id, not randomised, so an owner always
+    dreams in the same minute: reproducible from the owner id alone when reading
+    a container's logs, and a reprovision never silently moves it.
+    """
+
+    def freq(owner: str) -> str:
+        return build_openclaw_config_dict(
+            user_id=owner,
+            gateway_token="test-token",
+            provider_choice="bedrock_trial",
+            aip_arns={"sonnet": "arn:aws:bedrock:us-east-1:1:application-inference-profile/s"},
+        )["plugins"]["entries"]["memory-core"]["config"]["dreaming"]["frequency"]
+
+    # Same owner, same minute -- every time.
+    assert freq("user_alpha") == freq("user_alpha")
+    # The hour never moves; only the minute, and it stays a legal cron minute.
+    minute, rest = freq("user_alpha").split(" ", 1)
+    assert rest == "3 * * *"
+    assert 0 <= int(minute) <= 59
+    # Owners land on different minutes (this pair is checked, not the whole space).
+    assert freq("user_alpha") != freq("user_beta")
+
+
+def test_subagent_lane_is_bounded_on_every_path():
+    """The subagent lane is EXEMPT from agents.defaults.maxConcurrent, so leaving
+    it at upstream's 8 makes the real ceiling 4 + 8 on a 1 vCPU Fargate task —
+    the box that already crash-looped an 11-agent owner at boot. It is a CPU
+    bound, not a spend bound, so it applies to paid owners too; the two numbers
+    move together."""
+    from core.containers.config import AGENT_MAX_CONCURRENT, AGENT_SUBAGENT_MAX_CONCURRENT
+
+    assert AGENT_SUBAGENT_MAX_CONCURRENT == AGENT_MAX_CONCURRENT
+
+    paid = build_openclaw_config_dict(
+        user_id="u_1",
+        gateway_token="test-token",
+        provider_choice="bedrock_claude",
+        aip_arns={
+            "sonnet": "arn:aws:bedrock:us-east-1:1:application-inference-profile/s",
+            "haiku": "arn:aws:bedrock:us-east-1:1:application-inference-profile/h",
+        },
+    )
+    defaults = paid["agents"]["defaults"]
+    assert defaults["subagents"]["maxConcurrent"] == AGENT_SUBAGENT_MAX_CONCURRENT
+    assert defaults["maxConcurrent"] == AGENT_MAX_CONCURRENT

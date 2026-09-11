@@ -11,38 +11,37 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import type { ChatIncomingMessage } from "@/hooks/useGateway";
+import type { ChatIncomingMessage } from "@lightbulb/shared";
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 
 let chatHandlers: Array<(msg: ChatIncomingMessage) => void> = [];
-let eventHandlers: Array<(name: string, data: unknown) => void> = [];
 const sendReq = vi.fn().mockResolvedValue({});
 const sendChat = vi.fn();
 const send = vi.fn();
 
-vi.mock("@/hooks/useGateway", () => ({
-  useGateway: () => ({
+vi.mock("@/hooks/useAgentRoomTransport", () => ({
+  useAgentRoomTransport: (agentId: string | null) => ({
     isConnected: true,
-    nodeConnected: false,
-    error: null,
-    reconnectAttempt: 0,
-    send,
-    sendReq,
-    sendChat,
-    onEvent: (h: (name: string, data: unknown) => void) => {
-      eventHandlers.push(h);
+    onChatMessage: (handler: (message: ChatIncomingMessage) => void) => {
+      chatHandlers.push(handler);
       return () => {
-        eventHandlers = eventHandlers.filter((x) => x !== h);
+        chatHandlers = chatHandlers.filter((candidate) => candidate !== handler);
       };
     },
-    onChatMessage: (h: (msg: ChatIncomingMessage) => void) => {
-      chatHandlers.push(h);
-      return () => {
-        chatHandlers = chatHandlers.filter((x) => x !== h);
-      };
+    sendRoomMessage: async (message: string, clientMessageId: string) =>
+      sendChat(agentId, message, clientMessageId, undefined),
+    abortRun: async (runId: string) => {
+      const accepted = send({ type: "agent_abort", agentId: agentId, runId });
+      if (accepted === false) throw new Error("Stop not sent");
+      return {};
     },
-    reconnect: vi.fn(),
+    steerRun: async (runId: string, text: string) => {
+      const accepted = send({ type: "agent_steer", agentId: agentId, runId, text });
+      if (accepted === false) throw new Error("Steer not sent");
+      return {};
+    },
+    rpc: sendReq,
   }),
 }));
 
@@ -53,7 +52,6 @@ function dispatch(msg: ChatIncomingMessage) {
 describe("useAgentChat — run_active server-truth busy signal", () => {
   beforeEach(() => {
     chatHandlers = [];
-    eventHandlers = [];
     sendReq.mockReset().mockResolvedValue({});
     sendChat.mockReset();
     send.mockReset().mockReturnValue(true);
@@ -65,7 +63,7 @@ describe("useAgentChat — run_active server-truth busy signal", () => {
     const { result } = renderHook(() => useAgentChat("agentA", "user-1"));
 
     act(() => {
-      dispatch({ type: "run_active", active: true, agent_id: "agentA" } as ChatIncomingMessage);
+      dispatch({ type: "run_active", active: true, agentId: "agentA" } as ChatIncomingMessage);
     });
     expect(result.current.busy).toBe(true); // busy even though no chunk/tool arrived
     expect(result.current.isStreaming).toBe(false);
@@ -75,7 +73,7 @@ describe("useAgentChat — run_active server-truth busy signal", () => {
         type: "run_ended",
         runId: "r1",
         outcome: "done",
-        agent_id: "agentA",
+        agentId: "agentA",
       } as ChatIncomingMessage);
     });
     expect(result.current.busy).toBe(false);
@@ -85,7 +83,7 @@ describe("useAgentChat — run_active server-truth busy signal", () => {
     const { useAgentChat } = await import("@/hooks/useAgentChat");
     const { result } = renderHook(() => useAgentChat("agentA", "user-1"));
     act(() => {
-      dispatch({ type: "run_active", active: true, agent_id: "agentB" } as ChatIncomingMessage);
+      dispatch({ type: "run_active", active: true, agentId: "agentB" } as ChatIncomingMessage);
     });
     expect(result.current.busy).toBe(false);
   });
@@ -95,12 +93,12 @@ describe("useAgentChat — run_active server-truth busy signal", () => {
     const { result } = renderHook(() => useAgentChat("agentA", "user-1"));
 
     act(() => {
-      dispatch({ type: "run_active", active: true, agent_id: "agentA" } as ChatIncomingMessage);
+      dispatch({ type: "run_active", active: true, agentId: "agentA" } as ChatIncomingMessage);
     });
     expect(result.current.busy).toBe(true);
 
     act(() => {
-      dispatch({ type: "run_active", active: false, agent_id: "agentA" } as ChatIncomingMessage);
+      dispatch({ type: "run_active", active: false, agentId: "agentA" } as ChatIncomingMessage);
     });
     expect(result.current.busy).toBe(false);
   });
@@ -110,7 +108,7 @@ describe("useAgentChat — run_active server-truth busy signal", () => {
     const { result } = renderHook(() => useAgentChat("agentA", "user-1"));
 
     act(() => {
-      dispatch({ type: "run_active", active: true, agent_id: "agentA" } as ChatIncomingMessage);
+      dispatch({ type: "run_active", active: true, agentId: "agentA" } as ChatIncomingMessage);
     });
     expect(result.current.busy).toBe(true);
 
@@ -128,7 +126,7 @@ describe("useAgentChat — run_active server-truth busy signal", () => {
     const { result } = renderHook(() => useAgentChat("agentA", "user-1"));
 
     act(() => {
-      dispatch({ type: "run_active", active: true, agent_id: "agentA" } as ChatIncomingMessage);
+      dispatch({ type: "run_active", active: true, agentId: "agentA" } as ChatIncomingMessage);
     });
     expect(result.current.busy).toBe(true);
 

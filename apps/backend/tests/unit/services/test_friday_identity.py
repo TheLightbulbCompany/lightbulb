@@ -972,15 +972,34 @@ def test_agents_md_contains_company_control_wake_and_dual_condition():
     # The wake advances one company constraint through CEO work. It must not
     # reintroduce the arbitrary-specialist checkout that contradicted the
     # delegation boundary.
-    assert "Choose ONE company constraint" in agents_md
-    assert "Delegate specialist execution" in agents_md
+    assert "A constraint is actionable" in agents_md
+    # Renamed to "Delegate SUSTAINED specialist execution": the blanket form
+    # banned doing any work at all, which routed one-shot requests to the
+    # marketplace. See test_delegation_boundary_is_scoped_to_sustained_work.
+    assert "Delegate sustained specialist execution" in agents_md
     assert "delegation is the action" in agents_md
     assert "never checkout" in agents_md
     assert "keep THIS parent non-terminal" in agents_md
     assert "child's completion wakes you" in agents_md
     assert "Pick ONE task you can complete right now" not in agents_md
     assert "NIGHTLY-TASK-TAKEN:" not in agents_md
-    assert "Never invent work" in agents_md
+    assert "never an open-ended project" in agents_md
+
+
+def test_agents_md_nightly_always_emails_and_handles_empty_board():
+    """V3 contract: the wake ALWAYS ends with one owner email, and an empty board
+    yields exactly one goal-derived task rather than a silent exit."""
+    agents_md = friday_identity._render_templates(_personal_profile())["AGENTS.md"]
+    compact = " ".join(agents_md.split())
+    # Always email the owner, even a quiet night — no silent exit.
+    assert "ALWAYS email the owner" in agents_md
+    assert "Never exit silently" in agents_md
+    assert 'never send a "nothing to report" email' in compact
+    # Empty board → create exactly one goal-derived task.
+    assert "The board is empty" in agents_md
+    assert "Create exactly ONE" in agents_md
+    # V2's silent no-op marker is gone.
+    assert "NO-EXECUTABLE-COMPANY-CONSTRAINT" not in agents_md
 
 
 # ---------------------------------------------------------------------------
@@ -1190,6 +1209,37 @@ def test_migrate_nightly_section_replaces_only_exact_legacy_block():
     assert "Owner-authored footer." in healed
     assert friday_identity._LEGACY_NIGHTLY_WAKE_SECTION not in healed
 
+    ws.written = None
+    assert friday_identity._migrate_add_nightly_section(ws, "user_abc", "friday-uuid") is False
+    assert ws.written is None
+
+
+def test_migrate_nightly_section_reconciles_v2_forward_to_v3():
+    """A container still carrying the pre-always-email V2 block is reconciled
+    forward to the current section (V2 -> V3), and is idempotent on a re-apply."""
+    before = (
+        "# AGENTS.md — Friday's Playbook\n"
+        "\nOwner-authored preface.\n" + friday_identity._LEGACY_V2_NIGHTLY_WAKE_SECTION + "\nOwner-authored footer.\n"
+    )
+    ws = _MigrationWs(before)
+
+    assert friday_identity._migrate_add_nightly_section(ws, "user_abc", "friday-uuid") is True
+    _, healed = ws.written
+    assert healed == before.replace(
+        friday_identity._LEGACY_V2_NIGHTLY_WAKE_SECTION,
+        friday_identity._NIGHTLY_WAKE_SECTION,
+        1,
+    )
+    assert friday_identity._LEGACY_V2_NIGHTLY_WAKE_SECTION not in healed
+    assert friday_identity._NIGHTLY_WAKE_SECTION in healed
+    # What V3 adds over V2: the always-email guarantee and the empty-board task.
+    assert "ALWAYS email the owner" in healed
+    assert "The board is empty" in healed
+    assert "NO-EXECUTABLE-COMPANY-CONSTRAINT" not in healed
+    assert "Owner-authored preface." in healed
+    assert "Owner-authored footer." in healed
+
+    # V3 now present → a later fleet apply is a no-op.
     ws.written = None
     assert friday_identity._migrate_add_nightly_section(ws, "user_abc", "friday-uuid") is False
     assert ws.written is None
@@ -1809,3 +1859,292 @@ async def test_stage_agent_paperclip_identity_refreshes_stale_api_url():
         "companyId": "comp-1",
         "apiUrl": "http://paperclip.lightbulb-dev.local:3100",
     }
+
+
+# --- Self-service: Friday must use the tools she has -------------------------
+#
+# Reported: asked to open a page in the browser, she ran marketplace_search and
+# offered to hire someone. Three stacked causes, all in the seeded markdown:
+# SOUL described the browser as desktop-gated (it is not), the orchestration
+# loop had no terminal that was not delegation, and step 3 fired the marketplace
+# check on a missing TOOL rather than a missing ROLE.
+#
+# Not a tool-configuration problem: marketplace_search is a plugin tool and is
+# compacted by tool search exactly as `browser` is, so she reached one and not
+# the other in the same turn. The prompt is the whole cause.
+
+
+def test_soul_browser_line_states_the_container_browser_is_always_available():
+    """config.py sets browser.defaultProfile="openclaw" -- the in-container
+    Chromium -- on every container. The paired desktop is the OPTIONAL upgrade.
+    Naming only the gated profile made a browsing request read as a capability
+    Friday might not have."""
+    line = friday_identity._SOUL_BROWSER_LINE
+    assert "always" in line.lower()
+    assert "when their desktop app is paired" not in line
+    assert "signed-in" in line  # the paired-desktop upgrade is still described
+
+
+def test_soul_browser_line_carries_no_format_placeholder():
+    """str.format does not recurse into substituted values, so a placeholder
+    inside this constant would reach disk literally. It must also stay
+    byte-identical between the seed path and the heal migration, which has no
+    owner display name to substitute."""
+    assert "{" not in friday_identity._SOUL_BROWSER_LINE
+
+
+def test_orchestration_loop_has_a_do_it_yourself_terminal():
+    """Without a step-0 exit, a one-shot request runs decompose -> roster ->
+    "no agent qualified" -> marketplace_search. The loop had no other terminal."""
+    gate = friday_identity._AGENTS_DIY_GATE
+    assert gate.lstrip().startswith("0.")
+    for trigger in ("browser", "fetch", "read a file", "run a command", "answer"):
+        assert trigger in gate.lower(), f"missing trigger case: {trigger}"
+    # It must forbid the loop, not merely permit doing the work.
+    assert "do not decompose" in gate.lower()
+    assert "marketplace" in gate.lower()
+
+
+def test_marketplace_check_is_scoped_to_a_missing_role():
+    """Assert inside step 3's slice so line-wrapping cannot make this vacuous."""
+    t = friday_identity._AGENTS_TEMPLATE
+    step3 = t[t.index("3. **Identify or hire.") : t.index("4. **Confirm.")]
+    assert "role nobody on the roster fills" in step3
+    assert "is qualified" not in step3
+
+
+def test_delegation_boundary_is_scoped_to_sustained_work():
+    """A blanket "delegate it -- do not perform it yourself" bans doing the work
+    at all, which is what sent a one-shot browsing request to the marketplace."""
+    t = friday_identity._AGENTS_TEMPLATE
+    assert "sustained" in t
+    assert "delegate it — do not perform it yourself" not in t
+
+
+def test_rendered_agents_md_has_real_margin_below_the_truncation_ceiling():
+    """AGENTS.md is seeded whole into every turn's context.
+
+    Measure the RENDERED file, not the template: {owner_display} appears 17
+    times, so an org with a long display name produces a materially larger file
+    than len(_AGENTS_TEMPLATE) suggests. A template-length assertion passes
+    while a real container is over.
+
+    Thresholds, from the fork at v2026.8.1-isol8.3:
+      - DEFAULT_BOOTSTRAP_MAX_CHARS = 20_000 is the real cliff. Above it the
+        file is TRUNCATED and a notice tells the agent her own playbook was cut.
+      - nearLimit (85% = 17_000) is a DIAGNOSTIC FLAG in bootstrap-budget.ts,
+        not a cliff -- `nearLimit` only annotates the budget analysis.
+
+    We assert margin below the cliff rather than below the flag. Getting under
+    17_000 for a long org name would mean deleting the key-leak, Authorization
+    and run-id guards, and those are worth more than a diagnostic flag: a live
+    Paperclip key reached an owner's transcript once already.
+    """
+    template = friday_identity._AGENTS_TEMPLATE
+    occurrences = template.count("{owner_display}")
+    assert occurrences > 0, "owner substitution disappeared; this test is now vacuous"
+
+    # A long but realistic org display name.
+    long_owner = "Acme Manufacturing Group"
+    rendered = len(template) + occurrences * (len(long_owner) - len("{owner_display}"))
+
+    assert rendered < 18_500, (
+        f"rendered AGENTS.md is {rendered} chars for a {len(long_owner)}-char owner name; "
+        "the truncation ceiling is 20,000 and truncation tells the agent her playbook was "
+        "cut. Move reference material into the paperclip skill rather than raising this."
+    )
+
+
+# --- Self-service heal migration ---------------------------------------------
+#
+# SOUL.md and AGENTS.md are seeded write-if-missing, so the template fixes above
+# reach NEW provisions only. Already-provisioned Fridays keep the copy that
+# routes a browsing request to marketplace_search until this runs.
+
+
+def _self_service_ws(store: dict):
+    ws = MagicMock()
+    ws.read_file = lambda owner_id, rel_path: store[rel_path]
+    ws.write_file = lambda owner_id, rel_path, content: store.__setitem__(rel_path, content)
+    return ws
+
+
+def test_self_service_heal_replaces_the_legacy_browser_line():
+    store = {
+        "workspace-friday-uuid/SOUL.md": (
+            "# SOUL.md\n\nintro\n" + friday_identity._LEGACY_SOUL_BROWSER_LINE + "\noutro\n"
+        ),
+        "workspace-friday-uuid/AGENTS.md": friday_identity._AGENTS_DIY_GATE,
+    }
+    ws = _self_service_ws(store)
+    assert friday_identity._migrate_self_service(ws, "user_abc", "friday-uuid") is True
+    soul = store["workspace-friday-uuid/SOUL.md"]
+    assert friday_identity._LEGACY_SOUL_BROWSER_LINE not in soul
+    assert "always available" in soul
+    assert "outro" in soul  # surrounding content preserved
+
+
+def test_self_service_heal_is_idempotent():
+    store = {
+        "workspace-friday-uuid/SOUL.md": friday_identity._SOUL_BROWSER_LINE,
+        "workspace-friday-uuid/AGENTS.md": friday_identity._AGENTS_DIY_GATE,
+    }
+    ws = _self_service_ws(store)
+    assert friday_identity._migrate_self_service(ws, "user_abc", "friday-uuid") is False
+
+
+def test_self_service_heal_never_clobbers_an_edited_browser_line():
+    """An owner- or Friday-edited line is theirs. Only the byte-exact legacy
+    text moves; a heading match is never permission to overwrite."""
+    edited = "- **Browser** — my own notes about the browser. Do not touch.\n"
+    store = {
+        "workspace-friday-uuid/SOUL.md": "# SOUL.md\n\n" + edited,
+        "workspace-friday-uuid/AGENTS.md": friday_identity._AGENTS_DIY_GATE,
+    }
+    ws = _self_service_ws(store)
+    assert friday_identity._migrate_self_service(ws, "user_abc", "friday-uuid") is False
+    assert store["workspace-friday-uuid/SOUL.md"] == "# SOUL.md\n\n" + edited
+
+
+def test_self_service_heal_inserts_the_gate_into_an_existing_agents_md():
+    store = {
+        "workspace-friday-uuid/SOUL.md": friday_identity._SOUL_BROWSER_LINE,
+        "workspace-friday-uuid/AGENTS.md": ("# AGENTS.md\n\n## The orchestration loop\n\n1. **Decompose.** ...\n"),
+    }
+    ws = _self_service_ws(store)
+    assert friday_identity._migrate_self_service(ws, "user_abc", "friday-uuid") is True
+    agents = store["workspace-friday-uuid/AGENTS.md"]
+    assert friday_identity._AGENTS_DIY_GATE.rstrip("\n") in agents
+    # The gate goes directly under the heading, above step 1.
+    assert agents.index("0. **Can you just do it?") < agents.index("1. **Decompose.")
+
+
+def test_self_service_heal_skips_an_agents_md_with_no_loop_heading():
+    """Evolved content without the anchor is left alone rather than guessed at."""
+    store = {
+        "workspace-friday-uuid/SOUL.md": friday_identity._SOUL_BROWSER_LINE,
+        "workspace-friday-uuid/AGENTS.md": "# AGENTS.md\n\nOwner rewrote this entirely.\n",
+    }
+    ws = _self_service_ws(store)
+    assert friday_identity._migrate_self_service(ws, "user_abc", "friday-uuid") is False
+
+
+def test_self_service_heal_survives_a_missing_file():
+    """A Friday with no SOUL.md yet must not raise — the seed loop writes it."""
+    ws = MagicMock()
+    ws.read_file.side_effect = FileNotFoundError
+    assert friday_identity._migrate_self_service(ws, "user_abc", "friday-uuid") is False
+
+
+def test_self_service_heal_is_registered_in_the_rail():
+    """A migration nobody calls heals nothing."""
+    import inspect
+
+    src = inspect.getsource(friday_identity._run_heal_migrations)
+    assert "_migrate_self_service" in src
+
+
+# --- Heal completeness: the migration must deliver the WHOLE playbook fix -----
+#
+# Verified on a real prod container 2026-09-08: the first version of
+# _migrate_self_service healed the SOUL browser line and inserted the step-0
+# gate, but left step 3 still saying "If no agent is qualified, check the
+# marketplace first" and Boundaries still saying "delegate it — do not perform
+# it yourself". Two of four, and the two it missed are the instructions that
+# caused the bug. It also APPENDED without removing, so a healed AGENTS.md grew
+# to 19,552 chars — 448 from the 20,000 truncation ceiling.
+#
+# These constants are the RENDERED form (single braces). The template carries
+# `{{issueId}}` for str.format; the file on disk has `{issueId}`.
+
+
+def test_legacy_constants_are_the_rendered_form_not_the_template_form():
+    """A `{{` in a legacy constant means it was copied from the template and
+    will never match the file on disk."""
+    for name in (
+        "_LEGACY_AGENTS_STEP3_HEAD",
+        "_LEGACY_AGENTS_DELEGATE_BOUNDARY",
+        "_LEGACY_AGENTS_PAPERCLIP_REFERENCE",
+    ):
+        val = getattr(friday_identity, name)
+        assert "{{" not in val, f"{name} carries template-escaped braces"
+
+
+def _healed_store(agents_body: str) -> dict:
+    return {
+        "workspace-friday-uuid/SOUL.md": friday_identity._SOUL_BROWSER_LINE,
+        "workspace-friday-uuid/AGENTS.md": agents_body,
+    }
+
+
+def test_heal_rescopes_step_three_to_a_missing_role():
+    store = _healed_store(
+        "## The orchestration loop\n\n"
+        + friday_identity._AGENTS_DIY_GATE
+        + "\n"
+        + friday_identity._LEGACY_AGENTS_STEP3_HEAD
+    )
+    ws = _self_service_ws(store)
+    assert friday_identity._migrate_self_service(ws, "user_abc", "friday-uuid") is True
+    agents = store["workspace-friday-uuid/AGENTS.md"]
+    assert "role nobody on the roster fills" in agents
+    assert friday_identity._LEGACY_AGENTS_STEP3_HEAD not in agents
+
+
+def test_heal_narrows_the_delegation_boundary():
+    store = _healed_store(
+        "## The orchestration loop\n\n"
+        + friday_identity._AGENTS_DIY_GATE
+        + "\n"
+        + friday_identity._LEGACY_AGENTS_DELEGATE_BOUNDARY
+    )
+    ws = _self_service_ws(store)
+    assert friday_identity._migrate_self_service(ws, "user_abc", "friday-uuid") is True
+    agents = store["workspace-friday-uuid/AGENTS.md"]
+    assert "Delegate sustained specialist execution" in agents
+    assert "delegate it — do not perform it yourself" not in agents
+
+
+def test_heal_strips_the_paperclip_reference_so_the_file_shrinks():
+    """The migration appended without removing, which grew the file on exactly
+    the containers that already had the problem."""
+    body = (
+        "## The orchestration loop\n\n"
+        + friday_identity._AGENTS_DIY_GATE
+        + "\n"
+        + friday_identity._LEGACY_AGENTS_PAPERCLIP_REFERENCE
+    )
+    store = _healed_store(body)
+    ws = _self_service_ws(store)
+    assert friday_identity._migrate_self_service(ws, "user_abc", "friday-uuid") is True
+    healed = store["workspace-friday-uuid/AGENTS.md"]
+    assert len(healed) < len(body), "heal must shrink, not grow, an oversized playbook"
+    assert "GET /api/agents/me" not in healed
+    assert "skill paperclip" in healed  # the pointer replaces the tables
+
+
+def test_heal_never_clobbers_an_edited_step_three():
+    """Byte-exact or nothing — an owner-edited step 3 is theirs."""
+    edited = "3. **Identify or hire.** My own rewritten step three.\n"
+    body = "## The orchestration loop\n\n" + friday_identity._AGENTS_DIY_GATE + "\n" + edited
+    store = _healed_store(body)
+    ws = _self_service_ws(store)
+    assert friday_identity._migrate_self_service(ws, "user_abc", "friday-uuid") is False
+    assert store["workspace-friday-uuid/AGENTS.md"] == body
+
+
+def test_heal_is_idempotent_across_all_four_changes():
+    body = (
+        "## The orchestration loop\n\n"
+        + friday_identity._AGENTS_DIY_GATE
+        + "\n"
+        + friday_identity._LEGACY_AGENTS_STEP3_HEAD
+        + friday_identity._LEGACY_AGENTS_DELEGATE_BOUNDARY
+        + friday_identity._LEGACY_AGENTS_PAPERCLIP_REFERENCE
+    )
+    store = _healed_store(body)
+    ws = _self_service_ws(store)
+    assert friday_identity._migrate_self_service(ws, "user_abc", "friday-uuid") is True
+    once = store["workspace-friday-uuid/AGENTS.md"]
+    assert friday_identity._migrate_self_service(ws, "user_abc", "friday-uuid") is False
+    assert store["workspace-friday-uuid/AGENTS.md"] == once

@@ -2,13 +2,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
 import React from "react";
 
-// Covers the settings BillingPanel Ultra Pro upgrade CTA (settings/page.tsx):
-// a subscribed owner on the standard plan sees an "Upgrade to Ultra Pro —
-// $150/mo" button that calls useBilling().upgradeToUltra on click; an owner
-// already on ultra_pro sees an "Ultra Pro" active badge and no upgrade button;
-// the per-seat team card never shows the upgrade button (the Ultra CTA isn't
-// surfaced for orgs yet, even though Ultra now supports team subs at the
-// billing layer). Harness mirrors ./BillingPanel.billing.test.tsx.
+// Covers the settings BillingPanel Ultra upgrade CTA (settings/page.tsx):
+// a subscribed owner on the standard plan sees an "Upgrade to Ultra —
+// $150/mo" button that calls useBilling().startCheckout("ultra") on click; an owner
+// already on ultra_pro sees an "Ultra" active badge and no upgrade button.
+// Workspace owners use the same CTA. Harness mirrors ./BillingPanel.billing.test.tsx.
 
 const nav = vi.hoisted(() => ({ panel: "billing" as string | null }));
 vi.mock("next/navigation", () => ({
@@ -40,7 +38,7 @@ const billing = vi.hoisted(() => ({
   account: null as Record<string, unknown> | null,
   isLoading: false,
   isSubscribed: false,
-  upgradeToUltra: vi.fn().mockResolvedValue(undefined),
+  startCheckout: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@/hooks/useBilling", () => ({
@@ -50,23 +48,22 @@ vi.mock("@/hooks/useBilling", () => ({
     error: null,
     isSubscribed: billing.isSubscribed,
     openPortal: vi.fn(),
-    startTeamCheckout: vi.fn(),
-    upgradeToUltra: billing.upgradeToUltra,
+    startCheckout: billing.startCheckout,
     refresh: vi.fn(),
   }),
 }));
 
 import SettingsPage from "../page";
 
-describe("BillingPanel — Ultra Pro upgrade CTA", () => {
+describe("BillingPanel — Ultra upgrade CTA", () => {
   beforeEach(() => {
     nav.panel = "billing";
     clerk.membership = null;
     billing.isLoading = false;
-    billing.upgradeToUltra = vi.fn().mockResolvedValue(undefined);
+    billing.startCheckout = vi.fn().mockResolvedValue(undefined);
   });
 
-  it("standard subscribed personal owner sees the upgrade button; clicking calls upgradeToUltra", async () => {
+  it("standard subscribed workspace owner sees the upgrade button; clicking starts the ultra checkout", async () => {
     billing.isSubscribed = true;
     billing.account = {
       is_subscribed: true,
@@ -77,14 +74,13 @@ describe("BillingPanel — Ultra Pro upgrade CTA", () => {
       provider_choice: null,
       byo_provider: null,
       plan: "standard",
-      seat_count: null,
-      team_seat_price_usd: null,
-      is_seat_subscription: false,
+      workspace_price_usd: 50,
+      ultra_price_usd: 150,
     };
 
     render(<SettingsPage />);
 
-    const btn = screen.getByRole("button", { name: /upgrade to ultra pro/i });
+    const btn = screen.getByRole("button", { name: /upgrade to ultra/i });
     expect(btn).toBeInTheDocument();
     expect(btn).toHaveTextContent("$150");
 
@@ -95,10 +91,10 @@ describe("BillingPanel — Ultra Pro upgrade CTA", () => {
     await act(async () => {
       fireEvent.click(btn);
     });
-    expect(billing.upgradeToUltra).toHaveBeenCalledTimes(1);
+    expect(billing.startCheckout).toHaveBeenCalledWith("ultra");
   });
 
-  it("ultra_pro owner sees the Ultra Pro badge and no upgrade button", () => {
+  it("ultra_pro owner sees the Ultra badge and no upgrade button", () => {
     billing.isSubscribed = true;
     billing.account = {
       is_subscribed: true,
@@ -109,20 +105,19 @@ describe("BillingPanel — Ultra Pro upgrade CTA", () => {
       provider_choice: null,
       byo_provider: null,
       plan: "ultra_pro",
-      seat_count: null,
-      team_seat_price_usd: null,
-      is_seat_subscription: false,
+      workspace_price_usd: 50,
+      ultra_price_usd: 150,
     };
 
     render(<SettingsPage />);
 
-    expect(screen.getByText("Ultra Pro")).toBeInTheDocument();
+    expect(screen.getByText("Ultra")).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: /upgrade to ultra pro/i }),
+      screen.queryByRole("button", { name: /upgrade to ultra/i }),
     ).not.toBeInTheDocument();
   });
 
-  it("per-seat team card does not show the upgrade button (Ultra CTA not yet surfaced for orgs)", () => {
+  it("a workspace admin can upgrade the standard workspace to Ultra", () => {
     clerk.membership = { role: "org:admin" };
     billing.isSubscribed = true;
     billing.account = {
@@ -134,16 +129,12 @@ describe("BillingPanel — Ultra Pro upgrade CTA", () => {
       provider_choice: null,
       byo_provider: null,
       plan: "standard",
-      seat_count: 4,
-      team_seat_price_usd: 20,
-      is_seat_subscription: true,
+      workspace_price_usd: 50,
+      ultra_price_usd: 150,
     };
 
     render(<SettingsPage />);
 
-    // TeamBillingCard is present, but no Ultra upgrade button.
-    expect(
-      screen.queryByRole("button", { name: /upgrade to ultra pro/i }),
-    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /upgrade to ultra/i })).toBeInTheDocument();
   });
 });

@@ -4,6 +4,9 @@ import { render, fireEvent, screen } from "@testing-library/react";
 vi.mock("@/components/teams/command-palette/useFilteredCommandResults", () => ({
   useFilteredCommandResults: vi.fn(() => ({ agents: [], issues: [], projects: [] })),
 }));
+vi.mock("@/components/settings/CompanyStripeSection", () => ({
+  useCompanyStripeStatus: () => ({ data: null }),
+}));
 
 import { CommandPalette } from "@/components/teams/command-palette/CommandPalette";
 import { useFilteredCommandResults } from "@/components/teams/command-palette/useFilteredCommandResults";
@@ -18,7 +21,8 @@ test("renders 'Navigate' group with the IA nav actions on open with empty query"
   expect(screen.getByText("Navigate")).toBeInTheDocument();
   expect(screen.getByText("Inbox")).toBeInTheDocument();
   expect(screen.getByText("Home")).toBeInTheDocument();
-  expect(screen.getByText("Org chart")).toBeInTheDocument();
+  // The org chart is a view of the Agents panel now, so "Agents" is the row.
+  expect(screen.getByText("Agents")).toBeInTheDocument();
   expect(screen.getByText("Settings")).toBeInTheDocument();
 });
 

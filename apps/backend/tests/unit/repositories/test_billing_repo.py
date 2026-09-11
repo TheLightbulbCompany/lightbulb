@@ -123,105 +123,6 @@ async def test_set_subscription_nonexistent(dynamodb_table):
 
 
 @pytest.mark.asyncio
-async def test_set_subscription_clear_seat_fields_removes_stale_seat_data(dynamodb_table):
-    """Regression: cancelling a per-seat org subscription must also clear
-    subscription_item_id + seat_count, not just the subscription id/status —
-    otherwise is_seat_subscription (routers/billing.py) stays True forever."""
-    from core.repositories import billing_repo
-
-    await billing_repo.create_if_not_exists("org_seat_cancel", "cus_seat_cancel", owner_type="org")
-    await billing_repo.set_team_subscription(
-        "org_seat_cancel",
-        subscription_id="sub_seat",
-        subscription_item_id="si_seat",
-        status="active",
-        seat_count=4,
-    )
-
-    result = await billing_repo.set_subscription(
-        owner_id="org_seat_cancel",
-        subscription_id=None,
-        status="canceled",
-        trial_end=None,
-        clear_seat_fields=True,
-    )
-    assert result is not None
-    assert result["subscription_status"] == "canceled"
-    assert result["stripe_subscription_id"] is None
-    assert "subscription_item_id" not in result
-    assert "seat_count" not in result
-
-    stored = await billing_repo.get_by_owner_id("org_seat_cancel")
-    assert "subscription_item_id" not in stored
-    assert "seat_count" not in stored
-
-
-@pytest.mark.asyncio
-async def test_set_subscription_without_clear_seat_fields_preserves_seat_data(dynamodb_table):
-    """Default behavior (clear_seat_fields=False) — used by the
-    created/updated webhook path — must NOT touch seat fields, since that
-    path relies on set_team_subscription running separately/afterward."""
-    from core.repositories import billing_repo
-
-    await billing_repo.create_if_not_exists("org_seat_keep", "cus_seat_keep", owner_type="org")
-    await billing_repo.set_team_subscription(
-        "org_seat_keep",
-        subscription_id="sub_seat",
-        subscription_item_id="si_seat",
-        status="active",
-        seat_count=3,
-    )
-
-    result = await billing_repo.set_subscription(
-        owner_id="org_seat_keep",
-        subscription_id="sub_seat",
-        status="active",
-        trial_end=None,
-    )
-    assert result["subscription_item_id"] == "si_seat"
-    assert result["seat_count"] == 3
-
-
-@pytest.mark.asyncio
-async def test_set_team_subscription_writes_item_id_and_seats(dynamodb_table):
-    from core.repositories import billing_repo
-
-    await billing_repo.create_if_not_exists("org_seat", "cus_seat", owner_type="org")
-    result = await billing_repo.set_team_subscription(
-        "org_seat",
-        subscription_id="sub_seat",
-        subscription_item_id="si_seat",
-        status="active",
-        seat_count=5,
-    )
-    assert result is not None
-    assert result["stripe_subscription_id"] == "sub_seat"
-    assert result["subscription_item_id"] == "si_seat"
-    assert result["subscription_status"] == "active"
-    assert result["seat_count"] == 5
-
-    stored = await billing_repo.get_by_owner_id("org_seat")
-    assert stored["subscription_item_id"] == "si_seat"
-    assert stored["seat_count"] == 5
-
-
-@pytest.mark.asyncio
-async def test_set_team_subscription_noops_without_row(dynamodb_table):
-    from core.repositories import billing_repo
-
-    # Never upsert a phantom row for an owner with no billing account.
-    result = await billing_repo.set_team_subscription(
-        "org_missing",
-        subscription_id="sub_x",
-        subscription_item_id="si_x",
-        status="active",
-        seat_count=2,
-    )
-    assert result is None
-    assert await billing_repo.get_by_owner_id("org_missing") is None
-
-
-@pytest.mark.asyncio
 async def test_delete(dynamodb_table):
     from core.repositories import billing_repo
 
@@ -256,19 +157,50 @@ async def test_set_and_get_by_metronome_customer_id(dynamodb_table):
 async def test_create_trial_local_if_absent_writes_trial_row(dynamodb_table):
     from core.repositories import billing_repo
 
-    before = int(time.time())
-    created = await billing_repo.create_trial_local_if_absent("user_trial_1", "personal")
-    after = int(time.time())
+    created = await billing_repo.create_trial_local_if_absent("org_trial_1", "org", trial_end=None)
 
-    assert created is True, "the call that actually writes the row must return True"
-    item = await billing_repo.get_by_owner_id("user_trial_1")
-    assert item is not None
+    assert created is True
+    item = await billing_repo.get_by_owner_id("org_trial_1")
     assert item["subscription_status"] == "trial_local"
-    assert item["owner_type"] == "personal"
-    assert "trial_end" in item
-    three_days = 3 * 24 * 60 * 60
-    assert before + three_days <= item["trial_end"] <= after + three_days
+    assert item["owner_type"] == "org"
+    assert "trial_end" not in item
     assert not any(k.startswith("stripe_") for k in item)
+
+
+@pytest.mark.asyncio
+async def test_trial_arms_once_even_when_ready_polls_race(dynamodb_table):
+    import asyncio
+    from core.repositories import billing_repo
+
+    dynamodb_table.put_item(Item={"owner_id": "org_trial", "owner_type": "org", "subscription_status": "trial_local"})
+    ends = await asyncio.gather(
+        billing_repo.arm_trial_if_unset("org_trial", now_s=1_000),
+        billing_repo.arm_trial_if_unset("org_trial", now_s=9_999),
+    )
+    assert ends[0] == ends[1]
+    assert ends[0] in (260_200, 269_199)
+    assert await billing_repo.arm_trial_if_unset("org_trial", now_s=50_000) == ends[0]
+    assert (await billing_repo.get_by_owner_id("org_trial"))["trial_end"] == ends[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [None, "active", "trialing", "canceled"])
+async def test_trial_armer_leaves_missing_and_non_trial_rows_untouched(dynamodb_table, status):
+    from core.repositories import billing_repo
+
+    if status:
+        dynamodb_table.put_item(Item={"owner_id": "org_other", "subscription_status": status, "trial_end": 123})
+    before = await billing_repo.get_by_owner_id("org_other")
+    assert await billing_repo.arm_trial_if_unset("org_other", now_s=1_000) is None
+    assert await billing_repo.get_by_owner_id("org_other") == before
+
+
+@pytest.mark.asyncio
+async def test_trial_armer_returns_first_ready_plus_three_days(dynamodb_table):
+    from core.repositories import billing_repo
+
+    dynamodb_table.put_item(Item={"owner_id": "org_trial", "subscription_status": "trial_local"})
+    assert await billing_repo.arm_trial_if_unset("org_trial", now_s=1_000) == 260_200
 
 
 @pytest.mark.asyncio
@@ -322,40 +254,6 @@ async def test_set_metronome_ids_requires_existing_row(dynamodb_table):
 
 
 @pytest.mark.asyncio
-async def test_add_trial_daily_spend_accumulates_per_date(dynamodb_table):
-    """First add creates the nested map + leaf; second add accumulates the
-    same day; a different date is an independent leaf."""
-    from core.repositories import billing_repo
-
-    await billing_repo.create_if_not_exists("user_x", "cus_meta")
-
-    t1 = await billing_repo.add_trial_daily_spend("user_x", "2026-07-10", 1000)
-    t2 = await billing_repo.add_trial_daily_spend("user_x", "2026-07-10", 500)
-    assert t1 == 1000
-    assert t2 == 1500
-
-    t3 = await billing_repo.add_trial_daily_spend("user_x", "2026-07-11", 200)
-    assert t3 == 200
-
-    assert await billing_repo.get_trial_daily_spend("user_x", "2026-07-10") == 1500
-    assert await billing_repo.get_trial_daily_spend("user_x", "2026-07-11") == 200
-
-
-@pytest.mark.asyncio
-async def test_add_trial_daily_spend_supports_negative_delta_rollback(dynamodb_table):
-    """The ADD verb is signed: a negative delta subtracts. No caller writes
-    negatives today (the meter Lambda only ever adds priced invocations), but
-    the primitive's arithmetic must stay correct — a correction/backfill is the
-    obvious future caller, and a silently-clamped ADD would be a money bug."""
-    from core.repositories import billing_repo
-
-    await billing_repo.create_if_not_exists("user_y", "cus_meta2")
-    await billing_repo.add_trial_daily_spend("user_y", "2026-07-10", 1000)
-    total = await billing_repo.add_trial_daily_spend("user_y", "2026-07-10", -400)
-    assert total == 600
-
-
-@pytest.mark.asyncio
 async def test_get_trial_daily_spend_defaults_to_zero(dynamodb_table):
     from core.repositories import billing_repo
 
@@ -364,19 +262,6 @@ async def test_get_trial_daily_spend_defaults_to_zero(dynamodb_table):
     assert await billing_repo.get_trial_daily_spend("user_z", "2026-07-10") == 0
     # no billing row at all for this owner
     assert await billing_repo.get_trial_daily_spend("ghost_owner", "2026-07-10") == 0
-
-
-@pytest.mark.asyncio
-async def test_add_trial_daily_spend_requires_existing_row(dynamodb_table):
-    """No phantom billing rows — same invariant as set_metronome_ids /
-    clear_provider_choice."""
-    from botocore.exceptions import ClientError
-
-    from core.repositories import billing_repo
-
-    with pytest.raises(ClientError):
-        await billing_repo.add_trial_daily_spend("ghost_owner", "2026-07-10", 1000)
-    assert await billing_repo.get_by_owner_id("ghost_owner") is None
 
 
 @pytest.mark.asyncio
@@ -399,14 +284,14 @@ async def test_set_stripe_customer_id_backfills_existing_trial_local_row(dynamod
     assert after["stripe_customer_id"] == "cus_backfilled"
     # Rest of the trial row is untouched.
     assert after["subscription_status"] == "trial_local"
-    assert after["trial_end"] == before["trial_end"]
+    assert "trial_end" not in after
 
 
 @pytest.mark.asyncio
 async def test_set_stripe_customer_id_requires_existing_row(dynamodb_table):
     """No phantom billing rows — same invariant as set_metronome_ids /
-    add_trial_daily_spend / clear_provider_choice. A conditional update
-    against a missing owner_id must raise, never silently upsert."""
+    clear_provider_choice. A conditional update against a missing owner_id
+    must raise, never silently upsert."""
     from botocore.exceptions import ClientError
 
     from core.repositories import billing_repo
@@ -414,6 +299,23 @@ async def test_set_stripe_customer_id_requires_existing_row(dynamodb_table):
     with pytest.raises(ClientError):
         await billing_repo.set_stripe_customer_id("ghost_owner", stripe_customer_id="cus_phantom")
     assert await billing_repo.get_by_owner_id("ghost_owner") is None
+
+
+@pytest.mark.asyncio
+async def test_set_stripe_customer_id_is_a_first_writer_wins_claim(dynamodb_table):
+    """A concurrent first checkout cannot overwrite the workspace customer."""
+    from botocore.exceptions import ClientError
+
+    from core.repositories import billing_repo
+
+    await billing_repo.create_trial_local_if_absent("workspace_claim", "org")
+    await billing_repo.set_stripe_customer_id("workspace_claim", stripe_customer_id="cus_winner")
+
+    with pytest.raises(ClientError):
+        await billing_repo.set_stripe_customer_id("workspace_claim", stripe_customer_id="cus_loser")
+
+    account = await billing_repo.get_by_owner_id("workspace_claim")
+    assert account["stripe_customer_id"] == "cus_winner"
 
 
 # ---------------------------------------------------------------------------
@@ -1017,25 +919,6 @@ async def test_a_lapsed_apple_purchase_does_not_hand_back_the_free_tier(dynamodb
 
     row = await billing_repo.get_by_owner_id("user_lapsed")
     assert row["subscription_status"] == "canceled"
-
-
-@pytest.mark.asyncio
-async def test_team_seat_writes_go_through_the_same_derivation(dynamodb_table):
-    """set_team_subscription is a Stripe writer too — writing the shared field
-    directly would make it last-writer-wins against Apple."""
-    from core.repositories import billing_repo
-
-    await billing_repo.create_if_not_exists("org_1", "cus_org")
-    await billing_repo.set_apple_subscription(
-        "org_1", original_transaction_id="2000000000000014", status="active", expires_at=None
-    )
-    await billing_repo.set_team_subscription(
-        "org_1", subscription_id=None, subscription_item_id="si_1", status="canceled", seat_count=3
-    )
-
-    row = await billing_repo.get_by_owner_id("org_1")
-    assert row["stripe_subscription_status"] == "canceled"
-    assert row["subscription_status"] == "active"
 
 
 # ---------------------------------------------------------------------------

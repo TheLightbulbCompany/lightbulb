@@ -1,185 +1,121 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, render } from "@testing-library/react";
+import { DEFAULT_AGENT_SENTINEL, MESSAGES_PANEL_ID } from "../panelRegistry";
+import {
+  _resetFocusComposerRequestForTests,
+  deferFocusComposerRequest,
+  releaseFocusComposerRequest,
+  requestFocusComposer,
+} from "@/lib/focusComposerRequest";
 
-import { DEFAULT_AGENT_SENTINEL } from "../panelRegistry";
-
-// --- Mocks -------------------------------------------------------------------
-// useAgents is fully stubbed so each test drives roster/settled state directly.
-// ChatPanel imports BOTH useAgents and agentDisplayName from this module, so the
-// mock must export both.
-interface FakeAgent {
-  id: string;
-  name?: string;
-  identity?: { name?: string };
-}
-let agentsState: { agents: FakeAgent[]; defaultId: string | undefined; isSettled: boolean };
+let defaultId: string | undefined;
+let selectAgentDm = vi.fn<(id: string) => Promise<void>>();
 vi.mock("@/hooks/useAgents", () => ({
-  useAgents: () => agentsState,
-  agentDisplayName: (a: FakeAgent) => a.identity?.name || a.name || a.id,
+  useAgents: () => ({ agents: [], defaultId }),
 }));
-
-// The GLOBAL /teams/agents roster read (pause/resume state).
-let teamsAgentsData:
-  | { agents?: { id: string; status?: string | null }[] }
-  | undefined;
-vi.mock("@/hooks/useTeamsApi", () => ({
-  useTeamsApi: () => ({ read: () => ({ data: teamsAgentsData }) }),
+vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
+  useMessagingWorkspace: () => ({ selectAgentDm }),
 }));
-
-const pause = vi.fn(async () => {});
-const resume = vi.fn(async () => {});
-vi.mock("@/components/teams/agents/hooks/useAgentMutations", () => ({
-  useAgentMutations: () => ({ pause, resume }),
-}));
-
-const openPanel = vi.fn();
-vi.mock("../workspaceController", () => ({
-  openPanel: (...args: unknown[]) => openPanel(...args),
-}));
-
-// Stub the heavy chat window down to a probe that exposes the agentId it was
-// handed plus a button that exercises the onOpenFile bridge.
-vi.mock("@/components/chat/AgentChatWindow", () => ({
-  AgentChatWindow: ({
-    agentId,
-    onOpenFile,
-  }: {
-    agentId: string | null;
-    onOpenFile?: (path: string) => void;
-  }) => (
-    <div data-testid="agent-chat" data-agent-id={agentId ?? ""}>
-      <button data-testid="open-file" onClick={() => onOpenFile?.("dir/file.txt")}>
-        open
-      </button>
-    </div>
-  ),
+vi.mock("@/components/messaging/MessagingWorkspace", () => ({
+  MessagingConversation: () => null,
+  MessagingWorkspace: () => null,
 }));
 
 import { ChatPanel } from "../panels/ChatPanel";
-
 type ChatPanelProps = React.ComponentProps<typeof ChatPanel>;
 
-function makeProps(agentId: string): ChatPanelProps {
-  const api: Record<string, unknown> = { title: "Chat", close: vi.fn() };
-  api.setTitle = vi.fn((t: string) => {
-    api.title = t;
-  });
+function makeProps(agentId?: string) {
+  const listeners = new Set<(params: { agentId?: string }) => void>();
+  const api = {
+    id: MESSAGES_PANEL_ID,
+    title: "Messages",
+    setTitle: vi.fn(),
+    onDidParametersChange: (listener: (params: { agentId?: string }) => void) => {
+      listeners.add(listener);
+      return { dispose: () => listeners.delete(listener) };
+    },
+    updateParameters: (params: { agentId?: string }) => listeners.forEach((listener) => listener(params)),
+  };
   return { params: { agentId }, api } as unknown as ChatPanelProps;
 }
 
 beforeEach(() => {
-  agentsState = { agents: [], defaultId: undefined, isSettled: true };
-  teamsAgentsData = undefined;
-  openPanel.mockClear();
-  pause.mockClear();
-  resume.mockClear();
+  _resetFocusComposerRequestForTests();
+  defaultId = undefined;
+  selectAgentDm = vi.fn().mockResolvedValue(undefined);
 });
 
 describe("ChatPanel", () => {
-  it("resolves the default sentinel to the concrete default agent", () => {
-    agentsState = {
-      agents: [{ id: "agent-ceo", name: "Friday" }],
-      defaultId: "agent-ceo",
-      isSettled: true,
-    };
+  it("resolves the sentinel when the default roster arrives", () => {
     const props = makeProps(DEFAULT_AGENT_SENTINEL);
-    render(<ChatPanel {...props} />);
-
-    // The resolved concrete id is handed to the chat window...
-    expect(screen.getByTestId("agent-chat").getAttribute("data-agent-id")).toBe(
-      "agent-ceo",
-    );
-    // ...and the tab title / header reflect the resolved agent name.
-    expect(props.api.setTitle).toHaveBeenCalledWith("Friday");
-    expect(screen.getByText("Friday")).toBeTruthy();
+    const view = render(<ChatPanel {...props} />);
+    expect(selectAgentDm).not.toHaveBeenCalled();
+    defaultId = "agent-ceo";
+    view.rerender(<ChatPanel {...props} />);
+    expect(selectAgentDm).toHaveBeenCalledExactlyOnceWith("agent-ceo");
+    expect(props.api.setTitle).not.toHaveBeenCalled();
   });
 
-  it("does NOT show agent-gone while the roster is still settling", () => {
-    // isSettled false ⇒ membership check must not fire even for an unknown id.
-    agentsState = { agents: [], defaultId: undefined, isSettled: false };
-    const props = makeProps("ghost");
-    render(<ChatPanel {...props} />);
-
-    expect(screen.queryByText(/no longer exists/i)).toBeNull();
-    const win = screen.getByTestId("agent-chat");
-    expect(win.getAttribute("data-agent-id")).toBe("ghost");
+  it("keeps an explicit agent deep link while the roster catches up", () => {
+    render(<ChatPanel {...makeProps("agent-late")} />);
+    expect(selectAgentDm).toHaveBeenCalledExactlyOnceWith("agent-late");
   });
 
-  it("holds a neutral 'Chat' title while the roster is unsettled, then re-resolves to the agent name", () => {
-    // Onboarding window: the roster is latched empty/unsettled, so a raw
-    // agent UUID must never surface as the tab title.
-    agentsState = { agents: [], defaultId: undefined, isSettled: false };
-    const props = makeProps("64ac920b-1111-2222-3333-444455556666");
-    const { rerender } = render(<ChatPanel {...props} />);
-
-    expect(props.api.setTitle).not.toHaveBeenCalledWith(
-      "64ac920b-1111-2222-3333-444455556666",
-    );
-    expect(props.api.title).toBe("Chat");
-
-    // Roster arrives — the title memo is reactive and re-resolves.
-    agentsState = {
-      agents: [{ id: "64ac920b-1111-2222-3333-444455556666", identity: { name: "Friday" } }],
-      defaultId: "64ac920b-1111-2222-3333-444455556666",
-      isSettled: true,
-    };
-    rerender(<ChatPanel {...props} />);
-    expect(props.api.setTitle).toHaveBeenCalledWith("Friday");
+  it("retargets a mounted conversation on Dockview parameter changes", () => {
+    const props = makeProps("agent-friday");
+    render(<ChatPanel {...props} />);
+    act(() => props.api.updateParameters({ agentId: "agent-atlas" }));
+    expect(selectAgentDm.mock.calls).toEqual([["agent-friday"], ["agent-atlas"]]);
   });
 
-  it("shows agent-gone ONLY once settled with an unknown id, and closes on click", () => {
-    agentsState = {
-      agents: [{ id: "real", name: "Real" }],
-      defaultId: "real",
-      isSettled: true,
-    };
-    const props = makeProps("ghost");
-    render(<ChatPanel {...props} />);
-
-    expect(screen.getByText(/no longer exists/i)).toBeTruthy();
-    // The chat window is not mounted in the gone state.
-    expect(screen.queryByTestId("agent-chat")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: /close panel/i }));
-    expect(props.api.close).toHaveBeenCalledTimes(1);
+  it("does not snap room selection back when the selector changes identity", () => {
+    const props = makeProps("agent-friday");
+    const view = render(<ChatPanel {...props} />);
+    selectAgentDm = vi.fn().mockResolvedValue(undefined);
+    view.rerender(<ChatPanel {...props} />);
+    expect(selectAgentDm).not.toHaveBeenCalled();
+    act(() => props.api.updateParameters({ agentId: undefined }));
+    expect(selectAgentDm).not.toHaveBeenCalled();
+    act(() => props.api.updateParameters({ agentId: "agent-friday" }));
+    expect(selectAgentDm).toHaveBeenCalledExactlyOnceWith("agent-friday");
   });
 
-  it("action cluster opens inspector + tasks via openPanel with pushUrl", () => {
-    agentsState = {
-      agents: [{ id: "agent-ceo", name: "Friday" }],
-      defaultId: "agent-ceo",
-      isSettled: true,
-    };
-    const props = makeProps("agent-ceo");
-    render(<ChatPanel {...props} />);
-
-    fireEvent.click(screen.getByTitle("Inspect agent"));
-    expect(openPanel).toHaveBeenCalledWith(
-      "agent-inspector",
-      { agent: "agent-ceo" },
-      { pushUrl: true },
-    );
-
-    fireEvent.click(screen.getByTitle("Agent tasks"));
-    expect(openPanel).toHaveBeenCalledWith(
-      "teams-issues",
-      { agent: "agent-ceo" },
-      { pushUrl: true },
-    );
+  it("leaves generic room selection to the shared owner", () => {
+    render(<ChatPanel {...makeProps()} />);
+    expect(selectAgentDm).not.toHaveBeenCalled();
   });
 
-  it("reflects paused status from the global roster read", () => {
-    agentsState = {
-      agents: [{ id: "agent-ceo", name: "Friday" }],
-      defaultId: "agent-ceo",
-      isSettled: true,
-    };
-    teamsAgentsData = { agents: [{ id: "agent-ceo", status: "paused" }] };
-    const props = makeProps("agent-ceo");
+  it("allows a failed agent selection to retry after clearing the target", async () => {
+    selectAgentDm.mockRejectedValueOnce(new Error("Unavailable"));
+    const props = makeProps("agent-friday");
     render(<ChatPanel {...props} />);
+    await act(async () => {});
+    act(() => props.api.updateParameters({ agentId: undefined }));
+    act(() => props.api.updateParameters({ agentId: "agent-friday" }));
+    expect(selectAgentDm).toHaveBeenCalledTimes(2);
+  });
 
-    // Paused ⇒ the toggle offers "Resume".
-    expect(screen.getByTitle("Resume agent")).toBeTruthy();
-    expect(screen.queryByTitle("Pause agent")).toBeNull();
+  it("discards a deferred focus request when room selection fails", async () => {
+    selectAgentDm.mockRejectedValueOnce(new Error("Unavailable"));
+    requestFocusComposer("agent-friday", "Do not replay later");
+    deferFocusComposerRequest("agent-friday");
+    render(<ChatPanel {...makeProps("agent-friday")} />);
+
+    await act(async () => {});
+
+    expect(releaseFocusComposerRequest("agent-friday")).toBe(false);
+  });
+
+  it("does not replay a newer selection after an older request fails", async () => {
+    let rejectOld!: (error: Error) => void;
+    selectAgentDm.mockImplementationOnce(() => new Promise<void>((_, reject) => { rejectOld = reject; }));
+    const props = makeProps("agent-friday");
+    const view = render(<ChatPanel {...props} />);
+    act(() => props.api.updateParameters({ agentId: "agent-atlas" }));
+    await act(async () => { rejectOld(new Error("Old request failed")); });
+    selectAgentDm = vi.fn().mockResolvedValue(undefined);
+    view.rerender(<ChatPanel {...props} />);
+    expect(selectAgentDm).not.toHaveBeenCalled();
   });
 });

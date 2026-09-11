@@ -3,6 +3,8 @@
 import pytest
 from unittest.mock import AsyncMock, patch
 
+from core.auth import AuthContext
+
 
 class TestSyncUser:
     """Tests for POST /api/v1/users/sync endpoint."""
@@ -318,6 +320,11 @@ class TestGetMe:
 
 class TestDeleteMyAccount:
     """Tests for POST /api/v1/users/me/delete (self-serve deletion, 5.1.1(v))."""
+
+    @pytest.fixture
+    def mock_auth_context(self) -> AuthContext:
+        """Self-service account deletion is intentionally personal-only."""
+        return AuthContext(user_id="user_test_123", email="person@example.com")
 
     @staticmethod
     def _report():

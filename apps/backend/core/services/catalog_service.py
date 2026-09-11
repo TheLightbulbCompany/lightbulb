@@ -640,6 +640,9 @@ class CatalogService:
                 extra_update_fields=extra_update_fields,
             )
 
+            # self._pair_fn (pair_with_openclaw) above also registers the
+            # agent's Lightbulb channel account + binding — see its docstring.
+
             # Selection-aware additions (marketplace publish flow): the
             # seller picked specific MCP servers + skills in the publish
             # wizard; those land in the slice under ``mcp`` / ``skills``
@@ -890,7 +893,7 @@ class CatalogService:
                 owner_id,
             )
 
-        from core.services.config_patcher import remove_from_openclaw_config_list
+        from core.services.config_patcher import deregister_lightbulb_agent_account, remove_from_openclaw_config_list
 
         try:
             await remove_from_openclaw_config_list(
@@ -901,6 +904,18 @@ class CatalogService:
         except Exception:
             logger.exception(
                 "unwind_partial_deploy: failed to remove openclaw.json agent entry %s for %s",
+                new_agent_id,
+                owner_id,
+            )
+
+        # Rollback counterpart of the register call in deploy_from_artifact —
+        # a channel account/binding left behind would route to an agent that
+        # no longer exists.
+        try:
+            await deregister_lightbulb_agent_account(owner_id, new_agent_id)
+        except Exception:
+            logger.exception(
+                "unwind_partial_deploy: failed to remove lightbulb channel account %s for %s",
                 new_agent_id,
                 owner_id,
             )

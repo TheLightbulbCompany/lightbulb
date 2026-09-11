@@ -96,14 +96,14 @@ def mock_user_payload() -> dict:
 
 
 @pytest.fixture
-def mock_auth_context() -> AuthContext:
-    """Default mock auth context for personal mode (no org)."""
-    return AuthContext(user_id="user_test_123")
+def mock_auth_context(mock_org_admin_context: AuthContext) -> AuthContext:
+    """Default mock auth context for an active workspace admin."""
+    return mock_org_admin_context
 
 
 @pytest.fixture
 def mock_current_user(mock_auth_context):
-    """Dependency override for get_current_user with mock AuthContext (personal mode)."""
+    """Dependency override for get_current_user with workspace-admin auth."""
 
     async def _mock_get_current_user():
         return mock_auth_context
@@ -193,7 +193,7 @@ def client(app, mock_current_user) -> Generator:
 
 @pytest.fixture
 async def async_client(app, mock_current_user) -> AsyncGenerator:
-    """Async test client with mocked auth (personal mode)."""
+    """Async test client with mocked workspace-admin auth."""
     from core.auth import get_current_user
 
     app.dependency_overrides[get_current_user] = mock_current_user

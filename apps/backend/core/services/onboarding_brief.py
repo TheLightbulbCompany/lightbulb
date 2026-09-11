@@ -1,27 +1,11 @@
-"""First-run brief staging — the onboarding aha's OpenClaw-primitive layer.
+"""First-message onboarding intake and fulfilment.
 
-Writes ``BRIEF.md`` into Friday's agent workspace on EFS BEFORE her
-container boots (same pre-boot window friday_identity.py uses; OpenClaw's
-writeFileIfMissing honors pre-written files): the user's funnel input,
-verbatim + identity context. Written unconditionally. The one-shot marker
-for the whole flow is the generation-fenced ``funnel_state`` on the
-paperclip-companies owner row (see
-``paperclip_repo.claim_funnel_submission``), not BRIEF.md's existence.
-
-There used to also be a first-run ``BOOTSTRAP.md`` variant staged here,
-telling Friday to read BRIEF.md and go to work. It was deleted (spec PR-6,
-BOOTSTRAP) once verified inert: OpenClaw's boot-time reconcile
-(``reconcileWorkspaceBootstrapCompletionState``) never surfaces a seeded
-BOOTSTRAP.md into Friday's context once ``setupCompletedAt`` is pre-marked
-(see ``core/services/friday_identity.py``, and research §5 of
-``docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md``'s
-companion) — the file was written but never read. The kickoff is now a
-server-dispatched ``chat.send`` (``core/services/bootstrap_dispatcher.py``),
-an observed operation instead of a file with no code path to Friday's
-context.
-
-The spec is docs/superpowers/specs/2026-07-12-onboarding-aha-first-run-design.md
-(§4.B). BRIEF.md's content contract is unchanged by PR-6.
+The first human message in a fresh workspace's canonical room remains a
+normal room dispatch. When that dispatch selected an agent, a post-send capture
+persists its text and target, then this module creates the initial goal/project
+and stages ``BRIEF.md`` in that agent's workspace exactly once. The
+generation-fenced ``funnel_state`` is the durable claim; there is no synthetic
+bootstrap message or bootstrap dispatcher.
 """
 
 from __future__ import annotations
@@ -32,7 +16,9 @@ from datetime import datetime, timezone
 from enum import Enum
 
 from core.containers.workspace import Workspace
+from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event
+from core.repositories import messaging_repo
 
 logger = logging.getLogger(__name__)
 
@@ -152,27 +138,9 @@ def project_name_for(first_name: str) -> str:
     return f"{first_name}'s Company"
 
 
-# ---------------------------------------------------------------------------
-# First-run kickoff message — the user's OWN words as their visible first
-# message in Friday's chat.
-#
-# Two functions, one source of truth for the wording:
-#
-#   * ``build_onboarding_brief_text`` — runs at ``/onboarding/brief`` submit
-#     time (where the funnel ``path`` is known) and produces the natural-
-#     language brief phrase persisted on the paperclip-companies owner row
-#     (``onboarding_brief_text``, written in ``claim_funnel_submission``'s CAS).
-#   * ``build_first_run_message`` — runs in ``bootstrap_dispatcher`` and wraps
-#     that persisted phrase into the chat.send the server dispatches as
-#     Friday's first-run kickoff. The dispatcher only sees the row (no funnel
-#     ``path``), so the phrase must already read correctly after "I'm starting
-#     " on BOTH funnel paths — which is why the phrase, not the wrapper, is
-#     where the new-vs-grow verb lives.
-#
-# This replaces the old generic ``FIRST_RUN_PROMPT`` ("Friday — I just set up
-# my company. Read BRIEF.md…"), which showed a canned instruction (or nothing)
-# instead of the user's own ask.
-# ---------------------------------------------------------------------------
+# Legacy first-run message helpers remain for compatibility coverage. Fresh
+# workspaces no longer synthesize a kickoff chat message; their own first room
+# message is the onboarding input and normal dispatch.
 
 # The naming ask sits IN the kickoff body, BEFORE the board ask — not in the
 # closing steps where it used to live. Two things freeze from the company's
@@ -216,16 +184,10 @@ FIRST_RUN_NO_BRIEF_MESSAGE = (
 
 
 def build_onboarding_brief_text(*, path: str, user_input: str | None, detail: str | None) -> str | None:
-    """The natural-language brief phrase persisted on the owner row and later
-    woven into Friday's first-run kickoff message (``build_first_run_message``).
+    """Legacy brief phrase formatter retained for compatibility coverage.
 
-    Returns ``None`` on the "you pick" path (``user_input`` absent/blank) — the
-    row simply carries no brief text and the dispatcher falls back to
-    ``FIRST_RUN_NO_BRIEF_MESSAGE``.
-
-    The phrase is written to slot after "I'm starting " and read correctly on
-    both funnel paths, since the dispatcher has only the persisted text (not the
-    ``path``) to work from:
+    Fresh-workspace onboarding captures the entire first room message directly.
+    This helper still normalizes the former funnel paths:
 
       * ``new`` — the user's verbatim idea, with the optional "who's it for"
         audience (``detail``) woven in naturally when present. Their words are
@@ -318,16 +280,10 @@ _CLOSING_STEPS = (
 
 
 def build_first_run_message(brief_text: str | None) -> str:
-    """Friday's first-run kickoff chat.send message — the VISIBLE first user
-    message in her chat.
+    """Legacy first-run kickoff message formatter.
 
-    ``brief_text`` is the persisted ``onboarding_brief_text``
-    (``build_onboarding_brief_text``'s output). When present, the message leads
-    with the user's own ask and carries the research → write-up → three-next-
-    moves instruction in that same message (deterministic, not a hoped-for
-    system-prompt behavior). When absent/blank (the "you pick" path, or a legacy
-    row with no persisted brief), it falls back to ``FIRST_RUN_NO_BRIEF_MESSAGE``
-    — so a missing field degrades to a sensible default, never an empty send.
+    It is not wired into fresh-workspace onboarding: that flow dispatches the
+    user's first room message normally and stages the text in ``BRIEF.md``.
     """
     brief = (brief_text or "").strip()
     if not brief:
@@ -427,7 +383,7 @@ class DrainOutcome(str, Enum):
 
     NOT_READY = "not_ready"
     """The workspace can't receive a brief yet (no owner row, still
-    provisioning, Friday not seeded). The NORMAL first-run state -- this is
+    provisioning, selected agent not seeded). The NORMAL first-run state -- this is
     what the whole mechanism exists to wait through, so it must never burn a
     failure attempt."""
 
@@ -496,22 +452,68 @@ def _claim_age_s(submitted_at) -> float | None:
 _draining: set[str] = set()
 
 
+async def capture_first_workspace_message(owner_id: str, message: dict) -> bool:
+    """Turn the first human message in the canonical room into onboarding intake."""
+    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.services.messaging import default_room_id
+
+    author = message.get("author") or {}
+    text = str(message.get("text") or "").strip()
+    if (
+        message.get("roomId") != default_room_id(owner_id)
+        or int(message.get("messageSeq") or 0) < 1
+        or author.get("kind") != "human"
+        or len(text) < 3
+    ):
+        return False
+    if len(text) > 2000:
+        put_metric("OnboardingBriefTooLong")
+        return False
+    target_agent_id = next(
+        (
+            target.get("agentId")
+            for target in message.get("dispatchTargets") or []
+            if isinstance(target, dict) and isinstance(target.get("agentId"), str)
+        ),
+        None,
+    )
+    if target_agent_id is None:
+        return False
+
+    message_seq = int(message.get("messageSeq") or 0)
+    earlier = await messaging_repo.list_messages_between(str(message["roomId"]), 1, message_seq - 1)
+    if any((row.get("author") or {}).get("kind") == "human" for row in earlier):
+        return False
+
+    repo = PaperclipRepo(table_name="paperclip-companies")
+    owner_row = await repo.resolve_owner_row(owner_id, consistent_read=True)
+    if getattr(owner_row, "status", None) != "active" or getattr(owner_row, "funnel_state", None) != "not_started":
+        return False
+
+    landed = await repo.put_pending_brief(
+        owner_id,
+        path="new",
+        user_input=text,
+        detail=None,
+        brief_text=text,
+        submitted_by=str(author["id"]),
+        source_message_id=str(message["messageId"]),
+        target_agent_id=target_agent_id,
+    )
+    if not landed:
+        return False
+    await reconcile_pending_brief(owner_id)
+    return True
+
+
 async def reconcile_pending_brief(owner_id: str) -> None:
-    """Fulfil a submitted funnel answer, if there is one and the workspace can
-    now receive it. Retries itself until it succeeds or gives up.
+    """Fulfil a captured first-room message when its workspace is ready.
 
-    This is the FULFILMENT half of ``POST /onboarding/brief``. The endpoint
-    itself does intake only (record what the user said, return); everything
-    that needs Paperclip up and Friday seeded happens here, on the same
-    server-owned, idempotent, claim-fenced pattern as
-    ``bootstrap_dispatcher.maybe_dispatch_bootstrap``. Call sites:
-
-      - ``routers/onboarding.py:submit_brief`` -- on every accepted POST,
-        including a duplicate one, since a resubmit is often the user trying
-        to unstick exactly this.
-      - ``routers/container.py:container_status`` -- ahead of that endpoint's
-        early returns, so a parked trial / gated / org-member poll still
-        drains.
+    ``capture_first_workspace_message`` is intake; it persists the message
+    and invokes this function after normal room dispatch. Everything that
+    needs an active Paperclip workspace happens here under one idempotent,
+    claim-fenced path. ``routers/container.py`` retries pending intake on
+    status polls, including early-return states.
 
     **Why it retries itself rather than leaning on the poll.** The poll looks
     like a free retry engine and isn't: dismissing the funnel opens the chat
@@ -673,11 +675,22 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
         # tells the next person which kind it was.
         logger.warning("reconcile_brief: fulfilment read phase failed for %s: %s", owner_id, e, exc_info=True)
         raise
-    friday = next((a for a in agents if a.get("role") == "ceo"), None)
-    if friday is None:
-        # Paperclip seed hasn't landed Friday yet -- still provisioning.
+    if "target_agent_id" in pending:
+        target_agent_id = pending.get("target_agent_id")
+        target_agent = next((agent for agent in agents if agent.get("id") == target_agent_id), None)
+    else:
+        # Briefs persisted by the retired onboarding endpoint predate room
+        # dispatch targets. Fulfil only those legacy rows through the existing
+        # root CEO; current chat capture always persists an explicit target.
+        target_agent = next(
+            (agent for agent in agents if agent.get("role") == "ceo" and not agent.get("reportsTo")),
+            None,
+        )
+    if target_agent is None:
+        # The selected dispatch target (or a legacy row's existing root CEO)
+        # has not landed yet.
         return DrainOutcome.NOT_READY
-    friday_id = friday["id"]
+    assigned_agent_id = target_agent["id"]
 
     claim_result = await repo.claim_funnel_submission(
         owner_row.user_id,
@@ -697,21 +710,21 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
     project_id: str | None = None
     try:
         first_name = first_name_from_email(email)
-        # Seeded BEFORE the kickoff dispatches, or Friday wakes into a company
-        # with no project to work against.
+        # Seed before staging BRIEF.md, so the dispatched agent has a project
+        # to work against when it next reads its workspace.
         goal_id, project_id = await seed_goal_and_project(
             admin=admin,
             session_cookie=session_cookie,
             company_id=owner_row.company_id,
-            friday_agent_id=friday_id,
+            friday_agent_id=assigned_agent_id,
             goal_title=derive_goal_title(path=path, user_input=user_input),
             project_name=project_name_for(first_name),
         )
         # Recorded BEFORE staging the workspace file, not after: this is the
         # generation-fenced write that decides who wins. Staging is a visible
-        # side effect on Friday's NEXT boot -- if this write raced a
-        # reprovision (generation moved on) and staging ran first anyway,
-        # Friday could boot against dead goal/project ids.
+        # side effect on the agent's next boot -- if this write raced a
+        # reprovision (generation moved on) and staging ran first anyway, the
+        # agent could boot against dead goal/project ids.
         await repo.record_onboarding_ids(
             owner_row.user_id,
             onboarding_generation=generation,
@@ -722,7 +735,7 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
         stage_first_run_files(
             workspace=get_workspace(),
             owner_id=owner_id,
-            friday_agent_id=friday_id,
+            friday_agent_id=assigned_agent_id,
             brief_md=render_brief_md(
                 path=path,
                 user_input=user_input,
@@ -731,6 +744,13 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
                 email=email or "",
             ),
         )
+        completed = await repo.complete_funnel_submission(
+            owner_row.user_id,
+            onboarding_generation=generation,
+            owner_id=owner_id,
+        )
+        if not completed:
+            raise RuntimeError("onboarding generation changed before completion")
     except BaseException:
         # BaseException, not Exception: asyncio.CancelledError (backend
         # shutdown mid-drain) inherits from BaseException. Skipping the revert
@@ -762,21 +782,7 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
             logger.error("reconcile_brief: failed to revert funnel claim for %s: %s", owner_id, cleanup_err)
         raise
 
-    # The pending item is deliberately NOT deleted here, even though we won the
-    # claim and finished the work. Deleting it now hands the funnel's dismissal
-    # back to a single signal -- the row's own funnel_state -- which for an org
-    # is read through the eventually-consistent by-org-id GSI. A poll landing
-    # in that replication window would see the item gone AND the row still
-    # "not_started", and re-render the committed front door at a user who just
-    # submitted (empty, since the client clears its draft on success).
-    #
-    # Retirement instead happens at one of two later, lag-free points:
-    #   * the completion sweep in bootstrap_dispatcher, when funnel_state goes
-    #     "complete" -- which is also the moment get_onboarding_state stops
-    #     reading this item at all; or
-    #   * _settle_lost_claim, once the seeded ids have outlived the rollback
-    #     window (SETTLED_CLAIM_S), for the case where the kickoff never
-    #     delivers.
+    await repo.delete_pending_brief(owner_id)
 
     # The funnel-conversion event belongs HERE, not at intake: it is the
     # metric that answers "did onboarding work", and an intake-time emission
@@ -788,36 +794,6 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
         properties={"path": path, "no_idea": user_input is None},
     )
 
-    # Same fire-and-forget hand-off the endpoint used to make: if the runtime
-    # is already up, Friday's kickoff goes now; if it is still cold, the next
-    # /container/status poll dispatches it (bootstrap_dispatcher's own guards
-    # make a redundant call a cheap no-op).
-    #
-    # The onboarding dict is passed INLINE rather than letting the dispatcher
-    # re-read the row. For an org that re-read goes through the
-    # eventually-consistent by-org-id GSI, and the claim landed milliseconds
-    # ago -- it would read funnel_state "not_started" and silently skip the
-    # kickoff, which is precisely the miss the old router avoided by passing
-    # this same dict. Every value here is one we just wrote or just read.
-    #
-    # Deliberately carries no bootstrap_dispatched_at/_dispatch_id: this fast
-    # path cannot expire a stale claim (the dispatcher's staleness rule refuses
-    # to act on a claim it cannot date -- fail closed), and it does not need to.
-    # The /container/status poll passes the full row and is the recovery path.
-    from core.services.bootstrap_dispatcher import maybe_dispatch_bootstrap
-
-    await maybe_dispatch_bootstrap(
-        owner_id,
-        onboarding={
-            "onboarding_generation": generation,
-            "funnel_state": "submitted",
-            "bootstrap_state": owner_row.bootstrap_state or "not_started",
-            "bootstrap_attempts": owner_row.bootstrap_attempts or 0,
-            "user_id": owner_row.user_id,
-            "onboarding_submitted_by": submitted_by,
-            "onboarding_brief_text": brief_text,
-        },
-    )
     return DrainOutcome.DONE
 
 
@@ -826,9 +802,8 @@ async def _settle_lost_claim(repo, owner_id: str, owner_row, generation: str) ->
 
     Three cases, and the distinction is load-bearing:
 
-    * **Fulfilment completed** (``funnel_state == "complete"`` -- set only by
-      ``mark_bootstrap_delivered``, i.e. Friday's kickoff was OBSERVED to
-      deliver). The brief is done; retire the item.
+    * **Fulfilment completed** (``funnel_state == "complete"`` after the
+      initial goal/project and BRIEF.md stage). The brief is done; retire it.
     * **A peer is mid-flight.** Leave the item alone and stop. It is NOT
       enough that the row carries ``onboarding_goal_id``: those ids are
       written by ``record_onboarding_ids`` BEFORE the last fallible step
@@ -839,9 +814,8 @@ async def _settle_lost_claim(repo, owner_id: str, owner_row, generation: str) ->
       seeding (a rolling deploy, a cancelled task) leaves the row at
       "submitted" with nothing behind it, and the generation fence has no
       stale-steal of its own -- so the row would sit unclaimable forever
-      while the funnel stays dismissed. Revert the claim so the next pass can
-      win it, the same recovery ``rearm_bootstrap_dispatch`` gives the
-      bootstrap claim.
+      while onboarding stays incomplete. Revert the claim so the next pass can
+      win it.
     """
     fresh = await repo.resolve_owner_row(owner_id, consistent_read=True)
     if fresh is None:

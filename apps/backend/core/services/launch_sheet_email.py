@@ -51,9 +51,9 @@ _DEFAULT_COPY: dict[str, dict[str, str]] = {
     },
     "winner_unpaid": {
         "subject": "You won a free month of Lightbulb",
-        "lead": "Your first month of Starter is free — applied automatically at checkout.",
+        "lead": "Your first month of Workspace is free — applied automatically at checkout.",
         "detail": (
-            "You made the top of the launch competition sheet, so your first month of Lightbulb Starter is on us."
+            "You made the top of the launch competition sheet, so your first month of Lightbulb Workspace is on us."
         ),
     },
     "competing": {
@@ -278,7 +278,7 @@ async def send_winner_paid_email(*, to_email: str, first_name: str | None, copy:
 
 async def send_winner_unpaid_email(*, to_email: str, first_name: str | None, copy: dict | None = None) -> str | None:
     """Winner not yet subscribed: the coupon pre-applies at checkout. The
-    free month is a STARTER month — the coupon is product-restricted, so the
+    free month is a Workspace month — the coupon is product-restricted, so the
     copy says so."""
     return await _send("winner_unpaid", to_email=to_email, first_name=first_name, values={}, copy=copy)
 
@@ -356,11 +356,10 @@ async def send_test(variant: str, *, to_email: str, copy: dict | None, values: d
 # best-effort, never raises.
 
 # The standing rule the founders would otherwise have to rederive at close:
-# a winning TEAM's free month covers the container line only.
+# a winning team's free month covers the Workspace subscription.
 TEAM_FREE_MONTH_NOTE = (
-    "If this team wins, their free month covers the container only "
-    "($50 Teams base) — per-seat charges still bill normally, so a "
-    "five-seat winner costs us the same $50 an individual winner does."
+    "If this team wins, their free month covers the $50 Workspace plan. "
+    "Ultra is $150/month; both plans include unlimited members and inference costs are separate."
 )
 
 

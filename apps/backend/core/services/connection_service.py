@@ -14,18 +14,15 @@ DynamoDB Table Schema:
 - userId (S) - the authenticated user's ID
 - orgId (S) - organization ID (empty string if None)
 - connectedAt (S) - ISO timestamp of connection
-- lastPingAt (N) - epoch seconds of the last liveness stamp (stamped at
-  connect by store_connection, refreshed by touch_connection on the
-  frontend's ~30s ping)
 - ttl (N) - epoch seconds; DynamoDB native TTL sweep attribute
-  (timeToLiveAttribute, api-stack.ts:277). Stamped alongside lastPingAt
-  so a missed $disconnect (crashed tab, dropped connection) still gets
-  reaped instead of leaving a zombie row forever.
+  (timeToLiveAttribute, api-stack.ts:277) for missed disconnect cleanup.
 
 Note: Table creation is handled by Terraform, not this service.
 """
 
 import asyncio
+import hashlib
+import json
 import logging
 import os
 import time
@@ -54,21 +51,6 @@ _TTL_WINDOW_SECONDS = 7200  # 2 hours
 # refreshes.
 _LIVENESS_STALE_SECONDS = 180
 
-# touch_connection in-process throttle: skip the DynamoDB write if the same
-# connection_id was touched more recently than this. The frontend pings
-# every ~30s, so this collapses roughly every other ping into a no-op.
-_PING_THROTTLE_SECONDS = 60
-
-# count_live_chat_connections freshness window: a chat row counts as "live"
-# if lastPingAt is within this many seconds of now (four missed 30s pings).
-_LIVE_WINDOW_SECONDS = 120
-
-# Bound on the in-process touch throttle dict (see touch_connection). Once
-# it grows past this many tracked connection_ids it is cleared outright
-# rather than evicted entry-by-entry -- simplest bound that still keeps
-# memory flat across a long-running process life.
-_TOUCH_THROTTLE_MAX_ENTRIES = 10_000
-
 # Synthetic connectionId namespace for the gateway-liveness rows (see
 # mark_gateway_connected). One row per owner_id, keyed
 # "gateway#{owner_id}" so it can never collide with a real API Gateway
@@ -85,6 +67,10 @@ _GATEWAY_LIVENESS_PREFIX = "gateway#"
 
 def _gateway_liveness_key(owner_id: str) -> str:
     return f"{_GATEWAY_LIVENESS_PREFIX}{owner_id}"
+
+
+def _revocation_key(owner_id: str, user_id: str) -> str:
+    return "revocation#" + hashlib.sha256(json.dumps([owner_id, user_id]).encode()).hexdigest()
 
 
 class ConnectionServiceError(Exception):
@@ -114,9 +100,6 @@ class ConnectionService:
         # Explicitly set region to avoid NoRegionError in containerized environments
         region = region_name or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
         self._client = boto3.client("dynamodb", region_name=region)
-        # In-process throttle for touch_connection -- see that method's
-        # docstring for scope (single-backend-instance posture) and bound.
-        self._touch_throttle: dict[str, float] = {}
 
     def store_connection(
         self,
@@ -193,6 +176,7 @@ class ConnectionService:
             response = self._client.get_item(
                 TableName=self.table_name,
                 Key={"connectionId": {"S": connection_id}},
+                ConsistentRead=True,
             )
         except ClientError as e:
             logger.error(
@@ -204,7 +188,7 @@ class ConnectionService:
                 f"Failed to get connection {connection_id}: {e.response['Error']['Message']}"
             ) from e
 
-        if "Item" not in response:
+        if "Item" not in response or "userId" not in response["Item"]:
             logger.debug("Connection %s not found", connection_id)
             return None
 
@@ -215,7 +199,70 @@ class ConnectionService:
             "user_id": item["userId"]["S"],
             "org_id": org_id_value if org_id_value else None,  # Convert empty string to None
             "connection_type": item.get("connectionType", {}).get("S", "chat"),
+            **{
+                name: item.get(field, {}).get("S", "")
+                for name, field in (
+                    ("auth_kind", "authKind"),
+                    ("verified_issuer", "verifiedIssuer"),
+                    ("verified_subject", "verifiedSubject"),
+                    ("source_ip", "sourceIp"),
+                    ("device_id", "deviceId"),
+                )
+                if field in item
+            },
         }
+
+    async def pending_member_revocations(self, owner_id: str, user_id: str) -> set[str]:
+        """Strong retry discovery independent of a deleted admission/GSI row."""
+        response = await asyncio.to_thread(
+            self._client.get_item,
+            TableName=self.table_name,
+            Key={"connectionId": {"S": _revocation_key(owner_id, user_id)}},
+            ConsistentRead=True,
+        )
+        return set(response.get("Item", {}).get("connectionIds", {}).get("SS", []))
+
+    async def begin_member_revocation(self, owner_id: str, user_id: str, connection_id: str) -> None:
+        """Atomically deny admission and retain its edge ID until teardown succeeds.
+
+        The retry marker has no userId/ownerId/type, so it is neither an
+        authorizing connection nor a user/owner fanout recipient. No TTL:
+        an outage must not silently expire an unfinished security cleanup.
+        """
+        await asyncio.to_thread(
+            self._client.transact_write_items,
+            TransactItems=[
+                {
+                    "Update": {
+                        "TableName": self.table_name,
+                        "Key": {"connectionId": {"S": _revocation_key(owner_id, user_id)}},
+                        "UpdateExpression": "ADD connectionIds :ids",
+                        "ExpressionAttributeValues": {":ids": {"SS": [connection_id]}},
+                    }
+                },
+                {"Delete": {"TableName": self.table_name, "Key": {"connectionId": {"S": connection_id}}}},
+            ],
+        )
+
+    async def finish_member_revocation(self, owner_id: str, user_id: str, connection_id: str) -> None:
+        key = {"connectionId": {"S": _revocation_key(owner_id, user_id)}}
+        await asyncio.to_thread(
+            self._client.update_item,
+            TableName=self.table_name,
+            Key=key,
+            UpdateExpression="DELETE connectionIds :ids",
+            ExpressionAttributeValues={":ids": {"SS": [connection_id]}},
+        )
+        try:
+            await asyncio.to_thread(
+                self._client.delete_item,
+                TableName=self.table_name,
+                Key=key,
+                ConditionExpression="attribute_not_exists(connectionIds)",
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
 
     async def count_for_user(self, user_id: str) -> int:
         """Count WS connection rows owned by ``user_id``.
@@ -341,141 +388,6 @@ class ConnectionService:
                 f"Failed to query connections for owner {owner_id}: {e.response['Error']['Message']}"
             ) from e
 
-    async def touch_connection(self, connection_id: str) -> None:
-        """Refresh liveness stamps (lastPingAt + ttl) for connection_id.
-
-        Called fire-and-forget from the ping handler in
-        routers/websocket_chat.py (``asyncio.create_task(...)``, never
-        awaited) right after the pong is sent, so the pong latency never
-        gains a DDB round-trip. Because nothing awaits this coroutine, it
-        must swallow its own errors -- an exception here would only ever
-        surface as an asyncio "Task exception was never retrieved"
-        warning, never anything actionable to a caller.
-
-        Throttled in-process to at most one DynamoDB write per
-        connection_id every ``_PING_THROTTLE_SECONDS``. The frontend pings
-        on a ~30s cadence, so this collapses roughly every other ping into
-        a no-op instead of writing on every single one. The throttle dict
-        lives on this instance/process -- same posture as other in-process
-        rate-limit state in this codebase (e.g.
-        ``routers/hooks_proxy.py::_RATE`` (a ``RateBucket``),
-        ``routers/connections.py::_aws_cli_rate_buckets``): correct as
-        long as the backend runs at desiredCount=1. If it's ever scaled
-        horizontally, each instance throttles independently -- a
-        connection touched via a different instance inside the window
-        just gets rewritten again, which is harmless (one extra write),
-        not incorrect. Bounded to avoid unbounded growth over a long
-        process lifetime: once the dict holds
-        ``_TOUCH_THROTTLE_MAX_ENTRIES`` tracked ids it is cleared outright
-        (cheap to recompute -- worst case is one extra write per
-        connection right after a clear) rather than tracked with
-        per-entry eviction.
-
-        Uses a conditional update (``attribute_exists(connectionId)``) so
-        a ping that races a concurrent $disconnect can't resurrect a
-        phantom row -- if the connection was already deleted, this is a
-        silent no-op rather than recreating a row with only lastPingAt/ttl
-        and none of the owner/user/type fields callers depend on.
-        """
-        now = time.time()
-        last_touch = self._touch_throttle.get(connection_id)
-        if last_touch is not None and (now - last_touch) < _PING_THROTTLE_SECONDS:
-            return
-
-        if len(self._touch_throttle) >= _TOUCH_THROTTLE_MAX_ENTRIES:
-            self._touch_throttle.clear()
-        self._touch_throttle[connection_id] = now
-
-        now_epoch = int(now)
-
-        def _update() -> None:
-            self._client.update_item(
-                TableName=self.table_name,
-                Key={"connectionId": {"S": connection_id}},
-                UpdateExpression="SET lastPingAt = :p, #ttl = :t",
-                ConditionExpression="attribute_exists(connectionId)",
-                ExpressionAttributeNames={"#ttl": "ttl"},
-                ExpressionAttributeValues={
-                    ":p": {"N": str(now_epoch)},
-                    ":t": {"N": str(now_epoch + _TTL_WINDOW_SECONDS)},
-                },
-            )
-
-        try:
-            await asyncio.to_thread(_update)
-        except ClientError as e:
-            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-                logger.debug(
-                    "touch_connection: %s no longer exists (disconnected concurrently)",
-                    connection_id,
-                )
-            else:
-                logger.warning(
-                    "Failed to touch connection %s (best-effort liveness stamp): %s",
-                    connection_id,
-                    e.response["Error"]["Message"],
-                )
-
-    async def count_live_chat_connections(self, owner_id: str) -> int:
-        """Count live chat-typed WS connections for owner_id.
-
-        "Live" (binding rules -- the scale-to-zero "is anyone here?" check
-        consumes this count, and that stop side must over-preserve, never
-        over-kill):
-          - connectionType == "chat" only. node/operator connections are
-            transparent pipes (desktop node-host, control-UI proxy), not
-            "someone looking at the chat UI".
-          - lastPingAt within ``_LIVE_WINDOW_SECONDS`` (120s -- four missed
-            30s pings) of now counts as live.
-          - lastPingAt MISSING also counts as live. This covers rows
-            written before this liveness stamping shipped (pre-deploy) and
-            the brief window right after $connect before the frontend's
-            first ping lands. Treating "we don't know" as "live" is the
-            deliberate fail-safe: undercounting live connections risks a
-            later scale-to-zero decision killing an active session, which
-            is exactly the failure mode this plumbing exists to prevent.
-
-        query_by_owner resolves candidates via the by-owner-id GSI, whose
-        INCLUDE projection only carries userId + connectionType (not
-        lastPingAt -- see the GSI comment in api-stack.ts), so each chat
-        candidate needs one extra base-table read to check freshness.
-        """
-        rows = await self.query_by_owner(owner_id)
-        chat_ids = [connection_id for connection_id, _user_id, connection_type in rows if connection_type == "chat"]
-        if not chat_ids:
-            return 0
-
-        now = time.time()
-
-        def _count() -> int:
-            live = 0
-            for connection_id in chat_ids:
-                response = self._client.get_item(
-                    TableName=self.table_name,
-                    Key={"connectionId": {"S": connection_id}},
-                    ProjectionExpression="lastPingAt",
-                )
-                item = response.get("Item")
-                if item is None:
-                    # Disconnected between the GSI query and this read.
-                    continue
-                raw = item.get("lastPingAt", {}).get("N")
-                if raw is None or (now - float(raw)) < _LIVE_WINDOW_SECONDS:
-                    live += 1
-            return live
-
-        try:
-            return await asyncio.to_thread(_count)
-        except ClientError as e:
-            logger.error(
-                "Failed to count live chat connections for owner %s: %s",
-                owner_id,
-                e.response["Error"]["Message"],
-            )
-            raise ConnectionServiceError(
-                f"Failed to count live chat connections for owner {owner_id}: {e.response['Error']['Message']}"
-            ) from e
-
     async def has_live_operator_connection(self, owner_id: str) -> bool:
         """Is a Paperclip run executing against this owner's container right now?
 
@@ -485,11 +397,9 @@ class ConnectionService:
         read of "is Paperclip using the container", with no run-state tracking
         of our own to keep in sync.
 
-        Scale-to-zero needs it because ``has_active_runs`` only ever sees
-        WEBCHAT runs: a trial owner who posts a Teams comment and closes their
-        tab has a live Friday run the pool is completely blind to, and stopping
-        the container under it kills a legitimate turn — the exact over-kill the
-        stop path's "over-preserve, never over-kill" rule forbids.
+        Scale-to-zero needs it because Paperclip's operator socket is separate
+        from backend-to-OpenClaw room run tracking. Stopping under it kills a
+        legitimate turn, violating the stop path's over-preserve rule.
 
         No freshness check, unlike the chat count: an operator row is written at
         ``$connect`` and deleted at ``$disconnect``, and the adapter does not

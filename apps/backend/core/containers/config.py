@@ -11,14 +11,20 @@ import base64
 import hashlib
 import json
 import logging
+import os
 import secrets
+import tempfile
 import time
 from pathlib import Path
 
 from core import openclaw_version
 from core.config import settings
 from core.services.config_schema import gate_config
-from core.services.efs_file_lock import get_file_lock, openclaw_config_sidecar_lock
+from core.services.efs_file_lock import (
+    chown_uid_1000_best_effort,
+    get_file_lock,
+    openclaw_config_sidecar_lock,
+)
 from core.services.paperclip_meta import (
     PAPERCLIP_AGENT_ROLES,
     PaperclipMeta,
@@ -248,11 +254,20 @@ AGENT_MAX_CONCURRENT = 4
 # does NOT count against the main agents.defaults.maxConcurrent semaphore, so it
 # needs its own bound.
 #
-# TRIAL ONLY, unlike the other three bounds. Those (timeoutSeconds, runRetries,
-# loopDetection) are sane everywhere: no legitimate run wants 48 hours or 160
-# retries. This one is different — it throttles *capability*, and for a paid
-# owner the spend is bounded by their own credits or their own API key, so
-# there is no reason to make them delegate more slowly than upstream allows.
+# This MOVES WITH AGENT_MAX_CONCURRENT and must never be left above it. The two
+# numbers bound the same scarce resource — the 1 vCPU Fargate task — through two
+# independent doors: the global run semaphore, and a subagent lane that is
+# explicitly exempt from it. Pinning the semaphore to 4 while leaving the lane at
+# upstream's 8 does not cap concurrency at 4, it caps it at 12, on the box that
+# already crash-looped an 11-agent owner at boot. So a change to either constant
+# is a change to both.
+#
+# It used to be trial-only, on the argument that a paid owner's spend is bounded
+# by their own credits. That was the wrong axis: this is a CPU bound, not a
+# spend bound, and the CPU is the same 1 vCPU on every plan.
+AGENT_SUBAGENT_MAX_CONCURRENT = AGENT_MAX_CONCURRENT
+# The trial box gets a tighter lane still: no human is in the loop, and a
+# fan-out is the fastest way to burn the $3.00/day cap.
 AGENT_SUBAGENT_MAX_CONCURRENT_TRIAL = 2
 
 # agents.defaults.contextTokens — BEDROCK ONLY. Our Bedrock catalog declares a
@@ -261,7 +276,54 @@ AGENT_SUBAGENT_MAX_CONCURRENT_TRIAL = 2
 # earlier (their ratios are measured against this value, not the model's
 # advertised window). Deliberately not set on the other paths: the ChatGPT/Codex
 # path serves ~272k and must keep inheriting its own budget.
+#
+# Do NOT round this down "to be safe". 200_000 is exactly 8.1's XL tool-result
+# tier boundary (tool-result-limits.ts: `tokens >= 200_000` → 64_000 chars,
+# `>= 100_000` → 32_000, else 16_000), and the comparison is `>=`, so sitting ON
+# the boundary buys the most generous live tool-result cap. 199_999 would halve
+# it. It is also upstream's own DEFAULT_CONTEXT_TOKENS, i.e. the value the tier
+# was drawn around.
 BEDROCK_CONTEXT_TOKENS = 200_000
+
+# session.maintenance.maxDiskBytes / highWaterBytes — the one number in this
+# file that is arithmetic against a physical disk rather than a taste call.
+#
+# WHAT CHANGED UNDER US AT 8.1. `src/config/sessions/session-history-eviction.ts`
+# is new at 2026.8.1 (absent at v2026.7.2-isol8.4). Through 7.2 this budget was
+# measured against LOGICAL bytes — projected store entries + transcript +
+# trajectory (session-accessor.sqlite-maintenance.ts:150). At 8.1 it is measured
+# against PHYSICAL usage: the SQLite main file + its WAL + everything in the
+# agent's sessions/ dir (disk-budget.ts `measureSessionPhysicalDiskUsage`). SQLite
+# main files do not shrink on delete, so the same string now buys far less real
+# history. Crossing maxDiskBytes prunes retained zstd archives with fs.promises.rm
+# and then evicts historical sessions oldest-first until usage falls to
+# highWaterBytes. We do not set `preserveRecent`, so on THIS path there is no
+# recency floor and no synthetic-only protection: a human's old /chat thread is a
+# candidate like any other. That is the opposite of what the block below used to
+# claim, and it is silent — the owner just finds their history gone.
+#
+# THE BUDGET IS PER AGENT, not per container. paths.ts resolves the store to
+# <state>/agents/<agentId>/sessions and the DB to
+# <state>/agents/<agentId>/agent/openclaw-agent.sqlite, and the sweep measures one
+# agent's directory. So the container-wide cost is N_agents x this number.
+#
+# WHY NOT UPSTREAM'S 10 GiB (store-maintenance.ts DEFAULT_SESSION_MAX_DISK_BYTES).
+# Upstream sizes for a host with a real disk. Ours is a Fargate task, and these
+# databases are NOT on EFS: container-stack.ts nests two config-less ECS volumes
+# (`openclaw-state`, `openclaw-agents`) inside the EFS mount, so state/ and
+# agents/ are task-local ext4 drawing from the task's ephemeral storage. That
+# storage is the Fargate DEFAULT — `ephemeralStorage` is declared nowhere, and
+# ecs_manager's register_task_definition kwargs whitelist would drop it if it
+# were — so the whole fleet has 20 GiB, shared. Ten agents x 10 GiB is 5x the
+# disk.
+#
+# Fixed per-agent budget: ordinary large identity rosters fit on the existing
+# 20 GiB task without turning identity count into a commercial entitlement.
+# ponytail: very large simultaneously active rosters still need measured task
+# storage work; keep the ECS reliability size-up until production boot metrics
+# show Standard rosters above ten no longer contend.
+SESSION_MAX_DISK_MIB = 256
+SESSION_HIGH_WATER_MIB = 204
 
 # ---------------------------------------------------------------------------
 # Tool deny lists — SINGLE SOURCE. node_proxy.py REPLACES tools.deny wholesale
@@ -269,7 +331,10 @@ BEDROCK_CONTEXT_TOKENS = 200_000
 # a hand-written list anywhere else silently re-enables an entry on the next
 # pair event.
 #
-# - canvas: no product surface (Control UI disabled).
+# - canvas: no product surface (Control UI disabled). Belt on top of the
+#   braces — workflow_plugin_entries pins the canvas PLUGIN off, which is what
+#   also removes its always-loaded skill from the prompt; this entry keeps the
+#   tool denied even if the plugin is ever re-enabled by hand.
 # - cron: Paperclip routines are the single scheduling authority.
 # - tts: the key-less Microsoft Edge provider registers the tts tool with NO
 #   config at all (tools.media.audio gates *understanding*, not TTS), so
@@ -586,7 +651,7 @@ def build_provider_block(
     _emit_81_shape = _emits_81_shape(deployed_tag)
     if provider_choice == "chatgpt_oauth":
         # ChatGPT OAuth resolves through OpenClaw's bundled `openai` provider
-        # plugin, whose model catalog (gpt-5.5 / gpt-5.4-mini / …) is baked
+        # plugin, whose model catalog (gpt-5.5 / gpt-5.6-luna / …) is baked
         # into its manifest as a STATIC catalog — so `openai/gpt-5.5` resolves
         # with no explicit provider entry. We deliberately emit NO
         # `models.providers.openai` block: an explicit override (baseUrl +
@@ -639,7 +704,15 @@ def build_provider_block(
             return (
                 {},
                 {
-                    "primary": "anthropic/claude-sonnet-4-6",
+                    # Same swap as the OpenAI path below (gpt-5.5 -> gpt-5.6-sol),
+                    # finally carried across: 8.1 dropped claude-sonnet-4-6 from
+                    # extensions/anthropic's catalog. A ref the static catalog no
+                    # longer resolves depends entirely on the plugin's live
+                    # discovery refresh against the owner's key — and before that
+                    # lands (cold container, first run, key or network failure)
+                    # model-setup throws model_not_found and the primary silently
+                    # degrades to the haiku fallback.
+                    "primary": "anthropic/claude-sonnet-5",
                     "fallbacks": ["anthropic/claude-haiku-4-5"],
                 },
                 {},
@@ -751,10 +824,19 @@ def build_provider_block(
             )
         # Fallbacks are error-only, not cost routing. With a haiku tier the
         # failover REDUCES spend (cheapest priced tier). With no cheaper tier —
-        # the trial's single-model catalog — the fallback is the primary itself:
-        # there is nothing else the owner's IAM role can invoke, and pointing at
-        # a model it can't would turn any transient error into a hard failure.
-        fallback_id = haiku_id or sonnet_id
+        # the trial's single-model catalog — there is NO fallback at all, and the
+        # key is omitted rather than pointed back at the primary.
+        #
+        # A self-fallback was emitted here for a while. It could never fire:
+        # createModelCandidateCollector (model-fallback-candidates.ts) dedupes on
+        # `provider/model`, and the primary is added first as the "requested"
+        # candidate, so the identical fallback is dropped and the chain is one
+        # entry long. What it DID do is make hasConfiguredModelFallbacks() report
+        # true, which flips `fallbackConfigured` on every run: past the overload
+        # profile-rotation cap the runner then stops rotating and throws a
+        # FailoverError to reach a model lane that has nothing in it. Omitting the
+        # key keeps that flag honest.
+        fallback_id = haiku_id
         # The bedrock-gate is the STANDARD Bedrock path: baseUrl points at the
         # gate's Function URL (discovered at runtime from SSM — see
         # core/billing/bedrock_gate_url.py) so every inference call flows
@@ -797,7 +879,7 @@ def build_provider_block(
                 #
                 # Users can still override per-agent via agents.list[*].model.
                 "primary": f"amazon-bedrock/{sonnet_id}",
-                "fallbacks": [f"amazon-bedrock/{fallback_id}"],
+                **({"fallbacks": [f"amazon-bedrock/{fallback_id}"]} if fallback_id else {}),
             },
             {
                 "amazon-bedrock": {
@@ -883,7 +965,11 @@ def premium_model_ref(
     if provider_choice == "byo_key":
         if byo_provider == "anthropic":
             # Anthropic-DIRECT id — no Bedrock "-v1" suffix / date-stamp.
-            return "anthropic/claude-opus-4-6"
+            # claude-opus-4-6 was dropped from the 8.1 catalog. This one matters
+            # more than the primary above: the CEO pin has NO per-agent fallback,
+            # so a ref the catalog cannot resolve does not degrade — it fails
+            # every Friday run until discovery refreshes.
+            return "anthropic/claude-opus-5"
         if byo_provider == "openai":
             # Same swap as the OAuth primary: gpt-5.5 is deprecated at 8.1 and
             # the BYO path now runs key-scoped discovery too (model_policy_block),
@@ -949,15 +1035,15 @@ def heartbeat_model_ref(
     This differs from ``cheap_model_ref`` only on the ``chatgpt_oauth`` path.
     The heartbeat is an ordinary agentTurn (the synthetic "[heartbeat poll]"
     that reads HEARTBEAT.md and replies HEARTBEAT_OK when idle), which the
-    Codex OAuth token CAN serve on the mini tier — unlike compaction, which
+    Codex OAuth token CAN serve on the Luna tier — unlike compaction, which
     the Codex backend runs natively and which rejects an OpenClaw-side model
     override (see ``cheap_model_ref``). So the OAuth heartbeat routes to
-    ``gpt-5.4-mini`` to keep the 30-min per-agent maintenance poll off the
+    ``gpt-5.6-luna`` to keep the 30-min per-agent maintenance poll off the
     premium model, while compaction/memory-flush keep using ``cheap_model``
     (None on OAuth → inherits the chat model so Codex native compaction runs).
     """
     if provider_choice == "chatgpt_oauth":
-        return "openai/gpt-5.4-mini"
+        return "openai/gpt-5.6-luna"
     return cheap_model_ref(provider_choice, byo_provider, aip_arns=aip_arns)
 
 
@@ -1059,6 +1145,25 @@ def _build_agents_list(paperclip_agents: list[dict], ceo_model: str | None = Non
     return entries
 
 
+def _lightbulb_agent_ids(paperclip_agents: list[dict]) -> list[str]:
+    """Canonical account/binding IDs from the same roster as agents.list/entries."""
+    return sorted({entry["id"] for entry in _build_agents_list(paperclip_agents)})
+
+
+def _lightbulb_bindings(agent_ids: list[str]) -> list[dict]:
+    return [
+        {
+            "agentId": agent_id,
+            "match": {
+                "channel": "lightbulb",
+                "accountId": agent_id,
+                "peer": {"kind": "channel", "id": "*"},
+            },
+        }
+        for agent_id in agent_ids
+    ]
+
+
 def _build_agents_roster(
     paperclip_agents: list[dict],
     ceo_model: str | None,
@@ -1089,8 +1194,8 @@ def _build_agents_roster(
 
 
 def workflow_plugin_entries(llm_task_model: str | None = None) -> dict:
-    """Bundled, provider-independent OpenClaw extensions enabled on every
-    container.
+    """Bundled, provider-independent OpenClaw extension entries pinned on every
+    container — enabled ones, plus the one we pin OFF.
 
     Single source of truth so BOTH the provision-time builder
     (``build_openclaw_config_dict``) and the post-onboarding provider
@@ -1103,11 +1208,13 @@ def workflow_plugin_entries(llm_task_model: str | None = None) -> dict:
     - ``llm-task`` — routed to the cheap tier via ``llm_task_model`` (a
       ``<provider>/<model>`` ref, split into the plugin's ``defaultProvider``
       / ``defaultModel`` fields): llm-task calls are workflow-glue JSON steps
-      that don't need the premium default. ``None`` (no cheap tier on this
-      path — chatgpt_oauth, bedrock_trial) leaves the entry enable-only so
-      calls inherit the agent's default model. The plugin's configSchema is
-      strict (``additionalProperties: false``); only schema-listed keys may
-      ever be added here or the container crash-loops at boot.
+      that don't need the premium default. OpenClaw 9.3 requires configured
+      plugin model overrides to be explicitly allowed and named, so the same
+      exact model is also the host-level ``llm.allowedCompletionModels``
+      boundary.
+      ``None`` leaves the entry enable-only so it inherits the agent default.
+      The plugin's configSchema is strict (``additionalProperties: false``);
+      only schema-listed keys may be added here or the container crash-loops.
     - ``aws-exec-profile`` — baked in-repo plugin whose ``resolve_exec_env``
       hook injects ``AWS_PROFILE=lightbulb-connector`` into the agent's exec'd
       commands only when the owner's connector AWS profile is materialized.
@@ -1135,6 +1242,14 @@ def workflow_plugin_entries(llm_task_model: str | None = None) -> dict:
     - ``sage-openclaw`` — Gen Sage ADR tool-call guard (baked, Dockerfile
       Layer 13c). Also strict-empty configSchema — behavior config is the
       image-baked ``/home/node/.sage/config.json``, NOT this entry.
+    - ``canvas`` — the ONE entry pinned OFF. It ships ``enabledByDefault: true``
+      with ``activation.onStartup`` and ``skills: ["./skills"]``, and that skill
+      carries no ``requires``, so it loads into every agent's prompt and offers
+      to "present hosted widget documents on a connected macOS panel". We have
+      no such panel, and ``canvas`` is in ``TOOL_DENY_BASE`` — so today the
+      prompt advertises a capability whose tool is denied. Disabling the plugin
+      kills the tool registration, the skill and the startup activation in one
+      key; denying the tool alone leaves the other two.
 
     Returned fresh each call so callers may merge/mutate without corrupting
     shared module state.
@@ -1148,6 +1263,10 @@ def workflow_plugin_entries(llm_task_model: str | None = None) -> dict:
             "defaultProvider": provider,
             "defaultModel": model,
         }
+        llm_task_entry["llm"] = {
+            "allowModelOverride": True,
+            "allowedCompletionModels": [llm_task_model],
+        }
     return {
         "lobster": {"enabled": True},
         "llm-task": llm_task_entry,
@@ -1160,10 +1279,33 @@ def workflow_plugin_entries(llm_task_model: str | None = None) -> dict:
         # an apiKey would move it to the owner's paid tier (BYOK surface,
         # not configured here).
         "firecrawl": {"enabled": True},
+        # Off, not merely tool-denied — see the docstring.
+        "canvas": {"enabled": False},
     }
 
 
-def memory_plugin_entries() -> dict:
+def _dreaming_frequency(owner_id: str | None) -> str:
+    """Nightly dreaming cron, jittered across the 03:00 UTC hour by owner.
+
+    Dreaming is a self-run per agent: it reads the day's transcripts and writes
+    consolidated notes. Every paid container firing it in the same minute is a
+    fleet-wide thundering herd — a simultaneous Bedrock burst and a simultaneous
+    EFS/SQLite burst across every task, for a sweep that has no reason to be
+    synchronised.
+
+    The minute is derived from a SHA-256 of the owner id rather than randomised,
+    so an owner always dreams in the same minute: the schedule is reproducible
+    from the owner id alone when reading a container's logs, and a reprovision
+    does not silently move it. ``None`` (fleet-wide callers with no owner in
+    hand, e.g. the memory-wiki-only patches) keeps the historical 03:00.
+    """
+    if not owner_id:
+        return "0 3 * * *"
+    minute = int(hashlib.sha256(owner_id.encode()).hexdigest(), 16) % 60
+    return f"{minute} 3 * * *"
+
+
+def memory_plugin_entries(owner_id: str | None = None) -> dict:
     """The bundled memory extensions (``memory-core`` + ``memory-wiki``),
     shared by the provision-time builder and the provider hot-swap path.
 
@@ -1218,6 +1360,9 @@ def memory_plugin_entries() -> dict:
     ``scope``/``path``/``renderMode``. A stray key crash-loops the container
     at boot.
 
+    ``owner_id`` only jitters the dreaming minute (see ``_dreaming_frequency``);
+    everything else is identical for every owner.
+
     Returned fresh each call so callers may merge/mutate without corrupting
     shared module state.
     """
@@ -1227,7 +1372,7 @@ def memory_plugin_entries() -> dict:
             "config": {
                 "dreaming": {
                     "enabled": True,
-                    "frequency": "0 3 * * *",  # nightly 03:00 unified sweep
+                    "frequency": _dreaming_frequency(owner_id),
                     "timezone": "UTC",
                     "phases": {
                         "light": {"enabled": True},
@@ -1525,7 +1670,6 @@ def build_openclaw_config_dict(
     # Fail fast — caller must regenerate via secrets.token_urlsafe before retry.
     if not gateway_token:
         raise ValueError("gateway_token must be a non-empty string")
-
     # The free-tier Bedrock config mode. Everything keyed off this flag is a
     # LOCKDOWN of autonomous / always-on surfaces: a trial container must only
     # ever run when a human is in the loop, because its only spend fence is the
@@ -1552,6 +1696,7 @@ def build_openclaw_config_dict(
     # contexts where the cost difference is largest.
     cheap_model = cheap_model_ref(provider_choice, byo_provider, aip_arns=aip_arns)
     heartbeat_model = heartbeat_model_ref(provider_choice, byo_provider, aip_arns=aip_arns)
+    lightbulb_agent_ids = _lightbulb_agent_ids(paperclip_agents or [])
 
     # Token auth — shared secret between backend and container.
     # Trusted-proxy mode explicitly blocks loopback connections (OpenClaw #17761),
@@ -1696,7 +1841,43 @@ def build_openclaw_config_dict(
                 # until a task roll. Emit the explicit owner so a regenerate
                 # alone is never owner-less. 7.2's strict agents.defaults schema
                 # refuses the key.
+                # The other FOUR keys that legacy.default-agent-roles.ts
+                # materializes from the same marker are deliberately NOT emitted;
+                # each was checked against its own reader on the deployed tag:
+                #   * talk.agentId — talk/agent-target.ts calls
+                #     resolveAmbientOwnerAgentId(cfg, cfg.talk?.agentId), so an
+                #     unset value lands on systemAgent above. Already covered.
+                #   * heartbeat.agentId — the materializer skips it whenever
+                #     agents.defaults.heartbeat is defined, and we ALWAYS define
+                #     it (below), so it is never materialized on our shape. Its
+                #     only runtime read is which agent the health summary reports
+                #     (gateway/health/collector.ts); enrollment is per-agent off
+                #     agents.defaults.heartbeat and does not consult it.
+                #   * sessionStore.agentId — the materializer skips it unless the
+                #     session store is FIXED, and ours is per-agent by omission
+                #     (isPerAgentSessionStoreConfig returns true for an unset
+                #     session.store). resolvePersistedSessionStoreOwner returns
+                #     {kind:"none"} on that shape regardless of the key.
+                #   * authInheritance.agentId — read only when the shared auth
+                #     store is still at "legacy-main", and in that case its
+                #     fallback ("main", via resolveLegacyInheritedAuthAgentId) is
+                #     the correct answer: legacy-main IS main's store. Pinning the
+                #     CEO there would repoint the inherited-auth dir at an agent
+                #     that does not hold it, and isInheritedAuthStoreOwner treats
+                #     an explicit value as authoritative even after relocation —
+                #     making the CEO permanently undeletable.
                 **({"systemAgent": {"agentId": _default_agent_id(paperclip_agents or [])}} if _emit_81_shape else {}),
+                # A `/model` directive from chat is best-effort PERSISTED unless
+                # this is "session": resolveStickyModelSelectionScope defaults to
+                # "effective" when unset, and get-reply-directives-apply.ts then
+                # sets canPersistStickyModelSelection for any owner/operator.admin
+                # sender — writing the picked model into agents.entries.<id>.model
+                # or agents.defaults.model on disk. That is chat mutating the file
+                # the backend owns wholesale, so the write survives exactly until
+                # the next regenerate and then vanishes without explanation.
+                # "session" keeps a picker change where the owner expects it —
+                # in the session — and leaves the file to its single writer.
+                **({"modelSelectionScope": "session"} if _emit_81_shape else {}),
                 **(
                     {}
                     if _emit_81_shape or provider_choice not in BEDROCK_PROVIDER_CHOICES
@@ -1813,7 +1994,7 @@ def build_openclaw_config_dict(
                 # tier — it's pure overhead and doesn't need the premium
                 # default. The heartbeat is an ordinary turn (unlike
                 # compaction), so it uses `heartbeat_model` (cheap tier for
-                # EVERY provider, including chatgpt_oauth → gpt-5.4-mini)
+                # EVERY provider, including chatgpt_oauth → gpt-5.6-luna)
                 # rather than `cheap_model` (which stays None on OAuth for the
                 # Codex native-compaction constraint). `None` only when a
                 # provider has no cheaper tier, in which case the heartbeat
@@ -1844,8 +2025,8 @@ def build_openclaw_config_dict(
                 # (simple-completion-runtime.ts) is utilityModel?.trim() ||
                 # effective PRIMARY — so an unset (or empty-string) value runs
                 # utility calls on the premium default. Reuses the heartbeat
-                # cheap-tier resolution (haiku AIP on paid Bedrock, mini on
-                # OAuth/BYO-openai, haiku on BYO-anthropic). Omitted on trial:
+                # cheap-tier resolution (haiku AIP on paid Bedrock, Luna on
+                # OAuth, mini on BYO-openai, haiku on BYO-anthropic). Omitted on trial:
                 # the single-AIP IAM policy means the primary IS the only
                 # invocable model, and "" would fall through to it anyway.
                 **({"utilityModel": heartbeat_model} if heartbeat_model else {}),
@@ -1911,10 +2092,15 @@ def build_openclaw_config_dict(
                     # stale valve merely stops counting it. Align with the
                     # run fence above.
                     "runTimeoutSeconds": AGENT_RUN_TIMEOUT_SECONDS,
-                    **(
-                        {"maxConcurrent": AGENT_SUBAGENT_MAX_CONCURRENT_TRIAL}
+                    # Pinned on EVERY path, not just the trial: the subagent lane
+                    # is exempt from the maxConcurrent semaphore above, so leaving
+                    # it at upstream's 8 makes the real ceiling 4 + 8 on a 1 vCPU
+                    # box. Moves in lockstep with AGENT_MAX_CONCURRENT — see the
+                    # constant.
+                    "maxConcurrent": (
+                        AGENT_SUBAGENT_MAX_CONCURRENT_TRIAL
                         if provider_choice == BEDROCK_TRIAL_CHOICE
-                        else {}
+                        else AGENT_SUBAGENT_MAX_CONCURRENT
                     ),
                 },
             },
@@ -1976,6 +2162,10 @@ def build_openclaw_config_dict(
         },
         "tools": {
             "profile": "full",
+            # Shared company agents communicate only through canonical rooms;
+            # never expose another agent's private OpenClaw sessions/tools.
+            "sessions": {"visibility": "agent"},
+            "agentToAgent": {"enabled": False},
             # Explicit wildcard allow, separate from ``profile: "full"``.
             # The profile's implicit wildcard surfaces core tools and
             # NON-optional plugin tools, but the optional-plugin-tool gate
@@ -2152,6 +2342,13 @@ def build_openclaw_config_dict(
                 )
             },
         },
+        "messages": {
+            "groupChat": {
+                "unmentionedInbound": "room_event",
+                "visibleReplies": "automatic",
+                "historyLimit": 50,
+            }
+        },
         "hooks": {
             "internal": {
                 "entries": {
@@ -2173,13 +2370,17 @@ def build_openclaw_config_dict(
             "enabled": True,
             "token": "${OPENCLAW_HOOK_TOKEN}",
             "path": "/hooks",
-            # Upstream's pre-auth body cap is 64 KB — far too small for
-            # real-world webhook traffic. Stripe routinely emits ~120 KB
-            # invoice payloads; GitHub PR webhooks can exceed 500 KB on
-            # large diffs. 1 MB matches the documented upper bound for
-            # both providers.
-            # Retired at 2026.8.1 (cap is built in at 256KB there); 7.2 still
-            # honours it and its default of 64KB is too small for real webhooks.
+            # 7.2 ONLY. Upstream's 7.2 pre-auth body cap is 64 KB, far too small
+            # for real webhook traffic (Stripe emits ~120 KB invoice payloads), so
+            # 7.2 containers get 1 MB.
+            #
+            # 8.1 RETIRED the key: the pre-auth cap is a built-in 256 KB, and the
+            # only way to raise it is per-mapping (hooks.mappings.<id>.maxBodyBytes).
+            # We define NO mappings, so on 8.1 the effective ceiling is 256 KB and
+            # a payload above it is refused. Nothing we drive today posts to /hooks
+            # (inbound agent mail is the only real traffic, and it is small), so
+            # this is recorded, not worked around — a >256 KB producer needs a
+            # named mapping, which is a design decision, not a constant bump.
             **({} if _emit_81_shape else {"maxBodyBytes": 1_048_576}),
             # OpenClaw v2026.5.7 (gateway/hooks.ts) requires
             # "hook:" in this list when ``defaultSessionKey`` is unset
@@ -2251,7 +2452,7 @@ def build_openclaw_config_dict(
                 # OFF). Shared with the provider hot-swap path via the
                 # memory_plugin_entries() seam so a Bedrock <-> ChatGPT switch
                 # doesn't drop it.
-                **memory_plugin_entries(),
+                **memory_plugin_entries(user_id),
                 # Parallel web-search provider plugin
                 # (@openclaw/parallel-plugin, baked into the extended image).
                 # Enables the keyless parallel-free provider that
@@ -2267,43 +2468,46 @@ def build_openclaw_config_dict(
                 # is the behaviour this replaced. The tools are non-optional,
                 # so the explicit tools.allow ["*"] above surfaces them.
                 "lightbulb-marketplace": {"enabled": True},
+                # First-party canonical multiplayer channel, baked and promoted
+                # before this config shape lands.
+                "lightbulb": {"enabled": True},
             },
         },
-        # Channels: ship EMPTY until the user configures one. A provider block
-        # (channels.<id> = {enabled: true, accounts: {...}}) appears only when the
-        # setup wizard PATCHes the first account. Why not the old enabled-trio:
-        #   - An enabled channel with zero accounts still counts as a "configured
-        #     channel" for OpenClaw's cron announce-delivery guard, so shipping all
-        #     three forced agents to disambiguate delivery.channel on every announce
-        #     cron — which they don't, so agent-authored delivery crons failed.
-        #   - An enabled channel with a stale/orphaned provider-level token auth-
-        #     loops on invalid_auth and burns CPU; empty-until-configured removes
-        #     that substrate entirely.
-        # COST: the first setup of a given channel is now a full gateway restart
-        # (the plugin isn't loaded until the channel is enabled), deferred up to
-        # ~300s — handled gracefully by the deferral-aware setup wizard
-        # (awaitChannelReady). On reprovision, the channel_accounts re-injection
-        # below recreates the enabled block + accounts for any channel the user had
-        # configured. ChannelsSchema accepts an empty object (upstream
-        # zod-schema.channels-config.ts: object().passthrough().optional()).
-        "channels": {},
+        # Lightbulb is a first-party account-per-agent channel. Third-party
+        # channels remain empty until configured and are carried below.
+        "channels": {
+            "lightbulb": {
+                "enabled": True,
+                "accounts": {agent_id: {"enabled": True} for agent_id in lightbulb_agent_ids},
+            }
+        },
+        "bindings": _lightbulb_bindings(lightbulb_agent_ids),
         "session": {
             "dmScope": "per-account-channel-peer",
+            "groupScope": "per-group",
             # "warn" (the old value) never deletes ANYTHING — unbounded
-            # session-store + archive growth on EFS, and giant session files
-            # are upstream's documented pre-OOM signature on small tasks. The
-            # eviction fear that motivated warn is obsolete: enforce preserves
-            # durable human conversations (main/group/thread), reaps only
-            # SYNTHETIC rows (cron/hook/heartbeat/ACP/subagent — exactly what
-            # our autonomous fleet mass-produces), and zstd-archives before
-            # any deletion. Bounds are generous multiples of upstream's
-            # defaults (500 rows / 30d) to protect heavy owners.
+            # session-store + archive growth, and giant session files are
+            # upstream's documented pre-OOM signature on small tasks. The
+            # eviction fear that motivated warn is obsolete for the ENTRY-COUNT
+            # and AGE paths: those preserve durable human conversations
+            # (main/group/thread) and reap only SYNTHETIC rows (cron / hook /
+            # heartbeat / ACP / subagent — exactly what our autonomous fleet
+            # mass-produces), zstd-archiving before any deletion. maxEntries and
+            # pruneAfter are therefore generous multiples of upstream's defaults
+            # (500 rows / 30d) to protect heavy owners.
+            #
+            # maxDiskBytes is NOT in that family and must not be reasoned about
+            # as if it were — at 8.1 it is a physical-bytes budget whose sweep
+            # has no synthetic-only filter and (with preserveRecent unset) no
+            # recency floor. It is derived arithmetic against the task's
+            # ephemeral disk; see SESSION_MAX_DISK_MIB above before touching it.
             # resetArchiveRetention defaults to keep-forever — set explicitly.
             "maintenance": {
                 "mode": "enforce",
                 "maxEntries": 2000,
                 "pruneAfter": "90d",
-                "maxDiskBytes": "500mb",
+                "maxDiskBytes": f"{SESSION_MAX_DISK_MIB}mb",
+                "highWaterBytes": f"{SESSION_HIGH_WATER_MIB}mb",
                 "resetArchiveRetention": "90d",
             },
             # Unconfigured, sessions reset daily at 04:00 gateway-local =
@@ -2420,7 +2624,8 @@ def build_openclaw_config_dict(
             # (findChromeExecutableLinux probes it first); the pin keeps the
             # choice deliberate rather than an accident of list order.
             "executablePath": "/usr/bin/google-chrome",
-            # extraArgs: WebGL only. Chrome 137 removed the automatic
+            # extraArgs: WebGL, the unsupported-flag infobar, and the egress
+            # proxy. Chrome 137 removed the automatic
             # SwiftShader fallback (blink-dev "Intent to Remove: SwiftShader
             # Fallback") and prod runs Chrome 151 on GPU-less Fargate, so
             # before this the container had NO WebGL at all —
@@ -2467,6 +2672,38 @@ def build_openclaw_config_dict(
             "extraArgs": [
                 "--disable-gpu",
                 "--enable-unsafe-swiftshader",
+                # Suppresses Chrome's yellow "You are using an unsupported
+                # command-line flag: --no-sandbox. Stability and security will
+                # suffer." bubble, which the owner sees in the Browser panel
+                # every session. We do not choose --no-sandbox: `noSandbox` is
+                # set above because the gateway runs as root and Chromium
+                # refuses to start as root without it, so the bar is
+                # unavoidable collateral of a decision made for us, and it
+                # tells the owner nothing they can act on.
+                #
+                # This is the SECOND banner in this panel. The first was Chrome
+                # for Testing's "only for automated testing" bar, fixed by
+                # pinning executablePath to google-chrome above — different
+                # cause, different fix, both had to be done.
+                #
+                # It must be --test-type, NOT the --disable-infobars in
+                # upstream's own extraArgs doc example: that switch stopped
+                # suppressing this bubble around Chrome 76 and is inert on the
+                # Chrome 151 we run. Do not "simplify" to it.
+                #
+                # --test-type is deliberately BROADER than this one bar: it is
+                # Chrome's "running under test automation" switch (it is what
+                # skips the bad-flags check in bad_flags_prompt.cc, which is
+                # why it works here) and it also suppresses some first-run and
+                # session-restore prompts. That is wanted, not tolerated —
+                # every one of those prompts is noise the owner would see in
+                # the live-view panel and could not act on. Anyone auditing
+                # this flag should expect more than the infobar.
+                #
+                # CONFIG-ONLY — no image roll. Verify after delivery by opening
+                # the Browser panel and looking for the bar, not by reading
+                # argv: the flag is only worth anything if the bubble is gone.
+                "--test-type",
                 # Cloudflare WARP browser egress, when the environment has the
                 # knob on. Appends at most one flag; see _browser_egress_args.
                 *_browser_egress_args(),
@@ -2597,12 +2834,14 @@ def build_openclaw_config_dict(
     # no cross-session credential bleed.
     #
     # runtimeScope exists only in the forked base image; an older gateway's MCP
-    # schema is strict and rejects unknown keys at boot, so emit it only once
-    # THIS environment's deployed image supports it — otherwise a config write to
-    # a container still on the old image bricks it on next boot. The gate flips
-    # per-environment as each tag is promoted. Only meaningful when an mcp block
-    # exists.
-    if openclaw_version.deployed_upstream_at_least("2026.6.1"):
+    # schema is strict and rejects unknown keys at boot, so emit it only once the
+    # image this config will actually RUN on supports it — otherwise a config
+    # write to a container still on the old image bricks it on next boot. Gated on
+    # _target_upstream(deployed_tag), like every other version gate in this module:
+    # the environment pin is right only for a fresh provision, and a live container
+    # can lag it by a whole upstream version during a promotion or a rollback.
+    # Only meaningful when an mcp block exists.
+    if openclaw_version.version_at_least(_target_upstream(deployed_tag), "2026.6.1"):
         mcp_block = config.get("mcp")
         if isinstance(mcp_block, dict):
             mcp_block["runtimeScope"] = "shared"
@@ -2627,6 +2866,18 @@ def build_openclaw_config_dict(
     if channel_accounts and not is_bedrock_trial:
         bindings = config.setdefault("bindings", [])
         channels = config.setdefault("channels", {})
+        # A route binding MUST name an agent that exists in this config.
+        # OpenClaw validates that at load and refuses the WHOLE file otherwise
+        # ("bindings.N.agentId: Unknown agent id ..."), so one bogus entry
+        # silently freezes an owner on their previous config — every later
+        # config change included. Two ways in, both guarded below: upstream
+        # normalizes channel-root settings into an `accounts.default` husk, and
+        # the legacy `agentId == accountId` rule then invents `agentId:
+        # "default"`; and a carried binding can name an agent since deleted.
+        agents_block = config.get("agents") or {}
+        known_agent_ids = set(agents_block.get("entries") or {}) | {
+            a.get("id") for a in (agents_block.get("list") or []) if isinstance(a, dict)
+        }
         for provider, accounts in channel_accounts.items():
             # Channels now ship empty-until-configured, so a carried-forward
             # account must (re)create its enabled channel block — otherwise the
@@ -2637,15 +2888,24 @@ def build_openclaw_config_dict(
             channel = channels.setdefault(provider, {"enabled": True, "dmPolicy": "pairing"})
             channel["enabled"] = True
             channel["accounts"] = accounts
-            # Progress drafts: one channel message edited live with tool/status
-            # lines during long autonomous turns, replaced by the final answer —
+            # Progress drafts: one channel message edited live with status
+            # during long autonomous turns, replaced by the final answer —
             # instead of minutes of silence. Telegram and Slack default to
             # plain block streaming upstream; Discord already defaults to
             # progress, so it needs no key. Zero extra LLM calls (edits only).
-            # (streaming.progress.commandText is NOT in the deployed schema —
-            # do not add it before the next image bump.)
+            #
+            # toolProgress is forced OFF, not setdefault-ed: it posts each
+            # tool's OUTPUT into the conversation, and a Read of a bundled
+            # SKILL.md put the whole file — maintenance notes addressed to our
+            # own engineers included — into an owner's shared company channel.
+            # Existing owners carry a streaming block already, so a setdefault
+            # on the parent would never reach them.
             if provider in ("telegram", "slack"):
-                channel.setdefault("streaming", {"mode": "progress"})
+                streaming = channel.setdefault("streaming", {"mode": "progress"})
+                if isinstance(streaming, dict):
+                    progress = streaming.setdefault("progress", {})
+                    if isinstance(progress, dict):
+                        progress["toolProgress"] = False
             # Stale bindings whose account no longer exists (e.g. deleted
             # after a crash) are dropped here — not carried, not re-written —
             # so an orphaned binding can't leak forward on every reprovision.
@@ -2654,6 +2914,7 @@ def build_openclaw_config_dict(
                 for b in (channel_bindings or [])
                 if (b.get("match") or {}).get("channel") == provider
                 and (b.get("match") or {}).get("accountId") in accounts
+                and b.get("agentId") in known_agent_ids
             ]
             for b in carried:
                 if b not in bindings:
@@ -2662,6 +2923,12 @@ def build_openclaw_config_dict(
             for account_id in accounts:
                 if account_id in carried_accounts:
                     continue  # the carried binding already routes this account
+                if account_id not in known_agent_ids:
+                    # The legacy convention only holds for an account KEYED by
+                    # an agent id. Anything else (an upstream `default` husk)
+                    # would name an agent that does not exist. Leave it unbound
+                    # — which is the state the container was already happy with.
+                    continue
                 binding = {
                     "type": "route",
                     "agentId": account_id,
@@ -2706,7 +2973,7 @@ async def write_openclaw_config(
     acp_enabled: bool = True,
     deployed_tag: str | None = None,
 ) -> None:
-    """Write the user's openclaw.json with the full container config.
+    """Atomically replace the user's openclaw.json with the full container config.
 
     Per spec §4.2 (flat-fee pivot, 2026-04). Tier gating is removed —
     one config shape per ``provider_choice``. The OPENAI/ANTHROPIC API
@@ -2780,7 +3047,20 @@ async def write_openclaw_config(
         # The process-local gate additionally serializes backend threads.
         with get_file_lock(lock_path):
             with openclaw_config_sidecar_lock(str(config_path.parent), lock_path):
-                config_path.write_text(json.dumps(config, indent=2))
+                fd, temporary_path = tempfile.mkstemp(
+                    dir=config_path.parent,
+                    prefix=f".{config_path.name}.",
+                    suffix=".tmp",
+                )
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                        json.dump(config, stream, indent=2)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    chown_uid_1000_best_effort(temporary_path)
+                    os.replace(temporary_path, config_path)
+                finally:
+                    Path(temporary_path).unlink(missing_ok=True)
 
     await asyncio.to_thread(_write)
 

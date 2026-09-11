@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import logging
 
+import httpx
+
 from core.containers import get_ecs_manager
 from core.containers.ecs_manager import slack_env_var_name, slack_token_value_from
 from core.repositories import channel_link_repo, integrations_repo, slack_installs_repo
@@ -69,6 +71,15 @@ def secret_provider(team_id: str) -> str:
     return f"{PROVIDER}/{team_id}"
 
 
+# Progress drafts: one channel message edited live during long turns instead of
+# minutes of silence. `toolProgress` is OFF because it posts each tool's OUTPUT
+# into the conversation — a Read of a bundled SKILL.md put the entire file,
+# including the maintenance notes addressed to our own engineers, into the
+# owner's shared company channel. The draft card still shows that work is
+# happening; only the raw tool payloads are withheld.
+PROGRESS_STREAMING = {"mode": "progress", "progress": {"toolProgress": False}}
+
+
 def account_block(team_id: str) -> dict:
     """``channels.slack.accounts.<team_id>`` for the platform app: http mode, one
     webhook path per account (the plugin's route registry is first-writer-
@@ -83,6 +94,20 @@ def account_block(team_id: str) -> dict:
         # Decision 3: Slack peers, not members — anyone in the workspace may DM.
         "dmPolicy": "open",
         "allowFrom": ["*"],
+        # Channels. `ChannelAccountPolicyDefaults` materializes
+        # groupPolicy="allowlist" onto every ACCOUNT that leaves it unset
+        # (upstream src/config/zod-schema.channel-messaging-common.ts), and we
+        # list no channels — so every channel message was dropped with an
+        # ephemeral "not in its allowlist" notice only the mentioner ever saw.
+        # That is the same materialize-on-account rule `dmPolicy` above already
+        # has to override.
+        "groupPolicy": "open",
+        # Pinned, not inherited. "open" alone would make the bot answer EVERY
+        # message in every channel it is in; what keeps it to @-mentions is
+        # requireMention, whose true is a runtime `?? true` in the plugin
+        # (monitor/context.ts), not a schema default. Leaving the safety half of
+        # this pair implicit is the exact shape of the bug above.
+        "requireMention": True,
         # Upstream default is disabled; the manifest declares /lightbulb.
         "slashCommand": {"enabled": True, "name": "lightbulb"},
     }
@@ -98,6 +123,40 @@ async def _mark_connected(owner_id: str) -> None:
 
 async def _mark_disconnected(owner_id: str) -> None:
     await integrations_repo.delete(owner_id, PROVIDER)
+
+
+SLACK_POST_MESSAGE_URL = "https://slack.com/api/chat.postMessage"
+
+# Slack surfaces an app in a member's sidebar only once a conversation with it
+# exists, so an install that posts nothing is invisible to the human who just
+# performed it: they land back on the web app, see "Connected", switch to
+# Slack, and find nothing. This DM IS the install's visible half — it opens the
+# conversation, puts the app in the installer's sidebar, and proves the token
+# works. Posting to a user id opens the IM (we hold chat:write + im:write).
+INSTALL_GREETING = (
+    "Lightbulb is connected to this workspace. :zap:\n\n"
+    "Your agent is listening right here — send it a message in this DM. "
+    "To use it in a channel, run `/invite @Lightbulb` there and @-mention it."
+)
+
+
+async def _greet_installer(bot_token: str, slack_user_id: str) -> None:
+    """Best-effort welcome DM to whoever clicked Add to Slack. A greeting that
+    fails must never fail the install — the workspace is already connected."""
+    if not slack_user_id:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+            resp = await client.post(
+                SLACK_POST_MESSAGE_URL,
+                headers={"Authorization": f"Bearer {bot_token}"},
+                json={"channel": slack_user_id, "text": INSTALL_GREETING},
+            )
+        body = resp.json()
+        if not body.get("ok"):
+            logger.warning("slack install: greeting rejected: %s", body.get("error"))
+    except Exception:  # noqa: BLE001 — cosmetic step, never worth failing an install
+        logger.exception("slack install: greeting failed")
 
 
 async def apply_install(
@@ -145,7 +204,7 @@ async def apply_install(
                 "channels": {
                     PROVIDER: {
                         "enabled": True,
-                        "streaming": {"mode": "progress"},
+                        "streaming": PROGRESS_STREAMING,
                         "accounts": {team_id: account_block(team_id)},
                     }
                 }
@@ -163,6 +222,7 @@ async def apply_install(
         logger.exception("slack install: roll/patch failed owner=%s team=%s, rolling back", owner_id, team_id)
         await revoke_install(team_id)
         raise
+    await _greet_installer(bot_token, installer_slack_user_id)
     logger.info("slack install applied owner=%s team=%s agent=%s", owner_id, team_id, agent_id)
     return row
 

@@ -26,9 +26,8 @@ from core.auth import (
 )
 from core.config import settings
 from core.containers import get_ecs_manager, get_workspace
-from core.containers.ecs_manager import ULTRA_CPU, ULTRA_MEMORY_MIB
 from core.dynamodb import run_in_thread
-from core.repositories import billing_repo, container_repo, marketplace_repo
+from core.repositories import container_repo, marketplace_repo
 from core.services import (
     agent_export,
     company_deploy_service,
@@ -40,10 +39,7 @@ from core.services import (
     seller_display,
     seller_profile,
 )
-from core.services.agent_budget import AGENT_BUDGET_EXCEEDED_DETAIL, is_at_agent_budget
 from core.services.agent_roster import roster_entries
-from core.services.company_package import COMPANY_STANDARD_PLAN_MAX_AGENTS
-from core.services.paperclip_openclaw_pairing import count_paperclip_agents_for_owner
 from core.services.agent_routine_provisioning import create_agent_routines
 from core.services.inbound_triggers import automation_requirement
 from core.services.catalog_service import (
@@ -57,7 +53,6 @@ from core.services.paperclip_agent_lifecycle import (
     create_paperclip_for_marketplace,
     delete_paperclip_for_marketplace,
 )
-from core.services.paperclip_admin_client import PaperclipAgentCreateReplayMiss
 from core.services.paperclip_agent_idempotency import build_agent_create_idempotency_key
 from core.services.paperclip_meta import derive_from_listing, read_from_agent_entry
 from core.services.paperclip_openclaw_pairing import (
@@ -758,8 +753,7 @@ async def deploy_listing(
         # buyer launch (harmless only while the route was platform-admin-only).
         # Same rules as the agent path: free deploys for anyone signed in,
         # sellers skip their own listing's check, purchase identity is the
-        # RESOLVED owner. Checked before the plan gate so an unentitled caller
-        # can't kick a container resize.
+        # RESOLVED owner. Checked before any artifact or runtime work.
         if (
             int(listing.get("price_cents", 0) or 0) > 0
             and listing.get("seller_id") != auth.user_id
@@ -798,10 +792,8 @@ async def deploy_listing(
         # company twice (single-agent hires have an already-installed dedupe;
         # this is the company equivalent). The marker is written by
         # run_company_deploy on real success and dies with the row on a
-        # workspace wipe/reprovision. Checked BEFORE the plan gate below: this
-        # is a pure row read and an unconditional refusal, while the plan
-        # gate's size reconcile can KICK A CONTAINER RESTART — wasted, real
-        # disruption for a request this fence was always going to refuse.
+        # workspace wipe/reprovision. Checked before artifact work because it
+        # is a pure row read and an unconditional refusal.
         already = container_row.get("deployed_company")
         if isinstance(already, dict) and already.get("listing_id"):
             raise HTTPException(
@@ -812,58 +804,8 @@ async def deploy_listing(
                 ),
             )
 
-        # min_plan is "standard" iff agent_count <= 10 (see company_package).
-        # A company needing Ultra (min_plan != standard, or — belt-and-
-        # suspenders — a raw agent_count over the standard cap should a manifest
-        # disagree) may only be deployed by an ultra_pro owner. A standard-plan
-        # owner still 409s; an ultra_pro owner passes and gets the large box
-        # (the provision path sizes their container by plan).
         company = (listing.get("manifest_json") or {}).get("company") or {}
         agent_count = int(company.get("agent_count", 0) or 0)
-        # The package's own size is not the whole story: company_deploy_service
-        # ADDS its agents to the existing team rather than replacing it, so a
-        # standard owner already holding 8 agents could take a "standard"
-        # 5-agent package and land at 13 on the small box. Budget the SUM.
-        # A 0 from the count is undeterminable (Paperclip unreachable), not an
-        # empty roster — it drops out of the check rather than reading as "no
-        # existing agents", matching the fail-open posture everywhere else.
-        existing_agents = await count_paperclip_agents_for_owner(owner_id)
-        needs_ultra = (
-            company.get("min_plan") != "standard"
-            or agent_count > COMPANY_STANDARD_PLAN_MAX_AGENTS
-            or (existing_agents > 0 and existing_agents + agent_count > COMPANY_STANDARD_PLAN_MAX_AGENTS)
-        )
-        if needs_ultra:
-            account = await billing_repo.get_by_owner_id(owner_id)
-            if (account or {}).get("plan") != "ultra_pro":
-                raise HTTPException(status_code=409, detail="Requires Ultra Pro")
-
-            # Size reconcile BEFORE dispatch. The Ultra upgrade webhook's
-            # up-resize (standard -> 2 vCPU / 8 GB) is best-effort/swallowed;
-            # if it failed transiently the owner is plan=ultra_pro but their
-            # container is still the standard 1 vCPU / 4 GB box. Seeding a
-            # >10-agent company onto that box OOMs. A resize restarts the
-            # container, so we CANNOT resize mid-deploy — instead we compare
-            # the running box's ACTUAL size against Ultra and, on a mismatch,
-            # KICK the resize and refuse this deploy; the owner retries once it
-            # is up. Only runs when needs_ultra — a standard box is always
-            # adequate for a standard company.
-            #
-            # The desired size is the Ultra constants INLINE, not
-            # _size_for_owner: the plan gate just above already confirmed
-            # ultra_pro, and _size_for_owner is fail-open (a transient billing
-            # read error there returns the STANDARD size, which would falsely
-            # match the still-standard box and dispatch the big company onto
-            # the 2 GB box — the exact OOM this guards). current_container_size
-            # reads the real running size and does not touch billing.
-            desired_cpu, desired_memory = ULTRA_CPU, ULTRA_MEMORY_MIB
-            ecs = get_ecs_manager()
-            if await ecs.current_container_size(owner_id) != (desired_cpu, desired_memory):
-                await ecs.resize_user_container(owner_id, new_cpu=desired_cpu, new_memory=desired_memory)
-                raise HTTPException(
-                    status_code=409,
-                    detail=("Your container is resizing to Ultra Pro — please retry the deploy in about a minute."),
-                )
 
         s3_prefix = listing.get("s3_prefix")
         if not s3_prefix:
@@ -874,9 +816,8 @@ async def deploy_listing(
         # container, so it must not overlap a hire, an Atlas build, or another
         # company deploy (a double POST would mint the whole org twice). The
         # background run extends the lease per agent (its wall clock is N x a
-        # single deploy's) and releases it when done. Taken AFTER the plan/
-        # resize checks so their 409s never leak a claim, and BEFORE the S3
-        # fetch so a loser doesn't pay for the GET.
+        # single deploy's) and releases it when done. Taken before the S3 fetch
+        # so a loser doesn't pay for the GET.
         claim_token, _held = await container_repo.try_claim_owner_deploy(owner_id, listing_id=listing["listing_id"])
         if not claim_token:
             if await container_repo.get_by_owner_id(owner_id) is None:
@@ -993,17 +934,6 @@ async def deploy_listing(
             "already_installed": True,
         }
 
-    # Plan agent budget. The company branch above has its own Ultra gate. At
-    # the cap, this one-agent path may only replay the same logical install;
-    # Paperclip atomically refuses a missing operation key.
-    #
-    # Placed AFTER the already-installed short-circuit above, not before it: a
-    # deploy whose response was lost leaves the owner installed but retrying,
-    # and gating first would answer that retry with "upgrade to Ultra" for an
-    # agent they already have and that this call would not create. The retry
-    # must still heal into the existing install.
-    at_agent_budget = await is_at_agent_budget(owner_id)
-
     # Exclusive claim for the whole deploy, OWNER-WIDE (not per-listing). The
     # sidecar read above is a READ, not a lock: two OVERLAPPING deploys can both
     # see "not installed" (the second starts before the first has extracted
@@ -1119,10 +1049,7 @@ async def deploy_listing(
                         "version": int(listing.get("version", 1) or 1),
                     },
                 ),
-                idempotency_replay_only=at_agent_budget,
             )
-        except PaperclipAgentCreateReplayMiss as exc:
-            raise HTTPException(status_code=409, detail=AGENT_BUDGET_EXCEEDED_DETAIL) from exc
         except Exception as exc:
             logger.exception(
                 "Marketplace deploy: Paperclip create failed for owner=%s listing=%s",

@@ -1,17 +1,20 @@
 "use client";
 
-// The empty/blocked states shared by Payments, Products and Customers.
+// The ONE page-level notice Money shows instead of its Stripe sections:
+// unbound, partial, under review, forbidden, or a Stripe read failure.
 //
-// WHY SHARED: these three read the same connected Stripe account through the
-// same envelope, so they are empty for the same reasons at the same moments.
-// Written three times they drift — and the drift is invisible, because you
-// only ever see one tab at a time. The failure that motivated this: all three
-// saying "no payments yet" when the truth was "your Stripe onboarding isn't
+// It is page-level because all three Stripe sections read the same connected
+// account through the same envelope — they are blocked for the same reason at
+// the same moment, and three copies of that sentence drift invisibly (you only
+// ever see one at a time). The failure that motivated it: three tabs saying
+// "no payments yet" when the truth was "your Stripe onboarding isn't
 // finished", which sends an owner looking for sales they never made instead of
 // to the two-minute form that unblocks them.
 //
-// Each state names the noun it is about, so the sentence is right on all three
-// without a per-panel rewrite.
+// There is deliberately no `zero` case: a healthy, empty account renders the
+// sections, and each one owns its own empty line (MoneyEmptyLine) in its own
+// words. `noun` stays because the blocked sentences still have to name what
+// the reader came for.
 
 import { CreditCard } from "lucide-react";
 import { PanelNotice } from "@/components/teams/shell";
@@ -118,18 +121,8 @@ export function MoneyStates({ view, noun }: { view: MoneyView; noun: string }) {
         />
       );
 
-    case "zero":
-      // Genuinely nothing, and we can prove it — connected, onboarded, empty.
-      // Calm: this is every healthy company's first week.
-      return (
-        <PanelNotice
-          state="zero"
-          icon={CreditCard}
-          headline={`No ${noun} yet.`}
-          supporting={`Your Stripe account is connected and ready. The first ${noun.replace(/s$/, "")} shows up here as soon as it lands.`}
-        />
-      );
-
+    // rows / zero / loading: the sections render themselves, including their
+    // own empty lines.
     default:
       return null;
   }

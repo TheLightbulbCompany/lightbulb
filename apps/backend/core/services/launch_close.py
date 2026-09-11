@@ -73,7 +73,7 @@ async def _attach_coupon(billing: dict, coupon: str) -> str:
         already there); the caller stamps the row.
       - ``"no_sub"`` — no ``stripe_subscription_id`` on the billing row
         (Apple-rail/legacy shape); a visible failure, retried on force.
-      - ``"nonflat"`` — the subscription does not carry the flat (Starter)
+      - ``"nonflat"`` — the subscription does not carry the Workspace
         price, so the product-restricted coupon would apply NOTHING (Stripe
         attaches it without erroring and discounts $0). Skipped: the winner
         keeps the unpaid-style entitlement instead of a lie.
@@ -89,7 +89,7 @@ async def _attach_coupon(billing: dict, coupon: str) -> str:
     from core.services.billing_service import subscription_item_on_price
 
     items = (sub.get("items") or {}).get("data") or []
-    if not subscription_item_on_price(items, settings.STRIPE_FLAT_PRICE_ID):
+    if not subscription_item_on_price(items, settings.STRIPE_WORKSPACE_PRICE_ID):
         return "nonflat"
     existing = list(sub.get("discounts") or [])
     if not existing and sub.get("discount"):
@@ -120,7 +120,7 @@ async def _ensure_restricted_coupon(auth: AuthContext) -> str:
     if coupon:
         try:
             stored = await run_in_thread(stripe.Coupon.retrieve, coupon, expand=["applies_to"])
-            price = await run_in_thread(stripe.Price.retrieve, settings.STRIPE_FLAT_PRICE_ID)
+            price = await run_in_thread(stripe.Price.retrieve, settings.STRIPE_WORKSPACE_PRICE_ID)
         except stripe.StripeError as e:
             logger.error("launch_close: coupon verification failed for %s: %s", coupon, e)
             raise launch_settings.StripeMintError() from None
@@ -305,8 +305,7 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
 
     # (e) The coupon: ensure a PRODUCT-RESTRICTED one exists (mint if
     # missing; force a re-mint over a stale coupon that predates the
-    # applies_to restriction — an unrestricted 100%-off coupon would also
-    # zero the bundled starter-credits line item at checkout), then attach to
+    # applies_to restriction), then attach to
     # every PAYING winner's subscription. Attach failures are logged and
     # counted, never fatal — rerun with force to converge.
     coupon = await _ensure_restricted_coupon(auth)
@@ -333,13 +332,13 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
             # A paying winner NOT on the flat plan (Ultra): the restricted
             # coupon would discount $0 — attaching + stamping would be a
             # lie ("next invoice is $0"). Skip; they keep the winner flag,
-            # get the unpaid-variant email below, and a future Starter
+            # get the unpaid-variant email below, and a future Workspace
             # checkout pre-applies the discount.
             coupon_skipped_nonflat += 1
             nonflat_winners.add(r["email"])
             logger.info(
                 "launch_close: paying winner %s is not on the flat plan — coupon not attached "
-                "(free month = Starter month)",
+                "(free month = Workspace month)",
                 r.get("user_id"),
             )
         else:  # "no_sub"
@@ -384,7 +383,7 @@ async def close(auth: AuthContext, *, force: bool = False) -> dict:
         if r["email"] in winner_emails:
             # Paid variant only when the coupon actually lands on their sub —
             # a nonflat paying winner gets the unpaid variant, whose copy
-            # ("first month of Starter is free, applied automatically at
+            # ("first month of Workspace is free, applied automatically at
             # checkout") is literally accurate for them.
             is_paid_variant = r["email"] in paying and r["email"] not in nonflat_winners
             send = send_winner_paid_email if is_paid_variant else send_winner_unpaid_email

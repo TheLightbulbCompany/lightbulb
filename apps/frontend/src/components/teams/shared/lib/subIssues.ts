@@ -14,7 +14,15 @@ export interface SubIssueProgressTarget {
 }
 export interface SubIssueProgressSummary {
   totalCount: number;
+  /** Literally `done`. The sub-issue strip's meaning of finished. */
   doneCount: number;
+  /**
+   * Everything FINISHED, not just `done`: also `won_t_do`, `duplicate` and
+   * `closed` (cancelled is already out of `totalCount`). A goal heading needs
+   * this one — counting only `done` means a goal whose last task was closed
+   * reads "0 of 2 done" forever and can never reach its own total.
+   */
+  settledCount: number;
   inProgressCount: number;
   blockedCount: number;
   target: SubIssueProgressTarget | null;
@@ -67,6 +75,7 @@ export function buildSubIssueProgressSummary(issues: Issue[]): SubIssueProgressS
   return {
     totalCount: progress.length,
     doneCount: count("done"),
+    settledCount: progress.filter((i) => isTerminalStatus(i.status)).length,
     inProgressCount: count("in_progress"),
     blockedCount: count("blocked"),
     target: next ? { issue: next, kind: "next" } : blocked ? { issue: blocked, kind: "blocked" } : null,

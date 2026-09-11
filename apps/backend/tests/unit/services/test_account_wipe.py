@@ -60,6 +60,7 @@ EXPECTED_ORDER = [
     # account deauthorize (never a delete; see account_wipe.py's docstring).
     "stripe",
     "usage_counters",
+    "messaging",
     "paperclip_row",
     "billing_row",
     "user_row",
@@ -190,6 +191,10 @@ def wipe_mocks():
     company_stripe_deauthorize = AsyncMock(return_value=True)
     billing_clear_company_stripe = AsyncMock(return_value={})
     usage_delete = AsyncMock(return_value=3)
+    messaging_list_rooms = AsyncMock(return_value=["room-1", "room-2"])
+    messaging_get_room = AsyncMock(return_value={"ownerId": OWNER_ID})
+    messaging_delete_room = AsyncMock(return_value=2)
+    messaging_delete_owner = AsyncMock(return_value=3)
     clerk_delete = AsyncMock(return_value=None)
     agent_keys_list = AsyncMock(return_value=["lightbulb/dev/paperclip-agent-keys/user_abc123/agent-1"])
     agent_keys_delete = AsyncMock(return_value=1)
@@ -242,6 +247,10 @@ def wipe_mocks():
         ("core.services.account_wipe.company_stripe.deauthorize", company_stripe_deauthorize),
         ("core.services.account_wipe.billing_repo.clear_company_stripe_account", billing_clear_company_stripe),
         ("core.services.account_wipe.usage_repo.delete_all_for_owner", usage_delete),
+        ("core.services.account_wipe.messaging_repo.list_owner_room_ids", messaging_list_rooms),
+        ("core.services.account_wipe.messaging_repo.get_room", messaging_get_room),
+        ("core.services.account_wipe.messaging_repo.delete_room_partition", messaging_delete_room),
+        ("core.services.account_wipe.messaging_repo.delete_owner_partition", messaging_delete_owner),
         ("core.services.account_wipe.clerk_admin.delete_user", clerk_delete),
         ("core.services.account_wipe.list_owner_agent_key_secret_names", agent_keys_list),
         ("core.services.account_wipe.delete_owner_agent_key_secrets", agent_keys_delete),
@@ -287,6 +296,10 @@ def wipe_mocks():
             company_stripe_deauthorize=company_stripe_deauthorize,
             billing_clear_company_stripe=billing_clear_company_stripe,
             usage_delete=usage_delete,
+            messaging_list_rooms=messaging_list_rooms,
+            messaging_get_room=messaging_get_room,
+            messaging_delete_room=messaging_delete_room,
+            messaging_delete_owner=messaging_delete_owner,
             clerk_delete=clerk_delete,
             agent_keys_list=agent_keys_list,
             agent_keys_delete=agent_keys_delete,
@@ -336,6 +349,16 @@ async def test_wipe_account_runs_steps_in_spec_order(wipe_mocks):
     wipe_mocks.company_stripe_deauthorize.assert_awaited_once_with(account_id="acct_xyz789")
     wipe_mocks.billing_clear_company_stripe.assert_awaited_once_with(OWNER_ID, account_id="acct_xyz789")
     wipe_mocks.usage_delete.assert_awaited_once_with(OWNER_ID)
+    wipe_mocks.messaging_list_rooms.assert_awaited_once_with(OWNER_ID)
+    assert [call.args for call in wipe_mocks.messaging_get_room.await_args_list] == [
+        ("room-1",),
+        ("room-2",),
+    ]
+    assert [call.args for call in wipe_mocks.messaging_delete_room.await_args_list] == [
+        ("room-1",),
+        ("room-2",),
+    ]
+    wipe_mocks.messaging_delete_owner.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.paperclip_row_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.billing_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.user_delete.assert_awaited_once_with(OWNER_ID)
@@ -350,6 +373,43 @@ async def test_wipe_account_runs_steps_in_spec_order(wipe_mocks):
         "user_id": OWNER_ID,
         "purpose": "harness",
     }
+
+
+@pytest.mark.asyncio
+async def test_messaging_wipe_keeps_owner_catalog_after_partial_failure_for_retry(wipe_mocks):
+    wipe_mocks.messaging_delete_room.side_effect = [2, RuntimeError("delete failed")]
+
+    first = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
+
+    assert next(step for step in first.steps if step.system == "messaging").status == "failed"
+    wipe_mocks.messaging_delete_owner.assert_not_awaited()
+
+    wipe_mocks.messaging_delete_room.reset_mock(side_effect=True)
+    wipe_mocks.messaging_delete_room.return_value = 2
+    second = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
+
+    assert next(step for step in second.steps if step.system == "messaging").status == "ok"
+    assert [call.args for call in wipe_mocks.messaging_delete_room.await_args_list] == [
+        ("room-1",),
+        ("room-2",),
+    ]
+    wipe_mocks.messaging_delete_owner.assert_awaited_once_with(OWNER_ID)
+
+
+@pytest.mark.asyncio
+async def test_messaging_wipe_refuses_cross_owner_catalog_entry(wipe_mocks):
+    wipe_mocks.messaging_get_room.side_effect = [
+        {"ownerId": OWNER_ID},
+        {"ownerId": "user_other"},
+    ]
+
+    report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
+
+    step = next(step for step in report.steps if step.system == "messaging")
+    assert step.status == "failed"
+    assert "owned elsewhere" in (step.error or "")
+    wipe_mocks.messaging_delete_room.assert_awaited_once_with("room-1")
+    wipe_mocks.messaging_delete_owner.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -430,7 +490,7 @@ async def test_early_step_failure_does_not_abort_later_steps(wipe_mocks):
     assert "ECS API down" in (by_system["ecs_service"].error or "")
 
     # Every step after the failure still ran and succeeded.
-    for system in ("efs_workspace_dir", "metronome", "usage_counters"):
+    for system in ("efs_workspace_dir", "metronome", "usage_counters", "messaging"):
         assert by_system[system].status == "ok", f"{system} should still have run: {by_system[system]}"
 
     # "stripe" covers two steps (Step 8 delete_stripe_customer, Step 8b
@@ -643,6 +703,7 @@ async def test_clerk_delete_still_runs_when_every_other_step_fails(wipe_mocks):
     wipe_mocks.agent_email_delete.side_effect = RuntimeError("ddb down")
     wipe_mocks.slack_installs_delete.side_effect = RuntimeError("ddb down")
     wipe_mocks.slug_delete.side_effect = RuntimeError("ddb down")
+    wipe_mocks.messaging_list_rooms.side_effect = RuntimeError("ddb down")
 
     with (
         patch("core.services.account_wipe.settings.LITESTREAM_BUCKET", "isol8-dev-openclaw-replicas"),
@@ -732,8 +793,9 @@ async def test_preview_wipe_skips_absent_resources(wipe_mocks):
     assert by_system["paperclip_row"].status == "skipped"
     assert by_system["billing_row"].status == "skipped"
     assert by_system["user_row"].status == "skipped"
-    # usage_counters and clerk_user have no cheap existence check -- always would_delete.
+    # Owner-partition sweeps and Clerk have no cheap existence check -- always would_delete.
     assert by_system["usage_counters"].status == "would_delete"
+    assert by_system["messaging"].status == "would_delete"
     assert by_system["clerk_user"].status == "would_delete"
 
 
@@ -815,6 +877,10 @@ async def test_wipe_account_refuses_bootstrap_admin_before_any_teardown(wipe_moc
     wipe_mocks.metronome_archive.assert_not_awaited()
     wipe_mocks.stripe_delete.assert_not_awaited()
     wipe_mocks.usage_delete.assert_not_awaited()
+    wipe_mocks.messaging_list_rooms.assert_not_awaited()
+    wipe_mocks.messaging_get_room.assert_not_awaited()
+    wipe_mocks.messaging_delete_room.assert_not_awaited()
+    wipe_mocks.messaging_delete_owner.assert_not_awaited()
     wipe_mocks.paperclip_row_delete.assert_not_awaited()
     wipe_mocks.billing_delete.assert_not_awaited()
     wipe_mocks.user_delete.assert_not_awaited()

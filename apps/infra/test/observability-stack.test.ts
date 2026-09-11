@@ -1,5 +1,4 @@
 import {
-  legacyTablePrefix,
   resourcePrefix,
   tablePrefix,
 } from "../lib/table-names";
@@ -200,6 +199,9 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "operator.upstream.closed": [[]],
   "paperclip.upstream.error": [["kind"]],
   "provision.gate.blocked": [["code"]],
+  // run_analytics.schedule_run_completed — full set {outcome, source}; W67
+  // binds {outcome=failure, source=paperclip} (autonomous-run reliability).
+  "run.completed": [["outcome", "source"]],
   "stripe.api.latency": [["op"]],
   "stripe.webhook.received": [["event_type"]],
   "stripe.webhook.sig_fail": [[]],
@@ -272,15 +274,20 @@ describe("ObservabilityStack", () => {
   });
 
   // GuardDuty + Access Analyzer already exist at account level — not created by CDK.
-  // We only create EventBridge rules to route their findings to SNS.
-  test("creates EventBridge rules for security findings", () => {
-    // GuardDuty + Access Analyzer + ECS TaskStopped (W39) + ECS TaskRunning
-    // (W59 multi-task detector) + Aurora failover/failure (W61b).
-    template.resourceCountIs("AWS::Events::Rule", 5);
+  // We only create EventBridge rules to route their findings to SNS. Both
+  // rules are PROD-GATED (see ObservabilityStack.createAccountHardening) —
+  // account-wide findings, so dev doesn't get a duplicate copy of them.
+  test("creates EventBridge rules for security findings (dev, no account-wide rules)", () => {
+    // ECS TaskStopped (W39) + ECS TaskRunning (W59 multi-task detector) +
+    // Aurora failover/failure (W61b). GuardDuty + Access Analyzer are prod-only.
+    template.resourceCountIs("AWS::Events::Rule", 3);
   });
 
-  test("creates AWS Budget", () => {
-    template.resourceCountIs("AWS::Budgets::Budget", 1);
+  // The $1,500 account-wide Budget is PROD-GATED (see createCostAlarms) —
+  // dev and prod share one AWS account, so an ungated budget would render
+  // twice and double-email admin@ for the same account-wide spend number.
+  test("does NOT create an AWS Budget in dev", () => {
+    template.resourceCountIs("AWS::Budgets::Budget", 0);
   });
 
   // Both tiers must have a live destination. Alarms are worthless without one:
@@ -736,6 +743,19 @@ describe("ObservabilityStack — prod-only paths", () => {
       buildTemplate("dev").findResources("AWS::SNS::Subscription"),
     );
     expect(devSubs.every((s: any) => s.Properties.Protocol === "email")).toBe(true);
+  });
+
+  // Account-wide resources (GuardDuty/Access Analyzer routing rules, the
+  // $1,500 Budget) are PROD-GATED — dev and prod share one AWS account, so
+  // these render exactly once, on the prod stack.
+  test("prod creates EventBridge rules for security findings", () => {
+    // ECS TaskStopped (W39) + ECS TaskRunning (W59) + Aurora failover (W61b)
+    // + GuardDuty + Access Analyzer.
+    template.resourceCountIs("AWS::Events::Rule", 5);
+  });
+
+  test("prod creates the account-wide AWS Budget", () => {
+    template.resourceCountIs("AWS::Budgets::Budget", 1);
   });
 
   test("prod uptime alarms page rather than warn", () => {

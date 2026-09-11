@@ -1,10 +1,16 @@
 """Tests for billing API endpoints — flat-fee model."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import boto3
 import pytest
 from moto import mock_aws
+
+
+@pytest.fixture
+def mock_auth_context(mock_org_admin_context):
+    """Billing routes default to an active organization workspace."""
+    return mock_org_admin_context
 
 
 @pytest.fixture
@@ -19,6 +25,7 @@ def dedup_table_and_settings(monkeypatch):
             BillingMode="PAY_PER_REQUEST",
         )
         monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", "test-webhook-event-dedup")
+        monkeypatch.setattr("core.config.settings.STRIPE_WORKSPACE_PRICE_ID", "price_workspace_test")
         yield
 
 
@@ -31,7 +38,7 @@ class TestGetBillingAccount:
     async def test_get_billing_account_active_subscription(self, mock_repo, mock_get_summary, async_client):
         mock_repo.get_by_owner_id = AsyncMock(
             return_value={
-                "owner_id": "user_test_123",
+                "owner_id": "org_test_456",
                 "stripe_customer_id": "cus_billing_test",
                 "stripe_subscription_id": "sub_123",
                 "subscription_status": "active",
@@ -68,7 +75,7 @@ class TestGetBillingAccount:
         free-tier card with a Subscribe CTA, never "Active subscription")."""
         mock_repo.get_by_owner_id = AsyncMock(
             return_value={
-                "owner_id": "user_test_123",
+                "owner_id": "org_test_456",
                 "subscription_status": "trial_local",
                 "trial_end": None,
             }
@@ -125,8 +132,10 @@ class TestGetBillingAccount:
 
 class TestGetUsage:
     @pytest.mark.asyncio
+    @patch("routers.billing.usage_repo")
     @patch("routers.billing.get_usage_summary")
-    async def test_get_usage_returns_summary(self, mock_get_summary, async_client):
+    async def test_get_usage_returns_summary(self, mock_get_summary, mock_usage_repo, async_client):
+        mock_usage_repo.get_member_usage = AsyncMock(return_value=[])
         mock_get_summary.return_value = {
             "period": "2026-03",
             "total_spend": 5.25,
@@ -168,7 +177,7 @@ class TestGetMyUsage:
         assert data["total_spend"] == 3.5
         assert data["request_count"] == 25
         call_args = mock_usage_repo.get_period_usage.call_args
-        assert call_args[0][0] == "user_test_123"
+        assert call_args[0][0] == "org_test_456"
         assert call_args[0][1].startswith("member:user_test_123:")
 
     @pytest.mark.asyncio
@@ -312,6 +321,17 @@ class TestStripeWebhook:
                     "customer": "cus_update_x",
                     "status": "trialing",
                     "trial_end": 1700000000,
+                    "items": {
+                        "data": [
+                            {
+                                "id": "si_workspace",
+                                "price": {
+                                    "id": "price_workspace_test",
+                                    "recurring": {"interval": "month"},
+                                },
+                            }
+                        ]
+                    },
                 }
             },
         }
@@ -367,6 +387,17 @@ class TestStripeWebhook:
                     "metadata": {
                         "provider_choice": "bedrock_claude",
                         "clerk_user_id": "user_clerk_x",
+                    },
+                    "items": {
+                        "data": [
+                            {
+                                "id": "si_workspace",
+                                "price": {
+                                    "id": "price_workspace_test",
+                                    "recurring": {"interval": "month"},
+                                },
+                            }
+                        ]
                     },
                 }
             },
@@ -444,6 +475,17 @@ class TestStripeWebhook:
                     "customer": "cus_shared",
                     "status": "active",
                     "metadata": {"owner_id": "org_xyz"},
+                    "items": {
+                        "data": [
+                            {
+                                "id": "si_workspace",
+                                "price": {
+                                    "id": "price_workspace_test",
+                                    "recurring": {"interval": "month"},
+                                },
+                            }
+                        ]
+                    },
                 }
             },
         }
@@ -486,6 +528,17 @@ class TestStripeWebhook:
                     "id": "sub_legacy_org",
                     "customer": "cus_shared",
                     "status": "active",
+                    "items": {
+                        "data": [
+                            {
+                                "id": "si_workspace",
+                                "price": {
+                                    "id": "price_workspace_test",
+                                    "recurring": {"interval": "month"},
+                                },
+                            }
+                        ]
+                    },
                 }
             },
         }
@@ -515,161 +568,3 @@ class TestStripeWebhook:
         assert response.status_code == 200
         mock_repo.set_subscription.assert_awaited_once()
         assert mock_repo.set_subscription.await_args.kwargs["owner_id"] == "org_legacy"
-
-
-class TestTrialCheckoutProviderRules:
-    """POST /api/v1/billing/trial-checkout — org/personal provider_choice rules.
-
-    ChatGPT OAuth is available to org workspaces as well as personal ones: the
-    subscribing org admin is the workspace owner and the single connector whose
-    OpenAI account backs every teammate's inference, so there is no reselling
-    across separate humans. Org-context callers may pick chatgpt_oauth, byo_key,
-    or bedrock_claude.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _no_live_subs(self):
-        """The live-subscription guard lists subs on the Stripe customer before
-        creating a Checkout session — empty here, these tests are about
-        provider rules."""
-        with patch(
-            "routers.billing.stripe.Subscription.list",
-            return_value=MagicMock(auto_paging_iter=lambda: iter([])),
-        ):
-            yield
-
-    @pytest.fixture
-    def override_org_admin_auth(self, app, mock_org_admin_user):
-        """Swap get_current_user with an org-admin AuthContext for one test."""
-        from core.auth import get_current_user
-
-        app.dependency_overrides[get_current_user] = mock_org_admin_user
-        yield
-        app.dependency_overrides.clear()
-
-    @pytest.mark.asyncio
-    @patch("routers.billing.billing_repo")
-    @patch("core.services.billing_service.create_flat_fee_checkout")
-    async def test_trial_checkout_allows_chatgpt_oauth_for_org(
-        self, mock_create_checkout, mock_repo, async_client, override_org_admin_auth
-    ):
-        """Org-context admin calling trial-checkout with provider_choice=chatgpt_oauth
-        is allowed through to Stripe Checkout — no 403.
-
-        Mocks billing_repo + create_flat_fee_checkout so the request reaches the
-        happy path; the assertion is that the org-block is GONE (200, Checkout
-        session minted) rather than the old personal-only 403.
-        """
-        mock_repo.get_by_owner_id = AsyncMock(
-            return_value={
-                "owner_id": "org_test_456",
-                "stripe_customer_id": "cus_org_chatgpt",
-                "subscription_status": None,
-            }
-        )
-        # Sync-persist of provider_choice runs before Stripe Checkout.
-        mock_repo.set_provider_choice = AsyncMock()
-
-        class _Session:
-            url = "https://checkout.stripe.test/sess_org_chatgpt"
-
-        mock_create_checkout.return_value = _Session()
-
-        resp = await async_client.post(
-            "/api/v1/billing/trial-checkout",
-            json={"provider_choice": "chatgpt_oauth"},
-        )
-        assert resp.status_code == 200
-        assert resp.json()["checkout_url"] == "https://checkout.stripe.test/sess_org_chatgpt"
-        mock_create_checkout.assert_called_once()
-
-    @pytest.mark.asyncio
-    @patch("routers.billing.billing_repo")
-    @patch("core.services.billing_service.create_flat_fee_checkout")
-    async def test_trial_checkout_allows_byo_key_for_org(
-        self, mock_create_checkout, mock_repo, async_client, override_org_admin_auth
-    ):
-        """Org-context user can still pick byo_key — the gate is chatgpt_oauth-only."""
-        # Org owner_id = org_test_456 from mock_org_admin_context.
-        mock_repo.get_by_owner_id = AsyncMock(
-            return_value={
-                "owner_id": "org_test_456",
-                "stripe_customer_id": "cus_org_byo",
-                "subscription_status": None,
-            }
-        )
-        # trial-checkout synchronously persists provider_choice via
-        # billing_repo.set_provider_choice before creating the Stripe
-        # Checkout session. Mock as AsyncMock so the await works.
-        mock_repo.set_provider_choice = AsyncMock()
-
-        class _Session:
-            url = "https://checkout.stripe.test/sess_byo"
-
-        mock_create_checkout.return_value = _Session()
-
-        resp = await async_client.post(
-            "/api/v1/billing/trial-checkout",
-            json={"provider_choice": "byo_key", "byo_provider": "anthropic"},
-        )
-        assert resp.status_code == 200
-        assert resp.json()["checkout_url"] == "https://checkout.stripe.test/sess_byo"
-
-    @pytest.mark.asyncio
-    @patch("routers.billing.billing_repo")
-    @patch("core.services.billing_service.create_flat_fee_checkout")
-    async def test_trial_checkout_allows_bedrock_claude_for_org(
-        self, mock_create_checkout, mock_repo, async_client, override_org_admin_auth
-    ):
-        """Org-context user can still pick bedrock_claude."""
-        mock_repo.get_by_owner_id = AsyncMock(
-            return_value={
-                "owner_id": "org_test_456",
-                "stripe_customer_id": "cus_org_bed",
-                "subscription_status": None,
-            }
-        )
-        # Sync-persist of provider_choice — see byo test above.
-        mock_repo.set_provider_choice = AsyncMock()
-
-        class _Session:
-            url = "https://checkout.stripe.test/sess_bed"
-
-        mock_create_checkout.return_value = _Session()
-
-        resp = await async_client.post(
-            "/api/v1/billing/trial-checkout",
-            json={"provider_choice": "bedrock_claude"},
-        )
-        assert resp.status_code == 200
-        assert resp.json()["checkout_url"] == "https://checkout.stripe.test/sess_bed"
-
-    @pytest.mark.asyncio
-    @patch("routers.billing.billing_repo")
-    @patch("core.services.billing_service.create_flat_fee_checkout")
-    async def test_trial_checkout_allows_chatgpt_oauth_for_personal(
-        self, mock_create_checkout, mock_repo, async_client
-    ):
-        """Personal user (no org_id) can still pick chatgpt_oauth — only orgs are blocked."""
-        # Default async_client uses mock_current_user — personal mode (user_test_123, no org).
-        mock_repo.get_by_owner_id = AsyncMock(
-            return_value={
-                "owner_id": "user_test_123",
-                "stripe_customer_id": "cus_personal_chatgpt",
-                "subscription_status": None,
-            }
-        )
-        # Sync-persist of provider_choice — see byo test above.
-        mock_repo.set_provider_choice = AsyncMock()
-
-        class _Session:
-            url = "https://checkout.stripe.test/sess_personal"
-
-        mock_create_checkout.return_value = _Session()
-
-        resp = await async_client.post(
-            "/api/v1/billing/trial-checkout",
-            json={"provider_choice": "chatgpt_oauth"},
-        )
-        assert resp.status_code == 200
-        assert resp.json()["checkout_url"] == "https://checkout.stripe.test/sess_personal"

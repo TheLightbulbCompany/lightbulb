@@ -3,9 +3,13 @@
 // Ported (subset) from upstream Paperclip's lib/inbox.ts
 // (paperclip/ui/src/lib/inbox.ts) (MIT, (c) 2025 Paperclip AI).
 // Subset: pure helpers only. localStorage helpers in inboxStorage.ts.
+//
+// The Inbox page no longer renders issue rows, so what remains here is what
+// the landing page's WorkspaceDemo still uses to render its marketing
+// inbox — the per-tab reads, the keyboard-nav projection and the "mine"
+// status filter went with the pill tabs.
 
 import type { Issue } from "@/components/teams/shared/types";
-import type { IssueFilterState } from "@/components/teams/shared/lib/issueFilters";
 
 // Re-export so consumers can `import { InboxTab } from ".../lib/inbox"` without
 // reaching into queryKeys.ts. The canonical type lives in queryKeys.ts.
@@ -19,23 +23,6 @@ export {
   DEFAULT_INBOX_ISSUE_COLUMNS,
   type InboxIssueColumn,
 } from "@/components/teams/shared/lib/inboxColumns";
-
-/**
- * Comma-joined string of issue statuses considered "mine" (active work). Used
- * as the BFF query param value for /teams/inbox?tab=mine&status=...
- *
- * Ported verbatim from upstream's paperclip/packages/shared/src/constants.ts.
- */
-export const INBOX_MINE_ISSUE_STATUSES = [
-  "backlog",
-  "todo",
-  "in_progress",
-  "in_review",
-  "blocked",
-  "done",
-] as const;
-
-export const INBOX_MINE_ISSUE_STATUS_FILTER: string = INBOX_MINE_ISSUE_STATUSES.join(",");
 
 /**
  * v1 discriminated union — only the `issue` variant is used. Approval /
@@ -57,23 +44,6 @@ export interface InboxGroupedSection {
   items: InboxWorkItem[];
 }
 
-/**
- * Flat keyboard-nav projection of the grouped sections. The keyboard handler
- * walks this array directly with `j` / `k` / arrow keys.
- */
-export interface InboxKeyboardNavEntry {
-  id: string;
-  kind: InboxWorkItem["kind"];
-}
-
-/**
- * Issue-applicable subset of upstream's `InboxFilterPreferences`. Approval /
- * category filters are deferred (no all-tab category select in v1).
- */
-export interface InboxFilterPreferences {
-  issueFilters: IssueFilterState;
-}
-
 // ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
@@ -85,21 +55,6 @@ export interface InboxFilterPreferences {
  */
 export function getInboxWorkItems(issues: Issue[]): InboxWorkItem[] {
   return issues.map((issue) => ({ kind: "issue" as const, issue }));
-}
-
-/**
- * For the "unread" tab, filter issues by `unread === true`. For "recent" /
- * "all", returns all issues unchanged. The upstream version sorts + slices
- * to RECENT_ISSUES_LIMIT — that responsibility lives in the BFF for us.
- */
-export function getRecentTouchedIssues(
-  touchedIssues: Issue[],
-  options: { unreadOnly?: boolean } = {},
-): Issue[] {
-  if (options.unreadOnly) {
-    return touchedIssues.filter((issue) => issue.unread === true);
-  }
-  return [...touchedIssues];
 }
 
 /**
@@ -168,44 +123,4 @@ export function buildGroupedInboxSections(
   if (today.length > 0) sections.push({ kind: "today", items: today });
   if (earlier.length > 0) sections.push({ kind: "earlier", items: earlier });
   return sections;
-}
-
-/**
- * Flatten grouped sections into a single ordered list of `{id, kind}` entries
- * for keyboard navigation. Order preserved: section order, then item order
- * within each section.
- */
-export function buildInboxKeyboardNavEntries(
-  sections: InboxGroupedSection[],
-): InboxKeyboardNavEntry[] {
-  const entries: InboxKeyboardNavEntry[] = [];
-  for (const section of sections) {
-    for (const item of section.items) {
-      entries.push({ id: item.issue.id, kind: item.kind });
-    }
-  }
-  return entries;
-}
-
-/**
- * Returns the index of `selectedId` in `navItems`, or `-1` if not found
- * (including when `selectedId` is null). Used by `useInboxKeyboardNav` to
- * compute the next/prev target relative to the current selection.
- */
-export function resolveInboxSelectionIndex(
-  navItems: InboxKeyboardNavEntry[],
-  selectedId: string | null,
-): number {
-  if (selectedId === null) return -1;
-  for (let i = 0; i < navItems.length; i += 1) {
-    if (navItems[i].id === selectedId) return i;
-  }
-  return -1;
-}
-
-// `InboxTab` helper used by the InboxToolbar to decide which BFF query to
-// fire. Kept tiny for now — Task 4 (`useInboxData`) is what actually
-// dispatches per-tab.
-export function isMineInboxTab(tab: InboxTab): boolean {
-  return tab === "mine";
 }

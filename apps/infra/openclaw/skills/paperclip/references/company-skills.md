@@ -7,13 +7,13 @@ Use this reference when a board user, CEO, or manager asks you to find a skill, 
 - App-shipped catalog: a curated set of company skills in `@paperclipai/skills-catalog`, browseable and installable without leaving Paperclip.
 - Company skill library: install, inspect, update, audit, reset, and read company skills for the whole company.
 - Agent skill assignment: add or remove company skills on an existing agent.
-- Governed new-agent composition: put the required skill keys in the role specification delegated to Atlas, or choose a marketplace listing that already carries them.
+- Governed new-agent composition: put the required skill keys in the role specification assigned to the requested agent or root CEO, or choose a marketplace listing that already carries them.
 
 The canonical model is:
 
 1. add the skill to the company library — either from the app catalog (`skills install`), an external source (`skills import`), or a managed local skill (`skills create`/`skills scan-projects`)
 2. attach the company skill to the agent (`skills agent sync`)
-3. for a new agent, convey the desired set through Atlas or the marketplace listing before the governed creation flow runs
+3. for a new agent, convey the desired set through the explicit assignee or the root CEO before the governed creation flow runs, or choose a marketplace listing that already carries it
 
 Catalog install ≠ agent attach. Installing a catalog skill only adds the row to
 `company_skills`. The agent will not use it until you sync the agent's desired
@@ -215,10 +215,11 @@ curl -sS "$PAPERCLIP_API_URL/api/agents/<agent-id>/skills" \
 ## Skills For A New Agent
 
 Do not call Paperclip's `/agents` or `/agent-hires` endpoints in Lightbulb. Put
-the required company skill keys in the role specification that you delegate
-to Atlas, or select a marketplace listing that already carries the skills.
-The owner's governed Lightbulb deploy or approval flow creates the agent and
-attaches its approved skill set.
+the required company skill keys in the role specification. Use the explicit
+assignee when one was named; otherwise resolve the root CEO (`role: ceo` and no
+`reportsTo`) from the roster. Never select by display name. A marketplace
+listing may already carry the skills. The owner's governed Lightbulb creation,
+deploy, or approval flow creates the agent and attaches its approved skill set.
 
 ## Notes
 

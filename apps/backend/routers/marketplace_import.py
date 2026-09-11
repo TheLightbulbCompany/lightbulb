@@ -17,8 +17,7 @@ context (a tar of ``~/.claude``) into the owner's roster.
          workspace (claude_code_import.apply_to_workspace) → container bounce
          if memory/skills landed → staging removed. No Ultra gate — nothing
          here mints an agent.
-       → anything else: Ultra gate (same predicate as the company-deploy
-         branch) → for each selected agent: restage → staging export →
+       → anything else: for each selected agent: restage → staging export →
          register_staged_agent_under_claim (the Atlas mint →
          deploy_from_artifact → pair → rollback envelope) → plugins (Task 7)
          → history hand-off (Task 8) → one container bounce if either ran →
@@ -53,14 +52,12 @@ from core.config import settings
 from core.containers import get_ecs_manager, get_workspace
 from core.dynamodb import run_in_thread
 from core.openclaw_version import deployed_upstream_version
-from core.repositories import billing_repo, container_repo
+from core.repositories import container_repo
 from core.services import agent_export
 from core.services import claude_code_import
 from core.services import openclaw_backup_import as backup_import
-from core.services.company_package import COMPANY_STANDARD_PLAN_MAX_AGENTS
 from core.services.openclaw_backup_history import stage_history
 from core.services.openclaw_backup_plugins import apply_plugins
-from core.services.paperclip_openclaw_pairing import count_paperclip_agents_for_owner
 from routers.agent_builder import RegisterBuiltAgentRequest, register_staged_agent_under_claim
 from schemas import marketplace as schemas
 
@@ -137,12 +134,6 @@ def _export(owner_id: str, import_id: str, normalized: backup_import.ImportNorma
 def _staging_id_for(import_id: str, agent_id: str) -> str:
     """Per-agent staging id → distinct Paperclip idempotency intent per agent."""
     return f"{import_id}-{re.sub(r'[^A-Za-z0-9._-]', '-', agent_id)[:40]}"
-
-
-async def _ultra_facts(owner_id: str) -> tuple[int, str | None]:
-    existing = await count_paperclip_agents_for_owner(owner_id)
-    account = await billing_repo.get_by_owner_id(owner_id)
-    return existing, (account or {}).get("plan")
 
 
 @router.post("/presign", response_model=schemas.ImportPresignResponse)
@@ -289,7 +280,6 @@ async def start_import(payload: schemas.ImportStartRequest, auth: Annotated[Auth
             f"{report.skipped_links} linked archive member(s) (symbolic or hard links) were skipped — links "
             "cannot be imported; copy the real files into the workspace and re-export if you need them"
         )
-    existing, plan = await _ultra_facts(owner_id)
     return {
         "import_id": import_id,
         "kind": normalized.kind,
@@ -317,9 +307,6 @@ async def start_import(payload: schemas.ImportStartRequest, auth: Annotated[Auth
         "safety_flags": package.manifest.get("safety_flags") or [],
         "warnings": normalized.warnings,
         "skipped_big_files": report.skipped_big,
-        "existing_agents": existing,
-        "standard_max_agents": COMPANY_STANDARD_PLAN_MAX_AGENTS,
-        "plan": plan,
     }
 
 
@@ -422,20 +409,6 @@ async def confirm_import(
         raise HTTPException(status_code=400, detail=f"agents not in this backup: {', '.join(unknown)}")
     if not wanted:
         raise HTTPException(status_code=400, detail="select at least one agent")
-
-    # Ultra gate — same predicate as the company-deploy branch: the SUM of the
-    # owner's live agents and what this import adds must fit the standard plan.
-    existing, plan = await _ultra_facts(owner_id)
-    if plan != "ultra_pro" and existing + len(wanted) > COMPANY_STANDARD_PLAN_MAX_AGENTS:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": "ultra_required",
-                "existing_agents": existing,
-                "importing": len(wanted),
-                "max": COMPANY_STANDARD_PLAN_MAX_AGENTS,
-            },
-        )
 
     selection = _selection(payload)
     fleet = deployed_upstream_version()

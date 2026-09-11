@@ -15,6 +15,10 @@ type ClerkUser = {
   last_name?: string | null;
 };
 
+type ClerkOrganizationMembership = {
+  organization?: { id?: string };
+};
+
 export async function createUser(opts: {
   secretKey: string;
   email: string;
@@ -34,7 +38,6 @@ export async function createUser(opts: {
       last_name: opts.runId,
       skip_password_checks: true,
       unsafe_metadata: {
-        onboarded: false,
         e2e_run_id: opts.runId,
       },
     }),
@@ -78,6 +81,40 @@ export async function findUserByEmail(opts: {
   }
 }
 
+/** Return every Clerk organization membership for one E2E user. */
+export async function listUserOrganizationIds(opts: {
+  secretKey: string;
+  userId: string;
+}): Promise<string[]> {
+  const limit = 500;
+  let offset = 0;
+  const organizationIds: string[] = [];
+  while (true) {
+    const res = await fetch(
+      `${CLERK_API}/users/${opts.userId}/organization_memberships?limit=${limit}&offset=${offset}`,
+      { headers: { Authorization: `Bearer ${opts.secretKey}` } },
+    );
+    if (!res.ok) {
+      throw new Error(
+        `Clerk listUserOrganizationIds ${res.status}: ${await res.text()}`,
+      );
+    }
+    const page = (await res.json()) as { data?: ClerkOrganizationMembership[] };
+    if (!Array.isArray(page.data)) {
+      throw new Error('Clerk listUserOrganizationIds returned an invalid membership page');
+    }
+    for (const membership of page.data) {
+      const organizationId = membership.organization?.id;
+      if (!organizationId) {
+        throw new Error('Clerk listUserOrganizationIds returned a membership without an organization ID');
+      }
+      organizationIds.push(organizationId);
+    }
+    if (page.data.length < limit) return organizationIds;
+    offset += limit;
+  }
+}
+
 export async function deleteUser(opts: {
   secretKey: string;
   userId: string;
@@ -102,6 +139,36 @@ export async function deleteOrg(opts: {
   if (!res.ok && res.status !== 404) {
     throw new Error(`Clerk deleteOrg ${res.status}: ${await res.text()}`);
   }
+}
+
+export async function createOrganizationInvitation(opts: {
+  secretKey: string;
+  orgId: string;
+  inviterUserId: string;
+  email: string;
+}): Promise<string> {
+  const res = await fetch(
+    `${CLERK_API}/organizations/${opts.orgId}/invitations`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${opts.secretKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        email_address: opts.email,
+        inviter_user_id: opts.inviterUserId,
+        role: 'org:member',
+      }),
+    },
+  );
+  if (!res.ok) {
+    throw new Error(
+      `Clerk createOrganizationInvitation ${res.status}: ${await res.text()}`,
+    );
+  }
+  const body = (await res.json()) as { id: string };
+  return body.id;
 }
 
 export async function createSignInToken(opts: {

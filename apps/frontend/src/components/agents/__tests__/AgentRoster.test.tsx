@@ -333,23 +333,20 @@ describe("AgentRoster rendering", () => {
     );
   });
 
-  it("hides delete on seeded agents even when no default is reported", () => {
-    // `defaultAgentId` alone left Friday deletable on any container whose
-    // agents.list returns no default (a legacy pre-Paperclip container is
-    // exactly that). The backend refuses the delete; the row shouldn't offer it.
+  it("offers delete for a starter specialist regardless of provenance", () => {
     renderRoster([
-      entry("f", "Friday", "idle", true, undefined, { isSeeded: true }),
+      entry("f", "Renamed specialist", "idle", false, undefined, { isSeeded: true }),
       entry("a", "Ada", "idle"),
     ]);
-    expect(screen.queryByLabelText("Delete Friday")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Delete Renamed specialist")).toBeInTheDocument();
     expect(screen.getByLabelText("Delete Ada")).toBeInTheDocument();
   });
 
-  it("hides delete on the default agent, which cannot be removed", () => {
-    renderRoster([entry("f", "Friday", "idle", true), entry("a", "Ada", "idle")], {
+  it("lets the backend decide whether the current default can be removed", () => {
+    renderRoster([entry("f", "Renamed CEO", "idle", true), entry("a", "Ada", "idle")], {
       defaultAgentId: "f",
     });
-    expect(screen.queryByLabelText("Delete Friday")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Delete Renamed CEO")).toBeInTheDocument();
     expect(screen.getByLabelText("Delete Ada")).toBeInTheDocument();
   });
 

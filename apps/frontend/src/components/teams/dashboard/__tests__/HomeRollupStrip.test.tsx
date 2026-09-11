@@ -12,10 +12,10 @@ vi.mock("@/hooks/useCompanyRollup", () => ({
   useCompanyRollup: (span: number) => mockRollup(span),
 }));
 
-// Every tile's "Ask Friday" hands off to the same hook — a plain spy is
+// Every tile's "Ask CEO" hands off to the same hook — a plain spy is
 // enough to assert the exact draft each tile sends.
-const askFriday = vi.fn();
-vi.mock("@/hooks/useAskFriday", () => ({ useAskFriday: () => askFriday }));
+const askCeo = vi.fn();
+vi.mock("@/hooks/useAskCeo", () => ({ useAskCeo: () => askCeo }));
 
 // Only `details_submitted` is read, and only when there are no rows at all —
 // a bound-but-unonboarded account returns legitimately empty, and "finish
@@ -583,6 +583,21 @@ describe("HomeRollupStrip — business-first hero", () => {
     const titles = Array.from(hero.querySelectorAll("rect > title")).map((t) => t.textContent);
     expect(titles).toEqual(["Aug 30 · $1", "Aug 31 · $2"]);
     expect(container.querySelector('[aria-label="New customers over the period"] polyline')).not.toBeNull();
+    // `role="group"`, not `role="img"` — the group exposes each day's link to
+    // assistive tech rather than hiding the anchors behind an image role.
+    const group = screen.getByRole("group", { name: "Revenue over the period" });
+    expect(within(group).getAllByRole("link")).toHaveLength(LIVE.days.length);
+  });
+
+  it("links every hero bar to Money scoped to that day, in-shell with a real href", () => {
+    mockRollup.mockReturnValue(view({ rollup: LIVE }));
+    const { container } = render(<HomeRollupStrip spendCents={1400} />);
+    const links = Array.from(container.querySelectorAll('[aria-label="Revenue over the period"] a'));
+    expect(links.map((a) => a.getAttribute("href"))).toEqual([
+      "/chat?panel=teams-money&day=2026-08-30",
+      "/chat?panel=teams-money&day=2026-08-31",
+    ]);
+    expect(links[0].querySelector("rect")).not.toBeNull();
   });
 
   it("calls the customer tile New customers and lets the hero span two columns beside the tiles", () => {
@@ -595,13 +610,13 @@ describe("HomeRollupStrip — business-first hero", () => {
     expect(hero.className).not.toContain("col-span-3");
   });
 
-  it("hands each tile's question to Friday with the period in it", () => {
+  it("hands each tile's question to the CEO with the period in it", () => {
     mockRollup.mockReturnValue(view({ rollup: LIVE }));
     render(<HomeRollupStrip spendCents={1400} />);
     const revenue = screen.getByRole("group", { name: "Revenue" });
-    fireEvent.click(within(revenue).getByRole("button", { name: "Ask Friday" }));
-    expect(askFriday).toHaveBeenCalledWith(expect.stringMatching(/revenue.*30 days/));
-    fireEvent.click(within(screen.getByRole("group", { name: "Agent spend" })).getByRole("button", { name: "Ask Friday" }));
-    expect(askFriday).toHaveBeenLastCalledWith(expect.stringMatching(/agents cost/));
+    fireEvent.click(within(revenue).getByRole("button", { name: "Ask CEO" }));
+    expect(askCeo).toHaveBeenCalledWith(expect.stringMatching(/revenue.*30 days/));
+    fireEvent.click(within(screen.getByRole("group", { name: "Agent spend" })).getByRole("button", { name: "Ask CEO" }));
+    expect(askCeo).toHaveBeenLastCalledWith(expect.stringMatching(/agents cost/));
   });
 });

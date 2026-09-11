@@ -5,7 +5,7 @@ import { stripExternalContentMarkers } from "@/lib/externalContentMarkers";
 import { Copy, Check, Share2, ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useScrollToBottom } from "@/hooks/useScrollToBottom";
-import { ChatErrorCard, isTrialPaywallCode } from "@/components/chat/ChatErrorCard";
+import { ChatErrorCard } from "@/components/chat/ChatErrorCard";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import SyntaxHighlighter from "react-syntax-highlighter/dist/esm/prism-light";
@@ -625,14 +625,9 @@ function toolCallFromPair(block: ContentBlock, pairs: ToolBlockPair[]): ToolCall
 function MessageBlocks({
   message,
   onOpenFile,
-  interactive = true,
 }: {
   message: HistoryMessage;
   onOpenFile?: (path: string) => void;
-  /** Forwarded to ChatErrorCard — only the newest bubble may render the live
-   *  conversion paywall, so repeated capped turns do not stack purchase forms
-   *  each holding their own credit amount. */
-  interactive?: boolean;
 }) {
   // `content` may be a block array, a bare string, or absent with the body on
   // the top-level `text` field (older chat.history rows, cron run transcripts).
@@ -705,7 +700,6 @@ function MessageBlocks({
               key={`err:${i}`}
               message={text.slice("Error: ".length)}
               code={message.errorCode}
-              interactive={interactive}
             />
           );
         } else {
@@ -835,14 +829,9 @@ const ItemRenderer = React.memo(
   function ItemRenderer({
     item,
     onOpenFile,
-    interactive = true,
   }: {
     item: ChatRenderItem;
     onOpenFile?: (path: string) => void;
-    /** True only for the newest bubble of the newest assistant group — gates
-     *  ChatErrorCard's live conversion paywall so it cannot stack. Included in
-     *  the memo comparator below, or the flag would never propagate. */
-    interactive?: boolean;
   }) {
     if (item.kind === "divider") {
       return (
@@ -868,13 +857,12 @@ const ItemRenderer = React.memo(
       return <ThinkingBlock content={item.text} streaming />;
     }
     if (item.kind === "message") {
-      return <MessageBlocks message={item.message} onOpenFile={onOpenFile} interactive={interactive} />;
+      return <MessageBlocks message={item.message} onOpenFile={onOpenFile} />;
     }
     return null;
   },
   (prev, next) =>
     prev.onOpenFile === next.onOpenFile &&
-    prev.interactive === next.interactive &&
     itemEquals(prev.item, next.item),
 );
 
@@ -949,7 +937,6 @@ const BubbleGroup = React.memo(BubbleGroupImpl, (prev, next) =>
   prev.rewindDisabled === next.rewindDisabled &&
   prev.isStreaming === next.isStreaming &&
   prev.isLastAssistantGroup === next.isLastAssistantGroup &&
-  prev.paywallItemKey === next.paywallItemKey &&
   prev.onOpenFile === next.onOpenFile &&
   groupEquals(prev.group, next.group),
 );
@@ -1059,7 +1046,6 @@ function BubbleGroupImpl({
   agentName,
   isStreaming,
   isLastAssistantGroup,
-  paywallItemKey,
   onOpenFile,
   onRewind,
   rewindDisabled,
@@ -1070,10 +1056,6 @@ function BubbleGroupImpl({
   isLastAssistantGroup?: boolean;
   onRewind?: (entryId: string) => void;
   rewindDisabled?: boolean;
-  /** Key of the ONE transcript item allowed to render the live conversion
-   *  paywall — the newest trial-coded error card. See the computation at the
-   *  call site for why this is not simply the newest bubble. */
-  paywallItemKey?: string | null;
   onOpenFile?: (path: string) => void;
 }) {
   if (group.side === "btw") {
@@ -1113,13 +1095,7 @@ function BubbleGroupImpl({
   }
   // Assistant side
   //
-  // `w-full` when any item carries an errorCode: ChatErrorCard's conversion
-  // paywall wraps ProviderPicker, whose root is `@container` —
-  // `container-type: inline-size` zeroes the element's intrinsic width, and
-  // this column is shrink-to-fit (sized from intrinsic content), so without an
-  // explicit width the bubble collapses to the AgentHead's ~120px and the
-  // purchase form renders as a needle-thin strip that no window resize can
-  // widen. Error cards are full-width cards; plain bubbles keep hugging.
+  // Error cards are full-width cards; plain bubbles keep hugging.
   const hasErrorCard = group.items.some(
     (item) => item.kind === "message" && Boolean(item.message.errorCode),
   );
@@ -1147,17 +1123,6 @@ function BubbleGroupImpl({
               key={entry.item.key}
               item={entry.item}
               onOpenFile={onOpenFile}
-              // Exactly ONE item in the whole transcript may render the live
-              // paywall: the newest trial-coded error card (paywallItemKey,
-              // computed once at the top level). Not "the newest bubble" —
-              // a mid-run cap emits the reclassified trial error and then
-              // OpenClaw's raw rate-limited frame ~20ms later, so the newest
-              // bubble is reliably NOT the cap card and that predicate
-              // demoted the paywall to a settings link in exactly the
-              // scenario it exists for (observed live in prod). The
-              // one-key rule still prevents stacked pickers with divergent
-              // credit-amount state.
-              interactive={entry.item.key === paywallItemKey}
             />
             ),
           )}
@@ -1228,6 +1193,20 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
     // pulling — they'll scroll back down themselves. Threshold matches
     // Tailwind's `space-y-10` (~40px) plus a comfortable margin.
     const isNearBottomRef = React.useRef(true);
+    // "Jump to latest" visibility. Deliberately ONE boolean rather than two
+    // derived conditions, because the two halves are set from different
+    // places and neither is sufficient alone: it goes true only when content
+    // arrives WHILE the reader is scrolled away (the streaming effect below),
+    // and false the moment they are back near the bottom (handleScroll).
+    //
+    // Gating on "newer content exists" alone is the known failure mode —
+    // upstream shipped that and the button flashed on every reply, because
+    // from the first streaming tick of a turn there is always content at the
+    // tail. Their fix was to AND it with live-edge geometry; this is the same
+    // predicate, collapsed into the flag's own transitions.
+    //
+    // State, not a ref, because unlike isNearBottomRef this one has to paint.
+    const [showJumpToLatest, setShowJumpToLatest] = React.useState(false);
     const hasMountedRef = React.useRef(false);
     const prevTotalItemsRef = React.useRef(0);
     const prevLastTailLengthRef = React.useRef(0);
@@ -1236,6 +1215,16 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
     React.useImperativeHandle(ref, () => ({
       scrollToBottom,
     }));
+
+    // Re-pin autoscroll by hand rather than waiting for the scroll event the
+    // write below queues: that event is asynchronous, so the next streaming
+    // commit could land first, read a stale isNearBottomRef and re-arm the
+    // button on the very chunk the user jumped to see.
+    const handleJumpToLatest = React.useCallback(() => {
+      isNearBottomRef.current = true;
+      setShowJumpToLatest(false);
+      scrollToBottom();
+    }, [scrollToBottom]);
 
     // Scroll events can burst several times per frame (touch / momentum
     // scrolling), and every run measures the container. Coalesce them to one
@@ -1256,6 +1245,9 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
       if (!c) return;
       const distance = c.scrollHeight - c.scrollTop - c.clientHeight;
       isNearBottomRef.current = distance < 120;
+      // Back at the live edge — whatever arrived while they were away is now
+      // on screen, so the affordance has nothing left to offer.
+      if (isNearBottomRef.current) setShowJumpToLatest(false);
       scrollFrameRef.current = requestAnimationFrame(() => {
         scrollFrameRef.current = null;
       });
@@ -1323,9 +1315,17 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
       if (isFirstPaintWithItems || newUserMessage) {
         snapToBottom();
         isNearBottomRef.current = true;
+        setShowJumpToLatest(false);
         hasMountedRef.current = true;
-      } else if ((itemsIncreased || tailGrew) && isNearBottomRef.current) {
-        snapToBottom();
+      } else if (itemsIncreased || tailGrew) {
+        if (isNearBottomRef.current) {
+          snapToBottom();
+        } else {
+          // Content arrived below a reader who has scrolled away. This is the
+          // ONLY place the affordance is armed, which is what keeps it off
+          // screen for someone sitting at the live edge.
+          setShowJumpToLatest(true);
+        }
       }
 
       if (totalItems > 0) hasMountedRef.current = true;
@@ -1352,26 +1352,6 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
       if (renderGroups[i].side === "assistant") {
         lastAssistantGroupIndex = i;
         break;
-      }
-    }
-
-    // The ONE item allowed to render the live conversion paywall: the newest
-    // trial-coded error card anywhere in the transcript. Searched backward so
-    // repeated capped turns bless only the latest (no stacked pickers with
-    // divergent credit-amount state), and searched by CODE rather than
-    // position because the cap card is reliably NOT the last bubble — a
-    // mid-run cap emits the reclassified trial error and then OpenClaw's raw
-    // rate-limited frame ~20ms behind it (prod logs: 17:58:44.187 vs .208).
-    let paywallItemKey: string | null = null;
-    outer: for (let i = renderGroups.length - 1; i >= 0; i--) {
-      if (renderGroups[i].side !== "assistant") continue;
-      const items = renderGroups[i].items;
-      for (let j = items.length - 1; j >= 0; j--) {
-        const it = items[j];
-        if (it.kind === "message" && isTrialPaywallCode(it.message.errorCode)) {
-          paywallItemKey = it.key;
-          break outer;
-        }
       }
     }
 
@@ -1409,7 +1389,6 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
               agentName={agentName}
               isStreaming={isStreaming}
               isLastAssistantGroup={idx === lastAssistantGroupIndex}
-              paywallItemKey={paywallItemKey}
               onOpenFile={onOpenFile}
               onRewind={onRewind}
               rewindDisabled={rewindDisabled}
@@ -1417,6 +1396,24 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
           ))}
           {showTypingPlaceholder && <TypingPlaceholder agentName={agentName} />}
         </div>
+        {/* Sticky, not absolute: `absolute` inside a scroll container anchors
+            to the scrolled content, which would park this at the end of the
+            transcript instead of over the viewport. Sticky pins it to the
+            scrollport. It sits OUTSIDE .chat-transcript because that class
+            gives every direct child `content-visibility: auto` and a 200px
+            intrinsic-size placeholder. `h-0` keeps it out of layout so
+            appearing and disappearing never reflows the transcript. */}
+        {showJumpToLatest && (
+          <div className="sticky bottom-4 z-10 flex h-0 justify-center">
+            <button
+              type="button"
+              onClick={handleJumpToLatest}
+              className="-translate-y-full text-caption text-[var(--midnight-soft)] hover:text-[var(--midnight)] px-3 py-1 rounded-full border border-[var(--edge)] bg-[var(--cream-deep)] shadow-sm"
+            >
+              Jump to latest
+            </button>
+          </div>
+        )}
       </div>
     );
   }

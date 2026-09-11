@@ -3,11 +3,11 @@
 import asyncio
 import hashlib
 import logging
-import os
 import time
 from typing import Literal
 
 import stripe
+from botocore.exceptions import ClientError
 
 from core.config import settings
 from core.observability.metrics import put_metric, timing
@@ -35,51 +35,9 @@ class ChangeProviderError(Exception):
 
 stripe.api_key = settings.STRIPE_SECRET_KEY
 
-# Starter Claude credits bundled into the bedrock_claude subscription Checkout
-# as a one-time line item. The owner picks the amount; this is only the
-# preselected default when they don't. Deliberately constants and not env vars:
-# the resulting total is quoted to the customer BEFORE payment, so a value that
-# drifted per environment would make the disclosure false in one of them.
-#
-# The min/max mirror the standalone top-up window (routers/billing.py
-# `_TOP_UP_MAX_CENTS`, `ge=500`) — the same money buying the same balance
-# should not have two different limits depending on which door it came
-# through. Kept as literals here rather than imported to avoid a service →
-# router import; the router's Pydantic bounds are the front-line check and
-# these are the backstop for non-router callers.
-BEDROCK_STARTER_CREDITS_CENTS = 2000
-MIN_STARTER_CREDITS_CENTS = 500  # $5 — matches TrialCheckoutRequest ge=500
-MAX_STARTER_CREDITS_CENTS = 100_000  # $1,000 — matches _TOP_UP_MAX_CENTS
-
-
-# Bumped whenever the Checkout Session request body shape changes — see
-# _checkout_idempotency_key. v2 = top-level `metadata` + the optional credits
-# line item + conditional allow_promotion_codes. v3 = the launch winner
-# `discounts` pre-apply (which also drops allow_promotion_codes when present).
-_CHECKOUT_BODY_VERSION = 3
-
-
-def normalize_starter_credits(credits_cents: int | None) -> int | None:
-    """The ONE definition of "what starter amount does this request mean".
-
-    ``None`` in, ``None`` out — absent means no credits line item, never a
-    silent default (see create_flat_fee_checkout). Any supplied value is
-    clamped into the $5–$1,000 window.
-
-    Explicitly `is None`, not truthiness: ``credits_cents or DEFAULT`` treated
-    a deliberate ``0`` as "not supplied" and substituted $20, charging money
-    nobody asked for — and the clamp that would have caught the zero never saw
-    it.
-
-    Shared with the router's open-session guard on purpose. That guard decides
-    whether an already-open Checkout still matches what the customer is asking
-    for now, which is only answerable against the same normalized value this
-    function feeds into the line item; two copies of the arithmetic would let
-    "same amount" and "same session" disagree.
-    """
-    if credits_cents is None:
-        return None
-    return min(max(credits_cents, MIN_STARTER_CREDITS_CENTS), MAX_STARTER_CREDITS_CENTS)
+# Bump whenever the shared Checkout body changes; Stripe idempotency compares
+# the complete request body for a reused key.
+_CHECKOUT_BODY_VERSION = 6
 
 
 class BillingServiceError(Exception):
@@ -90,79 +48,41 @@ class BillingService:
     async def create_customer_for_owner(
         self, owner_id: str, owner_type: str = "personal", email: str | None = None
     ) -> dict:
-        """Resolve a Stripe customer for ``owner_id``, keyed by ``email``.
+        """Resolve a Stripe customer for one workspace billing row only.
 
-        Email is the system-of-record idempotency key for Stripe-side identity:
-        a single human (one verified email in Clerk) maps to a single Stripe
-        Customer, regardless of how many billing entities they own (personal
-        account, multiple orgs as admin, etc.). DDB ``billing-accounts`` rows
-        are still per-owner_id, so multiple rows can share one
-        ``stripe_customer_id``.
-
-        Resolution order:
-          1. Existing DDB row for this owner_id WITH a ``stripe_customer_id``
-             → return it (no Stripe call).
-          1b. Existing DDB row WITHOUT a ``stripe_customer_id`` — the
-              card-less ``trial_local`` row (``create_trial_local_if_absent``
-              deliberately writes no ``stripe_*`` fields) is the only row
-              that reaches this today — falls through to steps 2-3 below to
-              mint/reuse a customer, then BACKFILLS it onto the existing row
-              via ``billing_repo.set_stripe_customer_id`` rather than
-              attempting a fresh ``create_if_not_exists`` (which would raise
-              ``AlreadyExistsError`` against a row that's already there).
-              Without this, ``create_flat_fee_checkout`` always sees no
-              Stripe customer and raises — every free-tier user hits an
-              HTTP 400 on Upgrade.
-          2. ``stripe.Customer.list(email=...)`` → reuse the most recent match.
-             ``list`` is exact-match and immediately consistent (unlike
-             ``search``, which has indexing lag).
-          3. No match → ``stripe.Customer.create``.
-
-        Webhook handlers must resolve owner via subscription metadata
-        (``owner_id``) since the GSI on ``stripe_customer_id`` is no longer
-        unique. See ``handle_stripe_webhook`` in ``routers/billing.py``.
+        A human can administer multiple workspaces, so their email is display
+        data on a newly-created customer, never a cross-workspace deduplication
+        key. Reuse is permitted only when this workspace row already stores a
+        Stripe customer id.
         """
         existing = await billing_repo.get_by_owner_id(owner_id)
         if existing and existing.get("stripe_customer_id"):
             return existing
 
-        # Normalize so a single human typing/signing in with mixed case
-        # ("User@Example.com" vs "user@example.com") still maps to one
-        # Stripe customer. Stripe's Customer.list email filter is exact
-        # match, so without normalization we'd silently create duplicates.
-        normalized_email = email.strip().lower() if email else None
-
-        customer_id: str | None = None
-        created_locally = False
-        if normalized_email:
-            with timing("stripe.api.latency", {"op": "customers.list"}):
-                matches = stripe.Customer.list(email=normalized_email, limit=1)
-            if matches and matches.data:
-                customer_id = matches.data[0].id
-                put_metric("stripe.customer.email_dedup", dimensions={"result": "reuse"})
-                logger.info(
-                    "Reusing Stripe customer %s for owner_id=%s (email=%s)",
-                    customer_id,
-                    owner_id,
-                    normalized_email,
-                )
-
-        if customer_id is None:
-            with timing("stripe.api.latency", {"op": "customers.create"}):
-                customer = stripe.Customer.create(
-                    email=normalized_email,
-                    metadata={"owner_id": owner_id, "owner_type": owner_type},
-                )
-            customer_id = customer.id
-            created_locally = True
-            put_metric("stripe.customer.email_dedup", dimensions={"result": "create"})
+        with timing("stripe.api.latency", {"op": "customers.create"}):
+            customer = stripe.Customer.create(
+                metadata={"workspace_id": owner_id, "owner_id": owner_id, "owner_type": owner_type},
+                idempotency_key=f"workspace-customer:v2:{owner_id}",
+            )
+        customer_id = customer.id
 
         if existing:
             # Backfill path (1b above) — the row already exists (trial_local
             # today), so persist onto it instead of racing a fresh
             # create_if_not_exists, which would raise AlreadyExistsError
             # against a row that's already there.
-            await billing_repo.set_stripe_customer_id(owner_id, stripe_customer_id=customer_id)
+            try:
+                await billing_repo.set_stripe_customer_id(owner_id, stripe_customer_id=customer_id)
+            except ClientError as e:
+                if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                    raise
+                winner = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
+                if not winner or not winner.get("stripe_customer_id"):
+                    raise BillingServiceError("customer_attach_retry") from e
+                if winner["stripe_customer_id"] != customer_id:
+                    with timing("stripe.api.latency", {"op": "customers.delete"}):
+                        stripe.Customer.delete(customer_id, idempotency_key=f"delete_customer:{customer_id}")
+                return winner
             existing["stripe_customer_id"] = customer_id
             return existing
 
@@ -173,18 +93,10 @@ class BillingService:
                 owner_type=owner_type,
             )
         except billing_repo.AlreadyExistsError:
-            # Lost the DDB race for this owner_id. If we took the create
-            # path, two concurrent callers may have both missed the
-            # email-list lookup and each minted a fresh Stripe customer —
-            # the loser's customer is now orphaned (no DDB row points at
-            # it). Delete it so the email→customer invariant holds.
-            winner = await billing_repo.get_by_owner_id(owner_id)
-            if (
-                created_locally
-                and winner
-                and winner.get("stripe_customer_id")
-                and winner["stripe_customer_id"] != customer_id
-            ):
+            # Lost the DDB race for this workspace. Delete the Stripe customer
+            # created by this request and return the workspace winner.
+            winner = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
+            if winner and winner.get("stripe_customer_id") and winner["stripe_customer_id"] != customer_id:
                 logger.info(
                     "Lost DDB race for owner_id=%s; deleting orphan Stripe customer %s (winner=%s)",
                     owner_id,
@@ -197,10 +109,10 @@ class BillingService:
                             customer_id,
                             idempotency_key=f"delete_customer:{customer_id}",
                         )
-                    put_metric("stripe.customer.orphan_delete", dimensions={"result": "ok"})
                 except Exception:
-                    put_metric("stripe.customer.orphan_delete", dimensions={"result": "error"})
                     logger.warning("Failed to delete orphan Stripe customer %s", customer_id)
+            if not winner or not winner.get("stripe_customer_id"):
+                raise BillingServiceError("customer_attach_retry")
             return winner
 
     async def create_portal_session(self, billing_account: dict, *, return_path: str | None = None) -> str:
@@ -231,206 +143,193 @@ class BillingService:
         return session.url
 
     async def cancel_subscription(self, billing_account: dict) -> None:
-        # clear_seat_fields=True: cancellation must also wipe
-        # subscription_item_id + seat_count, not just the subscription
-        # id/status -- otherwise a stale subscription_item_id survives
-        # cancellation and is_seat_subscription (routers/billing.py) keeps
-        # reporting a per-seat subscription that no longer exists.
         await billing_repo.set_subscription(
             owner_id=billing_account["owner_id"],
             subscription_id=None,
             status="canceled",
             trial_end=None,
-            clear_seat_fields=True,
         )
 
 
-async def create_flat_fee_checkout(
-    *,
-    owner_id: str,
-    provider_choice: str | None = None,
-    byo_provider: str | None = None,
-    clerk_user_id: str | None = None,
-    credits_cents: int | None = None,
-) -> stripe.checkout.Session:
-    """Create a Stripe Checkout session on the single flat-fee price.
+async def create_workspace_checkout(*, owner_id: str, clerk_user_id: str, plan: Literal["workspace", "ultra"]) -> dict:
+    """Create or change the single recurring subscription for a workspace."""
+    checkout_bucket = int(time.time() // 300)
+    checkout_expires_at = (checkout_bucket * 300) + 36 * 60
+    price_id = settings.STRIPE_WORKSPACE_PRICE_ID if plan == "workspace" else settings.STRIPE_ULTRA_PRICE_ID
+    if not price_id:
+        raise BillingServiceError(f"STRIPE_{plan.upper()}_PRICE_ID not configured")
 
-    Used by the flat-fee onboarding wizard (frontend cards 1, 2, 3 — all three
-    pay the same monthly fee against ``STRIPE_FLAT_PRICE_ID``). The card is
-    charged for the first month at checkout — there is no Stripe trial;
-    no-card evaluation happens on the ``trial_local`` free tier before the
-    user ever reaches this flow.
+    from core.services.provision_gate import LIVE_SUBSCRIPTION_STATUSES
 
-    ``provider_choice``, ``clerk_user_id`` and ``owner_id`` are threaded into
-    ``subscription_data.metadata`` so the ``customer.subscription.*`` webhook
-    can resolve the owner unambiguously. ``owner_id`` matters because the
-    Stripe customer is shared across personal/org billing rows for the same
-    email — the GSI on ``stripe_customer_id`` is no longer 1:1.
+    account = await billing_repo.get_by_owner_id(owner_id)
+    if not account or not account.get("stripe_customer_id"):
+        raise BillingServiceError(f"No Stripe customer for owner_id={owner_id}")
 
-    Conventions (mirrors Plan 1 Stripe Tax setup):
-      - ``automatic_tax={"enabled": True}`` — Stripe computes sales tax/VAT.
-      - ``customer_update={"address": "auto"}`` — required when automatic_tax
-        is enabled so Checkout can persist the collected billing address back
-        onto the existing Stripe customer.
-      - ``allow_promotion_codes=True`` — surfaces the promo-code field so
-        internal coupons (e.g. 100%-off launch codes) can be applied.
-      - ``idempotency_key`` bucketed to a 5-minute window: collapses
-        rapid duplicate clicks (and "open Stripe Checkout in two tabs"
-        style retries) to a single Checkout Session, so a user can't
-        accidentally complete two parallel subscriptions before the
-        first ``customer.subscription.created`` webhook lands and the
-        guard in ``create_trial_checkout`` kicks in. Stripe's
-        idempotency does a body-shape compare, so a config change
-        (e.g. ``allow_promotion_codes`` flipping on) naturally
-        bypasses the cached response within the same bucket.
-    """
-    if not settings.STRIPE_FLAT_PRICE_ID:
-        raise BillingServiceError("STRIPE_FLAT_PRICE_ID not configured")
+    def validate_owned_subscription(candidate: dict, *, allow_legacy_metadata: bool = False) -> None:
+        """Reject Stripe objects that cannot be proven to belong to this workspace."""
+        if candidate.get("customer") != account["stripe_customer_id"]:
+            raise BillingServiceError("Subscription has a different customer")
+        metadata = candidate.get("metadata") or {}
+        if metadata.get("owner_id") and metadata["owner_id"] != owner_id:
+            raise BillingServiceError("Subscription belongs to a different workspace")
+        if metadata.get("workspace_id") != owner_id and not (
+            allow_legacy_metadata and metadata.get("workspace_id") is None
+        ):
+            raise BillingServiceError("Subscription has no matching workspace metadata")
 
-    # Serialize session creation per owner. Concurrent requests with
-    # different provider choices carry different idempotency keys, so
-    # without the claim both would mint distinct completable sessions
-    # before either pending-checkout marker lands. Self-expires (90s) so a
-    # crashed request can't wedge the owner; the router maps this error to
-    # a 409.
+    subscription = None
+    sub_id = account.get("stripe_subscription_id")
+    if sub_id:
+        try:
+            with timing("stripe.api.latency", {"op": "subscription.retrieve"}):
+                candidate = stripe.Subscription.retrieve(sub_id)
+        except stripe.error.InvalidRequestError as e:
+            if getattr(e, "code", None) != "resource_missing":
+                raise
+        else:
+            if candidate.get("status") in LIVE_SUBSCRIPTION_STATUSES:
+                # A persisted row is the historical binding for pre-v2
+                # subscriptions. It may lack workspace_id, but must never
+                # contradict the workspace/customer recorded locally.
+                validate_owned_subscription(candidate, allow_legacy_metadata=True)
+                subscription = candidate
+
+    # The local id is only a candidate. Stripe's complete customer list is the
+    # authority for the one-live-subscription invariant; otherwise a stale row
+    # could mask a second live subscription and let us modify the wrong one.
+    with timing("stripe.api.latency", {"op": "subscription.list"}):
+        subscriptions = stripe.Subscription.list(customer=account["stripe_customer_id"], status="all", limit=100)
+    live = [
+        candidate
+        for candidate in subscriptions.auto_paging_iter()
+        if candidate.get("status") in LIVE_SUBSCRIPTION_STATUSES
+    ]
+    if live:
+        if len(live) != 1:
+            raise BillingServiceError("Multiple live subscriptions require support")
+        listed = live[0]
+        validate_owned_subscription(
+            listed,
+            # Only a stored legacy binding may omit workspace_id. A list-only
+            # result with missing canonical metadata is never safe to adopt.
+            allow_legacy_metadata=bool(subscription and listed.get("id") == subscription.get("id")),
+        )
+        subscription = listed
+    elif subscription is not None:
+        raise BillingServiceError("Stored subscription was not found in the customer subscription list")
+
+    if subscription is not None:
+        sub_id = subscription.get("id") or sub_id
+        items = subscription["items"]["data"]
+        if len(items) != 1:
+            raise BillingServiceError("This subscription's plan can't be changed automatically")
+        item = items[0]
+        if (item.get("price") or {}).get("id") == price_id:
+            return {"updated": False}
+        try:
+            revision = str(int((subscription.get("metadata") or {}).get("workspace_plan_revision", "0")) + 1)
+        except ValueError as e:
+            raise BillingServiceError("Subscription has an invalid checkout revision") from e
+        transition = hashlib.sha256(
+            "|".join((owner_id, subscription["id"], item["id"], item["price"]["id"], price_id, revision)).encode()
+        ).hexdigest()
+        with timing("stripe.api.latency", {"op": "subscription.modify"}):
+            stripe.Subscription.modify(
+                subscription["id"],
+                items=[{"id": item["id"], "price": price_id}],
+                proration_behavior="create_prorations",
+                # Canonical billing metadata is intentionally the only partial
+                # update. It neither copies arbitrary Stripe-side fields nor
+                # includes the initiating admin, so same-transition retries
+                # retain an identical body/key. Empty strings delete obsolete
+                # legacy provider/credit metadata in Stripe.
+                metadata={
+                    "workspace_id": owner_id,
+                    "owner_id": owner_id,
+                    "plan": plan,
+                    "purpose": "workspace_subscription_v2",
+                    "workspace_plan_revision": revision,
+                    "provider_choice": "",
+                    "byo_provider": "",
+                    "credits_cents": "",
+                },
+                idempotency_key=f"workspace-plan-change:v2:{transition}",
+            )
+        return {"updated": True}
+
+    pending_id = account.get("pending_checkout_session_id")
+    if pending_id:
+        try:
+            with timing("stripe.api.latency", {"op": "checkout.session.retrieve"}):
+                pending = stripe.checkout.Session.retrieve(pending_id)
+        except stripe.error.InvalidRequestError:
+            pending = None
+        if pending is not None:
+            if pending.get("status") == "complete":
+                raise BillingServiceError("already_subscribed:checkout_completed")
+            if pending.get("status") == "open":
+                metadata = pending.get("metadata") or {}
+                if (
+                    metadata.get("purpose") == "workspace_subscription_v2"
+                    and metadata.get("plan") == plan
+                    and metadata.get("workspace_id") == owner_id
+                    and metadata.get("owner_id") in {None, owner_id}
+                    and pending.get("customer") == account["stripe_customer_id"]
+                    and pending.get("mode") == "subscription"
+                ):
+                    return {"checkout_url": pending["url"]}
+                # A corrupt or foreign marker is not ours to disclose or
+                # expire. Failing closed avoids damaging another workspace.
+                raise BillingServiceError("pending_checkout_invalid")
+
     claim_token = await billing_repo.try_claim_checkout_slot(owner_id)
     if not claim_token:
         raise BillingServiceError("checkout_in_progress")
 
-    metadata: dict = {"owner_id": owner_id}
-    if provider_choice:
-        metadata["provider_choice"] = provider_choice
-    if byo_provider:
-        metadata["byo_provider"] = byo_provider
-    if clerk_user_id:
-        metadata["clerk_user_id"] = clerk_user_id
-
-    # Bedrock is the only path provision_gate will not start a container for
-    # until credits are funded (Layer 3, `credits_required`), so its Checkout
-    # carries the starter credits as a ONE-TIME line item beside the recurring
-    # flat price: one session, one card entry, the full total disclosed before
-    # payment.
-    #
-    # This replaces a second Checkout that fired AFTER the subscription was
-    # already paid for — the owner reached CreditsStep having bought a
-    # container that would not boot, which is a refund, not a conversion. It
-    # is also strictly cheaper: one combined charge costs 2.9% + $0.30, where
-    # the two separate charges paid the fixed $0.30 twice.
-    #
-    # CreditsStep needs no change to match — it already calls onComplete()
-    # when the balance is spendable, so a funded balance makes it self-skip.
-    #
-    # `credits_cents` is the owner's chosen starter amount, already bounded to
-    # $5–$1,000 by TrialCheckoutRequest and scoped to bedrock_claude by the
-    # router. It is re-normalized here anyway: this function is importable and
-    # a future caller that skips the router must not be able to mint a
-    # $0-or-$1M line item.
-    #
-    # EXPLICIT-ONLY, deliberately: no credits_cents means no credits line item,
-    # never a silent default. The amount is quoted to the customer before they
-    # pay, and only a caller that renders the chooser knows what was quoted. A
-    # cached frontend bundle, the mobile app, or any client predating this
-    # change posts {provider_choice: "bedrock_claude"} alone — defaulting there
-    # would charge $70 against a UI that displayed $50. Such a caller gets the
-    # pre-existing behaviour instead: $50 now, credits later via CreditsStep.
-    line_items: list[dict] = [{"price": settings.STRIPE_FLAT_PRICE_ID, "quantity": 1}]
-    starter_cents = normalize_starter_credits(credits_cents) if provider_choice == "bedrock_claude" else None
-    if starter_cents is not None:
-        line_items.append(
-            {
-                "price_data": {
-                    "currency": "usd",
-                    "unit_amount": starter_cents,
-                    "product_data": {
-                        "name": "Claude credits",
-                        "description": "Prepaid Claude inference balance.",
-                    },
-                },
-                "quantity": 1,
-            }
-        )
-        # The webhook grants off metadata, never off the line items.
-        metadata["credits_cents"] = str(starter_cents)
-
+    metadata = {
+        "workspace_id": owner_id,
+        "owner_id": owner_id,
+        "clerk_user_id": clerk_user_id,
+        "plan": plan,
+        "purpose": "workspace_subscription_v2",
+    }
     try:
         session = await _build_subscription_checkout(
             owner_id=owner_id,
-            line_items=line_items,
+            line_items=[{"price": price_id, "quantity": 1}],
             metadata=metadata,
-            # `credits=bundled` tells the returning wizard the balance is
-            # already paid for and in flight, so CreditsStep shows a "landing
-            # shortly" state instead of a live second purchase form. Without
-            # it CreditsStep only self-skips once the balance READS spendable,
-            # which it does not at the instant the browser gets back from
-            # Stripe — the grant is still travelling through the webhook — so
-            # the owner who just paid to avoid a second step was shown one.
-            success_url=(
-                f"{settings.FRONTEND_URL}/chat?checkout=success"
-                + (f"&provider={provider_choice}" if provider_choice else "")
-                + ("&credits=bundled" if starter_cents is not None else "")
+            success_url=f"{settings.FRONTEND_URL}/settings?panel=billing&checkout=success",
+            cancel_url=f"{settings.FRONTEND_URL}/settings?panel=billing&checkout=cancel",
+            idempotency_key=(
+                f"workspace_checkout:v{_CHECKOUT_BODY_VERSION}:{owner_id}:{plan}:{clerk_user_id}:{checkout_bucket}"
             ),
-            cancel_url=f"{settings.FRONTEND_URL}/?checkout=cancel",
-            # Promotion codes are OFF once credits ride along. The standalone
-            # top-up deliberately grants the REQUESTED amount under a coupon
-            # ("us absorbing the cost") — safe there, because that session
-            # contains nothing but credits the owner chose. Here one
-            # subscription-intended code would also discount up to $1,000 of
-            # prepaid balance while the webhook still grants the full metadata
-            # amount. Re-enable only with a coupon restricted via `applies_to`
-            # to the subscription product.
-            allow_promotion_codes=starter_cents is None,
-            # The amount is part of the key, not just the provider. The key is
-            # bucketed to 5 minutes to collapse double-clicks; without the
-            # amount, an owner who picks $20, backs out, and picks $100 inside
-            # that window reuses the key with a different body — Stripe rejects
-            # the mismatch and the second, larger purchase simply fails.
-            idempotency_key=_checkout_idempotency_key(
-                "flat_checkout",
-                owner_id,
-                f"{provider_choice or '_'}:{starter_cents or '_'}",
-            ),
+            expires_at=checkout_expires_at,
         )
     except Exception:
-        # No session exists — free the slot so the user's immediate retry
-        # doesn't wait out the claim TTL. Fenced on our own token so a hung
-        # create that failed here can't clobber a concurrent re-claim.
         await billing_repo.release_checkout_slot(owner_id, token=claim_token)
         raise
-    # The marker is load-bearing: after the 90s claim TTL lapses, an
-    # UNRECORDED open session is invisible to every guard while staying
-    # completable until its ~31-minute expiry — a retry could mint a second
-    # session and both could be completed. Fail CLOSED: the user has not
-    # seen this session's URL yet, so expire it, free the slot, and let the
-    # retry mint fresh.
     try:
-        await billing_repo.set_pending_checkout(owner_id, session_id=session.id, provider_choice=provider_choice)
+        await billing_repo.set_pending_checkout(owner_id, session_id=session["id"], provider_choice=None)
     except Exception:
-        logger.exception("Failed to record pending checkout session for owner %s", owner_id)
+        logger.exception("Failed to record pending workspace checkout for owner %s", owner_id)
         try:
             with timing("stripe.api.latency", {"op": "checkout.session.expire"}):
-                stripe.checkout.Session.expire(session.id)
+                stripe.checkout.Session.expire(session["id"])
         except Exception:
-            # Session floats until expires_at — bounded, and nobody holds
-            # its URL.
-            logger.exception("Failed to expire unrecorded checkout session %s", session.id)
+            logger.exception("Failed to expire unrecorded workspace checkout %s", session["id"])
         try:
             await billing_repo.release_checkout_slot(owner_id, token=claim_token)
         except Exception:
-            # Claim self-expires in 90s; the retry just waits it out.
-            logger.exception("Failed to release checkout slot for owner %s", owner_id)
+            logger.exception("Failed to release workspace checkout slot for owner %s", owner_id)
         raise BillingServiceError("checkout_unavailable")
-    return session
+    return {"checkout_url": session["url"]}
 
 
 def subscription_item_on_price(items: list[dict], price_id: str) -> dict:
     """The subscription line item carrying ``price_id``, or ``{}`` if none does.
 
-    THE single way to answer "which item is priced X?". A Teams subscription
-    carries two items (flat base + per-seat) and Stripe does not guarantee
-    their order, so any positional read is a latent billing bug — picking the
-    base item as the seat item makes sync_team_seat_quantity drive the base
-    quantity. Empty ``price_id`` yields ``{}`` so an unconfigured price can
-    never match an item by accident.
+    Empty ``price_id`` yields ``{}`` so an unconfigured price can never match
+    an item by accident.
     """
     if not price_id:
         return {}
@@ -472,50 +371,20 @@ async def _build_subscription_checkout(
     success_url: str,
     cancel_url: str,
     idempotency_key: str,
+    expires_at: int | None = None,
     allow_promotion_codes: bool = True,
     origin_context: str | None = None,
 ) -> stripe.checkout.Session:
     """Single builder for subscription-mode Stripe Checkout sessions.
 
-    Owns the session kwargs, the automatic_tax / customer_update block, and
-    the subscription_data metadata assembly so neither the flat (personal)
-    nor the team path copies them. Callers pass a list so the team path can
-    charge a flat base alongside the per-seat item. Single-element lists are
-    the norm; price-id existence guards stay in each caller because the
-    config key differs.
+    Owns the subscription metadata assembly. Workspace subscriptions use a
+    single recurring item and expose manually-entered promotion codes. Stripe
+    Tax is intentionally omitted until the operational readiness checklist is
+    completed and finance approves enabling it.
     """
     account = await billing_repo.get_by_owner_id(owner_id)
     if not account or not account.get("stripe_customer_id"):
         raise BillingServiceError(f"No Stripe customer for owner_id={owner_id}")
-
-    # Launch competition: an unpaid WINNER's checkout gets the free-month
-    # coupon pre-applied server-side (no code to type) — but ONLY on a
-    # session selling the flat (Starter) plan: the coupon is product-
-    # restricted to it (free month = Starter month), so an Ultra session
-    # gets no discount rather than a Stripe applicability error. Lazy
-    # import — the launch modules import nothing from here. Never raises
-    # (returns None on any failure).
-    discounts = None
-    if any(item.get("price") == settings.STRIPE_FLAT_PRICE_ID for item in line_items):
-        from core.services.launch_close import winner_checkout_discount
-
-        discounts = await winner_checkout_discount(owner_id)
-    if discounts:
-        # The marker rides BOTH metadata targets (session + subscription) so
-        # handle_checkout_session can stamp the sheet row the moment the
-        # coupon is consumed — without it a forced close rerun would attach
-        # a second free month to the subscription this checkout mints.
-        metadata = {**metadata, "launch_winner_coupon": "true"}
-        # Winner state rides the IDEMPOTENCY KEY too, because it changes the
-        # request BODY (`discounts`, and `allow_promotion_codes` dropped
-        # below). An owner who opened an undiscounted session and was then
-        # flagged a winner inside the same 5-minute bucket would otherwise
-        # retry the same key with a different body — Stripe rejects that
-        # instead of replaying it, so the discounted session simply fails
-        # until the bucket rolls (and the same in reverse, once the coupon is
-        # consumed). Suffixed ONLY when discounted, so every non-winner key
-        # stays byte-identical to what it has always been.
-        idempotency_key = f"{idempotency_key}:win"
 
     subscription_data: dict = {"metadata": metadata}
 
@@ -526,28 +395,25 @@ async def _build_subscription_checkout(
         success_url=success_url,
         cancel_url=cancel_url,
         allow_promotion_codes=allow_promotion_codes,
-        automatic_tax={"enabled": True},
-        customer_update={"address": "auto"},
+        payment_method_collection="always",
         # The SAME dict on BOTH, because Stripe puts them on different objects
         # and two different webhooks read them:
         #   subscription_data.metadata → the created Subscription, which is
         #     what customer.subscription.* carries (handle_subscription_state).
         #   metadata                   → the Session itself, which is what
         #     checkout.session.completed carries (handle_checkout_session).
-        # Only subscription_data was set here, so any Session-reading handler
-        # saw {}. That was invisible until the bedrock_claude Checkout started
-        # bundling starter credits: the one-time line item was charged and
-        # `credits_cents` never reached the grant, so the customer paid for a
-        # balance that was never funded. The standalone top-up path never hit
-        # this because it calls Session.create directly with top-level
-        # metadata — which is exactly why it worked and this did not.
+        # Keep Checkout and Subscription metadata aligned: Stripe emits them
+        # on different webhook objects, and launch-coupon settlement reads the
+        # session while subscription lifecycle reads the subscription.
         metadata=metadata,
         subscription_data=subscription_data,
         idempotency_key=idempotency_key,
         # Stripe's minimum is 30 minutes; the default is 24 hours. A short
         # expiry bounds how long an abandoned session can linger completable
         # — load-bearing for the single-open-session guard in /trial-checkout.
-        expires_at=int(time.time()) + 31 * 60,
+        # This matches _checkout_idempotency_key's five-minute bucket. Six
+        # buckets plus one minute gives Stripe at least 31 minutes.
+        expires_at=expires_at if expires_at is not None else (int(time.time() // 300) * 300) + 36 * 60,
     )
     if origin_context:
         # "mobile_app" switches Checkout to the UI built for app-to-web
@@ -555,638 +421,8 @@ async def _build_subscription_checkout(
         # Omitted entirely for web callers so their session shape — and
         # therefore their idempotency body-compare — is untouched.
         kwargs["origin_context"] = origin_context
-    if discounts:
-        kwargs["discounts"] = discounts
-        # Stripe refuses a session that sets both `discounts` and
-        # `allow_promotion_codes` — and the coupon is 100% off, so there is
-        # nothing left for a promo code to do.
-        kwargs.pop("allow_promotion_codes", None)
     with timing("stripe.api.latency", {"op": "checkout.session.create"}):
         session = stripe.checkout.Session.create(**kwargs)
-    return session
-
-
-async def _open_pending_checkout(owner_id: str) -> stripe.checkout.Session | None:
-    """The owner's still-open MOBILE Checkout Session, or None if there is none.
-
-    Reads the ``pending_checkout_session_id`` marker and asks Stripe what it
-    actually is, because the marker alone cannot say: it is written at create
-    time and nothing clears it when a session expires or completes. The
-    session's LIVE status is the truth, so a stale marker self-heals into None.
-
-    **The marker is shared by every checkout flow** — the flat browser checkout,
-    the Ultra checkout and this one all write it — so "an open session exists"
-    is a different question from "an open session for what this caller sells".
-    Reusing on status alone handed the mobile caller whichever session happened
-    to be open: an owner who abandoned an Ultra session ($150) and then tapped
-    the mobile paywall's flat option ($50) would be sent back to the Ultra page
-    and charged for line items the app never quoted. A session for anything else
-    is expired and replaced, the way the web route already treats a provider or
-    credit-amount switch.
-
-    Raises ``already_subscribed:checkout_completed`` when the pending session is
-    already paid. The subscription exists at Stripe but the webhook has not
-    landed, so every local guard still reads "not subscribed" — minting another
-    session here is precisely how an owner ends up charged twice.
-    """
-    account = await billing_repo.get_by_owner_id(owner_id)
-    pending_id = (account or {}).get("pending_checkout_session_id")
-    if not pending_id:
-        return None
-
-    try:
-        with timing("stripe.api.latency", {"op": "checkout.session.retrieve"}):
-            pending = stripe.checkout.Session.retrieve(pending_id)
-    except stripe.error.InvalidRequestError:
-        # Unretrievable (wrong mode, deleted, never existed) — dead marker.
-        logger.info("Pending checkout session %s not retrievable — minting fresh", pending_id)
-        return None
-
-    status = pending.get("status")
-    if status == "complete":
-        raise BillingServiceError("already_subscribed:checkout_completed")
-    if status != "open":
-        return None
-
-    # Read the purpose off the SESSION rather than a stored column: one source
-    # of truth, no migration, and the same dict the grant webhook reads.
-    purpose = (pending.get("metadata") or {}).get("purpose")
-    if purpose == "mobile_web_checkout":
-        # Launch winner staleness: a session minted before the owner's row
-        # was flagged carries no discount (marker absent), and one minted
-        # WITH the discount goes stale once the coupon is consumed. Either
-        # mismatch means the cached session sells the wrong total — fall
-        # through to the expire-and-mint-fresh path below.
-        from core.services.launch_close import winner_checkout_discount
-
-        has_marker = (pending.get("metadata") or {}).get("launch_winner_coupon") == "true"
-        wants_discount = bool(await winner_checkout_discount(owner_id))
-        if has_marker == wants_discount:
-            return pending
-        logger.info("Pending checkout session %s has a stale winner-discount state — expiring it", pending_id)
-
-    # Someone else's open session. Expire it before minting ours, or both stay
-    # completable and the owner can be charged twice.
-    logger.info("Pending checkout session %s is for %s, not mobile — expiring it", pending_id, purpose)
-    try:
-        with timing("stripe.api.latency", {"op": "checkout.session.expire"}):
-            stripe.checkout.Session.expire(pending_id)
-    except stripe.error.InvalidRequestError:
-        # Thin race: it can complete between retrieve and expire (checkout
-        # finishing in a browser tab). Minting a fresh session here would leave
-        # BOTH chargeable — re-check and stop unless it genuinely expired.
-        with timing("stripe.api.latency", {"op": "checkout.session.retrieve"}):
-            recheck = stripe.checkout.Session.retrieve(pending_id)
-        if recheck.get("status") != "expired":
-            raise BillingServiceError("already_subscribed:checkout_completed") from None
-    return None
-
-
-async def create_mobile_web_checkout(*, owner_id: str) -> stripe.checkout.Session:
-    """App-to-web Checkout for the iOS paywall's "subscribe on the web" option.
-
-    This is the link-out half of the paywall. It exists because guideline
-    3.1.1(a) lets a U.S.-storefront app send customers to an external purchase
-    page, and because the alternative — dropping them on
-    isol8.co/settings?panel=billing — means signing in and finding a panel
-    before they can pay. Stripe's iOS guide is this exact shape: create a
-    Session server-side, open its URL in Safari, fulfil on the webhook.
-
-    The client opens it in the DEFAULT BROWSER, never a WKWebView. Apple's
-    wording is what binds — U.S.-storefront apps "may link out to the default
-    browser ... for payment mechanisms other than in-app purchase" — and an
-    embedded checkout is not linking out; it is the in-app storefront 3.1.1
-    forbids.
-
-    ``origin_context="mobile_app"`` is what makes the page the app-optimized
-    variant rather than the desktop one. Apple Pay rides along automatically on
-    supported devices, which is the single biggest conversion lever here.
-
-    Carries the SAME checkout-slot claim, pending-session marker, AND
-    single-open-session guard as ``create_flat_fee_checkout``. An earlier
-    version omitted them on the reasoning that the app is the only caller and
-    ``is_trial_blocked`` already refuses a prior subscriber — both true and both
-    irrelevant. The idempotency key is bucketed to five minutes while a session
-    stays completable for about thirty-one, and ``is_trial_blocked`` reads a
-    local row that says nothing until a checkout webhook lands. So an owner
-    calling twice across a bucket boundary gets two live sessions, completes
-    both, and ends up with two Stripe subscriptions. "The app is the only
-    caller" is not a property of an authenticated HTTP endpoint.
-
-    The version after that WROTE the marker but never READ it, which fixed
-    nothing: recording an open session prevents a second one only if something
-    checks for it. Hence the ``_open_pending_checkout`` call below — the same
-    guard the web route runs, minus the intent-comparison, because this
-    session's body never varies (one price, no credits, no provider choice), so
-    an already-open session is always the right one to hand back.
-
-    Still deliberately unlike the flat path: **no starter-credits line item**.
-    Credits are a Bedrock-onboarding concern; this session sells the plan alone.
-
-    The caller is responsible for the entitlement check. Returns the Session so
-    the router can hand back ``session.url``.
-    """
-    if not settings.STRIPE_FLAT_PRICE_ID:
-        raise BillingServiceError("STRIPE_FLAT_PRICE_ID not configured")
-
-    existing = await _open_pending_checkout(owner_id)
-    if existing is not None:
-        return existing
-
-    # Serializes concurrent calls for one owner; self-expires (90s) so a crashed
-    # request cannot wedge them out of checking out. The router maps this to 409.
-    claim_token = await billing_repo.try_claim_checkout_slot(owner_id)
-    if not claim_token:
-        raise BillingServiceError("checkout_in_progress")
-
-    try:
-        session = await _build_subscription_checkout(
-            owner_id=owner_id,
-            line_items=[{"price": settings.STRIPE_FLAT_PRICE_ID, "quantity": 1}],
-            metadata={"owner_id": owner_id, "purpose": "mobile_web_checkout"},
-            # A universal link, so iOS hands control back to the app on success
-            # and falls through to the web page when the app is not installed.
-            # The matching apple-app-site-association entry is what makes it
-            # deep-link rather than merely load.
-            success_url=f"{settings.FRONTEND_URL}/checkout_redirect/success",
-            cancel_url=f"{settings.FRONTEND_URL}/checkout_redirect/cancel",
-            # Off for the same reason the credits-bundled path turns it off: a
-            # promo field on a phone keyboard is friction, and nothing here
-            # quotes a code.
-            allow_promotion_codes=False,
-            origin_context="mobile_app",
-            idempotency_key=_checkout_idempotency_key("mobile_web_checkout", owner_id, "flat"),
-        )
-    except Exception:
-        # No session exists — free the slot so an immediate retry does not wait
-        # out the claim TTL. Fenced on our own token.
-        await billing_repo.release_checkout_slot(owner_id, token=claim_token)
-        raise
-
-    # Record the open session. Without this, once the 90s claim lapses an
-    # unrecorded session stays completable for ~31 minutes and is invisible to
-    # every guard, so a retry can mint a second one and both can be completed.
-    # Fail CLOSED: the caller has not seen this URL yet, so expire it and let the
-    # retry mint fresh.
-    try:
-        await billing_repo.set_pending_checkout(owner_id, session_id=session.id, provider_choice=None)
-    except Exception:
-        logger.exception("Failed to record pending mobile checkout for owner %s", owner_id)
-        try:
-            with timing("stripe.api.latency", {"op": "checkout.session.expire"}):
-                stripe.checkout.Session.expire(session.id)
-        except Exception:
-            logger.exception("Failed to expire orphaned mobile checkout session %s", session.id)
-        await billing_repo.release_checkout_slot(owner_id, token=claim_token)
-        raise BillingServiceError("could not start checkout — try again")
-
-    return session
-
-
-async def create_team_seat_checkout(*, owner_id: str, member_count: int) -> stripe.checkout.Session:
-    """Teams Checkout: flat base at quantity 1 plus per-seat at the seat count.
-
-    Threads ``purpose="team_seat"`` into subscription metadata so the
-    customer.subscription.* webhook records the subscription item id + seat
-    count via set_team_subscription. The BASE quantity is always 1; the SEAT
-    quantity is floored at 1 so a transient member-count read of 0 never
-    creates a zero-quantity subscription.
-    """
-    if not settings.STRIPE_TEAM_SEAT_PRICE_ID:
-        raise BillingServiceError("STRIPE_TEAM_SEAT_PRICE_ID not configured")
-    if not settings.STRIPE_TEAM_BASE_PRICE_ID:
-        raise BillingServiceError("STRIPE_TEAM_BASE_PRICE_ID not configured")
-    if settings.STRIPE_TEAM_BASE_PRICE_ID == settings.STRIPE_TEAM_SEAT_PRICE_ID:
-        # Identical ids would make subscription_item_on_price return the same
-        # item for both lookups — reintroducing, through config, exactly the
-        # positional ambiguity this whole flow exists to eliminate.
-        raise BillingServiceError("STRIPE_TEAM_BASE_PRICE_ID and STRIPE_TEAM_SEAT_PRICE_ID must differ")
-
-    quantity = max(1, member_count)
-    return await _build_subscription_checkout(
-        owner_id=owner_id,
-        # Flat base + per-seat, in that order. NOTHING may select these by
-        # position — the webhook picks the seat item by price id precisely
-        # because Stripe does not guarantee line-item order.
-        line_items=[
-            {"price": settings.STRIPE_TEAM_BASE_PRICE_ID, "quantity": 1},
-            {"price": settings.STRIPE_TEAM_SEAT_PRICE_ID, "quantity": quantity},
-        ],
-        # Teams are Bedrock-managed automatically — there is no provider picker
-        # in the team flow. Thread provider_choice into the subscription
-        # metadata so the customer.subscription.* webhook persists it as the
-        # idempotent backup when the subscription first goes live (the
-        # metadata is a checkout-time snapshot, so live→live events never
-        # re-apply it over a later change_provider switch), mirroring how
-        # /trial-checkout threads the personal picker's choice. The router
-        # also writes it synchronously before this call so a poll returning
-        # from Checkout never flashes provider_required.
-        metadata={"owner_id": owner_id, "purpose": "team_seat", "provider_choice": "bedrock_claude"},
-        success_url=f"{settings.FRONTEND_URL}/chat?checkout=success",
-        cancel_url=f"{settings.FRONTEND_URL}/?checkout=cancel",
-        # Seat count rides in the key. Seats now move on INVITE — seconds
-        # before the admin clicks Subscribe — so invite, open checkout,
-        # abandon, invite again, Subscribe can all land inside one 5-minute
-        # bucket. Without the quantity, that resends the same key with
-        # different line items and Stripe either errors or replays the stale
-        # session at the old seat count.
-        idempotency_key=_checkout_idempotency_key("team_checkout", owner_id, str(quantity)),
-    )
-
-
-async def sync_team_seat_quantity(owner_id: str) -> int:
-    """Set the team subscription's seat quantity to the live billable seat
-    count (accepted members PLUS pending invitations — "no free members").
-
-    The SINGLE writer of seat quantity — called from the membership webhooks,
-    the reconcile safety-net, and post-checkout. Absolute set (no delta math),
-    idempotent. Returns the resulting seat count.
-
-    No-ops (returns the stored seat_count, or 0) when:
-      - there's no active subscription, or
-      - there's no ``subscription_item_id`` (grandfathered non-seat sub, or a
-        team sub whose creation webhook hasn't landed yet), or
-      - the live count already equals the stored count.
-
-    Stripe errors are logged and swallowed (returns the stored count) so a
-    caller in a webhook path still 200s; the reconcile net heals the drift.
-    """
-    from core.services import clerk_admin
-    from core.services.provision_gate import is_subscription_active
-
-    account = await billing_repo.get_by_owner_id(owner_id)
-    if not account or not is_subscription_active(account):
-        return 0
-
-    item_id = account.get("subscription_item_id")
-    if not item_id:
-        # Grandfathered / not-yet-webhooked — never touch a non-seat sub.
-        return int(account.get("seat_count") or 0)
-
-    current = int(account.get("seat_count") or 0)
-    # Returns 0 when the count isn't known for certain, which the guard below
-    # treats as "don't act" — an uncertain count must never move the Stripe
-    # quantity. See get_organization_seat_count.
-    member_count = await clerk_admin.get_organization_seat_count(owner_id)
-    if member_count <= 0 or member_count == current:
-        # 0 = Clerk read failed/stubbed; don't zero a real subscription.
-        return current
-
-    try:
-        with timing("stripe.api.latency", {"op": "subscription_item.modify"}):
-            stripe.SubscriptionItem.modify(
-                item_id,
-                quantity=member_count,
-                proration_behavior="create_prorations",
-            )
-    except Exception:
-        logger.exception("sync_team_seat_quantity: Stripe modify failed for owner %s", owner_id)
-        return current
-
-    await billing_repo.set_team_subscription(
-        owner_id=owner_id,
-        subscription_id=account.get("stripe_subscription_id"),
-        subscription_item_id=item_id,
-        status=account.get("subscription_status"),
-        seat_count=member_count,
-    )
-
-    # Keep the agent-facing facts file's seat count current on the
-    # membership-change path — without this, agents keep quoting the old
-    # count until an unrelated webhook/reprovision rewrites the file. The
-    # just-written count rides as an override. Internally best-effort.
-    from core.services.owner_facts import write_owner_facts
-
-    await write_owner_facts(owner_id, account_overrides={"seat_count": member_count})
-
-    return member_count
-
-
-async def create_ultra_upgrade(
-    *,
-    owner_id: str,
-    clerk_user_id: str | None = None,
-) -> dict | stripe.checkout.Session:
-    """Upgrade an owner to the Ultra Pro tier.
-
-    Ultra is *only* a container size ($150 base instead of $50) — it swaps a
-    price, never the shape of the subscription. Two paths, picked by whether
-    the owner already holds a LIVE subscription:
-
-    - **In-place item swap** — an owner already on a live subscription
-      (``stripe_subscription_id`` present + a LIVE ``subscription_status`` —
-      any of ``LIVE_SUBSCRIPTION_STATUSES``, i.e. active/trialing but also
-      past_due/unpaid/paused/incomplete) is upgraded by swapping ONE item's
-      price to ``STRIPE_ULTRA_PRICE_ID`` on the SAME Stripe subscription,
-      prorated. Keeps ONE subscription (no cancel + re-subscribe), so the
-      owner is charged only the prorated difference and a still-billable
-      (e.g. past_due) owner never gets a SECOND parallel subscription.
-
-      A **personal** sub has a single item — that item is swapped. A
-      **team** sub carries two items (flat base + per-seat, price ids
-      ``STRIPE_TEAM_BASE_PRICE_ID`` / ``STRIPE_TEAM_SEAT_PRICE_ID``); only the
-      BASE item is swapped to the Ultra price — the seat item's id and
-      quantity are never touched, so a 4-seat Ultra team pays
-      $150 + 4×$20/mo. Item selection is always by price id
-      (``subscription_item_on_price``), never position — Stripe does not
-      guarantee line-item order. A subscription whose shape isn't exactly one
-      of those two (an unrecognised multi-item sub, a seat-only sub with no
-      base item, etc.) is refused rather than repriced blind. Returns
-      ``{"upgraded": True}``.
-
-    - **Fresh checkout** — an owner with no live subscription (``trial_local``
-      / canceled / never subscribed — no item to swap) gets a
-      subscription-mode Checkout session on the Ultra price via the shared
-      builder. Returns the Session; the caller redirects to ``session.url``.
-      This branch always mints a single-item, seat-less Ultra subscription, so
-      an **org** with no live subscription is refused up front — it must buy
-      its team plan (base + seat) first, or it would end up paying $150/mo for
-      zero seats with no seat item for ``sync_team_seat_quantity`` to drive.
-
-    ``trial_local`` counts as "active" for platform use but carries no
-    ``stripe_subscription_id``, so it correctly takes the fresh-checkout
-    branch. A terminal status (``canceled``/``incomplete_expired``) never
-    swaps in place even if a stale ``stripe_subscription_id`` lingers — it
-    falls through to a fresh checkout rather than modifying a dead sub.
-
-    The fresh-checkout branch serializes behind the same per-owner claim as
-    ``create_flat_fee_checkout`` (no duplicate concurrent sessions) and threads
-    the account's existing ``provider_choice`` into the session metadata so a
-    trial_local / no-sub owner doesn't hit the provider_required gate after
-    paying.
-
-    The durable plan/tier write + container resize happen in the
-    ``customer.subscription.*`` webhook (Task 4), NOT here — this only
-    initiates the Stripe-side change. The webhook derives the Ultra tier from
-    the resulting subscription's price and resizes.
-    """
-    if not settings.STRIPE_ULTRA_PRICE_ID:
-        raise BillingServiceError("STRIPE_ULTRA_PRICE_ID not configured")
-
-    from core.services.provision_gate import LIVE_SUBSCRIPTION_STATUSES
-
-    account = await billing_repo.get_by_owner_id(owner_id)
-
-    sub_id = account.get("stripe_subscription_id") if account else None
-    status = account.get("subscription_status") if account else None
-
-    # An org with no live subscription must buy its team plan first. The
-    # fresh-checkout branch below emits a single-item Ultra subscription with
-    # NO seat item — correct for a personal owner, but it would leave an org
-    # paying $150/mo for zero seats and with no item for
-    # sync_team_seat_quantity to drive.
-    from core.auth import is_org_owner_id
-
-    if is_org_owner_id(owner_id) and not (sub_id and status in LIVE_SUBSCRIPTION_STATUSES):
-        raise BillingServiceError("Subscribe your team before upgrading to Ultra Pro")
-
-    if sub_id and status in LIVE_SUBSCRIPTION_STATUSES:
-        with timing("stripe.api.latency", {"op": "subscription.retrieve"}):
-            sub = stripe.Subscription.retrieve(sub_id)
-        items_data = sub["items"]["data"]
-
-        seat_item = subscription_item_on_price(items_data, settings.STRIPE_TEAM_SEAT_PRICE_ID)
-        base_item = subscription_item_on_price(items_data, settings.STRIPE_TEAM_BASE_PRICE_ID)
-        ultra_item = subscription_item_on_price(items_data, settings.STRIPE_ULTRA_PRICE_ID)
-        is_team_sub = bool(seat_item)
-
-        # Which item carries the tier? A team's tier lives on its BASE item
-        # (either the standard base, or the ultra price once upgraded); a
-        # personal sub's tier is its only item. Never by position — Stripe does
-        # not guarantee line-item order.
-        if is_team_sub:
-            target_item = base_item or ultra_item
-            recognised = len(items_data) == 2 and bool(target_item)
-        else:
-            target_item = items_data[0] if len(items_data) == 1 else {}
-            recognised = len(items_data) == 1
-
-        # Defence in depth: never reprice an item on a subscription whose shape
-        # we cannot fully explain (an unknown add-on, a coupon item, a
-        # hand-edited sub). Recognised shapes are exactly: one item (personal),
-        # or base+seat (team).
-        if not recognised or not target_item:
-            raise BillingServiceError("This subscription's plan can't be changed automatically")
-
-        item_id = target_item["id"]
-        with timing("stripe.api.latency", {"op": "subscription.modify"}):
-            stripe.Subscription.modify(
-                sub_id,
-                items=[{"id": item_id, "price": settings.STRIPE_ULTRA_PRICE_ID}],
-                proration_behavior="create_prorations",
-                # Scope the key to the CURRENT subscription item id: a genuine
-                # double-click retries the same item and collapses to one write,
-                # while a later downgrade-then-re-upgrade lands on a NEW item id
-                # (Stripe mints a fresh item across resubscribe) and gets a fresh
-                # key — so the real re-upgrade re-swaps instead of returning
-                # Stripe's cached first response.
-                idempotency_key=f"ultra-upgrade-{owner_id}-{item_id}",
-            )
-        return {"upgraded": True}
-
-    # No live subscription to swap — start a fresh Ultra subscription via
-    # Checkout. Serialize session creation behind the same per-owner claim as
-    # create_flat_fee_checkout so a trial/canceled owner can't open duplicate
-    # concurrent checkout sessions (distinct idempotency keys would otherwise
-    # each mint a completable session before either pending-checkout marker
-    # lands). Self-expires (90s); the router maps this error to a 409.
-    claim_token = await billing_repo.try_claim_checkout_slot(owner_id)
-    if not claim_token:
-        raise BillingServiceError("checkout_in_progress")
-
-    # ``purpose="ultra"`` rides the subscription metadata so the webhook records
-    # the Ultra tier when the subscription first goes live; ``clerk_user_id`` is
-    # threaded through the same as the flat path so the webhook can resolve the
-    # right per-Clerk-user row.
-    metadata: dict = {"owner_id": owner_id, "purpose": "ultra"}
-    if clerk_user_id:
-        metadata["clerk_user_id"] = clerk_user_id
-    # Seed the account's existing provider_choice into the checkout metadata
-    # (mirrors create_flat_fee_checkout): without it a trial_local / no-sub owner
-    # returns from Checkout and hits the provider_required gate. Omitted when the
-    # account has none — never invent one.
-    provider_choice = account.get("provider_choice") if account else None
-    byo_provider = account.get("byo_provider") if account else None
-    if provider_choice:
-        metadata["provider_choice"] = provider_choice
-    if byo_provider:
-        metadata["byo_provider"] = byo_provider
-
-    try:
-        session = await _build_subscription_checkout(
-            owner_id=owner_id,
-            line_items=[{"price": settings.STRIPE_ULTRA_PRICE_ID, "quantity": 1}],
-            metadata=metadata,
-            success_url=(
-                f"{settings.FRONTEND_URL}/chat?checkout=success"
-                + (f"&provider={provider_choice}" if provider_choice else "")
-            ),
-            cancel_url=f"{settings.FRONTEND_URL}/?checkout=cancel",
-            idempotency_key=_checkout_idempotency_key("ultra_checkout", owner_id),
-        )
-    except Exception:
-        # No session exists — free the slot so an immediate retry doesn't wait
-        # out the claim TTL. Fenced on our own token (see create_flat_fee_checkout).
-        await billing_repo.release_checkout_slot(owner_id, token=claim_token)
-        raise
-    # Fail CLOSED on a marker-write failure (mirrors create_flat_fee_checkout):
-    # an unrecorded open session is invisible to every guard once the claim TTL
-    # lapses, yet stays completable until its ~31-minute expiry. The user has not
-    # seen this session's URL yet, so expire it, free the slot, and let the retry
-    # mint fresh.
-    try:
-        await billing_repo.set_pending_checkout(owner_id, session_id=session.id, provider_choice=provider_choice)
-    except Exception:
-        logger.exception("Failed to record pending checkout session for owner %s", owner_id)
-        try:
-            with timing("stripe.api.latency", {"op": "checkout.session.expire"}):
-                stripe.checkout.Session.expire(session.id)
-        except Exception:
-            logger.exception("Failed to expire unrecorded checkout session %s", session.id)
-        try:
-            await billing_repo.release_checkout_slot(owner_id, token=claim_token)
-        except Exception:
-            logger.exception("Failed to release checkout slot for owner %s", owner_id)
-        raise BillingServiceError("checkout_unavailable")
-    return session
-
-
-async def create_credit_top_up_checkout(
-    *,
-    owner_id: str,
-    amount_cents: int,
-    enable_auto_charge: bool = False,
-) -> stripe.checkout.Session:
-    """Create a Stripe Checkout session for a one-shot Claude-credit top-up.
-
-    EXPLICIT payment is the default credits-purchase path: the customer
-    sees the amount and their card on a Stripe-hosted page and actively
-    confirms — no implicit card-on-file charge. The credits grant happens
-    asynchronously when Stripe fires ``checkout.session.completed`` with
-    metadata ``{"purpose": "credit_top_up", ...}``: the webhook creates an
-    UNGATED Metronome commit (the money is already collected here, so
-    Metronome must never invoice it a second time — see
-    metronome_funding.grant_prepaid_credits).
-
-    ``enable_auto_charge`` is the customer's opt-in to one-click top-ups:
-    it sets ``payment_intent_data.setup_future_usage="off_session"`` —
-    Stripe's documented consent artifact for charging the saved card
-    off-session later — and rides the session metadata so the webhook
-    flips the billing row's ``credits_auto_charge`` flag only after this
-    consenting payment actually succeeds. Without it the session saves
-    nothing and later top-ups keep routing through Checkout.
-
-    Conventions match :func:`create_flat_fee_checkout`:
-      - ``allow_promotion_codes`` (internal 100%-off coupons),
-        ``automatic_tax``, ``customer_update.address=auto``.
-      - ``idempotency_key`` includes a per-request nonce: legitimate repeat
-        top-ups for the same amount must produce distinct sessions, so
-        bucketing on owner_id+amount would silently collapse a second
-        purchase onto the first.
-
-    ``owner_id`` is the org_id in org context, the user_id in personal
-    context — the credits pool at the owner level.
-    """
-    if amount_cents < 500:
-        raise BillingServiceError("Minimum top-up is $5 (500 cents)")
-
-    account = await billing_repo.get_by_owner_id(owner_id)
-    if not account or not account.get("stripe_customer_id"):
-        raise BillingServiceError(f"No Stripe customer for owner_id={owner_id}")
-
-    # Take money ONLY when the completion webhook can actually grant: mirror
-    # grant_prepaid_credits' prerequisites (Metronome customer + contract on
-    # the billing row, credits product configured) BEFORE creating a payable
-    # session. Without this, a not-yet-provisioned owner pays on Stripe and
-    # the grant then 500s/retries until provisioning lands — collected money
-    # in limbo.
-    if not settings.METRONOME_CREDITS_PRODUCT_ID:
-        raise BillingServiceError("Credits are not configured for this environment")
-
-    # Provision on demand rather than assuming something else already did.
-    # This block used to just assert the ids were present, on the reasoning
-    # that "provisioning re-runs on every status poll" — which is FALSE for a
-    # personal owner with a running container: ``ensure_user_ready`` (the only
-    # other caller of ensure_metronome_customer) is re-dispatched on a running
-    # box only for org context or a failed Teams seat. A trial→paid converted
-    # owner therefore sat permanently un-provisioned and got "try again in a
-    # moment" forever — on the exact screen the credits gate sends them to.
-    # Ensuring here makes buying credits self-healing, so a missed webhook
-    # provision can never strand a paying customer with no way to pay us.
-    # Idempotent and a no-op once the ids are on the row.
-    if not account.get("metronome_customer_id") or not account.get("metronome_contract_id"):
-        from core.billing.metronome_provisioning import ensure_metronome_customer
-
-        provisioning_failed = False
-        try:
-            await ensure_metronome_customer(owner_id=owner_id)
-        except Exception:
-            provisioning_failed = True
-            put_metric("metronome.provision.error", dimensions={"source": "credit_top_up"})
-            logger.exception("On-demand Metronome provisioning failed for owner %s", owner_id)
-        # Strongly consistent: we just wrote these ids and are about to decide
-        # whether to take the customer's money on the strength of them.
-        account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or account
-        if provisioning_failed and (
-            not account.get("metronome_customer_id") or not account.get("metronome_contract_id")
-        ):
-            # Do NOT tell the buyer "try again in a moment" here. Provisioning
-            # raised, so retrying hits the same failure every time — the old
-            # message sent them into an infinite retry loop with nothing
-            # surfaced to them or to support saying it could never work. The
-            # transient wording below is reserved for the case where
-            # provisioning ran WITHOUT raising and the ids still aren't
-            # visible, which a moment genuinely can fix.
-            raise BillingServiceError(
-                "We couldn't finish setting up billing for this account. "
-                f"Please contact {settings.EMAIL_SUPPORT_ADDRESS} — retrying won't clear this."
-            )
-    if not account.get("metronome_customer_id") or not account.get("metronome_contract_id"):
-        raise BillingServiceError("Credits aren't ready for this account yet — try again in a moment")
-
-    # Per-request nonce — see docstring. Hashed to keep the key short.
-    nonce = hashlib.sha1(os.urandom(16)).hexdigest()[:12]
-
-    payment_intent_data: dict = {
-        "metadata": {
-            "purpose": "credit_top_up",
-            "owner_id": owner_id,
-        },
-    }
-    if enable_auto_charge:
-        payment_intent_data["setup_future_usage"] = "off_session"
-
-    with timing("stripe.api.latency", {"op": "checkout.session.create"}):
-        session = stripe.checkout.Session.create(
-            customer=account["stripe_customer_id"],
-            mode="payment",
-            line_items=[
-                {
-                    "price_data": {
-                        "currency": "usd",
-                        "unit_amount": amount_cents,
-                        "product_data": {
-                            "name": "Claude credits",
-                            "description": "Prepaid Claude inference balance.",
-                        },
-                    },
-                    "quantity": 1,
-                }
-            ],
-            success_url=f"{settings.FRONTEND_URL}/chat?credits=success",
-            cancel_url=f"{settings.FRONTEND_URL}/chat?credits=cancel",
-            allow_promotion_codes=True,
-            automatic_tax={"enabled": True},
-            customer_update={"address": "auto"},
-            payment_intent_data=payment_intent_data,
-            metadata={
-                "purpose": "credit_top_up",
-                "owner_id": owner_id,
-                "amount_cents": str(amount_cents),
-                "auto_charge_opt_in": "true" if enable_auto_charge else "false",
-            },
-            idempotency_key=f"credit_checkout:{owner_id}:{nonce}",
-        )
     return session
 
 
@@ -1979,8 +1215,8 @@ async def _hot_swap_provider(
     # fail and the session overflow), so the swap CLEARS those slots there.
     cheap_model = cheap_model_ref(new_provider, None)
     # The heartbeat/utility lane is different in kind: both are ordinary
-    # completions the OAuth token CAN serve on the mini tier, so they re-pin
-    # via heartbeat_model_ref (mini on chatgpt_oauth) instead of being cleared
+    # completions the OAuth token CAN serve on the Luna tier, so they re-pin
+    # via heartbeat_model_ref (Luna on chatgpt_oauth) instead of being cleared
     # with the compaction slots. Subagent spawns re-pin to the new standard
     # tier so children never inherit a stale ref (or Friday's premium pin);
     # llm-task follows cheap_model (enable-only when None). All four mirror

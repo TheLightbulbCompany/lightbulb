@@ -34,9 +34,9 @@
 // a failed `/teams/agents` read or a missed frame degrades to "nothing to
 // report", never to a wrong state.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useSyncExternalStore } from "react";
 
-import { useGateway } from "@/hooks/useGateway";
+import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { Agent } from "@/hooks/useAgents";
 import { rosterStateFor, type RosterEntry } from "@/components/agents/AgentRoster";
@@ -52,6 +52,49 @@ interface RosterAgentRow {
 
 /** Sentinel for a `run_active` frame that arrived without a `session_id`. */
 const UNKEYED_SESSION = "__unkeyed__";
+type ChatMessageSubscriber = ReturnType<typeof useLiveEvents>["onChatMessage"];
+type LiveRuns = ReadonlyMap<string, ReadonlySet<string>>;
+const EMPTY_LIVE_RUNS: LiveRuns = new Map();
+
+interface LiveRunStore {
+  getSnapshot: () => LiveRuns;
+  set: (next: LiveRuns) => void;
+  subscribe: (listener: () => void) => () => void;
+}
+
+function createLiveRunStore(): LiveRunStore {
+  let current = EMPTY_LIVE_RUNS;
+  const listeners = new Set<() => void>();
+  return {
+    getSnapshot: () => current,
+    set: (next) => {
+      if (next === current) return;
+      current = next;
+      for (const listener of listeners) listener();
+    },
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+}
+
+// One cache per GatewayProvider connection. Every hook instance still owns
+// its React subscription, but a panel mounted after run_active can seed from
+// the sidebar's already-observed state. Weak keys prevent one signed-in
+// provider lifetime from leaking into the next.
+const liveRunsByGateway = new WeakMap<
+  ChatMessageSubscriber,
+  LiveRunStore
+>();
+
+function liveRunStoreFor(onChatMessage: ChatMessageSubscriber): LiveRunStore {
+  const existing = liveRunsByGateway.get(onChatMessage);
+  if (existing) return existing;
+  const created = createLiveRunStore();
+  liveRunsByGateway.set(onChatMessage, created);
+  return created;
+}
 
 /**
  * Liveness for the `/teams/agents` key, owned by this hook so BOTH hosts get
@@ -80,14 +123,23 @@ const ROSTER_SWR = { refreshInterval: 30_000, revalidateOnFocus: true };
  * rather than gating it on a run).
  */
 function useLiveRunAgentIds(): ReadonlySet<string> {
-  const { onChatMessage } = useGateway();
-  const [live, setLive] = useState<ReadonlyMap<string, ReadonlySet<string>>>(
-    () => new Map(),
+  const { liveConnected, onChatMessage } = useLiveEvents();
+  const store = useMemo(() => liveRunStoreFor(onChatMessage), [onChatMessage]);
+  const live = useSyncExternalStore(
+    store.subscribe,
+    store.getSnapshot,
+    store.getSnapshot,
   );
 
   useEffect(() => {
+    if (!liveConnected) {
+      store.set(EMPTY_LIVE_RUNS);
+    }
+  }, [liveConnected, store]);
+
+  useEffect(() => {
     return onChatMessage((msg) => {
-      const agentId = "agent_id" in msg ? msg.agent_id : undefined;
+      const agentId = "agentId" in msg ? msg.agentId : undefined;
       if (typeof agentId !== "string" || !agentId) return;
       // `run_active` is the signal; `run_ended` is the belt-and-braces clear
       // for a dropped/never-delivered `active: false` (a reconnect mid-run
@@ -98,23 +150,25 @@ function useLiveRunAgentIds(): ReadonlySet<string> {
         msg.type === "run_active" ? !!msg.active : msg.type === "run_ended" ? false : null;
       if (active === null) return;
       const sessionId =
-        "session_id" in msg && typeof msg.session_id === "string"
-          ? msg.session_id
+        "sessionId" in msg && typeof msg.sessionId === "string"
+          ? msg.sessionId
           : UNKEYED_SESSION;
 
-      setLive((prev) => {
-        const sessions = prev.get(agentId);
-        if (active ? sessions?.has(sessionId) : !sessions?.has(sessionId)) return prev;
-        const next = new Map(prev);
+      const prev = store.getSnapshot();
+      const sessions = prev.get(agentId);
+      let current = prev;
+      if (active ? !sessions?.has(sessionId) : sessions?.has(sessionId)) {
+        const updatedRuns = new Map(prev);
         const updated = new Set(sessions ?? []);
         if (active) updated.add(sessionId);
         else updated.delete(sessionId);
-        if (updated.size) next.set(agentId, updated);
-        else next.delete(agentId);
-        return next;
-      });
+        if (updated.size) updatedRuns.set(agentId, updated);
+        else updatedRuns.delete(agentId);
+        current = updatedRuns;
+      }
+      store.set(current);
     });
-  }, [onChatMessage]);
+  }, [onChatMessage, store]);
 
   // Identity changes only when an agent enters or leaves the live set, so
   // downstream memos genuinely skip work on unrelated frames.
@@ -160,8 +214,7 @@ export function useRosterEntries(agents: Agent[]): RosterEntry[] {
         state:
           durable === "idle" && liveRunAgentIds.has(agent.id) ? ("running" as const) : durable,
         isCeo: row?.role === "ceo",
-        // Friday and Atlas. The BFF stamps this from the persisted seeded-agent
-        // ids, and the backend rejects deleting them outright.
+        // Backend-authored starter provenance; display names are irrelevant.
         isSeeded: row?.seeded === true,
         rawStatus: row?.status,
       };

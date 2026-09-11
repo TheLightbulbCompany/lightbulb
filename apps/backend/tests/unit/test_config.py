@@ -64,12 +64,11 @@ def test_ws_gateway_url_overrides_via_env():
     assert settings.WS_GATEWAY_URL == "wss://override.example.com"
 
 
-def test_team_seat_settings_have_expected_defaults():
+def test_workspace_price_settings_have_expected_defaults():
     s = Settings()
-    # Empty default so the app boots without the CDK-wired price id.
-    assert s.STRIPE_TEAM_SEAT_PRICE_ID == ""
-    # Per-seat display dollars — the single server-side source of the "$20".
-    assert s.TEAM_SEAT_PRICE_USD == 20
+    assert s.STRIPE_WORKSPACE_PRICE_ID == ""
+    assert s.WORKSPACE_PRICE_USD == 50
+    assert s.ULTRA_PRICE_USD == 150
 
 
 def test_apex_domain_collapses_subdomains():

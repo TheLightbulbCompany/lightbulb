@@ -3,7 +3,6 @@ import { useAuth } from "@clerk/nextjs";
 import {
   ApiError,
   createApiClient,
-  deriveWebSocketUrl as deriveWebSocketUrlShared,
   fetchJsonWithStatus as fetchJsonWithStatusShared,
   type ApiCallOptions,
   type ApiMethods,
@@ -18,19 +17,6 @@ import { recordRequestId } from "./requestIdLog";
 
 // Use environment variable for production, fallback to localhost for development
 export const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
-
-/**
- * Derive the WebSocket gateway URL from `apiUrl` — see the shared
- * implementation for the rewrite rules. `NEXT_PUBLIC_WS_URL` takes precedence
- * over derivation so bespoke environments (e.g. a PR preview against a
- * non-standard gateway) can override without code changes; read at call time
- * so tests can stub it per-case.
- */
-export function deriveWebSocketUrl(apiUrl: string): string {
-  return deriveWebSocketUrlShared(apiUrl, process.env.NEXT_PUBLIC_WS_URL);
-}
-
-export const WS_URL = deriveWebSocketUrl(BACKEND_URL);
 
 export { ApiError };
 export type { ApiCallOptions };

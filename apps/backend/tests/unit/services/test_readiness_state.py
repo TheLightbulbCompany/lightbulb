@@ -113,7 +113,7 @@ class TestComputeStatusLifecycleScenarios:
 
     @pytest.mark.asyncio
     async def test_provider_selection_required_org_active_no_provider(self):
-        """Orgs have NO free tier — an org with an active per-seat
+        """Orgs have NO free tier — an org with an active workspace
         subscription but no provider_choice sits here, distinct from
         personal's trial_local path."""
         account = _account(subscription_status="active", provider_choice=None)
@@ -508,9 +508,68 @@ class TestResolveOnboardingStateThreading:
             result = await readiness_state.resolve_onboarding_state("user_x")
         assert result["onboarding_generation"] is None
         assert result["funnel_state"] == "not_started"
-        assert result["bootstrap_state"] == "not_started"
         assert result["user_id"] is None
         assert result["onboarding_submitted_by"] is None
+
+    # The keys `get_onboarding_state` returns for a
+    # genuinely-not-started row -- an explicit literal, independent of
+    # BOTH `ONBOARDING_STATE_DEFAULTS` and `resolve_onboarding_state`'s
+    # implementation, so drift on either side fails loudly instead of a
+    # tautological self-comparison. This is the regression guard for the
+    # exact bug this task fixed: first_contact_state, first_contact_attempts,
+    # first_contact_reason, and friday_agent_id silently dropped out of
+    # readiness_state's hand-copy (commit 6b42f427e / #1820 paid this once
+    # already).
+    _EXPECTED_ONBOARDING_STATE_KEYS = frozenset(
+        {
+            "onboarding_generation",
+            "funnel_state",
+            "pending_brief",
+            "funnel_submitted_at",
+            "funnel_completed_at",
+            "onboarding_goal_id",
+            "onboarding_project_id",
+            "onboarding_brief_text",
+            "onboarding_submitted_by",
+            "first_contact_state",
+            "first_contact_attempts",
+            "first_contact_reason",
+            "friday_agent_id",
+            "teams_state",
+            "company_id",
+            "paperclip_user_id",
+            "user_id",
+        }
+    )
+
+    def test_onboarding_state_defaults_have_the_expected_keys(self):
+        """paperclip_repo.ONBOARDING_STATE_DEFAULTS must carry exactly the
+        literal key set above -- fails if a key is added or removed there
+        without updating this literal (or vice versa)."""
+        from core.repositories import paperclip_repo as paperclip_repo_module
+
+        assert set(paperclip_repo_module.ONBOARDING_STATE_DEFAULTS.keys()) == self._EXPECTED_ONBOARDING_STATE_KEYS
+
+    @pytest.mark.asyncio
+    async def test_readiness_onboarding_keys_match_repo_defaults(self):
+        """readiness_state's degrade-to-defaults dict (the except branch of
+        resolve_onboarding_state) must carry the same literal 25-key set --
+        a future hand-copy reappearing here (the exact failure mode this
+        task fixed) fails against the literal, not against the thing being
+        hand-copied."""
+        paperclip_repo = MagicMock()
+        paperclip_repo.get_onboarding_state = AsyncMock(side_effect=RuntimeError("ddb down"))
+        with patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=paperclip_repo):
+            result = await readiness_state.resolve_onboarding_state("user_x")
+        assert set(result.keys()) == self._EXPECTED_ONBOARDING_STATE_KEYS
+
+        # Cheap and documents intent, but the literal assertion above is the
+        # one that actually catches drift -- this alone is tautological
+        # (it compares resolve_onboarding_state's output to the exact
+        # object it's a shallow copy of).
+        from core.repositories import paperclip_repo as paperclip_repo_module
+
+        assert set(result.keys()) == set(paperclip_repo_module.ONBOARDING_STATE_DEFAULTS.keys())
 
 
 class TestGenerationThreading:
@@ -550,7 +609,6 @@ class TestGenerationThreading:
         )
         assert contract["generations"]["onboarding_generation"] == "01J_ONBOARDING_GEN"
         assert contract["funnel"]["state"] == "complete"
-        assert contract["bootstrap"]["state"] == "delivered"
         # RECONCILE-WITH-ONBOARD: once a real onboarding_generation exists,
         # `onboarded` follows funnel_state == "complete", not the legacy
         # per-container onboarded_at stamp.

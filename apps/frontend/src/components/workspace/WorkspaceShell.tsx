@@ -9,7 +9,7 @@ import "./workspace.css";
 import { constrainGroupHeight } from "./groupConstraints";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { useAuth, useOrganization } from "@clerk/nextjs";
+import { OrganizationList, useAuth, useOrganization } from "@clerk/nextjs";
 import {
   DockviewReact,
   themeLight,
@@ -28,6 +28,7 @@ import { LaunchJoinModal } from "@/components/chat/LaunchJoinModal";
 import { GetStarted } from "@/components/getstarted/GetStarted";
 import { InlineTeamsNavProvider } from "@/components/chat/InlineTeamsNav";
 import { TeamsEventsProvider } from "@/components/teams/TeamsEventsProvider";
+import { MessagingWorkspaceProvider } from "@/components/messaging/MessagingWorkspaceContext";
 import { CommandPaletteProvider } from "@/components/teams/command-palette/CommandPaletteProvider";
 import { preloadTeamsPanels } from "@/components/teams/TeamsPanelRouter";
 import { DesktopPermissionsGate } from "@/components/desktop/DesktopPermissionsGate";
@@ -39,19 +40,20 @@ import { PANEL_COMPONENTS } from "./panelComponents";
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 import { buildMissionControlLayout } from "./buildDefaultLayout";
-import { readLayout, writeLayout, clearLayout } from "./layoutStorage";
+import { readLayout, writeLayout } from "./layoutStorage";
 import { useBrowserToolAutoOpen } from "./useBrowserToolAutoOpen";
 import { clearClosedPanelFromUrl } from "./urlChannel";
-import { resolvePanelAlias } from "./panelRegistry";
+import { MESSAGES_PANEL_ID, resolvePanelAlias } from "./panelRegistry";
 import { requestFocusComposer } from "@/lib/focusComposerRequest";
 import { deriveReconcilerAction, isCommandTargetOpen } from "./workspaceShellReconciler";
 import {
   attachDockviewApi,
   openPanel,
   openChatPanel,
+  openMessagePanel,
   closeSubjectDeleted,
   isShellOperationInProgress,
-  resetWorkspaceLayout,
+  useWorkspaceState,
   getWorkspaceSnapshot,
   refreshWorkspaceSnapshot,
 } from "./workspaceController";
@@ -62,7 +64,7 @@ import {
 // stylesheet still supplies every `--dv-*` default and workspace.css's
 // `.dv-shell.dockview-theme-lightbulb` block only repoints the ~18 that
 // carry colour, tone or rhythm.
-const ISOL8_THEME: DockviewTheme = {
+const LIGHTBULB_THEME: DockviewTheme = {
   ...themeLight,
   name: "lightbulb",
   className: `${themeLight.className} dockview-theme-lightbulb`,
@@ -98,12 +100,41 @@ function DockUnmountSentinel({ onUnmount }: { onUnmount: () => void }): null {
   return null;
 }
 
+function DesktopMessagingProvider({ children }: { children: React.ReactNode }) {
+  const { activePanelId } = useWorkspaceState();
+  return (
+    <MessagingWorkspaceProvider subscribeToRoom={activePanelId === MESSAGES_PANEL_ID}>
+      {children}
+    </MessagingWorkspaceProvider>
+  );
+}
+
 export function WorkspaceShell(): React.ReactElement {
-  const onboardingPhase = useOnboardingGate(); // exactly ONE mount (router side effects)
-  useBrowserToolAutoOpen(); // desktop-only by mount site; surfaces the Browser panel on agent browser use
+  const onboardingPhase = useOnboardingGate();
   const { userId, isSignedIn } = useAuth();
   const { organization } = useOrganization();
-  const scopeId = organization?.id ?? userId ?? "anon"; // gate below makes "anon" unreachable
+  if (onboardingPhase === "selecting") {
+    return (
+      <main className="flex min-h-screen flex-col items-center justify-center gap-6 p-4">
+        <h1 className="text-2xl font-bold">Choose your workspace</h1>
+        <OrganizationList hidePersonal afterSelectOrganizationUrl="/chat" afterCreateOrganizationUrl="/onboarding" skipInvitationScreen />
+      </main>
+    );
+  }
+  if (onboardingPhase !== "ready" || !isSignedIn || !userId || !organization) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
+        <div style={{ color: "var(--midnight-muted)", fontSize: 14 }}>Loading…</div>
+      </div>
+    );
+  }
+  const scopeId = organization.id;
+  return <AuthenticatedWorkspace key={`${userId}:${scopeId}`} scopeId={scopeId} />;
+}
+
+function AuthenticatedWorkspace({ scopeId }: { scopeId: string }): React.ReactElement {
+  const { activePanelId } = useWorkspaceState();
+  useBrowserToolAutoOpen();
   const { agents, defaultId, isSettled: agentsSettled } = useAgents();
   const defaultIdRef = useRef<string | undefined>(defaultId);
   const agentsSettledRef = useRef(agentsSettled);
@@ -137,7 +168,7 @@ export function WorkspaceShell(): React.ReactElement {
   const lastAppliedRef = useRef<string | null>(null);
   const [recoveryTriggered, setRecoveryTriggered] = useState(false);
 
-  useUserSyncOnce(Boolean(isSignedIn) && onboardingPhase === "ready");
+  useUserSyncOnce(true);
   const { showSubscriptionSuccess } = useCheckoutReturn();
   // `chatReady` + the four completion signals (chat/hire/channel/task) are
   // derived in the shared shell hook — see its doc comment for the
@@ -172,10 +203,16 @@ export function WorkspaceShell(): React.ReactElement {
     const wasOpen = isCommandTargetOpen(
       command,
       snapshot.openPanelIds,
-      () => defaultIdRef.current,
     );
     if (command.descriptor.component === "chat") {
-      openChatPanel(command.descriptor.params.agentId);
+      // Room permalinks (?panel=chat&room=…&message=…) carry roomId, not
+      // agentId — openChatPanel no-ops on an undefined agentId, so route
+      // those through openMessagePanel instead.
+      if (command.descriptor.params.roomId) {
+        openMessagePanel(command.descriptor.params.roomId, command.descriptor.params.messageId);
+      } else {
+        openChatPanel(command.descriptor.params.agentId);
+      }
     } else if (decision.panelKey) {
       // NO pushUrl: the URL already carries this command.
       openPanel(decision.panelKey, decision.durableParams, { oneShots: command.oneShots });
@@ -257,16 +294,13 @@ export function WorkspaceShell(): React.ReactElement {
       runReconciler(window.location.search);
 
       // Clear-on-close: closing the URL-named panel canonicalizes the URL in
-      // place (replace, never push) so refresh can't resurrect it. Sentinel-
-      // unified: closing chat:__default__ while the URL names the concrete
-      // default agent (and vice versa) still clears.
+      // place (replace, never push) so refresh can't resurrect it.
       disposablesRef.current.push(
         api.onDidRemovePanel((panel) => {
           if (isShellOperationInProgress()) return;
           const cleared = clearClosedPanelFromUrl(
             window.location.search,
             panel.id,
-            () => defaultIdRef.current,
           );
           if (cleared !== null) replaceSearchParams(new URLSearchParams(cleared));
         }),
@@ -348,12 +382,6 @@ export function WorkspaceShell(): React.ReactElement {
     return () => window.clearTimeout(id);
   }, []);
 
-  const handleResetLayout = useCallback(() => {
-    resetWorkspaceLayout(buildMissionControlLayout);
-    clearLayout(scopeId);
-    capture("workspace_layout_reset");
-  }, [scopeId]);
-
   const navValue = useMemo(
     () => ({
       openDetail: (panelKey: string, id: string) =>
@@ -389,14 +417,6 @@ export function WorkspaceShell(): React.ReactElement {
     [],
   );
 
-  if (onboardingPhase !== "ready") {
-    return (
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
-        <div style={{ color: "var(--midnight-muted)", fontSize: 14 }}>Loading…</div>
-      </div>
-    );
-  }
-
   // Shared by both stepper branches: same element → the dock never remounts
   // when recoveryTriggered flips (prop-switch ternary, NO key).
   const dock = (
@@ -404,7 +424,7 @@ export function WorkspaceShell(): React.ReactElement {
       <DockUnmountSentinel onUnmount={teardownDock} />
       <DockviewReact
         components={PANEL_COMPONENTS}
-        theme={ISOL8_THEME}
+        theme={LIGHTBULB_THEME}
         onReady={onReady}
         disableFloatingGroups
         // Tabs only. This kills BOTH drag backends at the source
@@ -425,71 +445,69 @@ export function WorkspaceShell(): React.ReactElement {
   return (
     <InlineTeamsNavProvider value={navValue}>
       <TeamsEventsProvider>
-        <CommandPaletteProvider>
-          <DesktopPermissionsGate />
-          <div className="workspace-shell">
-            <WorkspaceSidebar
-              chatReady={chatReady}
-              onRecoveryReprovision={() => setRecoveryTriggered(true)}
-            />
-            <div className="workspace-main">
-              <WorkspaceHeader onResetLayout={handleResetLayout} />
-              <div className="workspace-content">
-                <TrialBanner />
-                <OutOfCreditsBanner />
-                <LaunchJoinBanner />
-                <LaunchJoinModal />
-                {showSubscriptionSuccess && (
-                  <div className="subscription-banner">
-                    <p>Subscription confirmed! Your agent is being upgraded.</p>
-                  </div>
-                )}
-                {recoveryTriggered ? (
-                  <ProvisioningStepper trigger="recovery">{dock}</ProvisioningStepper>
-                ) : (
-                  <ProvisioningStepper>{dock}</ProvisioningStepper>
-                )}
-              </div>
-            </div>
-            {chatReady && (
-              <GetStarted
-                derived={getStartedDerived}
-                actions={{
-                  chat: () => {
-                    // Don't act on an empty id: if no real agent exists yet,
-                    // bail rather than opening a chat panel for "".
-                    const target = defaultIdRef.current;
-                    if (!target) return;
-                    // Record the focus intent BEFORE opening: when openChatPanel
-                    // ADDS a new dock panel, its ChatInput hasn't mounted (or
-                    // registered its window listener) yet — the CustomEvent below
-                    // would be lost, so the freshly-mounted composer consumes
-                    // this pending request instead. The already-mounted case is
-                    // covered by the event; its listener also consumes the slot
-                    // so the two paths can't double-fire.
-                    requestFocusComposer(target);
-                    openChatPanel(target);
-                    window.dispatchEvent(
-                      new CustomEvent("getstarted:focus-composer", { detail: { agentId: target } }),
-                    );
-                  },
-                  task: () =>
-                    openPanel("teams-inbox", {}, { pushUrl: true, oneShots: { newIssue: "onboarding" } }),
-                  hire: () => openMarketplace({ view: "browse" }),
-                  channel: () => {
-                    const target = defaultIdRef.current;
-                    if (!target) return;
-                    openPanel(
-                      "agent-inspector",
-                      { agent: target, inspectorTab: "channels" },
-                      { pushUrl: true },
-                    );
-                  },
-                }}
+        <DesktopMessagingProvider>
+          <CommandPaletteProvider>
+            <DesktopPermissionsGate />
+            <div className="workspace-shell" data-messages-active={activePanelId === MESSAGES_PANEL_ID}>
+              <WorkspaceHeader chatReady={chatReady} />
+              <WorkspaceSidebar
+                chatReady={chatReady}
+                onRecoveryReprovision={() => setRecoveryTriggered(true)}
               />
-            )}
-          </div>
-        </CommandPaletteProvider>
+              <div className="workspace-main">
+                <div className="workspace-content">
+                  <TrialBanner />
+                  <OutOfCreditsBanner />
+                  <LaunchJoinBanner />
+                  <LaunchJoinModal />
+                  {showSubscriptionSuccess && (
+                    <div className="subscription-banner">
+                      <p>Subscription confirmed! Your agent is being upgraded.</p>
+                    </div>
+                  )}
+                  {recoveryTriggered ? (
+                    <ProvisioningStepper trigger="recovery">{dock}</ProvisioningStepper>
+                  ) : (
+                    <ProvisioningStepper>{dock}</ProvisioningStepper>
+                  )}
+                </div>
+              </div>
+              {chatReady && (
+                <GetStarted
+                  derived={getStartedDerived}
+                  actions={{
+                    chat: () => {
+                      // Don't act on an empty id: if no real agent exists yet,
+                      // bail rather than opening a chat panel for "".
+                      const target = defaultIdRef.current;
+                      if (!target) return;
+                      // Record the focus intent before opening. openChatPanel
+                      // defers delivery until ChatPanel renders the selected DM,
+                      // so this event cannot focus a same-agent composer too soon.
+                      requestFocusComposer(target);
+                      openChatPanel(target);
+                      window.dispatchEvent(
+                        new CustomEvent("getstarted:focus-composer", { detail: { agentId: target } }),
+                      );
+                    },
+                    task: () =>
+                      openPanel("teams-issues", {}, { pushUrl: true, oneShots: { newIssue: "onboarding" } }),
+                    hire: () => openMarketplace({ view: "browse" }),
+                    channel: () => {
+                      const target = defaultIdRef.current;
+                      if (!target) return;
+                      openPanel(
+                        "agent-inspector",
+                        { agent: target, inspectorTab: "channels" },
+                        { pushUrl: true },
+                      );
+                    },
+                  }}
+                />
+              )}
+            </div>
+          </CommandPaletteProvider>
+        </DesktopMessagingProvider>
       </TeamsEventsProvider>
     </InlineTeamsNavProvider>
   );

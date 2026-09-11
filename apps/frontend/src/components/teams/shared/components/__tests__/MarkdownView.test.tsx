@@ -11,6 +11,7 @@ import {
   attachmentPathFromHref,
   shellUrlFromPaperclipPath,
 } from "../MarkdownView";
+import { roomUrlTransform } from "@/components/messaging/markdown";
 
 describe("attachmentPathFromHref", () => {
   it("maps upstream contentPath hrefs to the BFF download path", () => {
@@ -141,6 +142,33 @@ describe("MarkdownView attachment links", () => {
     render(<MarkdownView>{"[docs](https://example.com/docs)"}</MarkdownView>);
     const anchor = screen.getByRole("link", { name: "docs" });
     expect(anchor).toHaveAttribute("href", "https://example.com/docs");
+  });
+});
+
+describe("MarkdownView urlTransform", () => {
+  it("passes a mention: href through when the caller opts in (roomUrlTransform)", () => {
+    render(<MarkdownView urlTransform={roomUrlTransform}>{"[@x](mention:agent:1)"}</MarkdownView>);
+    expect(screen.getByRole("link", { name: "@x" })).toHaveAttribute("href", "mention:agent:1");
+  });
+
+  it("still blanks a javascript: href with the default transform", () => {
+    render(<MarkdownView>{"[boom](javascript:alert(1))"}</MarkdownView>);
+    expect(screen.queryByRole("link")).toBeNull();
+  });
+
+  it("still blanks a data: href with the default transform", () => {
+    render(<MarkdownView>{"[boom](data:text/html,<script>)"}</MarkdownView>);
+    expect(screen.queryByRole("link")).toBeNull();
+  });
+
+  it("still blanks a javascript: href with the mention passthrough", () => {
+    render(<MarkdownView urlTransform={roomUrlTransform}>{"[boom](javascript:alert(1))"}</MarkdownView>);
+    expect(screen.queryByRole("link")).toBeNull();
+  });
+
+  it("still blanks a data: href with the mention passthrough", () => {
+    render(<MarkdownView urlTransform={roomUrlTransform}>{"[boom](data:text/html,<script>)"}</MarkdownView>);
+    expect(screen.queryByRole("link")).toBeNull();
   });
 });
 

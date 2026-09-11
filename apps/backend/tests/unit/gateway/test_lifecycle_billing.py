@@ -33,8 +33,10 @@ def conn():
     # __init__ in real usage; tests that use __new__ to bypass init have to
     # populate them by hand.
     c._active_runs = {}
+    c._terminal_run_ids = {}
     c._run_state = {}
     c._side_run_ids = {}
+    c._run_text = {}
     c._parked = False
     c._parked_watchdog_task = None
     # Run-completion observer registry (INV-5 bootstrap dispatcher). Not
@@ -186,15 +188,15 @@ async def test_chat_final_no_longer_calls_billing(conn):
 
     with (
         patch.object(conn, "_fetch_and_record_usage", AsyncMock()) as mock_fetch,
-        patch.object(conn, "_forward_to_frontends", AsyncMock()) as mock_forward,
+        patch.object(conn, "_publish_room_frame", AsyncMock()) as mock_forward,
     ):
         await conn._handle_message({"type": "event", "event": "chat", "payload": payload})
         # Yield for consistency with the other tests
         await asyncio.sleep(0)
 
     mock_fetch.assert_not_awaited()
-    # But UI signal IS forwarded ({"type": "done"})
-    any_done = any(isinstance(c[0][0], dict) and c[0][0].get("type") == "done" for c in mock_forward.call_args_list)
+    # But UI signal IS forwarded ({"type": "done"}) -- _publish_room_frame(session_key, frame)
+    any_done = any(isinstance(c[0][1], dict) and c[0][1].get("type") == "done" for c in mock_forward.call_args_list)
     assert any_done
 
 
@@ -211,7 +213,7 @@ async def test_chat_final_with_text_schedules_trial_first_response(conn):
     sched = MagicMock(return_value=None)
     with (
         patch.object(conn, "_fetch_and_record_usage", AsyncMock()),
-        patch.object(conn, "_forward_to_frontends", AsyncMock()),
+        patch.object(conn, "_publish_room_frame", AsyncMock()),
         patch("core.gateway.connection_pool.schedule_trial_first_agent_response", sched),
     ):
         await conn._handle_message({"type": "event", "event": "chat", "payload": _final("hi")})
@@ -226,7 +228,7 @@ async def test_chat_final_without_assistant_text_does_not_schedule(conn):
     sched = MagicMock(return_value=None)
     with (
         patch.object(conn, "_fetch_and_record_usage", AsyncMock()),
-        patch.object(conn, "_forward_to_frontends", AsyncMock()),
+        patch.object(conn, "_publish_room_frame", AsyncMock()),
         patch("core.gateway.connection_pool.schedule_trial_first_agent_response", sched),
     ):
         await conn._handle_message({"type": "event", "event": "chat", "payload": _final(None)})
@@ -240,7 +242,7 @@ async def test_chat_error_does_not_schedule_trial_first_response(conn):
     payload = {"sessionKey": "agent:main:main", "state": "error", "runId": "run-1", "errorMessage": "boom"}
     with (
         patch.object(conn, "_fetch_and_record_usage", AsyncMock()),
-        patch.object(conn, "_forward_to_frontends", AsyncMock()),
+        patch.object(conn, "_publish_room_frame", AsyncMock()),
         patch("core.gateway.connection_pool.schedule_trial_first_agent_response", sched),
     ):
         await conn._handle_message({"type": "event", "event": "chat", "payload": payload})

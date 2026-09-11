@@ -877,6 +877,33 @@ export class ObservabilityStack extends cdk.Stack {
       description: "ECS task definition registration failed",
     });
 
+    // W67: agent-run-failure-storm
+    // run.completed{outcome=failure, source=paperclip} — the alarmable
+    // reliability signal for AUTONOMOUS work (nightly CEO + every Paperclip
+    // routine/issue run; those carry source="paperclip" per _parse_session_key).
+    // Human-initiated runs (webchat/channel) are excluded on purpose: their
+    // failures are visible to the person who triggered them, whereas an
+    // autonomous run fails with nobody watching — which is exactly the
+    // MyTrainer (104 gateway_timeouts) / KidShield (~325 failed runs) retry-loop
+    // storm class this catches. The full [env, service, outcome, source] set is
+    // published by put_metric, so this binds a real metric (no emitter change).
+    // GREATER_THAN + NOT_BREACHING: zero failures publishes no datapoint, so a
+    // quiet fleet never alarms (unlike the deleted W5 gauge-to-zero trap below).
+    // Threshold is a storm line, not a rate — recalibrate up as the armed fleet
+    // grows past a few dozen owners.
+    this.createAlarm({
+      id: "W67",
+      name: "agent-run-failure-storm",
+      metricName: "run.completed",
+      threshold: 20,
+      evaluationPeriods: 1,
+      periodMinutes: 15,
+      dimensions: { outcome: "failure", source: "paperclip" },
+      severity: "warn",
+      description:
+        "Autonomous (Paperclip) agent-run failures spiking: >20 failed runs in 15m — the nightly-CEO/routine retry-loop storm class.",
+    });
+
     // W5 (gateway-connection-drop) DELETED: absence-of-signal noise.
     // The `gateway.connection.open <= 0` design fired whenever no owner had a
     // chat tab open — which, on a launch-stage fleet, is most of the time. The
@@ -2240,48 +2267,54 @@ def handler(event, _ctx):
     // readable string in the Budgets console and buys a resource that can
     // actually be updated. The budget is identified by the alarm/notification
     // it produces, not by its console name.
-    new budgets.CfnBudget(this, "MonthlyBudget", {
-      budget: {
-        budgetType: "COST",
-        timeUnit: "MONTHLY",
-        budgetLimit: { amount: 1500, unit: "USD" },
-      },
-      notificationsWithSubscribers: [
-        {
-          // W49a: 80% threshold → warn topic
-          notification: {
-            notificationType: "ACTUAL",
-            comparisonOperator: "GREATER_THAN",
-            threshold: 80,
-            thresholdType: "PERCENTAGE",
-          },
-          // Budgets email the address directly — no SNS, so no confirmation
-          // click and none of the silent-expiry problem the topics had. It
-          // still has to be a mailbox somebody reads.
-          subscribers: [
-            {
-              subscriptionType: "EMAIL",
-              address: this.alertEmail,
-            },
-          ],
+    // ENV-BLIND, so PROD-GATED (see W46/W47 above). AWS Budgets are
+    // account-wide with no per-environment scope; dev and prod both deploy
+    // this stack, so an ungated budget renders twice and both copies email
+    // admin@ for the same account-wide spend number.
+    if (this.envName === "prod") {
+      new budgets.CfnBudget(this, "MonthlyBudget", {
+        budget: {
+          budgetType: "COST",
+          timeUnit: "MONTHLY",
+          budgetLimit: { amount: 1500, unit: "USD" },
         },
-        {
-          // W49b: 100% threshold → page topic
-          notification: {
-            notificationType: "ACTUAL",
-            comparisonOperator: "GREATER_THAN",
-            threshold: 100,
-            thresholdType: "PERCENTAGE",
-          },
-          subscribers: [
-            {
-              subscriptionType: "EMAIL",
-              address: this.alertEmail,
+        notificationsWithSubscribers: [
+          {
+            // W49a: 80% threshold → warn topic
+            notification: {
+              notificationType: "ACTUAL",
+              comparisonOperator: "GREATER_THAN",
+              threshold: 80,
+              thresholdType: "PERCENTAGE",
             },
-          ],
-        },
-      ],
-    });
+            // Budgets email the address directly — no SNS, so no confirmation
+            // click and none of the silent-expiry problem the topics had. It
+            // still has to be a mailbox somebody reads.
+            subscribers: [
+              {
+                subscriptionType: "EMAIL",
+                address: this.alertEmail,
+              },
+            ],
+          },
+          {
+            // W49b: 100% threshold → page topic
+            notification: {
+              notificationType: "ACTUAL",
+              comparisonOperator: "GREATER_THAN",
+              threshold: 100,
+              thresholdType: "PERCENTAGE",
+            },
+            subscribers: [
+              {
+                subscriptionType: "EMAIL",
+                address: this.alertEmail,
+              },
+            ],
+          },
+        ],
+      });
+    }
 
     // W50: Bedrock spend anomaly — ENV-BLIND, so PROD-GATED (see W46/W47).
     // AWS/Bedrock Invocations is account-global with no env dimension; dev and
@@ -3043,6 +3076,14 @@ def handler(event, _ctx):
     // GuardDuty and Access Analyzer are already enabled at the account level
     // (prod has them pre-configured). We only create EventBridge rules to
     // route their findings to our SNS warn topic.
+    //
+    // ENV-BLIND, so PROD-GATED (see W46/W47/W49a-b above). GuardDuty and
+    // Access Analyzer findings are account-wide with no per-environment
+    // scope; dev and prod both deploy this stack, so an ungated rule renders
+    // twice and both copies email admin@ for the same account-wide finding.
+    if (this.envName !== "prod") {
+      return;
+    }
 
     // GuardDuty findings → warn SNS via EventBridge
     const guardDutyRule = new events.Rule(this, "GuardDutyFindings", {

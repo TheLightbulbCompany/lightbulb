@@ -72,6 +72,22 @@ def _slice_with_agent(**overrides):
     return out
 
 
+@pytest.fixture(autouse=True)
+def _noop_lightbulb_channel_registration(monkeypatch):
+    """unwind_partial_deploy lazily imports
+    core.services.config_patcher.deregister_lightbulb_agent_account (not
+    constructor-injected, like the rest of this file's mocked collaborators)
+    and writes to a real openclaw.json on EFS. These tests never provision
+    one, so default it to a no-op here.
+
+    Registration itself now happens inside ``pair_with_openclaw`` (the
+    chokepoint every agent-creation path routes through — see
+    core.services.paperclip_openclaw_pairing), which this file's ``pair_fn``
+    is always mocked away, so there is nothing to no-op for it here; that
+    behavior is covered by test_paperclip_openclaw_pairing.py."""
+    monkeypatch.setattr("core.services.config_patcher.deregister_lightbulb_agent_account", AsyncMock())
+
+
 @pytest.mark.asyncio
 async def test_deploy_calls_pair_before_aux_merge():
     """Agent entry must register via the gateway BEFORE the aux file merge —
@@ -99,6 +115,34 @@ async def test_deploy_calls_pair_before_aux_merge():
     )
 
     assert order == ["extract", "sidecar", "pair", "aux", "complete"], order
+
+
+@pytest.mark.asyncio
+async def test_deploy_pairs_with_the_deployed_agent_id_and_owner():
+    """The deployed agent must be paired via ``pair_fn`` (production:
+    ``pair_with_openclaw``) with the right owner/agent — that pairing call is
+    what registers the Lightbulb channel account + binding on success (see
+    test_paperclip_openclaw_pairing.py), since build_openclaw_config_dict
+    only derives channels.lightbulb.accounts/bindings when the whole config
+    is rewritten (provision/reprovision), never for a hire deployed
+    afterwards."""
+    svc, _ws, _aux, pair_fn, _gw = _make_service()
+
+    await svc.deploy_from_artifact(
+        owner_id="user_buyer",
+        slug="demo",
+        manifest={"name": "Demo", "version": 1},
+        slice_=_slice_with_agent(),
+        tar_bytes=b"<gz>",
+        container_ip="10.0.0.1",
+        container_token="tok",
+        new_agent_id="agent_abc",
+    )
+
+    pair_fn.assert_awaited_once()
+    kwargs = pair_fn.await_args.kwargs
+    assert kwargs["owner_id"] == "user_buyer"
+    assert kwargs["paperclip_agent"]["id"] == "agent_abc"
 
 
 @pytest.mark.asyncio

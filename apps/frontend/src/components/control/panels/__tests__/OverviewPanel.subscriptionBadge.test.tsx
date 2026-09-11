@@ -17,8 +17,8 @@ import { OverviewPanel } from "../OverviewPanel";
 // this badge and the sidebar footer badge contradict each other on the same
 // screen.
 
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpc: (method: string) => {
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpc: (method: string) => {
     if (method === "health") {
       return {
         data: { ok: true, ts: Date.now(), sessions: { count: 0 }, agents: [] },

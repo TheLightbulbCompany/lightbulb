@@ -459,10 +459,6 @@ class ImportPreviewResponse(BaseModel):
     safety_flags: list[SafetyFlag] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     skipped_big_files: list[str] = Field(default_factory=list)
-    # Ultra gate facts so the dialog can say "8 + 4 > 10" before confirm.
-    existing_agents: int = 0
-    standard_max_agents: int = 10
-    plan: str | None = None
     # Populated only when kind == "claude"; the backup-specific fields above
     # stay at their defaults on that path.
     claude: ClaudeImportPreview | None = None

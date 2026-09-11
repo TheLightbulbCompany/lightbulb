@@ -9,7 +9,14 @@ import {
   PanelToolbar,
 } from "@/components/teams/shell";
 import { NewIssueDialog } from "@/components/teams/issues/NewIssueDialog";
-import { TasksList } from "@/components/teams/issues/TasksList";
+import {
+  ONBOARDING_FIRST_TASK_DESCRIPTION,
+  ONBOARDING_FIRST_TASK_TITLE,
+  resolveCeoAgentId,
+} from "@/components/getstarted/getStartedFirstTask";
+import { TasksList, type TasksGroupBy } from "@/components/teams/issues/TasksList";
+import { CreateGoalDialog } from "@/components/teams/goals/CreateGoalDialog";
+import { CreateProjectDialog } from "@/components/teams/issues/CreateProjectDialog";
 import { useIssueMutations } from "@/components/teams/issues/hooks/useIssueMutations";
 import { useLiveRuns } from "@/components/teams/dashboard/hooks/useLiveRuns";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
@@ -25,8 +32,20 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 export interface IssuesPanelProps {
   /** Agent-scope filter (from the roster's "See her work →"). null = no filter. */
   agentFilter?: string | null;
+  /**
+   * Grouping to open on — from `?groupBy=`, or from the Goals / Projects keys
+   * that now alias to this page. Validated by the router before it gets here.
+   */
+  initialGroupBy?: TasksGroupBy;
   /** One-shot intent to auto-open the create dialog (from the "New task" pill). */
   newTask?: boolean;
+  /**
+   * Which composer that one-shot wants: the bare one, or the Get Started
+   * "Create your first task" step, which opens pre-filled with a CEO-directed
+   * task. Tasks owns this dialog now — the intent moved here with Inbox's
+   * issue rows.
+   */
+  newTaskPrefill?: "onboarding" | null;
   /** Fired when the create dialog closes — the shell strips its one-shot param. */
   onNewTaskConsumed?: () => void;
   /** Fired when the filter chip is dismissed — the shell clears its durable param. */
@@ -43,7 +62,9 @@ export interface IssuesPanelProps {
 // absent the panel renders its unfiltered, no-dialog default (standalone/test).
 export function IssuesPanel({
   agentFilter: agentFilterProp = null,
+  initialGroupBy,
   newTask = false,
+  newTaskPrefill = null,
   onNewTaskConsumed,
   onAgentFilterCleared,
 }: IssuesPanelProps = {}) {
@@ -80,10 +101,10 @@ export function IssuesPanel({
   // are non-empty (its defaults are []). TasksList also resolves assignee /
   // status-circle names from the roster, and feeds agents to the board.
   const { data: agentsData } = read<{ agents: CompanyAgent[] }>("/agents");
-  const { data: projectsData } = read<{ projects: IssueProject[] }>(
+  const { data: projectsData, mutate: mutateProjects } = read<{ projects: IssueProject[] }>(
     "/projects",
   );
-  const { data: goalsData } = read<{ goals: Goal[] }>("/goals");
+  const { data: goalsData, mutate: mutateGoals } = read<{ goals: Goal[] }>("/goals");
   // Live-agent-runs feed → the set of task ids with an active run, which lights
   // the board "Live" badge + the list-row live dot. Derived the same way the
   // dashboard does (useLiveRuns → isRunActive); SWR self-refreshes the feed.
@@ -92,6 +113,22 @@ export function IssuesPanel({
   // Seed from the one-shot so a mount that already carries the intent opens the
   // dialog on first render (no effect); the prev-compare below covers re-delivery.
   const [creating, setCreating] = useState(newTask);
+  const [creatingGoal, setCreatingGoal] = useState(false);
+  const [creatingProject, setCreatingProject] = useState(false);
+  // The grouping the owner is LOOKING AT, which is not the same as the one the
+  // URL opened on: they can pick another from the Group select at any time.
+  // "New goal" / "New project" follow this, because gating them on the deep
+  // link alone hid "New goal" from anyone who grouped by goal by hand — and a
+  // company with no goals yet has no goal link to arrive by, so that was the
+  // whole first-goal path.
+  const [liveGroupBy, setLiveGroupBy] = useState<TasksGroupBy>(initialGroupBy ?? "none");
+  // Mirrors TasksList's own re-delivery sync (dockview merges params onto an
+  // open panel rather than remounting it), so the two cannot drift.
+  const [prevInitialGroupBy, setPrevInitialGroupBy] = useState(initialGroupBy);
+  if (initialGroupBy !== prevInitialGroupBy) {
+    setPrevInitialGroupBy(initialGroupBy);
+    setLiveGroupBy(initialGroupBy ?? "none");
+  }
   const [search, setSearch] = useState("");
 
   // The sidebar create pill's "New task" delivers a one-shot `newTask` prop.
@@ -100,14 +137,21 @@ export function IssuesPanel({
   // render-time prev-compare pattern (React "adjust state when a prop changes")
   // rather than a setState-in-effect that would cascade renders. Closing reports
   // consumption so the shell strips its channel (URL param on mobile).
+  // Captured as STATE, not re-derived from the prop, so it survives the shell
+  // stripping its one-shot channel and any later re-open of the dialog.
+  const [prefilled, setPrefilled] = useState(newTask && newTaskPrefill === "onboarding");
   const [prevNewTask, setPrevNewTask] = useState(newTask);
   if (newTask !== prevNewTask) {
     setPrevNewTask(newTask);
-    if (newTask) setCreating(true);
+    if (newTask) {
+      setCreating(true);
+      setPrefilled(newTaskPrefill === "onboarding");
+    }
   }
   const newTaskOpen = creating;
   const closeNewTask = () => {
     setCreating(false);
+    setPrefilled(false);
     onNewTaskConsumed?.();
   };
 
@@ -169,9 +213,26 @@ export function IssuesPanel({
         overline="Work"
         title="Tasks"
         actions={
-          <EditorialButton variant="primary" onClick={() => setCreating(true)}>
-            New task
-          </EditorialButton>
+          <div className="flex items-center gap-2">
+            {/* Goals lost their own tab to this page, and the goal tab was the
+                only place a goal could be CREATED — detail, edit and delete
+                survive behind a group heading's link. Offered only while the
+                page is grouped by goal, so it appears where it means
+                something rather than sitting on every view. */}
+            {liveGroupBy === "goal" && (
+              <EditorialButton variant="secondary" onClick={() => setCreatingGoal(true)}>
+                New goal
+              </EditorialButton>
+            )}
+            {liveGroupBy === "project" && (
+              <EditorialButton variant="secondary" onClick={() => setCreatingProject(true)}>
+                New project
+              </EditorialButton>
+            )}
+            <EditorialButton variant="primary" onClick={() => setCreating(true)}>
+              New task
+            </EditorialButton>
+          </div>
         }
       />
       <PanelToolbar
@@ -236,6 +297,9 @@ export function IssuesPanel({
       <TasksList
         issues={filtered}
         agents={agentsData?.agents ?? []}
+        goals={goalsData?.goals ?? []}
+        initialGroupBy={initialGroupBy}
+        onGroupByChange={setLiveGroupBy}
         liveIssueIds={liveIssueIds}
         currentUserId={user?.id ?? null}
         searchActive={search.trim().length > 0 || agentFilter !== null}
@@ -245,16 +309,42 @@ export function IssuesPanel({
       />
 
       <NewIssueDialog
+        key={prefilled ? "onboarding" : "blank"}
         open={newTaskOpen}
         onOpenChange={(open) => (open ? setCreating(true) : closeNewTask())}
         agents={agentsData?.agents ?? []}
         projects={projectsData?.projects ?? []}
         goals={goalsData?.goals ?? []}
+        defaultTitle={prefilled ? ONBOARDING_FIRST_TASK_TITLE : undefined}
+        defaultDescription={prefilled ? ONBOARDING_FIRST_TASK_DESCRIPTION : undefined}
+        defaultAssigneeAgentId={
+          prefilled ? resolveCeoAgentId(agentsData?.agents ?? []) : undefined
+        }
+        defaultStatus={prefilled ? "todo" : undefined}
         onCreated={() => {
           closeNewTask();
           mutate();
         }}
       />
+      {creatingProject && (
+        <CreateProjectDialog
+          onClose={() => setCreatingProject(false)}
+          onCreated={() => {
+            setCreatingProject(false);
+            mutateProjects();
+          }}
+        />
+      )}
+      {creatingGoal && (
+        <CreateGoalDialog
+          goals={goalsData?.goals ?? []}
+          onClose={() => setCreatingGoal(false)}
+          onCreated={() => {
+            setCreatingGoal(false);
+            mutateGoals();
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -29,7 +29,6 @@ over whatever `.env.local` contains. Plain `pnpm start` falls back to
 | Variable | Purpose | Default |
 |----------|---------|---------|
 | `EXPO_PUBLIC_API_URL` | Backend REST API including `/api/v1` | `https://api-dev.flickmeon.ai/api/v1` |
-| `EXPO_PUBLIC_WS_URL` | Explicit WS gateway override | derived (`api` host → `ws` host) |
 | `EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY` | Clerk publishable key | required — app renders setup instructions without it |
 
 ## CI/CD + release lanes

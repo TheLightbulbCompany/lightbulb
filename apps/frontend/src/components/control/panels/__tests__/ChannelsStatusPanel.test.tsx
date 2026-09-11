@@ -3,12 +3,12 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import React from "react";
 import { ChannelsStatusPanel } from "../ChannelsStatusPanel";
 
-// useGatewayRpc is the only data source. Stub it so each test seeds a
+// useRuntimeRpc is the only data source. Stub it so each test seeds a
 // snapshot and we can assert mutate() is called by the Probe button.
 const mockData = vi.fn();
 const mockMutate = vi.fn();
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpc: () => ({
+vi.mock("@/hooks/useRuntimeRpc", () => ({
+  useRuntimeRpc: () => ({
     data: mockData(),
     error: undefined,
     isLoading: false,

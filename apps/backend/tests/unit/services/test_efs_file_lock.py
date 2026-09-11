@@ -1,7 +1,12 @@
 import os
+import subprocess
+import sys
+import time
+from contextlib import contextmanager, nullcontext
 
 import pytest
 
+import core.services.efs_file_lock as efs_file_lock
 from core.services.efs_file_lock import (
     OPENCLAW_CONFIG_GUARD_SUFFIX,
     OPENCLAW_CONFIG_PROTOCOL_EPHEMERAL,
@@ -9,6 +14,8 @@ from core.services.efs_file_lock import (
     OPENCLAW_CONFIG_PROTOCOL_SUFFIX,
     SidecarLockIdentityError,
     SidecarLockTimeoutError,
+    _openclaw_config_sidecar_under_guard,
+    get_file_lock,
     openclaw_config_recovery_guard,
     openclaw_config_sidecar_lock,
 )
@@ -17,6 +24,27 @@ from core.services.efs_file_lock import (
 def _write_protocol(lock_path, value):
     (tmp_path := lock_path.parent / f"{lock_path.name}{OPENCLAW_CONFIG_PROTOCOL_SUFFIX}").write_bytes(value)
     return tmp_path
+
+
+def _child_can_acquire(path):
+    code = """
+import fcntl, os, sys
+fd = os.open(sys.argv[1], os.O_RDWR)
+try:
+    fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    sys.exit(1)
+else:
+    sys.exit(0)
+"""
+    child = subprocess.run(
+        [sys.executable, "-c", code, str(path)],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert child.returncode in (0, 1), child.stderr
+    return child.returncode == 0
 
 
 def test_openclaw_sidecar_preserves_legacy_protocol_before_recovery(tmp_path):
@@ -134,3 +162,64 @@ def test_recovery_guard_fails_if_path_no_longer_names_locked_inode(tmp_path):
             guard_path.write_text("replacement")
 
     assert guard_path.read_text() == "replacement"
+
+
+@pytest.mark.parametrize(
+    ("protocol", "sidecar_persists"),
+    [(None, True), (OPENCLAW_CONFIG_PROTOCOL_EPHEMERAL, False)],
+)
+@pytest.mark.parametrize("body_error", [False, True])
+def test_sidecar_under_guard_composes_with_guard_and_propagates_body_error(
+    tmp_path, protocol, sidecar_persists, body_error
+):
+    lock_path = tmp_path / "openclaw.json.lock"
+    guard_path = tmp_path / f"openclaw.json.lock{OPENCLAW_CONFIG_GUARD_SUFFIX}"
+    if protocol is not None:
+        _write_protocol(lock_path, protocol)
+
+    with get_file_lock(str(lock_path)):
+        with openclaw_config_recovery_guard(str(tmp_path), str(lock_path)):
+            assert not _child_can_acquire(guard_path)
+            with pytest.raises(RuntimeError, match="body failed") if body_error else nullcontext():
+                with _openclaw_config_sidecar_under_guard(
+                    str(tmp_path),
+                    str(lock_path),
+                    deadline=time.monotonic() + 1,
+                    poll_interval_s=0.01,
+                ):
+                    assert not _child_can_acquire(guard_path)
+                    assert lock_path.is_file()
+                    if body_error:
+                        raise RuntimeError("body failed")
+            assert not _child_can_acquire(guard_path)
+
+        assert _child_can_acquire(guard_path)
+
+    assert lock_path.is_file() is sidecar_persists
+
+
+def test_public_sidecar_wrapper_forwards_pre_guard_deadline_and_poll_interval(tmp_path, monkeypatch):
+    lock_path = tmp_path / "openclaw.json.lock"
+    calls = []
+
+    @contextmanager
+    def recording_sidecar(lock_dir, sidecar_path, *, deadline, poll_interval_s):
+        calls.append((lock_dir, sidecar_path, deadline, poll_interval_s))
+        yield
+
+    @contextmanager
+    def no_guard(*args, **kwargs):
+        yield
+
+    monkeypatch.setattr(efs_file_lock.time, "monotonic", lambda: 42)
+    monkeypatch.setattr(efs_file_lock, "openclaw_config_recovery_guard", no_guard)
+    monkeypatch.setattr(
+        efs_file_lock,
+        "_openclaw_config_sidecar_under_guard",
+        recording_sidecar,
+    )
+
+    with openclaw_config_sidecar_lock(str(tmp_path), str(lock_path), timeout_s=7, poll_interval_s=0.01):
+        pass
+
+    assert calls == [(str(tmp_path), str(lock_path), 49, 0.01)]

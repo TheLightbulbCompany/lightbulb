@@ -11,7 +11,9 @@ from core.observability.logging import configure_logging
 
 configure_logging(level="INFO")
 
-from fastapi import FastAPI, Depends
+from fastapi import Depends, FastAPI
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from fastapi.openapi.utils import get_openapi
@@ -26,6 +28,7 @@ from core.containers import (
 )
 from core.observability.e2e_correlation import E2ECorrelationMiddleware
 from core.repositories import container_repo
+from core.services.messaging import ApiProblem
 from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.update_service import run_scheduled_worker
 from routers import (
@@ -51,16 +54,17 @@ from routers import (
     hooks_proxy,
     integrations,
     launch,
+    messaging,
     meta_webhook,
     metronome_webhook,
     oauth,
-    onboarding,
     ops,
     orgs,
     paperclip_events,
     paperclip_proxy,
     paperclip_trigger_proxy,
     platform_info,
+    runtime_rpc,
     ses_inbound,
     settings_keys,
     slack_app,
@@ -308,48 +312,6 @@ async def _resume_wake_resize_transitions() -> None:
         logger.info("Resumed provisioning -> running poller for %s (wake/resize, unclaimed)", owner_id)
 
 
-async def _reconcile_trial_idle_containers() -> None:
-    """One-time boot sweep that stops trial containers leaked across a restart.
-
-    Task 12's extended-idle scale-to-zero (``GatewayConnectionPool._grace_close``
-    / ``_maybe_stop_trial_container``) is in-process: the grace timer that
-    watches a ``trial_local`` owner after their last chat tab closes is a plain
-    ``asyncio.Task`` living on a single backend instance. A deploy or crash
-    kills that task mid-grace, and nothing else re-arms the stop check — the
-    container it was watching keeps running (and billing Bedrock credits)
-    forever. This is the one-time recovery for exactly that leak: on boot,
-    read every ``status="running"`` container row and dispatch its owner
-    straight to ``pool._maybe_stop_trial_container``.
-
-    Deliberately does NOT re-derive the trial_local / active-run / live-chat
-    pre-filters here. ``_maybe_stop_trial_container`` already re-runs its full
-    veto ladder from scratch on every call (billing_repo re-read, has_active_runs,
-    is_parked, cross-task live-chat count via connection_service) — every row is
-    dispatched unconditionally and the method itself decides who is actually
-    safe to stop. Duplicating those reads in this pass would double the DDB
-    traffic for zero extra safety and risk drifting out of sync with the one
-    place (Task 12) that already owns "who never gets stopped."
-
-    ONE-TIME — no loop, no interval. This codebase deliberately runs no
-    sweepers: whatever leaked from a previous process's death is caught at
-    the next restart, and Task 12's event-driven grace covers every
-    subsequent connect/disconnect without polling. A steady-state interval
-    here would just be a slower, wasteful version of the same veto ladder
-    this function already dispatches to once.
-    """
-    try:
-        rows = await container_repo.get_by_status("running")
-    except Exception:
-        logger.warning("Could not reconcile trial idle containers on startup", exc_info=True)
-        return
-
-    pool = get_gateway_pool()
-    for row in rows:
-        owner_id = row["owner_id"]
-        asyncio.create_task(pool._maybe_stop_trial_container(owner_id, trigger="boot_reconcile"))
-        logger.info("Boot reconcile: dispatched trial-stop check for %s", owner_id)
-
-
 async def _build_teams_event_broker():
     """Construct the singleton TeamsEventBroker used by /ws/message.
 
@@ -359,8 +321,6 @@ async def _build_teams_event_broker():
     """
     try:
         from core.repositories.paperclip_repo import PaperclipRepo
-        from core.services.connection_service import ConnectionService
-        from core.services.management_api_client import ManagementApiClient
         from core.services.paperclip_event_client import PaperclipEventClient
         from core.services.paperclip_user_session import get_user_session_cookie
         from core.services.teams_event_broker import TeamsEventBroker
@@ -383,8 +343,6 @@ async def _build_teams_event_broker():
         ws_base = ws_base.rstrip("/")
 
         repo = PaperclipRepo(table_name="paperclip-companies")
-        conn_svc = ConnectionService()
-        mgmt_api = ManagementApiClient()
 
         from core.services.clerk_admin import get_primary_email
         from core.services.paperclip_admin_client import shared_admin_client
@@ -414,8 +372,6 @@ async def _build_teams_event_broker():
 
         broker = TeamsEventBroker(
             client_factory=client_factory,
-            management_api=mgmt_api,
-            connection_service=conn_svc,
             resolve_company_id=resolve_company_id,
             resolve_session_cookie=resolve_session_cookie,
         )
@@ -438,13 +394,18 @@ async def lifespan(app: FastAPI):
     set_shutting_down(False)
     await startup_containers()
     await _resume_wake_resize_transitions()
-    await _reconcile_trial_idle_containers()
-    worker_task = asyncio.create_task(run_scheduled_worker())
 
-    # Teams event broker — proxies Paperclip's per-company live-events WS
-    # to subscribed browser tabs via API Gateway Management API. Started
-    # after the gateway pool (so management_api singleton is initialized)
-    # but before anything that depends on its API.
+    from core.services.durable_activity import run_trial_idle_sweeper
+    from core.services.openclaw_work import get_openclaw_work_worker
+
+    scheduled_worker_task = asyncio.create_task(run_scheduled_worker())
+    openclaw_worker = get_openclaw_work_worker()
+    openclaw_work_task = asyncio.create_task(openclaw_worker.run())
+    idle_sweeper_stop = asyncio.Event()
+    idle_sweeper_task = asyncio.create_task(run_trial_idle_sweeper(idle_sweeper_stop))
+
+    # Teams event broker — projects approved Paperclip events onto each user's
+    # private AppSync channel. REST remains available when it is unconfigured.
     broker = await _build_teams_event_broker()
     if broker is not None:
         from core.services import teams_event_broker_singleton
@@ -454,11 +415,16 @@ async def lifespan(app: FastAPI):
     gauge_task = asyncio.create_task(_running_count_gauge_loop())
 
     # Register background tasks so /admin/system/health can surface their state.
-    # See core/services/system_health.py — admin dashboard reads this dict.
     from core.services import system_health
 
-    system_health.BACKGROUND_TASKS["scheduled_worker"] = worker_task
-    system_health.BACKGROUND_TASKS["running_gauges"] = gauge_task
+    system_health.BACKGROUND_TASKS.update(
+        {
+            "scheduled_worker": scheduled_worker_task,
+            "openclaw_work": openclaw_work_task,
+            "trial_idle_sweeper": idle_sweeper_task,
+            "running_gauges": gauge_task,
+        }
+    )
 
     # Startup complete — flip the liveness gate so /health returns 200.
     global _started
@@ -466,45 +432,52 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Shutdown — bounded so no step can ride into the ECS SIGKILL window.
-    # Ladder: this timeout(20) < uvicorn --timeout-graceful-shutdown 25 < ECS stopTimeout 30.
+    # Shutdown — request every producer's stop before draining. The FIFO worker
+    # retains gateway access until it has finished its current item or returned
+    # that item's visibility; gateway teardown remains last.
     logger.info("Shutting down application...")
     set_shutting_down(True)  # 503 new business requests; /health stays green for ALB drain
+    from core.services.provision_dispatch import handoff_inflight_provisions
     from core.services.update_service import request_worker_stop
 
+    request_worker_stop()
+    openclaw_worker.request_stop()
+    idle_sweeper_stop.set()
+    gauge_task.cancel()
+    containers_shutdown = False
     try:
         async with asyncio.timeout(20):
-            # First: terminate any in-flight inline provision child. It must
-            # land before the SIGKILL window so no runner outlives this
-            # instance; everything below is process-local cleanup. No
-            # StartExecution — the state machine has been watching each claim
-            # since it was minted and takes the ECS leg over on its own clock.
-            from core.services.provision_dispatch import handoff_inflight_provisions
-
-            await handoff_inflight_provisions()
-            system_health.BACKGROUND_TASKS.clear()
-            # Worker: graceful stop (finish current iteration); gauge: stateless hard-cancel.
-            request_worker_stop()
-            gauge_task.cancel()
-            try:
-                await gauge_task
-            except asyncio.CancelledError:
-                pass
-            # Give the worker a short window to honor the stop event and finish
-            # its current iteration cleanly. wait_for hard-cancels it on timeout,
-            # so a wedged iteration can't consume the whole shutdown budget.
-            try:
-                await asyncio.wait_for(worker_task, timeout=5)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
-                pass
+            cleanup = [
+                handoff_inflight_provisions(),
+                scheduled_worker_task,
+                openclaw_work_task,
+                idle_sweeper_task,
+                gauge_task,
+            ]
             if broker is not None:
-                from core.services import teams_event_broker_singleton
-
-                await broker.shutdown()
-                teams_event_broker_singleton.set_broker(None)
+                cleanup.append(broker.shutdown())
+            await asyncio.gather(*cleanup, return_exceptions=True)
             await shutdown_containers()
+            containers_shutdown = True
     except asyncio.TimeoutError:
-        logger.error("Graceful shutdown exceeded 20s budget; exiting to let the platform reclaim the task")
+        logger.error("Graceful shutdown exceeded 20s budget; cancelling process-local workers")
+        for task in (scheduled_worker_task, openclaw_work_task, idle_sweeper_task, gauge_task):
+            task.cancel()
+        await asyncio.gather(
+            scheduled_worker_task,
+            openclaw_work_task,
+            idle_sweeper_task,
+            gauge_task,
+            return_exceptions=True,
+        )
+    finally:
+        system_health.BACKGROUND_TASKS.clear()
+        if broker is not None:
+            from core.services import teams_event_broker_singleton
+
+            teams_event_broker_singleton.set_broker(None)
+        if not containers_shutdown:
+            await shutdown_containers()
 
 
 openapi_tags = [
@@ -531,6 +504,10 @@ openapi_tags = [
     {
         "name": "integrations",
         "description": "MCP server and ClawHub integration management.",
+    },
+    {
+        "name": "messaging",
+        "description": "Canonical multiplayer rooms, messages, and runtime commands.",
     },
     {
         "name": "debug",
@@ -564,6 +541,19 @@ app = FastAPI(
     openapi_tags=openapi_tags,
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(ApiProblem)
+async def messaging_api_problem_handler(request, exc: ApiProblem):
+    return JSONResponse(status_code=exc.status_code, content=exc.body())
+
+
+@app.exception_handler(RequestValidationError)
+async def messaging_validation_error_handler(request, exc: RequestValidationError):
+    if request.url.path.startswith(("/api/v1/messaging", "/api/v1/runtime", "/api/v1/internal/messaging")):
+        problem = ApiProblem("INVALID_REQUEST", "Request validation failed.")
+        return JSONResponse(status_code=problem.status_code, content=problem.body())
+    return await request_validation_exception_handler(request, exc)
 
 
 # PaperclipApiError handler — translate upstream Paperclip non-2xx responses into
@@ -667,7 +657,7 @@ app.add_middleware(ShutdownAwareMiddleware)
 # in LIFO source order — last added runs first). The dispatcher reads
 # X-Isol8-Public-Host directly off the scope, so it doesn't actually depend
 # on ProxyHeadersMiddleware running first; the placement here is about
-# letting CORS/E2E/admin-metrics still see all traffic uniformly.
+# letting CORS/E2E still see all traffic uniformly.
 app.add_middleware(HostDispatcherMiddleware)
 
 # Proxy-headers middleware — ALB terminates TLS and forwards X-Forwarded-Proto.
@@ -736,12 +726,6 @@ app.add_middleware(
 # same e2e_run_id field. No-op for traffic that doesn't send the header.
 app.add_middleware(E2ECorrelationMiddleware)
 
-# Admin metrics middleware (CEO O1) — emits admin_api.* CloudWatch metrics
-# for every /api/v1/admin/* request. No-op for non-admin paths.
-from core.middleware.admin_metrics import AdminMetricsMiddleware  # noqa: E402
-
-app.add_middleware(AdminMetricsMiddleware)
-
 # Security response headers (nosniff / frame-options / referrer-policy). Added
 # last so it wraps outermost and stamps every response, including ones a
 # downstream middleware short-circuits.
@@ -793,6 +777,10 @@ app.include_router(paperclip_events.router, prefix="/api/v1/webhooks", tags=["we
 # WebSocket routes (API Gateway WebSocket -> HTTP POST)
 app.include_router(websocket_chat.router, prefix="/api/v1/ws")
 
+# Browser/mobile canonical messaging and the guarded HTTP runtime bridge.
+app.include_router(messaging.router, prefix="/api/v1", tags=["messaging"])
+app.include_router(runtime_rpc.router, prefix="/api/v1/runtime", tags=["messaging"])
+
 # Container browser live-view relay (direct browser WS via the ALB, like the
 # paperclip_proxy relay — NOT the API Gateway WebSocket path above)
 app.include_router(browser_view.router, prefix="/api/v1/browser-view", tags=["browser-view"])
@@ -816,9 +804,6 @@ app.include_router(metronome_webhook.router, prefix=settings.API_V1_STR, tags=["
 
 # Organization management (Gate A — invite-creation tenancy invariant)
 app.include_router(orgs.router, prefix="/api/v1/orgs", tags=["orgs"])
-
-# First-run onboarding brief (stages BRIEF.md/BOOTSTRAP.md + Set-up issue)
-app.include_router(onboarding.router, prefix="/api/v1/onboarding", tags=["onboarding"])
 
 # Container lifecycle management (GET /status, POST /retry)
 app.include_router(container.router, prefix="/api/v1/container", tags=["container"])

@@ -64,15 +64,14 @@ def _literal_values(annotation) -> set[str]:
 
 
 def test_bedrock_trial_is_not_an_acceptable_stored_provider_choice():
-    """The only write paths for provider_choice are POST /billing/trial-checkout
-    and POST /billing/provider. Both validate against a Literal that must NOT
+    """The provider write paths validate against a Literal that must NOT
     admit `bedrock_trial` — a request body could otherwise persist the trial
     config mode as a paid owner's provider, and the trial lockdown (one AIP, no
     cron/ACP/heartbeat) would silently apply to a paying customer."""
-    from routers.billing import ChangeProviderRequest, TrialCheckoutRequest
+    from routers.billing import ChangeProviderRequest
     from schemas.user_schemas import SyncUserRequest
 
-    for model in (TrialCheckoutRequest, ChangeProviderRequest, SyncUserRequest):
+    for model in (ChangeProviderRequest, SyncUserRequest):
         allowed = _literal_values(model.model_fields["provider_choice"].annotation)
         assert allowed, f"{model.__name__}.provider_choice is not a Literal any more"
         assert BEDROCK_TRIAL_CHOICE not in allowed, f"{model.__name__} admits {BEDROCK_TRIAL_CHOICE}"

@@ -18,8 +18,6 @@ import yaml
 
 from core.services.paperclip_meta import PAPERCLIP_AGENT_ROLES
 
-COMPANY_STANDARD_PLAN_MAX_AGENTS = 10
-
 
 @dataclass
 class CompanyMeta:
@@ -39,9 +37,7 @@ class CompanyMeta:
 
     @property
     def min_plan(self) -> str:
-        if self.agent_count <= COMPANY_STANDARD_PLAN_MAX_AGENTS:
-            return "standard"
-        return "ultra_pro"
+        return "standard"
 
     def to_manifest_dict(self) -> dict:
         return {

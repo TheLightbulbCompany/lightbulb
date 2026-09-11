@@ -168,6 +168,7 @@ export type QuestionResolvedEvent =
 
 export type LiveEventType =
   | "room.message.created"
+  | "room.message.available"
   | "room.typing.changed"
   | "room.run.frame"
   | "room.metadata.changed"
@@ -184,6 +185,7 @@ export type LiveEventType =
 
 export const LIVE_EVENT_TYPES: ReadonlySet<string> = new Set<LiveEventType>([
   "room.message.created",
+  "room.message.available",
   "room.typing.changed",
   "room.run.frame",
   "room.metadata.changed",
@@ -238,6 +240,7 @@ export type PaperclipEvent = { eventName: PaperclipEventName; payload: unknown }
 
 export type LiveEvent =
   | LiveEventEnvelope<"room.message.created", CanonicalRoomMessage>
+  | LiveEventEnvelope<"room.message.available", { roomId: string; messageId: string; messageSeq: number; threadRootMessageId: string | null; notify: boolean }>
   | LiveEventEnvelope<"room.typing.changed", RoomTypingChanged>
   | LiveEventEnvelope<"room.run.frame", RoomRunFrame>
   | LiveEventEnvelope<"room.metadata.changed", RoomMetadataChanged>
@@ -330,6 +333,9 @@ function payloadValid(type: LiveEventType, payload: unknown): boolean {
   switch (type) {
     case "room.message.created":
       return canonicalMessageValid(payload);
+    case "room.message.available":
+      return str(payload.roomId) && str(payload.messageId) && num(payload.messageSeq) && payload.messageSeq > 0 &&
+        nullableString(payload.threadRootMessageId) && typeof payload.notify === "boolean";
     case "room.typing.changed":
       return str(payload.roomId) && str(payload.userId) && text(payload.displayName) && str(payload.expiresAt);
     case "room.run.frame":
@@ -387,6 +393,7 @@ export function parseLiveEvent(raw: unknown): LiveEvent | null {
   if (type === "room.message.created") {
     if (payload.messageSeq !== value.messageSeq || payload.roomRevision !== value.roomRevision) return null;
   }
+  if (type === "room.message.available" && payload.messageSeq !== value.messageSeq) return null;
   const event: Record<string, unknown> = {
     schemaVersion: 1,
     eventId: value.eventId,

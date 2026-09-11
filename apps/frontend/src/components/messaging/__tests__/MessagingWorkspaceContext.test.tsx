@@ -10,6 +10,7 @@ import type { LiveRoomRun } from "@/hooks/useRooms";
 const mocks = vi.hoisted(() => ({ rooms: vi.fn(), agents: vi.fn(), roster: vi.fn() }));
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: "owner", orgId: "org" }) }));
 vi.mock("@/hooks/useRooms", () => ({ useRooms: mocks.rooms }));
+vi.mock("@/components/notifications/MessageNotifications", () => ({ MessageNotifications: () => null }));
 vi.mock("@/hooks/useAgents", () => ({ useAgents: mocks.agents }));
 vi.mock("@/components/agents/useRosterEntries", () => ({ useRosterEntries: mocks.roster }));
 vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: () => ({

@@ -102,6 +102,12 @@ class FakeDdb:
         item = self.items.get((pk, sk))
         return {"Item": av_map(item)} if item else {}
 
+    def query(self, **kwargs):
+        self.calls.append(kwargs)
+        values = kwargs["ExpressionAttributeValues"]
+        return {"Items": [av_map(row) for (pk, sk), row in self.items.items()
+                          if pk == values[":pk"]["S"] and sk.startswith(values[":prefix"]["S"])]}
+
 
 class ProjectorTests(unittest.TestCase):
     def setUp(self):
@@ -129,7 +135,7 @@ class ProjectorTests(unittest.TestCase):
 
     @patch("index._publish")
     def test_room_projection_strong_reads_and_uses_current_delivery_key(self, publish):
-        index._ddb_client = FakeDdb({(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY}})
+        index._ddb_client = FakeDdb({(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID}})
         index.process_record(stream_record(message_item()))
 
         self.assertEqual(publish.call_args.args[0], f"/rooms/{ROOM_ID}/{DELIVERY_KEY}")
@@ -139,6 +145,57 @@ class ProjectorTests(unittest.TestCase):
         self.assertEqual(event["payload"]["messageSeq"], 1)
         self.assertNotIn("deliveryKey", event["payload"])
         self.assertTrue(index._ddb_client.calls[0]["ConsistentRead"])
+
+    @patch("index._publish")
+    def test_private_message_hint_targets_and_rechecks_access_without_content(self, publish):
+        recipient = "user_bob"
+        member = {"id": recipient, "ownerId": OWNER_ID, "joinedSeq": 0}
+        items = {
+            (f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID, "kind": "dm"},
+            (f"ROOM#{ROOM_ID}", f"MEMBER#human#{recipient}"): member,
+            (f"OWNER#{OWNER_ID}", f"USERSTREAM#{recipient}"): {"active": True, "channelKey": CHANNEL_KEY},
+            (f"STREAM#{CHANNEL_KEY}", "META"): {"active": True, "ownerId": OWNER_ID, "userId": recipient},
+        }
+        for kind, mentioned, thread, expected in [
+            ("dm", False, False, True), ("group-dm", False, False, True),
+            ("channel", False, False, False), ("channel", True, False, True),
+            ("channel", False, True, True),
+        ]:
+            items[(f"ROOM#{ROOM_ID}", "META")]["kind"] = kind
+            message = message_item(sequence=2)
+            message["mentions"] = [{"kind": "human", "id": recipient}] if mentioned else []
+            root = message_item(message_id=EVENT_ID)
+            root["author"]["id"] = recipient
+            items[(f"ROOM#{ROOM_ID}", root["sk"])] = root
+            message["threadRootMessageId"] = EVENT_ID if thread else None
+            index._ddb_client = FakeDdb(items)
+            publish.reset_mock()
+            index._project_message(message)
+            channel, event = publish.call_args_list[0].args
+            self.assertEqual(channel, f"/users/{CHANNEL_KEY}")
+            self.assertEqual(event["payload"]["notify"], expected)
+            self.assertNotEqual(event["eventId"], message["messageId"])
+            self.assertNotIn("hello", json.dumps(event))
+            self.assertNotIn("author", event["payload"])
+            self.assertTrue(all(call["ConsistentRead"] for call in index._ddb_client.calls))
+
+        # A removed/rejoined member must not receive an earlier message.
+        message["author"]["id"] = recipient
+        index._project_message(message)
+        self.assertFalse(publish.call_args_list[-2].args[1]["payload"]["notify"])
+        message["author"]["id"] = USER_ID
+        items[(f"ROOM#{ROOM_ID}", f"READ#human#{recipient}")] = {"lastReadSeq": 2}
+        index._project_message(message)
+        self.assertFalse(publish.call_args_list[-2].args[1]["payload"]["notify"])
+        member["joinedSeq"] = 2
+        publish.reset_mock()
+        index._project_message(message)
+        self.assertEqual(publish.call_count, 1)
+        member["joinedSeq"] = 0
+        items[(f"STREAM#{CHANNEL_KEY}", "META")]["active"] = False
+        publish.reset_mock()
+        index._project_message(message)
+        self.assertEqual(publish.call_count, 1)
 
     @patch("index._publish")
     def test_active_user_stream_projects_stored_frozen_event(self, publish):
@@ -202,7 +259,7 @@ class ProjectorTests(unittest.TestCase):
     @patch("index._publish")
     def test_partial_batch_reports_only_bad_record_and_replayed_success_is_safe(self, publish):
         second_id = "77777777-7777-4777-8777-777777777777"
-        index._ddb_client = FakeDdb({(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY}})
+        index._ddb_client = FakeDdb({(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID}})
         good_one = stream_record(message_item(), "10")
         bad = {"eventID": "bad", "eventName": "INSERT", "dynamodb": {"SequenceNumber": "11"}}
         good_two = stream_record(message_item(second_id, 2), "12")

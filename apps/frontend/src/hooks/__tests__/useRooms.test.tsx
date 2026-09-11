@@ -88,6 +88,7 @@ function messageEvent(message: CanonicalRoomMessage): LiveEvent {
 }
 
 beforeEach(() => {
+  vi.spyOn(document, "hasFocus").mockReturnValue(true);
   handlers.clear();
   live.liveConnected = false;
   live.liveChannels = [];
@@ -103,6 +104,33 @@ beforeEach(() => {
 });
 
 describe("useRooms canonical reconciliation", () => {
+  it("keeps background arrivals unread until the window gains focus", async () => {
+    vi.mocked(document.hasFocus).mockReturnValue(false);
+    const { result } = renderHook(() => useRooms(), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(room.roomId));
+    act(() => { for (const handler of handlers) handler(messageEvent(firstMessage)); });
+    await waitFor(() => expect(result.current.messages).toHaveLength(1));
+    expect(messaging.markRead).not.toHaveBeenCalled();
+    vi.mocked(document.hasFocus).mockReturnValue(true);
+    act(() => window.dispatchEvent(new Event("focus")));
+    await waitFor(() => expect(messaging.markRead).toHaveBeenCalled());
+  });
+
+  it("keeps an inactive room unread and refreshes the directory on private hints", async () => {
+    const { result } = renderHook(() => useRooms(null, false), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(room.roomId));
+    act(() => { for (const handler of handlers) handler(messageEvent(firstMessage)); });
+    await waitFor(() => expect(result.current.messages).toHaveLength(1));
+    expect(messaging.markRead).not.toHaveBeenCalled();
+    messaging.listRooms.mockClear();
+    act(() => { for (const handler of handlers) handler({
+      type: "room.message.available", schemaVersion: 1, eventId: "hint", occurredAt: firstMessage.createdAt,
+      roomId: "other", payload: { roomId: "other", messageId: "new", messageSeq: 3, threadRootMessageId: null, notify: false },
+    }); });
+    await waitFor(() => expect(messaging.listRooms).toHaveBeenCalled());
+  });
   it("replaces active room state with the member upsert response", async () => {
     const updated = { ...room, roomRevision: 2, members: [...room.members, { ...room.members[1], id: "agent-atlas", displayName: "Atlas" }] };
     messaging.upsertMember.mockResolvedValue(updated);

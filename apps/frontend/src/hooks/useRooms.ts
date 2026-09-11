@@ -74,6 +74,9 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
   );
   const roomsData = roomsResponse.data;
   const mutateRooms = roomsResponse.mutate;
+  useEffect(() => {
+    if (liveConnected) void mutateRooms();
+  }, [connectionRevision, liveConnected, mutateRooms]);
   const rooms = roomsData?.rooms ?? NO_ROOMS;
   const directoryDetailCache = useRef(new Map<string, RoomDetail>());
   const getCachedDirectoryRoomDetails = useCallback(() => {
@@ -244,6 +247,10 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
   }, [subscriptionPath, activeRoom?.roomRevision, liveChannels, connectionRevision, reconcile, reconcileRuns]);
 
   useEffect(() => onEvent((event) => {
+    if (event.type === "room.message.available") {
+      void mutateRooms();
+      return;
+    }
     if (event.type === "room.access.removed" && event.payload.roomId === activeRoomId) {
       setAccessRemoved(true);
       messagesRef.current = [];
@@ -314,13 +321,23 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true)
   }, [typing.size]);
 
   useEffect(() => {
-    const sequence = lastSequence(messages);
-    if (!activeRoom || sequence <= activeRoom.lastReadSeq || accessRemoved) return;
-    void messaging.markRead(activeRoom.roomId, { lastReadSeq: sequence }).then(() => {
-      void mutateRoom();
-      void mutateRooms();
-    }).catch(() => {});
-  }, [messages, activeRoom, accessRemoved, messaging, mutateRoom, mutateRooms]);
+    const markVisibleRead = () => {
+      const sequence = lastSequence(messages);
+      if (!subscribeToRoom || document.visibilityState !== "visible" || !document.hasFocus() ||
+          !activeRoom || sequence <= activeRoom.lastReadSeq || accessRemoved) return;
+      void messaging.markRead(activeRoom.roomId, { lastReadSeq: sequence }).then(() => {
+        void mutateRoom();
+        void mutateRooms();
+      }).catch(() => {});
+    };
+    markVisibleRead();
+    window.addEventListener("focus", markVisibleRead);
+    document.addEventListener("visibilitychange", markVisibleRead);
+    return () => {
+      window.removeEventListener("focus", markVisibleRead);
+      document.removeEventListener("visibilitychange", markVisibleRead);
+    };
+  }, [messages, activeRoom, accessRemoved, subscribeToRoom, messaging, mutateRoom, mutateRooms]);
 
   const sendMessage = useCallback(async (request: CreateMessageRequest) => {
     if (!activeRoomId) throw new Error("No room selected.");

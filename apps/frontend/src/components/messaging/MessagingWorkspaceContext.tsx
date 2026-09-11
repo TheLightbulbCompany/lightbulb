@@ -8,7 +8,8 @@ import { useAgents } from "@/hooks/useAgents";
 import { useRosterEntries } from "@/components/agents/useRosterEntries";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { CompanyAgent, CompanyMember } from "@/components/teams/shared/types";
-import { openPanel } from "@/components/workspace/workspaceController";
+import { activateMessagesPanel, openPanel } from "@/components/workspace/workspaceController";
+import { MessageNotifications } from "@/components/notifications/MessageNotifications";
 import type { RoomComposerProps } from "./RoomComposer";
 import type { RoomDirectoryProps, ConversationCreation } from "./RoomDirectory";
 import type { RoomPanelProps } from "./RoomPanel";
@@ -105,6 +106,12 @@ export function MessagingWorkspaceProvider({
   const [mentions, setMentions] = useState<MemberRef[]>([]);
   const [clientMessageId, setClientMessageId] = useState(() => crypto.randomUUID());
   const [threadId, setThreadId] = useState<string | null>(null);
+  const [notificationTarget, setNotificationTarget] = useState<{ roomId: string; threadId: string | null } | null>(null);
+  useEffect(() => {
+    if (!notificationTarget || notificationTarget.roomId !== rooms.activeRoomId) return;
+    setThreadId(notificationTarget.threadId);
+    setNotificationTarget(null);
+  }, [notificationTarget, rooms.activeRoomId]);
   const [threadDraft, setThreadDraft] = useState("");
   const [threadMentions, setThreadMentions] = useState<MemberRef[]>([]);
   const [threadClientMessageId, setThreadClientMessageId] = useState(() => crypto.randomUUID());
@@ -327,5 +334,10 @@ export function MessagingWorkspaceProvider({
     directoryProps,
     roomProps,
     selectAgentDm: rooms.selectAgentDm,
-  }}>{children}</MessagingWorkspaceContext.Provider>;
+  }}><MessageNotifications activeRoomId={rooms.activeRoomId} threadId={threadId} roomVisible={subscribeToRoom}
+    onOpen={(roomId, targetThreadId) => {
+      rooms.selectRoom(roomId);
+      setNotificationTarget({ roomId, threadId: targetThreadId });
+      activateMessagesPanel();
+    }} />{children}</MessagingWorkspaceContext.Provider>;
 }

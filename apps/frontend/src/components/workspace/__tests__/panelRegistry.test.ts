@@ -138,7 +138,9 @@ describe("panelRegistry", () => {
     expect(durableParamsFor("file-viewer")).toEqual(["panel", "path", "agent"]);
     // Bare ?agent names a chat panel (rule 7) — close must clear it, and the
     // explicit ?panel=chat grammar (agent OR agentId) must clear fully too.
-    expect(durableParamsFor("chat:a-1")).toEqual(["panel", "agent", "agentId"]);
+    // room/message (permalinks, task-7a) are also chat-durable — close must
+    // clear those too, or a refresh resurrects the closed room/message.
+    expect(durableParamsFor("chat:a-1")).toEqual(["panel", "agent", "agentId", "room", "message"]);
   });
 
   it("names the clearable PANEL params a plain re-open must reset", () => {

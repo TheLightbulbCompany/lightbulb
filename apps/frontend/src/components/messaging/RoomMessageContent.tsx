@@ -63,6 +63,7 @@ export function RoomMessageContent({ message, currentUserId, actionable, onUpdat
     </DropdownMenu>}
     <Dialog open={deleting} onOpenChange={(open) => { if (!open && !pending) setRequest(null); }}>
       <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto"
+        onEscapeKeyDown={(event) => { event.stopPropagation(); if (pending) event.preventDefault(); }}
         onOpenAutoFocus={(event) => { event.preventDefault(); cancel.current?.focus(); }}
         onCloseAutoFocus={(event) => { event.preventDefault(); restoreFocus(); }}>
         <DialogHeader><DialogTitle>Delete message?</DialogTitle><DialogDescription>This removes the message and its attachments from the conversation. It does not change requests already sent to agents or undo their work. Thread replies stay available.</DialogDescription></DialogHeader>

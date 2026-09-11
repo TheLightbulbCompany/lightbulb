@@ -12,6 +12,8 @@ import {
 } from "openclaw/plugin-sdk/channel-outbound";
 import { channelReadyPatch, channelStoppedPatch } from "openclaw/plugin-sdk/gateway-runtime";
 import { createIngressEffectOnce } from "openclaw/plugin-sdk/ingress-effect-once";
+// @ts-expect-error OpenClaw 2026.9.3 exports this runtime JS subpath but omits its declaration file.
+import { completeWithPreparedSimpleCompletionModel, prepareSimpleCompletionModelForAgent } from "openclaw/plugin-sdk/simple-completion-runtime";
 import {
   createComputedAccountStatusAdapter,
   createDefaultChannelRuntimeState,
@@ -128,6 +130,8 @@ export const lightbulbChannelPlugin = createChatChannelPlugin({
             resolveStableChannelMessageIngress,
             buildChannelInboundEventContext,
             createIngressEffectOnce,
+            prepareSimpleCompletionModelForAgent,
+            completeWithPreparedSimpleCompletionModel,
           },
           env: () => process.env,
           registerPluginHttpRoute,

@@ -5,6 +5,8 @@ import { resolveStableChannelMessageIngress } from "openclaw/plugin-sdk/channel-
 import { defineChannelMessageAdapter, waitUntilAbort, } from "openclaw/plugin-sdk/channel-outbound";
 import { channelReadyPatch, channelStoppedPatch } from "openclaw/plugin-sdk/gateway-runtime";
 import { createIngressEffectOnce } from "openclaw/plugin-sdk/ingress-effect-once";
+// @ts-expect-error OpenClaw 2026.9.3 exports this runtime JS subpath but omits its declaration file.
+import { completeWithPreparedSimpleCompletionModel, prepareSimpleCompletionModelForAgent } from "openclaw/plugin-sdk/simple-completion-runtime";
 import { createComputedAccountStatusAdapter, createDefaultChannelRuntimeState, } from "openclaw/plugin-sdk/status-helpers";
 import { applyBasicWebhookRequestGuards, readJsonWebhookBodyOrReject, registerPluginHttpRoute, } from "openclaw/plugin-sdk/webhook-ingress";
 import { CHANNEL_CONFIG_JSON_SCHEMA, CHANNEL_ID, DURABLE_FINAL_CAPABILITIES, PLUGIN_ID, createOutbound, listAccountIds, normalizeTarget, resolveAccount, startGatewayAccount, } from "./channel.js";
@@ -95,6 +97,8 @@ export const lightbulbChannelPlugin = createChatChannelPlugin({
                     resolveStableChannelMessageIngress,
                     buildChannelInboundEventContext,
                     createIngressEffectOnce,
+                    prepareSimpleCompletionModelForAgent,
+                    completeWithPreparedSimpleCompletionModel,
                 },
                 env: () => process.env,
                 registerPluginHttpRoute,

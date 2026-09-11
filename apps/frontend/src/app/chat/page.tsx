@@ -8,8 +8,6 @@ import { MessagingWorkspace } from "@/components/messaging/MessagingWorkspace";
 import { useAgents } from "@/hooks/useAgents";
 import { ControlPanelRouter } from "@/components/control/ControlPanelRouter";
 import { LiveEventsProvider } from "@/hooks/useLiveEvents";
-import { ExecApprovalsProvider } from "@/hooks/useExecApprovals";
-import { QuestionsProvider } from "@/hooks/useQuestions";
 import { MarketplaceDrawerProvider } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { MarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawer";
 import { MarketplaceToast } from "@/components/marketplace/drawer/MarketplaceToast";
@@ -43,7 +41,7 @@ function WorkspaceShellLoading() {
 // browser-only dock out of the server bundle.
 // The mobile shell is deliberately NOT split to match: it IS the SSR/hydration
 // branch, so splitting it would delay first paint for EVERY visitor, and its
-// heavy children (AgentChatWindow, ControlPanelRouter) are shared with the
+// heavy children (MessagingWorkspace, ControlPanelRouter) are shared with the
 // desktop dock panels anyway — there's little unique weight to reclaim.
 const WorkspaceShell = dynamic(
   () => import("@/components/workspace/WorkspaceShell").then((m) => m.WorkspaceShell),
@@ -72,20 +70,16 @@ function ChatPageInner() {
   return (
     <MarketplaceDrawerProvider>
       <LiveEventsProvider>
-        <ExecApprovalsProvider>
-          <QuestionsProvider>
-            {isDesktop ? <WorkspaceShell /> : <MobileChatShell />}
-          </QuestionsProvider>
-        </ExecApprovalsProvider>
-        {/* Drawer + toast must live INSIDE GatewayProvider — useHire() and
-            PickAgentStep both call useAgents() which calls useGateway(). */}
+        {isDesktop ? <WorkspaceShell /> : <MobileChatShell />}
+        {/* Drawer + toast must live INSIDE LiveEventsProvider — useHire() and
+            PickAgentStep both call useAgents() which calls useLiveEvents(). */}
         <MarketplaceDrawer />
         <MarketplaceToast />
         {/* Each branch mounts its own RunNotifications variant; only ONE renders
             at a time. Desktop derives its watched keys from the dock snapshot
             (no props); mobile threads the selected agent + view/panel (mounted
             inside MobileChatShell, colocated with the state that feeds it).
-            Both stay inside GatewayProvider. */}
+            Both stay inside LiveEventsProvider. */}
         {isDesktop ? <RunNotifications mode="desktop" /> : null}
       </LiveEventsProvider>
     </MarketplaceDrawerProvider>

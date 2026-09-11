@@ -126,9 +126,9 @@ export function ChatLayout({
   // Derive effective agent: user selection > default > first agent
   const currentAgentId = userSelectedId ?? defaultId ?? agents[0]?.id ?? null;
 
-  // Per-agent session state. `useActiveSession` is a shared module store, so
-  // selecting a row here drives the transcript in AgentChatWindow's
-  // useAgentChat (same store) — no prop drilling across subtrees.
+  // Per-agent session state. `useActiveSession` is a shared module store so a
+  // selection here needs no prop drilling across subtrees; since the transcript
+  // moved to `components/messaging/*` this shell is its only reader.
   //
   // The list comes first because it decides the seed — see the same block in
   // WorkspaceSidebar for why it is gated on an EMPTY list rather than on a

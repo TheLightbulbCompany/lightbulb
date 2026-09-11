@@ -75,12 +75,6 @@ vi.mock("@/hooks/useLiveEvents", () => ({
 vi.mock("@/hooks/useAgents", () => ({
   useAgents: () => ({ agents: [], defaultId: null, isLoading: false, isSettled: true }),
 }));
-vi.mock("@/hooks/useQuestions", () => ({
-  QuestionsProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}));
-vi.mock("@/hooks/useExecApprovals", () => ({
-  ExecApprovalsProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}));
 vi.mock("@/components/marketplace/drawer/MarketplaceDrawerProvider", () => ({
   MarketplaceDrawerProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   useMarketplaceDrawer: () => ({ open: vi.fn() }),

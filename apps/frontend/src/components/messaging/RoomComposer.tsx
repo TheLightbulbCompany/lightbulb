@@ -37,6 +37,17 @@ export interface RoomComposerProps {
 
 const sameMember = (left: MemberRef, right: MemberRef) => left.kind === right.kind && left.id === right.id;
 
+const FORMAT_CONTROLS: { style: MarkdownStyle; label: string; Icon: typeof Bold; keys?: string }[] = [
+  { style: "bold", label: "Bold", Icon: Bold, keys: "Meta+B Control+B" },
+  { style: "italic", label: "Italic", Icon: Italic, keys: "Meta+I Control+I" },
+  { style: "strike", label: "Strikethrough", Icon: Strikethrough, keys: "Meta+Shift+X Control+Shift+X" },
+  { style: "ul", label: "Bulleted list", Icon: List },
+  { style: "ol", label: "Numbered list", Icon: ListOrdered },
+  { style: "code", label: "Inline code", Icon: Code },
+  { style: "codeblock", label: "Code block", Icon: SquareCode, keys: "Meta+Shift+C Control+Shift+C" },
+  { style: "link", label: "Link", Icon: Link2 },
+];
+
 export function RoomComposer(props: RoomComposerProps) {
   return <ComposerAttempt key={props.clientMessageId} {...props} />;
 }
@@ -341,17 +352,6 @@ function ComposerAttempt({
     }
   }
 
-  const FORMAT_CONTROLS: { style: MarkdownStyle; label: string; Icon: typeof Bold }[] = [
-    { style: "bold", label: "Bold", Icon: Bold },
-    { style: "italic", label: "Italic", Icon: Italic },
-    { style: "strike", label: "Strikethrough", Icon: Strikethrough },
-    { style: "ul", label: "Bulleted list", Icon: List },
-    { style: "ol", label: "Numbered list", Icon: ListOrdered },
-    { style: "code", label: "Inline code", Icon: Code },
-    { style: "codeblock", label: "Code block", Icon: SquareCode },
-    { style: "link", label: "Link", Icon: Link2 },
-  ];
-
   function format(style: MarkdownStyle) {
     const start = field.current?.selectionStart ?? text.length;
     const end = field.current?.selectionEnd ?? start;
@@ -379,9 +379,9 @@ function ComposerAttempt({
         setToolbarIndex(next);
         toolbarButtons.current[next]?.focus();
       }}>
-      {FORMAT_CONTROLS.map(({ style, label: controlLabel, Icon }, index) => <Button key={style} type="button" variant="ghost" size="icon-sm"
+      {FORMAT_CONTROLS.map(({ style, label: controlLabel, Icon, keys }, index) => <Button key={style} type="button" variant="ghost" size="icon-sm"
         ref={(node) => { toolbarButtons.current[index] = node; }} tabIndex={index === toolbarIndex ? 0 : -1}
-        aria-label={controlLabel} title={controlLabel} disabled={!editable}
+        aria-label={controlLabel} aria-keyshortcuts={keys} title={controlLabel} disabled={!editable}
         onFocus={() => setToolbarIndex(index)} onClick={() => format(style)}><Icon aria-hidden="true" /></Button>)}
     </div>
     {dropping && <p className="room-drop-hint text-sm text-muted-foreground" role="status">Drop images to attach</p>}

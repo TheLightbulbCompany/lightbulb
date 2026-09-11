@@ -22,6 +22,7 @@ it("exposes the eight formatting controls in one toolbar", () => {
   for (const name of ["Bold", "Italic", "Strikethrough", "Bulleted list", "Numbered list", "Inline code", "Code block", "Link"]) {
     expect(screen.getByRole("button", { name })).toBe(toolbar.querySelector(`[aria-label="${name}"]`));
   }
+  expect(screen.getByRole("button", { name: "Bold" })).toHaveAttribute("aria-keyshortcuts", "Meta+B Control+B");
 });
 
 it("uses a single roving tab stop across the toolbar and moves focus with ArrowRight", () => {

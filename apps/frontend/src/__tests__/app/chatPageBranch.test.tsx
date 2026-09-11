@@ -53,9 +53,6 @@ vi.mock("@/hooks/useGateway", () => ({
     isConnected: false,
   }),
 }));
-vi.mock("@/hooks/useExecApprovals", () => ({
-  ExecApprovalsProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}));
 vi.mock("@/components/marketplace/drawer/MarketplaceDrawerProvider", () => ({
   MarketplaceDrawerProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   useMarketplaceDrawer: () => ({ open: vi.fn() }),

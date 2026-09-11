@@ -12,3 +12,7 @@
 /* Radix portals PopoverContent to `body`, outside `.room-panel`, so the
  * ancestor-scoped focus-visible outline in messaging.css never reaches it. */
 .room-emoji-picker :is(button, input):focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+@media (max-width: 859px) {
+  .room-emoji-row button, .room-emoji-search { min-height: 44px; }
+}

@@ -2,8 +2,7 @@
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ArrowLeft, Check, Circle, CircleAlert, Hash, Link, Link2, MessageCircle, Users } from "lucide-react";
-import { defaultUrlTransform } from "react-markdown";
-import type { Components, UrlTransform } from "react-markdown";
+import type { Components } from "react-markdown";
 import type { CreateMessageRequest, ListenMode, MemberRef, UpdateMessageRequest } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
 import { Button } from "@/components/ui/button";
@@ -12,9 +11,11 @@ import { Identity } from "@/components/teams/shared/components/Identity";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
 import { safeHref } from "@/components/teams/shared/lib/safeHref";
 import { cn } from "@/lib/utils";
+import { roomUrlTransform } from "./markdown";
 import { copyText, messagePermalink } from "./messageLinks";
 import { RoomComposer, type RoomComposerProps } from "./RoomComposer";
-import { linkifyMentions, MENTION_SCHEME, parseMentionHref } from "./mentions";
+import { linkifyMentions, parseMentionHref } from "./mentions";
+import { readRecentEmoji } from "./EmojiPicker";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import { ParticipantProfile } from "./ParticipantProfile";
 import { RoomMessageItem } from "./RoomMessageItem";
@@ -73,6 +74,8 @@ export interface RoomPanelProps {
   narrow?: boolean;
 }
 
+const DEFAULT_QUICK_REACTIONS = ["👍", "✅", "🎉", "👀"];
+
 const workLabel: Record<WorkState, string> = {
   ready: "Ready", queued: "Queued", working: "Working", paused: "Paused",
   "needs-approval": "Needs approval", completed: "Completed", failed: "Failed", offline: "Offline", unknown: "Unknown",
@@ -95,11 +98,6 @@ const roomMarkdown: Partial<Components> = {
   img: ({ alt }) => <span className="text-muted-foreground">{alt || "Image omitted"}</span>,
   blockquote: ({ children }) => <blockquote className="border-l border-border pl-3 my-2 text-muted-foreground">{children}</blockquote>,
 };
-
-// react-markdown's default urlTransform blanks any href whose scheme it doesn't
-// recognize (http/https/mailto/relative/…), so a `mention:` link never reaches
-// roomMarkdown.a's href at all unless we carve out an exception for it here.
-const roomUrlTransform: UrlTransform = (value) => (value.startsWith(MENTION_SCHEME) ? value : defaultUrlTransform(value));
 
 const narrowQuery = "(max-width: 859px)";
 const overlayQuery = "(min-width: 860px) and (max-width: 1179px)";
@@ -200,7 +198,10 @@ function RoomContent({
   narrow,
 }: RoomPanelProps) {
   const id = useId();
-  const [searchTarget, setSearchTarget] = useState<Pick<RoomMessage, "messageId" | "threadRootMessageId"> | null>(null);
+  // token increments on every selection (even of the same result) so RoomTimeline
+  // re-scrolls/re-highlights instead of treating a repeat click as already-handled.
+  const searchTargetToken = useRef(0);
+  const [searchTarget, setSearchTarget] = useState<(Pick<RoomMessage, "messageId" | "threadRootMessageId"> & { token: number }) | null>(null);
   // RoomContent remounts per room (RoomBoundary is keyed by roomId), so this resets naturally on room change.
   const [sentSinceOpen, setSentSinceOpen] = useState(false);
   // Only suppress the "New" line once a send actually succeeds -- a rejected send must leave sentSinceOpen false.
@@ -209,8 +210,15 @@ function RoomContent({
     setSentSinceOpen(true);
   };
   const [copied, setCopied] = useState<string | null>(null);
+  const [copyError, setCopyError] = useState<string | null>(null);
   const [reactionPending, setReactionPending] = useState<string | null>(null);
   const [reactionError, setReactionError] = useState<string | null>(null);
+  // Computed once per mount/reaction-change (not per message render) -- reading
+  // localStorage in every RoomMessageItem render was wasted work on a long list.
+  const [quickReactions, setQuickReactions] = useState<readonly string[]>(() => {
+    const recent = readRecentEmoji();
+    return recent.length ? recent.slice(0, 4) : DEFAULT_QUICK_REACTIONS;
+  });
   const [membersOpen, setMembersOpen] = useState(false);
   const [memberPickerOpen, setMemberPickerOpen] = useState(false);
   const [addingMembers, setAddingMembers] = useState(false);
@@ -241,6 +249,9 @@ function RoomContent({
   const newLineSeq = readSeqAtOpen ?? null;
   const ownSeqs = mainMessages.filter((message) => message.author.kind === "human" && message.author.id === currentUserId).map((message) => message.messageSeq);
   const ownLastSentSeq = ownSeqs.length ? Math.max(...ownSeqs) : null;
+  // Only a main-list (non-thread) search result with no thread open is a target
+  // for RoomTimeline -- a thread-scoped result is handled by the effect below.
+  const activeSearchTarget = searchTarget && !searchTarget.threadRootMessageId && !selection ? searchTarget : null;
   const parentMessage = selection?.kind === "thread" ? messages.find((message) => message.messageId === selection.id) : undefined;
   const showDetail = !!parentMessage;
   const showContext = showDetail || !contextCollapsed;
@@ -340,17 +351,21 @@ function RoomContent({
       message={message} text={linkifyMentions(message.text, message.mentions, participants)} participant={participant} currentUserId={currentUserId} actionable={actionable} inThread={inThread} collapsed={collapsed}
       replyCount={inThread ? 0 : messages.filter((candidate) => candidate.threadRootMessageId === message.messageId).length}
       highlighted={inThread && searchTarget?.messageId === message.messageId} mentionsViewer={mentionsMe} markdown={roomMarkdown} urlTransform={roomUrlTransform} workStatus={(state) => <WorkStatus state={state} />}
-      reactionPending={reactionPending !== null} reactionError={reactionError === message.messageId}
+      quickReactions={quickReactions} reactionPending={reactionPending !== null} reactionError={reactionError === message.messageId}
       onToggleReaction={onSetReaction && !message.deletedAt ? (emoji) => void toggleReaction(message, emoji) : undefined}
       onOpenThread={(button) => openDetail("thread", message.messageId, button)}
       onSelectParticipant={onSelectParticipant} onUpdateMessage={onUpdateMessage} onDownloadAttachment={onDownloadAttachment}
-      toolbarExtras={<Button type="button" variant="ghost" size="icon-sm" aria-label="Copy link"
-        title={copied === message.messageId ? "Copied" : "Copy link"}
-        onClick={async () => {
-          const ok = await copyText(messagePermalink(roomId, message.messageId));
-          setCopied(ok ? message.messageId : null);
-          if (ok) setTimeout(() => setCopied((current) => current === message.messageId ? null : current), 2000);
-        }}><Link aria-hidden="true" /></Button>} />;
+      toolbarExtras={!message.deletedAt ? <>
+        <Button type="button" variant="ghost" size="icon-sm" aria-label="Copy link"
+          title={copied === message.messageId ? "Copied" : "Copy link"}
+          onClick={async () => {
+            const ok = await copyText(messagePermalink(roomId, message.messageId));
+            setCopied(ok ? message.messageId : null);
+            setCopyError(ok ? null : message.messageId);
+            if (ok) setTimeout(() => setCopied((current) => current === message.messageId ? null : current), 2000);
+          }}><Link aria-hidden="true" /></Button>
+        {copyError === message.messageId && <p role="alert" className="text-sm text-err">Could not copy the link.</p>}
+      </> : undefined} />;
   }
   async function toggleReaction(message: RoomMessage, emoji: string) {
     if (!onSetReaction || !actionable || reactionPending !== null) return;
@@ -358,23 +373,28 @@ function RoomContent({
     setReactionError(null);
     try { await onSetReaction(message.messageId, emoji, !message.reactions?.[emoji]?.includes(currentUserId)); }
     catch { setReactionError(message.messageId); }
-    finally { setReactionPending(null); }
+    finally {
+      setReactionPending(null);
+      const recent = readRecentEmoji();
+      setQuickReactions(recent.length ? recent.slice(0, 4) : DEFAULT_QUICK_REACTIONS);
+    }
   }
 
   function renderRun(run: RoomRunView) {
     const agent = participants.find((participant) => participant.kind === "agent" && participant.id === run.agentId);
     const agentName = agent?.displayName ?? "Agent";
-    if (run.state !== "running") {
+    if (run.state !== "running" && !run.text) {
       const label = run.state === "completed" ? `${agentName} finished · no reply` : run.state === "aborted" ? `${agentName} stopped` : `${agentName}'s run failed`;
       return <div key={`${run.roomId}:${run.agentId}:${run.runId}`} className={cn("room-run-line", run.state === "failed" ? "text-err" : "text-muted-foreground")} role="status">
         <Circle size={12} aria-hidden="true" />{label}
         {run.tools.length > 0 && <details><summary>What it did</summary><ToolActivityTrace calls={run.tools} /></details>}
       </div>;
     }
+    const workState = run.state === "running" ? "working" : run.state === "aborted" ? "failed" : run.state;
     return <article key={`${run.roomId}:${run.agentId}:${run.runId}`} className="room-message room-live-run" aria-label={`Live run from ${agentName}`}>
-      <Identity name={agentName} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{agentName}</span><WorkStatus state="working" /></div>
+      <Identity name={agentName} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{agentName}</span><WorkStatus state={workState} /></div>
         {run.thinking && <details><summary>Thinking</summary><p className="room-wrap text-muted-foreground">{run.thinking}</p></details>}
-        {run.text && <MarkdownView skipHtml components={roomMarkdown}>{run.text}</MarkdownView>}
+        {run.text && <MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{run.text}</MarkdownView>}
         {run.tools.length > 0 && <ToolActivityTrace calls={run.tools} />}
         {(onAbortRun || onSteerRun) && <form className="room-run-controls" onSubmit={(event) => {
           event.preventDefault();
@@ -415,7 +435,7 @@ function RoomContent({
               onSelectThread?.(root);
               setSelection(root ? { kind: "thread", id: root } : null);
               setContextCollapsed(true);
-              setSearchTarget({ messageId: message.messageId, threadRootMessageId: root });
+              setSearchTarget({ messageId: message.messageId, threadRootMessageId: root, token: ++searchTargetToken.current });
             }} />
           <Button ref={memberTrigger} type="button" variant="ghost" className="room-members-trigger" aria-label="View members" aria-expanded={membersOpen} aria-controls={`${id}-members`}
             onClick={() => setMembersOpen(!membersOpen)}><Users aria-hidden="true" />{participants.length}</Button>
@@ -441,11 +461,12 @@ function RoomContent({
       {(state === "reconnecting" || !liveConnected) && <div className="room-state"><p role="status" aria-label="Room status">Reconnecting live updates. You can keep sending messages.</p>
         {onRetry && <Button variant="outline" onClick={onRetry}>Check for updates</Button>}</div>}
       <RoomTimeline roomId={roomId} messages={mainMessages} readSeq={sentSinceOpen ? null : newLineSeq} ownLastSentSeq={ownLastSentSeq}
-        targetMessageId={searchTarget && !searchTarget.threadRootMessageId && !selection ? searchTarget.messageId : targetMessageId ?? null}
+        targetMessageId={targetMessageId ?? (activeSearchTarget ? activeSearchTarget.messageId : null)}
+        targetToken={targetMessageId ? undefined : activeSearchTarget?.token}
         renderMessage={(message, collapsed) => renderMessage(message, false, collapsed)}
         empty={pendingMessages.length ? null : <div className="room-empty"><h3 className="font-semibold text-lg">Start the conversation</h3><p className="text-sm text-muted-foreground">Share an update or mention an agent when you want help.</p></div>}>
         {pendingMessages.filter((message) => message.threadRootMessageId === null).map((message) => <article key={message.clientMessageId} className="room-message" aria-label={`Pending message from ${viewer?.displayName ?? "You"}`}>
-          <Identity name={viewer?.displayName ?? "You"} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{viewer?.displayName ?? "You"}</span><span className="text-sm text-muted-foreground">Sending…</span></div><MarkdownView skipHtml components={roomMarkdown}>{message.text}</MarkdownView></div>
+          <Identity name={viewer?.displayName ?? "You"} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{viewer?.displayName ?? "You"}</span><span className="text-sm text-muted-foreground">Sending…</span></div><MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{linkifyMentions(message.text, message.mentions, participants)}</MarkdownView></div>
         </article>)}
         {runs.filter((run) => !run.threadRootMessageId).map(renderRun)}
       </RoomTimeline>

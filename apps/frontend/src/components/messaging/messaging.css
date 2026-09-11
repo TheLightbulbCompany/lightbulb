@@ -34,13 +34,6 @@
 .room-message-actions button { border-radius: 4px; }
 .room-quick-reactions { display: inline-flex; gap: 2px; }
 .room-quick-reactions button { min-width: 28px; }
-@media (hover: none), (pointer: coarse) {
-  .room-message-actions { opacity: 1; pointer-events: auto; }
-  /* The picker covers every emoji already; the quick row is a hover-affordance shortcut that doesn't earn its width on touch. */
-  .room-quick-reactions { display: none; }
-  .room-message:has(.room-message-actions) .room-message-byline { padding-right: 140px; flex-wrap: wrap; }
-  .room-message-collapsed .room-message-content { padding-right: 140px; }
-}
 .room-message-content { flex: 1; min-width: 0; line-height: 1.5; }
 .room-message-content > :is(.prose, [class*="prose"]) { font-family: var(--font-sans); font-size: 1rem; line-height: 1.5; }
 .room-message-content p { margin-top: 2px; margin-bottom: 4px; font-size: 1rem; line-height: 1.5; }
@@ -52,7 +45,7 @@
 .room-message-byline > span:first-child { min-width: 0; }
 .room-message-content pre { max-width: 100%; }
 .room-mention { display: inline-block; padding: 0 4px; border-radius: 4px; font-weight: 600; color: var(--info); background: color-mix(in srgb, var(--info) 12%, transparent); }
-.room-message-mentions-me { background: color-mix(in srgb, var(--brass) 10%, transparent); border-radius: 6px; }
+.room-message-mentions-me { background: color-mix(in srgb, var(--info) 8%, transparent); border-radius: 6px; }
 .room-reply { margin-top: 2px; margin-left: -12px; color: var(--info); font-size: .875rem; height: 28px; }
 .room-work-link { margin: 8px 8px 0 0; max-width: 100%; white-space: normal; height: auto; min-height: 36px; text-align: left; overflow-wrap: anywhere; }
 .room-run { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; padding-top: 8px; }
@@ -185,7 +178,17 @@
 .room-message-collapsed { padding-top: 2px; padding-bottom: 2px; min-height: 40px; }
 .room-message-gutter { flex: none; width: 32px; padding-top: 4px; font-size: .75rem; line-height: 1.5; text-align: right; color: var(--muted-foreground); font-variant-numeric: tabular-nums; opacity: 0; }
 .room-message:hover .room-message-gutter, .room-message:focus-within .room-message-gutter { opacity: 1; }
-@media (hover: none), (pointer: coarse) { .room-message-gutter { opacity: 1; } }
+
+/* Positioned after the .room-message-gutter/.room-message-actions base rules above
+ * (same specificity, so the touch override must come later in source order to win). */
+@media (hover: none), (pointer: coarse) {
+  .room-message-actions { opacity: 1; pointer-events: auto; }
+  /* The picker covers every emoji already; the quick row is a hover-affordance shortcut that doesn't earn its width on touch. */
+  .room-quick-reactions { display: none; }
+  .room-message:has(.room-message-actions) .room-message-byline { padding-right: 140px; flex-wrap: wrap; }
+  .room-message-collapsed .room-message-content { padding-right: 140px; }
+  .room-message-gutter { opacity: 1; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   .participant-avatar[data-agent-state="running"] { animation: none; }

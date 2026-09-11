@@ -341,6 +341,13 @@ it("collapses a finished run with no reply into a muted status line", () => {
   expect(screen.queryByRole("article", { name: "Live run from Friday" })).not.toBeInTheDocument();
 });
 
+it("keeps rendering a finished run's text instead of collapsing it", () => {
+  const run: RoomRunView = { roomId: "room", agentId: "friday", runId: "run-1", text: "Partial answer", thinking: "", state: "completed", tools: [] };
+  render(<RoomPanel {...props} runs={[run]} />);
+  expect(within(screen.getByRole("article", { name: "Live run from Friday" })).getByText("Partial answer")).toBeInTheDocument();
+  expect(screen.queryByText("Friday finished · no reply")).not.toBeInTheDocument();
+});
+
 it("lets wide room details change agent listen mode without giving humans a control", async () => {
   const user = userEvent.setup();
   const onListenModeChange = vi.fn();
@@ -578,4 +585,15 @@ it("copies a message permalink from the toolbar", async () => {
   await user.click(screen.getByRole("button", { name: "Copy link" }));
   expect(writeText).toHaveBeenCalledWith(expect.stringContaining("panel=chat&room=room&message=message"));
   expect(await screen.findByRole("status", { name: "Link copied" })).toBeInTheDocument();
+});
+
+it("shows an alert when copying the link fails, and clears it on the next successful copy", async () => {
+  const user = userEvent.setup();
+  const writeText = vi.fn().mockRejectedValueOnce(new Error("denied")).mockResolvedValueOnce(undefined);
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  render(<RoomPanel {...props} />);
+  await user.click(screen.getByRole("button", { name: "Copy link" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Could not copy the link.");
+  await user.click(screen.getByRole("button", { name: "Copy link" }));
+  await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
 });

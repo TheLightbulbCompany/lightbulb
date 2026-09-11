@@ -13,6 +13,10 @@ export interface RoomTimelineProps {
   readSeq: number | null;
   ownLastSentSeq: number | null;
   targetMessageId?: string | null;
+  /** Bump this (e.g. a monotonically increasing counter) to force a re-scroll/
+   *  re-highlight of the same targetMessageId — otherwise re-selecting the same
+   *  search result a second time is a no-op (see the `handled` ref below). */
+  targetToken?: number;
   renderMessage: (message: RoomMessage, collapsed: boolean) => ReactNode;
   children?: ReactNode;
   empty: ReactNode;
@@ -23,7 +27,7 @@ const HIGHLIGHT_MS = 2000;
 
 const escapeSelector = (value: string) => typeof CSS !== "undefined" && "escape" in CSS ? CSS.escape(value) : value.replace(/["\\]/g, "\\$&");
 
-export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, targetMessageId, renderMessage, children, empty }: RoomTimelineProps): ReactElement {
+export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, targetMessageId, targetToken, renderMessage, children, empty }: RoomTimelineProps): ReactElement {
   const region = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);
   const lastSeq = useRef<number>(messages.at(-1)?.messageSeq ?? 0);
@@ -59,20 +63,23 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, target
   }, [messages, ownLastSentSeq]);
 
   // Target message: scroll/focus/highlight once per target, so an unrelated
-  // message arriving later doesn't re-trigger the same target. Kept in the
-  // deps only so a target that isn't rendered yet (history still loading) is
-  // retried as more messages come in.
+  // message arriving later doesn't re-trigger the same target. Keyed on
+  // targetToken too so re-selecting the same message (e.g. the same search
+  // result twice) still re-scrolls. Kept in the deps only so a target that
+  // isn't rendered yet (history still loading) is retried as more messages
+  // come in.
   useEffect(() => {
-    if (!targetMessageId || handled.current === targetMessageId) return;
+    const key = `${targetToken ?? 0}:${targetMessageId}`;
+    if (!targetMessageId || handled.current === key) return;
     const node = region.current?.querySelector<HTMLElement>(`[data-message-id="${escapeSelector(targetMessageId)}"]`);
     if (!node) return;
     node.scrollIntoView({ block: "center" });
     node.focus({ preventScroll: true });
-    handled.current = targetMessageId;
+    handled.current = key;
     setHighlighted(targetMessageId);
     const timer = setTimeout(() => setHighlighted(null), HIGHLIGHT_MS);
     return () => clearTimeout(timer);
-  }, [targetMessageId, messages.length]);
+  }, [targetMessageId, targetToken, messages.length]);
 
   function onScroll() {
     const node = region.current;

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Existing Tauri 2/Rust desktop, FastAPI, DynamoDB messaging table, authenticated machine WebSocket infrastructure, AppSync Events, and shared React/TypeScript messaging client. Native harness interfaces before wrappers or new dependencies.
 
-**Status:** Tasks 1–6 and integration with `main` at `68c52c359` are implemented locally and independently reviewed through September 11, 2026. Integration checks passed: 117 backend, 69 plugin/build, 272 frontend, 137 shared, and 87 Rust library + 8 probe tests, with 3 explicit-live tests ignored. The final UI-only integration fix passed a fresh 164-test covering run and TypeScript. Paperclip links are next. Packaged-app/deployed/two-person validation remains a release gate. The user separately authorized dev-first testing followed by prod/founder rollout; no feature push or deployment has occurred yet.
+**Status:** Tasks 1–7 and integration with `main` at `68c52c359` are implemented locally and independently reviewed through September 11, 2026. Task 7 passed 481 backend and 379 frontend tests plus typecheck/lint; fresh targeted verification passed another 30 backend and 33 frontend checks. Earlier native verification passed 87 Rust library + 8 probe tests, with 3 explicit-live tests ignored. Draft PR [#2492](https://github.com/TheLightbulbCompany/lightbulb/pull/2492) contains the reviewed pre-Task-7 checkpoint: Mobile CI passed; five other workflows could not start because GitHub reported a payment/spending-limit issue. Desktop release gating, final review and packaged-app/deployed/two-person validation remain pending. The user separately authorized dev-first testing followed by prod/founder rollout; no feature deployment or real-session enrollment has occurred.
 
 **Document lifecycle:** Working plan. Delete when shipped; preserve decisions and verification evidence in the shipping PR, following `CLAUDE.md`.
 
@@ -433,11 +433,13 @@ Workspace evidence is private and bounded: 512 paths, 4 MiB total, 1 MiB/file; b
 
 **Modify:** existing session record/service/shared types and session panel. Use the existing Paperclip proxy/client access path; do not invent a second issue store.
 
-- [ ] Add an optional issue/workspace link with independent authorization checks and a session deep link on an explicit conversation message.
-- [ ] Test that issue closure does not terminate a session, session completion does not close an issue, and inaccessible work links reveal no protected issue details.
+- [x] Add an optional issue/workspace link with independent authorization checks and a session deep link on an explicit conversation message.
+- [x] Test that issue closure does not terminate a session, session completion does not close an issue, and inaccessible work links reveal no protected issue details.
 - [ ] Demonstrate the original handoff: one human runs an investigation; the second reads its actual history, asks the same session a follow-up and continues the work. Link the findings to existing work only when requested.
 
 **Exit:** Paperclip organizes the work without owning local-session identity or being required for sharing.
+
+**Local checkpoint:** Reviewed commit `ce2ce82b9` stores canonical work identifiers and an independent link revision in existing session metadata. Explicit Teams routes use the current viewer's per-user cookie and actual company/workspace validation; ordinary session history/control never depends on Paperclip. Real repository/relay race tests preserve session counters, generation and links. The collapsed linked-work section validates protected details afresh, and canonical session links reuse the singleton Messages pane; copying or appending a link never sends a command. The two-human handoff check uses synthetic history and real local storage/relay contracts, not two live enrolled desktops. Deployed Paperclip permissions, full browser-shell navigation and real native continuation remain release gates.
 
 ### Task 8 — Release gate and rollout
 

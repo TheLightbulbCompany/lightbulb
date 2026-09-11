@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ArrowLeft, Check, Circle, CircleAlert, FileText, Hash, Link2, MessageCircle, SmilePlus, Users } from "lucide-react";
 import type { Components } from "react-markdown";
-import type { ListenMode, MemberRef, UpdateMessageRequest } from "@lightbulb/shared";
+import type { CreateMessageRequest, ListenMode, MemberRef, UpdateMessageRequest } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -199,6 +199,11 @@ function RoomContent({
   const [searchTarget, setSearchTarget] = useState<Pick<RoomMessage, "messageId" | "threadRootMessageId"> | null>(null);
   // RoomContent remounts per room (RoomBoundary is keyed by roomId), so this resets naturally on room change.
   const [sentSinceOpen, setSentSinceOpen] = useState(false);
+  // Only suppress the "New" line once a send actually succeeds -- a rejected send must leave sentSinceOpen false.
+  const markSent = (callback: RoomComposerProps["onSubmit"]) => async (request: CreateMessageRequest) => {
+    await callback(request);
+    setSentSinceOpen(true);
+  };
   const [reactionPending, setReactionPending] = useState<string | null>(null);
   const [reactionError, setReactionError] = useState<string | null>(null);
   const [membersOpen, setMembersOpen] = useState(false);
@@ -474,8 +479,8 @@ function RoomContent({
       </RoomTimeline>
       <p className="room-typing text-sm text-muted-foreground" role="status">{typingMembers.length > 0 ? `${typingMembers.slice(0, 3).map((member) => member.displayName).join(", ")}${typingMembers.length > 3 ? " and others" : ""} ${typingMembers.length === 1 ? "is" : "are"} typing…` : ""}</p>
       <RoomComposer {...composer}
-        onSubmit={(request) => { setSentSinceOpen(true); return composer.onSubmit(request); }}
-        onRetry={composer.onRetry ? (request) => { setSentSinceOpen(true); return composer.onRetry!(request); } : undefined}
+        onSubmit={markSent(composer.onSubmit)}
+        onRetry={composer.onRetry ? markSent(composer.onRetry) : undefined}
         disabled={!actionable || composer.disabled} />
     </div>
     {showContext && !showDetail && <aside className="room-context" aria-label="Room details">

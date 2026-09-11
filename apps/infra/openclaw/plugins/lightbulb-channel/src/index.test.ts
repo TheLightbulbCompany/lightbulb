@@ -1019,10 +1019,19 @@ describe("native inbound context and delivery", () => {
     expect(delivered).toEqual({ text: "addressed final" });
   });
 
-  it("suppresses automatic ambient finals while leaving native message sends registered", async () => {
+  it("auto-delivers finals after the ambient gate approves without authorizing commands", async () => {
     const dispatch = vi.fn(async (params: any) => {
-      expect(params.delivery.preparePayload({ text: "ambient final" }, { kind: "final" })).toBeNull();
-      expect(params.delivery.durable).toBe(false);
+      expect(params.ctxPayload.InboundEventKind).toBe("user_request");
+      expect(params.ctxPayload.CommandAuthorized).toBe(false);
+      expect(params.delivery.preparePayload({ text: "ambient final" }, { kind: "final" })).toEqual({
+        text: "ambient final",
+      });
+      expect(params.delivery.durable).toEqual({
+        to: `lightbulb:${ROOM}`,
+        replyToId: null,
+        threadId: undefined,
+        requiredCapabilities: DURABLE_FINAL_CAPABILITIES,
+      });
       return { admission: { kind: "dispatch" }, dispatched: true };
     });
     await dispatchRoomEvent(

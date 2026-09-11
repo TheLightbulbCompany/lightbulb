@@ -563,6 +563,7 @@ export async function dispatchRoomEvent(deps, event, invocation) {
         if (gateOutcome !== "dispatched")
             return gateOutcome;
     }
+    const turnEventKind = eventKind === "room_event" ? "user_request" : eventKind;
     const timestamp = Date.parse(message.createdAt);
     const target = `${CHANNEL_ID}:${room.id}`;
     const ctxPayload = sdk.buildChannelInboundEventContext({
@@ -594,7 +595,7 @@ export async function dispatchRoomEvent(deps, event, invocation) {
             ...(message.threadRootMessageId ? { messageThreadId: message.threadRootMessageId } : {}),
         },
         message: {
-            inboundEventKind: eventKind,
+            inboundEventKind: turnEventKind,
             body: buildEnvelope({ channel: "Lightbulb", from: sender.displayName, timestamp, body: message.text }),
             bodyForAgent: message.text,
             rawBody: message.text,
@@ -659,10 +660,10 @@ export async function dispatchRoomEvent(deps, event, invocation) {
         ...(botLoopProtection ? { botLoopProtection } : {}),
         replyPipeline: {},
         delivery: {
-            // Addressed requests deliver their final through the durable message
-            // adapter (stable queue id); ambient room events never auto-post.
-            preparePayload: (payload, info) => eventKind === "user_request" && info.kind === "final" ? payload : null,
-            durable: eventKind === "user_request"
+            // Addressed and gate-approved ambient requests deliver their final through
+            // the durable message adapter (stable queue id).
+            preparePayload: (payload, info) => turnEventKind === "user_request" && info.kind === "final" ? payload : null,
+            durable: turnEventKind === "user_request"
                 ? {
                     to: target,
                     replyToId: message.replyToMessageId,

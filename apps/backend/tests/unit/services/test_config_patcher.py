@@ -2061,13 +2061,13 @@ async def test_replace_provider_block_to_oauth_repins_all_provider_keys(bedrock_
     await replace_provider_block(
         "user_1",
         providers={},
-        default_model={"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.4"]},
+        default_model={"primary": "openai/gpt-5.6-sol", "fallbacks": ["openai/gpt-5.4"]},
         plugin_entries={},
         ceo_model=None,
         cheap_model=None,
-        heartbeat_model="openai/gpt-5.4-mini",
-        utility_model="openai/gpt-5.4-mini",
-        subagent_model="openai/gpt-5.5",
+        heartbeat_model="openai/gpt-5.6-luna",
+        utility_model="openai/gpt-5.6-luna",
+        subagent_model="openai/gpt-5.6-sol",
         llm_task_model=None,
         web_search_provider="parallel-free",
         tool_search_mode=None,
@@ -2081,14 +2081,14 @@ async def test_replace_provider_block_to_oauth_repins_all_provider_keys(bedrock_
     assert "model" not in defaults["compaction"]["memoryFlush"]
     assert defaults["compaction"]["midTurnPrecheck"] == {"enabled": True}
 
-    # Heartbeat is an ordinary turn the OAuth token CAN serve on mini — it is
+    # Heartbeat is an ordinary turn the OAuth token CAN serve on Luna — it is
     # re-pinned, NOT deleted with the compaction slots. Siblings survive.
-    assert defaults["heartbeat"]["model"] == "openai/gpt-5.4-mini"
+    assert defaults["heartbeat"]["model"] == "openai/gpt-5.6-luna"
     assert defaults["heartbeat"]["every"] == "30m"
     assert defaults["heartbeat"]["isolatedSession"] is True
 
-    assert defaults["utilityModel"] == "openai/gpt-5.4-mini"
-    assert defaults["subagents"]["model"] == "openai/gpt-5.5"
+    assert defaults["utilityModel"] == "openai/gpt-5.6-luna"
+    assert defaults["subagents"]["model"] == "openai/gpt-5.6-sol"
     assert defaults["subagents"]["allowAgents"] == ["*"]
     assert defaults["subagents"]["runTimeoutSeconds"] == 1800
 

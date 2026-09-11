@@ -118,7 +118,7 @@ class TestHeartbeatIsolation:
         hb = _cfg("chatgpt_oauth")["agents"]["defaults"]["heartbeat"]
         assert hb["isolatedSession"] is True
         assert hb["lightContext"] is True
-        assert hb["model"] == "openai/gpt-5.4-mini"
+        assert hb["model"] == "openai/gpt-5.6-luna"
 
     def test_heartbeat_disabled_on_trial(self):
         """Trial must pin every="0m" — the documented upstream disable. An
@@ -133,7 +133,7 @@ class TestUtilityModel:
         for titles/utility calls — verified in fork source, the trim||chain
         ends at resolveAgentEffectiveModelPrimary."""
         assert _cfg("bedrock_claude")["agents"]["defaults"]["utilityModel"] == _HAIKU_REF
-        assert _cfg("chatgpt_oauth")["agents"]["defaults"]["utilityModel"] == "openai/gpt-5.4-mini"
+        assert _cfg("chatgpt_oauth")["agents"]["defaults"]["utilityModel"] == "openai/gpt-5.6-luna"
         assert (
             _cfg("byo_key", byo_provider="anthropic")["agents"]["defaults"]["utilityModel"]
             == "anthropic/claude-haiku-4-5"

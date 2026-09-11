@@ -1,4 +1,4 @@
-"""Tests for the friday-identity seeding wire-up in ecs_manager.write_user_configs."""
+"""Tests for the per-agent wiring in ecs_manager.write_user_configs."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -20,13 +20,9 @@ def _local_environment(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _legacy_seed_row(monkeypatch):
-    """These historical Friday/Atlas tests exercise a legacy seed row."""
-    repo = MagicMock(
-        resolve_owner_row=AsyncMock(
-            return_value=MagicMock(starter_agent_ids=None, seeded_agent_ids=["legacy-friday", "legacy-atlas"])
-        )
-    )
+def _owner_row(monkeypatch):
+    """Stub the Paperclip repo so resolve_owner_row never reaches DynamoDB."""
+    repo = MagicMock(resolve_owner_row=AsyncMock(return_value=MagicMock(starter_agent_ids={})))
     monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo", MagicMock(return_value=repo))
 
 
@@ -52,109 +48,6 @@ def _make_async_httpx_client_mock() -> MagicMock:
     instance.aclose = AsyncMock()
     factory = MagicMock(return_value=instance)
     return factory
-
-
-@pytest.mark.asyncio
-async def test_invokes_seeder_after_write_openclaw_config(monkeypatch, tmp_path, manager):
-    """write_user_configs calls pre_stage_friday_identity AFTER write_openclaw_config."""
-    monkeypatch.setattr(settings, "EFS_MOUNT_PATH", str(tmp_path))
-
-    paperclip_agents = [{"id": "uuid-friday", "role": "ceo", "name": "Friday"}]
-
-    fetch_mock = AsyncMock(return_value=paperclip_agents)
-    write_oc_mock = AsyncMock()
-    seeder_mock = AsyncMock()
-    atlas_seeder_mock = AsyncMock()
-    ensure_devices_mock = AsyncMock()
-
-    # Patch every external dependency of write_user_configs.
-    with (
-        patch(
-            "core.services.paperclip_openclaw_pairing.fetch_paperclip_agents_for_owner",
-            fetch_mock,
-        ),
-        patch("core.containers.ecs_manager.write_openclaw_config", write_oc_mock),
-        patch(
-            "core.services.friday_identity.pre_stage_friday_identity",
-            seeder_mock,
-        ),
-        patch(
-            "core.services.atlas_seed.pre_stage_atlas",
-            atlas_seeder_mock,
-        ),
-        patch(
-            "core.services.paperclip_api_key.ensure_paperclip_api_key",
-            AsyncMock(return_value=None),
-        ),
-        patch(
-            "core.services.paperclip_openclaw_pairing.resolve_company_id_for_owner",
-            AsyncMock(return_value=None),
-        ),
-        patch.object(manager, "ensure_device_identities", ensure_devices_mock),
-        patch("httpx.AsyncClient", _make_async_httpx_client_mock()),
-    ):
-        await manager.write_user_configs(
-            user_id="user_abc",
-            gateway_token="t" * 32,
-            provider_choice="bedrock_claude",
-            byo_provider=None,
-            aip_arns=_AIPS,
-        )
-
-    write_oc_mock.assert_awaited_once()
-    seeder_mock.assert_awaited_once()
-    seeder_kwargs = seeder_mock.call_args.kwargs
-    assert seeder_kwargs["owner_id"] == "user_abc"
-    assert seeder_kwargs["paperclip_agents"] == paperclip_agents
-
-    atlas_seeder_mock.assert_awaited_once()
-    atlas_kwargs = atlas_seeder_mock.call_args.kwargs
-    assert atlas_kwargs["owner_id"] == "user_abc"
-    assert atlas_kwargs["paperclip_agents"] == paperclip_agents
-
-
-@pytest.mark.asyncio
-async def test_swallows_seeder_failure_and_continues(monkeypatch, tmp_path, manager):
-    """Seeder raises -> write_user_configs still calls ensure_device_identities."""
-    monkeypatch.setattr(settings, "EFS_MOUNT_PATH", str(tmp_path))
-
-    fetch_mock = AsyncMock(return_value=[{"id": "uuid-1", "role": "ceo"}])
-    write_oc_mock = AsyncMock()
-    seeder_mock = AsyncMock(side_effect=RuntimeError("EFS hiccup"))
-    ensure_devices_mock = AsyncMock()
-
-    with (
-        patch(
-            "core.services.paperclip_openclaw_pairing.fetch_paperclip_agents_for_owner",
-            fetch_mock,
-        ),
-        patch("core.containers.ecs_manager.write_openclaw_config", write_oc_mock),
-        patch(
-            "core.services.friday_identity.pre_stage_friday_identity",
-            seeder_mock,
-        ),
-        patch(
-            "core.services.paperclip_api_key.ensure_paperclip_api_key",
-            AsyncMock(return_value=None),
-        ),
-        patch(
-            "core.services.paperclip_openclaw_pairing.resolve_company_id_for_owner",
-            AsyncMock(return_value=None),
-        ),
-        patch.object(manager, "ensure_device_identities", ensure_devices_mock),
-        patch("httpx.AsyncClient", _make_async_httpx_client_mock()),
-    ):
-        # Should not raise even though the seeder raised.
-        await manager.write_user_configs(
-            user_id="user_abc",
-            gateway_token="t" * 32,
-            provider_choice="bedrock_claude",
-            byo_provider=None,
-            aip_arns=_AIPS,
-        )
-
-    seeder_mock.assert_awaited_once()
-    ensure_devices_mock.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -186,9 +79,7 @@ async def test_mints_a_key_for_every_agent_and_stages_per_agent_identities(monke
             AsyncMock(return_value=paperclip_agents),
         ),
         patch("core.containers.ecs_manager.write_openclaw_config", AsyncMock()),
-        patch("core.services.friday_identity.pre_stage_friday_identity", AsyncMock()),
         patch("core.services.friday_identity.pre_stage_paperclip_identities", identities_mock),
-        patch("core.services.atlas_seed.pre_stage_atlas", AsyncMock()),
         patch("core.services.paperclip_api_key.ensure_paperclip_api_key", ensure_key_mock),
         patch(
             "core.services.paperclip_openclaw_pairing.resolve_company_id_for_owner",
@@ -242,9 +133,7 @@ async def test_one_agent_key_failure_does_not_block_the_rest(monkeypatch, tmp_pa
             AsyncMock(return_value=paperclip_agents),
         ),
         patch("core.containers.ecs_manager.write_openclaw_config", AsyncMock()),
-        patch("core.services.friday_identity.pre_stage_friday_identity", AsyncMock()),
         patch("core.services.friday_identity.pre_stage_paperclip_identities", identities_mock),
-        patch("core.services.atlas_seed.pre_stage_atlas", AsyncMock()),
         patch(
             "core.services.paperclip_api_key.ensure_paperclip_api_key",
             AsyncMock(side_effect=fake_ensure_key),
@@ -290,8 +179,6 @@ async def test_passes_channel_accounts_to_write_openclaw_config(monkeypatch, tmp
             "core.containers.ecs_manager._provision_channel_accounts",
             AsyncMock(return_value=(carried, carried_bindings)),
         ),
-        patch("core.services.friday_identity.pre_stage_friday_identity", AsyncMock()),
-        patch("core.services.atlas_seed.pre_stage_atlas", AsyncMock()),
         patch(
             "core.services.paperclip_api_key.ensure_paperclip_api_key",
             AsyncMock(return_value=None),
@@ -329,8 +216,6 @@ async def test_writes_owner_facts(monkeypatch, tmp_path, manager):
             AsyncMock(return_value=[{"id": "uuid-friday", "role": "ceo"}]),
         ),
         patch("core.containers.ecs_manager.write_openclaw_config", AsyncMock()),
-        patch("core.services.friday_identity.pre_stage_friday_identity", AsyncMock()),
-        patch("core.services.atlas_seed.pre_stage_atlas", AsyncMock()),
         patch(
             "core.services.paperclip_api_key.ensure_paperclip_api_key",
             AsyncMock(return_value=None),

@@ -69,8 +69,11 @@ function ComposerAttempt({
   const locked = useRef(sendState !== "idle");
   const retryLocked = useRef(false);
   const imageInput = useRef<HTMLInputElement>(null);
+  const previews = useRef(new Set<string>());
   const [images, setImages] = useState<Array<{ file: File; preview: string; attachment?: ImageAttachment; error?: string }>>([]);
   const evidenceVersion = useRef(0);
+
+  useEffect(() => () => previews.current.forEach((preview) => URL.revokeObjectURL(preview)), []);
 
   useEffect(() => {
     if (!focusAgentId) return;
@@ -118,7 +121,9 @@ function ComposerAttempt({
   const uncertain = effectiveState === "uncertain" || callbackUncertain;
   const pending = effectiveState === "sending" || (effectiveState === "idle" && submitted && !uncertain);
   const uploading = images.some((image) => !image.attachment && !image.error);
-  const canSend = !disabled && !error && !uploading && (text.trim().length > 0 || images.some((image) => image.attachment)) && !!clientMessageId && effectiveState === "idle" && !submitted && !uncertain;
+  const uploadFailed = images.some((image) => image.error);
+  const hasContent = text.trim().length > 0 || images.some((image) => image.attachment);
+  const canSend = !disabled && !error && !uploading && !uploadFailed && hasContent && !!clientMessageId && effectiveState === "idle" && !submitted && !uncertain;
   const editable = !disabled && !pending && !uncertain && effectiveState !== "persisted" && !retryPending;
   const status = uncertain
     ? "Message status is uncertain. Check before sending again."
@@ -135,10 +140,11 @@ function ComposerAttempt({
   }
 
   function addImages(files: File[]) {
-    if (!onUploadAttachment) return;
+    if (!onUploadAttachment || !editable) return;
     const room = Math.max(0, 4 - images.length);
     for (const file of files.slice(0, room)) {
       const preview = URL.createObjectURL(file);
+      previews.current.add(preview);
       setImages((current) => [...current, { file, preview }]);
       void onUploadAttachment(file).then(
         (attachment) => setImages((current) => current.map((image) => image.preview === preview ? { ...image, attachment } : image)),
@@ -148,13 +154,15 @@ function ComposerAttempt({
   }
 
   function removeImage(preview: string) {
+    if (!editable) return;
     URL.revokeObjectURL(preview);
+    previews.current.delete(preview);
     setImages((current) => current.filter((image) => image.preview !== preview));
   }
 
   function submit(retry = false) {
     if (retry
-      ? disabled || !!error || !text.trim() || !clientMessageId || effectiveState !== "rejected" || !onRetry || retryLocked.current
+      ? disabled || !!error || uploading || uploadFailed || !hasContent || !clientMessageId || effectiveState !== "rejected" || !onRetry || retryLocked.current
       : !canSend || locked.current) return;
     locked.current = true;
     if (retry) {
@@ -216,7 +224,7 @@ function ComposerAttempt({
     }).join(", ")}</p>}
     {images.length > 0 && <div className="room-image-previews">{images.map((image) => <div key={image.preview} className="room-image-preview">
       {/* eslint-disable-next-line @next/next/no-img-element */}<img src={image.preview} alt={image.file.name} />
-      <Button type="button" variant="ghost" aria-label={`Remove ${image.file.name}`} onClick={() => removeImage(image.preview)}><X aria-hidden="true" /></Button>
+      <Button type="button" variant="ghost" aria-label={`Remove ${image.file.name}`} disabled={!editable} onClick={() => removeImage(image.preview)}><X aria-hidden="true" /></Button>
       <span className={image.error ? "text-err" : "text-muted-foreground"}>{image.error ?? (image.attachment ? "Ready" : "Uploading…")}</span>
     </div>)}</div>}
     <div className="room-composer-actions">

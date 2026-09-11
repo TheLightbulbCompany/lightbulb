@@ -91,6 +91,21 @@ def test_attachment_load_rejects_metadata_id_mismatch(tmp_path, monkeypatch):
         messaging.load_image_attachment("owner", room_id, str(attachment.id))
 
 
+def test_attachment_store_rejects_symlink_to_another_room(tmp_path, monkeypatch):
+    workspace = Workspace(str(tmp_path))
+    monkeypatch.setattr(workspace, "_chown_for_access_point", lambda *_: None)
+    monkeypatch.setattr(messaging, "get_workspace", lambda: workspace)
+    room_id = str(uuid.uuid4())
+    room_path = tmp_path / "owner" / messaging.attachment_dir(room_id)
+    sibling_path = room_path.parent / str(uuid.uuid4())
+    sibling_path.mkdir(parents=True)
+    room_path.symlink_to(sibling_path, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="escapes its room"):
+        messaging.store_image_attachment("owner", room_id, "proof.png", "image/png", b"\x89PNG\r\n\x1a\nrest")
+    assert list(sibling_path.iterdir()) == []
+
+
 @pytest.mark.asyncio
 async def test_attachment_download_checks_current_room_membership(monkeypatch):
     checked = False

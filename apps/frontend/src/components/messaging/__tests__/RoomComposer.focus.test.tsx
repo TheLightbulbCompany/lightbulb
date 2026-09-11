@@ -56,3 +56,22 @@ it("uploads and sends an image without text", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Send message" }));
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ text: "", attachmentIds: ["22222222-2222-4222-8222-222222222222"] }));
 });
+
+it("retries an attachment-only rejected send", async () => {
+  const onRetry = vi.fn();
+  const onUploadAttachment = vi.fn().mockResolvedValue({
+    id: "22222222-2222-4222-8222-222222222222", fileName: "proof.png", contentType: "image/png", size: 8,
+  });
+  render(<RoomComposer {...baseProps} sendState="rejected" onRetry={onRetry} onUploadAttachment={onUploadAttachment} />);
+  fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [new File(["png"], "proof.png", { type: "image/png" })] } });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Retry message" })).toBeEnabled());
+  fireEvent.click(screen.getByRole("button", { name: "Retry message" }));
+  expect(onRetry).toHaveBeenCalledWith(expect.objectContaining({ text: "", attachmentIds: ["22222222-2222-4222-8222-222222222222"] }));
+});
+
+it("does not silently discard a failed upload when text is present", async () => {
+  render(<RoomComposer {...baseProps} text="Keep the image" onUploadAttachment={vi.fn().mockRejectedValue(new Error("Upload failed"))} />);
+  fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [new File(["png"], "proof.png", { type: "image/png" })] } });
+  await screen.findByText("Upload failed");
+  expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+});

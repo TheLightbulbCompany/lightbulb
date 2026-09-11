@@ -15,8 +15,9 @@ export function RoomImageAttachments({ roomId, attachments, download }: {
     const created: string[] = [];
     void Promise.all(attachments.map(async (attachment) => {
       const url = URL.createObjectURL(await download(roomId, attachment.id));
+      if (!active) return URL.revokeObjectURL(url);
       created.push(url);
-      if (active) setUrls((current) => ({ ...current, [attachment.id]: url }));
+      setUrls((current) => ({ ...current, [attachment.id]: url }));
     })).catch(() => { if (active) setFailed(true); });
     return () => { active = false; created.forEach(URL.revokeObjectURL); };
   }, [attachments, download, roomId]);

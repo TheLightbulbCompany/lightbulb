@@ -579,6 +579,12 @@ def store_image_attachment(
     attachment = ImageAttachment(id=attachment_id, file_name=safe_name, content_type=content_type, size=len(data))
     root = attachment_dir(room_id)
     workspace = get_workspace()
+    expected_root = workspace.user_path(owner_id).resolve() / root
+    try:
+        workspace._resolve_user_file(owner_id, f"{root}/{attachment_id}{suffix}").relative_to(expected_root)
+        workspace._resolve_user_file(owner_id, f"{root}/{attachment_id}.json").relative_to(expected_root)
+    except (ValueError, WorkspaceError) as exc:
+        raise ValueError("attachment path escapes its room") from exc
     workspace.write_bytes(owner_id, f"{root}/{attachment_id}{suffix}", data)
     workspace.write_file(owner_id, f"{root}/{attachment_id}.json", attachment.model_dump_json(by_alias=True))
     return attachment
@@ -602,9 +608,12 @@ def load_image_attachment(owner_id: str, room_id: str, attachment_id: str) -> tu
             data = handle.read(IMAGE_MAX_BYTES + 1)
     except (WorkspaceError, OSError, ValueError, KeyError) as exc:
         raise ApiProblem("MESSAGE_NOT_FOUND", "Image attachment not found.") from exc
-    validate_image_bytes(metadata.content_type, data)
-    if len(data) != metadata.size:
-        raise ApiProblem("MESSAGE_NOT_FOUND", "Image attachment is invalid.")
+    try:
+        validate_image_bytes(metadata.content_type, data)
+        if len(data) != metadata.size:
+            raise ValueError("attachment size mismatch")
+    except ValueError as exc:
+        raise ApiProblem("MESSAGE_NOT_FOUND", "Image attachment is invalid.") from exc
     return metadata, data
 
 

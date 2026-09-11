@@ -17,22 +17,46 @@ function getTauriNotification(): TauriNotificationApi | null {
 }
 
 /**
- * Mirror an in-app toast as a native OS notification when running inside the
- * desktop shell and the window is not focused (a focused window already shows
- * the toast). Best-effort: any failure is swallowed.
+ * Mirror an in-app toast as a native OS notification when the window is not
+ * focused (a focused window already shows the toast). Best-effort: any
+ * failure is swallowed.
+ *
+ * Inside the Tauri desktop shell this is unchanged (Tauri v2's notification
+ * API gives no click callback, so `opts.onClick`/`opts.tag` are ignored
+ * there). Outside Tauri it falls back to the browser `Notification` API,
+ * which requires permission to already be granted — see
+ * `MessageNotifications`'s first-gesture `requestPermission()` call.
  */
-export function nativeNotify(title: string, body?: string): void {
+export function nativeNotify(
+  title: string,
+  body?: string,
+  opts?: { onClick?: () => void; tag?: string },
+): void {
+  if (document.hasFocus()) return;
   const notification = getTauriNotification();
-  if (!notification || document.hasFocus()) return;
-  void (async () => {
-    try {
-      let granted = await notification.isPermissionGranted();
-      if (!granted) {
-        granted = (await notification.requestPermission()) === "granted";
+  if (notification) {
+    void (async () => {
+      try {
+        let granted = await notification.isPermissionGranted();
+        if (!granted) {
+          granted = (await notification.requestPermission()) === "granted";
+        }
+        if (granted) notification.sendNotification({ title, body });
+      } catch {
+        // Never let native-notify failures surface into the app.
       }
-      if (granted) notification.sendNotification({ title, body });
-    } catch {
-      // Never let native-notify failures surface into the app.
-    }
-  })();
+    })();
+    return;
+  }
+  try {
+    if (!("Notification" in window) || window.Notification.permission !== "granted") return;
+    const browserNotification = new window.Notification(title, { body, tag: opts?.tag });
+    browserNotification.onclick = () => {
+      window.focus();
+      opts?.onClick?.();
+      browserNotification.close();
+    };
+  } catch {
+    // Best-effort — never let native-notify failures surface into the app.
+  }
 }

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Existing Tauri 2/Rust desktop, FastAPI, DynamoDB messaging table, authenticated machine WebSocket infrastructure, AppSync Events, and shared React/TypeScript messaging client. Native harness interfaces before wrappers or new dependencies.
 
-**Status:** Tasks 1–4 (native feasibility, room-scoped registry/authorization, dedicated machine transport, desktop adapters) implemented locally and reviewed through September 11, 2026. Latest controller verification: 83 Rust library tests and 8 probe tests passed; 3 explicit-live tests ignored. Covering backend (94), frontend (18), shared (32) tests and both TypeScript checks passed before the final Rust-only fix. Room UI is next. Packaged-app/deployed/two-person validation remains a release gate; no account sharing, push or deployment is implied.
+**Status:** Tasks 1–5 (native feasibility, room-scoped registry/authorization, dedicated machine transport, desktop adapters, conversation UI) implemented locally and reviewed through September 11, 2026. Latest controller UI verification: 105 frontend tests and TypeScript passed; backend (96), shared (32) and shared TypeScript passed before the final UI-only fix. Task 4 verification remains 83 Rust library + 8 probe tests, with 3 explicit-live tests ignored. Friday/workspace awareness is next. Packaged-app/deployed/two-person validation remains a release gate; no account sharing, push or deployment is implied.
 
 **Document lifecycle:** Working plan. Delete when shipped; preserve decisions and verification evidence in the shipping PR, following `CLAUDE.md`.
 
@@ -392,11 +392,11 @@ pnpm --filter @lightbulb/shared typecheck
 
 **Modify:** `RoomPanel.tsx`, `MessagingWorkspaceContext.tsx`, `messaging.css`; add resource fetching/invalidations to `apps/frontend/src/hooks/useRooms.ts` or a narrowly scoped sibling hook if necessary. Extend existing hook/component tests for access removal.
 
-- [ ] Render devices grouped by current human member, with local sessions nested underneath. Reconcile the desktop's logical node IDs into one physical-device row. Fetch only through the authorized room endpoint.
-- [ ] Add selected-session transcript/activity and an explicitly targeted input box. Keep conversation/reply composers separate. Use existing markdown/tool rendering where its contract fits; do not fake an OpenClaw `agentId` to satisfy a component.
-- [ ] Show provider, owner, device, title, state and actual capability limits. Include the shared-transcript audience explanation and local-approval/offline/unknown-command states.
-- [ ] Subscribe to resource hints, fetch after a cursor, deduplicate repeated events and recover after missed hints. Scope cache keys by owner scope, room and session, with access-removal clearing and stale-response guards.
-- [ ] Test a removed owner disappearing from both the informational panel and every functional selector; test room switch while a transcript fetch is in flight. Include keyboard navigation, focus restoration, loading and empty states.
+- [x] Render devices grouped by current human member, with local sessions nested underneath. Paired OpenClaw endpoints remain visible independently of sharing. Only explicit, revalidated Mac/CLI associations group together; unassociated endpoints are labeled as logical nodes with unknown availability, not invented physical computers.
+- [x] Add selected-session transcript/activity and an explicitly targeted input box in the existing responsive secondary pane. Keep conversation/reply composers separate; reuse safe Markdown without a fake OpenClaw `agentId`.
+- [x] Show provider, owner, device, honest provider/short-ID title fallback, state and actual capability limits. Include shared-transcript audience, native permission/usage, local-approval/offline/unknown-command explanations.
+- [x] Reuse resource hints and open-pane polling with coalesced refreshes, immediate access invalidation and stale-response guards. Initial recent pages use canonical latestEventSeq; older/newer navigation and the 200-event retained window stay bounded and recoverable. Uncertain sends retain request ID/payload.
+- [x] Test removed-owner selection/input/history clearing, stale room/history responses, sustained hints, scope changes and hidden workspace. Include keyboard navigation, focus restoration, loading and empty states.
 
 **Checks:**
 
@@ -405,6 +405,8 @@ pnpm --filter @lightbulb/frontend test -- src/components/messaging/__tests__/Roo
 ```
 
 **Exit:** Aden can find and steer a normally started local session without inviting a new agent, picking a duplicate “session room,” or leaving the conversation.
+
+**Local checkpoint:** Reviewed through `2f516af22`, including a reproduced/fixed frequent-hint starvation bug. Controller's 105 frontend tests and TypeScript check pass; separate synthetic desktop/mobile previews were inspected. These are component/hook/service and rendered-fixture checks, not a real authenticated two-person/native/deployed handoff. Those remain Task 8 gates.
 
 ### Task 6 — Friday adapter and shared-workspace awareness
 

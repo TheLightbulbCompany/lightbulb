@@ -156,6 +156,50 @@ async def test_friday_not_seeded_yet_keeps_the_brief(env):
     env.repo.delete_pending_brief.assert_not_awaited()
 
 
+async def test_legacy_targetless_pending_brief_uses_existing_root_ceo(env):
+    legacy_pending = dict(PENDING)
+    legacy_pending.pop("target_agent_id")
+    env.repo.get_pending_brief.return_value = legacy_pending
+    env.admin.list_agents.return_value = [
+        {
+            "id": "imported-ceo-uuid",
+            "role": "ceo",
+            "name": "Imported CEO",
+            "reportsTo": "friday-uuid",
+        },
+        {**FRIDAY, "reportsTo": None},
+    ]
+
+    await reconcile_pending_brief("user_abc")
+
+    env.admin.create_goal.assert_awaited_once()
+    env.admin.create_project.assert_awaited_once()
+    assert env.admin.create_goal.await_args.kwargs["body"]["ownerAgentId"] == FRIDAY["id"]
+    assert env.admin.create_project.await_args.kwargs["body"]["leadAgentId"] == FRIDAY["id"]
+    assert env.ws.write_file.call_args.args[1] == "workspace-friday-uuid/BRIEF.md"
+
+
+async def test_legacy_targetless_pending_without_root_keeps_the_brief(env):
+    legacy_pending = dict(PENDING)
+    legacy_pending.pop("target_agent_id")
+    env.repo.get_pending_brief.return_value = legacy_pending
+    env.admin.list_agents.return_value = [
+        ATLAS,
+        {
+            "id": "imported-ceo-uuid",
+            "role": "ceo",
+            "name": "Imported CEO",
+            "reportsTo": "missing-parent",
+        },
+    ]
+
+    await reconcile_pending_brief("user_abc")
+
+    env.repo.claim_funnel_submission.assert_not_awaited()
+    env.admin.create_goal.assert_not_awaited()
+    env.repo.delete_pending_brief.assert_not_awaited()
+
+
 async def test_paperclip_unavailable_keeps_the_brief_and_claims_nothing(env):
     """Reads happen BEFORE the claim, so a Paperclip blip costs nothing --
     there is no claim to unwind."""

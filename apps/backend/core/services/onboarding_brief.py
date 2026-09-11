@@ -675,10 +675,20 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
         # tells the next person which kind it was.
         logger.warning("reconcile_brief: fulfilment read phase failed for %s: %s", owner_id, e, exc_info=True)
         raise
-    target_agent_id = pending.get("target_agent_id")
-    target_agent = next((agent for agent in agents if agent.get("id") == target_agent_id), None)
+    if "target_agent_id" in pending:
+        target_agent_id = pending.get("target_agent_id")
+        target_agent = next((agent for agent in agents if agent.get("id") == target_agent_id), None)
+    else:
+        # Briefs persisted by the retired onboarding endpoint predate room
+        # dispatch targets. Fulfil only those legacy rows through the existing
+        # root CEO; current chat capture always persists an explicit target.
+        target_agent = next(
+            (agent for agent in agents if agent.get("role") == "ceo" and not agent.get("reportsTo")),
+            None,
+        )
     if target_agent is None:
-        # The agent selected by normal room dispatch has not landed yet.
+        # The selected dispatch target (or a legacy row's existing root CEO)
+        # has not landed yet.
         return DrainOutcome.NOT_READY
     assigned_agent_id = target_agent["id"]
 

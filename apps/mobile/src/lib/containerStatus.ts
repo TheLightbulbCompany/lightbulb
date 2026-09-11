@@ -58,15 +58,9 @@
  * `getToken` behind a ref so the adapter config is built exactly once —
  * `useOnboardingStatus` itself never sees `getToken`'s churn.
  *
- * `ready` (and `starting`, when the body carries one) also surfaces the
- * per-CONTAINER `onboarded` fact straight from the body (mobile
- * onboarding-parity Slice 2) — see `containerStatusContext.ts` for how
- * FirstRunGate reads this SAME poll instead of running a second one.
- * `undefined` means "not known" (old backend / not-yet-ready) and callers
- * must treat that as onboarded-enough to skip the funnel, never as false.
- * FirstRunGate deliberately consumes only the `ready` one — the funnel must
- * not open behind a container that can still be taken over by the stepper's
- * cold-start promotion; see that file's docstring.
+ * `ready` (and `starting`, when the body carries one) also preserves the
+ * per-CONTAINER `onboarded` fact for status consumers and legacy responses.
+ * `undefined` means "not known" (old backend / not-yet-ready).
  */
 import { useAuth } from "@clerk/clerk-expo";
 import { useMemo, useRef } from "react";
@@ -289,10 +283,9 @@ export function useContainerStatus() {
   });
 
   // A LIVE failure outranks the sticky last-good body. `useOnboardingStatus`
-  // now keeps the last successfully classified status across a failed poll,
-  // so web's first-run funnel isn't unmounted (and its half-typed brief
-  // destroyed) by a single blip. That stickiness silently broke the old
-  // `classified ? … : networkError ? …` order here: once ANY good poll had
+  // keeps the last successfully classified status across a failed poll.
+  // That stickiness broke the old `classified ? … : networkError ? …`
+  // order here: once ANY good poll had
   // landed, `classified` stayed truthy for the rest of the session and the
   // `networkError` branch became unreachable, so a sustained outage rendered
   // a frozen cold-start screen with no way out.
@@ -302,10 +295,8 @@ export function useContainerStatus() {
   // so a failure always landed here). That is the right policy for MOBILE
   // specifically: `unreachable` is NON-BLOCKING here — ProvisionGate falls
   // through to `children` — so it degrades to the app rather than trapping
-  // the user, and mobile's own first-run funnel is protected by its
-  // `onboarded` latch (see FirstRunGate), not by this stickiness. Rendering
-  // policy belongs to each binding; web keeps the sticky read because its
-  // funnel gates on it directly.
+  // the user. Rendering policy belongs to each binding; web can retain the
+  // sticky last-good read while mobile surfaces current connectivity loss.
   const status: ContainerStatus = networkError
     ? { kind: "unreachable", message: networkError.message }
     : classified

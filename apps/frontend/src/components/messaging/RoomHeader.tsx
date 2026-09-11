@@ -1,7 +1,7 @@
 "use client";
 
 import { useId, useRef, useState, type ReactNode } from "react";
-import { Bell, BellOff, Hash, Link, LogOut, MessageCircle, MoreHorizontal, Pencil, Star, Users } from "lucide-react";
+import { Bell, BellOff, Hash, Link, LogOut, MessageCircle, MoreHorizontal, Pencil, Pin, Star, Users } from "lucide-react";
 import type { MemberPrefsRequest } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -21,8 +21,8 @@ export interface RoomHeaderProps {
   canEditRoom: boolean; // owner/admin AND kind !== "dm"
   canLeave: boolean; // kind === "channel" AND role !== "owner"
   actionable: boolean;
-  pinnedCount: number; // reserved for Tasks 10/11's Pins surface; unused here
-  detailsOpen: boolean; // reserved for Tasks 10/11's tab-aware Details panel; unused here
+  pinnedCount: number; // shown beside the facepile; the affordance opens the Details panel's Pins tab
+  detailsOpen: boolean; // whether the Details panel these affordances disclose is open
   search: ReactNode; // the shipped <RoomMessageSearch />
   onOpenDetails: (tab?: "members" | "pins" | "files" | "links" | "about") => void;
   onSetPrefs?: (prefs: MemberPrefsRequest) => Promise<void>;
@@ -39,6 +39,8 @@ export function RoomHeader({
   canEditRoom,
   canLeave,
   actionable,
+  pinnedCount,
+  detailsOpen,
   search,
   onOpenDetails,
   onSetPrefs,
@@ -97,7 +99,10 @@ export function RoomHeader({
     </div>
     <div className="room-audience">
       {search}
-      <Button type="button" variant="ghost" className="room-facepile" aria-label={`View members, ${participantCount} in this conversation`}
+      {pinnedCount > 0 && <Button type="button" variant="ghost" size="sm" aria-expanded={detailsOpen}
+        aria-label={`${pinnedCount} pinned ${pinnedCount === 1 ? "message" : "messages"}`} onClick={() => onOpenDetails("pins")}>
+        <Pin size={14} aria-hidden="true" />{pinnedCount}</Button>}
+      <Button type="button" variant="ghost" className="room-facepile" aria-expanded={detailsOpen} aria-label={`View members, ${participantCount} in this conversation`}
         onClick={() => onOpenDetails("members")}>
         {faces.map((participant) => <ParticipantAvatar key={`${participant.kind}:${participant.id}`} participant={participant} size="sm" />)}
         {overflow > 0 && <span className="text-sm text-muted-foreground">+{overflow}</span>}

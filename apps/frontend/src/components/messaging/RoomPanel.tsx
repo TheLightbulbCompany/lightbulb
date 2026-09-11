@@ -20,6 +20,7 @@ import { roomUrlTransform } from "./markdown";
 import { copyText, messagePermalink, parseSessionPermalink } from "./messageLinks";
 import { openSessionPanel } from "@/components/workspace/workspaceController";
 import { RoomComposer, type RoomComposerProps } from "./RoomComposer";
+import { RoomDetailsPanel, type DetailsTab } from "./RoomDetailsPanel";
 import { RoomHeader } from "./RoomHeader";
 import { linkifyMentions, parseMentionHref } from "./mentions";
 import { readRecentEmoji } from "./EmojiPicker";
@@ -276,6 +277,7 @@ function RoomContent({
   const managementTrigger = useRef<HTMLButtonElement | null>(null);
   const managementCancel = useRef<HTMLButtonElement>(null);
   const [contextCollapsed, setContextCollapsed] = useState(true);
+  const [detailsTab, setDetailsTab] = useState<DetailsTab>("members");
   const [editTarget, setEditTarget] = useState<string | null>(null);
   const [localSelection, setSelection] = useState<{ kind: "thread" | "resources"; id: string } | null>(null);
   const [consumedSession, setConsumedSession] = useState<number | null>(null);
@@ -524,7 +526,7 @@ function RoomContent({
             setContextCollapsed(true);
             setSearchTarget({ messageId: message.messageId, threadRootMessageId: root, token: ++searchTargetToken.current });
           }} />}
-        onOpenDetails={() => { closeDetail(); setContextCollapsed(false); }}
+        onOpenDetails={(tab) => { closeDetail(); if (tab) setDetailsTab(tab); setContextCollapsed(false); }}
         onSetPrefs={onSetPrefs} onRenameRoom={onRenameRoom} onSetTopic={onSetTopic} onLeaveRoom={onLeaveRoom} />
       <nav className="room-tabs" aria-label="Conversation views">
         <button type="button" className="room-tab" aria-current={contextCollapsed && !showDetail ? "page" : undefined} onClick={() => { closeDetail(); setContextCollapsed(true); }}>{visibleRoom?.kind === "channel" ? "Channel" : "Conversation"}</button>
@@ -564,8 +566,17 @@ function RoomContent({
     </div>
     {showContext && !showDetail && <aside className="room-context" aria-label="Room details">
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={() => setContextCollapsed(true)}><ArrowLeft aria-hidden="true" /></Button><h3 ref={contextHeading} tabIndex={-1} className="font-semibold">Room details</h3></header>
-      <div className="room-context-body">
-        <section aria-labelledby={`${id}-context-members`}>
+      <RoomDetailsPanel room={visibleRoom} roomName={roomName} tab={detailsTab} onSelectTab={setDetailsTab}
+        participants={participants} currentUserId={currentUserId} actionable={actionable}
+        messages={messages} pinnedMessageIds={pinnedMessageIds} activeRuns={activeRuns}
+        onUnpin={onSetPin ? (messageId) => onSetPin(messageId, false) : undefined}
+        onLeaveRoom={onLeaveRoom && canLeaveRoom ? onLeaveRoom : undefined}
+        // Reuses the shipped search scroll/highlight path rather than adding a second one.
+        onOpenMessage={(messageId) => {
+          setContextCollapsed(true);
+          setSearchTarget({ messageId, threadRootMessageId: null, token: ++searchTargetToken.current });
+        }}
+        members={<section aria-labelledby={`${id}-context-members`}>
           <div className="room-members-heading"><h4 id={`${id}-context-members`} className="font-semibold">Members</h4>
             {canAddMembers && <Button type="button" variant="outline" aria-expanded={memberPickerOpen} onClick={() => {
               if (!memberPickerOpen) setMemberError(undefined);
@@ -593,13 +604,7 @@ function RoomContent({
               <Button type="button" disabled={selectedMembers.length === 0 || addingMembers} onClick={() => void addSelectedMembers()}>{addingMembers ? "Adding…" : "Add selected"}</Button></>}
             {memberError && <p role="alert" className="text-sm text-err">{memberError}</p>}
           </div>}
-        </section>
-        <section aria-labelledby={`${id}-context-runs`}>
-          <h4 id={`${id}-context-runs`} className="font-semibold">Active work</h4>
-          {activeRuns.length === 0 ? <p className="text-sm text-muted-foreground">No active runs.</p>
-            : activeRuns.map((run) => <p key={run.runId} className="room-wrap">{participants.find((participant) => participant.kind === "agent" && participant.id === run.agentId)?.displayName ?? "Agent"} is working</p>)}
-        </section>
-      </div>
+        </section>} />
     </aside>}
     {showResources && <RoomResources key={JSON.stringify([ownerScopeId, currentUserId, roomId, participants.filter(p => p.kind === "human").map(p => p.id).sort()])}
       roomId={roomId} source={resourceSource!} participants={participants} onClose={closeDetail}

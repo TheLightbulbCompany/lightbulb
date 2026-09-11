@@ -724,3 +724,25 @@ it("omits mark-unread-from-here for a thread reply", async () => {
   expect(await screen.findByRole("menuitem", { name: "Pin to conversation" })).toBeInTheDocument();
   expect(screen.queryByRole("menuitem", { name: "Mark unread from here" })).not.toBeInTheDocument();
 });
+
+it("opens the details panel on the pins tab from the header pinned count", async () => {
+  const onSetPin = vi.fn().mockResolvedValue(undefined);
+  render(<RoomPanel {...props} messages={[message]} pinnedMessageIds={[message.messageId]} onSetPin={onSetPin} />);
+  await userEvent.click(screen.getByRole("button", { name: "1 pinned message" }));
+  const details = within(screen.getByRole("complementary", { name: "Room details" }));
+  expect(details.getByRole("tab", { name: "Pins", selected: true })).toBeInTheDocument();
+  expect(within(details.getByRole("list", { name: "Pinned messages" })).getByText("Hello")).toBeInTheDocument();
+  await userEvent.click(details.getByRole("button", { name: "Unpin this message" }));
+  expect(onSetPin).toHaveBeenCalledWith(message.messageId, false);
+  await userEvent.click(details.getByRole("tab", { name: "Members" }));
+  expect(details.getByText("Friday")).toBeInTheDocument();
+});
+
+it("jumps from a pinned message back to it in the conversation", async () => {
+  HTMLElement.prototype.scrollIntoView = vi.fn();
+  render(<RoomPanel {...props} messages={[message]} pinnedMessageIds={[message.messageId]} />);
+  await userEvent.click(screen.getByRole("button", { name: "1 pinned message" }));
+  await userEvent.click(screen.getByRole("button", { name: "Jump to message" }));
+  expect(screen.queryByRole("complementary", { name: "Room details" })).not.toBeInTheDocument();
+  expect(screen.getByRole("article", { name: "Message from Friday" }).closest("[data-message-id]")).toHaveFocus();
+});

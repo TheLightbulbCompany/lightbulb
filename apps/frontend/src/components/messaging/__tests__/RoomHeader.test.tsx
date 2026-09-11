@@ -104,3 +104,17 @@ it("does not leak a failed star's error into a freshly opened rename dialog", as
   const dialog = await screen.findByRole("dialog", { name: "Rename conversation" });
   expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument();
 });
+
+it("opens the pins tab of the details panel from the pinned count", async () => {
+  const onOpenDetails = vi.fn();
+  render(<RoomHeader {...props} onOpenDetails={onOpenDetails} detailsOpen />);
+  const pins = screen.getByRole("button", { name: "2 pinned messages" });
+  expect(pins).toHaveAttribute("aria-expanded", "true");
+  await userEvent.click(pins);
+  expect(onOpenDetails).toHaveBeenCalledWith("pins");
+});
+
+it("hides the pinned count when nothing is pinned", () => {
+  render(<RoomHeader {...props} pinnedCount={0} />);
+  expect(screen.queryByRole("button", { name: /pinned/ })).not.toBeInTheDocument();
+});

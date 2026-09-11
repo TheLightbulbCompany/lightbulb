@@ -23,7 +23,9 @@ export function RoomMessageSearch({ roomId, messages, participants, loading = fa
   const [query, setQuery] = useState("");
   const selected = useRef<RoomMessage | null>(null);
   const term = query.trim().toLowerCase();
-  const matches = term ? messages.filter((message) => message.roomId === roomId && message.text.toLowerCase().includes(term)).toReversed() : [];
+  const roomMessages = messages.filter((message) => message.roomId === roomId);
+  const loadedMessageIds = new Set(roomMessages.map((message) => message.messageId));
+  const matches = term ? roomMessages.filter((message) => message.text.toLowerCase().includes(term)).reverse() : [];
 
   return <Dialog open={open} onOpenChange={(next) => {
     setOpen(next);
@@ -51,7 +53,7 @@ export function RoomMessageSearch({ roomId, messages, participants, loading = fa
         {matches.map((message) => {
           const name = participants.find((member) => member.kind === message.author.kind && member.id === message.author.id)?.displayName || message.author.displayName || "Unknown author";
           const validDate = !Number.isNaN(Date.parse(message.createdAt));
-          const threadLoaded = !message.threadRootMessageId || messages.some((parent) => parent.roomId === roomId && parent.messageId === message.threadRootMessageId);
+          const threadLoaded = !message.threadRootMessageId || loadedMessageIds.has(message.threadRootMessageId);
           const start = Math.max(0, message.text.toLowerCase().indexOf(term) - 60);
           return <li key={message.messageId}>
             <button type="button" disabled={!threadLoaded} className="w-full rounded-sm p-3 text-left hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"

@@ -130,11 +130,16 @@ function DirectoryContent({
     {unreadError && <p role="alert" className="px-2 text-sm text-err">Could not mark {unreadError.label} unread. <Button variant="outline" disabled={markingUnread !== null}
       onClick={() => void markRoomUnread(unreadError.roomId, unreadError.label)}>Try again</Button></p>}
     {partialError && <div role="alert" className="px-2 text-sm text-err">Some conversation details could not be loaded. {onRetry && <Button variant="outline" onClick={onRetry}>Try again</Button>}</div>}
-    {(["Channels", "Direct messages"] as const).map((group) => {
-      const entries = rooms.filter((room) => group === "Channels" ? room.kind === "channel" : room.kind !== "channel");
+    {(["Channels", "Group chats", "Direct messages"] as const).map((group) => {
+      const kind = group === "Channels" ? "channel" : group === "Group chats" ? "group-dm" : "dm";
+      const entries = rooms.filter((room) => room.kind === kind);
       return <section key={group} aria-label={group}>
         <h3 className="room-directory-group">{group}</h3>
-        {entries.length === 0 && <p className="text-sm text-muted-foreground px-2">{group === "Channels" ? "Create a channel for shared work." : "Start a conversation with people or agents."}</p>}
+        {entries.length === 0 && <p className="text-sm text-muted-foreground px-2">{
+          group === "Channels" ? "Create a channel for shared work."
+            : group === "Group chats" ? "Start a conversation with two or more people or agents."
+              : "Start a conversation with a person or agent."
+        }</p>}
         <ul>{entries.map((room) => {
           const Icon = room.kind === "channel" ? Hash : room.kind === "group-dm" ? Users : MessageCircle;
           const label = roomDisplayName(room, room.participants);
@@ -185,7 +190,7 @@ function DirectoryContent({
         onChange={(event) => { setKind(event.target.value as RoomKind); setSelected(new Map()); }}>
         <option value="channel">Channel</option>
         <option value="dm">Direct message</option>
-        <option value="group-dm">Group message</option>
+        <option value="group-dm">Group chat</option>
       </select>
       {kind === "channel" && <><label htmlFor={`${id}-name`}>Channel name</label>
         <input id={`${id}-name`} className="room-input" value={name} maxLength={80} disabled={creationBusy} onChange={(event) => setName(event.target.value)} /></>}

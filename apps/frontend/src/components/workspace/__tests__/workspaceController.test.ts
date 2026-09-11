@@ -5,6 +5,7 @@ import {
   openPanel,
   openChatPanel,
   openChatPanelWithDraft,
+  openMessagePanel,
   closeSubjectDeleted,
   activateMessagesPanel,
   syncMessagesPanelAgent,
@@ -14,6 +15,7 @@ import {
   _snapshotForTests,
 } from "../workspaceController";
 import { MESSAGES_PANEL_ID } from "../panelRegistry";
+import { parseCommand } from "../urlChannel";
 
 vi.mock("@/lib/shellNav", () => ({
   pushSearchParams: vi.fn(),
@@ -253,6 +255,43 @@ describe("workspaceController", () => {
     attachDockviewApi(api, () => undefined);
     openChatPanel("a-1");
     expect(api.addPanel).toHaveBeenCalledWith(expect.objectContaining({ renderer: "always" }));
+  });
+
+  it("openMessagePanel retargets the Messages panel for a room permalink and clears the stale agent target", () => {
+    const api = makeFakeApi();
+    attachDockviewApi(api, () => "friday-id");
+    openChatPanel("friday-id");
+    openMessagePanel("room-1", "msg-1");
+    expect(api.addPanel).toHaveBeenCalledTimes(1); // retargeted, not a second panel
+    expect(api.getPanel(MESSAGES_PANEL_ID)?.api.updateParameters)
+      .toHaveBeenLastCalledWith({ roomId: "room-1", messageId: "msg-1", agentId: undefined, agentSelection: undefined });
+    expect(api.getPanel(MESSAGES_PANEL_ID)?.params).toEqual({ roomId: "room-1", messageId: "msg-1" });
+  });
+
+  it("openMessagePanel opens a room without a target message", () => {
+    const api = makeFakeApi();
+    attachDockviewApi(api, () => undefined);
+    openMessagePanel("room-2");
+    expect(api.getPanel(MESSAGES_PANEL_ID)?.params).toEqual({ roomId: "room-2" });
+  });
+
+  // Proves the WorkspaceShell routing-gap fix: a ?panel=chat&room=…&message=…
+  // command must reach the Messages panel's params. WorkspaceShell.test.tsx
+  // mocks getWorkspaceSnapshot to `{ ready: false }`, so it never exercises the
+  // reconciler's chat branch — this exercises the controller side of the same
+  // seam WorkspaceShell.tsx's reconciler calls into (`command.descriptor.params
+  // .roomId ? openMessagePanel(...) : openChatPanel(...)`).
+  it("a room permalink command reaches the Messages panel via openMessagePanel, not the agentId-only openChatPanel", () => {
+    const api = makeFakeApi();
+    attachDockviewApi(api, () => undefined);
+    const command = parseCommand("?panel=chat&room=r1&message=m1");
+    expect(command?.descriptor.component).toBe("chat");
+    if (command?.descriptor.params.roomId) {
+      openMessagePanel(command.descriptor.params.roomId, command.descriptor.params.messageId);
+    } else {
+      openChatPanel(command?.descriptor.params.agentId as string);
+    }
+    expect(api.getPanel(MESSAGES_PANEL_ID)?.params).toEqual({ roomId: "r1", messageId: "m1" });
   });
 
   it("openChatPanelWithDraft defers the draft until room navigation settles", () => {

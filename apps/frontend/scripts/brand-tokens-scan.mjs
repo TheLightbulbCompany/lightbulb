@@ -3,12 +3,13 @@
  * Brand-token scanner. Fails on any colour literal outside the files that are
  * allowed to hold one, plus retired font CSS vars outside the landing.
  *
- * The exemptions (SKIP below) are deliberate, and all five are documented in
+ * The exemptions (SKIP below) are deliberate, and six are documented in
  * CLAUDE.md and .interface-design/system.md: `app/globals.css` and
- * `app/landing.css` (the token layer itself), `lib/clerkAppearance.ts` (Clerk
- * takes hex, not var()), `*Brand.ts` (vendor marks, off-palette by
- * definition), `components/landing/**` (marketing, its own palette), and
- * tests (`__tests__/`, `*.test.*`) which hold literals as fixtures.
+ * `app/landing.css`, `app/landing-v2.css` (the token layer itself + marketing),
+ * `lib/clerkAppearance.ts` (Clerk takes hex, not var()), `*Brand.ts` (vendor
+ * marks, off-palette by definition), `components/landing/**` (marketing, its
+ * own palette), and tests (`__tests__/`, `*.test.*`) which hold literals as
+ * fixtures.
  *
  * Usage: node scripts/brand-tokens-scan.mjs [paths...]   (default: src)
  * Exit 1 if anything matched. `--count` prints only the total.
@@ -25,6 +26,7 @@ const EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".css"]);
 export const SKIP = (rel) =>
   rel === "app/globals.css" ||
   rel === "app/landing.css" ||
+  rel === "app/landing-v2.css" ||
   rel === "lib/clerkAppearance.ts" ||
   rel.endsWith("Brand.ts") ||
   rel.startsWith("components/landing/") ||

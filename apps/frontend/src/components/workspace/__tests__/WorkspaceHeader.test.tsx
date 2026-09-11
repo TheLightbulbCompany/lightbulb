@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 
 const setPaletteOpen = vi.fn();
 const openPanel = vi.fn();
@@ -34,6 +34,7 @@ vi.mock("@clerk/nextjs", () => {
 
 vi.mock("../workspaceController", () => ({ openPanel: (...args: unknown[]) => openPanel(...args), activateMessagesPanel: () => activateMessagesPanel(), useWorkspaceState: () => ({ activePanelId }) }));
 
+import { trackTeamRunActivity } from "@/components/notifications/teamRunActivity";
 import { WorkspaceHeader } from "../WorkspaceHeader";
 
 describe("WorkspaceHeader", () => {
@@ -44,6 +45,17 @@ describe("WorkspaceHeader", () => {
     expect(button).toHaveAttribute("aria-current", "page");
     fireEvent.click(button);
     expect(openPanel).toHaveBeenCalledWith(panel, {}, { pushUrl: true });
+  });
+  it("shows active team runs on Activity without covering workspace content", () => {
+    act(() => trackTeamRunActivity("teams.heartbeat.run.queued", { runId: "run-1" }));
+    render(<WorkspaceHeader />);
+    const activity = screen.getByRole("button", { name: "Activity, 1 active team run" });
+    expect(within(activity).getByText("1")).toBeInTheDocument();
+    fireEvent.click(activity);
+    expect(openPanel).toHaveBeenCalledWith("teams-inbox", {}, { pushUrl: true });
+
+    // Resolve the run so it doesn't leak into the next test's activity count.
+    act(() => trackTeamRunActivity("teams.heartbeat.run.status", { runId: "run-1", status: "succeeded" }));
   });
   it("returns to Messages and keeps settings accessible", () => {
     render(<WorkspaceHeader />);

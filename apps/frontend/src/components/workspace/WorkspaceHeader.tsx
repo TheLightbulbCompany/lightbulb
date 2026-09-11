@@ -5,6 +5,7 @@ import { UserButton } from "@clerk/nextjs";
 import { Bell, Chrome, FolderOpen, HelpCircle, Home, ListTodo, MessageSquare, Search, Settings } from "lucide-react";
 import Link from "next/link";
 import { capture } from "@/lib/analytics";
+import { useActiveTeamRunCount } from "@/components/notifications/teamRunActivity";
 import { useSupport } from "@/components/support/SupportProvider";
 import { useCommandPalette } from "@/components/teams/command-palette/CommandPaletteProvider";
 import { activateMessagesPanel, openPanel, useWorkspaceState } from "./workspaceController";
@@ -24,13 +25,18 @@ export function WorkspaceHeader({ chatReady = true }: { chatReady?: boolean }): 
   const { openSupport } = useSupport();
   const { setOpen } = useCommandPalette();
   const { activePanelId } = useWorkspaceState();
+  const activeTeamRunCount = useActiveTeamRunCount();
   return (
     <nav className="workspace-rail" aria-label="Workspace">
       <button type="button" className="workspace-rail__search" aria-label="Search agents, issues, and projects" title="Search (⌘/Ctrl K)" onClick={() => setOpen(true)}>
         <Search size={20} aria-hidden="true" />
       </button>
-      {DESTINATIONS.map(({ panel, label, Icon }) => (
-        <button key={panel} type="button" aria-label={label} title={label} disabled={!chatReady}
+      {DESTINATIONS.map(({ panel, label, Icon }) => {
+        const showsActivity = panel === "teams-inbox" && activeTeamRunCount > 0;
+        const accessibleLabel = showsActivity
+          ? `${label}, ${activeTeamRunCount} active team ${activeTeamRunCount === 1 ? "run" : "runs"}`
+          : label;
+        return <button key={panel} type="button" aria-label={accessibleLabel} title={accessibleLabel} disabled={!chatReady}
           aria-current={activePanelId === panel ? "page" : undefined}
           onClick={() => {
             if (panel === "file-viewer") capture("file_browser_opened");
@@ -38,10 +44,12 @@ export function WorkspaceHeader({ chatReady = true }: { chatReady?: boolean }): 
             if (panel === MESSAGES_PANEL_ID) activateMessagesPanel();
             else openPanel(panel, {}, { pushUrl: true });
           }}>
-          <Icon size={20} aria-hidden="true" />
+          <span className="workspace-rail__icon"><Icon size={20} aria-hidden="true" />
+            {showsActivity && <span className="workspace-rail__activity-badge" aria-hidden="true">{activeTeamRunCount > 9 ? "9+" : activeTeamRunCount}</span>}
+          </span>
           {label !== "Browse workspace files" && <span>{label}</span>}
-        </button>
-      ))}
+        </button>;
+      })}
       <div className="workspace-rail__spacer" />
       <button type="button" onClick={() => openSupport()} aria-label="Get help" title="Get help"><HelpCircle size={20} aria-hidden="true" /></button>
       <Link href="/settings" aria-label="Settings" title="Settings"><Settings size={20} aria-hidden="true" /></Link>

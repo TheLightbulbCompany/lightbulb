@@ -900,7 +900,9 @@ async def get_room(auth: AuthContext, room_id: str) -> RoomDetail:
 
 async def patch_room(auth: AuthContext, room_id: str, request: PatchRoomRequest) -> RoomDetail:
     owner_id = resolve_owner_id(auth)
-    await require_room_admin(owner_id, auth.user_id, room_id)
+    meta, _ = await require_room_admin(owner_id, auth.user_id, room_id)
+    if meta.get("kind") == "dm":
+        raise ApiProblem("ROOM_FORBIDDEN", "Direct messages cannot be renamed.")
     try:
         meta = await messaging_repo.patch_room_name(room_id, request.name)
     except messaging_repo.RoomNotFound as exc:

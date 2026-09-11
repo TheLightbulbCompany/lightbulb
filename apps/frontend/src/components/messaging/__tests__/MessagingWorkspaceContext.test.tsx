@@ -1,4 +1,5 @@
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { useEffect } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { RoomDetail } from "@lightbulb/shared";
 import type { RoomDirectoryProps } from "../RoomDirectory";
@@ -31,8 +32,17 @@ vi.mock("../RoomPanel", () => ({ RoomPanel: (props: RoomPanelProps) => {
   return <section aria-label="Messages">{renderComposer && <RoomComposer {...props.composer} />}</section>;
 } }));
 
-import { MessagingWorkspaceProvider } from "../MessagingWorkspaceContext";
+import { MessagingWorkspaceProvider, useMessagingWorkspace, type MessagingWorkspaceValue } from "../MessagingWorkspaceContext";
 import { MessagingConversation, MessagingDirectory } from "../MessagingWorkspace";
+
+let workspaceValue: MessagingWorkspaceValue;
+function CaptureContext() {
+  const value = useMessagingWorkspace();
+  // Assigning the module-level capture in an effect (not during render) keeps
+  // this component pure per react-hooks/globals.
+  useEffect(() => { workspaceValue = value; });
+  return null;
+}
 
 const room: RoomDetail = {
   roomId: "room-1", kind: "dm", name: null, roomRevision: 1,
@@ -75,6 +85,7 @@ afterEach(cleanup);
 
 function compose(onOpenRoom?: (room?: import("../types").DirectoryRoom) => void) {
   return render(<MessagingWorkspaceProvider initialAgentId="agent-friday" subscribeToRoom>
+    <CaptureContext />
     <MessagingDirectory onOpenRoom={onOpenRoom} />
     <MessagingConversation />
   </MessagingWorkspaceProvider>);
@@ -159,12 +170,21 @@ it("offers channel admins only non-members and projects explicit member wire fie
   });
 });
 
-it.each(["dm", "group-dm"] as const)("does not expose member adds for a %s", (kind) => {
-  state.activeRoom = { ...room, kind };
+it("does not expose room management for a direct message", () => {
+  state.activeRoom = { ...room, kind: "dm" };
   compose();
   expect(panel.onAddMember).toBeUndefined();
   expect(panel.onRenameRoom).toBeUndefined();
   expect(panel.onRemoveMember).toBeUndefined();
+});
+
+it("exposes only renaming for a group chat owner", async () => {
+  state.activeRoom = { ...room, kind: "group-dm" };
+  compose();
+  expect(panel.onAddMember).toBeUndefined();
+  expect(panel.onRemoveMember).toBeUndefined();
+  await act(async () => panel.onRenameRoom?.("Project room"));
+  expect(state.updateRoom).toHaveBeenCalledWith({ name: "Project room" });
 });
 
 it("does not expose member adds to a channel member without admin permission", () => {
@@ -231,6 +251,17 @@ it("surfaces DM selection failures through the directory action error", async ()
   await act(async () => directory.onSelectParticipant(directory.participants[0]));
 
   await waitFor(() => expect(directory.creationError).toBe("Conversation could not be opened."));
+});
+
+it("openMessage selects the room and exposes targetMessageId on roomProps, clearing it after 3s", () => {
+  vi.useFakeTimers();
+  compose();
+  act(() => { workspaceValue.openMessage("room-1", "msg-1"); });
+  expect(state.selectRoom).toHaveBeenCalledWith("room-1");
+  expect(panel.targetMessageId).toBe("msg-1");
+  act(() => { vi.advanceTimersByTime(3000); });
+  expect(panel.targetMessageId).toBeNull();
+  vi.useRealTimers();
 });
 
 it("renders the empty conversation when no room is selected", () => {

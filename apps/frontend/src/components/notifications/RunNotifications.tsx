@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { LoaderCircle } from "lucide-react";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { useAgents, agentDisplayName, type Agent } from "@/hooks/useAgents";
 import { useWorkspaceState } from "@/components/workspace/workspaceController";
@@ -22,6 +23,8 @@ import {
   type RunToastAction,
   type RunToastContext,
 } from "./runToastReducer";
+import { trackTeamRunActivity, useActiveTeamRunCount } from "./teamRunActivity";
+import "./run-notifications.css";
 
 /**
  * Global bottom-right run notifications. Renders nothing; consumes the
@@ -137,7 +140,10 @@ function executeAction(action: RunToastAction, agents: Agent[]): void {
   const view = isChat ? viewAgentAction(action.agentId) : viewTeamsAction("recently");
   capture("run_notification_shown", { source: action.source, kind: action.kind });
   if (action.kind === "working") {
-    notifyLoading(isChat ? `${name} is working…` : "A team agent run started…", {
+    // Background team runs use the persistent Activity-rail indicator instead
+    // of an infinite bottom-right toast that obscures the composer and roster.
+    if (!isChat) return;
+    notifyLoading(`${name} is working…`, {
       dedupeKey: action.key,
       action: view,
     });
@@ -152,12 +158,13 @@ function executeAction(action: RunToastAction, agents: Agent[]): void {
   }
 }
 
-export function RunNotifications(props: RunNotificationsProps): null {
+export function RunNotifications(props: RunNotificationsProps) {
   const { onEvent, onChatMessage } = useLiveEvents();
   const { agents } = useAgents();
   const workspace = useWorkspaceState();
 
   const stateRef = useRef(createRunToastState());
+  const activeTeamRunCount = useActiveTeamRunCount();
   const ctxRef = useRef<RunToastContext>({
     watchedChatKeys: new Set(),
     teamsPanelActive: false,
@@ -211,6 +218,7 @@ export function RunNotifications(props: RunNotificationsProps): null {
     const unsubEvent = onEvent((event) => {
       if (event.type !== "paperclip.event") return;
       try {
+        trackTeamRunActivity(event.payload.eventName, event.payload.payload);
         const actions = [
           ...reduceTeamsRunEvent(
             stateRef.current,
@@ -237,5 +245,12 @@ export function RunNotifications(props: RunNotificationsProps): null {
     };
   }, [onChatMessage, onEvent]);
 
-  return null;
+  if (props.mode !== "mobile" || activeTeamRunCount === 0) return null;
+  const label = activeTeamRunCount === 1 ? "Team is working" : `${activeTeamRunCount} team runs active`;
+  return <button type="button" className="team-run-mobile-indicator" onClick={viewTeamsAction("recently").onClick}
+    aria-label={`${label}. View activity`}>
+    <LoaderCircle size={14} aria-hidden="true" />
+    <span>{label}</span>
+    <span className="team-run-mobile-indicator__view" aria-hidden="true">View</span>
+  </button>;
 }

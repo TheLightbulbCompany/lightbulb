@@ -83,7 +83,8 @@ export function Navbar() {
   }, []);
 
   const initialActive = (id: string) => {
-    if (onLanding) return id === "home" ? "active" : undefined;
+    // The landing hero is no longer a nav destination; the observer takes over on scroll.
+    if (onLanding) return undefined;
     if (onMarketplace) return id === "marketplace" ? "active" : undefined;
     if (onBlog) return id === "blog" ? "active" : undefined;
     if (onDocs) return id === "docs" ? "active" : undefined;
@@ -94,26 +95,19 @@ export function Navbar() {
     <nav className="landing-nav" aria-label="Main navigation">
       <div className="nav-brand">
         <Logo size="md" withMark />
-        <span className="nav-badge">Public Beta</span>
       </div>
       <div className={`nav-links${mobileOpen ? " mobile-open" : ""}`} ref={linksRef}>
-        <Link href="/" data-section="home" className={initialActive("home")}>
-          Home
-        </Link>
         <Link href={anchor("workspace")} data-section="workspace" className={initialActive("workspace")}>
           Product
-        </Link>
-        <Link href={anchor("marketplace")} data-section="marketplace" className={initialActive("marketplace")}>
-          Marketplace
-        </Link>
-        <Link href={anchor("pricing")} data-section="pricing" className={initialActive("pricing")}>
-          Pricing
         </Link>
         <Link href="/docs" data-section="docs" className={initialActive("docs")}>
           Docs
         </Link>
         <Link href="/blog" data-section="blog" className={initialActive("blog")}>
-          Blog
+          Blogs
+        </Link>
+        <Link href={anchor("pricing")} data-section="pricing" className={initialActive("pricing")}>
+          Pricing
         </Link>
         {/* Plain <a>: an API route (302 to the signed DMG), not a Next page. */}
         {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
@@ -155,7 +149,7 @@ export function Navbar() {
                 })
               }
             >
-              Sign up
+              Get started free
             </Link>
           </>
         )}

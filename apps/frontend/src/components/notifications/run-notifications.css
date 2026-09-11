@@ -1,0 +1,23 @@
+.team-run-mobile-indicator {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 7px;
+  max-width: min(180px, 40vw);
+  min-height: 30px;
+  padding: 4px 6px 4px 8px;
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--border));
+  border-radius: 999px;
+  background: var(--background);
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 600;
+}
+.team-run-mobile-indicator > svg { flex: none; color: var(--warn); animation: team-run-spin 1s linear infinite; }
+.team-run-mobile-indicator > span:not(.team-run-mobile-indicator__view) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.team-run-mobile-indicator__view { flex: none; border-radius: 999px; padding: 3px 7px; background: var(--foreground); color: var(--background); font-size: 10px; }
+.team-run-mobile-indicator:focus-visible { outline: 2px solid var(--foreground); outline-offset: 2px; }
+@keyframes team-run-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .team-run-mobile-indicator > svg { animation: none; }
+}

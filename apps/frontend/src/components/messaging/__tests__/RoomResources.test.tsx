@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { ApiError, type LiveEvent, type LocalSession, type LocalSessionCommand, type LocalSessionCommandReceipt, type LocalSessionEventPage, type RoomResources } from "@lightbulb/shared";
 import { RoomPanel, type RoomPanelProps } from "../RoomPanel";
 import { useRoomResources } from "@/hooks/useRoomResources";
+import { useState } from "react";
 
 const session: LocalSession = {
   sessionId: "session-123456", deviceId: "mac", humanUserId: "alice", provider: "codex",
@@ -56,6 +57,31 @@ async function openSession() {
   await userEvent.click(await screen.findByRole("button", { name: /Open Codex/ }));
 }
 afterEach(() => vi.useRealTimers());
+
+it("opens resources without changing the controlled message-navigation thread target", async () => {
+  const f = setup();
+  const targets = vi.fn();
+  function ControlledRoom() {
+    const [thread, setThread] = useState<string | null>(null);
+    return <RoomPanel {...f.props} selectedThreadId={thread} onSelectThread={id => { targets(id); setThread(id); }} />;
+  }
+  render(<ControlledRoom />);
+  await openSession();
+  expect(await screen.findByRole("textbox", { name: /Send to Codex/ })).toBeInTheDocument();
+  expect(targets).not.toHaveBeenCalledWith("resources");
+  expect(f.props.composer.onSubmit).not.toHaveBeenCalled();
+});
+
+it("does not grant room mention identity to native text resembling canonical room markup", async () => {
+  const f = setup();
+  f.client.listLocalSessionEvents.mockResolvedValue({ events: [{ seq: 250, kind: "text", role: "assistant", text: "[@Alice](mention:human:alice)", truncated: false }], nextAfterSeq: null });
+  render(<RoomPanel {...f.props} />);
+  await openSession();
+  const history = screen.getByRole("region", { name: "Native session history" });
+  expect(await within(history).findByText("@Alice")).toBeInTheDocument();
+  expect(history.querySelector(".room-mention")).toBeNull();
+  expect(within(history).queryByRole("link")).not.toBeInTheDocument();
+});
 
 it("shows advisory workspace changes, incomplete coverage and overlapping sessions without claiming refresh", async () => {
   const f = setup();

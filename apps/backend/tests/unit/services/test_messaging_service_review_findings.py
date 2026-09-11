@@ -20,6 +20,49 @@ from core.services.messaging import (
 
 
 @pytest.mark.asyncio
+async def test_patch_room_allows_group_chat_admin_and_rejects_direct_message_rename(monkeypatch):
+    auth = AuthContext(user_id="admin", org_id="org_1")
+    group_meta = {"roomId": "group", "kind": "group-dm"}
+    require_admin = AsyncMock(return_value=(group_meta, {"role": "admin"}))
+    patch_name = AsyncMock(return_value={**group_meta, "name": "Release crew"})
+    detail = AsyncMock(return_value="detail")
+    publish = AsyncMock()
+    monkeypatch.setattr(messaging, "require_room_admin", require_admin)
+    monkeypatch.setattr(messaging.messaging_repo, "patch_room_name", patch_name)
+    monkeypatch.setattr(messaging, "_room_detail", detail)
+    monkeypatch.setattr(messaging, "_publish_room_metadata", publish)
+
+    result = await messaging.patch_room(auth, "group", messaging.PatchRoomRequest(name="Release crew"))
+    assert result == "detail"
+    patch_name.assert_awaited_once_with("group", "Release crew")
+    publish.assert_awaited_once_with({**group_meta, "name": "Release crew"})
+
+    require_admin.return_value = ({"roomId": "dm", "kind": "dm"}, {"role": "owner"})
+    with pytest.raises(ApiProblem) as exc:
+        await messaging.patch_room(auth, "dm", messaging.PatchRoomRequest(name="Private label"))
+    assert exc.value.error.code == "ROOM_FORBIDDEN"
+    assert "cannot be renamed" in exc.value.error.message
+    assert patch_name.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_patch_room_keeps_admin_permission_check_in_front_of_persistence(monkeypatch):
+    auth = AuthContext(user_id="member", org_id="org_1")
+    monkeypatch.setattr(
+        messaging,
+        "require_room_admin",
+        AsyncMock(side_effect=ApiProblem("ROOM_FORBIDDEN", "Room owner or admin access required.")),
+    )
+    patch_name = AsyncMock()
+    monkeypatch.setattr(messaging.messaging_repo, "patch_room_name", patch_name)
+
+    with pytest.raises(ApiProblem) as exc:
+        await messaging.patch_room(auth, "group", messaging.PatchRoomRequest(name="Denied"))
+    assert exc.value.error.code == "ROOM_FORBIDDEN"
+    patch_name.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_reaction_rejects_foreign_room_message_and_invalid_emoji(monkeypatch):
     auth = AuthContext(user_id="user_owner", org_id="org_1")
     monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=({}, {})))

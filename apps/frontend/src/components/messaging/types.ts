@@ -14,7 +14,7 @@ export type RoomState = "loading" | "ready" | "reconnecting" | "unavailable" | "
 export const roomKindLabel = {
   channel: "Channel",
   dm: "Direct message",
-  "group-dm": "Group message",
+  "group-dm": "Group chat",
 } as const;
 
 export function roomDisplayName(
@@ -25,7 +25,7 @@ export function roomDisplayName(
   if (room.name) return room.name;
   const names = participants.map((participant) => participant.displayName);
   if (room.kind === "dm") return names[0] ?? "Direct message";
-  if (room.kind === "group-dm") return names.length ? names.join(" and ") : "Group message";
+  if (room.kind === "group-dm") return names.length ? names.join(" and ") : "Group chat";
   return "Untitled channel";
 }
 

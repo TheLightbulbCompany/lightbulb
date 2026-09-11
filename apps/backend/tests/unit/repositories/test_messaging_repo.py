@@ -220,6 +220,19 @@ async def test_create_room_replay_is_idempotent_and_conflict_is_detected(table):
 
 
 @pytest.mark.asyncio
+async def test_patch_room_name_persists_to_room_and_sidebar_catalog(table):
+    room_id, meta = await _room(name="Launch crew")
+
+    updated = await repo.patch_room_name(room_id, "Release crew")
+
+    assert updated["name"] == "Release crew"
+    assert updated["revision"] == meta["revision"] + 1
+    assert (await repo.get_room(room_id))["name"] == "Release crew"
+    listed = await repo.list_rooms_for_member(OWNER, "human", USER_A)
+    assert listed[0]["meta"]["name"] == "Release crew"
+
+
+@pytest.mark.asyncio
 async def test_member_limit_and_action_formula(table):
     members = [_member("human", USER_A, "owner")] + [
         _member("agent", f"{i:08d}-0000-4000-8000-000000000000") for i in range(32)

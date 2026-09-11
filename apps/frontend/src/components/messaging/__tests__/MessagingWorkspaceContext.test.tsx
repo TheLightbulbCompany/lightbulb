@@ -425,6 +425,17 @@ it("opens the shortcut sheet on Cmd+/", () => {
   expect(screen.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeInTheDocument();
 });
 
+it("does not stack the shortcut sheet over another open dialog", () => {
+  compose();
+  const palette = document.body.appendChild(document.createElement("div"));
+  palette.setAttribute("role", "dialog");
+
+  fireEvent.keyDown(window, { key: "/", metaKey: true });
+  palette.remove();
+
+  expect(screen.queryByRole("dialog", { name: "Keyboard shortcuts" })).not.toBeInTheDocument();
+});
+
 it("closes the shortcut sheet on a second Cmd+/, even though it is itself an open dialog", () => {
   compose();
   fireEvent.keyDown(window, { key: "/", metaKey: true });

@@ -106,20 +106,24 @@ export function useMessagingWorkspaceOptional(): MessagingWorkspaceValue | null 
  * from inside the composer — that is where the owner's hands are, and the
  * combos are modified, so they are not what anyone types into a message.
  * `defaultPrevented` covers everything the composer or a typeahead already
- * handled (e.g. its own plain-ArrowUp "edit last message"). `⌘/` is
- * evaluated BEFORE the dialog guard — it must still toggle the shortcut
- * sheet closed while that very dialog (its own `role="dialog"`) is open.
+ * handled (e.g. its own plain-ArrowUp "edit last message"). `⌘/` carries its
+ * own dialog guard rather than the shared one below: it must still toggle
+ * the shortcut sheet closed while that very sheet (its own `role="dialog"`)
+ * is open, but must not stack a sheet over someone else's dialog — the ⌘K
+ * palette.
  */
 export function useMessagingShortcuts(
   rooms: readonly RoomSummary[],
   activeRoomId: string | null,
   selectRoom: (roomId: string) => void,
   onShowShortcuts: () => void,
+  shortcutsOpen: boolean,
 ): void {
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
       if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key === "/") {
+        if (!shortcutsOpen && hasBlockingShortcutDialog()) return;
         event.preventDefault();
         onShowShortcuts();
         return;
@@ -141,7 +145,7 @@ export function useMessagingShortcuts(
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [rooms, activeRoomId, selectRoom, onShowShortcuts]);
+  }, [rooms, activeRoomId, selectRoom, onShowShortcuts, shortcutsOpen]);
 }
 
 export function MessagingWorkspaceProvider({
@@ -183,7 +187,7 @@ export function MessagingWorkspaceProvider({
   const [creationError, setCreationError] = useState<string>();
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const toggleShortcuts = useCallback(() => setShortcutsOpen((open) => !open), []);
-  useMessagingShortcuts(rooms.rooms, rooms.activeRoomId, rooms.selectRoom, toggleShortcuts);
+  useMessagingShortcuts(rooms.rooms, rooms.activeRoomId, rooms.selectRoom, toggleShortcuts, shortcutsOpen);
   const [draftRoomId, setDraftRoomId] = useState(rooms.activeRoomId);
   const [draftThreadId, setDraftThreadId] = useState<string | null>(null);
   const typingActive = useRef(false);

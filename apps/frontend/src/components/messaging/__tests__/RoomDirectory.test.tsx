@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within, waitFor } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { RoomDirectory } from "../RoomDirectory";
 import type { DirectoryParticipant, DirectoryRoom } from "../types";
@@ -7,6 +7,39 @@ const friday: DirectoryParticipant = { kind: "agent", id: "friday", displayName:
 const alice: DirectoryParticipant = { kind: "human", id: "alice", displayName: "Alice", mentionHandle: null };
 const atlas: DirectoryParticipant = { kind: "agent", id: "atlas", displayName: "Atlas", mentionHandle: "atlas" };
 const base: DirectoryRoom = { roomId: "channel", kind: "channel", name: "Launch", roomRevision: 1, lastMessageSeq: 0, lastMessageAt: null, unreadCount: 0, updatedAt: "2026-09-10T00:00:00Z", participants: [] };
+
+it("creates through a centered portal with member settings and closes on success", async () => {
+  const onCreate = vi.fn().mockResolvedValue(true);
+  const { container } = render(<RoomDirectory ownerScopeId="org" state="ready" rooms={[]} participants={[alice, atlas]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onCreate={onCreate} />);
+  fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
+  const dialog = screen.getByRole("dialog", { name: "Create a channel" });
+  expect(container.contains(dialog)).toBe(false);
+  fireEvent.change(within(dialog).getByLabelText("Channel name"), { target: { value: "Launch" } });
+  fireEvent.click(within(dialog).getByLabelText("Select Atlas"));
+  fireEvent.change(within(dialog).getByLabelText("Listen mode for Atlas"), { target: { value: "active" } });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Create channel" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  expect(onCreate).toHaveBeenCalledWith({ kind: "channel", name: "Launch", members: [{ kind: "agent", id: "atlas", role: "member", listenMode: "active" }] });
+});
+
+it("preserves a failed draft and disables member controls while creating", async () => {
+  const props = { ownerScopeId: "org", state: "ready" as const, rooms: [], participants: [atlas], onSelectRoom: vi.fn(), onSelectParticipant: vi.fn(), onCreate: vi.fn().mockResolvedValue(false) };
+  const { rerender } = render(<RoomDirectory {...props} />);
+  fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
+  fireEvent.change(screen.getByLabelText("Channel name"), { target: { value: "Launch" } });
+  fireEvent.click(screen.getByLabelText("Select Atlas"));
+  rerender(<RoomDirectory {...props} creationBusy />);
+  expect(screen.getByLabelText("Listen mode for Atlas")).toBeDisabled();
+  fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+  expect(screen.getByRole("dialog")).toBeInTheDocument();
+  rerender(<RoomDirectory {...props} creationError="Try again" />);
+  expect(screen.getByRole("alert")).toHaveTextContent("Try again");
+  expect(screen.getByLabelText("Channel name")).toHaveValue("Launch");
+  expect(screen.getByLabelText("Select Atlas")).toBeChecked();
+  fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  expect(screen.getByRole("button", { name: "New conversation" })).toHaveFocus();
+});
 
 it("names canonical DMs from counterparts and preserves selection and unread counts", () => {
   const onSelectRoom = vi.fn();

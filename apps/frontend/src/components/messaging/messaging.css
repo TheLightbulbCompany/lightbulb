@@ -97,7 +97,14 @@
 .room-directory-entry:hover, .room-directory-entry[aria-current="page"] { background: var(--cream-deeper); }
 .room-unread { display: inline-block; height: 6px; width: 6px; border-radius: 50%; background: var(--foreground); flex-shrink: 0; }
 .room-count { border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; font-size: .875rem; font-variant-numeric: tabular-nums; }
-.room-creation { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--border); padding-top: 16px; }
+.room-creation-dialog { width: min(520px, calc(100vw - 32px)); max-width: 520px; padding: 0; overflow: hidden; border-radius: 8px; font-family: var(--font-sans); }
+.room-creation { display: flex; flex-direction: column; max-height: calc(100dvh - 32px); min-height: 0; }
+.room-creation-header { display: grid; gap: 8px; padding: 24px 48px 16px 24px; flex-shrink: 0; }
+.room-creation-body { display: flex; flex-direction: column; gap: 8px; padding: 0 24px 16px; overflow-y: auto; overscroll-behavior: contain; min-height: 0; }
+.room-creation-body .room-picker { display: grid; gap: 8px; margin-top: 8px; }
+.room-creation-footer { flex-shrink: 0; display: grid; gap: 8px; padding: 16px 24px; border-top: 1px solid var(--border); background: var(--background); }
+.room-creation-dialog :is(button, input, select):focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.room-creation-dialog ::selection { color: var(--primary-foreground); background: var(--primary); }
 .room-wrap { overflow-wrap: anywhere; }
 .room-panel :is(button, input, textarea, select, summary):focus-visible,
 .room-directory :is(button, input, select):focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
@@ -146,5 +153,5 @@
 
 @media (prefers-reduced-motion: reduce) {
   .participant-avatar[data-agent-state="running"] { animation: none; }
-  .room-panel *, .room-directory * { transition: none !important; animation: none !important; }
+  .room-panel *, .room-directory *, .room-creation-dialog { transition: none !important; animation: none !important; }
 }

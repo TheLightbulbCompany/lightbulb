@@ -238,8 +238,10 @@ export function MessagingWorkspaceProvider({
     setCreationError(undefined);
     try {
       await rooms.createRoom({ clientRoomId: crypto.randomUUID(), ...creation });
+      return true;
     } catch (error) {
       setCreationError(error instanceof Error ? error.message : "Conversation could not be created.");
+      return false;
     } finally {
       setCreationBusy(false);
     }
@@ -284,7 +286,7 @@ export function MessagingWorkspaceProvider({
     currentRoomId: rooms.activeRoomId ?? undefined,
     onSelectRoom: rooms.selectRoom,
     onSelectParticipant: selectParticipant,
-    onCreate: (creation) => void createRoom(creation),
+    onCreate: createRoom,
     creationBusy,
     creationError,
     onRetry: () => void rooms.refreshRooms(),
